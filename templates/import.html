@@ -1,0 +1,68 @@
+{% extends "layout.html" %}
+{% block content %}
+  <section class="hero">
+    <div class="hero-content">
+      <h1>Import Streaming History</h1>
+      <p>Upload your Spotify export file and let the app import your listening history with progress tracking.</p>
+    </div>
+  </section>
+
+  <section class="card import-card">
+    <form id="import-form" action="{{ url_for('import_history') }}" method="post" enctype="multipart/form-data">
+      <label for="history_file">Spotify history JSON file</label>
+      <input id="history_file" name="history_file" type="file" accept=".json" required />
+      <button class="primary-button" type="submit">Start Import</button>
+    </form>
+
+    <div id="import-status" class="import-status">
+      <p id="progress-message">
+        {% if importProgress.status == 'running' %}
+          Import in progress: {{ importProgress.percentage }}% — {{ importProgress.message }}
+        {% elif importProgress.status == 'complete' %}
+          Last import completed: {{ importProgress.message }}
+        {% elif importProgress.status == 'failed' %}
+          Import failed: {{ importProgress.message }}
+        {% else %}
+          Upload your streaming history file to begin importing.
+        {% endif %}
+      </p>
+      <progress id="progress-bar" max="100" value="{{ importProgress.percentage or 0 }}"></progress>
+    </div>
+  </section>
+
+  <script>
+    const progressBar = document.getElementById('progress-bar');
+    const progressMessage = document.getElementById('progress-message');
+    const importForm = document.getElementById('import-form');
+
+    async function fetchProgress() {
+      try {
+        const response = await fetch('{{ url_for('import_progress') }}');
+        if (!response.ok) {
+          return;
+        }
+        const progress = await response.json();
+        progressBar.value = progress.percentage || 0;
+        if (progress.status === 'running') {
+          progressMessage.textContent = `Import in progress: ${progress.percentage}% — ${progress.message}`;
+          setTimeout(fetchProgress, 1200);
+        } else if (progress.status === 'complete') {
+          progressMessage.textContent = `Import complete: ${progress.message}`;
+        } else if (progress.status === 'failed') {
+          progressMessage.textContent = `Import failed: ${progress.message}`;
+        }
+      } catch (error) {
+        console.error('Failed to load import progress', error);
+      }
+    }
+
+    if ({{ 'true' if importProgress.status == 'running' else 'false' }}) {
+      fetchProgress();
+    }
+
+    importForm?.addEventListener('submit', () => {
+      progressMessage.textContent = 'Starting import...';
+      progressBar.value = 0;
+    });
+  </script>
+{% endblock %}

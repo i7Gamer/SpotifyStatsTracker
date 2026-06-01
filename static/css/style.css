@@ -101,6 +101,70 @@ button {
   gap: 14px;
 }
 
+.import-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 20px;
+  margin-bottom: 24px;
+}
+
+#import-form {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+#import-form input[type="file"] {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 12px 14px;
+  border-radius: 14px;
+}
+
+#import-form label {
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
+#import-form .primary-button {
+  width: fit-content;
+}
+
+.import-status {
+  display: grid;
+  gap: 10px;
+}
+
+#import-progress {
+  width: 100%;
+  height: 14px;
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+progress {
+  width: 100%;
+  height: 14px;
+  appearance: none;
+}
+
+progress::-webkit-progress-bar {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+}
+
+progress::-webkit-progress-value {
+  background: var(--accent);
+  border-radius: 12px;
+}
+
+progress::-moz-progress-bar {
+  background: var(--accent);
+  border-radius: 12px;
+}
+
 .login-panel {
   min-height: calc(100vh - 70px);
   display: grid;
