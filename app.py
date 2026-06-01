@@ -23,48 +23,19 @@ def loadHistory(start=None, end=None) -> list:
     except Exception:
         return []
 
-def formatDuration(ms: int) -> str:
-    seconds = max(0, ms // 1000)
-    minutes = seconds // 60
-    remaining = seconds % 60
-    return f"{minutes}:{remaining:02d}"
-
-
-def enrichTrack(track: dict) -> dict:
-    album = track.get("album", {}) or {}
-    artists = album.get("artists", []) or []
-    artistNames = ", ".join(a.get("name", "") for a in artists if isinstance(a, dict))
-
-    timestamp = track.get("timestamp")
-    try:
-        playedAt = datetime.datetime.fromtimestamp(float(timestamp))
-    except Exception:
-        playedAt = datetime.datetime.fromtimestamp(0)
-
-    return {
-        "name": track.get("name", "Unknown"),
-        "url": track.get("external_urls", {}).get("spotify", "#"),
-        "imageUrl": track.get("image_url", ""),
-        "albumName": album.get("name", "Unknown album"),
-        "artist": artistNames or "Unknown artist",
-        "durationMs": int(track.get("duration_ms", 0) or 0),
-        "duration": formatDuration(int(track.get("duration_ms", 0) or 0)),
-        "playedAt": playedAt,
-        "playedAtText": playedAt.strftime("%Y-%m-%d %H:%M"),
-        "explicit": bool(track.get("explicit", False)),
-        "popularity": track.get("popularity", 0),
-        "trackNumber": track.get("track_number", 0),
-        "discNumber": track.get("disc_number", 0),
-        "isrc": track.get("external_ids", {}).get("isrc", ""),
-    }
-
+def getLatestHistory(limit=None):
+    tracks = loadHistory()
+    if limit is not None:
+        size = len(tracks)
+        tracks = tracks[max(size-limit, 0):size]
+    return tracks
 
 @app.route("/")
 def dashboard():
-    tracks = [enrichTrack(track) for track in loadHistory()]
-    tracks.sort(key=lambda t: t["playedAt"], reverse=True)
+    tracks = getLatestHistory(50)
+    # tracks.sort(key=lambda t: t["playedAt"], reverse=True)    #< assume tracks are already in order of play
 
-    totalDurationMs = sum(track["durationMs"] for track in tracks)
+    totalDurationMs = sum(track["duration"] for track in tracks)
     durationHours = totalDurationMs // 3_600_000
     durationMinutes = (totalDurationMs % 3_600_000) // 60_000
     totalDuration = f"{durationHours}h {durationMinutes}m" if durationHours else f"{durationMinutes}m"

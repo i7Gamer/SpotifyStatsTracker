@@ -14,11 +14,11 @@
     </article>
     <article class="track-summary-card">
       <h3>Artists Tracked</h3>
-      <p>{{ unique_artists }}</p>
+      <p>{{ uniqueArtists }}</p>
     </article>
     <article class="track-summary-card">
       <h3>Total Listening Time</h3>
-      <p>{{ total_duration }}</p>
+      <p>{{ totalDuration }}</p>
     </article>
   </section>
 
@@ -33,13 +33,12 @@
                 <a href="{{ track.url }}" target="_blank" rel="noreferrer noopener">
                   <h3>{{ track.name }}</h3>
                 </a>
-                <div class="track-meta">{{ track.artist }} · {{ track.album_name }}</div>
-                <div class="track-meta">Played at {{ track.played_at_text }}</div>
+                <div class="track-meta">{{ track.artist }} · {{ track.albumName }}</div>
+                <div class="track-meta">Played at {{ track.playedAtText }}</div>
               </div>
               <div class="track-attributes">
                 <span class="track-label">Duration: {{ track.duration }}</span>
-                <span class="track-label">Popularity: {{ track.popularity }}</span>
-                <span class="track-label">Track {{ track.track_number }} · Disc {{ track.disc_number }}</span>
+                <span class="track-label">Track {{ track.trackNumber }} · Disc {{ track.discNumber }}</span>
                 <span class="track-label">{{ "Explicit" if track.explicit else "Clean" }}</span>
                 {% if track.isrc %}<span class="track-label">ISRC: {{ track.isrc }}</span>{% endif %}
               </div>
