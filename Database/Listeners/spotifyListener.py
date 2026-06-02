@@ -5,7 +5,7 @@ from SpotipyFree import Spotify
 class Listener:
     def __init__(self, cookiesFile):
         self.run = False
-        self.sp = Spotify(cookies=cookiesFile)
+        self.sp = Spotify(cookiesFile=cookiesFile)
         self.sp.startRecentlyPlayedListener()
         self.recentlyPlayed_Z1 = self.sp.current_user_recently_played()
 

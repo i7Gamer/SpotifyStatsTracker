@@ -7,13 +7,14 @@ import time
 from flask import Flask, render_template, redirect, request, url_for, jsonify, send_from_directory
 
 from Database.database import Database
+from SpotipyFree import saveSession, parseCookieString
 
 class SpotifyDashboardApp:
     def __init__(self):
         self.app = Flask(__name__)
         self.baseDir = Path(__file__).resolve().parent
         self.username = "Tzur"
-        self.cookiesFile = self.baseDir / "cookies.json"
+        self.cookiesFile = self.baseDir / "secrets" / "cookies.json"
         self.database = Database(user=self.username)
 
         # Register routes
@@ -44,7 +45,7 @@ class SpotifyDashboardApp:
 
     def startListenerIfNeeded(self):
         if self.database.listener is None:
-            self.database.startListener(self.cookiesFile)
+            self.database.startListener(str(self.cookiesFile))
             print("Started listener thread.")
             time.sleep(2)  # Give listener time to initialize
 
@@ -57,10 +58,7 @@ class SpotifyDashboardApp:
     def ensureLoggedIn(self):
         if self.cookiesFile.exists():
             try:
-                data = json.loads(self.cookiesFile.read_text(encoding="utf-8"))
-                if type(data) != dict or not data:
-                    print("Invalid cookies file format.")
-                    return False
+                json.loads(self.cookiesFile.read_text(encoding="utf-8"))
                 self.startListenerIfNeeded()
                 if self.database.isListenerLoggedIn():
                     return True
@@ -77,7 +75,6 @@ class SpotifyDashboardApp:
         @self.app.route("/", methods=["GET"])
         def dashboard():
             if not self.ensureLoggedIn():
-                # FIX: updated 'login' endpoint target
                 return redirect(url_for("login", next=request.path))
             tracks = self.getLatestHistory(50)
             totalDurationMs = sum(track.get("duration", 0) for track in tracks)
@@ -142,8 +139,9 @@ class SpotifyDashboardApp:
                 if not cookies:
                     return render_template("login.html", step=2, email=email, error="Cookies required.")
 
-                with open(self.cookiesFile, "w", encoding="utf-8") as f:
-                    json.dump({"email": email, "cookies": cookies}, f, indent=2)
+                # with open(self.cookiesFile, "w", encoding="utf-8") as f:
+                #     json.dump({"email": email, "cookies": cookies}, f, indent=2)
+                saveSession(parseCookieString(cookies), email, self.cookiesFile)
 
                 # FIX: updated 'dashboard' endpoint target
                 return redirect(url_for("dashboard"))

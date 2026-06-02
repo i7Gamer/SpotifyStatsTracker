@@ -2,3 +2,5 @@ Flask
 spotipyFree
 pillow
 requests
+redis
+websockets
