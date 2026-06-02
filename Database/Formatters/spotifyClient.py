@@ -12,25 +12,29 @@ class Client:
     @staticmethod
     def _formatArtists(albumRaw):
         artists = []
-        for artist in (
-            albumRaw.get("artists", []) or []
-        ):  # < list of artists names and links to spotify
+
+        for artist in (albumRaw.get("artists") or []):
             artists.append(
                 {
                     "name": artist.get("name", ""),
-                    "url": artist.get("external_urls", {"spotify": "N/A"})["spotify"],
+                    "url": artist.get("external_urls", {}).get("spotify", "N/A"),
                 }
             )
-        artistsText = ", ".join(a["name"] for a in artists)
+
+        artistsText = ", ".join(a.get("name", "") for a in artists)
+
         return artists, artistsText
 
     @staticmethod
     def _formatAlbum(albumRaw):
+        images = albumRaw.get("images") or []
+        firstImage = images[0] if images else {}
+
         return {
             "name": albumRaw.get("name", "Unknown album"),
             "url": albumRaw.get("external_urls", {}).get("spotify", "#"),
             "id": albumRaw.get("id", 0),
-            "imageUrl": albumRaw.get("images", [{}])[0].get("url", ""),
+            "imageUrl": firstImage.get("url", ""),
             "totalTracks": albumRaw.get("total_tracks", 0),
             "releaseDateText": albumRaw.get("release_date", "NA"),
         }
@@ -41,27 +45,34 @@ class Client:
             playedAt = datetime.datetime.fromtimestamp(float(timestamp))
         except Exception:
             playedAt = datetime.datetime.fromtimestamp(0)
-        duration = track["duration_ms"] or 0
-        album = track.get("album", {}) or {}
+
+        track = track or {}
+        album = track.get("album") or {}
+
+        images = album.get("images") or []
+        firstImage = images[0] if images else {}
+
+        duration = track.get("duration_ms") or 0
+
         artists, artistsText = Client._formatArtists(album)
 
         return {
-            "name": track["name"],
+            "name": track.get("name", "Unknown Track"),
             "releaseDateText": album.get("release_date", "NA"),
-            "id": track["id"],
-            "url": track["external_urls"]["spotify"],
+            "id": track.get("id", 0),
+            "url": track.get("external_urls", {}).get("spotify", "#"),
             "playedAt": timestamp,
             "playedAtText": playedAt.strftime("%Y-%m-%d %H:%M"),
             "timePlayed": msPlayed,
             "artists": artists,
             "artistsText": artistsText,
             "album": Client._formatAlbum(album),
-            "imageUrl": album["images"][0]["url"],
-            "imageId": album["id"],
+            "imageUrl": firstImage.get("url", ""),
+            "imageId": album.get("id", 0),
             "duration": duration,
             "durationText": Client._formatDuration(duration),
             "explicit": bool(track.get("explicit", False)),
-            "isrc": track["external_ids"]["isrc"],
-            "discNumber": track["disc_number"],
-            "trackNumber": track["track_number"],
+            "isrc": track.get("external_ids", {}).get("isrc", ""),
+            "discNumber": track.get("disc_number", 0),
+            "trackNumber": track.get("track_number", 0),
         }
