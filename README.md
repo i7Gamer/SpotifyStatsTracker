@@ -4,7 +4,7 @@
 
 # Spotify Stats Tracker
 ### If you found [this repository](https://github.com/TzurSoffer/SpotifyStatsTracker) useful, please give it a ⭐!.
-A web application that allows users to track and analyze their Spotify listening habits and statistics.
+A web application that allows users to track and analyze their Spotify listening habits and statistics **without Spotify Premium**.
 
 ## Features
 
