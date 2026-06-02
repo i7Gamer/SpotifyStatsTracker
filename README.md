@@ -1,40 +1,43 @@
 # Spotify Stats Tracker
 
-A lightweight Python/Flask SpotifyTracker
+A web application that allows users to track and analyze their Spotify listening habits and statistics.
 
 ## Features
 
-- Flask server serving HTML templates and static CSS
-- Sample user profile and listening data endpoints
+- View your top songs.
+- View your top artists.
+- See your listening history.
 
-## Run locally
+## Installation
 
-This Flask app renders the UI server-side using Jinja2 templates and the existing CSS found in `static/css/style.css`.
-
-- `backend/` contains the Flask app logic.
-- `templates/` contains the server-rendered pages.
-
-1. Create a Python virtual environment
-
+1. Clone the repository:
 ```bash
-python -m venv .venv
-.\.venv\Scripts\activate
+git clone https://github.com/TzurSoffer/SpotifyStatsTracker
+cd SpotifyStatsTracker
 ```
 
-2. Install dependencies
-
+2. Install dependencies:
 ```bash
 pip install -r requirements.txt
 ```
 
-3. Start the app
+## Run the Application
 
+1. Start the app:
 ```bash
 python app.py
 ```
 
-4. Open the app in your browser:
-
+2. Open the app in your browser:
 ```text
 http://127.0.0.1:5000
 ```
+or whatever your IP is
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+## Support
+
+For support, please open an issue on the GitHub repository or contact me.

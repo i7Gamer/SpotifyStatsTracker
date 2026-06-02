@@ -226,7 +226,7 @@ class SpotifyDashboardApp:
             return render_template("top_artists.html", tracks=tracks, username=self.username, totalPlays=totalPlays, totalUnique=totalUnique, totalTime=self.formatMs(totalMs))
 
     def run(self):
-        self.app.run(debug=True, port=5000, threaded=False, use_reloader=False)
+        self.app.run(host="0.0.0.0", debug=True, port=5000, threaded=False, use_reloader=False)
 
 if __name__ == "__main__":
     dashboardApp = SpotifyDashboardApp()
