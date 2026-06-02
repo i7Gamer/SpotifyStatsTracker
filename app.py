@@ -10,6 +10,7 @@ from Database.database import import_spotify_history, read_progress, getTopSongs
 app = Flask(__name__)
 baseDir = Path(__file__).resolve().parent
 USERNAME = "Tzur"
+COOKIES_FILE = baseDir / "cookies.json"
 
 @app.route('/img/<username>/tracks/<filename>')
 def serve_track_image(username, filename):
@@ -58,12 +59,23 @@ def run_import_background(history_data):
     try:
         import_spotify_history(history_data)
     except Exception:
-        # The import helper writes failure state to progress.json
         pass
+
+def ensure_logged_in(redirect_to=None):
+    if COOKIES_FILE.exists():
+        try:
+            data = json.loads(COOKIES_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and data:
+                return True
+        except Exception:
+            pass
+    return False
 
 
 @app.route("/", methods=["GET"])
 def dashboard():
+    if not ensure_logged_in():
+        return redirect(url_for("login", next=request.path))
     tracks = get_latest_history(50)
     total_duration_ms = sum(track.get("duration", 0) for track in tracks)
     duration_hours = total_duration_ms // 3_600_000
@@ -75,11 +87,8 @@ def dashboard():
     )
 
     unique_artists = len({track.get("artist") for track in tracks if track.get("artist")})
-    # fetch top songs and artists (limit to 10)
     raw_top_songs = getTopSongs()
     raw_top_artists = getTopArtists()
-
-    # format_ms is a module-level helper
 
     top_songs = []
     for item in (raw_top_songs or [])[:10]:
@@ -135,6 +144,32 @@ def import_history():
 def import_page():
     return render_template("import.html", importProgress=read_progress())
 
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    step = request.form.get("step", "1")
+
+    if step == "1":
+        if request.method == "GET":
+            return render_template("login.html", step=1)
+
+        email = request.form.get("email", "").strip()
+        if not email:
+            return render_template("login.html", step=1, error="Email required.")
+
+        return render_template("login.html", step=2, email=email)
+
+    if step == "2":
+        email = request.form.get("email", "")
+        cookies = request.form.get("cookies", "")
+
+        if not cookies:
+            return render_template("login.html", step=2, email=email,
+                                   error="Cookies required.")
+
+        with open(COOKIES_FILE, "w", encoding="utf-8") as f:
+            json.dump({"email": email, "cookies": cookies}, f, indent=2)
+
+        return redirect(url_for("dashboard"))
 
 @app.route("/import-progress", methods=["GET"])
 def import_progress():
@@ -143,6 +178,9 @@ def import_progress():
 
 @app.route("/top-songs", methods=["GET"])
 def top_songs_page():
+    if not ensure_logged_in():
+        return redirect(url_for("login", next=request.path))
+
     raw_top_songs = getTopSongs()
     tracks = []
     for item in (raw_top_songs or [])[:50]:
@@ -172,6 +210,9 @@ def top_songs_page():
 
 @app.route("/top-artists", methods=["GET"])
 def top_artists_page():
+    if not ensure_logged_in():
+        return redirect(url_for("login", next=request.path))
+
     raw_top_artists = getTopArtists()
     # build representative track-like cards for each artist
     history = get_latest_history(None)

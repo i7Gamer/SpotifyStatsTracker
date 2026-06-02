@@ -9,5 +9,5 @@ instance/
 .env.*
 Streaming*.*
 secrets.json
-cookies.json
+cookies*.json
 Database/img/*/tracks/*

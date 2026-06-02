@@ -1,0 +1,57 @@
+{% extends "layout.html" %}
+{% block content %}
+
+<section class="hero">
+  <div class="hero-content">
+    <h1>Login</h1>
+    {% if step == 1 %}
+      <p>Step 1 of 2: Enter your email.</p>
+    {% else %}
+      <p>Step 2 of 2: Paste your cookies.</p>
+    {% endif %}
+  </div>
+</section>
+
+<section class="import-form">
+  {% if error %}
+    <p class="error">{{ error }}</p>
+  {% endif %}
+
+  {% if step == 1 %}
+    <form method="post" action="/login">
+      <input type="hidden" name="step" value="1">
+
+      <div class="form-group">
+        <label>Email</label>
+        <input type="email" name="email" required>
+      </div>
+
+      <button type="submit" class="btn-primary">Next</button>
+    </form>
+
+  {% else %}
+    <form method="post" action="/login">
+      <input type="hidden" name="step" value="2">
+      <input type="hidden" name="email" value="{{ email }}">
+
+      <div class="form-group">
+        <label>Cookies</label>
+        <textarea name="cookies" required></textarea>
+      </div>
+
+      <button type="submit" class="btn-primary">Finish</button>
+    </form>
+    <section class="instructions">
+        <h3>How to locate your session data</h3>
+        <ol>
+            <li>Open <a href="https://open.spotify.com" target="_blank">open.spotify.com</a> in a new browser tab and log in if not already logged in.</li>
+            <li>Open the Developer Tools (<strong>F12</strong>).</li>
+            <li>Navigate to the <strong>Application</strong> tab and expand the <strong>Cookies</strong> section on the left.</li>
+            <li>Find the <strong>https://open.spotify.com</strong> entry and click on it. Highlight and copy <strong>everything</strong> in that table.</li>
+            <li>Paste it into the input area above.</li>
+        </ol>
+    </section>
+  {% endif %}
+</section>
+
+{% endblock %}

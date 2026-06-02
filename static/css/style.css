@@ -341,3 +341,104 @@ progress::-moz-progress-bar {
     grid-template-columns: 1fr;
   }
 }
+
+.import-form {
+  max-width: 480px;
+  margin: 2rem auto;
+  padding: 2rem;
+  background: #ffffff;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+}
+
+.form-group {
+  margin-bottom: 1.5rem;
+  display: flex;
+  flex-direction: column;
+}
+
+.form-group label {
+  font-weight: 600;
+  margin-bottom: 0.5rem;
+  color: #333333;
+  font-size: 0.95rem;
+}
+
+.form-control {
+  width: 100%;
+  padding: 0.75rem 1rem;
+  font-size: 1rem;
+  border: 1px solid #cccccc;
+  border-radius: 6px;
+  box-sizing: border-box;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.form-control:focus {
+  outline: none;
+  border-color: #0070f3;
+  box-shadow: 0 0 0 3px rgba(0, 112, 243, 0.15);
+}
+
+.text-monospace {
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 0.85rem;
+  resize: vertical;
+  line-height: 1.4;
+}
+
+.form-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 1.5rem;
+}
+
+.btn-primary, .btn-secondary {
+  padding: 0.75rem 1.5rem;
+  font-size: 1rem;
+  font-weight: 500;
+  border-radius: 6px;
+  cursor: pointer;
+  text-decoration: none;
+  text-align: center;
+  border: none;
+}
+
+.btn-primary {
+  background-color: #0070f3;
+  color: #ffffff;
+  transition: background-color 0.2s;
+}
+
+.btn-primary:hover {
+  background-color: #0051b3;
+}
+
+.btn-secondary {
+  background-color: #f0f0f0;
+  color: #333333;
+  transition: background-color 0.2s;
+}
+
+.btn-secondary:hover {
+  background-color: #e0e0e0;
+}
+
+.error {
+  color: #d32f2f;
+  background-color: #ffebee;
+  padding: 0.75rem;
+  border-radius: 4px;
+  margin-bottom: 1rem;
+  font-size: 0.9rem;
+}
+
+.instructions {
+  background-color: #e3f2fd;
+  color: #0d47a1;
+  padding: 1rem;
+  border-radius: 6px;
+  margin-bottom: 1.5rem;
+  font-size: 0.95rem;
+}
