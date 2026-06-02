@@ -2,16 +2,16 @@ version: '3.8'
 
 services:
   spotify-tracker:
-    image: spotify-tracker:latest
-    # image: yourusername/spotify-tracker:latest
+    image: mepro3/spotify-tracker
     ports:
-      - "5001:5000"
+      - "5000:5000"
     volumes:
       - ./Database:/app/Database/img
       - ./secrets:/app/secrets
     environment:
       - FLASK_APP=app.py
       - PYTHONUNBUFFERED=1
+    restart: always
     # Optional: uncomment for debug mode
     # environment:
     #   - FLASK_DEBUG=1

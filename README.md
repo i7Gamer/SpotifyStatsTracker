@@ -23,6 +23,31 @@ pip install -r requirements.txt
 
 ## Run the Application
 
+### Using Docker
+
+Use this docker-compose command:
+```docker
+version: '3.8'
+
+services:
+  spotify-tracker:
+    image: mepro3/spotify-tracker
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./Database:/app/Database/img
+      - ./secrets:/app/secrets
+    environment:
+      - FLASK_APP=app.py
+      - PYTHONUNBUFFERED=1
+    restart: always
+    # Optional: uncomment for debug mode
+    # environment:
+    #   - FLASK_DEBUG=1
+```
+
+Then you can run `docker compose up -d` and the app should start on `127.0.0.1:5000` or `yourIp:5000`
+
 ### Local Development
 
 1. Start the app:
@@ -35,19 +60,6 @@ python app.py
 http://127.0.0.1:5000
 ```
 or whatever your IP is
-
-### Using Docker
-
-1. Build and run with Docker Compose (recommended):
-```bash
-docker-compose up --build
-```
-
-2. Or build manually and run:
-```bash
-docker build -t spotify-tracker .
-docker run -p 5000:5000 -v $(pwd)/Database:/app/Database spotify-tracker
-```
 
 3. Open the app in your browser:
 ```text
