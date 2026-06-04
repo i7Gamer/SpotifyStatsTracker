@@ -51,6 +51,9 @@
         } else if (progress.status === 'failed') {
           progressMessage.textContent = `Import failed: ${progress.message}`;
         }
+        else {
+          setTimeout(fetchProgress, 5000);
+        }
       } catch (error) {
         console.error('Failed to load import progress', error);
       }

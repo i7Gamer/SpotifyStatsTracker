@@ -129,30 +129,36 @@ class Database:
     def getHistory(self) -> int:
         history = self._loadEntries()
         return self._paginateEntries(history)
+
+    def getEntriesCount(self) -> int:
+        """Return total number of entries in the database."""
+        return len(self._loadEntries())
     
-    def getEntriesFromNew(self, count: int) -> list:
+    def getEntriesFromNew(self, count: int | None = None, startIndex: int = 0) -> list:
         """ Return the latest `count` entries from history, sorted from newest to oldest. If count is None, return all entries. """
         entries = self._loadEntries()
+        startPos = len(entries) - startIndex   #< Everything is reversed
+        
         if count is not None:
-            return self._paginateEntries(entries[:count][::-1])
-        return self._paginateEntries(entries[::-1])
+            endPos = startPos - count
+            endPos = None if endPos <= 0 else endPos
+            slicedEntries = entries[startPos - 1 : endPos : -1]   #< slice and reverse
+        else:
+            slicedEntries = entries[startPos - 1 : : -1]           #< slice and reverse
+            
+        return self._paginateEntries(slicedEntries)
 
-    def getEntriesFromOld(self, count: int) -> list:
-        """ Return the oldest `count` entries from history, sorted from oldest to newest. If count is None, return all entries. """
-        entries = self._loadEntries()
-        if count is not None:
-            return self._paginateEntries(entries[-count:])
-        return self._paginateEntries(entries)
+    def getEntriesFromOld(self, count: int | None = None, startIndex: int = 0) -> list:
+            """ Return the oldest `count` entries from history, sorted from oldest to newest. If count is None, return all entries. """
+            entries = self._loadEntries()
 
-    def getEntriesFromIndex(self, index: int, count: int = None, oldest_first: bool = False) -> list:
-        entries = self._loadEntries()
-        index = min(index, len(entries) - 1)
-        if count is not None:
-            if oldest_first:
-                return self._paginateEntries(entries[index:index + count])
+            if count is not None:
+                endIndex = startIndex + count
+                slicedEntries = entries[startIndex:endIndex]
             else:
-                return self._paginateEntries(entries[index - count:index]) if index >= count else self._paginateEntries(entries[:index])
-        return [self._paginateEntries([entries[index]])]
+                slicedEntries = entries[startIndex:]
+                
+            return self._paginateEntries(slicedEntries)
 
     def writeProgress(self, status: str, current: int = 0, total: int = 0, message: str = "", error: bool = False):
         payload = {
@@ -220,12 +226,10 @@ class Database:
     def resortDatabase(self):
         """ In case entries got out of order, this will sort them by playedAt timestamp. """
         entries = self._loadEntries()
-        for entry in entries:
-            print(convertToDatetime(entry["playedAt"]).timestamp())
         entries.sort(
             key=lambda x: convertToDatetime(x["playedAt"]).timestamp()
         )
-        print(entries)
+        print("Resorted Database")
 
         self._saveEntries(entries)
 
@@ -258,7 +262,7 @@ class Database:
         filtered = []
         for track in entries:
             playedAt = track["playedAt"]
-            date = datetime.datetime.fromtimestamp(int(playedAt))
+            date = convertToDatetime(playedAt)
 
             if startDate and date < startDate:
                 continue

@@ -10,9 +10,31 @@ def parseError(e):
 
 def convertToDatetime(timestamp):
     try:
-        playedAt = datetime.datetime.fromtimestamp(float(timestamp))
-    except ValueError:
-        playedAt = datetime.datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
-    except:
-        playedAt = datetime.datetime.fromtimestamp(0)
+        playedAt = datetime.datetime.fromtimestamp(float(timestamp), datetime.timezone.utc)
+    except (ValueError, TypeError):
+        try:
+            dt = datetime.datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+            if dt.tzinfo is not None:
+                playedAt = dt.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+            else:
+                playedAt = dt
+        except Exception:
+            playedAt = datetime.datetime.fromtimestamp(float(timestamp), datetime.timezone.utc)
     return playedAt
+
+def timeToInt(timestampOrStr):
+    """ Convert ISO string or datetime to int """
+    try:
+        return int(float(timestampOrStr))
+    except (ValueError, TypeError):
+        try:
+            dt = datetime.datetime.fromisoformat(timestampOrStr.replace("Z", "+00:00"))
+            return int(dt.timestamp())
+        except:
+            return 0
+
+if __name__ == "__main__":
+    import pysole
+    pysole.probe(runRemainingCode=True)
+    print("un = timeToInt('2022-09-22T03:29:43Z')")
+    print("dt = convertToDatetime(un)")

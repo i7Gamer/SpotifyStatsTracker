@@ -1,4 +1,4 @@
-from Database.utils import convertToDatetime
+from Database.utils import convertToDatetime, timeToInt
 
 class Client:
     @staticmethod
@@ -37,11 +37,18 @@ class Client:
             "totalTracks": albumRaw.get("total_tracks", 0),
             "releaseDateText": albumRaw.get("release_date", "NA"),
         }
-
+    
+    @staticmethod
+    def embedPlayInfo(track, timestamp, timePlayed):
+        playedAtTimestamp = timeToInt(timestamp)
+        playedAt = convertToDatetime(playedAtTimestamp)
+        track["playedAt"] = playedAtTimestamp
+        track["playedAtText"] = playedAt.strftime("%Y-%m-%d %H:%M")
+        track["timePlayed"] = timePlayed
+        return track
+    
     @staticmethod
     def formatTrack(timestamp, track, msPlayed):
-        playedAt = convertToDatetime(timestamp)
-
         track = track or {}
         album = track.get("album") or {}
 
@@ -52,14 +59,11 @@ class Client:
 
         artists, artistsText = Client._formatArtists(album)
 
-        return {
+        track = {
             "name": track.get("name", "Unknown Track"),
-            "releaseDateText": album.get("release_date", "NA"),
-            "id": track.get("id", 0),
-            "url": track.get("external_urls", {}).get("spotify", "#"),
-            "playedAt": timestamp,
-            "playedAtText": playedAt.strftime("%Y-%m-%d %H:%M"),
-            "timePlayed": msPlayed,
+            "releaseDateText": album["release_date"],
+            "id": track["id"],
+            "url": track["external_urls"]["spotify"],
             "artists": artists,
             "artistsText": artistsText,
             "album": Client._formatAlbum(album),
@@ -72,3 +76,4 @@ class Client:
             "discNumber": track.get("disc_number", 0),
             "trackNumber": track.get("track_number", 0),
         }
+        return Client.embedPlayInfo(track, timestamp, msPlayed)

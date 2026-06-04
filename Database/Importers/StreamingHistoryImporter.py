@@ -3,10 +3,10 @@ import datetime
 
 try:
     from Database.Formatters.spotifyClient import Client
-    from Database.utils import convertToDatetime
+    from Database.utils import timeToInt
 except ModuleNotFoundError:
     from Formatters.spotifyClient import Client
-    from utils import convertToDatetime
+    from utils import timeToInt
 
 
 class Importer:
@@ -15,7 +15,9 @@ class Importer:
 
     def _searchForSong(self, name, artist):
         query = f"track:{name} artist:{artist}"
-        return self.sp.search(query, type="track", limit=1)["tracks"]["items"][0]
+        track = self.sp.search(query, type="track", limit=1)["tracks"]["items"][0]
+        # track = self.sp.track(track["external_urls"]["spotify"])
+        return track
 
     def importHistory(self, history, known=[]):
         if len(history) == 0:
@@ -42,11 +44,11 @@ class Importer:
 
                 id = name+artist
                 if id in known:
-                    meta = known[id]
+                    meta = Client.embedPlayInfo(known[id], startTimestamp, timePlayed)
+
                 else:
                     meta = self._searchForSong(name=name, artist=artist)
-                meta = Client.formatTrack(startTimestamp, meta, msPlayed=timePlayed)  #< Update with correct played at info
-                if id not in known:
+                    meta = Client.formatTrack(startTimestamp, meta, msPlayed=timePlayed)  #< Update with correct played at info:
                     known[id] = meta
 
                 yield meta
@@ -56,8 +58,7 @@ class Importer:
 
     def importAcountHistory(self, history, known=[]):
         def dataFunction(item):
-            endTimestamp = datetime.datetime.strptime(item["endTime"], "%Y-%m-%d %H:%M")
-            endTimestamp = int(endTimestamp.timestamp())
+            endTimestamp = timeToInt(item["endTime"])
             timePlayed = item["msPlayed"]
 
             startTimestamp = endTimestamp-timePlayed//1000
@@ -70,10 +71,8 @@ class Importer:
     def importExtendedHistory(self, history, known=[]):
         def dataFunction(item):
             ts = item["ts"]
-            dt = convertToDatetime(ts)
-            endTimestamp = int(dt.timestamp())
+            startTimestamp = timeToInt(ts)
             timePlayed = item.get("ms_played", 0)
-            startTimestamp = endTimestamp - (timePlayed // 1000)
 
             name = item["master_metadata_track_name"]
             artist = item["master_metadata_album_artist_name"]

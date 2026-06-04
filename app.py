@@ -83,10 +83,13 @@ class SpotifyDashboardApp:
             if not self.ensureLoggedIn():
                 return redirect(url_for("login", next=request.path))
             page = int(request.args.get("page", 1) or 1)
-            allTracks = self.getLatestHistory(None)
-            tracks, total, page, totalPages, startIndex = self.paginate(allTracks, page)
+            pageSize = 50
+            total = self.database.getEntriesCount()
+            startIndex = (page - 1) * pageSize
+            tracks = self.database.getEntriesFromNew(count=pageSize, startIndex=startIndex)
+            totalPages = max(1, (total + pageSize - 1) // pageSize)
 
-            totalDurationMs = sum(track.get("duration", 0) for track in allTracks)
+            totalDurationMs = sum(track.get("duration", 0) for track in self.getLatestHistory(None))
             durationHours = totalDurationMs // 3_600_000
             durationMinutes = (totalDurationMs % 3_600_000) // 60_000
             totalDuration = (
@@ -95,14 +98,14 @@ class SpotifyDashboardApp:
                 else f"{durationMinutes}m"
             )
 
-            uniqueArtists = len({track.get("artist") for track in allTracks if track.get("artist")})
+            uniqueArtists = len({track.get("artist") for track in self.getLatestHistory(None) if track.get("artist")})
             prevUrl = url_for("dashboard", page=page - 1) if page > 1 else None
             nextUrl = url_for("dashboard", page=page + 1) if page < totalPages else None
 
             return render_template(
                 "tracks.html",
                 tracks=tracks,
-                total=len(allTracks),
+                total=total,
                 uniqueArtists=uniqueArtists,
                 totalDuration=totalDuration,
                 username=self.username,
