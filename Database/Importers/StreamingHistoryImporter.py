@@ -1,12 +1,11 @@
 import SpotipyFree
-import datetime
 
 try:
     from Database.Formatters.spotifyClient import Client
-    from Database.utils import timeToInt
+    from Database.utils import timeToInt, parseError
 except ModuleNotFoundError:
     from Formatters.spotifyClient import Client
-    from utils import timeToInt
+    from utils import timeToInt, parseError
 
 
 class Importer:
@@ -48,12 +47,12 @@ class Importer:
 
                 else:
                     meta = self._searchForSong(name=name, artist=artist)
-                    meta = Client.formatTrack(startTimestamp, meta, msPlayed=timePlayed)  #< Update with correct played at info:
+                    meta = Client.formatTrack(meta, startTimestamp, msPlayed=timePlayed)  #< Update with correct played at info:
                     known[id] = meta
 
                 yield meta
             except Exception as e:
-                print(f"Error processing item: {e}")
+                print(f"Error processing item: {parseError(e)}")
                 continue
 
     def importAcountHistory(self, history, known=[]):
