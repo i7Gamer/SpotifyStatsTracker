@@ -15,6 +15,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 RUN pip uninstall spotAPI -y
 RUN pip install git+https://github.com/TzurSoffer/SpotAPI
 
+RUN apt-get remove git -y
+RUN apt-get remove gcc -y
+RUN apt-get autoremove -y
 
 # Copy application code
 COPY . .

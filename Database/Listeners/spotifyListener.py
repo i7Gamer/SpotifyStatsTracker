@@ -28,6 +28,9 @@ class Listener:
 
         return None
 
+    def track(self, id):
+        return self.sp.track(id)
+
     def startListener(self, callback):
         self.run = True
         while self.run:

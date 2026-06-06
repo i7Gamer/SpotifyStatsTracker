@@ -50,7 +50,7 @@ class Client:
         return track
     
     @staticmethod
-    def formatTrack(timestamp, track, msPlayed):
+    def formatTrack(track, timestamp=-1, msPlayed=-1):
         track = track or {}
         album = track.get("album") or {}
 

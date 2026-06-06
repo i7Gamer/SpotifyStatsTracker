@@ -38,7 +38,7 @@ class Database:
             track = item.get("track")
             timestamp = item.get("played_at")
             msPlayed = item.get("ms_played", 0)
-            if track and timestamp:
+            if track:
                 self.appendTrackData(timestamp, track, msPlayed)
 
     def _loadDownloadedImagesCache(self) -> list:
@@ -80,6 +80,10 @@ class Database:
         """ Load full track metadata from the JSON file. """
         return self._loadJsonFile(self.tracksPath, {})
     
+    def _addTrack(self, tracks, track):
+        tracks.update({track["id"]: track})
+        return tracks
+    
     def _splitEntryAndTrack(self, metadata: dict) -> tuple[list, dict]:
         entry = {
             "id": metadata["id"],
@@ -92,15 +96,19 @@ class Database:
         metadata.pop("playedAtText")
         metadata.pop("timePlayed")
         metadata.pop("timePlayedText")
-        track = {metadata["id"]: metadata}
-        return entry, track
+        return entry, metadata
 
-    def _splitEntriesAndTracks(self, metadata: list) -> tuple[list, dict]:
-        return [self._splitEntryAndTrack(m) for m in metadata]
+    def _saveNewTrackFromId(self, id, tracks=None):
+        if tracks == None:
+            tracks = self._loadTracks()
+        track = Client.formatTrack(self.listener.track(id))
+        tracks = self._addTrack(tracks, track)
+        self._saveTracks(tracks)
 
     def _paginateEntry(self, entry: dict, tracks: dict = None) -> dict:
-        if tracks is None:
+        if tracks == None:
             tracks = self._loadTracks()
+                
         meta = tracks[entry["id"]]
         meta["playedAt"] = entry["playedAt"]
         meta["playedAtText"] = entry["playedAtText"]
@@ -112,7 +120,10 @@ class Database:
         ret = []
         tracks = self._loadTracks()
         for entry in entries:
+            if entry["id"] not in tracks:    #< add track if missing
+                self._saveNewTrackFromId(entry["id"], tracks)
             ret.append(self._paginateEntry(entry, tracks))
+
         return ret
 
     def appendEntries(self, newEntries: list):
@@ -122,11 +133,11 @@ class Database:
         entries.append(newEntries)
         self._saveEntries(entries)
     
-    def updateTracks(self, tracks: dict):
-        if not tracks:
+    def updateTracks(self, track: dict):
+        if not track:
             return
         existingTracks = self._loadTracks()
-        existingTracks.update(tracks)          #< Add new track if missing, or update existing track metadata if already exists
+        self._addTrack(existingTracks, track)          #< Add new track if missing, or update existing track metadata if already exists
         self._saveTracks(existingTracks)
 
     def getHistory(self) -> int:
@@ -224,7 +235,7 @@ class Database:
         self.updateTracks(track)
 
     def appendTrackData(self, timestamp, track, timePlayed):
-        self.appendMetadata(Client.formatTrack(timestamp, track, timePlayed))
+        self.appendMetadata(Client.formatTrack(track, timestamp, timePlayed))
 
     def resortDatabase(self):
         """ In case entries got out of order, this will sort them by playedAt timestamp. """
@@ -248,7 +259,7 @@ class Database:
             for index, meta in enumerate(importer.importHistory(exportedHistory, self._loadTracks().values()), start=1):  #< We only want the tracks, the importer doesn't care about the keys
                 e, t = self._splitEntryAndTrack(meta)
                 entries.append(e)
-                tracks.update(t)
+                tracks = self._addTrack(tracks, t)
                 self.writeProgress("running", index, total, f"Imported {index} of {total}")
             self._saveEntries(entries)
             self._saveTracks(tracks)
@@ -296,6 +307,8 @@ class Database:
                     "totalTimeListened": 0,
                     "song": None,
                 }
+                if entry["id"] not in tracks:    #< add track if missing
+                    self._saveNewTrackFromId(entry["id"], tracks)
                 songs[key]["song"] = self._paginateEntry(entry, tracks)  #< Get full song metadata for this entry
             songs[key]["plays"] += 1
             songs[key]["totalTimeListened"] += timePlayed
