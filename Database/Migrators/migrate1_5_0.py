@@ -1,10 +1,11 @@
 import json
-from pathlib import Path
 
 try:
     from Database.Migrators.base import BaseMigrator
+    from Database.database import Database
 except ModuleNotFoundError:
     from Migrators.base import BaseMigrator
+    from database import Database
 
 class Migrator(BaseMigrator):
     def __init__(self, *args, **kwargs):
@@ -41,8 +42,7 @@ class Migrator(BaseMigrator):
                 tracks = json.load(f)
             metadataFolder = baseDir / "img" / "tracks"# / "metadata.json"
             downloadedImages = list(metadataFolder.iterdir())
-            metadataPath = metadataFolder / "metadata.json"
-            ids = self._loadJsonFile(metadataPath, [])
+            db = Database(user)
 
             for index, key in enumerate(tracks.keys()):
                 imageId = tracks[key]["imageId"]
@@ -60,6 +60,7 @@ class Migrator(BaseMigrator):
                         oldPath.rename(newPath)
                         downloadedImages.append(newPath)
                     else:
+                        db.saveTrackImg(tracks[key]["imageUrl"], imageId)   #< Should not use imported db but im too lazy to change
                         print(f"Missing file: {oldPath}")
 
                 # Fix artist image IDs
