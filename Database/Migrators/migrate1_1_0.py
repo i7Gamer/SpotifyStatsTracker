@@ -1,10 +1,31 @@
 import json
 try:
     from Database.Migrators.base import BaseMigrator
-    from Database.utils import msToString
 except ModuleNotFoundError:
     from Migrators.base import BaseMigrator
-    from utils import msToString
+
+def msToString(ms: int | float) -> str:
+    """ Converts milliseconds into a human-readable duration string. """
+    if ms is None or ms <= 0:
+        return "0ms"
+
+    totalSeconds = int(ms) // 1000
+
+    seconds = totalSeconds % 60
+    minutes = (totalSeconds // 60) % 60
+    hours = totalSeconds // 3600
+    
+    parts = []
+
+    if hours > 0:
+        parts.append(f"{hours}h")
+    if minutes > 0 or hours > 0:
+        parts.append(f"{minutes}m")
+    if seconds > 0 or minutes > 0 or hours > 0:
+        parts.append(f"{seconds}s")
+        
+    return " ".join(parts)
+
 
 class Migrator(BaseMigrator):
     def __init__(self, *args, **kwargs):

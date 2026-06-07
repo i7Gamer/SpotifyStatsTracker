@@ -85,14 +85,10 @@ class Database:
         entry = {
             "id": metadata["id"],
             "playedAt": metadata["playedAt"],
-            "playedAtText": metadata["playedAtText"],
             "timePlayed": metadata["timePlayed"],
-            "timePlayedText": metadata["timePlayedText"],
         }
         metadata.pop("playedAt")
-        metadata.pop("playedAtText")
         metadata.pop("timePlayed")
-        metadata.pop("timePlayedText")
         return entry, metadata
 
     def _paginateEntry(self, entry: dict, tracks: dict = None) -> dict:
@@ -109,9 +105,7 @@ class Database:
 
         meta = tracks[entry["id"]]
         meta["playedAt"] = entry["playedAt"]
-        meta["playedAtText"] = entry["playedAtText"]
         meta["timePlayed"] = entry["timePlayed"]
-        meta["timePlayedText"] = entry["timePlayedText"]
         return meta
 
     def _paginateEntries(self, entries: list) -> list:
@@ -233,9 +227,9 @@ class Database:
         self._saveImg(self.imgDir_artists, url, imgId)
 
     def appendMetadata(self, meta: dict) -> None:
-        self.saveTrackImg(meta["imageUrl"], meta["id"])
+        self.saveTrackImg(meta["imageUrl"], meta["imageId"])
         for artist in meta["artists"]:
-            self.saveArtistImg(artist["url"], artist["id"])
+            self.saveArtistImg(artist["imageUrl"], artist["imageId"])
         entry, track = self._splitEntryAndTrack(meta)
         self.appendEntries(entry)
         self.updateTracks(track)

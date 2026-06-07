@@ -1,3 +1,4 @@
+import datetime
 import json
 try:
     from Database.Migrators.base import BaseMigrator
@@ -12,6 +13,12 @@ class Migrator(BaseMigrator):
         super().checkPreconditions()
         if self.tracksPath.exists() == False:
             raise FileExistsError("Tracks file doesn't exist. You might be on an older version.")
+
+    def _getTimestamp(self, timestamp):
+        if timestamp == "0000-00-00":
+            return 0.0
+        return datetime.datetime.strptime(timestamp, "%Y-%m-%d").timestamp()
+
 
     def migrate(self):
         users = [
@@ -28,20 +35,23 @@ class Migrator(BaseMigrator):
                 tracks = json.load(f)
 
             for index, key in enumerate(tracks):
-                for artist in tracks[key]["artists"]:
-                    artist["imageId"] = artist["id"]
-
-                print(f"Processed {index+1}/{len(tracks)} entries", end="\r")
-
-            for index, key in enumerate(tracks):
-                tracks[key]["album"]["imageId"] = tracks[key]["album"]["id"]
+                tracks[key].pop("releaseDateText")
+                tracks[key].pop("durationText")
+                releaseDateText = tracks[key]["album"].pop("releaseDateText")
+                ts = self._getTimestamp(releaseDateText)
+                tracks[key]["album"]["releaseDate"] = ts
+                tracks[key]["releaseDate"] = ts
+                
+                if "imageId" not in tracks[key]:
+                    tracks[key]["imageId"] = tracks[key]["album"]["id"]
+                    # tracks[key]["album"]["imageId"] = tracks[key]["album"]["id"]
 
                 print(f"Processed {index+1}/{len(tracks)} entries", end="\r")
 
             with open(self.tracksPath, "w", encoding="utf-8") as f:
                 json.dump(tracks, f, indent=4, ensure_ascii=False)
-
-        self.updateAppVersion("1.4.0")
+        
+        self.updateAppVersion("1.5.0")
 
 
 

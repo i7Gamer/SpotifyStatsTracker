@@ -19,8 +19,17 @@ def convertToDatetime(timestamp):
             else:
                 playedAt = dt
         except Exception:
-            playedAt = datetime.datetime.fromtimestamp(float(timestamp), datetime.timezone.utc)
+            if timestamp == "0000-00-00":
+                return 0.0     #< 1970 in unix time
+            return datetime.datetime.strptime(timestamp, "%Y-%m-%d").timestamp()
+
     return playedAt
+
+def dateToString(timestamp):
+    if type(timestamp) == float:
+        timestamp = datetime.datetime.fromtimestamp(timestamp, datetime.timezone.utc)
+
+    return timestamp.strftime("%Y-%m-%d")
 
 def timeToInt(timestampOrStr):
     """ Convert ISO string or datetime to int """
@@ -54,6 +63,12 @@ def msToString(ms: int | float) -> str:
         parts.append(f"{seconds}s")
         
     return " ".join(parts)
+
+def formatDuration(ms: int) -> str:
+    seconds = max(0, ms // 1000)
+    minutes = seconds // 60
+    remaining = seconds % 60
+    return f"{minutes}:{remaining:02d}"
 
 if __name__ == "__main__":
     import pysole

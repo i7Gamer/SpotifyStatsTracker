@@ -1,13 +1,6 @@
-from Database.utils import convertToDatetime, timeToInt, msToString
+from Database.utils import timeToInt, convertToDatetime
 
 class Client:
-    @staticmethod
-    def _formatDuration(ms: int) -> str:
-        seconds = max(0, ms // 1000)
-        minutes = seconds // 60
-        remaining = seconds % 60
-        return f"{minutes}:{remaining:02d}"
-
     @staticmethod
     def _formatArtists(albumRaw):
         artists = []
@@ -21,14 +14,12 @@ class Client:
                     "name": artist.get("name", ""),
                     "url": artist.get("external_urls", {}).get("spotify", "https://open.spotify.com/artist/6FXMGgJwohJLUSr5nVlf9X"),
                     "imageUrl": imageUrl,
-                    "imageId": albumRaw.get("id", 0),
+                    "imageId": artist.get("id", 0),
                     "id": artist.get("id", "6FXMGgJwohJLUSr5nVlf9X"),
                 }
             )
 
-        artistsText = ", ".join(a.get("name", "") for a in artists)
-
-        return artists, artistsText
+        return artists
 
     @staticmethod
     def _formatAlbum(albumRaw):
@@ -42,18 +33,15 @@ class Client:
             "imageId": albumRaw.get("id", 0),
             "imageUrl": firstImage.get("url", ""),
             "totalTracks": albumRaw.get("total_tracks", 0),
-            "releaseDateText": albumRaw.get("release_date", "NA"),
+            "releaseDate": convertToDatetime(albumRaw.get("release_date", "NA")).timestamp(),
         }
     
     @staticmethod
     def embedPlayInfo(track, timestamp, timePlayed):
         playedAtTimestamp = timeToInt(timestamp)
-        playedAt = convertToDatetime(playedAtTimestamp)
         
         track["playedAt"] = playedAtTimestamp
-        track["playedAtText"] = playedAt.strftime("%Y-%m-%d %H:%M")
         track["timePlayed"] = timePlayed
-        track["timePlayedText"] = msToString(timePlayed)
         return track
     
     @staticmethod
@@ -66,19 +54,19 @@ class Client:
 
         duration = track.get("duration_ms") or 0
 
-        artists, artistsText = Client._formatArtists(album)
+        artists = Client._formatArtists(album)
+        album = Client._formatAlbum(album)
 
         track = {
             "name": track.get("name", "Unknown Track"),
-            "releaseDateText": album["release_date"],
+            "releaseDate": album["releaseDate"],
             "id": track["id"],
             "url": track["external_urls"]["spotify"],
             "artists": artists,
-            "artistsText": artistsText,
-            "album": Client._formatAlbum(album),
+            "album": album,
             "imageUrl": firstImage.get("url", ""),
+            "imageId": album["id"],
             "duration": duration,
-            "durationText": Client._formatDuration(duration),
             "explicit": bool(track.get("explicit", False)),
             "isrc": track.get("external_ids", {}).get("isrc", ""),
             "discNumber": track.get("disc_number", 0),

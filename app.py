@@ -8,6 +8,7 @@ from flask import Flask, render_template, redirect, request, url_for, jsonify, s
 
 from Database.database import Database
 from Database.Migrators.migrate import migrateIfNeeded
+from Database.utils import msToString, convertToDatetime, formatDuration, dateToString
 from SpotipyFree import saveSession, parseCookieString
 
 class SpotifyDashboardApp:
@@ -20,40 +21,68 @@ class SpotifyDashboardApp:
         self.database = Database(user=self.username)
         self.database.resetProgress()
 
-        # Register routes
         self.registerRoutes()
 
         # Initialize background listener if cookies exist
         if self.cookiesFile.exists():
             self.startListenerIfNeeded()
 
-    def formatMs(self, ms: int) -> str:
-        if not ms:
-            return "0s"
-        seconds = ms // 1000
-        minutes, sec = divmod(seconds, 60)
-        hours, minutes = divmod(minutes, 60)
-        if hours:
-            return f"{hours}h {minutes}m"
-        if minutes:
-            return f"{minutes}m {sec}s"
-        return f"{sec}s"
-
-    def getLatestHistory(self, limit=None):
-        return self.database.getEntriesFromNew(limit)
-
-    def getPage(self, items, page, pageSize=50):
-        page = max(1, page)
-        total = len(items)
-        start = (page - 1) * pageSize
-        end = start + pageSize
-        return items[start:end], total, page, max(1, (total + pageSize - 1) // pageSize), start
-
     def startListenerIfNeeded(self):
         if self.database.listener is None:
             self.database.startListener(str(self.cookiesFile))
             print("Started listener thread.")
             time.sleep(2)  # Give listener time to initialize
+
+    def _embedSongTextElements(self, song) -> dict:
+        if "playedAt" in song:   #< some tracks just dont have it (top tracks)
+            playedAt = convertToDatetime(song["playedAt"])
+            song["playedAtText"] = playedAt.strftime("%Y-%m-%d %H:%M")
+            song["timePlayedText"] = msToString(song["timePlayed"])
+
+        artistsText = ", ".join(a.get("name", "") for a in song["artists"])
+        releaseDateText = dateToString(song["album"]["releaseDate"])
+        song["releaseDateText"] = releaseDateText
+        song["artistsText"] = artistsText
+        song["durationText"] = formatDuration(song["duration"])
+        song["album"]["releaseDateText"] = releaseDateText
+        return song
+
+    def _embedTopSongTextElements(self, song) -> dict:
+        song["totalTimeListenedText"] = msToString(song.get("totalTimeListened", 0))
+        return song
+
+    def _embedArtistTextElements(self, artist) -> dict:
+        artist["totalTimeListenedText"] = msToString(artist.get("totalTimeListened", 0))
+        return artist
+
+    def _embedSongsTextElements(self, songs) -> list[dict]:
+        return [self._embedSongTextElements(song) for song in songs]
+
+    def _embedTopSongsTextElements(self, songs) -> list[dict]:
+        return [self._embedTopSongTextElements(song) for song in songs]
+
+    def _embedArtistsTextElements(self, songs) -> list[dict]:
+        return [self._embedArtistTextElements(song) for song in songs]
+
+    def _getNeighboringUrls(self, name, page, totalPages):
+        prevUrl = url_for(name, page=page - 1) if page > 1 else None
+        nextUrl = url_for(name, page=page + 1) if page < totalPages else None
+        return prevUrl, nextUrl
+    
+    def _getTotal(self, arr, key):
+        return sum(i.get(key, 0) for i in arr)
+
+    def getLatestHistory(self, limit=None):
+        return self.database.getEntriesFromNew(limit)
+
+    def getPage(self, items, page, pageSize=50):
+        """ Gets items in page as well as other data including total pages and start index """
+        page = max(1, page)
+        total = len(items)
+        totalPages = max(1, (total + pageSize - 1) // pageSize)
+        start = (page - 1) * pageSize
+        end = start + pageSize
+        return (items[start:end], totalPages, start)
 
     def runImportBackground(self, historyData):
         try:
@@ -147,27 +176,22 @@ class SpotifyDashboardApp:
             total = self.database.getEntriesCount()
             startIndex = (page - 1) * pageSize
             tracks = self.database.getEntriesFromNew(count=pageSize, startIndex=startIndex)
+            tracks = self._embedSongsTextElements(tracks)
+
             totalPages = max(1, (total + pageSize - 1) // pageSize)
 
             totalDurationMs = sum(track.get("timePlayed", 0) for track in self.getLatestHistory(None))
-            durationHours = totalDurationMs // 3_600_000
-            durationMinutes = (totalDurationMs % 3_600_000) // 60_000
-            totalDuration = (
-                f"{durationHours}h {durationMinutes}m"
-                if durationHours
-                else f"{durationMinutes}m"
-            )
+            totalDurationText = msToString(totalDurationMs)
 
             uniqueArtists = len({track.get("artist") for track in self.getLatestHistory(None) if track.get("artist")})
-            prevUrl = url_for("dashboard", page=page - 1) if page > 1 else None
-            nextUrl = url_for("dashboard", page=page + 1) if page < totalPages else None
+            prevUrl, nextUrl = self._getNeighboringUrls("dashboard", page, totalPages)
 
             return render_template(
                 "tracks.html",
                 tracks=tracks,
                 total=total,
                 uniqueArtists=uniqueArtists,
-                totalDuration=totalDuration,
+                totalDuration=totalDurationText,
                 username=self.username,
                 page=page,
                 totalPages=totalPages,
@@ -184,29 +208,20 @@ class SpotifyDashboardApp:
 
             page = int(request.args.get("page", 1) or 1)
             rawTopSongs = self.database.getTopSongs() or []
-            pageItems, total, page, totalPages, startIndex = self.getPage(rawTopSongs, page)
+            tracks, totalPages, startIndex = self.getPage(rawTopSongs, page)
+            tracks = self._embedSongsTextElements(tracks)
+            tracks = self._embedTopSongsTextElements(tracks)
 
-            tracks = []
-            for song in pageItems:
-                song["artistsText"] =  ""
-                for artist in song.get("artists", []):
-                    song["artistsText"] += artist.get("name", "") + ", "
-                song["artistsText"] = song["artistsText"][:-2]
-                song["durationText"] = self.formatMs(song.get("duration", 0))
-                song["totalTimeListenedText"] = self.formatMs(song.get("totalTimeListened", 0))
-                tracks.append(song)
-
-            totalPlays = sum(i.get("plays", 0) for i in rawTopSongs)
-            totalMs = sum(i.get("totalTimeListened", 0) for i in rawTopSongs)
-            prevUrl = url_for("topSongsPage", page=page - 1) if page > 1 else None
-            nextUrl = url_for("topSongsPage", page=page + 1) if page < totalPages else None
+            totalPlays = self._getTotal(rawTopSongs, "plays")
+            totalMs = self._getTotal(rawTopSongs, "totalTimeListened")
+            prevUrl, nextUrl = self._getNeighboringUrls("topSongsPage", page, totalPages)
 
             return render_template(
                 "top_songs.html",
                 tracks=tracks,
                 username=self.username,
                 totalPlays=totalPlays,
-                totalTime=self.formatMs(totalMs),
+                totalTime=msToString(totalMs),
                 page=page,
                 totalPages=totalPages,
                 prevUrl=prevUrl,
@@ -222,27 +237,21 @@ class SpotifyDashboardApp:
 
             page = int(request.args.get("page", 1) or 1)
             rawTopArtists = self.database.getTopArtists() or []
-            pageItems, total, page, totalPages, startIndex = self.getPage(rawTopArtists, page)
-            
-            tracks = []
-            for item in pageItems:
-                print(item)
-                item["totalTimeListenedText"] = self.formatMs(item.get("totalTimeListened", 0))
-                tracks.append(item)
+            artists, totalPages, startIndex = self.getPage(rawTopArtists, page)
+            artists = self._embedArtistsTextElements(artists)
 
-            totalPlays = sum(i.get("plays", 0) for i in rawTopArtists)
-            totalUnique = sum(i.get("uniqueSongCount", 0) for i in rawTopArtists)
-            totalMs = sum(i.get("totalTimeListened", 0) for i in rawTopArtists)
-            prevUrl = url_for("topArtistsPage", page=page - 1) if page > 1 else None
-            nextUrl = url_for("topArtistsPage", page=page + 1) if page < totalPages else None
+            totalPlays = self._getTotal(rawTopArtists, "plays")
+            totalUnique = self._getTotal(rawTopArtists, "uniqueSongCount")
+            totalMs = self._getTotal(rawTopArtists, "totalTimeListened")
+            prevUrl, nextUrl = self._getNeighboringUrls("topArtistsPage", page, totalPages)
 
             return render_template(
                 "top_artists.html",
-                tracks=tracks,
+                tracks=artists,
                 username=self.username,
                 totalPlays=totalPlays,
                 totalUnique=totalUnique,
-                totalTime=self.formatMs(totalMs),
+                totalTime=msToString(totalMs),
                 page=page,
                 totalPages=totalPages,
                 prevUrl=prevUrl,
