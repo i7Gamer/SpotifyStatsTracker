@@ -295,6 +295,8 @@ class Database:
         for entry in entries:
             key = entry["id"]
             timePlayed = entry["timePlayed"]
+            playedAt = entry.get("playedAt")
+            
             if key not in songs:
                 metadata = self._paginateEntry(entry, tracks)  #< Get full song metadata for this entry
                 if metadata == None:
@@ -302,17 +304,11 @@ class Database:
                 songs[key] = metadata
                 songs[key]["plays"] = 0
                 songs[key]["totalTimeListened"] = 0
+                songs[key]["firstListenedAt"] = playedAt       #< database is sorted, so first find must be first time lisened
 
             songs[key]["plays"] += 1
             songs[key]["totalTimeListened"] += timePlayed
-
         return list(songs.values())
-
-    def getTopSongs(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None, by: str = "plays") -> list:
-        return sorted(
-            self.getSongsStats(startDate, endDate),
-            key=lambda item: (-item[by], -item["totalTimeListened"], item["name"])
-        )
 
     def getArtistsStats(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> list:
         """Return artists sorted by total plays with aggregated data and listen totals."""
@@ -322,6 +318,7 @@ class Database:
 
         for entry in entries:
             timePlayed = entry["timePlayed"]
+            playedAt = entry.get("playedAt")
             metadata = self._paginateEntry(entry, tracks)
             if metadata == None:
                 continue
@@ -334,7 +331,7 @@ class Database:
                     artistsStats[artistName]["plays"] = 0
                     artistsStats[artistName]["totalTimeListened"] = 0
                     artistsStats[artistName]["uniqueSongs"] = set()
-                    artistsStats[artistName]["plays"] = 0
+                    artistsStats[artistName]["firstListenedAt"] = playedAt
 
                 artistsStats[artistName]["plays"] += 1
                 artistsStats[artistName]["totalTimeListened"] += timePlayed
@@ -349,11 +346,33 @@ class Database:
 
         return normalized
 
-    def getTopArtists(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None, by: str = "plays") -> list:
+    def _getTopStats(self, items, compareKeys, startDate: datetime.datetime = None, endDate: datetime.datetime = None, by: str = "plays") -> list:
+        """
+        Sorts songs within a date range. 
+        'plays' and 'totalTimeListened' are sorted descending (highest first).
+        'name' is sorted ascending (A to Z).
+        """
+
+        reverse=True
+        if by == "name":
+            reverse=False
+
         return sorted(
-            self.getArtistsStats(startDate, endDate),
-            key=lambda item: (-item[by], -item["totalTimeListened"], item["name"])
+            items, 
+            key=lambda item: tuple(item[key] for key in compareKeys),     #< the tuple acts as a tie breaker, if two elements 'by' are the same, it compares the 'totalTimeListened', then 'name'
+            reverse=reverse
         )
+
+    def getTopSongs(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None, by: str = "plays") -> list:
+        songs = self.getSongsStats(startDate, endDate)
+        compKeys = (by, "totalTimeListened", "name")
+        return self._getTopStats(songs, compKeys, startDate, endDate, by)
+        
+
+    def getTopArtists(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None, by: str = "plays") -> list:
+        artists = self.getArtistsStats(startDate, endDate)
+        compKeys = (by, "totalTimeListened", "name")
+        return self._getTopStats(artists, compKeys, startDate, endDate, by)
 
     def startListener(self, cookiesFile):
         self.listener = Listener(cookiesFile)

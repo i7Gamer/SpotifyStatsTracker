@@ -264,13 +264,13 @@ progress::-moz-progress-bar {
 
 .track-card {
   display: grid;
-  grid-template-columns: 56px 120px 1fr;
+  grid-template-columns: 56px 120px 1fr auto;
   gap: 18px;
   padding: 20px;
   border-radius: 20px;
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid var(--border);
-  align-items: start;
+  align-items: center;
 }
 
 .track-number {
@@ -456,4 +456,84 @@ progress::-moz-progress-bar {
   border-radius: 6px;
   margin-bottom: 1.5rem;
   font-size: 0.95rem;
+}
+
+.filter-section {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  margin-bottom: 24px;
+  padding: 16px 20px;
+  background: color-mix(in srgb, var(--surface), #fff 5%);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  flex-wrap: wrap;
+  color: var(--text);
+}
+.filter-group select option {
+  background-color: color-mix(in srgb, var(--surface), #fff 5%);
+  color: var(--text);
+}
+
+.filter-group {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.filter-group label {
+  font-weight: 600;
+  font-size: 0.95rem;
+  white-space: nowrap;
+}
+
+.filter-group select,
+.filter-group input[type="date"] {
+  padding: 10px 14px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+  font-family: inherit;
+  cursor: pointer;
+  font-size: 0.95rem;
+  transition: all 0.2s ease;
+}
+
+.filter-group select:hover,
+.filter-group input[type="date"]:hover {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: var(--accent);
+}
+
+.filter-group select:focus,
+.filter-group input[type="date"]:focus {
+  outline: none;
+  background: rgba(255, 255, 255, 0.08);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(251, 113, 123, 0.2);
+}
+
+.custom-dates {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+@media (max-width: 768px) {
+  .filter-section {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .filter-group,
+  .custom-dates {
+    width: 100%;
+  }
+
+  .filter-group select,
+  .filter-group input[type="date"] {
+    flex: 1;
+  }
 }

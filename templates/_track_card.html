@@ -74,11 +74,13 @@
           <span class="track-label">{{ "Explicit" if track.get('explicit') else "Clean" }}</span>
           {% if track.get('isrc') %}<span class="track-label">ISRC: {{ track.get('isrc') }}</span>{% endif %}
         {% elif section == 'top_songs' %}
-          <!-- Top Songs: show duration, track info, explicit, isrc -->
+          {% if track.get('firstListenedText') %}<span class="track-label">First Listened: {{ track.get('firstListenedText') }}</span>{% endif %}
           {% if track.get('durationText') %}<span class="track-label">Duration: {{ track.get('durationText') }}</span>{% endif %}
           {% if track.get('trackNumber') %}<span class="track-label">Track {{ track.get('trackNumber') }} · Disc {{ track.get('discNumber') }}</span>{% endif %}
           <span class="track-label">{{ "Explicit" if track.get('explicit') else "Clean" }}</span>
           {% if track.get('isrc') %}<span class="track-label">ISRC: {{ track.get('isrc') }}</span>{% endif %}
+        {% elif section == 'top_artists' %}
+          {% if track.get('firstListenedText') %}<span class="track-label">First Listened: {{ track.get('firstListenedText') }}</span>{% endif %}
         {% endif %}
       </div>
     </div>

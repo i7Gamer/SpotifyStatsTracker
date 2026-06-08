@@ -41,7 +41,7 @@ class Client:
         playedAtTimestamp = timeToInt(timestamp)
         
         track["playedAt"] = playedAtTimestamp
-        track["timePlayed"] = timePlayed
+        track["timePlayed"] = min(timePlayed, track["duration"])   #< sometimes spotipyFree returns extremly large (wrong) values (I think it has to do with pause)
         return track
     
     @staticmethod

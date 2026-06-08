@@ -1,0 +1,70 @@
+<section class="filter-section">
+<div class="filter-group">
+    <label for="interval">Time Period:</label>
+    <select id="interval" name="interval" onchange="updateIntervalFilter()">
+    <option value="">All Time</option>
+    <option value="day" {% if interval == 'day' %}selected{% endif %}>Last Day</option>
+    <option value="week" {% if interval == 'week' %}selected{% endif %}>Last Week</option>
+    <option value="month" {% if interval == 'month' %}selected{% endif %}>Last Month</option>
+    <option value="year" {% if interval == 'year' %}selected{% endif %}>Last Year</option>
+    <option value="5years" {% if interval == '5years' %}selected{% endif %}>Last 5 Years</option>
+    <option value="custom" {% if customStart and customEnd %}selected{% endif %}>Custom Date Range</option>
+    </select>
+</div>
+
+<div class="filter-group custom-dates" id="customDates" {% if not (customStart and customEnd) %}style="display: none;"{% endif %}>
+    <label for="startDate">From:</label>
+    <input type="date" id="startDate" name="startDate" value="{{ customStart }}" onchange="updateDateFilter()">
+    <label for="endDate">To:</label>
+    <input type="date" id="endDate" name="endDate" value="{{ customEnd }}" onchange="updateDateFilter()">
+</div>
+
+<div class="filter-group">
+    <label for="sortBy">Sort by:</label>
+    <select id="sortBy" name="sortBy" onchange="updateFilters()">
+    <option value="totalTimeListened" {% if sortBy == 'totalTimeListened' %}selected{% endif %}>Time Played</option>
+    <option value="plays" {% if sortBy == 'plays' %}selected{% endif %}>Number of Plays</option>
+    <option value="name" {% if sortBy == 'name' %}selected{% endif %}>Name (A-Z)</option>
+    </select>
+</div>
+</section>
+
+<script>
+function updateIntervalFilter() {
+    const interval = document.getElementById('interval').value;
+    const customDates = document.getElementById('customDates');
+    
+    if (interval === 'custom') {
+    customDates.style.display = 'flex';
+    } else {
+    customDates.style.display = 'none';
+    updateFilters();
+    }
+}
+
+function updateDateFilter() {
+    const startDate = document.getElementById('startDate').value;
+    const endDate = document.getElementById('endDate').value;
+    
+    if (startDate && endDate) {
+    const params = new URLSearchParams();
+    params.append('sortBy', document.getElementById('sortBy').value);
+    params.append('interval', 'custom');
+    params.append('startDate', startDate);
+    params.append('endDate', endDate);
+    window.location = window.location.pathname + '?' + params.toString();
+    }
+}
+
+function updateFilters() {
+    const sortBy = document.getElementById('sortBy').value;
+    const interval = document.getElementById('interval').value;
+    
+    const params = new URLSearchParams();
+    params.append('sortBy', sortBy);
+    if (interval && interval !== 'custom') {
+    params.append('interval', interval);
+    }
+    window.location = window.location.pathname + '?' + params.toString();
+}
+</script>

@@ -6,6 +6,7 @@
       <p>Your most-listened artists and aggregated stats.</p>
     </div>
   </section>
+  {% include '_page_card.html' %}
 
   <section class="track-summary-grid">
     <article class="track-summary-card">
@@ -36,11 +37,11 @@
 
   <section class="pagination">
     {% if prevUrl %}
-      <a class="button" href="{{ prevUrl }}">Previous</a>
+      <a class="button" href="{{ prevUrl }}&sortBy={{ sortBy }}&interval={{ interval }}&startDate={{ customStart }}&endDate={{ customEnd }}">Previous</a>
     {% endif %}
     <span>Page {{ page }} of {{ totalPages }}</span>
     {% if nextUrl %}
-      <a class="button" href="{{ nextUrl }}">Next</a>
+      <a class="button" href="{{ nextUrl }}&sortBy={{ sortBy }}&interval={{ interval }}&startDate={{ customStart }}&endDate={{ customEnd }}">Next</a>
     {% endif %}
   </section>
 {% endblock %}

@@ -3,6 +3,7 @@ import json
 import threading
 from pathlib import Path
 import time
+from datetime import datetime, timedelta, timezone
 
 from flask import Flask, render_template, redirect, request, url_for, jsonify, send_from_directory
 
@@ -49,10 +50,12 @@ class SpotifyDashboardApp:
 
     def _embedTopSongTextElements(self, song) -> dict:
         song["totalTimeListenedText"] = msToString(song.get("totalTimeListened", 0))
+        song["firstListenedText"] = convertToDatetime(song.get("firstListenedAt", 0)).strftime("%b %d, %Y")
         return song
 
     def _embedArtistTextElements(self, artist) -> dict:
         artist["totalTimeListenedText"] = msToString(artist.get("totalTimeListened", 0))
+        artist["firstListenedText"] = convertToDatetime(artist.get("firstListenedAt", 0)).strftime("%b %d, %Y")
         return artist
 
     def _embedSongsTextElements(self, songs) -> list[dict]:
@@ -83,6 +86,34 @@ class SpotifyDashboardApp:
         start = (page - 1) * pageSize
         end = start + pageSize
         return (items[start:end], totalPages, start)
+
+    def _getDateRange(self, interval: str = None, customStart: str = None, customEnd: str = None):
+        """Get start and end dates based on interval or custom dates."""
+        endDate = datetime.now(timezone.utc)
+        startDate = None
+
+        if customStart and customEnd:
+            try:
+                startDate = datetime.strptime(customStart, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                endDate = datetime.strptime(customEnd, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            except ValueError:
+                pass
+
+        if not startDate:
+            if interval == "day":
+                startDate = endDate - timedelta(days=1)
+            elif interval == "week":
+                startDate = endDate - timedelta(weeks=1)
+            elif interval == "month":
+                startDate = endDate - timedelta(days=30)
+            elif interval == "year":
+                startDate = endDate - timedelta(days=365)
+            elif interval == "5years":
+                startDate = endDate - timedelta(days=365*5)
+            else:
+                return None, None    # Default: all
+
+        return startDate, endDate
 
     def runImportBackground(self, historyData):
         try:
@@ -207,7 +238,13 @@ class SpotifyDashboardApp:
                 return redirect(url_for("login", next=request.path))
 
             page = int(request.args.get("page", 1) or 1)
-            rawTopSongs = self.database.getTopSongs() or []
+            sortBy = request.args.get("sortBy", "totalTimeListened")
+            interval = request.args.get("interval", "")
+            customStart = request.args.get("startDate", "")
+            customEnd = request.args.get("endDate", "")
+            
+            startDate, endDate = self._getDateRange(interval, customStart, customEnd)
+            rawTopSongs = self.database.getTopSongs(startDate=startDate, endDate=endDate, by=sortBy) or []
             tracks, totalPages, startIndex = self.getPage(rawTopSongs, page)
             tracks = self._embedSongsTextElements(tracks)
             tracks = self._embedTopSongsTextElements(tracks)
@@ -228,6 +265,10 @@ class SpotifyDashboardApp:
                 nextUrl=nextUrl,
                 startIndex=startIndex,
                 section="top_songs",
+                sortBy=sortBy,
+                interval=interval,
+                customStart=customStart,
+                customEnd=customEnd,
             )
 
         @self.app.route("/top-artists", methods=["GET"])
@@ -236,7 +277,13 @@ class SpotifyDashboardApp:
                 return redirect(url_for("login", next=request.path))
 
             page = int(request.args.get("page", 1) or 1)
-            rawTopArtists = self.database.getTopArtists() or []
+            sortBy = request.args.get("sortBy", "totalTimeListened")
+            interval = request.args.get("interval", "")
+            customStart = request.args.get("startDate", "")
+            customEnd = request.args.get("endDate", "")
+            
+            startDate, endDate = self._getDateRange(interval, customStart, customEnd)
+            rawTopArtists = self.database.getTopArtists(startDate=startDate, endDate=endDate, by=sortBy) or []
             artists, totalPages, startIndex = self.getPage(rawTopArtists, page)
             artists = self._embedArtistsTextElements(artists)
 
@@ -258,6 +305,10 @@ class SpotifyDashboardApp:
                 nextUrl=nextUrl,
                 startIndex=startIndex,
                 section="top_artists",
+                sortBy=sortBy,
+                interval=interval,
+                customStart=customStart,
+                customEnd=customEnd,
             )
 
     def run(self):
