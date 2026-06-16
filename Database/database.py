@@ -1,4 +1,5 @@
 import datetime
+import threading
 import json
 from pathlib import Path
 from io import BytesIO
@@ -29,6 +30,30 @@ class Database:
         self.tracksPath = self.baseDir / "Users" / self.user / "tracks.json"
         self.progressPath = self.baseDir / "Users" / self.user / "progress.json"
 
+        self.fileLock = threading.RLock()
+
+    def _loadJsonFile(self, path: Path, default):
+        with self.fileLock:
+            path.parent.mkdir(parents=True, exist_ok=True)
+
+            if not path.exists():
+                path.write_text(
+                    json.dumps(default, indent=4),
+                    encoding="utf-8"
+                )
+                return default
+
+            try:
+                return json.loads(path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError as e:
+                print(f"Corrupted JSON in {path}: {e}")
+                raise
+
+    def _save(self, file, data):
+        with self.fileLock:
+            file.parent.mkdir(parents=True, exist_ok=True)
+            file.write_text(json.dumps(data, indent=4), encoding="utf-8")
+
     def _addToDatabaseFromListener(self, data) -> None:
         if not data:
             return
@@ -38,21 +63,6 @@ class Database:
             msPlayed = item.get("ms_played", 0)
             if track:
                 self.appendTrackData(timestamp, track, msPlayed)
-
-    def _loadJsonFile(self, path: Path, default) -> list:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        if not path.exists():
-            path.write_text(json.dumps(default, indent=4), encoding="utf-8")
-            return default
-        try:
-            return json.loads(path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            path.write_text(json.dumps(default, indent=4), encoding="utf-8")
-            return default
-
-    def _save(self, file, data):
-        file.parent.mkdir(parents=True, exist_ok=True)
-        file.write_text(json.dumps(data, indent=4), encoding="utf-8")
 
     def _loadEntries(self) -> list:
         """ Load ONLY id and info about time played from the JSON file. """
