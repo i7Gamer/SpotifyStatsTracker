@@ -537,3 +537,17 @@ progress::-moz-progress-bar {
     flex: 1;
   }
 }
+
+.version-badge {
+  display: inline-flex;
+  justify-content: flex-start;
+  align-items: center;
+  gap: 8px;
+  margin-left: 12px;
+  margin-right: auto;
+  padding: 3px 6px;
+  background: #0070f3;
+  color: #ffffff;
+  border-radius: 8px;
+  font-size: 0.95rem;
+}

@@ -13,6 +13,9 @@
   <body>
     <header class="topbar">
       <div class="brand">Spotify Tracker</div>
+      <div id="version-badge" class="version-badge" style="display:none;">
+        <span id="version-badge-text"></span>
+      </div>
       <nav class="nav-links">
         <a href="/">Dashboard</a>
         <a href="/top-songs">Top Songs</a>
@@ -23,5 +26,28 @@
     </header>
 
     <main class="page">{% block content %}{% endblock %}</main>
+    <script>
+      (function(){
+        const badge = document.getElementById('version-badge');
+        const textEl = document.getElementById('version-badge-text');
+
+        function hideBadge(){
+          badge.style.display = 'none';
+        }
+        function checkVersion(){
+          fetch('/version_status').then(r=>r.json()).then(data=>{
+            if(data && data.latest){
+              textEl.textContent = `New version: ${data.latest} (you: ${data.current})`;
+              badge.style.display = 'inline-flex';
+            } else {
+              hideBadge();
+            }
+          }).catch(()=>{});
+        }
+
+        checkVersion();
+        setInterval(checkVersion, 15 * 60 * 1000);
+      })();
+    </script>
   </body>
 </html>

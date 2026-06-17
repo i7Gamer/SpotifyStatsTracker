@@ -1,6 +1,7 @@
 import os
 import json
 import threading
+import requests
 from pathlib import Path
 import time
 from datetime import datetime, timedelta, timezone
@@ -9,7 +10,7 @@ from flask import Flask, render_template, redirect, request, url_for, jsonify, s
 
 from Database.database import Database
 from Database.Migrators.migrate import migrateIfNeeded
-from Database.utils import msToString, convertToDatetime, formatDuration, dateToString
+from Database.utils import msToString, convertToDatetime, formatDuration, dateToString, versionTuple
 from SpotipyFree import saveSession, parseCookieString
 
 class SpotifyDashboardApp:
@@ -21,6 +22,12 @@ class SpotifyDashboardApp:
         self.cookiesFile = self.baseDir / "secrets" / "cookies.json"
         self.database = Database(user=self.username)
         self.database.resetProgress()
+        try:
+            self.currentVersion = (self.baseDir / "Database" / "VERSION").read_text(encoding="utf-8").strip()  #< only needs to be checked once because app cant update without restart
+        except Exception:
+            self.currentVersion = "0.0.0"
+        self.latestVersion = None
+        self._version_lock = threading.Lock()
 
         self.registerRoutes()
 
@@ -28,11 +35,39 @@ class SpotifyDashboardApp:
         if self.cookiesFile.exists():
             self.startListenerIfNeeded()
 
+        self.startVersionCheck_thread()
+
     def startListenerIfNeeded(self):
         if self.database.listener is None:
             self.database.startListener(str(self.cookiesFile))
             print("Started listener thread.")
             time.sleep(2)  # Give listener time to initialize
+
+    def startVersionCheck_thread(self):
+        thread = threading.Thread(target=self._versionCheckLoop, daemon=True)
+        thread.start()
+
+    def _versionCheckLoop(self):
+        # Check version from GitHub at startup and then every hour.
+        url = "https://raw.githubusercontent.com/TzurSoffer/SpotifyStatsTracker/main/Database/VERSION"
+        while True:
+            try:
+                resp = requests.get(url, timeout=6)
+                if resp.status_code == 200:
+                    remoteVersion = resp.text.strip()
+                    # store remoteVersion if it's newer than current
+                    try:
+                        with self._version_lock:
+                            if versionTuple(remoteVersion) > versionTuple(self.currentVersion):
+                                self.latestVersion = remoteVersion
+                            else:
+                                self.latestVersion = None
+                    except:
+                        pass
+            except Exception:
+                pass
+
+            time.sleep(60 * 60)
 
     def _getPercentPlayedText(self, item, sortBy, totalPlays, totalMs):
         if sortBy == "plays":
@@ -145,6 +180,12 @@ class SpotifyDashboardApp:
         return False
 
     def registerRoutes(self):
+        def _is_version_newer(remote: str, local: str) -> bool:
+            try:
+                return versionTuple(remote) > versionTuple(local)
+            except Exception:
+                return False
+
         @self.app.route('/img/<username>/tracks/<filename>')
         def serveTrackImage(username, filename):
             imageDir = os.path.join(self.baseDir, "Database", "Users", username, "img", "tracks")
@@ -209,6 +250,16 @@ class SpotifyDashboardApp:
         @self.app.route("/import-progress", methods=["GET"])
         def importProgress():
             return jsonify(self.database.readProgress())
+
+        @self.app.route("/version_status", methods=["GET"])
+        def version_status():
+            # Return the current and latest versions (latest is null if not newer)
+            with self._version_lock:
+                latest = self.latestVersion
+            if latest and _is_version_newer(latest, self.currentVersion):
+                return jsonify({"current": self.currentVersion, "latest": latest})
+            else:
+                return jsonify({"current": self.currentVersion, "latest": None})
 
         @self.app.route("/", methods=["GET"])
         def dashboard():

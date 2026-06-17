@@ -70,6 +70,10 @@ def formatDuration(ms: int) -> str:
     remaining = seconds % 60
     return f"{minutes}:{remaining:02d}"
 
+def versionTuple(version: str) -> tuple:
+    """ Can be used to compare versions with > and < """
+    return tuple(int(x) for x in version.split("."))
+
 if __name__ == "__main__":
     import pysole
     pysole.probe(runRemainingCode=True)
