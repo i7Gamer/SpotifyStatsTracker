@@ -4,3 +4,4 @@ pillow
 requests
 redis
 websockets
+shutil

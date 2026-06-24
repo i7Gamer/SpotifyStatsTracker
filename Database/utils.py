@@ -1,12 +1,22 @@
 import os
 import sys
+import traceback
 import datetime
 
 def parseError(e):
-    excType, excObj, excTb = sys.exc_info()
-    fname = os.path.basename(excTb.tb_frame.f_code.co_filename)
-    lineno = excTb.tb_lineno
-    return(f"{excType.__name__} in {fname} at line {lineno}: {e}")
+    _, _, excTb = sys.exc_info()
+    summary = traceback.extract_tb(excTb)
+    
+    if summary:
+        lastFrame = summary[-1]
+        fname = os.path.basename(lastFrame.filename)
+        lineno = lastFrame.lineno
+        funcName = lastFrame.name
+        codeLine = lastFrame.line
+
+        return f"{type(e).__name__} in {fname} -> {funcName}() at line {lineno}: '{codeLine}' -> Error: {e}"
+    
+    return f"{type(e).__name__}: {e}"
 
 def convertToDatetime(timestamp):
     try:
@@ -20,8 +30,8 @@ def convertToDatetime(timestamp):
                 playedAt = dt
         except Exception:
             if timestamp == "0000-00-00":
-                return 0.0     #< 1970 in unix time
-            return datetime.datetime.strptime(timestamp, "%Y-%m-%d").timestamp()
+                return datetime.datetime.fromtimestamp(0, datetime.timezone.utc)     #< 1970 in unix time
+            return datetime.datetime.strptime(timestamp, "%Y-%m-%d")
 
     return playedAt
 

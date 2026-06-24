@@ -21,6 +21,7 @@ class SpotifyDashboardApp:
         self.username = "Tzur"
         self.cookiesFile = self.baseDir / "secrets" / "cookies.json"
         self.database = Database(user=self.username)
+        self.database.startAutoImporter()
         self.database.resetProgress()
         try:
             self.currentVersion = (self.baseDir / "Database" / "VERSION").read_text(encoding="utf-8").strip()  #< only needs to be checked once because app cant update without restart

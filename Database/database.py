@@ -10,11 +10,13 @@ from PIL import Image
 try:
     from Database.Formatters.spotifyClient import Client
     from Database.Importers.StreamingHistoryImporter import Importer
+    from Database.Importers.AutoImporter import AutoImporter
     from Database.Listeners.spotifyListener import Listener
     from Database.utils import parseError, convertToDatetime
 except ModuleNotFoundError:
     from Formatters.spotifyClient import Client
     from Importers.StreamingHistoryImporter import Importer
+    from Importers.AutoImporter import AutoImporter
     from Listeners.spotifyListener import Listener
     from utils import parseError, convertToDatetime
 
@@ -29,8 +31,13 @@ class Database:
         self.entriesPath = self.baseDir / "Users" / self.user / "entries.json"
         self.tracksPath = self.baseDir / "Users" / self.user / "tracks.json"
         self.progressPath = self.baseDir / "Users" / self.user / "progress.json"
+        self.autoImportFolderPath = self.baseDir / ".." / "autoImport"
 
         self.fileLock = threading.RLock()
+        
+        self.autoImporter = AutoImporter(folderPath=self.autoImportFolderPath,
+                                         importCallback=self.importHistory,
+                                         pollInterval=5)
 
     def _loadJsonFile(self, path: Path, default):
         with self.fileLock:
@@ -387,7 +394,10 @@ class Database:
     def startListener(self, cookiesFile):
         self.listener = Listener(cookiesFile)
         self.listener.startListener_thread(callback=self._addToDatabaseFromListener)
-    
+
+    def startAutoImporter(self):
+        self.autoImporter.start()
+
     def isListenerLoggedIn(self):
         if self.listener == None:
             return False
@@ -399,6 +409,7 @@ if __name__ == "__main__":
 
     manager = Database(user="Tzur")
     manager.startListener("cookies.json")
+    manager.startAutoImporter()
     import pysole
     pysole.probe()
 

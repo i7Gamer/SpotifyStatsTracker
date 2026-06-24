@@ -14,6 +14,10 @@ A web application that allows users to track and analyze their Spotify listening
 - View your top songs.
 - View your top artists.
 - See your listening history.
+- Track your spotify recently listened in real time
+- Import Spotify data export
+- Import musicolet pro exports
+- Automatically import files in the 'auto-import folder'
 
 ## Installation
 
@@ -44,10 +48,11 @@ services:
     volumes:
       - ./Database:/app/Database/Users
       - ./secrets:/app/secrets
+      - ./autoImport:/app/autoImport  #< files put in this folder will be imported automatically
     environment:
       - FLASK_APP=app.py
       - PYTHONUNBUFFERED=1
-      - TZ=America/Los_Angeles    #< don't forget to change this or you will get the wrong times for songs
+      - TZ=America/Los_Angeles        #< don't forget to change this or you will get the wrong times for songs
     restart: always
     # Optional: uncomment for debug mode
     # environment:
