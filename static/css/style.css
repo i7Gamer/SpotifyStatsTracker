@@ -92,18 +92,19 @@ button {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 20px;
-  padding: 24px;
-  min-height: 140px;
+  padding: 16px 18px;
+  min-height: 0;
   display: grid;
-  gap: 12px;
+  gap: 8px;
 }
 
 .summary-card h2 {
   margin: 0;
-  font-size: 0.95rem;
+  font-size: 0.9rem;
   color: var(--muted);
   text-transform: uppercase;
   letter-spacing: 0.04em;
+  line-height: 1.15;
 }
 
 .summary-card p,
@@ -112,7 +113,7 @@ button {
 }
 
 .summary-value {
-  font-size: clamp(2.25rem, 4vw, 3.5rem);
+  font-size: clamp(1.9rem, 3vw, 2.8rem);
   font-weight: 800;
   color: #ffffff;
   line-height: 1.05;
@@ -120,23 +121,25 @@ button {
 
 .summary-item {
   display: grid;
-  gap: 8px;
+  gap: 4px;
 }
 
 .summary-item strong {
   display: block;
-  font-size: 1.5rem;
+  font-size: 1.2rem;
   font-weight: 700;
+  line-height: 1.15;
 }
 
 .summary-item span {
-  font-size: 0.95rem;
+  font-size: 0.9rem;
   color: var(--muted);
+  line-height: 1.35;
 }
 
 .summary-change {
-  margin-top: 12px;
-  font-size: 0.95rem;
+  margin-top: 4px;
+  font-size: 0.9rem;
   font-weight: 700;
 }
 

@@ -224,6 +224,7 @@ class SpotifyDashboardApp:
 
     def _getIntervalLabel(self, interval: str = None, customStart: str = None, customEnd: str = None):
         labels = {
+            "all time": "All Time",
             "day": "Last Day",
             "week": "Last Week",
             "month": "Last Month",
@@ -493,7 +494,7 @@ class SpotifyDashboardApp:
             )
 
     def run(self):
-        self.app.run(host="0.0.0.0", debug=True, port=5000)#, threaded=False, use_reloader=False)
+        self.app.run(host="0.0.0.0", debug=True, port=5000, use_reloader=False)#, threaded=False)
 
 if __name__ == "__main__":
     ## $env:IMPORT_KEYWORD="Weekly"
