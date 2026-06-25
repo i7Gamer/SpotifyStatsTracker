@@ -36,7 +36,7 @@ pip install -r requirements.txt
 
 ### Using Docker
 
-Use this docker-compose command:
+Use this docker-compose file:
 ```docker
 version: '3.8'
 
@@ -58,7 +58,9 @@ services:
     restart: always
 ```
 
-Then you can run `docker compose up -d` and the app should start on `http://127.0.0.1:5000` or `http://yourIp:5000`
+### Then you can run `docker compose up -d` and the app should start on `http://127.0.0.1:5000` or `http://yourIp:5000`
+
+### To update the container if an update is available, run `docker compose pull`
 
 ### Local Development
 

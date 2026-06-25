@@ -163,7 +163,7 @@ class SpotifyDashboardApp:
         end = start + pageSize
         return (items[start:end], totalPages, start)
 
-    def _getDateRange(self, interval: str = None, customStart: str = None, customEnd: str = None):
+    def _getDateRange(self, interval: str = None, customStart: str = None, customEnd: str = None, default="day"):
             """Get start and end dates based on interval or custom dates.
 
             Returns a half-open local interval [startDate, endDate).
@@ -186,8 +186,10 @@ class SpotifyDashboardApp:
                     endDate = endLocal + timedelta(days=1)
                 except ValueError:
                     pass
+            if interval == "":
+                interval = default
             if not startDate:
-                if interval == "day" or interval == "":
+                if interval == "day":
                     startDate = nowLocal - timedelta(days=1)
 
                 elif interval == "week":
@@ -314,7 +316,7 @@ class SpotifyDashboardApp:
             tracks = self._embedSongsTextElements(tracks)
 
             intervalLabel = self._getIntervalLabel(interval, customStart, customEnd)
-            startDate, endDate = self._getDateRange(interval, customStart, customEnd)
+            startDate, endDate = self._getDateRange(interval, customStart, customEnd, default="day")
             stats = self.database.getOverallStats(startDate, endDate) 
 
             totalDurationText = msToString(stats["totalDurationMs"])
@@ -362,7 +364,7 @@ class SpotifyDashboardApp:
             customStart = request.args.get("startDate", "")
             customEnd = request.args.get("endDate", "")
             
-            startDate, endDate = self._getDateRange(interval, customStart, customEnd)
+            startDate, endDate = self._getDateRange(interval, customStart, customEnd, default="all time")
             rawTopSongs = self.database.getTopSongs(startDate=startDate, endDate=endDate, by=sortBy)
             tracks, totalPages, startIndex = self.getPage(rawTopSongs, page)
             totalPlays = self._getTotal(rawTopSongs, "plays")
@@ -401,7 +403,7 @@ class SpotifyDashboardApp:
             customStart = request.args.get("startDate", "")
             customEnd = request.args.get("endDate", "")
             
-            startDate, endDate = self._getDateRange(interval, customStart, customEnd)
+            startDate, endDate = self._getDateRange(interval, customStart, customEnd, default="all time")
             rawTopArtists = self.database.getTopArtists(startDate=startDate, endDate=endDate, by=sortBy) or []
             artists, totalPages, startIndex = self.getPage(rawTopArtists, page)
             totalPlays = self._getTotal(rawTopArtists, "plays")
