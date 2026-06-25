@@ -77,6 +77,77 @@ button {
   max-width: 60ch;
 }
 
+.dashboard-summary {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 20px;
+  margin-top: 24px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.summary-card {
+  flex: 1 1 0;
+  min-width: 220px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 24px;
+  min-height: 140px;
+  display: grid;
+  gap: 12px;
+}
+
+.summary-card h2 {
+  margin: 0;
+  font-size: 0.95rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.summary-card p,
+.summary-card ul {
+  margin: 0;
+}
+
+.summary-value {
+  font-size: clamp(2.25rem, 4vw, 3.5rem);
+  font-weight: 800;
+  color: #ffffff;
+  line-height: 1.05;
+}
+
+.summary-item {
+  display: grid;
+  gap: 8px;
+}
+
+.summary-item strong {
+  display: block;
+  font-size: 1.5rem;
+  font-weight: 700;
+}
+
+.summary-item span {
+  font-size: 0.95rem;
+  color: var(--muted);
+}
+
+.summary-change {
+  margin-top: 12px;
+  font-size: 0.95rem;
+  font-weight: 700;
+}
+
+.change-positive {
+  color: #5dd97c;
+}
+
+.change-negative {
+  color: #ff6f6f;
+}
+
 .grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -232,7 +303,7 @@ progress::-moz-progress-bar {
 
 .track-summary-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 20px;
   margin-bottom: 24px;
 }
@@ -346,6 +417,7 @@ progress::-moz-progress-bar {
     grid-template-columns: 1fr;
   }
 
+  .dashboard-summary,
   .track-summary-grid {
     grid-template-columns: 1fr;
   }

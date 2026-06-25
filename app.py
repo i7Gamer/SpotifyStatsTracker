@@ -123,6 +123,44 @@ class SpotifyDashboardApp:
     def _getTotal(self, arr, key):
         return sum(i.get(key, 0) for i in arr)
 
+    def _getListeningTotals(self, entries, startDate, endDate):
+        totalSongsPlayed = 0
+        totalListenMs = 0
+
+        if startDate is None or endDate is None:
+            return totalSongsPlayed, totalListenMs
+
+        for entry in entries:
+            playedAt = entry.get("playedAt")
+            if playedAt is None:
+                continue
+
+            playedAtDate = convertToDatetime(playedAt)
+            if playedAtDate.tzinfo is None:
+                playedAtDate = playedAtDate.replace(tzinfo=timezone.utc)
+            else:
+                playedAtDate = playedAtDate.astimezone(timezone.utc)
+
+            # Half-open interval: [startDate, endDate)
+            if playedAtDate < startDate or playedAtDate >= endDate:
+                continue
+
+            totalSongsPlayed += 1
+            totalListenMs += entry.get("timePlayed", 0)
+
+        return totalSongsPlayed, totalListenMs
+
+    def _getChangeText(self, currentValue, previousValue):
+        if previousValue is None or previousValue == 0:
+            if currentValue == 0:
+                return None, ""
+            return f"New this period", "change-positive"
+
+        change = ((currentValue - previousValue) / previousValue) * 100
+        formatted = f"{abs(round(change, 1))}% {'better' if change > 0 else 'worse'} than the previous period"
+        cssClass = "change-positive" if change > 0 else "change-negative"
+        return formatted, cssClass
+
     def getLatestHistory(self, limit=None):
         return self.database.getEntriesFromNew(limit)
 
@@ -136,20 +174,30 @@ class SpotifyDashboardApp:
         return (items[start:end], totalPages, start)
 
     def _getDateRange(self, interval: str = None, customStart: str = None, customEnd: str = None):
-        """Get start and end dates based on interval or custom dates."""
-        endDate = datetime.now(timezone.utc)
+        """Get start and end dates based on interval or custom dates.
+
+        Returns a half-open UTC interval [startDate, endDate).
+        """
+        nowLocal = datetime.now().astimezone()
+        endDate = nowLocal.astimezone(timezone.utc)
         startDate = None
 
         if customStart and customEnd:
             try:
-                startDate = datetime.strptime(customStart, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-                endDate = datetime.strptime(customEnd, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                startLocal = datetime.strptime(customStart, "%Y-%m-%d").replace(tzinfo=nowLocal.tzinfo)
+                # Make custom end inclusive by extending to the next midnight.
+                endLocalExclusive = datetime.strptime(customEnd, "%Y-%m-%d").replace(tzinfo=nowLocal.tzinfo) + timedelta(days=1)
+                startDate = startLocal.astimezone(timezone.utc)
+                endDate = endLocalExclusive.astimezone(timezone.utc)
             except ValueError:
                 pass
 
         if not startDate:
             if interval == "day":
-                startDate = endDate - timedelta(days=1)
+                dayStartLocal = nowLocal.replace(hour=0, minute=0, second=0, microsecond=0)
+                # Match the manual "last day" range: the previous full calendar day.
+                startDate = (dayStartLocal - timedelta(days=1)).astimezone(timezone.utc)
+                endDate = dayStartLocal.astimezone(timezone.utc)
             elif interval == "week":
                 startDate = endDate - timedelta(weeks=1)
             elif interval == "month":
@@ -162,6 +210,29 @@ class SpotifyDashboardApp:
                 return None, None    # Default: all
 
         return startDate, endDate
+
+    def _getPreviousDateRange(self, startDate, endDate):
+        if not startDate or not endDate:
+            return None, None
+
+        duration = endDate - startDate
+        previousEnd = startDate
+        previousStart = startDate - duration
+        return previousStart, previousEnd
+
+    def _getIntervalLabel(self, interval: str = None, customStart: str = None, customEnd: str = None):
+        labels = {
+            "day": "Last Day",
+            "week": "Last Week",
+            "month": "Last Month",
+            "year": "Last Year",
+            "5years": "Last 5 Years",
+        }
+
+        if interval == "custom" and customStart and customEnd:
+            return f"Custom range: {customStart} to {customEnd}"
+
+        return labels.get(interval or "day", "Last Day")
 
     def ensureLoggedIn(self):
         if self.cookiesFile.exists():
@@ -255,20 +326,66 @@ class SpotifyDashboardApp:
         def dashboard():
             if not self.ensureLoggedIn():
                 return redirect(url_for("login", next=request.path))
+
             page = int(request.args.get("page", 1) or 1)
+            customStart = request.args.get("startDate", "")
+            customEnd = request.args.get("endDate", "")
+            interval = request.args.get("interval", "day") or "day"
+            if interval == "custom" and not (customStart and customEnd):
+                interval = "day"
+
+            intervalLabel = self._getIntervalLabel(interval, customStart, customEnd)
+            currentStart, currentEnd = self._getDateRange(interval, customStart, customEnd)
+            if currentStart is None or currentEnd is None:
+                interval = "day"
+                intervalLabel = self._getIntervalLabel(interval)
+                currentStart, currentEnd = self._getDateRange(interval)
+
+            previousStart, previousEnd = self._getPreviousDateRange(currentStart, currentEnd)
+
             pageSize = 50
             total = self.database.getEntriesCount()
             startIndex = (page - 1) * pageSize
             tracks = self.database.getEntriesFromNew(count=pageSize, startIndex=startIndex)
             tracks = self._embedSongsTextElements(tracks)
+            historyEntries = self.getLatestHistory() or []
+
+            totalSongsPlayed, totalDurationMs = self._getListeningTotals(historyEntries, currentStart, currentEnd)
+            previousSongsPlayed, previousDurationMs = self._getListeningTotals(historyEntries, previousStart, previousEnd)
 
             totalPages = max(1, (total + pageSize - 1) // pageSize)
 
-            totalDurationMs = sum(track.get("timePlayed", 0) for track in self.getLatestHistory(None))
-            totalDurationText = msToString(totalDurationMs)
+            currentTopSongs = self.database.getTopSongs(startDate=currentStart, endDate=currentEnd, by="plays") or []
+            currentTopArtists = self.database.getTopArtists(startDate=currentStart, endDate=currentEnd, by="totalTimeListened") or []
 
-            uniqueArtists = len({track.get("artist") for track in self.getLatestHistory(None) if track.get("artist")})
-            prevUrl, nextUrl = self._getNeighboringUrls("dashboard", page, totalPages)
+            totalDurationText = msToString(totalDurationMs)
+            uniqueArtists = len(currentTopArtists)
+
+            currentTopSong = self._embedTopSongTextElements(currentTopSongs[0], sortBy="plays", totalPlays=totalSongsPlayed, totalMs=totalDurationMs) if currentTopSongs else None
+            currentTopArtist = self._embedArtistTextElement(currentTopArtists[0], sortBy="totalTimeListened", totalPlays=totalSongsPlayed, totalMs=totalDurationMs) if currentTopArtists else None
+
+            previousTopSongs = self.database.getTopSongs(startDate=previousStart, endDate=previousEnd, by="plays") or []
+            previousTopArtists = self.database.getTopArtists(startDate=previousStart, endDate=previousEnd, by="totalTimeListened") or []
+
+            totalSongsChangeText, totalSongsChangeClass = self._getChangeText(
+                totalSongsPlayed,
+                previousSongsPlayed,
+            )
+
+            totalListenChangeText, totalListenChangeClass = self._getChangeText(
+                totalDurationMs,
+                previousDurationMs,
+            )
+
+            def _dashboardUrl(targetPage):
+                params = {"page": targetPage, "interval": interval}
+                if interval == "custom" and customStart and customEnd:
+                    params["startDate"] = customStart
+                    params["endDate"] = customEnd
+                return url_for("dashboard", **params)
+
+            prevUrl = _dashboardUrl(page - 1) if page > 1 else None
+            nextUrl = _dashboardUrl(page + 1) if page < totalPages else None
 
             return render_template(
                 "tracks.html",
@@ -276,6 +393,14 @@ class SpotifyDashboardApp:
                 total=total,
                 uniqueArtists=uniqueArtists,
                 totalDuration=totalDurationText,
+                totalSongsPlayed=totalSongsPlayed,
+                totalListenTime=totalDurationText,
+                totalSongsChangeText=totalSongsChangeText,
+                totalSongsChangeClass=totalSongsChangeClass,
+                totalListenChangeText=totalListenChangeText,
+                totalListenChangeClass=totalListenChangeClass,
+                currentTopSong=currentTopSong,
+                currentTopArtist=currentTopArtist,
                 username=self.username,
                 page=page,
                 totalPages=totalPages,
@@ -283,6 +408,10 @@ class SpotifyDashboardApp:
                 nextUrl=nextUrl,
                 startIndex=startIndex,
                 section="dashboard",
+                interval=interval,
+                customStart=customStart,
+                customEnd=customEnd,
+                intervalLabel=intervalLabel,
             )
 
         @self.app.route("/top-songs", methods=["GET"])

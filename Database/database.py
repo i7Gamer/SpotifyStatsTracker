@@ -1,4 +1,5 @@
 import datetime
+import copy
 import os
 import threading
 import json
@@ -135,7 +136,9 @@ class Database:
         for entry in entries:
             metadata = self._paginateEntry(entry, tracks)
             if metadata != None:
-                ret.append(metadata)
+                # Use an entry-scoped copy so repeated plays of the same track do not
+                # overwrite each other while paginating history.
+                ret.append(copy.deepcopy(metadata))
         return ret
 
     def appendEntries(self, newEntries: list):
@@ -170,7 +173,7 @@ class Database:
             endPos = None if endPos <= 0 else endPos
             slicedEntries = entries[startPos - 1 : endPos : -1]   #< slice and reverse
         else:
-            slicedEntries = entries[startPos - 1 : : -1]           #< slice and reverse
+            slicedEntries = entries[startPos - 1 : : -1]          #< slice and reverse
             
         return self._paginateEntries(slicedEntries)
 
