@@ -4,13 +4,13 @@ import threading
 import requests
 from pathlib import Path
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 
 from flask import Flask, render_template, redirect, request, url_for, jsonify, send_from_directory
 
 from Database.database import Database
 from Database.Migrators.migrate import migrateIfNeeded
-from Database.utils import msToString, convertToDatetime, formatDuration, dateToString, versionTuple
+from Database.utils import msToString, convertToDatetime, formatDuration, dateToString, versionTuple, now, startOfDay, parseDateString
 from SpotipyFree import saveSession, parseCookieString
 
 class SpotifyDashboardApp:
@@ -136,10 +136,6 @@ class SpotifyDashboardApp:
                 continue
 
             playedAtDate = convertToDatetime(playedAt)
-            if playedAtDate.tzinfo is None:
-                playedAtDate = playedAtDate.replace(tzinfo=timezone.utc)
-            else:
-                playedAtDate = playedAtDate.astimezone(timezone.utc)
 
             # Half-open interval: [startDate, endDate)
             if playedAtDate < startDate or playedAtDate >= endDate:
@@ -176,28 +172,31 @@ class SpotifyDashboardApp:
     def _getDateRange(self, interval: str = None, customStart: str = None, customEnd: str = None):
         """Get start and end dates based on interval or custom dates.
 
-        Returns a half-open UTC interval [startDate, endDate).
+        Returns a half-open local interval [startDate, endDate).
         """
-        nowLocal = datetime.now().astimezone()
-        endDate = nowLocal.astimezone(timezone.utc)
+        nowLocal = now()
+        endDate = nowLocal
         startDate = None
 
         if customStart and customEnd:
             try:
-                startLocal = datetime.strptime(customStart, "%Y-%m-%d").replace(tzinfo=nowLocal.tzinfo)
+                startLocal = parseDateString(customStart)
+                endLocal = parseDateString(customEnd)
+                if startLocal is None or endLocal is None:
+                    raise ValueError("Invalid custom date")
                 # Make custom end inclusive by extending to the next midnight.
-                endLocalExclusive = datetime.strptime(customEnd, "%Y-%m-%d").replace(tzinfo=nowLocal.tzinfo) + timedelta(days=1)
-                startDate = startLocal.astimezone(timezone.utc)
-                endDate = endLocalExclusive.astimezone(timezone.utc)
+                endLocalExclusive = endLocal + timedelta(days=1)
+                startDate = startLocal
+                endDate = endLocalExclusive
             except ValueError:
                 pass
 
         if not startDate:
             if interval == "day":
-                dayStartLocal = nowLocal.replace(hour=0, minute=0, second=0, microsecond=0)
+                dayStartLocal = startOfDay(nowLocal)
                 # Match the manual "last day" range: the previous full calendar day.
-                startDate = (dayStartLocal - timedelta(days=1)).astimezone(timezone.utc)
-                endDate = dayStartLocal.astimezone(timezone.utc)
+                startDate = dayStartLocal - timedelta(days=1)
+                endDate = dayStartLocal
             elif interval == "week":
                 startDate = endDate - timedelta(weeks=1)
             elif interval == "month":
@@ -364,9 +363,6 @@ class SpotifyDashboardApp:
             currentTopSong = self._embedTopSongTextElements(currentTopSongs[0], sortBy="plays", totalPlays=totalSongsPlayed, totalMs=totalDurationMs) if currentTopSongs else None
             currentTopArtist = self._embedArtistTextElement(currentTopArtists[0], sortBy="totalTimeListened", totalPlays=totalSongsPlayed, totalMs=totalDurationMs) if currentTopArtists else None
 
-            previousTopSongs = self.database.getTopSongs(startDate=previousStart, endDate=previousEnd, by="plays") or []
-            previousTopArtists = self.database.getTopArtists(startDate=previousStart, endDate=previousEnd, by="totalTimeListened") or []
-
             totalSongsChangeText, totalSongsChangeClass = self._getChangeText(
                 totalSongsPlayed,
                 previousSongsPlayed,
@@ -498,5 +494,7 @@ class SpotifyDashboardApp:
 
 if __name__ == "__main__":
     ## $env:IMPORT_KEYWORD="Weekly"
+    ## $env:TZ="America/Los_Angeles"
+
     dashboardApp = SpotifyDashboardApp()
     dashboardApp.run()

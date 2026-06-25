@@ -36,6 +36,8 @@ class Database:
         self.autoImportFolderPath = self.baseDir / ".." / "autoImport"
 
         self.fileLock = threading.RLock()
+        self.entriesCache = None
+        self.tracksCache = None
 
         filterKeyword = os.environ.get("IMPORT_KEYWORD", None)
         print(f"auto import filtering by {filterKeyword}")
@@ -77,23 +79,29 @@ class Database:
                 self.appendTrackData(timestamp, track, msPlayed)
 
     def _loadEntries(self) -> list:
-        """ Load ONLY id and info about time played from the JSON file. """
-        return self._loadJsonFile(self.entriesPath, [])
+        """Load ONLY id and info about time played from the JSON file."""
+        if self.entriesCache is None:
+            self.entriesCache = self._loadJsonFile(self.entriesPath, [])
+        return self.entriesCache
 
     def _saveEntries(self, entries: list):
-        """ Save ONLY id and info about time played to the JSON file. """
+        """Save ONLY id and info about time played to the JSON file."""
+        self.entriesCache = entries
         self._save(self.entriesPath, entries)
-    
+
     def _saveTracks(self, tracks: dict):
-        """ Save full track metadata to the JSON file. """
+        """Save full track metadata to the JSON file."""
+        self.tracksCache = tracks
         self._save(self.tracksPath, tracks)
 
-    def _loadTracks(self) -> list:
-        """ Load full track metadata from the JSON file. """
-        return self._loadJsonFile(self.tracksPath, {})
+    def _loadTracks(self) -> dict:
+        """Load full track metadata from the JSON file."""
+        if self.tracksCache is None:
+            self.tracksCache = self._loadJsonFile(self.tracksPath, {})
+        return self.tracksCache
     
     def _addTrack(self, tracks, track):
-        tracks.update({track["id"]: track})
+        tracks[track["id"]] = track
         return tracks
 
     def _saveNewTrackFromId(self, id, tracks=None):
@@ -114,20 +122,22 @@ class Database:
         return entry, metadata
 
     def _paginateEntry(self, entry: dict, tracks: dict = None) -> dict:
-        if tracks == None:
+        if tracks is None:
             tracks = self._loadTracks()
 
         if entry["id"] not in tracks:
-            print(f"Missing track metadata for {entry["id"]}, downloading it")
+            print(f"Missing track metadata for {entry['id']}, downloading it")
             try:
                 self._saveNewTrackFromId(entry["id"], tracks)
-            except:
+            except Exception:
                 print("Failed to download track")
                 return None
 
-        meta = tracks[entry["id"]]
+        meta = tracks[entry["id"]].copy()
+
         meta["playedAt"] = entry["playedAt"]
         meta["timePlayed"] = entry["timePlayed"]
+
         return meta
 
     def _paginateEntries(self, entries: list) -> list:
@@ -136,9 +146,7 @@ class Database:
         for entry in entries:
             metadata = self._paginateEntry(entry, tracks)
             if metadata != None:
-                # Use an entry-scoped copy so repeated plays of the same track do not
-                # overwrite each other while paginating history.
-                ret.append(copy.deepcopy(metadata))
+                ret.append(metadata)
         return ret
 
     def appendEntries(self, newEntries: list):

@@ -5,10 +5,10 @@ import SpotipyFree
 
 try:
     from Database.Formatters.spotifyClient import Client
-    from Database.utils import timeToInt, parseError
+    from Database.utils import timeToInt, parseError, now
 except ModuleNotFoundError:
     from Formatters.spotifyClient import Client
-    from utils import timeToInt, parseError
+    from utils import timeToInt, parseError, now
 
 
 class Importer:
@@ -109,7 +109,7 @@ class Importer:
             DURATION_MS = 8
             PLAYCOUNT = 9
 
-            currentTime = datetime.datetime.now()
+            currentTime = now()
             formatedData = []
             reader = csv.reader(rows)
             

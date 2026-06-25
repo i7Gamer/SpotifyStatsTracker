@@ -3,6 +3,24 @@ import sys
 import traceback
 import datetime
 
+from zoneinfo import ZoneInfo
+
+DATE_FORMATS = ("%Y-%m-%d", "%Y-%m", "%Y")
+
+try:
+    tzName = os.environ.get("TZ")
+    tz = datetime.datetime.now().astimezone().tzinfo
+    if tzName:
+        tz = ZoneInfo(tzName)
+except Exception:
+    print("Failed to get timezone from environment variable 'TZ'. Using UTC instead.")
+    tz = datetime.timezone.utc
+
+print("Using timezone:", tzName)
+
+
+## ERROR PRINTING
+
 def parseError(e):
     _, _, excTb = sys.exc_info()
     summary = traceback.extract_tb(excTb)
@@ -18,39 +36,90 @@ def parseError(e):
     
     return f"{type(e).__name__}: {e}"
 
-def convertToDatetime(timestamp):
-    try:
-        playedAt = datetime.datetime.fromtimestamp(float(timestamp), datetime.timezone.utc)
-    except (ValueError, TypeError):
-        try:
-            dt = datetime.datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
-            if dt.tzinfo is not None:
-                playedAt = dt.astimezone(datetime.timezone.utc).replace(tzinfo=None)
-            else:
-                playedAt = dt
-        except Exception:
-            if timestamp == "0000-00-00":
-                return datetime.datetime.fromtimestamp(0, datetime.timezone.utc)     #< 1970 in unix time
-            return datetime.datetime.strptime(timestamp, "%Y-%m-%d")
 
-    return playedAt
+## DATETIME RELATED
+
+def epoch():
+    return datetime.datetime.fromtimestamp(0, tz=tz)
+
+def parseIsoDatetime(value):
+    return datetime.datetime.fromisoformat(
+        str(value).replace("Z", "+00:00")
+    )
+
+def getTimezone():
+    return tz
+
+def now():
+    return datetime.datetime.now(tz=tz)
+
+
+def toTimezone(dt: datetime.datetime, tz=None):
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=tz)
+    return dt.astimezone(tz)
+
+
+def startOfDay(dt: datetime.datetime = None):
+    dt = toTimezone(dt or now())
+    return dt.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def parseDateString(dateText: str):
+    for fmt in DATE_FORMATS:
+        try:
+            return datetime.datetime.strptime(
+                str(dateText), fmt
+            ).replace(tzinfo=tz)
+        except ValueError:
+            pass
+    return None
+
+def parseDatetime(value):
+    try:
+        return toTimezone(parseIsoDatetime(value), tz)
+    except Exception:
+        return parseDateString(value)
+
+def convertToDatetime(timestamp):
+    if type(timestamp) == datetime.datetime:
+        return toTimezone(timestamp)
+
+    try:
+        return datetime.datetime.fromtimestamp(
+            float(timestamp),
+            tz=tz
+        )
+    except (ValueError, TypeError):
+        pass
+
+    if timestamp == "0000-00-00":
+        return epoch()
+
+    parsed = parseDatetime(timestamp)
+    return parsed if parsed is not None else epoch()
 
 def dateToString(timestamp):
-    if type(timestamp) == float:
-        timestamp = datetime.datetime.fromtimestamp(timestamp, datetime.timezone.utc)
+    if type(timestamp) in (float, int):
+        timestamp = datetime.datetime.fromtimestamp(timestamp, tz=tz)
+    elif type(timestamp) != datetime.datetime:
+        timestamp = convertToDatetime(timestamp)
+
+    timestamp = toTimezone(timestamp)
 
     return timestamp.strftime("%Y-%m-%d")
 
 def timeToInt(timestampOrStr):
-    """ Convert ISO string or datetime to int """
+    if type(timestampOrStr) == datetime.datetime:
+        return int(toTimezone(timestampOrStr).timestamp())
+
     try:
         return int(float(timestampOrStr))
     except (ValueError, TypeError):
-        try:
-            dt = datetime.datetime.fromisoformat(timestampOrStr.replace("Z", "+00:00"))
-            return int(dt.timestamp())
-        except:
-            return 0
+        pass
+
+    parsed = parseDatetime(timestampOrStr)
+    return int(parsed.timestamp()) if parsed else 0
 
 def msToString(ms: int | float) -> str:
     """ Converts milliseconds into a human-readable duration string. """
