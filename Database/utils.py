@@ -99,12 +99,12 @@ def parseDatetime(value):
 def convertToDatetime(timestamp):
     """
     Converts:
-    - datetime → normalized
-    - numeric timestamp → safe conversion
-    - ISO string → parsed
-    - date-only string → parsed
-    - "0000-00-00" → epoch
-    - invalid → epoch
+    - datetime -> normalized
+    - numeric timestamp -> safe conversion
+    - ISO string -> parsed
+    - date-only string -> parsed
+    - "0000-00-00" -> epoch
+    - invalid -> epoch
     """
     if isinstance(timestamp, datetime.datetime):
         return toTimezone(timestamp)
