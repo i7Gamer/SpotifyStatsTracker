@@ -19,9 +19,9 @@
 
 <div class="filter-group custom-dates" id="customDates" {% if not (customStart and customEnd) %}style="display: none;"{% endif %}>
     <label for="startDate">From:</label>
-    <input type="date" id="startDate" name="startDate" value="{{ customStart }}" onchange="updateDateFilter()">
+    <input type="date" id="startDate" name="startDate" value="{{ customStart }}" onchange="scheduleSearchFilter('startDate', updateDateFilter)">
     <label for="endDate">To:</label>
-    <input type="date" id="endDate" name="endDate" value="{{ customEnd }}" onchange="updateDateFilter()">
+    <input type="date" id="endDate" name="endDate" value="{{ customEnd }}" onchange="scheduleSearchFilter('endDate', updateDateFilter)">
 </div>
 
 <div class="filter-group">

@@ -23,9 +23,9 @@
 
     <div class="filter-group custom-dates" id="chartsCustomDates" {% if interval != 'custom' %}style="display: none;"{% endif %}>
       <label for="startDate">From:</label>
-      <input type="date" id="startDate" name="startDate" value="{{ customStart }}" onchange="updateChartsDateFilter()">
+      <input type="date" id="startDate" name="startDate" value="{{ customStart }}" onchange="scheduleSearchFilter('startDate', updateChartsDateFilter)">
       <label for="endDate">To:</label>
-      <input type="date" id="endDate" name="endDate" value="{{ customEnd }}" onchange="updateChartsDateFilter()">
+      <input type="date" id="endDate" name="endDate" value="{{ customEnd }}" onchange="scheduleSearchFilter('endDate', updateChartsDateFilter)">
     </div>
 
     <div class="filter-group">

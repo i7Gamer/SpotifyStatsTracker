@@ -33,9 +33,9 @@
 
         <div class="filter-group custom-dates" id="dashboardCustomDates" {% if interval != 'custom' %}style="display: none;"{% endif %}>
           <label for="startDate">From:</label>
-          <input type="date" id="startDate" name="startDate" value="{{ customStart }}" onchange="updateDashboardDateFilter()">
+          <input type="date" id="startDate" name="startDate" value="{{ customStart }}" onchange="scheduleSearchFilter('startDate', updateDashboardDateFilter)">
           <label for="endDate">To:</label>
-          <input type="date" id="endDate" name="endDate" value="{{ customEnd }}" onchange="updateDashboardDateFilter()">
+          <input type="date" id="endDate" name="endDate" value="{{ customEnd }}" onchange="scheduleSearchFilter('endDate', updateDashboardDateFilter)">
         </div>
 
         <noscript>
