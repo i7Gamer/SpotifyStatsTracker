@@ -25,7 +25,9 @@ except ModuleNotFoundError:
     from utils import parseError, convertToDatetime
 
 class Database:
-    def __init__(self, user: str = "Tzur", cookiesFile: str | None = None, email: str | None = None):
+    def __init__(self, user: str, cookiesFile: str | None = None, email: str | None = None):
+        if not user:
+            raise ValueError("Database user must be specified and cannot be empty.")
         self.user = user
         self.cookiesFile = cookiesFile
         self.email = email
