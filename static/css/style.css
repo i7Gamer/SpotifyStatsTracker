@@ -737,6 +737,23 @@ progress::-moz-progress-bar {
   margin-bottom: 24px;
 }
 
+.chart-section {
+  padding: 20px 0;
+}
+
+.chart-section:first-of-type {
+  padding-top: 0;
+}
+
+.chart-section:last-of-type {
+  padding-bottom: 0;
+}
+
+.chart-section:not(:last-of-type) {
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 24px;
+}
+
 .chart-card h2 {
   margin-bottom: 4px;
 }
@@ -780,7 +797,7 @@ progress::-moz-progress-bar {
 }
 
 .chart-tooltip {
-  position: absolute;
+  position: fixed;
   display: none;
   pointer-events: none;
   z-index: 20;

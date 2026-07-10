@@ -32,8 +32,8 @@
   function showTooltip(evt, html) {
     var tooltip = ensureTooltip();
     tooltip.innerHTML = html;
-    tooltip.style.left = (evt.pageX + 14) + 'px';
-    tooltip.style.top = (evt.pageY + 14) + 'px';
+    tooltip.style.left = (evt.clientX + 14) + 'px';
+    tooltip.style.top = (evt.clientY + 14) + 'px';
     tooltip.style.display = 'block';
   }
 
