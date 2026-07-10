@@ -488,7 +488,11 @@ class Database:
             for artist in artists:
                 artistName = artist["name"]
                 if artistName not in artistsStats:
-                    artistsStats[artistName] = artist
+                    # Copy rather than alias: `artist` is the same dict object cached
+                    # inside self.tracksCache (via _paginateEntry's shallow copy), so
+                    # writing stats fields directly onto it would leak them into the
+                    # persisted tracks.json schema the next time tracks get saved.
+                    artistsStats[artistName] = artist.copy()
                     artistsStats[artistName]["plays"] = 0
                     artistsStats[artistName]["totalTimeListened"] = 0
                     artistsStats[artistName]["uniqueSongs"] = set()
