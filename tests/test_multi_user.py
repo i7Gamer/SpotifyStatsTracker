@@ -44,7 +44,7 @@ class TestMultiUser(unittest.TestCase):
     def test_get_username_for_email_from_map(self, mock_read_text, mock_exists, mock_migrate, mock_check, mock_version, mock_secret):
         mock_exists.return_value = True
         mock_read_text.return_value = '{"test@example.com": "test_user"}'
-        
+
         app = SpotifyDashboardApp()
         username = app.get_username_for_email("test@example.com")
         self.assertEqual(username, "test_user")
@@ -60,7 +60,7 @@ class TestMultiUser(unittest.TestCase):
         # Everything does not exist
         mock_exists.return_value = False
         app = SpotifyDashboardApp()
-        
+
         username = app.get_or_create_user("john.doe@test.com")
         self.assertEqual(username, "johndoe")
 
@@ -87,28 +87,28 @@ class TestMultiUser(unittest.TestCase):
     def test_migrate_legacy_database(self, mock_migrate, mock_check, mock_version, mock_secret):
         import tempfile
         import shutil
-        
+
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_path = Path(tmpdir)
             app = SpotifyDashboardApp()
             app.baseDir = tmp_path
-            
+
             # Create a legacy directory with entries.json
             legacy_dir = tmp_path / "Database" / "Users" / "Tzur"
             legacy_dir.mkdir(parents=True, exist_ok=True)
             legacy_entries = legacy_dir / "entries.json"
             legacy_entries.write_text('[{"id": "track_1"}]', encoding="utf-8")
-            
+
             # Run migration to target "timorzipa"
             app._migrate_legacy_database_if_needed("timorzipa")
-            
+
             # Target directory should now exist and have the copied entries.json
             target_dir = tmp_path / "Database" / "Users" / "timorzipa"
             target_entries = target_dir / "entries.json"
-            
+
             self.assertTrue(target_entries.exists())
             self.assertEqual(target_entries.read_text(encoding="utf-8"), '[{"id": "track_1"}]')
-            
+
             # Legacy directory should be removed/cleaned up
             self.assertFalse(legacy_dir.exists())
 

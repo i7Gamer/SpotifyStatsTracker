@@ -19,6 +19,7 @@ from SpotipyFree import saveSession, parseCookieString
 
 PAGE_SIZE = 50                  #< list items shown per page
 LOGIN_CACHE_TTL_SECONDS = 180  #< seconds to cache isListenerLoggedIn result per user
+CHART_ARTIST_TREND_TOP_N = 5   #< how many top artists are plotted on the trend line chart
 
 class SpotifyDashboardApp:
     def __init__(self):
@@ -524,6 +525,17 @@ class SpotifyDashboardApp:
 
         return labels.get(interval or "day", "Last Day")
 
+    def _embedTimeSeriesTextElements(self, timeSeries: list) -> list:
+        for bucket in timeSeries:
+            bucket["totalTimeListenedText"] = msToString(bucket["totalTimeListened"])
+        return timeSeries
+
+    def _embedHeatmapTextElements(self, heatmap: list) -> list:
+        for row in heatmap:
+            for cell in row:
+                cell["totalTimeListenedText"] = msToString(cell["totalTimeListened"])
+        return heatmap
+
     def registerRoutes(self):
         def _is_version_newer(remote: str, local: str) -> bool:
             try:
@@ -850,6 +862,44 @@ class SpotifyDashboardApp:
                 interval=interval,
                 customStart=customStart,
                 customEnd=customEnd,
+            )
+
+        @self.app.route("/charts", methods=["GET"])
+        def chartsPage():
+            email, username, db = get_current_user_or_redirect()
+            if not email:
+                return redirect(url_for("login", next=request.path))
+
+            interval = request.args.get("interval", "month")
+            customStart = request.args.get("startDate", "")
+            customEnd = request.args.get("endDate", "")
+            if interval == "custom" and not (customStart and customEnd):
+                interval = "month"
+            groupBy = request.args.get("groupBy", "day")
+            if groupBy not in ("day", "week"):
+                groupBy = "day"
+
+            startDate, endDate = self._getDateRange(interval, customStart, customEnd, default="month")
+            intervalLabel = self._getIntervalLabel(interval, customStart, customEnd)
+
+            timeSeries = self._embedTimeSeriesTextElements(
+                db.getListeningTimeSeries(startDate=startDate, endDate=endDate, groupBy=groupBy)
+            )
+            heatmap = self._embedHeatmapTextElements(db.getHourOfDayHeatmap(startDate=startDate, endDate=endDate))
+            artistTrend = db.getArtistTrend(startDate=startDate, endDate=endDate, topN=CHART_ARTIST_TREND_TOP_N, groupBy=groupBy)
+
+            return render_template(
+                "charts.html",
+                username=username,
+                section="charts",
+                interval=interval,
+                customStart=customStart,
+                customEnd=customEnd,
+                groupBy=groupBy,
+                intervalLabel=intervalLabel,
+                timeSeries=timeSeries,
+                heatmap=heatmap,
+                artistTrend=artistTrend,
             )
 
     def run(self):

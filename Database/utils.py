@@ -82,6 +82,12 @@ def startOfDay(dt: datetime.datetime = None):
     return dt.replace(hour=0, minute=0, second=0, microsecond=0)
 
 
+def startOfWeek(dt: datetime.datetime = None):
+    """Monday 00:00 local time for the week containing dt (or now())."""
+    dt = startOfDay(dt)
+    return dt - datetime.timedelta(days=dt.weekday())
+
+
 def parseDateString(dateText: str):
     for fmt in DATE_FORMATS:
         try:
