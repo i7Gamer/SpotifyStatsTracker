@@ -68,6 +68,39 @@ class TestMusicoletImport(unittest.TestCase):
         tracks = list(gen)
         self.assertEqual(len(tracks), 1)
 
+    def test_prefetch_progress_callback_is_monotonic(self):
+        importer = self._mockedImporter()
+        
+        # We need two missing tracks to show multiple pre-fetch progress steps
+        history = [
+            ("Track A", "Artist A", "2023-01-01 00:00:00", 180000, "uriA"),
+            ("Track B", "Artist B", "2023-01-01 00:03:00", 180000, "uriB"),
+        ]
+        
+        # Mock SpotipyFree search/track to return valid items
+        importer.sp.track.side_effect = [
+            {"id": "uriA", "name": "Track A", "external_urls": {"spotify": "http://a"}, "duration_ms": 180000, "album": {"images": []}},
+            {"id": "uriB", "name": "Track B", "external_urls": {"spotify": "http://b"}, "duration_ms": 180000, "album": {"images": []}},
+        ]
+        
+        progressCalls = []
+        def progressCallback(status, current, total, message):
+            progressCalls.append((status, current, total, message))
+            
+        def dummyDataFunction(item):
+            return item
+            
+        # Run import generator to trigger pre-fetch and yielding
+        tracks = list(importer._import(dummyDataFunction, history, known=[], progressCallback=progressCallback))
+        
+        # Filter progress calls that are pre-fetching
+        prefetchCalls = [c for c in progressCalls if "Pre-fetching" in c[3]]
+        
+        # We expect 2 calls, with current values: 1 and 2
+        self.assertEqual(len(prefetchCalls), 2)
+        self.assertEqual(prefetchCalls[0][1], 1)
+        self.assertEqual(prefetchCalls[1][1], 2)
+
 
 if __name__ == "__main__":
     unittest.main()

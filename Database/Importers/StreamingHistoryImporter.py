@@ -120,7 +120,7 @@ class Importer:
                 if progressCallback:
                     progressCallback(
                         "running", 
-                        chunkStart, 
+                        chunkStart + fetchedCount, 
                         totalItems, 
                         f"Pre-fetching batch metadata ({fetchedCount}/{totalMissing})..."
                     )
