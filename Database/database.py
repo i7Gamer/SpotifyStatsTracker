@@ -408,6 +408,27 @@ class Database:
 
         self._saveEntries(entries)
 
+    def deduplicate(self) -> int:
+        """Removes duplicate entries from the database, keeping the first occurrence.
+        Returns the number of removed duplicates.
+        """
+        with self.fileLock:
+            entries = self._loadEntries()
+            initial_len = len(entries)
+            seen = set()
+            unique_entries = []
+            for entry in entries:
+                key = (entry["id"], self._entrySortKey(entry))
+                if key in seen:
+                    continue
+                seen.add(key)
+                unique_entries.append(entry)
+            
+            if len(unique_entries) < initial_len:
+                self._saveEntries(unique_entries)
+                return initial_len - len(unique_entries)
+            return 0
+
     def importHistory(self, exportedHistory):
         importer = Importer(cookiesFile=self.cookiesFile, email=self.email)
 
@@ -429,8 +450,15 @@ class Database:
         importedTracks = {}
         index = 0
         try:
+            existing_keys = {(entry["id"], self._entrySortKey(entry)) for entry in self._loadEntries()}
             for index, meta in enumerate(importer.importHistory(parsedHistory, self._loadTracks().values(), exportType, progress_callback=progress_callback), start=1):  #< We only want the tracks, the importer doesn't care about the keys
                 e, t = self._splitEntryAndTrack(meta)
+                
+                entry_key = (e["id"], self._entrySortKey(e))
+                if entry_key in existing_keys:
+                    continue
+                existing_keys.add(entry_key)
+                
                 importedEntries.append(e)
                 importedTracks[t["id"]] = t
                 self.saveImagesFromTrack(t)
