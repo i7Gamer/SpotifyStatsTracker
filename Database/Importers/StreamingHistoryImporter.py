@@ -18,7 +18,7 @@ class Importer:
     # to avoid rate limits/network blocking without long delays.
     CHUNK_SIZE = 500
 
-    def __init__(self, user="Tzur", cookiesFile=None, email=None):
+    def __init__(self, cookiesFile=None, email=None):
         self.sp = SpotipyFree.Spotify(cookiesFile=cookiesFile, email=email)
 
     def _searchForSong(self, name, artist):
