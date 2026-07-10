@@ -26,6 +26,7 @@ class SpotifyDashboardApp:
         self.user_databases = {}
         self._db_lock = threading.RLock()
         self._session_lock = threading.RLock()
+        self._migration_lock = threading.RLock()
         
         try:
             self.currentVersion = (self.baseDir / "Database" / "VERSION").read_text(encoding="utf-8").strip()  #< only needs to be checked once because app cant update without restart
@@ -178,8 +179,12 @@ class SpotifyDashboardApp:
         # Legacy-folder migration (file copies) and directory creation only touch
         # this user's own directory, not the shared session/mapping files, so they
         # don't need the global session lock - and its I/O shouldn't block other
-        # users' session lookups while it runs.
-        self._migrate_legacy_database_if_needed(username)
+        # users' session lookups while it runs. They still need their own lock
+        # though: the legacy sources are fixed, shared paths (e.g. Database/Tzur),
+        # so two different brand-new users logging in around the same time could
+        # otherwise both race to migrate the same source into their own directory.
+        with self._migration_lock:
+            self._migrate_legacy_database_if_needed(username)
         users_dir = self.baseDir / "Database" / "Users"
         (users_dir / username).mkdir(parents=True, exist_ok=True)
 

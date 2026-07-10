@@ -216,6 +216,7 @@ class TestSessionLockScope(unittest.TestCase):
         app.user_databases = {}
         app._db_lock = threading.RLock()
         app._session_lock = threading.RLock()
+        app._migration_lock = threading.RLock()
         return app
 
     def test_slow_listener_check_does_not_block_unrelated_session_lookups(self):
@@ -248,6 +249,40 @@ class TestSessionLockScope(unittest.TestCase):
             "an unrelated session lookup blocked on another user's live listener check "
             "- the session lock's critical section is too broad"
         )
+
+    def test_two_new_users_do_not_migrate_the_same_legacy_source_concurrently(self):
+        """get_or_create_user() no longer runs legacy migration under the (now
+        narrower) session lock, so it needs its own lock: the legacy sources are
+        fixed, shared paths, so two different brand-new users logging in around the
+        same time could otherwise both race to migrate the same source."""
+        import time
+
+        dash = self._makeApp()
+
+        concurrentCount = {"current": 0, "max": 0}
+        countLock = threading.Lock()
+
+        def fakeMigrate(username):
+            with countLock:
+                concurrentCount["current"] += 1
+                concurrentCount["max"] = max(concurrentCount["max"], concurrentCount["current"])
+            time.sleep(0.1)
+            with countLock:
+                concurrentCount["current"] -= 1
+
+        with patch.object(dash, 'get_username_for_email', return_value=None), \
+             patch.object(dash, '_migrate_legacy_database_if_needed', side_effect=fakeMigrate):
+
+            threads = [
+                threading.Thread(target=dash.get_or_create_user, args=(f"user{i}@example.com",))
+                for i in range(3)
+            ]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+        self.assertEqual(concurrentCount["max"], 1, "legacy migration ran concurrently for different users")
 
 
 if __name__ == '__main__':
