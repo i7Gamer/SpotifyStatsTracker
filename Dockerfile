@@ -26,8 +26,8 @@ COPY . .
 EXPOSE 5000
 
 # Set environment variables
-ENV FLASK_APP=app.py
+ENV FLASK_APP=wsgi.py
 ENV PYTHONUNBUFFERED=1
 
 # Run the Flask app
-CMD ["python", "app.py"]
+CMD ["python", "wsgi.py"]
