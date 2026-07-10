@@ -285,5 +285,110 @@ class TestSessionLockScope(unittest.TestCase):
         self.assertEqual(concurrentCount["max"], 1, "legacy migration ran concurrently for different users")
 
 
+class TestLoginCookieVerification(unittest.TestCase):
+    """Login must verify that the submitted cookies actually belong to the claimed
+    email before persisting them. Without this, anyone can claim any email with
+    arbitrary cookies and be handed that user's database (and clobber the real
+    user's stored session)."""
+
+    # Keep tests from regenerating the real secrets/flask_secret_key.txt
+    # (the mocked Path.exists below would otherwise force a rewrite).
+    @patch('app.SpotifyDashboardApp._get_or_create_secret_key', return_value='test-secret-key')
+    @patch('app.SpotifyDashboardApp.startVersionCheck_thread')
+    @patch('app.SpotifyDashboardApp.checkLogin_thread')
+    @patch('app.migrateIfNeeded')
+    @patch('app.Path.exists')
+    def _makeApp(self, mock_exists, mock_migrate, mock_check, mock_version, mock_secret):
+        mock_exists.return_value = False
+        return SpotifyDashboardApp()
+
+    def _postLogin(self, dash, email="alice@example.com", cookies="sp_dc=abc"):
+        client = dash.app.test_client()
+        resp = client.post("/login", data={"step": "2", "email": email, "cookies": cookies})
+        return resp, client
+
+    def test_login_rejects_unverified_cookies(self):
+        dash = self._makeApp()
+        with patch.object(dash, '_verifyCookiesMatchEmail', return_value=False), \
+             patch('app.saveSession') as mock_save:
+            resp, client = self._postLogin(dash)
+
+        self.assertEqual(resp.status_code, 200)  #< re-renders login page instead of redirecting
+        mock_save.assert_not_called()
+        with client.session_transaction() as sess:
+            self.assertNotIn('email', sess)
+
+    def test_login_accepts_verified_cookies(self):
+        dash = self._makeApp()
+        with patch.object(dash, '_verifyCookiesMatchEmail', return_value=True), \
+             patch('app.saveSession') as mock_save, \
+             patch.object(dash, 'get_or_create_user', return_value='alice'), \
+             patch.object(dash, 'get_user_db'):
+            resp, client = self._postLogin(dash)
+
+        self.assertEqual(resp.status_code, 302)
+        mock_save.assert_called_once()
+        self.assertIs(mock_save.call_args.args[2], dash.cookiesFile)
+        with client.session_transaction() as sess:
+            self.assertEqual(sess.get('email'), 'alice@example.com')
+
+    def test_verify_accepts_matching_profile_email_case_insensitive(self):
+        dash = self._makeApp()
+        spotify = MagicMock()
+        spotify.isLoggedIn.return_value = True
+        spotify.current_user.return_value = {"email": "Alice@Example.com"}
+        with patch('app.SpotipyFree') as mock_sf, patch('app.saveSession'):
+            mock_sf.Spotify.return_value = spotify
+            result = dash._verifyCookiesMatchEmail({"sp_dc": "abc"}, "alice@example.com")
+        self.assertTrue(result)
+
+    def test_verify_rejects_mismatched_profile_email(self):
+        dash = self._makeApp()
+        spotify = MagicMock()
+        spotify.isLoggedIn.return_value = True
+        spotify.current_user.return_value = {"email": "attacker@evil.com"}
+        with patch('app.SpotipyFree') as mock_sf, patch('app.saveSession'):
+            mock_sf.Spotify.return_value = spotify
+            result = dash._verifyCookiesMatchEmail({"sp_dc": "abc"}, "alice@example.com")
+        self.assertFalse(result)
+
+    def test_verify_rejects_when_not_logged_in(self):
+        dash = self._makeApp()
+        spotify = MagicMock()
+        spotify.isLoggedIn.return_value = False
+        with patch('app.SpotipyFree') as mock_sf, patch('app.saveSession'):
+            mock_sf.Spotify.return_value = spotify
+            result = dash._verifyCookiesMatchEmail({"sp_dc": "abc"}, "alice@example.com")
+        self.assertFalse(result)
+
+    def test_verify_rejects_on_spotify_error(self):
+        dash = self._makeApp()
+        with patch('app.SpotipyFree') as mock_sf, patch('app.saveSession'):
+            mock_sf.Spotify.side_effect = RuntimeError("network down")
+            result = dash._verifyCookiesMatchEmail({"sp_dc": "abc"}, "alice@example.com")
+        self.assertFalse(result)
+
+    def test_verify_rejects_empty_inputs(self):
+        dash = self._makeApp()
+        with patch('app.SpotipyFree') as mock_sf:
+            self.assertFalse(dash._verifyCookiesMatchEmail({}, "alice@example.com"))
+            self.assertFalse(dash._verifyCookiesMatchEmail({"sp_dc": "abc"}, ""))
+            mock_sf.Spotify.assert_not_called()
+
+    def test_verify_never_touches_shared_cookies_file_and_cleans_up_temp(self):
+        dash = self._makeApp()
+        spotify = MagicMock()
+        spotify.isLoggedIn.return_value = True
+        spotify.current_user.return_value = {"email": "alice@example.com"}
+        with patch('app.SpotipyFree') as mock_sf, patch('app.saveSession') as mock_save:
+            mock_sf.Spotify.return_value = spotify
+            dash._verifyCookiesMatchEmail({"sp_dc": "abc"}, "alice@example.com")
+
+            tempPath = mock_save.call_args.args[2]
+            self.assertNotEqual(str(tempPath), str(dash.cookiesFile))
+            self.assertEqual(mock_sf.Spotify.call_args.kwargs.get("cookiesFile"), tempPath)
+        self.assertFalse(os.path.exists(tempPath))
+
+
 if __name__ == '__main__':
     unittest.main()
