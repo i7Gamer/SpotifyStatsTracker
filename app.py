@@ -25,6 +25,7 @@ class SpotifyDashboardApp:
         
         self.user_databases = {}
         self._db_lock = threading.RLock()
+        self._session_lock = threading.RLock()
         
         try:
             self.currentVersion = (self.baseDir / "Database" / "VERSION").read_text(encoding="utf-8").strip()  #< only needs to be checked once because app cant update without restart
@@ -57,16 +58,17 @@ class SpotifyDashboardApp:
         return newKey
 
     def get_username_for_email(self, email):
-        map_file = self.baseDir / "secrets" / "users_map.json"
-        if map_file.exists():
-            try:
-                users_map = json.loads(map_file.read_text(encoding="utf-8"))
-                if email in users_map:
-                    return users_map[email]
-            except Exception:
-                pass
-        
-        return None
+        with self._session_lock:
+            map_file = self.baseDir / "secrets" / "users_map.json"
+            if map_file.exists():
+                try:
+                    users_map = json.loads(map_file.read_text(encoding="utf-8"))
+                    if email in users_map:
+                        return users_map[email]
+                except Exception:
+                    pass
+            
+            return None
 
     def _migrate_legacy_database_if_needed(self, username):
         import shutil
@@ -144,42 +146,43 @@ class SpotifyDashboardApp:
                     break
 
     def get_or_create_user(self, email):
-        username = self.get_username_for_email(email)
-        if not username:
-            # Create a new username from email prefix
-            prefix = email.split("@")[0]
-            sanitized = "".join(c for c in prefix if c.isalnum() or c in ("-", "_")).strip()
-            if not sanitized:
-                sanitized = f"user_{int(time.time())}"
-                
-            # Ensure uniqueness under Database/Users/
-            username = sanitized
-            counter = 1
+        with self._session_lock:
+            username = self.get_username_for_email(email)
+            if not username:
+                # Create a new username from email prefix
+                prefix = email.split("@")[0]
+                sanitized = "".join(c for c in prefix if c.isalnum() or c in ("-", "_")).strip()
+                if not sanitized:
+                    sanitized = f"user_{int(time.time())}"
+                    
+                # Ensure uniqueness under Database/Users/
+                username = sanitized
+                counter = 1
+                users_dir = self.baseDir / "Database" / "Users"
+                while (users_dir / username).exists() or username in self.user_databases:
+                    username = f"{sanitized}_{counter}"
+                    counter += 1
+                    
+                # Save to mapping
+                map_file = self.baseDir / "secrets" / "users_map.json"
+                users_map = {}
+                if map_file.exists():
+                    try:
+                        users_map = json.loads(map_file.read_text(encoding="utf-8"))
+                    except Exception:
+                        pass
+                users_map[email] = username
+                map_file.parent.mkdir(parents=True, exist_ok=True)
+                map_file.write_text(json.dumps(users_map, indent=4), encoding="utf-8")
+            
+            # Ensure legacy folders are migrated to this user's active directory
+            self._migrate_legacy_database_if_needed(username)
+            
+            # Ensure directories exist
             users_dir = self.baseDir / "Database" / "Users"
-            while (users_dir / username).exists() or username in self.user_databases:
-                username = f"{sanitized}_{counter}"
-                counter += 1
-                
-            # Save to mapping
-            map_file = self.baseDir / "secrets" / "users_map.json"
-            users_map = {}
-            if map_file.exists():
-                try:
-                    users_map = json.loads(map_file.read_text(encoding="utf-8"))
-                except Exception:
-                    pass
-            users_map[email] = username
-            map_file.parent.mkdir(parents=True, exist_ok=True)
-            map_file.write_text(json.dumps(users_map, indent=4), encoding="utf-8")
-        
-        # Ensure legacy folders are migrated to this user's active directory
-        self._migrate_legacy_database_if_needed(username)
-        
-        # Ensure directories exist
-        users_dir = self.baseDir / "Database" / "Users"
-        (users_dir / username).mkdir(parents=True, exist_ok=True)
-        
-        return username
+            (users_dir / username).mkdir(parents=True, exist_ok=True)
+            
+            return username
 
     def get_user_db(self, username, email):
         with self._db_lock:
@@ -192,22 +195,23 @@ class SpotifyDashboardApp:
             return self.user_databases[username]
 
     def is_user_logged_in(self, email):
-        if not email:
-            return False
-        if not self.cookiesFile.exists():
-            return False
-        try:
-            cookies_data = json.loads(self.cookiesFile.read_text(encoding="utf-8"))
-            has_cookie = any(c.get("identifier") == email for c in cookies_data)
-            if not has_cookie:
+        with self._session_lock:
+            if not email:
                 return False
-        except Exception:
-            return False
-            
-        username = self.get_username_for_email(email)
-        if username and username in self.user_databases:
-            return self.user_databases[username].isListenerLoggedIn()
-        return True
+            if not self.cookiesFile.exists():
+                return False
+            try:
+                cookies_data = json.loads(self.cookiesFile.read_text(encoding="utf-8"))
+                has_cookie = any(c.get("identifier") == email for c in cookies_data)
+                if not has_cookie:
+                    return False
+            except Exception:
+                return False
+                
+            username = self.get_username_for_email(email)
+            if username and username in self.user_databases:
+                return self.user_databases[username].isListenerLoggedIn()
+            return True
 
     def checkLogin_thread(self):
         self._ensureAllUsersLogin()
@@ -215,16 +219,17 @@ class SpotifyDashboardApp:
         thread.start()
     
     def _ensureAllUsersLogin(self):
-        if self.cookiesFile.exists():
-            try:
-                cookies_data = json.loads(self.cookiesFile.read_text(encoding="utf-8"))
-                for entry in cookies_data:
-                    email = entry.get("identifier")
-                    if email:
-                        username = self.get_or_create_user(email)
-                        self.get_user_db(username, email)
-            except Exception as e:
-                print("Error initializing users:", e)
+        with self._session_lock:
+            if self.cookiesFile.exists():
+                try:
+                    cookies_data = json.loads(self.cookiesFile.read_text(encoding="utf-8"))
+                    for entry in cookies_data:
+                        email = entry.get("identifier")
+                        if email:
+                            username = self.get_or_create_user(email)
+                            self.get_user_db(username, email)
+                except Exception as e:
+                    print("Error initializing users:", e)
     
     def _checkLoginLoop(self):
         while True:
@@ -541,10 +546,11 @@ class SpotifyDashboardApp:
                 if not cookies:
                     return render_template("login.html", step=2, email=email, error="Cookies required.")
 
-                saveSession(parseCookieString(cookies), email, self.cookiesFile)
-                session.permanent = True
-                username = self.get_or_create_user(email)
-                self.get_user_db(username, email)
+                with self._session_lock:
+                    saveSession(parseCookieString(cookies), email, self.cookiesFile)
+                    session.permanent = True
+                    username = self.get_or_create_user(email)
+                    self.get_user_db(username, email)
                 session["email"] = email
                 session["username"] = username
 
