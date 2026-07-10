@@ -51,7 +51,11 @@ class TestServeArtistImageRoute(unittest.TestCase):
         dash.user_databases["alice"] = fakeDb
 
         client = dash.app.test_client()
-        resp = client.get('/img/alice/artists/artist123.jpeg')
+        with patch.object(dash, 'is_user_logged_in', return_value=True), \
+             patch.object(dash, 'get_username_for_email', return_value='alice'):
+            with client.session_transaction() as sess:
+                sess['email'] = 'alice@example.com'
+            resp = client.get('/img/alice/artists/artist123.jpeg')
 
         self.assertEqual(resp.status_code, 200)
         fakeDb.lazyFetchArtistImage.assert_called_once()
@@ -70,7 +74,11 @@ class TestServeArtistImageRoute(unittest.TestCase):
         dash.user_databases["alice"] = fakeDb
 
         client = dash.app.test_client()
-        resp = client.get('/img/alice/artists/artist123.jpeg')
+        with patch.object(dash, 'is_user_logged_in', return_value=True), \
+             patch.object(dash, 'get_username_for_email', return_value='alice'):
+            with client.session_transaction() as sess:
+                sess['email'] = 'alice@example.com'
+            resp = client.get('/img/alice/artists/artist123.jpeg')
 
         self.assertEqual(resp.status_code, 200)
         fakeDb.lazyFetchArtistImage.assert_not_called()
@@ -86,9 +94,34 @@ class TestServeArtistImageRoute(unittest.TestCase):
         dash = self._makeApp()
 
         client = dash.app.test_client()
-        resp = client.get('/img/unknown_user/artists/artist123.jpeg')
+        with patch.object(dash, 'is_user_logged_in', return_value=True), \
+             patch.object(dash, 'get_username_for_email', return_value='unknown_user'):
+            with client.session_transaction() as sess:
+                sess['email'] = 'unknown_user@example.com'
+            resp = client.get('/img/unknown_user/artists/artist123.jpeg')
 
         self.assertEqual(resp.status_code, 200)
+
+    @patch('app.send_from_directory')
+    @patch('app.os.path.exists')
+    def test_denies_lazy_fetch_for_mismatched_session_user(self, mock_path_exists, mock_send):
+        """Authorization must be checked before any lazy-fetch delegation happens."""
+        mock_path_exists.return_value = False
+        mock_send.return_value = "OK"
+
+        dash = self._makeApp()
+        fakeDb = MagicMock()
+        dash.user_databases["bob"] = fakeDb
+
+        client = dash.app.test_client()
+        with patch.object(dash, 'is_user_logged_in', return_value=True), \
+             patch.object(dash, 'get_username_for_email', return_value='alice'):
+            with client.session_transaction() as sess:
+                sess['email'] = 'alice@example.com'
+            resp = client.get('/img/bob/artists/artist123.jpeg')
+
+        self.assertEqual(resp.status_code, 404)
+        fakeDb.lazyFetchArtistImage.assert_not_called()
 
 
 if __name__ == "__main__":
