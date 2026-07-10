@@ -393,48 +393,60 @@ class Database:
     def appendTrackData(self, timestamp, track, timePlayed, context=None):
         self.appendMetadata(Client.formatTrack(track, timestamp, timePlayed, context=context))
 
+    @staticmethod
+    def _entrySortKey(entry):
+        playedAt = entry.get("playedAt", 0)
+        return playedAt if isinstance(playedAt, (int, float)) else convertToDatetime(playedAt).timestamp()
+
     def resortDatabase(self):
         """ In case entries got out of order, this will sort them by playedAt timestamp. """
         entries = self._loadEntries()
-        entries.sort(
-            key=lambda x: x.get("playedAt", 0) if isinstance(x.get("playedAt", 0), (int, float)) else convertToDatetime(x.get("playedAt", 0)).timestamp()
-        )
+        entries.sort(key=self._entrySortKey)
         print("Resorted Database")
 
         self._saveEntries(entries)
 
     def importHistory(self, exportedHistory):
-        entries = self._loadEntries()
-        tracks = self._loadTracks()
         importer = Importer(cookiesFile=self.cookiesFile, email=self.email)
-        
+
         parsedHistory, exportType = importer._convertToList(exportedHistory)
         if not parsedHistory:
             return
-            
+
         total = len(parsedHistory)
         self.writeProgress("running", 0, total, "Starting import")
 
         def progress_callback(status, current, total_steps, message):
             self.writeProgress(status, current, total_steps, message)
 
+        # Imported data is collected locally and only merged into the shared caches
+        # once the whole import has succeeded - a mid-import failure must not leave
+        # half-imported, unsorted entries behind (a later save would persist them,
+        # breaking the sorted-order assumption filterByInterval relies on).
+        importedEntries = []
+        importedTracks = {}
         index = 0
         try:
             for index, meta in enumerate(importer.importHistory(parsedHistory, self._loadTracks().values(), exportType, progress_callback=progress_callback), start=1):  #< We only want the tracks, the importer doesn't care about the keys
                 e, t = self._splitEntryAndTrack(meta)
-                entries.append(e)
-                tracks = self._addTrack(tracks, t)
+                importedEntries.append(e)
+                importedTracks[t["id"]] = t
                 self.saveImagesFromTrack(t)
-                
+
                 if index % 10 == 0 or index == total:
                     self.writeProgress("running", index, total, f"Imported {index} of {total}")
-            
-            # Sort entries in-memory before saving, avoiding redundant read/writes
-            entries.sort(
-                key=lambda x: x.get("playedAt", 0) if isinstance(x.get("playedAt", 0), (int, float)) else convertToDatetime(x.get("playedAt", 0)).timestamp()
-            )
-            self._saveEntries(entries)
-            self._saveTracks(tracks)
+
+            # Merge under the file lock so entries the listener recorded while the
+            # import ran are kept, then sort once and persist.
+            with self.fileLock:
+                entries = self._loadEntries()
+                entries.extend(importedEntries)
+                entries.sort(key=self._entrySortKey)
+                self._saveEntries(entries)
+
+                tracks = self._loadTracks()
+                tracks.update(importedTracks)
+                self._saveTracks(tracks)
             self.writeProgress("complete", total, total, "Import complete")
         except Exception as e:
             self.writeProgress("failed", index, total, f"Import failed: {parseError(e)}", error=True)
