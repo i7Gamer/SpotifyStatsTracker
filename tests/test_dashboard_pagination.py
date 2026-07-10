@@ -19,11 +19,12 @@ class TestDashboardPagination(unittest.TestCase):
     shown - joining full track metadata onto every entry ever recorded on every
     request gets slow once the history grows large."""
 
+    @patch('app.SpotifyDashboardApp._get_or_create_secret_key', return_value='test-secret-key')
     @patch('app.SpotifyDashboardApp.startVersionCheck_thread')
     @patch('app.SpotifyDashboardApp.checkLogin_thread')
     @patch('app.migrateIfNeeded')
     @patch('app.Path.exists')
-    def _makeApp(self, mock_exists, mock_migrate, mock_check, mock_version):
+    def _makeApp(self, mock_exists, mock_migrate, mock_check, mock_version, mock_secret):
         mock_exists.return_value = False
         return SpotifyDashboardApp()
 
