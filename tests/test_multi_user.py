@@ -291,11 +291,14 @@ class TestLoginCookieVerification(unittest.TestCase):
     arbitrary cookies and be handed that user's database (and clobber the real
     user's stored session)."""
 
+    # Keep tests from regenerating the real secrets/flask_secret_key.txt
+    # (the mocked Path.exists below would otherwise force a rewrite).
+    @patch('app.SpotifyDashboardApp._get_or_create_secret_key', return_value='test-secret-key')
     @patch('app.SpotifyDashboardApp.startVersionCheck_thread')
     @patch('app.SpotifyDashboardApp.checkLogin_thread')
     @patch('app.migrateIfNeeded')
     @patch('app.Path.exists')
-    def _makeApp(self, mock_exists, mock_migrate, mock_check, mock_version):
+    def _makeApp(self, mock_exists, mock_migrate, mock_check, mock_version, mock_secret):
         mock_exists.return_value = False
         return SpotifyDashboardApp()
 
