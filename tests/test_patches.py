@@ -2,11 +2,26 @@ import unittest
 from unittest.mock import MagicMock, patch
 import signal
 import threading
+import concurrent.futures
 import websockets.sync.client
 import spotapi.status
 import spotapi.websocket
+import spotapi.public
 
 from Database.patches import patch_spotipy_free
+
+
+def fakeTrackUnion(trackId):
+    """Minimal raw trackUnion shape (spotapi's GraphQL response format) - just
+    enough fields for SpotifyFormatter.formatTrack/formatArtists to succeed."""
+    return {
+        "uri": f"spotify:track:{trackId}",
+        "name": f"Song {trackId}",
+        "duration": {"totalMilliseconds": 200000},
+        "contentRating": {"label": "NONE"},
+        "firstArtist": {"items": []},
+        "otherArtists": {"items": []},
+    }
 
 
 def setUpModule():
@@ -169,6 +184,95 @@ class TestPatches(unittest.TestCase):
         sp_no_email = SpotipyFree.Spotify(cookiesFile="cookies.json")
         sp_no_email.login("cookies.json")
         mock_from_saver.assert_called_with(unittest.mock.ANY, unittest.mock.ANY, "user1@test.com")
+
+    def _newSpotifyInstance(self):
+        import SpotipyFree
+        instance = SpotipyFree.Spotify.__new__(SpotipyFree.Spotify)
+        instance.getIsrc = False
+        return instance
+
+    @patch("spotapi.Song")
+    @patch("spotapi.Public")
+    def test_spotify_track_uses_public_song_info_not_song(self, mock_public, mock_song):
+        """Spotify.track() must fetch metadata via spotapi.Public's locked client
+        pool, not spotapi.Song()'s process-wide shared-default client."""
+        mock_public.song_info.return_value = {"data": {"trackUnion": fakeTrackUnion("abc123")}}
+
+        instance = self._newSpotifyInstance()
+        result = instance.track("abc123")
+
+        mock_public.song_info.assert_called_once_with("abc123")
+        mock_song.assert_not_called()
+        self.assertEqual(result["track_id"], "abc123")
+        self.assertEqual(result["name"], "Song abc123")
+
+    @patch("spotapi.Song")
+    @patch("spotapi.Public")
+    def test_spotify_track_resolves_url_before_lookup(self, mock_public, mock_song):
+        """A Spotify URL/URI passed to track() must be resolved to a bare id
+        before being handed to Public.song_info (unchanged from the original
+        behavior - only the fetch mechanism changed)."""
+        mock_public.song_info.return_value = {"data": {"trackUnion": fakeTrackUnion("xyz789")}}
+
+        instance = self._newSpotifyInstance()
+        instance.track("https://open.spotify.com/track/xyz789")
+
+        mock_public.song_info.assert_called_once_with("xyz789")
+        mock_song.assert_not_called()
+
+    @patch("spotapi.Song")
+    @patch("spotapi.Public")
+    def test_spotify_track_isrc_lookup_still_applied(self, mock_public, mock_song):
+        """getIsrc=True must still attach external_ids.isrc, unchanged from the
+        original method body."""
+        mock_public.song_info.return_value = {"data": {"trackUnion": fakeTrackUnion("iso1")}}
+
+        instance = self._newSpotifyInstance()
+        instance.getIsrc = True
+        instance._getIsrc = MagicMock(return_value="US-ISO-01")
+
+        result = instance.track("iso1")
+
+        instance._getIsrc.assert_called_once_with("iso1")
+        self.assertEqual(result["external_ids"], {"isrc": "US-ISO-01"})
+
+    @patch("spotapi.Song")
+    @patch("spotapi.Public")
+    def test_spotify_track_concurrent_calls_do_not_cross_contaminate(self, mock_public, mock_song):
+        """Regression test for the race this patch fixes: the original
+        implementation shared one spotapi.Song() client across every thread, so
+        concurrent track() calls (as the importer's ThreadPoolExecutor pre-fetch
+        issues) could authenticate/return data for the wrong track. With the
+        patch, each call must still resolve to exactly the track it asked for,
+        and the unsafe spotapi.Song() path must never be touched."""
+        mock_public.song_info.side_effect = lambda trackId: {
+            "data": {"trackUnion": fakeTrackUnion(trackId)}
+        }
+
+        instance = self._newSpotifyInstance()
+        trackIds = [f"track{i}" for i in range(50)]
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+            results = list(executor.map(instance.track, trackIds))
+
+        for trackId, result in zip(trackIds, results):
+            self.assertEqual(result["track_id"], trackId)
+        mock_song.assert_not_called()
+
+    def test_public_song_info_uses_locked_pool_not_shared_default(self):
+        """Sanity check on the dependency itself: spotapi.public.Pooler (what
+        spotapi.Public.song_info checks clients out of) must hand out distinct
+        objects until one is returned, rather than one shared instance. If a
+        future spotapi upgrade changes this, the thread-safety assumption behind
+        the patch above no longer holds and this test should fail to flag it."""
+        pool = spotapi.public.Pooler(factory=object)
+        first = pool.get()
+        second = pool.get()
+        self.assertIsNot(first, second)
+
+        pool.put(first)
+        third = pool.get()
+        self.assertIs(third, first)
 
 
 if __name__ == "__main__":

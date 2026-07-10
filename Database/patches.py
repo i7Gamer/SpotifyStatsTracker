@@ -90,6 +90,8 @@ import sys
 def patch_spotipy_free() -> bool:
     """Patch SpotipyFree.Spotify to store email on initialization and use it during
     login, instead of always hardcoding the first session in the cookies file.
+    Also patches Spotify.track() to fetch metadata through spotapi.Public's locked
+    client pool instead of spotapi.Song()'s process-wide shared default client.
 
     This is called automatically below at import time, but it's also exposed as a
     plain function (rather than only running once as module-level code) so callers
@@ -154,6 +156,40 @@ def patch_spotipy_free() -> bool:
             return True
 
         SpotipyFree.Spotify.login = patched_spotify_login
+
+        # spotapi.Song() (used by the original Spotify.track()) defaults its
+        # `client` argument to a single TLSClient instance shared by every Song
+        # created in the process (spotapi/song.py's `client: TLSClient =
+        # TLSClient(...)` default is evaluated once, at import time). Every
+        # spotapi.Song() construction re-points that shared client's
+        # `.authenticate`/`.on_auth_failure` callbacks at itself, so when
+        # multiple threads call Spotify.track() concurrently (as the importer's
+        # metadata pre-fetch does), an in-flight request from one thread can get
+        # authenticated using another thread's auth state, causing intermittent
+        # wrong/failed track lookups. spotapi.Public already avoids this for
+        # search/album/playlist lookups by checking a TLSClient out of a
+        # lock-protected pool per call; route track-by-id lookups through the
+        # same pool (spotapi.Public.song_info) instead of spotapi.Song()
+        # directly, keeping the rest of the method's behavior unchanged.
+        from SpotipyFree.Formatter import SpotifyFormatter
+
+        def patched_spotify_track(self, trackId, *args, **kwargs):
+            if self.isUrl(trackId):
+                trackId = self.urlToId(trackId)
+
+            track = spotapi.Public.song_info(trackId)["data"]["trackUnion"]
+            try:
+                artists = track["firstArtist"]["items"]
+                artists.extend(track["otherArtists"]["items"])
+            except Exception:
+                artists = ["Not Found"]
+            formattedArtists = SpotifyFormatter.formatArtists(artists)
+            track = SpotifyFormatter.formatTrack(track, formattedArtists)
+            if self.getIsrc:
+                track["external_ids"] = {"isrc": self._getIsrc(track["track_id"])}
+            return track
+
+        SpotipyFree.Spotify.track = patched_spotify_track
         return True
     except (ModuleNotFoundError, ImportError):
         return False
