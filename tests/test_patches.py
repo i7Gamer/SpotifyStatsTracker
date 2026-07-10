@@ -5,6 +5,18 @@ import websockets.sync.client
 import spotapi.status
 import spotapi.websocket
 
+from Database.patches import patch_spotipy_free
+
+
+def setUpModule():
+    # Database.patches applies its SpotipyFree patch once, at whatever moment
+    # Database (the package) first gets imported. If that happened to be while
+    # another test module's sys.modules["SpotipyFree"] mock was still in place
+    # (unittest discover imports every test module before running any tests), the
+    # real SpotipyFree.Spotify would never get patched for the rest of the process.
+    # Re-applying here makes this module correct regardless of import order.
+    patch_spotipy_free()
+
 
 class TestPatches(unittest.TestCase):
     """Verify that monkey-patches are correctly applied to websockets and spotapi."""

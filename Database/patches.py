@@ -68,19 +68,32 @@ spotapi.status.PlayerStatus.reconnect = player_status_reconnect
 import json
 import sys
 
-# Check if SpotipyFree is already imported and is a mock
-is_mocked = False
-if "SpotipyFree" in sys.modules:
-    sf = sys.modules["SpotipyFree"]
-    if sf.__class__.__name__ in ("MagicMock", "Mock"):
-        is_mocked = True
 
-if not is_mocked:
+def patch_spotipy_free() -> bool:
+    """Patch SpotipyFree.Spotify to store email on initialization and use it during
+    login, instead of always hardcoding the first session in the cookies file.
+
+    This is called automatically below at import time, but it's also exposed as a
+    plain function (rather than only running once as module-level code) so callers
+    can re-invoke it deliberately - e.g. a test module that needs the real
+    SpotipyFree.Spotify patched can call this itself instead of depending on which
+    other test module happened to import Database.patches first. Module-level code
+    only ever runs once per process, so if it first ran while some other test's
+    sys.modules["SpotipyFree"] mock was still in place, the real module would never
+    get patched for the rest of the process without a way to retry.
+
+    Returns True if the patch was applied, False if SpotipyFree is currently mocked
+    or not installed.
+    """
+    # Skip if SpotipyFree is currently a mock rather than the real module.
+    if "SpotipyFree" in sys.modules:
+        sf = sys.modules["SpotipyFree"]
+        if sf.__class__.__name__ in ("MagicMock", "Mock"):
+            return False
+
     try:
         import SpotipyFree
 
-        # 3. Patch SpotipyFree.Spotify to store email on initialization and use it during login,
-        # instead of always hardcoding the first session in the cookies file.
         original_spotify_init = SpotipyFree.Spotify.__init__
 
         def patched_spotify_init(self, *args, **kwargs):
@@ -102,14 +115,14 @@ if not is_mocked:
                 try:
                     with open(cookiesFile, "r") as f:
                         sessions = json.load(f)
-                    
+
                     identifier = None
                     if hasattr(self, "email") and self.email:
                         for s in sessions:
                             if s.get("identifier") == self.email:
                                 identifier = s["identifier"]
                                 break
-                    
+
                     if not identifier and sessions:
                         identifier = sessions[0]["identifier"]
                 except Exception as e:
@@ -123,7 +136,11 @@ if not is_mocked:
             return True
 
         SpotipyFree.Spotify.login = patched_spotify_login
+        return True
     except (ModuleNotFoundError, ImportError):
-        pass
+        return False
+
+
+patch_spotipy_free()
 
 
