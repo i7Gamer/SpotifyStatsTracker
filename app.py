@@ -17,7 +17,8 @@ from Database.utils import msToString, convertToDatetime, formatDuration, dateTo
 import SpotipyFree
 from SpotipyFree import saveSession, parseCookieString
 
-PAGE_SIZE = 50   #< list items shown per page
+PAGE_SIZE = 50                  #< list items shown per page
+LOGIN_CACHE_TTL_SECONDS = 180  #< seconds to cache isListenerLoggedIn result per user
 
 class SpotifyDashboardApp:
     def __init__(self):
@@ -32,6 +33,7 @@ class SpotifyDashboardApp:
         self._db_lock = threading.RLock()
         self._session_lock = threading.RLock()
         self._migration_lock = threading.RLock()
+        self._login_cache: dict = {}  #< {email: (result: bool, expires_at: float)}
         
         try:
             self.currentVersion = (self.baseDir / "Database" / "VERSION").read_text(encoding="utf-8").strip()  #< only needs to be checked once because app cant update without restart
@@ -253,8 +255,16 @@ class SpotifyDashboardApp:
         # isListenerLoggedIn() can make a live network call to Spotify - done outside
         # the lock so a slow/hanging check for one user can't block every other
         # user's session lookups (this runs on nearly every authenticated request).
+        # The result is cached per user for LOGIN_CACHE_TTL_SECONDS to avoid a round-
+        # trip on every request (the main cause of Waitress queue saturation).
         if username and username in self.user_databases:
-            return self.user_databases[username].isListenerLoggedIn()
+            now_ts = time.monotonic()
+            cached = self._login_cache.get(email)
+            if cached is not None and cached[1] > now_ts:
+                return cached[0]
+            result = self.user_databases[username].isListenerLoggedIn()
+            self._login_cache[email] = (result, now_ts + LOGIN_CACHE_TTL_SECONDS)
+            return result
         return True
 
     def checkLogin_thread(self):

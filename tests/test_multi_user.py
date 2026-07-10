@@ -217,7 +217,9 @@ class TestSessionLockScope(unittest.TestCase):
         app._db_lock = threading.RLock()
         app._session_lock = threading.RLock()
         app._migration_lock = threading.RLock()
+        app._login_cache = {}
         return app
+
 
     def test_slow_listener_check_does_not_block_unrelated_session_lookups(self):
         import json
