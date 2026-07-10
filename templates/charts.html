@@ -42,26 +42,28 @@
   </form>
 
   <section class="card chart-card">
-    <h2>Listening Time &middot; {{ intervalLabel }}</h2>
-    <div class="chart-canvas-wrap">
-      <canvas id="timeSeriesChart"></canvas>
+    <div class="chart-section">
+      <h2>Listening Time &middot; {{ intervalLabel }}</h2>
+      <div class="chart-canvas-wrap">
+        <canvas id="timeSeriesChart"></canvas>
+      </div>
     </div>
-  </section>
 
-  <section class="card chart-card">
-    <h2>When You Listen</h2>
-    <p class="chart-subtitle">Total listening time by day of week and hour of day.</p>
-    <div class="chart-canvas-wrap heatmap-wrap">
-      <canvas id="heatmapChart"></canvas>
+    <div class="chart-section">
+      <h2>When You Listen</h2>
+      <p class="chart-subtitle">Total listening time by day of week and hour of day.</p>
+      <div class="chart-canvas-wrap heatmap-wrap">
+        <canvas id="heatmapChart"></canvas>
+      </div>
     </div>
-  </section>
 
-  <section class="card chart-card">
-    <h2>Top Artists Over Time</h2>
-    <div class="chart-canvas-wrap">
-      <canvas id="artistTrendChart"></canvas>
+    <div class="chart-section">
+      <h2>Top Artists Over Time</h2>
+      <div class="chart-canvas-wrap">
+        <canvas id="artistTrendChart"></canvas>
+      </div>
+      <div id="artistTrendLegend" class="chart-legend"></div>
     </div>
-    <div id="artistTrendLegend" class="chart-legend"></div>
   </section>
 
   <script>
