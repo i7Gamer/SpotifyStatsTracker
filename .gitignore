@@ -12,6 +12,11 @@ instance/
 Streaming*.json
 secrets.json
 cookies*.json
-Database/Users/*/img/tracks/*
-Database/Users/*/img/artists/*
+flask_secret_key.txt
+
+# Runtime user data - listening history, session cookies and the email->username
+# map are personal data and must never be committed.
+secrets/
+Database/Users/
+autoImport/
 tmp/

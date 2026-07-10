@@ -2,6 +2,7 @@ from __future__ import annotations
 import datetime
 import copy
 import os
+import re
 import threading
 import json
 from pathlib import Path
@@ -25,8 +26,12 @@ except ModuleNotFoundError:
     from utils import parseError, convertToDatetime
 
 class Database:
-    def __init__(self, user: str = "Tzur"):
+    def __init__(self, user: str, cookiesFile: str | None = None, email: str | None = None):
+        if not user:
+            raise ValueError("Database user must be specified and cannot be empty.")
         self.user = user
+        self.cookiesFile = cookiesFile
+        self.email = email
         self.listener = None
         self.baseDir = Path(__file__).resolve().parent
 
@@ -36,7 +41,7 @@ class Database:
         self.tracksPath = self.baseDir / "Users" / self.user / "tracks.json"
         self.playlistsPath = self.baseDir / "Users" / self.user / "playlists.json"
         self.progressPath = self.baseDir / "Users" / self.user / "progress.json"
-        self.autoImportFolderPath = self.baseDir / ".." / "autoImport"
+        self.autoImportFolderPath = self.baseDir / ".." / "autoImport" / self.user
 
         self.fileLock = threading.RLock()
         self.entriesCache = None
@@ -46,6 +51,7 @@ class Database:
         self._imageIdsLock = threading.RLock()
         self._downloadedTrackImages = None
         self._downloadedArtistImages = None
+        self._artistImageLazyFetchAttempted = set()
         self._imageDownloadExecutor = concurrent.futures.ThreadPoolExecutor(max_workers=5)
 
         filterKeyword = os.environ.get("IMPORT_KEYWORD", None)
@@ -85,7 +91,13 @@ class Database:
             timestamp = item.get("played_at")
             msPlayed = item.get("ms_played", 0)
             if track:
-                self.appendTrackData(timestamp, track, msPlayed, context=item.get("context", None))
+                # Per-item isolation: if the callback raised, the listener would
+                # retry the whole batch forever and record nothing new until the
+                # bad item aged out of the recently-played feed.
+                try:
+                    self.appendTrackData(timestamp, track, msPlayed, context=item.get("context", None))
+                except Exception as e:
+                    print(f"Error adding track from listener: {parseError(e)}")
 
     def _loadEntries(self) -> list:
         """Load ONLY id and info about time played from the JSON file."""
@@ -228,14 +240,16 @@ class Database:
         """ Return the latest `count` entries from history, sorted from newest to oldest. If count is None, return all entries. """
         entries = self._loadEntries()
         startPos = len(entries) - startIndex   #< Everything is reversed
-        
-        if count is not None:
-            endPos = startPos - count
-            endPos = None if endPos <= 0 else endPos
+
+        if startPos <= 0:                      #< startIndex at/past the oldest entry - nothing left (guards against negative-index wraparound)
+            slicedEntries = []
+        elif count is not None:
+            endPos = startPos - count - 1      #< stop is exclusive when stepping backwards
+            endPos = None if endPos < 0 else endPos
             slicedEntries = entries[startPos - 1 : endPos : -1]   #< slice and reverse
         else:
             slicedEntries = entries[startPos - 1 : : -1]          #< slice and reverse
-        
+
         if fullPagination:
             return self._paginateEntries(slicedEntries)
         return slicedEntries
@@ -290,9 +304,11 @@ class Database:
             response = requests.get(url, timeout=10)
             response.raise_for_status()
             img = Image.open(BytesIO(response.content))
-            ext = img.format.lower() if img.format else "jpeg"
-            
-            img.save(path / f"{imgId}.{ext}")
+            # Always store as JPEG: the templates hardcode `<imgId>.jpeg`, so an
+            # image saved under its source format (e.g. .png) would 404 forever.
+            if img.mode not in ("RGB", "L"):
+                img = img.convert("RGB")   #< JPEG can't store alpha/palette modes
+            img.save(path / f"{imgId}.jpeg", format="JPEG")
             
             with self._imageIdsLock:
                 # Add to set and persist. Pre-adding handles immediate concurrent lookups, 
@@ -308,6 +324,8 @@ class Database:
                 print(f"Error saving image: {parseError(e)}")
 
     def _saveImg(self, path: Path, url: str, imgId: str, isTrack: bool):
+        if not url:
+            return  #< Spotify occasionally returns tracks with no album images; skip silently
         metadataPath = path / "metadata.json"
         
         with self._imageIdsLock:
@@ -335,11 +353,40 @@ class Database:
 
     def saveArtistImg(self, url: str, imgId: str):
         self._saveImg(self.imgDir_artists, url, imgId, isTrack=False)
-    
+
+    def lazyFetchArtistImage(self, artistId: str, imagePath: Path) -> bool:
+        """Best-effort synchronous fetch of an artist's image scraped from their public
+        Spotify page, used as a fallback for artists we never received image metadata
+        for from the API. Deduplicated per artist id (via the same lock used by the
+        rest of the image pipeline) so repeated requests for a still-missing image
+        don't keep re-hitting Spotify. Returns True if the image exists on disk after
+        this call, whether freshly fetched or already cached.
+        """
+        if imagePath.exists():
+            return True
+        if not artistId:
+            return False
+
+        with self._imageIdsLock:
+            if artistId in self._artistImageLazyFetchAttempted:
+                return imagePath.exists()
+            self._artistImageLazyFetchAttempted.add(artistId)
+
+        try:
+            res = requests.get(f"https://open.spotify.com/artist/{artistId}", timeout=5)
+            match = re.search(r'<meta property="og:image" content="([^"]+)"', res.text)
+            if not match:
+                return False
+            imgData = requests.get(match.group(1), timeout=5).content
+            imagePath.parent.mkdir(parents=True, exist_ok=True)
+            imagePath.write_bytes(imgData)
+            return True
+        except Exception as e:
+            print(f"Failed to lazy load artist image for {artistId}: {parseError(e)}")
+            return False
+
     def saveImagesFromTrack(self, track: dict):
         self.saveTrackImg(track["imageUrl"], track["imageId"])
-        for artist in track["artists"]:
-            self.saveArtistImg(artist["imageUrl"], artist["imageId"])
 
     def appendMetadata(self, meta: dict) -> None:
         self.saveImagesFromTrack(meta)
@@ -351,48 +398,60 @@ class Database:
     def appendTrackData(self, timestamp, track, timePlayed, context=None):
         self.appendMetadata(Client.formatTrack(track, timestamp, timePlayed, context=context))
 
+    @staticmethod
+    def _entrySortKey(entry):
+        playedAt = entry.get("playedAt", 0)
+        return playedAt if isinstance(playedAt, (int, float)) else convertToDatetime(playedAt).timestamp()
+
     def resortDatabase(self):
         """ In case entries got out of order, this will sort them by playedAt timestamp. """
         entries = self._loadEntries()
-        entries.sort(
-            key=lambda x: x.get("playedAt", 0) if isinstance(x.get("playedAt", 0), (int, float)) else convertToDatetime(x.get("playedAt", 0)).timestamp()
-        )
+        entries.sort(key=self._entrySortKey)
         print("Resorted Database")
 
         self._saveEntries(entries)
 
     def importHistory(self, exportedHistory):
-        entries = self._loadEntries()
-        tracks = self._loadTracks()
-        importer = Importer()
-        
+        importer = Importer(cookiesFile=self.cookiesFile, email=self.email)
+
         parsedHistory, exportType = importer._convertToList(exportedHistory)
         if not parsedHistory:
             return
-            
+
         total = len(parsedHistory)
         self.writeProgress("running", 0, total, "Starting import")
 
         def progressCallback(status, current, totalSteps, message):
             self.writeProgress(status, current, totalSteps, message)
 
+        # Imported data is collected locally and only merged into the shared caches
+        # once the whole import has succeeded - a mid-import failure must not leave
+        # half-imported, unsorted entries behind (a later save would persist them,
+        # breaking the sorted-order assumption filterByInterval relies on).
+        importedEntries = []
+        importedTracks = {}
         index = 0
         try:
             for index, meta in enumerate(importer.importHistory(parsedHistory, self._loadTracks().values(), exportType, progressCallback=progressCallback), start=1):  #< We only want the tracks, the importer doesn't care about the keys
                 e, t = self._splitEntryAndTrack(meta)
-                entries.append(e)
-                tracks = self._addTrack(tracks, t)
+                importedEntries.append(e)
+                importedTracks[t["id"]] = t
                 self.saveImagesFromTrack(t)
-                
+
                 if index % 10 == 0 or index == total:
                     self.writeProgress("running", index, total, f"Imported {index} of {total}")
-            
-            # Sort entries in-memory before saving, avoiding redundant read/writes
-            entries.sort(
-                key=lambda x: x.get("playedAt", 0) if isinstance(x.get("playedAt", 0), (int, float)) else convertToDatetime(x.get("playedAt", 0)).timestamp()
-            )
-            self._saveEntries(entries)
-            self._saveTracks(tracks)
+
+            # Merge under the file lock so entries the listener recorded while the
+            # import ran are kept, then sort once and persist.
+            with self.fileLock:
+                entries = self._loadEntries()
+                entries.extend(importedEntries)
+                entries.sort(key=self._entrySortKey)
+                self._saveEntries(entries)
+
+                tracks = self._loadTracks()
+                tracks.update(importedTracks)
+                self._saveTracks(tracks)
             self.writeProgress("complete", total, total, "Import complete")
         except Exception as e:
             self.writeProgress("failed", index, total, f"Import failed: {parseError(e)}", error=True)
@@ -456,7 +515,11 @@ class Database:
             for artist in artists:
                 artistName = artist["name"]
                 if artistName not in artistsStats:
-                    artistsStats[artistName] = artist
+                    # Copy rather than alias: `artist` is the same dict object cached
+                    # inside self.tracksCache (via _paginateEntry's shallow copy), so
+                    # writing stats fields directly onto it would leak them into the
+                    # persisted tracks.json schema the next time tracks get saved.
+                    artistsStats[artistName] = artist.copy()
                     artistsStats[artistName]["plays"] = 0
                     artistsStats[artistName]["totalTimeListened"] = 0
                     artistsStats[artistName]["uniqueSongs"] = set()
@@ -539,8 +602,12 @@ class Database:
         compKeys = (by, "totalTimeListened", "name")
         return self._sortTopStats(artists, compKeys, by)
 
-    def startListener(self, cookiesFile):
-        self.listener = Listener(cookiesFile)
+    def startListener(self, cookiesFile, email=None):
+        if cookiesFile:
+            self.cookiesFile = cookiesFile
+        if email:
+            self.email = email
+        self.listener = Listener(self.cookiesFile, email=self.email)
         self.listener.startListener_thread(callback=self._addToDatabaseFromListener)
 
     def startAutoImporter(self):

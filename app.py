@@ -1,29 +1,40 @@
 import os
 import json
+import secrets
+import tempfile
 import threading
 import requests
 from pathlib import Path
 import time
 from datetime import timedelta
 
-from flask import Flask, render_template, redirect, request, url_for, jsonify, send_from_directory
+from flask import Flask, render_template, redirect, request, url_for, jsonify, send_from_directory, session, g
 
 from Database.database import Database
 from Database.Migrators.migrate import migrateIfNeeded
+from Database.Listeners.spotifyListener import _suppress_signal_in_thread
 from Database.utils import msToString, convertToDatetime, formatDuration, dateToString, versionTuple, now, startOfDay, parseDateString
+import SpotipyFree
 from SpotipyFree import saveSession, parseCookieString
+
+PAGE_SIZE = 50                  #< list items shown per page
+LOGIN_CACHE_TTL_SECONDS = 180  #< seconds to cache isListenerLoggedIn result per user
 
 class SpotifyDashboardApp:
     def __init__(self):
         migrateIfNeeded()
         self.app = Flask(__name__)
         self.baseDir = Path(__file__).resolve().parent
-        self.isLoggedIn = False
-        self.username = "Tzur"
+        self.app.secret_key = self._get_or_create_secret_key()
+        self.app.permanent_session_lifetime = timedelta(days=30)
         self.cookiesFile = self.baseDir / "secrets" / "cookies.json"
-        self.database = Database(user=self.username)
-        self.database.startAutoImporter()
-        self.database.resetProgress()
+        
+        self.user_databases = {}
+        self._db_lock = threading.RLock()
+        self._session_lock = threading.RLock()
+        self._migration_lock = threading.RLock()
+        self._login_cache: dict = {}  #< {email: (result: bool, expires_at: float)}
+        
         try:
             self.currentVersion = (self.baseDir / "Database" / "VERSION").read_text(encoding="utf-8").strip()  #< only needs to be checked once because app cant update without restart
         except Exception:
@@ -35,33 +46,257 @@ class SpotifyDashboardApp:
 
         self.registerRoutes()
 
-    def startListenerIfNeeded(self):
-        if self.database.listener is None:
-            self.database.startListener(str(self.cookiesFile))
-            print("Started listener thread.")
-            time.sleep(2)  # Give listener time to initialize
-    
+    def _get_or_create_secret_key(self):
+        """Resolve the Flask session-signing key. Prefers FLASK_SECRET_KEY, otherwise
+        persists a random key under secrets/ so sessions can't be forged using the
+        publicly-known default that used to ship in this repo."""
+        envKey = os.environ.get("FLASK_SECRET_KEY")
+        if envKey:
+            return envKey
+
+        keyFile = self.baseDir / "secrets" / "flask_secret_key.txt"
+        if keyFile.exists():
+            existingKey = keyFile.read_text(encoding="utf-8").strip()
+            if existingKey:
+                return existingKey
+
+        newKey = secrets.token_hex(32)
+        keyFile.parent.mkdir(parents=True, exist_ok=True)
+        keyFile.write_text(newKey, encoding="utf-8")
+        return newKey
+
+    def get_username_for_email(self, email):
+        with self._session_lock:
+            map_file = self.baseDir / "secrets" / "users_map.json"
+            if map_file.exists():
+                try:
+                    users_map = json.loads(map_file.read_text(encoding="utf-8"))
+                    if email in users_map:
+                        return users_map[email]
+                except Exception:
+                    pass
+            
+            return None
+
+    def _migrate_legacy_database_if_needed(self, username):
+        import shutil
+        users_dir = self.baseDir / "Database" / "Users"
+        target_dir = users_dir / username
+        
+        # If target already contains data (entries.json exists and is not empty), no migration is needed
+        target_entries = target_dir / "entries.json"
+        if target_entries.exists() and target_entries.stat().st_size > 2:
+            return
+            
+        # Possible legacy source directories:
+        # 1. Database/Users/Tzur (from early multi-user version)
+        # 2. Database/Tzur (legacy single-user version)
+        # 3. Database (legacy single-user version directly in Database folder)
+        legacy_sources = [
+            users_dir / "Tzur",
+            self.baseDir / "Database" / "Tzur",
+            self.baseDir / "Database"
+        ]
+        
+        for src in legacy_sources:
+            if src.exists() and src.resolve() != target_dir.resolve() and src.resolve() != users_dir.resolve():
+                src_entries = src / "entries.json"
+                # Check if this source directory actually has database entries
+                if src_entries.exists() and src_entries.stat().st_size > 2:
+                    print(f"Migrating legacy database from {src} to {target_dir}...")
+                    
+                    # Create target directory
+                    target_dir.mkdir(parents=True, exist_ok=True)
+                    
+                    try:
+                        if src.resolve() == (self.baseDir / "Database").resolve():
+                            # Only migrate individual database files to avoid recursive copying of Database/Users
+                            db_files = ["entries.json", "tracks.json", "playlists.json", "progress.json"]
+                            for file_name in db_files:
+                                file_path = src / file_name
+                                if file_path.exists():
+                                    shutil.copy2(file_path, target_dir / file_name)
+                                    file_path.unlink()
+                            
+                            # Copy image directories if they exist
+                            for img_type in ["tracks", "artists"]:
+                                img_src = src / "img" / img_type
+                                if img_src.exists():
+                                    img_dst = target_dir / "img" / img_type
+                                    img_dst.mkdir(parents=True, exist_ok=True)
+                                    for item in img_src.iterdir():
+                                        if item.is_file():
+                                            shutil.copy2(item, img_dst / item.name)
+                            
+                            # Clean up legacy img folders if they are empty
+                            legacy_img = src / "img"
+                            if legacy_img.exists():
+                                try:
+                                    shutil.rmtree(legacy_img)
+                                except Exception:
+                                    pass
+                        else:
+                            # Copy all contents recursively
+                            def copy_recursive(src_path, dst_path):
+                                dst_path.mkdir(parents=True, exist_ok=True)
+                                for item in src_path.iterdir():
+                                    target_item = dst_path / item.name
+                                    if item.is_dir():
+                                        copy_recursive(item, target_item)
+                                    else:
+                                        shutil.copy2(item, target_item)
+                            copy_recursive(src, target_dir)
+                            # Remove the old directory to keep files clean and avoid re-migration
+                            shutil.rmtree(src)
+                        print(f"Successfully migrated and cleaned up legacy folder: {src}")
+                    except Exception as e:
+                        print(f"Error migrating legacy database: {e}")
+                    break
+
+    def get_or_create_user(self, email):
+        with self._session_lock:
+            username = self.get_username_for_email(email)
+            if not username:
+                # Create a new username from email prefix
+                prefix = email.split("@")[0]
+                sanitized = "".join(c for c in prefix if c.isalnum() or c in ("-", "_")).strip()
+                if not sanitized:
+                    sanitized = f"user_{int(time.time())}"
+
+                # Ensure uniqueness under Database/Users/
+                username = sanitized
+                counter = 1
+                users_dir = self.baseDir / "Database" / "Users"
+                while (users_dir / username).exists() or username in self.user_databases:
+                    username = f"{sanitized}_{counter}"
+                    counter += 1
+
+                # Save to mapping
+                map_file = self.baseDir / "secrets" / "users_map.json"
+                users_map = {}
+                if map_file.exists():
+                    try:
+                        users_map = json.loads(map_file.read_text(encoding="utf-8"))
+                    except Exception:
+                        pass
+                users_map[email] = username
+                map_file.parent.mkdir(parents=True, exist_ok=True)
+                map_file.write_text(json.dumps(users_map, indent=4), encoding="utf-8")
+
+        # Legacy-folder migration (file copies) and directory creation only touch
+        # this user's own directory, not the shared session/mapping files, so they
+        # don't need the global session lock - and its I/O shouldn't block other
+        # users' session lookups while it runs. They still need their own lock
+        # though: the legacy sources are fixed, shared paths (e.g. Database/Tzur),
+        # so two different brand-new users logging in around the same time could
+        # otherwise both race to migrate the same source into their own directory.
+        with self._migration_lock:
+            self._migrate_legacy_database_if_needed(username)
+        users_dir = self.baseDir / "Database" / "Users"
+        (users_dir / username).mkdir(parents=True, exist_ok=True)
+
+        return username
+
+    def _verifyCookiesMatchEmail(self, cookies: dict, email: str) -> bool:
+        """Check that the submitted Spotify cookies actually belong to `email` by
+        fetching the account profile with them. The cookies are written to a
+        throwaway session file so an unverified login attempt can never overwrite
+        another user's stored cookies. Without this check, anyone could claim any
+        email at login and be handed that user's database."""
+        if not cookies or not email:
+            return False
+
+        tmpFd, tmpPath = tempfile.mkstemp(prefix="verify_cookies_", suffix=".json")
+        os.close(tmpFd)
+        try:
+            saveSession(cookies, email, tmpPath)
+            with _suppress_signal_in_thread():
+                sp = SpotipyFree.Spotify(cookiesFile=tmpPath, email=email)
+            if not sp.isLoggedIn():
+                return False
+            profile = sp.current_user() or {}
+            profileEmail = (profile.get("email") or "").strip().lower()
+            return profileEmail == email.strip().lower()
+        except Exception as e:
+            print(f"Cookie verification failed for {email}: {e}")
+            return False
+        finally:
+            try:
+                os.unlink(tmpPath)
+            except OSError:
+                pass
+
+    def get_user_db(self, username, email):
+        with self._db_lock:
+            if username not in self.user_databases:
+                db = Database(user=username, cookiesFile=str(self.cookiesFile), email=email)
+                db.startAutoImporter()
+                db.resetProgress()
+                db.startListener(str(self.cookiesFile), email=email)
+                self.user_databases[username] = db
+            return self.user_databases[username]
+
+    def is_user_logged_in(self, email):
+        if not email:
+            return False
+
+        with self._session_lock:
+            if not self.cookiesFile.exists():
+                return False
+            try:
+                cookies_data = json.loads(self.cookiesFile.read_text(encoding="utf-8"))
+                has_cookie = any(c.get("identifier") == email for c in cookies_data)
+            except Exception:
+                return False
+            if not has_cookie:
+                return False
+            username = self.get_username_for_email(email)
+
+        # isListenerLoggedIn() can make a live network call to Spotify - done outside
+        # the lock so a slow/hanging check for one user can't block every other
+        # user's session lookups (this runs on nearly every authenticated request).
+        # The result is cached per user for LOGIN_CACHE_TTL_SECONDS to avoid a round-
+        # trip on every request (the main cause of Waitress queue saturation).
+        if username and username in self.user_databases:
+            now_ts = time.monotonic()
+            cached = self._login_cache.get(email)
+            if cached is not None and cached[1] > now_ts:
+                return cached[0]
+            result = self.user_databases[username].isListenerLoggedIn()
+            self._login_cache[email] = (result, now_ts + LOGIN_CACHE_TTL_SECONDS)
+            return result
+        return True
+
     def checkLogin_thread(self):
-        self._ensureLogin()
+        self._ensureAllUsersLogin()
         thread = threading.Thread(target=self._checkLoginLoop, daemon=True)
         thread.start()
     
-    def _ensureLogin(self):
-        if self.cookiesFile.exists():
+    def _ensureAllUsersLogin(self):
+        with self._session_lock:
+            if not self.cookiesFile.exists():
+                return
             try:
-                json.loads(self.cookiesFile.read_text(encoding="utf-8"))
-                self.startListenerIfNeeded()
-                if self.database.isListenerLoggedIn():
-                    self.isLoggedIn = True
+                cookies_data = json.loads(self.cookiesFile.read_text(encoding="utf-8"))
             except Exception as e:
-                print(e)
-                self.isLoggedIn = False
-        else:
-            self.isLoggedIn = False
+                print("Error initializing users:", e)
+                return
+
+        # get_or_create_user/get_user_db can migrate legacy folders and start a
+        # listener (a live network call) per user - done outside the session lock
+        # so initializing one user doesn't block every other user's requests.
+        try:
+            for entry in cookies_data:
+                email = entry.get("identifier")
+                if email:
+                    username = self.get_or_create_user(email)
+                    self.get_user_db(username, email)
+        except Exception as e:
+            print("Error initializing users:", e)
     
     def _checkLoginLoop(self):
         while True:
-            self._ensureLogin()
+            self._ensureAllUsersLogin()
             time.sleep(60 * 5)  # Check every 5 minutes
 
     def startVersionCheck_thread(self):
@@ -108,7 +343,9 @@ class SpotifyDashboardApp:
 
         song["contextName"] = None
         if "playedFrom" in song:
-            song["contextName"] = self.database.playlistName(song["playedFrom"])
+            db = g.get("db", None)
+            if db:
+                song["contextName"] = db.playlistName(song["playedFrom"])
 
         artistsText = ", ".join(a.get("name", "") for a in song["artists"])
         releaseDateText = dateToString(song["album"]["releaseDate"])
@@ -171,7 +408,9 @@ class SpotifyDashboardApp:
         playedFrom = item.get("playedFrom")
         if playedFrom:
             try:
-                parts.append(self.database.playlistName(playedFrom))
+                db = g.get("db", None)
+                if db:
+                    parts.append(db.playlistName(playedFrom))
             except:
                 pass
 
@@ -208,7 +447,14 @@ class SpotifyDashboardApp:
         cssClass = "change-positive" if change > 0 else "change-negative"
         return formatted, cssClass
 
-    def getPage(self, items, page, pageSize=50):
+    def _getPageParam(self):
+        """The current request's ?page=... as an int >= 1, tolerating junk input."""
+        try:
+            return max(1, int(request.args.get("page", 1) or 1))
+        except (TypeError, ValueError):
+            return 1
+
+    def getPage(self, items, page, pageSize=PAGE_SIZE):
         """ Gets items in page as well as other data including total pages and start index """
         page = max(1, page)
         total = len(items)
@@ -285,33 +531,77 @@ class SpotifyDashboardApp:
             except Exception:
                 return False
 
+        def get_current_user_or_redirect():
+            email = session.get("email")
+            if not email or not self.is_user_logged_in(email):
+                return None, None, None
+            
+            # Ensure the username matches the correct email mapping to prevent session pollution from legacy user "Tzur"
+            correct_username = self.get_username_for_email(email)
+            if not correct_username:
+                correct_username = self.get_or_create_user(email)
+            
+            if session.get("username") != correct_username:
+                session["username"] = correct_username
+
+            username = correct_username
+            db = self.get_user_db(username, email)
+            g.db = db
+            return email, username, db
+
+        def _authorized_image_username():
+            """Returns the username the current session is allowed to view images for, or None."""
+            email = session.get("email")
+            if not email or not self.is_user_logged_in(email):
+                return None
+            return self.get_username_for_email(email)
+
         @self.app.route('/img/<username>/tracks/<filename>')
         def serveTrackImage(username, filename):
+            if username != _authorized_image_username() or filename != os.path.basename(filename):
+                return "", 404
             imageDir = os.path.join(self.baseDir, "Database", "Users", username, "img", "tracks")
             return send_from_directory(imageDir, filename)
 
         @self.app.route('/img/<username>/artists/<filename>')
         def serveArtistImage(username, filename):
+            if username != _authorized_image_username() or filename != os.path.basename(filename):
+                return "", 404
             imageDir = os.path.join(self.baseDir, "Database", "Users", username, "img", "artists")
+            imagePath = os.path.join(imageDir, filename)
+
+            if not os.path.exists(imagePath):
+                artistId = filename.split('.')[0]
+                db = self.user_databases.get(username)
+                if db:
+                    db.lazyFetchArtistImage(artistId, Path(imagePath))
+
             return send_from_directory(imageDir, filename)
 
         @self.app.route("/import-history", methods=["POST"])
         def importHistory():
-            if self.database.readProgress().get("status") == "running":
+            email, username, db = get_current_user_or_redirect()
+            if not email:
+                return redirect(url_for("login"))
+
+            if db.readProgress().get("status") == "running":
                 return redirect(url_for("importPage"))
 
             upload = request.files.get("history_file")
             if upload is None or upload.filename == "":
                 return redirect(url_for("importPage"))
 
-            thread = threading.Thread(target=self.database.importHistory, args=(upload.read().decode("utf-8"),), daemon=True)
+            thread = threading.Thread(target=db.importHistory, args=(upload.read().decode("utf-8"),), daemon=True)
             thread.start()
             time.sleep(1)  # Give thread time to start and update progress
             return redirect(url_for("importPage"))
 
         @self.app.route("/import", methods=["GET"])
         def importPage():
-            return render_template("import.html", importProgress=self.database.readProgress())
+            email, username, db = get_current_user_or_redirect()
+            if not email:
+                return redirect(url_for("login"))
+            return render_template("import.html", importProgress=db.readProgress())
 
         @self.app.route("/login", methods=["GET", "POST"])
         def login():
@@ -334,15 +624,39 @@ class SpotifyDashboardApp:
                 if not cookies:
                     return render_template("login.html", step=2, email=email, error="Cookies required.")
 
-                saveSession(parseCookieString(cookies), email, self.cookiesFile)
-                self.isLoggedIn = True
-                self.startListenerIfNeeded()
+                # Verification happens against a throwaway session file, so nothing
+                # is persisted for this email unless the cookies really are theirs.
+                parsedCookies = parseCookieString(cookies)
+                if not self._verifyCookiesMatchEmail(parsedCookies, email):
+                    return render_template(
+                        "login.html", step=2, email=email,
+                        error=f"Couldn't verify that these cookies belong to {email}. "
+                              "Make sure you are logged into open.spotify.com with that account and copied all cookies.")
+
+                with self._session_lock:
+                    saveSession(parsedCookies, email, self.cookiesFile)
+                session.permanent = True
+                # get_or_create_user/get_user_db manage their own locking and can
+                # start a listener (a live network call) - kept outside the session
+                # lock so logging one user in doesn't block everyone else.
+                username = self.get_or_create_user(email)
+                self.get_user_db(username, email)
+                session["email"] = email
+                session["username"] = username
 
                 return redirect(url_for("dashboard"))
 
+        @self.app.route("/logout", methods=["GET"])
+        def logout():
+            session.clear()
+            return redirect(url_for("login"))
+
         @self.app.route("/import-progress", methods=["GET"])
         def importProgress():
-            return jsonify(self.database.readProgress())
+            email, username, db = get_current_user_or_redirect()
+            if not email:
+                return jsonify({"error": "unauthorized"}), 401
+            return jsonify(db.readProgress())
 
         @self.app.route("/version_status", methods=["GET"])
         def version_status():
@@ -356,10 +670,11 @@ class SpotifyDashboardApp:
 
         @self.app.route("/", methods=["GET"])
         def dashboard():
-            if not self.isLoggedIn:
+            email, username, db = get_current_user_or_redirect()
+            if not email:
                 return redirect(url_for("login", next=request.path))
 
-            page = int(request.args.get("page", 1) or 1)
+            page = self._getPageParam()
             searchQuery = request.args.get("q", "")
             customStart = request.args.get("startDate", "")
             customEnd = request.args.get("endDate", "")
@@ -367,16 +682,26 @@ class SpotifyDashboardApp:
             if interval == "custom" and not (customStart and customEnd):
                 interval = "all time"
 
-            tracks = self.database.getEntriesFromNew()
             if searchQuery:
+                # Search has to look at the whole history.
+                tracks = db.getEntriesFromNew()
                 self._embedIndices(tracks)
-            tracks = self._filterBySearch(tracks, searchQuery)
-            tracks, totalPages, startIndex = self.getPage(tracks, page)
+                tracks = self._filterBySearch(tracks, searchQuery)
+                tracks, totalPages, startIndex = self.getPage(tracks, page)
+            else:
+                # Only materialize the page being shown - joining full track
+                # metadata onto every entry ever recorded on every request gets
+                # slow once the history grows large.
+                totalEntries = db.getEntriesCount()
+                totalPages = max(1, (totalEntries + PAGE_SIZE - 1) // PAGE_SIZE)
+                page = max(1, min(page, totalPages))
+                startIndex = (page - 1) * PAGE_SIZE
+                tracks = db.getEntriesFromNew(count=PAGE_SIZE, startIndex=startIndex)
             tracks = self._embedSongsTextElements(tracks)
 
             intervalLabel = self._getIntervalLabel(interval, customStart, customEnd)
             startDate, endDate = self._getDateRange(interval, customStart, customEnd, default="day")
-            stats = self.database.getOverallStats(startDate, endDate) 
+            stats = db.getOverallStats(startDate, endDate) 
 
             totalDurationText = msToString(stats["totalDurationMs"])
 
@@ -408,7 +733,7 @@ class SpotifyDashboardApp:
                 currentTopSong=currentTopSong,
                 currentTopArtist=currentTopArtist,
                 intervalLabel=intervalLabel,
-                username=self.username,
+                username=username,
                 page=page,
                 totalPages=totalPages,
                 prevUrl=prevUrl,
@@ -422,10 +747,11 @@ class SpotifyDashboardApp:
 
         @self.app.route("/top-songs", methods=["GET"])
         def topSongsPage():
-            if not self.isLoggedIn:
+            email, username, db = get_current_user_or_redirect()
+            if not email:
                 return redirect(url_for("login", next=request.path))
 
-            page = int(request.args.get("page", 1) or 1)
+            page = self._getPageParam()
             searchQuery = request.args.get("q", "")
             sortBy = request.args.get("sortBy", "totalTimeListened")
             interval = request.args.get("interval", "")
@@ -433,7 +759,7 @@ class SpotifyDashboardApp:
             customEnd = request.args.get("endDate", "")
             
             startDate, endDate = self._getDateRange(interval, customStart, customEnd, default="all time")
-            rawTopSongs = self.database.getTopSongs(startDate=startDate, endDate=endDate, by=sortBy)
+            rawTopSongs = db.getTopSongs(startDate=startDate, endDate=endDate, by=sortBy)
             if searchQuery:
                 self._embedIndices(rawTopSongs)
             tracks = self._filterBySearch(rawTopSongs, searchQuery)
@@ -457,7 +783,7 @@ class SpotifyDashboardApp:
             return render_template(
                 "top_songs.html",
                 tracks=tracks,
-                username=self.username,
+                username=username,
                 totalPlays=totalPlays,
                 totalTime=msToString(totalMs),
                 page=page,
@@ -474,10 +800,11 @@ class SpotifyDashboardApp:
 
         @self.app.route("/top-artists", methods=["GET"])
         def topArtistsPage():
-            if not self.isLoggedIn:
+            email, username, db = get_current_user_or_redirect()
+            if not email:
                 return redirect(url_for("login", next=request.path))
 
-            page = int(request.args.get("page", 1) or 1)
+            page = self._getPageParam()
             searchQuery = request.args.get("q", "")
             sortBy = request.args.get("sortBy", "totalTimeListened")
             interval = request.args.get("interval", "")
@@ -485,7 +812,7 @@ class SpotifyDashboardApp:
             customEnd = request.args.get("endDate", "")
             
             startDate, endDate = self._getDateRange(interval, customStart, customEnd, default="all time")
-            rawTopArtists = self.database.getTopArtists(startDate=startDate, endDate=endDate, by=sortBy) or []
+            rawTopArtists = db.getTopArtists(startDate=startDate, endDate=endDate, by=sortBy) or []
             if searchQuery:
                 self._embedIndices(rawTopArtists)
             tracks = self._filterBySearch(rawTopArtists, searchQuery)
@@ -509,7 +836,7 @@ class SpotifyDashboardApp:
             return render_template(
                 "top_artists.html",
                 tracks=artists,
-                username=self.username,
+                username=username,
                 totalPlays=totalPlays,
                 totalUnique=totalUnique,
                 totalTime=msToString(totalMs),
