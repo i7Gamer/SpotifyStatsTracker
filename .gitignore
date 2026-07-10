@@ -9,6 +9,7 @@ __pycache__/
 instance/
 .env
 .env.*
+.token-savior-cache.json
 Streaming*.json
 secrets.json
 cookies*.json
