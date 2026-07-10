@@ -316,11 +316,13 @@ class Database:
                 cachedIdsSet.add(imgId)
                 metadataPath.write_text(json.dumps(list(cachedIdsSet), indent=4), encoding="utf-8")
         except requests.exceptions.RequestException as e:
-            print(f"Error fetching image from {url}: {parseError(e)}")
+            print(f"Error fetching image from {url} (id={imgId}): {parseError(e)}")
         except Exception as e:
-            print(f"Error saving image: {parseError(e)}")
+            print(f"Error saving image (id={imgId}): {parseError(e)}")
 
     def _saveImg(self, path: Path, url: str, imgId: str, isTrack: bool):
+        if not url:
+            return  #< Spotify occasionally returns tracks with no album images; skip silently
         metadataPath = path / "metadata.json"
         
         with self._imageIdsLock:
