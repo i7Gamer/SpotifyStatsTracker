@@ -1,6 +1,7 @@
 import os
 import json
 import secrets
+import tempfile
 import threading
 import requests
 from pathlib import Path
@@ -11,7 +12,9 @@ from flask import Flask, render_template, redirect, request, url_for, jsonify, s
 
 from Database.database import Database
 from Database.Migrators.migrate import migrateIfNeeded
+from Database.Listeners.spotifyListener import _suppress_signal_in_thread
 from Database.utils import msToString, convertToDatetime, formatDuration, dateToString, versionTuple, now, startOfDay, parseDateString
+import SpotipyFree
 from SpotipyFree import saveSession, parseCookieString
 
 class SpotifyDashboardApp:
@@ -189,6 +192,35 @@ class SpotifyDashboardApp:
         (users_dir / username).mkdir(parents=True, exist_ok=True)
 
         return username
+
+    def _verifyCookiesMatchEmail(self, cookies: dict, email: str) -> bool:
+        """Check that the submitted Spotify cookies actually belong to `email` by
+        fetching the account profile with them. The cookies are written to a
+        throwaway session file so an unverified login attempt can never overwrite
+        another user's stored cookies. Without this check, anyone could claim any
+        email at login and be handed that user's database."""
+        if not cookies or not email:
+            return False
+
+        tmpFd, tmpPath = tempfile.mkstemp(prefix="verify_cookies_", suffix=".json")
+        os.close(tmpFd)
+        try:
+            saveSession(cookies, email, tmpPath)
+            with _suppress_signal_in_thread():
+                sp = SpotipyFree.Spotify(cookiesFile=tmpPath, email=email)
+            if not sp.isLoggedIn():
+                return False
+            profile = sp.current_user() or {}
+            profileEmail = (profile.get("email") or "").strip().lower()
+            return profileEmail == email.strip().lower()
+        except Exception as e:
+            print(f"Cookie verification failed for {email}: {e}")
+            return False
+        finally:
+            try:
+                os.unlink(tmpPath)
+            except OSError:
+                pass
 
     def get_user_db(self, username, email):
         with self._db_lock:
@@ -573,8 +605,17 @@ class SpotifyDashboardApp:
                 if not cookies:
                     return render_template("login.html", step=2, email=email, error="Cookies required.")
 
+                # Verification happens against a throwaway session file, so nothing
+                # is persisted for this email unless the cookies really are theirs.
+                parsedCookies = parseCookieString(cookies)
+                if not self._verifyCookiesMatchEmail(parsedCookies, email):
+                    return render_template(
+                        "login.html", step=2, email=email,
+                        error=f"Couldn't verify that these cookies belong to {email}. "
+                              "Make sure you are logged into open.spotify.com with that account and copied all cookies.")
+
                 with self._session_lock:
-                    saveSession(parseCookieString(cookies), email, self.cookiesFile)
+                    saveSession(parsedCookies, email, self.cookiesFile)
                 session.permanent = True
                 # get_or_create_user/get_user_db manage their own locking and can
                 # start a listener (a live network call) - kept outside the session
