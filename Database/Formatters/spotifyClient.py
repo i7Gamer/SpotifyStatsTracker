@@ -56,9 +56,10 @@ class Client:
         
         playedFrom = None
         if context:
-            uri = context.get("uri", None)
-            if not uri:
-                return
+            # A context without a usable uri is not an error - the play still counts,
+            # it just has no known source. Returning None here would crash callers
+            # (e.g. the listener callback) that expect a track dict.
+            uri = context.get("uri") or ""
             uri = uri.removeprefix("spotify:").removeprefix("internal:recs:")
             if uri.startswith("album") or uri.startswith("playlist"):
                 playedFrom = uri

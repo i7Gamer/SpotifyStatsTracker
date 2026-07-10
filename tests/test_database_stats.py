@@ -78,5 +78,44 @@ class TestGetArtistsStatsDoesNotMutateCache(unittest.TestCase):
         self.assertEqual(firstStats[0]["totalTimeListened"], secondStats[0]["totalTimeListened"])
 
 
+class TestGetEntriesFromNew(unittest.TestCase):
+    """Slicing edge cases: a startIndex at/past the end must yield an empty page,
+    not wrap around to a negative index and return the whole history."""
+
+    def _makeDb(self, entryCount):
+        entries = [{"id": f"t{i}", "playedAt": i, "timePlayed": 1} for i in range(entryCount)]
+        return _bareDatabaseWithData({}, entries), entries
+
+    def test_returns_all_entries_newest_first(self):
+        db, entries = self._makeDb(3)
+        result = db.getEntriesFromNew(fullPagination=False)
+        self.assertEqual(result, list(reversed(entries)))
+
+    def test_returns_requested_page(self):
+        db, entries = self._makeDb(5)
+        result = db.getEntriesFromNew(count=2, startIndex=2, fullPagination=False)
+        self.assertEqual([e["id"] for e in result], ["t2", "t1"])
+
+    def test_start_index_at_end_returns_empty(self):
+        db, _ = self._makeDb(3)
+        result = db.getEntriesFromNew(startIndex=3, fullPagination=False)
+        self.assertEqual(result, [])
+
+    def test_start_index_past_end_returns_empty(self):
+        db, _ = self._makeDb(3)
+        result = db.getEntriesFromNew(count=2, startIndex=10, fullPagination=False)
+        self.assertEqual(result, [])
+
+    def test_empty_database_returns_empty(self):
+        db, _ = self._makeDb(0)
+        self.assertEqual(db.getEntriesFromNew(fullPagination=False), [])
+        self.assertEqual(db.getEntriesFromNew(count=5, fullPagination=False), [])
+
+    def test_count_larger_than_remaining_returns_rest(self):
+        db, _ = self._makeDb(3)
+        result = db.getEntriesFromNew(count=10, startIndex=1, fullPagination=False)
+        self.assertEqual([e["id"] for e in result], ["t1", "t0"])
+
+
 if __name__ == "__main__":
     unittest.main()

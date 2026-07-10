@@ -91,7 +91,13 @@ class Database:
             timestamp = item.get("played_at")
             msPlayed = item.get("ms_played", 0)
             if track:
-                self.appendTrackData(timestamp, track, msPlayed, context=item.get("context", None))
+                # Per-item isolation: if the callback raised, the listener would
+                # retry the whole batch forever and record nothing new until the
+                # bad item aged out of the recently-played feed.
+                try:
+                    self.appendTrackData(timestamp, track, msPlayed, context=item.get("context", None))
+                except Exception as e:
+                    print(f"Error adding track from listener: {parseError(e)}")
 
     def _loadEntries(self) -> list:
         """Load ONLY id and info about time played from the JSON file."""
@@ -234,14 +240,16 @@ class Database:
         """ Return the latest `count` entries from history, sorted from newest to oldest. If count is None, return all entries. """
         entries = self._loadEntries()
         startPos = len(entries) - startIndex   #< Everything is reversed
-        
-        if count is not None:
-            endPos = startPos - count
-            endPos = None if endPos <= 0 else endPos
+
+        if startPos <= 0:                      #< startIndex at/past the oldest entry - nothing left (guards against negative-index wraparound)
+            slicedEntries = []
+        elif count is not None:
+            endPos = startPos - count - 1      #< stop is exclusive when stepping backwards
+            endPos = None if endPos < 0 else endPos
             slicedEntries = entries[startPos - 1 : endPos : -1]   #< slice and reverse
         else:
             slicedEntries = entries[startPos - 1 : : -1]          #< slice and reverse
-        
+
         if fullPagination:
             return self._paginateEntries(slicedEntries)
         return slicedEntries
@@ -296,9 +304,11 @@ class Database:
             response = requests.get(url, timeout=10)
             response.raise_for_status()
             img = Image.open(BytesIO(response.content))
-            ext = img.format.lower() if img.format else "jpeg"
-            
-            img.save(path / f"{imgId}.{ext}")
+            # Always store as JPEG: the templates hardcode `<imgId>.jpeg`, so an
+            # image saved under its source format (e.g. .png) would 404 forever.
+            if img.mode not in ("RGB", "L"):
+                img = img.convert("RGB")   #< JPEG can't store alpha/palette modes
+            img.save(path / f"{imgId}.jpeg", format="JPEG")
             
             with self._imageIdsLock:
                 # Add to set and persist. Pre-adding handles immediate concurrent lookups, 
