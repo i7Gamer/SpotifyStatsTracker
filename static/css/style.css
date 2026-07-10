@@ -732,3 +732,65 @@ progress::-moz-progress-bar {
   color: #0b57d0;          /* darker blue on hover */
   text-decoration: underline;
 }
+
+.chart-card {
+  margin-bottom: 24px;
+}
+
+.chart-card h2 {
+  margin-bottom: 4px;
+}
+
+.chart-subtitle {
+  margin: 0 0 14px;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.chart-canvas-wrap {
+  width: 100%;
+}
+
+.chart-canvas-wrap canvas {
+  display: block;
+  width: 100%;
+  cursor: crosshair;
+}
+
+.chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-top: 14px;
+}
+
+.chart-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+.chart-legend-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  display: inline-block;
+}
+
+.chart-tooltip {
+  position: absolute;
+  display: none;
+  pointer-events: none;
+  z-index: 20;
+  background: rgba(10, 10, 10, 0.95);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 12px;
+  font-size: 0.85rem;
+  line-height: 1.4;
+  color: var(--text);
+  white-space: nowrap;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
