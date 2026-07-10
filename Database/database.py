@@ -315,10 +315,13 @@ class Database:
                 # this ensures it's persisted successfully.
                 cachedIdsSet.add(imgId)
                 metadataPath.write_text(json.dumps(list(cachedIdsSet), indent=4), encoding="utf-8")
-        except requests.exceptions.RequestException as e:
-            print(f"Error fetching image from {url} (id={imgId}): {parseError(e)}")
         except Exception as e:
-            print(f"Error saving image (id={imgId}): {parseError(e)}")
+            with self._imageIdsLock:
+                cachedIdsSet.discard(imgId)
+            if isinstance(e, requests.exceptions.RequestException):
+                print(f"Error fetching image from {url}: {parseError(e)}")
+            else:
+                print(f"Error saving image: {parseError(e)}")
 
     def _saveImg(self, path: Path, url: str, imgId: str, isTrack: bool):
         if not url:
@@ -418,8 +421,8 @@ class Database:
         total = len(parsedHistory)
         self.writeProgress("running", 0, total, "Starting import")
 
-        def progress_callback(status, current, total_steps, message):
-            self.writeProgress(status, current, total_steps, message)
+        def progressCallback(status, current, totalSteps, message):
+            self.writeProgress(status, current, totalSteps, message)
 
         # Imported data is collected locally and only merged into the shared caches
         # once the whole import has succeeded - a mid-import failure must not leave
@@ -429,7 +432,7 @@ class Database:
         importedTracks = {}
         index = 0
         try:
-            for index, meta in enumerate(importer.importHistory(parsedHistory, self._loadTracks().values(), exportType, progress_callback=progress_callback), start=1):  #< We only want the tracks, the importer doesn't care about the keys
+            for index, meta in enumerate(importer.importHistory(parsedHistory, self._loadTracks().values(), exportType, progressCallback=progressCallback), start=1):  #< We only want the tracks, the importer doesn't care about the keys
                 e, t = self._splitEntryAndTrack(meta)
                 importedEntries.append(e)
                 importedTracks[t["id"]] = t
