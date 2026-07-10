@@ -63,6 +63,12 @@ class Importer:
             index[item["name"]+item["artists"][0]["name"]] = item
         return index
 
+    def _stripPlayFields(self, track):
+        track.pop("playedAt", None)
+        track.pop("timePlayed", None)
+        track.pop("playedFrom", None)
+        return track
+
     def _parseHistory(self, dataFunction, history):
         parsedItems = []
         for item in history:
@@ -122,7 +128,7 @@ class Importer:
                 try:
                     key, meta = future.result()
                     if meta:
-                        formatted = Client.formatTrack(meta)
+                        formatted = self._stripPlayFields(Client.formatTrack(meta))
                         known[formatted["id"]] = formatted
                         if key != formatted["id"]:
                             known[key] = formatted
@@ -160,7 +166,7 @@ class Importer:
                     
                 meta = Client.formatTrack(meta, startTimestamp, msPlayed=timePlayed)
                 
-                newCopy = meta.copy()
+                newCopy = self._stripPlayFields(meta.copy())
                 known[meta["id"]] = newCopy
                 if idKey:
                     known[idKey] = newCopy
