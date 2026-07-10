@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import patch, MagicMock, mock_open
 import sys
 import os
+import threading
 from pathlib import Path
 
 # Ensure we can import app.py
@@ -197,6 +198,91 @@ class TestImageRouteAuthorization(unittest.TestCase):
                 sess['email'] = 'alice@example.com'
             resp = client.get('/img/alice/tracks/..%5C..%5Csecret.txt')
         self.assertEqual(resp.status_code, 404)
+
+
+class TestSessionLockScope(unittest.TestCase):
+    """_session_lock exists to protect users_map.json / cookies.json reads and
+    writes from corruption under concurrent access - it must not also serialize
+    unrelated, slow work (like a live Spotify network call) across all users."""
+
+    @patch('app.SpotifyDashboardApp.startVersionCheck_thread')
+    @patch('app.SpotifyDashboardApp.checkLogin_thread')
+    @patch('app.migrateIfNeeded')
+    def _makeApp(self, mock_migrate, mock_check, mock_version):
+        import tempfile
+        app = SpotifyDashboardApp.__new__(SpotifyDashboardApp)
+        app.baseDir = Path(tempfile.mkdtemp())
+        app.cookiesFile = app.baseDir / "secrets" / "cookies.json"
+        app.user_databases = {}
+        app._db_lock = threading.RLock()
+        app._session_lock = threading.RLock()
+        app._migration_lock = threading.RLock()
+        return app
+
+    def test_slow_listener_check_does_not_block_unrelated_session_lookups(self):
+        import json
+        import time
+
+        dash = self._makeApp()
+        dash.cookiesFile.parent.mkdir(parents=True, exist_ok=True)
+        dash.cookiesFile.write_text(json.dumps([{"identifier": "alice@example.com"}]), encoding="utf-8")
+
+        usersMapFile = dash.baseDir / "secrets" / "users_map.json"
+        usersMapFile.write_text(json.dumps({"alice@example.com": "alice"}), encoding="utf-8")
+
+        slowDb = MagicMock()
+        slowDb.isListenerLoggedIn.side_effect = lambda: time.sleep(0.3) or True
+        dash.user_databases["alice"] = slowDb
+
+        thread = threading.Thread(target=lambda: dash.is_user_logged_in("alice@example.com"))
+        thread.start()
+        time.sleep(0.05)  # let the slow call start and take the lock
+
+        start = time.time()
+        dash.get_username_for_email("bob@example.com")  # unrelated user, no network involved
+        elapsed = time.time() - start
+
+        thread.join()
+
+        self.assertLess(
+            elapsed, 0.2,
+            "an unrelated session lookup blocked on another user's live listener check "
+            "- the session lock's critical section is too broad"
+        )
+
+    def test_two_new_users_do_not_migrate_the_same_legacy_source_concurrently(self):
+        """get_or_create_user() no longer runs legacy migration under the (now
+        narrower) session lock, so it needs its own lock: the legacy sources are
+        fixed, shared paths, so two different brand-new users logging in around the
+        same time could otherwise both race to migrate the same source."""
+        import time
+
+        dash = self._makeApp()
+
+        concurrentCount = {"current": 0, "max": 0}
+        countLock = threading.Lock()
+
+        def fakeMigrate(username):
+            with countLock:
+                concurrentCount["current"] += 1
+                concurrentCount["max"] = max(concurrentCount["max"], concurrentCount["current"])
+            time.sleep(0.1)
+            with countLock:
+                concurrentCount["current"] -= 1
+
+        with patch.object(dash, 'get_username_for_email', return_value=None), \
+             patch.object(dash, '_migrate_legacy_database_if_needed', side_effect=fakeMigrate):
+
+            threads = [
+                threading.Thread(target=dash.get_or_create_user, args=(f"user{i}@example.com",))
+                for i in range(3)
+            ]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+        self.assertEqual(concurrentCount["max"], 1, "legacy migration ran concurrently for different users")
 
 
 if __name__ == '__main__':
