@@ -14,10 +14,8 @@ import app as appModule
 from app import SpotifyDashboardApp
 
 
-class TestDashboardPagination(unittest.TestCase):
-    """Without a search query the dashboard must only materialize the page being
-    shown - joining full track metadata onto every entry ever recorded on every
-    request gets slow once the history grows large."""
+class _ListRouteTestBase(unittest.TestCase):
+    """Shared fixtures for exercising the list routes with a mocked per-user db."""
 
     @patch('app.SpotifyDashboardApp._get_or_create_secret_key', return_value='test-secret-key')
     @patch('app.SpotifyDashboardApp.startVersionCheck_thread')
@@ -32,6 +30,8 @@ class TestDashboardPagination(unittest.TestCase):
         db = MagicMock()
         db.getEntriesFromNew.return_value = []
         db.getEntriesCount.return_value = entryCount
+        db.getTopSongs.return_value = []
+        db.getTopArtists.return_value = []
         db.getOverallStats.return_value = {
             "currentTopSongs": [],
             "currentTopArtists": [],
@@ -42,14 +42,23 @@ class TestDashboardPagination(unittest.TestCase):
         }
         return db
 
-    def _getDashboard(self, dash, db, query=""):
+    def _getPath(self, dash, db, path):
         client = dash.app.test_client()
         with patch.object(dash, 'is_user_logged_in', return_value=True), \
              patch.object(dash, 'get_username_for_email', return_value='alice'), \
              patch.object(dash, 'get_user_db', return_value=db):
             with client.session_transaction() as sess:
                 sess['email'] = 'alice@example.com'
-            return client.get(f"/{query}")
+            return client.get(path)
+
+    def _getDashboard(self, dash, db, query=""):
+        return self._getPath(dash, db, f"/{query}")
+
+
+class TestDashboardPagination(_ListRouteTestBase):
+    """Without a search query the dashboard must only materialize the page being
+    shown - joining full track metadata onto every entry ever recorded on every
+    request gets slow once the history grows large."""
 
     def test_without_search_fetches_only_one_page(self):
         dash = self._makeApp()
@@ -99,6 +108,45 @@ class TestDashboardPagination(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         db.getEntriesFromNew.assert_called_once_with()
         db.getEntriesCount.assert_not_called()
+
+
+class TestPageParamParsing(_ListRouteTestBase):
+    """A non-numeric ?page= must not 500 any list route - it falls back to page 1."""
+
+    def test_dashboard_survives_non_numeric_page(self):
+        dash = self._makeApp()
+        db = self._makeDb(entryCount=120)
+
+        resp = self._getDashboard(dash, db, query="?page=abc")
+
+        self.assertEqual(resp.status_code, 200)
+        db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=0)
+        self.assertIn(b"Page 1 of 3", resp.data)
+
+    def test_dashboard_clamps_negative_page(self):
+        dash = self._makeApp()
+        db = self._makeDb(entryCount=120)
+
+        resp = self._getDashboard(dash, db, query="?page=-5")
+
+        self.assertEqual(resp.status_code, 200)
+        db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=0)
+
+    def test_top_songs_survives_non_numeric_page(self):
+        dash = self._makeApp()
+        db = self._makeDb(entryCount=0)
+
+        resp = self._getPath(dash, db, "/top-songs?page=abc")
+
+        self.assertEqual(resp.status_code, 200)
+
+    def test_top_artists_survives_non_numeric_page(self):
+        dash = self._makeApp()
+        db = self._makeDb(entryCount=0)
+
+        resp = self._getPath(dash, db, "/top-artists?page=abc")
+
+        self.assertEqual(resp.status_code, 200)
 
 
 if __name__ == "__main__":

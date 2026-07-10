@@ -405,6 +405,13 @@ class SpotifyDashboardApp:
         cssClass = "change-positive" if change > 0 else "change-negative"
         return formatted, cssClass
 
+    def _getPageParam(self):
+        """The current request's ?page=... as an int >= 1, tolerating junk input."""
+        try:
+            return max(1, int(request.args.get("page", 1) or 1))
+        except (TypeError, ValueError):
+            return 1
+
     def getPage(self, items, page, pageSize=PAGE_SIZE):
         """ Gets items in page as well as other data including total pages and start index """
         page = max(1, page)
@@ -616,7 +623,7 @@ class SpotifyDashboardApp:
             if not email:
                 return redirect(url_for("login", next=request.path))
 
-            page = int(request.args.get("page", 1) or 1)
+            page = self._getPageParam()
             searchQuery = request.args.get("q", "")
             customStart = request.args.get("startDate", "")
             customEnd = request.args.get("endDate", "")
@@ -693,7 +700,7 @@ class SpotifyDashboardApp:
             if not email:
                 return redirect(url_for("login", next=request.path))
 
-            page = int(request.args.get("page", 1) or 1)
+            page = self._getPageParam()
             searchQuery = request.args.get("q", "")
             sortBy = request.args.get("sortBy", "totalTimeListened")
             interval = request.args.get("interval", "")
@@ -746,7 +753,7 @@ class SpotifyDashboardApp:
             if not email:
                 return redirect(url_for("login", next=request.path))
 
-            page = int(request.args.get("page", 1) or 1)
+            page = self._getPageParam()
             searchQuery = request.args.get("q", "")
             sortBy = request.args.get("sortBy", "totalTimeListened")
             interval = request.args.get("interval", "")
