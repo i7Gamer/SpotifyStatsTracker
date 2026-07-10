@@ -8,108 +8,107 @@ from pathlib import Path
 # Ensure we can import app.py
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-# Backup original modules before we mock them
-_original_modules = {}
-for m in ["Database.database", "Database.Migrators.migrate", "Database.utils"]:
-    if m in sys.modules:
-        _original_modules[m] = sys.modules[m]
-
-# Mock database imports to avoid side effects
-sys.modules["Database.database"] = MagicMock()
-sys.modules["Database.Migrators.migrate"] = MagicMock()
-sys.modules["Database.utils"] = MagicMock()
-
-def tearDownModule():
-    # Restore original modules so we don't pollute other tests
-    for m in ["Database.database", "Database.Migrators.migrate", "Database.utils"]:
-        if m in _original_modules:
-            sys.modules[m] = _original_modules[m]
-        elif m in sys.modules:
-            del sys.modules[m]
-
+# NOTE: this file deliberately does NOT swap Database modules for MagicMocks in
+# sys.modules. Side effects are avoided with per-test patches (app.Database,
+# app.migrateIfNeeded, threads, _get_or_create_secret_key) instead - a
+# module-level mock/restore here would poison the patch("Database.database...")
+# targets of test files that run after this one, which used to silently send
+# tests to the real network.
 from app import SpotifyDashboardApp
 
+# Patch target for the Flask secret key so instantiating the app in tests never
+# regenerates the real secrets/flask_secret_key.txt (mocked Path.exists would
+# otherwise force a rewrite, invalidating live sessions).
+_SECRET_KEY_PATCH = 'app.SpotifyDashboardApp._get_or_create_secret_key'
+
 class TestMultiUser(unittest.TestCase):
+    @patch(_SECRET_KEY_PATCH, return_value='test-secret-key')
     @patch('app.SpotifyDashboardApp.startVersionCheck_thread')
     @patch('app.SpotifyDashboardApp.checkLogin_thread')
     @patch('app.migrateIfNeeded')
     @patch('app.Path.exists')
     @patch('app.Path.read_text')
-    def test_get_username_for_email_timorzipa(self, mock_read_text, mock_exists, mock_migrate, mock_check, mock_version):
+    def test_get_username_for_email_timorzipa(self, mock_read_text, mock_exists, mock_migrate, mock_check, mock_version, mock_secret):
         # Mock secrets map not existing
         mock_exists.return_value = False
         app = SpotifyDashboardApp()
         username = app.get_username_for_email("timorzipa@gmail.com")
         self.assertIsNone(username)
 
+    @patch(_SECRET_KEY_PATCH, return_value='test-secret-key')
     @patch('app.SpotifyDashboardApp.startVersionCheck_thread')
     @patch('app.SpotifyDashboardApp.checkLogin_thread')
     @patch('app.migrateIfNeeded')
     @patch('app.Path.exists')
     @patch('app.Path.read_text')
-    def test_get_username_for_email_from_map(self, mock_read_text, mock_exists, mock_migrate, mock_check, mock_version):
+    def test_get_username_for_email_from_map(self, mock_read_text, mock_exists, mock_migrate, mock_check, mock_version, mock_secret):
         mock_exists.return_value = True
         mock_read_text.return_value = '{"test@example.com": "test_user"}'
-        
+
         app = SpotifyDashboardApp()
         username = app.get_username_for_email("test@example.com")
         self.assertEqual(username, "test_user")
 
+    @patch(_SECRET_KEY_PATCH, return_value='test-secret-key')
     @patch('app.SpotifyDashboardApp.startVersionCheck_thread')
     @patch('app.SpotifyDashboardApp.checkLogin_thread')
     @patch('app.migrateIfNeeded')
     @patch('app.Path.exists')
     @patch('app.Path.mkdir')
     @patch('app.Path.write_text')
-    def test_get_or_create_user(self, mock_write_text, mock_mkdir, mock_exists, mock_migrate, mock_check, mock_version):
+    def test_get_or_create_user(self, mock_write_text, mock_mkdir, mock_exists, mock_migrate, mock_check, mock_version, mock_secret):
         # Everything does not exist
         mock_exists.return_value = False
         app = SpotifyDashboardApp()
-        
+
         username = app.get_or_create_user("john.doe@test.com")
         self.assertEqual(username, "johndoe")
 
+    @patch(_SECRET_KEY_PATCH, return_value='test-secret-key')
+    @patch('app.Database')   #< get_user_db must not build a real Database (files, threads, network)
     @patch('app.SpotifyDashboardApp.startVersionCheck_thread')
     @patch('app.SpotifyDashboardApp.checkLogin_thread')
     @patch('app.migrateIfNeeded')
     @patch('app.Path.exists')
-    def test_get_user_db_cache(self, mock_exists, mock_migrate, mock_check, mock_version):
+    def test_get_user_db_cache(self, mock_exists, mock_migrate, mock_check, mock_version, mock_database, mock_secret):
         mock_exists.return_value = False
         app = SpotifyDashboardApp()
-        
+
         db1 = app.get_user_db("Tzur", "timorzipa@gmail.com")
         db2 = app.get_user_db("Tzur", "timorzipa@gmail.com")
-        
-        self.assertIs(db1, db2) # Should be the exact same object from cache
 
+        self.assertIs(db1, db2) # Should be the exact same object from cache
+        mock_database.assert_called_once()
+
+    @patch(_SECRET_KEY_PATCH, return_value='test-secret-key')
     @patch('app.SpotifyDashboardApp.startVersionCheck_thread')
     @patch('app.SpotifyDashboardApp.checkLogin_thread')
     @patch('app.migrateIfNeeded')
-    def test_migrate_legacy_database(self, mock_migrate, mock_check, mock_version):
+    def test_migrate_legacy_database(self, mock_migrate, mock_check, mock_version, mock_secret):
         import tempfile
         import shutil
-        
+
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_path = Path(tmpdir)
             app = SpotifyDashboardApp()
             app.baseDir = tmp_path
-            
+
             # Create a legacy directory with entries.json
             legacy_dir = tmp_path / "Database" / "Users" / "Tzur"
             legacy_dir.mkdir(parents=True, exist_ok=True)
             legacy_entries = legacy_dir / "entries.json"
             legacy_entries.write_text('[{"id": "track_1"}]', encoding="utf-8")
-            
+
             # Run migration to target "timorzipa"
             app._migrate_legacy_database_if_needed("timorzipa")
-            
+
             # Target directory should now exist and have the copied entries.json
             target_dir = tmp_path / "Database" / "Users" / "timorzipa"
             target_entries = target_dir / "entries.json"
-            
+
             self.assertTrue(target_entries.exists())
             self.assertEqual(target_entries.read_text(encoding="utf-8"), '[{"id": "track_1"}]')
-            
+
             # Legacy directory should be removed/cleaned up
             self.assertFalse(legacy_dir.exists())
 
@@ -141,11 +140,12 @@ class TestMultiUser(unittest.TestCase):
 
 
 class TestImageRouteAuthorization(unittest.TestCase):
+    @patch(_SECRET_KEY_PATCH, return_value='test-secret-key')
     @patch('app.SpotifyDashboardApp.startVersionCheck_thread')
     @patch('app.SpotifyDashboardApp.checkLogin_thread')
     @patch('app.migrateIfNeeded')
     @patch('app.Path.exists')
-    def _makeApp(self, mock_exists, mock_migrate, mock_check, mock_version):
+    def _makeApp(self, mock_exists, mock_migrate, mock_check, mock_version, mock_secret):
         mock_exists.return_value = False
         return SpotifyDashboardApp()
 

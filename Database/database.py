@@ -17,13 +17,13 @@ try:
     from Database.Importers.StreamingHistoryImporter import Importer
     from Database.Importers.AutoImporter import AutoImporter
     from Database.Listeners.spotifyListener import Listener
-    from Database.utils import parseError, convertToDatetime
+    from Database.utils import parseError, convertToDatetime, dateToString, startOfDay, startOfWeek
 except ModuleNotFoundError:
     from Formatters.spotifyClient import Client
     from Importers.StreamingHistoryImporter import Importer
     from Importers.AutoImporter import AutoImporter
     from Listeners.spotifyListener import Listener
-    from utils import parseError, convertToDatetime
+    from utils import parseError, convertToDatetime, dateToString, startOfDay, startOfWeek
 
 class Database:
     def __init__(self, user: str, cookiesFile: str | None = None, email: str | None = None):
@@ -574,6 +574,91 @@ class Database:
         artists = self.getArtistsStats(startDate, endDate)
         compKeys = (by, "totalTimeListened", "name")
         return self._sortTopStats(artists, compKeys, by)
+
+    def _bucketKey(self, date: datetime.datetime, groupBy: str) -> str:
+        return dateToString(startOfWeek(date) if groupBy == "week" else startOfDay(date))
+
+    def getListeningTimeSeries(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None, groupBy: str = "day") -> list:
+        """Total listening time and play count per day or week, gap-filled with
+        zero-value buckets so a bar chart shows a continuous timeline."""
+        entries = self.filterByInterval(self._loadEntries(), startDate, endDate)
+
+        buckets = {}
+        for entry in entries:
+            date = convertToDatetime(entry["playedAt"])
+            key = self._bucketKey(date, groupBy)
+            bucket = buckets.setdefault(key, {"label": key, "totalTimeListened": 0, "plays": 0})
+            bucket["totalTimeListened"] += entry["timePlayed"]
+            bucket["plays"] += 1
+
+        if startDate is not None and endDate is not None:
+            rangeStart, rangeEnd = startDate, endDate
+        elif entries:
+            playedDates = [convertToDatetime(e["playedAt"]) for e in entries]
+            rangeStart = min(playedDates)
+            rangeEnd = max(playedDates) + datetime.timedelta(seconds=1)
+        else:
+            return []
+
+        step = datetime.timedelta(days=7 if groupBy == "week" else 1)
+        cursor = startOfWeek(rangeStart) if groupBy == "week" else startOfDay(rangeStart)
+
+        result = []
+        while cursor < rangeEnd:
+            key = self._bucketKey(cursor, groupBy)
+            result.append(buckets.get(key, {"label": key, "totalTimeListened": 0, "plays": 0}))
+            cursor += step
+        return result
+
+    def getHourOfDayHeatmap(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> list:
+        """7x24 grid (rows Monday=0..Sunday=6, columns hour-of-day 0-23) of total
+        listening time and play count, for a 'when do I listen' heatmap."""
+        entries = self.filterByInterval(self._loadEntries(), startDate, endDate)
+        grid = [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
+
+        for entry in entries:
+            date = convertToDatetime(entry["playedAt"])
+            cell = grid[date.weekday()][date.hour]
+            cell["totalTimeListened"] += entry["timePlayed"]
+            cell["plays"] += 1
+
+        return grid
+
+    def getArtistTrend(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None, topN: int = 5, groupBy: str = "week") -> dict:
+        """Per-bucket play counts for the topN most-played artists in the range, for
+        an 'artist trend over time' line chart. Buckets are only the ones that have
+        any activity - unlike getListeningTimeSeries, a trend line doesn't need a
+        gap-filled timeline the way a bar chart's x-axis does."""
+        entries = self.filterByInterval(self._loadEntries(), startDate, endDate)
+        tracks = self._loadTracks()
+
+        totalPlaysByArtist = {}
+        perEntryArtists = []
+        for entry in entries:
+            metadata = self._paginateEntry(entry, tracks)
+            if metadata is None:
+                continue
+            date = convertToDatetime(entry["playedAt"])
+            key = self._bucketKey(date, groupBy)
+            artistNames = [a["name"] for a in metadata.get("artists", [])]
+            perEntryArtists.append((key, artistNames))
+            for name in artistNames:
+                totalPlaysByArtist[name] = totalPlaysByArtist.get(name, 0) + 1
+
+        if not totalPlaysByArtist:
+            return {"buckets": [], "series": []}
+
+        topNames = [name for name, _ in sorted(totalPlaysByArtist.items(), key=lambda kv: kv[1], reverse=True)[:topN]]
+
+        bucketKeys = sorted({key for key, _ in perEntryArtists})
+        seriesData = {name: {key: 0 for key in bucketKeys} for name in topNames}
+        for key, artistNames in perEntryArtists:
+            for name in artistNames:
+                if name in seriesData:
+                    seriesData[name][key] += 1
+
+        series = [{"name": name, "data": [seriesData[name][key] for key in bucketKeys]} for name in topNames]
+        return {"buckets": bucketKeys, "series": series}
 
     def startListener(self, cookiesFile, email=None):
         if cookiesFile:
