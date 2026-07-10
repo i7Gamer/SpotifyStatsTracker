@@ -14,6 +14,8 @@ from Database.Migrators.migrate import migrateIfNeeded
 from Database.utils import msToString, convertToDatetime, formatDuration, dateToString, versionTuple, now, startOfDay, parseDateString
 from SpotipyFree import saveSession, parseCookieString
 
+PAGE_SIZE = 50   #< list items shown per page
+
 class SpotifyDashboardApp:
     def __init__(self):
         migrateIfNeeded()
@@ -403,7 +405,14 @@ class SpotifyDashboardApp:
         cssClass = "change-positive" if change > 0 else "change-negative"
         return formatted, cssClass
 
-    def getPage(self, items, page, pageSize=50):
+    def _getPageParam(self):
+        """The current request's ?page=... as an int >= 1, tolerating junk input."""
+        try:
+            return max(1, int(request.args.get("page", 1) or 1))
+        except (TypeError, ValueError):
+            return 1
+
+    def getPage(self, items, page, pageSize=PAGE_SIZE):
         """ Gets items in page as well as other data including total pages and start index """
         page = max(1, page)
         total = len(items)
@@ -614,7 +623,7 @@ class SpotifyDashboardApp:
             if not email:
                 return redirect(url_for("login", next=request.path))
 
-            page = int(request.args.get("page", 1) or 1)
+            page = self._getPageParam()
             searchQuery = request.args.get("q", "")
             customStart = request.args.get("startDate", "")
             customEnd = request.args.get("endDate", "")
@@ -622,11 +631,21 @@ class SpotifyDashboardApp:
             if interval == "custom" and not (customStart and customEnd):
                 interval = "all time"
 
-            tracks = db.getEntriesFromNew()
             if searchQuery:
+                # Search has to look at the whole history.
+                tracks = db.getEntriesFromNew()
                 self._embedIndices(tracks)
-            tracks = self._filterBySearch(tracks, searchQuery)
-            tracks, totalPages, startIndex = self.getPage(tracks, page)
+                tracks = self._filterBySearch(tracks, searchQuery)
+                tracks, totalPages, startIndex = self.getPage(tracks, page)
+            else:
+                # Only materialize the page being shown - joining full track
+                # metadata onto every entry ever recorded on every request gets
+                # slow once the history grows large.
+                totalEntries = db.getEntriesCount()
+                totalPages = max(1, (totalEntries + PAGE_SIZE - 1) // PAGE_SIZE)
+                page = max(1, min(page, totalPages))
+                startIndex = (page - 1) * PAGE_SIZE
+                tracks = db.getEntriesFromNew(count=PAGE_SIZE, startIndex=startIndex)
             tracks = self._embedSongsTextElements(tracks)
 
             intervalLabel = self._getIntervalLabel(interval, customStart, customEnd)
@@ -681,7 +700,7 @@ class SpotifyDashboardApp:
             if not email:
                 return redirect(url_for("login", next=request.path))
 
-            page = int(request.args.get("page", 1) or 1)
+            page = self._getPageParam()
             searchQuery = request.args.get("q", "")
             sortBy = request.args.get("sortBy", "totalTimeListened")
             interval = request.args.get("interval", "")
@@ -734,7 +753,7 @@ class SpotifyDashboardApp:
             if not email:
                 return redirect(url_for("login", next=request.path))
 
-            page = int(request.args.get("page", 1) or 1)
+            page = self._getPageParam()
             searchQuery = request.args.get("q", "")
             sortBy = request.args.get("sortBy", "totalTimeListened")
             interval = request.args.get("interval", "")

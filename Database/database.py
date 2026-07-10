@@ -91,7 +91,13 @@ class Database:
             timestamp = item.get("played_at")
             msPlayed = item.get("ms_played", 0)
             if track:
-                self.appendTrackData(timestamp, track, msPlayed, context=item.get("context", None))
+                # Per-item isolation: if the callback raised, the listener would
+                # retry the whole batch forever and record nothing new until the
+                # bad item aged out of the recently-played feed.
+                try:
+                    self.appendTrackData(timestamp, track, msPlayed, context=item.get("context", None))
+                except Exception as e:
+                    print(f"Error adding track from listener: {parseError(e)}")
 
     def _loadEntries(self) -> list:
         """Load ONLY id and info about time played from the JSON file."""
@@ -234,14 +240,16 @@ class Database:
         """ Return the latest `count` entries from history, sorted from newest to oldest. If count is None, return all entries. """
         entries = self._loadEntries()
         startPos = len(entries) - startIndex   #< Everything is reversed
-        
-        if count is not None:
-            endPos = startPos - count
-            endPos = None if endPos <= 0 else endPos
+
+        if startPos <= 0:                      #< startIndex at/past the oldest entry - nothing left (guards against negative-index wraparound)
+            slicedEntries = []
+        elif count is not None:
+            endPos = startPos - count - 1      #< stop is exclusive when stepping backwards
+            endPos = None if endPos < 0 else endPos
             slicedEntries = entries[startPos - 1 : endPos : -1]   #< slice and reverse
         else:
             slicedEntries = entries[startPos - 1 : : -1]          #< slice and reverse
-        
+
         if fullPagination:
             return self._paginateEntries(slicedEntries)
         return slicedEntries
@@ -296,9 +304,11 @@ class Database:
             response = requests.get(url, timeout=10)
             response.raise_for_status()
             img = Image.open(BytesIO(response.content))
-            ext = img.format.lower() if img.format else "jpeg"
-            
-            img.save(path / f"{imgId}.{ext}")
+            # Always store as JPEG: the templates hardcode `<imgId>.jpeg`, so an
+            # image saved under its source format (e.g. .png) would 404 forever.
+            if img.mode not in ("RGB", "L"):
+                img = img.convert("RGB")   #< JPEG can't store alpha/palette modes
+            img.save(path / f"{imgId}.jpeg", format="JPEG")
             
             with self._imageIdsLock:
                 # Add to set and persist. Pre-adding handles immediate concurrent lookups, 
@@ -383,48 +393,60 @@ class Database:
     def appendTrackData(self, timestamp, track, timePlayed, context=None):
         self.appendMetadata(Client.formatTrack(track, timestamp, timePlayed, context=context))
 
+    @staticmethod
+    def _entrySortKey(entry):
+        playedAt = entry.get("playedAt", 0)
+        return playedAt if isinstance(playedAt, (int, float)) else convertToDatetime(playedAt).timestamp()
+
     def resortDatabase(self):
         """ In case entries got out of order, this will sort them by playedAt timestamp. """
         entries = self._loadEntries()
-        entries.sort(
-            key=lambda x: x.get("playedAt", 0) if isinstance(x.get("playedAt", 0), (int, float)) else convertToDatetime(x.get("playedAt", 0)).timestamp()
-        )
+        entries.sort(key=self._entrySortKey)
         print("Resorted Database")
 
         self._saveEntries(entries)
 
     def importHistory(self, exportedHistory):
-        entries = self._loadEntries()
-        tracks = self._loadTracks()
         importer = Importer(cookiesFile=self.cookiesFile, email=self.email)
-        
+
         parsedHistory, exportType = importer._convertToList(exportedHistory)
         if not parsedHistory:
             return
-            
+
         total = len(parsedHistory)
         self.writeProgress("running", 0, total, "Starting import")
 
         def progress_callback(status, current, total_steps, message):
             self.writeProgress(status, current, total_steps, message)
 
+        # Imported data is collected locally and only merged into the shared caches
+        # once the whole import has succeeded - a mid-import failure must not leave
+        # half-imported, unsorted entries behind (a later save would persist them,
+        # breaking the sorted-order assumption filterByInterval relies on).
+        importedEntries = []
+        importedTracks = {}
         index = 0
         try:
             for index, meta in enumerate(importer.importHistory(parsedHistory, self._loadTracks().values(), exportType, progress_callback=progress_callback), start=1):  #< We only want the tracks, the importer doesn't care about the keys
                 e, t = self._splitEntryAndTrack(meta)
-                entries.append(e)
-                tracks = self._addTrack(tracks, t)
+                importedEntries.append(e)
+                importedTracks[t["id"]] = t
                 self.saveImagesFromTrack(t)
-                
+
                 if index % 10 == 0 or index == total:
                     self.writeProgress("running", index, total, f"Imported {index} of {total}")
-            
-            # Sort entries in-memory before saving, avoiding redundant read/writes
-            entries.sort(
-                key=lambda x: x.get("playedAt", 0) if isinstance(x.get("playedAt", 0), (int, float)) else convertToDatetime(x.get("playedAt", 0)).timestamp()
-            )
-            self._saveEntries(entries)
-            self._saveTracks(tracks)
+
+            # Merge under the file lock so entries the listener recorded while the
+            # import ran are kept, then sort once and persist.
+            with self.fileLock:
+                entries = self._loadEntries()
+                entries.extend(importedEntries)
+                entries.sort(key=self._entrySortKey)
+                self._saveEntries(entries)
+
+                tracks = self._loadTracks()
+                tracks.update(importedTracks)
+                self._saveTracks(tracks)
             self.writeProgress("complete", total, total, "Import complete")
         except Exception as e:
             self.writeProgress("failed", index, total, f"Import failed: {parseError(e)}", error=True)

@@ -6,29 +6,22 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-_original_modules = {}
-for m in ["Database.database", "Database.Migrators.migrate", "Database.utils", "SpotipyFree"]:
-    if m in sys.modules:
-        _original_modules[m] = sys.modules[m]
-
-sys.modules["Database.database"] = MagicMock()
-sys.modules["Database.Migrators.migrate"] = MagicMock()
-sys.modules["Database.utils"] = MagicMock()
-sys.modules["SpotipyFree"] = MagicMock()
-
-
-def tearDownModule():
-    for m in ["Database.database", "Database.Migrators.migrate", "Database.utils", "SpotipyFree"]:
-        if m in _original_modules:
-            sys.modules[m] = _original_modules[m]
-        elif m in sys.modules:
-            del sys.modules[m]
-
-
+# NOTE: this file deliberately does NOT swap Database modules for MagicMocks in
+# sys.modules. These tests never construct a real Database (user_databases is
+# populated with per-test mocks), and a module-level mock/restore here would
+# poison the patch("Database.database...") targets of test files that run after
+# this one - which used to silently send tests to the real network.
 from app import SpotifyDashboardApp
 
 
 class TestServeArtistImageRoute(unittest.TestCase):
+    def setUp(self):
+        # Keep tests from regenerating the real secrets/flask_secret_key.txt
+        # (the mocked Path.exists in _makeApp would otherwise force a rewrite).
+        patcher = patch('app.SpotifyDashboardApp._get_or_create_secret_key', return_value='test-secret-key')
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     @patch('app.SpotifyDashboardApp.startVersionCheck_thread')
     @patch('app.SpotifyDashboardApp.checkLogin_thread')
     @patch('app.migrateIfNeeded')

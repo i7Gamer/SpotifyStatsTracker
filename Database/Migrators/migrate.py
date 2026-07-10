@@ -25,6 +25,7 @@ def migrateIfNeeded():
     appVersion = appVersionFile.read_text().strip()
     databaseVersionFile = baseDir / ".." / "Users" / "VERSION"
     if databaseVersionFile.exists() == False:
+        databaseVersionFile.parent.mkdir(parents=True, exist_ok=True)   #< Users/ is runtime data, absent on a fresh install
         databaseVersionFile.write_text(appVersion)
         return   #< means this is first run, no migration needed
     databaseVersion = databaseVersionFile.read_text().strip()

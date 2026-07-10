@@ -95,5 +95,51 @@ class TestLazyFetchArtistImage(unittest.TestCase):
             self.assertFalse(result)
 
 
+class TestDownloadImageTaskExtension(unittest.TestCase):
+    """The templates hardcode `<imgId>.jpeg`, so downloaded covers must always be
+    saved as .jpeg regardless of the format the CDN returns - a PNG saved as
+    `<imgId>.png` would 404 forever."""
+
+    def _makeResponse(self, imageBytes):
+        response = MagicMock()
+        response.content = imageBytes
+        return response
+
+    def _pngBytes(self, mode="RGBA"):
+        from io import BytesIO
+        from PIL import Image
+        buffer = BytesIO()
+        Image.new(mode, (2, 2), (255, 0, 0, 128) if mode == "RGBA" else 0).save(buffer, format="PNG")
+        return buffer.getvalue()
+
+    def test_png_response_is_saved_as_jpeg(self):
+        db = _bareDatabase()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            imgDir = Path(tmpdir)
+            metadataPath = imgDir / "metadata.json"
+
+            with patch("Database.database.requests.get", return_value=self._makeResponse(self._pngBytes())):
+                db._downloadImageTask(imgDir, "https://img.example/x", "img1", metadataPath, set())
+
+            self.assertTrue((imgDir / "img1.jpeg").exists())
+            self.assertFalse((imgDir / "img1.png").exists())
+
+            from PIL import Image
+            with Image.open(imgDir / "img1.jpeg") as saved:
+                self.assertEqual(saved.format, "JPEG")
+
+    def test_download_persists_image_id_to_metadata(self):
+        import json
+        db = _bareDatabase()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            imgDir = Path(tmpdir)
+            metadataPath = imgDir / "metadata.json"
+
+            with patch("Database.database.requests.get", return_value=self._makeResponse(self._pngBytes())):
+                db._downloadImageTask(imgDir, "https://img.example/x", "img1", metadataPath, set())
+
+            self.assertIn("img1", json.loads(metadataPath.read_text(encoding="utf-8")))
+
+
 if __name__ == "__main__":
     unittest.main()
