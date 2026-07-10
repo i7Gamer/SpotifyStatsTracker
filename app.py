@@ -154,7 +154,7 @@ class SpotifyDashboardApp:
                 sanitized = "".join(c for c in prefix if c.isalnum() or c in ("-", "_")).strip()
                 if not sanitized:
                     sanitized = f"user_{int(time.time())}"
-                    
+
                 # Ensure uniqueness under Database/Users/
                 username = sanitized
                 counter = 1
@@ -162,7 +162,7 @@ class SpotifyDashboardApp:
                 while (users_dir / username).exists() or username in self.user_databases:
                     username = f"{sanitized}_{counter}"
                     counter += 1
-                    
+
                 # Save to mapping
                 map_file = self.baseDir / "secrets" / "users_map.json"
                 users_map = {}
@@ -174,15 +174,16 @@ class SpotifyDashboardApp:
                 users_map[email] = username
                 map_file.parent.mkdir(parents=True, exist_ok=True)
                 map_file.write_text(json.dumps(users_map, indent=4), encoding="utf-8")
-            
-            # Ensure legacy folders are migrated to this user's active directory
-            self._migrate_legacy_database_if_needed(username)
-            
-            # Ensure directories exist
-            users_dir = self.baseDir / "Database" / "Users"
-            (users_dir / username).mkdir(parents=True, exist_ok=True)
-            
-            return username
+
+        # Legacy-folder migration (file copies) and directory creation only touch
+        # this user's own directory, not the shared session/mapping files, so they
+        # don't need the global session lock - and its I/O shouldn't block other
+        # users' session lookups while it runs.
+        self._migrate_legacy_database_if_needed(username)
+        users_dir = self.baseDir / "Database" / "Users"
+        (users_dir / username).mkdir(parents=True, exist_ok=True)
+
+        return username
 
     def get_user_db(self, username, email):
         with self._db_lock:
@@ -195,23 +196,27 @@ class SpotifyDashboardApp:
             return self.user_databases[username]
 
     def is_user_logged_in(self, email):
+        if not email:
+            return False
+
         with self._session_lock:
-            if not email:
-                return False
             if not self.cookiesFile.exists():
                 return False
             try:
                 cookies_data = json.loads(self.cookiesFile.read_text(encoding="utf-8"))
                 has_cookie = any(c.get("identifier") == email for c in cookies_data)
-                if not has_cookie:
-                    return False
             except Exception:
                 return False
-                
+            if not has_cookie:
+                return False
             username = self.get_username_for_email(email)
-            if username and username in self.user_databases:
-                return self.user_databases[username].isListenerLoggedIn()
-            return True
+
+        # isListenerLoggedIn() can make a live network call to Spotify - done outside
+        # the lock so a slow/hanging check for one user can't block every other
+        # user's session lookups (this runs on nearly every authenticated request).
+        if username and username in self.user_databases:
+            return self.user_databases[username].isListenerLoggedIn()
+        return True
 
     def checkLogin_thread(self):
         self._ensureAllUsersLogin()
@@ -220,16 +225,25 @@ class SpotifyDashboardApp:
     
     def _ensureAllUsersLogin(self):
         with self._session_lock:
-            if self.cookiesFile.exists():
-                try:
-                    cookies_data = json.loads(self.cookiesFile.read_text(encoding="utf-8"))
-                    for entry in cookies_data:
-                        email = entry.get("identifier")
-                        if email:
-                            username = self.get_or_create_user(email)
-                            self.get_user_db(username, email)
-                except Exception as e:
-                    print("Error initializing users:", e)
+            if not self.cookiesFile.exists():
+                return
+            try:
+                cookies_data = json.loads(self.cookiesFile.read_text(encoding="utf-8"))
+            except Exception as e:
+                print("Error initializing users:", e)
+                return
+
+        # get_or_create_user/get_user_db can migrate legacy folders and start a
+        # listener (a live network call) per user - done outside the session lock
+        # so initializing one user doesn't block every other user's requests.
+        try:
+            for entry in cookies_data:
+                email = entry.get("identifier")
+                if email:
+                    username = self.get_or_create_user(email)
+                    self.get_user_db(username, email)
+        except Exception as e:
+            print("Error initializing users:", e)
     
     def _checkLoginLoop(self):
         while True:
@@ -548,9 +562,12 @@ class SpotifyDashboardApp:
 
                 with self._session_lock:
                     saveSession(parseCookieString(cookies), email, self.cookiesFile)
-                    session.permanent = True
-                    username = self.get_or_create_user(email)
-                    self.get_user_db(username, email)
+                session.permanent = True
+                # get_or_create_user/get_user_db manage their own locking and can
+                # start a listener (a live network call) - kept outside the session
+                # lock so logging one user in doesn't block everyone else.
+                username = self.get_or_create_user(email)
+                self.get_user_db(username, email)
                 session["email"] = email
                 session["username"] = username
 

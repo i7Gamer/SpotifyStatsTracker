@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import patch, MagicMock, mock_open
 import sys
 import os
+import threading
 from pathlib import Path
 
 # Ensure we can import app.py
@@ -197,6 +198,56 @@ class TestImageRouteAuthorization(unittest.TestCase):
                 sess['email'] = 'alice@example.com'
             resp = client.get('/img/alice/tracks/..%5C..%5Csecret.txt')
         self.assertEqual(resp.status_code, 404)
+
+
+class TestSessionLockScope(unittest.TestCase):
+    """_session_lock exists to protect users_map.json / cookies.json reads and
+    writes from corruption under concurrent access - it must not also serialize
+    unrelated, slow work (like a live Spotify network call) across all users."""
+
+    @patch('app.SpotifyDashboardApp.startVersionCheck_thread')
+    @patch('app.SpotifyDashboardApp.checkLogin_thread')
+    @patch('app.migrateIfNeeded')
+    def _makeApp(self, mock_migrate, mock_check, mock_version):
+        import tempfile
+        app = SpotifyDashboardApp.__new__(SpotifyDashboardApp)
+        app.baseDir = Path(tempfile.mkdtemp())
+        app.cookiesFile = app.baseDir / "secrets" / "cookies.json"
+        app.user_databases = {}
+        app._db_lock = threading.RLock()
+        app._session_lock = threading.RLock()
+        return app
+
+    def test_slow_listener_check_does_not_block_unrelated_session_lookups(self):
+        import json
+        import time
+
+        dash = self._makeApp()
+        dash.cookiesFile.parent.mkdir(parents=True, exist_ok=True)
+        dash.cookiesFile.write_text(json.dumps([{"identifier": "alice@example.com"}]), encoding="utf-8")
+
+        usersMapFile = dash.baseDir / "secrets" / "users_map.json"
+        usersMapFile.write_text(json.dumps({"alice@example.com": "alice"}), encoding="utf-8")
+
+        slowDb = MagicMock()
+        slowDb.isListenerLoggedIn.side_effect = lambda: time.sleep(0.3) or True
+        dash.user_databases["alice"] = slowDb
+
+        thread = threading.Thread(target=lambda: dash.is_user_logged_in("alice@example.com"))
+        thread.start()
+        time.sleep(0.05)  # let the slow call start and take the lock
+
+        start = time.time()
+        dash.get_username_for_email("bob@example.com")  # unrelated user, no network involved
+        elapsed = time.time() - start
+
+        thread.join()
+
+        self.assertLess(
+            elapsed, 0.2,
+            "an unrelated session lookup blocked on another user's live listener check "
+            "- the session lock's critical section is too broad"
+        )
 
 
 if __name__ == '__main__':
