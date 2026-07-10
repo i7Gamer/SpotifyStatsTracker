@@ -1,5 +1,6 @@
 import unittest
 from unittest.mock import MagicMock, patch
+import signal
 import threading
 import websockets.sync.client
 import spotapi.status
@@ -40,6 +41,25 @@ class TestPatches(unittest.TestCase):
                 )
         finally:
             pass
+
+    def test_websocket_streamer_init_restores_previous_sigint_handler(self):
+        """WebsocketStreamer.__init__ must not leave spotapi's own SIGINT handler
+        installed. Even if the underlying init hijacks SIGINT (as spotapi's real
+        implementation does, to call ws.close(); exit(0)), whatever handler was
+        registered beforehand (e.g. Python/Werkzeug's default) must win, so Ctrl+C
+        doesn't get hijacked mid-request by a background listener thread."""
+        def fakeOriginalInit(self, *args, **kwargs):
+            signal.signal(signal.SIGINT, lambda signum, frame: None)
+
+        sentinelHandler = lambda signum, frame: None
+        originalHandler = signal.signal(signal.SIGINT, sentinelHandler)
+        try:
+            instance = spotapi.websocket.WebsocketStreamer.__new__(spotapi.websocket.WebsocketStreamer)
+            with patch("Database.patches.original_websocket_streamer_init", fakeOriginalInit):
+                spotapi.websocket.WebsocketStreamer.__init__(instance, MagicMock())
+            self.assertIs(signal.getsignal(signal.SIGINT), sentinelHandler)
+        finally:
+            signal.signal(signal.SIGINT, originalHandler)
 
     def test_player_status_has_reconnect_method(self):
         """PlayerStatus class must have reconnect method injected."""

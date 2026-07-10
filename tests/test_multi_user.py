@@ -138,6 +138,39 @@ class TestMultiUser(unittest.TestCase):
 
             self.assertEqual(key, "my-env-secret")
 
+    @patch(_SECRET_KEY_PATCH, return_value='test-secret-key')
+    @patch('app.SpotifyDashboardApp.startVersionCheck_thread')
+    @patch('app.SpotifyDashboardApp.checkLogin_thread')
+    @patch('app.migrateIfNeeded')
+    def test_shutdown_stops_all_user_databases(self, mock_migrate, mock_check, mock_version, mock_secret):
+        app = SpotifyDashboardApp()
+        db1 = MagicMock()
+        db2 = MagicMock()
+        app.user_databases = {"user1": db1, "user2": db2}
+
+        app.shutdown()
+
+        db1.stop.assert_called_once()
+        db2.stop.assert_called_once()
+
+    @patch(_SECRET_KEY_PATCH, return_value='test-secret-key')
+    @patch('app.SpotifyDashboardApp.startVersionCheck_thread')
+    @patch('app.SpotifyDashboardApp.checkLogin_thread')
+    @patch('app.migrateIfNeeded')
+    def test_shutdown_continues_after_one_database_fails_to_stop(self, mock_migrate, mock_check, mock_version, mock_secret):
+        """One user's listener failing to stop cleanly must not block the rest
+        from being stopped during app shutdown."""
+        app = SpotifyDashboardApp()
+        db1 = MagicMock()
+        db1.user = "user1"
+        db1.stop.side_effect = Exception("boom")
+        db2 = MagicMock()
+        app.user_databases = {"user1": db1, "user2": db2}
+
+        app.shutdown()  # should not raise
+
+        db2.stop.assert_called_once()
+
 
 class TestImageRouteAuthorization(unittest.TestCase):
     @patch(_SECRET_KEY_PATCH, return_value='test-secret-key')

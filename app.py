@@ -906,8 +906,19 @@ class SpotifyDashboardApp:
                 artistTrend=artistTrend,
             )
 
+    def shutdown(self):
+        with self._db_lock:
+            for db in self.user_databases.values():
+                try:
+                    db.stop()
+                except Exception as e:
+                    print(f"Error stopping database for {db.user}: {e}")
+
     def run(self):
-        self.app.run(host="0.0.0.0", debug=True, port=5000, use_reloader=False)#, threaded=False)
+        try:
+            self.app.run(host="0.0.0.0", debug=True, port=5000, use_reloader=False)#, threaded=False)
+        finally:
+            self.shutdown()
 
 if __name__ == "__main__":
     ## $env:IMPORT_KEYWORD="Weekly"

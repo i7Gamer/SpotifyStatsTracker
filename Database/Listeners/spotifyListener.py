@@ -5,6 +5,8 @@ from contextlib import contextmanager
 from SpotipyFree import Spotify
 from Database.utils import parseError
 
+LISTENER_STOP_JOIN_TIMEOUT_SECONDS = 5  #< bound how long shutdown waits for spotapi's background LastPlayed thread to exit
+
 
 @contextmanager
 def _suppress_signal_in_thread():
@@ -80,3 +82,14 @@ class Listener:
     
     def stop(self):
         self.run = False
+        # Also stop spotapi's own background LastPlayed thread (started via
+        # startRecentlyPlayedListener). Left running, it can hit a rate-limited or
+        # malformed response mid-request while the interpreter is shutting down,
+        # producing spurious errors. Bounded join instead of calling its own
+        # stop() (which joins with no timeout) so app shutdown can't hang.
+        lastPlayedManager = getattr(self.sp, "lastPlayedManager", None)
+        if lastPlayedManager is not None:
+            lastPlayedManager.run = False
+            thread = getattr(lastPlayedManager, "thread", None)
+            if thread is not None and thread.is_alive():
+                thread.join(timeout=LISTENER_STOP_JOIN_TIMEOUT_SECONDS)

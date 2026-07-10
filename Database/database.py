@@ -731,6 +731,11 @@ class Database:
             return False
         return self.listener.isLoggedIn()
 
+    def stop(self):
+        if self.listener is not None:
+            self.listener.stop()
+        self.autoImporter.wd.stop()
+
 
 if __name__ == "__main__":
 

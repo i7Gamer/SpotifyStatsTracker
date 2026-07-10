@@ -1,3 +1,4 @@
+import signal
 import threading
 import websockets.sync.client
 import spotapi.status
@@ -63,6 +64,23 @@ def player_status_reconnect(self):
 
 # Inject the reconnect method into PlayerStatus class
 spotapi.status.PlayerStatus.reconnect = player_status_reconnect
+
+
+# 3. Prevent WebsocketStreamer.__init__ from hijacking the process's SIGINT handler.
+# It unconditionally does `signal.signal(signal.SIGINT, self.handle_interrupt)`, whose
+# handler just does `self.ws.close(); exit(0)`. That overwrites Flask/Werkzeug's normal
+# Ctrl+C handling, and since it can fire while a background listener thread (see
+# LastPlayed.py's updateLoop) is mid-request, it leads to noisy/broken shutdowns instead
+# of a clean KeyboardInterrupt. Restore whatever SIGINT handler was registered before
+# spotapi's own __init__ ran.
+original_websocket_streamer_init = spotapi.websocket.WebsocketStreamer.__init__
+
+def patched_websocket_streamer_init(self, *args, **kwargs):
+    previousSigintHandler = signal.getsignal(signal.SIGINT)
+    original_websocket_streamer_init(self, *args, **kwargs)
+    signal.signal(signal.SIGINT, previousSigintHandler)
+
+spotapi.websocket.WebsocketStreamer.__init__ = patched_websocket_streamer_init
 
 
 import json
