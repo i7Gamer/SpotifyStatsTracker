@@ -61,13 +61,15 @@ class SpotifyDashboardApp:
         # Possible legacy source directories:
         # 1. Database/Users/Tzur (from early multi-user version)
         # 2. Database/Tzur (legacy single-user version)
+        # 3. Database (legacy single-user version directly in Database folder)
         legacy_sources = [
             users_dir / "Tzur",
-            self.baseDir / "Database" / "Tzur"
+            self.baseDir / "Database" / "Tzur",
+            self.baseDir / "Database"
         ]
         
         for src in legacy_sources:
-            if src.exists() and src.resolve() != target_dir.resolve():
+            if src.exists() and src.resolve() != target_dir.resolve() and src.resolve() != users_dir.resolve():
                 src_entries = src / "entries.json"
                 # Check if this source directory actually has database entries
                 if src_entries.exists() and src_entries.stat().st_size > 2:
@@ -76,20 +78,46 @@ class SpotifyDashboardApp:
                     # Create target directory
                     target_dir.mkdir(parents=True, exist_ok=True)
                     
-                    # Copy all contents recursively
-                    def copy_recursive(src_path, dst_path):
-                        dst_path.mkdir(parents=True, exist_ok=True)
-                        for item in src_path.iterdir():
-                            target_item = dst_path / item.name
-                            if item.is_dir():
-                                copy_recursive(item, target_item)
-                            else:
-                                shutil.copy2(item, target_item)
-                                
                     try:
-                        copy_recursive(src, target_dir)
-                        # Remove the old directory to keep files clean and avoid re-migration
-                        shutil.rmtree(src)
+                        if src.resolve() == (self.baseDir / "Database").resolve():
+                            # Only migrate individual database files to avoid recursive copying of Database/Users
+                            db_files = ["entries.json", "tracks.json", "playlists.json", "progress.json"]
+                            for file_name in db_files:
+                                file_path = src / file_name
+                                if file_path.exists():
+                                    shutil.copy2(file_path, target_dir / file_name)
+                                    file_path.unlink()
+                            
+                            # Copy image directories if they exist
+                            for img_type in ["tracks", "artists"]:
+                                img_src = src / "img" / img_type
+                                if img_src.exists():
+                                    img_dst = target_dir / "img" / img_type
+                                    img_dst.mkdir(parents=True, exist_ok=True)
+                                    for item in img_src.iterdir():
+                                        if item.is_file():
+                                            shutil.copy2(item, img_dst / item.name)
+                            
+                            # Clean up legacy img folders if they are empty
+                            legacy_img = src / "img"
+                            if legacy_img.exists():
+                                try:
+                                    shutil.rmtree(legacy_img)
+                                except Exception:
+                                    pass
+                        else:
+                            # Copy all contents recursively
+                            def copy_recursive(src_path, dst_path):
+                                dst_path.mkdir(parents=True, exist_ok=True)
+                                for item in src_path.iterdir():
+                                    target_item = dst_path / item.name
+                                    if item.is_dir():
+                                        copy_recursive(item, target_item)
+                                    else:
+                                        shutil.copy2(item, target_item)
+                            copy_recursive(src, target_dir)
+                            # Remove the old directory to keep files clean and avoid re-migration
+                            shutil.rmtree(src)
                         print(f"Successfully migrated and cleaned up legacy folder: {src}")
                     except Exception as e:
                         print(f"Error migrating legacy database: {e}")
@@ -408,10 +436,16 @@ class SpotifyDashboardApp:
             email = session.get("email")
             if not email or not self.is_user_logged_in(email):
                 return None, None, None
-            username = session.get("username")
-            if not username:
-                username = self.get_or_create_user(email)
-                session["username"] = username
+            
+            # Ensure the username matches the correct email mapping to prevent session pollution from legacy user "Tzur"
+            correct_username = self.get_username_for_email(email)
+            if not correct_username:
+                correct_username = self.get_or_create_user(email)
+            
+            if session.get("username") != correct_username:
+                session["username"] = correct_username
+
+            username = correct_username
             db = self.get_user_db(username, email)
             return email, username, db
 
