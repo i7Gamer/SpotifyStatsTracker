@@ -396,7 +396,8 @@ class SpotifyDashboardApp:
                 interval = default
             if not startDate:
                 if interval == "day":
-                    startDate = nowLocal - timedelta(days=1)
+                    startDate = convertToDatetime(startOfDay(nowLocal - timedelta(days=1)))
+                    endDate = convertToDatetime(startOfDay(nowLocal))
 
                 elif interval == "week":
                     startDate = nowLocal - timedelta(weeks=1)
