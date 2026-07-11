@@ -230,6 +230,14 @@ button {
   margin-bottom: 18px;
 }
 
+/* Section headings that sit directly on the page background rather than
+   inside a .card (e.g. "Top Songs" on Wrapped/artist/album detail pages) -
+   the child combinator keeps this from also matching .card h2 above. */
+.page > h2 {
+  margin: 36px 0 18px;
+  font-size: 1.3rem;
+}
+
 .card-content {
   display: grid;
   gap: 14px;
@@ -745,6 +753,7 @@ progress::-moz-progress-bar {
     left: 0;
     right: 0;
     flex-direction: column;
+    flex-wrap: nowrap;
     background: rgba(13, 13, 13, 0.98);
     border-bottom: 1px solid var(--border);
     gap: 16px;
@@ -755,7 +764,12 @@ progress::-moz-progress-bar {
   }
 
   .nav-links.active {
-    max-height: 400px;
+    /* was a fixed 400px, which fit the original 6 links but overflowed and
+       wrapped into a broken second column once Top Albums/Wrapped brought the
+       count to 8 - vh-based + scroll keeps this from recurring as more links
+       are added. */
+    max-height: 80vh;
+    overflow-y: auto;
   }
 
   .nav-links a {
@@ -902,7 +916,7 @@ progress::-moz-progress-bar {
   font-weight: 500;
 }
 
-.pagination .button {
+.button {
   padding: 12px 24px;
   border: 1px solid var(--accent);
   background: transparent;
@@ -919,12 +933,12 @@ progress::-moz-progress-bar {
   min-height: 44px;
 }
 
-.pagination .button:hover {
+.button:hover {
   background: var(--accent);
   color: white;
 }
 
-.pagination .button:active {
+.button:active {
   opacity: 0.9;
 }
 
