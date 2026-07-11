@@ -16,18 +16,40 @@ try:
     from Database.Importers.StreamingHistoryImporter import Importer
     from Database.Importers.AutoImporter import AutoImporter
     from Database.Listeners.spotifyListener import Listener
-    from Database.repository import Repository
+    from Database.repository import (
+        Repository, IMAGE_KIND_TRACK, IMAGE_KIND_ARTIST, IMAGE_STATUS_OK, IMAGE_STATUS_FAILED,
+    )
     from Database.utils import parseError, convertToDatetime, dateToString, startOfDay, startOfWeek
 except ModuleNotFoundError:
     from Formatters.spotifyClient import Client
     from Importers.StreamingHistoryImporter import Importer
     from Importers.AutoImporter import AutoImporter
     from Listeners.spotifyListener import Listener
-    from repository import Repository
+    from repository import Repository, IMAGE_KIND_TRACK, IMAGE_KIND_ARTIST, IMAGE_STATUS_OK, IMAGE_STATUS_FAILED
     from utils import parseError, convertToDatetime, dateToString, startOfDay, startOfWeek
+
+IMAGE_DOWNLOAD_WORKERS = 5   #< bounds total concurrent image downloads for the whole process, not per user
+
+# Images are shared across every user (album art / artist photos are the same
+# bytes for everyone), so they live in one directory tree instead of under each
+# user's own folder. Still inside Users/ so the existing Docker volume mount
+# (Database/Users -> host ./Database/Users) covers it without a compose change.
+MEDIA_DIR = Path(__file__).resolve().parent / "Users" / "Media"
+
 
 class Database:
     PROGRESS_UPDATE_INTERVAL = 10   #< Write import progress to disk every N entries instead of every entry
+
+    # Shared across every Database instance (every user) in this process. Image
+    # download de-duplication is enforced by the `images` table (atomic across
+    # threads *and* users), so a single bounded pool for the whole process is
+    # enough - there's no need for one per user, and no need for the old
+    # per-user in-memory id sets / metadata.json files this replaces.
+    imgDir_tracks = MEDIA_DIR / "tracks"
+    imgDir_artists = MEDIA_DIR / "artists"
+    _imageDownloadExecutor = concurrent.futures.ThreadPoolExecutor(max_workers=IMAGE_DOWNLOAD_WORKERS)
+    _imageIdsLock = threading.RLock()
+    _artistImageLazyFetchAttempted = set()
 
     def __init__(self, user: str, cookiesFile: str | None = None, email: str | None = None, dbPath=None):
         if not user:
@@ -44,15 +66,7 @@ class Database:
         self.repo = Repository(dbPath) if dbPath is not None else Repository()
         self.repo.upsertUser(user, email)
 
-        self.imgDir_tracks = self.baseDir / "Users" / self.user / "img" / "tracks"
-        self.imgDir_artists = self.baseDir / "Users" / self.user / "img" / "artists"
         self.autoImportFolderPath = self.baseDir / ".." / "autoImport" / self.user
-
-        self._imageIdsLock = threading.RLock()
-        self._downloadedTrackImages = None
-        self._downloadedArtistImages = None
-        self._artistImageLazyFetchAttempted = set()
-        self._imageDownloadExecutor = concurrent.futures.ThreadPoolExecutor(max_workers=5)
 
         filterKeyword = os.environ.get("IMPORT_KEYWORD", None)
         print(f"auto import filtering by {filterKeyword}")
@@ -60,22 +74,6 @@ class Database:
                                          importCallback=self.importHistory,
                                          pollInterval=5,
                                          keyword=filterKeyword)
-
-    def _loadJsonFile(self, path: Path, default):
-        path.parent.mkdir(parents=True, exist_ok=True)
-
-        if not path.exists():
-            path.write_text(
-                json.dumps(default, indent=4),
-                encoding="utf-8"
-            )
-            return default
-
-        try:
-            return json.loads(path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as e:
-            print(f"Corrupted JSON in {path}: {e}")
-            raise
 
     def _addToDatabaseFromListener(self, data) -> None:
         if not data:
@@ -201,7 +199,7 @@ class Database:
     def resetProgress(self):
         self.writeProgress("idle", 0, 0, "", False)
 
-    def _downloadImageTask(self, path: Path, url: str, imgId: str, metadataPath: Path, cachedIdsSet: set):
+    def _downloadImageTask(self, path: Path, url: str, imgId: str, kind: str):
         try:
             response = requests.get(url, timeout=10)
             response.raise_for_status()
@@ -210,51 +208,32 @@ class Database:
             # image saved under its source format (e.g. .png) would 404 forever.
             if img.mode not in ("RGB", "L"):
                 img = img.convert("RGB")   #< JPEG can't store alpha/palette modes
+            path.mkdir(parents=True, exist_ok=True)
             img.save(path / f"{imgId}.jpeg", format="JPEG")
-
-            with self._imageIdsLock:
-                # Add to set and persist. Pre-adding handles immediate concurrent lookups,
-                # this ensures it's persisted successfully.
-                cachedIdsSet.add(imgId)
-                metadataPath.write_text(json.dumps(list(cachedIdsSet), indent=4), encoding="utf-8")
+            self.repo.markImageStatus(imgId, kind, IMAGE_STATUS_OK)
         except Exception as e:
-            with self._imageIdsLock:
-                cachedIdsSet.discard(imgId)
+            self.repo.markImageStatus(imgId, kind, IMAGE_STATUS_FAILED)
             if isinstance(e, requests.exceptions.RequestException):
                 print(f"Error fetching image from {url} (id={imgId}): {parseError(e)}")
             else:
                 print(f"Error saving image (id={imgId}): {parseError(e)}")
 
-    def _saveImg(self, path: Path, url: str, imgId: str, isTrack: bool):
+    def _saveImg(self, path: Path, url: str, imgId: str, kind: str):
         if not url:
             return  #< Spotify occasionally returns tracks with no album images; skip silently
-        metadataPath = path / "metadata.json"
-
-        with self._imageIdsLock:
-            if isTrack:
-                if self._downloadedTrackImages is None:
-                    path.mkdir(parents=True, exist_ok=True)
-                    self._downloadedTrackImages = set(self._loadJsonFile(metadataPath, []))
-                cachedSet = self._downloadedTrackImages
-            else:
-                if self._downloadedArtistImages is None:
-                    path.mkdir(parents=True, exist_ok=True)
-                    self._downloadedArtistImages = set(self._loadJsonFile(metadataPath, []))
-                cachedSet = self._downloadedArtistImages
-
-            if imgId in cachedSet:
-                return
-
-            # Pre-add to set to prevent duplicate concurrent download requests for the same image
-            cachedSet.add(imgId)
-
-        self._imageDownloadExecutor.submit(self._downloadImageTask, path, url, imgId, metadataPath, cachedSet)
+        # Atomically claim the download: returns False if this image is already
+        # downloaded or another thread/user already claimed it - shared across the
+        # whole process (and would even be safe across separate processes, unlike
+        # the old per-instance in-memory id sets).
+        if not self.repo.tryClaimImageDownload(imgId, kind):
+            return
+        self._imageDownloadExecutor.submit(self._downloadImageTask, path, url, imgId, kind)
 
     def saveTrackImg(self, url: str, imgId: str):
-        self._saveImg(self.imgDir_tracks, url, imgId, isTrack=True)
+        self._saveImg(self.imgDir_tracks, url, imgId, kind=IMAGE_KIND_TRACK)
 
     def saveArtistImg(self, url: str, imgId: str):
-        self._saveImg(self.imgDir_artists, url, imgId, isTrack=False)
+        self._saveImg(self.imgDir_artists, url, imgId, kind=IMAGE_KIND_ARTIST)
 
     def lazyFetchArtistImage(self, artistId: str, imagePath: Path) -> bool:
         """Best-effort synchronous fetch of an artist's image scraped from their public

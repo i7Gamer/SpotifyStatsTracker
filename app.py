@@ -572,18 +572,21 @@ class SpotifyDashboardApp:
                 return None
             return self.get_username_for_email(email)
 
+        # Images are shared across every user (Database.imgDir_tracks/imgDir_artists
+        # are class-level, not per user) - the <username> segment in these routes is
+        # kept only as the authorization check ("is this session allowed to ask at
+        # all"), not to select which directory to read from.
         @self.app.route('/img/<username>/tracks/<filename>')
         def serveTrackImage(username, filename):
             if username != _authorized_image_username() or filename != os.path.basename(filename):
                 return "", 404
-            imageDir = os.path.join(self.baseDir, "Database", "Users", username, "img", "tracks")
-            return send_from_directory(imageDir, filename)
+            return send_from_directory(Database.imgDir_tracks, filename)
 
         @self.app.route('/img/<username>/artists/<filename>')
         def serveArtistImage(username, filename):
             if username != _authorized_image_username() or filename != os.path.basename(filename):
                 return "", 404
-            imageDir = os.path.join(self.baseDir, "Database", "Users", username, "img", "artists")
+            imageDir = Database.imgDir_artists
             imagePath = os.path.join(imageDir, filename)
 
             if not os.path.exists(imagePath):

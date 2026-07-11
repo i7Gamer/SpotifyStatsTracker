@@ -15,7 +15,9 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 if isinstance(sys.modules.get("Database.database"), MagicMock):
     del sys.modules["Database.database"]
 
+from conftest import DatabaseTestCase
 from Database.database import Database
+from Database.repository import IMAGE_KIND_TRACK, IMAGE_STATUS_OK, IMAGE_STATUS_FAILED
 
 
 def _bareDatabase():
@@ -95,7 +97,7 @@ class TestLazyFetchArtistImage(unittest.TestCase):
             self.assertFalse(result)
 
 
-class TestDownloadImageTaskExtension(unittest.TestCase):
+class TestDownloadImageTaskExtension(DatabaseTestCase):
     """The templates hardcode `<imgId>.jpeg`, so downloaded covers must always be
     saved as .jpeg regardless of the format the CDN returns - a PNG saved as
     `<imgId>.png` would 404 forever."""
@@ -113,13 +115,12 @@ class TestDownloadImageTaskExtension(unittest.TestCase):
         return buffer.getvalue()
 
     def test_png_response_is_saved_as_jpeg(self):
-        db = _bareDatabase()
+        db = self._makeDb({}, [])
         with tempfile.TemporaryDirectory() as tmpdir:
             imgDir = Path(tmpdir)
-            metadataPath = imgDir / "metadata.json"
 
             with patch("Database.database.requests.get", return_value=self._makeResponse(self._pngBytes())):
-                db._downloadImageTask(imgDir, "https://img.example/x", "img1", metadataPath, set())
+                db._downloadImageTask(imgDir, "https://img.example/x", "img1", IMAGE_KIND_TRACK)
 
             self.assertTrue((imgDir / "img1.jpeg").exists())
             self.assertFalse((imgDir / "img1.png").exists())
@@ -128,65 +129,69 @@ class TestDownloadImageTaskExtension(unittest.TestCase):
             with Image.open(imgDir / "img1.jpeg") as saved:
                 self.assertEqual(saved.format, "JPEG")
 
-    def test_download_persists_image_id_to_metadata(self):
-        import json
-        db = _bareDatabase()
+    def test_download_marks_image_ok_in_the_shared_catalog(self):
+        db = self._makeDb({}, [])
         with tempfile.TemporaryDirectory() as tmpdir:
             imgDir = Path(tmpdir)
-            metadataPath = imgDir / "metadata.json"
 
             with patch("Database.database.requests.get", return_value=self._makeResponse(self._pngBytes())):
-                db._downloadImageTask(imgDir, "https://img.example/x", "img1", metadataPath, set())
+                db._downloadImageTask(imgDir, "https://img.example/x", "img1", IMAGE_KIND_TRACK)
 
-            self.assertIn("img1", json.loads(metadataPath.read_text(encoding="utf-8")))
+            self.assertEqual(db.repo.imageStatus("img1", IMAGE_KIND_TRACK), IMAGE_STATUS_OK)
 
 
-class TestSaveImgEmptyUrlGuard(unittest.TestCase):
+class TestSaveImgEmptyUrlGuard(DatabaseTestCase):
     """_saveImg() must silently skip when url is empty/None (MissingSchema fix)."""
 
-    def _makeDb(self, tmpdir):
-        db = Database.__new__(Database)
-        db._imageIdsLock = threading.RLock()
-        db._downloadedTrackImages = None
-        db._downloadedArtistImages = None
+    def _makeDbWithFakeExecutor(self, tmpdir):
+        db = self._makeDb({}, [])
         db.imgDir_tracks = Path(tmpdir) / "tracks"
-        db.imgDir_artists = Path(tmpdir) / "artists"
         db._imageDownloadExecutor = MagicMock()
-        db.fileLock = threading.RLock()
         return db
 
     def test_empty_url_does_not_call_executor(self):
         """An empty imageUrl must never reach the thread pool / requests.get."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            db = self._makeDb(tmpdir)
-            db._saveImg(db.imgDir_tracks, "", "some-img-id", isTrack=True)
+            db = self._makeDbWithFakeExecutor(tmpdir)
+            db._saveImg(db.imgDir_tracks, "", "some-img-id", kind=IMAGE_KIND_TRACK)
             db._imageDownloadExecutor.submit.assert_not_called()
 
     def test_none_url_does_not_call_executor(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            db = self._makeDb(tmpdir)
-            db._saveImg(db.imgDir_tracks, None, "some-img-id", isTrack=True)
+            db = self._makeDbWithFakeExecutor(tmpdir)
+            db._saveImg(db.imgDir_tracks, None, "some-img-id", kind=IMAGE_KIND_TRACK)
             db._imageDownloadExecutor.submit.assert_not_called()
 
-    def test_empty_url_does_not_poison_cache(self):
-        """imgId must NOT be added to the cache for an empty URL — a retry should
-        be possible if the URL is later populated."""
+    def test_empty_url_does_not_poison_the_claim(self):
+        """imgId must NOT be claimed for an empty URL - a retry should be possible
+        if the URL is later populated."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            db = self._makeDb(tmpdir)
-            db._saveImg(db.imgDir_tracks, "", "poison-id", isTrack=True)
-            # Cache is still None (never initialised) — the imgId was never touched
-            self.assertIsNone(db._downloadedTrackImages)
+            db = self._makeDbWithFakeExecutor(tmpdir)
+            db._saveImg(db.imgDir_tracks, "", "poison-id", kind=IMAGE_KIND_TRACK)
+            self.assertIsNone(db.repo.imageStatus("poison-id", IMAGE_KIND_TRACK))
 
     def test_valid_url_still_reaches_executor(self):
         """Sanity check: a proper URL must still be submitted to the executor."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            db = self._makeDb(tmpdir)
-            db._saveImg(db.imgDir_tracks, "https://example.com/cover.jpg", "valid-id", isTrack=True)
+            db = self._makeDbWithFakeExecutor(tmpdir)
+            db._saveImg(db.imgDir_tracks, "https://example.com/cover.jpg", "valid-id", kind=IMAGE_KIND_TRACK)
             db._imageDownloadExecutor.submit.assert_called_once()
 
+    def test_already_claimed_image_does_not_reach_executor(self):
+        """The second saveImg for the same id (e.g. two users' plays of the same
+        song) must not re-download - the claim is shared, not per user."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = self._makeDbWithFakeExecutor(tmpdir)
+            db._saveImg(db.imgDir_tracks, "https://example.com/cover.jpg", "shared-id", kind=IMAGE_KIND_TRACK)
+            db._imageDownloadExecutor.submit.assert_called_once()
 
-class TestDownloadImageTaskErrorLog(unittest.TestCase):
-    """_downloadImageTask() must include imgId in error log lines."""
+            db._saveImg(db.imgDir_tracks, "https://example.com/cover.jpg", "shared-id", kind=IMAGE_KIND_TRACK)
+            db._imageDownloadExecutor.submit.assert_called_once()  #< still just the one call
+
+
+class TestDownloadImageTaskErrorLog(DatabaseTestCase):
+    """_downloadImageTask() must include imgId in error log lines and mark the
+    image as failed in the shared catalog (not left permanently 'pending')."""
 
     def _pngBytes(self):
         from io import BytesIO
@@ -197,30 +202,32 @@ class TestDownloadImageTaskErrorLog(unittest.TestCase):
 
     def test_request_error_log_includes_imgid(self):
         import requests as req
-        db = _bareDatabase()
+        db = self._makeDb({}, [])
         with tempfile.TemporaryDirectory() as tmpdir:
             imgDir = Path(tmpdir)
             with patch("Database.database.requests.get",
                        side_effect=req.exceptions.ConnectionError("timeout")), \
                  patch("builtins.print") as mock_print:
-                db._downloadImageTask(imgDir, "https://img.example/x", "track-abc", imgDir / "meta.json", set())
+                db._downloadImageTask(imgDir, "https://img.example/x", "track-abc", IMAGE_KIND_TRACK)
 
         logged = " ".join(str(a) for call in mock_print.call_args_list for a in call.args)
         self.assertIn("track-abc", logged)
+        self.assertEqual(db.repo.imageStatus("track-abc", IMAGE_KIND_TRACK), IMAGE_STATUS_FAILED)
 
     def test_save_error_log_includes_imgid(self):
         """If saving the image raises (e.g. corrupt bytes), the imgId appears in the log."""
-        db = _bareDatabase()
+        db = self._makeDb({}, [])
         with tempfile.TemporaryDirectory() as tmpdir:
             imgDir = Path(tmpdir)
             bad_response = MagicMock()
             bad_response.content = b"not-an-image"
             with patch("Database.database.requests.get", return_value=bad_response), \
                  patch("builtins.print") as mock_print:
-                db._downloadImageTask(imgDir, "https://img.example/x", "track-xyz", imgDir / "meta.json", set())
+                db._downloadImageTask(imgDir, "https://img.example/x", "track-xyz", IMAGE_KIND_TRACK)
 
         logged = " ".join(str(a) for call in mock_print.call_args_list for a in call.args)
         self.assertIn("track-xyz", logged)
+        self.assertEqual(db.repo.imageStatus("track-xyz", IMAGE_KIND_TRACK), IMAGE_STATUS_FAILED)
 
 
 if __name__ == "__main__":
