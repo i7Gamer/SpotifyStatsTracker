@@ -53,13 +53,33 @@
     };
 
     const backButton = document.getElementById('back-button');
-    if (backButton && document.referrer.includes('wrapped')) {
-      backButton.textContent = '← Back to Wrapped';
-      backButton.href = '#';
-      backButton.onclick = (e) => {
-        e.preventDefault();
-        history.back();
-      };
+    if (backButton) {
+      const referrer = document.referrer;
+      let backText = '← Back to Top Albums';
+      let useHistoryBack = false;
+
+      if (referrer.includes('wrapped')) {
+        backText = '← Back to Wrapped';
+        useHistoryBack = true;
+      } else if (referrer.includes('top_songs')) {
+        backText = '← Back to Top Songs';
+        useHistoryBack = true;
+      } else if (referrer.includes('top_artists')) {
+        backText = '← Back to Top Artists';
+        useHistoryBack = true;
+      } else if (referrer.includes('/song/') || referrer.includes('/artist/') || referrer.includes('/album/')) {
+        backText = '← Back';
+        useHistoryBack = true;
+      }
+
+      backButton.textContent = backText;
+      if (useHistoryBack) {
+        backButton.href = '#';
+        backButton.onclick = (e) => {
+          e.preventDefault();
+          history.back();
+        };
+      }
     }
   </script>
   <script src="{{ url_for('static', filename='js/charts.js') }}"></script>
