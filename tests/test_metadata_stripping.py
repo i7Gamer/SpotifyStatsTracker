@@ -8,6 +8,7 @@ import tempfile
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+from conftest import DatabaseTestCase
 from Database.database import Database
 from Database.Formatters.spotifyClient import Client
 from Database.Importers.StreamingHistoryImporter import Importer
@@ -32,24 +33,26 @@ FAKE_TRACK_METADATA = {
     },
 }
 
-class TestMetadataStripping(unittest.TestCase):
-    def test_save_new_track_from_id_strips_play_fields(self):
-        # Create a bare database instance
-        db = Database.__new__(Database)
+class TestMetadataStripping(DatabaseTestCase):
+    def test_fetch_track_from_listener_strips_play_fields(self):
+        db = self._makeDb({}, [])
         db.listener = MagicMock()
         db.listener.track.return_value = FAKE_TRACK_METADATA
-        db._saveTracks = MagicMock()
-        
-        tracks = {}
-        db._saveNewTrackFromId("track999", tracks, deferSave=True)
-        
-        self.assertIn("track999", tracks)
-        saved_track = tracks["track999"]
-        
+
+        fetched = db._fetchTrackFromListener("track999")
+
         # Verify play-specific fields are NOT present
-        self.assertNotIn("playedAt", saved_track)
-        self.assertNotIn("timePlayed", saved_track)
-        self.assertNotIn("playedFrom", saved_track)
+        self.assertNotIn("playedAt", fetched)
+        self.assertNotIn("timePlayed", fetched)
+        self.assertNotIn("playedFrom", fetched)
+        self.assertEqual(fetched["id"], "track999")
+
+        # ... and that it was actually cached in the shared catalog, not just
+        # returned - a later _ensureTrackMetadata() call must not need the
+        # listener again.
+        stored = db.repo.getTrack("track999")
+        self.assertIsNotNone(stored)
+        self.assertNotIn("playedAt", stored)
 
     def test_prefetch_missing_tracks_strips_play_fields(self):
         importer = Importer()

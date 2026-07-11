@@ -217,6 +217,155 @@ class TestPlaysHistory(RepositoryTestCase):
         self.assertEqual(entries[0]["playedFrom"], "playlist:xyz")
 
 
+class TestTransactionControl(RepositoryTestCase):
+    """upsertTrack/insertPlay don't auto-commit, so a caller (e.g. a bulk import)
+    can compose several of them into one all-or-nothing transaction."""
+
+    def setUp(self):
+        super().setUp()
+        self.repo.upsertUser("alice", "alice@example.com")
+
+    def test_uncommitted_track_upsert_is_still_visible_on_same_connection(self):
+        self.repo.upsertTrack(makeTrack(trackId="t1"))
+        self.assertTrue(self.repo.trackExists("t1"))  #< read-your-own-writes, no commit() call yet
+
+    def test_uncommitted_play_insert_is_still_visible_on_same_connection(self):
+        self.repo.upsertTrack(makeTrack(trackId="t1"))
+        self.repo.insertPlay("alice", "t1", 1000.0, 5000)
+        self.assertEqual(self.repo.getPlaysCount("alice"), 1)
+
+    def test_rollback_discards_uncommitted_track_and_play(self):
+        self.repo.upsertTrack(makeTrack(trackId="t1"))
+        self.repo.insertPlay("alice", "t1", 1000.0, 5000)
+
+        self.repo.rollback()
+
+        self.assertFalse(self.repo.trackExists("t1"))
+        self.assertEqual(self.repo.getPlaysCount("alice"), 0)
+
+    def test_commit_then_new_connection_sees_the_data(self):
+        """Simulates a second thread (a fresh connection to the same file) reading
+        after commit() - the real cross-thread visibility the app depends on."""
+        self.repo.upsertTrack(makeTrack(trackId="t1"))
+        self.repo.insertPlay("alice", "t1", 1000.0, 5000)
+        self.repo.commit()
+
+        otherConnRepo = Repository(self.repo.connectionManager.dbPath)
+        try:
+            self.assertTrue(otherConnRepo.trackExists("t1"))
+            self.assertEqual(otherConnRepo.getPlaysCount("alice"), 1)
+        finally:
+            otherConnRepo.connectionManager.close()
+
+
+class TestStatsAggregates(RepositoryTestCase):
+    def setUp(self):
+        super().setUp()
+        self.repo.upsertUser("alice", "alice@example.com")
+
+    def _track(self, trackId, albumId, *artistIds):
+        track = makeTrack(trackId=trackId, albumId=albumId)
+        track["artists"] = [
+            {"id": aid, "name": f"Artist {aid}", "url": "u", "imageUrl": "", "imageId": aid}
+            for aid in artistIds
+        ]
+        return track
+
+    def test_get_all_tracks_reconstructs_every_track(self):
+        self.repo.upsertTrack(self._track("t1", "alb1", "a1"))
+        self.repo.upsertTrack(self._track("t2", "alb1", "a1", "a2"))
+
+        tracks = {t["id"]: t for t in self.repo.getAllTracks()}
+
+        self.assertEqual(set(tracks.keys()), {"t1", "t2"})
+        self.assertEqual([a["id"] for a in tracks["t2"]["artists"]], ["a1", "a2"])
+
+    def test_play_aggregates_by_track(self):
+        self.repo.upsertTrack(self._track("t1", "alb1", "a1"))
+        self.repo.insertPlay("alice", "t1", 100.0, 1000)
+        self.repo.insertPlay("alice", "t1", 200.0, 2000)
+        self.repo.commit()
+
+        aggregates = self.repo.getPlayAggregatesByTrack("alice")
+
+        self.assertEqual(len(aggregates), 1)
+        self.assertEqual(aggregates[0]["trackId"], "t1")
+        self.assertEqual(aggregates[0]["plays"], 2)
+        self.assertEqual(aggregates[0]["totalTimeListened"], 3000)
+        self.assertEqual(aggregates[0]["firstListenedAt"], 100.0)
+
+    def test_play_aggregates_respect_date_range(self):
+        self.repo.upsertTrack(self._track("t1", "alb1", "a1"))
+        self.repo.insertPlay("alice", "t1", 100.0, 1000)
+        self.repo.insertPlay("alice", "t1", 5000.0, 2000)
+        self.repo.commit()
+
+        aggregates = self.repo.getPlayAggregatesByTrack("alice", startTs=0, endTs=1000)
+
+        self.assertEqual(aggregates[0]["plays"], 1)
+        self.assertEqual(aggregates[0]["totalTimeListened"], 1000)
+
+    def test_artist_aggregates_grouped_by_artist_id_not_name(self):
+        self.repo.upsertTrack(self._track("t1", "alb1", "a1", "a2"))
+        self.repo.insertPlay("alice", "t1", 100.0, 1000)
+        self.repo.commit()
+
+        aggregates = {a["id"]: a for a in self.repo.getArtistAggregates("alice")}
+
+        self.assertEqual(set(aggregates.keys()), {"a1", "a2"})
+        self.assertEqual(aggregates["a1"]["plays"], 1)
+        self.assertEqual(aggregates["a1"]["totalTimeListened"], 1000)
+        self.assertEqual(aggregates["a1"]["uniqueSongCount"], 1)
+        self.assertEqual(aggregates["a1"]["firstListenedAt"], 100.0)
+
+    def test_artist_aggregates_unique_song_count(self):
+        self.repo.upsertTrack(self._track("t1", "alb1", "a1"))
+        self.repo.upsertTrack(self._track("t2", "alb1", "a1"))
+        self.repo.insertPlay("alice", "t1", 100.0, 1000)
+        self.repo.insertPlay("alice", "t1", 200.0, 1000)
+        self.repo.insertPlay("alice", "t2", 300.0, 1000)
+        self.repo.commit()
+
+        aggregates = {a["id"]: a for a in self.repo.getArtistAggregates("alice")}
+
+        self.assertEqual(aggregates["a1"]["plays"], 3)
+        self.assertEqual(aggregates["a1"]["uniqueSongCount"], 2)
+
+    def test_plays_in_range(self):
+        self.repo.upsertTrack(self._track("t1", "alb1", "a1"))
+        self.repo.insertPlay("alice", "t1", 100.0, 1000)
+        self.repo.insertPlay("alice", "t1", 200.0, 2000)
+        self.repo.commit()
+
+        plays = self.repo.getPlaysInRange("alice")
+
+        self.assertEqual(sorted(p["playedAt"] for p in plays), [100.0, 200.0])
+
+    def test_play_artist_pairs_yields_one_row_per_artist(self):
+        self.repo.upsertTrack(self._track("t1", "alb1", "a1", "a2"))
+        self.repo.insertPlay("alice", "t1", 100.0, 1000)
+        self.repo.commit()
+
+        pairs = self.repo.getPlayArtistPairsInRange("alice")
+
+        self.assertEqual(sorted(p["artistName"] for p in pairs), ["Artist a1", "Artist a2"])
+
+    def test_play_totals(self):
+        self.repo.upsertTrack(self._track("t1", "alb1", "a1"))
+        self.repo.insertPlay("alice", "t1", 100.0, 1000)
+        self.repo.insertPlay("alice", "t1", 200.0, 2000)
+        self.repo.commit()
+
+        count, total = self.repo.getPlayTotals("alice")
+
+        self.assertEqual(count, 2)
+        self.assertEqual(total, 3000)
+
+    def test_play_totals_empty_range_returns_zero(self):
+        count, total = self.repo.getPlayTotals("alice")
+        self.assertEqual((count, total), (0, 0))
+
+
 class TestUsersAndCookies(RepositoryTestCase):
     def test_upsert_and_lookup_by_email(self):
         self.repo.upsertUser("alice", "alice@example.com")

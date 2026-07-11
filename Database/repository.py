@@ -29,56 +29,71 @@ class Repository:
     def _conn(self):
         return self.connectionManager.connection()
 
+    def connection(self):
+        """Exposes the thread-local connection for callers that need to compose
+        several non-auto-committing writes (upsertTrack/insertPlay) into a single
+        transaction - e.g. a bulk import that must commit all-or-nothing."""
+        return self._conn()
+
+    def commit(self):
+        self._conn().commit()
+
+    def rollback(self):
+        self._conn().rollback()
+
     # ---- Catalog: tracks / artists / albums ----------------------------------
 
     def upsertTrack(self, track: dict) -> None:
         """Upsert a track and its nested album/artists (as produced by
         Client.formatTrack). Last write wins, matching the previous
-        tracks[id] = track dict-assignment semantics."""
+        tracks[id] = track dict-assignment semantics.
+
+        Does NOT commit - callers compose this with insertPlay() into a single
+        transaction (one play = one commit; a bulk import = one commit for the
+        whole batch), then call commit()/rollback() themselves."""
         album = track["album"]
         artists = track["artists"]
         conn = self._conn()
-        with conn:
+        conn.execute(
+            """
+            INSERT INTO albums (id, name, url, total_tracks, release_date, image_id, image_url)
+            VALUES (:id, :name, :url, :totalTracks, :releaseDate, :id, :imageUrl)
+            ON CONFLICT(id) DO UPDATE SET
+                name=excluded.name, url=excluded.url, total_tracks=excluded.total_tracks,
+                release_date=excluded.release_date, image_url=excluded.image_url
+            """,
+            album,
+        )
+
+        for artist in artists:
             conn.execute(
                 """
-                INSERT INTO albums (id, name, url, total_tracks, release_date, image_id, image_url)
-                VALUES (:id, :name, :url, :totalTracks, :releaseDate, :id, :imageUrl)
+                INSERT INTO artists (id, name, url, image_id)
+                VALUES (:id, :name, :url, :imageId)
                 ON CONFLICT(id) DO UPDATE SET
-                    name=excluded.name, url=excluded.url, total_tracks=excluded.total_tracks,
-                    release_date=excluded.release_date, image_url=excluded.image_url
+                    name=excluded.name, url=excluded.url, image_id=excluded.image_id
                 """,
-                album,
+                artist,
             )
 
-            for artist in artists:
-                conn.execute(
-                    """
-                    INSERT INTO artists (id, name, url, image_id)
-                    VALUES (:id, :name, :url, :imageId)
-                    ON CONFLICT(id) DO UPDATE SET
-                        name=excluded.name, url=excluded.url, image_id=excluded.image_id
-                    """,
-                    artist,
-                )
+        conn.execute(
+            """
+            INSERT INTO tracks (id, name, url, album_id, image_id, duration_ms, explicit, isrc, disc_number, track_number)
+            VALUES (:id, :name, :url, :albumId, :imageId, :duration, :explicit, :isrc, :discNumber, :trackNumber)
+            ON CONFLICT(id) DO UPDATE SET
+                name=excluded.name, url=excluded.url, album_id=excluded.album_id, image_id=excluded.image_id,
+                duration_ms=excluded.duration_ms, explicit=excluded.explicit, isrc=excluded.isrc,
+                disc_number=excluded.disc_number, track_number=excluded.track_number
+            """,
+            {**track, "albumId": album["id"], "explicit": bool(track.get("explicit", False))},
+        )
 
+        conn.execute("DELETE FROM track_artists WHERE track_id=?", (track["id"],))
+        for position, artist in enumerate(artists):
             conn.execute(
-                """
-                INSERT INTO tracks (id, name, url, album_id, image_id, duration_ms, explicit, isrc, disc_number, track_number)
-                VALUES (:id, :name, :url, :albumId, :imageId, :duration, :explicit, :isrc, :discNumber, :trackNumber)
-                ON CONFLICT(id) DO UPDATE SET
-                    name=excluded.name, url=excluded.url, album_id=excluded.album_id, image_id=excluded.image_id,
-                    duration_ms=excluded.duration_ms, explicit=excluded.explicit, isrc=excluded.isrc,
-                    disc_number=excluded.disc_number, track_number=excluded.track_number
-                """,
-                {**track, "albumId": album["id"], "explicit": bool(track.get("explicit", False))},
+                "INSERT INTO track_artists (track_id, artist_id, position) VALUES (?, ?, ?)",
+                (track["id"], artist["id"], position),
             )
-
-            conn.execute("DELETE FROM track_artists WHERE track_id=?", (track["id"],))
-            for position, artist in enumerate(artists):
-                conn.execute(
-                    "INSERT INTO track_artists (track_id, artist_id, position) VALUES (?, ?, ?)",
-                    (track["id"], artist["id"], position),
-                )
 
     def getTrack(self, trackId: str) -> dict | None:
         conn = self._conn()
@@ -94,7 +109,32 @@ class Repository:
             """,
             (trackId,),
         ).fetchall()
+        return self._trackRowToDict(trackRow, albumRow, artistRows)
 
+    def getAllTracks(self) -> list[dict]:
+        """Every track in the shared catalog, fully reconstructed - used to seed
+        the importer's "don't re-fetch metadata we already have" cache."""
+        conn = self._conn()
+        trackRows = conn.execute("SELECT * FROM tracks").fetchall()
+        albumsById = {row["id"]: row for row in conn.execute("SELECT * FROM albums").fetchall()}
+        artistsByTrack: dict[str, list] = {}
+        for row in conn.execute(
+            """
+            SELECT ta.track_id, a.id, a.name, a.url, a.image_id FROM track_artists ta
+            JOIN artists a ON a.id = ta.artist_id
+            ORDER BY ta.track_id, ta.position
+            """
+        ).fetchall():
+            artistsByTrack.setdefault(row["track_id"], []).append(row)
+
+        return [
+            self._trackRowToDict(trackRow, albumsById.get(trackRow["album_id"]),
+                                  artistsByTrack.get(trackRow["id"], []))
+            for trackRow in trackRows
+        ]
+
+    @classmethod
+    def _trackRowToDict(cls, trackRow, albumRow, artistRows) -> dict:
         return {
             "id": trackRow["id"],
             "name": trackRow["name"],
@@ -107,7 +147,7 @@ class Repository:
             "discNumber": trackRow["disc_number"],
             "trackNumber": trackRow["track_number"],
             "releaseDate": albumRow["release_date"] if albumRow else None,
-            "album": self._albumRowToDict(albumRow) if albumRow else None,
+            "album": cls._albumRowToDict(albumRow) if albumRow else None,
             "artists": [
                 {"id": r["id"], "name": r["name"], "url": r["url"], "imageUrl": "", "imageId": r["image_id"]}
                 for r in artistRows
@@ -198,15 +238,16 @@ class Repository:
     def insertPlay(self, username: str, trackId: str, playedAt: float, timePlayed: int,
                    playedFrom: str | None = None) -> bool:
         """Returns True if a new row was inserted, False if this exact
-        (username, trackId, playedAt) play was already recorded."""
+        (username, trackId, playedAt) play was already recorded.
+
+        Does NOT commit - see upsertTrack()'s docstring."""
         conn = self._conn()
-        with conn:
-            cur = conn.execute(
-                "INSERT OR IGNORE INTO plays (username, track_id, played_at, time_played, played_from) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (username, trackId, playedAt, timePlayed, playedFrom),
-            )
-            return cur.rowcount > 0
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO plays (username, track_id, played_at, time_played, played_from) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (username, trackId, playedAt, timePlayed, playedFrom),
+        )
+        return cur.rowcount > 0
 
     def getPlaysCount(self, username: str) -> int:
         conn = self._conn()
@@ -241,6 +282,100 @@ class Repository:
             "timePlayed": row["time_played"],
             "playedFrom": row["played_from"],
         }
+
+    # ---- Per-user: stats aggregates (SQL GROUP BY instead of Python loops over
+    # the full history) -----------------------------------------------------------
+
+    @staticmethod
+    def _dateRangeClause() -> str:
+        return "AND (? IS NULL OR played_at >= ?) AND (? IS NULL OR played_at <= ?)"
+
+    def getPlayAggregatesByTrack(self, username: str, startTs: float | None = None,
+                                  endTs: float | None = None) -> list[dict]:
+        conn = self._conn()
+        rows = conn.execute(
+            f"""
+            SELECT track_id, COUNT(*) AS plays, SUM(time_played) AS total_time_listened,
+                   MIN(played_at) AS first_listened_at
+            FROM plays
+            WHERE username = ? {self._dateRangeClause()}
+            GROUP BY track_id
+            """,
+            (username, startTs, startTs, endTs, endTs),
+        ).fetchall()
+        return [
+            {"trackId": r["track_id"], "plays": r["plays"], "totalTimeListened": r["total_time_listened"],
+             "firstListenedAt": r["first_listened_at"]}
+            for r in rows
+        ]
+
+    def getArtistAggregates(self, username: str, startTs: float | None = None,
+                             endTs: float | None = None) -> list[dict]:
+        """One row per artist who appears on at least one played track, grouped by
+        artist id (not name - two different artists that happen to share a display
+        name are no longer merged, unlike the old name-keyed in-memory grouping)."""
+        conn = self._conn()
+        rows = conn.execute(
+            f"""
+            SELECT ar.id AS id, ar.name AS name, ar.url AS url, ar.image_id AS image_id,
+                   COUNT(*) AS plays, SUM(p.time_played) AS total_time_listened,
+                   MIN(p.played_at) AS first_listened_at, COUNT(DISTINCT p.track_id) AS unique_song_count
+            FROM plays p
+            JOIN track_artists ta ON ta.track_id = p.track_id
+            JOIN artists ar ON ar.id = ta.artist_id
+            WHERE p.username = ? {self._dateRangeClause().replace("played_at", "p.played_at")}
+            GROUP BY ar.id
+            """,
+            (username, startTs, startTs, endTs, endTs),
+        ).fetchall()
+        return [
+            {
+                "id": r["id"], "name": r["name"], "url": r["url"], "imageUrl": "", "imageId": r["image_id"],
+                "plays": r["plays"], "totalTimeListened": r["total_time_listened"],
+                "uniqueSongCount": r["unique_song_count"], "firstListenedAt": r["first_listened_at"],
+            }
+            for r in rows
+        ]
+
+    def getPlaysInRange(self, username: str, startTs: float | None = None,
+                         endTs: float | None = None) -> list[dict]:
+        """Raw (playedAt, timePlayed) pairs for date-bucketed charts (time series,
+        hour-of-day heatmap) - bucketing itself stays in Python since it depends on
+        the app's configurable IANA timezone, which SQLite's date functions can't
+        express correctly."""
+        conn = self._conn()
+        rows = conn.execute(
+            f"SELECT played_at, time_played FROM plays WHERE username = ? {self._dateRangeClause()}",
+            (username, startTs, startTs, endTs, endTs),
+        ).fetchall()
+        return [{"playedAt": r["played_at"], "timePlayed": r["time_played"]} for r in rows]
+
+    def getPlayArtistPairsInRange(self, username: str, startTs: float | None = None,
+                                   endTs: float | None = None) -> list[dict]:
+        """One row per (play, artist) pair - a play whose track has N artists
+        yields N rows, matching the per-artist increment the old Python loop did."""
+        conn = self._conn()
+        rows = conn.execute(
+            f"""
+            SELECT p.played_at AS played_at, ar.name AS artist_name
+            FROM plays p
+            JOIN track_artists ta ON ta.track_id = p.track_id
+            JOIN artists ar ON ar.id = ta.artist_id
+            WHERE p.username = ? {self._dateRangeClause().replace("played_at", "p.played_at")}
+            """,
+            (username, startTs, startTs, endTs, endTs),
+        ).fetchall()
+        return [{"playedAt": r["played_at"], "artistName": r["artist_name"]} for r in rows]
+
+    def getPlayTotals(self, username: str, startTs: float | None = None,
+                       endTs: float | None = None) -> tuple[int, int]:
+        conn = self._conn()
+        row = conn.execute(
+            f"SELECT COUNT(*) AS c, COALESCE(SUM(time_played), 0) AS total FROM plays "
+            f"WHERE username = ? {self._dateRangeClause()}",
+            (username, startTs, startTs, endTs, endTs),
+        ).fetchone()
+        return row["c"], row["total"]
 
     # ---- Per-user: users / cookies ----------------------------------------------
 

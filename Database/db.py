@@ -68,9 +68,13 @@ CREATE TABLE IF NOT EXISTS images (
     PRIMARY KEY (id, kind)
 );
 
+-- email is nullable: a Database instance can be constructed for maintenance/
+-- scripting purposes (e.g. the __main__ smoke test) before the email is known.
+-- SQLite treats each NULL as distinct for UNIQUE, so multiple email-less users
+-- can coexist without colliding.
 CREATE TABLE IF NOT EXISTS users (
     username        TEXT PRIMARY KEY,
-    email           TEXT NOT NULL UNIQUE,
+    email           TEXT UNIQUE,
     cookies_json    TEXT,
     created_at      REAL NOT NULL
 );
