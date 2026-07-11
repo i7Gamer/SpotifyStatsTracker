@@ -461,6 +461,10 @@ progress::-moz-progress-bar {
   margin-bottom: 24px;
 }
 
+.track-list + .track-list {
+  margin-top: 24px;
+}
+
 .track-card {
   display: flex;
   flex-wrap: wrap;
