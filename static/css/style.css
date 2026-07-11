@@ -134,7 +134,17 @@ button {
 .hero-content p {
   margin-top: 12px;
   color: var(--muted);
-  max-width: 60ch;
+  line-height: 1.6;
+}
+
+.hero-content p a {
+  color: var(--accent);
+  text-decoration: underline;
+  transition: color 0.2s ease;
+}
+
+.hero-content p a:hover {
+  color: #ff9fa6;
 }
 
 .dashboard-summary {
