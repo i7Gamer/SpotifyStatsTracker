@@ -93,7 +93,7 @@
         continue;
       }
       var x = labelForIndex(i);
-      ctx.fillText(labels[i].slice(5), x, paddingTop + plotHeight + 8);
+      ctx.fillText(labels[i].slice(0, 7), x, paddingTop + plotHeight + 8);
     }
   }
 

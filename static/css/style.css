@@ -250,11 +250,26 @@ button {
 }
 
 #import-form input[type="file"] {
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid var(--border);
+  background: linear-gradient(135deg, rgba(251, 113, 123, 0.1), rgba(255, 255, 255, 0.03));
+  border: 2px dashed var(--accent);
   color: var(--text);
-  padding: 12px 14px;
-  border-radius: 14px;
+  padding: 20px 16px;
+  border-radius: 16px;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  font-weight: 500;
+}
+
+#import-form input[type="file"]:hover {
+  background: linear-gradient(135deg, rgba(251, 113, 123, 0.15), rgba(255, 255, 255, 0.05));
+  border-color: #ff9fa6;
+  box-shadow: 0 0 0 3px rgba(251, 113, 123, 0.1);
+}
+
+#import-form input[type="file"]:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(251, 113, 123, 0.2);
 }
 
 #import-form label {
