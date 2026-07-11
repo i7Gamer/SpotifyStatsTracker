@@ -348,6 +348,22 @@ class TestStatsAggregates(RepositoryTestCase):
         self.assertEqual(aggregates["a1"]["uniqueSongCount"], 1)
         self.assertEqual(aggregates["a1"]["firstListenedAt"], 100.0)
 
+    def test_artist_aggregates_filtered_by_artist_id(self):
+        self.repo.upsertTrack(self._track("t1", "alb1", "a1", "a2"))
+        self.repo.insertPlay("alice", "t1", 100.0, 1000)
+        self.repo.commit()
+
+        aggregates = self.repo.getArtistAggregates("alice", artistId="a1")
+
+        self.assertEqual([a["id"] for a in aggregates], ["a1"])
+
+    def test_artist_aggregates_filtered_by_unknown_artist_id_returns_empty(self):
+        self.repo.upsertTrack(self._track("t1", "alb1", "a1"))
+        self.repo.insertPlay("alice", "t1", 100.0, 1000)
+        self.repo.commit()
+
+        self.assertEqual(self.repo.getArtistAggregates("alice", artistId="missing"), [])
+
     def test_artist_aggregates_unique_song_count(self):
         self.repo.upsertTrack(self._track("t1", "alb1", "a1"))
         self.repo.upsertTrack(self._track("t2", "alb1", "a1"))
@@ -370,6 +386,39 @@ class TestStatsAggregates(RepositoryTestCase):
         plays = self.repo.getPlaysInRange("alice")
 
         self.assertEqual(sorted(p["playedAt"] for p in plays), [100.0, 200.0])
+
+    def test_plays_in_range_filtered_by_track_id(self):
+        self.repo.upsertTrack(self._track("t1", "alb1", "a1"))
+        self.repo.upsertTrack(self._track("t2", "alb1", "a1"))
+        self.repo.insertPlay("alice", "t1", 100.0, 1000)
+        self.repo.insertPlay("alice", "t2", 200.0, 2000)
+        self.repo.commit()
+
+        plays = self.repo.getPlaysInRange("alice", trackId="t1")
+
+        self.assertEqual([p["playedAt"] for p in plays], [100.0])
+
+    def test_plays_in_range_filtered_by_artist_id(self):
+        self.repo.upsertTrack(self._track("t1", "alb1", "a1"))
+        self.repo.upsertTrack(self._track("t2", "alb1", "a2"))
+        self.repo.insertPlay("alice", "t1", 100.0, 1000)
+        self.repo.insertPlay("alice", "t2", 200.0, 2000)
+        self.repo.commit()
+
+        plays = self.repo.getPlaysInRange("alice", artistId="a1")
+
+        self.assertEqual([p["playedAt"] for p in plays], [100.0])
+
+    def test_plays_in_range_filtered_by_album_id(self):
+        self.repo.upsertTrack(self._track("t1", "alb1", "a1"))
+        self.repo.upsertTrack(self._track("t2", "alb2", "a1"))
+        self.repo.insertPlay("alice", "t1", 100.0, 1000)
+        self.repo.insertPlay("alice", "t2", 200.0, 2000)
+        self.repo.commit()
+
+        plays = self.repo.getPlaysInRange("alice", albumId="alb1")
+
+        self.assertEqual([p["playedAt"] for p in plays], [100.0])
 
     def test_play_artist_pairs_yields_one_row_per_artist(self):
         self.repo.upsertTrack(self._track("t1", "alb1", "a1", "a2"))
@@ -572,6 +621,53 @@ class TestSongsPage(RepositoryTestCase):
     def test_songs_count_zero_when_no_plays(self):
         self.assertEqual(self.repo.getSongsCount("alice"), 0)
 
+    def test_filtered_by_track_id_returns_only_that_track(self):
+        self._seedThreeSongs()
+
+        songs = self.repo.getSongsPage("alice", trackId="t2")
+
+        self.assertEqual([s["id"] for s in songs], ["t2"])
+
+    def test_filtered_by_track_id_unknown_returns_empty(self):
+        self._seedThreeSongs()
+
+        self.assertEqual(self.repo.getSongsPage("alice", trackId="missing"), [])
+
+    def test_filtered_by_artist_id_returns_only_that_artists_songs(self):
+        self.repo.upsertTrack(self._track("t1", "alb1", "a1", name="Song One"))
+        self.repo.upsertTrack(self._track("t2", "alb1", "a2", name="Song Two"))
+        self.repo.insertPlay("alice", "t1", 100.0, 1000)
+        self.repo.insertPlay("alice", "t2", 200.0, 1000)
+        self.repo.commit()
+
+        songs = self.repo.getSongsPage("alice", artistId="a1")
+
+        self.assertEqual([s["id"] for s in songs], ["t1"])
+
+    def test_filtered_by_artist_id_does_not_duplicate_multi_artist_tracks(self):
+        """A track credited to multiple artists must still yield exactly one
+        row (not one per matching artist) when filtered by one of them."""
+        self.repo.upsertTrack(self._track("t1", "alb1", "a1", "a2"))
+        self.repo.insertPlay("alice", "t1", 100.0, 1000)
+        self.repo.insertPlay("alice", "t1", 200.0, 1000)
+        self.repo.commit()
+
+        songs = self.repo.getSongsPage("alice", artistId="a1")
+
+        self.assertEqual(len(songs), 1)
+        self.assertEqual(songs[0]["plays"], 2)
+
+    def test_filtered_by_album_id_returns_only_that_albums_songs(self):
+        self.repo.upsertTrack(self._track("t1", "alb1", "a1", name="Song One"))
+        self.repo.upsertTrack(self._track("t2", "alb2", "a1", name="Song Two"))
+        self.repo.insertPlay("alice", "t1", 100.0, 1000)
+        self.repo.insertPlay("alice", "t2", 200.0, 1000)
+        self.repo.commit()
+
+        songs = self.repo.getSongsPage("alice", albumId="alb1")
+
+        self.assertEqual([s["id"] for s in songs], ["t1"])
+
 
 class TestAlbumsPage(RepositoryTestCase):
     """getAlbumsPage()/getAlbumsCount() aggregate plays by album, mirroring
@@ -722,6 +818,18 @@ class TestAlbumsPage(RepositoryTestCase):
 
     def test_albums_count_zero_when_no_plays(self):
         self.assertEqual(self.repo.getAlbumsCount("alice"), 0)
+
+    def test_filtered_by_album_id_returns_only_that_album(self):
+        self._seedThreeAlbums()
+
+        albums = self.repo.getAlbumsPage("alice", albumId="alb2")
+
+        self.assertEqual([a["id"] for a in albums], ["alb2"])
+
+    def test_filtered_by_album_id_unknown_returns_empty(self):
+        self._seedThreeAlbums()
+
+        self.assertEqual(self.repo.getAlbumsPage("alice", albumId="missing"), [])
 
 
 class TestUsersAndCookies(RepositoryTestCase):

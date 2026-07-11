@@ -14,8 +14,15 @@
   <div class="track-details">
     <div class="track-details-top">
       <div class="track-header">
-        {% if track.get('url') %}
-        <a href="{{ track.get('url') }}" target="_blank" rel="noreferrer noopener">
+        {% if section == 'top_artists' %}
+          {% set detailUrl = url_for('artistDetailPage', artist_id=track.get('id')) %}
+        {% elif section == 'top_albums' %}
+          {% set detailUrl = url_for('albumDetailPage', album_id=track.get('id')) %}
+        {% else %}
+          {% set detailUrl = url_for('songDetailPage', track_id=track.get('id')) %}
+        {% endif %}
+        {% if track.get('id') %}
+        <a href="{{ detailUrl }}">
           <h3>{{ track.get('name', '') }}</h3>
         </a>
         {% else %}
@@ -74,7 +81,14 @@
         {% if section == 'top_albums' %}
         <div class="track-meta">{{ track.get('artistsText') }}</div>
         {% elif section != 'top_artists' %}
-        <div class="track-meta">{{ track.get('artistsText') or (track.get('artists') and (', '.join(track.get('artists'))) ) or track.get('artist','') }} · {{ (track.get('album') and track.get('album').get('name')) or '' }}</div>
+        <div class="track-meta">
+          {{ track.get('artistsText') or (track.get('artists') and (', '.join(track.get('artists'))) ) or track.get('artist','') }}
+          {% if track.get('album') and track.get('album').get('id') %}
+            · <a href="{{ url_for('albumDetailPage', album_id=track.get('album').get('id')) }}">{{ track.get('album').get('name') }}</a>
+          {% elif track.get('album') and track.get('album').get('name') %}
+            · {{ track.get('album').get('name') }}
+          {% endif %}
+        </div>
         {% endif %}
         
         <!-- Played at - only for dashboard -->
@@ -85,6 +99,7 @@
       
       <!-- Attributes based on section -->
       <div class="track-attributes">
+        {% if track.get('url') %}<a class="track-label" href="{{ track.get('url') }}" target="_blank" rel="noreferrer noopener">Open in Spotify ↗</a>{% endif %}
         {% if section == 'dashboard' %}
           <!-- Dashboard: show duration, time played, track info, explicit, isrc -->
           {% if track.get('durationText') %}<span class="track-label">Duration: {{ track.get('durationText') }}</span>{% endif %}

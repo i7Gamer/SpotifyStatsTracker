@@ -217,6 +217,64 @@ class TestGetAlbumsStats(DatabaseTestCase):
         self.assertEqual(db.getTopAlbums(), [])
 
 
+class TestDetailLookups(DatabaseTestCase):
+    """getSong/getArtist/getAlbum are the thin single-item lookups the
+    song/artist/album detail pages use - reusing the same paged/aggregate
+    queries the listing pages already rely on, just narrowed to one id."""
+
+    def _sampleData(self):
+        tracks = {
+            "t1": {"id": "t1", "name": "Song One", "artists": [{"id": "a1", "name": "Artist A"}],
+                   "imageId": "alb1", "album": {"id": "alb1", "name": "Album One", "url": "u",
+                                                 "imageId": "alb1", "imageUrl": "", "totalTracks": 1,
+                                                 "releaseDate": 0}},
+        }
+        entries = [
+            {"id": "t1", "playedAt": 100, "timePlayed": 3000},
+            {"id": "t1", "playedAt": 200, "timePlayed": 3000},
+        ]
+        return tracks, entries
+
+    def test_get_song_returns_the_matching_track(self):
+        tracks, entries = self._sampleData()
+        db = self._makeDb(tracks, entries)
+
+        song = db.getSong("t1")
+
+        self.assertEqual(song["id"], "t1")
+        self.assertEqual(song["plays"], 2)
+
+    def test_get_song_unknown_returns_none(self):
+        db = self._makeDb({}, [])
+        self.assertIsNone(db.getSong("missing"))
+
+    def test_get_artist_returns_the_matching_artist(self):
+        tracks, entries = self._sampleData()
+        db = self._makeDb(tracks, entries)
+
+        artist = db.getArtist("a1")
+
+        self.assertEqual(artist["id"], "a1")
+        self.assertEqual(artist["plays"], 2)
+
+    def test_get_artist_unknown_returns_none(self):
+        db = self._makeDb({}, [])
+        self.assertIsNone(db.getArtist("missing"))
+
+    def test_get_album_returns_the_matching_album(self):
+        tracks, entries = self._sampleData()
+        db = self._makeDb(tracks, entries)
+
+        album = db.getAlbum("alb1")
+
+        self.assertEqual(album["id"], "alb1")
+        self.assertEqual(album["plays"], 2)
+
+    def test_get_album_unknown_returns_none(self):
+        db = self._makeDb({}, [])
+        self.assertIsNone(db.getAlbum("missing"))
+
+
 class TestGetPlayTotals(DatabaseTestCase):
     def test_returns_count_and_sum(self):
         tracks = {"t1": {"id": "t1", "name": "Song One", "artists": []}}

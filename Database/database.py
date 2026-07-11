@@ -415,13 +415,24 @@ class Database:
         return startTs, endTs
 
     def getSongsStats(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None,
-                       sortBy: str = "plays", limit: int | None = None, offset: int = 0) -> list:
+                       sortBy: str = "plays", limit: int | None = None, offset: int = 0,
+                       trackId: str | None = None, artistId: str | None = None,
+                       albumId: str | None = None) -> list:
         """Return songs sorted by `sortBy` with full song metadata and listen
         totals - sorted/paged in SQL via a single batched query (see
         Repository.getSongsPage) rather than hydrating every song ever played
-        just to discard all but the requested page."""
+        just to discard all but the requested page. `trackId`/`artistId`/
+        `albumId` narrow this to a single song's stats, an artist's songs, or an
+        album's songs (see Repository.getSongsPage)."""
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
-        return self.repo.getSongsPage(self.user, startTs, endTs, sortBy=sortBy, limit=limit, offset=offset)
+        return self.repo.getSongsPage(self.user, startTs, endTs, sortBy=sortBy, limit=limit, offset=offset,
+                                       trackId=trackId, artistId=artistId, albumId=albumId)
+
+    def getSong(self, trackId: str) -> dict | None:
+        """A single song's full metadata plus all-time listen totals - the
+        song-detail page's lookup."""
+        results = self.getSongsStats(sortBy="plays", limit=1, trackId=trackId)
+        return results[0] if results else None
 
     def getSongsCount(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> int:
         """Number of distinct songs played in range - the paging counterpart to
@@ -437,12 +448,20 @@ class Database:
         return self.repo.getPlayTotals(self.user, startTs, endTs)
 
     def getAlbumsStats(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None,
-                        sortBy: str = "plays", limit: int | None = None, offset: int = 0) -> list:
+                        sortBy: str = "plays", limit: int | None = None, offset: int = 0,
+                        albumId: str | None = None) -> list:
         """Return albums sorted by `sortBy` with aggregated listen totals - sorted/
         paged in SQL via a single batched query (see Repository.getAlbumsPage),
-        mirroring getSongsStats()."""
+        mirroring getSongsStats(). `albumId` narrows this to a single album's
+        stats."""
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
-        return self.repo.getAlbumsPage(self.user, startTs, endTs, sortBy=sortBy, limit=limit, offset=offset)
+        return self.repo.getAlbumsPage(self.user, startTs, endTs, sortBy=sortBy, limit=limit, offset=offset,
+                                        albumId=albumId)
+
+    def getAlbum(self, albumId: str) -> dict | None:
+        """A single album's aggregate stats - the album-detail page's lookup."""
+        results = self.getAlbumsStats(sortBy="plays", limit=1, albumId=albumId)
+        return results[0] if results else None
 
     def getAlbumsCount(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> int:
         """Number of distinct albums played in range - the paging counterpart to
@@ -457,10 +476,18 @@ class Database:
         # rather than re-sorted here in Python, for the same reason getTopSongs is.
         return self.getAlbumsStats(startDate, endDate, sortBy=by, limit=limit, offset=offset)
 
-    def getArtistsStats(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> list:
-        """Return artists sorted by total plays with aggregated data and listen totals."""
+    def getArtistsStats(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None,
+                         artistId: str | None = None) -> list:
+        """Return artists sorted by total plays with aggregated data and listen
+        totals. `artistId` narrows this to a single artist's stats."""
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
-        return self.repo.getArtistAggregates(self.user, startTs, endTs)
+        return self.repo.getArtistAggregates(self.user, startTs, endTs, artistId=artistId)
+
+    def getArtist(self, artistId: str, startDate: datetime.datetime = None,
+                  endDate: datetime.datetime = None) -> dict | None:
+        """A single artist's aggregate stats - the artist-detail page's lookup."""
+        results = self.getArtistsStats(startDate, endDate, artistId=artistId)
+        return results[0] if results else None
 
     def getOverallStats(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> list:
         """Return songs sorted by play count with full song metadata and listen totals."""
@@ -522,11 +549,18 @@ class Database:
     def _bucketKey(self, date: datetime.datetime, groupBy: str) -> str:
         return dateToString(startOfWeek(date) if groupBy == "week" else startOfDay(date))
 
-    def getListeningTimeSeries(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None, groupBy: str = "day") -> list:
+    def getListeningTimeSeries(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None,
+                                groupBy: str = "day", trackId: str | None = None, artistId: str | None = None,
+                                albumId: str | None = None) -> list:
         """Total listening time and play count per day or week, gap-filled with
-        zero-value buckets so a bar chart shows a continuous timeline."""
+        zero-value buckets so a bar chart shows a continuous timeline.
+        `trackId`/`artistId`/`albumId` narrow this to one item's plays only -
+        reused as-is by the song/artist/album detail pages' play-history chart
+        (same output shape, so the frontend's existing renderTimeSeriesChart
+        needs no changes)."""
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
-        plays = self.repo.getPlaysInRange(self.user, startTs, endTs)
+        plays = self.repo.getPlaysInRange(self.user, startTs, endTs, trackId=trackId, artistId=artistId,
+                                           albumId=albumId)
 
         buckets = {}
         for play in plays:

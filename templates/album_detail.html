@@ -1,0 +1,56 @@
+{% extends "layout.html" %}
+{% block content %}
+  <section class="hero">
+    <div class="hero-content">
+      <h1>{{ album.get('name', '') }}</h1>
+      <p>{{ album.get('artistsText', '') }}</p>
+    </div>
+  </section>
+
+  <p><a class="button" href="{{ url_for('topAlbumsPage') }}">&larr; Back to Top Albums</a></p>
+
+  <section id="track-list" class="track-list">
+    {% set track = album %}
+    {% set section = 'top_albums' %}
+    {% set item_number = '' %}
+    {% include '_track_card.html' %}
+  </section>
+
+  {% if firstSongName %}
+  <section class="track-summary-grid">
+    <article class="track-summary-card">
+      <h3>First Song You Listened To</h3>
+      <p class="summary-value">{{ firstSongName }}</p>
+    </article>
+  </section>
+  {% endif %}
+
+  <section class="card chart-card">
+    <div class="chart-section">
+      <h2>Play History</h2>
+      <div class="chart-canvas-wrap">
+        <canvas id="timeSeriesChart"></canvas>
+      </div>
+    </div>
+  </section>
+
+  <h2>Top Songs on {{ album.get('name', '') }}</h2>
+  <section class="track-list">
+    {% if songs %}
+      {% for track in songs %}
+        {% set item_number = loop.index %}
+        {% set section = 'top_songs' %}
+        {% include '_track_card.html' %}
+      {% endfor %}
+    {% else %}
+      <p class="loading">No songs found for this album.</p>
+    {% endif %}
+  </section>
+
+  <script>
+    window.__chartData = {
+      timeSeries: {{ timeSeries | tojson }}
+    };
+  </script>
+  <script src="{{ url_for('static', filename='js/charts.js') }}"></script>
+{% endblock %}

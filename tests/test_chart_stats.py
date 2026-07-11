@@ -95,6 +95,72 @@ class TestGetListeningTimeSeries(ChartStatsTestCase):
 
         self.assertEqual([b["label"] for b in result], ["2026-07-01", "2026-07-02", "2026-07-03"])
 
+    def test_track_id_filter_scopes_to_one_track(self):
+        """Detail pages reuse this exact method (and renderTimeSeriesChart on the
+        frontend) to show one song/artist/album's own play history."""
+        tracks = {
+            "t1": {"id": "t1", "name": "Song One", "artists": [{"id": "a1", "name": "Artist A"}]},
+            "t2": {"id": "t2", "name": "Song Two", "artists": [{"id": "a1", "name": "Artist A"}]},
+        }
+        entries = [
+            {"id": "t1", "playedAt": _ts(2026, 7, 1), "timePlayed": 1000},
+            {"id": "t2", "playedAt": _ts(2026, 7, 1), "timePlayed": 5000},
+        ]
+        db = self._makeDb(tracks, entries)
+
+        result = db.getListeningTimeSeries(
+            startDate=datetime.datetime(2026, 7, 1, tzinfo=datetime.timezone.utc),
+            endDate=datetime.datetime(2026, 7, 2, tzinfo=datetime.timezone.utc),
+            groupBy="day", trackId="t1",
+        )
+
+        self.assertEqual(result[0]["totalTimeListened"], 1000)
+        self.assertEqual(result[0]["plays"], 1)
+
+    def test_artist_id_filter_scopes_to_one_artist(self):
+        tracks = {
+            "t1": {"id": "t1", "name": "Song One", "artists": [{"id": "a1", "name": "Artist A"}]},
+            "t2": {"id": "t2", "name": "Song Two", "artists": [{"id": "a2", "name": "Artist B"}]},
+        }
+        entries = [
+            {"id": "t1", "playedAt": _ts(2026, 7, 1), "timePlayed": 1000},
+            {"id": "t2", "playedAt": _ts(2026, 7, 1), "timePlayed": 5000},
+        ]
+        db = self._makeDb(tracks, entries)
+
+        result = db.getListeningTimeSeries(
+            startDate=datetime.datetime(2026, 7, 1, tzinfo=datetime.timezone.utc),
+            endDate=datetime.datetime(2026, 7, 2, tzinfo=datetime.timezone.utc),
+            groupBy="day", artistId="a1",
+        )
+
+        self.assertEqual(result[0]["totalTimeListened"], 1000)
+
+    def test_album_id_filter_scopes_to_one_album(self):
+        tracks = {
+            "t1": {"id": "t1", "name": "Song One", "artists": [],
+                   "imageId": "alb1", "album": {"id": "alb1", "name": "Album One", "url": "u",
+                                                 "imageId": "alb1", "imageUrl": "", "totalTracks": 1,
+                                                 "releaseDate": 0}},
+            "t2": {"id": "t2", "name": "Song Two", "artists": [],
+                   "imageId": "alb2", "album": {"id": "alb2", "name": "Album Two", "url": "u",
+                                                 "imageId": "alb2", "imageUrl": "", "totalTracks": 1,
+                                                 "releaseDate": 0}},
+        }
+        entries = [
+            {"id": "t1", "playedAt": _ts(2026, 7, 1), "timePlayed": 1000},
+            {"id": "t2", "playedAt": _ts(2026, 7, 1), "timePlayed": 5000},
+        ]
+        db = self._makeDb(tracks, entries)
+
+        result = db.getListeningTimeSeries(
+            startDate=datetime.datetime(2026, 7, 1, tzinfo=datetime.timezone.utc),
+            endDate=datetime.datetime(2026, 7, 2, tzinfo=datetime.timezone.utc),
+            groupBy="day", albumId="alb1",
+        )
+
+        self.assertEqual(result[0]["totalTimeListened"], 1000)
+
 
 class TestGetHourOfDayHeatmap(ChartStatsTestCase):
     def test_buckets_by_weekday_and_hour(self):

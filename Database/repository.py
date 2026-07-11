@@ -345,11 +345,19 @@ class Repository:
         ]
 
     def getArtistAggregates(self, username: str, startTs: float | None = None,
-                             endTs: float | None = None) -> list[dict]:
+                             endTs: float | None = None, artistId: str | None = None) -> list[dict]:
         """One row per artist who appears on at least one played track, grouped by
         artist id (not name - two different artists that happen to share a display
-        name are no longer merged, unlike the old name-keyed in-memory grouping)."""
+        name are no longer merged, unlike the old name-keyed in-memory grouping).
+
+        `artistId` narrows this to a single artist - reused by artist-detail
+        pages to fetch that one artist's own aggregate stats."""
         conn = self._conn()
+        params = [username, startTs, startTs, endTs, endTs]
+        artistFilterClause = ""
+        if artistId is not None:
+            artistFilterClause = " AND ar.id = ?"
+            params.append(artistId)
         rows = conn.execute(
             f"""
             SELECT ar.id AS id, ar.name AS name, ar.url AS url, ar.image_id AS image_id,
@@ -358,10 +366,10 @@ class Repository:
             FROM plays p
             JOIN track_artists ta ON ta.track_id = p.track_id
             JOIN artists ar ON ar.id = ta.artist_id
-            WHERE p.username = ? {self._dateRangeClause().replace("played_at", "p.played_at")}
+            WHERE p.username = ? {self._dateRangeClause().replace("played_at", "p.played_at")}{artistFilterClause}
             GROUP BY ar.id
             """,
-            (username, startTs, startTs, endTs, endTs),
+            params,
         ).fetchall()
         return [
             {
@@ -373,7 +381,9 @@ class Repository:
         ]
 
     def getSongsPage(self, username: str, startTs: float | None = None, endTs: float | None = None,
-                      sortBy: str = "plays", limit: int | None = None, offset: int = 0) -> list[dict]:
+                      sortBy: str = "plays", limit: int | None = None, offset: int = 0,
+                      trackId: str | None = None, artistId: str | None = None,
+                      albumId: str | None = None) -> list[dict]:
         """Sorted/paged song stats in one batched round-trip, replacing the old
         "aggregate, then getTrack() per row" N+1 pattern - a caller asking for
         page N now pays for page N, not for every song ever played.
@@ -383,6 +393,12 @@ class Repository:
         duplicating rows. artists are 1:many per track, so they're fetched in a
         second, small query keyed by just this page's track ids (mirrors
         getAllTracks()'s two-query shape) rather than fanning out the GROUP BY.
+
+        `trackId`/`artistId`/`albumId` narrow the result to a single track, an
+        artist's songs, or an album's songs - reused by the song/artist/album
+        detail pages instead of a separate query per lookup. `artistId` is
+        matched via EXISTS rather than an extra JOIN so a multi-artist track
+        still yields exactly one row.
         """
         if sortBy not in SONG_SORT_COLUMNS:
             raise ValueError(f"Unknown sortBy: {sortBy!r}")
@@ -391,6 +407,19 @@ class Repository:
         limitValue = -1 if limit is None else limit
 
         conn = self._conn()
+        params = [username, startTs, startTs, endTs, endTs]
+        extraClauses = ""
+        if trackId is not None:
+            extraClauses += " AND t.id = ?"
+            params.append(trackId)
+        if artistId is not None:
+            extraClauses += " AND EXISTS (SELECT 1 FROM track_artists ta2 WHERE ta2.track_id = t.id AND ta2.artist_id = ?)"
+            params.append(artistId)
+        if albumId is not None:
+            extraClauses += " AND al.id = ?"
+            params.append(albumId)
+        params += [limitValue, offset]
+
         rows = conn.execute(
             f"""
             SELECT
@@ -405,12 +434,12 @@ class Repository:
             FROM plays p
             JOIN tracks t ON t.id = p.track_id
             LEFT JOIN albums al ON al.id = t.album_id
-            WHERE p.username = ? {self._dateRangeClause().replace("played_at", "p.played_at")}
+            WHERE p.username = ? {self._dateRangeClause().replace("played_at", "p.played_at")}{extraClauses}
             GROUP BY t.id
             ORDER BY {sortColumn} {direction}, total_time_listened {direction}, name {direction}, track_id ASC
             LIMIT ? OFFSET ?
             """,
-            (username, startTs, startTs, endTs, endTs, limitValue, offset),
+            params,
         ).fetchall()
 
         artistsByTrack = self._artistsForTracks([row["track_id"] for row in rows])
@@ -433,10 +462,14 @@ class Repository:
         return row["c"]
 
     def getAlbumsPage(self, username: str, startTs: float | None = None, endTs: float | None = None,
-                       sortBy: str = "plays", limit: int | None = None, offset: int = 0) -> list[dict]:
+                       sortBy: str = "plays", limit: int | None = None, offset: int = 0,
+                       albumId: str | None = None) -> list[dict]:
         """Sorted/paged album stats in one batched round-trip - one row per
         album, aggregated across every track on it this user played. Mirrors
-        getSongsPage()'s SQL-first sort/page pattern exactly."""
+        getSongsPage()'s SQL-first sort/page pattern exactly.
+
+        `albumId` narrows this to a single album - reused by album-detail pages
+        to fetch that one album's own aggregate stats."""
         if sortBy not in ALBUM_SORT_COLUMNS:
             raise ValueError(f"Unknown sortBy: {sortBy!r}")
         sortColumn = ALBUM_SORT_COLUMNS[sortBy]
@@ -444,6 +477,13 @@ class Repository:
         limitValue = -1 if limit is None else limit
 
         conn = self._conn()
+        params = [username, startTs, startTs, endTs, endTs]
+        albumFilterClause = ""
+        if albumId is not None:
+            albumFilterClause = " AND al.id = ?"
+            params.append(albumId)
+        params += [limitValue, offset]
+
         rows = conn.execute(
             f"""
             SELECT
@@ -454,12 +494,12 @@ class Repository:
             FROM plays p
             JOIN tracks t ON t.id = p.track_id
             JOIN albums al ON al.id = t.album_id
-            WHERE p.username = ? {self._dateRangeClause().replace("played_at", "p.played_at")}
+            WHERE p.username = ? {self._dateRangeClause().replace("played_at", "p.played_at")}{albumFilterClause}
             GROUP BY al.id
             ORDER BY {sortColumn} {direction}, total_time_listened {direction}, name {direction}, album_id ASC
             LIMIT ? OFFSET ?
             """,
-            (username, startTs, startTs, endTs, endTs, limitValue, offset),
+            params,
         ).fetchall()
 
         artistsByAlbum = self._artistsForAlbums([row["album_id"] for row in rows])
@@ -582,16 +622,33 @@ class Repository:
             "firstListenedAt": row["first_listened_at"],
         }
 
-    def getPlaysInRange(self, username: str, startTs: float | None = None,
-                         endTs: float | None = None) -> list[dict]:
+    def getPlaysInRange(self, username: str, startTs: float | None = None, endTs: float | None = None,
+                         trackId: str | None = None, artistId: str | None = None,
+                         albumId: str | None = None) -> list[dict]:
         """Raw (playedAt, timePlayed) pairs for date-bucketed charts (time series,
         hour-of-day heatmap) - bucketing itself stays in Python since it depends on
         the app's configurable IANA timezone, which SQLite's date functions can't
-        express correctly."""
+        express correctly.
+
+        `trackId`/`artistId`/`albumId` narrow this to one item's plays - reused
+        by the song/artist/album detail pages' "play history over time" chart,
+        which otherwise reads the exact same shape as the main Charts page."""
         conn = self._conn()
+        params = [username, startTs, startTs, endTs, endTs]
+        extraClauses = ""
+        if trackId is not None:
+            extraClauses += " AND track_id = ?"
+            params.append(trackId)
+        if artistId is not None:
+            extraClauses += " AND EXISTS (SELECT 1 FROM track_artists ta WHERE ta.track_id = plays.track_id AND ta.artist_id = ?)"
+            params.append(artistId)
+        if albumId is not None:
+            extraClauses += " AND EXISTS (SELECT 1 FROM tracks t WHERE t.id = plays.track_id AND t.album_id = ?)"
+            params.append(albumId)
+
         rows = conn.execute(
-            f"SELECT played_at, time_played FROM plays WHERE username = ? {self._dateRangeClause()}",
-            (username, startTs, startTs, endTs, endTs),
+            f"SELECT played_at, time_played FROM plays WHERE username = ? {self._dateRangeClause()}{extraClauses}",
+            params,
         ).fetchall()
         return [{"playedAt": r["played_at"], "timePlayed": r["time_played"]} for r in rows]
 

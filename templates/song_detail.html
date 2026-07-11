@@ -1,0 +1,34 @@
+{% extends "layout.html" %}
+{% block content %}
+  <section class="hero">
+    <div class="hero-content">
+      <h1>{{ song.get('name', '') }}</h1>
+      <p>{{ song.get('artistsText', '') }}</p>
+    </div>
+  </section>
+
+  <p><a class="button" href="{{ url_for('topSongsPage') }}">&larr; Back to Top Songs</a></p>
+
+  <section id="track-list" class="track-list">
+    {% set track = song %}
+    {% set section = 'top_songs' %}
+    {% set item_number = '' %}
+    {% include '_track_card.html' %}
+  </section>
+
+  <section class="card chart-card">
+    <div class="chart-section">
+      <h2>Play History</h2>
+      <div class="chart-canvas-wrap">
+        <canvas id="timeSeriesChart"></canvas>
+      </div>
+    </div>
+  </section>
+
+  <script>
+    window.__chartData = {
+      timeSeries: {{ timeSeries | tojson }}
+    };
+  </script>
+  <script src="{{ url_for('static', filename='js/charts.js') }}"></script>
+{% endblock %}

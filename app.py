@@ -882,6 +882,95 @@ class SpotifyDashboardApp:
                 artistTrend=artistTrend,
             )
 
+        @self.app.route("/song/<track_id>", methods=["GET"])
+        def songDetailPage(track_id):
+            email, username, db = get_current_user_or_redirect()
+            if not email:
+                return redirect(url_for("login", next=request.path))
+
+            song = db.getSong(track_id)
+            if song is None:
+                return redirect(url_for("topSongsPage"))
+
+            song = self._embedSongTextElements(song)
+            song = self._embedTopSongTextElements(song)
+
+            timeSeries = self._embedTimeSeriesTextElements(
+                db.getListeningTimeSeries(trackId=track_id, groupBy="week")
+            )
+
+            return render_template(
+                "song_detail.html",
+                song=song,
+                username=username,
+                timeSeries=timeSeries,
+                section="top_songs",
+            )
+
+        @self.app.route("/artist/<artist_id>", methods=["GET"])
+        def artistDetailPage(artist_id):
+            email, username, db = get_current_user_or_redirect()
+            if not email:
+                return redirect(url_for("login", next=request.path))
+
+            artist = db.getArtist(artist_id)
+            if artist is None:
+                return redirect(url_for("topArtistsPage"))
+
+            songs = db.getSongsStats(sortBy="plays", artistId=artist_id)
+            songs = self._embedSongsTextElements(songs)
+            songs = self._embedTopSongsTextElements(
+                songs, sortBy="plays", totalPlays=artist.get("plays", 0), totalMs=artist.get("totalTimeListened", 0)
+            )
+            artist = self._embedArtistTextElement(artist)
+
+            timeSeries = self._embedTimeSeriesTextElements(
+                db.getListeningTimeSeries(artistId=artist_id, groupBy="week")
+            )
+
+            return render_template(
+                "artist_detail.html",
+                artist=artist,
+                songs=songs,
+                username=username,
+                timeSeries=timeSeries,
+                section="top_artists",
+            )
+
+        @self.app.route("/album/<album_id>", methods=["GET"])
+        def albumDetailPage(album_id):
+            email, username, db = get_current_user_or_redirect()
+            if not email:
+                return redirect(url_for("login", next=request.path))
+
+            album = db.getAlbum(album_id)
+            if album is None:
+                return redirect(url_for("topAlbumsPage"))
+
+            songs = db.getSongsStats(sortBy="plays", albumId=album_id)
+            firstSong = min(songs, key=lambda s: s.get("firstListenedAt") or float("inf")) if songs else None
+            firstSongName = firstSong.get("name") if firstSong else None
+
+            songs = self._embedSongsTextElements(songs)
+            songs = self._embedTopSongsTextElements(
+                songs, sortBy="plays", totalPlays=album.get("plays", 0), totalMs=album.get("totalTimeListened", 0)
+            )
+            album = self._embedAlbumTextElements(album)
+
+            timeSeries = self._embedTimeSeriesTextElements(
+                db.getListeningTimeSeries(albumId=album_id, groupBy="week")
+            )
+
+            return render_template(
+                "album_detail.html",
+                album=album,
+                songs=songs,
+                firstSongName=firstSongName,
+                username=username,
+                timeSeries=timeSeries,
+                section="top_albums",
+            )
+
     def shutdown(self):
         with self._db_lock:
             for db in self.user_databases.values():
