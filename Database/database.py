@@ -326,7 +326,7 @@ class Database:
     def deduplicate(self) -> int:
         """No-op: plays.UNIQUE(username, track_id, played_at) makes it impossible
         to insert a duplicate in the first place. Kept for API compatibility with
-        callers (app.py's startup path, clear_duplicates.py)."""
+        callers (app.py's startup path)."""
         return 0
 
     def importHistory(self, exportedHistory):

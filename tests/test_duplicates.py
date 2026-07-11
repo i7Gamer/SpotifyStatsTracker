@@ -28,7 +28,7 @@ class TestDatabaseDeduplication(DatabaseTestCase):
         """The plays.UNIQUE(username, track_id, played_at) constraint makes a
         duplicate impossible to insert in the first place, so there's nothing left
         for deduplicate() to clean up - it's kept only so existing callers
-        (app.py's startup path, clear_duplicates.py) don't break."""
+        (app.py's startup path) don't break."""
         entries = [
             {"id": "e1", "playedAt": 100, "timePlayed": 1000},
             {"id": "e2", "playedAt": 300, "timePlayed": 1000},

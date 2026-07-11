@@ -47,13 +47,13 @@ services:
     ports:
       - "5000:5000"
     volumes:
-      - ./Database:/app/Database/Users
-      - ./secrets:/app/secrets
+      - ./Database/Users:/app/Database/Users
       - ./autoImport:/app/autoImport  #< files put in this folder will be imported automatically
     environment:
       - FLASK_APP=wsgi.py
       - PYTHONUNBUFFERED=1
       - TZ=America/Los_Angeles        #< don't forget to change this or you will get the wrong times for songs
+      - FLASK_SECRET_KEY=changeme-generate-your-own-random-value  #< fixed value = sessions survive a restart; unset = a new one is generated each restart, logging everyone out
       # - IMPORT_KEYWORD=Weekly       #< Uncomment to apply a filter to what files get auto-imported (only files containing this will be imported)
       # - FLASK_DEBUG=1               #< To get more detailed logs from Flask (provide this when opening an issue)
     restart: always
@@ -62,6 +62,16 @@ services:
 ### Then you can run `docker compose up -d` and the app should start on `http://127.0.0.1:5000` or `http://yourIp:5000`
 
 ### To update the container if an update is available, run `docker compose pull`
+
+### Upgrading from an older version
+
+Listening history, tracks, images, and login sessions now live in a single SQLite
+database under `Database/Users/` instead of the old per-user JSON files and
+`secrets/` folder - the app migrates existing data automatically on first startup
+after the update, no action needed. If you were relying on `secrets/` being mounted
+(e.g. so `secrets/flask_secret_key.txt` persisted across restarts), set
+`FLASK_SECRET_KEY` as shown above instead; otherwise everyone's login session resets
+on each container restart.
 
 ### Local Development
 
@@ -81,7 +91,7 @@ or whatever your IP is
 http://127.0.0.1:5000
 ```
 
-**Note:** The Docker container persists data in the `Database/` directory on your host machine.
+**Note:** The Docker container persists data in the `Database/Users/` directory on your host machine.
 
 ## License
 
