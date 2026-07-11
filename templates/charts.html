@@ -57,6 +57,7 @@
       </div>
     </div>
 
+    {% if artistTrend %}
     <div class="chart-section">
       <h2>Top Artists Over Time</h2>
       <div class="chart-canvas-wrap">
@@ -64,6 +65,7 @@
       </div>
       <div id="artistTrendLegend" class="chart-legend"></div>
     </div>
+    {% endif %}
   </section>
 
   <script>

@@ -892,11 +892,13 @@ class SpotifyDashboardApp:
 
             lastDayDate = startDate.strftime("%Y-%m-%d") if interval == "day" and startDate else None
 
+            timeSeriesGroupBy = "hour" if interval == "day" else groupBy
+
             timeSeries = self._embedTimeSeriesTextElements(
-                db.getListeningTimeSeries(startDate=startDate, endDate=endDate, groupBy=groupBy)
+                db.getListeningTimeSeries(startDate=startDate, endDate=endDate, groupBy=timeSeriesGroupBy)
             )
             heatmap = self._embedHeatmapTextElements(db.getHourOfDayHeatmap(startDate=startDate, endDate=endDate))
-            artistTrend = db.getArtistTrend(startDate=startDate, endDate=endDate, topN=CHART_ARTIST_TREND_TOP_N, groupBy=groupBy)
+            artistTrend = None if interval == "day" else db.getArtistTrend(startDate=startDate, endDate=endDate, topN=CHART_ARTIST_TREND_TOP_N, groupBy=groupBy)
 
             return render_template(
                 "charts.html",

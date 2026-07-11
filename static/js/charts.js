@@ -134,7 +134,9 @@
       return { x: x, width: barWidth, d: d, hourIndex: i };
     });
 
-    var labels = isLastDay ? data.map(function (d, i) { return i + ':00'; }) : data.map(function (d) { return d.label; });
+    var labels = isLastDay
+      ? data.map(function (d) { return d.label.split(' ')[1]; })  // Extract "HH:00" from "YYYY-MM-DD HH:00"
+      : data.map(function (d) { return d.label; });
     var labelSpacing = isLastDay ? 30 : MIN_AXIS_LABEL_SPACING_PX;
     drawSparseXLabels(ctx, labels, paddingLeft, plotWidth, plotHeight, paddingTop, function (i) {
       return paddingLeft + i * slotWidth + slotWidth / 2;
@@ -152,7 +154,7 @@
         }
       }
       if (hit) {
-        var label = isLastDay ? (hit.hourIndex + ':00') : hit.d.label;
+        var label = isLastDay ? hit.d.label.split(' ')[1] : hit.d.label;
         showTooltip(evt, '<strong>' + label + '</strong><br>' + (hit.d.totalTimeListenedText || '0ms') + ' &middot; ' + hit.d.plays + ' plays');
       } else {
         hideTooltip();

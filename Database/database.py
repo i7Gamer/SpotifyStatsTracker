@@ -547,7 +547,12 @@ class Database:
         return self._sortTopStats(artists, compKeys, by)
 
     def _bucketKey(self, date: datetime.datetime, groupBy: str) -> str:
-        return dateToString(startOfWeek(date) if groupBy == "week" else startOfDay(date))
+        if groupBy == "week":
+            return dateToString(startOfWeek(date))
+        elif groupBy == "hour":
+            return date.strftime("%Y-%m-%d %H:00")
+        else:
+            return dateToString(startOfDay(date))
 
     def getListeningTimeSeries(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None,
                                 groupBy: str = "day", trackId: str | None = None, artistId: str | None = None,
@@ -579,8 +584,15 @@ class Database:
         else:
             return []
 
-        step = datetime.timedelta(days=7 if groupBy == "week" else 1)
-        cursor = startOfWeek(rangeStart) if groupBy == "week" else startOfDay(rangeStart)
+        if groupBy == "week":
+            step = datetime.timedelta(days=7)
+            cursor = startOfWeek(rangeStart)
+        elif groupBy == "hour":
+            step = datetime.timedelta(hours=1)
+            cursor = rangeStart.replace(minute=0, second=0, microsecond=0)
+        else:
+            step = datetime.timedelta(days=1)
+            cursor = startOfDay(rangeStart)
 
         result = []
         while cursor < rangeEnd:
