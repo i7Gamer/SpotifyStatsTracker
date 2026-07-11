@@ -3,10 +3,10 @@ import shutil
 from pathlib import Path
 
 try:
-    from Database.Migrators.base import BaseMigrator
+    from Database.Migrators.base import BaseMigrator, resolveRuntimeDir
     from Database.repository import Repository, IMAGE_KIND_TRACK, IMAGE_KIND_ARTIST, IMAGE_STATUS_OK
 except ModuleNotFoundError:
-    from Migrators.base import BaseMigrator
+    from Migrators.base import BaseMigrator, resolveRuntimeDir
     from repository import Repository, IMAGE_KIND_TRACK, IMAGE_KIND_ARTIST, IMAGE_STATUS_OK
 
 
@@ -19,16 +19,26 @@ class Migrator(BaseMigrator):
     tryClaimImageDownload() are idempotent, so the same track or image
     encountered under multiple users' folders just gets written once.
 
+    As its last step, renames the runtime-data directory from Users/ to Data/ -
+    "Users" stopped being an accurate name once its main contents became a
+    shared database and shared media, rather than per-user files. The rename
+    happens last (after this migrator has already read everything it needs from
+    Users/) so migrate1_0_0 through migrate1_5_0, which all hardcode "Users"
+    internally, run completely unaffected - they always run earlier in the
+    chain, before this directory ever gets renamed.
+
     Safe to re-run: every write is an upsert/INSERT-OR-IGNORE, and the app
-    version marker (Users/VERSION) is only advanced after every user migrates
-    successfully - a failure partway through leaves it unchanged, so the next
-    startup retries the whole migration rather than silently leaving that user's
-    history behind.
+    version marker is only advanced (and the rename only performed) after every
+    user migrates successfully - a failure partway through leaves both
+    unchanged, so the next startup retries the whole migration rather than
+    silently leaving that user's history behind. A retry after a successful
+    migration whose version bump was somehow lost operates directly against the
+    already-renamed Data/ directory (see resolveRuntimeDir()).
     """
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.usersDir = self.baseDir / ".." / "Users"
+        self.usersDir = resolveRuntimeDir(self.baseDir)
         self.secretsDir = self.baseDir / ".." / ".." / "secrets"
         self.mediaDir = self.usersDir / "Media"
 
@@ -95,13 +105,14 @@ class Migrator(BaseMigrator):
     def migrate(self):
         self.checkPreconditions()
 
-        # migrateIfNeeded() (Migrators/migrate.py) already guarantees Users/VERSION
-        # exists before any numbered Migrator is constructed (BaseMigrator.__init__
-        # itself reads it) - a fresh install with no user subdirectories yet just
-        # means the loop below runs zero times, not that Users/ is missing.
+        # migrateIfNeeded() (Migrators/migrate.py) already guarantees a runtime
+        # data dir with a VERSION file exists before any numbered Migrator is
+        # constructed (BaseMigrator.__init__ itself reads it) - a fresh install
+        # with no user subdirectories yet just means the loop below runs zero
+        # times, not that self.usersDir is missing.
 
         # Explicit path (not the bare Repository() default) so this always targets
-        # the same Users/ directory this migrator just resolved baseDir against,
+        # the same directory this migrator just resolved baseDir against,
         # regardless of what Database.db.DEFAULT_DB_PATH happens to be.
         repo = Repository(self.usersDir / "spotify_stats.db")
         try:
@@ -120,15 +131,26 @@ class Migrator(BaseMigrator):
                     print(f"Failed to migrate user '{username}': {e}")
                     failedUsers.append(username)
         finally:
-            repo.connectionManager.close()   #< don't leave a dangling connection open past this one-shot script
+            # Must close before the Users/ -> Data/ rename below - Windows can't
+            # rename a directory containing a file with an open handle.
+            repo.connectionManager.close()
 
         if failedUsers:
             raise RuntimeError(
                 f"Migration failed for {len(failedUsers)} user(s): {', '.join(failedUsers)}. "
-                "Database/Users/VERSION was not advanced - fix the underlying issue and restart "
+                "The version marker was not advanced - fix the underlying issue and restart "
                 "to retry (already-migrated users/tracks/plays are safely skipped on retry)."
             )
 
+        dataDir = self.baseDir / ".." / "Data"
+        if self.usersDir.resolve() != dataDir.resolve():
+            print(f"Renaming {self.usersDir} -> {dataDir}")
+            # shutil.move (not Path.rename/os.rename): Users/ and Data/ can be
+            # separate Docker bind mounts, and a plain rename() fails with EXDEV
+            # across a mount boundary - shutil.move falls back to copy+delete
+            # when that happens, same end result either way.
+            shutil.move(str(self.usersDir), str(dataDir))
+        self.databaseVersionFile = dataDir / "VERSION"
         self.updateAppVersion("1.7.0")
         print(f"Migration complete: {len(usernames)} user(s) migrated to SQLite.")
 

@@ -5,10 +5,11 @@ from pathlib import Path
 
 SQLITE_BUSY_TIMEOUT_MS = 5000   #< how long a writer waits for a lock before raising "database is locked"
 
-# Database/Users/ is the directory the Docker volume mounts for persistence (see
-# docker-compose.yml); the shared catalog/history DB and media cache live there
-# too now, alongside (eventually replacing) the legacy per-user JSON folders.
-DEFAULT_DB_PATH = Path(__file__).resolve().parent / "Users" / "spotify_stats.db"
+# Database/Data/ is the directory the Docker volume mounts for persistence (see
+# docker-compose.yml). Named "Data" rather than "Users" since its main contents
+# (this database, the shared media cache) aren't per-user - migrate1_6_0.py
+# renames the old Users/ directory here on upgrade.
+DEFAULT_DB_PATH = Path(__file__).resolve().parent / "Data" / "spotify_stats.db"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS artists (

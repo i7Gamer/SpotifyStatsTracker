@@ -52,6 +52,9 @@ class MigratorTestCase(unittest.TestCase):
         self.migratorsDir.mkdir(parents=True)
         self.usersDir = self.root / "Database" / "Users"
         self.usersDir.mkdir(parents=True)
+        # Where the migrator renames Users/ -> at the end of a successful run.
+        # Not created upfront - most tests assert against this after migrate().
+        self.dataDir = self.root / "Database" / "Data"
         self.secretsDir = self.root / "secrets"
         self.secretsDir.mkdir(parents=True)
 
@@ -75,8 +78,11 @@ class MigratorTestCase(unittest.TestCase):
                 (imgDir / f"{imgId}.jpeg").write_bytes(content)
         return userDir
 
-    def _repo(self):
-        repo = Repository(self.usersDir / "spotify_stats.db")
+    def _repo(self, atDir=None):
+        """Repository pointed at the given directory, defaulting to Data/ (the
+        post-successful-migration location). Pass self.usersDir explicitly for
+        scenarios where no rename happened (e.g. a failed migration)."""
+        repo = Repository((atDir or self.dataDir) / "spotify_stats.db")
         self.addCleanup(repo.connectionManager.close)
         return repo
 
@@ -93,11 +99,12 @@ class TestSingleUserMigration(MigratorTestCase):
         Migrator = migrateModule.Migrator
         Migrator().migrate()
 
+        self.assertFalse(self.usersDir.exists(), "Users/ must be renamed away, not left behind")
         repo = self._repo()
         self.assertEqual(repo.getPlaysCount("alice"), 1)
         self.assertIsNotNone(repo.getTrack("t1"))
         self.assertEqual(repo.getPlaylistName("p1", "playlist"), "My Playlist")
-        self.assertEqual((self.usersDir / "VERSION").read_text(encoding="utf-8").strip(), "1.7.0")
+        self.assertEqual((self.dataDir / "VERSION").read_text(encoding="utf-8").strip(), "1.7.0")
 
     def test_images_moved_to_shared_media_dir(self):
         self._writeUser(
@@ -108,10 +115,10 @@ class TestSingleUserMigration(MigratorTestCase):
 
         migrateModule.Migrator().migrate()
 
-        mediaFile = self.usersDir / "Media" / "tracks" / "alb1.jpeg"
+        mediaFile = self.dataDir / "Media" / "tracks" / "alb1.jpeg"
         self.assertTrue(mediaFile.exists())
         self.assertEqual(mediaFile.read_bytes(), b"fake-jpeg-bytes")
-        self.assertFalse((self.usersDir / "alice" / "img" / "tracks" / "alb1.jpeg").exists())
+        self.assertFalse((self.dataDir / "alice" / "img" / "tracks" / "alb1.jpeg").exists())
 
         repo = self._repo()
         self.assertEqual(repo.imageStatus("alb1", IMAGE_KIND_TRACK), "ok")
@@ -127,7 +134,7 @@ class TestMultiUserSharedCatalog(MigratorTestCase):
         migrateModule.Migrator().migrate()
 
         repo = self._repo()
-        conn = sqlite3.connect(self.usersDir / "spotify_stats.db")
+        conn = sqlite3.connect(self.dataDir / "spotify_stats.db")
         trackCount = conn.execute("SELECT COUNT(*) FROM tracks WHERE id='t1'").fetchone()[0]
         playCount = conn.execute("SELECT COUNT(*) FROM plays WHERE track_id='t1'").fetchone()[0]
         conn.close()
@@ -145,10 +152,10 @@ class TestMultiUserSharedCatalog(MigratorTestCase):
 
         migrateModule.Migrator().migrate()  #< must not raise on the second user's duplicate image
 
-        mediaDir = self.usersDir / "Media" / "tracks"
+        mediaDir = self.dataDir / "Media" / "tracks"
         self.assertEqual(list(mediaDir.glob("shared-alb.jpeg")), [mediaDir / "shared-alb.jpeg"])
         # Bob's own copy must be cleaned up, not left behind as a duplicate.
-        self.assertFalse((self.usersDir / "bob" / "img" / "tracks" / "shared-alb.jpeg").exists())
+        self.assertFalse((self.dataDir / "bob" / "img" / "tracks" / "shared-alb.jpeg").exists())
 
 
 class TestCookiesAndUsersMapMigration(MigratorTestCase):
@@ -181,25 +188,30 @@ class TestIdempotentRetry(MigratorTestCase):
                          tracks={"t1": _track("t1")})
 
         migrateModule.Migrator().migrate()
-        (self.usersDir / "VERSION").write_text("1.6.0", encoding="utf-8")  #< simulate a restart before the bump was seen
+        # Simulate a restart before the version bump was durably seen (e.g. a
+        # crash right after migrate() returned): the rename to Data/ already
+        # happened, so the "stale" marker lives there now, not under Users/.
+        (self.dataDir / "VERSION").write_text("1.6.0", encoding="utf-8")
         migrateModule.Migrator().migrate()
 
+        self.assertFalse(self.usersDir.exists())
         repo = self._repo()
         self.assertEqual(repo.getPlaysCount("alice"), 1)
 
 
 class TestNoUsersDirectory(MigratorTestCase):
-    def test_no_user_subdirectories_yet_just_bumps_version(self):
+    def test_no_user_subdirectories_yet_still_renames_and_bumps_version(self):
         """migrateIfNeeded() (Migrators/migrate.py) already guarantees Users/VERSION
         exists before any numbered Migrator runs - a fresh-ish install with no user
         subdirectories yet just means zero users to iterate, not a missing Users/."""
         migrateModule.Migrator().migrate()
 
-        self.assertEqual((self.usersDir / "VERSION").read_text(encoding="utf-8").strip(), "1.7.0")
+        self.assertFalse(self.usersDir.exists())
+        self.assertEqual((self.dataDir / "VERSION").read_text(encoding="utf-8").strip(), "1.7.0")
 
 
 class TestPartialFailure(MigratorTestCase):
-    def test_one_bad_user_blocks_version_bump_but_other_users_still_migrate(self):
+    def test_one_bad_user_blocks_version_bump_and_rename_but_other_users_still_migrate(self):
         self._writeUser("alice", entries=[{"id": "t1", "playedAt": 100.0, "timePlayed": 5000}],
                          tracks={"t1": _track("t1")})
         badUserDir = self._writeUser("bob")
@@ -211,8 +223,13 @@ class TestPartialFailure(MigratorTestCase):
             migrateModule.Migrator().migrate()
         self.assertIn("bob", str(ctx.exception))
 
+        # A failed migration must not rename Users/ away - the next retry needs
+        # to find the same JSON files (including bob's) still there.
+        self.assertTrue(self.usersDir.exists())
+        self.assertFalse(self.dataDir.exists())
+
         # alice's data (migrated before bob failed) must still be there.
-        repo = self._repo()
+        repo = self._repo(atDir=self.usersDir)
         self.assertEqual(repo.getPlaysCount("alice"), 1)
         # Version must NOT have advanced, so the next startup retries.
         self.assertEqual((self.usersDir / "VERSION").read_text(encoding="utf-8").strip(), "1.6.0")

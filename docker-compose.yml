@@ -6,7 +6,8 @@ services:
     ports:
       - "5000:5000"
     volumes:
-      - ./Database/Users:/app/Database/Users
+      - ./Database/Data:/app/Database/Data
+      - ./Database/Users:/app/Database/Users  #< pre-1.7.0 data dir; only needed for the one restart that migrates it into Data/ above, safe to remove after that
       - ./autoImport:/app/autoImport  #< files put in this folder will be imported automatically
     environment:
       - FLASK_APP=wsgi.py

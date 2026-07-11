@@ -33,9 +33,9 @@ IMAGE_DOWNLOAD_WORKERS = 5   #< bounds total concurrent image downloads for the 
 
 # Images are shared across every user (album art / artist photos are the same
 # bytes for everyone), so they live in one directory tree instead of under each
-# user's own folder. Still inside Users/ so the existing Docker volume mount
-# (Database/Users -> host ./Database/Users) covers it without a compose change.
-MEDIA_DIR = Path(__file__).resolve().parent / "Users" / "Media"
+# user's own folder. Inside Data/ (see Database/db.py's DEFAULT_DB_PATH) so the
+# Docker volume mount that persists the database also covers it.
+MEDIA_DIR = Path(__file__).resolve().parent / "Data" / "Media"
 
 
 class Database:

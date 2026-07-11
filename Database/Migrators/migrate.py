@@ -1,6 +1,11 @@
 from pathlib import Path
 import importlib.util
 
+try:
+    from Database.Migrators.base import resolveRuntimeDir
+except ModuleNotFoundError:
+    from base import resolveRuntimeDir
+
 def getMiddleVersion(version):
     return int(version.split(".")[1])
 
@@ -23,9 +28,10 @@ def migrateIfNeeded():
     baseDir = Path(__file__).resolve().parent
     appVersionFile = baseDir / ".." / "VERSION"
     appVersion = appVersionFile.read_text().strip()
-    databaseVersionFile = baseDir / ".." / "Users" / "VERSION"
+
+    databaseVersionFile = resolveRuntimeDir(baseDir) / "VERSION"
     if databaseVersionFile.exists() == False:
-        databaseVersionFile.parent.mkdir(parents=True, exist_ok=True)   #< Users/ is runtime data, absent on a fresh install
+        databaseVersionFile.parent.mkdir(parents=True, exist_ok=True)   #< runtime data dir absent on a fresh install
         databaseVersionFile.write_text(appVersion)
         return   #< means this is first run, no migration needed
     databaseVersion = databaseVersionFile.read_text().strip()
@@ -34,4 +40,5 @@ def migrateIfNeeded():
         dbVersion = getMiddleVersion(databaseVersion)
         migrate(dbVersion, baseDir)
 
+        databaseVersionFile = resolveRuntimeDir(baseDir) / "VERSION"   #< location may have changed (e.g. a Users/ -> Data/ rename)
         databaseVersion = databaseVersionFile.read_text().strip()

@@ -47,7 +47,8 @@ services:
     ports:
       - "5000:5000"
     volumes:
-      - ./Database/Users:/app/Database/Users
+      - ./Database/Data:/app/Database/Data
+      - ./Database/Users:/app/Database/Users  #< pre-1.7.0 data dir; only needed for the one restart that migrates it into Data/ above, safe to remove after that
       - ./autoImport:/app/autoImport  #< files put in this folder will be imported automatically
     environment:
       - FLASK_APP=wsgi.py
@@ -66,12 +67,15 @@ services:
 ### Upgrading from an older version
 
 Listening history, tracks, images, and login sessions now live in a single SQLite
-database under `Database/Users/` instead of the old per-user JSON files and
-`secrets/` folder - the app migrates existing data automatically on first startup
-after the update, no action needed. If you were relying on `secrets/` being mounted
-(e.g. so `secrets/flask_secret_key.txt` persisted across restarts), set
-`FLASK_SECRET_KEY` as shown above instead; otherwise everyone's login session resets
-on each container restart.
+database under `Database/Data/` instead of the old per-user JSON files under
+`Database/Users/` and the `secrets/` folder - the app migrates existing data
+automatically on first startup after the update, no action needed beyond keeping
+both volumes mounted (as shown above) for that first restart. Once you've confirmed
+the migration succeeded, the `./Database/Users:/app/Database/Users` line can be
+removed. If you were relying on `secrets/` being mounted (e.g. so
+`secrets/flask_secret_key.txt` persisted across restarts), set `FLASK_SECRET_KEY`
+as shown above instead; otherwise everyone's login session resets on each container
+restart.
 
 ### Local Development
 
@@ -91,7 +95,7 @@ or whatever your IP is
 http://127.0.0.1:5000
 ```
 
-**Note:** The Docker container persists data in the `Database/Users/` directory on your host machine.
+**Note:** The Docker container persists data in the `Database/Data/` directory on your host machine.
 
 ## License
 
