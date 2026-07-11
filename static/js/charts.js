@@ -103,6 +103,8 @@
       return;
     }
     var data = (window.__chartData && window.__chartData.timeSeries) || [];
+    var interval = (window.__chartData && window.__chartData.interval) || '';
+    var isLastDay = interval === 'day';
     var setup = setupCanvas(canvas, 260);
     var ctx = setup.ctx, width = setup.width, height = setup.height;
     ctx.clearRect(0, 0, width, height);
@@ -128,10 +130,11 @@
       var y = paddingTop + plotHeight - barHeight;
       ctx.fillStyle = CHART_PALETTE[0];
       ctx.fillRect(x, y, barWidth, barHeight);
-      return { x: x, width: barWidth, d: d };
+      return { x: x, width: barWidth, d: d, hourIndex: i };
     });
 
-    drawSparseXLabels(ctx, data.map(function (d) { return d.label; }), paddingLeft, plotWidth, plotHeight, paddingTop, function (i) {
+    var labels = isLastDay ? data.map(function (d, i) { return i + ':00'; }) : data.map(function (d) { return d.label; });
+    drawSparseXLabels(ctx, labels, paddingLeft, plotWidth, plotHeight, paddingTop, function (i) {
       return paddingLeft + i * slotWidth + slotWidth / 2;
     });
 
@@ -147,7 +150,8 @@
         }
       }
       if (hit) {
-        showTooltip(evt, '<strong>' + hit.d.label + '</strong><br>' + (hit.d.totalTimeListenedText || '0ms') + ' &middot; ' + hit.d.plays + ' plays');
+        var label = isLastDay ? (hit.hourIndex + ':00') : hit.d.label;
+        showTooltip(evt, '<strong>' + label + '</strong><br>' + (hit.d.totalTimeListenedText || '0ms') + ' &middot; ' + hit.d.plays + ' plays');
       } else {
         hideTooltip();
       }
