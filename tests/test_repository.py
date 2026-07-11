@@ -366,6 +366,183 @@ class TestStatsAggregates(RepositoryTestCase):
         self.assertEqual((count, total), (0, 0))
 
 
+class TestSongsPage(RepositoryTestCase):
+    """getSongsPage()/getSongsCount() replace the old N+1 getTrack()-per-row
+    loop with a single batched query - these tests pin down the merged output
+    shape, SQL-level ordering/tie-breaking, and LIMIT/OFFSET pagination."""
+
+    def setUp(self):
+        super().setUp()
+        self.repo.upsertUser("alice", "alice@example.com")
+
+    def _track(self, trackId, albumId, *artistIds, name=None):
+        track = makeTrack(trackId=trackId, name=name or f"Song {trackId}", albumId=albumId)
+        track["artists"] = [
+            {"id": aid, "name": f"Artist {aid}", "url": "u", "imageUrl": "", "imageId": aid}
+            for aid in artistIds
+        ]
+        return track
+
+    def test_returns_merged_shape_with_plays_and_track_metadata(self):
+        self.repo.upsertTrack(self._track("t1", "alb1", "a1"))
+        self.repo.insertPlay("alice", "t1", 100.0, 1000)
+        self.repo.insertPlay("alice", "t1", 200.0, 2000)
+        self.repo.commit()
+
+        songs = self.repo.getSongsPage("alice")
+
+        self.assertEqual(len(songs), 1)
+        song = songs[0]
+        self.assertEqual(song["id"], "t1")
+        self.assertEqual(song["name"], "Song t1")
+        self.assertEqual(song["album"]["id"], "alb1")
+        self.assertEqual(song["plays"], 2)
+        self.assertEqual(song["totalTimeListened"], 3000)
+        self.assertEqual(song["firstListenedAt"], 100.0)
+
+    def test_multi_artist_order_preserved(self):
+        self.repo.upsertTrack(self._track("t1", "alb1", "a1", "a2", "a3"))
+        self.repo.insertPlay("alice", "t1", 100.0, 1000)
+        self.repo.commit()
+
+        song = self.repo.getSongsPage("alice")[0]
+
+        self.assertEqual([a["id"] for a in song["artists"]], ["a1", "a2", "a3"])
+
+    def _seedThreeSongs(self):
+        self.repo.upsertTrack(self._track("t1", "alb1", "a1", name="Bravo"))
+        self.repo.upsertTrack(self._track("t2", "alb1", "a1", name="Alpha"))
+        self.repo.upsertTrack(self._track("t3", "alb1", "a1", name="Charlie"))
+        self.repo.insertPlay("alice", "t1", 100.0, 5000)   # t1: 1 play, 5000ms
+        self.repo.insertPlay("alice", "t2", 200.0, 1000)
+        self.repo.insertPlay("alice", "t2", 300.0, 1000)   # t2: 2 plays, 2000ms
+        self.repo.insertPlay("alice", "t3", 400.0, 9000)   # t3: 1 play, 9000ms
+        self.repo.commit()
+
+    def test_order_by_plays_descending(self):
+        self._seedThreeSongs()
+
+        songs = self.repo.getSongsPage("alice", sortBy="plays")
+
+        # t1 and t3 tie on plays (1 each); tie-break is totalTimeListened desc,
+        # and t3's 9000ms beats t1's 5000ms.
+        self.assertEqual([s["id"] for s in songs], ["t2", "t3", "t1"])
+
+    def test_order_by_total_time_listened_descending(self):
+        self._seedThreeSongs()
+
+        songs = self.repo.getSongsPage("alice", sortBy="totalTimeListened")
+
+        self.assertEqual([s["id"] for s in songs], ["t3", "t1", "t2"])
+
+    def test_order_by_name_ascending(self):
+        self._seedThreeSongs()
+
+        songs = self.repo.getSongsPage("alice", sortBy="name")
+
+        self.assertEqual([s["name"] for s in songs], ["Alpha", "Bravo", "Charlie"])
+
+    def test_invalid_sort_by_raises_value_error(self):
+        self._seedThreeSongs()
+
+        with self.assertRaises(ValueError):
+            self.repo.getSongsPage("alice", sortBy="; DROP TABLE plays;--")
+
+    def test_limit_and_offset_paginate_default_order(self):
+        self._seedThreeSongs()
+
+        firstPage = self.repo.getSongsPage("alice", sortBy="plays", limit=2, offset=0)
+        secondPage = self.repo.getSongsPage("alice", sortBy="plays", limit=2, offset=2)
+
+        self.assertEqual([s["id"] for s in firstPage], ["t2", "t3"])
+        self.assertEqual([s["id"] for s in secondPage], ["t1"])
+
+    def test_limit_none_returns_everything(self):
+        self._seedThreeSongs()
+
+        songs = self.repo.getSongsPage("alice", limit=None)
+
+        self.assertEqual(len(songs), 3)
+
+    def test_offset_past_end_returns_empty(self):
+        self._seedThreeSongs()
+
+        songs = self.repo.getSongsPage("alice", limit=2, offset=10)
+
+        self.assertEqual(songs, [])
+
+    def test_no_plays_returns_empty(self):
+        songs = self.repo.getSongsPage("alice")
+        self.assertEqual(songs, [])
+
+    def test_tied_rows_paginate_deterministically(self):
+        """Two songs identical on plays/totalTimeListened/name have no natural
+        tie-break in SQL GROUP BY output order - track_id is used as the final
+        tie-break so paging never repeats or drops a row."""
+        self.repo.upsertTrack(self._track("t2", "alb1", "a1", name="Same"))
+        self.repo.upsertTrack(self._track("t1", "alb1", "a1", name="Same"))
+        self.repo.insertPlay("alice", "t1", 100.0, 1000)
+        self.repo.insertPlay("alice", "t2", 200.0, 1000)
+        self.repo.commit()
+
+        firstCall = [s["id"] for s in self.repo.getSongsPage("alice", sortBy="plays")]
+        secondCall = [s["id"] for s in self.repo.getSongsPage("alice", sortBy="plays")]
+        page1 = [s["id"] for s in self.repo.getSongsPage("alice", sortBy="plays", limit=1, offset=0)]
+        page2 = [s["id"] for s in self.repo.getSongsPage("alice", sortBy="plays", limit=1, offset=1)]
+
+        self.assertEqual(firstCall, secondCall)
+        self.assertEqual(page1 + page2, firstCall)
+
+    def test_date_range_filtering(self):
+        self.repo.upsertTrack(self._track("t1", "alb1", "a1"))
+        self.repo.insertPlay("alice", "t1", 100.0, 1000)
+        self.repo.insertPlay("alice", "t1", 5000.0, 2000)
+        self.repo.commit()
+
+        songs = self.repo.getSongsPage("alice", startTs=0, endTs=1000)
+
+        self.assertEqual(songs[0]["plays"], 1)
+        self.assertEqual(songs[0]["totalTimeListened"], 1000)
+
+    def test_missing_album_row_falls_back_like_get_track(self):
+        """The LEFT JOIN can in principle return no matching album row, and
+        _songRowToDict must degrade gracefully like getTrack()'s equivalent
+        fallback - exercised directly against a synthetic row rather than via
+        the database, since tracks.album_id is a NOT NULL foreign key and this
+        state can't actually be produced through the public API (see
+        test_db_schema.py::test_foreign_keys_enforced)."""
+        row = {
+            "track_id": "t1", "name": "Song", "url": "u", "image_id": "img1",
+            "duration_ms": 1000, "explicit": 0, "isrc": None,
+            "disc_number": 1, "track_number": 1,
+            "album_id": None, "album_name": None, "album_url": None,
+            "album_total_tracks": None, "album_release_date": None,
+            "album_image_id": None, "album_image_url": None,
+            "plays": 1, "total_time_listened": 1000, "first_listened_at": 100.0,
+        }
+
+        song = Repository._songRowToDict(row, [])
+
+        self.assertIsNone(song["album"])
+        self.assertEqual(song["imageUrl"], "")
+        self.assertIsNone(song["releaseDate"])
+
+    def test_songs_count_matches_distinct_track_count(self):
+        self._seedThreeSongs()
+        self.assertEqual(self.repo.getSongsCount("alice"), 3)
+
+    def test_songs_count_respects_date_range(self):
+        self.repo.upsertTrack(self._track("t1", "alb1", "a1"))
+        self.repo.insertPlay("alice", "t1", 100.0, 1000)
+        self.repo.insertPlay("alice", "t1", 5000.0, 1000)
+        self.repo.commit()
+
+        self.assertEqual(self.repo.getSongsCount("alice", startTs=0, endTs=1000), 1)
+
+    def test_songs_count_zero_when_no_plays(self):
+        self.assertEqual(self.repo.getSongsCount("alice"), 0)
+
+
 class TestUsersAndCookies(RepositoryTestCase):
     def test_upsert_and_lookup_by_email(self):
         self.repo.upsertUser("alice", "alice@example.com")

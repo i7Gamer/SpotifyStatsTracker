@@ -1,5 +1,6 @@
 import sys
 import os
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -95,6 +96,92 @@ class TestGetEntriesFromNew(DatabaseTestCase):
         db, _ = self._makeDbWithEntries(3)
         result = db.getEntriesFromNew(count=10, startIndex=1, fullPagination=False)
         self.assertEqual([e["id"] for e in result], ["t1", "t0"])
+
+
+class TestGetTopSongsMultiArtist(DatabaseTestCase):
+    def test_song_with_multiple_artists_round_trips(self):
+        track = {"id": "track1", "artists": [{"id": "a1", "name": "Artist A"}, {"id": "a2", "name": "Artist B"}],
+                 "name": "Song One"}
+        entries = [{"id": "track1", "playedAt": 1000, "timePlayed": 5000}]
+        db = self._makeDb({"track1": track}, entries)
+
+        songs = db.getTopSongs()
+
+        self.assertEqual(len(songs), 1)
+        self.assertEqual([a["id"] for a in songs[0]["artists"]], ["a1", "a2"])
+        self.assertEqual(songs[0]["plays"], 1)
+        self.assertEqual(songs[0]["totalTimeListened"], 5000)
+
+    def test_get_track_is_not_called_per_row_anymore(self):
+        """Regression guard against the old N+1 pattern (getSongsStats calling
+        repo.getTrack() once per unique song) silently coming back."""
+        tracks = {f"t{i}": {"id": f"t{i}", "name": f"Song {i}", "artists": []} for i in range(5)}
+        entries = [{"id": f"t{i}", "playedAt": i, "timePlayed": 1000} for i in range(5)]
+        db = self._makeDb(tracks, entries)
+
+        with patch.object(db.repo, "getTrack", wraps=db.repo.getTrack) as mockGetTrack:
+            songs = db.getTopSongs()
+
+        self.assertEqual(len(songs), 5)
+        mockGetTrack.assert_not_called()
+
+
+class TestGetOverallStats(DatabaseTestCase):
+    def _sampleData(self):
+        tracks = {
+            "t1": {"id": "t1", "name": "Song One", "artists": [{"id": "a1", "name": "Artist A"}]},
+            "t2": {"id": "t2", "name": "Song Two", "artists": [{"id": "a1", "name": "Artist A"}]},
+        }
+        entries = [
+            {"id": "t1", "playedAt": 100, "timePlayed": 3000},
+            {"id": "t1", "playedAt": 200, "timePlayed": 3000},
+            {"id": "t2", "playedAt": 300, "timePlayed": 1000},
+        ]
+        return tracks, entries
+
+    def test_totals_match_hand_computed_values(self):
+        tracks, entries = self._sampleData()
+        db = self._makeDb(tracks, entries)
+
+        stats = db.getOverallStats()
+
+        self.assertEqual(stats["totalSongsPlayed"], 3)
+        self.assertEqual(stats["totalDurationMs"], 7000)
+        self.assertEqual(len(stats["currentTopSongs"]), 1)
+        self.assertEqual(stats["currentTopSongs"][0]["id"], "t1")   #< 2 plays beats t2's 1
+        self.assertEqual(len(stats["currentTopArtists"]), 1)
+        self.assertEqual(stats["currentTopArtists"][0]["id"], "a1")
+        self.assertEqual(stats["previousSongsPlayed"], 0)
+        self.assertEqual(stats["previousDurationMs"], 0)
+
+    def test_empty_database_returns_zeroed_stats_without_crashing(self):
+        db = self._makeDb({}, [])
+
+        stats = db.getOverallStats()
+
+        self.assertEqual(stats["currentTopSongs"], [])
+        self.assertEqual(stats["currentTopArtists"], [])
+        self.assertEqual(stats["totalSongsPlayed"], 0)
+        self.assertEqual(stats["totalDurationMs"], 0)
+
+
+class TestGetPlayTotals(DatabaseTestCase):
+    def test_returns_count_and_sum(self):
+        tracks = {"t1": {"id": "t1", "name": "Song One", "artists": []}}
+        entries = [
+            {"id": "t1", "playedAt": 100, "timePlayed": 1000},
+            {"id": "t1", "playedAt": 200, "timePlayed": 2000},
+        ]
+        db = self._makeDb(tracks, entries)
+
+        count, total = db.getPlayTotals()
+
+        self.assertEqual(count, 2)
+        self.assertEqual(total, 3000)
+
+    def test_empty_database_returns_zero(self):
+        db = self._makeDb({}, [])
+        self.assertEqual(db.getPlayTotals(), (0, 0))
 
 
 if __name__ == "__main__":

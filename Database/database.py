@@ -386,28 +386,32 @@ class Database:
         endTs = endDate.timestamp() if endDate else None
         return startTs, endTs
 
-    def getSongsStats(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> list:
-        """Return songs sorted by play count with full song metadata and listen totals."""
+    def getSongsStats(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None,
+                       sortBy: str = "plays", limit: int | None = None, offset: int = 0) -> list:
+        """Return songs sorted by `sortBy` with full song metadata and listen
+        totals - sorted/paged in SQL via a single batched query (see
+        Repository.getSongsPage) rather than hydrating every song ever played
+        just to discard all but the requested page."""
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
-        songs = []
-        for agg in self.repo.getPlayAggregatesByTrack(self.user, startTs, endTs):
-            track = self.repo.getTrack(agg["trackId"])
-            if track is None:
-                continue
-            song = track.copy()
-            song["plays"] = agg["plays"]
-            song["totalTimeListened"] = agg["totalTimeListened"]
-            song["firstListenedAt"] = agg["firstListenedAt"]
-            songs.append(song)
-        return songs
+        return self.repo.getSongsPage(self.user, startTs, endTs, sortBy=sortBy, limit=limit, offset=offset)
+
+    def getSongsCount(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> int:
+        """Number of distinct songs played in range - the paging counterpart to
+        getSongsStats(), for computing total page count without fetching every
+        song's metadata."""
+        startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
+        return self.repo.getSongsCount(self.user, startTs, endTs)
+
+    def getPlayTotals(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> tuple[int, int]:
+        """(play count, total time listened) across the whole range - cheap
+        aggregate that doesn't require fetching per-song metadata."""
+        startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
+        return self.repo.getPlayTotals(self.user, startTs, endTs)
 
     def getArtistsStats(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> list:
         """Return artists sorted by total plays with aggregated data and listen totals."""
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
         return self.repo.getArtistAggregates(self.user, startTs, endTs)
-
-    def _getTotal(self, arr, key):
-        return sum(i.get(key, 0) for i in arr)
 
     def getOverallStats(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> list:
         """Return songs sorted by play count with full song metadata and listen totals."""
@@ -419,12 +423,14 @@ class Database:
             prevStartTs, prevEndTs = self._dateRangeToTimestamps(previousStart, previousEnd)
             previousSongsPlayed, previousDurationMs = self.repo.getPlayTotals(self.user, prevStartTs, prevEndTs)
 
-        currentTopSongs = self.getTopSongs(startDate=startDate, endDate=endDate, by="plays")
+        # totalSongsPlayed/totalDurationMs are computed via a dedicated COUNT/SUM
+        # query rather than by summing every song's stats: each play belongs to
+        # exactly one song, so sum(plays-per-song) == total play count over the
+        # same range - identical math, without hydrating every song just to add
+        # its numbers up. currentTopSongs only needs the single top row.
+        totalSongsPlayed, totalDurationMs = self.getPlayTotals(startDate, endDate)
+        currentTopSongs = self.getTopSongs(startDate=startDate, endDate=endDate, by="plays", limit=1)
         currentTopArtists = self.getTopArtists(startDate=startDate, endDate=endDate, by="totalTimeListened")
-
-        # By using the already calculated currentTopSongs, we can save a lot of time by not having to iterate through the entire entries list again to calculate the totals.
-        totalSongsPlayed = self._getTotal(currentTopSongs, "plays")
-        totalDurationMs = self._getTotal(currentTopSongs, "totalTimeListened")
 
         return {"currentTopSongs": currentTopSongs,
                 "currentTopArtists": currentTopArtists,
@@ -451,10 +457,13 @@ class Database:
             reverse=reverse
         )
 
-    def getTopSongs(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None, by: str = "plays") -> list:
-        songs = self.getSongsStats(startDate, endDate)
-        compKeys = (by, "totalTimeListened", "name")
-        return self._sortTopStats(songs, compKeys, by)
+    def getTopSongs(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None, by: str = "plays",
+                     limit: int | None = None, offset: int = 0) -> list:
+        # Songs are sorted/paged in SQL (see getSongsStats -> Repository.getSongsPage)
+        # rather than re-sorted here in Python: once pagination is pushed down to
+        # the database, re-sorting an already-LIMIT-ed page can't reconstruct
+        # global rank, so SQL ordering must be the single source of truth.
+        return self.getSongsStats(startDate, endDate, sortBy=by, limit=limit, offset=offset)
 
     def getTopArtists(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None, by: str = "plays") -> list:
         artists = self.getArtistsStats(startDate, endDate)

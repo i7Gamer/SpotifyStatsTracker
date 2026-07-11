@@ -663,13 +663,26 @@ class SpotifyDashboardApp:
             customEnd = request.args.get("endDate", "")
             
             startDate, endDate = self._getDateRange(interval, customStart, customEnd, default="all time")
-            rawTopSongs = db.getTopSongs(startDate=startDate, endDate=endDate, by=sortBy)
+            # totalPlays/totalMs are a whole-range aggregate regardless of search -
+            # a cheap dedicated query instead of summing every song's metadata.
+            totalPlays, totalMs = db.getPlayTotals(startDate, endDate)
+
             if searchQuery:
+                # Search has to look at the whole history to match text across
+                # name/artist/album.
+                rawTopSongs = db.getTopSongs(startDate=startDate, endDate=endDate, by=sortBy)
                 self._embedIndices(rawTopSongs)
-            tracks = self._filterBySearch(rawTopSongs, searchQuery)
-            tracks, totalPages, startIndex = self.getPage(tracks, page)
-            totalPlays = self._getTotal(rawTopSongs, "plays")
-            totalMs = self._getTotal(rawTopSongs, "totalTimeListened")
+                tracks = self._filterBySearch(rawTopSongs, searchQuery)
+                tracks, totalPages, startIndex = self.getPage(tracks, page)
+            else:
+                # Only materialize the page being shown - SQL-level LIMIT/OFFSET
+                # instead of sorting+hydrating every song ever played.
+                totalCount = db.getSongsCount(startDate, endDate)
+                totalPages = max(1, (totalCount + PAGE_SIZE - 1) // PAGE_SIZE)
+                startIndex = (page - 1) * PAGE_SIZE
+                tracks = db.getTopSongs(startDate=startDate, endDate=endDate, by=sortBy,
+                                         limit=PAGE_SIZE, offset=startIndex)
+
             prevUrl, nextUrl = self._getNeighboringUrls(
                 "topSongsPage",
                 page,
