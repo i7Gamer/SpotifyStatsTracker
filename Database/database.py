@@ -329,7 +329,7 @@ class Database:
         callers (app.py's startup path)."""
         return 0
 
-    def importHistory(self, exportedHistory):
+    def importHistory(self, exportedHistory, progressPrefix: str = ""):
         importer = self._withCookiesFile(lambda cookiesFile: Importer(cookiesFile=cookiesFile, email=self.email))
 
         parsedHistory, exportType = importer._convertToList(exportedHistory)
@@ -337,10 +337,10 @@ class Database:
             return
 
         total = len(parsedHistory)
-        self.writeProgress("running", 0, total, "Starting import")
+        self.writeProgress("running", 0, total, f"{progressPrefix}Starting import")
 
         def progressCallback(status, current, totalSteps, message):
-            self.writeProgress(status, current, totalSteps, message)
+            self.writeProgress(status, current, totalSteps, f"{progressPrefix}{message}")
 
         # Imported tracks/plays are staged locally and only written to the database
         # once the whole import has succeeded. SQLite only allows one writer
@@ -364,7 +364,7 @@ class Database:
                 self.saveImagesFromTrack(track)
 
                 if index % self.PROGRESS_UPDATE_INTERVAL == 0 or index == total:
-                    self.writeProgress("running", index, total, f"Imported {index} of {total}")
+                    self.writeProgress("running", index, total, f"{progressPrefix}Imported {index} of {total}")
 
             for track in stagedTracks.values():
                 self.repo.upsertTrack(track)
@@ -372,11 +372,39 @@ class Database:
                 self.repo.insertPlay(self.user, entry["id"], entry["playedAt"], entry["timePlayed"], entry.get("playedFrom"))
             self.repo.commit()
 
-            self.writeProgress("complete", total, total, "Import complete")
+            self.writeProgress("complete", total, total, f"{progressPrefix}Import complete")
         except Exception as e:
             self.repo.rollback()
-            self.writeProgress("failed", index, total, f"Import failed: {parseError(e)}", error=True)
+            self.writeProgress("failed", index, total, f"{progressPrefix}Import failed: {parseError(e)}", error=True)
             raise
+
+    def importHistoryBatch(self, fileContents: list[str]) -> None:
+        """Import multiple export files sequentially - cached up front by the
+        caller (app.py reads every upload before starting this thread) and then
+        processed one after another, mirroring AutoImporter's existing
+        one-file-at-a-time folder-watching behavior. A failure in one file is
+        logged and skipped rather than aborting the whole batch, so a single bad
+        upload doesn't block the rest."""
+        if not fileContents:
+            return
+
+        total = len(fileContents)
+        failedCount = 0
+        for index, content in enumerate(fileContents, start=1):
+            try:
+                self.importHistory(content, progressPrefix=f"File {index}/{total}: ")
+            except Exception as e:
+                failedCount += 1
+                print(f"Import failed for file {index}/{total}: {parseError(e)}")
+
+        succeededCount = total - failedCount
+        if failedCount == 0:
+            self.writeProgress("complete", total, total, f"Imported {succeededCount}/{total} files")
+        elif succeededCount == 0:
+            self.writeProgress("failed", total, total, f"Imported 0/{total} files (all failed)", error=True)
+        else:
+            self.writeProgress("complete", total, total,
+                                f"Imported {succeededCount}/{total} files ({failedCount} failed)")
 
     # ---- stats -------------------------------------------------------------------------
 
@@ -407,6 +435,27 @@ class Database:
         aggregate that doesn't require fetching per-song metadata."""
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
         return self.repo.getPlayTotals(self.user, startTs, endTs)
+
+    def getAlbumsStats(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None,
+                        sortBy: str = "plays", limit: int | None = None, offset: int = 0) -> list:
+        """Return albums sorted by `sortBy` with aggregated listen totals - sorted/
+        paged in SQL via a single batched query (see Repository.getAlbumsPage),
+        mirroring getSongsStats()."""
+        startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
+        return self.repo.getAlbumsPage(self.user, startTs, endTs, sortBy=sortBy, limit=limit, offset=offset)
+
+    def getAlbumsCount(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> int:
+        """Number of distinct albums played in range - the paging counterpart to
+        getAlbumsStats(), for computing total page count without fetching every
+        album's metadata."""
+        startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
+        return self.repo.getAlbumsCount(self.user, startTs, endTs)
+
+    def getTopAlbums(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None, by: str = "plays",
+                      limit: int | None = None, offset: int = 0) -> list:
+        # Albums are sorted/paged in SQL (see getAlbumsStats -> Repository.getAlbumsPage)
+        # rather than re-sorted here in Python, for the same reason getTopSongs is.
+        return self.getAlbumsStats(startDate, endDate, sortBy=by, limit=limit, offset=offset)
 
     def getArtistsStats(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> list:
         """Return artists sorted by total plays with aggregated data and listen totals."""

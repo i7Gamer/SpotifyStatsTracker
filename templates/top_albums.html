@@ -1,0 +1,43 @@
+{% extends "layout.html" %}
+{% block content %}
+  <section class="hero">
+    <div class="hero-content">
+      <h1>Top Albums</h1>
+      <p>Your most-listened albums and aggregated stats.</p>
+    </div>
+  </section>
+  {% include '_page_card.html' %}
+
+  <section class="track-summary-grid">
+    <article class="track-summary-card">
+      <h3>Total Plays (top list)</h3>
+      <p class="summary-value">{{ totalPlays }}</p>
+    </article>
+    <article class="track-summary-card">
+      <h3>Time</h3>
+      <p class="summary-value">{{ totalTime }}</p>
+    </article>
+  </section>
+
+  <section id="track-list" class="track-list">
+    {% if tracks %}
+      {% for track in tracks %}
+        {% set item_number = track.get('absoluteIndex') if track.get('absoluteIndex') else (startIndex | default(0)) + loop.index %}
+        {% set section = 'top_albums' %}
+        {% include '_track_card.html' %}
+      {% endfor %}
+    {% else %}
+      <p class="loading">No top albums available. Import some listening history first.</p>
+    {% endif %}
+  </section>
+
+  <section class="pagination">
+    {% if prevUrl %}
+      <a class="button" href="{{ prevUrl }}">Previous</a>
+    {% endif %}
+    <span>Page {{ page }} of {{ totalPages }}</span>
+    {% if nextUrl %}
+      <a class="button" href="{{ nextUrl }}">Next</a>
+    {% endif %}
+  </section>
+{% endblock %}

@@ -573,6 +573,157 @@ class TestSongsPage(RepositoryTestCase):
         self.assertEqual(self.repo.getSongsCount("alice"), 0)
 
 
+class TestAlbumsPage(RepositoryTestCase):
+    """getAlbumsPage()/getAlbumsCount() aggregate plays by album, mirroring
+    getSongsPage()'s batched sort/page/date-range pattern."""
+
+    def setUp(self):
+        super().setUp()
+        self.repo.upsertUser("alice", "alice@example.com")
+
+    def _track(self, trackId, albumId, albumName, *artistIds):
+        track = makeTrack(trackId=trackId, albumId=albumId)
+        track["album"]["name"] = albumName
+        track["artists"] = [
+            {"id": aid, "name": f"Artist {aid}", "url": "u", "imageUrl": "", "imageId": aid}
+            for aid in artistIds
+        ]
+        return track
+
+    def test_returns_merged_shape_with_plays_and_album_metadata(self):
+        self.repo.upsertTrack(self._track("t1", "alb1", "Album One", "a1"))
+        self.repo.insertPlay("alice", "t1", 100.0, 1000)
+        self.repo.insertPlay("alice", "t1", 200.0, 2000)
+        self.repo.commit()
+
+        albums = self.repo.getAlbumsPage("alice")
+
+        self.assertEqual(len(albums), 1)
+        album = albums[0]
+        self.assertEqual(album["id"], "alb1")
+        self.assertEqual(album["name"], "Album One")
+        self.assertEqual(album["plays"], 2)
+        self.assertEqual(album["totalTimeListened"], 3000)
+        self.assertEqual(album["firstListenedAt"], 100.0)
+        self.assertEqual(album["uniqueSongCount"], 1)
+        self.assertEqual([a["id"] for a in album["artists"]], ["a1"])
+
+    def test_plays_across_multiple_tracks_on_same_album_are_combined(self):
+        self.repo.upsertTrack(self._track("t1", "alb1", "Album One", "a1"))
+        self.repo.upsertTrack(self._track("t2", "alb1", "Album One", "a1"))
+        self.repo.insertPlay("alice", "t1", 100.0, 1000)
+        self.repo.insertPlay("alice", "t2", 200.0, 2000)
+        self.repo.commit()
+
+        album = self.repo.getAlbumsPage("alice")[0]
+
+        self.assertEqual(album["plays"], 2)
+        self.assertEqual(album["totalTimeListened"], 3000)
+        self.assertEqual(album["uniqueSongCount"], 2)
+
+    def test_artists_across_the_album_are_deduplicated(self):
+        self.repo.upsertTrack(self._track("t1", "alb1", "Album One", "a1", "a2"))
+        self.repo.upsertTrack(self._track("t2", "alb1", "Album One", "a1"))
+        self.repo.insertPlay("alice", "t1", 100.0, 1000)
+        self.repo.insertPlay("alice", "t2", 200.0, 1000)
+        self.repo.commit()
+
+        album = self.repo.getAlbumsPage("alice")[0]
+
+        self.assertEqual(sorted(a["id"] for a in album["artists"]), ["a1", "a2"])
+
+    def _seedThreeAlbums(self):
+        self.repo.upsertTrack(self._track("t1", "alb1", "Bravo", "a1"))
+        self.repo.upsertTrack(self._track("t2", "alb2", "Alpha", "a1"))
+        self.repo.upsertTrack(self._track("t3", "alb3", "Charlie", "a1"))
+        self.repo.insertPlay("alice", "t1", 100.0, 5000)   # alb1: 1 play, 5000ms
+        self.repo.insertPlay("alice", "t2", 200.0, 1000)
+        self.repo.insertPlay("alice", "t2", 300.0, 1000)   # alb2: 2 plays, 2000ms
+        self.repo.insertPlay("alice", "t3", 400.0, 9000)   # alb3: 1 play, 9000ms
+        self.repo.commit()
+
+    def test_order_by_plays_descending(self):
+        self._seedThreeAlbums()
+
+        albums = self.repo.getAlbumsPage("alice", sortBy="plays")
+
+        # alb1 and alb3 tie on plays (1 each); tie-break is totalTimeListened desc.
+        self.assertEqual([a["id"] for a in albums], ["alb2", "alb3", "alb1"])
+
+    def test_order_by_total_time_listened_descending(self):
+        self._seedThreeAlbums()
+
+        albums = self.repo.getAlbumsPage("alice", sortBy="totalTimeListened")
+
+        self.assertEqual([a["id"] for a in albums], ["alb3", "alb1", "alb2"])
+
+    def test_order_by_name_ascending(self):
+        self._seedThreeAlbums()
+
+        albums = self.repo.getAlbumsPage("alice", sortBy="name")
+
+        self.assertEqual([a["name"] for a in albums], ["Alpha", "Bravo", "Charlie"])
+
+    def test_invalid_sort_by_raises_value_error(self):
+        self._seedThreeAlbums()
+
+        with self.assertRaises(ValueError):
+            self.repo.getAlbumsPage("alice", sortBy="; DROP TABLE plays;--")
+
+    def test_limit_and_offset_paginate_default_order(self):
+        self._seedThreeAlbums()
+
+        firstPage = self.repo.getAlbumsPage("alice", sortBy="plays", limit=2, offset=0)
+        secondPage = self.repo.getAlbumsPage("alice", sortBy="plays", limit=2, offset=2)
+
+        self.assertEqual([a["id"] for a in firstPage], ["alb2", "alb3"])
+        self.assertEqual([a["id"] for a in secondPage], ["alb1"])
+
+    def test_limit_none_returns_everything(self):
+        self._seedThreeAlbums()
+
+        albums = self.repo.getAlbumsPage("alice", limit=None)
+
+        self.assertEqual(len(albums), 3)
+
+    def test_offset_past_end_returns_empty(self):
+        self._seedThreeAlbums()
+
+        albums = self.repo.getAlbumsPage("alice", limit=2, offset=10)
+
+        self.assertEqual(albums, [])
+
+    def test_no_plays_returns_empty(self):
+        albums = self.repo.getAlbumsPage("alice")
+        self.assertEqual(albums, [])
+
+    def test_date_range_filtering(self):
+        self.repo.upsertTrack(self._track("t1", "alb1", "Album One", "a1"))
+        self.repo.insertPlay("alice", "t1", 100.0, 1000)
+        self.repo.insertPlay("alice", "t1", 5000.0, 2000)
+        self.repo.commit()
+
+        albums = self.repo.getAlbumsPage("alice", startTs=0, endTs=1000)
+
+        self.assertEqual(albums[0]["plays"], 1)
+        self.assertEqual(albums[0]["totalTimeListened"], 1000)
+
+    def test_albums_count_matches_distinct_album_count(self):
+        self._seedThreeAlbums()
+        self.assertEqual(self.repo.getAlbumsCount("alice"), 3)
+
+    def test_albums_count_respects_date_range(self):
+        self.repo.upsertTrack(self._track("t1", "alb1", "Album One", "a1"))
+        self.repo.insertPlay("alice", "t1", 100.0, 1000)
+        self.repo.insertPlay("alice", "t1", 5000.0, 1000)
+        self.repo.commit()
+
+        self.assertEqual(self.repo.getAlbumsCount("alice", startTs=0, endTs=1000), 1)
+
+    def test_albums_count_zero_when_no_plays(self):
+        self.assertEqual(self.repo.getAlbumsCount("alice"), 0)
+
+
 class TestUsersAndCookies(RepositoryTestCase):
     def test_upsert_and_lookup_by_email(self):
         self.repo.upsertUser("alice", "alice@example.com")

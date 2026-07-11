@@ -39,6 +39,22 @@
               {% endif %}
           </div>
           {% endif %}
+        {% elif section == 'top_albums' %}
+          {% if track.get('plays') or track.get('uniqueSongCount') %}
+          <div class="track-meta small">
+              {% if track.get('plays') %}
+              <div class="track-meta small">
+                  {% if track.get('plays') %}{{ track.get('plays') }} plays{% endif %}
+                  {% if track.get('totalTimeListenedText') %} · {{ track.get('totalTimeListenedText') }}{% endif %}
+                  {% if track.get('sortPercentText') %} · {{ track.get('sortPercentText') }}{% endif %}
+              </div>
+              {% endif %}
+
+              {% if track.get('uniqueSongCount') %}
+              <div>You played {{ track.get('uniqueSongCount') }} song{{ 's' if track.get('uniqueSongCount') != 1 else '' }} from {{ track.get('name', '') }}</div>
+              {% endif %}
+          </div>
+          {% endif %}
         {% elif section == 'top_songs' %}
           <!-- Top Songs stats: plays, time -->
           {% if track.get('plays') or track.get('totalTimeListenedText') %}
@@ -55,7 +71,9 @@
           {% endif %}
         {% endif %}
         
-        {% if section != 'top_artists' %}
+        {% if section == 'top_albums' %}
+        <div class="track-meta">{{ track.get('artistsText') }}</div>
+        {% elif section != 'top_artists' %}
         <div class="track-meta">{{ track.get('artistsText') or (track.get('artists') and (', '.join(track.get('artists'))) ) or track.get('artist','') }} · {{ (track.get('album') and track.get('album').get('name')) or '' }}</div>
         {% endif %}
         
@@ -83,6 +101,10 @@
           {% if track.get('isrc') %}<span class="track-label">ISRC: {{ track.get('isrc') }}</span>{% endif %}
         {% elif section == 'top_artists' %}
           {% if track.get('firstListenedText') %}<span class="track-label">First Listened: {{ track.get('firstListenedText') }}</span>{% endif %}
+        {% elif section == 'top_albums' %}
+          {% if track.get('firstListenedText') %}<span class="track-label">First Listened: {{ track.get('firstListenedText') }}</span>{% endif %}
+          {% if track.get('releaseDateText') %}<span class="track-label">Released: {{ track.get('releaseDateText') }}</span>{% endif %}
+          {% if track.get('totalTracks') %}<span class="track-label">{{ track.get('totalTracks') }} tracks</span>{% endif %}
         {% endif %}
       </div>
     </div>

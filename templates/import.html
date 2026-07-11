@@ -9,8 +9,8 @@
 
   <section class="card import-card">
     <form id="import-form" action="{{ url_for('importHistory') }}" method="post" enctype="multipart/form-data">
-      <label for="history_file">Spotify history JSON file</label>
-      <input id="history_file" name="history_file" type="file" accept=".json, .csv" required />
+      <label for="history_file">Spotify history JSON file(s)</label>
+      <input id="history_file" name="history_file" type="file" accept=".json, .csv" multiple required />
       <button class="primary-button" type="submit">Start Import</button>
     </form>
 
@@ -64,7 +64,9 @@
     }
 
     importForm?.addEventListener('submit', () => {
-      progressMessage.textContent = 'Starting import...';
+      const fileCount = document.getElementById('history_file').files.length;
+      const label = fileCount > 1 ? `Starting import of ${fileCount} files...` : 'Starting import...';
+      progressMessage.textContent = label;
       progressBar.value = 0;
     });
   </script>

@@ -252,6 +252,17 @@ class SpotifyDashboardApp:
         song["sortPercentText"] = self._getPercentPlayedText(song, sortBy, totalPlays, totalMs)
         return song
 
+    def _embedAlbumTextElements(self, album, sortBy=None, totalPlays=0, totalMs=0) -> dict:
+        album["totalTimeListenedText"] = msToString(album.get("totalTimeListened", 0))
+        album["firstListenedText"] = convertToDatetime(album.get("firstListenedAt", 0)).strftime("%b %d, %Y")
+        album["sortPercentText"] = self._getPercentPlayedText(album, sortBy, totalPlays, totalMs)
+        album["releaseDateText"] = dateToString(album.get("releaseDate", 0))
+        album["artistsText"] = ", ".join(a.get("name", "") for a in album.get("artists", []))
+        return album
+
+    def _embedAlbumsTextElements(self, albums, sortBy=None, totalPlays=0, totalMs=0) -> list[dict]:
+        return [self._embedAlbumTextElements(album, sortBy, totalPlays, totalMs) for album in albums]
+
     def _embedArtistTextElement(self, artist, sortBy=None, totalPlays=0, totalMs=0) -> dict:
         artist["totalTimeListenedText"] = msToString(artist.get("totalTimeListened", 0))
         artist["firstListenedText"] = convertToDatetime(artist.get("firstListenedAt", 0)).strftime("%b %d, %Y")
@@ -492,11 +503,12 @@ class SpotifyDashboardApp:
             if db.readProgress().get("status") == "running":
                 return redirect(url_for("importPage"))
 
-            upload = request.files.get("history_file")
-            if upload is None or upload.filename == "":
+            uploads = [f for f in request.files.getlist("history_file") if f and f.filename]
+            if not uploads:
                 return redirect(url_for("importPage"))
 
-            thread = threading.Thread(target=db.importHistory, args=(upload.read().decode("utf-8"),), daemon=True)
+            contents = [upload.read().decode("utf-8") for upload in uploads]
+            thread = threading.Thread(target=db.importHistoryBatch, args=(contents,), daemon=True)
             thread.start()
             time.sleep(1)  # Give thread time to start and update progress
             return redirect(url_for("importPage"))
@@ -709,6 +721,69 @@ class SpotifyDashboardApp:
                 nextUrl=nextUrl,
                 startIndex=startIndex,
                 section="top_songs",
+                sortBy=sortBy,
+                interval=interval,
+                customStart=customStart,
+                customEnd=customEnd,
+            )
+
+        @self.app.route("/top-albums", methods=["GET"])
+        def topAlbumsPage():
+            email, username, db = get_current_user_or_redirect()
+            if not email:
+                return redirect(url_for("login", next=request.path))
+
+            page = self._getPageParam()
+            searchQuery = request.args.get("q", "")
+            sortBy = request.args.get("sortBy", "totalTimeListened")
+            interval = request.args.get("interval", "")
+            customStart = request.args.get("startDate", "")
+            customEnd = request.args.get("endDate", "")
+
+            startDate, endDate = self._getDateRange(interval, customStart, customEnd, default="all time")
+            totalPlays, totalMs = db.getPlayTotals(startDate, endDate)
+
+            if searchQuery:
+                # Search has to look at the whole history to match text across
+                # name/artist.
+                rawTopAlbums = db.getTopAlbums(startDate=startDate, endDate=endDate, by=sortBy)
+                self._embedIndices(rawTopAlbums)
+                albums = self._filterBySearch(rawTopAlbums, searchQuery)
+                albums, totalPages, startIndex = self.getPage(albums, page)
+            else:
+                # Only materialize the page being shown - SQL-level LIMIT/OFFSET
+                # instead of sorting+hydrating every album ever played.
+                totalCount = db.getAlbumsCount(startDate, endDate)
+                totalPages = max(1, (totalCount + PAGE_SIZE - 1) // PAGE_SIZE)
+                startIndex = (page - 1) * PAGE_SIZE
+                albums = db.getTopAlbums(startDate=startDate, endDate=endDate, by=sortBy,
+                                          limit=PAGE_SIZE, offset=startIndex)
+
+            prevUrl, nextUrl = self._getNeighboringUrls(
+                "topAlbumsPage",
+                page,
+                totalPages,
+                q=searchQuery,
+                sortBy=sortBy,
+                interval=interval,
+                startDate=customStart,
+                endDate=customEnd,
+            )
+
+            albums = self._embedAlbumsTextElements(albums, sortBy=sortBy, totalPlays=totalPlays, totalMs=totalMs)
+
+            return render_template(
+                "top_albums.html",
+                tracks=albums,
+                username=username,
+                totalPlays=totalPlays,
+                totalTime=msToString(totalMs),
+                page=page,
+                totalPages=totalPages,
+                prevUrl=prevUrl,
+                nextUrl=nextUrl,
+                startIndex=startIndex,
+                section="top_albums",
                 sortBy=sortBy,
                 interval=interval,
                 customStart=customStart,

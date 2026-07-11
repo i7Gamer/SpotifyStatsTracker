@@ -95,6 +95,110 @@ class TestImportHistoryCommit(DatabaseTestCase):
         self.assertEqual(len(self._playedAts()), 2)
         importer.importHistory.assert_not_called()
 
+    def test_progress_prefix_is_included_in_messages(self):
+        def gen():
+            yield _meta("i1", 200)
+
+        capturedMessages = []
+        originalWriteProgress = self.db.writeProgress
+
+        def captureWriteProgress(status, current=0, total=0, message="", error=False):
+            capturedMessages.append(message)
+            originalWriteProgress(status, current, total, message, error)
+
+        self.db.writeProgress = captureWriteProgress
+
+        with patch("Database.database.Importer", return_value=self._mockImporter(gen)):
+            self.db.importHistory("raw export", progressPrefix="File 1/1: ")
+
+        self.assertTrue(capturedMessages)
+        self.assertTrue(all(m.startswith("File 1/1: ") for m in capturedMessages))
+
+
+class TestImportHistoryBatch(DatabaseTestCase):
+    """importHistoryBatch imports multiple files sequentially (cached and
+    processed one after another), mirroring AutoImporter's existing
+    one-file-at-a-time folder-watching behavior."""
+
+    def setUp(self):
+        super().setUp()
+        self.db = self._makeDb({}, [])
+
+    def _mockImporter(self, generatorFactory, parsedCount=1):
+        importer = MagicMock()
+        importer._convertToList.return_value = ([{}] * parsedCount, "spotifyAcountExport")
+        importer.importHistory.return_value = generatorFactory()
+        return importer
+
+    def _ids(self):
+        return [e["id"] for e in self.db.getEntriesFromOld(fullPagination=False)]
+
+    def test_files_are_imported_sequentially_and_merged(self):
+        def gen1():
+            yield _meta("f1i1", 100)
+
+        def gen2():
+            yield _meta("f2i1", 200)
+
+        with patch("Database.database.Importer",
+                    side_effect=[self._mockImporter(gen1), self._mockImporter(gen2)]):
+            self.db.importHistoryBatch(["export one", "export two"])
+
+        self.assertEqual(self._ids(), ["f1i1", "f2i1"])
+        self.assertEqual(self.db.readProgress()["status"], "complete")
+
+    def test_one_failing_file_does_not_block_the_rest(self):
+        def failing():
+            raise RuntimeError("bad file")
+            yield  # unreachable - keeps this a generator function
+
+        def gen2():
+            yield _meta("f2i1", 200)
+
+        with patch("Database.database.Importer",
+                    side_effect=[self._mockImporter(failing), self._mockImporter(gen2)]):
+            self.db.importHistoryBatch(["bad export", "good export"])
+
+        self.assertEqual(self._ids(), ["f2i1"])
+        progress = self.db.readProgress()
+        self.assertEqual(progress["status"], "complete")
+        self.assertIn("1 failed", progress["message"])
+
+    def test_all_files_failing_marks_progress_failed(self):
+        def failing():
+            raise RuntimeError("bad file")
+            yield  # unreachable - keeps this a generator function
+
+        with patch("Database.database.Importer",
+                    side_effect=[self._mockImporter(failing), self._mockImporter(failing)]):
+            self.db.importHistoryBatch(["bad one", "bad two"])
+
+        progress = self.db.readProgress()
+        self.assertEqual(progress["status"], "failed")
+        self.assertTrue(progress["error"])
+
+    def test_progress_prefix_identifies_current_file(self):
+        def gen():
+            yield _meta("i1", 100)
+
+        capturedMessages = []
+        originalWriteProgress = self.db.writeProgress
+
+        def captureWriteProgress(status, current=0, total=0, message="", error=False):
+            capturedMessages.append(message)
+            originalWriteProgress(status, current, total, message, error)
+
+        self.db.writeProgress = captureWriteProgress
+
+        with patch("Database.database.Importer", return_value=self._mockImporter(gen)):
+            self.db.importHistoryBatch(["only export"])
+
+        self.assertTrue(any("File 1/1" in m for m in capturedMessages))
+
+    def test_empty_file_list_is_a_noop(self):
+        self.db.importHistoryBatch([])
+        self.assertEqual(self._ids(), [])
+
 
 if __name__ == "__main__":
     import unittest

@@ -165,6 +165,58 @@ class TestGetOverallStats(DatabaseTestCase):
         self.assertEqual(stats["totalDurationMs"], 0)
 
 
+class TestGetAlbumsStats(DatabaseTestCase):
+    def _sampleData(self):
+        tracks = {
+            "t1": {"id": "t1", "name": "Song One", "artists": [{"id": "a1", "name": "Artist A"}],
+                   "imageId": "alb1", "album": {"id": "alb1", "name": "Album One", "url": "u",
+                                                 "imageId": "alb1", "imageUrl": "", "totalTracks": 2,
+                                                 "releaseDate": 0}},
+            "t2": {"id": "t2", "name": "Song Two", "artists": [{"id": "a1", "name": "Artist A"}],
+                   "imageId": "alb2", "album": {"id": "alb2", "name": "Album Two", "url": "u",
+                                                 "imageId": "alb2", "imageUrl": "", "totalTracks": 1,
+                                                 "releaseDate": 0}},
+        }
+        entries = [
+            {"id": "t1", "playedAt": 100, "timePlayed": 3000},
+            {"id": "t1", "playedAt": 200, "timePlayed": 3000},
+            {"id": "t2", "playedAt": 300, "timePlayed": 1000},
+        ]
+        return tracks, entries
+
+    def test_get_albums_stats_returns_one_row_per_album(self):
+        tracks, entries = self._sampleData()
+        db = self._makeDb(tracks, entries)
+
+        albums = db.getAlbumsStats()
+
+        self.assertEqual({a["id"] for a in albums}, {"alb1", "alb2"})
+        alb1 = next(a for a in albums if a["id"] == "alb1")
+        self.assertEqual(alb1["plays"], 2)
+        self.assertEqual(alb1["totalTimeListened"], 6000)
+
+    def test_get_albums_count(self):
+        tracks, entries = self._sampleData()
+        db = self._makeDb(tracks, entries)
+
+        self.assertEqual(db.getAlbumsCount(), 2)
+
+    def test_get_top_albums_sorted_by_plays(self):
+        tracks, entries = self._sampleData()
+        db = self._makeDb(tracks, entries)
+
+        topAlbums = db.getTopAlbums(by="plays")
+
+        self.assertEqual([a["id"] for a in topAlbums], ["alb1", "alb2"])
+
+    def test_empty_database_returns_empty(self):
+        db = self._makeDb({}, [])
+
+        self.assertEqual(db.getAlbumsStats(), [])
+        self.assertEqual(db.getAlbumsCount(), 0)
+        self.assertEqual(db.getTopAlbums(), [])
+
+
 class TestGetPlayTotals(DatabaseTestCase):
     def test_returns_count_and_sum(self):
         tracks = {"t1": {"id": "t1", "name": "Song One", "artists": []}}

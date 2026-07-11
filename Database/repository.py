@@ -26,6 +26,12 @@ SONG_SORT_COLUMNS = {
     "name": "name",
 }
 
+ALBUM_SORT_COLUMNS = {
+    "plays": "plays",
+    "totalTimeListened": "total_time_listened",
+    "name": "name",
+}
+
 
 class Repository:
     """Data-access layer over the shared SQLite database.
@@ -425,6 +431,102 @@ class Repository:
             (username, startTs, startTs, endTs, endTs),
         ).fetchone()
         return row["c"]
+
+    def getAlbumsPage(self, username: str, startTs: float | None = None, endTs: float | None = None,
+                       sortBy: str = "plays", limit: int | None = None, offset: int = 0) -> list[dict]:
+        """Sorted/paged album stats in one batched round-trip - one row per
+        album, aggregated across every track on it this user played. Mirrors
+        getSongsPage()'s SQL-first sort/page pattern exactly."""
+        if sortBy not in ALBUM_SORT_COLUMNS:
+            raise ValueError(f"Unknown sortBy: {sortBy!r}")
+        sortColumn = ALBUM_SORT_COLUMNS[sortBy]
+        direction = "ASC" if sortBy == "name" else "DESC"
+        limitValue = -1 if limit is None else limit
+
+        conn = self._conn()
+        rows = conn.execute(
+            f"""
+            SELECT
+                al.id AS album_id, al.name AS name, al.url AS url, al.image_id AS image_id,
+                al.image_url AS image_url, al.total_tracks AS total_tracks, al.release_date AS release_date,
+                COUNT(*) AS plays, SUM(p.time_played) AS total_time_listened,
+                COUNT(DISTINCT p.track_id) AS unique_song_count, MIN(p.played_at) AS first_listened_at
+            FROM plays p
+            JOIN tracks t ON t.id = p.track_id
+            JOIN albums al ON al.id = t.album_id
+            WHERE p.username = ? {self._dateRangeClause().replace("played_at", "p.played_at")}
+            GROUP BY al.id
+            ORDER BY {sortColumn} {direction}, total_time_listened {direction}, name {direction}, album_id ASC
+            LIMIT ? OFFSET ?
+            """,
+            (username, startTs, startTs, endTs, endTs, limitValue, offset),
+        ).fetchall()
+
+        artistsByAlbum = self._artistsForAlbums([row["album_id"] for row in rows])
+        return [self._albumStatsRowToDict(row, artistsByAlbum.get(row["album_id"], [])) for row in rows]
+
+    def getAlbumsCount(self, username: str, startTs: float | None = None, endTs: float | None = None) -> int:
+        """Number of distinct albums played in range - the paging counterpart to
+        getAlbumsPage(), used to compute total page count without fetching every
+        album's metadata."""
+        conn = self._conn()
+        row = conn.execute(
+            f"""
+            SELECT COUNT(*) AS c FROM (
+                SELECT t.album_id FROM plays p
+                JOIN tracks t ON t.id = p.track_id
+                WHERE p.username = ? {self._dateRangeClause().replace("played_at", "p.played_at")}
+                GROUP BY t.album_id
+            )
+            """,
+            (username, startTs, startTs, endTs, endTs),
+        ).fetchone()
+        return row["c"]
+
+    def _artistsForAlbums(self, albumIds: list[str]) -> dict[str, list[dict]]:
+        """Distinct artists across every track on each album, grouped by album id
+        and ordered by their earliest track position - the album-level
+        counterpart to _artistsForTracks()."""
+        if not albumIds:
+            return {}
+        conn = self._conn()
+        placeholders = ",".join("?" for _ in albumIds)
+        rows = conn.execute(
+            f"""
+            SELECT t.album_id AS album_id, a.id AS id, a.name AS name, a.url AS url, a.image_id AS image_id,
+                   MIN(ta.position) AS min_position
+            FROM track_artists ta
+            JOIN artists a ON a.id = ta.artist_id
+            JOIN tracks t ON t.id = ta.track_id
+            WHERE t.album_id IN ({placeholders})
+            GROUP BY t.album_id, a.id
+            ORDER BY t.album_id, min_position
+            """,
+            albumIds,
+        ).fetchall()
+        artistsByAlbum: dict[str, list] = {}
+        for row in rows:
+            artistsByAlbum.setdefault(row["album_id"], []).append(
+                {"id": row["id"], "name": row["name"], "url": row["url"], "imageUrl": "", "imageId": row["image_id"]}
+            )
+        return artistsByAlbum
+
+    @staticmethod
+    def _albumStatsRowToDict(row, artists: list[dict]) -> dict:
+        return {
+            "id": row["album_id"],
+            "name": row["name"],
+            "url": row["url"],
+            "imageId": row["image_id"],
+            "imageUrl": row["image_url"],
+            "totalTracks": row["total_tracks"],
+            "releaseDate": row["release_date"],
+            "artists": artists,
+            "plays": row["plays"],
+            "totalTimeListened": row["total_time_listened"],
+            "uniqueSongCount": row["unique_song_count"],
+            "firstListenedAt": row["first_listened_at"],
+        }
 
     def _artistsForTracks(self, trackIds: list[str]) -> dict[str, list[dict]]:
         """Ordered artists for a specific set of track ids, grouped by track id -
