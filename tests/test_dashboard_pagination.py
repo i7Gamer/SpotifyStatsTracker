@@ -31,6 +31,8 @@ class _ListRouteTestBase(unittest.TestCase):
         db.getEntriesFromNew.return_value = []
         db.getEntriesCount.return_value = entryCount
         db.getTopSongs.return_value = []
+        db.getSongsCount.return_value = 0
+        db.getPlayTotals.return_value = (0, 0)
         db.getTopArtists.return_value = []
         db.getOverallStats.return_value = {
             "currentTopSongs": [],
@@ -53,6 +55,9 @@ class _ListRouteTestBase(unittest.TestCase):
 
     def _getDashboard(self, dash, db, query=""):
         return self._getPath(dash, db, f"/{query}")
+
+    def _getTopSongs(self, dash, db, query=""):
+        return self._getPath(dash, db, f"/top-songs{query}")
 
 
 class TestDashboardPagination(_ListRouteTestBase):
@@ -108,6 +113,96 @@ class TestDashboardPagination(_ListRouteTestBase):
         self.assertEqual(resp.status_code, 200)
         db.getEntriesFromNew.assert_called_once_with()
         db.getEntriesCount.assert_not_called()
+
+
+class TestTopSongsPagination(_ListRouteTestBase):
+    """/top-songs must only ask the DB layer for the current page (SQL-level
+    LIMIT/OFFSET, mirroring the dashboard's getEntriesCount/getEntriesFromNew
+    pattern) when there's no search query - search still needs the full list
+    to filter text across name/artist/album."""
+
+    def test_without_search_fetches_only_one_page(self):
+        dash = self._makeApp()
+        db = self._makeDb(entryCount=0)
+
+        resp = self._getTopSongs(dash, db)
+
+        self.assertEqual(resp.status_code, 200)
+        db.getSongsCount.assert_called_once()
+        db.getTopSongs.assert_called_once()
+        kwargs = db.getTopSongs.call_args.kwargs
+        self.assertEqual(kwargs["limit"], appModule.PAGE_SIZE)
+        self.assertEqual(kwargs["offset"], 0)
+        self.assertEqual(kwargs["by"], "totalTimeListened")   #< topSongsPage's default sortBy
+
+    def test_without_search_requests_correct_offset_for_page(self):
+        dash = self._makeApp()
+        db = self._makeDb(entryCount=0)
+        db.getSongsCount.return_value = 120
+
+        resp = self._getTopSongs(dash, db, query="?page=2")
+
+        self.assertEqual(resp.status_code, 200)
+        kwargs = db.getTopSongs.call_args.kwargs
+        self.assertEqual(kwargs["offset"], appModule.PAGE_SIZE)
+        self.assertIn(b"Page 2 of 3", resp.data)
+
+    def test_without_search_passes_requested_sort(self):
+        dash = self._makeApp()
+        db = self._makeDb(entryCount=0)
+
+        resp = self._getTopSongs(dash, db, query="?sortBy=plays")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(db.getTopSongs.call_args.kwargs["by"], "plays")
+
+    def test_without_search_handles_empty_database(self):
+        dash = self._makeApp()
+        db = self._makeDb(entryCount=0)
+
+        resp = self._getTopSongs(dash, db)
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn(b"Page 1 of 1", resp.data)
+
+    def test_with_search_still_scans_full_history(self):
+        """Search has to look at everything, so the full-fetch path stays -
+        no limit/offset, and the cheap count query is skipped entirely."""
+        dash = self._makeApp()
+        db = self._makeDb(entryCount=0)
+
+        resp = self._getTopSongs(dash, db, query="?q=foo")
+
+        self.assertEqual(resp.status_code, 200)
+        db.getSongsCount.assert_not_called()
+        kwargs = db.getTopSongs.call_args.kwargs
+        self.assertNotIn("limit", kwargs)
+        self.assertNotIn("offset", kwargs)
+
+    def test_totals_come_from_get_play_totals_independent_of_list(self):
+        """totalPlays/totalTime must reflect the whole-range aggregate (via the
+        cheap getPlayTotals call), not just whatever getTopSongs happens to
+        return for the current page."""
+        dash = self._makeApp()
+        db = self._makeDb(entryCount=0)
+        db.getPlayTotals.return_value = (42, 999000)
+
+        resp = self._getTopSongs(dash, db)
+
+        self.assertEqual(resp.status_code, 200)
+        db.getPlayTotals.assert_called_once()
+        self.assertIn(b'<p class="summary-value">42</p>', resp.data)
+
+    def test_totals_are_fetched_in_search_branch_too(self):
+        dash = self._makeApp()
+        db = self._makeDb(entryCount=0)
+        db.getPlayTotals.return_value = (7, 1000)
+
+        resp = self._getTopSongs(dash, db, query="?q=foo")
+
+        self.assertEqual(resp.status_code, 200)
+        db.getPlayTotals.assert_called_once()
+        self.assertIn(b'<p class="summary-value">7</p>', resp.data)
 
 
 class TestPageParamParsing(_ListRouteTestBase):

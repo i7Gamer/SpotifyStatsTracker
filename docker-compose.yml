@@ -2,17 +2,18 @@ version: '3.8'
 
 services:
   spotify-tracker:
-    image: mepro3/spotify-tracker
+    image: i7gamer/spotify-tracker
     ports:
       - "5000:5000"
     volumes:
-      - ./Database/Users:/app/Database/Users
-      - ./secrets:/app/secrets
+      - ./Database/Data:/app/Database/Data
+      - ./Database/Users:/app/Database/Users  #< pre-1.7.0 data dir; only needed for the one restart that migrates it into Data/ above, safe to remove after that
       - ./autoImport:/app/autoImport  #< files put in this folder will be imported automatically
     environment:
-      - FLASK_APP=app.py
+      - FLASK_APP=wsgi.py
       - PYTHONUNBUFFERED=1
       - TZ=America/Los_Angeles        #< don't forget to change this or you will get the wrong times for songs
+      - FLASK_SECRET_KEY=changeme-generate-your-own-random-value  #< fixed value = sessions survive a restart; unset = a new one is generated each restart, logging everyone out
       # - IMPORT_KEYWORD=Weekly       #< Uncomment to apply a filter to what files get auto-imported (only files containing this will be imported)
       # - FLASK_DEBUG=1               #< To get more detailed logs from Flask (provide this when opening an issue)
     restart: always

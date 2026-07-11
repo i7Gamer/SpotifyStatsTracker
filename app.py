@@ -11,6 +11,7 @@ from datetime import timedelta
 from flask import Flask, render_template, redirect, request, url_for, jsonify, send_from_directory, session, g
 
 from Database.database import Database
+from Database.repository import Repository
 from Database.Migrators.migrate import migrateIfNeeded
 from Database.Listeners.spotifyListener import _suppress_signal_in_thread
 from Database.utils import msToString, convertToDatetime, formatDuration, dateToString, versionTuple, now, startOfDay, parseDateString
@@ -28,12 +29,14 @@ class SpotifyDashboardApp:
         self.baseDir = Path(__file__).resolve().parent
         self.app.secret_key = self._get_or_create_secret_key()
         self.app.permanent_session_lifetime = timedelta(days=30)
-        self.cookiesFile = self.baseDir / "secrets" / "cookies.json"
-        
+        # Users, emails and Spotify session cookies live in the shared database
+        # (see Database/repository.py) instead of secrets/users_map.json and
+        # secrets/cookies.json.
+        self.repo = Repository()
+
         self.user_databases = {}
         self._db_lock = threading.RLock()
         self._session_lock = threading.RLock()
-        self._migration_lock = threading.RLock()
         self._login_cache: dict = {}  #< {email: (result: bool, expires_at: float)}
         
         try:
@@ -67,96 +70,16 @@ class SpotifyDashboardApp:
         return newKey
 
     def get_username_for_email(self, email):
-        with self._session_lock:
-            map_file = self.baseDir / "secrets" / "users_map.json"
-            if map_file.exists():
-                try:
-                    users_map = json.loads(map_file.read_text(encoding="utf-8"))
-                    if email in users_map:
-                        return users_map[email]
-                except Exception:
-                    pass
-            
-            return None
-
-    def _migrate_legacy_database_if_needed(self, username):
-        import shutil
-        users_dir = self.baseDir / "Database" / "Users"
-        target_dir = users_dir / username
-        
-        # If target already contains data (entries.json exists and is not empty), no migration is needed
-        target_entries = target_dir / "entries.json"
-        if target_entries.exists() and target_entries.stat().st_size > 2:
-            return
-            
-        # Possible legacy source directories:
-        # 1. Database/Users/Tzur (from early multi-user version)
-        # 2. Database/Tzur (legacy single-user version)
-        # 3. Database (legacy single-user version directly in Database folder)
-        legacy_sources = [
-            users_dir / "Tzur",
-            self.baseDir / "Database" / "Tzur",
-            self.baseDir / "Database"
-        ]
-        
-        for src in legacy_sources:
-            if src.exists() and src.resolve() != target_dir.resolve() and src.resolve() != users_dir.resolve():
-                src_entries = src / "entries.json"
-                # Check if this source directory actually has database entries
-                if src_entries.exists() and src_entries.stat().st_size > 2:
-                    print(f"Migrating legacy database from {src} to {target_dir}...")
-                    
-                    # Create target directory
-                    target_dir.mkdir(parents=True, exist_ok=True)
-                    
-                    try:
-                        if src.resolve() == (self.baseDir / "Database").resolve():
-                            # Only migrate individual database files to avoid recursive copying of Database/Users
-                            db_files = ["entries.json", "tracks.json", "playlists.json", "progress.json"]
-                            for file_name in db_files:
-                                file_path = src / file_name
-                                if file_path.exists():
-                                    shutil.copy2(file_path, target_dir / file_name)
-                                    file_path.unlink()
-                            
-                            # Copy image directories if they exist
-                            for img_type in ["tracks", "artists"]:
-                                img_src = src / "img" / img_type
-                                if img_src.exists():
-                                    img_dst = target_dir / "img" / img_type
-                                    img_dst.mkdir(parents=True, exist_ok=True)
-                                    for item in img_src.iterdir():
-                                        if item.is_file():
-                                            shutil.copy2(item, img_dst / item.name)
-                            
-                            # Clean up legacy img folders if they are empty
-                            legacy_img = src / "img"
-                            if legacy_img.exists():
-                                try:
-                                    shutil.rmtree(legacy_img)
-                                except Exception:
-                                    pass
-                        else:
-                            # Copy all contents recursively
-                            def copy_recursive(src_path, dst_path):
-                                dst_path.mkdir(parents=True, exist_ok=True)
-                                for item in src_path.iterdir():
-                                    target_item = dst_path / item.name
-                                    if item.is_dir():
-                                        copy_recursive(item, target_item)
-                                    else:
-                                        shutil.copy2(item, target_item)
-                            copy_recursive(src, target_dir)
-                            # Remove the old directory to keep files clean and avoid re-migration
-                            shutil.rmtree(src)
-                        print(f"Successfully migrated and cleaned up legacy folder: {src}")
-                    except Exception as e:
-                        print(f"Error migrating legacy database: {e}")
-                    break
+        return self.repo.getUsernameForEmail(email)
 
     def get_or_create_user(self, email):
+        # The whole check-then-create sequence needs the lock, not just the final
+        # write: two concurrent first-time logins for different emails that
+        # happen to sanitize to the same username prefix (e.g. "alice@a.com" and
+        # "alice@b.com") could otherwise both pass the uniqueness check before
+        # either has actually created their row.
         with self._session_lock:
-            username = self.get_username_for_email(email)
+            username = self.repo.getUsernameForEmail(email)
             if not username:
                 # Create a new username from email prefix
                 prefix = email.split("@")[0]
@@ -164,37 +87,25 @@ class SpotifyDashboardApp:
                 if not sanitized:
                     sanitized = f"user_{int(time.time())}"
 
-                # Ensure uniqueness under Database/Users/
                 username = sanitized
                 counter = 1
-                users_dir = self.baseDir / "Database" / "Users"
-                while (users_dir / username).exists() or username in self.user_databases:
+                while True:
+                    if username in self.user_databases:
+                        pass  # a live Database already exists under this name - can't be the same account, needs a new suffix
+                    elif not self.repo.usernameExists(username):
+                        self.repo.upsertUser(username, email)
+                        break
+                    elif self.repo.getEmailForUsername(username) is None:
+                        # Orphaned account with no email on record - e.g. a
+                        # migration whose users_map.json didn't have this user's
+                        # email. Claim it instead of creating a sibling account
+                        # that strands its existing history (the caller already
+                        # verified these cookies belong to `email`).
+                        self.repo.setUserEmail(username, email)
+                        break
+
                     username = f"{sanitized}_{counter}"
                     counter += 1
-
-                # Save to mapping
-                map_file = self.baseDir / "secrets" / "users_map.json"
-                users_map = {}
-                if map_file.exists():
-                    try:
-                        users_map = json.loads(map_file.read_text(encoding="utf-8"))
-                    except Exception:
-                        pass
-                users_map[email] = username
-                map_file.parent.mkdir(parents=True, exist_ok=True)
-                map_file.write_text(json.dumps(users_map, indent=4), encoding="utf-8")
-
-        # Legacy-folder migration (file copies) and directory creation only touch
-        # this user's own directory, not the shared session/mapping files, so they
-        # don't need the global session lock - and its I/O shouldn't block other
-        # users' session lookups while it runs. They still need their own lock
-        # though: the legacy sources are fixed, shared paths (e.g. Database/Tzur),
-        # so two different brand-new users logging in around the same time could
-        # otherwise both race to migrate the same source into their own directory.
-        with self._migration_lock:
-            self._migrate_legacy_database_if_needed(username)
-        users_dir = self.baseDir / "Database" / "Users"
-        (users_dir / username).mkdir(parents=True, exist_ok=True)
 
         return username
 
@@ -230,10 +141,10 @@ class SpotifyDashboardApp:
     def get_user_db(self, username, email):
         with self._db_lock:
             if username not in self.user_databases:
-                db = Database(user=username, cookiesFile=str(self.cookiesFile), email=email)
+                db = Database(user=username, email=email)
                 db.startAutoImporter()
                 db.resetProgress()
-                db.startListener(str(self.cookiesFile), email=email)
+                db.startListener(email=email)
                 try:
                     db.deduplicate()
                 except Exception as e:
@@ -245,24 +156,14 @@ class SpotifyDashboardApp:
         if not email:
             return False
 
-        with self._session_lock:
-            if not self.cookiesFile.exists():
-                return False
-            try:
-                cookies_data = json.loads(self.cookiesFile.read_text(encoding="utf-8"))
-                has_cookie = any(c.get("identifier") == email for c in cookies_data)
-            except Exception:
-                return False
-            if not has_cookie:
-                return False
-            username = self.get_username_for_email(email)
+        username = self.repo.getUsernameForEmail(email)
+        if not username or self.repo.getUserCookies(username) is None:
+            return False
 
-        # isListenerLoggedIn() can make a live network call to Spotify - done outside
-        # the lock so a slow/hanging check for one user can't block every other
-        # user's session lookups (this runs on nearly every authenticated request).
-        # The result is cached per user for LOGIN_CACHE_TTL_SECONDS to avoid a round-
-        # trip on every request (the main cause of Waitress queue saturation).
-        if username and username in self.user_databases:
+        # isListenerLoggedIn() can make a live network call to Spotify - the result
+        # is cached per user for LOGIN_CACHE_TTL_SECONDS to avoid a round-trip on
+        # every request (the main cause of Waitress queue saturation).
+        if username in self.user_databases:
             now_ts = time.monotonic()
             cached = self._login_cache.get(email)
             if cached is not None and cached[1] > now_ts:
@@ -276,26 +177,11 @@ class SpotifyDashboardApp:
         self._ensureAllUsersLogin()
         thread = threading.Thread(target=self._checkLoginLoop, daemon=True)
         thread.start()
-    
-    def _ensureAllUsersLogin(self):
-        with self._session_lock:
-            if not self.cookiesFile.exists():
-                return
-            try:
-                cookies_data = json.loads(self.cookiesFile.read_text(encoding="utf-8"))
-            except Exception as e:
-                print("Error initializing users:", e)
-                return
 
-        # get_or_create_user/get_user_db can migrate legacy folders and start a
-        # listener (a live network call) per user - done outside the session lock
-        # so initializing one user doesn't block every other user's requests.
+    def _ensureAllUsersLogin(self):
         try:
-            for entry in cookies_data:
-                email = entry.get("identifier")
-                if email:
-                    username = self.get_or_create_user(email)
-                    self.get_user_db(username, email)
+            for username, email in self.repo.getAllUsersWithCookies():
+                self.get_user_db(username, email)
         except Exception as e:
             print("Error initializing users:", e)
     
@@ -572,18 +458,21 @@ class SpotifyDashboardApp:
                 return None
             return self.get_username_for_email(email)
 
+        # Images are shared across every user (Database.imgDir_tracks/imgDir_artists
+        # are class-level, not per user) - the <username> segment in these routes is
+        # kept only as the authorization check ("is this session allowed to ask at
+        # all"), not to select which directory to read from.
         @self.app.route('/img/<username>/tracks/<filename>')
         def serveTrackImage(username, filename):
             if username != _authorized_image_username() or filename != os.path.basename(filename):
                 return "", 404
-            imageDir = os.path.join(self.baseDir, "Database", "Users", username, "img", "tracks")
-            return send_from_directory(imageDir, filename)
+            return send_from_directory(Database.imgDir_tracks, filename)
 
         @self.app.route('/img/<username>/artists/<filename>')
         def serveArtistImage(username, filename):
             if username != _authorized_image_username() or filename != os.path.basename(filename):
                 return "", 404
-            imageDir = os.path.join(self.baseDir, "Database", "Users", username, "img", "artists")
+            imageDir = Database.imgDir_artists
             imagePath = os.path.join(imageDir, filename)
 
             if not os.path.exists(imagePath):
@@ -649,13 +538,12 @@ class SpotifyDashboardApp:
                         error=f"Couldn't verify that these cookies belong to {email}. "
                               "Make sure you are logged into open.spotify.com with that account and copied all cookies.")
 
-                with self._session_lock:
-                    saveSession(parsedCookies, email, self.cookiesFile)
                 session.permanent = True
                 # get_or_create_user/get_user_db manage their own locking and can
                 # start a listener (a live network call) - kept outside the session
                 # lock so logging one user in doesn't block everyone else.
                 username = self.get_or_create_user(email)
+                self.repo.setUserCookies(username, parsedCookies)
                 self.get_user_db(username, email)
                 session["email"] = email
                 session["username"] = username
@@ -775,13 +663,26 @@ class SpotifyDashboardApp:
             customEnd = request.args.get("endDate", "")
             
             startDate, endDate = self._getDateRange(interval, customStart, customEnd, default="all time")
-            rawTopSongs = db.getTopSongs(startDate=startDate, endDate=endDate, by=sortBy)
+            # totalPlays/totalMs are a whole-range aggregate regardless of search -
+            # a cheap dedicated query instead of summing every song's metadata.
+            totalPlays, totalMs = db.getPlayTotals(startDate, endDate)
+
             if searchQuery:
+                # Search has to look at the whole history to match text across
+                # name/artist/album.
+                rawTopSongs = db.getTopSongs(startDate=startDate, endDate=endDate, by=sortBy)
                 self._embedIndices(rawTopSongs)
-            tracks = self._filterBySearch(rawTopSongs, searchQuery)
-            tracks, totalPages, startIndex = self.getPage(tracks, page)
-            totalPlays = self._getTotal(rawTopSongs, "plays")
-            totalMs = self._getTotal(rawTopSongs, "totalTimeListened")
+                tracks = self._filterBySearch(rawTopSongs, searchQuery)
+                tracks, totalPages, startIndex = self.getPage(tracks, page)
+            else:
+                # Only materialize the page being shown - SQL-level LIMIT/OFFSET
+                # instead of sorting+hydrating every song ever played.
+                totalCount = db.getSongsCount(startDate, endDate)
+                totalPages = max(1, (totalCount + PAGE_SIZE - 1) // PAGE_SIZE)
+                startIndex = (page - 1) * PAGE_SIZE
+                tracks = db.getTopSongs(startDate=startDate, endDate=endDate, by=sortBy,
+                                         limit=PAGE_SIZE, offset=startIndex)
+
             prevUrl, nextUrl = self._getNeighboringUrls(
                 "topSongsPage",
                 page,

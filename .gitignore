@@ -15,9 +15,12 @@ secrets.json
 cookies*.json
 flask_secret_key.txt
 
-# Runtime user data - listening history, session cookies and the email->username
-# map are personal data and must never be committed.
+# Runtime data - listening history, images, the database (Spotify session
+# cookies included), and the flask secret key file are personal/sensitive and
+# must never be committed. Database/Users/ is the pre-1.7.0 name, kept here too
+# since existing local checkouts won't have renamed it until their next start.
 secrets/
+Database/Data/
 Database/Users/
 autoImport/
 tmp/

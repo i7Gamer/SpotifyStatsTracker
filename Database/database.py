@@ -1,8 +1,8 @@
 from __future__ import annotations
 import datetime
-import copy
 import os
 import re
+import tempfile
 import threading
 import json
 from pathlib import Path
@@ -17,16 +17,42 @@ try:
     from Database.Importers.StreamingHistoryImporter import Importer
     from Database.Importers.AutoImporter import AutoImporter
     from Database.Listeners.spotifyListener import Listener
+    from Database.repository import (
+        Repository, IMAGE_KIND_TRACK, IMAGE_KIND_ARTIST, IMAGE_STATUS_OK, IMAGE_STATUS_FAILED,
+    )
     from Database.utils import parseError, convertToDatetime, dateToString, startOfDay, startOfWeek
 except ModuleNotFoundError:
     from Formatters.spotifyClient import Client
     from Importers.StreamingHistoryImporter import Importer
     from Importers.AutoImporter import AutoImporter
     from Listeners.spotifyListener import Listener
+    from repository import Repository, IMAGE_KIND_TRACK, IMAGE_KIND_ARTIST, IMAGE_STATUS_OK, IMAGE_STATUS_FAILED
     from utils import parseError, convertToDatetime, dateToString, startOfDay, startOfWeek
 
+IMAGE_DOWNLOAD_WORKERS = 5   #< bounds total concurrent image downloads for the whole process, not per user
+
+# Images are shared across every user (album art / artist photos are the same
+# bytes for everyone), so they live in one directory tree instead of under each
+# user's own folder. Inside Data/ (see Database/db.py's DEFAULT_DB_PATH) so the
+# Docker volume mount that persists the database also covers it.
+MEDIA_DIR = Path(__file__).resolve().parent / "Data" / "Media"
+
+
 class Database:
-    def __init__(self, user: str, cookiesFile: str | None = None, email: str | None = None):
+    PROGRESS_UPDATE_INTERVAL = 10   #< Write import progress to disk every N entries instead of every entry
+
+    # Shared across every Database instance (every user) in this process. Image
+    # download de-duplication is enforced by the `images` table (atomic across
+    # threads *and* users), so a single bounded pool for the whole process is
+    # enough - there's no need for one per user, and no need for the old
+    # per-user in-memory id sets / metadata.json files this replaces.
+    imgDir_tracks = MEDIA_DIR / "tracks"
+    imgDir_artists = MEDIA_DIR / "artists"
+    _imageDownloadExecutor = concurrent.futures.ThreadPoolExecutor(max_workers=IMAGE_DOWNLOAD_WORKERS)
+    _imageIdsLock = threading.RLock()
+    _artistImageLazyFetchAttempted = set()
+
+    def __init__(self, user: str, cookiesFile: str | None = None, email: str | None = None, dbPath=None):
         if not user:
             raise ValueError("Database user must be specified and cannot be empty.")
         self.user = user
@@ -35,24 +61,13 @@ class Database:
         self.listener = None
         self.baseDir = Path(__file__).resolve().parent
 
-        self.imgDir_tracks = self.baseDir / "Users" / self.user / "img" / "tracks"
-        self.imgDir_artists = self.baseDir / "Users" / self.user / "img" / "artists"
-        self.entriesPath = self.baseDir / "Users" / self.user / "entries.json"
-        self.tracksPath = self.baseDir / "Users" / self.user / "tracks.json"
-        self.playlistsPath = self.baseDir / "Users" / self.user / "playlists.json"
-        self.progressPath = self.baseDir / "Users" / self.user / "progress.json"
+        # All Database instances (one per user) share the same underlying SQLite
+        # file - catalog data (tracks/artists/albums/images) is global, so it's
+        # stored once regardless of how many users have played a given track.
+        self.repo = Repository(dbPath) if dbPath is not None else Repository()
+        self.repo.upsertUser(user, email)
+
         self.autoImportFolderPath = self.baseDir / ".." / "autoImport" / self.user
-
-        self.fileLock = threading.RLock()
-        self.entriesCache = None
-        self.tracksCache = None
-        self.playlistsCache = None
-
-        self._imageIdsLock = threading.RLock()
-        self._downloadedTrackImages = None
-        self._downloadedArtistImages = None
-        self._artistImageLazyFetchAttempted = set()
-        self._imageDownloadExecutor = concurrent.futures.ThreadPoolExecutor(max_workers=5)
 
         filterKeyword = os.environ.get("IMPORT_KEYWORD", None)
         print(f"auto import filtering by {filterKeyword}")
@@ -60,28 +75,6 @@ class Database:
                                          importCallback=self.importHistory,
                                          pollInterval=5,
                                          keyword=filterKeyword)
-
-    def _loadJsonFile(self, path: Path, default):
-        with self.fileLock:
-            path.parent.mkdir(parents=True, exist_ok=True)
-
-            if not path.exists():
-                path.write_text(
-                    json.dumps(default, indent=4),
-                    encoding="utf-8"
-                )
-                return default
-
-            try:
-                return json.loads(path.read_text(encoding="utf-8"))
-            except json.JSONDecodeError as e:
-                print(f"Corrupted JSON in {path}: {e}")
-                raise
-
-    def _save(self, file, data):
-        with self.fileLock:
-            file.parent.mkdir(parents=True, exist_ok=True)
-            file.write_text(json.dumps(data, indent=4), encoding="utf-8")
 
     def _addToDatabaseFromListener(self, data) -> None:
         if not data:
@@ -99,207 +92,142 @@ class Database:
                 except Exception as e:
                     print(f"Error adding track from listener: {parseError(e)}")
 
-    def _loadEntries(self) -> list:
-        """Load ONLY id and info about time played from the JSON file."""
-        if self.entriesCache is None:
-            self.entriesCache = self._loadJsonFile(self.entriesPath, [])
-        return self.entriesCache
+    def _materializeCookiesFile(self) -> Path:
+        """SpotipyFree/spotapi only know how to read a Spotify session from a file
+        path (spotapi.saver.JSONSaver), not from a dict - write this user's
+        cookies (the database is the source of truth) to a short-lived temp file
+        in the same [{"identifier", "cookies"}, ...] shape SpotipyFree.saveSession
+        produces. The caller is responsible for deleting it once the client
+        holding it has been constructed - it's only read at construction time."""
+        cookies = self.repo.getUserCookies(self.user) or {}
+        tmpFd, tmpPath = tempfile.mkstemp(prefix=f"cookies_{self.user}_", suffix=".json")
+        os.close(tmpFd)
+        tmpPath = Path(tmpPath)
+        tmpPath.write_text(json.dumps([{"identifier": self.email, "cookies": cookies}]), encoding="utf-8")
+        return tmpPath
 
-    def _saveEntries(self, entries: list):
-        """Save ONLY id and info about time played to the JSON file."""
-        self.entriesCache = entries
-        self._save(self.entriesPath, entries)
+    def _withCookiesFile(self, factory):
+        """Call `factory(cookiesFilePath)` using either an explicitly-provided
+        self.cookiesFile (manual/dev usage, e.g. this module's __main__ block) or
+        a temp file materialized from this user's cookies in the database (the
+        normal app path, where Database is constructed without a cookiesFile)."""
+        if self.cookiesFile:
+            return factory(self.cookiesFile)
+        tmpPath = self._materializeCookiesFile()
+        try:
+            return factory(str(tmpPath))
+        finally:
+            tmpPath.unlink(missing_ok=True)
 
-    def _saveTracks(self, tracks: dict):
-        """Save full track metadata to the JSON file."""
-        self.tracksCache = tracks
-        self._save(self.tracksPath, tracks)
+    # ---- catalog / track metadata --------------------------------------------------
 
-    def _loadTracks(self) -> dict:
-        """Load full track metadata from the JSON file."""
-        if self.tracksCache is None:
-            self.tracksCache = self._loadJsonFile(self.tracksPath, {})
-        return self.tracksCache
-
-    def _loadPlaylists(self) -> dict:
-        """Load playlist id to name mappings from the JSON file."""
-        if self.playlistsCache is None:
-            self.playlistsCache = self._loadJsonFile(self.playlistsPath, {"album": {}, "playlist": {}})
-        return self.playlistsCache
-
-    def _savePlaylists(self, playlists: dict):
-        """Save playlist id to name mappings to the JSON file."""
-        self.playlistsCache = playlists
-        self._save(self.playlistsPath, playlists)
-
-    def playlistName(self, playlistUri: str | None) -> str | None:
-        """Return the playlist name for a Spotify playlist URI or id, caching it on first lookup."""
-        if not playlistUri:
+    def _fetchTrackFromListener(self, trackId: str) -> dict | None:
+        """Fetch and cache full metadata for a track we don't have yet, via the
+        live listener client. Returns None (and logs) if the fetch fails - a play
+        for an unknown track can't be recorded without its metadata, since plays
+        has a foreign key to tracks."""
+        if self.listener is None:
             return None
-        type, playlistId = playlistUri.split(":", 1)
-        playlists = self._loadPlaylists()
-        return playlists[type].get(playlistId, None)
-    
-    def _addTrack(self, tracks, track):
-        tracks[track["id"]] = track
-        return tracks
+        try:
+            track = Client.formatTrack(self.listener.track(trackId), embedPlaybackInfo=False)
+            self.repo.upsertTrack(track)
+            self.repo.commit()
+            return track
+        except Exception:
+            print(f"Failed to download track {trackId}")
+            return None
 
-    def _saveNewTrackFromId(self, id, tracks=None, deferSave=False):
-        if tracks == None:
-            tracks = self._loadTracks()
-        track = Client.formatTrack(self.listener.track(id), embedPlaybackInfo=False)
-        tracks = self._addTrack(tracks, track)
-        if not deferSave:
-            self._saveTracks(tracks)
+    def _ensureTrackMetadata(self, trackId: str) -> dict | None:
+        track = self.repo.getTrack(trackId)
+        if track is not None:
+            return track
+        print(f"Missing track metadata for {trackId}, downloading it")
+        return self._fetchTrackFromListener(trackId)
 
-    def _splitEntryAndTrack(self, metadata: dict) -> tuple[list, dict]:
+    @staticmethod
+    def _splitEntryAndTrack(metadata: dict) -> tuple[dict, dict]:
         entry = {
             "id": metadata["id"],
             "playedAt": metadata["playedAt"],
             "timePlayed": metadata["timePlayed"],
             "playedFrom": metadata.get("playedFrom"),
         }
-        metadata.pop("playedAt")
-        metadata.pop("timePlayed")
-        metadata.pop("playedFrom", None)
-        return entry, metadata
+        track = {k: v for k, v in metadata.items() if k not in ("playedAt", "timePlayed", "playedFrom")}
+        return entry, track
 
-    def _paginateEntry(self, entry: dict, tracks: dict = None, deferSave: bool = False) -> dict:
-        if tracks is None:
-            tracks = self._loadTracks()
-
-        if entry["id"] not in tracks:
-            print(f"Missing track metadata for {entry['id']}, downloading it")
-            try:
-                self._saveNewTrackFromId(entry["id"], tracks, deferSave=deferSave)
-            except Exception:
-                print("Failed to download track")
-                return None
-
-        meta = tracks[entry["id"]].copy()
-
+    def _entryWithTrackMetadata(self, entry: dict) -> dict | None:
+        track = self._ensureTrackMetadata(entry["id"])
+        if track is None:
+            return None
+        meta = track.copy()
         meta["playedAt"] = entry["playedAt"]
         meta["timePlayed"] = entry["timePlayed"]
-        meta["playedFrom"] = entry.get("playedFrom", None)
-
+        meta["playedFrom"] = entry.get("playedFrom")
         return meta
 
     def _paginateEntries(self, entries: list) -> list:
-        ret = []
-        tracks = self._loadTracks()
-        initialLength = len(tracks)
+        result = []
         for entry in entries:
-            metadata = self._paginateEntry(entry, tracks, deferSave=True)
-            if metadata != None:
-                ret.append(metadata)
-                
-        if len(tracks) > initialLength:
-            self._saveTracks(tracks)
-            
-        return ret
+            meta = self._entryWithTrackMetadata(entry)
+            if meta is not None:
+                result.append(meta)
+        return result
 
-    def appendEntries(self, newEntries: list):
-        if not newEntries:
-            return
-        entries = self._loadEntries()
-        entries.append(newEntries)
-        self._saveEntries(entries)
-    
-    def updateTracks(self, track: dict):
-        if not track:
-            return
-        existingTracks = self._loadTracks()
-        self._addTrack(existingTracks, track)          #< Add new track if missing, or update existing track metadata if already exists
-        self._saveTracks(existingTracks)
+    def playlistName(self, playlistUri: str | None) -> str | None:
+        """Return the playlist name for a Spotify playlist URI or id, caching it on first lookup."""
+        if not playlistUri:
+            return None
+        contextType, playlistId = playlistUri.split(":", 1)
+        return self.repo.getPlaylistName(playlistId, contextType)
 
-    def updatePlaylists(self, playlist):
+    def updatePlaylists(self, playlist: str | None) -> None:
         if playlist is None:
             return
-        existingPlaylists = self._loadPlaylists()
         contextType, playlistId = playlist.split(":", 1)
-        if playlistId not in existingPlaylists[contextType]:
-            try:
-                if contextType == "album":
-                    existingPlaylists[contextType][playlistId] = self.listener.albumName(playlistId)
-                else:
-                    existingPlaylists[contextType][playlistId] = self.listener.playlistName(playlistId)
-            except Exception as e:
-                print(f"Error occurred while fetching playlist name for {playlistId} (probably due to playlist being private): {e}")
-                existingPlaylists[contextType][playlistId] = None
-            self._savePlaylists(existingPlaylists)
+        if self.repo.playlistKnown(playlistId, contextType):
+            return
+        try:
+            if contextType == "album":
+                name = self.listener.albumName(playlistId)
+            else:
+                name = self.listener.playlistName(playlistId)
+        except Exception as e:
+            print(f"Error occurred while fetching playlist name for {playlistId} (probably due to playlist being private): {e}")
+            name = None
+        self.repo.upsertPlaylistName(playlistId, contextType, name)
 
-    def getHistory(self) -> int:
-        history = self._loadEntries()
-        return self._paginateEntries(history)
+    # ---- history / entries ----------------------------------------------------------
+
+    def getHistory(self) -> list:
+        return self._paginateEntries(self.repo.getPlaysOldestFirst(self.user))
 
     def getEntriesCount(self) -> int:
         """Return total number of entries in the database."""
-        return len(self._loadEntries())
-    
+        return self.repo.getPlaysCount(self.user)
+
     def getEntriesFromNew(self, count: int | None = None, startIndex: int = 0, fullPagination: bool = True) -> list:
         """ Return the latest `count` entries from history, sorted from newest to oldest. If count is None, return all entries. """
-        entries = self._loadEntries()
-        startPos = len(entries) - startIndex   #< Everything is reversed
-
-        if startPos <= 0:                      #< startIndex at/past the oldest entry - nothing left (guards against negative-index wraparound)
-            slicedEntries = []
-        elif count is not None:
-            endPos = startPos - count - 1      #< stop is exclusive when stepping backwards
-            endPos = None if endPos < 0 else endPos
-            slicedEntries = entries[startPos - 1 : endPos : -1]   #< slice and reverse
-        else:
-            slicedEntries = entries[startPos - 1 : : -1]          #< slice and reverse
-
-        if fullPagination:
-            return self._paginateEntries(slicedEntries)
-        return slicedEntries
+        entries = self.repo.getPlaysNewestFirst(self.user, count=count, startIndex=startIndex)
+        return self._paginateEntries(entries) if fullPagination else entries
 
     def getEntriesFromOld(self, count: int | None = None, startIndex: int = 0, fullPagination: bool = True) -> list:
-            """ Return the oldest `count` entries from history, sorted from oldest to newest. If count is None, return all entries. """
-            entries = self._loadEntries()
-
-            if count is not None:
-                endIndex = startIndex + count
-                slicedEntries = entries[startIndex:endIndex]
-            else:
-                slicedEntries = entries[startIndex:]
-                
-            if fullPagination:
-                return self._paginateEntries(slicedEntries)
-            return slicedEntries
+        """ Return the oldest `count` entries from history, sorted from oldest to newest. If count is None, return all entries. """
+        entries = self.repo.getPlaysOldestFirst(self.user, count=count, startIndex=startIndex)
+        return self._paginateEntries(entries) if fullPagination else entries
 
     def writeProgress(self, status: str, current: int = 0, total: int = 0, message: str = "", error: bool = False):
-        payload = {
-            "status": status,
-            "current": current,
-            "total": total,
-            "percentage": round((current / total * 100) if total else 0),
-            "message": message,
-            "error": error,
-        }
-        self.progressPath.parent.mkdir(parents=True, exist_ok=True)
-        self.progressPath.write_text(json.dumps(payload, indent=4), encoding="utf-8")
+        self.repo.writeProgress(self.user, status, current, total, message, error)
 
     def readProgress(self) -> dict:
-        defaultProgress = {
-            "status": "idle",
-            "current": 0,
-            "total": 0,
-            "percentage": 0,
-            "message": "",
-            "error": False,
-        }
-        if not self.progressPath.exists():
-            return defaultProgress
-        try:
-            return json.loads(self.progressPath.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            return defaultProgress
-    
+        progress = self.repo.readProgress(self.user)
+        if progress is None:
+            return {"status": "idle", "current": 0, "total": 0, "percentage": 0, "message": "", "error": False}
+        return progress
+
     def resetProgress(self):
         self.writeProgress("idle", 0, 0, "", False)
 
-    def _downloadImageTask(self, path: Path, url: str, imgId: str, metadataPath: Path, cachedIdsSet: set):
+    def _downloadImageTask(self, path: Path, url: str, imgId: str, kind: str):
         try:
             response = requests.get(url, timeout=10)
             response.raise_for_status()
@@ -308,51 +236,32 @@ class Database:
             # image saved under its source format (e.g. .png) would 404 forever.
             if img.mode not in ("RGB", "L"):
                 img = img.convert("RGB")   #< JPEG can't store alpha/palette modes
+            path.mkdir(parents=True, exist_ok=True)
             img.save(path / f"{imgId}.jpeg", format="JPEG")
-            
-            with self._imageIdsLock:
-                # Add to set and persist. Pre-adding handles immediate concurrent lookups, 
-                # this ensures it's persisted successfully.
-                cachedIdsSet.add(imgId)
-                metadataPath.write_text(json.dumps(list(cachedIdsSet), indent=4), encoding="utf-8")
+            self.repo.markImageStatus(imgId, kind, IMAGE_STATUS_OK)
         except Exception as e:
-            with self._imageIdsLock:
-                cachedIdsSet.discard(imgId)
+            self.repo.markImageStatus(imgId, kind, IMAGE_STATUS_FAILED)
             if isinstance(e, requests.exceptions.RequestException):
                 print(f"Error fetching image from {url} (id={imgId}): {parseError(e)}")
             else:
                 print(f"Error saving image (id={imgId}): {parseError(e)}")
 
-    def _saveImg(self, path: Path, url: str, imgId: str, isTrack: bool):
+    def _saveImg(self, path: Path, url: str, imgId: str, kind: str):
         if not url:
             return  #< Spotify occasionally returns tracks with no album images; skip silently
-        metadataPath = path / "metadata.json"
-        
-        with self._imageIdsLock:
-            if isTrack:
-                if self._downloadedTrackImages is None:
-                    path.mkdir(parents=True, exist_ok=True)
-                    self._downloadedTrackImages = set(self._loadJsonFile(metadataPath, []))
-                cachedSet = self._downloadedTrackImages
-            else:
-                if self._downloadedArtistImages is None:
-                    path.mkdir(parents=True, exist_ok=True)
-                    self._downloadedArtistImages = set(self._loadJsonFile(metadataPath, []))
-                cachedSet = self._downloadedArtistImages
-
-            if imgId in cachedSet:
-                return
-            
-            # Pre-add to set to prevent duplicate concurrent download requests for the same image
-            cachedSet.add(imgId)
-
-        self._imageDownloadExecutor.submit(self._downloadImageTask, path, url, imgId, metadataPath, cachedSet)
+        # Atomically claim the download: returns False if this image is already
+        # downloaded or another thread/user already claimed it - shared across the
+        # whole process (and would even be safe across separate processes, unlike
+        # the old per-instance in-memory id sets).
+        if not self.repo.tryClaimImageDownload(imgId, kind):
+            return
+        self._imageDownloadExecutor.submit(self._downloadImageTask, path, url, imgId, kind)
 
     def saveTrackImg(self, url: str, imgId: str):
-        self._saveImg(self.imgDir_tracks, url, imgId, isTrack=True)
+        self._saveImg(self.imgDir_tracks, url, imgId, kind=IMAGE_KIND_TRACK)
 
     def saveArtistImg(self, url: str, imgId: str):
-        self._saveImg(self.imgDir_artists, url, imgId, isTrack=False)
+        self._saveImg(self.imgDir_artists, url, imgId, kind=IMAGE_KIND_ARTIST)
 
     def lazyFetchArtistImage(self, artistId: str, imagePath: Path) -> bool:
         """Best-effort synchronous fetch of an artist's image scraped from their public
@@ -388,52 +297,40 @@ class Database:
     def saveImagesFromTrack(self, track: dict):
         self.saveTrackImg(track["imageUrl"], track["imageId"])
 
+    # ---- writing plays ---------------------------------------------------------------
+
+    def appendEntries(self, entry: dict):
+        """Record a single play. Named for compatibility with the previous
+        JSON-backed API (it always took one entry despite the plural name)."""
+        if not entry:
+            return
+        self.repo.insertPlay(self.user, entry["id"], entry["playedAt"], entry["timePlayed"], entry.get("playedFrom"))
+        self.repo.commit()
+
     def appendMetadata(self, meta: dict) -> None:
         self.saveImagesFromTrack(meta)
         entry, track = self._splitEntryAndTrack(meta)
-        self.appendEntries(entry)
-        self.updateTracks(track)
-        self.updatePlaylists(entry.get("playedFrom", None))
+        self.repo.upsertTrack(track)
+        self.repo.insertPlay(self.user, entry["id"], entry["playedAt"], entry["timePlayed"], entry.get("playedFrom"))
+        self.repo.commit()
+        self.updatePlaylists(entry.get("playedFrom"))
 
     def appendTrackData(self, timestamp, track, timePlayed, context=None):
         self.appendMetadata(Client.formatTrack(track, timestamp, timePlayed, context=context))
 
-    @staticmethod
-    def _entrySortKey(entry):
-        playedAt = entry.get("playedAt", 0)
-        return playedAt if isinstance(playedAt, (int, float)) else convertToDatetime(playedAt).timestamp()
-
     def resortDatabase(self):
-        """ In case entries got out of order, this will sort them by playedAt timestamp. """
-        entries = self._loadEntries()
-        entries.sort(key=self._entrySortKey)
+        """No-op: plays are always returned in played_at order via SQL ORDER BY,
+        so there's no persisted ordering left to fix."""
         print("Resorted Database")
 
-        self._saveEntries(entries)
-
     def deduplicate(self) -> int:
-        """Removes duplicate entries from the database, keeping the first occurrence.
-        Returns the number of removed duplicates.
-        """
-        with self.fileLock:
-            entries = self._loadEntries()
-            initial_len = len(entries)
-            seen = set()
-            unique_entries = []
-            for entry in entries:
-                key = (entry["id"], self._entrySortKey(entry))
-                if key in seen:
-                    continue
-                seen.add(key)
-                unique_entries.append(entry)
-            
-            if len(unique_entries) < initial_len:
-                self._saveEntries(unique_entries)
-                return initial_len - len(unique_entries)
-            return 0
+        """No-op: plays.UNIQUE(username, track_id, played_at) makes it impossible
+        to insert a duplicate in the first place. Kept for API compatibility with
+        callers (app.py's startup path)."""
+        return 0
 
     def importHistory(self, exportedHistory):
-        importer = Importer(cookiesFile=self.cookiesFile, email=self.email)
+        importer = self._withCookiesFile(lambda cookiesFile: Importer(cookiesFile=cookiesFile, email=self.email))
 
         parsedHistory, exportType = importer._convertToList(exportedHistory)
         if not parsedHistory:
@@ -445,156 +342,96 @@ class Database:
         def progressCallback(status, current, totalSteps, message):
             self.writeProgress(status, current, totalSteps, message)
 
-        # Imported data is collected locally and only merged into the shared caches
-        # once the whole import has succeeded - a mid-import failure must not leave
-        # half-imported, unsorted entries behind (a later save would persist them,
-        # breaking the sorted-order assumption filterByInterval relies on).
-        importedEntries = []
-        importedTracks = {}
+        # Imported tracks/plays are staged locally and only written to the database
+        # once the whole import has succeeded. SQLite only allows one writer
+        # transaction at a time, so committing incrementally here would either
+        # block progress-polling reads for the whole import, or (worse) let a
+        # failure partway through leave a half-imported batch committed. Progress
+        # writes go through their own connection/commit (Repository.writeProgress),
+        # so they stay live throughout regardless.
+        stagedTracks: dict[str, dict] = {}
+        stagedPlays: list[dict] = []
         index = 0
         try:
-            existing_keys = {(entry["id"], self._entrySortKey(entry)) for entry in self._loadEntries()}
-            for index, meta in enumerate(importer.importHistory(parsedHistory, self._loadTracks().values(), exportType, progressCallback=progressCallback), start=1):  #< We only want the tracks, the importer doesn't care about the keys
-                e, t = self._splitEntryAndTrack(meta)
-                
-                entry_key = (e["id"], self._entrySortKey(e))
-                if entry_key in existing_keys:
-                    continue
-                existing_keys.add(entry_key)
-                
-                importedEntries.append(e)
-                importedTracks[t["id"]] = t
-                self.saveImagesFromTrack(t)
+            knownTracks = self.repo.getAllTracks()
+            for index, meta in enumerate(
+                importer.importHistory(parsedHistory, knownTracks, exportType, progressCallback=progressCallback),
+                start=1,
+            ):
+                entry, track = self._splitEntryAndTrack(meta)
+                stagedTracks[track["id"]] = track
+                stagedPlays.append(entry)
+                self.saveImagesFromTrack(track)
 
-                if index % 10 == 0 or index == total:
+                if index % self.PROGRESS_UPDATE_INTERVAL == 0 or index == total:
                     self.writeProgress("running", index, total, f"Imported {index} of {total}")
 
-            # Merge under the file lock so entries the listener recorded while the
-            # import ran are kept, then sort once and persist.
-            with self.fileLock:
-                entries = self._loadEntries()
-                entries.extend(importedEntries)
-                entries.sort(key=self._entrySortKey)
-                self._saveEntries(entries)
+            for track in stagedTracks.values():
+                self.repo.upsertTrack(track)
+            for entry in stagedPlays:
+                self.repo.insertPlay(self.user, entry["id"], entry["playedAt"], entry["timePlayed"], entry.get("playedFrom"))
+            self.repo.commit()
 
-                tracks = self._loadTracks()
-                tracks.update(importedTracks)
-                self._saveTracks(tracks)
             self.writeProgress("complete", total, total, "Import complete")
         except Exception as e:
+            self.repo.rollback()
             self.writeProgress("failed", index, total, f"Import failed: {parseError(e)}", error=True)
             raise
 
-    def filterByInterval(self, entries: list, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> list:
-        if startDate is None and endDate is None:
-            return entries
+    # ---- stats -------------------------------------------------------------------------
 
-        filtered = []
-        for track in entries:
-            playedAt = track["playedAt"]
-            date = convertToDatetime(playedAt)
+    @staticmethod
+    def _dateRangeToTimestamps(startDate: datetime.datetime | None, endDate: datetime.datetime | None):
+        startTs = startDate.timestamp() if startDate else None
+        endTs = endDate.timestamp() if endDate else None
+        return startTs, endTs
 
-            if startDate and date < startDate:
-                continue
-            if endDate and date > endDate:
-                break
-                
-            filtered.append(track)
-        return filtered
+    def getSongsStats(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None,
+                       sortBy: str = "plays", limit: int | None = None, offset: int = 0) -> list:
+        """Return songs sorted by `sortBy` with full song metadata and listen
+        totals - sorted/paged in SQL via a single batched query (see
+        Repository.getSongsPage) rather than hydrating every song ever played
+        just to discard all but the requested page."""
+        startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
+        return self.repo.getSongsPage(self.user, startTs, endTs, sortBy=sortBy, limit=limit, offset=offset)
 
-    def getSongsStats(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> list:
-        """Return songs sorted by play count with full song metadata and listen totals."""
-        tracks = self._loadTracks()
-        entries = self.filterByInterval(self._loadEntries(), startDate, endDate)
-        songs = {}
+    def getSongsCount(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> int:
+        """Number of distinct songs played in range - the paging counterpart to
+        getSongsStats(), for computing total page count without fetching every
+        song's metadata."""
+        startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
+        return self.repo.getSongsCount(self.user, startTs, endTs)
 
-        for entry in entries:
-            key = entry["id"]
-            timePlayed = entry["timePlayed"]
-            playedAt = entry.get("playedAt")
-            
-            if key not in songs:
-                metadata = self._paginateEntry(entry, tracks)  #< Get full song metadata for this entry
-                if metadata == None:
-                    continue
-                songs[key] = metadata
-                songs[key]["plays"] = 0
-                songs[key]["totalTimeListened"] = 0
-                songs[key]["firstListenedAt"] = playedAt       #< database is sorted, so first find must be first time listened
-
-            songs[key]["plays"] += 1
-            songs[key]["totalTimeListened"] += timePlayed
-        return list(songs.values())
+    def getPlayTotals(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> tuple[int, int]:
+        """(play count, total time listened) across the whole range - cheap
+        aggregate that doesn't require fetching per-song metadata."""
+        startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
+        return self.repo.getPlayTotals(self.user, startTs, endTs)
 
     def getArtistsStats(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> list:
         """Return artists sorted by total plays with aggregated data and listen totals."""
-        tracks = self._loadTracks()
-        entries = self.filterByInterval(self._loadEntries(), startDate, endDate)
-        artistsStats = {}
-
-        for entry in entries:
-            timePlayed = entry["timePlayed"]
-            playedAt = entry.get("playedAt")
-            metadata = self._paginateEntry(entry, tracks)
-            if metadata == None:
-                continue
-            
-            artists = metadata.get("artists", [])
-            for artist in artists:
-                artistName = artist["name"]
-                if artistName not in artistsStats:
-                    # Copy rather than alias: `artist` is the same dict object cached
-                    # inside self.tracksCache (via _paginateEntry's shallow copy), so
-                    # writing stats fields directly onto it would leak them into the
-                    # persisted tracks.json schema the next time tracks get saved.
-                    artistsStats[artistName] = artist.copy()
-                    artistsStats[artistName]["plays"] = 0
-                    artistsStats[artistName]["totalTimeListened"] = 0
-                    artistsStats[artistName]["uniqueSongs"] = set()
-                    artistsStats[artistName]["firstListenedAt"] = playedAt
-
-                artistsStats[artistName]["plays"] += 1
-                artistsStats[artistName]["totalTimeListened"] += timePlayed
-                artistsStats[artistName]["uniqueSongs"].add(entry.get("id"))
-
-        normalized = []
-        for v in artistsStats.values():
-            uniqueSongCount = len(v["uniqueSongs"])
-            v["uniqueSongCount"] = uniqueSongCount
-            v.pop("uniqueSongs")
-            normalized.append(v)
-
-        return normalized
-    
-    def _getListeningTotals(self, entries):
-        totalSongsPlayed = 0
-        totalDurationMs = 0
-        for entry in entries:
-            totalSongsPlayed += 1
-            totalDurationMs += entry["timePlayed"]
-        return totalSongsPlayed, totalDurationMs
-
-    def _getTotal(self, arr, key):
-        return sum(i.get(key, 0) for i in arr)
+        startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
+        return self.repo.getArtistAggregates(self.user, startTs, endTs)
 
     def getOverallStats(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> list:
         """Return songs sorted by play count with full song metadata and listen totals."""
-        previousEntries = []
+        previousSongsPlayed, previousDurationMs = 0, 0
         if startDate and endDate:
             duration = endDate - startDate
             previousStart = startDate - duration
             previousEnd = startDate
-            previousEntries = self.filterByInterval(self._loadEntries(),
-                                                    previousStart,
-                                                    previousEnd)
-        currentTopSongs = self.getTopSongs(startDate=startDate, endDate=endDate, by="plays")
+            prevStartTs, prevEndTs = self._dateRangeToTimestamps(previousStart, previousEnd)
+            previousSongsPlayed, previousDurationMs = self.repo.getPlayTotals(self.user, prevStartTs, prevEndTs)
+
+        # totalSongsPlayed/totalDurationMs are computed via a dedicated COUNT/SUM
+        # query rather than by summing every song's stats: each play belongs to
+        # exactly one song, so sum(plays-per-song) == total play count over the
+        # same range - identical math, without hydrating every song just to add
+        # its numbers up. currentTopSongs only needs the single top row.
+        totalSongsPlayed, totalDurationMs = self.getPlayTotals(startDate, endDate)
+        currentTopSongs = self.getTopSongs(startDate=startDate, endDate=endDate, by="plays", limit=1)
         currentTopArtists = self.getTopArtists(startDate=startDate, endDate=endDate, by="totalTimeListened")
-        
-        # By using the already calculated currentTopSongs, we can save a lot of time by not having to iterate through the entire entries list again to calculate the totals.
-        totalSongsPlayed = self._getTotal(currentTopSongs, "plays")
-        totalDurationMs = self._getTotal(currentTopSongs, "totalTimeListened")
-        previousSongsPlayed, previousDurationMs = self._getListeningTotals(previousEntries)
-        
+
         return {"currentTopSongs": currentTopSongs,
                 "currentTopArtists": currentTopArtists,
                 "totalSongsPlayed": totalSongsPlayed,
@@ -605,7 +442,7 @@ class Database:
 
     def _sortTopStats(self, items, compareKeys, by: str = "plays") -> list:
         """
-        Sorts songs within a date range. 
+        Sorts songs within a date range.
         'plays' and 'totalTimeListened' are sorted descending (highest first).
         'name' is sorted ascending (A to Z).
         """
@@ -615,15 +452,18 @@ class Database:
             reverse=False
 
         return sorted(
-            items, 
+            items,
             key=lambda item: tuple(item[key] for key in compareKeys),     #< the tuple acts as a tie breaker, if two elements 'by' are the same, it compares the 'totalTimeListened', then 'name'
             reverse=reverse
         )
 
-    def getTopSongs(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None, by: str = "plays") -> list:
-        songs = self.getSongsStats(startDate, endDate)
-        compKeys = (by, "totalTimeListened", "name")
-        return self._sortTopStats(songs, compKeys, by)
+    def getTopSongs(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None, by: str = "plays",
+                     limit: int | None = None, offset: int = 0) -> list:
+        # Songs are sorted/paged in SQL (see getSongsStats -> Repository.getSongsPage)
+        # rather than re-sorted here in Python: once pagination is pushed down to
+        # the database, re-sorting an already-LIMIT-ed page can't reconstruct
+        # global rank, so SQL ordering must be the single source of truth.
+        return self.getSongsStats(startDate, endDate, sortBy=by, limit=limit, offset=offset)
 
     def getTopArtists(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None, by: str = "plays") -> list:
         artists = self.getArtistsStats(startDate, endDate)
@@ -636,20 +476,21 @@ class Database:
     def getListeningTimeSeries(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None, groupBy: str = "day") -> list:
         """Total listening time and play count per day or week, gap-filled with
         zero-value buckets so a bar chart shows a continuous timeline."""
-        entries = self.filterByInterval(self._loadEntries(), startDate, endDate)
+        startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
+        plays = self.repo.getPlaysInRange(self.user, startTs, endTs)
 
         buckets = {}
-        for entry in entries:
-            date = convertToDatetime(entry["playedAt"])
+        for play in plays:
+            date = convertToDatetime(play["playedAt"])
             key = self._bucketKey(date, groupBy)
             bucket = buckets.setdefault(key, {"label": key, "totalTimeListened": 0, "plays": 0})
-            bucket["totalTimeListened"] += entry["timePlayed"]
+            bucket["totalTimeListened"] += play["timePlayed"]
             bucket["plays"] += 1
 
         if startDate is not None and endDate is not None:
             rangeStart, rangeEnd = startDate, endDate
-        elif entries:
-            playedDates = [convertToDatetime(e["playedAt"]) for e in entries]
+        elif plays:
+            playedDates = [convertToDatetime(p["playedAt"]) for p in plays]
             rangeStart = min(playedDates)
             rangeEnd = max(playedDates) + datetime.timedelta(seconds=1)
         else:
@@ -668,13 +509,14 @@ class Database:
     def getHourOfDayHeatmap(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> list:
         """7x24 grid (rows Monday=0..Sunday=6, columns hour-of-day 0-23) of total
         listening time and play count, for a 'when do I listen' heatmap."""
-        entries = self.filterByInterval(self._loadEntries(), startDate, endDate)
+        startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
+        plays = self.repo.getPlaysInRange(self.user, startTs, endTs)
         grid = [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
 
-        for entry in entries:
-            date = convertToDatetime(entry["playedAt"])
+        for play in plays:
+            date = convertToDatetime(play["playedAt"])
             cell = grid[date.weekday()][date.hour]
-            cell["totalTimeListened"] += entry["timePlayed"]
+            cell["totalTimeListened"] += play["timePlayed"]
             cell["plays"] += 1
 
         return grid
@@ -684,43 +526,38 @@ class Database:
         an 'artist trend over time' line chart. Buckets are only the ones that have
         any activity - unlike getListeningTimeSeries, a trend line doesn't need a
         gap-filled timeline the way a bar chart's x-axis does."""
-        entries = self.filterByInterval(self._loadEntries(), startDate, endDate)
-        tracks = self._loadTracks()
+        startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
+        pairs = self.repo.getPlayArtistPairsInRange(self.user, startTs, endTs)
 
         totalPlaysByArtist = {}
-        perEntryArtists = []
-        for entry in entries:
-            metadata = self._paginateEntry(entry, tracks)
-            if metadata is None:
-                continue
-            date = convertToDatetime(entry["playedAt"])
+        bucketedPairs = []
+        for pair in pairs:
+            date = convertToDatetime(pair["playedAt"])
             key = self._bucketKey(date, groupBy)
-            artistNames = [a["name"] for a in metadata.get("artists", [])]
-            perEntryArtists.append((key, artistNames))
-            for name in artistNames:
-                totalPlaysByArtist[name] = totalPlaysByArtist.get(name, 0) + 1
+            name = pair["artistName"]
+            bucketedPairs.append((key, name))
+            totalPlaysByArtist[name] = totalPlaysByArtist.get(name, 0) + 1
 
         if not totalPlaysByArtist:
             return {"buckets": [], "series": []}
 
         topNames = [name for name, _ in sorted(totalPlaysByArtist.items(), key=lambda kv: kv[1], reverse=True)[:topN]]
 
-        bucketKeys = sorted({key for key, _ in perEntryArtists})
+        bucketKeys = sorted({key for key, _ in bucketedPairs})
         seriesData = {name: {key: 0 for key in bucketKeys} for name in topNames}
-        for key, artistNames in perEntryArtists:
-            for name in artistNames:
-                if name in seriesData:
-                    seriesData[name][key] += 1
+        for key, name in bucketedPairs:
+            if name in seriesData:
+                seriesData[name][key] += 1
 
         series = [{"name": name, "data": [seriesData[name][key] for key in bucketKeys]} for name in topNames]
         return {"buckets": bucketKeys, "series": series}
 
-    def startListener(self, cookiesFile, email=None):
+    def startListener(self, cookiesFile=None, email=None):
         if cookiesFile:
             self.cookiesFile = cookiesFile
         if email:
             self.email = email
-        self.listener = Listener(self.cookiesFile, email=self.email)
+        self.listener = self._withCookiesFile(lambda cf: Listener(cf, email=self.email))
         self.listener.startListener_thread(callback=self._addToDatabaseFromListener)
 
     def startAutoImporter(self):
@@ -754,4 +591,3 @@ if __name__ == "__main__":
     #     with importFile.open("r", encoding="utf-8") as f:
     #         historyPayload = json.load(f)
     #     manager.importSpotifyHistory(historyPayload)
-

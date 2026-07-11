@@ -7,7 +7,7 @@
 
 
 # Spotify Stats Tracker
-### If you found [this repository](https://github.com/TzurSoffer/SpotifyStatsTracker) useful, please give it a ⭐!.
+### If you found [this repository](https://github.com/i7Gamer/SpotifyStatsTracker) useful, please give it a ⭐!.
 A web application that allows users to track and analyze their Spotify listening habits and statistics **without Spotify Premium**.
 
 ## Features
@@ -24,7 +24,7 @@ A web application that allows users to track and analyze their Spotify listening
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/TzurSoffer/SpotifyStatsTracker
+git clone https://github.com/i7Gamer/SpotifyStatsTracker
 cd SpotifyStatsTracker
 ```
 
@@ -43,17 +43,18 @@ version: '3.8'
 
 services:
   spotify-tracker:
-    image: mepro3/spotify-tracker
+    image: i7gamer/spotify-tracker
     ports:
       - "5000:5000"
     volumes:
-      - ./Database:/app/Database/Users
-      - ./secrets:/app/secrets
+      - ./Database/Data:/app/Database/Data
+      - ./Database/Users:/app/Database/Users  #< pre-1.7.0 data dir; only needed for the one restart that migrates it into Data/ above, safe to remove after that
       - ./autoImport:/app/autoImport  #< files put in this folder will be imported automatically
     environment:
-      - FLASK_APP=app.py
+      - FLASK_APP=wsgi.py
       - PYTHONUNBUFFERED=1
       - TZ=America/Los_Angeles        #< don't forget to change this or you will get the wrong times for songs
+      - FLASK_SECRET_KEY=changeme-generate-your-own-random-value  #< fixed value = sessions survive a restart; unset = a new one is generated each restart, logging everyone out
       # - IMPORT_KEYWORD=Weekly       #< Uncomment to apply a filter to what files get auto-imported (only files containing this will be imported)
       # - FLASK_DEBUG=1               #< To get more detailed logs from Flask (provide this when opening an issue)
     restart: always
@@ -62,6 +63,19 @@ services:
 ### Then you can run `docker compose up -d` and the app should start on `http://127.0.0.1:5000` or `http://yourIp:5000`
 
 ### To update the container if an update is available, run `docker compose pull`
+
+### Upgrading from an older version
+
+Listening history, tracks, images, and login sessions now live in a single SQLite
+database under `Database/Data/` instead of the old per-user JSON files under
+`Database/Users/` and the `secrets/` folder - the app migrates existing data
+automatically on first startup after the update, no action needed beyond keeping
+both volumes mounted (as shown above) for that first restart. Once you've confirmed
+the migration succeeded, the `./Database/Users:/app/Database/Users` line can be
+removed. If you were relying on `secrets/` being mounted (e.g. so
+`secrets/flask_secret_key.txt` persisted across restarts), set `FLASK_SECRET_KEY`
+as shown above instead; otherwise everyone's login session resets on each container
+restart.
 
 ### Local Development
 
@@ -81,7 +95,7 @@ or whatever your IP is
 http://127.0.0.1:5000
 ```
 
-**Note:** The Docker container persists data in the `Database/` directory on your host machine.
+**Note:** The Docker container persists data in the `Database/Data/` directory on your host machine.
 
 ## License
 

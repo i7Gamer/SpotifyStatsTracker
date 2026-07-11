@@ -1,33 +1,13 @@
-import unittest
-from unittest.mock import MagicMock
 import sys
 import os
-import threading
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-# See tests/test_database_images.py for why this guard is needed: other test
-# modules replace Database.database with a MagicMock at import time, and unittest
-# discover imports every test file before running any of them.
-if isinstance(sys.modules.get("Database.database"), MagicMock):
-    del sys.modules["Database.database"]
-
-from Database.database import Database
+from conftest import DatabaseTestCase
 
 
-def _bareDatabaseWithData(tracks, entries):
-    """A Database instance with just enough state for getArtistsStats/getSongsStats,
-    skipping the heavy __init__ (autoimporter/listener setup) and file I/O by
-    pre-seeding the in-memory caches directly."""
-    db = Database.__new__(Database)
-    db.fileLock = threading.RLock()
-    db.tracksCache = tracks
-    db.entriesCache = entries
-    db.playlistsCache = None
-    return db
-
-
-class TestGetArtistsStatsDoesNotMutateCache(unittest.TestCase):
+class TestGetArtistsStatsDoesNotMutateCache(DatabaseTestCase):
     def _sampleData(self):
         artist = {"name": "Artist A", "id": "a1"}
         track = {"id": "track1", "artists": [artist], "name": "Song One"}
@@ -40,13 +20,14 @@ class TestGetArtistsStatsDoesNotMutateCache(unittest.TestCase):
 
     def test_artist_dict_in_tracks_cache_is_unmodified_after_stats_call(self):
         tracks, entries, artist = self._sampleData()
-        db = _bareDatabaseWithData(tracks, entries)
+        db = self._makeDb(tracks, entries)
 
         db.getArtistsStats()
 
-        # The artist dict living inside the shared tracks cache must not have picked
-        # up derived, per-request-only fields - those belong only in the returned
-        # stats list, not in the cached/persistable track metadata.
+        # The artist dict the caller originally passed in must not have picked up
+        # derived, per-request-only fields - those belong only in the returned
+        # stats list. Every Database read reconstructs fresh dicts from the DB, so
+        # there's no shared cache left to leak into.
         self.assertNotIn("plays", artist)
         self.assertNotIn("totalTimeListened", artist)
         self.assertNotIn("uniqueSongs", artist)
@@ -56,7 +37,7 @@ class TestGetArtistsStatsDoesNotMutateCache(unittest.TestCase):
 
     def test_returned_stats_are_still_correct(self):
         tracks, entries, artist = self._sampleData()
-        db = _bareDatabaseWithData(tracks, entries)
+        db = self._makeDb(tracks, entries)
 
         stats = db.getArtistsStats()
 
@@ -69,7 +50,7 @@ class TestGetArtistsStatsDoesNotMutateCache(unittest.TestCase):
     def test_repeated_calls_do_not_accumulate_stale_state(self):
         """A second call must not be polluted by fields left over from the first."""
         tracks, entries, artist = self._sampleData()
-        db = _bareDatabaseWithData(tracks, entries)
+        db = self._makeDb(tracks, entries)
 
         firstStats = db.getArtistsStats()
         secondStats = db.getArtistsStats()
@@ -78,44 +59,131 @@ class TestGetArtistsStatsDoesNotMutateCache(unittest.TestCase):
         self.assertEqual(firstStats[0]["totalTimeListened"], secondStats[0]["totalTimeListened"])
 
 
-class TestGetEntriesFromNew(unittest.TestCase):
+class TestGetEntriesFromNew(DatabaseTestCase):
     """Slicing edge cases: a startIndex at/past the end must yield an empty page,
     not wrap around to a negative index and return the whole history."""
 
-    def _makeDb(self, entryCount):
+    def _makeDbWithEntries(self, entryCount):
         entries = [{"id": f"t{i}", "playedAt": i, "timePlayed": 1} for i in range(entryCount)]
-        return _bareDatabaseWithData({}, entries), entries
+        return self._makeDb({}, entries), entries
 
     def test_returns_all_entries_newest_first(self):
-        db, entries = self._makeDb(3)
+        db, entries = self._makeDbWithEntries(3)
         result = db.getEntriesFromNew(fullPagination=False)
-        self.assertEqual(result, list(reversed(entries)))
+        self.assertEqual([e["id"] for e in result], [e["id"] for e in reversed(entries)])
 
     def test_returns_requested_page(self):
-        db, entries = self._makeDb(5)
+        db, entries = self._makeDbWithEntries(5)
         result = db.getEntriesFromNew(count=2, startIndex=2, fullPagination=False)
         self.assertEqual([e["id"] for e in result], ["t2", "t1"])
 
     def test_start_index_at_end_returns_empty(self):
-        db, _ = self._makeDb(3)
+        db, _ = self._makeDbWithEntries(3)
         result = db.getEntriesFromNew(startIndex=3, fullPagination=False)
         self.assertEqual(result, [])
 
     def test_start_index_past_end_returns_empty(self):
-        db, _ = self._makeDb(3)
+        db, _ = self._makeDbWithEntries(3)
         result = db.getEntriesFromNew(count=2, startIndex=10, fullPagination=False)
         self.assertEqual(result, [])
 
     def test_empty_database_returns_empty(self):
-        db, _ = self._makeDb(0)
+        db, _ = self._makeDbWithEntries(0)
         self.assertEqual(db.getEntriesFromNew(fullPagination=False), [])
         self.assertEqual(db.getEntriesFromNew(count=5, fullPagination=False), [])
 
     def test_count_larger_than_remaining_returns_rest(self):
-        db, _ = self._makeDb(3)
+        db, _ = self._makeDbWithEntries(3)
         result = db.getEntriesFromNew(count=10, startIndex=1, fullPagination=False)
         self.assertEqual([e["id"] for e in result], ["t1", "t0"])
 
 
+class TestGetTopSongsMultiArtist(DatabaseTestCase):
+    def test_song_with_multiple_artists_round_trips(self):
+        track = {"id": "track1", "artists": [{"id": "a1", "name": "Artist A"}, {"id": "a2", "name": "Artist B"}],
+                 "name": "Song One"}
+        entries = [{"id": "track1", "playedAt": 1000, "timePlayed": 5000}]
+        db = self._makeDb({"track1": track}, entries)
+
+        songs = db.getTopSongs()
+
+        self.assertEqual(len(songs), 1)
+        self.assertEqual([a["id"] for a in songs[0]["artists"]], ["a1", "a2"])
+        self.assertEqual(songs[0]["plays"], 1)
+        self.assertEqual(songs[0]["totalTimeListened"], 5000)
+
+    def test_get_track_is_not_called_per_row_anymore(self):
+        """Regression guard against the old N+1 pattern (getSongsStats calling
+        repo.getTrack() once per unique song) silently coming back."""
+        tracks = {f"t{i}": {"id": f"t{i}", "name": f"Song {i}", "artists": []} for i in range(5)}
+        entries = [{"id": f"t{i}", "playedAt": i, "timePlayed": 1000} for i in range(5)]
+        db = self._makeDb(tracks, entries)
+
+        with patch.object(db.repo, "getTrack", wraps=db.repo.getTrack) as mockGetTrack:
+            songs = db.getTopSongs()
+
+        self.assertEqual(len(songs), 5)
+        mockGetTrack.assert_not_called()
+
+
+class TestGetOverallStats(DatabaseTestCase):
+    def _sampleData(self):
+        tracks = {
+            "t1": {"id": "t1", "name": "Song One", "artists": [{"id": "a1", "name": "Artist A"}]},
+            "t2": {"id": "t2", "name": "Song Two", "artists": [{"id": "a1", "name": "Artist A"}]},
+        }
+        entries = [
+            {"id": "t1", "playedAt": 100, "timePlayed": 3000},
+            {"id": "t1", "playedAt": 200, "timePlayed": 3000},
+            {"id": "t2", "playedAt": 300, "timePlayed": 1000},
+        ]
+        return tracks, entries
+
+    def test_totals_match_hand_computed_values(self):
+        tracks, entries = self._sampleData()
+        db = self._makeDb(tracks, entries)
+
+        stats = db.getOverallStats()
+
+        self.assertEqual(stats["totalSongsPlayed"], 3)
+        self.assertEqual(stats["totalDurationMs"], 7000)
+        self.assertEqual(len(stats["currentTopSongs"]), 1)
+        self.assertEqual(stats["currentTopSongs"][0]["id"], "t1")   #< 2 plays beats t2's 1
+        self.assertEqual(len(stats["currentTopArtists"]), 1)
+        self.assertEqual(stats["currentTopArtists"][0]["id"], "a1")
+        self.assertEqual(stats["previousSongsPlayed"], 0)
+        self.assertEqual(stats["previousDurationMs"], 0)
+
+    def test_empty_database_returns_zeroed_stats_without_crashing(self):
+        db = self._makeDb({}, [])
+
+        stats = db.getOverallStats()
+
+        self.assertEqual(stats["currentTopSongs"], [])
+        self.assertEqual(stats["currentTopArtists"], [])
+        self.assertEqual(stats["totalSongsPlayed"], 0)
+        self.assertEqual(stats["totalDurationMs"], 0)
+
+
+class TestGetPlayTotals(DatabaseTestCase):
+    def test_returns_count_and_sum(self):
+        tracks = {"t1": {"id": "t1", "name": "Song One", "artists": []}}
+        entries = [
+            {"id": "t1", "playedAt": 100, "timePlayed": 1000},
+            {"id": "t1", "playedAt": 200, "timePlayed": 2000},
+        ]
+        db = self._makeDb(tracks, entries)
+
+        count, total = db.getPlayTotals()
+
+        self.assertEqual(count, 2)
+        self.assertEqual(total, 3000)
+
+    def test_empty_database_returns_zero(self):
+        db = self._makeDb({}, [])
+        self.assertEqual(db.getPlayTotals(), (0, 0))
+
+
 if __name__ == "__main__":
+    import unittest
     unittest.main()

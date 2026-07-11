@@ -26,11 +26,7 @@ class TestMultiUser(unittest.TestCase):
     @patch('app.SpotifyDashboardApp.startVersionCheck_thread')
     @patch('app.SpotifyDashboardApp.checkLogin_thread')
     @patch('app.migrateIfNeeded')
-    @patch('app.Path.exists')
-    @patch('app.Path.read_text')
-    def test_get_username_for_email_timorzipa(self, mock_read_text, mock_exists, mock_migrate, mock_check, mock_version, mock_secret):
-        # Mock secrets map not existing
-        mock_exists.return_value = False
+    def test_get_username_for_email_timorzipa(self, mock_migrate, mock_check, mock_version, mock_secret):
         app = SpotifyDashboardApp()
         username = app.get_username_for_email("timorzipa@gmail.com")
         self.assertIsNone(username)
@@ -39,13 +35,10 @@ class TestMultiUser(unittest.TestCase):
     @patch('app.SpotifyDashboardApp.startVersionCheck_thread')
     @patch('app.SpotifyDashboardApp.checkLogin_thread')
     @patch('app.migrateIfNeeded')
-    @patch('app.Path.exists')
-    @patch('app.Path.read_text')
-    def test_get_username_for_email_from_map(self, mock_read_text, mock_exists, mock_migrate, mock_check, mock_version, mock_secret):
-        mock_exists.return_value = True
-        mock_read_text.return_value = '{"test@example.com": "test_user"}'
-
+    def test_get_username_for_email_from_map(self, mock_migrate, mock_check, mock_version, mock_secret):
         app = SpotifyDashboardApp()
+        app.repo.upsertUser("test_user", "test@example.com")
+
         username = app.get_username_for_email("test@example.com")
         self.assertEqual(username, "test_user")
 
@@ -53,16 +46,44 @@ class TestMultiUser(unittest.TestCase):
     @patch('app.SpotifyDashboardApp.startVersionCheck_thread')
     @patch('app.SpotifyDashboardApp.checkLogin_thread')
     @patch('app.migrateIfNeeded')
-    @patch('app.Path.exists')
-    @patch('app.Path.mkdir')
-    @patch('app.Path.write_text')
-    def test_get_or_create_user(self, mock_write_text, mock_mkdir, mock_exists, mock_migrate, mock_check, mock_version, mock_secret):
-        # Everything does not exist
-        mock_exists.return_value = False
+    def test_get_or_create_user(self, mock_migrate, mock_check, mock_version, mock_secret):
         app = SpotifyDashboardApp()
 
         username = app.get_or_create_user("john.doe@test.com")
         self.assertEqual(username, "johndoe")
+
+    @patch(_SECRET_KEY_PATCH, return_value='test-secret-key')
+    @patch('app.SpotifyDashboardApp.startVersionCheck_thread')
+    @patch('app.SpotifyDashboardApp.checkLogin_thread')
+    @patch('app.migrateIfNeeded')
+    def test_get_or_create_user_adopts_orphaned_username_with_no_email(self, mock_migrate, mock_check, mock_version, mock_secret):
+        """A username that already exists with no email on record (e.g. a
+        migration whose users_map.json didn't know this user's email) must be
+        claimed by the first login that sanitizes to it, not shadowed by a new
+        sibling account that leaves its existing history stranded."""
+        app = SpotifyDashboardApp()
+        app.repo.upsertUser("timorzipa", None)
+
+        username = app.get_or_create_user("timorzipa@gmail.com")
+
+        self.assertEqual(username, "timorzipa")
+        self.assertEqual(app.repo.getUsernameForEmail("timorzipa@gmail.com"), "timorzipa")
+
+    @patch(_SECRET_KEY_PATCH, return_value='test-secret-key')
+    @patch('app.SpotifyDashboardApp.startVersionCheck_thread')
+    @patch('app.SpotifyDashboardApp.checkLogin_thread')
+    @patch('app.migrateIfNeeded')
+    def test_get_or_create_user_still_suffixes_on_a_real_email_collision(self, mock_migrate, mock_check, mock_version, mock_secret):
+        """A username that already belongs to a DIFFERENT, known email must not
+        be claimed - only a truly orphaned (no-email) username is fair game."""
+        app = SpotifyDashboardApp()
+        app.repo.upsertUser("alice", "alice@other.com")
+
+        username = app.get_or_create_user("alice@example.com")
+
+        self.assertEqual(username, "alice_1")
+        self.assertEqual(app.repo.getUsernameForEmail("alice@other.com"), "alice")
+        self.assertEqual(app.repo.getUsernameForEmail("alice@example.com"), "alice_1")
 
     @patch(_SECRET_KEY_PATCH, return_value='test-secret-key')
     @patch('app.Database')   #< get_user_db must not build a real Database (files, threads, network)
@@ -79,38 +100,6 @@ class TestMultiUser(unittest.TestCase):
 
         self.assertIs(db1, db2) # Should be the exact same object from cache
         mock_database.assert_called_once()
-
-    @patch(_SECRET_KEY_PATCH, return_value='test-secret-key')
-    @patch('app.SpotifyDashboardApp.startVersionCheck_thread')
-    @patch('app.SpotifyDashboardApp.checkLogin_thread')
-    @patch('app.migrateIfNeeded')
-    def test_migrate_legacy_database(self, mock_migrate, mock_check, mock_version, mock_secret):
-        import tempfile
-        import shutil
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmp_path = Path(tmpdir)
-            app = SpotifyDashboardApp()
-            app.baseDir = tmp_path
-
-            # Create a legacy directory with entries.json
-            legacy_dir = tmp_path / "Database" / "Users" / "Tzur"
-            legacy_dir.mkdir(parents=True, exist_ok=True)
-            legacy_entries = legacy_dir / "entries.json"
-            legacy_entries.write_text('[{"id": "track_1"}]', encoding="utf-8")
-
-            # Run migration to target "timorzipa"
-            app._migrate_legacy_database_if_needed("timorzipa")
-
-            # Target directory should now exist and have the copied entries.json
-            target_dir = tmp_path / "Database" / "Users" / "timorzipa"
-            target_entries = target_dir / "entries.json"
-
-            self.assertTrue(target_entries.exists())
-            self.assertEqual(target_entries.read_text(encoding="utf-8"), '[{"id": "track_1"}]')
-
-            # Legacy directory should be removed/cleaned up
-            self.assertFalse(legacy_dir.exists())
 
     def test_get_or_create_secret_key_persists_random_value(self):
         import tempfile
@@ -234,36 +223,34 @@ class TestImageRouteAuthorization(unittest.TestCase):
 
 
 class TestSessionLockScope(unittest.TestCase):
-    """_session_lock exists to protect users_map.json / cookies.json reads and
-    writes from corruption under concurrent access - it must not also serialize
-    unrelated, slow work (like a live Spotify network call) across all users."""
+    """_session_lock now only protects get_or_create_user()'s check-then-create
+    username sequence (the one place that still has a real race: two concurrent
+    first-time logins picking the same candidate username). Reads (is_user_logged_in,
+    get_username_for_email) go straight to the database and don't need it - a slow
+    network call in one must not block unrelated lookups or a concurrent
+    get_or_create_user for someone else."""
 
     @patch('app.SpotifyDashboardApp.startVersionCheck_thread')
     @patch('app.SpotifyDashboardApp.checkLogin_thread')
     @patch('app.migrateIfNeeded')
     def _makeApp(self, mock_migrate, mock_check, mock_version):
         import tempfile
+        from Database.repository import Repository
         app = SpotifyDashboardApp.__new__(SpotifyDashboardApp)
         app.baseDir = Path(tempfile.mkdtemp())
-        app.cookiesFile = app.baseDir / "secrets" / "cookies.json"
+        app.repo = Repository(app.baseDir / "test.db")
         app.user_databases = {}
         app._db_lock = threading.RLock()
         app._session_lock = threading.RLock()
-        app._migration_lock = threading.RLock()
         app._login_cache = {}
         return app
 
-
     def test_slow_listener_check_does_not_block_unrelated_session_lookups(self):
-        import json
         import time
 
         dash = self._makeApp()
-        dash.cookiesFile.parent.mkdir(parents=True, exist_ok=True)
-        dash.cookiesFile.write_text(json.dumps([{"identifier": "alice@example.com"}]), encoding="utf-8")
-
-        usersMapFile = dash.baseDir / "secrets" / "users_map.json"
-        usersMapFile.write_text(json.dumps({"alice@example.com": "alice"}), encoding="utf-8")
+        dash.repo.upsertUser("alice", "alice@example.com")
+        dash.repo.setUserCookies("alice", {"sp_dc": "fake"})
 
         slowDb = MagicMock()
         slowDb.isListenerLoggedIn.side_effect = lambda: time.sleep(0.3) or True
@@ -271,7 +258,7 @@ class TestSessionLockScope(unittest.TestCase):
 
         thread = threading.Thread(target=lambda: dash.is_user_logged_in("alice@example.com"))
         thread.start()
-        time.sleep(0.05)  # let the slow call start and take the lock
+        time.sleep(0.05)  # let the slow call start
 
         start = time.time()
         dash.get_username_for_email("bob@example.com")  # unrelated user, no network involved
@@ -281,43 +268,32 @@ class TestSessionLockScope(unittest.TestCase):
 
         self.assertLess(
             elapsed, 0.2,
-            "an unrelated session lookup blocked on another user's live listener check "
-            "- the session lock's critical section is too broad"
+            "an unrelated session lookup blocked on another user's live listener check"
         )
 
-    def test_two_new_users_do_not_migrate_the_same_legacy_source_concurrently(self):
-        """get_or_create_user() no longer runs legacy migration under the (now
-        narrower) session lock, so it needs its own lock: the legacy sources are
-        fixed, shared paths, so two different brand-new users logging in around the
-        same time could otherwise both race to migrate the same source."""
-        import time
-
+    def test_two_new_users_do_not_race_on_the_same_candidate_username(self):
+        """Two different brand-new emails that sanitize to the same username
+        prefix must not both win the uniqueness check and collide - the whole
+        check-then-create sequence in get_or_create_user is what _session_lock
+        protects now."""
         dash = self._makeApp()
 
-        concurrentCount = {"current": 0, "max": 0}
-        countLock = threading.Lock()
+        results = {}
 
-        def fakeMigrate(username):
-            with countLock:
-                concurrentCount["current"] += 1
-                concurrentCount["max"] = max(concurrentCount["max"], concurrentCount["current"])
-            time.sleep(0.1)
-            with countLock:
-                concurrentCount["current"] -= 1
+        def create(email):
+            results[email] = dash.get_or_create_user(email)
 
-        with patch.object(dash, 'get_username_for_email', return_value=None), \
-             patch.object(dash, '_migrate_legacy_database_if_needed', side_effect=fakeMigrate):
+        emails = [f"alice+{i}@example.com" for i in range(5)]  # all sanitize to "alice" + suffix
+        threads = [threading.Thread(target=create, args=(email,)) for email in emails]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
 
-            threads = [
-                threading.Thread(target=dash.get_or_create_user, args=(f"user{i}@example.com",))
-                for i in range(3)
-            ]
-            for t in threads:
-                t.start()
-            for t in threads:
-                t.join()
-
-        self.assertEqual(concurrentCount["max"], 1, "legacy migration ran concurrently for different users")
+        usernames = list(results.values())
+        self.assertEqual(len(usernames), len(set(usernames)), "two emails were assigned the same username")
+        for email, username in results.items():
+            self.assertEqual(dash.repo.getUsernameForEmail(email), username)
 
 
 class TestLoginCookieVerification(unittest.TestCase):
@@ -356,14 +332,14 @@ class TestLoginCookieVerification(unittest.TestCase):
     def test_login_accepts_verified_cookies(self):
         dash = self._makeApp()
         with patch.object(dash, '_verifyCookiesMatchEmail', return_value=True), \
-             patch('app.saveSession') as mock_save, \
              patch.object(dash, 'get_or_create_user', return_value='alice'), \
-             patch.object(dash, 'get_user_db'):
+             patch.object(dash, 'get_user_db'), \
+             patch.object(dash.repo, 'setUserCookies') as mock_set_cookies:
             resp, client = self._postLogin(dash)
 
         self.assertEqual(resp.status_code, 302)
-        mock_save.assert_called_once()
-        self.assertIs(mock_save.call_args.args[2], dash.cookiesFile)
+        mock_set_cookies.assert_called_once()
+        self.assertEqual(mock_set_cookies.call_args.args[0], 'alice')
         with client.session_transaction() as sess:
             self.assertEqual(sess.get('email'), 'alice@example.com')
 
@@ -410,7 +386,7 @@ class TestLoginCookieVerification(unittest.TestCase):
             self.assertFalse(dash._verifyCookiesMatchEmail({"sp_dc": "abc"}, ""))
             mock_sf.Spotify.assert_not_called()
 
-    def test_verify_never_touches_shared_cookies_file_and_cleans_up_temp(self):
+    def test_verify_cleans_up_its_temp_cookies_file(self):
         dash = self._makeApp()
         spotify = MagicMock()
         spotify.isLoggedIn.return_value = True
@@ -420,7 +396,6 @@ class TestLoginCookieVerification(unittest.TestCase):
             dash._verifyCookiesMatchEmail({"sp_dc": "abc"}, "alice@example.com")
 
             tempPath = mock_save.call_args.args[2]
-            self.assertNotEqual(str(tempPath), str(dash.cookiesFile))
             self.assertEqual(mock_sf.Spotify.call_args.kwargs.get("cookiesFile"), tempPath)
         self.assertFalse(os.path.exists(tempPath))
 

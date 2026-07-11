@@ -17,6 +17,7 @@ class Importer:
     # 500 allows for frequent progress bar updates in the UI and batches API pre-fetches
     # to avoid rate limits/network blocking without long delays.
     CHUNK_SIZE = 500
+    MAX_PREFETCH_WORKERS = 10
 
     def __init__(self, cookiesFile=None, email=None):
         self.sp = SpotipyFree.Spotify(cookiesFile=cookiesFile, email=email)
@@ -26,6 +27,15 @@ class Importer:
         track = self.sp.search(query, type="track", limit=1)["tracks"]["items"][0]
         # track = self.sp.track(track["external_urls"]["spotify"])
         return track
+
+    def _fetchTrackMeta(self, name, artist, trackUri):
+        """ Fetch raw track metadata by URI, falling back to a name/artist search. """
+        if trackUri:
+            try:
+                return self.sp.track(trackUri)
+            except Exception:
+                return self._searchForSong(name=name, artist=artist)
+        return self._searchForSong(name=name, artist=artist)
 
     def _convertToList(self, export):
         if export.lstrip().startswith("FILE_PATH,"):
@@ -73,19 +83,28 @@ class Importer:
                 continue
         return parsedItems
 
+    def _resolveKnownKey(self, trackUri, name, artist, known):
+        """ Return whichever of trackUri or the name+artist key is already cached in
+        `known`, preferring trackUri. A trackUri missing from the cache still falls
+        back to the name+artist key (e.g. a reissue/remaster URI for a song already
+        cached under its name+artist) rather than being treated as unmatched. """
+        if trackUri and trackUri in known:
+            return trackUri
+        idKey = name + artist if name and artist else None
+        if idKey and idKey in known:
+            return idKey
+        return None
+
     def _identifyMissingTracks(self, chunk, known):
         missingTracks = {}
         for name, artist, startTimestamp, timePlayed, trackUri in chunk:
-            idKey = name + artist if name and artist else None
-            if trackUri and trackUri in known:
+            if self._resolveKnownKey(trackUri, name, artist, known) is not None:
                 continue
-            if idKey and idKey in known:
-                continue
-            
+
             if trackUri:
                 missingTracks[trackUri] = (name, artist, trackUri)
-            elif idKey:
-                missingTracks[idKey] = (name, artist, None)
+            elif name and artist:
+                missingTracks[name + artist] = (name, artist, None)
         return missingTracks
 
     def _prefetchMissingTracks(self, missingTracks, chunkStart, totalItems, known, progressCallback):
@@ -96,18 +115,12 @@ class Importer:
             name, artist, trackUri = info
             meta = None
             try:
-                if trackUri:
-                    try:
-                        meta = self.sp.track(trackUri)
-                    except Exception:
-                        meta = self._searchForSong(name=name, artist=artist)
-                else:
-                    meta = self._searchForSong(name=name, artist=artist)
+                meta = self._fetchTrackMeta(name, artist, trackUri)
             except Exception as e:
                 print(f"Error fetching {name} by {artist}: {parseError(e)}")
             return key, meta
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.MAX_PREFETCH_WORKERS) as executor:
             futures = {executor.submit(fetchOne, k, val): k for k, val in missingTracks.items()}
             for future in concurrent.futures.as_completed(futures):
                 fetchedCount += 1
@@ -135,33 +148,18 @@ class Importer:
     def _processPlay(self, item, known):
         name, artist, startTimestamp, timePlayed, trackUri = item
         try:
-            idKey = name + artist if name and artist else None
-            
-            if trackUri and trackUri in known:
-                matchedId = trackUri
-            elif idKey and idKey in known:
-                matchedId = idKey
-            else:
-                matchedId = None
+            matchedId = self._resolveKnownKey(trackUri, name, artist, known)
 
             if matchedId:
                 meta = Client.embedPlayInfo(known[matchedId].copy(), startTimestamp, timePlayed)
             else:
                 if not name or not artist:
                     return None
-                
-                if trackUri:
-                    try:
-                        meta = self.sp.track(trackUri)
-                    except Exception:
-                        meta = self._searchForSong(name=name, artist=artist)
-                else:
-                    meta = self._searchForSong(name=name, artist=artist)
-                    
+
+                meta = self._fetchTrackMeta(name, artist, trackUri)
                 base = Client.formatTrack(meta, embedPlaybackInfo=False)
                 known[base["id"]] = base
-                if idKey:
-                    known[idKey] = base
+                known[name + artist] = base
                 meta = Client.embedPlayInfo(base.copy(), startTimestamp, timePlayed)
 
             return meta

@@ -1,32 +1,12 @@
 import datetime
-import unittest
-from unittest.mock import MagicMock, patch
 import sys
 import os
-import threading
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-# See tests/test_database_images.py for why this guard is needed: other test
-# modules replace Database.database with a MagicMock at import time, and unittest
-# discover imports every test file before running any of them.
-if isinstance(sys.modules.get("Database.database"), MagicMock):
-    del sys.modules["Database.database"]
-
-from Database.database import Database
+from conftest import DatabaseTestCase
 import Database.utils as utilsModule
-
-
-def _bareDatabaseWithData(tracks, entries):
-    """A Database instance with just enough state for the chart-stats methods,
-    skipping the heavy __init__ (autoimporter/listener setup) and file I/O by
-    pre-seeding the in-memory caches directly."""
-    db = Database.__new__(Database)
-    db.fileLock = threading.RLock()
-    db.tracksCache = tracks
-    db.entriesCache = entries
-    db.playlistsCache = None
-    return db
 
 
 def _ts(y, m, d, h=12, mi=0):
@@ -34,11 +14,12 @@ def _ts(y, m, d, h=12, mi=0):
     return int(datetime.datetime(y, m, d, h, mi, tzinfo=datetime.timezone.utc).timestamp())
 
 
-class ChartStatsTestCase(unittest.TestCase):
+class ChartStatsTestCase(DatabaseTestCase):
     """All chart-stats tests fix the app's timezone to UTC so weekday/hour bucketing
     is deterministic regardless of the machine running the suite."""
 
     def setUp(self):
+        super().setUp()
         patcher = patch.object(utilsModule, "tz", datetime.timezone.utc)
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -51,7 +32,7 @@ class TestGetListeningTimeSeries(ChartStatsTestCase):
             {"id": "t1", "playedAt": _ts(2026, 7, 1, 20), "timePlayed": 2000},
             {"id": "t1", "playedAt": _ts(2026, 7, 2, 9), "timePlayed": 500},
         ]
-        db = _bareDatabaseWithData({}, entries)
+        db = self._makeDb({}, entries)
 
         result = db.getListeningTimeSeries(
             startDate=datetime.datetime(2026, 7, 1, tzinfo=datetime.timezone.utc),
@@ -66,7 +47,7 @@ class TestGetListeningTimeSeries(ChartStatsTestCase):
 
     def test_daily_grouping_fills_gaps_with_zero(self):
         entries = [{"id": "t1", "playedAt": _ts(2026, 7, 1), "timePlayed": 1000}]
-        db = _bareDatabaseWithData({}, entries)
+        db = self._makeDb({}, entries)
 
         result = db.getListeningTimeSeries(
             startDate=datetime.datetime(2026, 7, 1, tzinfo=datetime.timezone.utc),
@@ -84,7 +65,7 @@ class TestGetListeningTimeSeries(ChartStatsTestCase):
             {"id": "t1", "playedAt": _ts(2026, 7, 9), "timePlayed": 2000},   # Thursday, same week
             {"id": "t1", "playedAt": _ts(2026, 7, 13), "timePlayed": 500},   # next Monday
         ]
-        db = _bareDatabaseWithData({}, entries)
+        db = self._makeDb({}, entries)
 
         result = db.getListeningTimeSeries(
             startDate=datetime.datetime(2026, 7, 6, tzinfo=datetime.timezone.utc),
@@ -100,7 +81,7 @@ class TestGetListeningTimeSeries(ChartStatsTestCase):
         self.assertEqual(result[1]["totalTimeListened"], 500)
 
     def test_empty_entries_with_no_date_range_returns_empty_list(self):
-        db = _bareDatabaseWithData({}, [])
+        db = self._makeDb({}, [])
         self.assertEqual(db.getListeningTimeSeries(), [])
 
     def test_no_date_range_infers_bounds_from_entries(self):
@@ -108,7 +89,7 @@ class TestGetListeningTimeSeries(ChartStatsTestCase):
             {"id": "t1", "playedAt": _ts(2026, 7, 1), "timePlayed": 1000},
             {"id": "t1", "playedAt": _ts(2026, 7, 3), "timePlayed": 500},
         ]
-        db = _bareDatabaseWithData({}, entries)
+        db = self._makeDb({}, entries)
 
         result = db.getListeningTimeSeries(groupBy="day")
 
@@ -122,7 +103,7 @@ class TestGetHourOfDayHeatmap(ChartStatsTestCase):
             {"id": "t1", "playedAt": _ts(2026, 7, 6, 9, 30), "timePlayed": 500},  # Monday 09:xx, same bucket
             {"id": "t1", "playedAt": _ts(2026, 7, 12, 23), "timePlayed": 2000},  # Sunday 23:00
         ]
-        db = _bareDatabaseWithData({}, entries)
+        db = self._makeDb({}, entries)
 
         grid = db.getHourOfDayHeatmap()
 
@@ -139,7 +120,7 @@ class TestGetHourOfDayHeatmap(ChartStatsTestCase):
             {"id": "t1", "playedAt": _ts(2026, 7, 1, 9), "timePlayed": 1000},
             {"id": "t1", "playedAt": _ts(2026, 8, 1, 9), "timePlayed": 5000},
         ]
-        db = _bareDatabaseWithData({}, entries)
+        db = self._makeDb({}, entries)
 
         grid = db.getHourOfDayHeatmap(
             startDate=datetime.datetime(2026, 7, 1, tzinfo=datetime.timezone.utc),
@@ -150,7 +131,7 @@ class TestGetHourOfDayHeatmap(ChartStatsTestCase):
         self.assertEqual(totalAcrossGrid, 1000)
 
     def test_empty_database_returns_zeroed_grid(self):
-        db = _bareDatabaseWithData({}, [])
+        db = self._makeDb({}, [])
         grid = db.getHourOfDayHeatmap()
         self.assertEqual(len(grid), 7)
         self.assertTrue(all(cell["plays"] == 0 for row in grid for cell in row))
@@ -177,7 +158,7 @@ class TestGetArtistTrend(ChartStatsTestCase):
 
     def test_selects_top_n_artists_by_total_plays(self):
         tracks, entries = self._sampleData()
-        db = _bareDatabaseWithData(tracks, entries)
+        db = self._makeDb(tracks, entries)
 
         result = db.getArtistTrend(topN=2, groupBy="week")
 
@@ -186,7 +167,7 @@ class TestGetArtistTrend(ChartStatsTestCase):
 
     def test_series_values_align_with_buckets(self):
         tracks, entries = self._sampleData()
-        db = _bareDatabaseWithData(tracks, entries)
+        db = self._makeDb(tracks, entries)
 
         result = db.getArtistTrend(topN=1, groupBy="week")
 
@@ -195,14 +176,17 @@ class TestGetArtistTrend(ChartStatsTestCase):
         self.assertEqual(artistASeries["data"], [2, 1])
 
     def test_empty_entries_returns_empty_structure(self):
-        db = _bareDatabaseWithData({}, [])
+        db = self._makeDb({}, [])
         result = db.getArtistTrend()
         self.assertEqual(result, {"buckets": [], "series": []})
 
-    def test_skips_entries_with_missing_track_metadata(self):
+    def test_skips_plays_whose_track_has_no_resolvable_artists(self):
+        """A track with zero artists (track_artists has no rows for it) can't
+        contribute to any artist's trend line - the inner JOIN naturally excludes
+        it, the SQL-backed equivalent of the old 'missing metadata -> skip'."""
+        tracks = {"ghost": {"id": "ghost", "name": "No Artist Song", "artists": []}}
         entries = [{"id": "ghost", "playedAt": _ts(2026, 7, 6), "timePlayed": 1000}]
-        db = _bareDatabaseWithData({}, entries)
-        db._saveNewTrackFromId = MagicMock(side_effect=Exception("no listener"))
+        db = self._makeDb(tracks, entries)
 
         result = db.getArtistTrend()
 
@@ -210,4 +194,5 @@ class TestGetArtistTrend(ChartStatsTestCase):
 
 
 if __name__ == "__main__":
+    import unittest
     unittest.main()

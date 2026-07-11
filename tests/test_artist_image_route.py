@@ -54,7 +54,9 @@ class TestServeArtistImageRoute(unittest.TestCase):
         fakeDb.lazyFetchArtistImage.assert_called_once()
         calledArtistId, calledPath = fakeDb.lazyFetchArtistImage.call_args[0]
         self.assertEqual(calledArtistId, "artist123")
-        self.assertTrue(str(calledPath).endswith(os.path.join("alice", "img", "artists", "artist123.jpeg")))
+        # Images are shared across every user now, not stored per user - the path
+        # is under the shared Media/artists dir, with no username segment.
+        self.assertTrue(str(calledPath).endswith(os.path.join("Media", "artists", "artist123.jpeg")))
 
     @patch('app.send_from_directory')
     @patch('app.os.path.exists')
