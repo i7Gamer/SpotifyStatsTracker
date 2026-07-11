@@ -768,7 +768,9 @@ progress::-moz-progress-bar {
     padding: 16px 24px;
     max-height: 0;
     overflow: hidden;
-    transition: max-height 0.3s ease;
+    visibility: hidden;
+    opacity: 0;
+    transition: max-height 0.3s ease, visibility 0.3s ease, opacity 0.3s ease;
   }
 
   .nav-links.active {
@@ -778,6 +780,8 @@ progress::-moz-progress-bar {
        are added. */
     max-height: 80vh;
     overflow-y: auto;
+    visibility: visible;
+    opacity: 1;
   }
 
   .nav-links a {
