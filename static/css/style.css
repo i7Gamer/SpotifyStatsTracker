@@ -397,14 +397,14 @@ progress::-moz-progress-bar {
 }
 
 .track-card {
-  display: grid;
-  grid-template-columns: 56px 120px 1fr auto;
+  display: flex;
+  flex-wrap: wrap;
   gap: 18px;
   padding: 20px;
   border-radius: 20px;
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid var(--border);
-  align-items: center;
+  align-items: flex-start;
 }
 
 .track-number {
@@ -419,6 +419,7 @@ progress::-moz-progress-bar {
   min-height: 120px;
   padding: 10px 8px;
   width: 56px;
+  flex-shrink: 0;
 }
 
 .track-cover {
@@ -427,12 +428,15 @@ progress::-moz-progress-bar {
   object-fit: cover;
   border-radius: 16px;
   background: #111;
+  flex-shrink: 0;
 }
 
 .track-details {
   display: flex;
   flex-direction: column;
   justify-content: space-between;
+  flex: 1;
+  min-width: 250px;
 }
 
 .track-details-top {
@@ -477,10 +481,6 @@ progress::-moz-progress-bar {
 }
 
 @media (max-width: 600px) {
-  .track-card {
-    grid-template-columns: 1fr;
-  }
-
   .dashboard-summary,
   .track-summary-grid {
     grid-template-columns: 1fr;
