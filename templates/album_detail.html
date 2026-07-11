@@ -7,7 +7,7 @@
     </div>
   </section>
 
-  <p><a class="button" href="{{ url_for('topAlbumsPage') }}">&larr; Back to Top Albums</a></p>
+  <p><a id="back-button" class="button" href="{{ url_for('topAlbumsPage') }}">&larr; Back to Top Albums</a></p>
 
   <section id="track-list" class="track-list">
     {% set track = album %}
@@ -51,6 +51,16 @@
     window.__chartData = {
       timeSeries: {{ timeSeries | tojson }}
     };
+
+    const backButton = document.getElementById('back-button');
+    if (backButton && document.referrer.includes('wrapped')) {
+      backButton.textContent = '← Back to Wrapped';
+      backButton.href = '#';
+      backButton.onclick = (e) => {
+        e.preventDefault();
+        history.back();
+      };
+    }
   </script>
   <script src="{{ url_for('static', filename='js/charts.js') }}"></script>
 {% endblock %}

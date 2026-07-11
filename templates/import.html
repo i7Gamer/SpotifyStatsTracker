@@ -23,7 +23,7 @@
         {% elif importProgress.status == 'failed' %}
           Import failed: {{ importProgress.message }}
         {% else %}
-          Upload your streaming history file to begin importing.
+          Drag and drop your files here or click to browse
         {% endif %}
       </p>
       <progress id="progress-bar" max="100" value="{{ importProgress.percentage or 0 }}"></progress>

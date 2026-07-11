@@ -2,7 +2,7 @@
   {% set imgId = track.get('imageId', '') %}
   {% set item_number = item_number if item_number is defined else '' %}
   {% set section = section if section is defined else 'dashboard' %}
-  <div class="track-number">{{ item_number }}</div>
+  {% if item_number %}<div class="track-number">{{ item_number }}</div>{% endif %}
   
   <!-- Image path depends on section -->
   {% if section == 'top_artists' %}

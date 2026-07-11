@@ -33,74 +33,117 @@
     </div>
   </section>
 
-  <h2>Top Songs</h2>
-  <section class="track-list">
-    {% if topSongs %}
-      {% for track in topSongs %}
-        {% set item_number = loop.index %}
-        {% set section = 'top_songs' %}
-        {% include '_track_card.html' %}
-      {% endfor %}
-    {% else %}
-      <p class="loading">No songs played in {{ year }}.</p>
+  <nav class="wrapped-stats-filters" aria-label="Filter statistics by category">
+    <button class="stats-filter-button active" data-filter="all">All Stats</button>
+    <button class="stats-filter-button" data-filter="top-songs">Top Songs</button>
+    <button class="stats-filter-button" data-filter="top-artists">Top Artists</button>
+    <button class="stats-filter-button" data-filter="top-albums">Top Albums</button>
+    {% if discoveredSongs or discoveredArtists %}
+    <button class="stats-filter-button" data-filter="discoveries">Discoveries</button>
     {% endif %}
-  </section>
+  </nav>
 
-  <h2>Top Artists</h2>
-  <section class="track-list">
-    {% if topArtists %}
-      {% for track in topArtists %}
-        {% set item_number = loop.index %}
-        {% set section = 'top_artists' %}
-        {% include '_track_card.html' %}
-      {% endfor %}
-    {% else %}
-      <p class="loading">No artists played in {{ year }}.</p>
-    {% endif %}
-  </section>
+  <div data-category="top-songs">
+    <h2>Top Songs</h2>
+    <section class="track-list">
+      {% if topSongs %}
+        {% for track in topSongs %}
+          {% set item_number = loop.index %}
+          {% set section = 'top_songs' %}
+          {% include '_track_card.html' %}
+        {% endfor %}
+      {% else %}
+        <p class="loading">No songs played in {{ year }}.</p>
+      {% endif %}
+    </section>
+  </div>
 
-  <h2>Top Albums</h2>
-  <section class="track-list">
-    {% if topAlbums %}
-      {% for track in topAlbums %}
-        {% set item_number = loop.index %}
-        {% set section = 'top_albums' %}
-        {% include '_track_card.html' %}
-      {% endfor %}
-    {% else %}
-      <p class="loading">No albums played in {{ year }}.</p>
-    {% endif %}
-  </section>
+  <div data-category="top-artists">
+    <h2>Top Artists</h2>
+    <section class="track-list">
+      {% if topArtists %}
+        {% for track in topArtists %}
+          {% set item_number = loop.index %}
+          {% set section = 'top_artists' %}
+          {% include '_track_card.html' %}
+        {% endfor %}
+      {% else %}
+        <p class="loading">No artists played in {{ year }}.</p>
+      {% endif %}
+    </section>
+  </div>
+
+  <div data-category="top-albums">
+    <h2>Top Albums</h2>
+    <section class="track-list">
+      {% if topAlbums %}
+        {% for track in topAlbums %}
+          {% set item_number = loop.index %}
+          {% set section = 'top_albums' %}
+          {% include '_track_card.html' %}
+        {% endfor %}
+      {% else %}
+        <p class="loading">No albums played in {{ year }}.</p>
+      {% endif %}
+    </section>
+  </div>
 
   {% if discoveredSongs or discoveredArtists %}
-    <h2>Discoveries of {{ year }}</h2>
-    <p class="chart-subtitle">Songs and artists you first listened to in {{ year }}.</p>
+    <div data-category="discoveries">
+      <h2>Discoveries of {{ year }}</h2>
+      <p class="chart-subtitle">Songs and artists you first listened to in {{ year }}.</p>
 
-    {% if discoveredSongs %}
-    <section class="track-list">
-      {% for track in discoveredSongs %}
-        {% set item_number = loop.index %}
-        {% set section = 'top_songs' %}
-        {% include '_track_card.html' %}
-      {% endfor %}
-    </section>
-    {% endif %}
+      {% if discoveredSongs %}
+      <section class="track-list">
+        {% for track in discoveredSongs %}
+          {% set item_number = loop.index %}
+          {% set section = 'top_songs' %}
+          {% include '_track_card.html' %}
+        {% endfor %}
+      </section>
+      {% endif %}
 
-    {% if discoveredArtists %}
-    <section class="track-list">
-      {% for track in discoveredArtists %}
-        {% set item_number = loop.index %}
-        {% set section = 'top_artists' %}
-        {% include '_track_card.html' %}
-      {% endfor %}
-    </section>
-    {% endif %}
+      {% if discoveredArtists %}
+      <section class="track-list">
+        {% for track in discoveredArtists %}
+          {% set item_number = loop.index %}
+          {% set section = 'top_artists' %}
+          {% include '_track_card.html' %}
+        {% endfor %}
+      </section>
+      {% endif %}
+    </div>
   {% endif %}
 
   <script>
     window.__chartData = {
       timeSeries: {{ timeSeries | tojson }}
     };
+
+    const filterButtons = document.querySelectorAll('.stats-filter-button');
+    const categoryDivs = document.querySelectorAll('[data-category]');
+
+    filterButtons.forEach(button => {
+      button.addEventListener('click', () => {
+        const filter = button.dataset.filter;
+
+        filterButtons.forEach(btn => btn.classList.remove('active'));
+        button.classList.add('active');
+
+        categoryDivs.forEach(div => {
+          if (filter === 'all' || div.dataset.category === filter) {
+            div.classList.add('visible');
+          } else {
+            div.classList.remove('visible');
+          }
+        });
+      });
+    });
+
+    const allButton = document.querySelector('[data-filter="all"]');
+    if (allButton) {
+      allButton.click();
+    }
   </script>
   <script src="{{ url_for('static', filename='js/charts.js') }}"></script>
 {% endblock %}

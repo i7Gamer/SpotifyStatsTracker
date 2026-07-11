@@ -268,6 +268,10 @@ button {
   font-weight: 500;
 }
 
+#import-form input[type="file"]::file-selector-button {
+  display: none;
+}
+
 #import-form input[type="file"]:hover {
   background: linear-gradient(135deg, rgba(251, 113, 123, 0.15), rgba(255, 255, 255, 0.05));
   border-color: #ff9fa6;
@@ -417,6 +421,10 @@ progress::-moz-progress-bar {
   display: grid;
   gap: 18px;
   padding-right: 4px;
+}
+
+.page > .track-list {
+  margin-bottom: 24px;
 }
 
 .track-card {
@@ -969,4 +977,42 @@ progress::-moz-progress-bar {
 .wrapped-year-badge.active {
   background: var(--accent);
   color: #111;
+}
+
+.wrapped-stats-filters {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+  margin: 24px 0 32px;
+}
+
+.stats-filter-button {
+  padding: 10px 20px;
+  border: 1px solid var(--accent);
+  background: transparent;
+  color: var(--accent);
+  border-radius: 999px;
+  font-weight: 600;
+  font-size: 0.95rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-family: inherit;
+}
+
+.stats-filter-button:hover {
+  background: rgba(251, 113, 123, 0.15);
+}
+
+.stats-filter-button.active {
+  background: var(--accent);
+  color: #111;
+}
+
+[data-category] {
+  display: none;
+}
+
+[data-category].visible {
+  display: block;
 }
