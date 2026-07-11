@@ -7,7 +7,7 @@
 
 
 # Spotify Stats Tracker
-### If you found [this repository](https://github.com/TzurSoffer/SpotifyStatsTracker) useful, please give it a ⭐!.
+### If you found [this repository](https://github.com/i7Gamer/SpotifyStatsTracker) useful, please give it a ⭐!.
 A web application that allows users to track and analyze their Spotify listening habits and statistics **without Spotify Premium**.
 
 ## Features
@@ -24,7 +24,7 @@ A web application that allows users to track and analyze their Spotify listening
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/TzurSoffer/SpotifyStatsTracker
+git clone https://github.com/i7Gamer/SpotifyStatsTracker
 cd SpotifyStatsTracker
 ```
 
@@ -43,7 +43,7 @@ version: '3.8'
 
 services:
   spotify-tracker:
-    image: mepro3/spotify-tracker
+    image: i7gamer/spotify-tracker
     ports:
       - "5000:5000"
     volumes:
@@ -51,7 +51,7 @@ services:
       - ./secrets:/app/secrets
       - ./autoImport:/app/autoImport  #< files put in this folder will be imported automatically
     environment:
-      - FLASK_APP=app.py
+      - FLASK_APP=wsgi.py
       - PYTHONUNBUFFERED=1
       - TZ=America/Los_Angeles        #< don't forget to change this or you will get the wrong times for songs
       # - IMPORT_KEYWORD=Weekly       #< Uncomment to apply a filter to what files get auto-imported (only files containing this will be imported)
