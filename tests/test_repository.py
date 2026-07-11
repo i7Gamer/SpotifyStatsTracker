@@ -384,6 +384,21 @@ class TestUsersAndCookies(RepositoryTestCase):
         self.repo.upsertUser("alice", "alice@example.com")  #< must not raise
         self.assertTrue(self.repo.usernameExists("alice"))
 
+    def test_get_email_for_username(self):
+        self.assertIsNone(self.repo.getEmailForUsername("alice"))  #< doesn't exist yet
+        self.repo.upsertUser("alice", None)
+        self.assertIsNone(self.repo.getEmailForUsername("alice"))  #< exists, but no email on record
+        self.repo.upsertUser("bob", "bob@example.com")
+        self.assertEqual(self.repo.getEmailForUsername("bob"), "bob@example.com")
+
+    def test_set_user_email_claims_an_orphaned_username(self):
+        self.repo.upsertUser("alice", None)
+
+        self.repo.setUserEmail("alice", "alice@example.com")
+
+        self.assertEqual(self.repo.getEmailForUsername("alice"), "alice@example.com")
+        self.assertEqual(self.repo.getUsernameForEmail("alice@example.com"), "alice")
+
     def test_cookies_default_to_none(self):
         self.repo.upsertUser("alice", "alice@example.com")
         self.assertIsNone(self.repo.getUserCookies("alice"))

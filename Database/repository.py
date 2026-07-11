@@ -406,6 +406,21 @@ class Repository:
         row = conn.execute("SELECT 1 FROM users WHERE username=?", (username,)).fetchone()
         return row is not None
 
+    def getEmailForUsername(self, username: str) -> str | None:
+        """The stored email for an existing username, or None - either because
+        the username doesn't exist, or it exists but has no email on record yet
+        (e.g. a migrated account whose users_map.json didn't know it). Callers
+        that need to tell those two cases apart should check usernameExists()
+        first."""
+        conn = self._conn()
+        row = conn.execute("SELECT email FROM users WHERE username=?", (username,)).fetchone()
+        return row["email"] if row else None
+
+    def setUserEmail(self, username: str, email: str) -> None:
+        conn = self._conn()
+        with conn:
+            conn.execute("UPDATE users SET email=? WHERE username=?", (email, username))
+
     def setUserCookies(self, username: str, cookies: dict) -> None:
         conn = self._conn()
         with conn:

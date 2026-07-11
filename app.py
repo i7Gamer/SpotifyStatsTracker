@@ -89,11 +89,23 @@ class SpotifyDashboardApp:
 
                 username = sanitized
                 counter = 1
-                while self.repo.usernameExists(username) or username in self.user_databases:
+                while True:
+                    if username in self.user_databases:
+                        pass  # a live Database already exists under this name - can't be the same account, needs a new suffix
+                    elif not self.repo.usernameExists(username):
+                        self.repo.upsertUser(username, email)
+                        break
+                    elif self.repo.getEmailForUsername(username) is None:
+                        # Orphaned account with no email on record - e.g. a
+                        # migration whose users_map.json didn't have this user's
+                        # email. Claim it instead of creating a sibling account
+                        # that strands its existing history (the caller already
+                        # verified these cookies belong to `email`).
+                        self.repo.setUserEmail(username, email)
+                        break
+
                     username = f"{sanitized}_{counter}"
                     counter += 1
-
-                self.repo.upsertUser(username, email)
 
         return username
 
