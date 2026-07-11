@@ -113,8 +113,8 @@ class ConnectionManager:
     those threads read concurrently while a writer holds the lock.
     """
 
-    def __init__(self, dbPath: Path = DEFAULT_DB_PATH):
-        self.dbPath = Path(dbPath)
+    def __init__(self, dbPath: Path | None = None):
+        self.dbPath = Path(dbPath if dbPath is not None else DEFAULT_DB_PATH)
         self._local = threading.local()
 
     def _newConnection(self) -> sqlite3.Connection:

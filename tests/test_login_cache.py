@@ -3,7 +3,6 @@
 Verifies that isListenerLoggedIn() is NOT called on every request and that the
 cache expires correctly after LOGIN_CACHE_TTL_SECONDS.
 """
-import json
 import time
 import unittest
 from unittest.mock import MagicMock, patch
@@ -27,16 +26,10 @@ def _make_app() -> SpotifyDashboardApp:
 
 
 def _seed_cookies(dash: SpotifyDashboardApp, email: str, username: str):
-    """Write a minimal cookies file and users_map so is_user_logged_in() passes the
+    """Seed a user with stored cookies so is_user_logged_in() passes the
     pre-checks and reaches the isListenerLoggedIn() call."""
-    dash.cookiesFile.parent.mkdir(parents=True, exist_ok=True)
-    dash.cookiesFile.write_text(
-        json.dumps([{"identifier": email}]), encoding="utf-8"
-    )
-    users_map_file = dash.baseDir / "secrets" / "users_map.json"
-    users_map_file.write_text(
-        json.dumps({email: username}), encoding="utf-8"
-    )
+    dash.repo.upsertUser(username, email)
+    dash.repo.setUserCookies(username, {"sp_dc": "fake"})
 
 
 class TestLoginCache(unittest.TestCase):
@@ -104,15 +97,8 @@ class TestLoginCache(unittest.TestCase):
         dash = _make_app()
         users = [("dave@example.com", "dave"), ("eve@example.com", "eve")]
 
-        # Write both users to cookies/users_map in one go so neither overwrites the other
-        dash.cookiesFile.parent.mkdir(parents=True, exist_ok=True)
-        dash.cookiesFile.write_text(
-            json.dumps([{"identifier": email} for email, _ in users]), encoding="utf-8"
-        )
-        users_map_file = dash.baseDir / "secrets" / "users_map.json"
-        users_map_file.write_text(
-            json.dumps({email: username for email, username in users}), encoding="utf-8"
-        )
+        for email, username in users:
+            _seed_cookies(dash, email, username)
 
         for email, username in users:
             dash.user_databases[username] = self._make_mock_db(return_value=True)

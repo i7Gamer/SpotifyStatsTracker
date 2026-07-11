@@ -2,6 +2,7 @@ from __future__ import annotations
 import datetime
 import os
 import re
+import tempfile
 import threading
 import json
 from pathlib import Path
@@ -90,6 +91,33 @@ class Database:
                     self.appendTrackData(timestamp, track, msPlayed, context=item.get("context", None))
                 except Exception as e:
                     print(f"Error adding track from listener: {parseError(e)}")
+
+    def _materializeCookiesFile(self) -> Path:
+        """SpotipyFree/spotapi only know how to read a Spotify session from a file
+        path (spotapi.saver.JSONSaver), not from a dict - write this user's
+        cookies (the database is the source of truth) to a short-lived temp file
+        in the same [{"identifier", "cookies"}, ...] shape SpotipyFree.saveSession
+        produces. The caller is responsible for deleting it once the client
+        holding it has been constructed - it's only read at construction time."""
+        cookies = self.repo.getUserCookies(self.user) or {}
+        tmpFd, tmpPath = tempfile.mkstemp(prefix=f"cookies_{self.user}_", suffix=".json")
+        os.close(tmpFd)
+        tmpPath = Path(tmpPath)
+        tmpPath.write_text(json.dumps([{"identifier": self.email, "cookies": cookies}]), encoding="utf-8")
+        return tmpPath
+
+    def _withCookiesFile(self, factory):
+        """Call `factory(cookiesFilePath)` using either an explicitly-provided
+        self.cookiesFile (manual/dev usage, e.g. this module's __main__ block) or
+        a temp file materialized from this user's cookies in the database (the
+        normal app path, where Database is constructed without a cookiesFile)."""
+        if self.cookiesFile:
+            return factory(self.cookiesFile)
+        tmpPath = self._materializeCookiesFile()
+        try:
+            return factory(str(tmpPath))
+        finally:
+            tmpPath.unlink(missing_ok=True)
 
     # ---- catalog / track metadata --------------------------------------------------
 
@@ -302,7 +330,7 @@ class Database:
         return 0
 
     def importHistory(self, exportedHistory):
-        importer = Importer(cookiesFile=self.cookiesFile, email=self.email)
+        importer = self._withCookiesFile(lambda cookiesFile: Importer(cookiesFile=cookiesFile, email=self.email))
 
         parsedHistory, exportType = importer._convertToList(exportedHistory)
         if not parsedHistory:
@@ -515,12 +543,12 @@ class Database:
         series = [{"name": name, "data": [seriesData[name][key] for key in bucketKeys]} for name in topNames]
         return {"buckets": bucketKeys, "series": series}
 
-    def startListener(self, cookiesFile, email=None):
+    def startListener(self, cookiesFile=None, email=None):
         if cookiesFile:
             self.cookiesFile = cookiesFile
         if email:
             self.email = email
-        self.listener = Listener(self.cookiesFile, email=self.email)
+        self.listener = self._withCookiesFile(lambda cf: Listener(cf, email=self.email))
         self.listener.startListener_thread(callback=self._addToDatabaseFromListener)
 
     def startAutoImporter(self):

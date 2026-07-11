@@ -24,6 +24,20 @@ def _blockNetwork(monkeypatch):
     monkeypatch.setattr(socket.socket, "connect", guardedConnect)
 
 
+@pytest.fixture(autouse=True)
+def _isolateDefaultDbPath(tmp_path, monkeypatch):
+    """No test should ever touch the real Database/Users/spotify_stats.db - only
+    tests that explicitly pass dbPath= are meant to touch a database at all.
+    Redirects the default path (used by any Database()/Repository()/
+    SpotifyDashboardApp() constructed without an explicit override - notably
+    SpotifyDashboardApp's own user/cookie lookups) to a per-test temp file.
+    Database.repository.Repository resolves this at call time (not as a normal
+    default argument) specifically so this monkeypatch takes effect."""
+    import Database.db as dbModule
+
+    monkeypatch.setattr(dbModule, "DEFAULT_DB_PATH", tmp_path / "test_default.db")
+
+
 def normalizeTrackForTest(track: dict) -> dict:
     """Fill in the fields Client.formatTrack normally provides but that test
     fixtures often omit for brevity, so a minimal {"id", "name", "artists"} dict

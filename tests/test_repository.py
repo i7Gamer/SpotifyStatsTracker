@@ -402,6 +402,19 @@ class TestUsersAndCookies(RepositoryTestCase):
         self.repo.setUserCookies("alice", {"sp_dc": "new"})
         self.assertEqual(self.repo.getUserCookies("alice"), {"sp_dc": "new"})
 
+    def test_get_all_users_with_cookies_excludes_users_without_cookies(self):
+        self.repo.upsertUser("alice", "alice@example.com")
+        self.repo.upsertUser("bob", "bob@example.com")
+        self.repo.setUserCookies("alice", {"sp_dc": "abc"})
+
+        result = self.repo.getAllUsersWithCookies()
+
+        self.assertEqual(result, [("alice", "alice@example.com")])
+
+    def test_get_all_users_with_cookies_empty_when_none_logged_in(self):
+        self.repo.upsertUser("alice", "alice@example.com")
+        self.assertEqual(self.repo.getAllUsersWithCookies(), [])
+
 
 class TestImportProgress(RepositoryTestCase):
     def setUp(self):

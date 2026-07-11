@@ -4,9 +4,11 @@ import time
 from pathlib import Path
 
 try:
-    from Database.db import ConnectionManager, DEFAULT_DB_PATH
+    import Database.db as db
+    from Database.db import ConnectionManager
 except ModuleNotFoundError:
-    from db import ConnectionManager, DEFAULT_DB_PATH
+    import db
+    from db import ConnectionManager
 
 IMAGE_KIND_TRACK = "track"
 IMAGE_KIND_ARTIST = "artist"
@@ -23,8 +25,14 @@ class Repository:
     Per-user methods (plays/users/progress) are scoped by `username`.
     """
 
-    def __init__(self, dbPath: Path = DEFAULT_DB_PATH):
-        self.connectionManager = ConnectionManager(dbPath)
+    def __init__(self, dbPath: Path | None = None):
+        # Resolved against db.DEFAULT_DB_PATH at call time rather than as a
+        # normal default argument, so tests can monkeypatch db.DEFAULT_DB_PATH
+        # (see conftest.py's _isolateDefaultDbPath) and have every Repository()
+        # constructed without an explicit path - including indirectly, e.g. via
+        # SpotifyDashboardApp() - redirect to a per-test temp file instead of the
+        # real project database.
+        self.connectionManager = ConnectionManager(dbPath if dbPath is not None else db.DEFAULT_DB_PATH)
 
     def _conn(self):
         return self.connectionManager.connection()
@@ -412,6 +420,15 @@ class Repository:
         if row is None or row["cookies_json"] is None:
             return None
         return json.loads(row["cookies_json"])
+
+    def getAllUsersWithCookies(self) -> list[tuple[str, str]]:
+        """(username, email) for every user who has logged in at least once -
+        used at startup to make sure each of them has a running listener."""
+        conn = self._conn()
+        rows = conn.execute(
+            "SELECT username, email FROM users WHERE cookies_json IS NOT NULL"
+        ).fetchall()
+        return [(r["username"], r["email"]) for r in rows]
 
     # ---- Per-user: import progress ------------------------------------------------
 

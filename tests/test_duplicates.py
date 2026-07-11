@@ -1,7 +1,6 @@
 import sys
 import os
 from unittest.mock import patch, MagicMock
-from pathlib import Path
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -91,7 +90,6 @@ class TestAppDeduplicateOnStartup(DatabaseTestCase):
         mock_db_class.return_value = mock_db_instance
 
         app = SpotifyDashboardApp()
-        app.cookiesFile = Path("/dummy/cookies.json")
 
         app.get_user_db("test_user", "test@example.com")
 
