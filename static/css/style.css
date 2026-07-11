@@ -813,6 +813,10 @@ progress::-moz-progress-bar {
     text-align: center;
   }
 
+  .nav-links a:last-child {
+    margin-right: 0;
+  }
+
   .topbar-search {
     width: 100%;
     order: 3;
