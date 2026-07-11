@@ -229,7 +229,7 @@ class SpotifyDashboardApp:
     def _embedSongTextElements(self, song) -> dict:
         if "playedAt" in song:   #< some tracks just dont have it (top tracks)
             playedAt = convertToDatetime(song["playedAt"])
-            song["playedAtText"] = playedAt.strftime("%Y-%m-%d %H:%M")
+            song["playedAtText"] = playedAt.strftime("%d %b %Y, %H:%M")
             song["timePlayedText"] = msToString(song["timePlayed"])
 
         song["contextName"] = None

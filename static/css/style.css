@@ -58,11 +58,16 @@ button {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 12px;
+  gap: 28px;
 }
 
 .nav-links a {
   margin-left: 0;
+  transition: color 0.2s ease;
+}
+
+.nav-links a:hover {
+  color: var(--accent);
 }
 
 .topbar-search {
@@ -675,7 +680,67 @@ progress::-moz-progress-bar {
   flex-wrap: wrap;
 }
 
+.nav-toggle {
+  display: none;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 8px;
+  flex-direction: column;
+  gap: 6px;
+  align-items: center;
+  justify-content: center;
+}
+
+.nav-toggle span {
+  display: block;
+  width: 24px;
+  height: 2px;
+  background: var(--text);
+  border-radius: 2px;
+  transition: all 0.3s ease;
+}
+
+.nav-toggle.active span:nth-child(1) {
+  transform: rotate(45deg) translate(8px, 8px);
+}
+
+.nav-toggle.active span:nth-child(2) {
+  opacity: 0;
+}
+
+.nav-toggle.active span:nth-child(3) {
+  transform: rotate(-45deg) translate(8px, -8px);
+}
+
 @media (max-width: 768px) {
+  .nav-toggle {
+    display: flex;
+  }
+
+  .nav-links {
+    position: absolute;
+    top: 70px;
+    left: 0;
+    right: 0;
+    flex-direction: column;
+    background: rgba(13, 13, 13, 0.98);
+    border-bottom: 1px solid var(--border);
+    gap: 16px;
+    padding: 16px 24px;
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height 0.3s ease;
+  }
+
+  .nav-links.active {
+    max-height: 400px;
+  }
+
+  .nav-links a {
+    padding: 8px 0;
+  }
+
   .topbar-search {
     width: 100%;
     order: 3;
@@ -719,18 +784,6 @@ progress::-moz-progress-bar {
   color: #ffffff;
   border-radius: 8px;
   font-size: 0.95rem;
-}
-#github-link {
-  color: #1a73e8;
-  text-decoration: none;
-  font-weight: 500;
-  cursor: pointer;
-  transition: color 0.2s ease, text-decoration 0.2s ease;
-}
-
-#github-link:hover {
-  color: #0b57d0;          /* darker blue on hover */
-  text-decoration: underline;
 }
 
 .chart-card {
@@ -810,4 +863,46 @@ progress::-moz-progress-bar {
   color: var(--text);
   white-space: nowrap;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+.pagination {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 16px;
+  margin-top: 32px;
+  padding: 24px;
+  flex-wrap: wrap;
+}
+
+.pagination span {
+  color: var(--muted);
+  font-size: 0.95rem;
+  font-weight: 500;
+}
+
+.pagination .button {
+  padding: 12px 24px;
+  border: 1px solid var(--accent);
+  background: transparent;
+  color: var(--accent);
+  border-radius: 12px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-weight: 600;
+  font-size: 0.95rem;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+}
+
+.pagination .button:hover {
+  background: var(--accent);
+  color: white;
+}
+
+.pagination .button:active {
+  opacity: 0.9;
 }

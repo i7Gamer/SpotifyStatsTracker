@@ -24,6 +24,16 @@
     <input type="date" id="endDate" name="endDate" value="{{ customEnd }}" onchange="scheduleSearchFilter('endDate', updateDateFilter)">
 </div>
 
+<script>
+if (typeof flatpickr !== 'undefined') {
+  flatpickr("#startDate, #endDate", {
+    format: "d/m/Y",
+    locale: "de",
+    wrap: true
+  });
+}
+</script>
+
 <div class="filter-group">
     <label for="sortBy">Sort by:</label>
     <select id="sortBy" name="sortBy" onchange="updateFilters()">

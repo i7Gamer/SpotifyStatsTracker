@@ -4,26 +4,26 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#000000" />
-    <meta name="title" content="Spotify Tracker by Tzur Soffer" />
+    <meta name="title" content="Spotify Tracker" />
     <meta name="description" content="Keep track of your Spotify listening habits with this Spotify Tracker." />
-    <title>Spotify Tracker by Tzur Soffer</title>
+    <title>Spotify Tracker</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
     <link rel="manifest" href="{{ url_for('static', filename='manifest.json') }}" />
     <link rel="icon" type="image/png" href="{{ url_for('static', filename='images/favicon.png') }}">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
   </head>
   <body>
     <header class="topbar">
-      <div class="brand">Spotify Tracker by Tzur Soffer</div>
-      <a id="github-link" 
-        href="https://github.com/TzurSoffer/SpotifyStatsTracker" 
-        target="_blank" 
-        rel="noopener noreferrer">
-        ⭐ on GitHub
-      </a>
+      <div class="brand">Spotify Tracker</div>
       <div id="version-badge" class="version-badge" style="display:none;">
         <span id="version-badge-text"></span>
       </div>
-      <nav class="nav-links">
+      <button id="nav-toggle" class="nav-toggle" aria-label="Toggle navigation menu">
+        <span></span>
+        <span></span>
+        <span></span>
+      </button>
+      <nav class="nav-links" id="nav-menu">
         {% set currentQuery = request.args.get('q', '') %}
         <a href="{{ url_for('dashboard', q=currentQuery) if currentQuery else url_for('dashboard') }}">Dashboard</a>
         <a href="{{ url_for('topSongsPage', q=currentQuery) if currentQuery else url_for('topSongsPage') }}">Top Songs</a>
@@ -81,6 +81,25 @@
         setInterval(checkVersion, 15 * 60 * 1000);
       })();
 
+      (function(){
+        const navToggle = document.getElementById('nav-toggle');
+        const navMenu = document.getElementById('nav-menu');
+
+        if (!navToggle || !navMenu) return;
+
+        navToggle.addEventListener('click', () => {
+          navMenu.classList.toggle('active');
+          navToggle.classList.toggle('active');
+        });
+
+        navMenu.querySelectorAll('a').forEach(link => {
+          link.addEventListener('click', () => {
+            navMenu.classList.remove('active');
+            navToggle.classList.remove('active');
+          });
+        });
+      })();
+
       window.addEventListener('load', () => {
         const searchInput = document.querySelector('.auto-search-focus');
         if (!searchInput) {
@@ -92,5 +111,6 @@
         searchInput.setSelectionRange(valueLength, valueLength);
       });
     </script>
+    <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
   </body>
 </html>
