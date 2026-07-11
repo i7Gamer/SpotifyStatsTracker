@@ -1,0 +1,106 @@
+{% extends "layout.html" %}
+{% block content %}
+  <section class="hero wrapped-hero">
+    <div class="hero-content">
+      <h1>Your {{ year }} Wrapped</h1>
+      <p>A look back at what you listened to in {{ year }}.</p>
+    </div>
+  </section>
+
+  <nav class="wrapped-year-badges" aria-label="Select year">
+    {% for y in availableYears %}
+      <a class="wrapped-year-badge{{ ' active' if y == year else '' }}" href="{{ url_for('wrappedPage', year=y) }}">{{ y }}</a>
+    {% endfor %}
+  </nav>
+
+  <section class="track-summary-grid">
+    <article class="track-summary-card">
+      <h3>Total Plays</h3>
+      <p class="summary-value">{{ totalPlays }}</p>
+    </article>
+    <article class="track-summary-card">
+      <h3>Total Time</h3>
+      <p class="summary-value">{{ totalTime }}</p>
+    </article>
+  </section>
+
+  <section class="card chart-card">
+    <div class="chart-section">
+      <h2>Listening Over {{ year }}</h2>
+      <div class="chart-canvas-wrap">
+        <canvas id="timeSeriesChart"></canvas>
+      </div>
+    </div>
+  </section>
+
+  <h2>Top Songs</h2>
+  <section class="track-list">
+    {% if topSongs %}
+      {% for track in topSongs %}
+        {% set item_number = loop.index %}
+        {% set section = 'top_songs' %}
+        {% include '_track_card.html' %}
+      {% endfor %}
+    {% else %}
+      <p class="loading">No songs played in {{ year }}.</p>
+    {% endif %}
+  </section>
+
+  <h2>Top Artists</h2>
+  <section class="track-list">
+    {% if topArtists %}
+      {% for track in topArtists %}
+        {% set item_number = loop.index %}
+        {% set section = 'top_artists' %}
+        {% include '_track_card.html' %}
+      {% endfor %}
+    {% else %}
+      <p class="loading">No artists played in {{ year }}.</p>
+    {% endif %}
+  </section>
+
+  <h2>Top Albums</h2>
+  <section class="track-list">
+    {% if topAlbums %}
+      {% for track in topAlbums %}
+        {% set item_number = loop.index %}
+        {% set section = 'top_albums' %}
+        {% include '_track_card.html' %}
+      {% endfor %}
+    {% else %}
+      <p class="loading">No albums played in {{ year }}.</p>
+    {% endif %}
+  </section>
+
+  {% if discoveredSongs or discoveredArtists %}
+    <h2>Discoveries of {{ year }}</h2>
+    <p class="chart-subtitle">Songs and artists you first listened to in {{ year }}.</p>
+
+    {% if discoveredSongs %}
+    <section class="track-list">
+      {% for track in discoveredSongs %}
+        {% set item_number = loop.index %}
+        {% set section = 'top_songs' %}
+        {% include '_track_card.html' %}
+      {% endfor %}
+    </section>
+    {% endif %}
+
+    {% if discoveredArtists %}
+    <section class="track-list">
+      {% for track in discoveredArtists %}
+        {% set item_number = loop.index %}
+        {% set section = 'top_artists' %}
+        {% include '_track_card.html' %}
+      {% endfor %}
+    </section>
+    {% endif %}
+  {% endif %}
+
+  <script>
+    window.__chartData = {
+      timeSeries: {{ timeSeries | tojson }}
+    };
+  </script>
+  <script src="{{ url_for('static', filename='js/charts.js') }}"></script>
+{% endblock %}

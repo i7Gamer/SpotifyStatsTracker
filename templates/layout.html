@@ -30,6 +30,7 @@
         <a href="{{ url_for('topArtistsPage', q=currentQuery) if currentQuery else url_for('topArtistsPage') }}">Top Artists</a>
         <a href="{{ url_for('topAlbumsPage', q=currentQuery) if currentQuery else url_for('topAlbumsPage') }}">Top Albums</a>
         <a href="{{ url_for('chartsPage') }}">Charts</a>
+        <a href="{{ url_for('wrappedPage') }}">Wrapped</a>
         <a href="{{ url_for('importPage') }}">Import</a>
         <a href="{{ url_for('logout') }}">Logout</a>
       </nav>

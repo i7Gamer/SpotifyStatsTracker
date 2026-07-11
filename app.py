@@ -21,6 +21,8 @@ from SpotipyFree import saveSession, parseCookieString
 PAGE_SIZE = 50                  #< list items shown per page
 LOGIN_CACHE_TTL_SECONDS = 180  #< seconds to cache isListenerLoggedIn result per user
 CHART_ARTIST_TREND_TOP_N = 5   #< how many top artists are plotted on the trend line chart
+WRAPPED_LIST_SIZE = 5           #< how many top songs/artists/albums the Wrapped page shows
+WRAPPED_DISCOVERIES_SIZE = 10   #< how many "discovered this year" songs/artists the Wrapped page shows
 
 class SpotifyDashboardApp:
     def __init__(self):
@@ -436,6 +438,30 @@ class SpotifyDashboardApp:
             for cell in row:
                 cell["totalTimeListenedText"] = msToString(cell["totalTimeListened"])
         return heatmap
+
+    def _getWrappedYearParam(self, availableYears: list, defaultYear: int) -> int:
+        """The current request's ?year=... if it's one of the years the user
+        actually has data for, else `defaultYear` - mirrors _getPageParam()'s
+        tolerate-junk-input, silently-clamp behavior for ?page=."""
+        try:
+            year = int(request.args.get("year", defaultYear))
+        except (TypeError, ValueError):
+            return defaultYear
+        return year if year in availableYears else defaultYear
+
+    def _discoveriesInYear(self, items: list, yearStart, yearEnd, limit: int) -> list:
+        """Items (songs or artists) whose true, all-time first listen falls
+        within [yearStart, yearEnd) - not just their earliest play *within* that
+        range, which a date-scoped query would report instead. `items` must
+        therefore come from an unbounded (no date range) stats call. Sorted by
+        play count, most-played discovery first."""
+        yearStartTs, yearEndTs = yearStart.timestamp(), yearEnd.timestamp()
+        discovered = [
+            item for item in items
+            if item.get("firstListenedAt") is not None and yearStartTs <= item["firstListenedAt"] < yearEndTs
+        ]
+        discovered.sort(key=lambda item: item.get("plays", 0), reverse=True)
+        return discovered[:limit]
 
     def registerRoutes(self):
         def _is_version_newer(remote: str, local: str) -> bool:
@@ -880,6 +906,65 @@ class SpotifyDashboardApp:
                 timeSeries=timeSeries,
                 heatmap=heatmap,
                 artistTrend=artistTrend,
+            )
+
+        @self.app.route("/wrapped", methods=["GET"])
+        def wrappedPage():
+            email, username, db = get_current_user_or_redirect()
+            if not email:
+                return redirect(url_for("login", next=request.path))
+
+            nowLocal = now()
+            currentYear = nowLocal.year
+
+            oldestEntries = db.getEntriesFromOld(count=1, fullPagination=False)
+            earliestYear = convertToDatetime(oldestEntries[0]["playedAt"]).year if oldestEntries else currentYear
+            availableYears = list(range(currentYear, earliestYear - 1, -1))   #< most recent first, for the year badges
+
+            year = self._getWrappedYearParam(availableYears, currentYear)
+            yearStart = nowLocal.replace(year=year, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+            yearEnd = nowLocal.replace(year=year + 1, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+
+            topSongs = db.getTopSongs(startDate=yearStart, endDate=yearEnd, by="plays", limit=WRAPPED_LIST_SIZE)
+            topArtists = db.getTopArtists(startDate=yearStart, endDate=yearEnd, by="plays")[:WRAPPED_LIST_SIZE]
+            topAlbums = db.getTopAlbums(startDate=yearStart, endDate=yearEnd, by="plays", limit=WRAPPED_LIST_SIZE)
+            totalPlays, totalMs = db.getPlayTotals(yearStart, yearEnd)
+
+            # Discoveries need each item's true, all-time first listen, so these
+            # two calls are deliberately unbounded (no date range) rather than
+            # scoped to the year - see _discoveriesInYear()'s docstring.
+            discoveredSongs = self._discoveriesInYear(
+                db.getSongsStats(sortBy="plays"), yearStart, yearEnd, WRAPPED_DISCOVERIES_SIZE
+            )
+            discoveredArtists = self._discoveriesInYear(
+                db.getArtistsStats(), yearStart, yearEnd, WRAPPED_DISCOVERIES_SIZE
+            )
+
+            timeSeries = self._embedTimeSeriesTextElements(
+                db.getListeningTimeSeries(startDate=yearStart, endDate=yearEnd, groupBy="week")
+            )
+
+            topSongs = self._embedSongsTextElements(topSongs)
+            topSongs = self._embedTopSongsTextElements(topSongs, sortBy="plays", totalPlays=totalPlays, totalMs=totalMs)
+            topArtists = self._embedArtistsTextElements(topArtists, sortBy="plays", totalPlays=totalPlays, totalMs=totalMs)
+            topAlbums = self._embedAlbumsTextElements(topAlbums, sortBy="plays", totalPlays=totalPlays, totalMs=totalMs)
+            discoveredSongs = self._embedTopSongsTextElements(self._embedSongsTextElements(discoveredSongs))
+            discoveredArtists = self._embedArtistsTextElements(discoveredArtists)
+
+            return render_template(
+                "wrapped.html",
+                username=username,
+                section="wrapped",
+                year=year,
+                availableYears=availableYears,
+                totalPlays=totalPlays,
+                totalTime=msToString(totalMs),
+                topSongs=topSongs,
+                topArtists=topArtists,
+                topAlbums=topAlbums,
+                discoveredSongs=discoveredSongs,
+                discoveredArtists=discoveredArtists,
+                timeSeries=timeSeries,
             )
 
         @self.app.route("/song/<track_id>", methods=["GET"])

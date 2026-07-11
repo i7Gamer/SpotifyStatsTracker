@@ -927,3 +927,32 @@ progress::-moz-progress-bar {
 .pagination .button:active {
   opacity: 0.9;
 }
+
+.wrapped-year-badges {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+  margin: 24px 0 32px;
+}
+
+.wrapped-year-badge {
+  padding: 10px 20px;
+  border: 1px solid var(--accent);
+  background: transparent;
+  color: var(--accent);
+  border-radius: 999px;
+  font-weight: 600;
+  font-size: 0.95rem;
+  text-decoration: none;
+  transition: all 0.2s ease;
+}
+
+.wrapped-year-badge:hover {
+  background: rgba(251, 113, 123, 0.15);
+}
+
+.wrapped-year-badge.active {
+  background: var(--accent);
+  color: #111;
+}
