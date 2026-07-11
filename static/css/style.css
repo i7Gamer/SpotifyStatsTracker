@@ -66,6 +66,10 @@ button {
   transition: color 0.2s ease;
 }
 
+.nav-links a:last-child {
+  margin-right: auto;
+}
+
 .nav-links a:hover {
   color: var(--accent);
 }
@@ -407,13 +411,14 @@ progress::-moz-progress-bar {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 0.95rem;
+  font-size: 0.75rem;
   font-weight: 700;
   color: var(--muted);
   background: rgba(255, 255, 255, 0.06);
   border-radius: 16px;
   min-height: 120px;
   padding: 10px 8px;
+  width: 56px;
 }
 
 .track-cover {
@@ -471,7 +476,7 @@ progress::-moz-progress-bar {
   color: var(--muted);
 }
 
-@media (max-width: 980px) {
+@media (max-width: 600px) {
   .track-card {
     grid-template-columns: 1fr;
   }
@@ -685,11 +690,12 @@ progress::-moz-progress-bar {
   background: none;
   border: none;
   cursor: pointer;
-  padding: 8px;
+  padding: 10px 12px;
   flex-direction: column;
-  gap: 6px;
+  gap: 5px;
   align-items: center;
   justify-content: center;
+  height: 100%;
 }
 
 .nav-toggle span {
