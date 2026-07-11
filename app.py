@@ -241,11 +241,13 @@ class SpotifyDashboardApp:
                 song["contextName"] = db.playlistName(song["playedFrom"])
 
         artistsText = ", ".join(a.get("name", "") for a in song["artists"])
-        releaseDateText = dateToString(song["album"]["releaseDate"])
+        album = song.get("album")   #< can be None - see Repository._songRowToDict()'s LEFT JOIN fallback
+        releaseDateText = dateToString(album["releaseDate"]) if album else ""
         song["releaseDateText"] = releaseDateText
         song["artistsText"] = artistsText
         song["durationText"] = formatDuration(song["duration"])
-        song["album"]["releaseDateText"] = releaseDateText
+        if album:
+            album["releaseDateText"] = releaseDateText
         return song
 
     def _embedTopSongTextElements(self, song, sortBy=None, totalPlays=0, totalMs=0) -> dict:
