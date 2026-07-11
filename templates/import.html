@@ -10,7 +10,10 @@
   <section class="card import-card">
     <form id="import-form" action="{{ url_for('importHistory') }}" method="post" enctype="multipart/form-data">
       <label for="history_file">Spotify history JSON file(s)</label>
-      <input id="history_file" name="history_file" type="file" accept=".json, .csv" multiple required />
+      <div class="import-input-wrapper">
+        <input id="history_file" name="history_file" type="file" accept=".json, .csv" multiple required />
+        <p id="import-hint" class="import-hint">Drag and drop your files here or click to browse</p>
+      </div>
       <button class="primary-button" type="submit">Start Import</button>
     </form>
 
@@ -23,7 +26,7 @@
         {% elif importProgress.status == 'failed' %}
           Import failed: {{ importProgress.message }}
         {% else %}
-          Drag and drop your files here or click to browse
+          Ready to import
         {% endif %}
       </p>
       <progress id="progress-bar" max="100" value="{{ importProgress.percentage or 0 }}"></progress>

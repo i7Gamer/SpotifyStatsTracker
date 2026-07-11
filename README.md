@@ -7,18 +7,19 @@
 
 
 # Spotify Stats Tracker
-### If you found [this repository](https://github.com/i7Gamer/SpotifyStatsTracker) useful, please give it a ⭐!.
+### If you found [this repository](https://github.com/i7Gamer/SpotifyStatsTracker) useful, please give it a ⭐!
 A web application that allows users to track and analyze their Spotify listening habits and statistics **without Spotify Premium**.
 
 ## Features
 
-- View your top songs.
-- View your top artists.
-- See your listening history.
-- Track your spotify recently listened in real time
-- Import Spotify data export
-- Import musicolet pro exports
-- Automatically import files in the 'auto-import folder' with optional filtering
+- **Top Lists**: View your top songs, artists, and albums with detailed statistics
+- **Listening History**: See your listening history and track Spotify activity in real time
+- **Charts & Analytics**: Visualize your listening patterns and statistics with interactive charts
+- **Yearly Wrapped**: Get a personalized recap of your yearly listening with category filters (Top Songs, Artists, Albums, Discoveries)
+- **Detail Pages**: Drill down into individual songs, artists, and albums to see play history and detailed stats
+- **Multi-File Import**: Import multiple Spotify data export files at once with progress tracking
+- **Auto-Import**: Automatically import files from the 'auto-import' folder with optional keyword filtering
+- **Cross-Linking**: Click on artist names to explore artist pages from any song, and album links to see album details
 
 ## Installation
 

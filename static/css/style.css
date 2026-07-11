@@ -272,6 +272,30 @@ button {
   display: none;
 }
 
+.import-input-wrapper {
+  display: grid;
+  grid-template-columns: 1fr;
+  grid-template-rows: 1fr;
+}
+
+#import-form input[type="file"] {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.import-hint {
+  grid-column: 1;
+  grid-row: 1;
+  margin: 0;
+  padding: 20px 16px;
+  color: var(--muted);
+  text-align: center;
+  pointer-events: none;
+  font-size: 0.95rem;
+  align-self: center;
+  justify-self: center;
+}
+
 #import-form input[type="file"]:hover {
   background: linear-gradient(135deg, rgba(251, 113, 123, 0.15), rgba(255, 255, 255, 0.05));
   border-color: #ff9fa6;
@@ -786,6 +810,7 @@ progress::-moz-progress-bar {
 
   .nav-links a {
     padding: 8px 0;
+    text-align: center;
   }
 
   .topbar-search {
