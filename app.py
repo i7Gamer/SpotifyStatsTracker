@@ -890,6 +890,8 @@ class SpotifyDashboardApp:
             startDate, endDate = self._getDateRange(interval, customStart, customEnd, default="month")
             intervalLabel = self._getIntervalLabel(interval, customStart, customEnd)
 
+            lastDayDate = startDate.strftime("%Y-%m-%d") if interval == "day" and startDate else None
+
             timeSeries = self._embedTimeSeriesTextElements(
                 db.getListeningTimeSeries(startDate=startDate, endDate=endDate, groupBy=groupBy)
             )
@@ -905,6 +907,7 @@ class SpotifyDashboardApp:
                 customEnd=customEnd,
                 groupBy=groupBy,
                 intervalLabel=intervalLabel,
+                lastDayDate=lastDayDate,
                 timeSeries=timeSeries,
                 heatmap=heatmap,
                 artistTrend=artistTrend,

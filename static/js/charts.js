@@ -81,12 +81,13 @@
     }
   }
 
-  function drawSparseXLabels(ctx, labels, paddingLeft, plotWidth, plotHeight, paddingTop, labelForIndex) {
+  function drawSparseXLabels(ctx, labels, paddingLeft, plotWidth, plotHeight, paddingTop, labelForIndex, minSpacing) {
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
     ctx.fillStyle = '#b0b0b0';
     ctx.font = '11px sans-serif';
-    var maxLabels = Math.max(2, Math.floor(plotWidth / MIN_AXIS_LABEL_SPACING_PX));
+    var spacing = minSpacing !== undefined ? minSpacing : MIN_AXIS_LABEL_SPACING_PX;
+    var maxLabels = Math.max(2, Math.floor(plotWidth / spacing));
     var step = Math.max(1, Math.ceil(labels.length / maxLabels));
     for (var i = 0; i < labels.length; i++) {
       if (i % step !== 0 && i !== labels.length - 1) {
@@ -134,9 +135,10 @@
     });
 
     var labels = isLastDay ? data.map(function (d, i) { return i + ':00'; }) : data.map(function (d) { return d.label; });
+    var labelSpacing = isLastDay ? 30 : MIN_AXIS_LABEL_SPACING_PX;
     drawSparseXLabels(ctx, labels, paddingLeft, plotWidth, plotHeight, paddingTop, function (i) {
       return paddingLeft + i * slotWidth + slotWidth / 2;
-    });
+    }, labelSpacing);
 
     canvas.onmousemove = function (evt) {
       var rect = canvas.getBoundingClientRect();
@@ -278,7 +280,7 @@
     drawYAxisGrid(ctx, paddingLeft, paddingTop, plotWidth, plotHeight, maxPlays, function (v) { return Math.round(v); });
     drawSparseXLabels(ctx, data.buckets, paddingLeft, plotWidth, plotHeight, paddingTop, function (i) {
       return paddingLeft + i * stepX;
-    });
+    }, MIN_AXIS_LABEL_SPACING_PX);
 
     var lines = data.series.map(function (series, si) {
       var color = CHART_PALETTE[si % CHART_PALETTE.length];
