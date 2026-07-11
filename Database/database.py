@@ -26,6 +26,8 @@ except ModuleNotFoundError:
     from utils import parseError, convertToDatetime, dateToString, startOfDay, startOfWeek
 
 class Database:
+    PROGRESS_UPDATE_INTERVAL = 10   #< Write import progress to disk every N entries instead of every entry
+
     def __init__(self, user: str, cookiesFile: str | None = None, email: str | None = None):
         if not user:
             raise ValueError("Database user must be specified and cannot be empty.")
@@ -466,7 +468,7 @@ class Database:
                 importedTracks[t["id"]] = t
                 self.saveImagesFromTrack(t)
 
-                if index % 10 == 0 or index == total:
+                if index % self.PROGRESS_UPDATE_INTERVAL == 0 or index == total:
                     self.writeProgress("running", index, total, f"Imported {index} of {total}")
 
             # Merge under the file lock so entries the listener recorded while the

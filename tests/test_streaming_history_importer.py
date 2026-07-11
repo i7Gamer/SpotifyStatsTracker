@@ -102,5 +102,60 @@ class TestMusicoletImport(unittest.TestCase):
         self.assertEqual(prefetchCalls[1][1], 2)
 
 
+class TestResolveKnownKey(unittest.TestCase):
+    def _importer(self):
+        importer = Importer()
+        importer.sp = MagicMock()
+        return importer
+
+    def test_prefers_trackUri_when_both_keys_are_known(self):
+        importer = self._importer()
+        known = {"uri1": {"id": "uri1"}, "NameArtist": {"id": "other"}}
+        self.assertEqual(importer._resolveKnownKey("uri1", "Name", "Artist", known), "uri1")
+
+    def test_falls_back_to_name_artist_key_when_trackUri_not_known(self):
+        """A trackUri absent from the cache must not stop matching by name+artist -
+        e.g. a reissue/remaster URI for a song already cached under its name+artist."""
+        importer = self._importer()
+        known = {"NameArtist": {"id": "cached"}}
+        self.assertEqual(importer._resolveKnownKey("uriNotCached", "Name", "Artist", known), "NameArtist")
+
+    def test_returns_none_when_neither_key_is_known(self):
+        importer = self._importer()
+        self.assertIsNone(importer._resolveKnownKey("uriX", "Name", "Artist", {}))
+
+    def test_returns_none_without_trackUri_or_name_and_artist(self):
+        importer = self._importer()
+        self.assertIsNone(importer._resolveKnownKey(None, None, None, {"anything": {}}))
+
+
+class TestFetchTrackMeta(unittest.TestCase):
+    def _importer(self):
+        importer = Importer()
+        importer.sp = MagicMock()
+        return importer
+
+    def test_uses_track_lookup_when_trackUri_given(self):
+        importer = self._importer()
+        importer.sp.track.return_value = {"id": "abc"}
+        result = importer._fetchTrackMeta("Song", "Artist", "abc")
+        importer.sp.track.assert_called_once_with("abc")
+        self.assertEqual(result, {"id": "abc"})
+
+    def test_falls_back_to_search_when_track_lookup_fails(self):
+        importer = self._importer()
+        importer.sp.track.side_effect = Exception("not found")
+        importer.sp.search.return_value = {"tracks": {"items": [FAKE_TRACK]}}
+        result = importer._fetchTrackMeta("Song One", "Artist One", "abc")
+        self.assertEqual(result, FAKE_TRACK)
+
+    def test_searches_directly_when_no_trackUri(self):
+        importer = self._importer()
+        importer.sp.search.return_value = {"tracks": {"items": [FAKE_TRACK]}}
+        result = importer._fetchTrackMeta("Song One", "Artist One", None)
+        importer.sp.track.assert_not_called()
+        self.assertEqual(result, FAKE_TRACK)
+
+
 if __name__ == "__main__":
     unittest.main()
