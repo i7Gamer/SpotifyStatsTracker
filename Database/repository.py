@@ -267,6 +267,17 @@ class Repository:
         )
         return cur.rowcount > 0
 
+    def deleteZeroDurationPlays(self) -> int:
+        """Remove plays with zero (or negative) recorded listening time, across
+        every user - leftover skip/error events that older importer versions
+        recorded as real plays before the importer started filtering them out
+        at import time. Returns the number of rows removed.
+
+        Does NOT commit - see upsertTrack()'s docstring."""
+        conn = self._conn()
+        cur = conn.execute("DELETE FROM plays WHERE time_played <= 0")
+        return cur.rowcount
+
     def getPlaysCount(self, username: str) -> int:
         conn = self._conn()
         row = conn.execute("SELECT COUNT(*) AS c FROM plays WHERE username=?", (username,)).fetchone()

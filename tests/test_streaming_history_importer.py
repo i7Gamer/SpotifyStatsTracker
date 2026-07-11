@@ -102,6 +102,84 @@ class TestMusicoletImport(unittest.TestCase):
         self.assertEqual(prefetchCalls[1][1], 2)
 
 
+class TestZeroDurationFiltering(unittest.TestCase):
+    """Plays under MIN_TIME_PLAYED_MS (skips/errors) must never reach the
+    database - across every export format."""
+
+    def _importer(self):
+        importer = Importer()
+        importer.sp = MagicMock()
+        importer.sp.search.return_value = {"tracks": {"items": [FAKE_TRACK]}}
+        importer.sp.track.return_value = FAKE_TRACK
+        return importer
+
+    def test_parse_history_skips_zero_played_items(self):
+        importer = self._importer()
+        history = [
+            ("Song A", "Artist A", 100, 0, None),
+            ("Song B", "Artist B", 200, 5000, None),
+        ]
+        parsed = importer._parseHistory(lambda item: item, history)
+        self.assertEqual([name for name, *_ in parsed], ["Song B"])
+
+    def test_parse_history_skips_negative_played_items(self):
+        importer = self._importer()
+        history = [("Song A", "Artist A", 100, -5, None)]
+        parsed = importer._parseHistory(lambda item: item, history)
+        self.assertEqual(parsed, [])
+
+    def test_parse_history_skips_items_below_minimum_threshold(self):
+        importer = self._importer()
+        history = [
+            ("Song A", "Artist A", 100, Importer.MIN_TIME_PLAYED_MS - 1, None),
+            ("Song B", "Artist B", 200, Importer.MIN_TIME_PLAYED_MS, None),
+        ]
+        parsed = importer._parseHistory(lambda item: item, history)
+        self.assertEqual([name for name, *_ in parsed], ["Song B"])
+
+    def test_import_extended_history_skips_zero_ms_played(self):
+        importer = self._importer()
+        history = [
+            {
+                "ts": "2023-01-01T00:00:00Z", "ms_played": 0,
+                "master_metadata_track_name": "Song One",
+                "master_metadata_album_artist_name": "Artist One",
+                "spotify_track_uri": "spotify:track:track123",
+            },
+            {
+                "ts": "2023-01-01T00:05:00Z", "ms_played": 5000,
+                "master_metadata_track_name": "Song One",
+                "master_metadata_album_artist_name": "Artist One",
+                "spotify_track_uri": "spotify:track:track123",
+            },
+        ]
+        tracks = list(importer.importExtendedHistory(history, known=[], progressCallback=None))
+        self.assertEqual(len(tracks), 1)
+        self.assertEqual(tracks[0]["timePlayed"], 5000)
+
+    def test_import_account_history_skips_zero_ms_played(self):
+        importer = self._importer()
+        history = [
+            {"endTime": "2023-01-01 00:00:00", "msPlayed": 0, "trackName": "Song One", "artistName": "Artist One"},
+            {"endTime": "2023-01-01 00:05:00", "msPlayed": 5000, "trackName": "Song One", "artistName": "Artist One"},
+        ]
+        tracks = list(importer.importAcountHistory(history, known=[], progressCallback=None))
+        self.assertEqual(len(tracks), 1)
+        self.assertEqual(tracks[0]["timePlayed"], 5000)
+
+    def test_import_musicolet_csv_skips_zero_duration_rows(self):
+        csvData = (
+            "FILE_PATH,TITLE,ARTIST,ALBUM,ALBUM_ARTIST,COMPOSER,GENRE,YEAR,DURATION_MS,PLAY_COUNT\n"
+            "/music/zero.mp3,Zero Song,Artist One,Album One,Artist One,,Pop,2020,0,1\n"
+            "/music/song.mp3,Song One,Artist One,Album One,Artist One,,Pop,2020,200000,1\n"
+        )
+        importer = self._importer()
+        rows = csvData.splitlines()[1:]
+        tracks = list(importer.importMusicoletCSVExport(rows, known=[], progressCallback=None))
+        self.assertEqual(len(tracks), 1)
+        self.assertEqual(tracks[0]["timePlayed"], 200000)
+
+
 class TestResolveKnownKey(unittest.TestCase):
     def _importer(self):
         importer = Importer()

@@ -14,10 +14,14 @@ except ModuleNotFoundError:
 
 
 class Importer:
-    # 500 allows for frequent progress bar updates in the UI and batches API pre-fetches
+    # 1000 allows for frequent progress bar updates in the UI and batches API pre-fetches
     # to avoid rate limits/network blocking without long delays.
-    CHUNK_SIZE = 500
-    MAX_PREFETCH_WORKERS = 10
+    CHUNK_SIZE = 1000
+    MAX_PREFETCH_WORKERS = 14
+    # Spotify's exported history includes skips recorded with only a fraction of
+    # a second played - below this threshold it's not a real listen and must not
+    # be imported as one.
+    MIN_TIME_PLAYED_MS = 1000
 
     def __init__(self, cookiesFile=None, email=None):
         self.sp = SpotipyFree.Spotify(cookiesFile=cookiesFile, email=email)
@@ -78,6 +82,8 @@ class Importer:
         for item in history:
             try:
                 name, artist, startTimestamp, timePlayed, trackUri = dataFunction(item)
+                if timePlayed < self.MIN_TIME_PLAYED_MS:
+                    continue
                 parsedItems.append((name, artist, startTimestamp, timePlayed, trackUri))
             except Exception:
                 continue

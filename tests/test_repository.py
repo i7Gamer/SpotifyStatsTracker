@@ -216,6 +216,36 @@ class TestPlaysHistory(RepositoryTestCase):
         entries = self.repo.getPlaysNewestFirst("alice")
         self.assertEqual(entries[0]["playedFrom"], "playlist:xyz")
 
+    def test_delete_zero_duration_plays_removes_only_zero_and_negative(self):
+        self.repo.insertPlay("alice", "t1", 1000.0, 0)
+        self.repo.insertPlay("alice", "t1", 2000.0, -5)
+        self.repo.insertPlay("alice", "t1", 3000.0, 5000)
+        self.repo.commit()
+
+        removedCount = self.repo.deleteZeroDurationPlays()
+        self.repo.commit()
+
+        self.assertEqual(removedCount, 2)
+        self.assertEqual(self.repo.getPlaysCount("alice"), 1)
+        self.assertEqual(self.repo.getPlaysNewestFirst("alice")[0]["timePlayed"], 5000)
+
+    def test_delete_zero_duration_plays_spans_every_user(self):
+        self.repo.upsertUser("bob", "bob@example.com")
+        self.repo.insertPlay("alice", "t1", 1000.0, 0)
+        self.repo.insertPlay("bob", "t1", 1000.0, 0)
+        self.repo.commit()
+
+        removedCount = self.repo.deleteZeroDurationPlays()
+
+        self.assertEqual(removedCount, 2)
+
+    def test_delete_zero_duration_plays_is_noop_when_none_exist(self):
+        self.repo.insertPlay("alice", "t1", 1000.0, 5000)
+        self.repo.commit()
+
+        self.assertEqual(self.repo.deleteZeroDurationPlays(), 0)
+        self.assertEqual(self.repo.getPlaysCount("alice"), 1)
+
 
 class TestTransactionControl(RepositoryTestCase):
     """upsertTrack/insertPlay don't auto-commit, so a caller (e.g. a bulk import)
