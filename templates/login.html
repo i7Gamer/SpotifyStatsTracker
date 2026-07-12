@@ -4,7 +4,7 @@
 <div class="login-panel">
   <div class="login-card">
     <h1>Log in</h1>
-    <p>Connect your Spotify account to start tracking your listening history.</p>
+    <p>Log in with your email and password to keep tracking your listening history.</p>
 
     {% if error %}
       <p class="error">{{ error }}</p>
@@ -19,23 +19,39 @@
       </div>
 
       <div class="form-group">
-        <label for="loginCookies">Cookies</label>
-        <textarea id="loginCookies" name="cookies" required></textarea>
+        <label for="loginPassword">Password</label>
+        <input type="password" id="loginPassword" name="password" required>
       </div>
 
       <button type="submit" class="primary-button">Log in</button>
     </form>
 
-    <section class="instructions">
-      <h3>How to locate your session data</h3>
-      <ol>
-        <li>Open <a href="https://open.spotify.com" target="_blank" rel="noreferrer noopener">open.spotify.com</a> in a new browser tab and log in if not already logged in.</li>
-        <li>Open Developer Tools (<strong>F12</strong>).</li>
-        <li>Go to the <strong>Application</strong> tab (Chrome/Edge) or <strong>Storage</strong> tab (Firefox) and expand <strong>Cookies</strong> on the left.</li>
-        <li>Click the <strong>https://open.spotify.com</strong> entry, then select and copy <strong>everything</strong> in that table.</li>
-        <li>Paste it into the Cookies field above.</li>
-      </ol>
-    </section>
+    <div class="auth-links">
+      <a href="{{ url_for('register') }}">Create an account</a>
+      <a href="{{ url_for('resetPassword') }}">Forgot your password?</a>
+    </div>
+
+    <details class="cookie-login-fallback">
+      <summary>Log in with cookies instead</summary>
+
+      <form class="login-form" method="post" action="/login">
+        {% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
+
+        <div class="form-group">
+          <label for="cookieLoginEmail">Email</label>
+          <input type="email" id="cookieLoginEmail" name="email" value="{{ email or '' }}">
+        </div>
+
+        <div class="form-group">
+          <label for="loginCookies">Cookies</label>
+          <textarea id="loginCookies" name="cookies"></textarea>
+        </div>
+
+        <button type="submit" class="primary-button">Log in with cookies</button>
+      </form>
+
+      {% include "_cookie_instructions.html" %}
+    </details>
   </div>
 </div>
 

@@ -631,6 +631,42 @@ progress::-moz-progress-bar {
   font-size: 0.95rem;
 }
 
+.form-group small {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.auth-links {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 16px;
+  font-size: 0.9rem;
+}
+
+.auth-links a {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.cookie-login-fallback {
+  margin-top: 24px;
+  border-top: 1px solid var(--border);
+  padding-top: 20px;
+}
+
+.cookie-login-fallback summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.cookie-login-fallback .login-form {
+  margin-top: 18px;
+}
+
 .instructions h3 {
   margin-top: 0;
   color: var(--text);

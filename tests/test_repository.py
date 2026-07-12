@@ -1313,6 +1313,30 @@ class TestUsersAndCookies(RepositoryTestCase):
         self.repo.upsertUser("alice", "alice@example.com")
         self.assertEqual(self.repo.getAllUsersWithCookies(), [])
 
+    def test_password_hash_defaults_to_none(self):
+        self.repo.upsertUser("alice", "alice@example.com")
+        self.assertIsNone(self.repo.getUserPasswordHash("alice"))
+
+    def test_password_hash_roundtrip(self):
+        self.repo.upsertUser("alice", "alice@example.com")
+
+        self.repo.setUserPassword("alice", "hashed-value")
+
+        self.assertEqual(self.repo.getUserPasswordHash("alice"), "hashed-value")
+
+    def test_password_hash_can_be_updated(self):
+        self.repo.upsertUser("alice", "alice@example.com")
+        self.repo.setUserPassword("alice", "old-hash")
+        self.repo.setUserPassword("alice", "new-hash")
+        self.assertEqual(self.repo.getUserPasswordHash("alice"), "new-hash")
+
+    def test_add_user_password_hash_column_if_missing_is_a_noop_when_present(self):
+        """The column already exists via SCHEMA on a fresh test database -
+        calling this again (as migrate1_8_0 does defensively) must not raise."""
+        self.repo.upsertUser("alice", "alice@example.com")
+        self.repo.addUserPasswordHashColumnIfMissing()
+        self.assertIsNone(self.repo.getUserPasswordHash("alice"))
+
 
 class TestImportProgress(RepositoryTestCase):
     def setUp(self):

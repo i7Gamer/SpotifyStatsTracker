@@ -1,0 +1,47 @@
+{% extends "layout.html" %}
+{% block content %}
+
+<div class="login-panel">
+  <div class="login-card">
+    <h1>Register</h1>
+    <p>Set a password so you can log in without pasting your cookies every time. If this email
+      already has a cookies-only account, this adds a password to it instead of creating a new one.</p>
+
+    {% if error %}
+      <p class="error">{{ error }}</p>
+    {% endif %}
+
+    <form class="login-form" method="post" action="/register">
+      <div class="form-group">
+        <label for="registerEmail">Email</label>
+        <input type="email" id="registerEmail" name="email" value="{{ email or '' }}" required autofocus>
+      </div>
+
+      <div class="form-group">
+        <label for="registerPassword">Password</label>
+        <input type="password" id="registerPassword" name="password" minlength="{{ minPasswordLength }}" required>
+        <small>At least {{ minPasswordLength }} characters, with uppercase, lowercase and a number or special character.</small>
+      </div>
+
+      <div class="form-group">
+        <label for="registerConfirmPassword">Confirm password</label>
+        <input type="password" id="registerConfirmPassword" name="confirm_password" minlength="{{ minPasswordLength }}" required>
+      </div>
+
+      <div class="form-group">
+        <label for="registerCookies">Cookies</label>
+        <textarea id="registerCookies" name="cookies" required></textarea>
+      </div>
+
+      <button type="submit" class="primary-button">Register</button>
+    </form>
+
+    <div class="auth-links">
+      <a href="{{ url_for('login') }}">Already have an account? Log in</a>
+    </div>
+
+    {% include "_cookie_instructions.html" %}
+  </div>
+</div>
+
+{% endblock %}

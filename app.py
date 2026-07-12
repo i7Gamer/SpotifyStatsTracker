@@ -9,6 +9,7 @@ import time
 from datetime import timedelta
 
 from flask import Flask, render_template, redirect, request, url_for, jsonify, send_from_directory, session, g
+from werkzeug.security import generate_password_hash, check_password_hash
 
 from Database.database import Database
 from Database.repository import Repository
@@ -31,6 +32,22 @@ DEFAULT_SORT_BY = "totalTimeListened"
 # falling back to the default.
 VALID_SORT_BY = {"totalTimeListened", "plays", "name"}
 TRUTHY_ENV_VALUES = {"1", "true", "yes", "on"}
+PASSWORD_MIN_LENGTH = 8   #< also enforced client-side via the minlength attribute
+
+
+def _passwordPolicyError(password: str) -> str | None:
+    """None if `password` satisfies the account password policy, otherwise a
+    user-facing message naming the first unmet rule."""
+    if len(password) < PASSWORD_MIN_LENGTH:
+        return f"Password must be at least {PASSWORD_MIN_LENGTH} characters long."
+    if not any(c.isupper() for c in password):
+        return "Password must contain at least one uppercase letter."
+    if not any(c.islower() for c in password):
+        return "Password must contain at least one lowercase letter."
+    if not any(c.isdigit() or not c.isalnum() for c in password):
+        return "Password must contain at least one number or special character."
+    return None
+
 
 class SpotifyDashboardApp:
     def __init__(self):
@@ -502,6 +519,13 @@ class SpotifyDashboardApp:
         return discovered[:limit]
 
     def registerRoutes(self):
+        @self.app.context_processor
+        def _injectPasswordPolicy():
+            # Lets register.html/reset_password.html show the actual configured
+            # minimum instead of a hardcoded number that could drift from
+            # PASSWORD_MIN_LENGTH.
+            return {"minPasswordLength": PASSWORD_MIN_LENGTH}
+
         def _is_version_newer(remote: str, local: str) -> bool:
             try:
                 return versionTuple(remote) > versionTuple(local)
@@ -608,8 +632,47 @@ class SpotifyDashboardApp:
                 return render_template("login.html", next=_safeNextUrl(request.args.get("next")))
 
             email = request.form.get("email", "").strip()
-            cookies = request.form.get("cookies", "")
             nextUrl = _safeNextUrl(request.form.get("next"))
+
+            # The password form and the (collapsed, fallback) cookies form are
+            # separate <form>s on login.html - only the submitted one's fields
+            # are present, so their presence tells the two branches apart.
+            if "password" in request.form:
+                password = request.form.get("password", "")
+                if not email or not password:
+                    return render_template(
+                        "login.html", email=email, next=nextUrl,
+                        error="Email and password are both required.")
+
+                username = self.repo.getUsernameForEmail(email)
+                passwordHash = self.repo.getUserPasswordHash(username) if username else None
+                if username and not passwordHash:
+                    return render_template(
+                        "login.html", email=email, next=nextUrl,
+                        error="This account doesn't have a password yet - register to add one, "
+                              "or log in with cookies instead.")
+                if not passwordHash or not check_password_hash(passwordHash, password):
+                    return render_template(
+                        "login.html", email=email, next=nextUrl,
+                        error="Invalid email or password.")
+
+                # Password auth only ever unlocks the session while the cookies
+                # stored from the last cookie-based (re-)login/register/reset
+                # are still live - a lapsed Spotify session must be refreshed
+                # via /reset-password or the cookies form, not just a password.
+                if not self.is_user_logged_in(email):
+                    return render_template(
+                        "login.html", email=email, next=nextUrl,
+                        error="Your saved Spotify session has expired. Reset your password with "
+                              "fresh cookies, or log in with cookies instead.")
+
+                session.permanent = True
+                self.get_user_db(username, email)
+                session["email"] = email
+                session["username"] = username
+                return redirect(nextUrl or url_for("dashboard"))
+
+            cookies = request.form.get("cookies", "")
 
             if not email or not cookies:
                 return render_template(
@@ -642,6 +705,113 @@ class SpotifyDashboardApp:
             session["username"] = username
 
             return redirect(nextUrl or url_for("dashboard"))
+
+        @self.app.route("/register", methods=["GET", "POST"])
+        def register():
+            if request.method == "GET":
+                return render_template("register.html")
+
+            email = request.form.get("email", "").strip()
+            password = request.form.get("password", "")
+            confirmPassword = request.form.get("confirm_password", "")
+            cookies = request.form.get("cookies", "")
+
+            if not email or not password or not confirmPassword or not cookies:
+                return render_template(
+                    "register.html", email=email,
+                    error="Email, password, confirmed password and cookies are all required.")
+
+            if password != confirmPassword:
+                return render_template(
+                    "register.html", email=email, error="Passwords do not match.")
+
+            policyError = _passwordPolicyError(password)
+            if policyError:
+                return render_template("register.html", email=email, error=policyError)
+
+            # Verification happens against a throwaway session file, so nothing
+            # is persisted for this email unless the cookies really are theirs.
+            parsedCookies = parseCookieString(cookies)
+            if not self.skipEmailVerification and not self._verifyCookiesMatchEmail(parsedCookies, email):
+                return render_template(
+                    "register.html", email=email,
+                    error=f"Couldn't verify that these cookies belong to {email}. "
+                          "Make sure you are logged into open.spotify.com with that account and copied all cookies.")
+
+            existingUsername = self.repo.getUsernameForEmail(email)
+            if existingUsername and self.repo.getUserPasswordHash(existingUsername):
+                return render_template(
+                    "register.html", email=email,
+                    error="An account with this email already exists. Log in, or reset your "
+                          "password if you forgot it.")
+
+            # get_or_create_user returns the existing username for a legacy
+            # (pre-password) account instead of erroring, so registering with
+            # an email that's already logged in via cookies just adds a
+            # password to that account rather than being rejected as a dupe.
+            session.permanent = True
+            username = self.get_or_create_user(email)
+            self.repo.setUserCookies(username, parsedCookies)
+            self.repo.setUserPassword(username, generate_password_hash(password))
+            if username in self.user_databases:
+                self._refresh_user_session(username, email)
+            else:
+                self.get_user_db(username, email)
+            session["email"] = email
+            session["username"] = username
+
+            return redirect(url_for("dashboard"))
+
+        @self.app.route("/reset-password", methods=["GET", "POST"])
+        def resetPassword():
+            if request.method == "GET":
+                return render_template("reset_password.html")
+
+            email = request.form.get("email", "").strip()
+            password = request.form.get("password", "")
+            confirmPassword = request.form.get("confirm_password", "")
+            cookies = request.form.get("cookies", "")
+
+            if not email or not password or not confirmPassword or not cookies:
+                return render_template(
+                    "reset_password.html", email=email,
+                    error="Email, new password, confirmed password and cookies are all required.")
+
+            if password != confirmPassword:
+                return render_template(
+                    "reset_password.html", email=email, error="Passwords do not match.")
+
+            policyError = _passwordPolicyError(password)
+            if policyError:
+                return render_template("reset_password.html", email=email, error=policyError)
+
+            username = self.repo.getUsernameForEmail(email)
+            if not username:
+                return render_template(
+                    "reset_password.html", email=email, error="No account found for this email.")
+
+            # There's no old password to check against a forgotten one - proof
+            # of identity is the same as everywhere else in this app: valid,
+            # matching Spotify cookies for the account's email.
+            parsedCookies = parseCookieString(cookies)
+            if not self.skipEmailVerification and not self._verifyCookiesMatchEmail(parsedCookies, email):
+                return render_template(
+                    "reset_password.html", email=email,
+                    error=f"Couldn't verify that these cookies belong to {email}. "
+                          "Make sure you are logged into open.spotify.com with that account and copied all cookies.")
+
+            self.repo.setUserCookies(username, parsedCookies)
+            self.repo.setUserPassword(username, generate_password_hash(password))
+            if username in self.user_databases:
+                self._refresh_user_session(username, email)
+            else:
+                self.get_user_db(username, email)
+
+            session.permanent = True
+            session["email"] = email
+            session["username"] = username
+
+            return redirect(url_for("dashboard"))
 
         @self.app.route("/logout", methods=["GET"])
         def logout():

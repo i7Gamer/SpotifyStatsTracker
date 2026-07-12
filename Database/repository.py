@@ -1022,6 +1022,30 @@ class Repository:
             return None
         return json.loads(row["cookies_json"])
 
+    def setUserPassword(self, username: str, passwordHash: str) -> None:
+        conn = self._conn()
+        with conn:
+            conn.execute(
+                "UPDATE users SET password_hash=? WHERE username=?",
+                (passwordHash, username),
+            )
+
+    def getUserPasswordHash(self, username: str) -> str | None:
+        conn = self._conn()
+        row = conn.execute("SELECT password_hash FROM users WHERE username=?", (username,)).fetchone()
+        return row["password_hash"] if row else None
+
+    def addUserPasswordHashColumnIfMissing(self) -> None:
+        """SCHEMA's CREATE TABLE IF NOT EXISTS only shapes brand-new databases -
+        a users table that already existed before password_hash was added needs
+        an explicit ALTER TABLE (migrate1_8_0). Guarded so re-running the
+        migration against an already-migrated database doesn't fail."""
+        conn = self._conn()
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
+        if "password_hash" not in columns:
+            with conn:
+                conn.execute("ALTER TABLE users ADD COLUMN password_hash TEXT")
+
     def getAllUsersWithCookies(self) -> list[tuple[str, str]]:
         """(username, email) for every user who has logged in at least once -
         used at startup to make sure each of them has a running listener."""

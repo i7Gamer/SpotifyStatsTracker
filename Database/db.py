@@ -77,6 +77,7 @@ CREATE TABLE IF NOT EXISTS users (
     username        TEXT PRIMARY KEY,
     email           TEXT UNIQUE,
     cookies_json    TEXT,
+    password_hash   TEXT,
     created_at      REAL NOT NULL
 );
 
