@@ -578,6 +578,27 @@ class TestStatsAggregates(RepositoryTestCase):
 
         self.assertEqual([a["id"] for a in aggregates], ["a1", "a2"])  #< "Artist a1" < "Artist a2"
 
+    def test_artist_aggregates_name_sort_is_case_insensitive(self):
+        """SQLite's default BINARY collation sorts every uppercase letter
+        before every lowercase one, so "Banana" would otherwise land before
+        "apple"/"cherry" instead of interleaving alphabetically by letter."""
+        def trackWithArtist(trackId, artistId, artistName):
+            track = makeTrack(trackId=trackId, albumId="alb1")
+            track["artists"] = [{"id": artistId, "name": artistName, "url": "u", "imageUrl": "", "imageId": artistId}]
+            return track
+
+        self.repo.upsertTrack(trackWithArtist("t1", "a1", "apple"))
+        self.repo.upsertTrack(trackWithArtist("t2", "a2", "Banana"))
+        self.repo.upsertTrack(trackWithArtist("t3", "a3", "cherry"))
+        self.repo.insertPlay("alice", "t1", 100.0, 1000)
+        self.repo.insertPlay("alice", "t2", 200.0, 1000)
+        self.repo.insertPlay("alice", "t3", 300.0, 1000)
+        self.repo.commit()
+
+        aggregates = self.repo.getArtistAggregates("alice", sortBy="name")
+
+        self.assertEqual([a["id"] for a in aggregates], ["a1", "a2", "a3"])  #< apple, Banana, cherry
+
     def test_artist_aggregates_rejects_unknown_sortby(self):
         with self.assertRaises(ValueError):
             self.repo.getArtistAggregates("alice", sortBy="not_a_real_column")
@@ -787,6 +808,19 @@ class TestSongsPage(RepositoryTestCase):
         songs = self.repo.getSongsPage("alice", sortBy="name")
 
         self.assertEqual([s["name"] for s in songs], ["Alpha", "Bravo", "Charlie"])
+
+    def test_order_by_name_is_case_insensitive(self):
+        self.repo.upsertTrack(self._track("t1", "alb1", "a1", name="apple"))
+        self.repo.upsertTrack(self._track("t2", "alb1", "a1", name="Banana"))
+        self.repo.upsertTrack(self._track("t3", "alb1", "a1", name="cherry"))
+        self.repo.insertPlay("alice", "t1", 100.0, 1000)
+        self.repo.insertPlay("alice", "t2", 200.0, 1000)
+        self.repo.insertPlay("alice", "t3", 300.0, 1000)
+        self.repo.commit()
+
+        songs = self.repo.getSongsPage("alice", sortBy="name")
+
+        self.assertEqual([s["name"] for s in songs], ["apple", "Banana", "cherry"])
 
     def test_invalid_sort_by_raises_value_error(self):
         self._seedThreeSongs()
@@ -1072,6 +1106,19 @@ class TestAlbumsPage(RepositoryTestCase):
         albums = self.repo.getAlbumsPage("alice", sortBy="name")
 
         self.assertEqual([a["name"] for a in albums], ["Alpha", "Bravo", "Charlie"])
+
+    def test_order_by_name_is_case_insensitive(self):
+        self.repo.upsertTrack(self._track("t1", "alb1", "apple", "a1"))
+        self.repo.upsertTrack(self._track("t2", "alb2", "Banana", "a1"))
+        self.repo.upsertTrack(self._track("t3", "alb3", "cherry", "a1"))
+        self.repo.insertPlay("alice", "t1", 100.0, 1000)
+        self.repo.insertPlay("alice", "t2", 200.0, 1000)
+        self.repo.insertPlay("alice", "t3", 300.0, 1000)
+        self.repo.commit()
+
+        albums = self.repo.getAlbumsPage("alice", sortBy="name")
+
+        self.assertEqual([a["name"] for a in albums], ["apple", "Banana", "cherry"])
 
     def test_invalid_sort_by_raises_value_error(self):
         self._seedThreeAlbums()

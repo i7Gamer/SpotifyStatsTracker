@@ -380,7 +380,11 @@ class SpotifyDashboardApp:
             if interval == "":
                 interval = default
             if not startDate:
-                if interval == "day":
+                if interval == "today":
+                    startDate = convertToDatetime(startOfDay(nowLocal))
+                    endDate = convertToDatetime(startOfDay(nowLocal + timedelta(days=1)))
+
+                elif interval == "day":
                     startDate = convertToDatetime(startOfDay(nowLocal - timedelta(days=1)))
                     endDate = convertToDatetime(startOfDay(nowLocal))
 
@@ -404,7 +408,8 @@ class SpotifyDashboardApp:
     def _getIntervalLabel(self, interval: str = None, customStart: str = None, customEnd: str = None):
         labels = {
             "all time": "All Time",
-            "day": "Last Day",
+            "today": "Today",
+            "day": "Yesterday",
             "week": "Last Week",
             "month": "Last Month",
             "year": "Last Year",
@@ -414,7 +419,7 @@ class SpotifyDashboardApp:
         if interval == "custom" and customStart and customEnd:
             return f"Custom range: {customStart} to {customEnd}"
 
-        return labels.get(interval or "day", "Last Day")
+        return labels.get(interval or "day", "Yesterday")
 
     def _embedTimeSeriesTextElements(self, timeSeries: list) -> list:
         for bucket in timeSeries:
@@ -537,6 +542,7 @@ class SpotifyDashboardApp:
                 importProgress=db.readProgress(),
                 maxUploadMb=MAX_UPLOAD_MB,
                 uploadTooLarge=request.args.get("error") == "upload_too_large",
+                section="import",
             )
 
         @self.app.errorhandler(413)
@@ -553,57 +559,44 @@ class SpotifyDashboardApp:
 
         @self.app.route("/login", methods=["GET", "POST"])
         def login():
-            step = request.form.get("step", "1")
+            if request.method == "GET":
+                return render_template("login.html", next=_safeNextUrl(request.args.get("next")))
 
-            if step == "1":
-                if request.method == "GET":
-                    return render_template("login.html", step=1, next=_safeNextUrl(request.args.get("next")))
+            email = request.form.get("email", "").strip()
+            cookies = request.form.get("cookies", "")
+            nextUrl = _safeNextUrl(request.form.get("next"))
 
-                email = request.form.get("email", "").strip()
-                nextUrl = _safeNextUrl(request.form.get("next"))
-                if not email:
-                    return render_template("login.html", step=1, error="Email required.", next=nextUrl)
+            if not email or not cookies:
+                return render_template(
+                    "login.html", email=email, next=nextUrl,
+                    error="Email and cookies are both required.")
 
-                return render_template("login.html", step=2, email=email, next=nextUrl)
+            # Verification happens against a throwaway session file, so nothing
+            # is persisted for this email unless the cookies really are theirs.
+            parsedCookies = parseCookieString(cookies)
+            if not self._verifyCookiesMatchEmail(parsedCookies, email):
+                return render_template(
+                    "login.html", email=email, next=nextUrl,
+                    error=f"Couldn't verify that these cookies belong to {email}. "
+                          "Make sure you are logged into open.spotify.com with that account and copied all cookies.")
 
-            if step == "2":
-                email = request.form.get("email", "")
-                cookies = request.form.get("cookies", "")
-                nextUrl = _safeNextUrl(request.form.get("next"))
+            session.permanent = True
+            # get_or_create_user/get_user_db manage their own locking and can
+            # start a listener (a live network call) - kept outside the session
+            # lock so logging one user in doesn't block everyone else.
+            username = self.get_or_create_user(email)
+            self.repo.setUserCookies(username, parsedCookies)
+            if username in self.user_databases:
+                # Returning user re-logging in (e.g. after their session
+                # expired) - restart their listener against the fresh cookies
+                # instead of leaving the old, dead one running.
+                self._refresh_user_session(username, email)
+            else:
+                self.get_user_db(username, email)
+            session["email"] = email
+            session["username"] = username
 
-                if not cookies:
-                    return render_template("login.html", step=2, email=email, error="Cookies required.", next=nextUrl)
-
-                # Verification happens against a throwaway session file, so nothing
-                # is persisted for this email unless the cookies really are theirs.
-                parsedCookies = parseCookieString(cookies)
-                if not self._verifyCookiesMatchEmail(parsedCookies, email):
-                    return render_template(
-                        "login.html", step=2, email=email, next=nextUrl,
-                        error=f"Couldn't verify that these cookies belong to {email}. "
-                              "Make sure you are logged into open.spotify.com with that account and copied all cookies.")
-
-                session.permanent = True
-                # get_or_create_user/get_user_db manage their own locking and can
-                # start a listener (a live network call) - kept outside the session
-                # lock so logging one user in doesn't block everyone else.
-                username = self.get_or_create_user(email)
-                self.repo.setUserCookies(username, parsedCookies)
-                if username in self.user_databases:
-                    # Returning user re-logging in (e.g. after their session
-                    # expired) - restart their listener against the fresh cookies
-                    # instead of leaving the old, dead one running.
-                    self._refresh_user_session(username, email)
-                else:
-                    self.get_user_db(username, email)
-                session["email"] = email
-                session["username"] = username
-
-                return redirect(nextUrl or url_for("dashboard"))
-
-            # Unknown/tampered step value - start over instead of falling through
-            # with no return value (which Flask turns into a 500).
-            return redirect(url_for("login"))
+            return redirect(nextUrl or url_for("dashboard"))
 
         @self.app.route("/logout", methods=["GET"])
         def logout():
@@ -901,15 +894,16 @@ class SpotifyDashboardApp:
             startDate, endDate = self._getDateRange(interval, customStart, customEnd, default="month")
             intervalLabel = self._getIntervalLabel(interval, customStart, customEnd)
 
-            lastDayDate = startDate.strftime("%Y-%m-%d") if interval == "day" and startDate else None
+            isSingleDayView = interval in ("day", "today")
+            lastDayDate = startDate.strftime("%Y-%m-%d") if isSingleDayView and startDate else None
 
-            timeSeriesGroupBy = "hour" if interval == "day" else groupBy
+            timeSeriesGroupBy = "hour" if isSingleDayView else groupBy
 
             timeSeries = self._embedTimeSeriesTextElements(
                 db.getListeningTimeSeries(startDate=startDate, endDate=endDate, groupBy=timeSeriesGroupBy)
             )
             heatmap = self._embedHeatmapTextElements(db.getHourOfDayHeatmap(startDate=startDate, endDate=endDate))
-            artistTrend = None if interval == "day" else db.getArtistTrend(startDate=startDate, endDate=endDate, topN=CHART_ARTIST_TREND_TOP_N, groupBy=groupBy)
+            artistTrend = None if isSingleDayView else db.getArtistTrend(startDate=startDate, endDate=endDate, topN=CHART_ARTIST_TREND_TOP_N, groupBy=groupBy)
 
             return render_template(
                 "charts.html",
@@ -1084,7 +1078,7 @@ class SpotifyDashboardApp:
 
     def run(self):
         try:
-            self.app.run(host="0.0.0.0", debug=True, port=5000, use_reloader=False)#, threaded=False)
+            self.app.run(host="0.0.0.0", debug=True, port=5444, use_reloader=False)#, threaded=False)
         finally:
             self.shutdown()
 

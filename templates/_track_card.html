@@ -6,9 +6,9 @@
   
   <!-- Image path depends on section -->
   {% if section == 'top_artists' %}
-    <img class="track-cover" loading="lazy" src="/img/{{ username }}/artists/{{ imgId }}.jpeg" alt="Artist image for {{ track.get('name','') }}" />
+    <img class="track-cover" loading="lazy" src="/img/{{ username }}/artists/{{ imgId }}.jpeg" alt="Artist image for {{ track.get('name','') }}" onerror="this.onerror=null;this.src=window.PLACEHOLDER_IMG;" />
   {% else %}
-    <img class="track-cover" loading="lazy" src="/img/{{ username }}/tracks/{{ imgId }}.jpeg" alt="Album cover for {{ track.get('name','') }}" />
+    <img class="track-cover" loading="lazy" src="/img/{{ username }}/tracks/{{ imgId }}.jpeg" alt="Album cover for {{ track.get('name','') }}" onerror="this.onerror=null;this.src=window.PLACEHOLDER_IMG;" />
   {% endif %}
   
   <div class="track-details">

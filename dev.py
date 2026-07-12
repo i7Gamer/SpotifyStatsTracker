@@ -1,7 +1,7 @@
 import time
 import requests
 
-def testResponseTime(count=5, url="http://127.0.0.1:5000/"):
+def testResponseTime(count=5, url="http://127.0.0.1:5444/"):
     """
     Test the response time of the Spotify API by making multiple requests and measuring the time taken for each request.
     """

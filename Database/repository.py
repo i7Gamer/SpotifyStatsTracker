@@ -20,22 +20,25 @@ IMAGE_STATUS_FAILED = "failed"
 # they're allowed to sort by. sortBy is interpolated directly into ORDER BY
 # (column names can't be bound as query parameters), and it's user-controlled
 # (app.py's sortBy query param) - this whitelist is what makes that safe.
+# "name" sorts COLLATE NOCASE so e.g. "abba" and "ABBA" interleave by letter
+# instead of every uppercase name sorting before every lowercase one (SQLite's
+# default BINARY collation).
 SONG_SORT_COLUMNS = {
     "plays": "plays",
     "totalTimeListened": "total_time_listened",
-    "name": "name",
+    "name": "name COLLATE NOCASE",
 }
 
 ALBUM_SORT_COLUMNS = {
     "plays": "plays",
     "totalTimeListened": "total_time_listened",
-    "name": "name",
+    "name": "name COLLATE NOCASE",
 }
 
 ARTIST_SORT_COLUMNS = {
     "plays": "plays",
     "totalTimeListened": "total_time_listened",
-    "name": "name",
+    "name": "name COLLATE NOCASE",
 }
 
 
@@ -509,7 +512,7 @@ class Repository:
             JOIN artists ar ON ar.id = ta.artist_id
             WHERE p.username = ? {self._dateRangeClause().replace("played_at", "p.played_at")}{extraClauses}
             GROUP BY ar.id
-            ORDER BY {sortColumn} {direction}, total_time_listened {direction}, name {direction}, id ASC
+            ORDER BY {sortColumn} {direction}, total_time_listened {direction}, name COLLATE NOCASE {direction}, id ASC
             LIMIT ? OFFSET ?
             """,
             params,
@@ -648,7 +651,7 @@ class Repository:
             LEFT JOIN albums al ON al.id = t.album_id
             WHERE p.username = ? {self._dateRangeClause().replace("played_at", "p.played_at")}{extraClauses}
             GROUP BY t.id
-            ORDER BY {sortColumn} {direction}, total_time_listened {direction}, name {direction}, track_id ASC
+            ORDER BY {sortColumn} {direction}, total_time_listened {direction}, name COLLATE NOCASE {direction}, track_id ASC
             LIMIT ? OFFSET ?
             """,
             params,
@@ -756,7 +759,7 @@ class Repository:
             JOIN albums al ON al.id = t.album_id
             WHERE p.username = ? {self._dateRangeClause().replace("played_at", "p.played_at")}{extraClauses}
             GROUP BY al.id
-            ORDER BY {sortColumn} {direction}, total_time_listened {direction}, name {direction}, album_id ASC
+            ORDER BY {sortColumn} {direction}, total_time_listened {direction}, name COLLATE NOCASE {direction}, album_id ASC
             LIMIT ? OFFSET ?
             """,
             params,

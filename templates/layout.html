@@ -24,19 +24,24 @@
       </button>
       <nav class="nav-links" id="nav-menu">
         {% set currentQuery = request.args.get('q', '') %}
-        <a href="{{ url_for('dashboard', q=currentQuery) if currentQuery else url_for('dashboard') }}">Dashboard</a>
-        <a href="{{ url_for('topSongsPage', q=currentQuery) if currentQuery else url_for('topSongsPage') }}">Top Songs</a>
-        <a href="{{ url_for('topArtistsPage', q=currentQuery) if currentQuery else url_for('topArtistsPage') }}">Top Artists</a>
-        <a href="{{ url_for('topAlbumsPage', q=currentQuery) if currentQuery else url_for('topAlbumsPage') }}">Top Albums</a>
-        <a href="{{ url_for('chartsPage') }}">Charts</a>
-        <a href="{{ url_for('wrappedPage') }}">Wrapped</a>
-        <a href="{{ url_for('importPage') }}">Import</a>
+        <a class="{{ 'active' if section == 'dashboard' }}" {% if section == 'dashboard' %}aria-current="page"{% endif %} href="{{ url_for('dashboard', q=currentQuery) if currentQuery else url_for('dashboard') }}">Dashboard</a>
+        <a class="{{ 'active' if section == 'top_songs' }}" {% if section == 'top_songs' %}aria-current="page"{% endif %} href="{{ url_for('topSongsPage', q=currentQuery) if currentQuery else url_for('topSongsPage') }}">Top Songs</a>
+        <a class="{{ 'active' if section == 'top_artists' }}" {% if section == 'top_artists' %}aria-current="page"{% endif %} href="{{ url_for('topArtistsPage', q=currentQuery) if currentQuery else url_for('topArtistsPage') }}">Top Artists</a>
+        <a class="{{ 'active' if section == 'top_albums' }}" {% if section == 'top_albums' %}aria-current="page"{% endif %} href="{{ url_for('topAlbumsPage', q=currentQuery) if currentQuery else url_for('topAlbumsPage') }}">Top Albums</a>
+        <a class="{{ 'active' if section == 'charts' }}" {% if section == 'charts' %}aria-current="page"{% endif %} href="{{ url_for('chartsPage') }}">Charts</a>
+        <a class="{{ 'active' if section == 'wrapped' }}" {% if section == 'wrapped' %}aria-current="page"{% endif %} href="{{ url_for('wrappedPage') }}">Wrapped</a>
+        <a class="{{ 'active' if section == 'import' }}" {% if section == 'import' %}aria-current="page"{% endif %} href="{{ url_for('importPage') }}">Import</a>
         <a href="{{ url_for('logout') }}">Logout</a>
       </nav>
     </header>
 
     <main class="page">{% block content %}{% endblock %}</main>
     <script>
+      // Shown in place of a track/artist/album cover that 404s or fails to
+      // load (not yet downloaded, or the fetch failed) instead of a broken-
+      // image icon - a plain music-note glyph on the app's surface color.
+      window.PLACEHOLDER_IMG = "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='16' fill='%231d1d1d'/><path d='M62 24v34.8a12 12 0 1 0 6 10.4V36l10-3v-9l-16 4z' fill='%23555'/></svg>";
+
       window.__searchDebounceTimers = window.__searchDebounceTimers || {};
 
       window.scheduleSearchFilter = function(searchInputId, applyFilterFn, delayMs = 500) {
@@ -57,6 +62,13 @@
         }
 
         event.preventDefault();
+        applyFilterFn();
+      };
+
+      // Search boxes only navigate on Enter or when the field is left (blur) -
+      // not on every keystroke - so typing doesn't reload the page/reset
+      // scroll and focus mid-word.
+      window.handleSearchBlur = function(event, applyFilterFn) {
         applyFilterFn();
       };
 

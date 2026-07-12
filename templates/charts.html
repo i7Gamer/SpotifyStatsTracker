@@ -11,7 +11,8 @@
     <div class="filter-group">
       <label for="interval">Time Period:</label>
       <select id="interval" name="interval" onchange="updateChartsIntervalFilter()">
-        <option value="day" {% if interval == 'day' %}selected{% endif %}>Last Day</option>
+        <option value="today" {% if interval == 'today' %}selected{% endif %}>Today</option>
+        <option value="day" {% if interval == 'day' %}selected{% endif %}>Yesterday</option>
         <option value="week" {% if interval == 'week' %}selected{% endif %}>Last Week</option>
         <option value="month" {% if interval == 'month' %}selected{% endif %}>Last Month</option>
         <option value="year" {% if interval == 'year' %}selected{% endif %}>Last Year</option>

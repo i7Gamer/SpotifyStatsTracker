@@ -1,7 +1,5 @@
 """After logging in, the user should land back on the page that redirected
-them to /login (?next=...) instead of always on the dashboard - and a POST to
-/login with a tampered/unknown `step` must redirect rather than fall through
-with no return value (which Flask turns into a 500).
+them to /login (?next=...) instead of always on the dashboard.
 """
 import unittest
 from unittest.mock import patch
@@ -27,7 +25,7 @@ class TestLoginNextRedirect(unittest.TestCase):
 
     def _postLogin(self, dash, next_url, email="alice@example.com", cookies="sp_dc=abc"):
         client = dash.app.test_client()
-        data = {"step": "2", "email": email, "cookies": cookies}
+        data = {"email": email, "cookies": cookies}
         if next_url is not None:
             data["next"] = next_url
         resp = client.post("/login", data=data)
@@ -80,32 +78,32 @@ class TestLoginNextRedirect(unittest.TestCase):
         self.assertEqual(resp.status_code, 302)
         self.assertNotIn("evil.example.com", resp.headers["Location"])
 
-    def test_next_survives_a_failed_step_1_submission(self):
+    def test_next_survives_a_failed_submission(self):
         dash = self._makeApp()
         client = dash.app.test_client()
-        resp = client.post("/login", data={"step": "1", "email": "", "next": "/top-albums"})
+        resp = client.post("/login", data={"email": "", "cookies": "", "next": "/top-albums"})
 
         self.assertEqual(resp.status_code, 200)
         self.assertIn(b'name="next" value="/top-albums"', resp.data)
 
-
-class TestLoginUnknownStep(unittest.TestCase):
-    @patch(_SECRET_KEY_PATCH, return_value='test-secret-key')
-    @patch('app.SpotifyDashboardApp.startVersionCheck_thread')
-    @patch('app.SpotifyDashboardApp.checkLogin_thread')
-    @patch('app.migrateIfNeeded')
-    @patch('app.Path.exists')
-    def _makeApp(self, mock_exists, mock_migrate, mock_check, mock_version, mock_secret):
-        mock_exists.return_value = False
-        return SpotifyDashboardApp()
-
-    def test_unrecognized_step_redirects_instead_of_500(self):
+    def test_missing_email_or_cookies_shows_error_instead_of_crashing(self):
         dash = self._makeApp()
         client = dash.app.test_client()
-        resp = client.post("/login", data={"step": "99"})
+        resp = client.post("/login", data={"email": "alice@example.com", "cookies": ""})
 
-        self.assertEqual(resp.status_code, 302)
-        self.assertTrue(resp.headers["Location"].endswith("/login"))
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn(b"required", resp.data)
+
+    def test_login_page_shows_both_email_and_cookies_fields_at_once(self):
+        """Login is a single page/form now - both fields are always present,
+        not split across a two-step email-then-cookies flow."""
+        dash = self._makeApp()
+        client = dash.app.test_client()
+        resp = client.get("/login")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn(b'name="email"', resp.data)
+        self.assertIn(b'name="cookies"', resp.data)
 
 
 if __name__ == "__main__":

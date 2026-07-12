@@ -83,13 +83,13 @@ python app.py
 
 2. Open the app in your browser:
 ```text
-http://127.0.0.1:5000
+http://127.0.0.1:5444
 ```
 or whatever your IP is
 
 3. Open the app in your browser:
 ```text
-http://127.0.0.1:5000
+http://127.0.0.1:5444
 ```
 
 **Note:** The Docker container persists data in the `Database/Data/` directory on your host machine.

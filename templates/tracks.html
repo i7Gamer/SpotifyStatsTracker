@@ -13,8 +13,8 @@
             value="{{ request.args.get('q', '') }}"
             placeholder="Search songs, artists, playlists"
             aria-label="Search the current page"
-            oninput="scheduleSearchFilter('dashboardSearch', updateDashboardFilters)"
             onkeydown="handleSearchKeydown(event, updateDashboardFilters)"
+            onblur="handleSearchBlur(event, updateDashboardFilters)"
           />
         </div>
 
@@ -22,7 +22,8 @@
           <label for="interval">Time Period:</label>
           <select id="interval" name="interval" onchange="updateDashboardInterval()">
             <option value="all time" {% if interval == 'all time' %}selected{% endif %}>All Time</option>
-            <option value="day" {% if interval == 'day' %}selected{% endif %}>Last Day</option>
+            <option value="today" {% if interval == 'today' %}selected{% endif %}>Today</option>
+            <option value="day" {% if interval == 'day' %}selected{% endif %}>Yesterday</option>
             <option value="week" {% if interval == 'week' %}selected{% endif %}>Last Week</option>
             <option value="month" {% if interval == 'month' %}selected{% endif %}>Last Month</option>
             <option value="year" {% if interval == 'year' %}selected{% endif %}>Last Year</option>

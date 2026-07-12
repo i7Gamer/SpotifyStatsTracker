@@ -1,14 +1,15 @@
 <section class="filter-section">
 <div class="filter-group filter-search">
     <label for="searchQuery">Search:</label>
-    <input type="search" id="searchQuery" class="auto-search-focus" name="q" value="{{ request.args.get('q', '') }}" placeholder="Search songs, artists, playlists" aria-label="Search the current page" oninput="scheduleSearchFilter('searchQuery', updateSearchFilter)" onkeydown="handleSearchKeydown(event, updateSearchFilter)">
+    <input type="search" id="searchQuery" class="auto-search-focus" name="q" value="{{ request.args.get('q', '') }}" placeholder="Search songs, artists, playlists" aria-label="Search the current page" onkeydown="handleSearchKeydown(event, updateSearchFilter)" onblur="handleSearchBlur(event, updateSearchFilter)">
 </div>
 
 <div class="filter-group">
     <label for="interval">Time Period:</label>
     <select id="interval" name="interval" onchange="updateIntervalFilter()">
     <option value="">All Time</option>
-    <option value="day" {% if interval == 'day' %}selected{% endif %}>Last Day</option>
+    <option value="today" {% if interval == 'today' %}selected{% endif %}>Today</option>
+    <option value="day" {% if interval == 'day' %}selected{% endif %}>Yesterday</option>
     <option value="week" {% if interval == 'week' %}selected{% endif %}>Last Week</option>
     <option value="month" {% if interval == 'month' %}selected{% endif %}>Last Month</option>
     <option value="year" {% if interval == 'year' %}selected{% endif %}>Last Year</option>
