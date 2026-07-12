@@ -9,9 +9,34 @@
 
   <nav class="wrapped-year-badges" aria-label="Select year">
     {% for y in availableYears %}
-      <a class="wrapped-year-badge{{ ' active' if y == year else '' }}" href="{{ url_for('wrappedPage', year=y) }}">{{ y }}</a>
+      <a class="wrapped-year-badge{{ ' active' if y == year else '' }}" href="{{ url_for('wrappedPage', year=y, groupBy=groupBy, limit=limit) }}">{{ y }}</a>
     {% endfor %}
   </nav>
+
+  <form class="filter-section" method="get" action="{{ url_for('wrappedPage', year=year) }}">
+    <input type="hidden" name="year" value="{{ year }}">
+    <div class="filter-group">
+      <label for="groupBy">Group by:</label>
+      <select id="groupBy" name="groupBy" onchange="updateWrappedFilters()">
+        <option value="day" {% if groupBy == 'day' %}selected{% endif %}>Day</option>
+        <option value="week" {% if groupBy == 'week' %}selected{% endif %}>Week</option>
+        <option value="month" {% if groupBy == 'month' %}selected{% endif %}>Month</option>
+      </select>
+    </div>
+
+    <div class="filter-group">
+      <label for="limit">Items per category:</label>
+      <select id="limit" name="limit" onchange="updateWrappedFilters()">
+        {% for option in limitOptions %}
+          <option value="{{ option }}" {% if limit == option %}selected{% endif %}>{{ option }}</option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <noscript>
+      <button class="primary-button" type="submit">Apply</button>
+    </noscript>
+  </form>
 
   <section class="track-summary-grid">
     <article class="track-summary-card">
@@ -38,8 +63,14 @@
     <button class="stats-filter-button" data-filter="top-songs">Top Songs</button>
     <button class="stats-filter-button" data-filter="top-artists">Top Artists</button>
     <button class="stats-filter-button" data-filter="top-albums">Top Albums</button>
-    {% if discoveredSongs or discoveredArtists %}
-    <button class="stats-filter-button" data-filter="discoveries">Discoveries</button>
+    {% if discoveredSongs %}
+    <button class="stats-filter-button" data-filter="discoveries-songs">Discovered Songs</button>
+    {% endif %}
+    {% if discoveredArtists %}
+    <button class="stats-filter-button" data-filter="discoveries-artists">Discovered Artists</button>
+    {% endif %}
+    {% if discoveredAlbums %}
+    <button class="stats-filter-button" data-filter="discoveries-albums">Discovered Albums</button>
     {% endif %}
   </nav>
 
@@ -88,12 +119,10 @@
     </section>
   </div>
 
-  {% if discoveredSongs or discoveredArtists %}
-    <div data-category="discoveries">
-      <h2>Discoveries of {{ year }}</h2>
-      <p class="chart-subtitle">Songs and artists you first listened to in {{ year }}.</p>
-
-      {% if discoveredSongs %}
+  {% if discoveredSongs %}
+    <div data-category="discoveries-songs">
+      <h2>Discovered Songs</h2>
+      <p class="chart-subtitle">Songs you first listened to in {{ year }}.</p>
       <section class="track-list">
         {% for track in discoveredSongs %}
           {% set item_number = loop.index %}
@@ -101,9 +130,13 @@
           {% include '_track_card.html' %}
         {% endfor %}
       </section>
-      {% endif %}
+    </div>
+  {% endif %}
 
-      {% if discoveredArtists %}
+  {% if discoveredArtists %}
+    <div data-category="discoveries-artists">
+      <h2>Discovered Artists</h2>
+      <p class="chart-subtitle">Artists you first listened to in {{ year }}.</p>
       <section class="track-list">
         {% for track in discoveredArtists %}
           {% set item_number = loop.index %}
@@ -111,7 +144,20 @@
           {% include '_track_card.html' %}
         {% endfor %}
       </section>
-      {% endif %}
+    </div>
+  {% endif %}
+
+  {% if discoveredAlbums %}
+    <div data-category="discoveries-albums">
+      <h2>Discovered Albums</h2>
+      <p class="chart-subtitle">Albums you first listened to in {{ year }}.</p>
+      <section class="track-list">
+        {% for track in discoveredAlbums %}
+          {% set item_number = loop.index %}
+          {% set section = 'top_albums' %}
+          {% include '_track_card.html' %}
+        {% endfor %}
+      </section>
     </div>
   {% endif %}
 
@@ -143,6 +189,17 @@
     const allButton = document.querySelector('[data-filter="all"]');
     if (allButton) {
       allButton.click();
+    }
+
+    function updateWrappedFilters() {
+      const groupBy = document.getElementById('groupBy').value;
+      const limit = document.getElementById('limit').value;
+      const params = new URLSearchParams(window.location.search);
+
+      params.set('groupBy', groupBy);
+      params.set('limit', limit);
+
+      window.location = window.location.pathname + '?' + params.toString();
     }
   </script>
   <script src="{{ url_for('static', filename='js/charts.js') }}"></script>

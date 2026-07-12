@@ -21,8 +21,8 @@ from SpotipyFree import saveSession, parseCookieString
 PAGE_SIZE = 50                  #< list items shown per page
 LOGIN_CACHE_TTL_SECONDS = 180  #< seconds to cache isListenerLoggedIn result per user
 CHART_ARTIST_TREND_TOP_N = 5   #< how many top artists are plotted on the trend line chart
-WRAPPED_LIST_SIZE = 5           #< how many top songs/artists/albums the Wrapped page shows
-WRAPPED_DISCOVERIES_SIZE = 10   #< how many "discovered this year" songs/artists the Wrapped page shows
+WRAPPED_LIST_SIZE = 10          #< default/fallback for ?limit= - how many items per category the Wrapped page shows
+WRAPPED_LIMIT_OPTIONS = (10, 25, 50, 100)   #< selectable values for Wrapped's items-per-category dropdown
 MAX_UPLOAD_MB = 500              #< cap on a single import-history request's total upload size
 DEFAULT_SORT_BY = "totalTimeListened"
 # The only sortBy values Repository.SONG_SORT_COLUMNS/ALBUM_SORT_COLUMNS/
@@ -943,23 +943,34 @@ class SpotifyDashboardApp:
             yearStart = nowLocal.replace(year=year, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
             yearEnd = nowLocal.replace(year=year + 1, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
 
-            topSongs = db.getTopSongs(startDate=yearStart, endDate=yearEnd, by="plays", limit=WRAPPED_LIST_SIZE)
-            topArtists = db.getTopArtists(startDate=yearStart, endDate=yearEnd, by="plays", limit=WRAPPED_LIST_SIZE)
-            topAlbums = db.getTopAlbums(startDate=yearStart, endDate=yearEnd, by="plays", limit=WRAPPED_LIST_SIZE)
+            groupBy = request.args.get("groupBy", "week")
+            if groupBy not in ("day", "week", "month"):
+                groupBy = "week"
+
+            limit = request.args.get("limit", type=int)
+            if limit not in WRAPPED_LIMIT_OPTIONS:
+                limit = WRAPPED_LIST_SIZE
+
+            topSongs = db.getTopSongs(startDate=yearStart, endDate=yearEnd, by="plays", limit=limit)
+            topArtists = db.getTopArtists(startDate=yearStart, endDate=yearEnd, by="plays", limit=limit)
+            topAlbums = db.getTopAlbums(startDate=yearStart, endDate=yearEnd, by="plays", limit=limit)
             totalPlays, totalMs = db.getPlayTotals(yearStart, yearEnd)
 
             # Discoveries need each item's true, all-time first listen, so these
-            # two calls are deliberately unbounded (no date range) rather than
+            # three calls are deliberately unbounded (no date range) rather than
             # scoped to the year - see _discoveriesInYear()'s docstring.
             discoveredSongs = self._discoveriesInYear(
-                db.getSongsStats(sortBy="plays"), yearStart, yearEnd, WRAPPED_DISCOVERIES_SIZE
+                db.getSongsStats(sortBy="plays"), yearStart, yearEnd, limit
             )
             discoveredArtists = self._discoveriesInYear(
-                db.getArtistsStats(), yearStart, yearEnd, WRAPPED_DISCOVERIES_SIZE
+                db.getArtistsStats(), yearStart, yearEnd, limit
+            )
+            discoveredAlbums = self._discoveriesInYear(
+                db.getAlbumsStats(sortBy="plays"), yearStart, yearEnd, limit
             )
 
             timeSeries = self._embedTimeSeriesTextElements(
-                db.getListeningTimeSeries(startDate=yearStart, endDate=yearEnd, groupBy="week")
+                db.getListeningTimeSeries(startDate=yearStart, endDate=yearEnd, groupBy=groupBy)
             )
 
             topSongs = self._embedSongsTextElements(topSongs)
@@ -968,6 +979,7 @@ class SpotifyDashboardApp:
             topAlbums = self._embedAlbumsTextElements(topAlbums, sortBy="plays", totalPlays=totalPlays, totalMs=totalMs)
             discoveredSongs = self._embedTopSongsTextElements(self._embedSongsTextElements(discoveredSongs))
             discoveredArtists = self._embedArtistsTextElements(discoveredArtists)
+            discoveredAlbums = self._embedAlbumsTextElements(discoveredAlbums)
 
             return render_template(
                 "wrapped.html",
@@ -975,6 +987,9 @@ class SpotifyDashboardApp:
                 section="wrapped",
                 year=year,
                 availableYears=availableYears,
+                groupBy=groupBy,
+                limit=limit,
+                limitOptions=WRAPPED_LIMIT_OPTIONS,
                 totalPlays=totalPlays,
                 totalTime=msToString(totalMs),
                 topSongs=topSongs,
@@ -982,6 +997,7 @@ class SpotifyDashboardApp:
                 topAlbums=topAlbums,
                 discoveredSongs=discoveredSongs,
                 discoveredArtists=discoveredArtists,
+                discoveredAlbums=discoveredAlbums,
                 timeSeries=timeSeries,
             )
 

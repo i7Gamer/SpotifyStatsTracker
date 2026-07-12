@@ -38,6 +38,15 @@ def _artist(artistId, name, plays, firstListenedAt):
     }
 
 
+def _album(albumId, name, plays, firstListenedAt):
+    return {
+        "id": albumId, "name": name, "url": "u", "imageId": "i", "imageUrl": "",
+        "totalTracks": 1, "releaseDate": 0, "artists": [],
+        "plays": plays, "totalTimeListened": plays * 1000, "uniqueSongCount": 1,
+        "firstListenedAt": firstListenedAt,
+    }
+
+
 class _WrappedRouteTestBase(unittest.TestCase):
     """All tests fix the app's timezone to UTC (matching test_chart_stats.py) and
     freeze `now()` to 2026-07-11, so year math is deterministic."""
@@ -72,6 +81,7 @@ class _WrappedRouteTestBase(unittest.TestCase):
         db.getPlayTotals.return_value = (0, 0)
         db.getSongsStats.return_value = []
         db.getArtistsStats.return_value = []
+        db.getAlbumsStats.return_value = []
         db.getListeningTimeSeries.return_value = []
         return db
 
@@ -178,6 +188,59 @@ class TestWrappedTotals(_WrappedRouteTestBase):
         self.assertEqual(artistKwargs["limit"], appModule.WRAPPED_LIST_SIZE)
 
 
+class TestWrappedGroupBy(_WrappedRouteTestBase):
+    def test_month_groupby_is_passed_through_and_selected(self):
+        dash = self._makeApp()
+        db = self._makeDb()
+
+        resp = self._getWrapped(dash, db, query="?groupBy=month")
+
+        kwargs = db.getListeningTimeSeries.call_args.kwargs
+        self.assertEqual(kwargs["groupBy"], "month")
+        self.assertIn(b'<option value="month" selected>Month</option>', resp.data)
+
+    def test_invalid_groupby_falls_back_to_week(self):
+        dash = self._makeApp()
+        db = self._makeDb()
+
+        self._getWrapped(dash, db, query="?groupBy=nonsense")
+
+        kwargs = db.getListeningTimeSeries.call_args.kwargs
+        self.assertEqual(kwargs["groupBy"], "week")
+
+
+class TestWrappedLimit(_WrappedRouteTestBase):
+    def test_limit_param_is_honored_across_top_lists_and_discoveries(self):
+        dash = self._makeApp()
+        db = self._makeDb()
+
+        self._getWrapped(dash, db, query="?limit=25")
+
+        self.assertEqual(db.getTopSongs.call_args.kwargs["limit"], 25)
+        self.assertEqual(db.getTopArtists.call_args.kwargs["limit"], 25)
+        self.assertEqual(db.getTopAlbums.call_args.kwargs["limit"], 25)
+
+    def test_invalid_limit_falls_back_to_default(self):
+        dash = self._makeApp()
+        db = self._makeDb()
+
+        self._getWrapped(dash, db, query="?limit=999")
+
+        self.assertEqual(db.getTopSongs.call_args.kwargs["limit"], appModule.WRAPPED_LIST_SIZE)
+
+    def test_discoveries_cap_follows_the_limit_param(self):
+        dash = self._makeApp()
+        db = self._makeDb(earliestPlayedAt=_ts(2024))
+        songs = [_song(f"s{i}", f"Discovery {i}", plays=i, firstListenedAt=_ts(2026, 3)) for i in range(1, 30)]
+        db.getSongsStats.return_value = songs
+
+        resp = self._getWrapped(dash, db, query="?limit=25")
+
+        body = resp.data.decode()
+        self.assertIn("Discovery 29", body)   #< highest play count, must survive a 25-item cap
+        self.assertNotIn("Discovery 1<", body)  #< lowest play count, must be cut by a 25-item cap
+
+
 class TestWrappedDiscoveries(_WrappedRouteTestBase):
     def test_only_items_first_listened_in_the_selected_year_are_discoveries(self):
         dash = self._makeApp()
@@ -220,6 +283,19 @@ class TestWrappedDiscoveries(_WrappedRouteTestBase):
 
         self.assertEqual(resp.status_code, 200)
         self.assertNotIn(b"Unknown Origin", resp.data)
+
+    def test_only_albums_first_listened_in_the_selected_year_are_discoveries(self):
+        dash = self._makeApp()
+        db = self._makeDb(earliestPlayedAt=_ts(2024))
+        db.getAlbumsStats.return_value = [
+            _album("newAlb", "New Album", plays=5, firstListenedAt=_ts(2026, 3)),
+            _album("oldAlb", "Old Album", plays=20, firstListenedAt=_ts(2024, 1)),
+        ]
+
+        resp = self._getWrapped(dash, db)
+
+        self.assertIn(b"New Album", resp.data)
+        self.assertNotIn(b"Old Album", resp.data)
 
     def test_discoveries_are_capped_and_sorted_by_plays(self):
         dash = self._makeApp()
