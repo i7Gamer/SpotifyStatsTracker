@@ -27,9 +27,10 @@
       <input type="date" id="startDate" name="startDate" value="{{ customStart }}" onchange="scheduleSearchFilter('startDate', updateChartsDateFilter)">
       <label for="endDate">To:</label>
       <input type="date" id="endDate" name="endDate" value="{{ customEnd }}" onchange="scheduleSearchFilter('endDate', updateChartsDateFilter)">
+      <span id="dateError" style="color: var(--accent); font-size: 0.85rem; display: none; margin-left: 10px;"></span>
     </div>
 
-    <div class="filter-group">
+    <div class="filter-group" id="groupByContainer" {% if interval in ['today', 'day'] %}style="display: none;"{% endif %}>
       <label for="groupBy">Group by:</label>
       <select id="groupBy" name="groupBy" onchange="updateChartsFilters()">
         <option value="day" {% if groupBy == 'day' %}selected{% endif %}>Day</option>
@@ -82,6 +83,13 @@
     function updateChartsIntervalFilter() {
       const interval = document.getElementById('interval').value;
       const customDates = document.getElementById('chartsCustomDates');
+      const groupByContainer = document.getElementById('groupByContainer');
+
+      if (interval === 'today' || interval === 'day') {
+        groupByContainer.style.display = 'none';
+      } else {
+        groupByContainer.style.display = 'flex';
+      }
 
       if (interval === 'custom') {
         customDates.style.display = 'flex';
@@ -93,10 +101,24 @@
     }
 
     function updateChartsDateFilter() {
-      const startDate = document.getElementById('startDate').value;
-      const endDate = document.getElementById('endDate').value;
+      const startDateElem = document.getElementById('startDate');
+      const endDateElem = document.getElementById('endDate');
+      const errorElem = document.getElementById('dateError');
+      const startDate = startDateElem.value;
+      const endDate = endDateElem.value;
+
+      errorElem.style.display = 'none';
+      startDateElem.style.borderColor = '';
+      endDateElem.style.borderColor = '';
 
       if (startDate && endDate) {
+        if (new Date(startDate) > new Date(endDate)) {
+          errorElem.textContent = 'Start date cannot be after end date.';
+          errorElem.style.display = 'block';
+          startDateElem.style.borderColor = 'var(--accent)';
+          endDateElem.style.borderColor = 'var(--accent)';
+          return;
+        }
         updateChartsFilters(true);
       }
     }

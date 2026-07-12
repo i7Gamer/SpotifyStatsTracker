@@ -1,16 +1,43 @@
 :root {
-  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
+  --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
+  --font-headings: 'Outfit', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
   --accent: #FB717B;
-  --background: #0d0d0d;
-  --content-background: #121212;
-  --surface: #1d1d1d;
+  --background: #060606;
+  --content-background: #0b0b0b;
+  --surface: rgba(25, 25, 25, 0.45);
   --text: #f6f6f6;
-  --muted: #b0b0b0;
-  --border: #2b2b2b;
+  --muted: #a0a0a0;
+  --border: rgba(255, 255, 255, 0.08);
+  --glass-bg: rgba(18, 18, 18, 0.65);
+  --glass-border: rgba(255, 255, 255, 0.06);
 }
 
 * {
   box-sizing: border-box;
+}
+
+::selection {
+  background: rgba(251, 113, 123, 0.3);
+  color: var(--text);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--background);
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 10px;
+  border: 2px solid var(--background);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.3);
 }
 
 body {
@@ -19,6 +46,33 @@ body {
   font-family: var(--font);
   background: var(--background);
   color: var(--text);
+  overflow-x: hidden;
+}
+
+@keyframes ambientGlow {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: -1;
+  background: radial-gradient(circle at 20% 30%, rgba(251, 113, 123, 0.15), transparent 40%),
+              radial-gradient(circle at 80% 70%, rgba(29, 185, 84, 0.1), transparent 50%),
+              radial-gradient(circle at 50% 50%, rgba(25, 25, 25, 0.3), transparent 60%);
+  background-size: 200% 200%;
+  animation: ambientGlow 20s ease-in-out infinite;
+  pointer-events: none;
+}
+
+h1, h2, h3, h4, h5, h6, .brand, .summary-value {
+  font-family: var(--font-headings);
 }
 
 a {
@@ -35,8 +89,10 @@ button {
   justify-content: space-between;
   align-items: center;
   padding: 18px 24px;
-  border-bottom: 1px solid var(--border);
-  background: rgba(10, 10, 10, 0.96);
+  border-bottom: 1px solid var(--glass-border);
+  background: var(--glass-bg);
+  backdrop-filter: blur(16px) saturate(180%);
+  -webkit-backdrop-filter: blur(16px) saturate(180%);
   position: sticky;
   top: 0;
   z-index: 10;
@@ -74,6 +130,18 @@ button {
   color: var(--accent);
 }
 
+@keyframes shimmer {
+  0% { background-position: -1000px 0; }
+  100% { background-position: 1000px 0; }
+}
+
+.skeleton-loader {
+  animation: shimmer 2s infinite linear;
+  background: linear-gradient(to right, rgba(255, 255, 255, 0.03) 4%, rgba(255, 255, 255, 0.08) 25%, rgba(255, 255, 255, 0.03) 36%);
+  background-size: 1000px 100%;
+  border-radius: 12px;
+}
+
 .nav-links a.active {
   color: var(--accent);
   font-weight: 700;
@@ -104,7 +172,13 @@ button {
 .topbar-search input[type="search"]:focus {
   outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 0 2px rgba(251, 113, 123, 0.2);
+  box-shadow: 0 0 12px rgba(251, 113, 123, 0.4), 0 0 0 2px rgba(251, 113, 123, 0.2);
+}
+
+.filter-search input[type="search"]:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 12px rgba(251, 113, 123, 0.4), 0 0 0 2px rgba(251, 113, 123, 0.2);
 }
 
 .topbar-search button {
@@ -115,6 +189,11 @@ button {
   color: #111;
   font-weight: 700;
   cursor: pointer;
+  transition: transform 0.15s ease;
+}
+
+.topbar-search button:active {
+  transform: scale(0.92);
 }
 
 .page {
@@ -166,11 +245,19 @@ button {
   min-width: 220px;
   background: var(--surface);
   border: 1px solid var(--border);
+  backdrop-filter: blur(12px) saturate(180%);
+  -webkit-backdrop-filter: blur(12px) saturate(180%);
   border-radius: 20px;
   padding: 16px 18px;
   min-height: 0;
   display: grid;
   gap: 8px;
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.summary-card:hover {
+  transform: translateY(-4px) scale(1.01);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.45);
 }
 
 .summary-card h2 {
@@ -235,10 +322,19 @@ button {
 .card {
   background: var(--surface);
   border: 1px solid var(--border);
+  backdrop-filter: blur(12px) saturate(180%);
+  -webkit-backdrop-filter: blur(12px) saturate(180%);
   border-radius: 20px;
   padding: 20px;
   min-height: 260px;
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
+
+.card:hover {
+  transform: translateY(-4px) scale(1.01);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.45);
+}
+
 
 .card h2 {
   margin-top: 0;
@@ -261,6 +357,8 @@ button {
 .import-card {
   background: var(--surface);
   border: 1px solid var(--border);
+  backdrop-filter: blur(12px) saturate(180%);
+  -webkit-backdrop-filter: blur(12px) saturate(180%);
   border-radius: 20px;
   padding: 20px;
   margin-bottom: 24px;
@@ -323,6 +421,12 @@ button {
   box-shadow: 0 0 0 3px rgba(251, 113, 123, 0.2);
 }
 
+.filter-group input[type="date"]:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 12px rgba(251, 113, 123, 0.4), 0 0 0 2px rgba(251, 113, 123, 0.2);
+}
+
 #import-form label {
   color: var(--muted);
   font-size: 0.95rem;
@@ -377,6 +481,8 @@ progress::-moz-progress-bar {
   border-radius: 20px;
   background: var(--surface);
   border: 1px solid var(--border);
+  backdrop-filter: blur(16px) saturate(180%);
+  -webkit-backdrop-filter: blur(16px) saturate(180%);
 }
 
 .login-card h1 {
@@ -401,6 +507,12 @@ progress::-moz-progress-bar {
   color: white;
   cursor: pointer;
   font-weight: 700;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, opacity 0.15s ease;
+}
+
+.primary-button:active {
+  transform: scale(0.96);
+  opacity: 0.9;
 }
 
 .track-row,
@@ -441,8 +553,16 @@ progress::-moz-progress-bar {
 .track-summary-card {
   background: var(--surface);
   border: 1px solid var(--border);
+  backdrop-filter: blur(12px) saturate(180%);
+  -webkit-backdrop-filter: blur(12px) saturate(180%);
   border-radius: 20px;
   padding: 20px;
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.track-summary-card:hover {
+  transform: translateY(-4px) scale(1.01);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.45);
 }
 
 .track-summary-card h3 {
@@ -479,7 +599,16 @@ progress::-moz-progress-bar {
   border-radius: 20px;
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid var(--border);
+  backdrop-filter: blur(12px) saturate(180%);
+  -webkit-backdrop-filter: blur(12px) saturate(180%);
   align-items: flex-start;
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), background 0.3s ease, border-color 0.3s ease;
+}
+
+.track-card:hover {
+  transform: translateX(6px);
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.15);
 }
 
 .track-number {
@@ -608,7 +737,7 @@ progress::-moz-progress-bar {
 .form-group textarea:focus {
   outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 0 2px rgba(251, 113, 123, 0.2);
+  box-shadow: 0 0 12px rgba(251, 113, 123, 0.4), 0 0 0 2px rgba(251, 113, 123, 0.2);
 }
 
 .error {
@@ -823,8 +952,10 @@ progress::-moz-progress-bar {
     right: 0;
     flex-direction: column;
     flex-wrap: nowrap;
-    background: rgba(13, 13, 13, 0.98);
-    border-bottom: 1px solid var(--border);
+    background: var(--glass-bg);
+    backdrop-filter: blur(16px) saturate(180%);
+    -webkit-backdrop-filter: blur(16px) saturate(180%);
+    border-bottom: 1px solid var(--glass-border);
     gap: 16px;
     padding: 16px 24px;
     max-height: 0;
@@ -967,8 +1098,10 @@ progress::-moz-progress-bar {
   display: none;
   pointer-events: none;
   z-index: 20;
-  background: rgba(10, 10, 10, 0.95);
-  border: 1px solid var(--border);
+  background: var(--glass-bg);
+  backdrop-filter: blur(12px) saturate(180%);
+  -webkit-backdrop-filter: blur(12px) saturate(180%);
+  border: 1px solid var(--glass-border);
   border-radius: 10px;
   padding: 8px 12px;
   font-size: 0.85rem;
@@ -1074,6 +1207,7 @@ progress::-moz-progress-bar {
 }
 
 .button:active {
+  transform: scale(0.96);
   opacity: 0.9;
 }
 
@@ -1095,6 +1229,10 @@ progress::-moz-progress-bar {
   font-size: 0.95rem;
   text-decoration: none;
   transition: all 0.2s ease;
+}
+
+.wrapped-year-badge:active {
+  transform: scale(0.94);
 }
 
 .wrapped-year-badge:hover {
@@ -1125,6 +1263,10 @@ progress::-moz-progress-bar {
   cursor: pointer;
   transition: all 0.2s ease;
   font-family: inherit;
+}
+
+.stats-filter-button:active {
+  transform: scale(0.94);
 }
 
 .stats-filter-button:hover {

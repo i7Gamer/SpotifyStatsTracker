@@ -37,6 +37,7 @@
           <input type="date" id="startDate" name="startDate" value="{{ customStart }}" onchange="scheduleSearchFilter('startDate', updateDashboardDateFilter)">
           <label for="endDate">To:</label>
           <input type="date" id="endDate" name="endDate" value="{{ customEnd }}" onchange="scheduleSearchFilter('endDate', updateDashboardDateFilter)">
+          <span id="dateError" style="color: var(--accent); font-size: 0.85rem; display: none; margin-left: 10px;"></span>
         </div>
 
         <noscript>
@@ -113,10 +114,24 @@
     }
 
     function updateDashboardDateFilter() {
-      const startDate = document.getElementById('startDate').value;
-      const endDate = document.getElementById('endDate').value;
+      const startDateElem = document.getElementById('startDate');
+      const endDateElem = document.getElementById('endDate');
+      const errorElem = document.getElementById('dateError');
+      const startDate = startDateElem.value;
+      const endDate = endDateElem.value;
+
+      errorElem.style.display = 'none';
+      startDateElem.style.borderColor = '';
+      endDateElem.style.borderColor = '';
 
       if (startDate && endDate) {
+        if (new Date(startDate) > new Date(endDate)) {
+          errorElem.textContent = 'Start date cannot be after end date.';
+          errorElem.style.display = 'block';
+          startDateElem.style.borderColor = 'var(--accent)';
+          endDateElem.style.borderColor = 'var(--accent)';
+          return;
+        }
         updateDashboardFilters(true);
       }
     }
