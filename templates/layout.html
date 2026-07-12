@@ -72,7 +72,11 @@
       // not on every keystroke - so typing doesn't reload the page/reset
       // scroll and focus mid-word.
       window.handleSearchBlur = function(event, applyFilterFn) {
-        applyFilterFn();
+        const params = new URLSearchParams(window.location.search);
+        const currentQ = params.get('q') || '';
+        if (event.target.value.trim() !== currentQ.trim()) {
+          applyFilterFn();
+        }
       };
 
       // Shared by song_detail.html/artist_detail.html/album_detail.html's
@@ -144,16 +148,7 @@
         });
       })();
 
-      window.addEventListener('load', () => {
-        const searchInput = document.querySelector('.auto-search-focus');
-        if (!searchInput) {
-          return;
-        }
 
-        searchInput.focus();
-        const valueLength = searchInput.value.length;
-        searchInput.setSelectionRange(valueLength, valueLength);
-      });
     </script>
   </body>
 </html>
