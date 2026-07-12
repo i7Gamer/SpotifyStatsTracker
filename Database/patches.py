@@ -128,7 +128,7 @@ def patch_spotipy_free() -> bool:
 
         def patched_spotify_login(self, cookiesFile=None):
             if cookiesFile is None:
-                cookiesFile = SpotipyFree.Spotify.getCookiesFile()
+                cookiesFile = SpotipyFree.getCookiesFile()
             try:
                 cfg = spotapi.Config(logger=spotapi.Logger())
                 saver = spotapi.saver.JSONSaver(cookiesFile)

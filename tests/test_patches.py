@@ -1,5 +1,6 @@
 import unittest
 from unittest.mock import MagicMock, patch
+import json
 import signal
 import threading
 import concurrent.futures
@@ -137,6 +138,28 @@ class TestPatches(unittest.TestCase):
         # Test with positional arg
         sp2 = SpotipyFree.Spotify(False, False, "dummy.json", "positional@test.com")
         self.assertEqual(sp2.email, "positional@test.com")
+
+    @patch("spotapi.Login.from_saver")
+    @patch("SpotipyFree.getCookiesFile")
+    @patch("builtins.open")
+    def test_spotify_login_resolves_missing_cookies_file_via_module_level_helper(
+        self, mock_open, mock_get_cookies_file, mock_from_saver
+    ):
+        """login(cookiesFile=None) must resolve the path via the module-level
+        SpotipyFree.getCookiesFile() function - it's re-exported at package level,
+        not a method on the Spotify class, so calling it as
+        SpotipyFree.Spotify.getCookiesFile() raises AttributeError and crashes any
+        background reconnect/login refresh that omits cookiesFile."""
+        mock_get_cookies_file.return_value = "resolved_cookies.json"
+        mock_file_data = json.dumps([{"identifier": "user1@test.com", "cookies": {}}])
+        mock_open.return_value.__enter__.return_value.read.return_value = mock_file_data
+
+        sp = self._newSpotifyInstance()
+        result = sp.login(cookiesFile=None)
+
+        mock_get_cookies_file.assert_called_once()
+        mock_open.assert_called_once_with("resolved_cookies.json", "r")
+        self.assertTrue(result)
 
     @patch("spotapi.Login.from_saver")
     @patch("builtins.open")
