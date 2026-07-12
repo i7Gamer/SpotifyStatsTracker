@@ -115,6 +115,30 @@ class TestTopAlbumsRoute(unittest.TestCase):
 
         self.assertEqual(resp.status_code, 200)
 
+    def test_unknown_sortby_falls_back_to_default_instead_of_500(self):
+        """sortBy is whitelisted (VALID_SORT_BY) before reaching the DB layer -
+        Repository.getAlbumsPage raises ValueError for anything outside
+        ALBUM_SORT_COLUMNS, which an unvalidated query param would otherwise
+        turn into a 500."""
+        dash = self._makeApp()
+        db = self._makeDb()
+
+        resp = self._getTopAlbums(dash, db, query="?sortBy=not_a_real_column")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(db.getTopAlbums.call_args.kwargs["by"], appModule.DEFAULT_SORT_BY)
+
+    def test_page_beyond_range_is_clamped_to_last_page(self):
+        dash = self._makeApp()
+        db = self._makeDb(albumCount=120)
+
+        resp = self._getTopAlbums(dash, db, query="?page=9999")
+
+        self.assertEqual(resp.status_code, 200)
+        kwargs = db.getTopAlbums.call_args.kwargs
+        self.assertEqual(kwargs["offset"], 2 * appModule.PAGE_SIZE)   #< last page (3) of 120/50
+        self.assertIn(b"Page 3 of 3", resp.data)
+
     def test_nav_link_present(self):
         dash = self._makeApp()
         db = self._makeDb()

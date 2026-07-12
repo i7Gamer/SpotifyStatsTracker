@@ -23,6 +23,13 @@ LOGIN_CACHE_TTL_SECONDS = 180  #< seconds to cache isListenerLoggedIn result per
 CHART_ARTIST_TREND_TOP_N = 5   #< how many top artists are plotted on the trend line chart
 WRAPPED_LIST_SIZE = 5           #< how many top songs/artists/albums the Wrapped page shows
 WRAPPED_DISCOVERIES_SIZE = 10   #< how many "discovered this year" songs/artists the Wrapped page shows
+MAX_UPLOAD_MB = 500              #< cap on a single import-history request's total upload size
+DEFAULT_SORT_BY = "totalTimeListened"
+# The only sortBy values Repository.SONG_SORT_COLUMNS/ALBUM_SORT_COLUMNS (and
+# Database._sortTopStats for artists) know how to handle - an unrecognized
+# ?sortBy= would otherwise reach a ValueError/KeyError deep in the DB layer
+# and 500 instead of just falling back to the default.
+VALID_SORT_BY = {"totalTimeListened", "plays", "name"}
 
 class SpotifyDashboardApp:
     def __init__(self):
@@ -31,6 +38,11 @@ class SpotifyDashboardApp:
         self.baseDir = Path(__file__).resolve().parent
         self.app.secret_key = self._get_or_create_secret_key()
         self.app.permanent_session_lifetime = timedelta(days=30)
+        # Caps a single import-history request's total upload size (summed across
+        # every file in a multi-file upload) - without this, an oversized/
+        # accidental upload is read fully into memory before anything can reject
+        # it.
+        self.app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_MB * 1024 * 1024
         # Users, emails and Spotify session cookies live in the shared database
         # (see Database/repository.py) instead of secrets/users_map.json and
         # secrets/cookies.json.
@@ -154,6 +166,21 @@ class SpotifyDashboardApp:
                 self.user_databases[username] = db
             return self.user_databases[username]
 
+    def _refresh_user_session(self, username, email):
+        """Restart this user's listener against the cookies just saved to the
+        database, and drop any cached login-status result. Without this, a
+        re-login after expired/invalid cookies (get_user_db is a no-op for a
+        username that already has a live Database) would leave the old, dead
+        listener running and the stale cached is_user_logged_in() result in
+        place until the process restarts."""
+        with self._db_lock:
+            db = self.user_databases.get(username)
+            if db is not None:
+                if db.listener is not None:
+                    db.listener.stop()
+                db.startListener(email=email)
+        self._login_cache.pop(email, None)
+
     def is_user_logged_in(self, email):
         if not email:
             return False
@@ -182,10 +209,16 @@ class SpotifyDashboardApp:
 
     def _ensureAllUsersLogin(self):
         try:
-            for username, email in self.repo.getAllUsersWithCookies():
-                self.get_user_db(username, email)
+            usersWithCookies = self.repo.getAllUsersWithCookies()
         except Exception as e:
             print("Error initializing users:", e)
+            return
+
+        for username, email in usersWithCookies:
+            try:
+                self.get_user_db(username, email)
+            except Exception as e:
+                print(f"Error initializing user {username}: {e}")
     
     def _checkLoginLoop(self):
         while True:
@@ -198,7 +231,7 @@ class SpotifyDashboardApp:
 
     def _versionCheckLoop(self):
         # Check version from GitHub at startup and then every hour.
-        url = "https://raw.githubusercontent.com/TzurSoffer/SpotifyStatsTracker/main/Database/VERSION"
+        url = "https://raw.githubusercontent.com/i7Gamer/SpotifyStatsTracker/main/Database/VERSION"
         while True:
             try:
                 resp = requests.get(url, timeout=6)
@@ -349,6 +382,9 @@ class SpotifyDashboardApp:
             return f"New this period", "change-positive"
 
         change = ((currentValue - previousValue) / previousValue) * 100
+        if round(change, 1) == 0:
+            return "No change from the previous period", ""
+
         formatted = f"{abs(round(change, 1))}% {'more' if change > 0 else 'less'} than the previous period"
         cssClass = "change-positive" if change > 0 else "change-negative"
         return formatted, cssClass
@@ -360,14 +396,25 @@ class SpotifyDashboardApp:
         except (TypeError, ValueError):
             return 1
 
+    def _getSortByParam(self, default=DEFAULT_SORT_BY):
+        """The current request's ?sortBy=..., falling back to `default` for any
+        value the DB layer doesn't know how to sort by (see VALID_SORT_BY) -
+        without this, an unrecognized value reaches a ValueError/KeyError deep
+        in Repository/Database and 500s instead of just using the default."""
+        sortBy = request.args.get("sortBy", default)
+        return sortBy if sortBy in VALID_SORT_BY else default
+
     def getPage(self, items, page, pageSize=PAGE_SIZE):
-        """ Gets items in page as well as other data including total pages and start index """
-        page = max(1, page)
+        """ Gets items in page as well as other data including total pages, start
+        index, and the page number itself clamped to [1, totalPages] - callers
+        must use this clamped value (not their original `page`) for anything
+        shown to the user, e.g. a "Page X of Y" label. """
         total = len(items)
         totalPages = max(1, (total + pageSize - 1) // pageSize)
+        page = max(1, min(page, totalPages))
         start = (page - 1) * pageSize
         end = start + pageSize
-        return (items[start:end], totalPages, start)
+        return (items[start:end], totalPages, start, page)
 
     def _getDateRange(self, interval: str = None, customStart: str = None, customEnd: str = None, default="day"):
             """Get start and end dates based on interval or custom dates.
@@ -547,7 +594,24 @@ class SpotifyDashboardApp:
             email, username, db = get_current_user_or_redirect()
             if not email:
                 return redirect(url_for("login"))
-            return render_template("import.html", importProgress=db.readProgress())
+            return render_template(
+                "import.html",
+                importProgress=db.readProgress(),
+                maxUploadMb=MAX_UPLOAD_MB,
+                uploadTooLarge=request.args.get("error") == "upload_too_large",
+            )
+
+        @self.app.errorhandler(413)
+        def _uploadTooLarge(error):
+            return redirect(url_for("importPage", error="upload_too_large"))
+
+        def _safeNextUrl(nextUrl):
+            """Only allow same-origin relative redirects after login - a `next`
+            value like `//evil.com` or `https://evil.com` would otherwise send a
+            freshly authenticated session to an attacker-controlled site."""
+            if not nextUrl or not nextUrl.startswith("/") or nextUrl.startswith("//"):
+                return None
+            return nextUrl
 
         @self.app.route("/login", methods=["GET", "POST"])
         def login():
@@ -555,27 +619,29 @@ class SpotifyDashboardApp:
 
             if step == "1":
                 if request.method == "GET":
-                    return render_template("login.html", step=1)
+                    return render_template("login.html", step=1, next=_safeNextUrl(request.args.get("next")))
 
                 email = request.form.get("email", "").strip()
+                nextUrl = _safeNextUrl(request.form.get("next"))
                 if not email:
-                    return render_template("login.html", step=1, error="Email required.")
+                    return render_template("login.html", step=1, error="Email required.", next=nextUrl)
 
-                return render_template("login.html", step=2, email=email)
+                return render_template("login.html", step=2, email=email, next=nextUrl)
 
             if step == "2":
                 email = request.form.get("email", "")
                 cookies = request.form.get("cookies", "")
+                nextUrl = _safeNextUrl(request.form.get("next"))
 
                 if not cookies:
-                    return render_template("login.html", step=2, email=email, error="Cookies required.")
+                    return render_template("login.html", step=2, email=email, error="Cookies required.", next=nextUrl)
 
                 # Verification happens against a throwaway session file, so nothing
                 # is persisted for this email unless the cookies really are theirs.
                 parsedCookies = parseCookieString(cookies)
                 if not self._verifyCookiesMatchEmail(parsedCookies, email):
                     return render_template(
-                        "login.html", step=2, email=email,
+                        "login.html", step=2, email=email, next=nextUrl,
                         error=f"Couldn't verify that these cookies belong to {email}. "
                               "Make sure you are logged into open.spotify.com with that account and copied all cookies.")
 
@@ -585,11 +651,21 @@ class SpotifyDashboardApp:
                 # lock so logging one user in doesn't block everyone else.
                 username = self.get_or_create_user(email)
                 self.repo.setUserCookies(username, parsedCookies)
-                self.get_user_db(username, email)
+                if username in self.user_databases:
+                    # Returning user re-logging in (e.g. after their session
+                    # expired) - restart their listener against the fresh cookies
+                    # instead of leaving the old, dead one running.
+                    self._refresh_user_session(username, email)
+                else:
+                    self.get_user_db(username, email)
                 session["email"] = email
                 session["username"] = username
 
-                return redirect(url_for("dashboard"))
+                return redirect(nextUrl or url_for("dashboard"))
+
+            # Unknown/tampered step value - start over instead of falling through
+            # with no return value (which Flask turns into a 500).
+            return redirect(url_for("login"))
 
         @self.app.route("/logout", methods=["GET"])
         def logout():
@@ -632,7 +708,7 @@ class SpotifyDashboardApp:
                 tracks = db.getEntriesFromNew()
                 self._embedIndices(tracks)
                 tracks = self._filterBySearch(tracks, searchQuery)
-                tracks, totalPages, startIndex = self.getPage(tracks, page)
+                tracks, totalPages, startIndex, page = self.getPage(tracks, page)
             else:
                 # Only materialize the page being shown - joining full track
                 # metadata onto every entry ever recorded on every request gets
@@ -698,11 +774,11 @@ class SpotifyDashboardApp:
 
             page = self._getPageParam()
             searchQuery = request.args.get("q", "")
-            sortBy = request.args.get("sortBy", "totalTimeListened")
+            sortBy = self._getSortByParam()
             interval = request.args.get("interval", "")
             customStart = request.args.get("startDate", "")
             customEnd = request.args.get("endDate", "")
-            
+
             startDate, endDate = self._getDateRange(interval, customStart, customEnd, default="all time")
             # totalPlays/totalMs are a whole-range aggregate regardless of search -
             # a cheap dedicated query instead of summing every song's metadata.
@@ -714,12 +790,13 @@ class SpotifyDashboardApp:
                 rawTopSongs = db.getTopSongs(startDate=startDate, endDate=endDate, by=sortBy)
                 self._embedIndices(rawTopSongs)
                 tracks = self._filterBySearch(rawTopSongs, searchQuery)
-                tracks, totalPages, startIndex = self.getPage(tracks, page)
+                tracks, totalPages, startIndex, page = self.getPage(tracks, page)
             else:
                 # Only materialize the page being shown - SQL-level LIMIT/OFFSET
                 # instead of sorting+hydrating every song ever played.
                 totalCount = db.getSongsCount(startDate, endDate)
                 totalPages = max(1, (totalCount + PAGE_SIZE - 1) // PAGE_SIZE)
+                page = max(1, min(page, totalPages))
                 startIndex = (page - 1) * PAGE_SIZE
                 tracks = db.getTopSongs(startDate=startDate, endDate=endDate, by=sortBy,
                                          limit=PAGE_SIZE, offset=startIndex)
@@ -764,7 +841,7 @@ class SpotifyDashboardApp:
 
             page = self._getPageParam()
             searchQuery = request.args.get("q", "")
-            sortBy = request.args.get("sortBy", "totalTimeListened")
+            sortBy = self._getSortByParam()
             interval = request.args.get("interval", "")
             customStart = request.args.get("startDate", "")
             customEnd = request.args.get("endDate", "")
@@ -778,12 +855,13 @@ class SpotifyDashboardApp:
                 rawTopAlbums = db.getTopAlbums(startDate=startDate, endDate=endDate, by=sortBy)
                 self._embedIndices(rawTopAlbums)
                 albums = self._filterBySearch(rawTopAlbums, searchQuery)
-                albums, totalPages, startIndex = self.getPage(albums, page)
+                albums, totalPages, startIndex, page = self.getPage(albums, page)
             else:
                 # Only materialize the page being shown - SQL-level LIMIT/OFFSET
                 # instead of sorting+hydrating every album ever played.
                 totalCount = db.getAlbumsCount(startDate, endDate)
                 totalPages = max(1, (totalCount + PAGE_SIZE - 1) // PAGE_SIZE)
+                page = max(1, min(page, totalPages))
                 startIndex = (page - 1) * PAGE_SIZE
                 albums = db.getTopAlbums(startDate=startDate, endDate=endDate, by=sortBy,
                                           limit=PAGE_SIZE, offset=startIndex)
@@ -827,17 +905,17 @@ class SpotifyDashboardApp:
 
             page = self._getPageParam()
             searchQuery = request.args.get("q", "")
-            sortBy = request.args.get("sortBy", "totalTimeListened")
+            sortBy = self._getSortByParam()
             interval = request.args.get("interval", "")
             customStart = request.args.get("startDate", "")
             customEnd = request.args.get("endDate", "")
-            
+
             startDate, endDate = self._getDateRange(interval, customStart, customEnd, default="all time")
             rawTopArtists = db.getTopArtists(startDate=startDate, endDate=endDate, by=sortBy) or []
             if searchQuery:
                 self._embedIndices(rawTopArtists)
             tracks = self._filterBySearch(rawTopArtists, searchQuery)
-            artists, totalPages, startIndex = self.getPage(tracks, page)
+            artists, totalPages, startIndex, page = self.getPage(tracks, page)
             totalPlays = self._getTotal(rawTopArtists, "plays")
             totalUnique = self._getTotal(rawTopArtists, "uniqueSongCount")
             totalMs = self._getTotal(rawTopArtists, "totalTimeListened")

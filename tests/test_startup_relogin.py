@@ -94,6 +94,30 @@ class TestStartupReloginFromDatabaseCookies(unittest.TestCase):
             "bob@example.com": {"sp_dc": "bob-cookie"},
         })
 
+    def test_one_users_failure_does_not_block_the_rest(self):
+        """A single user whose get_user_db() call raises (e.g. a corrupt cookie
+        blob, a Listener construction error) must not stop every user after it
+        in the list from getting their listener started - the whole loop used
+        to be wrapped in one try/except that aborted on the first failure."""
+        app = _makeApp()
+        app.repo.upsertUser("alice", "alice@example.com")
+        app.repo.setUserCookies("alice", {"sp_dc": "broken"})
+        app.repo.upsertUser("bob", "bob@example.com")
+        app.repo.setUserCookies("bob", {"sp_dc": "bob-cookie"})
+
+        def fakeListener(cookiesFile, email=None):
+            if email == "alice@example.com":
+                raise RuntimeError("boom")
+            return MagicMock()
+
+        with patch("Database.database.Listener", side_effect=fakeListener), \
+             patch("Database.database.AutoImporter") as mockAutoImporterClass:
+            mockAutoImporterClass.return_value = MagicMock()
+            app._ensureAllUsersLogin()  # must not raise
+
+        self.assertNotIn("alice", app.user_databases)
+        self.assertIn("bob", app.user_databases)
+
     def test_second_call_does_not_recreate_already_running_databases(self):
         """_checkLoginLoop() re-runs this every 5 minutes - a user already
         holding a live Database/listener must not be reconstructed."""

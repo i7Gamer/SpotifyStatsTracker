@@ -8,11 +8,14 @@
   </section>
 
   <section class="card import-card">
+    {% if uploadTooLarge %}
+      <p class="error">That upload is too large (max {{ maxUploadMb }} MB total per request). Try uploading fewer files at once.</p>
+    {% endif %}
     <form id="import-form" action="{{ url_for('importHistory') }}" method="post" enctype="multipart/form-data">
       <label for="history_file">Spotify history JSON file(s)</label>
       <div class="import-input-wrapper">
         <input id="history_file" name="history_file" type="file" accept=".json, .csv" multiple required />
-        <p id="import-hint" class="import-hint">Drag and drop your files here or click to browse</p>
+        <p id="import-hint" class="import-hint">Drag and drop your files here or click to browse (max {{ maxUploadMb }} MB total)</p>
       </div>
       <button class="primary-button" type="submit">Start Import</button>
     </form>

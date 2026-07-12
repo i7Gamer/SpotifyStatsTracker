@@ -20,6 +20,7 @@
   {% if step == 1 %}
     <form method="post" action="/login">
       <input type="hidden" name="step" value="1">
+      {% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
 
       <div class="form-group">
         <label>Email</label>
@@ -33,6 +34,7 @@
     <form method="post" action="/login">
       <input type="hidden" name="step" value="2">
       <input type="hidden" name="email" value="{{ email }}">
+      {% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
 
       <div class="form-group">
         <label>Cookies</label>

@@ -204,6 +204,29 @@ class TestTopSongsPagination(_ListRouteTestBase):
         db.getPlayTotals.assert_called_once()
         self.assertIn(b'<p class="summary-value">7</p>', resp.data)
 
+    def test_unknown_sortby_falls_back_to_default_instead_of_500(self):
+        """Repository.getSongsPage raises ValueError for a sortBy outside
+        SONG_SORT_COLUMNS - an unvalidated query param would otherwise 500."""
+        dash = self._makeApp()
+        db = self._makeDb(entryCount=0)
+
+        resp = self._getTopSongs(dash, db, query="?sortBy=not_a_real_column")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(db.getTopSongs.call_args.kwargs["by"], appModule.DEFAULT_SORT_BY)
+
+    def test_page_beyond_range_is_clamped_to_last_page(self):
+        dash = self._makeApp()
+        db = self._makeDb(entryCount=0)
+        db.getSongsCount.return_value = 120
+
+        resp = self._getTopSongs(dash, db, query="?page=9999")
+
+        self.assertEqual(resp.status_code, 200)
+        kwargs = db.getTopSongs.call_args.kwargs
+        self.assertEqual(kwargs["offset"], 2 * appModule.PAGE_SIZE)   #< last page (3) of 120/50
+        self.assertIn(b"Page 3 of 3", resp.data)
+
 
 class TestPageParamParsing(_ListRouteTestBase):
     """A non-numeric ?page= must not 500 any list route - it falls back to page 1."""
@@ -242,6 +265,45 @@ class TestPageParamParsing(_ListRouteTestBase):
         resp = self._getPath(dash, db, "/top-artists?page=abc")
 
         self.assertEqual(resp.status_code, 200)
+
+
+class TestTopArtistsSortAndPageClamp(_ListRouteTestBase):
+    """/top-artists always paginates through getPage() (it has no SQL-level
+    LIMIT/OFFSET branch), so getPage()'s own page-clamping and the sortBy
+    whitelist are exercised here instead."""
+
+    def _makeArtistsDb(self, artists):
+        db = self._makeDb(entryCount=0)
+        db.getTopArtists.return_value = artists
+        return db
+
+    def test_unknown_sortby_falls_back_to_default_instead_of_500(self):
+        """Database._sortTopStats indexes each artist dict by `by` directly - an
+        unrecognized key would KeyError, which an unvalidated query param would
+        otherwise turn into a 500."""
+        dash = self._makeApp()
+        db = self._makeArtistsDb([
+            {"id": "a1", "name": "Artist A", "plays": 5, "totalTimeListened": 1000, "uniqueSongCount": 1, "firstListenedAt": 0},
+        ])
+
+        resp = self._getPath(dash, db, "/top-artists?sortBy=not_a_real_column")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(db.getTopArtists.call_args.kwargs["by"], appModule.DEFAULT_SORT_BY)
+
+    def test_page_beyond_range_is_clamped_to_last_page(self):
+        artists = [
+            {"id": f"a{i}", "name": f"Artist {i}", "plays": 1, "totalTimeListened": 1000,
+             "uniqueSongCount": 1, "firstListenedAt": 0}
+            for i in range(120)
+        ]
+        dash = self._makeApp()
+        db = self._makeArtistsDb(artists)
+
+        resp = self._getPath(dash, db, "/top-artists?page=9999")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn(b"Page 3 of 3", resp.data)
 
 
 if __name__ == "__main__":
