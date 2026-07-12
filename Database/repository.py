@@ -32,6 +32,12 @@ ALBUM_SORT_COLUMNS = {
     "name": "name",
 }
 
+ARTIST_SORT_COLUMNS = {
+    "plays": "plays",
+    "totalTimeListened": "total_time_listened",
+    "name": "name",
+}
+
 
 class Repository:
     """Data-access layer over the shared SQLite database.
@@ -156,6 +162,52 @@ class Repository:
                                   artistsByTrack.get(trackRow["id"], []))
             for trackRow in trackRows
         ]
+
+    def getTracksByIds(self, trackIds: list[str]) -> dict[str, dict]:
+        """Batch equivalent of getTrack() for a specific set of track ids, in a
+        fixed 3 queries total regardless of how many ids are requested (tracks,
+        albums, artists) - the caller-facing counterpart to getAllTracks(),
+        scoped instead of unbounded. Mirrors getAllTracks()'s own raw-row
+        artist query (not _artistsForTracks(), which returns already-converted
+        dicts shaped for _songRowToDict rather than the raw rows
+        _trackRowToDict() expects). Reused by Database._paginateEntries() so
+        hydrating a page of play history doesn't pay 3 queries per play
+        (getTrack()'s old N+1)."""
+        if not trackIds:
+            return {}
+        conn = self._conn()
+        placeholders = ",".join("?" for _ in trackIds)
+        trackRows = conn.execute(f"SELECT * FROM tracks WHERE id IN ({placeholders})", trackIds).fetchall()
+
+        albumIds = {row["album_id"] for row in trackRows}
+        albumsById = {}
+        if albumIds:
+            albumIdList = list(albumIds)
+            albumPlaceholders = ",".join("?" for _ in albumIdList)
+            albumsById = {
+                row["id"]: row
+                for row in conn.execute(f"SELECT * FROM albums WHERE id IN ({albumPlaceholders})", albumIdList).fetchall()
+            }
+
+        resolvedIds = [row["id"] for row in trackRows]
+        artistsByTrack: dict[str, list] = {}
+        if resolvedIds:
+            idPlaceholders = ",".join("?" for _ in resolvedIds)
+            for row in conn.execute(
+                f"""
+                SELECT ta.track_id, a.id, a.name, a.url, a.image_id FROM track_artists ta
+                JOIN artists a ON a.id = ta.artist_id
+                WHERE ta.track_id IN ({idPlaceholders})
+                ORDER BY ta.track_id, ta.position
+                """,
+                resolvedIds,
+            ).fetchall():
+                artistsByTrack.setdefault(row["track_id"], []).append(row)
+
+        return {
+            row["id"]: self._trackRowToDict(row, albumsById.get(row["album_id"]), artistsByTrack.get(row["id"], []))
+            for row in trackRows
+        }
 
     @classmethod
     def _trackRowToDict(cls, trackRow, albumRow, artistRows) -> dict:
@@ -318,6 +370,78 @@ class Repository:
             "playedFrom": row["played_from"],
         }
 
+    @staticmethod
+    def _likePattern(query: str) -> str:
+        """Wraps `query` for a LIKE '%...%' match, escaping LIKE's own wildcard
+        characters so a literal "%" or "_" typed by the user is matched as text
+        rather than treated as a wildcard - matches the substring-only
+        semantics of the Python `in` check this replaces."""
+        escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        return f"%{escaped}%"
+
+    # Dashboard search: matches a track's name, its artist(s), its album, and
+    # the playlist/album it was played from, done in SQL so matching is
+    # pushed down instead of requiring every play in the user's history to be
+    # hydrated first. played_from is stored as "type:id" (see
+    # Client.formatTrack), so it's split with substr/instr to join against
+    # playlists(id, type) rather than needing a second round-trip through
+    # Database.playlistName() per row.
+    _SEARCH_JOIN_CLAUSE = """
+        JOIN tracks t ON t.id = p.track_id
+        LEFT JOIN albums al ON al.id = t.album_id
+        LEFT JOIN playlists pl
+               ON pl.id = substr(p.played_from, instr(p.played_from, ':') + 1)
+              AND pl.type = substr(p.played_from, 1, instr(p.played_from, ':') - 1)
+    """
+    _SEARCH_MATCH_CLAUSE = """
+        AND (
+            t.name LIKE ? ESCAPE '\\'
+            OR al.name LIKE ? ESCAPE '\\'
+            OR pl.name LIKE ? ESCAPE '\\'
+            OR EXISTS (
+                SELECT 1 FROM track_artists ta JOIN artists ar ON ar.id = ta.artist_id
+                WHERE ta.track_id = p.track_id AND ar.name LIKE ? ESCAPE '\\'
+            )
+        )
+    """
+
+    def searchPlays(self, username: str, query: str, limit: int | None = None, offset: int = 0) -> list[dict]:
+        """Plays (newest first) whose track name, artist(s), album, or source
+        playlist/album match `query` - the SQL-pushed-down, paginated
+        replacement for fetching every play and filtering in Python."""
+        conn = self._conn()
+        limitValue = -1 if limit is None else limit
+        pattern = self._likePattern(query)
+        rows = conn.execute(
+            f"""
+            SELECT p.track_id AS track_id, p.played_at AS played_at,
+                   p.time_played AS time_played, p.played_from AS played_from
+            FROM plays p
+            {self._SEARCH_JOIN_CLAUSE}
+            WHERE p.username = ? {self._SEARCH_MATCH_CLAUSE}
+            ORDER BY p.played_at DESC, p.id DESC
+            LIMIT ? OFFSET ?
+            """,
+            (username, pattern, pattern, pattern, pattern, limitValue, offset),
+        ).fetchall()
+        return [self._playRowToEntry(r) for r in rows]
+
+    def searchPlaysCount(self, username: str, query: str) -> int:
+        """The paging counterpart to searchPlays() - total matching plays,
+        for computing total page count without fetching every match."""
+        conn = self._conn()
+        pattern = self._likePattern(query)
+        row = conn.execute(
+            f"""
+            SELECT COUNT(*) AS c
+            FROM plays p
+            {self._SEARCH_JOIN_CLAUSE}
+            WHERE p.username = ? {self._SEARCH_MATCH_CLAUSE}
+            """,
+            (username, pattern, pattern, pattern, pattern),
+        ).fetchone()
+        return row["c"]
+
     # ---- Per-user: stats aggregates (SQL GROUP BY instead of Python loops over
     # the full history) -----------------------------------------------------------
 
@@ -345,19 +469,36 @@ class Repository:
         ]
 
     def getArtistAggregates(self, username: str, startTs: float | None = None,
-                             endTs: float | None = None, artistId: str | None = None) -> list[dict]:
+                             endTs: float | None = None, artistId: str | None = None,
+                             sortBy: str = "plays", limit: int | None = None, offset: int = 0,
+                             searchQuery: str | None = None) -> list[dict]:
         """One row per artist who appears on at least one played track, grouped by
         artist id (not name - two different artists that happen to share a display
         name are no longer merged, unlike the old name-keyed in-memory grouping).
+        Sorted/paged in SQL (mirrors getSongsPage()/getAlbumsPage()) rather than
+        fetching every artist and sorting/paging in Python.
 
         `artistId` narrows this to a single artist - reused by artist-detail
-        pages to fetch that one artist's own aggregate stats."""
+        pages to fetch that one artist's own aggregate stats. `searchQuery`
+        narrows to artists whose name matches (the only field Top Artists'
+        search ever matched, since a bare artist dict carries no track/album/
+        playlist text to search)."""
+        if sortBy not in ARTIST_SORT_COLUMNS:
+            raise ValueError(f"Unknown sortBy: {sortBy!r}")
+        sortColumn = ARTIST_SORT_COLUMNS[sortBy]
+        direction = "ASC" if sortBy == "name" else "DESC"
+        limitValue = -1 if limit is None else limit
+
         conn = self._conn()
         params = [username, startTs, startTs, endTs, endTs]
-        artistFilterClause = ""
+        extraClauses = ""
         if artistId is not None:
-            artistFilterClause = " AND ar.id = ?"
+            extraClauses += " AND ar.id = ?"
             params.append(artistId)
+        if searchQuery:
+            extraClauses += " AND ar.name LIKE ? ESCAPE '\\'"
+            params.append(self._likePattern(searchQuery))
+        params += [limitValue, offset]
         rows = conn.execute(
             f"""
             SELECT ar.id AS id, ar.name AS name, ar.url AS url, ar.image_id AS image_id,
@@ -366,8 +507,10 @@ class Repository:
             FROM plays p
             JOIN track_artists ta ON ta.track_id = p.track_id
             JOIN artists ar ON ar.id = ta.artist_id
-            WHERE p.username = ? {self._dateRangeClause().replace("played_at", "p.played_at")}{artistFilterClause}
+            WHERE p.username = ? {self._dateRangeClause().replace("played_at", "p.played_at")}{extraClauses}
             GROUP BY ar.id
+            ORDER BY {sortColumn} {direction}, total_time_listened {direction}, name {direction}, id ASC
+            LIMIT ? OFFSET ?
             """,
             params,
         ).fetchall()
@@ -380,10 +523,64 @@ class Repository:
             for r in rows
         ]
 
+    def getArtistsCount(self, username: str, startTs: float | None = None, endTs: float | None = None,
+                         searchQuery: str | None = None) -> int:
+        """Number of distinct artists played in range - the paging counterpart
+        to getArtistAggregates(), used to compute total page count without
+        fetching every artist's metadata."""
+        conn = self._conn()
+        params = [username, startTs, startTs, endTs, endTs]
+        searchClause = ""
+        if searchQuery:
+            searchClause = " AND ar.name LIKE ? ESCAPE '\\'"
+            params.append(self._likePattern(searchQuery))
+        row = conn.execute(
+            f"""
+            SELECT COUNT(*) AS c FROM (
+                SELECT ta.artist_id FROM plays p
+                JOIN track_artists ta ON ta.track_id = p.track_id
+                JOIN artists ar ON ar.id = ta.artist_id
+                WHERE p.username = ? {self._dateRangeClause().replace("played_at", "p.played_at")}{searchClause}
+                GROUP BY ta.artist_id
+            )
+            """,
+            params,
+        ).fetchone()
+        return row["c"]
+
+    def getArtistTotals(self, username: str, startTs: float | None = None,
+                         endTs: float | None = None) -> tuple[int, int, int]:
+        """(total plays, total unique songs, total time listened) summed across
+        every artist in range - the Top Artists page's "(top list)" totals.
+        Deliberately a sum of each artist's own aggregate (an artist with N
+        plays contributes N; a multi-artist track's plays are counted once per
+        artist on it), not the same number as getPlayTotals()'s track-level
+        total - matches the totals the old fetch-everything-then-sum-in-Python
+        code computed, just without hydrating every artist's name/url first."""
+        conn = self._conn()
+        params = [username, startTs, startTs, endTs, endTs]
+        row = conn.execute(
+            f"""
+            SELECT COALESCE(SUM(plays), 0) AS total_plays,
+                   COALESCE(SUM(unique_song_count), 0) AS total_unique,
+                   COALESCE(SUM(total_time_listened), 0) AS total_time_listened
+            FROM (
+                SELECT COUNT(*) AS plays, COUNT(DISTINCT p.track_id) AS unique_song_count,
+                       SUM(p.time_played) AS total_time_listened
+                FROM plays p
+                JOIN track_artists ta ON ta.track_id = p.track_id
+                WHERE p.username = ? {self._dateRangeClause().replace("played_at", "p.played_at")}
+                GROUP BY ta.artist_id
+            )
+            """,
+            params,
+        ).fetchone()
+        return row["total_plays"], row["total_unique"], row["total_time_listened"]
+
     def getSongsPage(self, username: str, startTs: float | None = None, endTs: float | None = None,
                       sortBy: str = "plays", limit: int | None = None, offset: int = 0,
                       trackId: str | None = None, artistId: str | None = None,
-                      albumId: str | None = None) -> list[dict]:
+                      albumId: str | None = None, searchQuery: str | None = None) -> list[dict]:
         """Sorted/paged song stats in one batched round-trip, replacing the old
         "aggregate, then getTrack() per row" N+1 pattern - a caller asking for
         page N now pays for page N, not for every song ever played.
@@ -398,7 +595,11 @@ class Repository:
         artist's songs, or an album's songs - reused by the song/artist/album
         detail pages instead of a separate query per lookup. `artistId` is
         matched via EXISTS rather than an extra JOIN so a multi-artist track
-        still yields exactly one row.
+        still yields exactly one row. `searchQuery` narrows to songs whose
+        name, album, or artist(s) match - safe to check via the current row's
+        own t.id (unlike getAlbumsPage(), every row already shares the same
+        t.id within a GROUP BY t.id group, so there's no risk of the filter
+        seeing a different track's data than the one being aggregated).
         """
         if sortBy not in SONG_SORT_COLUMNS:
             raise ValueError(f"Unknown sortBy: {sortBy!r}")
@@ -418,6 +619,17 @@ class Repository:
         if albumId is not None:
             extraClauses += " AND al.id = ?"
             params.append(albumId)
+        if searchQuery:
+            pattern = self._likePattern(searchQuery)
+            extraClauses += """ AND (
+                t.name LIKE ? ESCAPE '\\'
+                OR al.name LIKE ? ESCAPE '\\'
+                OR EXISTS (
+                    SELECT 1 FROM track_artists ta3 JOIN artists ar3 ON ar3.id = ta3.artist_id
+                    WHERE ta3.track_id = t.id AND ar3.name LIKE ? ESCAPE '\\'
+                )
+            )"""
+            params += [pattern, pattern, pattern]
         params += [limitValue, offset]
 
         rows = conn.execute(
@@ -445,31 +657,67 @@ class Repository:
         artistsByTrack = self._artistsForTracks([row["track_id"] for row in rows])
         return [self._songRowToDict(row, artistsByTrack.get(row["track_id"], [])) for row in rows]
 
-    def getSongsCount(self, username: str, startTs: float | None = None, endTs: float | None = None) -> int:
+    def getSongsCount(self, username: str, startTs: float | None = None, endTs: float | None = None,
+                       searchQuery: str | None = None) -> int:
         """Number of distinct songs played in range - the paging counterpart to
         getSongsPage(), used to compute total page count without fetching every
         song's metadata."""
         conn = self._conn()
+        if not searchQuery:
+            # No name/artist/album lookup needed, so skip the joins entirely -
+            # this stays exactly as cheap as before search support was added.
+            row = conn.execute(
+                f"""
+                SELECT COUNT(*) AS c FROM (
+                    SELECT track_id FROM plays WHERE username = ? {self._dateRangeClause()}
+                    GROUP BY track_id
+                )
+                """,
+                (username, startTs, startTs, endTs, endTs),
+            ).fetchone()
+            return row["c"]
+
+        pattern = self._likePattern(searchQuery)
+        params = [username, startTs, startTs, endTs, endTs, pattern, pattern, pattern]
         row = conn.execute(
             f"""
             SELECT COUNT(*) AS c FROM (
-                SELECT track_id FROM plays WHERE username = ? {self._dateRangeClause()}
-                GROUP BY track_id
+                SELECT p.track_id FROM plays p
+                JOIN tracks t ON t.id = p.track_id
+                LEFT JOIN albums al ON al.id = t.album_id
+                WHERE p.username = ? {self._dateRangeClause().replace("played_at", "p.played_at")}
+                AND (
+                    t.name LIKE ? ESCAPE '\\'
+                    OR al.name LIKE ? ESCAPE '\\'
+                    OR EXISTS (
+                        SELECT 1 FROM track_artists ta JOIN artists ar ON ar.id = ta.artist_id
+                        WHERE ta.track_id = t.id AND ar.name LIKE ? ESCAPE '\\'
+                    )
+                )
+                GROUP BY p.track_id
             )
             """,
-            (username, startTs, startTs, endTs, endTs),
+            params,
         ).fetchone()
         return row["c"]
 
     def getAlbumsPage(self, username: str, startTs: float | None = None, endTs: float | None = None,
                        sortBy: str = "plays", limit: int | None = None, offset: int = 0,
-                       albumId: str | None = None) -> list[dict]:
+                       albumId: str | None = None, searchQuery: str | None = None) -> list[dict]:
         """Sorted/paged album stats in one batched round-trip - one row per
         album, aggregated across every track on it this user played. Mirrors
         getSongsPage()'s SQL-first sort/page pattern exactly.
 
         `albumId` narrows this to a single album - reused by album-detail pages
-        to fetch that one album's own aggregate stats."""
+        to fetch that one album's own aggregate stats. `searchQuery` narrows to
+        albums whose name or any artist on them matches - the artist check
+        deliberately looks up every track on the album (`t2.album_id = al.id`)
+        rather than just the current row's own track: unlike getSongsPage()
+        (grouped by t.id, so every row in a group already shares one track),
+        an album's rows span multiple different tracks, so filtering by the
+        current row's track alone would silently drop that album's non-matching
+        tracks from the aggregate instead of keeping the album's true totals.
+        """
         if sortBy not in ALBUM_SORT_COLUMNS:
             raise ValueError(f"Unknown sortBy: {sortBy!r}")
         sortColumn = ALBUM_SORT_COLUMNS[sortBy]
@@ -478,10 +726,22 @@ class Repository:
 
         conn = self._conn()
         params = [username, startTs, startTs, endTs, endTs]
-        albumFilterClause = ""
+        extraClauses = ""
         if albumId is not None:
-            albumFilterClause = " AND al.id = ?"
+            extraClauses += " AND al.id = ?"
             params.append(albumId)
+        if searchQuery:
+            pattern = self._likePattern(searchQuery)
+            extraClauses += """ AND (
+                al.name LIKE ? ESCAPE '\\'
+                OR EXISTS (
+                    SELECT 1 FROM tracks t2
+                    JOIN track_artists ta2 ON ta2.track_id = t2.id
+                    JOIN artists ar2 ON ar2.id = ta2.artist_id
+                    WHERE t2.album_id = al.id AND ar2.name LIKE ? ESCAPE '\\'
+                )
+            )"""
+            params += [pattern, pattern]
         params += [limitValue, offset]
 
         rows = conn.execute(
@@ -494,7 +754,7 @@ class Repository:
             FROM plays p
             JOIN tracks t ON t.id = p.track_id
             JOIN albums al ON al.id = t.album_id
-            WHERE p.username = ? {self._dateRangeClause().replace("played_at", "p.played_at")}{albumFilterClause}
+            WHERE p.username = ? {self._dateRangeClause().replace("played_at", "p.played_at")}{extraClauses}
             GROUP BY al.id
             ORDER BY {sortColumn} {direction}, total_time_listened {direction}, name {direction}, album_id ASC
             LIMIT ? OFFSET ?
@@ -505,21 +765,50 @@ class Repository:
         artistsByAlbum = self._artistsForAlbums([row["album_id"] for row in rows])
         return [self._albumStatsRowToDict(row, artistsByAlbum.get(row["album_id"], [])) for row in rows]
 
-    def getAlbumsCount(self, username: str, startTs: float | None = None, endTs: float | None = None) -> int:
+    def getAlbumsCount(self, username: str, startTs: float | None = None, endTs: float | None = None,
+                        searchQuery: str | None = None) -> int:
         """Number of distinct albums played in range - the paging counterpart to
         getAlbumsPage(), used to compute total page count without fetching every
         album's metadata."""
         conn = self._conn()
+        if not searchQuery:
+            # No name/artist lookup needed, so skip the joins entirely - stays
+            # exactly as cheap as before search support was added.
+            row = conn.execute(
+                f"""
+                SELECT COUNT(*) AS c FROM (
+                    SELECT t.album_id FROM plays p
+                    JOIN tracks t ON t.id = p.track_id
+                    WHERE p.username = ? {self._dateRangeClause().replace("played_at", "p.played_at")}
+                    GROUP BY t.album_id
+                )
+                """,
+                (username, startTs, startTs, endTs, endTs),
+            ).fetchone()
+            return row["c"]
+
+        pattern = self._likePattern(searchQuery)
+        params = [username, startTs, startTs, endTs, endTs, pattern, pattern]
         row = conn.execute(
             f"""
             SELECT COUNT(*) AS c FROM (
                 SELECT t.album_id FROM plays p
                 JOIN tracks t ON t.id = p.track_id
+                JOIN albums al ON al.id = t.album_id
                 WHERE p.username = ? {self._dateRangeClause().replace("played_at", "p.played_at")}
+                AND (
+                    al.name LIKE ? ESCAPE '\\'
+                    OR EXISTS (
+                        SELECT 1 FROM tracks t2
+                        JOIN track_artists ta2 ON ta2.track_id = t2.id
+                        JOIN artists ar2 ON ar2.id = ta2.artist_id
+                        WHERE t2.album_id = al.id AND ar2.name LIKE ? ESCAPE '\\'
+                    )
+                )
                 GROUP BY t.album_id
             )
             """,
-            (username, startTs, startTs, endTs, endTs),
+            params,
         ).fetchone()
         return row["c"]
 

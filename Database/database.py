@@ -155,22 +155,38 @@ class Database:
         track = {k: v for k, v in metadata.items() if k not in ("playedAt", "timePlayed", "playedFrom")}
         return entry, track
 
-    def _entryWithTrackMetadata(self, entry: dict) -> dict | None:
-        track = self._ensureTrackMetadata(entry["id"])
-        if track is None:
-            return None
+    @staticmethod
+    def _mergeEntryWithTrack(entry: dict, track: dict) -> dict:
         meta = track.copy()
         meta["playedAt"] = entry["playedAt"]
         meta["timePlayed"] = entry["timePlayed"]
         meta["playedFrom"] = entry.get("playedFrom")
         return meta
 
+    def _entryWithTrackMetadata(self, entry: dict) -> dict | None:
+        track = self._ensureTrackMetadata(entry["id"])
+        if track is None:
+            return None
+        return self._mergeEntryWithTrack(entry, track)
+
     def _paginateEntries(self, entries: list) -> list:
+        """Merge each play entry with its track's catalog metadata. Track
+        metadata for every distinct id in `entries` is fetched in one batched
+        round-trip (Repository.getTracksByIds) rather than once per entry -
+        hydrating a page of history used to cost 3 queries per play. A track
+        id that isn't in the catalog yet (rare) falls back to the single-track
+        path, which also handles fetching it live from the listener."""
+        trackIds = list({entry["id"] for entry in entries})
+        tracksById = self.repo.getTracksByIds(trackIds)
+
         result = []
         for entry in entries:
-            meta = self._entryWithTrackMetadata(entry)
-            if meta is not None:
-                result.append(meta)
+            track = tracksById.get(entry["id"])
+            if track is None:
+                track = self._ensureTrackMetadata(entry["id"])
+            if track is None:
+                continue
+            result.append(self._mergeEntryWithTrack(entry, track))
         return result
 
     def playlistName(self, playlistUri: str | None) -> str | None:
@@ -214,6 +230,18 @@ class Database:
         """ Return the oldest `count` entries from history, sorted from oldest to newest. If count is None, return all entries. """
         entries = self.repo.getPlaysOldestFirst(self.user, count=count, startIndex=startIndex)
         return self._paginateEntries(entries) if fullPagination else entries
+
+    def searchEntries(self, query: str, count: int | None = None, startIndex: int = 0) -> list:
+        """Entries (newest first) whose track/artist/album/playlist matches
+        `query`, paginated in SQL (Repository.searchPlays) rather than
+        filtering the whole history in Python."""
+        entries = self.repo.searchPlays(self.user, query, limit=count, offset=startIndex)
+        return self._paginateEntries(entries)
+
+    def searchEntriesCount(self, query: str) -> int:
+        """The paging counterpart to searchEntries() - total matching entries,
+        for computing total page count without fetching every match."""
+        return self.repo.searchPlaysCount(self.user, query)
 
     def writeProgress(self, status: str, current: int = 0, total: int = 0, message: str = "", error: bool = False):
         self.repo.writeProgress(self.user, status, current, total, message, error)
@@ -263,24 +291,7 @@ class Database:
     def saveArtistImg(self, url: str, imgId: str):
         self._saveImg(self.imgDir_artists, url, imgId, kind=IMAGE_KIND_ARTIST)
 
-    def lazyFetchArtistImage(self, artistId: str, imagePath: Path) -> bool:
-        """Best-effort synchronous fetch of an artist's image scraped from their public
-        Spotify page, used as a fallback for artists we never received image metadata
-        for from the API. Deduplicated per artist id (via the same lock used by the
-        rest of the image pipeline) so repeated requests for a still-missing image
-        don't keep re-hitting Spotify. Returns True if the image exists on disk after
-        this call, whether freshly fetched or already cached.
-        """
-        if imagePath.exists():
-            return True
-        if not artistId:
-            return False
-
-        with self._imageIdsLock:
-            if artistId in self._artistImageLazyFetchAttempted:
-                return imagePath.exists()
-            self._artistImageLazyFetchAttempted.add(artistId)
-
+    def _lazyFetchArtistImageTask(self, artistId: str, imagePath: Path) -> bool:
         try:
             res = requests.get(f"https://open.spotify.com/artist/{artistId}", timeout=5)
             match = re.search(r'<meta property="og:image" content="([^"]+)"', res.text)
@@ -293,6 +304,35 @@ class Database:
         except Exception as e:
             print(f"Failed to lazy load artist image for {artistId}: {parseError(e)}")
             return False
+
+    def lazyFetchArtistImage(self, artistId: str, imagePath: Path):
+        """Best-effort fetch of an artist's image scraped from their public
+        Spotify page, used as a fallback for artists we never received image
+        metadata for from the API. Deduplicated per artist id (via the same
+        lock used by the rest of the image pipeline) so repeated requests for
+        a still-missing image don't keep re-hitting Spotify.
+
+        The actual fetch runs on the shared image-download executor (like
+        saveTrackImg()/saveArtistImg()) instead of inline, so a request for a
+        still-missing image doesn't block the request thread on up to two
+        sequential network calls. Returns True if the image is already on
+        disk (nothing to do); otherwise returns the submitted Future for a
+        freshly kicked-off fetch (the HTTP route that calls this doesn't wait
+        on it - it just serves whatever's on disk right now, same as the
+        other image types - callers that do need to wait, e.g. tests, can
+        call .result() on it), or False if there's nothing to fetch (no
+        artistId, or a fetch for this id was already attempted)."""
+        if imagePath.exists():
+            return True
+        if not artistId:
+            return False
+
+        with self._imageIdsLock:
+            if artistId in self._artistImageLazyFetchAttempted:
+                return imagePath.exists()
+            self._artistImageLazyFetchAttempted.add(artistId)
+
+        return self._imageDownloadExecutor.submit(self._lazyFetchArtistImageTask, artistId, imagePath)
 
     def saveImagesFromTrack(self, track: dict):
         self.saveTrackImg(track["imageUrl"], track["imageId"])
@@ -417,16 +457,17 @@ class Database:
     def getSongsStats(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None,
                        sortBy: str = "plays", limit: int | None = None, offset: int = 0,
                        trackId: str | None = None, artistId: str | None = None,
-                       albumId: str | None = None) -> list:
+                       albumId: str | None = None, searchQuery: str | None = None) -> list:
         """Return songs sorted by `sortBy` with full song metadata and listen
         totals - sorted/paged in SQL via a single batched query (see
         Repository.getSongsPage) rather than hydrating every song ever played
         just to discard all but the requested page. `trackId`/`artistId`/
         `albumId` narrow this to a single song's stats, an artist's songs, or an
-        album's songs (see Repository.getSongsPage)."""
+        album's songs (see Repository.getSongsPage). `searchQuery` narrows to
+        songs whose name, artist(s), or album match."""
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
         return self.repo.getSongsPage(self.user, startTs, endTs, sortBy=sortBy, limit=limit, offset=offset,
-                                       trackId=trackId, artistId=artistId, albumId=albumId)
+                                       trackId=trackId, artistId=artistId, albumId=albumId, searchQuery=searchQuery)
 
     def getSong(self, trackId: str) -> dict | None:
         """A single song's full metadata plus all-time listen totals - the
@@ -434,12 +475,13 @@ class Database:
         results = self.getSongsStats(sortBy="plays", limit=1, trackId=trackId)
         return results[0] if results else None
 
-    def getSongsCount(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> int:
+    def getSongsCount(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None,
+                       searchQuery: str | None = None) -> int:
         """Number of distinct songs played in range - the paging counterpart to
         getSongsStats(), for computing total page count without fetching every
         song's metadata."""
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
-        return self.repo.getSongsCount(self.user, startTs, endTs)
+        return self.repo.getSongsCount(self.user, startTs, endTs, searchQuery=searchQuery)
 
     def getPlayTotals(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> tuple[int, int]:
         """(play count, total time listened) across the whole range - cheap
@@ -449,45 +491,69 @@ class Database:
 
     def getAlbumsStats(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None,
                         sortBy: str = "plays", limit: int | None = None, offset: int = 0,
-                        albumId: str | None = None) -> list:
+                        albumId: str | None = None, searchQuery: str | None = None) -> list:
         """Return albums sorted by `sortBy` with aggregated listen totals - sorted/
         paged in SQL via a single batched query (see Repository.getAlbumsPage),
         mirroring getSongsStats(). `albumId` narrows this to a single album's
-        stats."""
+        stats. `searchQuery` narrows to albums whose name or artist(s) match."""
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
         return self.repo.getAlbumsPage(self.user, startTs, endTs, sortBy=sortBy, limit=limit, offset=offset,
-                                        albumId=albumId)
+                                        albumId=albumId, searchQuery=searchQuery)
 
     def getAlbum(self, albumId: str) -> dict | None:
         """A single album's aggregate stats - the album-detail page's lookup."""
         results = self.getAlbumsStats(sortBy="plays", limit=1, albumId=albumId)
         return results[0] if results else None
 
-    def getAlbumsCount(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> int:
+    def getAlbumsCount(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None,
+                        searchQuery: str | None = None) -> int:
         """Number of distinct albums played in range - the paging counterpart to
         getAlbumsStats(), for computing total page count without fetching every
         album's metadata."""
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
-        return self.repo.getAlbumsCount(self.user, startTs, endTs)
+        return self.repo.getAlbumsCount(self.user, startTs, endTs, searchQuery=searchQuery)
 
     def getTopAlbums(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None, by: str = "plays",
-                      limit: int | None = None, offset: int = 0) -> list:
+                      limit: int | None = None, offset: int = 0, searchQuery: str | None = None) -> list:
         # Albums are sorted/paged in SQL (see getAlbumsStats -> Repository.getAlbumsPage)
         # rather than re-sorted here in Python, for the same reason getTopSongs is.
-        return self.getAlbumsStats(startDate, endDate, sortBy=by, limit=limit, offset=offset)
+        return self.getAlbumsStats(startDate, endDate, sortBy=by, limit=limit, offset=offset, searchQuery=searchQuery)
 
     def getArtistsStats(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None,
-                         artistId: str | None = None) -> list:
-        """Return artists sorted by total plays with aggregated data and listen
-        totals. `artistId` narrows this to a single artist's stats."""
+                         artistId: str | None = None, sortBy: str = "plays", limit: int | None = None,
+                         offset: int = 0, searchQuery: str | None = None) -> list:
+        """Return artists sorted by `sortBy` with aggregated data and listen
+        totals - sorted/paged in SQL via a single batched query (see
+        Repository.getArtistAggregates) rather than fetching every artist and
+        sorting/paging in Python, mirroring getSongsStats()/getAlbumsStats().
+        `artistId` narrows this to a single artist's stats; `searchQuery`
+        narrows to artists whose name matches."""
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
-        return self.repo.getArtistAggregates(self.user, startTs, endTs, artistId=artistId)
+        return self.repo.getArtistAggregates(self.user, startTs, endTs, artistId=artistId, sortBy=sortBy,
+                                              limit=limit, offset=offset, searchQuery=searchQuery)
 
     def getArtist(self, artistId: str, startDate: datetime.datetime = None,
                   endDate: datetime.datetime = None) -> dict | None:
         """A single artist's aggregate stats - the artist-detail page's lookup."""
-        results = self.getArtistsStats(startDate, endDate, artistId=artistId)
+        results = self.getArtistsStats(startDate, endDate, artistId=artistId, limit=1)
         return results[0] if results else None
+
+    def getArtistsCount(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None,
+                         searchQuery: str | None = None) -> int:
+        """Number of distinct artists played in range - the paging counterpart
+        to getArtistsStats(), for computing total page count without fetching
+        every artist's metadata."""
+        startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
+        return self.repo.getArtistsCount(self.user, startTs, endTs, searchQuery=searchQuery)
+
+    def getArtistTotals(self, startDate: datetime.datetime = None,
+                         endDate: datetime.datetime = None) -> tuple[int, int, int]:
+        """(total plays, total unique songs, total time listened) summed across
+        every artist in range - the Top Artists page's "(top list)" totals,
+        computed directly in SQL instead of fetching every artist and summing
+        in Python."""
+        startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
+        return self.repo.getArtistTotals(self.user, startTs, endTs)
 
     def getOverallStats(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> list:
         """Return songs sorted by play count with full song metadata and listen totals."""
@@ -506,7 +572,7 @@ class Database:
         # its numbers up. currentTopSongs only needs the single top row.
         totalSongsPlayed, totalDurationMs = self.getPlayTotals(startDate, endDate)
         currentTopSongs = self.getTopSongs(startDate=startDate, endDate=endDate, by="plays", limit=1)
-        currentTopArtists = self.getTopArtists(startDate=startDate, endDate=endDate, by="totalTimeListened")
+        currentTopArtists = self.getTopArtists(startDate=startDate, endDate=endDate, by="totalTimeListened", limit=1)
 
         return {"currentTopSongs": currentTopSongs,
                 "currentTopArtists": currentTopArtists,
@@ -516,35 +582,19 @@ class Database:
                 "previousDurationMs": previousDurationMs
                 }
 
-    def _sortTopStats(self, items, compareKeys, by: str = "plays") -> list:
-        """
-        Sorts songs within a date range.
-        'plays' and 'totalTimeListened' are sorted descending (highest first).
-        'name' is sorted ascending (A to Z).
-        """
-
-        reverse=True
-        if by == "name":
-            reverse=False
-
-        return sorted(
-            items,
-            key=lambda item: tuple(item[key] for key in compareKeys),     #< the tuple acts as a tie breaker, if two elements 'by' are the same, it compares the 'totalTimeListened', then 'name'
-            reverse=reverse
-        )
-
     def getTopSongs(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None, by: str = "plays",
-                     limit: int | None = None, offset: int = 0) -> list:
+                     limit: int | None = None, offset: int = 0, searchQuery: str | None = None) -> list:
         # Songs are sorted/paged in SQL (see getSongsStats -> Repository.getSongsPage)
         # rather than re-sorted here in Python: once pagination is pushed down to
         # the database, re-sorting an already-LIMIT-ed page can't reconstruct
         # global rank, so SQL ordering must be the single source of truth.
-        return self.getSongsStats(startDate, endDate, sortBy=by, limit=limit, offset=offset)
+        return self.getSongsStats(startDate, endDate, sortBy=by, limit=limit, offset=offset, searchQuery=searchQuery)
 
-    def getTopArtists(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None, by: str = "plays") -> list:
-        artists = self.getArtistsStats(startDate, endDate)
-        compKeys = (by, "totalTimeListened", "name")
-        return self._sortTopStats(artists, compKeys, by)
+    def getTopArtists(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None, by: str = "plays",
+                       limit: int | None = None, offset: int = 0, searchQuery: str | None = None) -> list:
+        # Artists are sorted/paged in SQL (see getArtistsStats -> Repository.getArtistAggregates)
+        # rather than re-sorted here in Python, for the same reason getTopSongs is.
+        return self.getArtistsStats(startDate, endDate, sortBy=by, limit=limit, offset=offset, searchQuery=searchQuery)
 
     def _bucketKey(self, date: datetime.datetime, groupBy: str) -> str:
         if groupBy == "week":

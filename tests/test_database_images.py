@@ -53,6 +53,9 @@ class TestLazyFetchArtistImage(unittest.TestCase):
             mock_get.assert_not_called()
 
     def test_fetches_and_saves_image_on_first_call(self):
+        """The actual fetch runs on the shared background executor, not
+        inline - lazyFetchArtistImage() returns the submitted Future rather
+        than the outcome directly, so the test waits on it explicitly."""
         db = _bareDatabase()
         with tempfile.TemporaryDirectory() as tmpdir:
             imagePath = Path(tmpdir) / "artist123.jpeg"
@@ -63,7 +66,8 @@ class TestLazyFetchArtistImage(unittest.TestCase):
             imageResponse.content = b"fake-image-bytes"
 
             with patch("Database.database.requests.get", side_effect=[pageResponse, imageResponse]) as mock_get:
-                result = db.lazyFetchArtistImage("artist123", imagePath)
+                future = db.lazyFetchArtistImage("artist123", imagePath)
+                result = future.result(timeout=5)
 
             self.assertTrue(result)
             self.assertEqual(imagePath.read_bytes(), b"fake-image-bytes")
@@ -80,11 +84,12 @@ class TestLazyFetchArtistImage(unittest.TestCase):
             noImageResponse.text = "<html>no og:image here</html>"
 
             with patch("Database.database.requests.get", return_value=noImageResponse) as mock_get:
-                firstResult = db.lazyFetchArtistImage("missingArtist", imagePath)
+                firstFuture = db.lazyFetchArtistImage("missingArtist", imagePath)
+                firstResult = firstFuture.result(timeout=5)
                 secondResult = db.lazyFetchArtistImage("missingArtist", imagePath)
 
             self.assertFalse(firstResult)
-            self.assertFalse(secondResult)
+            self.assertFalse(secondResult)   #< dedup path returns a plain bool, no new Future/fetch
             mock_get.assert_called_once()
 
     def test_network_exception_is_swallowed_and_returns_false(self):
@@ -92,9 +97,33 @@ class TestLazyFetchArtistImage(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             imagePath = Path(tmpdir) / "artist999.jpeg"
             with patch("Database.database.requests.get", side_effect=Exception("boom")):
-                result = db.lazyFetchArtistImage("artist999", imagePath)
+                future = db.lazyFetchArtistImage("artist999", imagePath)
+                result = future.result(timeout=5)
 
             self.assertFalse(result)
+
+    def test_dispatch_does_not_block_the_calling_thread(self):
+        """The whole point of routing this through the shared executor: an
+        HTTP request thread calling this must get control back immediately
+        instead of blocking on up to two sequential network calls."""
+        import time
+        db = _bareDatabase()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            imagePath = Path(tmpdir) / "artistSlow.jpeg"
+
+            def slowGet(*args, **kwargs):
+                time.sleep(0.3)
+                response = MagicMock()
+                response.text = "<html>no og:image here</html>"
+                return response
+
+            with patch("Database.database.requests.get", side_effect=slowGet):
+                start = time.monotonic()
+                future = db.lazyFetchArtistImage("artistSlow", imagePath)
+                elapsed = time.monotonic() - start
+
+                self.assertLess(elapsed, 0.1)
+                future.result(timeout=5)   #< let the background task finish before tmpdir cleanup
 
 
 class TestDownloadImageTaskExtension(DatabaseTestCase):

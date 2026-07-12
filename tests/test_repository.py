@@ -117,6 +117,60 @@ class TestTrackCatalog(RepositoryTestCase):
         self.assertEqual(artistCount, 1)
 
 
+class TestGetTracksByIds(RepositoryTestCase):
+    """Batch equivalent of getTrack(), used by Database._paginateEntries() to
+    avoid a 3-query-per-play N+1 when hydrating a page of history."""
+
+    def test_returns_a_dict_keyed_by_track_id(self):
+        self.repo.upsertTrack(makeTrack(trackId="t1", name="Song One"))
+        self.repo.upsertTrack(makeTrack(trackId="t2", name="Song Two", albumId="alb2", artistId="art2"))
+
+        result = self.repo.getTracksByIds(["t1", "t2"])
+
+        self.assertEqual(set(result.keys()), {"t1", "t2"})
+        self.assertEqual(result["t1"]["name"], "Song One")
+        self.assertEqual(result["t2"]["name"], "Song Two")
+
+    def test_result_matches_getTrack_for_the_same_id(self):
+        self.repo.upsertTrack(makeTrack())
+
+        viaBatch = self.repo.getTracksByIds(["t1"])["t1"]
+        viaSingle = self.repo.getTrack("t1")
+
+        self.assertEqual(viaBatch, viaSingle)
+
+    def test_unknown_ids_are_simply_absent_from_the_result(self):
+        self.repo.upsertTrack(makeTrack(trackId="t1"))
+
+        result = self.repo.getTracksByIds(["t1", "missing"])
+
+        self.assertEqual(set(result.keys()), {"t1"})
+
+    def test_empty_id_list_returns_empty_dict_without_querying(self):
+        self.assertEqual(self.repo.getTracksByIds([]), {})
+
+    def test_tracks_on_different_albums_each_get_their_own_album(self):
+        self.repo.upsertTrack(makeTrack(trackId="t1", albumId="alb1", artistId="art1"))
+        self.repo.upsertTrack(makeTrack(trackId="t2", albumId="alb2", artistId="art2"))
+
+        result = self.repo.getTracksByIds(["t1", "t2"])
+
+        self.assertEqual(result["t1"]["album"]["id"], "alb1")
+        self.assertEqual(result["t2"]["album"]["id"], "alb2")
+
+    def test_multi_artist_order_preserved_per_track(self):
+        track = makeTrack(trackId="t1")
+        track["artists"] = [
+            {"id": "a1", "name": "First", "url": "u", "imageUrl": "", "imageId": "a1"},
+            {"id": "a2", "name": "Second", "url": "u", "imageUrl": "", "imageId": "a2"},
+        ]
+        self.repo.upsertTrack(track)
+
+        result = self.repo.getTracksByIds(["t1"])
+
+        self.assertEqual([a["id"] for a in result["t1"]["artists"]], ["a1", "a2"])
+
+
 class TestPlaylistCatalog(RepositoryTestCase):
     def test_roundtrip(self):
         self.assertFalse(self.repo.playlistKnown("p1", "playlist"))
@@ -245,6 +299,130 @@ class TestPlaysHistory(RepositoryTestCase):
 
         self.assertEqual(self.repo.deleteZeroDurationPlays(), 0)
         self.assertEqual(self.repo.getPlaysCount("alice"), 1)
+
+
+def makeSearchableTrack(trackId, name, artistName, albumName):
+    """Unlike makeTrack() (which hardcodes "Artist One"/"Album One" regardless
+    of id - fine for id-uniqueness tests, wrong for text-search tests), this
+    lets each fixture track carry genuinely distinct searchable text."""
+    return {
+        "id": trackId,
+        "name": name,
+        "url": f"http://example.com/track/{trackId}",
+        "artists": [
+            {"id": f"{trackId}-artist", "name": artistName, "url": "http://example.com/artist",
+             "imageUrl": "", "imageId": f"{trackId}-artist"},
+        ],
+        "album": {
+            "id": f"{trackId}-album", "name": albumName, "url": "http://example.com/album",
+            "imageId": f"{trackId}-album", "imageUrl": "", "totalTracks": 1, "releaseDate": 12345.0,
+        },
+        "imageUrl": "", "imageId": f"{trackId}-album", "duration": 200000, "explicit": False,
+        "isrc": "", "discNumber": 1, "trackNumber": 1, "releaseDate": 12345.0,
+    }
+
+
+class TestSearchPlays(RepositoryTestCase):
+    """searchPlays()/searchPlaysCount() match a play's track name, artist(s),
+    album, or source playlist - pushed down into SQL (with LIMIT/OFFSET)
+    instead of requiring every play to be fetched and filtered in Python."""
+
+    def setUp(self):
+        super().setUp()
+        self.repo.upsertUser("alice", "alice@example.com")
+        self.repo.upsertTrack(makeSearchableTrack("t1", "Bohemian Rhapsody", "Queen", "A Night at the Opera"))
+        self.repo.upsertTrack(makeSearchableTrack("t2", "Another One Bites the Dust", "Queen", "The Game"))
+        self.repo.upsertTrack(makeSearchableTrack("t3", "Unrelated Song", "Random Artist", "Random Album"))
+
+    def test_matches_track_name(self):
+        self.repo.insertPlay("alice", "t1", 100.0, 5000)
+        self.repo.insertPlay("alice", "t3", 200.0, 5000)
+
+        results = self.repo.searchPlays("alice", "bohemian")
+
+        self.assertEqual([r["id"] for r in results], ["t1"])
+
+    def test_match_is_case_insensitive(self):
+        self.repo.insertPlay("alice", "t1", 100.0, 5000)
+
+        results = self.repo.searchPlays("alice", "BOHEMIAN")
+
+        self.assertEqual([r["id"] for r in results], ["t1"])
+
+    def test_matches_artist_name(self):
+        self.repo.insertPlay("alice", "t1", 100.0, 5000)
+        self.repo.insertPlay("alice", "t3", 200.0, 5000)
+
+        results = self.repo.searchPlays("alice", "Queen")
+
+        self.assertEqual([r["id"] for r in results], ["t1"])
+
+    def test_matches_album_name(self):
+        self.repo.insertPlay("alice", "t1", 100.0, 5000)
+        self.repo.insertPlay("alice", "t3", 200.0, 5000)
+
+        results = self.repo.searchPlays("alice", "Night at the Opera")
+
+        self.assertEqual([r["id"] for r in results], ["t1"])
+
+    def test_matches_playlist_name(self):
+        self.repo.upsertPlaylistName("pl1", "playlist", "Road Trip Mix")
+        self.repo.insertPlay("alice", "t1", 100.0, 5000, playedFrom="playlist:pl1")
+        self.repo.insertPlay("alice", "t3", 200.0, 5000)
+
+        results = self.repo.searchPlays("alice", "road trip")
+
+        self.assertEqual([r["id"] for r in results], ["t1"])
+
+    def test_no_match_returns_empty(self):
+        self.repo.insertPlay("alice", "t1", 100.0, 5000)
+
+        self.assertEqual(self.repo.searchPlays("alice", "nonexistent"), [])
+        self.assertEqual(self.repo.searchPlaysCount("alice", "nonexistent"), 0)
+
+    def test_percent_and_underscore_are_matched_literally_not_as_wildcards(self):
+        self.repo.upsertTrack(makeSearchableTrack("t4", "100% Pure Love", "Random Artist", "Random Album"))
+        self.repo.insertPlay("alice", "t1", 100.0, 5000)
+        self.repo.insertPlay("alice", "t4", 200.0, 5000)
+
+        results = self.repo.searchPlays("alice", "100%")
+
+        self.assertEqual([r["id"] for r in results], ["t4"])
+
+    def test_results_are_scoped_per_user(self):
+        self.repo.upsertUser("bob", "bob@example.com")
+        self.repo.insertPlay("alice", "t1", 100.0, 5000)
+        self.repo.insertPlay("bob", "t1", 100.0, 5000)
+
+        self.assertEqual(self.repo.searchPlaysCount("alice", "bohemian"), 1)
+        self.assertEqual(len(self.repo.searchPlays("bob", "bohemian")), 1)
+
+    def test_ordered_newest_first(self):
+        """"the" matches t1 via its album ("A Night at the Opera") and t2 via
+        its own name ("...Bites the Dust")."""
+        self.repo.insertPlay("alice", "t1", 100.0, 5000)
+        self.repo.insertPlay("alice", "t2", 300.0, 5000)
+        self.repo.insertPlay("alice", "t1", 200.0, 5000)
+
+        results = self.repo.searchPlays("alice", "the")
+
+        self.assertEqual([r["playedAt"] for r in results], [300.0, 200.0, 100.0])
+
+    def test_limit_and_offset_paginate_matches(self):
+        for i in range(5):
+            self.repo.insertPlay("alice", "t1", float(i), 5000)
+
+        page = self.repo.searchPlays("alice", "bohemian", limit=2, offset=1)
+
+        self.assertEqual([r["playedAt"] for r in page], [3.0, 2.0])
+
+    def test_count_matches_full_result_length(self):
+        for i in range(5):
+            self.repo.insertPlay("alice", "t1", float(i), 5000)
+        self.repo.insertPlay("alice", "t3", 100.0, 5000)
+
+        self.assertEqual(self.repo.searchPlaysCount("alice", "bohemian"), 5)
+        self.assertEqual(len(self.repo.searchPlays("alice", "bohemian")), 5)
 
 
 class TestTransactionControl(RepositoryTestCase):
@@ -377,6 +555,93 @@ class TestStatsAggregates(RepositoryTestCase):
         self.assertEqual(aggregates["a1"]["plays"], 3)
         self.assertEqual(aggregates["a1"]["uniqueSongCount"], 2)
 
+    def test_artist_aggregates_sorted_by_plays_descending_by_default(self):
+        self.repo.upsertTrack(self._track("t1", "alb1", "a1"))
+        self.repo.upsertTrack(self._track("t2", "alb1", "a2"))
+        self.repo.insertPlay("alice", "t1", 100.0, 1000)
+        self.repo.insertPlay("alice", "t2", 200.0, 1000)
+        self.repo.insertPlay("alice", "t2", 300.0, 1000)
+        self.repo.commit()
+
+        aggregates = self.repo.getArtistAggregates("alice")
+
+        self.assertEqual([a["id"] for a in aggregates], ["a2", "a1"])
+
+    def test_artist_aggregates_sorted_by_name_ascending(self):
+        self.repo.upsertTrack(self._track("t1", "alb1", "a1"))
+        self.repo.upsertTrack(self._track("t2", "alb1", "a2"))
+        self.repo.insertPlay("alice", "t1", 100.0, 1000)
+        self.repo.insertPlay("alice", "t2", 200.0, 1000)
+        self.repo.commit()
+
+        aggregates = self.repo.getArtistAggregates("alice", sortBy="name")
+
+        self.assertEqual([a["id"] for a in aggregates], ["a1", "a2"])  #< "Artist a1" < "Artist a2"
+
+    def test_artist_aggregates_rejects_unknown_sortby(self):
+        with self.assertRaises(ValueError):
+            self.repo.getArtistAggregates("alice", sortBy="not_a_real_column")
+
+    def test_artist_aggregates_limit_and_offset_paginate(self):
+        for i in range(5):
+            trackId, artistId = f"t{i}", f"a{i}"
+            self.repo.upsertTrack(self._track(trackId, "alb1", artistId))
+            self.repo.insertPlay("alice", trackId, float(i), i + 1)  #< distinct play counts for a stable sort
+        self.repo.commit()
+
+        page = self.repo.getArtistAggregates("alice", limit=2, offset=1)
+
+        self.assertEqual(len(page), 2)
+
+    def test_artist_aggregates_filtered_by_search_query(self):
+        self.repo.upsertTrack(self._track("t1", "alb1", "a1"))
+        self.repo.upsertTrack(self._track("t2", "alb1", "a2"))
+        self.repo.insertPlay("alice", "t1", 100.0, 1000)
+        self.repo.insertPlay("alice", "t2", 200.0, 1000)
+        self.repo.commit()
+
+        aggregates = self.repo.getArtistAggregates("alice", searchQuery="a1")
+
+        self.assertEqual([a["id"] for a in aggregates], ["a1"])
+
+    def test_get_artists_count(self):
+        self.repo.upsertTrack(self._track("t1", "alb1", "a1"))
+        self.repo.upsertTrack(self._track("t2", "alb1", "a2"))
+        self.repo.insertPlay("alice", "t1", 100.0, 1000)
+        self.repo.insertPlay("alice", "t2", 200.0, 1000)
+        self.repo.commit()
+
+        self.assertEqual(self.repo.getArtistsCount("alice"), 2)
+
+    def test_get_artists_count_filtered_by_search_query(self):
+        self.repo.upsertTrack(self._track("t1", "alb1", "a1"))
+        self.repo.upsertTrack(self._track("t2", "alb1", "a2"))
+        self.repo.insertPlay("alice", "t1", 100.0, 1000)
+        self.repo.insertPlay("alice", "t2", 200.0, 1000)
+        self.repo.commit()
+
+        self.assertEqual(self.repo.getArtistsCount("alice", searchQuery="a1"), 1)
+
+    def test_get_artist_totals_sums_across_every_artist(self):
+        """A multi-artist track's plays are counted once per artist on it - the
+        totals are a sum of each artist's own aggregate, not the track-level
+        total getPlayTotals() would give."""
+        self.repo.upsertTrack(self._track("t1", "alb1", "a1", "a2"))
+        self.repo.upsertTrack(self._track("t2", "alb1", "a1"))
+        self.repo.insertPlay("alice", "t1", 100.0, 1000)
+        self.repo.insertPlay("alice", "t2", 200.0, 2000)
+        self.repo.commit()
+
+        totalPlays, totalUnique, totalTime = self.repo.getArtistTotals("alice")
+
+        # a1: 2 plays (t1, t2), 2 unique songs; a2: 1 play (t1), 1 unique song.
+        self.assertEqual(totalPlays, 3)
+        self.assertEqual(totalUnique, 3)
+        self.assertEqual(totalTime, 4000)
+
+    def test_get_artist_totals_empty_range_returns_zeros(self):
+        self.assertEqual(self.repo.getArtistTotals("alice"), (0, 0, 0))
+
     def test_plays_in_range(self):
         self.repo.upsertTrack(self._track("t1", "alb1", "a1"))
         self.repo.insertPlay("alice", "t1", 100.0, 1000)
@@ -454,12 +719,14 @@ class TestSongsPage(RepositoryTestCase):
         super().setUp()
         self.repo.upsertUser("alice", "alice@example.com")
 
-    def _track(self, trackId, albumId, *artistIds, name=None):
+    def _track(self, trackId, albumId, *artistIds, name=None, albumName=None):
         track = makeTrack(trackId=trackId, name=name or f"Song {trackId}", albumId=albumId)
         track["artists"] = [
             {"id": aid, "name": f"Artist {aid}", "url": "u", "imageUrl": "", "imageId": aid}
             for aid in artistIds
         ]
+        if albumName is not None:
+            track["album"]["name"] = albumName
         return track
 
     def test_returns_merged_shape_with_plays_and_track_metadata(self):
@@ -582,6 +849,52 @@ class TestSongsPage(RepositoryTestCase):
 
         self.assertEqual(songs[0]["plays"], 1)
         self.assertEqual(songs[0]["totalTimeListened"], 1000)
+
+    def test_search_query_matches_track_name(self):
+        self.repo.upsertTrack(self._track("t1", "alb1", "a1", name="Bohemian Rhapsody"))
+        self.repo.upsertTrack(self._track("t2", "alb1", "a2", name="Unrelated"))
+        self.repo.insertPlay("alice", "t1", 100.0, 1000)
+        self.repo.insertPlay("alice", "t2", 200.0, 1000)
+        self.repo.commit()
+
+        songs = self.repo.getSongsPage("alice", searchQuery="bohemian")
+
+        self.assertEqual([s["id"] for s in songs], ["t1"])
+
+    def test_search_query_matches_artist_name(self):
+        self.repo.upsertTrack(self._track("t1", "alb1", "a1"))
+        self.repo.upsertTrack(self._track("t2", "alb1", "a2"))
+        self.repo.insertPlay("alice", "t1", 100.0, 1000)
+        self.repo.insertPlay("alice", "t2", 200.0, 1000)
+        self.repo.commit()
+
+        songs = self.repo.getSongsPage("alice", searchQuery="Artist a1")
+
+        self.assertEqual([s["id"] for s in songs], ["t1"])
+
+    def test_search_query_matches_album_name(self):
+        self.repo.upsertTrack(self._track("t1", "alb1", "a1", albumName="A Night at the Opera"))
+        self.repo.upsertTrack(self._track("t2", "alb2", "a1", albumName="Unrelated Album"))
+        self.repo.insertPlay("alice", "t1", 100.0, 1000)
+        self.repo.insertPlay("alice", "t2", 200.0, 1000)
+        self.repo.commit()
+
+        songs = self.repo.getSongsPage("alice", searchQuery="night at the opera")
+
+        self.assertEqual([s["id"] for s in songs], ["t1"])
+
+    def test_search_query_paginates_with_getSongsCount(self):
+        self.repo.upsertTrack(self._track("t1", "alb1", "a1", name="Bohemian Rhapsody"))
+        self.repo.upsertTrack(self._track("t2", "alb1", "a1", name="Bohemian Remix"))
+        self.repo.upsertTrack(self._track("t3", "alb1", "a1", name="Unrelated"))
+        self.repo.insertPlay("alice", "t1", 100.0, 1000)
+        self.repo.insertPlay("alice", "t2", 200.0, 1000)
+        self.repo.insertPlay("alice", "t3", 300.0, 1000)
+        self.repo.commit()
+
+        self.assertEqual(self.repo.getSongsCount("alice", searchQuery="bohemian"), 2)
+        page = self.repo.getSongsPage("alice", searchQuery="bohemian", limit=1, offset=0)
+        self.assertEqual(len(page), 1)
 
     def test_missing_album_row_falls_back_like_get_track(self):
         """The LEFT JOIN can in principle return no matching album row, and
@@ -830,6 +1143,63 @@ class TestAlbumsPage(RepositoryTestCase):
         self._seedThreeAlbums()
 
         self.assertEqual(self.repo.getAlbumsPage("alice", albumId="missing"), [])
+
+    def test_search_query_matches_album_name(self):
+        self.repo.upsertTrack(self._track("t1", "alb1", "A Night at the Opera", "a1"))
+        self.repo.upsertTrack(self._track("t2", "alb2", "Unrelated Album", "a1"))
+        self.repo.insertPlay("alice", "t1", 100.0, 1000)
+        self.repo.insertPlay("alice", "t2", 200.0, 1000)
+        self.repo.commit()
+
+        albums = self.repo.getAlbumsPage("alice", searchQuery="night at the opera")
+
+        self.assertEqual([a["id"] for a in albums], ["alb1"])
+
+    def test_search_query_matches_artist_name(self):
+        self.repo.upsertTrack(self._track("t1", "alb1", "Album One", "a1"))
+        self.repo.upsertTrack(self._track("t2", "alb2", "Album Two", "a2"))
+        self.repo.insertPlay("alice", "t1", 100.0, 1000)
+        self.repo.insertPlay("alice", "t2", 200.0, 1000)
+        self.repo.commit()
+
+        albums = self.repo.getAlbumsPage("alice", searchQuery="Artist a1")
+
+        self.assertEqual([a["id"] for a in albums], ["alb1"])
+
+    def test_search_match_on_one_track_still_aggregates_the_whole_album(self):
+        """A row-level filter (checking only the current play's own track)
+        would silently shrink a matching album's totals down to just its
+        matching track's plays - the search must be evaluated per-album so a
+        match still returns the album's TRUE totals across every track on it,
+        matching exactly what a non-search fetch of the same album returns."""
+        self.repo.upsertTrack(self._track("t1", "alb1", "Album One", "a1"))     # matches "Artist a1"
+        self.repo.upsertTrack(self._track("t2", "alb1", "Album One", "a2"))     # does not match, same album
+        self.repo.insertPlay("alice", "t1", 100.0, 1000)
+        self.repo.insertPlay("alice", "t2", 200.0, 2000)
+        self.repo.commit()
+
+        searched = self.repo.getAlbumsPage("alice", searchQuery="Artist a1")
+        unfiltered = self.repo.getAlbumsPage("alice")
+
+        self.assertEqual(len(searched), 1)
+        self.assertEqual(searched[0]["plays"], unfiltered[0]["plays"])
+        self.assertEqual(searched[0]["totalTimeListened"], unfiltered[0]["totalTimeListened"])
+        self.assertEqual(searched[0]["uniqueSongCount"], unfiltered[0]["uniqueSongCount"])
+        self.assertEqual(searched[0]["plays"], 2)
+        self.assertEqual(searched[0]["totalTimeListened"], 3000)
+
+    def test_search_query_paginates_with_getAlbumsCount(self):
+        self.repo.upsertTrack(self._track("t1", "alb1", "Bohemian Album", "a1"))
+        self.repo.upsertTrack(self._track("t2", "alb2", "Bohemian Remix", "a1"))
+        self.repo.upsertTrack(self._track("t3", "alb3", "Unrelated", "a1"))
+        self.repo.insertPlay("alice", "t1", 100.0, 1000)
+        self.repo.insertPlay("alice", "t2", 200.0, 1000)
+        self.repo.insertPlay("alice", "t3", 300.0, 1000)
+        self.repo.commit()
+
+        self.assertEqual(self.repo.getAlbumsCount("alice", searchQuery="bohemian"), 2)
+        page = self.repo.getAlbumsPage("alice", searchQuery="bohemian", limit=1, offset=0)
+        self.assertEqual(len(page), 1)
 
 
 class TestUsersAndCookies(RepositoryTestCase):
