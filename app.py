@@ -30,6 +30,7 @@ DEFAULT_SORT_BY = "totalTimeListened"
 # otherwise reach a ValueError deep in the DB layer and 500 instead of just
 # falling back to the default.
 VALID_SORT_BY = {"totalTimeListened", "plays", "name"}
+TRUTHY_ENV_VALUES = {"1", "true", "yes", "on"}
 
 class SpotifyDashboardApp:
     def __init__(self):
@@ -52,6 +53,11 @@ class SpotifyDashboardApp:
         self._db_lock = threading.RLock()
         self._session_lock = threading.RLock()
         self._login_cache: dict = {}  #< {email: (result: bool, expires_at: float)}
+        # Lets a self-hoster turn off the "do these cookies actually belong to
+        # this email" check at login, e.g. if Spotify starts blocking the
+        # verification request for their account. Off by default since it's
+        # what stops one user from claiming another's account/database.
+        self.skipEmailVerification = os.environ.get("SKIP_EMAIL_VERIFICATION", "").strip().lower() in TRUTHY_ENV_VALUES
         
         try:
             self.currentVersion = (self.baseDir / "Database" / "VERSION").read_text(encoding="utf-8").strip()  #< only needs to be checked once because app cant update without restart
@@ -574,7 +580,7 @@ class SpotifyDashboardApp:
             # Verification happens against a throwaway session file, so nothing
             # is persisted for this email unless the cookies really are theirs.
             parsedCookies = parseCookieString(cookies)
-            if not self._verifyCookiesMatchEmail(parsedCookies, email):
+            if not self.skipEmailVerification and not self._verifyCookiesMatchEmail(parsedCookies, email):
                 return render_template(
                     "login.html", email=email, next=nextUrl,
                     error=f"Couldn't verify that these cookies belong to {email}. "

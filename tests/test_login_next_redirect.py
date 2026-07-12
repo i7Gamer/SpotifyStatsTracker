@@ -105,6 +105,34 @@ class TestLoginNextRedirect(unittest.TestCase):
         self.assertIn(b'name="email"', resp.data)
         self.assertIn(b'name="cookies"', resp.data)
 
+    def test_skip_email_verification_env_var_bypasses_the_check(self):
+        """SKIP_EMAIL_VERIFICATION lets a self-hoster turn off the
+        cookies-belong-to-this-email check entirely, e.g. if Spotify starts
+        blocking the verification request for their account."""
+        with patch.dict(os.environ, {"SKIP_EMAIL_VERIFICATION": "1"}):
+            dash = self._makeApp()
+        with patch.object(dash, '_verifyCookiesMatchEmail') as mock_verify, \
+             patch.object(dash, 'get_or_create_user', return_value='alice'), \
+             patch.object(dash, 'get_user_db'), \
+             patch.object(dash.repo, 'setUserCookies'):
+            resp, client = self._postLogin(dash, next_url=None)
+
+        mock_verify.assert_not_called()
+        self.assertEqual(resp.status_code, 302)
+        self.assertTrue(resp.headers["Location"].endswith("/"))
+
+    def test_email_verification_runs_by_default(self):
+        dash = self._makeApp()
+        with patch.object(dash, '_verifyCookiesMatchEmail', return_value=False) as mock_verify, \
+             patch.object(dash, 'get_or_create_user', return_value='alice'), \
+             patch.object(dash, 'get_user_db'), \
+             patch.object(dash.repo, 'setUserCookies'):
+            resp, client = self._postLogin(dash, next_url=None)
+
+        mock_verify.assert_called_once()
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn(b"Couldn&#39;t verify", resp.data)
+
 
 if __name__ == "__main__":
     unittest.main()
