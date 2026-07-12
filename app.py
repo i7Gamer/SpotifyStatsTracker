@@ -894,7 +894,7 @@ class SpotifyDashboardApp:
             if interval == "custom" and not (customStart and customEnd):
                 interval = "month"
             groupBy = request.args.get("groupBy", "day")
-            if groupBy not in ("day", "week"):
+            if groupBy not in ("day", "week", "month"):
                 groupBy = "day"
 
             startDate, endDate = self._getDateRange(interval, customStart, customEnd, default="month")

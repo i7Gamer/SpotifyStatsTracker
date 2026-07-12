@@ -75,6 +75,18 @@ class TestChartsRoute(unittest.TestCase):
         _, kwargs = db.getListeningTimeSeries.call_args
         self.assertEqual(kwargs["groupBy"], "week")
 
+    def test_month_groupby_is_passed_through_and_selected(self):
+        dash = self._makeApp()
+        db = self._makeDb()
+
+        resp = self._get(dash, db, query="?groupBy=month")
+
+        _, kwargs = db.getListeningTimeSeries.call_args
+        self.assertEqual(kwargs["groupBy"], "month")
+        _, trendKwargs = db.getArtistTrend.call_args
+        self.assertEqual(trendKwargs["groupBy"], "month")
+        self.assertIn(b'<option value="month" selected>Month</option>', resp.data)
+
     def test_invalid_groupby_falls_back_to_day(self):
         dash = self._makeApp()
         db = self._makeDb()
