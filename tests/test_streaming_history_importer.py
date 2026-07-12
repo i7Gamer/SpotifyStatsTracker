@@ -1,3 +1,4 @@
+import datetime
 import unittest
 from unittest.mock import patch, MagicMock
 import sys
@@ -6,6 +7,7 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from Database.Importers.StreamingHistoryImporter import Importer
+import Database.utils as utilsModule
 
 MUSICOLET_CSV = (
     "FILE_PATH,TITLE,ARTIST,ALBUM,ALBUM_ARTIST,COMPOSER,GENRE,YEAR,DURATION_MS,PLAY_COUNT\n"
@@ -233,6 +235,69 @@ class TestFetchTrackMeta(unittest.TestCase):
         result = importer._fetchTrackMeta("Song One", "Artist One", None)
         importer.sp.track.assert_not_called()
         self.assertEqual(result, FAKE_TRACK)
+
+
+class TestAccountExportUsesUtcTimestamps(unittest.TestCase):
+    """Spotify's Account-export "endTime" field is documented as UTC but has no
+    timezone marker on the wire - it must not be interpreted as local time."""
+
+    def test_end_time_is_parsed_as_utc_regardless_of_local_tz(self):
+        importer = Importer()
+        importer.sp = MagicMock()
+        importer.sp.search.return_value = {"tracks": {"items": [FAKE_TRACK]}}
+
+        history = [{"endTime": "2023-07-08 12:00:00", "msPlayed": 5000,
+                    "trackName": "Song One", "artistName": "Artist One"}]
+
+        # A local TZ far from UTC - if endTime were (incorrectly) localized to
+        # this offset instead of treated as UTC, playedAt would be off by 8h.
+        with patch.object(utilsModule, "tz", datetime.timezone(datetime.timedelta(hours=-8))):
+            tracks = list(importer.importAcountHistory(history, known=[], progressCallback=None))
+
+        expectedEndTimestamp = int(datetime.datetime(2023, 7, 8, 12, 0, 0, tzinfo=datetime.timezone.utc).timestamp())
+        self.assertEqual(len(tracks), 1)
+        self.assertEqual(tracks[0]["playedAt"], expectedEndTimestamp - 5)  # msPlayed//1000 = 5s before endTime
+
+
+class TestMusicoletSyntheticTimestampsAreDeterministic(unittest.TestCase):
+    """Musicolet's CSV only carries an aggregate play count, not real play
+    timestamps. The synthetic timestamps generated for it must be reproducible
+    across independent import runs so that re-importing the same (or an
+    updated) file is deduped by plays.UNIQUE(username, track_id, played_at)
+    (see test_duplicates.py for proof that identical (track_id, played_at)
+    pairs are in fact ignored on re-insert) instead of creating a fresh batch
+    of fake plays every time."""
+
+    def _run(self, csvBody, playCount):
+        csvData = (
+            "FILE_PATH,TITLE,ARTIST,ALBUM,ALBUM_ARTIST,COMPOSER,GENRE,YEAR,DURATION_MS,PLAY_COUNT\n"
+            f"/music/song.mp3,Song One,Artist One,Album One,Artist One,,Pop,2020,200000,{playCount}\n"
+        )
+        rows = csvData.splitlines()[1:]
+        importer = Importer()
+        importer.sp = MagicMock()
+        importer.sp.search.return_value = {"tracks": {"items": [FAKE_TRACK]}}
+        tracks = list(importer.importMusicoletCSVExport(rows, known=[], progressCallback=None))
+        return [t["playedAt"] for t in tracks]
+
+    def test_two_independent_imports_of_the_same_file_produce_identical_timestamps(self):
+        firstRun = self._run(None, playCount=3)
+        secondRun = self._run(None, playCount=3)
+
+        self.assertEqual(len(firstRun), 3)
+        self.assertEqual(firstRun, secondRun)
+        self.assertEqual(len(set(firstRun)), 3)  #< the 3 plays within one import are still distinct
+
+    def test_an_updated_file_with_a_higher_play_count_only_adds_new_trailing_timestamps(self):
+        """A later export of the same track with a higher cumulative PLAY_COUNT
+        must reproduce the earlier run's timestamps exactly (so those already-
+        imported plays get deduped) and only append new ones for the delta."""
+        earlierRun = self._run(None, playCount=2)
+        laterRun = self._run(None, playCount=5)
+
+        self.assertEqual(laterRun[:2], earlierRun)
+        self.assertEqual(len(laterRun), 5)
+        self.assertEqual(len(set(laterRun)), 5)
 
 
 if __name__ == "__main__":

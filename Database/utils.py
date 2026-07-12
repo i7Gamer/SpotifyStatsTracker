@@ -151,6 +151,20 @@ def timeToInt(timestampOrStr):
     parsed = parseDatetime(timestampOrStr)
     return int(parsed.timestamp()) if parsed else 0
 
+def timeToIntUTC(timestampOrStr):
+    """Like timeToInt, but a date/time string with no timezone marker (no "Z" or
+    offset) is interpreted as UTC rather than the app's local TZ - for sources
+    that are documented as UTC but don't say so on the wire, e.g. Spotify's
+    older Account-export "endTime" field."""
+    try:
+        value = str(timestampOrStr).replace("Z", "+00:00")
+        parsed = datetime.datetime.fromisoformat(value)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+        return int(parsed.timestamp())
+    except (ValueError, TypeError):
+        return timeToInt(timestampOrStr)
+
 def msToString(ms: int | float) -> str:
     """ Converts milliseconds into a human-readable duration string. """
     if ms is None or ms <= 0:

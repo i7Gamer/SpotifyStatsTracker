@@ -7,10 +7,10 @@ import threading
 
 try:
     from Database.Formatters.spotifyClient import Client
-    from Database.utils import timeToInt, parseError, now
+    from Database.utils import timeToInt, timeToIntUTC, parseError
 except ModuleNotFoundError:
     from Formatters.spotifyClient import Client
-    from utils import timeToInt, parseError, now
+    from utils import timeToInt, timeToIntUTC, parseError
 
 
 class Importer:
@@ -204,7 +204,9 @@ class Importer:
 
     def importAcountHistory(self, history, known=[], progressCallback=None):
         def dataFunction(item):
-            endTimestamp = timeToInt(item["endTime"])
+            # endTime is documented by Spotify as UTC with no timezone marker on
+            # the wire - timeToInt would otherwise interpret it as local time.
+            endTimestamp = timeToIntUTC(item["endTime"])
             timePlayed = item["msPlayed"]
 
             startTimestamp = endTimestamp-timePlayed//1000
@@ -229,6 +231,15 @@ class Importer:
         
         yield from self._import(dataFunction, history, known, progressCallback)
 
+    # Musicolet's CSV only carries an aggregate play count per track, not
+    # individual play timestamps. Synthetic per-play timestamps are anchored
+    # here (a fixed epoch) rather than at now() - re-importing the same file
+    # then reproduces the exact same (track, played_at) pairs and is silently
+    # deduped by the plays.UNIQUE constraint instead of creating a fresh batch
+    # of fake plays every time. An updated file with a higher play count for a
+    # track only adds the new tail of plays.
+    MUSICOLET_SYNTHETIC_TIME_ANCHOR = datetime.datetime(2000, 1, 1)
+
     def importMusicoletCSVExport(self, rows, known=[], progressCallback=None):
         def expand(rows):
             ### Data formatted in: FILE_PATH,TITLE,ARTIST,ALBUM,ALBUM_ARTIST,COMPOSER,GENRE,YEAR,DURATION_MS,PLAY_COUNT
@@ -237,33 +248,33 @@ class Importer:
             DURATION_MS = 8
             PLAYCOUNT = 9
 
-            currentTime = now()
             formatedData = []
             reader = csv.reader(rows)
-            
+
             for song in reader:
                 if not song:
                     continue
-                    
+
                 try:
                     name = song[NAME]
                     mainArtist = song[ARTISTS].split("/")[0]
                     timePlayed = int(song[DURATION_MS])
                     playCount = int(song[PLAYCOUNT])
-                    
+
+                    trackTime = self.MUSICOLET_SYNTHETIC_TIME_ANCHOR
                     for _ in range(playCount):
-                        startTimestamp = currentTime.strftime("%Y-%m-%d %H:%M:%S")
+                        startTimestamp = trackTime.strftime("%Y-%m-%d %H:%M:%S")
                         formatedData.append((
                             name,
                             mainArtist,
                             startTimestamp,
                             timePlayed
                         ))
-                        currentTime += datetime.timedelta(milliseconds=timePlayed)
-                        
+                        trackTime += datetime.timedelta(milliseconds=timePlayed)
+
                 except (IndexError, ValueError) as e:
                     continue
-                    
+
             return formatedData
 
         def dataFunction(item):
