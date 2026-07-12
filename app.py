@@ -1,3 +1,4 @@
+import logging
 import os
 import json
 import secrets
@@ -15,9 +16,12 @@ from Database.database import Database
 from Database.repository import Repository
 from Database.Migrators.migrate import migrateIfNeeded
 from Database.Listeners.spotifyListener import _suppress_signal_in_thread
+from Database.logging_config import configureLogging
 from Database.utils import msToString, convertToDatetime, formatDuration, dateToString, versionTuple, now, startOfDay, parseDateString
 import SpotipyFree
 from SpotipyFree import saveSession, parseCookieString
+
+logger = logging.getLogger(__name__)
 
 PAGE_SIZE = 50                  #< list items shown per page
 LOGIN_CACHE_TTL_SECONDS = 180  #< seconds to cache isListenerLoggedIn result per user
@@ -51,6 +55,7 @@ def _passwordPolicyError(password: str) -> str | None:
 
 class SpotifyDashboardApp:
     def __init__(self):
+        configureLogging()
         migrateIfNeeded()
         self.app = Flask(__name__)
         self.baseDir = Path(__file__).resolve().parent
@@ -167,7 +172,7 @@ class SpotifyDashboardApp:
             profileEmail = (profile.get("email") or "").strip().lower()
             return profileEmail == email.strip().lower()
         except Exception as e:
-            print(f"Cookie verification failed for {email}: {e}")
+            logger.warning("Cookie verification failed for %s: %s", email, e)
             return False
         finally:
             try:
@@ -185,7 +190,7 @@ class SpotifyDashboardApp:
                 try:
                     db.deduplicate()
                 except Exception as e:
-                    print(f"Failed to deduplicate database for {username}: {e}")
+                    logger.error("Failed to deduplicate database for %s: %s", username, e)
                 self.user_databases[username] = db
             return self.user_databases[username]
 
@@ -234,14 +239,14 @@ class SpotifyDashboardApp:
         try:
             usersWithCookies = self.repo.getAllUsersWithCookies()
         except Exception as e:
-            print("Error initializing users:", e)
+            logger.error("Error initializing users: %s", e)
             return
 
         for username, email in usersWithCookies:
             try:
                 self.get_user_db(username, email)
             except Exception as e:
-                print(f"Error initializing user {username}: {e}")
+                logger.error("Error initializing user %s: %s", username, e)
     
     def _checkLoginLoop(self):
         while True:
@@ -1318,7 +1323,7 @@ class SpotifyDashboardApp:
                 try:
                     db.stop()
                 except Exception as e:
-                    print(f"Error stopping database for {db.user}: {e}")
+                    logger.error("Error stopping database for %s: %s", db.user, e)
 
     def run(self):
         try:

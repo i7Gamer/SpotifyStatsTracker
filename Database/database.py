@@ -1,5 +1,6 @@
 from __future__ import annotations
 import datetime
+import logging
 import os
 import re
 import tempfile
@@ -28,6 +29,8 @@ except ModuleNotFoundError:
     from Listeners.spotifyListener import Listener
     from repository import Repository, IMAGE_KIND_TRACK, IMAGE_KIND_ARTIST, IMAGE_STATUS_OK, IMAGE_STATUS_FAILED
     from utils import parseError, convertToDatetime, dateToString, startOfDay, startOfWeek, startOfMonth
+
+logger = logging.getLogger(__name__)
 
 IMAGE_DOWNLOAD_WORKERS = 5   #< bounds total concurrent image downloads for the whole process, not per user
 
@@ -70,7 +73,7 @@ class Database:
         self.autoImportFolderPath = self.baseDir / ".." / "autoImport" / self.user
 
         filterKeyword = os.environ.get("IMPORT_KEYWORD", None)
-        print(f"auto import filtering by {filterKeyword}")
+        logger.info("auto import filtering by %s", filterKeyword)
         self.autoImporter = AutoImporter(folderPath=self.autoImportFolderPath,
                                          importCallback=self.importHistory,
                                          pollInterval=5,
@@ -90,7 +93,7 @@ class Database:
                 try:
                     self.appendTrackData(timestamp, track, msPlayed, context=item.get("context", None))
                 except Exception as e:
-                    print(f"Error adding track from listener: {parseError(e)}")
+                    logger.error("Error adding track from listener: %s", parseError(e))
 
     def _materializeCookiesFile(self) -> Path:
         """SpotipyFree/spotapi only know how to read a Spotify session from a file
@@ -134,14 +137,14 @@ class Database:
             self.repo.commit()
             return track
         except Exception:
-            print(f"Failed to download track {trackId}")
+            logger.error("Failed to download track %s", trackId)
             return None
 
     def _ensureTrackMetadata(self, trackId: str) -> dict | None:
         track = self.repo.getTrack(trackId)
         if track is not None:
             return track
-        print(f"Missing track metadata for {trackId}, downloading it")
+        logger.info("Missing track metadata for %s, downloading it", trackId)
         return self._fetchTrackFromListener(trackId)
 
     @staticmethod
@@ -208,7 +211,10 @@ class Database:
             else:
                 name = self.listener.playlistName(playlistId)
         except Exception as e:
-            print(f"Error occurred while fetching playlist name for {playlistId} (probably due to playlist being private): {e}")
+            logger.warning(
+                "Error occurred while fetching playlist name for %s (probably due to playlist being private): %s",
+                playlistId, e,
+            )
             name = None
         self.repo.upsertPlaylistName(playlistId, contextType, name)
 
@@ -270,9 +276,9 @@ class Database:
         except Exception as e:
             self.repo.markImageStatus(imgId, kind, IMAGE_STATUS_FAILED)
             if isinstance(e, requests.exceptions.RequestException):
-                print(f"Error fetching image from {url} (id={imgId}): {parseError(e)}")
+                logger.error("Error fetching image from %s (id=%s): %s", url, imgId, parseError(e))
             else:
-                print(f"Error saving image (id={imgId}): {parseError(e)}")
+                logger.error("Error saving image (id=%s): %s", imgId, parseError(e))
 
     def _saveImg(self, path: Path, url: str, imgId: str, kind: str):
         if not url:
@@ -302,7 +308,7 @@ class Database:
             imagePath.write_bytes(imgData)
             return True
         except Exception as e:
-            print(f"Failed to lazy load artist image for {artistId}: {parseError(e)}")
+            logger.error("Failed to lazy load artist image for %s: %s", artistId, parseError(e))
             return False
 
     def lazyFetchArtistImage(self, artistId: str, imagePath: Path):
@@ -361,7 +367,7 @@ class Database:
     def resortDatabase(self):
         """No-op: plays are always returned in played_at order via SQL ORDER BY,
         so there's no persisted ordering left to fix."""
-        print("Resorted Database")
+        logger.info("Resorted Database")
 
     def deduplicate(self) -> int:
         """No-op: plays.UNIQUE(username, track_id, played_at) makes it impossible
@@ -435,7 +441,7 @@ class Database:
                 self.importHistory(content, progressPrefix=f"File {index}/{total}: ")
             except Exception as e:
                 failedCount += 1
-                print(f"Import failed for file {index}/{total}: {parseError(e)}")
+                logger.error("Import failed for file %s/%s: %s", index, total, parseError(e))
 
         succeededCount = total - failedCount
         if failedCount == 0:
@@ -716,7 +722,16 @@ class Database:
         if email:
             self.email = email
         self.listener = self._withCookiesFile(lambda cf: Listener(cf, email=self.email))
-        self.listener.startListener_thread(callback=self._addToDatabaseFromListener)
+        # onStale: the listener's own feed can go silently stale (see
+        # spotifyListener.LISTENER_STALE_TIMEOUT_SECONDS) - rebuilding the whole
+        # session here (fresh cookies file, fresh Listener, fresh websocket) is
+        # the same recovery startListener() already does for an explicit
+        # re-login (see app.py's _refresh_user_session), just triggered
+        # automatically instead of by a user hitting /login again.
+        self.listener.startListener_thread(
+            callback=self._addToDatabaseFromListener,
+            onStale=lambda: self.startListener(email=self.email),
+        )
 
     def startAutoImporter(self):
         self.autoImporter.start()

@@ -96,6 +96,28 @@ class TestStartListenerAndImportHistoryUseDatabaseCookies(DatabaseTestCase):
             self.assertEqual(calledKwargs["email"], "alice@example.com")
             mockListener.startListener_thread.assert_called_once()
 
+    def test_start_listener_wires_onStale_to_rebuild_the_session(self):
+        """A stale/dead listener feed (see LISTENER_STALE_TIMEOUT_SECONDS) must
+        trigger a full session rebuild - same recovery as an explicit re-login -
+        not just sit there broken until the process is restarted."""
+        db = self._makeDb({}, [], username="alice")
+        db.cookiesFile = None
+        db.email = "alice@example.com"
+        db.repo.setUserCookies("alice", {"sp_dc": "abc"})
+
+        with patch("Database.database.Listener") as mockListenerClass:
+            firstListener, secondListener = MagicMock(), MagicMock()
+            mockListenerClass.side_effect = [firstListener, secondListener]
+
+            db.startListener(email="alice@example.com")
+            onStale = firstListener.startListener_thread.call_args.kwargs["onStale"]
+
+            onStale()
+
+            self.assertEqual(mockListenerClass.call_count, 2)
+            secondListener.startListener_thread.assert_called_once()
+            self.assertIs(db.listener, secondListener)
+
 
 if __name__ == "__main__":
     import unittest

@@ -236,11 +236,10 @@ class TestDownloadImageTaskErrorLog(DatabaseTestCase):
             imgDir = Path(tmpdir)
             with patch("Database.database.requests.get",
                        side_effect=req.exceptions.ConnectionError("timeout")), \
-                 patch("builtins.print") as mock_print:
+                 self.assertLogs("Database.database", level="ERROR") as logs:
                 db._downloadImageTask(imgDir, "https://img.example/x", "track-abc", IMAGE_KIND_TRACK)
 
-        logged = " ".join(str(a) for call in mock_print.call_args_list for a in call.args)
-        self.assertIn("track-abc", logged)
+        self.assertIn("track-abc", " ".join(logs.output))
         self.assertEqual(db.repo.imageStatus("track-abc", IMAGE_KIND_TRACK), IMAGE_STATUS_FAILED)
 
     def test_save_error_log_includes_imgid(self):
@@ -251,11 +250,10 @@ class TestDownloadImageTaskErrorLog(DatabaseTestCase):
             bad_response = MagicMock()
             bad_response.content = b"not-an-image"
             with patch("Database.database.requests.get", return_value=bad_response), \
-                 patch("builtins.print") as mock_print:
+                 self.assertLogs("Database.database", level="ERROR") as logs:
                 db._downloadImageTask(imgDir, "https://img.example/x", "track-xyz", IMAGE_KIND_TRACK)
 
-        logged = " ".join(str(a) for call in mock_print.call_args_list for a in call.args)
-        self.assertIn("track-xyz", logged)
+        self.assertIn("track-xyz", " ".join(logs.output))
         self.assertEqual(db.repo.imageStatus("track-xyz", IMAGE_KIND_TRACK), IMAGE_STATUS_FAILED)
 
 

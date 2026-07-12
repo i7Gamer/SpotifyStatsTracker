@@ -1,3 +1,4 @@
+import logging
 import signal
 import threading
 import time
@@ -5,7 +6,19 @@ from contextlib import contextmanager
 from SpotipyFree import Spotify
 from Database.utils import parseError
 
+logger = logging.getLogger(__name__)
+
 LISTENER_STOP_JOIN_TIMEOUT_SECONDS = 5  #< bound how long shutdown waits for spotapi's background LastPlayed thread to exit
+
+# current_user_recently_played() doesn't actually poll - it just returns spotapi's
+# websocket-fed local cache (see SpotipyFree.Spotify.current_user_recently_played).
+# That websocket can silently die (its own reconnect() call targets a method that
+# doesn't exist on PlayerStatus - a bug in spotapi, not this code), after which the
+# cache is frozen forever: no exception, no new items, nothing recorded, ever again,
+# with the polling loop below none the wiser. If nothing has changed for this long,
+# assume the feed is dead and ask the caller to rebuild the session rather than
+# staying wedged silently until the process is restarted.
+LISTENER_STALE_TIMEOUT_SECONDS = 30 * 60
 
 
 @contextmanager
@@ -34,6 +47,7 @@ class Listener:
             self.sp = Spotify(cookiesFile=cookiesFile, email=email)
             self.sp.startRecentlyPlayedListener(refreshInterval=refreshInterval)
         self.recentlyPlayed_Z1 = self.sp.current_user_recently_played()
+        self._lastChangeTime = time.monotonic()
 
     def isLoggedIn(self):
         if self.sp.isLoggedIn() == False:
@@ -62,22 +76,47 @@ class Listener:
     def albumName(self, albumId):
         return self.sp.album(albumId).get("name", "Unknown Album")
 
-    def startListener(self, callback):
+    def _checkOnce(self, callback, onStale) -> bool:
+        """One iteration of the poll loop. Returns False if the feed was found
+        stale and handed off to `onStale` for reconnection - the caller should
+        stop this listener, since a new one now owns tracking."""
+        recentlyPlayed = self.sp.current_user_recently_played()
+        if recentlyPlayed != self.recentlyPlayed_Z1:
+            callback(self.getNewItems(recentlyPlayed))
+            self.recentlyPlayed_Z1 = recentlyPlayed
+            self._lastChangeTime = time.monotonic()
+            return True
+
+        if onStale is None:
+            return True
+
+        if time.monotonic() - self._lastChangeTime <= LISTENER_STALE_TIMEOUT_SECONDS:
+            return True
+
+        logger.warning(
+            "Recently-played feed unchanged for over %ss, assuming the underlying "
+            "session/websocket died silently - reconnecting", LISTENER_STALE_TIMEOUT_SECONDS,
+        )
+        try:
+            onStale()
+        except Exception as e:
+            logger.error("Reconnect attempt failed: %s", parseError(e))
+        return False
+
+    def startListener(self, callback, onStale=None):
         self.run = True
         while self.run:
             try:
-                recentlyPlayed = self.sp.current_user_recently_played()    #< doesn't trigger any websocket requests (spam safe)
-                if recentlyPlayed != self.recentlyPlayed_Z1:
-                    callback(self.getNewItems(recentlyPlayed))
-                    # print(f"New items found, callback executed. with {self.getNewItems(recentlyPlayed)}")
-                    self.recentlyPlayed_Z1 = recentlyPlayed
+                if not self._checkOnce(callback, onStale):
+                    self.run = False
+                    return
                 time.sleep(1)
             except Exception as e:
-                print("Error in listener:", parseError(e))
+                logger.error("Error in listener: %s", parseError(e))
                 time.sleep(30)
 
-    def startListener_thread(self, callback):
-        thread = threading.Thread(target=self.startListener, args=(callback,), daemon=True)
+    def startListener_thread(self, callback, onStale=None):
+        thread = threading.Thread(target=self.startListener, args=(callback,), kwargs={"onStale": onStale}, daemon=True)
         thread.start()
     
     def stop(self):
