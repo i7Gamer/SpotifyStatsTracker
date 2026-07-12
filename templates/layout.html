@@ -81,6 +81,25 @@
         window.location = window.location.pathname + '?' + params.toString();
       };
 
+      // _pagination.html's "Go to page" input - Enter navigates, clamped to
+      // [1, totalPages] so a stray typo can't request a nonexistent page.
+      window.handleJumpToPageKeydown = function(event, totalPages) {
+        if (event.key !== 'Enter') {
+          return;
+        }
+        event.preventDefault();
+
+        const value = parseInt(event.target.value, 10);
+        if (!Number.isInteger(value)) {
+          return;
+        }
+
+        const page = Math.min(Math.max(value, 1), totalPages);
+        const params = new URLSearchParams(window.location.search);
+        params.set('page', page);
+        window.location = window.location.pathname + '?' + params.toString();
+      };
+
       (function(){
         const badge = document.getElementById('version-badge');
         const textEl = document.getElementById('version-badge-text');

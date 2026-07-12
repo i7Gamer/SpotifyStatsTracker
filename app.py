@@ -331,6 +331,45 @@ class SpotifyDashboardApp:
         nextUrl = self._buildPageUrl(name, page + 1, **queryArgs) if page < totalPages else None
         return prevUrl, nextUrl
 
+    def _buildPageNumberLinks(self, endpoint, page, totalPages, window=2, **queryArgs):
+        """Page-number links for a pagination strip: always page 1 and the last
+        page, plus a `window`-page radius around the current page, with an
+        {"ellipsis": True} marker filling any gap between shown pages."""
+        if totalPages <= 1:
+            return []
+
+        pagesToShow = {1, totalPages}
+        for p in range(page - window, page + window + 1):
+            if 1 <= p <= totalPages:
+                pagesToShow.add(p)
+
+        links = []
+        previousPage = None
+        for p in sorted(pagesToShow):
+            if previousPage is not None and p - previousPage > 1:
+                links.append({"ellipsis": True})
+            links.append({"num": p, "url": self._buildPageUrl(endpoint, p, **queryArgs), "current": p == page})
+            previousPage = p
+        return links
+
+    def _buildPaginationContext(self, endpoint, page, totalPages, totalCount, pageSize=PAGE_SIZE, **queryArgs):
+        """Everything a list page's pagination strip needs: prev/next links,
+        windowed page-number links, and the 'Showing X-Y of Z' counts."""
+        prevUrl, nextUrl = self._getNeighboringUrls(endpoint, page, totalPages, **queryArgs)
+        pageLinks = self._buildPageNumberLinks(endpoint, page, totalPages, **queryArgs)
+        showingStart = (page - 1) * pageSize + 1 if totalCount else 0
+        showingEnd = min(page * pageSize, totalCount)
+        return {
+            "page": page,
+            "totalPages": totalPages,
+            "prevUrl": prevUrl,
+            "nextUrl": nextUrl,
+            "pageLinks": pageLinks,
+            "showingStart": showingStart,
+            "showingEnd": showingEnd,
+            "totalCount": totalCount,
+        }
+
     def _getChangeText(self, currentValue, previousValue):
         if previousValue is None or previousValue == 0:
             if currentValue == 0:
@@ -643,8 +682,8 @@ class SpotifyDashboardApp:
             if searchQuery:
                 # Matching and pagination both happen in SQL (Repository.searchPlays)
                 # instead of fetching every play ever recorded and filtering in Python.
-                totalMatches = db.searchEntriesCount(searchQuery)
-                totalPages = max(1, (totalMatches + PAGE_SIZE - 1) // PAGE_SIZE)
+                totalCount = db.searchEntriesCount(searchQuery)
+                totalPages = max(1, (totalCount + PAGE_SIZE - 1) // PAGE_SIZE)
                 page = max(1, min(page, totalPages))
                 startIndex = (page - 1) * PAGE_SIZE
                 tracks = db.searchEntries(searchQuery, count=PAGE_SIZE, startIndex=startIndex)
@@ -652,8 +691,8 @@ class SpotifyDashboardApp:
                 # Only materialize the page being shown - joining full track
                 # metadata onto every entry ever recorded on every request gets
                 # slow once the history grows large.
-                totalEntries = db.getEntriesCount()
-                totalPages = max(1, (totalEntries + PAGE_SIZE - 1) // PAGE_SIZE)
+                totalCount = db.getEntriesCount()
+                totalPages = max(1, (totalCount + PAGE_SIZE - 1) // PAGE_SIZE)
                 page = max(1, min(page, totalPages))
                 startIndex = (page - 1) * PAGE_SIZE
                 tracks = db.getEntriesFromNew(count=PAGE_SIZE, startIndex=startIndex)
@@ -671,10 +710,11 @@ class SpotifyDashboardApp:
             totalSongsChangeText, totalSongsChangeClass = self._getChangeText(stats["totalSongsPlayed"], stats["previousSongsPlayed"])
             totalListenChangeText, totalListenChangeClass = self._getChangeText(stats["totalDurationMs"], stats["previousDurationMs"])
 
-            prevUrl, nextUrl = self._getNeighboringUrls(
+            pagination = self._buildPaginationContext(
                 "dashboard",
                 page,
                 totalPages,
+                totalCount,
                 q=searchQuery,
                 interval=interval,
                 startDate=customStart,
@@ -694,15 +734,12 @@ class SpotifyDashboardApp:
                 currentTopArtist=currentTopArtist,
                 intervalLabel=intervalLabel,
                 username=username,
-                page=page,
-                totalPages=totalPages,
-                prevUrl=prevUrl,
-                nextUrl=nextUrl,
                 startIndex=startIndex,
                 section="dashboard",
                 interval=interval,
                 customStart=customStart,
                 customEnd=customEnd,
+                **pagination,
             )
 
         @self.app.route("/top-songs", methods=["GET"])
@@ -733,10 +770,11 @@ class SpotifyDashboardApp:
             tracks = db.getTopSongs(startDate=startDate, endDate=endDate, by=sortBy,
                                      limit=PAGE_SIZE, offset=startIndex, searchQuery=searchQuery)
 
-            prevUrl, nextUrl = self._getNeighboringUrls(
+            pagination = self._buildPaginationContext(
                 "topSongsPage",
                 page,
                 totalPages,
+                totalCount,
                 q=searchQuery,
                 sortBy=sortBy,
                 interval=interval,
@@ -753,16 +791,13 @@ class SpotifyDashboardApp:
                 username=username,
                 totalPlays=totalPlays,
                 totalTime=msToString(totalMs),
-                page=page,
-                totalPages=totalPages,
-                prevUrl=prevUrl,
-                nextUrl=nextUrl,
                 startIndex=startIndex,
                 section="top_songs",
                 sortBy=sortBy,
                 interval=interval,
                 customStart=customStart,
                 customEnd=customEnd,
+                **pagination,
             )
 
         @self.app.route("/top-albums", methods=["GET"])
@@ -791,10 +826,11 @@ class SpotifyDashboardApp:
             albums = db.getTopAlbums(startDate=startDate, endDate=endDate, by=sortBy,
                                       limit=PAGE_SIZE, offset=startIndex, searchQuery=searchQuery)
 
-            prevUrl, nextUrl = self._getNeighboringUrls(
+            pagination = self._buildPaginationContext(
                 "topAlbumsPage",
                 page,
                 totalPages,
+                totalCount,
                 q=searchQuery,
                 sortBy=sortBy,
                 interval=interval,
@@ -810,16 +846,13 @@ class SpotifyDashboardApp:
                 username=username,
                 totalPlays=totalPlays,
                 totalTime=msToString(totalMs),
-                page=page,
-                totalPages=totalPages,
-                prevUrl=prevUrl,
-                nextUrl=nextUrl,
                 startIndex=startIndex,
                 section="top_albums",
                 sortBy=sortBy,
                 interval=interval,
                 customStart=customStart,
                 customEnd=customEnd,
+                **pagination,
             )
 
         @self.app.route("/top-artists", methods=["GET"])
@@ -852,10 +885,11 @@ class SpotifyDashboardApp:
                                         limit=PAGE_SIZE, offset=startIndex, searchQuery=searchQuery)
 
             artists = self._embedArtistsTextElements(artists, sortBy=sortBy, totalPlays=totalPlays, totalMs=totalMs)
-            prevUrl, nextUrl = self._getNeighboringUrls(
+            pagination = self._buildPaginationContext(
                 "topArtistsPage",
                 page,
                 totalPages,
+                totalCount,
                 q=searchQuery,
                 sortBy=sortBy,
                 interval=interval,
@@ -870,16 +904,13 @@ class SpotifyDashboardApp:
                 totalPlays=totalPlays,
                 totalUnique=totalUnique,
                 totalTime=msToString(totalMs),
-                page=page,
-                totalPages=totalPages,
-                prevUrl=prevUrl,
-                nextUrl=nextUrl,
                 startIndex=startIndex,
                 section="top_artists",
                 sortBy=sortBy,
                 interval=interval,
                 customStart=customStart,
                 customEnd=customEnd,
+                **pagination,
             )
 
         @self.app.route("/charts", methods=["GET"])

@@ -1,0 +1,24 @@
+<section class="pagination">
+  <div class="pagination-summary">Showing {{ showingStart }}-{{ showingEnd }} of {{ totalCount }}</div>
+  <div class="pagination-controls">
+    {% if prevUrl %}
+      <a class="button" href="{{ prevUrl }}">Previous</a>
+    {% endif %}
+    {% for link in pageLinks %}
+      {% if link.ellipsis %}
+        <span class="pagination-ellipsis">&hellip;</span>
+      {% else %}
+        <a class="pagination-page{{ ' active' if link.current else '' }}" href="{{ link.url }}">{{ link.num }}</a>
+      {% endif %}
+    {% endfor %}
+    {% if nextUrl %}
+      <a class="button" href="{{ nextUrl }}">Next</a>
+    {% endif %}
+  </div>
+  <span>Page {{ page }} of {{ totalPages }}</span>
+  <div class="pagination-jump">
+    <label for="jumpToPage">Go to page:</label>
+    <input type="number" id="jumpToPage" min="1" max="{{ totalPages }}" placeholder="{{ page }}"
+           onkeydown="handleJumpToPageKeydown(event, {{ totalPages }})">
+  </div>
+</section>

@@ -333,5 +333,73 @@ class TestTopArtistsSortAndPageClamp(_ListRouteTestBase):
         self.assertEqual(db.getTopArtists.call_args.kwargs["searchQuery"], "queen")
 
 
+class TestPaginationExtras(_ListRouteTestBase):
+    """Page-number links, 'Showing X-Y of Z', and the jump-to-page input,
+    added alongside the existing Prev/Next + 'Page N of M' pagination."""
+
+    def test_page_number_links_are_windowed_with_ellipsis(self):
+        dash = self._makeApp()
+        db = self._makeDb(entryCount=500)   #< 10 pages of PAGE_SIZE=50
+
+        resp = self._getDashboard(dash, db, query="?page=5")
+
+        body = resp.data.decode()
+        for page in (1, 3, 4, 5, 6, 7, 10):
+            self.assertIn(f">{page}<", body)
+        self.assertNotIn(">2<", body)   #< skipped, covered by the ellipsis instead
+        self.assertNotIn(">9<", body)
+        self.assertIn("&hellip;", body)
+
+    def test_current_page_link_is_marked_active(self):
+        dash = self._makeApp()
+        db = self._makeDb(entryCount=500)
+
+        resp = self._getDashboard(dash, db, query="?page=5")
+
+        self.assertIn(b'class="pagination-page active"', resp.data)
+
+    def test_no_ellipsis_when_all_pages_fit_in_the_window(self):
+        dash = self._makeApp()
+        db = self._makeDb(entryCount=120)   #< 3 pages, well within the window
+
+        resp = self._getDashboard(dash, db, query="?page=2")
+
+        self.assertNotIn(b"&hellip;", resp.data)
+        for page in (1, 2, 3):
+            self.assertIn(f">{page}<".encode(), resp.data)
+
+    def test_showing_x_of_y_on_first_page(self):
+        dash = self._makeApp()
+        db = self._makeDb(entryCount=120)
+
+        resp = self._getDashboard(dash, db)
+
+        self.assertIn(b"Showing 1-50 of 120", resp.data)
+
+    def test_showing_x_of_y_on_last_page(self):
+        dash = self._makeApp()
+        db = self._makeDb(entryCount=120)
+
+        resp = self._getDashboard(dash, db, query="?page=3")
+
+        self.assertIn(b"Showing 101-120 of 120", resp.data)
+
+    def test_showing_x_of_y_with_no_results(self):
+        dash = self._makeApp()
+        db = self._makeDb(entryCount=0)
+
+        resp = self._getDashboard(dash, db)
+
+        self.assertIn(b"Showing 0-0 of 0", resp.data)
+
+    def test_jump_to_page_input_max_matches_total_pages(self):
+        dash = self._makeApp()
+        db = self._makeDb(entryCount=120)
+
+        resp = self._getDashboard(dash, db)
+
+        self.assertIn(b'max="3"', resp.data)
+
+
 if __name__ == "__main__":
     unittest.main()
