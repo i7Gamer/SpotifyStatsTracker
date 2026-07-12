@@ -20,14 +20,14 @@ try:
     from Database.repository import (
         Repository, IMAGE_KIND_TRACK, IMAGE_KIND_ARTIST, IMAGE_STATUS_OK, IMAGE_STATUS_FAILED,
     )
-    from Database.utils import parseError, convertToDatetime, dateToString, startOfDay, startOfWeek
+    from Database.utils import parseError, convertToDatetime, dateToString, startOfDay, startOfWeek, startOfMonth
 except ModuleNotFoundError:
     from Formatters.spotifyClient import Client
     from Importers.StreamingHistoryImporter import Importer
     from Importers.AutoImporter import AutoImporter
     from Listeners.spotifyListener import Listener
     from repository import Repository, IMAGE_KIND_TRACK, IMAGE_KIND_ARTIST, IMAGE_STATUS_OK, IMAGE_STATUS_FAILED
-    from utils import parseError, convertToDatetime, dateToString, startOfDay, startOfWeek
+    from utils import parseError, convertToDatetime, dateToString, startOfDay, startOfWeek, startOfMonth
 
 IMAGE_DOWNLOAD_WORKERS = 5   #< bounds total concurrent image downloads for the whole process, not per user
 
@@ -601,6 +601,8 @@ class Database:
             return dateToString(startOfWeek(date))
         elif groupBy == "hour":
             return date.strftime("%Y-%m-%d %H:00")
+        elif groupBy == "month":
+            return date.strftime("%Y-%m")
         else:
             return dateToString(startOfDay(date))
 
@@ -635,27 +637,38 @@ class Database:
             return []
 
         if groupBy == "week":
-            step = datetime.timedelta(days=7)
             cursor = startOfWeek(rangeStart)
+            advance = lambda d: d + datetime.timedelta(days=7)
         elif groupBy == "hour":
-            step = datetime.timedelta(hours=1)
             cursor = rangeStart.replace(minute=0, second=0, microsecond=0)
+            advance = lambda d: d + datetime.timedelta(hours=1)
+        elif groupBy == "month":
+            # A fixed timedelta step doesn't work here since months vary in
+            # length - advance to the 1st of the next calendar month instead.
+            cursor = startOfMonth(rangeStart)
+            advance = lambda d: d.replace(year=d.year + 1, month=1) if d.month == 12 else d.replace(month=d.month + 1)
         else:
-            step = datetime.timedelta(days=1)
             cursor = startOfDay(rangeStart)
+            advance = lambda d: d + datetime.timedelta(days=1)
 
         result = []
         while cursor < rangeEnd:
             key = self._bucketKey(cursor, groupBy)
             result.append(buckets.get(key, {"label": key, "totalTimeListened": 0, "plays": 0}))
-            cursor += step
+            cursor = advance(cursor)
         return result
 
-    def getHourOfDayHeatmap(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> list:
+    def getHourOfDayHeatmap(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None,
+                             trackId: str | None = None, artistId: str | None = None,
+                             albumId: str | None = None) -> list:
         """7x24 grid (rows Monday=0..Sunday=6, columns hour-of-day 0-23) of total
-        listening time and play count, for a 'when do I listen' heatmap."""
+        listening time and play count, for a 'when do I listen' heatmap.
+        `trackId`/`artistId`/`albumId` narrow this to one item's plays only -
+        reused by the song detail page's 'when you listen to this song' heatmap,
+        same as getListeningTimeSeries's item filters."""
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
-        plays = self.repo.getPlaysInRange(self.user, startTs, endTs)
+        plays = self.repo.getPlaysInRange(self.user, startTs, endTs, trackId=trackId, artistId=artistId,
+                                           albumId=albumId)
         grid = [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
 
         for play in plays:

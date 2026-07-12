@@ -80,6 +80,56 @@ class TestGetListeningTimeSeries(ChartStatsTestCase):
         self.assertEqual(result[1]["label"], "2026-07-13")
         self.assertEqual(result[1]["totalTimeListened"], 500)
 
+    def test_monthly_grouping_aggregates_entries_in_same_month(self):
+        entries = [
+            {"id": "t1", "playedAt": _ts(2026, 1, 5), "timePlayed": 1000},
+            {"id": "t1", "playedAt": _ts(2026, 1, 20), "timePlayed": 2000},
+            {"id": "t1", "playedAt": _ts(2026, 2, 3), "timePlayed": 500},
+        ]
+        db = self._makeDb({}, entries)
+
+        result = db.getListeningTimeSeries(
+            startDate=datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc),
+            endDate=datetime.datetime(2026, 3, 1, tzinfo=datetime.timezone.utc),
+            groupBy="month",
+        )
+
+        byLabel = {b["label"]: b for b in result}
+        self.assertEqual(byLabel["2026-01"]["totalTimeListened"], 3000)
+        self.assertEqual(byLabel["2026-01"]["plays"], 2)
+        self.assertEqual(byLabel["2026-02"]["totalTimeListened"], 500)
+
+    def test_monthly_grouping_fills_gaps_including_short_february(self):
+        entries = [{"id": "t1", "playedAt": _ts(2026, 1, 15), "timePlayed": 1000}]
+        db = self._makeDb({}, entries)
+
+        result = db.getListeningTimeSeries(
+            startDate=datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc),
+            endDate=datetime.datetime(2026, 4, 1, tzinfo=datetime.timezone.utc),
+            groupBy="month",
+        )
+
+        self.assertEqual([b["label"] for b in result], ["2026-01", "2026-02", "2026-03"])
+        self.assertEqual(result[1]["totalTimeListened"], 0)
+        self.assertEqual(result[1]["plays"], 0)
+
+    def test_monthly_grouping_handles_year_rollover(self):
+        entries = [
+            {"id": "t1", "playedAt": _ts(2025, 12, 15), "timePlayed": 1000},
+            {"id": "t1", "playedAt": _ts(2026, 1, 5), "timePlayed": 500},
+        ]
+        db = self._makeDb({}, entries)
+
+        result = db.getListeningTimeSeries(
+            startDate=datetime.datetime(2025, 12, 1, tzinfo=datetime.timezone.utc),
+            endDate=datetime.datetime(2026, 2, 1, tzinfo=datetime.timezone.utc),
+            groupBy="month",
+        )
+
+        self.assertEqual([b["label"] for b in result], ["2025-12", "2026-01"])
+        self.assertEqual(result[0]["totalTimeListened"], 1000)
+        self.assertEqual(result[1]["totalTimeListened"], 500)
+
     def test_empty_entries_with_no_date_range_returns_empty_list(self):
         db = self._makeDb({}, [])
         self.assertEqual(db.getListeningTimeSeries(), [])
@@ -201,6 +251,24 @@ class TestGetHourOfDayHeatmap(ChartStatsTestCase):
         grid = db.getHourOfDayHeatmap()
         self.assertEqual(len(grid), 7)
         self.assertTrue(all(cell["plays"] == 0 for row in grid for cell in row))
+
+    def test_track_id_filter_scopes_to_one_track(self):
+        """The song detail subpage reuses this to show a 'when you listen to
+        this song' heatmap scoped to just its own plays."""
+        tracks = {
+            "t1": {"id": "t1", "name": "Song One", "artists": [{"id": "a1", "name": "Artist A"}]},
+            "t2": {"id": "t2", "name": "Song Two", "artists": [{"id": "a1", "name": "Artist A"}]},
+        }
+        entries = [
+            {"id": "t1", "playedAt": _ts(2026, 7, 6, 9), "timePlayed": 1000},   # Monday 09:00
+            {"id": "t2", "playedAt": _ts(2026, 7, 6, 9), "timePlayed": 5000},   # Monday 09:00, different track
+        ]
+        db = self._makeDb(tracks, entries)
+
+        grid = db.getHourOfDayHeatmap(trackId="t1")
+
+        self.assertEqual(grid[0][9]["totalTimeListened"], 1000)
+        self.assertEqual(grid[0][9]["plays"], 1)
 
 
 class TestGetArtistTrend(ChartStatsTestCase):

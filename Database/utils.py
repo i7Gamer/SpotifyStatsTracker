@@ -88,6 +88,11 @@ def startOfWeek(dt: datetime.datetime = None):
     return dt - datetime.timedelta(days=dt.weekday())
 
 
+def startOfMonth(dt: datetime.datetime = None):
+    """The 1st of the month, 00:00 local time, for the month containing dt (or now())."""
+    return startOfDay(dt).replace(day=1)
+
+
 def parseDateString(dateText: str):
     for fmt in DATE_FORMATS:
         try:
