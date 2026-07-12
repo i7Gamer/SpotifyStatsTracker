@@ -173,7 +173,7 @@ def timeToIntUTC(timestampOrStr):
 def msToString(ms: int | float) -> str:
     """ Converts milliseconds into a human-readable duration string. """
     if ms is None or ms <= 0:
-        return "0ms"
+        return "0s"
 
     totalSeconds = int(ms) // 1000
 

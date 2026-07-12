@@ -155,7 +155,7 @@
       }
       if (hit) {
         var label = isLastDay ? hit.d.label.split(' ')[1] : hit.d.label;
-        showTooltip(evt, '<strong>' + label + '</strong><br>' + (hit.d.totalTimeListenedText || '0ms') + ' &middot; ' + hit.d.plays + ' plays');
+        showTooltip(evt, '<strong>' + label + '</strong><br>' + (hit.d.totalTimeListenedText || '0s') + ' &middot; ' + hit.d.plays + ' plays');
       } else {
         hideTooltip();
       }
@@ -243,7 +243,7 @@
       }
       if (hit) {
         var hourLabel = (hit.hour < 10 ? '0' : '') + hit.hour;
-        showTooltip(evt, '<strong>' + hit.day + ' ' + hourLabel + ':00</strong><br>' + (hit.cell.totalTimeListenedText || '0ms') + ' &middot; ' + hit.cell.plays + ' plays');
+        showTooltip(evt, '<strong>' + hit.day + ' ' + hourLabel + ':00</strong><br>' + (hit.cell.totalTimeListenedText || '0s') + ' &middot; ' + hit.cell.plays + ' plays');
       } else {
         hideTooltip();
       }
