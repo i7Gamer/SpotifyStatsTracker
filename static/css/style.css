@@ -550,7 +550,10 @@ progress::-moz-progress-bar {
 }
 
 @media (max-width: 600px) {
-  .dashboard-summary,
+  .dashboard-summary {
+    flex-direction: column;
+  }
+
   .track-summary-grid {
     grid-template-columns: 1fr;
   }
