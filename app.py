@@ -1011,18 +1011,25 @@ class SpotifyDashboardApp:
             if song is None:
                 return redirect(url_for("topSongsPage"))
 
+            groupBy = request.args.get("groupBy", "week")
+            if groupBy not in ("day", "week", "month"):
+                groupBy = "week"
+
             song = self._embedSongTextElements(song)
             song = self._embedTopSongTextElements(song)
 
             timeSeries = self._embedTimeSeriesTextElements(
-                db.getListeningTimeSeries(trackId=track_id, groupBy="week")
+                db.getListeningTimeSeries(trackId=track_id, groupBy=groupBy)
             )
+            heatmap = self._embedHeatmapTextElements(db.getHourOfDayHeatmap(trackId=track_id))
 
             return render_template(
                 "song_detail.html",
                 song=song,
                 username=username,
+                groupBy=groupBy,
                 timeSeries=timeSeries,
+                heatmap=heatmap,
                 section="top_songs",
             )
 
@@ -1036,7 +1043,14 @@ class SpotifyDashboardApp:
             if artist is None:
                 return redirect(url_for("topArtistsPage"))
 
+            groupBy = request.args.get("groupBy", "week")
+            if groupBy not in ("day", "week", "month"):
+                groupBy = "week"
+
             songs = db.getSongsStats(sortBy="plays", artistId=artist_id)
+            firstSong = min(songs, key=lambda s: s.get("firstListenedAt") or float("inf")) if songs else None
+            firstSongName = firstSong.get("name") if firstSong else None
+
             songs = self._embedSongsTextElements(songs)
             songs = self._embedTopSongsTextElements(
                 songs, sortBy="plays", totalPlays=artist.get("plays", 0), totalMs=artist.get("totalTimeListened", 0)
@@ -1044,14 +1058,16 @@ class SpotifyDashboardApp:
             artist = self._embedArtistTextElement(artist)
 
             timeSeries = self._embedTimeSeriesTextElements(
-                db.getListeningTimeSeries(artistId=artist_id, groupBy="week")
+                db.getListeningTimeSeries(artistId=artist_id, groupBy=groupBy)
             )
 
             return render_template(
                 "artist_detail.html",
                 artist=artist,
                 songs=songs,
+                firstSongName=firstSongName,
                 username=username,
+                groupBy=groupBy,
                 timeSeries=timeSeries,
                 section="top_artists",
             )
@@ -1066,6 +1082,10 @@ class SpotifyDashboardApp:
             if album is None:
                 return redirect(url_for("topAlbumsPage"))
 
+            groupBy = request.args.get("groupBy", "week")
+            if groupBy not in ("day", "week", "month"):
+                groupBy = "week"
+
             songs = db.getSongsStats(sortBy="plays", albumId=album_id)
             firstSong = min(songs, key=lambda s: s.get("firstListenedAt") or float("inf")) if songs else None
             firstSongName = firstSong.get("name") if firstSong else None
@@ -1077,7 +1097,7 @@ class SpotifyDashboardApp:
             album = self._embedAlbumTextElements(album)
 
             timeSeries = self._embedTimeSeriesTextElements(
-                db.getListeningTimeSeries(albumId=album_id, groupBy="week")
+                db.getListeningTimeSeries(albumId=album_id, groupBy=groupBy)
             )
 
             return render_template(
@@ -1085,6 +1105,7 @@ class SpotifyDashboardApp:
                 album=album,
                 songs=songs,
                 firstSongName=firstSongName,
+                groupBy=groupBy,
                 username=username,
                 timeSeries=timeSeries,
                 section="top_albums",

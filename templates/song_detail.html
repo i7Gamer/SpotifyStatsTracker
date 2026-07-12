@@ -7,7 +7,17 @@
     </div>
   </section>
 
-  <p><a id="back-button" class="button" href="{{ url_for('topSongsPage') }}">&larr; Back to Top Songs</a></p>
+  <div class="detail-toolbar">
+    <a id="back-button" class="button" href="{{ url_for('topSongsPage') }}">&larr; Back to Top Songs</a>
+    <div class="filter-group">
+      <label for="groupBy">Group by:</label>
+      <select id="groupBy" name="groupBy" onchange="updateDetailGroupByFilter()">
+        <option value="day" {% if groupBy == 'day' %}selected{% endif %}>Day</option>
+        <option value="week" {% if groupBy == 'week' %}selected{% endif %}>Week</option>
+        <option value="month" {% if groupBy == 'month' %}selected{% endif %}>Month</option>
+      </select>
+    </div>
+  </div>
 
   <section id="track-list" class="track-list">
     {% set track = song %}
@@ -23,11 +33,20 @@
         <canvas id="timeSeriesChart"></canvas>
       </div>
     </div>
+
+    <div class="chart-section">
+      <h2>When You Listen to This Song</h2>
+      <p class="chart-subtitle">Total listening time by day of week and hour of day.</p>
+      <div class="chart-canvas-wrap heatmap-wrap">
+        <canvas id="heatmapChart"></canvas>
+      </div>
+    </div>
   </section>
 
   <script>
     window.__chartData = {
-      timeSeries: {{ timeSeries | tojson }}
+      timeSeries: {{ timeSeries | tojson }},
+      heatmap: {{ heatmap | tojson }}
     };
 
     const backButton = document.getElementById('back-button');

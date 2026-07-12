@@ -72,6 +72,15 @@
         applyFilterFn();
       };
 
+      // Shared by song_detail.html/artist_detail.html/album_detail.html's
+      // group-by dropdown next to the back button.
+      window.updateDetailGroupByFilter = function() {
+        const groupBy = document.getElementById('groupBy').value;
+        const params = new URLSearchParams(window.location.search);
+        params.set('groupBy', groupBy);
+        window.location = window.location.pathname + '?' + params.toString();
+      };
+
       (function(){
         const badge = document.getElementById('version-badge');
         const textEl = document.getElementById('version-badge-text');

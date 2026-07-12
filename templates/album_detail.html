@@ -7,7 +7,17 @@
     </div>
   </section>
 
-  <p><a id="back-button" class="button" href="{{ url_for('topAlbumsPage') }}">&larr; Back to Top Albums</a></p>
+  <div class="detail-toolbar">
+    <a id="back-button" class="button" href="{{ url_for('topAlbumsPage') }}">&larr; Back to Top Albums</a>
+    <div class="filter-group">
+      <label for="groupBy">Group by:</label>
+      <select id="groupBy" name="groupBy" onchange="updateDetailGroupByFilter()">
+        <option value="day" {% if groupBy == 'day' %}selected{% endif %}>Day</option>
+        <option value="week" {% if groupBy == 'week' %}selected{% endif %}>Week</option>
+        <option value="month" {% if groupBy == 'month' %}selected{% endif %}>Month</option>
+      </select>
+    </div>
+  </div>
 
   <section id="track-list" class="track-list">
     {% set track = album %}
@@ -16,12 +26,20 @@
     {% include '_track_card.html' %}
   </section>
 
-  {% if firstSongName %}
+  {% if firstSongName or album.get('uniqueSongCount') %}
   <section class="track-summary-grid">
+    {% if firstSongName %}
     <article class="track-summary-card">
       <h3>First Song You Listened To</h3>
       <p class="summary-value">{{ firstSongName }}</p>
     </article>
+    {% endif %}
+    {% if album.get('uniqueSongCount') %}
+    <article class="track-summary-card">
+      <h3>Unique Songs Listened</h3>
+      <p class="summary-value">{{ album.get('uniqueSongCount') }}</p>
+    </article>
+    {% endif %}
   </section>
   {% endif %}
 

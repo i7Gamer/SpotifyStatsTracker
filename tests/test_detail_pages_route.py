@@ -48,6 +48,7 @@ class TestSongDetailRoute(_DetailRouteTestBase):
         db = MagicMock()
         db.getSong.return_value = self._song()
         db.getListeningTimeSeries.return_value = []
+        db.getHourOfDayHeatmap.return_value = [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
 
         resp = self._getPath(dash, db, "/song/t1")
 
@@ -56,6 +57,7 @@ class TestSongDetailRoute(_DetailRouteTestBase):
         db.getSong.assert_called_once_with("t1")
         db.getListeningTimeSeries.assert_called_once()
         self.assertEqual(db.getListeningTimeSeries.call_args.kwargs.get("trackId"), "t1")
+        self.assertEqual(db.getHourOfDayHeatmap.call_args.kwargs.get("trackId"), "t1")
 
     def test_unknown_song_redirects_to_top_songs(self):
         dash = self._makeApp()
@@ -67,12 +69,44 @@ class TestSongDetailRoute(_DetailRouteTestBase):
         self.assertEqual(resp.status_code, 302)
         self.assertIn("/top-songs", resp.headers["Location"])
 
+    def test_month_groupby_is_passed_through_and_selected(self):
+        dash = self._makeApp()
+        db = MagicMock()
+        db.getSong.return_value = self._song()
+        db.getListeningTimeSeries.return_value = []
+        db.getHourOfDayHeatmap.return_value = [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
+
+        resp = self._getPath(dash, db, "/song/t1?groupBy=month")
+
+        self.assertEqual(db.getListeningTimeSeries.call_args.kwargs.get("groupBy"), "month")
+        self.assertIn(b'<option value="month" selected>Month</option>', resp.data)
+
+    def test_invalid_groupby_falls_back_to_week(self):
+        dash = self._makeApp()
+        db = MagicMock()
+        db.getSong.return_value = self._song()
+        db.getListeningTimeSeries.return_value = []
+        db.getHourOfDayHeatmap.return_value = [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
+
+        self._getPath(dash, db, "/song/t1?groupBy=nonsense")
+
+        self.assertEqual(db.getListeningTimeSeries.call_args.kwargs.get("groupBy"), "week")
+
 
 class TestArtistDetailRoute(_DetailRouteTestBase):
     def _artist(self):
         return {"id": "a1", "name": "Artist A", "url": "http://example.com/a1", "imageUrl": "",
                 "imageId": "a1", "plays": 5, "totalTimeListened": 50000, "uniqueSongCount": 2,
                 "firstListenedAt": 100}
+
+    def _song(self, trackId, name, firstListenedAt):
+        return {
+            "id": trackId, "name": name, "url": "u", "imageId": "alb1",
+            "duration": 200000, "explicit": False, "isrc": "", "discNumber": 1, "trackNumber": 1,
+            "releaseDate": 0, "album": {"id": "alb1", "name": "Album One", "url": "u", "imageId": "alb1",
+                                        "imageUrl": "", "totalTracks": 2, "releaseDate": 0},
+            "artists": [], "plays": 3, "totalTimeListened": 30000, "firstListenedAt": firstListenedAt,
+        }
 
     def test_known_artist_renders_with_their_songs(self):
         dash = self._makeApp()
@@ -98,6 +132,45 @@ class TestArtistDetailRoute(_DetailRouteTestBase):
 
         self.assertEqual(resp.status_code, 302)
         self.assertIn("/top-artists", resp.headers["Location"])
+
+    def test_month_groupby_is_passed_through_and_selected(self):
+        dash = self._makeApp()
+        db = MagicMock()
+        db.getArtist.return_value = self._artist()
+        db.getSongsStats.return_value = []
+        db.getListeningTimeSeries.return_value = []
+
+        resp = self._getPath(dash, db, "/artist/a1?groupBy=month")
+
+        self.assertEqual(db.getListeningTimeSeries.call_args.kwargs.get("groupBy"), "month")
+        self.assertIn(b'<option value="month" selected>Month</option>', resp.data)
+
+    def test_first_song_you_listened_to_is_shown(self):
+        dash = self._makeApp()
+        db = MagicMock()
+        db.getArtist.return_value = self._artist()
+        db.getSongsStats.return_value = [
+            self._song("t1", "Later Song", firstListenedAt=200),
+            self._song("t2", "Earliest Song", firstListenedAt=100),
+        ]
+        db.getListeningTimeSeries.return_value = []
+
+        resp = self._getPath(dash, db, "/artist/a1")
+
+        self.assertIn(b"First Song You Listened To", resp.data)
+        self.assertIn(b"Earliest Song", resp.data)
+
+    def test_unique_song_count_card_is_shown(self):
+        dash = self._makeApp()
+        db = MagicMock()
+        db.getArtist.return_value = self._artist()
+        db.getSongsStats.return_value = []
+        db.getListeningTimeSeries.return_value = []
+
+        resp = self._getPath(dash, db, "/artist/a1")
+
+        self.assertIn(b"Unique Songs Listened", resp.data)
+        self.assertIn(b'<p class="summary-value">2</p>', resp.data)
 
 
 class TestAlbumDetailRoute(_DetailRouteTestBase):
@@ -139,6 +212,30 @@ class TestAlbumDetailRoute(_DetailRouteTestBase):
 
         self.assertEqual(resp.status_code, 302)
         self.assertIn("/top-albums", resp.headers["Location"])
+
+    def test_month_groupby_is_passed_through_and_selected(self):
+        dash = self._makeApp()
+        db = MagicMock()
+        db.getAlbum.return_value = self._album()
+        db.getSongsStats.return_value = []
+        db.getListeningTimeSeries.return_value = []
+
+        resp = self._getPath(dash, db, "/album/alb1?groupBy=month")
+
+        self.assertEqual(db.getListeningTimeSeries.call_args.kwargs.get("groupBy"), "month")
+        self.assertIn(b'<option value="month" selected>Month</option>', resp.data)
+
+    def test_unique_song_count_card_is_shown(self):
+        dash = self._makeApp()
+        db = MagicMock()
+        db.getAlbum.return_value = self._album()
+        db.getSongsStats.return_value = []
+        db.getListeningTimeSeries.return_value = []
+
+        resp = self._getPath(dash, db, "/album/alb1")
+
+        self.assertIn(b"Unique Songs Listened", resp.data)
+        self.assertIn(b'<p class="summary-value">2</p>', resp.data)
 
 
 if __name__ == "__main__":

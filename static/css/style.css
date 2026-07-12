@@ -653,6 +653,15 @@ progress::-moz-progress-bar {
   flex-wrap: wrap;
   color: var(--text);
 }
+
+.detail-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
 .filter-group select option {
   background-color: color-mix(in srgb, var(--surface), #fff 5%);
   color: var(--text);
