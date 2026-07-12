@@ -25,10 +25,10 @@ WRAPPED_LIST_SIZE = 5           #< how many top songs/artists/albums the Wrapped
 WRAPPED_DISCOVERIES_SIZE = 10   #< how many "discovered this year" songs/artists the Wrapped page shows
 MAX_UPLOAD_MB = 500              #< cap on a single import-history request's total upload size
 DEFAULT_SORT_BY = "totalTimeListened"
-# The only sortBy values Repository.SONG_SORT_COLUMNS/ALBUM_SORT_COLUMNS (and
-# Database._sortTopStats for artists) know how to handle - an unrecognized
-# ?sortBy= would otherwise reach a ValueError/KeyError deep in the DB layer
-# and 500 instead of just falling back to the default.
+# The only sortBy values Repository.SONG_SORT_COLUMNS/ALBUM_SORT_COLUMNS/
+# ARTIST_SORT_COLUMNS know how to handle - an unrecognized ?sortBy= would
+# otherwise reach a ValueError deep in the DB layer and 500 instead of just
+# falling back to the default.
 VALID_SORT_BY = {"totalTimeListened", "plays", "name"}
 
 class SpotifyDashboardApp:
@@ -325,56 +325,6 @@ class SpotifyDashboardApp:
         nextUrl = self._buildPageUrl(name, page + 1, **queryArgs) if page < totalPages else None
         return prevUrl, nextUrl
 
-    def _normalizeSearchQuery(self, query: str | None) -> str:
-        return (query or "").strip().lower()
-
-    def _getSearchableText(self, item: dict) -> str:
-        parts = [
-            item.get("name", ""),
-            item.get("artistsText", ""),
-            item.get("artist", ""),
-            item.get("contextName", ""),
-            item.get("album", {}).get("name", "") if type(item.get("album")) == dict else "",
-        ]
-
-        artists = item.get("artists", [])
-        for artist in artists:
-            if type(artist) == dict:
-                parts.append(artist.get("name", ""))
-            else:
-                parts.append(str(artist))
-
-        playedFrom = item.get("playedFrom")
-        if playedFrom:
-            try:
-                db = g.get("db", None)
-                if db:
-                    parts.append(db.playlistName(playedFrom))
-            except:
-                pass
-
-        return " ".join(str(part) for part in parts if part)
-
-    def _filterBySearch(self, items, query):
-        normalizedQuery = self._normalizeSearchQuery(query)
-        if not normalizedQuery:
-            return items
-
-        filtered = []
-        for item in items:
-            searchableText = self._getSearchableText(item).lower()
-            if normalizedQuery in searchableText:
-                filtered.append(item)
-        return filtered
-
-    def _getTotal(self, arr, key):
-        return sum(i.get(key, 0) for i in arr)
-
-    def _embedIndices(self, items):
-        for index, item in enumerate(items, start=1):
-            item["absoluteIndex"] = index
-        return items
-
     def _getChangeText(self, currentValue, previousValue):
         if previousValue is None or previousValue == 0:
             if currentValue == 0:
@@ -403,18 +353,6 @@ class SpotifyDashboardApp:
         in Repository/Database and 500s instead of just using the default."""
         sortBy = request.args.get("sortBy", default)
         return sortBy if sortBy in VALID_SORT_BY else default
-
-    def getPage(self, items, page, pageSize=PAGE_SIZE):
-        """ Gets items in page as well as other data including total pages, start
-        index, and the page number itself clamped to [1, totalPages] - callers
-        must use this clamped value (not their original `page`) for anything
-        shown to the user, e.g. a "Page X of Y" label. """
-        total = len(items)
-        totalPages = max(1, (total + pageSize - 1) // pageSize)
-        page = max(1, min(page, totalPages))
-        start = (page - 1) * pageSize
-        end = start + pageSize
-        return (items[start:end], totalPages, start, page)
 
     def _getDateRange(self, interval: str = None, customStart: str = None, customEnd: str = None, default="day"):
             """Get start and end dates based on interval or custom dates.
@@ -704,11 +642,13 @@ class SpotifyDashboardApp:
                 interval = "all time"
 
             if searchQuery:
-                # Search has to look at the whole history.
-                tracks = db.getEntriesFromNew()
-                self._embedIndices(tracks)
-                tracks = self._filterBySearch(tracks, searchQuery)
-                tracks, totalPages, startIndex, page = self.getPage(tracks, page)
+                # Matching and pagination both happen in SQL (Repository.searchPlays)
+                # instead of fetching every play ever recorded and filtering in Python.
+                totalMatches = db.searchEntriesCount(searchQuery)
+                totalPages = max(1, (totalMatches + PAGE_SIZE - 1) // PAGE_SIZE)
+                page = max(1, min(page, totalPages))
+                startIndex = (page - 1) * PAGE_SIZE
+                tracks = db.searchEntries(searchQuery, count=PAGE_SIZE, startIndex=startIndex)
             else:
                 # Only materialize the page being shown - joining full track
                 # metadata onto every entry ever recorded on every request gets
@@ -784,22 +724,15 @@ class SpotifyDashboardApp:
             # a cheap dedicated query instead of summing every song's metadata.
             totalPlays, totalMs = db.getPlayTotals(startDate, endDate)
 
-            if searchQuery:
-                # Search has to look at the whole history to match text across
-                # name/artist/album.
-                rawTopSongs = db.getTopSongs(startDate=startDate, endDate=endDate, by=sortBy)
-                self._embedIndices(rawTopSongs)
-                tracks = self._filterBySearch(rawTopSongs, searchQuery)
-                tracks, totalPages, startIndex, page = self.getPage(tracks, page)
-            else:
-                # Only materialize the page being shown - SQL-level LIMIT/OFFSET
-                # instead of sorting+hydrating every song ever played.
-                totalCount = db.getSongsCount(startDate, endDate)
-                totalPages = max(1, (totalCount + PAGE_SIZE - 1) // PAGE_SIZE)
-                page = max(1, min(page, totalPages))
-                startIndex = (page - 1) * PAGE_SIZE
-                tracks = db.getTopSongs(startDate=startDate, endDate=endDate, by=sortBy,
-                                         limit=PAGE_SIZE, offset=startIndex)
+            # Only materialize the page being shown - SQL-level LIMIT/OFFSET and
+            # WHERE-clause matching (see Repository.getSongsPage) instead of
+            # sorting+hydrating+filtering every song ever played in Python.
+            totalCount = db.getSongsCount(startDate, endDate, searchQuery=searchQuery)
+            totalPages = max(1, (totalCount + PAGE_SIZE - 1) // PAGE_SIZE)
+            page = max(1, min(page, totalPages))
+            startIndex = (page - 1) * PAGE_SIZE
+            tracks = db.getTopSongs(startDate=startDate, endDate=endDate, by=sortBy,
+                                     limit=PAGE_SIZE, offset=startIndex, searchQuery=searchQuery)
 
             prevUrl, nextUrl = self._getNeighboringUrls(
                 "topSongsPage",
@@ -849,22 +782,15 @@ class SpotifyDashboardApp:
             startDate, endDate = self._getDateRange(interval, customStart, customEnd, default="all time")
             totalPlays, totalMs = db.getPlayTotals(startDate, endDate)
 
-            if searchQuery:
-                # Search has to look at the whole history to match text across
-                # name/artist.
-                rawTopAlbums = db.getTopAlbums(startDate=startDate, endDate=endDate, by=sortBy)
-                self._embedIndices(rawTopAlbums)
-                albums = self._filterBySearch(rawTopAlbums, searchQuery)
-                albums, totalPages, startIndex, page = self.getPage(albums, page)
-            else:
-                # Only materialize the page being shown - SQL-level LIMIT/OFFSET
-                # instead of sorting+hydrating every album ever played.
-                totalCount = db.getAlbumsCount(startDate, endDate)
-                totalPages = max(1, (totalCount + PAGE_SIZE - 1) // PAGE_SIZE)
-                page = max(1, min(page, totalPages))
-                startIndex = (page - 1) * PAGE_SIZE
-                albums = db.getTopAlbums(startDate=startDate, endDate=endDate, by=sortBy,
-                                          limit=PAGE_SIZE, offset=startIndex)
+            # Only materialize the page being shown - SQL-level LIMIT/OFFSET and
+            # WHERE-clause matching (see Repository.getAlbumsPage) instead of
+            # sorting+hydrating+filtering every album ever played in Python.
+            totalCount = db.getAlbumsCount(startDate, endDate, searchQuery=searchQuery)
+            totalPages = max(1, (totalCount + PAGE_SIZE - 1) // PAGE_SIZE)
+            page = max(1, min(page, totalPages))
+            startIndex = (page - 1) * PAGE_SIZE
+            albums = db.getTopAlbums(startDate=startDate, endDate=endDate, by=sortBy,
+                                      limit=PAGE_SIZE, offset=startIndex, searchQuery=searchQuery)
 
             prevUrl, nextUrl = self._getNeighboringUrls(
                 "topAlbumsPage",
@@ -911,14 +837,20 @@ class SpotifyDashboardApp:
             customEnd = request.args.get("endDate", "")
 
             startDate, endDate = self._getDateRange(interval, customStart, customEnd, default="all time")
-            rawTopArtists = db.getTopArtists(startDate=startDate, endDate=endDate, by=sortBy) or []
-            if searchQuery:
-                self._embedIndices(rawTopArtists)
-            tracks = self._filterBySearch(rawTopArtists, searchQuery)
-            artists, totalPages, startIndex, page = self.getPage(tracks, page)
-            totalPlays = self._getTotal(rawTopArtists, "plays")
-            totalUnique = self._getTotal(rawTopArtists, "uniqueSongCount")
-            totalMs = self._getTotal(rawTopArtists, "totalTimeListened")
+            # totalPlays/totalUnique/totalMs are the whole (date-range-scoped) top
+            # list's totals regardless of search - mirrors getPlayTotals()'s role
+            # for the songs/albums pages, computed via a dedicated SQL aggregate
+            # instead of fetching every artist and summing in Python.
+            totalPlays, totalUnique, totalMs = db.getArtistTotals(startDate, endDate)
+
+            # Only materialize the page being shown - SQL-level LIMIT/OFFSET
+            # instead of sorting+hydrating every artist ever played.
+            totalCount = db.getArtistsCount(startDate, endDate, searchQuery=searchQuery)
+            totalPages = max(1, (totalCount + PAGE_SIZE - 1) // PAGE_SIZE)
+            page = max(1, min(page, totalPages))
+            startIndex = (page - 1) * PAGE_SIZE
+            artists = db.getTopArtists(startDate=startDate, endDate=endDate, by=sortBy,
+                                        limit=PAGE_SIZE, offset=startIndex, searchQuery=searchQuery)
 
             artists = self._embedArtistsTextElements(artists, sortBy=sortBy, totalPlays=totalPlays, totalMs=totalMs)
             prevUrl, nextUrl = self._getNeighboringUrls(
@@ -1012,7 +944,7 @@ class SpotifyDashboardApp:
             yearEnd = nowLocal.replace(year=year + 1, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
 
             topSongs = db.getTopSongs(startDate=yearStart, endDate=yearEnd, by="plays", limit=WRAPPED_LIST_SIZE)
-            topArtists = db.getTopArtists(startDate=yearStart, endDate=yearEnd, by="plays")[:WRAPPED_LIST_SIZE]
+            topArtists = db.getTopArtists(startDate=yearStart, endDate=yearEnd, by="plays", limit=WRAPPED_LIST_SIZE)
             topAlbums = db.getTopAlbums(startDate=yearStart, endDate=yearEnd, by="plays", limit=WRAPPED_LIST_SIZE)
             totalPlays, totalMs = db.getPlayTotals(yearStart, yearEnd)
 

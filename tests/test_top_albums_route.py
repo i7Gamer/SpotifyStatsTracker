@@ -84,17 +84,21 @@ class TestTopAlbumsRoute(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertIn(b"Page 1 of 1", resp.data)
 
-    def test_with_search_still_scans_full_history(self):
+    def test_with_search_paginates_and_matches_in_sql(self):
+        """Search is matched and paginated in SQL (Repository.getAlbumsPage)
+        the same way as the non-search path, not by fetching everything and
+        filtering in Python."""
         dash = self._makeApp()
-        db = self._makeDb()
+        db = self._makeDb(albumCount=5)
 
         resp = self._getTopAlbums(dash, db, query="?q=foo")
 
         self.assertEqual(resp.status_code, 200)
-        db.getAlbumsCount.assert_not_called()
+        db.getAlbumsCount.assert_called_once_with(None, None, searchQuery="foo")
         kwargs = db.getTopAlbums.call_args.kwargs
-        self.assertNotIn("limit", kwargs)
-        self.assertNotIn("offset", kwargs)
+        self.assertEqual(kwargs["limit"], appModule.PAGE_SIZE)
+        self.assertEqual(kwargs["offset"], 0)
+        self.assertEqual(kwargs["searchQuery"], "foo")
 
     def test_totals_come_from_get_play_totals(self):
         dash = self._makeApp()

@@ -30,10 +30,14 @@ class _ListRouteTestBase(unittest.TestCase):
         db = MagicMock()
         db.getEntriesFromNew.return_value = []
         db.getEntriesCount.return_value = entryCount
+        db.searchEntries.return_value = []
+        db.searchEntriesCount.return_value = 0
         db.getTopSongs.return_value = []
         db.getSongsCount.return_value = 0
         db.getPlayTotals.return_value = (0, 0)
         db.getTopArtists.return_value = []
+        db.getArtistsCount.return_value = 0
+        db.getArtistTotals.return_value = (0, 0, 0)
         db.getOverallStats.return_value = {
             "currentTopSongs": [],
             "currentTopArtists": [],
@@ -103,16 +107,32 @@ class TestDashboardPagination(_ListRouteTestBase):
         db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=0)
         self.assertIn(b"Page 1 of 1", resp.data)
 
-    def test_with_search_still_scans_full_history(self):
-        """Search has to look at everything, so the full-pagination path stays."""
+    def test_with_search_paginates_and_matches_in_sql(self):
+        """Search is pushed into SQL (Repository.searchPlays) and paginated
+        the same way as the non-search path - it must not fetch or count the
+        unfiltered history at all."""
         dash = self._makeApp()
         db = self._makeDb(entryCount=120)
+        db.searchEntriesCount.return_value = 5
 
         resp = self._getDashboard(dash, db, query="?q=foo")
 
         self.assertEqual(resp.status_code, 200)
-        db.getEntriesFromNew.assert_called_once_with()
+        db.searchEntriesCount.assert_called_once_with("foo")
+        db.searchEntries.assert_called_once_with("foo", count=appModule.PAGE_SIZE, startIndex=0)
+        db.getEntriesFromNew.assert_not_called()
         db.getEntriesCount.assert_not_called()
+
+    def test_search_page_beyond_range_is_clamped_to_last_page(self):
+        dash = self._makeApp()
+        db = self._makeDb(entryCount=0)
+        db.searchEntriesCount.return_value = 120
+
+        resp = self._getDashboard(dash, db, query="?q=foo&page=9999")
+
+        self.assertEqual(resp.status_code, 200)
+        db.searchEntries.assert_called_once_with("foo", count=appModule.PAGE_SIZE, startIndex=2 * appModule.PAGE_SIZE)
+        self.assertIn(b"Page 3 of 3", resp.data)
 
 
 class TestTopSongsPagination(_ListRouteTestBase):
@@ -165,19 +185,22 @@ class TestTopSongsPagination(_ListRouteTestBase):
         self.assertEqual(resp.status_code, 200)
         self.assertIn(b"Page 1 of 1", resp.data)
 
-    def test_with_search_still_scans_full_history(self):
-        """Search has to look at everything, so the full-fetch path stays -
-        no limit/offset, and the cheap count query is skipped entirely."""
+    def test_with_search_paginates_and_matches_in_sql(self):
+        """Search is matched and paginated in SQL (Repository.getSongsPage)
+        the same way as the non-search path, not by fetching everything and
+        filtering in Python."""
         dash = self._makeApp()
         db = self._makeDb(entryCount=0)
+        db.getSongsCount.return_value = 5
 
         resp = self._getTopSongs(dash, db, query="?q=foo")
 
         self.assertEqual(resp.status_code, 200)
-        db.getSongsCount.assert_not_called()
+        db.getSongsCount.assert_called_once_with(None, None, searchQuery="foo")
         kwargs = db.getTopSongs.call_args.kwargs
-        self.assertNotIn("limit", kwargs)
-        self.assertNotIn("offset", kwargs)
+        self.assertEqual(kwargs["limit"], appModule.PAGE_SIZE)
+        self.assertEqual(kwargs["offset"], 0)
+        self.assertEqual(kwargs["searchQuery"], "foo")
 
     def test_totals_come_from_get_play_totals_independent_of_list(self):
         """totalPlays/totalTime must reflect the whole-range aggregate (via the
@@ -268,23 +291,20 @@ class TestPageParamParsing(_ListRouteTestBase):
 
 
 class TestTopArtistsSortAndPageClamp(_ListRouteTestBase):
-    """/top-artists always paginates through getPage() (it has no SQL-level
-    LIMIT/OFFSET branch), so getPage()'s own page-clamping and the sortBy
-    whitelist are exercised here instead."""
+    """/top-artists is paginated in SQL (getArtistsCount()/getTopArtists()
+    LIMIT+OFFSET) the same way as top-songs/top-albums, not via getPage()."""
 
-    def _makeArtistsDb(self, artists):
+    def _makeArtistsDb(self, artistCount=0):
         db = self._makeDb(entryCount=0)
-        db.getTopArtists.return_value = artists
+        db.getArtistsCount.return_value = artistCount
         return db
 
     def test_unknown_sortby_falls_back_to_default_instead_of_500(self):
-        """Database._sortTopStats indexes each artist dict by `by` directly - an
-        unrecognized key would KeyError, which an unvalidated query param would
+        """Repository.getArtistAggregates raises ValueError for a sortBy
+        outside ARTIST_SORT_COLUMNS - an unvalidated query param would
         otherwise turn into a 500."""
         dash = self._makeApp()
-        db = self._makeArtistsDb([
-            {"id": "a1", "name": "Artist A", "plays": 5, "totalTimeListened": 1000, "uniqueSongCount": 1, "firstListenedAt": 0},
-        ])
+        db = self._makeArtistsDb()
 
         resp = self._getPath(dash, db, "/top-artists?sortBy=not_a_real_column")
 
@@ -292,18 +312,25 @@ class TestTopArtistsSortAndPageClamp(_ListRouteTestBase):
         self.assertEqual(db.getTopArtists.call_args.kwargs["by"], appModule.DEFAULT_SORT_BY)
 
     def test_page_beyond_range_is_clamped_to_last_page(self):
-        artists = [
-            {"id": f"a{i}", "name": f"Artist {i}", "plays": 1, "totalTimeListened": 1000,
-             "uniqueSongCount": 1, "firstListenedAt": 0}
-            for i in range(120)
-        ]
         dash = self._makeApp()
-        db = self._makeArtistsDb(artists)
+        db = self._makeArtistsDb(artistCount=120)
 
         resp = self._getPath(dash, db, "/top-artists?page=9999")
 
         self.assertEqual(resp.status_code, 200)
+        kwargs = db.getTopArtists.call_args.kwargs
+        self.assertEqual(kwargs["offset"], 2 * appModule.PAGE_SIZE)   #< last page (3) of 120/50
         self.assertIn(b"Page 3 of 3", resp.data)
+
+    def test_search_query_is_passed_through_to_sql(self):
+        dash = self._makeApp()
+        db = self._makeArtistsDb(artistCount=1)
+
+        resp = self._getPath(dash, db, "/top-artists?q=queen")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(db.getArtistsCount.call_args.kwargs["searchQuery"], "queen")
+        self.assertEqual(db.getTopArtists.call_args.kwargs["searchQuery"], "queen")
 
 
 if __name__ == "__main__":

@@ -173,6 +173,9 @@ class TestWrappedTotals(_WrappedRouteTestBase):
         self.assertEqual(albumKwargs["limit"], appModule.WRAPPED_LIST_SIZE)
         artistKwargs = db.getTopArtists.call_args.kwargs
         self.assertEqual(artistKwargs["startDate"].year, 2026)
+        # Artists must be capped via SQL LIMIT like songs/albums, not fetched
+        # unbounded and sliced in Python afterward.
+        self.assertEqual(artistKwargs["limit"], appModule.WRAPPED_LIST_SIZE)
 
 
 class TestWrappedDiscoveries(_WrappedRouteTestBase):
