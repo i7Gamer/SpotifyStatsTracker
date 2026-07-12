@@ -68,6 +68,51 @@ class TestMigrateIfNeeded(unittest.TestCase):
 
             mock_migrate.assert_not_called()
 
+    def test_same_minor_different_major_is_not_silently_skipped(self):
+        """Database "1.7.0" vs app "2.7.0" only differ in major version, but
+        getMiddleVersion() on each returns the same value (7) - a minor-only
+        comparison used to treat that as already up to date and skip
+        migration entirely instead of attempting it."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            migratorsDir = base / "Migrators"
+            migratorsDir.mkdir()
+            (base / "VERSION").write_text("2.7.0", encoding="utf-8")
+            dataDir = base / "Data"
+            dataDir.mkdir()
+            versionFile = dataDir / "VERSION"
+            versionFile.write_text("1.7.0", encoding="utf-8")
+
+            def fakeMigrate(major, minor, baseDir):
+                versionFile.write_text("2.7.0", encoding="utf-8")
+
+            with patch.object(migrateModule, "__file__", str(migratorsDir / "migrate.py")), \
+                 patch.object(migrateModule, "migrate", side_effect=fakeMigrate) as mock_migrate:
+                migrateModule.migrateIfNeeded()
+
+            mock_migrate.assert_called_once()
+            calledMajor, calledMinor, calledBaseDir = mock_migrate.call_args.args
+            self.assertEqual((calledMajor, calledMinor), (1, 7))
+            self.assertEqual(Path(calledBaseDir).resolve(), migratorsDir.resolve())
+
+    def test_migrator_module_name_includes_the_major_version(self):
+        """migrate() must not hardcode major version 1 into the module name it
+        loads - a future migrate2_0_0.py must be reachable once the database
+        is actually on major version 2."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            migratorsDir = base / "Migrators"
+            migratorsDir.mkdir()
+            modulePath = migratorsDir / "migrate2_0_0.py"
+            modulePath.write_text(
+                "class Migrator:\n"
+                "    def migrate(self):\n"
+                "        pass\n",
+                encoding="utf-8",
+            )
+
+            migrateModule.migrate(2, 0, migratorsDir)  # must not raise (module found and imported)
+
 
 if __name__ == "__main__":
     unittest.main()

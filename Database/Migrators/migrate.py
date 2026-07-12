@@ -2,12 +2,9 @@ from pathlib import Path
 import importlib.util
 
 try:
-    from Database.Migrators.base import resolveRuntimeDir
+    from Database.Migrators.base import resolveRuntimeDir, BaseMigrator
 except ModuleNotFoundError:
-    from base import resolveRuntimeDir
-
-def getMiddleVersion(version):
-    return int(version.split(".")[1])
+    from base import resolveRuntimeDir, BaseMigrator
 
 def _import(name, modulePath):
     spec = importlib.util.spec_from_file_location(name, modulePath)
@@ -15,11 +12,16 @@ def _import(name, modulePath):
     spec.loader.exec_module(module)
     return module
 
-def migrate(version, baseDir):
-    print(f"Migrating from version 1.{version}.0")
+def migrate(major, minor, baseDir):
+    print(f"Migrating from version {major}.{minor}.0")
 
-    modulePath = baseDir / f"migrate1_{version}_0.py"
-    module = _import(f"migrate1_{version}_0", modulePath)
+    # Migrator module names encode the major version too (not hardcoded to
+    # "1") so a future major-version bump's migrators (e.g. migrate2_0_0.py)
+    # get picked up correctly instead of always looking for a "migrate1_*"
+    # file regardless of which major version the database is actually on.
+    moduleName = f"migrate{major}_{minor}_0"
+    modulePath = baseDir / f"{moduleName}.py"
+    module = _import(moduleName, modulePath)
 
     Migrator = module.Migrator
     Migrator().migrate()
@@ -36,9 +38,14 @@ def migrateIfNeeded():
         return   #< means this is first run, no migration needed
     databaseVersion = databaseVersionFile.read_text().strip()
 
-    while getMiddleVersion(databaseVersion) != getMiddleVersion(appVersion):
-        dbVersion = getMiddleVersion(databaseVersion)
-        migrate(dbVersion, baseDir)
+    # Compare the full (major, minor) pair, not just the minor component -
+    # otherwise a database and app that only differ in major version (e.g.
+    # "1.7.0" vs "2.7.0") would be mistaken for already being up to date, and
+    # a genuine major bump would make the loop below hunt forever for a
+    # migrator file that can never satisfy a minor-only comparison.
+    while BaseMigrator.getMajorMinor(databaseVersion) != BaseMigrator.getMajorMinor(appVersion):
+        dbMajor, dbMinor = BaseMigrator.getMajorMinor(databaseVersion)
+        migrate(dbMajor, dbMinor, baseDir)
 
         databaseVersionFile = resolveRuntimeDir(baseDir) / "VERSION"   #< location may have changed (e.g. a Users/ -> Data/ rename)
         databaseVersion = databaseVersionFile.read_text().strip()

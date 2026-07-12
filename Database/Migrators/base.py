@@ -25,11 +25,18 @@ class BaseMigrator:
         self.appVersionFile = self.baseDir / ".." / "VERSION"
         self.appVersion = self.appVersionFile.read_text().strip()
 
-    def getMiddleVersion(self, version):
-        return int(version.split(".")[1])
+    @staticmethod
+    def getMajorMinor(version):
+        """(major, minor) as ints - comparisons must use both components, not
+        just minor, so e.g. database "1.7.0" vs app "2.7.0" (same minor,
+        different major) isn't mistaken for a version match."""
+        major, minor = version.split(".")[:2]
+        return int(major), int(minor)
 
     def checkPreconditions(self):
-        if self.getMiddleVersion(self.databaseVersion)+1 != self.getMiddleVersion(self.appVersion):
+        dbMajor, dbMinor = self.getMajorMinor(self.databaseVersion)
+        appMajor, appMinor = self.getMajorMinor(self.appVersion)
+        if dbMajor != appMajor or dbMinor + 1 != appMinor:
             raise Exception("Database and app versions are not compatible. Please run the migrator for the correct version first.")
 
     def updateAppVersion(self, newVersion):
