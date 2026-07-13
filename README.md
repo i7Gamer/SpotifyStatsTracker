@@ -52,6 +52,7 @@ services:
       - PYTHONUNBUFFERED=1
       - TZ=America/Los_Angeles        #< don't forget to change this or you will get the wrong times for songs
       - FLASK_SECRET_KEY=changeme-generate-your-own-random-value  #< fixed value = sessions survive a restart; unset = a new one is generated each restart, logging everyone out
+      # - SPOTIFY_CALLBACK_URL=http://localhost:5000/spotify-callback  #< Uncomment and set to your public callback URL to enable Spotify Web API backfilling
       # - IMPORT_KEYWORD=Weekly       #< Uncomment to apply a filter to what files get auto-imported (only files containing this will be imported)
       # - FLASK_DEBUG=1               #< To get more detailed logs from Flask (provide this when opening an issue)
       # - SKIP_EMAIL_VERIFICATION=1   #< Uncomment to disable the "do these cookies belong to this email" check at login (only do this if you trust everyone who can reach this instance - it's what stops one user from claiming another's account)
@@ -94,6 +95,15 @@ http://127.0.0.1:5444
 ```
 
 **Note:** The Docker container persists data in the `Database/Data/` directory on your host machine.
+
+### Spotify Web API Backfilling (Optional)
+
+To enable automatic backfilling of missed plays via the Spotify Developer API, you must configure the `SPOTIFY_CALLBACK_URL` environment variable:
+
+1. Register an application in the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard).
+2. Set the **Redirect URI** in your Spotify app configuration to match your public callback URL (e.g. `http://localhost:5000/spotify-callback`).
+3. Set the `SPOTIFY_CALLBACK_URL` environment variable in your `docker-compose.yml` to this exact callback URL.
+4. Once set, the Spotify Developer settings section will become visible on your User Profile page, allowing you to link your account.
 
 ## License
 

@@ -9,7 +9,7 @@ from pathlib import Path
 import time
 from datetime import timedelta
 
-from flask import Flask, render_template, redirect, request, url_for, jsonify, send_from_directory, session, g
+from flask import Flask, render_template, redirect, request, url_for, jsonify, send_from_directory, session, g, abort
 from flask_wtf.csrf import CSRFProtect
 from werkzeug.security import generate_password_hash, check_password_hash
 
@@ -853,7 +853,12 @@ class SpotifyDashboardApp:
             success = request.args.get("success")
             error = request.args.get("error")
 
+            spotify_callback_url = os.environ.get("SPOTIFY_CALLBACK_URL")
+            feature_enabled = bool(spotify_callback_url)
+
             if request.method == "POST":
+                if not feature_enabled:
+                    abort(404)
                 client_id = request.form.get("client_id")
                 client_secret = request.form.get("client_secret")
                 if client_id and client_secret:
@@ -870,8 +875,6 @@ class SpotifyDashboardApp:
             client_secret = creds.get("client_secret")
             refresh_token = creds.get("refresh_token")
 
-            redirect_uri = request.url_root.rstrip('/') + url_for('spotifyCallback')
-
             return render_template(
                 "profile.html",
                 username=username,
@@ -880,14 +883,17 @@ class SpotifyDashboardApp:
                 client_secret=client_secret,
                 has_api=bool(client_id and client_secret),
                 is_authenticated=bool(refresh_token),
-                redirect_uri=redirect_uri,
+                redirect_uri=spotify_callback_url,
                 success=success,
                 error=error,
-                section="profile"
+                section="profile",
+                feature_enabled=feature_enabled
             )
 
         @self.app.route("/profile/disconnect", methods=["GET"])
         def profileDisconnect():
+            if not os.environ.get("SPOTIFY_CALLBACK_URL"):
+                abort(404)
             email, username, db = get_current_user_or_redirect()
             if not email:
                 return redirect(url_for("login"))
@@ -900,6 +906,9 @@ class SpotifyDashboardApp:
 
         @self.app.route("/spotify-authorize", methods=["GET"])
         def spotifyAuthorize():
+            spotify_callback_url = os.environ.get("SPOTIFY_CALLBACK_URL")
+            if not spotify_callback_url:
+                abort(404)
             email, username, db = get_current_user_or_redirect()
             if not email:
                 return redirect(url_for("login"))
@@ -909,20 +918,22 @@ class SpotifyDashboardApp:
             if not client_id:
                 return redirect(url_for("profilePage", error="API Credentials not configured."))
 
-            redirect_uri = request.url_root.rstrip('/') + url_for('spotifyCallback')
             scope = "user-read-recently-played"
             
             auth_url = (
                 f"https://accounts.spotify.com/authorize"
                 f"?client_id={client_id}"
                 f"&response_type=code"
-                f"&redirect_uri={redirect_uri}"
+                f"&redirect_uri={spotify_callback_url}"
                 f"&scope={scope}"
             )
             return redirect(auth_url)
 
         @self.app.route("/spotify-callback", methods=["GET"])
         def spotifyCallback():
+            spotify_callback_url = os.environ.get("SPOTIFY_CALLBACK_URL")
+            if not spotify_callback_url:
+                abort(404)
             email, username, db = get_current_user_or_redirect()
             if not email:
                 return redirect(url_for("login"))
@@ -940,15 +951,13 @@ class SpotifyDashboardApp:
             if not client_id or not client_secret:
                 return redirect(url_for("profilePage", error="API Credentials missing."))
 
-            redirect_uri = request.url_root.rstrip('/') + url_for('spotifyCallback')
-
             import base64
             import requests
             url = "https://accounts.spotify.com/api/token"
             payload = {
                 "grant_type": "authorization_code",
                 "code": code,
-                "redirect_uri": redirect_uri,
+                "redirect_uri": spotify_callback_url,
             }
             auth_header = base64.b64encode(f"{client_id}:{client_secret}".encode("utf-8")).decode("utf-8")
             headers = {
