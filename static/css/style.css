@@ -212,7 +212,7 @@ button {
   margin-bottom: 24px;
   padding: 28px 24px;
   border-radius: 20px;
-  background: linear-gradient(135deg, rgba(251, 113, 123, 0.18), rgba(255, 255, 255, 0.03));
+  background: linear-gradient(135deg, var(--accent-glow), rgba(255, 255, 255, 0.03));
   border: 1px solid rgba(255, 255, 255, 0.08);
 }
 
