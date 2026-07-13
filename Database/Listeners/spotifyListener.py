@@ -4,6 +4,7 @@ import signal
 import threading
 import time
 from contextlib import contextmanager
+from typing import Optional
 from SpotipyFree import Spotify
 from Database.utils import parseError
 
@@ -23,8 +24,9 @@ LISTENER_STALE_TIMEOUT_SECONDS = 30 * 60
 
 AUTH_ERROR_TIMEOUT_SECONDS = 30  #< trigger reconnection immediately for auth errors, not 30 min
 
-REST_API_POLL_INTERVAL_SECONDS = 5 * 60  #< poll /v1/me/player/recently-played every 5 minutes for verification
+REST_API_POLL_INTERVAL_SECONDS = 10 * 60  #< poll /v1/me/player/recently-played every 10 minutes for verification
 REST_API_LIMIT = 50  #< fetch last 50 tracks per API call
+REST_API_BACKOFF_MAX_SECONDS = 3600  #< max backoff time for 429 errors (1 hour)
 
 
 def _is_auth_error(exc: Exception) -> bool:
@@ -41,6 +43,25 @@ def _is_auth_error(exc: Exception) -> bool:
         or re.search(r"invalid\s+.*token", exc_str)
         or re.search(r"session\s+.*expired", exc_str)
     )
+
+
+def _is_rate_limit_error(exc: Exception) -> bool:
+    """Check if exception is a 429 rate-limit error."""
+    return "429" in str(exc)
+
+
+def _get_retry_after_header(exc: Exception) -> Optional[int]:
+    """Extract Retry-After value from error response, in seconds.
+    Returns None if not found or invalid."""
+    exc_str = str(exc)
+    # Try to extract numeric Retry-After value from error message
+    match = re.search(r"Retry-After[:\s]+(\d+)", exc_str, re.IGNORECASE)
+    if match:
+        try:
+            return int(match.group(1))
+        except (ValueError, AttributeError):
+            pass
+    return None
 
 
 @contextmanager
@@ -71,6 +92,7 @@ class Listener:
         self.recentlyPlayed_Z1 = self.sp.current_user_recently_played()
         self._lastChangeTime = time.monotonic()
         self._rest_api_thread = None
+        self._rest_api_backoff_seconds = 0  #< current backoff delay for 429 errors
 
     def isLoggedIn(self):
         if self.sp.isLoggedIn() == False:
@@ -131,17 +153,46 @@ class Listener:
 
     def _pollRestApiHistoryLoop(self):
         """Background thread that periodically polls REST API for verification/cleanup.
-        Callback should handle deduplication and store data."""
+        Implements exponential backoff for 429 rate-limit errors and respects Retry-After headers."""
         while self.run:
             try:
-                time.sleep(REST_API_POLL_INTERVAL_SECONDS)
+                # Use backoff delay if rate-limited, otherwise use normal interval
+                sleep_duration = self._rest_api_backoff_seconds or REST_API_POLL_INTERVAL_SECONDS
+                time.sleep(sleep_duration)
                 if not self.run:
                     break
                 # Fetch REST API data - this will be used for verification and cleanup
                 api_tracks = self._pollRestApiHistory()
                 logger.debug("REST API poll returned %d tracks", len(api_tracks))
+                # Success: reset backoff
+                self._rest_api_backoff_seconds = 0
             except Exception as e:
-                logger.warning("REST API polling error: %s", parseError(e))
+                if _is_rate_limit_error(e):
+                    # Handle 429 rate-limit errors with backoff
+                    retry_after = _get_retry_after_header(e)
+                    if retry_after:
+                        # Spotify told us how long to wait
+                        self._rest_api_backoff_seconds = retry_after
+                        logger.warning(
+                            "REST API rate limited (429). Respecting Retry-After: waiting %ds before retry",
+                            retry_after,
+                        )
+                    else:
+                        # Exponential backoff: 2s, 4s, 8s, 16s... up to max (1 hour)
+                        if self._rest_api_backoff_seconds == 0:
+                            self._rest_api_backoff_seconds = 2
+                        else:
+                            self._rest_api_backoff_seconds = min(
+                                self._rest_api_backoff_seconds * 2, REST_API_BACKOFF_MAX_SECONDS
+                            )
+                        logger.warning(
+                            "REST API rate limited (429). Exponential backoff: waiting %ds before retry",
+                            self._rest_api_backoff_seconds,
+                        )
+                else:
+                    # Non-rate-limit errors: log and reset backoff to try again on normal schedule
+                    logger.warning("REST API polling error: %s", parseError(e))
+                    self._rest_api_backoff_seconds = 0
 
     def _checkOnce(self, callback, onStale) -> bool:
         """One iteration of the poll loop. Returns False if the feed was found
