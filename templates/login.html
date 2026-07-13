@@ -11,6 +11,7 @@
     {% endif %}
 
     <form class="login-form" method="post" action="/login">
+      {{ csrf_token() }}
       {% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
 
       <div class="form-group">
@@ -35,6 +36,7 @@
       <summary>Log in with cookies instead</summary>
 
       <form class="login-form" method="post" action="/login">
+        {{ csrf_token() }}
         {% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
 
         <div class="form-group">
