@@ -7,6 +7,19 @@ from contextlib import contextmanager
 from SpotipyFree import Spotify
 from Database.utils import parseError, timeToInt
 
+# Suppress ConnectionClosedOK during shutdown - it's not an error, just the websocket closing normally
+import websockets.exceptions
+import sys
+
+def _shutdown_exception_hook(args):
+    """Suppress harmless ConnectionClosedOK exceptions during interpreter shutdown."""
+    if isinstance(args.exc_value, websockets.exceptions.ConnectionClosedOK):
+        return
+    # Otherwise, use the default exception handler
+    sys.__excepthook__(args)
+
+threading.excepthook = _shutdown_exception_hook
+
 logger = logging.getLogger(__name__)
 
 LISTENER_STOP_JOIN_TIMEOUT_SECONDS = 5  #< bound how long shutdown waits for spotapi's background LastPlayed thread to exit
