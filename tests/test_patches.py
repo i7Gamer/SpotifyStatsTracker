@@ -208,6 +208,48 @@ class TestPatches(unittest.TestCase):
         sp_no_email.login("cookies.json")
         mock_from_saver.assert_called_with(unittest.mock.ANY, unittest.mock.ANY, "user1@test.com")
 
+    def test_config_client_default_is_shared_singleton(self):
+        """Sanity check on the dependency itself: spotapi.Config's `client`
+        field is declared as `field(default=TLSClient(...))` rather than
+        `field(default_factory=...)`. dataclasses only rejects known mutable
+        defaults (list/dict/set), so this TLSClient instance is built once at
+        import time and silently reused as the default for every Config()
+        call that omits client= - the exact footgun patched_spotify_login
+        works around below. If a future spotapi upgrade switches this to a
+        default_factory, this test should fail to flag that the workaround
+        is no longer needed."""
+        cfgA = spotapi.Config(logger=spotapi.Logger())
+        cfgB = spotapi.Config(logger=spotapi.Logger())
+        self.assertIs(cfgA.client, cfgB.client)
+
+    @patch("spotapi.Login.from_saver")
+    @patch("builtins.open")
+    def test_spotify_login_uses_isolated_client_not_shared_default(self, mock_open, mock_from_saver):
+        """Regression test for cross-user session contamination: since Login
+        stores cookies directly on cfg.client (see spotapi.Login.from_cookies,
+        which does cfg.client.cookies.clear() then sets this user's cookies),
+        two Spotify() instances sharing spotapi.Config's default TLSClient
+        would clobber each other's cookies whenever their logins/reconnects
+        overlapped - causing current_user() to intermittently return the
+        wrong user's identity. login() must construct a fresh TLSClient per
+        call so each user gets an isolated cookie jar."""
+        mock_file_data = json.dumps([{"identifier": "user1@test.com", "cookies": {}}])
+        mock_open.return_value.__enter__.return_value.read.return_value = mock_file_data
+
+        sp1 = self._newSpotifyInstance()
+        sp1.email = "user1@test.com"
+        sp1.login("cookies.json")
+
+        sp2 = self._newSpotifyInstance()
+        sp2.email = "user1@test.com"
+        sp2.login("cookies.json")
+
+        self.assertEqual(mock_from_saver.call_count, 2)
+        cfg1 = mock_from_saver.call_args_list[0].args[1]
+        cfg2 = mock_from_saver.call_args_list[1].args[1]
+        self.assertIsNot(cfg1.client, cfg2.client)
+        self.assertIsNot(cfg1.client, spotapi.Config(logger=spotapi.Logger()).client)
+
     def _newSpotifyInstance(self):
         import SpotipyFree
         instance = SpotipyFree.Spotify.__new__(SpotipyFree.Spotify)

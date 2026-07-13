@@ -130,7 +130,22 @@ def patch_spotipy_free() -> bool:
             if cookiesFile is None:
                 cookiesFile = SpotipyFree.getCookiesFile()
             try:
-                cfg = spotapi.Config(logger=spotapi.Logger())
+                # spotapi.Config's `client` field defaults via `field(default=TLSClient(...))`
+                # rather than `field(default_factory=...)` - dataclasses only reject known
+                # mutable defaults (list/dict/set), so that TLSClient instance is built once
+                # at import time and silently shared as the default for every Config() call
+                # that doesn't pass client= explicitly. Since Login stores cookies directly
+                # on cfg.client (a curl_cffi Session), every user's Login object was sharing
+                # one process-wide cookie jar - concurrent logins/reconnects would clobber
+                # each other's session cookies, causing current_user() to return whichever
+                # user's cookies happened to be in the jar at request time (the cross-user
+                # contamination bug). Passing a fresh TLSClient per login isolates each
+                # user's cookies, mirroring the fix already applied to spotapi.Song()'s
+                # identical shared-default footgun below (patched_spotify_track).
+                cfg = spotapi.Config(
+                    logger=spotapi.Logger(),
+                    client=spotapi.TLSClient("chrome120", "", auto_retries=3),
+                )
                 saver = spotapi.saver.JSONSaver(cookiesFile)
                 try:
                     with open(cookiesFile, "r") as f:
