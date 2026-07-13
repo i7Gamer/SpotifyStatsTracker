@@ -261,6 +261,7 @@ def patch_spotapi_user() -> bool:
         import spotapi.user
         from spotapi.exceptions import UserError
         from collections.abc import Mapping
+        from typing import Any
         import logging
 
         patch_logger = logging.getLogger("Database.patches")
