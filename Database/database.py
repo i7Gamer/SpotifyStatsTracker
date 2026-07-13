@@ -935,12 +935,14 @@ class Database:
             logger.debug("Reconciliation skipped: insufficient API data (tracks=%d, times=%d)", len(apiTrackIds), len(apiTimes))
             return
 
-        # Define the time window the API covers (includes tolerance for END/START conversion)
+        # Define the time window the API covers (tight boundaries)
+        # We do NOT expand this window because:
+        # 1. Plays outside [min, max] are not queried (safe - not deleted)
+        # 2. Plays inside [min, max] use two-pronged check (safe - kept if track in API)
+        # 3. Expanding would risk including plays we shouldn't examine
+        # The two-pronged corroboration (track ID + timestamp) handles START/END mismatch
         windowStart = min(apiTimes)
         windowEnd = max(apiTimes)
-        # Expand window to account for track duration (max typical ~10 minutes = 600s)
-        windowStart = windowStart - 600
-        windowEnd = windowEnd + 2  # Small tolerance for clock skew
 
         localPlays = self.repo.getPlaysInRange(self.user, windowStart, windowEnd)
         if not localPlays:
