@@ -70,7 +70,7 @@ class TestMigrate1_7_0(MigratorTestCase):
         seed.commit()
         seed.connectionManager.close()
 
-        migrateModule.Migrator().migrate()
+        migrateModule.Migrator("1.7.0", "1.8.0").migrate()
 
         repo = self._repo()
         self.assertEqual(repo.getPlaysCount("alice"), 1)
@@ -83,7 +83,7 @@ class TestMigrate1_7_0(MigratorTestCase):
         seed.commit()
         seed.connectionManager.close()
 
-        migrateModule.Migrator().migrate()
+        migrateModule.Migrator("1.7.0", "1.8.0").migrate()
 
         self.assertEqual((self.dataDir / "VERSION").read_text(encoding="utf-8").strip(), "1.8.0")
 
@@ -95,7 +95,7 @@ class TestMigrate1_7_0(MigratorTestCase):
         seed.commit()
         seed.connectionManager.close()
 
-        migrateModule.Migrator().migrate()
+        migrateModule.Migrator("1.7.0", "1.8.0").migrate()
 
         repo = self._repo()
         self.assertEqual(repo.getPlaysCount("alice"), 1)

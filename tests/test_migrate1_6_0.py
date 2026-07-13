@@ -97,7 +97,7 @@ class TestSingleUserMigration(MigratorTestCase):
         )
 
         Migrator = migrateModule.Migrator
-        Migrator().migrate()
+        Migrator("1.6.0", "1.7.0").migrate()
 
         self.assertFalse(self.usersDir.exists(), "Users/ must be renamed away, not left behind")
         repo = self._repo()
@@ -113,7 +113,7 @@ class TestSingleUserMigration(MigratorTestCase):
             images=[("tracks", "alb1", b"fake-jpeg-bytes")],
         )
 
-        migrateModule.Migrator().migrate()
+        migrateModule.Migrator("1.6.0", "1.7.0").migrate()
 
         mediaFile = self.dataDir / "Media" / "tracks" / "alb1.jpeg"
         self.assertTrue(mediaFile.exists())
@@ -131,7 +131,7 @@ class TestMultiUserSharedCatalog(MigratorTestCase):
         self._writeUser("bob", entries=[{"id": "t1", "playedAt": 200.0, "timePlayed": 3000}],
                          tracks={"t1": _track("t1")})
 
-        migrateModule.Migrator().migrate()
+        migrateModule.Migrator("1.6.0", "1.7.0").migrate()
 
         repo = self._repo()
         conn = sqlite3.connect(self.dataDir / "spotify_stats.db")
@@ -150,7 +150,7 @@ class TestMultiUserSharedCatalog(MigratorTestCase):
         self._writeUser("bob", tracks={"t2": _track("t2", albumId="shared-alb")},
                          images=[("tracks", "shared-alb", b"cover-bytes")])
 
-        migrateModule.Migrator().migrate()  #< must not raise on the second user's duplicate image
+        migrateModule.Migrator("1.6.0", "1.7.0").migrate()  #< must not raise on the second user's duplicate image
 
         mediaDir = self.dataDir / "Media" / "tracks"
         self.assertEqual(list(mediaDir.glob("shared-alb.jpeg")), [mediaDir / "shared-alb.jpeg"])
@@ -166,7 +166,7 @@ class TestCookiesAndUsersMapMigration(MigratorTestCase):
             json.dumps([{"identifier": "alice@example.com", "cookies": {"sp_dc": "abc123"}}]), encoding="utf-8")
         self._writeUser("alice")
 
-        migrateModule.Migrator().migrate()
+        migrateModule.Migrator("1.6.0", "1.7.0").migrate()
 
         repo = self._repo()
         self.assertEqual(repo.getUsernameForEmail("alice@example.com"), "alice")
@@ -176,7 +176,7 @@ class TestCookiesAndUsersMapMigration(MigratorTestCase):
         self._writeUser("orphan", entries=[{"id": "t1", "playedAt": 1.0, "timePlayed": 1}],
                          tracks={"t1": _track("t1")})
 
-        migrateModule.Migrator().migrate()  #< must not raise despite no users_map/cookies files
+        migrateModule.Migrator("1.6.0", "1.7.0").migrate()  #< must not raise despite no users_map/cookies files
 
         repo = self._repo()
         self.assertEqual(repo.getPlaysCount("orphan"), 1)
@@ -187,12 +187,12 @@ class TestIdempotentRetry(MigratorTestCase):
         self._writeUser("alice", entries=[{"id": "t1", "playedAt": 100.0, "timePlayed": 5000}],
                          tracks={"t1": _track("t1")})
 
-        migrateModule.Migrator().migrate()
+        migrateModule.Migrator("1.6.0", "1.7.0").migrate()
         # Simulate a restart before the version bump was durably seen (e.g. a
         # crash right after migrate() returned): the rename to Data/ already
         # happened, so the "stale" marker lives there now, not under Users/.
         (self.dataDir / "VERSION").write_text("1.6.0", encoding="utf-8")
-        migrateModule.Migrator().migrate()
+        migrateModule.Migrator("1.6.0", "1.7.0").migrate()
 
         self.assertFalse(self.usersDir.exists())
         repo = self._repo()
@@ -204,7 +204,7 @@ class TestNoUsersDirectory(MigratorTestCase):
         """migrateIfNeeded() (Migrators/migrate.py) already guarantees Users/VERSION
         exists before any numbered Migrator runs - a fresh-ish install with no user
         subdirectories yet just means zero users to iterate, not a missing Users/."""
-        migrateModule.Migrator().migrate()
+        migrateModule.Migrator("1.6.0", "1.7.0").migrate()
 
         self.assertFalse(self.usersDir.exists())
         self.assertEqual((self.dataDir / "VERSION").read_text(encoding="utf-8").strip(), "1.7.0")
@@ -220,7 +220,7 @@ class TestPartialFailure(MigratorTestCase):
         (badUserDir / "tracks.json").write_text(json.dumps({"t1": _track("t1")}), encoding="utf-8")
 
         with self.assertRaises(RuntimeError) as ctx:
-            migrateModule.Migrator().migrate()
+            migrateModule.Migrator("1.6.0", "1.7.0").migrate()
         self.assertIn("bob", str(ctx.exception))
 
         # A failed migration must not rename Users/ away - the next retry needs

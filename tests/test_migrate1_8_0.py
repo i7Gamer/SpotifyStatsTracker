@@ -64,7 +64,7 @@ class TestMigrate1_8_0(MigratorTestCase):
     def test_adds_password_hash_column_to_existing_users_table(self):
         self._seedPreMigrationDb()
 
-        migrateModule.Migrator().migrate()
+        migrateModule.Migrator("1.8.0", "1.9.0").migrate()
 
         conn = sqlite3.connect(self.dbPath)
         columns = {row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
@@ -74,7 +74,7 @@ class TestMigrate1_8_0(MigratorTestCase):
     def test_existing_rows_survive_with_null_password(self):
         self._seedPreMigrationDb()
 
-        migrateModule.Migrator().migrate()
+        migrateModule.Migrator("1.8.0", "1.9.0").migrate()
 
         repo = self._repo()
         self.assertIsNone(repo.getUserPasswordHash("alice"))
@@ -83,7 +83,7 @@ class TestMigrate1_8_0(MigratorTestCase):
     def test_advances_version_marker(self):
         self._seedPreMigrationDb()
 
-        migrateModule.Migrator().migrate()
+        migrateModule.Migrator("1.8.0", "1.9.0").migrate()
 
         self.assertEqual((self.dataDir / "VERSION").read_text(encoding="utf-8").strip(), "1.9.0")
 
@@ -95,7 +95,7 @@ class TestMigrate1_8_0(MigratorTestCase):
         seed.commit()
         seed.connectionManager.close()
 
-        migrateModule.Migrator().migrate()
+        migrateModule.Migrator("1.8.0", "1.9.0").migrate()
 
         repo = self._repo()
         self.assertIsNone(repo.getUserPasswordHash("alice"))

@@ -12,10 +12,15 @@ if isinstance(sys.modules.get("Database.database"), MagicMock):
 from Database.database import Database
 
 
+import threading
+
+
 def _bareDatabase():
     """A Database with only what _addToDatabaseFromListener touches."""
     db = Database.__new__(Database)
     db.appendTrackData = MagicMock()
+    db._health_lock = threading.RLock()
+    db.listener_health = "HEALTHY"
     return db
 
 
