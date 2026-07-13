@@ -424,7 +424,7 @@ class Database:
         track_id = track.get("id", "unknown")
         track_name = track.get("name", "unknown")
         logger.info(
-            "Recording play for user %s: track=%s (%s), timestamp=%.0f, duration=%dms",
+            "Recording play for user %s: track=%s (%s), timestamp=%s, duration=%dms",
             self.user, track_id, track_name, timestamp, timePlayed
         )
         self.appendMetadata(formatted_track, created_reason=f"listener_play (user: {self.user})")
