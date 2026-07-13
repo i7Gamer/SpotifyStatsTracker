@@ -217,18 +217,25 @@ class Listener:
                 if item.get("track")
             }
 
+            missingUris = []
             for uri in recentUris:
                 trackId = uri.removeprefix("spotify:track:")
                 if trackId in recordedTrackIds or uri in self._warnedMissingTrackUris:
                     continue
+                missingUris.append(uri)
+
+            if missingUris:
                 logger.warning(
-                    "Connect-state queue history shows track %s that was never recorded via "
-                    "current_user_recently_played() - the websocket cache may have missed a play",
-                    uri,
+                    "Connect-state queue history shows %d track(s) that were never recorded via "
+                    "current_user_recently_played() - the websocket cache may have missed a play. "
+                    "Missing tracks: %s",
+                    len(missingUris),
+                    ", ".join(missingUris),
                 )
-                if len(self._warnedMissingTrackUris) >= CONNECT_STATE_MISSED_TRACK_CACHE_SIZE:
-                    self._warnedMissingTrackUris.pop()
-                self._warnedMissingTrackUris.add(uri)
+                for uri in missingUris:
+                    if len(self._warnedMissingTrackUris) >= CONNECT_STATE_MISSED_TRACK_CACHE_SIZE:
+                        self._warnedMissingTrackUris.pop()
+                    self._warnedMissingTrackUris.add(uri)
         except Exception as e:
             logger.debug("Connect-state cross-check failed (non-fatal): %s", parseError(e))
 
