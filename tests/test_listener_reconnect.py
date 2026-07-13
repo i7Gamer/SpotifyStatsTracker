@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 if isinstance(sys.modules.get("Database.database"), MagicMock):
     del sys.modules["Database.database"]
 
-from Database.Listeners.spotifyListener import Listener, LISTENER_STALE_TIMEOUT_SECONDS
+from Database.Listeners.spotifyListener import Listener, LISTENER_STALE_TIMEOUT_SECONDS, _is_auth_error
 
 
 def _bareListener(recentlyPlayed=None):
@@ -98,6 +98,38 @@ class TestCheckOnceStaleness(unittest.TestCase):
 
         self.assertFalse(stillRunning)
         onStale.assert_called_once()
+
+
+class TestAuthErrorDetection(unittest.TestCase):
+    def test_loginerror_is_detected_as_auth_error(self):
+        exc = Exception("spotapi.exceptions.errors.LoginError: Could not GET ...")
+        self.assertTrue(_is_auth_error(exc))
+
+    def test_401_status_is_detected_as_auth_error(self):
+        exc = Exception("HTTP 401 Unauthorized")
+        self.assertTrue(_is_auth_error(exc))
+
+    def test_403_status_is_detected_as_auth_error(self):
+        exc = Exception("HTTP 403 Forbidden")
+        self.assertTrue(_is_auth_error(exc))
+
+    def test_expired_session_is_detected_as_auth_error(self):
+        exc = Exception("Session expired")
+        self.assertTrue(_is_auth_error(exc))
+
+    def test_invalid_token_is_detected_as_auth_error(self):
+        exc = Exception("Invalid access token")
+        self.assertTrue(_is_auth_error(exc))
+
+    def test_503_error_is_not_detected_as_auth_error(self):
+        exc = Exception("HTTP 503 Service Unavailable")
+        self.assertFalse(_is_auth_error(exc))
+
+    def test_timeout_error_is_not_detected_as_auth_error(self):
+        exc = Exception("Connection timeout")
+        self.assertFalse(_is_auth_error(exc))
+
+
 
 
 if __name__ == "__main__":

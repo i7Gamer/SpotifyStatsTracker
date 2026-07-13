@@ -5,6 +5,7 @@ import os
 import re
 import tempfile
 import threading
+import time
 import json
 from pathlib import Path
 from io import BytesIO
@@ -43,6 +44,9 @@ MEDIA_DIR = Path(__file__).resolve().parent / "Data" / "Media"
 
 class Database:
     PROGRESS_UPDATE_INTERVAL = 10   #< Write import progress to disk every N entries instead of every entry
+    RECONNECT_MAX_RETRIES = 10  #< max reconnection attempts before giving up (~30 min window with backoff)
+    RECONNECT_INITIAL_DELAY = 1  #< initial backoff in seconds
+    RECONNECT_MAX_DELAY = 300  #< cap backoff at 5 minutes
 
     # Shared across every Database instance (every user) in this process. Image
     # download de-duplication is enforced by the `images` table (atomic across
@@ -716,21 +720,47 @@ class Database:
         series = [{"name": name, "data": [seriesData[name][key] for key in bucketKeys]} for name in topNames]
         return {"buckets": bucketKeys, "series": series}
 
+    def _makeOnStaleCallback(self) -> callable:
+        """Create an onStale callback that retries with exponential backoff.
+        Called when the listener detects a stale feed or auth error and needs
+        to reconnect with fresh cookies/session."""
+        def onStaleWithBackoff():
+            for attempt in range(self.RECONNECT_MAX_RETRIES):
+                if attempt > 0:
+                    backoff_delay = min(
+                        self.RECONNECT_INITIAL_DELAY * (2 ** attempt),
+                        self.RECONNECT_MAX_DELAY
+                    )
+                    logger.warning(
+                        "Reconnection attempt %d/%d, waiting %ds before retry",
+                        attempt, self.RECONNECT_MAX_RETRIES, backoff_delay
+                    )
+                    time.sleep(backoff_delay)
+
+                try:
+                    logger.info("Attempting to reconnect (attempt %d/%d)", attempt + 1, self.RECONNECT_MAX_RETRIES)
+                    self.startListener(email=self.email)
+                    logger.info("Reconnection succeeded on attempt %d", attempt + 1)
+                    return
+                except Exception as e:
+                    logger.warning("Reconnection attempt %d failed: %s", attempt + 1, parseError(e))
+                    if attempt == self.RECONNECT_MAX_RETRIES - 1:
+                        logger.error(
+                            "Reconnection failed after %d attempts, tracking paused for this user",
+                            self.RECONNECT_MAX_RETRIES
+                        )
+
+        return onStaleWithBackoff
+
     def startListener(self, cookiesFile=None, email=None):
         if cookiesFile:
             self.cookiesFile = cookiesFile
         if email:
             self.email = email
         self.listener = self._withCookiesFile(lambda cf: Listener(cf, email=self.email))
-        # onStale: the listener's own feed can go silently stale (see
-        # spotifyListener.LISTENER_STALE_TIMEOUT_SECONDS) - rebuilding the whole
-        # session here (fresh cookies file, fresh Listener, fresh websocket) is
-        # the same recovery startListener() already does for an explicit
-        # re-login (see app.py's _refresh_user_session), just triggered
-        # automatically instead of by a user hitting /login again.
         self.listener.startListener_thread(
             callback=self._addToDatabaseFromListener,
-            onStale=lambda: self.startListener(email=self.email),
+            onStale=self._makeOnStaleCallback(),
         )
 
     def startAutoImporter(self):

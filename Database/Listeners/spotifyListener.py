@@ -1,4 +1,5 @@
 import logging
+import re
 import signal
 import threading
 import time
@@ -19,6 +20,24 @@ LISTENER_STOP_JOIN_TIMEOUT_SECONDS = 5  #< bound how long shutdown waits for spo
 # assume the feed is dead and ask the caller to rebuild the session rather than
 # staying wedged silently until the process is restarted.
 LISTENER_STALE_TIMEOUT_SECONDS = 30 * 60
+
+AUTH_ERROR_TIMEOUT_SECONDS = 30  #< trigger reconnection immediately for auth errors, not 30 min
+
+
+def _is_auth_error(exc: Exception) -> bool:
+    """Check if an exception is an authentication-related error (expired/invalid
+    credentials, 401/403) rather than transient network issues."""
+    exc_str = str(exc).lower()
+    exc_type = type(exc).__name__.lower()
+    return (
+        "loginerror" in exc_type
+        or "loginerror" in exc_str
+        or "401" in exc_str
+        or "403" in exc_str
+        or "unauthorized" in exc_str
+        or re.search(r"invalid\s+.*token", exc_str)
+        or re.search(r"session\s+.*expired", exc_str)
+    )
 
 
 @contextmanager
@@ -79,7 +98,8 @@ class Listener:
     def _checkOnce(self, callback, onStale) -> bool:
         """One iteration of the poll loop. Returns False if the feed was found
         stale and handed off to `onStale` for reconnection - the caller should
-        stop this listener, since a new one now owns tracking."""
+        stop this listener, since a new one now owns tracking. Raises an exception
+        if an auth error is detected so startListener can handle it immediately."""
         recentlyPlayed = self.sp.current_user_recently_played()
         if recentlyPlayed != self.recentlyPlayed_Z1:
             callback(self.getNewItems(recentlyPlayed))
@@ -90,7 +110,9 @@ class Listener:
         if onStale is None:
             return True
 
-        if time.monotonic() - self._lastChangeTime <= LISTENER_STALE_TIMEOUT_SECONDS:
+        elapsed = time.monotonic() - self._lastChangeTime
+
+        if elapsed <= LISTENER_STALE_TIMEOUT_SECONDS:
             return True
 
         logger.warning(
@@ -112,8 +134,18 @@ class Listener:
                     return
                 time.sleep(1)
             except Exception as e:
-                logger.error("Error in listener: %s", parseError(e))
-                time.sleep(30)
+                if _is_auth_error(e):
+                    logger.warning("Auth error detected, triggering immediate reconnection: %s", parseError(e))
+                    if onStale is not None:
+                        try:
+                            onStale()
+                        except Exception as reconnect_err:
+                            logger.error("Reconnect attempt failed: %s", parseError(reconnect_err))
+                    self.run = False
+                    return
+                else:
+                    logger.error("Error in listener: %s", parseError(e))
+                    time.sleep(30)
 
     def startListener_thread(self, callback, onStale=None):
         thread = threading.Thread(target=self.startListener, args=(callback,), kwargs={"onStale": onStale}, daemon=True)
