@@ -20,6 +20,7 @@ if __name__ == "__main__":
     os.environ["IMPORT_KEYWORD"] = "Weekly"
     os.environ["TZ"] = "America/Los_Angeles"
 
-    import pysole
-    pysole.probe(runRemainingCode=True, printStartupCode=True, primaryPrompt="[SpotifyStats] ")
+    import code
+    print("Running testResponseTime(50)...")
     testResponseTime(50)
+    code.interact(local=dict(globals(), **locals()))

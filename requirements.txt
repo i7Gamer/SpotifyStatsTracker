@@ -4,5 +4,4 @@ spotipyFree
 pillow
 requests
 websockets
-waitress
-pysole
+waitress

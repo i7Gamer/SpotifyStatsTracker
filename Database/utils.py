@@ -212,7 +212,7 @@ def versionTuple(version: str) -> tuple:
     return tuple(int(x) for x in version.split("."))
 
 if __name__ == "__main__":
-    import pysole
-    pysole.probe(runRemainingCode=True)
+    import code
     print("un = timeToInt('2022-09-22T03:29:43Z')")
     print("dt = convertToDatetime(un)")
+    code.interact(local=dict(globals(), **locals()))

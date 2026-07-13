@@ -929,8 +929,9 @@ if __name__ == "__main__":
     manager = Database(user="Tzur")
     manager.startListener("cookies.json")
     manager.startAutoImporter()
-    import pysole
-    pysole.probe()
+    import code
+    print("Starting interactive shell. Access 'manager' object directly.")
+    code.interact(local=dict(globals(), **locals()))
 
     # import SpotipyFree
     # sp = SpotipyFree.Spotify()
