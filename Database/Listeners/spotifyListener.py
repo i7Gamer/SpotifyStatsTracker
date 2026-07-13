@@ -14,9 +14,22 @@ import websockets.exceptions
 import sys
 
 def _shutdown_exception_hook(args):
-    """Suppress harmless ConnectionClosedOK exceptions during interpreter shutdown."""
-    if isinstance(args.exc_value, websockets.exceptions.ConnectionClosedOK):
+    """Suppress harmless websocket close exceptions - they're not errors, just the connection closing normally."""
+    exc = args.exc_value
+
+    # Suppress normal close (status 1000)
+    if isinstance(exc, websockets.exceptions.ConnectionClosedOK):
         return
+
+    # Also suppress ConnectionClosedError if it's a graceful close (status 1000).
+    # Some websocket implementations raise ConnectionClosedError instead of ConnectionClosedOK
+    # even when the close was initiated with status 1000 (normal close).
+    if isinstance(exc, websockets.exceptions.ConnectionClosedError):
+        # Check if close reason indicates graceful shutdown (1000 = OK)
+        exc_str = str(exc)
+        if "1000" in exc_str or "sent 1000" in exc_str:
+            return
+
     # Otherwise, use the default exception handler
     sys.__excepthook__(args.exc_type, args.exc_value, args.exc_traceback)
 
