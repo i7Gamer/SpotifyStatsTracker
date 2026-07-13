@@ -386,27 +386,37 @@ class Listener:
             }
 
             missed_items = []
+            # Corrected items for reconciliation: convert END times to START times
+            corrected_items_for_reconciliation = []
+
             for item in items:
                 played_at_str = item.get("played_at")
                 if not played_at_str:
                     continue
 
                 timestamp = timeToInt(played_at_str)
+                track = item.get("track")
+                duration_ms = track.get("duration_ms", 0) if track else 0
+
+                # Web API's played_at is the END time (when track stopped).
+                # Calculate the START time by subtracting the track duration.
+                start_timestamp = timestamp - (duration_ms // 1000)
+
+                # Convert start_timestamp back to ISO format
+                start_dt = convertToDatetime(start_timestamp)
+                start_time_iso = start_dt.isoformat(timespec='seconds').replace('+00:00', 'Z')
+
+                # Add corrected item for reconciliation (all API items, not just new ones)
+                corrected_items_for_reconciliation.append({
+                    **item,
+                    "played_at": start_time_iso,
+                })
+
                 # Check if we already recorded this play (matching within a 2-second window to handle minor precision diffs)
                 is_recorded = any(abs(timestamp - recorded_t) <= 2 for recorded_t in recorded_timestamps)
                 if not is_recorded:
-                    track = item.get("track")
                     if not track:
                         continue
-
-                    # Web API's played_at is the END time (when track stopped).
-                    # Calculate the START time by subtracting the track duration.
-                    duration_ms = track.get("duration_ms", 0)
-                    start_timestamp = timestamp - (duration_ms // 1000)
-
-                    # Convert start_timestamp back to ISO format
-                    start_dt = convertToDatetime(start_timestamp)
-                    start_time_iso = start_dt.isoformat(timespec='seconds').replace('+00:00', 'Z')
 
                     context = item.get("context") or {}
 
@@ -433,6 +443,8 @@ class Listener:
                 for item in missed_items:
                     self.recentlyPlayed_Z1.append(item)
 
+            # NOTE: reconciliation receives original API items (with END times).
+            # Reconciliation logic must account for potential timestamp format differences.
             if onWebApiSnapshot is not None:
                 onWebApiSnapshot(items)
 

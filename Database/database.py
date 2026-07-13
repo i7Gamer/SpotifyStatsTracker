@@ -918,9 +918,15 @@ class Database:
         what was actually played, so absence within its window is real
         evidence, not just a blind spot. Still bounded to the exact
         [oldest, newest] played_at span the API response covers - never
-        reaches past that window, so it can't touch older/imported history."""
-        if not apiItems:
-            return
+        reaches past that window, so it can't touch older/imported history.
+
+        TEMPORARILY DISABLED: After fixing backfill to use START times instead of
+        END times, the reconciliation logic breaks because it compares START times
+        (from corrected backfill plays) against END times (from API). This causes
+        valid plays to be deleted. Reconciliation needs to be redesigned to account
+        for track durations or track IDs instead of timestamp matching."""
+        logger.debug("Web API reconciliation disabled - timestamp format incompatible with backfill fix")
+        return
 
         apiTimes = {
             timeToInt(item["played_at"])
