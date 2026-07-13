@@ -1,3 +1,4 @@
+import datetime
 import logging
 import re
 import signal
@@ -5,7 +6,7 @@ import threading
 import time
 from contextlib import contextmanager
 from SpotipyFree import Spotify
-from Database.utils import parseError, timeToInt, convertToDatetime
+from Database.utils import parseError, timeToInt, fromtimestamp
 
 # Suppress ConnectionClosedOK during shutdown - it's not an error, just the websocket closing normally
 import websockets.exceptions
@@ -408,8 +409,11 @@ class Listener:
                 # Calculate the START time by subtracting the track duration.
                 start_timestamp = timestamp - (duration_ms // 1000)
 
-                # Convert start_timestamp back to ISO format
-                start_dt = convertToDatetime(start_timestamp)
+                # Convert start_timestamp back to a UTC "Z"-suffixed ISO string,
+                # matching the Web API's own format regardless of the app's
+                # configured local TZ (convertToDatetime would normalize to
+                # that local TZ instead, which is wrong here).
+                start_dt = fromtimestamp(start_timestamp, tz=datetime.timezone.utc)
                 start_time_iso = start_dt.isoformat(timespec='seconds').replace('+00:00', 'Z')
 
                 # Check if we already recorded this play (matching within a 2-second window to handle minor precision diffs)

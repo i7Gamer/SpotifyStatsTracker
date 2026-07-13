@@ -88,7 +88,7 @@ class TestReconcileWithWebApiHistory(unittest.TestCase):
         ]
         db.repo.deletePlay.return_value = True
 
-        db._reconcileWithWebApiHistory([{"played_at": API_PLAYED_AT}])
+        db._reconcileWithWebApiHistory([{"track": {"id": "t1"}, "played_at": API_PLAYED_AT}])
 
         db.repo.deletePlay.assert_called_once_with("alice", "t2", API_TS + 50)
         db.repo.commit.assert_called_once()
@@ -107,8 +107,8 @@ class TestReconcileWithWebApiHistory(unittest.TestCase):
         db.repo.getPlaysInRange.return_value = []
 
         db._reconcileWithWebApiHistory([
-            {"played_at": "2026-07-13T10:00:00Z"},
-            {"played_at": "2026-07-13T12:00:00Z"},
+            {"track": {"id": "t1"}, "played_at": "2026-07-13T10:00:00Z"},
+            {"track": {"id": "t2"}, "played_at": "2026-07-13T12:00:00Z"},
         ])
 
         args, kwargs = db.repo.getPlaysInRange.call_args
