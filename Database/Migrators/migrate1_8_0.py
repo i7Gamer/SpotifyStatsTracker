@@ -27,4 +27,4 @@ class Migrator(BaseMigrator):
 
 
 if __name__ == "__main__":
-    Migrator().migrate()
+    Migrator("1.8.0", "1.9.0").migrate()

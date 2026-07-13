@@ -18,12 +18,12 @@ def resolveRuntimeDir(baseDir: Path) -> Path:
 
 
 class BaseMigrator:
-    def __init__(self, *args, **kwargs):
+    def __init__(self, fromVersion: str, toVersion: str, *args, **kwargs):
         self.baseDir = Path(__file__).resolve().parent
         self.databaseVersionFile = resolveRuntimeDir(self.baseDir) / "VERSION"
         self.databaseVersion = self.databaseVersionFile.read_text().strip()
-        self.appVersionFile = self.baseDir / ".." / "VERSION"
-        self.appVersion = self.appVersionFile.read_text().strip()
+        self.fromVersion = fromVersion
+        self.toVersion = toVersion
 
     @staticmethod
     def getMajorMinor(version):
@@ -34,10 +34,8 @@ class BaseMigrator:
         return int(major), int(minor)
 
     def checkPreconditions(self):
-        dbMajor, dbMinor = self.getMajorMinor(self.databaseVersion)
-        appMajor, appMinor = self.getMajorMinor(self.appVersion)
-        if dbMajor != appMajor or dbMinor + 1 != appMinor:
-            raise Exception("Database and app versions are not compatible. Please run the migrator for the correct version first.")
+        if self.databaseVersion != self.fromVersion:
+            raise Exception(f"Database version {self.databaseVersion} does not match migrator's expected from-version {self.fromVersion}.")
 
     def updateAppVersion(self, newVersion):
         self.databaseVersion = newVersion

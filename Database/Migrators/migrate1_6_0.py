@@ -156,4 +156,4 @@ class Migrator(BaseMigrator):
 
 
 if __name__ == "__main__":
-    Migrator().migrate()
+    Migrator("1.6.0", "1.7.0").migrate()

@@ -23,8 +23,10 @@ def migrate(major, minor, baseDir):
     modulePath = baseDir / f"{moduleName}.py"
     module = _import(moduleName, modulePath)
 
+    fromVersion = f"{major}.{minor}.0"
+    toVersion = f"{major}.{minor + 1}.0"
     Migrator = module.Migrator
-    Migrator().migrate()
+    Migrator(fromVersion, toVersion).migrate()
 
 def migrateIfNeeded():
     baseDir = Path(__file__).resolve().parent

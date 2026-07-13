@@ -78,8 +78,8 @@ class Migrator(BaseMigrator):
 
 
 if __name__ == "__main__":
-    migrator = Migrator()
-    result = migrator.migrate()
+    migrator = Migrator("1.5.0", "1.6.0")
+    migrator.migrate()
 
     print(
         f"Migration complete. "

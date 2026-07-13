@@ -103,9 +103,15 @@ class TestMigrateIfNeeded(unittest.TestCase):
             base = Path(tmpdir)
             migratorsDir = base / "Migrators"
             migratorsDir.mkdir()
+            # Create a VERSION file so BaseMigrator doesn't fail reading it
+            dataDir = base / "Data"
+            dataDir.mkdir()
+            (dataDir / "VERSION").write_text("2.0.0", encoding="utf-8")
             modulePath = migratorsDir / "migrate2_0_0.py"
             modulePath.write_text(
                 "class Migrator:\n"
+                "    def __init__(self, fromVersion, toVersion):\n"
+                "        pass\n"
                 "    def migrate(self):\n"
                 "        pass\n",
                 encoding="utf-8",

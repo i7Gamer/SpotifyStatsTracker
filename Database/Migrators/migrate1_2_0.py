@@ -97,11 +97,7 @@ class Migrator(BaseMigrator):
 
 
 if __name__ == "__main__":
-    migrator = Migrator()
-    result = migrator.migrate()
-
-    print(
-        f"Migration complete. "
-        f"Created {result['entries']} entries and "
-        f"{result['tracks']} unique tracks."
+    migrator = Migrator("1.2.0", "1.3.0")
+    migrator.migrate()
+    print("Migration complete."
     )

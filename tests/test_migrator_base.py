@@ -49,30 +49,26 @@ class TestGetMajorMinor(unittest.TestCase):
 
 
 class TestCheckPreconditions(MigratorBaseTestCase):
-    def test_passes_when_db_is_one_minor_behind_within_the_same_major(self):
-        self._writeVersions(appVersion="1.8.0", databaseVersion="1.7.0")
-        BaseMigrator().checkPreconditions()  # must not raise
-
-    def test_raises_on_an_identical_minor_different_major_mismatch(self):
-        """This is the exact case a minor-only comparison used to miss:
-        getMiddleVersion("1.7.0") == getMiddleVersion("2.7.0") == 7, so the old
-        check never even looked at the major component to notice these belong
-        to different major versions entirely."""
-        self._writeVersions(appVersion="2.7.0", databaseVersion="1.7.0")
-        with self.assertRaises(Exception):
-            BaseMigrator().checkPreconditions()
-
-    def test_raises_when_db_is_more_than_one_minor_behind(self):
+    def test_passes_when_db_matches_migrator_from_version(self):
         self._writeVersions(appVersion="1.9.0", databaseVersion="1.7.0")
-        with self.assertRaises(Exception):
-            BaseMigrator().checkPreconditions()
+        BaseMigrator("1.7.0", "1.8.0").checkPreconditions()  # must not raise
 
-    def test_raises_when_major_differs_even_if_minor_plus_one_matches(self):
-        """Same shape as the pre-fix bug: minor 6+1==7 lines up, but major 1
-        vs 2 must still be rejected."""
-        self._writeVersions(appVersion="2.7.0", databaseVersion="1.6.0")
+    def test_raises_when_db_does_not_match_migrator_from_version(self):
+        self._writeVersions(appVersion="1.9.0", databaseVersion="1.6.0")
         with self.assertRaises(Exception):
-            BaseMigrator().checkPreconditions()
+            BaseMigrator("1.7.0", "1.8.0").checkPreconditions()
+
+    def test_raises_when_major_differs_from_expected(self):
+        self._writeVersions(appVersion="2.8.0", databaseVersion="2.7.0")
+        with self.assertRaises(Exception):
+            BaseMigrator("1.7.0", "1.8.0").checkPreconditions()
+
+    def test_allows_large_version_jumps_when_migrator_chain_runs(self):
+        """Database at 1.6.0, app at 1.9.0: when migrator1_6_0 runs, it should
+        check only against 1.6.0 (fromVersion), not reject because app is 1.9.0.
+        The migration chain will run migrate1_6_0, then 1_7_0, then 1_8_0."""
+        self._writeVersions(appVersion="1.9.0", databaseVersion="1.6.0")
+        BaseMigrator("1.6.0", "1.7.0").checkPreconditions()  # must not raise
 
 
 if __name__ == "__main__":
