@@ -5,4 +5,5 @@ pillow
 requests
 websockets
 waitress
-tzdata
+tzdata
+redis
