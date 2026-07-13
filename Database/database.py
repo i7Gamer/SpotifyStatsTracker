@@ -510,12 +510,51 @@ class Database:
     def getLongestStreak(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> int:
         """Longest consecutive days of plays in range."""
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
-        return self.repo.getLongestStreak(self.user, startTs, endTs)
+        plays = self.repo.getPlaysInRange(self.user, startTs, endTs)
+        if not plays:
+            return 0
+
+        play_dates = sorted(list({
+            convertToDatetime(p["playedAt"]).strftime("%Y-%m-%d")
+            for p in plays
+        }))
+
+        max_streak = 1
+        current_streak = 1
+        prev_date = None
+
+        for current_date in play_dates:
+            if prev_date:
+                # Check if dates are consecutive (1 day apart)
+                prev_obj = datetime.datetime.strptime(prev_date, "%Y-%m-%d")
+                curr_obj = datetime.datetime.strptime(current_date, "%Y-%m-%d")
+                if (curr_obj - prev_obj).days == 1:
+                    current_streak += 1
+                else:
+                    max_streak = max(max_streak, current_streak)
+                    current_streak = 1
+            prev_date = current_date
+
+        max_streak = max(max_streak, current_streak)
+        return max_streak
 
     def getPeakListeningTime(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> tuple[str, int] | None:
         """(day_of_week_name, play_count) for the day with most plays, or None."""
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
-        return self.repo.getPeakListeningDayOfWeek(self.user, startTs, endTs)
+        plays = self.repo.getPlaysInRange(self.user, startTs, endTs)
+        if not plays:
+            return None
+
+        # Map Python's locale-independent weekday index to English names
+        WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+        counts = {}
+        for p in plays:
+            dt = convertToDatetime(p["playedAt"])
+            day_name = WEEKDAYS[dt.weekday()]
+            counts[day_name] = counts.get(day_name, 0) + 1
+
+        peak_day = max(counts, key=counts.get)
+        return peak_day, counts[peak_day]
 
     def getDiscoveredSongsCount(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> int:
         """Count of distinct songs first played within the date range."""

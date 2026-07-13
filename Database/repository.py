@@ -1006,74 +1006,6 @@ class Repository:
         ).fetchone()
         return row["c"], row["total"]
 
-    def getLongestStreak(self, username: str, startTs: float | None = None,
-                          endTs: float | None = None) -> int:
-        """Longest consecutive days of plays in range. Returns 0 if no plays."""
-        conn = self._conn()
-        rows = conn.execute(
-            f"""
-            SELECT DISTINCT date(p.played_at, 'unixepoch') AS play_date
-            FROM plays p
-            WHERE p.username = ? {self._dateRangeClause().replace('played_at', 'p.played_at')}
-            ORDER BY play_date
-            """,
-            (username, startTs, startTs, endTs, endTs),
-        ).fetchall()
-
-        if not rows:
-            return 0
-
-        max_streak = 1
-        current_streak = 1
-        prev_date = None
-
-        for row in rows:
-            current_date = row["play_date"]
-            if prev_date:
-                # Check if dates are consecutive (1 day apart)
-                prev_obj = datetime.datetime.strptime(prev_date, "%Y-%m-%d")
-                curr_obj = datetime.datetime.strptime(current_date, "%Y-%m-%d")
-                if (curr_obj - prev_obj).days == 1:
-                    current_streak += 1
-                else:
-                    max_streak = max(max_streak, current_streak)
-                    current_streak = 1
-            prev_date = current_date
-
-        max_streak = max(max_streak, current_streak)
-        return max_streak
-
-    def getPeakListeningDayOfWeek(self, username: str, startTs: float | None = None,
-                                   endTs: float | None = None) -> tuple[str, int] | None:
-        """Returns (day_name, play_count) for the day of week with most plays.
-        Returns None if no plays."""
-        conn = self._conn()
-        row = conn.execute(
-            f"""
-            SELECT
-                CASE CAST(strftime('%w', p.played_at, 'unixepoch') AS INTEGER)
-                    WHEN 0 THEN 'Sunday'
-                    WHEN 1 THEN 'Monday'
-                    WHEN 2 THEN 'Tuesday'
-                    WHEN 3 THEN 'Wednesday'
-                    WHEN 4 THEN 'Thursday'
-                    WHEN 5 THEN 'Friday'
-                    WHEN 6 THEN 'Saturday'
-                END AS day_name,
-                COUNT(*) AS play_count
-            FROM plays p
-            WHERE p.username = ? {self._dateRangeClause().replace('played_at', 'p.played_at')}
-            GROUP BY strftime('%w', p.played_at, 'unixepoch')
-            ORDER BY play_count DESC
-            LIMIT 1
-            """,
-            (username, startTs, startTs, endTs, endTs),
-        ).fetchone()
-
-        if not row:
-            return None
-        return row["day_name"], row["play_count"]
-
     def getDiscoveredSongsCount(self, username: str, startTs: float | None = None,
                                  endTs: float | None = None) -> int:
         """Count of distinct songs first played (across all time) within the year range."""
@@ -1083,12 +1015,12 @@ class Repository:
             SELECT COUNT(*) AS c FROM (
                 SELECT DISTINCT p.track_id
                 FROM plays p
-                WHERE p.username = ?
+                WHERE p.username = ? AND p.played_at BETWEEN ? AND ?
                 AND (SELECT MIN(played_at) FROM plays WHERE username = ? AND track_id = p.track_id)
                     BETWEEN ? AND ?
             )
             """,
-            (username, username, startTs, endTs),
+            (username, startTs, endTs, username, startTs, endTs),
         ).fetchone()
         return row["c"]
 
@@ -1102,7 +1034,7 @@ class Repository:
                 SELECT DISTINCT ta.artist_id
                 FROM plays p
                 JOIN track_artists ta ON ta.track_id = p.track_id
-                WHERE p.username = ?
+                WHERE p.username = ? AND p.played_at BETWEEN ? AND ?
                 AND (SELECT MIN(played_at) FROM plays
                      WHERE username = ? AND track_id IN (
                          SELECT track_id FROM track_artists WHERE artist_id = ta.artist_id
@@ -1110,7 +1042,7 @@ class Repository:
                     BETWEEN ? AND ?
             )
             """,
-            (username, username, startTs, endTs),
+            (username, startTs, endTs, username, startTs, endTs),
         ).fetchone()
         return row["c"]
 
