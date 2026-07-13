@@ -387,18 +387,22 @@ class Listener:
                 if item.get("played_at")
             }
 
-            missed_items = []
-            # Corrected items for reconciliation: convert END times to START times
-            corrected_items_for_reconciliation = []
+            # Pairs of (missed_item, end_time_iso) built in lockstep so each
+            # missed item stays tied to its OWN source API item's END time -
+            # no post-hoc re-matching by track ID, which breaks when the same
+            # track appears more than once in `items` (all copies would
+            # resolve to whichever occurrence next() finds first).
+            missed_pairs = []
 
             for item in items:
                 played_at_str = item.get("played_at")
-                if not played_at_str:
+                track = item.get("track")
+                track_id = track.get("id") if track else None
+                if not played_at_str or not track_id:
                     continue
 
                 timestamp = timeToInt(played_at_str)
-                track = item.get("track")
-                duration_ms = track.get("duration_ms", 0) if track else 0
+                duration_ms = track.get("duration_ms", 0)
 
                 # Web API's played_at is the END time (when track stopped).
                 # Calculate the START time by subtracting the track duration.
@@ -408,60 +412,49 @@ class Listener:
                 start_dt = convertToDatetime(start_timestamp)
                 start_time_iso = start_dt.isoformat(timespec='seconds').replace('+00:00', 'Z')
 
-                # Add corrected item for reconciliation (all API items, not just new ones)
-                corrected_items_for_reconciliation.append({
-                    **item,
-                    "played_at": start_time_iso,
-                })
-
                 # Check if we already recorded this play (matching within a 2-second window to handle minor precision diffs)
                 is_recorded = any(abs(timestamp - recorded_t) <= 2 for recorded_t in recorded_timestamps)
                 if not is_recorded:
-                    if not track:
-                        continue
-
                     context = item.get("context") or {}
 
                     # Convert to the format expected by callback:
                     # {"track": track, "played_at": start_time, "ms_played": duration_ms, "context": context}
-                    missed_items.append({
-                        "track": track,
-                        "played_at": start_time_iso,
-                        "ms_played": duration_ms,
-                        "context": context
-                    })
+                    missed_pairs.append((
+                        {
+                            "track": track,
+                            "played_at": start_time_iso,
+                            "ms_played": duration_ms,
+                            "context": context
+                        },
+                        played_at_str,  # this item's own END time, for caching below
+                    ))
 
-            if missed_items:
-                logger.info("Backfilling %d plays from Web API recently-played history", len(missed_items))
+            if missed_pairs:
+                logger.info("Backfilling %d plays from Web API recently-played history", len(missed_pairs))
                 # Mark these as backfilled so the database can record the source
-                for item in missed_items:
-                    item["_source"] = "web_api_backfill"
+                for missed_item, _ in missed_pairs:
+                    missed_item["_source"] = "web_api_backfill"
                 # Pass them to callback (it expects a list, newest plays last)
                 # Web API returns newest plays first, so reverse to maintain cron order
-                missed_items.reverse()
-                callback(missed_items)
+                missed_pairs.reverse()
+                callback([missed_item for missed_item, _ in missed_pairs])
 
-                # Add backfilled items to recentlyPlayed_Z1 to prevent re-backfilling
-                # CRITICAL: Must add with END times (from API), NOT START times
-                # so comparisons remain consistent on future backfill runs
-                for item in missed_items:
-                    # Extract API END time (before we converted to START time for DB storage)
-                    api_item_match = next(
-                        (api_item for api_item in items
-                         if api_item.get("track", {}).get("id") == item.get("track", {}).get("id")),
-                        None
-                    )
-                    if api_item_match:
-                        # Add with END time (from API), not START time
-                        self.recentlyPlayed_Z1.append({
-                            "track": item.get("track"),
-                            "played_at": api_item_match.get("played_at"),  # END time from API
-                            "ms_played": item.get("ms_played"),
-                            "context": item.get("context")
-                        })
+            # Replace recentlyPlayed_Z1 with this batch (translated to the local
+            # played_at/track/ms_played/context shape, END times as returned by
+            # the API) so it holds exactly the last batch checked - only plays
+            # not in this batch get treated as new/missed on the next run.
+            # Entries missing a track ID or played_at are skipped entirely.
+            self.recentlyPlayed_Z1 = [
+                {
+                    "track": item.get("track"),
+                    "played_at": item.get("played_at"),
+                    "ms_played": item.get("track", {}).get("duration_ms", 0),
+                    "context": item.get("context") or {}
+                }
+                for item in items
+                if item.get("played_at") and item.get("track", {}).get("id")
+            ]
 
-            # NOTE: reconciliation receives original API items (with END times).
-            # Reconciliation logic must account for potential timestamp format differences.
             if onWebApiSnapshot is not None:
                 onWebApiSnapshot(items)
 
