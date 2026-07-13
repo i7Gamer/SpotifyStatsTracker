@@ -958,6 +958,12 @@ class Database:
                     self.user, self.email, email
                 )
             self.email = email
+        if self.listener is not None:
+            logger.info("Stopping existing listener for user %s before re-starting", self.user)
+            try:
+                self.listener.stop()
+            except Exception as e:
+                logger.error("Failed to stop existing listener for user %s: %s", self.user, parseError(e))
         self.listener = self._withCookiesFile(lambda cf: Listener(cf, email=self.email, get_credentials=self.getUserSpotifyCredentials))
         with self._health_lock:
             self.listener_health = "HEALTHY"

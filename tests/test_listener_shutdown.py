@@ -94,6 +94,37 @@ class TestDatabaseStop(unittest.TestCase):
 
         db.autoImporter.wd.stop.assert_called_once()
 
+    def test_startListener_stops_existing_listener(self):
+        db = _bareDatabase()
+        db.cookiesFile = "test_cookies.json"
+        db.email = "test@example.com"
+        db.user = "testuser"
+        db.getUserSpotifyCredentials = MagicMock(return_value=None)
+
+        # Mock _withCookiesFile to just return a dummy mock listener instead of instantiating real Listener
+        mock_new_listener = MagicMock()
+        db._withCookiesFile = MagicMock(return_value=mock_new_listener)
+
+        # Set an existing mocked listener
+        mock_old_listener = MagicMock()
+        db.listener = mock_old_listener
+
+        # Mock startListener_thread so we don't try to spawn a real thread
+        mock_new_listener.startListener_thread = MagicMock()
+
+        # Mock _health_lock and internal attributes startListener modifies
+        db._health_lock = MagicMock()
+        db._addToDatabaseFromListener = MagicMock()
+        db._makeOnStaleCallback = MagicMock()
+        db._reconcileWithWebApiHistory = MagicMock()
+
+        # Invoke startListener
+        db.startListener()
+
+        # Verify old listener was stopped
+        mock_old_listener.stop.assert_called_once()
+        self.assertIs(db.listener, mock_new_listener)
+
 
 if __name__ == "__main__":
     unittest.main()
