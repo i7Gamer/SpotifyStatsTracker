@@ -410,24 +410,26 @@ class Database:
                               created_reason=f"manual_entry (user: {self.user})")
         self.repo.commit()
 
-    def appendMetadata(self, meta: dict, created_reason: str | None = None) -> None:
+    def appendMetadata(self, meta: dict, created_reason: str | None = None) -> bool:
         self.saveImagesFromTrack(meta)
         entry, track = self._splitEntryAndTrack(meta)
         self.repo.upsertTrack(track, created_reason=created_reason)
-        self.repo.insertPlay(self.user, entry["id"], entry["playedAt"], entry["timePlayed"], entry.get("playedFrom"),
+        was_inserted = self.repo.insertPlay(self.user, entry["id"], entry["playedAt"], entry["timePlayed"], entry.get("playedFrom"),
                               created_reason=created_reason)
         self.repo.commit()
         self.updatePlaylists(entry.get("playedFrom"))
+        return was_inserted
 
     def appendTrackData(self, timestamp, track, timePlayed, context=None):
         formatted_track = Client.formatTrack(track, timestamp, timePlayed, context=context)
         track_id = track.get("id", "unknown")
         track_name = track.get("name", "unknown")
-        logger.info(
-            "Recording play for user %s: track=%s (%s), timestamp=%s, duration=%dms",
-            self.user, track_id, track_name, timestamp, timePlayed
-        )
-        self.appendMetadata(formatted_track, created_reason=f"listener_play (user: {self.user})")
+        was_inserted = self.appendMetadata(formatted_track, created_reason=f"listener_play (user: {self.user})")
+        if was_inserted:
+            logger.info(
+                "Recording play for user %s: track=%s (%s), timestamp=%s, duration=%dms",
+                self.user, track_id, track_name, timestamp, timePlayed
+            )
 
     def importHistory(self, exportedHistory, progressPrefix: str = "", isFinalFile: bool = True):
         importer = self._withCookiesFile(lambda cookiesFile: Importer(cookiesFile=cookiesFile, email=self.email))
