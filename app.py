@@ -10,6 +10,7 @@ import time
 from datetime import timedelta
 
 from flask import Flask, render_template, redirect, request, url_for, jsonify, send_from_directory, session, g
+from flask_wtf.csrf import CSRFProtect
 from werkzeug.security import generate_password_hash, check_password_hash
 
 from Database.database import Database
@@ -66,6 +67,8 @@ class SpotifyDashboardApp:
         # accidental upload is read fully into memory before anything can reject
         # it.
         self.app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_MB * 1024 * 1024
+        self.app.config["WTF_CSRF_TIME_LIMIT"] = None
+        CSRFProtect(self.app)
         # Users, emails and Spotify session cookies live in the shared database
         # (see Database/repository.py) instead of secrets/users_map.json and
         # secrets/cookies.json.
@@ -417,6 +420,24 @@ class SpotifyDashboardApp:
         sortBy = request.args.get("sortBy", default)
         return sortBy if sortBy in VALID_SORT_BY else default
 
+    def _calculatePagination(self, totalCount):
+        """Calculate safe page bounds given a total count.
+        Returns (page, totalPages, startIndex) where page is clamped to valid range."""
+        page = self._getPageParam()
+        totalPages = max(1, (totalCount + PAGE_SIZE - 1) // PAGE_SIZE)
+        page = max(1, min(page, totalPages))
+        startIndex = (page - 1) * PAGE_SIZE
+        return page, totalPages, startIndex
+
+    def _getValidInterval(self, interval, default="day"):
+        """Validate interval parameter, falling back to default for unrecognized values."""
+        valid_intervals = {"", "today", "day", "week", "month", "year", "5years", "all time", "custom"}
+        return interval if interval in valid_intervals else default
+
+    def _getValidGroupBy(self, groupBy, default="day"):
+        """Validate groupBy parameter, falling back to default for unrecognized values."""
+        return groupBy if groupBy in ("day", "week", "month") else default
+
     def _getDateRange(self, interval: str = None, customStart: str = None, customEnd: str = None, default="day"):
             """Get start and end dates based on interval or custom dates.
 
@@ -576,10 +597,12 @@ class SpotifyDashboardApp:
             imagePath = os.path.join(imageDir, filename)
 
             if not os.path.exists(imagePath):
-                artistId = filename.split('.')[0]
-                db = self.user_databases.get(username)
-                if db:
-                    db.lazyFetchArtistImage(artistId, Path(imagePath))
+                parts = os.path.splitext(filename)
+                if len(parts) == 2 and parts[0].isalnum():
+                    artistId = parts[0]
+                    db = self.user_databases.get(username)
+                    if db:
+                        db.lazyFetchArtistImage(artistId, Path(imagePath))
 
             return send_from_directory(imageDir, filename)
 
@@ -862,18 +885,14 @@ class SpotifyDashboardApp:
                 # Matching and pagination both happen in SQL (Repository.searchPlays)
                 # instead of fetching every play ever recorded and filtering in Python.
                 totalCount = db.searchEntriesCount(searchQuery)
-                totalPages = max(1, (totalCount + PAGE_SIZE - 1) // PAGE_SIZE)
-                page = max(1, min(page, totalPages))
-                startIndex = (page - 1) * PAGE_SIZE
+                page, totalPages, startIndex = self._calculatePagination(totalCount)
                 tracks = db.searchEntries(searchQuery, count=PAGE_SIZE, startIndex=startIndex)
             else:
                 # Only materialize the page being shown - joining full track
                 # metadata onto every entry ever recorded on every request gets
                 # slow once the history grows large.
                 totalCount = db.getEntriesCount()
-                totalPages = max(1, (totalCount + PAGE_SIZE - 1) // PAGE_SIZE)
-                page = max(1, min(page, totalPages))
-                startIndex = (page - 1) * PAGE_SIZE
+                page, totalPages, startIndex = self._calculatePagination(totalCount)
                 tracks = db.getEntriesFromNew(count=PAGE_SIZE, startIndex=startIndex)
             tracks = self._embedSongsTextElements(tracks)
 
@@ -943,9 +962,7 @@ class SpotifyDashboardApp:
             # WHERE-clause matching (see Repository.getSongsPage) instead of
             # sorting+hydrating+filtering every song ever played in Python.
             totalCount = db.getSongsCount(startDate, endDate, searchQuery=searchQuery)
-            totalPages = max(1, (totalCount + PAGE_SIZE - 1) // PAGE_SIZE)
-            page = max(1, min(page, totalPages))
-            startIndex = (page - 1) * PAGE_SIZE
+            page, totalPages, startIndex = self._calculatePagination(totalCount)
             tracks = db.getTopSongs(startDate=startDate, endDate=endDate, by=sortBy,
                                      limit=PAGE_SIZE, offset=startIndex, searchQuery=searchQuery)
 
@@ -999,9 +1016,7 @@ class SpotifyDashboardApp:
             # WHERE-clause matching (see Repository.getAlbumsPage) instead of
             # sorting+hydrating+filtering every album ever played in Python.
             totalCount = db.getAlbumsCount(startDate, endDate, searchQuery=searchQuery)
-            totalPages = max(1, (totalCount + PAGE_SIZE - 1) // PAGE_SIZE)
-            page = max(1, min(page, totalPages))
-            startIndex = (page - 1) * PAGE_SIZE
+            page, totalPages, startIndex = self._calculatePagination(totalCount)
             albums = db.getTopAlbums(startDate=startDate, endDate=endDate, by=sortBy,
                                       limit=PAGE_SIZE, offset=startIndex, searchQuery=searchQuery)
 
@@ -1057,9 +1072,7 @@ class SpotifyDashboardApp:
             # Only materialize the page being shown - SQL-level LIMIT/OFFSET
             # instead of sorting+hydrating every artist ever played.
             totalCount = db.getArtistsCount(startDate, endDate, searchQuery=searchQuery)
-            totalPages = max(1, (totalCount + PAGE_SIZE - 1) // PAGE_SIZE)
-            page = max(1, min(page, totalPages))
-            startIndex = (page - 1) * PAGE_SIZE
+            page, totalPages, startIndex = self._calculatePagination(totalCount)
             artists = db.getTopArtists(startDate=startDate, endDate=endDate, by=sortBy,
                                         limit=PAGE_SIZE, offset=startIndex, searchQuery=searchQuery)
 
@@ -1098,14 +1111,12 @@ class SpotifyDashboardApp:
             if not email:
                 return redirect(url_for("login", next=request.path))
 
-            interval = request.args.get("interval", "month")
+            interval = self._getValidInterval(request.args.get("interval", "month"), default="month")
             customStart = request.args.get("startDate", "")
             customEnd = request.args.get("endDate", "")
             if interval == "custom" and not (customStart and customEnd):
                 interval = "month"
-            groupBy = request.args.get("groupBy", "day")
-            if groupBy not in ("day", "week", "month"):
-                groupBy = "day"
+            groupBy = self._getValidGroupBy(request.args.get("groupBy", "day"))
 
             startDate, endDate = self._getDateRange(interval, customStart, customEnd, default="month")
             intervalLabel = self._getIntervalLabel(interval, customStart, customEnd)
@@ -1153,9 +1164,7 @@ class SpotifyDashboardApp:
             yearStart = nowLocal.replace(year=year, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
             yearEnd = nowLocal.replace(year=year + 1, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
 
-            groupBy = request.args.get("groupBy", "week")
-            if groupBy not in ("day", "week", "month"):
-                groupBy = "week"
+            groupBy = self._getValidGroupBy(request.args.get("groupBy", "week"), default="week")
 
             limit = request.args.get("limit", type=int)
             if limit not in WRAPPED_LIMIT_OPTIONS:
@@ -1234,9 +1243,7 @@ class SpotifyDashboardApp:
             if song is None:
                 return redirect(url_for("topSongsPage"))
 
-            groupBy = request.args.get("groupBy", "week")
-            if groupBy not in ("day", "week", "month"):
-                groupBy = "week"
+            groupBy = self._getValidGroupBy(request.args.get("groupBy", "week"), default="week")
 
             song = self._embedSongTextElements(song)
             song = self._embedTopSongTextElements(song)
@@ -1266,9 +1273,7 @@ class SpotifyDashboardApp:
             if artist is None:
                 return redirect(url_for("topArtistsPage"))
 
-            groupBy = request.args.get("groupBy", "week")
-            if groupBy not in ("day", "week", "month"):
-                groupBy = "week"
+            groupBy = self._getValidGroupBy(request.args.get("groupBy", "week"), default="week")
 
             songs = db.getSongsStats(sortBy="plays", artistId=artist_id)
             firstSong = min(songs, key=lambda s: s.get("firstListenedAt") or float("inf")) if songs else None
@@ -1305,9 +1310,7 @@ class SpotifyDashboardApp:
             if album is None:
                 return redirect(url_for("topAlbumsPage"))
 
-            groupBy = request.args.get("groupBy", "week")
-            if groupBy not in ("day", "week", "month"):
-                groupBy = "week"
+            groupBy = self._getValidGroupBy(request.args.get("groupBy", "week"), default="week")
 
             songs = db.getSongsStats(sortBy="plays", albumId=album_id)
             firstSong = min(songs, key=lambda s: s.get("firstListenedAt") or float("inf")) if songs else None
@@ -1344,7 +1347,8 @@ class SpotifyDashboardApp:
 
     def run(self):
         try:
-            self.app.run(host="0.0.0.0", debug=True, port=5444, use_reloader=False)#, threaded=False)
+            debug = os.environ.get("FLASK_DEBUG", "").lower() in TRUTHY_ENV_VALUES
+            self.app.run(host="0.0.0.0", debug=debug, port=5444, use_reloader=False)#, threaded=False)
         finally:
             self.shutdown()
 

@@ -57,8 +57,6 @@ class Database:
     imgDir_tracks = MEDIA_DIR / "tracks"
     imgDir_artists = MEDIA_DIR / "artists"
     _imageDownloadExecutor = concurrent.futures.ThreadPoolExecutor(max_workers=IMAGE_DOWNLOAD_WORKERS)
-    _imageIdsLock = threading.RLock()
-    _artistImageLazyFetchAttempted = set()
 
     def __init__(self, user: str, cookiesFile: str | None = None, email: str | None = None, dbPath=None):
         if not user:
@@ -94,6 +92,7 @@ class Database:
     def _addToDatabaseFromListener(self, data) -> None:
         if not data:
             return
+        had_errors = False
         for item in data:
             track = item.get("track")
             timestamp = item.get("played_at")
@@ -109,14 +108,23 @@ class Database:
                 try:
                     self.appendTrackData(timestamp, track, msPlayed, context=item.get("context", None))
                 except Exception as e:
-                    logger.error("Error adding track from listener: %s", parseError(e))
-        # Mark successful poll
+                    logger.error("Error adding track %s from listener: %s", track.get("id"), parseError(e))
+                    had_errors = True
+        # Mark successful poll (only if no errors occurred during processing)
         with self._health_lock:
             self.listener_last_poll_time = time.monotonic()
-            self.listener_error_count = 0
-            if self.listener_health != "HEALTHY":
-                self.listener_health = "HEALTHY"
-                logger.info("Listener recovered to HEALTHY state")
+            if had_errors:
+                self.listener_error_count += 1
+                self.listener_last_error = "One or more tracks failed to add from listener"
+                if self.listener_error_count > 5:
+                    self.listener_health = "DEGRADED"
+                    logger.warning("Listener error count exceeded threshold, marking as DEGRADED")
+            else:
+                self.listener_error_count = 0
+                self.listener_last_error = None
+                if self.listener_health != "HEALTHY":
+                    self.listener_health = "HEALTHY"
+                    logger.info("Listener recovered to HEALTHY state")
 
     def _materializeCookiesFile(self) -> Path:
         """SpotipyFree/spotapi only know how to read a Spotify session from a file
@@ -323,21 +331,23 @@ class Database:
             res = requests.get(f"https://open.spotify.com/artist/{artistId}", headers=headers, timeout=5)
             match = re.search(r'<meta property="og:image" content="([^"]+)"', res.text)
             if not match:
+                self.repo.markImageStatus(artistId, IMAGE_KIND_ARTIST, IMAGE_STATUS_FAILED)
                 return False
             imgData = requests.get(match.group(1), headers=headers, timeout=5).content
             imagePath.parent.mkdir(parents=True, exist_ok=True)
             imagePath.write_bytes(imgData)
+            self.repo.markImageStatus(artistId, IMAGE_KIND_ARTIST, IMAGE_STATUS_OK)
             return True
         except Exception as e:
             logger.error("Failed to lazy load artist image for %s: %s", artistId, parseError(e))
+            self.repo.markImageStatus(artistId, IMAGE_KIND_ARTIST, IMAGE_STATUS_FAILED)
             return False
 
     def lazyFetchArtistImage(self, artistId: str, imagePath: Path):
         """Best-effort fetch of an artist's image scraped from their public
         Spotify page, used as a fallback for artists we never received image
-        metadata for from the API. Deduplicated per artist id (via the same
-        lock used by the rest of the image pipeline) so repeated requests for
-        a still-missing image don't keep re-hitting Spotify.
+        metadata for from the API. Deduplicated per artist id via the database's
+        image status table so failed fetches persist across app restarts.
 
         The actual fetch runs on the shared image-download executor (like
         saveTrackImg()/saveArtistImg()) instead of inline, so a request for a
@@ -348,18 +358,21 @@ class Database:
         on it - it just serves whatever's on disk right now, same as the
         other image types - callers that do need to wait, e.g. tests, can
         call .result() on it), or False if there's nothing to fetch (no
-        artistId, or a fetch for this id was already attempted)."""
+        artistId, or a fetch for this id already succeeded/failed)."""
         if imagePath.exists():
             return True
         if not artistId:
             return False
 
-        with self._imageIdsLock:
-            if artistId in self._artistImageLazyFetchAttempted:
-                return imagePath.exists()
-            self._artistImageLazyFetchAttempted.add(artistId)
+        status = self.repo.imageStatus(artistId, IMAGE_KIND_ARTIST)
+        if status == IMAGE_STATUS_OK:
+            return imagePath.exists()
+        if status == IMAGE_STATUS_FAILED:
+            return False
 
-        return self._imageDownloadExecutor.submit(self._lazyFetchArtistImageTask, artistId, imagePath)
+        if self.repo.tryClaimImageDownload(artistId, IMAGE_KIND_ARTIST):
+            return self._imageDownloadExecutor.submit(self._lazyFetchArtistImageTask, artistId, imagePath)
+        return False
 
     def saveImagesFromTrack(self, track: dict):
         self.saveTrackImg(track["imageUrl"], track["imageId"])

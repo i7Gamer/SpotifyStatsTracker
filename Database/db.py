@@ -88,7 +88,7 @@ CREATE TABLE IF NOT EXISTS plays (
     username        TEXT NOT NULL REFERENCES users(username),
     track_id        TEXT NOT NULL REFERENCES tracks(id),
     played_at       REAL NOT NULL,
-    time_played     INTEGER NOT NULL,
+    time_played     INTEGER NOT NULL CHECK (time_played >= 1000),
     played_from     TEXT,
     UNIQUE (username, track_id, played_at)
 );

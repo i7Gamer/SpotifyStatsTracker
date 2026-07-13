@@ -1,4 +1,5 @@
 Flask
+Flask-WTF
 spotipyFree
 pillow
 requests

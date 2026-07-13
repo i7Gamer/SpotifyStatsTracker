@@ -7,16 +7,25 @@ from zoneinfo import ZoneInfo
 DATE_FORMATS = ("%Y-%m-%d", "%Y-%m", "%Y")
 
 ## TIMEZONE SETUP
-try:
-    tzName = os.environ.get("TZ")
-    tz = datetime.datetime.now().astimezone().tzinfo
-    if tzName:
-        tz = ZoneInfo(tzName)
-except Exception:
-    print("Failed to get timezone from environment variable 'TZ'. Using UTC instead.")
-    tz = datetime.timezone.utc
+tzName = os.environ.get("TZ")
+tz = None
 
-print("Using timezone:", tzName)
+if not tzName:
+    print("WARNING: TZ environment variable not set! Using system timezone.")
+    print("         In Docker/containers, this is usually UTC. Set TZ explicitly.")
+    try:
+        tz = datetime.datetime.now().astimezone().tzinfo
+    except Exception:
+        tz = datetime.timezone.utc
+else:
+    try:
+        tz = ZoneInfo(tzName)
+        print(f"Using timezone: {tzName}")
+    except Exception as e:
+        print(f"ERROR: Invalid timezone '{tzName}': {e}")
+        print("       Falling back to UTC. Use a valid IANA timezone (e.g., 'America/Los_Angeles')")
+        tz = datetime.timezone.utc
+        tzName = None
 
 
 ## ERROR PRINTING

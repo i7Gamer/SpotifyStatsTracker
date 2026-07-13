@@ -287,15 +287,22 @@ class Repository:
         previously-failed claim can be reclaimed."""
         conn = self._conn()
         with conn:
-            cur = conn.execute(
+            row = conn.execute(
+                "SELECT status FROM images WHERE id=? AND kind=?",
+                (imageId, kind)
+            ).fetchone()
+
+            if row is not None and row["status"] == IMAGE_STATUS_OK:
+                return False
+
+            conn.execute(
                 """
                 INSERT INTO images (id, kind, status) VALUES (?, ?, ?)
                 ON CONFLICT(id, kind) DO UPDATE SET status=excluded.status
-                WHERE images.status=?
                 """,
-                (imageId, kind, IMAGE_STATUS_PENDING, IMAGE_STATUS_FAILED),
+                (imageId, kind, IMAGE_STATUS_PENDING),
             )
-            return cur.rowcount > 0
+            return True
 
     def markImageStatus(self, imageId: str, kind: str, status: str) -> None:
         conn = self._conn()
