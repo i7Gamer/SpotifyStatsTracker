@@ -585,6 +585,9 @@ class Listener:
             if thread is not None and thread.is_alive():
                 thread.join(timeout=LISTENER_STOP_JOIN_TIMEOUT_SECONDS)
 
-        # Bounded join on the listener thread itself to wait for clean exit
-        if hasattr(self, "thread") and self.thread.is_alive():
+        # Bounded join on the listener thread itself to wait for clean exit.
+        # Skip the join if called from within the listener thread itself to avoid
+        # "cannot join current thread" error (happens when onStale() callback
+        # invokes reconnection from within the listener thread).
+        if hasattr(self, "thread") and self.thread.is_alive() and threading.current_thread() != self.thread:
             self.thread.join(timeout=LISTENER_STOP_JOIN_TIMEOUT_SECONDS)

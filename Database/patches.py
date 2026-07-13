@@ -79,7 +79,10 @@ original_websocket_streamer_init = spotapi.websocket.WebsocketStreamer.__init__
 def patched_websocket_streamer_init(self, *args, **kwargs):
     previousSigintHandler = signal.getsignal(signal.SIGINT)
     original_websocket_streamer_init(self, *args, **kwargs)
-    signal.signal(signal.SIGINT, previousSigintHandler)
+    try:
+        signal.signal(signal.SIGINT, previousSigintHandler)
+    except ValueError:
+        pass  # signal.signal only works in main thread; silently skip if in worker thread
 
 spotapi.websocket.WebsocketStreamer.__init__ = patched_websocket_streamer_init
 
