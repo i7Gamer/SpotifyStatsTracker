@@ -115,6 +115,20 @@ class Database:
             msPlayed = item.get("ms_played", 0)
             source = item.get("_source", "listener")
 
+            # Sanity check: detect malformed timestamp (Python datetime string repr with microseconds)
+            # e.g., "2026-07-13T13:52:17.200000Z" - the ".200000" is a Python artifact, not valid ISO 8601
+            if isinstance(timestamp, str) and "." in timestamp and timestamp.endswith("Z"):
+                parts = timestamp.split(".")
+                if len(parts[1]) > 1 and parts[1][0:6].isdigit():  # Has microseconds
+                    logger.warning(
+                        "Skipping track %s: timestamp has malformed microseconds %s (SpotipyFree data corruption). "
+                        "This usually indicates a websocket data integrity issue.",
+                        track.get("id") if track else "unknown",
+                        timestamp
+                    )
+                    had_errors = True
+                    continue
+
             # Sanity check: verify the timestamp makes sense (not in far future/past)
             import time as time_module
             current_time = time_module.time()
@@ -126,6 +140,19 @@ class Database:
                     track.get("id") if track else "unknown",
                     timestamp,
                     numeric_ts - current_time
+                )
+                had_errors = True
+                continue
+
+            # Sanity check: validate play duration is reasonable for a track
+            # (SpotipyFree sometimes returns insane values like 7062895ms for a 171s track)
+            track_duration = track.get("duration_ms", 0) if track else 0
+            if track_duration > 0 and msPlayed > track_duration * 10:
+                logger.warning(
+                    "Skipping track %s: recorded duration %dms is %dx the track's actual duration (%dms). "
+                    "Likely SpotipyFree data corruption.",
+                    track.get("id") if track else "unknown",
+                    msPlayed, msPlayed // max(track_duration, 1), track_duration
                 )
                 had_errors = True
                 continue
