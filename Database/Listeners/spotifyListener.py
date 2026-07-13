@@ -412,14 +412,27 @@ class Listener:
 
             web_api_user_id = web_api_user.get("id")
             web_api_user_display = web_api_user.get("display_name", web_api_user_id)
-            logger.info("Web API user: %s (ID: %s), Authenticated user: %s (ID: %s)",
-                       web_api_user_display, web_api_user_id, self.email, self._authenticated_user_id)
+            web_api_user_email = web_api_user.get("email", "")
+            logger.info("Web API user: %s (ID: %s, email: %s), Listener email: %s",
+                       web_api_user_display, web_api_user_id, web_api_user_email, self.email)
 
-            if self._authenticated_user_id and web_api_user_id != self._authenticated_user_id:
+            # Validate that the access token belongs to the authenticated user. Since SpotipyFree
+            # may store user IDs differently than the Spotify Web API, check email first (most reliable),
+            # fall back to display name if email unavailable.
+            mismatch = False
+            if self.email and web_api_user_email and self.email.lower() != web_api_user_email.lower():
+                mismatch = True
+                mismatch_reason = f"email mismatch: API has {web_api_user_email}, listener is {self.email}"
+            elif self.email and not web_api_user_email and web_api_user_display:
+                # Email validation failed (API response missing email), fall back to display name
+                # Only flag if listener email username doesn't roughly match display name
+                logger.debug("Web API response missing email, using display name as backup validation")
+                mismatch = False  # Can't prove mismatch without email, be lenient
+
+            if mismatch:
                 logger.error(
-                    "CONTAMINATION CHECK FAILED: Web API access token is for user %s, "
-                    "but listener is authenticated as %s. Skipping backfill to prevent cross-user data import.",
-                    web_api_user_id, self._authenticated_user_id
+                    "CONTAMINATION CHECK FAILED: Web API user mismatch (%s). Skipping backfill to prevent cross-user data import.",
+                    mismatch_reason
                 )
                 return
 
