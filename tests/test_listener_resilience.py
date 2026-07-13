@@ -21,6 +21,7 @@ def _bareDatabase():
     db.appendTrackData = MagicMock()
     db._health_lock = threading.RLock()
     db.listener_health = "HEALTHY"
+    db.listener_error_count = 0
     return db
 
 
