@@ -38,9 +38,15 @@
       <nav class="nav-links" id="nav-menu">
         {% set currentQuery = request.args.get('q', '') %}
         <a class="{{ 'active' if section == 'dashboard' }}" {% if section == 'dashboard' %}aria-current="page"{% endif %} href="{{ url_for('dashboard', q=currentQuery) if currentQuery else url_for('dashboard') }}">Dashboard</a>
-        <a class="{{ 'active' if section == 'top_songs' }}" {% if section == 'top_songs' %}aria-current="page"{% endif %} href="{{ url_for('topSongsPage', q=currentQuery) if currentQuery else url_for('topSongsPage') }}">Top Songs</a>
-        <a class="{{ 'active' if section == 'top_artists' }}" {% if section == 'top_artists' %}aria-current="page"{% endif %} href="{{ url_for('topArtistsPage', q=currentQuery) if currentQuery else url_for('topArtistsPage') }}">Top Artists</a>
-        <a class="{{ 'active' if section == 'top_albums' }}" {% if section == 'top_albums' %}aria-current="page"{% endif %} href="{{ url_for('topAlbumsPage', q=currentQuery) if currentQuery else url_for('topAlbumsPage') }}">Top Albums</a>
+        {% set top_active = section in ['top_songs', 'top_artists', 'top_albums'] %}
+        <div class="nav-item-dropdown {% if top_active %}active-parent{% endif %}">
+          <span class="dropdown-trigger">Top Stats <span class="chevron">▾</span></span>
+          <div class="dropdown-content">
+            <a class="{{ 'active' if section == 'top_songs' }}" {% if section == 'top_songs' %}aria-current="page"{% endif %} href="{{ url_for('topSongsPage', q=currentQuery) if currentQuery else url_for('topSongsPage') }}">Top Songs</a>
+            <a class="{{ 'active' if section == 'top_artists' }}" {% if section == 'top_artists' %}aria-current="page"{% endif %} href="{{ url_for('topArtistsPage', q=currentQuery) if currentQuery else url_for('topArtistsPage') }}">Top Artists</a>
+            <a class="{{ 'active' if section == 'top_albums' }}" {% if section == 'top_albums' %}aria-current="page"{% endif %} href="{{ url_for('topAlbumsPage', q=currentQuery) if currentQuery else url_for('topAlbumsPage') }}">Top Albums</a>
+          </div>
+        </div>
         <a class="{{ 'active' if section == 'charts' }}" {% if section == 'charts' %}aria-current="page"{% endif %} href="{{ url_for('chartsPage') }}">Charts</a>
         <a class="{{ 'active' if section == 'wrapped' }}" {% if section == 'wrapped' %}aria-current="page"{% endif %} href="{{ url_for('wrappedPage') }}">Wrapped</a>
         <a class="{{ 'active' if section == 'import' }}" {% if section == 'import' %}aria-current="page"{% endif %} href="{{ url_for('importPage') }}">Import</a>
