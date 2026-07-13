@@ -101,6 +101,7 @@ class Database:
             track = item.get("track")
             timestamp = item.get("played_at")
             msPlayed = item.get("ms_played", 0)
+            source = item.get("_source", "listener")
 
             # Sanity check: verify the timestamp makes sense (not in far future/past)
             import time as time_module
@@ -126,7 +127,7 @@ class Database:
                 # retry the whole batch forever and record nothing new until the
                 # bad item aged out of the recently-played feed.
                 try:
-                    self.appendTrackData(timestamp, track, msPlayed, context=item.get("context", None))
+                    self.appendTrackData(timestamp, track, msPlayed, context=item.get("context", None), source=source)
                 except Exception as e:
                     logger.error("Error adding track %s from listener: %s", track.get("id"), parseError(e))
                     had_errors = True
@@ -420,15 +421,16 @@ class Database:
         self.updatePlaylists(entry.get("playedFrom"))
         return was_inserted
 
-    def appendTrackData(self, timestamp, track, timePlayed, context=None):
+    def appendTrackData(self, timestamp, track, timePlayed, context=None, source="listener"):
         formatted_track = Client.formatTrack(track, timestamp, timePlayed, context=context)
         track_id = track.get("id", "unknown")
         track_name = track.get("name", "unknown")
-        was_inserted = self.appendMetadata(formatted_track, created_reason=f"listener_play (user: {self.user})")
+        created_reason = f"{source}_play (user: {self.user})"
+        was_inserted = self.appendMetadata(formatted_track, created_reason=created_reason)
         if was_inserted:
             logger.info(
-                "Recording play for user %s: track=%s (%s), timestamp=%s, duration=%dms",
-                self.user, track_id, track_name, timestamp, timePlayed
+                "Recording play for user %s: track=%s (%s), timestamp=%s, duration=%dms, source=%s",
+                self.user, track_id, track_name, timestamp, timePlayed, source
             )
 
     def importHistory(self, exportedHistory, progressPrefix: str = "", isFinalFile: bool = True):

@@ -48,8 +48,8 @@ class TestAddToDatabaseFromListener(unittest.TestCase):
 
         self.assertEqual(db.appendTrackData.call_count, 2)
         db.appendTrackData.assert_has_calls([
-            call(100, {"id": "t1"}, 1000, context=None),
-            call(200, {"id": "t2"}, 2000, context=None),
+            call(100, {"id": "t1"}, 1000, context=None, source="listener"),
+            call(200, {"id": "t2"}, 2000, context=None, source="listener"),
         ])
 
     def test_handles_empty_and_none_input(self):
@@ -69,7 +69,7 @@ class TestAddToDatabaseFromListener(unittest.TestCase):
         db._addToDatabaseFromListener(items)
         # Should skip the future one (t1) and successfully append t2
         self.assertEqual(db.appendTrackData.call_count, 1)
-        db.appendTrackData.assert_called_once_with("2026-07-13T10:05:00Z", {"id": "t2"}, 2000, context=None)
+        db.appendTrackData.assert_called_once_with("2026-07-13T10:05:00Z", {"id": "t2"}, 2000, context=None, source="listener")
 
 
 if __name__ == "__main__":

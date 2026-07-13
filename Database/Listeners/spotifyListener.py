@@ -390,11 +390,14 @@ class Listener:
 
             if missed_items:
                 logger.info("Backfilling %d plays from Web API recently-played history", len(missed_items))
+                # Mark these as backfilled so the database can record the source
+                for item in missed_items:
+                    item["_source"] = "web_api_backfill"
                 # Pass them to callback (it expects a list, newest plays last)
                 # Web API returns newest plays first, so reverse to maintain cron order
                 missed_items.reverse()
                 callback(missed_items)
-                
+
                 # Update recentlyPlayed_Z1 to include these newly recorded plays
                 for item in missed_items:
                     self.recentlyPlayed_Z1.append(item)
