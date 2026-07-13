@@ -168,6 +168,19 @@ class Listener:
         try:
             current_user = self.sp.current_user()
             self._authenticated_user_id = current_user.get("id")
+            authenticated_email = current_user.get("email", "").lower()
+
+            # CRITICAL: Verify cookies actually belong to the expected user, not a different account
+            if authenticated_email and email:
+                email_lower = email.lower()
+                if authenticated_email != email_lower:
+                    logger.error(
+                        "CRITICAL: Cookie contamination detected! Cookies for %s are actually authenticated as %s. "
+                        "This will cause plays from %s to be recorded under %s's account. "
+                        "The stored cookies must be re-authorized.",
+                        email, authenticated_email, authenticated_email, email
+                    )
+
             logger.info("Listener initialized for user %s (Spotify ID: %s)", email, self._authenticated_user_id)
         except Exception as e:
             logger.warning("Could not verify authenticated user during listener init: %s", parseError(e))
