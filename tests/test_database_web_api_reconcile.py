@@ -1,12 +1,20 @@
-"""Tests for Database._reconcileWithWebApiHistory - deletes locally-recorded
-plays that fall inside the time window Spotify's authoritative (real OAuth,
-account-wide) recently-played API response covers, but aren't corroborated by
-it. Unlike the earlier connect-state-based idea (rejected - device/session
-scoped, no completeness guarantee), this endpoint is documented as an
-account-wide view of what was actually played, so absence within its window is
-real evidence - motivated in part by a real prior cross-user contamination
-incident (see CONTAMINATION_FIX.md) that left bad plays recorded for users who
-have since configured API credentials.
+"""Tests for Database._reconcileWithWebApiHistory.
+
+Deletion is anchored on PROVABLE duplication only: a local play is only
+removed when another local row exists for the exact same track within
+DUPLICATE_RECORDING_TOLERANCE_SECONDS of it (a track can't legitimately
+restart within a few seconds of itself). Absence from the Web API response
+is NEVER by itself grounds for deletion - Spotify's recently-played endpoint
+isn't a complete log (item-count cap, its own play-duration threshold, track
+relinking), so a lone play with no same-track sibling is always left alone.
+The API response is used only to decide which of two duplicate rows to keep.
+
+Motivated in part by a real prior cross-user contamination incident (see
+CONTAMINATION_FIX.md) that left bad plays recorded for users who have since
+configured API credentials, and by repeated back-and-forth in this file's
+history over how aggressive deletion should be (see git log) - this test
+suite exists specifically to lock in the "never delete a non-duplicate"
+guarantee.
 """
 import sys
 import os
@@ -26,11 +34,14 @@ def _bareDatabase():
     db = Database.__new__(Database)
     db.user = "alice"
     db.repo = MagicMock()
+    db.repo.deletePlay.return_value = True
     return db
 
 
 API_PLAYED_AT = "2026-07-13T10:00:00Z"
 API_TS = timeToInt(API_PLAYED_AT)
+
+TOLERANCE = Database.DUPLICATE_RECORDING_TOLERANCE_SECONDS
 
 
 class TestReconcileWithWebApiHistory(unittest.TestCase):
@@ -48,6 +59,7 @@ class TestReconcileWithWebApiHistory(unittest.TestCase):
         db._reconcileWithWebApiHistory(None)
 
         db.repo.getPlaysInRange.assert_not_called()
+        db.repo.deletePlay.assert_not_called()
 
     def test_items_with_no_played_at_is_noop(self):
         db = _bareDatabase()
@@ -56,48 +68,80 @@ class TestReconcileWithWebApiHistory(unittest.TestCase):
 
         db.repo.getPlaysInRange.assert_not_called()
 
+    def test_items_with_no_track_id_is_noop(self):
+        db = _bareDatabase()
+
+        db._reconcileWithWebApiHistory([{"played_at": API_PLAYED_AT}])
+
+        db.repo.getPlaysInRange.assert_not_called()
+
     def test_no_local_plays_in_window_is_noop(self):
         db = _bareDatabase()
         db.repo.getPlaysInRange.return_value = []
 
-        db._reconcileWithWebApiHistory([{"played_at": API_PLAYED_AT}])
+        db._reconcileWithWebApiHistory([{"track": {"id": "t1"}, "played_at": API_PLAYED_AT}])
 
         db.repo.deletePlay.assert_not_called()
 
-    def test_local_play_matching_an_api_timestamp_is_kept(self):
+    def test_single_local_play_is_never_deleted_even_if_absent_from_api(self):
+        """Core safety guarantee: a lone play with no same-track sibling is
+        never deleted, regardless of whether the API corroborates it."""
         db = _bareDatabase()
-        db.repo.getPlaysInRange.return_value = [{"id": "t1", "playedAt": API_TS}]
-
-        db._reconcileWithWebApiHistory([{"played_at": API_PLAYED_AT}])
-
-        db.repo.deletePlay.assert_not_called()
-
-    def test_local_play_within_tolerance_of_an_api_timestamp_is_kept(self):
-        db = _bareDatabase()
-        db.repo.getPlaysInRange.return_value = [{"id": "t1", "playedAt": API_TS + 1}]  # 1s off
-
-        db._reconcileWithWebApiHistory([{"played_at": API_PLAYED_AT}])
-
-        db.repo.deletePlay.assert_not_called()
-
-    def test_local_play_not_corroborated_by_any_api_timestamp_is_deleted(self):
-        db = _bareDatabase()
-        db.repo.getPlaysInRange.return_value = [
-            {"id": "t1", "playedAt": API_TS},       # corroborated - kept
-            {"id": "t2", "playedAt": API_TS + 50},  # not corroborated - deleted
-        ]
-        db.repo.deletePlay.return_value = True
+        # Local play for a track that never appears in the API response at all.
+        db.repo.getPlaysInRange.return_value = [{"id": "t_missing", "playedAt": API_TS + 30}]
 
         db._reconcileWithWebApiHistory([{"track": {"id": "t1"}, "played_at": API_PLAYED_AT}])
 
-        db.repo.deletePlay.assert_called_once_with("alice", "t2", API_TS + 50)
+        db.repo.deletePlay.assert_not_called()
+
+    def test_two_far_apart_same_track_plays_are_both_kept(self):
+        """Two genuinely separate listens of the same track (gap far larger
+        than the duplicate-recording tolerance) must both survive - this is
+        a real repeat, not a double-recording of one event."""
+        db = _bareDatabase()
+        gap = TOLERANCE * 20
+        db.repo.getPlaysInRange.return_value = [
+            {"id": "t1", "playedAt": API_TS},
+            {"id": "t1", "playedAt": API_TS + gap},
+        ]
+
+        db._reconcileWithWebApiHistory([{"track": {"id": "t1"}, "played_at": API_PLAYED_AT}])
+
+        db.repo.deletePlay.assert_not_called()
+
+    def test_two_close_together_same_track_plays_worse_api_match_is_deleted(self):
+        """Two local rows for the same track within tolerance can only be the
+        same real listen recorded twice - keep whichever matches an actual
+        API-reported time most closely, delete the other."""
+        db = _bareDatabase()
+        goodMatch = {"id": "t1", "playedAt": API_TS}          # exact API match
+        worseMatch = {"id": "t1", "playedAt": API_TS + TOLERANCE}  # within tolerance of goodMatch, but not of API time
+        db.repo.getPlaysInRange.return_value = [worseMatch, goodMatch]
+
+        db._reconcileWithWebApiHistory([{"track": {"id": "t1"}, "played_at": API_PLAYED_AT}])
+
+        db.repo.deletePlay.assert_called_once_with("alice", "t1", API_TS + TOLERANCE)
         db.repo.commit.assert_called_once()
+
+    def test_two_close_together_plays_with_no_api_signal_keeps_earliest(self):
+        """If the track has no API-reported time at all to break the tie,
+        fall back to keeping the earliest recorded copy deterministically."""
+        db = _bareDatabase()
+        earliest = {"id": "t_unseen", "playedAt": API_TS}
+        later = {"id": "t_unseen", "playedAt": API_TS + 2}
+        db.repo.getPlaysInRange.return_value = [later, earliest]
+
+        # API response only reports a different track, so "t_unseen" gets no
+        # tie-breaking signal at all.
+        db._reconcileWithWebApiHistory([{"track": {"id": "t_other"}, "played_at": API_PLAYED_AT}])
+
+        db.repo.deletePlay.assert_called_once_with("alice", "t_unseen", API_TS + 2)
 
     def test_commit_is_not_called_when_nothing_is_deleted(self):
         db = _bareDatabase()
         db.repo.getPlaysInRange.return_value = [{"id": "t1", "playedAt": API_TS}]
 
-        db._reconcileWithWebApiHistory([{"played_at": API_PLAYED_AT}])
+        db._reconcileWithWebApiHistory([{"track": {"id": "t1"}, "played_at": API_PLAYED_AT}])
 
         db.repo.commit.assert_not_called()
 
@@ -119,12 +163,28 @@ class TestReconcileWithWebApiHistory(unittest.TestCase):
         """deletePlay() returning False (row already gone) must not crash or
         be treated as a successful deletion."""
         db = _bareDatabase()
-        db.repo.getPlaysInRange.return_value = [{"id": "t1", "playedAt": API_TS + 50}]
+        db.repo.getPlaysInRange.return_value = [
+            {"id": "t1", "playedAt": API_TS},
+            {"id": "t1", "playedAt": API_TS + 1},
+        ]
         db.repo.deletePlay.return_value = False
 
-        db._reconcileWithWebApiHistory([{"played_at": API_PLAYED_AT}])
+        db._reconcileWithWebApiHistory([{"track": {"id": "t1"}, "played_at": API_PLAYED_AT}])
 
         db.repo.commit.assert_not_called()
+
+    def test_different_tracks_are_never_compared_to_each_other(self):
+        """Two different tracks that happen to be played close together must
+        never be treated as duplicates of one another."""
+        db = _bareDatabase()
+        db.repo.getPlaysInRange.return_value = [
+            {"id": "t1", "playedAt": API_TS},
+            {"id": "t2", "playedAt": API_TS + 1},
+        ]
+
+        db._reconcileWithWebApiHistory([{"track": {"id": "t1"}, "played_at": API_PLAYED_AT}])
+
+        db.repo.deletePlay.assert_not_called()
 
 
 if __name__ == "__main__":
