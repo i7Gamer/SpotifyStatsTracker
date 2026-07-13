@@ -407,14 +407,28 @@ class Listener:
         if stop_event is not None:
             stop_event.set()
         self.run = False
+
         # Also stop spotapi's own background LastPlayed thread (started via
         # startRecentlyPlayedListener). Left running, it can hit a rate-limited or
         # malformed response mid-request while the interpreter is shutting down,
-        # producing spurious errors. Bounded join instead of calling its own
-        # stop() (which joins with no timeout) so app shutdown can't hang.
+        # producing spurious errors. Close the websocket connection first so the
+        # keep_alive thread doesn't try to send pings on a closed connection.
         lastPlayedManager = getattr(self.sp, "lastPlayedManager", None)
         if lastPlayedManager is not None:
+            # Close the websocket connection so background threads stop trying to use it
+            manager = getattr(lastPlayedManager, "manager", None)
+            if manager is not None:
+                ws = getattr(manager, "ws", None)
+                if ws is not None:
+                    try:
+                        ws.close()
+                    except Exception:
+                        pass  # Connection may already be closed
+
             lastPlayedManager.run = False
+            # Give the keep_alive thread a moment to detect the closed connection
+            # and exit gracefully before we join it
+            time.sleep(0.1)
             thread = getattr(lastPlayedManager, "thread", None)
             if thread is not None and thread.is_alive():
                 thread.join(timeout=LISTENER_STOP_JOIN_TIMEOUT_SECONDS)
