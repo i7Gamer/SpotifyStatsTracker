@@ -93,11 +93,16 @@ def _suppress_signal_in_thread():
     unconditionally registers a SIGINT handler in its __init__, which raises
     ValueError on non-main threads."""
     original = signal.signal
-    if threading.current_thread() is not threading.main_thread():
+    try:
+        original(signal.SIGINT, signal.getsignal(signal.SIGINT))
+        is_allowed = True
+    except ValueError:
+        is_allowed = False
+
+    if not is_allowed:
         def _patched(signalnum, handler):
-            if signalnum == signal.SIGINT:
-                return signal.getsignal(signalnum)
-            return original(signalnum, handler)
+            logger.debug("Suppressing signal registration for signal %s in context where signals are not allowed", signalnum)
+            return signal.getsignal(signalnum)
         signal.signal = _patched
     try:
         yield

@@ -39,27 +39,25 @@ class TestSuppressSignalInThread(unittest.TestCase):
         self.assertFalse(results.get("raised", True),
                          "signal.signal(SIGINT, ...) should not raise in the patched context")
 
-    def test_worker_thread_allows_non_sigint(self):
-        """On a worker thread, non-SIGINT signals should still go through
-        the original signal.signal (which will raise on non-main thread)."""
+    def test_worker_thread_suppresses_non_sigint(self):
+        """On a worker thread, non-SIGINT signals should also be suppressed and not raise ValueError."""
         results = {}
 
         def _run():
             with _suppress_signal_in_thread():
                 try:
-                    # SIGTERM registration should still hit the real signal.signal
-                    signal.signal(signal.SIGTERM, signal.SIG_DFL)
+                    ret = signal.signal(signal.SIGTERM, signal.SIG_DFL)
                     results["raised"] = False
+                    results["returned"] = ret
                 except ValueError:
-                    # Expected: real signal.signal raises on non-main thread
                     results["raised"] = True
 
         t = threading.Thread(target=_run)
         t.start()
         t.join()
 
-        self.assertTrue(results.get("raised", False),
-                        "non-SIGINT signals should still go through original signal.signal")
+        self.assertFalse(results.get("raised", True),
+                         "non-SIGINT signals should also be suppressed in the patched context")
 
     def test_signal_restored_after_context(self):
         """signal.signal should be restored to its original value after the
