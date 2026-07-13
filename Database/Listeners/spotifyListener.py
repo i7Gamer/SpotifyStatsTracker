@@ -104,10 +104,14 @@ class Listener:
         Returns list of track objects from authoritative REST API, not websocket cache.
         Raises exception if API call fails."""
         try:
-            # Use spotapi's Public client for REST API access to recently-played endpoint
-            from spotapi import Public
-            api = Public(self.sp.user_auth)
-            result = api.get_recently_played(limit=REST_API_LIMIT)
+            # Use spotapi's authenticated client for REST API access to recently-played endpoint
+            client = self.sp.user_auth.client
+            url = "https://api.spotify.com/v1/me/player/recently-played"
+            resp = client.get(url, authenticate=True, params={"limit": REST_API_LIMIT})
+            if resp.fail:
+                raise Exception(f"Failed to fetch recently played: {resp.error.string}")
+            
+            result = resp.response
             if result and "items" in result:
                 return result["items"]
             return []
