@@ -51,7 +51,9 @@ class Client:
 
         duration = track.get("duration_ms") or 0
 
-        artists = Client._formatArtists(album)
+        artists = Client._formatArtists(track)
+        if not artists:
+            artists = Client._formatArtists(album)
         album = Client._formatAlbum(album)
 
         track = {

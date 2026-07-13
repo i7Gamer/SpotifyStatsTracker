@@ -42,6 +42,7 @@ class Importer:
         return self._searchForSong(name=name, artist=artist)
 
     def _convertToList(self, export):
+        export = export.lstrip("\ufeff")
         if export.lstrip().startswith("FILE_PATH,"):
             return export.splitlines()[1:], "musicoletPremium"
         try:

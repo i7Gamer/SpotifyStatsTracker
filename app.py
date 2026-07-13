@@ -246,7 +246,13 @@ class SpotifyDashboardApp:
 
         for username, email in usersWithCookies:
             try:
-                self.get_user_db(username, email)
+                db = self.get_user_db(username, email)
+                # If listener has crashed, marked DEAD, or its thread has stopped, restart it
+                if db.getListenerHealth()["status"] == "DEAD" or not (
+                    db.listener and db.listener.thread and db.listener.thread.is_alive()
+                ):
+                    logger.warning("Listener thread for user %s is not running or is DEAD. Restarting...", username)
+                    db.startListener(email=email)
             except Exception as e:
                 logger.error("Error initializing user %s: %s", username, e)
     

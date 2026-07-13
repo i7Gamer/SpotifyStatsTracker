@@ -82,6 +82,12 @@ class AutoImporter:
                 os.makedirs(doneDirectory)
                 print(f"Created directory: {doneDirectory}")
             destinationPath = os.path.join(doneDirectory, fileName)
+            if os.path.exists(destinationPath):
+                base, ext = os.path.splitext(fileName)
+                counter = 1
+                while os.path.exists(os.path.join(doneDirectory, f"{base}_{counter}{ext}")):
+                    counter += 1
+                destinationPath = os.path.join(doneDirectory, f"{base}_{counter}{ext}")
 
             if self.keyword is not None and self.keyword not in fileName:
                 print(f"Keyword '{self.keyword}' not found in '{fileName}'. Skipping import and moving directly to DONE.")

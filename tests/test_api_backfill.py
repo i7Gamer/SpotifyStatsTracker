@@ -55,8 +55,15 @@ class ApiBackfillTestCase(unittest.TestCase):
         self.repo.addTrackMetadataColumnsIfMissing()
         self.repo.addSpotifyApiColumnsToUsersIfMissing()
         self.repo.commit()
+        # Mock _get_current_user_from_web_api to avoid real network connections
+        self._get_current_user_patcher = patch(
+            "Database.Listeners.spotifyListener._get_current_user_from_web_api",
+            return_value={"id": "alice", "display_name": "Alice", "email": "alice@example.com"}
+        )
+        self.mock_get_current_user = self._get_current_user_patcher.start()
 
     def tearDown(self):
+        self._get_current_user_patcher.stop()
         self.repo.connectionManager.close()
         self._tmpdir.cleanup()
 
