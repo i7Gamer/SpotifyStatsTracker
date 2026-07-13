@@ -439,9 +439,24 @@ class Listener:
                 missed_items.reverse()
                 callback(missed_items)
 
-                # Update recentlyPlayed_Z1 to include these newly recorded plays
+                # Add backfilled items to recentlyPlayed_Z1 to prevent re-backfilling
+                # CRITICAL: Must add with END times (from API), NOT START times
+                # so comparisons remain consistent on future backfill runs
                 for item in missed_items:
-                    self.recentlyPlayed_Z1.append(item)
+                    # Extract API END time (before we converted to START time for DB storage)
+                    api_item_match = next(
+                        (api_item for api_item in items
+                         if api_item.get("track", {}).get("id") == item.get("track", {}).get("id")),
+                        None
+                    )
+                    if api_item_match:
+                        # Add with END time (from API), not START time
+                        self.recentlyPlayed_Z1.append({
+                            "track": item.get("track"),
+                            "played_at": api_item_match.get("played_at"),  # END time from API
+                            "ms_played": item.get("ms_played"),
+                            "context": item.get("context")
+                        })
 
             # NOTE: reconciliation receives original API items (with END times).
             # Reconciliation logic must account for potential timestamp format differences.
