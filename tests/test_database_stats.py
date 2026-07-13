@@ -64,7 +64,10 @@ class TestGetEntriesFromNew(DatabaseTestCase):
     not wrap around to a negative index and return the whole history."""
 
     def _makeDbWithEntries(self, entryCount):
-        entries = [{"id": f"t{i}", "playedAt": i, "timePlayed": 1} for i in range(entryCount)]
+        entries = [
+            {"id": f"t{i}", "playedAt": i, "timePlayed": 1000}
+            for i in range(entryCount)
+        ]
         return self._makeDb({}, entries), entries
 
     def test_returns_all_entries_newest_first(self):

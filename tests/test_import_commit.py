@@ -75,7 +75,7 @@ class TestImportHistoryCommit(DatabaseTestCase):
         def gen():
             yield _meta("i1", 200)
             # Simulate the listener recording a play while the import is running.
-            self.db.appendEntries({"id": "L1", "playedAt": 250, "timePlayed": 500})
+            self.db.appendEntries({"id": "L1", "playedAt": 250, "timePlayed": 1000})
             yield _meta("i2", 50)
 
         with patch("Database.database.Importer", return_value=self._mockImporter(gen)):

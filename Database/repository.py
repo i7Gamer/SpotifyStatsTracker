@@ -304,7 +304,7 @@ class Repository:
                 (imageId, kind)
             ).fetchone()
 
-            if row is not None and row["status"] == IMAGE_STATUS_OK:
+            if row is not None and row["status"] in (IMAGE_STATUS_OK, IMAGE_STATUS_PENDING):
                 return False
 
             conn.execute(
@@ -335,9 +335,11 @@ class Repository:
     # ---- Per-user: plays (play history) -----------------------------------------
 
     def insertPlay(self, username: str, trackId: str, playedAt: float, timePlayed: int,
-                   playedFrom: str | None = None) -> bool:
+                   playedFrom: str | None = None, created_reason: str | None = None) -> bool:
         """Returns True if a new row was inserted, False if this exact
         (username, trackId, playedAt) play was already recorded (updates time_played if different).
+        If created_reason is provided, it's only set on INSERT (never updated
+        on an existing play, matching upsertTrack()'s semantics).
 
         Does NOT commit - see upsertTrack()'s docstring."""
         conn = self._conn()
@@ -354,10 +356,24 @@ class Repository:
                 )
             return False
 
+        createdAt = time.time() if created_reason else None
         cur = conn.execute(
-            "INSERT OR IGNORE INTO plays (username, track_id, played_at, time_played, played_from) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (username, trackId, playedAt, timePlayed, playedFrom),
+            "INSERT OR IGNORE INTO plays (username, track_id, played_at, time_played, played_from, created_at, created_reason) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (username, trackId, playedAt, timePlayed, playedFrom, createdAt, created_reason),
+        )
+        return cur.rowcount > 0
+
+    def deletePlay(self, username: str, trackId: str, playedAt: float) -> bool:
+        """Delete one specific play - the exact (username, trackId, playedAt)
+        tuple insertPlay() already treats as unique. Returns True if a row was
+        deleted.
+
+        Does NOT commit - see upsertTrack()'s docstring."""
+        conn = self._conn()
+        cur = conn.execute(
+            "DELETE FROM plays WHERE username=? AND track_id=? AND played_at=?",
+            (username, trackId, playedAt),
         )
         return cur.rowcount > 0
 
@@ -1006,10 +1022,10 @@ class Repository:
             params.append(albumId)
 
         rows = conn.execute(
-            f"SELECT played_at, time_played FROM plays WHERE username = ? {self._dateRangeClause()}{extraClauses}",
+            f"SELECT track_id, played_at, time_played FROM plays WHERE username = ? {self._dateRangeClause()}{extraClauses}",
             params,
         ).fetchall()
-        return [{"playedAt": r["played_at"], "timePlayed": r["time_played"]} for r in rows]
+        return [{"id": r["track_id"], "playedAt": r["played_at"], "timePlayed": r["time_played"]} for r in rows]
 
     def getPlayArtistPairsInRange(self, username: str, startTs: float | None = None,
                                    endTs: float | None = None) -> list[dict]:
@@ -1198,6 +1214,17 @@ class Repository:
                 conn.execute("ALTER TABLE tracks ADD COLUMN created_at REAL")
             if "created_reason" not in columns:
                 conn.execute("ALTER TABLE tracks ADD COLUMN created_reason TEXT")
+
+    def addPlayMetadataColumnsIfMissing(self) -> None:
+        """Add created_at and created_reason columns to plays table if missing.
+        Guarded so re-running the migration doesn't fail."""
+        conn = self._conn()
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(plays)").fetchall()}
+        with conn:
+            if "created_at" not in columns:
+                conn.execute("ALTER TABLE plays ADD COLUMN created_at REAL")
+            if "created_reason" not in columns:
+                conn.execute("ALTER TABLE plays ADD COLUMN created_reason TEXT")
 
     def getAllUsersWithCookies(self) -> list[tuple[str, str]]:
         """(username, email) for every user who has logged in at least once -

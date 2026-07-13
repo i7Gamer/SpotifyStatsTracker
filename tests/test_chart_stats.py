@@ -30,7 +30,7 @@ class TestGetListeningTimeSeries(ChartStatsTestCase):
         entries = [
             {"id": "t1", "playedAt": _ts(2026, 7, 1, 9), "timePlayed": 1000},
             {"id": "t1", "playedAt": _ts(2026, 7, 1, 20), "timePlayed": 2000},
-            {"id": "t1", "playedAt": _ts(2026, 7, 2, 9), "timePlayed": 500},
+            {"id": "t1", "playedAt": _ts(2026, 7, 2, 9), "timePlayed": 1500},
         ]
         db = self._makeDb({}, entries)
 
@@ -43,7 +43,7 @@ class TestGetListeningTimeSeries(ChartStatsTestCase):
         byLabel = {b["label"]: b for b in result}
         self.assertEqual(byLabel["2026-07-01"]["totalTimeListened"], 3000)
         self.assertEqual(byLabel["2026-07-01"]["plays"], 2)
-        self.assertEqual(byLabel["2026-07-02"]["totalTimeListened"], 500)
+        self.assertEqual(byLabel["2026-07-02"]["totalTimeListened"], 1500)
 
     def test_daily_grouping_fills_gaps_with_zero(self):
         entries = [{"id": "t1", "playedAt": _ts(2026, 7, 1), "timePlayed": 1000}]
@@ -63,7 +63,7 @@ class TestGetListeningTimeSeries(ChartStatsTestCase):
         entries = [
             {"id": "t1", "playedAt": _ts(2026, 7, 6), "timePlayed": 1000},   # Monday
             {"id": "t1", "playedAt": _ts(2026, 7, 9), "timePlayed": 2000},   # Thursday, same week
-            {"id": "t1", "playedAt": _ts(2026, 7, 13), "timePlayed": 500},   # next Monday
+            {"id": "t1", "playedAt": _ts(2026, 7, 13), "timePlayed": 1500},
         ]
         db = self._makeDb({}, entries)
 
@@ -78,13 +78,13 @@ class TestGetListeningTimeSeries(ChartStatsTestCase):
         self.assertEqual(result[0]["totalTimeListened"], 3000)
         self.assertEqual(result[0]["plays"], 2)
         self.assertEqual(result[1]["label"], "2026-07-13")
-        self.assertEqual(result[1]["totalTimeListened"], 500)
+        self.assertEqual(result[1]["totalTimeListened"], 1500)
 
     def test_monthly_grouping_aggregates_entries_in_same_month(self):
         entries = [
             {"id": "t1", "playedAt": _ts(2026, 1, 5), "timePlayed": 1000},
             {"id": "t1", "playedAt": _ts(2026, 1, 20), "timePlayed": 2000},
-            {"id": "t1", "playedAt": _ts(2026, 2, 3), "timePlayed": 500},
+            {"id": "t1", "playedAt": _ts(2026, 2, 3), "timePlayed": 1500},
         ]
         db = self._makeDb({}, entries)
 
@@ -97,7 +97,7 @@ class TestGetListeningTimeSeries(ChartStatsTestCase):
         byLabel = {b["label"]: b for b in result}
         self.assertEqual(byLabel["2026-01"]["totalTimeListened"], 3000)
         self.assertEqual(byLabel["2026-01"]["plays"], 2)
-        self.assertEqual(byLabel["2026-02"]["totalTimeListened"], 500)
+        self.assertEqual(byLabel["2026-02"]["totalTimeListened"], 1500)
 
     def test_monthly_grouping_fills_gaps_including_short_february(self):
         entries = [{"id": "t1", "playedAt": _ts(2026, 1, 15), "timePlayed": 1000}]
@@ -116,7 +116,7 @@ class TestGetListeningTimeSeries(ChartStatsTestCase):
     def test_monthly_grouping_handles_year_rollover(self):
         entries = [
             {"id": "t1", "playedAt": _ts(2025, 12, 15), "timePlayed": 1000},
-            {"id": "t1", "playedAt": _ts(2026, 1, 5), "timePlayed": 500},
+            {"id": "t1", "playedAt": _ts(2026, 1, 5), "timePlayed": 1500},
         ]
         db = self._makeDb({}, entries)
 
@@ -128,7 +128,7 @@ class TestGetListeningTimeSeries(ChartStatsTestCase):
 
         self.assertEqual([b["label"] for b in result], ["2025-12", "2026-01"])
         self.assertEqual(result[0]["totalTimeListened"], 1000)
-        self.assertEqual(result[1]["totalTimeListened"], 500)
+        self.assertEqual(result[1]["totalTimeListened"], 1500)
 
     def test_empty_entries_with_no_date_range_returns_empty_list(self):
         db = self._makeDb({}, [])
@@ -137,7 +137,7 @@ class TestGetListeningTimeSeries(ChartStatsTestCase):
     def test_no_date_range_infers_bounds_from_entries(self):
         entries = [
             {"id": "t1", "playedAt": _ts(2026, 7, 1), "timePlayed": 1000},
-            {"id": "t1", "playedAt": _ts(2026, 7, 3), "timePlayed": 500},
+            {"id": "t1", "playedAt": _ts(2026, 7, 3), "timePlayed": 1500},
         ]
         db = self._makeDb({}, entries)
 
@@ -216,7 +216,7 @@ class TestGetHourOfDayHeatmap(ChartStatsTestCase):
     def test_buckets_by_weekday_and_hour(self):
         entries = [
             {"id": "t1", "playedAt": _ts(2026, 7, 6, 9), "timePlayed": 1000},   # Monday 09:00
-            {"id": "t1", "playedAt": _ts(2026, 7, 6, 9, 30), "timePlayed": 500},  # Monday 09:xx, same bucket
+            {"id": "t1", "playedAt": _ts(2026, 7, 6, 9, 30), "timePlayed": 1500},  # Monday 09:xx, same bucket
             {"id": "t1", "playedAt": _ts(2026, 7, 12, 23), "timePlayed": 2000},  # Sunday 23:00
         ]
         db = self._makeDb({}, entries)
@@ -225,7 +225,7 @@ class TestGetHourOfDayHeatmap(ChartStatsTestCase):
 
         self.assertEqual(len(grid), 7)
         self.assertEqual(len(grid[0]), 24)
-        self.assertEqual(grid[0][9]["totalTimeListened"], 1500)  # Monday=0, hour 9
+        self.assertEqual(grid[0][9]["totalTimeListened"], 2500)  # Monday=0, hour 9
         self.assertEqual(grid[0][9]["plays"], 2)
         self.assertEqual(grid[6][23]["totalTimeListened"], 2000)  # Sunday=6, hour 23
         self.assertEqual(grid[0][0]["totalTimeListened"], 0)

@@ -271,9 +271,21 @@ class TestPlaysHistory(RepositoryTestCase):
         self.assertEqual(entries[0]["playedFrom"], "playlist:xyz")
 
     def test_delete_zero_duration_plays_removes_only_zero_and_negative(self):
-        self.repo.insertPlay("alice", "t1", 1000.0, 0)
-        self.repo.insertPlay("alice", "t1", 2000.0, -5)
-        self.repo.insertPlay("alice", "t1", 3000.0, 5000)
+        conn = self.repo._conn()
+        with conn:
+            conn.execute("PRAGMA ignore_check_constraints = ON")
+            conn.execute(
+                "INSERT INTO plays (username, track_id, played_at, time_played) VALUES (?, ?, ?, ?)",
+                ("alice", "t1", 1000.0, 0)
+            )
+            conn.execute(
+                "INSERT INTO plays (username, track_id, played_at, time_played) VALUES (?, ?, ?, ?)",
+                ("alice", "t1", 2000.0, -5)
+            )
+            conn.execute(
+                "INSERT INTO plays (username, track_id, played_at, time_played) VALUES (?, ?, ?, ?)",
+                ("alice", "t1", 3000.0, 5000)
+            )
         self.repo.commit()
 
         removedCount = self.repo.deleteZeroDurationPlays()
@@ -285,8 +297,17 @@ class TestPlaysHistory(RepositoryTestCase):
 
     def test_delete_zero_duration_plays_spans_every_user(self):
         self.repo.upsertUser("bob", "bob@example.com")
-        self.repo.insertPlay("alice", "t1", 1000.0, 0)
-        self.repo.insertPlay("bob", "t1", 1000.0, 0)
+        conn = self.repo._conn()
+        with conn:
+            conn.execute("PRAGMA ignore_check_constraints = ON")
+            conn.execute(
+                "INSERT INTO plays (username, track_id, played_at, time_played) VALUES (?, ?, ?, ?)",
+                ("alice", "t1", 1000.0, 0)
+            )
+            conn.execute(
+                "INSERT INTO plays (username, track_id, played_at, time_played) VALUES (?, ?, ?, ?)",
+                ("bob", "t1", 1000.0, 0)
+            )
         self.repo.commit()
 
         removedCount = self.repo.deleteZeroDurationPlays()
@@ -299,6 +320,78 @@ class TestPlaysHistory(RepositoryTestCase):
 
         self.assertEqual(self.repo.deleteZeroDurationPlays(), 0)
         self.assertEqual(self.repo.getPlaysCount("alice"), 1)
+
+    def test_delete_play_removes_the_exact_row(self):
+        self.repo.insertPlay("alice", "t1", 1000.0, 5000)
+        self.repo.insertPlay("alice", "t2", 1000.0, 5000)
+        self.repo.commit()
+
+        deleted = self.repo.deletePlay("alice", "t1", 1000.0)
+        self.repo.commit()
+
+        self.assertTrue(deleted)
+        self.assertEqual(self.repo.getPlaysCount("alice"), 1)
+        self.assertEqual(self.repo.getPlaysNewestFirst("alice")[0]["id"], "t2")
+
+    def test_delete_play_returns_false_when_no_match(self):
+        self.repo.insertPlay("alice", "t1", 1000.0, 5000)
+        self.repo.commit()
+
+        deleted = self.repo.deletePlay("alice", "t1", 9999.0)
+
+        self.assertFalse(deleted)
+        self.assertEqual(self.repo.getPlaysCount("alice"), 1)
+
+    def test_delete_play_is_scoped_per_user(self):
+        self.repo.upsertUser("bob", "bob@example.com")
+        self.repo.insertPlay("alice", "t1", 1000.0, 5000)
+        self.repo.insertPlay("bob", "t1", 1000.0, 5000)
+        self.repo.commit()
+
+        deleted = self.repo.deletePlay("alice", "t1", 1000.0)
+        self.repo.commit()
+
+        self.assertTrue(deleted)
+        self.assertEqual(self.repo.getPlaysCount("alice"), 0)
+        self.assertEqual(self.repo.getPlaysCount("bob"), 1)
+
+    def _playCreatedColumns(self, username, trackId, playedAt):
+        conn = self.repo._conn()
+        row = conn.execute(
+            "SELECT created_at, created_reason FROM plays WHERE username=? AND track_id=? AND played_at=?",
+            (username, trackId, playedAt),
+        ).fetchone()
+        return row["created_at"], row["created_reason"]
+
+    def test_insert_play_stores_created_reason_and_created_at(self):
+        self.repo.insertPlay("alice", "t1", 1000.0, 5000, created_reason="listener_play (user: alice)")
+        self.repo.commit()
+
+        createdAt, createdReason = self._playCreatedColumns("alice", "t1", 1000.0)
+        self.assertEqual(createdReason, "listener_play (user: alice)")
+        self.assertIsNotNone(createdAt)
+
+    def test_insert_play_without_created_reason_leaves_it_none(self):
+        self.repo.insertPlay("alice", "t1", 1000.0, 5000)
+        self.repo.commit()
+
+        createdAt, createdReason = self._playCreatedColumns("alice", "t1", 1000.0)
+        self.assertIsNone(createdReason)
+        self.assertIsNone(createdAt)
+
+    def test_updating_an_existing_play_does_not_change_created_reason(self):
+        """Mirrors upsertTrack()'s semantics: created_reason/created_at are
+        set once, on first insert, and never overwritten by a later update
+        (e.g. a duplicate play arriving with a corrected time_played)."""
+        self.repo.insertPlay("alice", "t1", 1000.0, 5000, created_reason="listener_play (user: alice)")
+        self.repo.commit()
+
+        self.repo.insertPlay("alice", "t1", 1000.0, 8000, created_reason="history_import (user: alice)")
+        self.repo.commit()
+
+        createdAt, createdReason = self._playCreatedColumns("alice", "t1", 1000.0)
+        self.assertEqual(createdReason, "listener_play (user: alice)")
+        self.assertEqual(self.repo.getPlaysNewestFirst("alice")[0]["timePlayed"], 8000)
 
 
 def makeSearchableTrack(trackId, name, artistName, albumName):
@@ -607,7 +700,7 @@ class TestStatsAggregates(RepositoryTestCase):
         for i in range(5):
             trackId, artistId = f"t{i}", f"a{i}"
             self.repo.upsertTrack(self._track(trackId, "alb1", artistId))
-            self.repo.insertPlay("alice", trackId, float(i), i + 1)  #< distinct play counts for a stable sort
+            self.repo.insertPlay("alice", trackId, float(i), (i + 1) * 1000)  #< distinct play counts for a stable sort
         self.repo.commit()
 
         page = self.repo.getArtistAggregates("alice", limit=2, offset=1)
@@ -672,6 +765,17 @@ class TestStatsAggregates(RepositoryTestCase):
         plays = self.repo.getPlaysInRange("alice")
 
         self.assertEqual(sorted(p["playedAt"] for p in plays), [100.0, 200.0])
+
+    def test_plays_in_range_includes_track_id(self):
+        """Needed by Database._reconcileWithWebApiHistory to target deletePlay()
+        precisely - not just for chart bucketing, which ignores the extra key."""
+        self.repo.upsertTrack(self._track("t1", "alb1", "a1"))
+        self.repo.insertPlay("alice", "t1", 100.0, 1000)
+        self.repo.commit()
+
+        plays = self.repo.getPlaysInRange("alice")
+
+        self.assertEqual(plays[0]["id"], "t1")
 
     def test_plays_in_range_filtered_by_track_id(self):
         self.repo.upsertTrack(self._track("t1", "alb1", "a1"))

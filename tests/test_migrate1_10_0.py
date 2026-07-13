@@ -53,6 +53,12 @@ class TestMigrate1_10_0(MigratorTestCase):
                 "  id TEXT PRIMARY KEY, name TEXT, url TEXT, album_id TEXT, image_id TEXT, duration_ms INTEGER"
                 ")"
             )
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS plays ("
+                "  id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT, track_id TEXT, "
+                "  played_at REAL, time_played INTEGER, played_from TEXT"
+                ")"
+            )
         self._repo().connectionManager.close()
 
         # Run migration
@@ -61,7 +67,7 @@ class TestMigrate1_10_0(MigratorTestCase):
         # Verify columns exist now
         repo = self._repo()
         conn = repo._conn()
-        
+
         user_cols = {row["name"] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
         self.assertIn("spotify_client_id", user_cols)
         self.assertIn("spotify_client_secret", user_cols)
@@ -70,6 +76,10 @@ class TestMigrate1_10_0(MigratorTestCase):
         track_cols = {row["name"] for row in conn.execute("PRAGMA table_info(tracks)").fetchall()}
         self.assertIn("created_at", track_cols)
         self.assertIn("created_reason", track_cols)
+
+        play_cols = {row["name"] for row in conn.execute("PRAGMA table_info(plays)").fetchall()}
+        self.assertIn("created_at", play_cols)
+        self.assertIn("created_reason", play_cols)
 
         # Verify version file is bumped
         self.assertEqual((self.dataDir / "VERSION").read_text(encoding="utf-8").strip(), "1.11.0")

@@ -29,6 +29,8 @@ def _bareListener(recentlyPlayed=None):
     listener.recentlyPlayed_Z1 = recentlyPlayed if recentlyPlayed is not None else []
     listener.sp.current_user_recently_played.return_value = listener.recentlyPlayed_Z1
     listener._lastChangeTime = 0.0
+    listener._authenticated_user_id = None
+    listener.email = None
     return listener
 
 

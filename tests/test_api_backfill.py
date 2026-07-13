@@ -162,3 +162,44 @@ class ApiBackfillTestCase(unittest.TestCase):
         # Confirm recentlyPlayed_Z1 was updated
         self.assertEqual(len(listener.recentlyPlayed_Z1), 2)
         self.assertEqual(listener.recentlyPlayed_Z1[1]["track"]["id"], "track_new")
+
+    @patch("Database.Listeners.spotifyListener._fetch_recently_played_from_web_api")
+    @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token")
+    def test_check_web_api_backfill_invokes_snapshot_callback_with_full_items(self, mock_refresh, mock_fetch):
+        """onWebApiSnapshot must receive every fetched item (not just the ones
+        missing locally) - Database._reconcileWithWebApiHistory needs the full
+        window to know what the API does and doesn't corroborate."""
+        mock_refresh.return_value = "token123"
+        apiItems = [
+            {"track": {"id": "track_new", "duration_ms": 180000}, "played_at": "2026-07-13T10:05:00Z"},
+            {"track": {"id": "track_recorded"}, "played_at": "2026-07-13T10:00:00Z"},
+        ]
+        mock_fetch.return_value = apiItems
+
+        get_credentials = MagicMock(return_value={
+            "client_id": "cid", "client_secret": "cs", "refresh_token": "rt",
+        })
+
+        with patch("Database.Listeners.spotifyListener.Spotify") as mock_spotify_cls:
+            mock_sp = MagicMock()
+            mock_sp.current_user_recently_played.return_value = [
+                {"track": {"id": "track_recorded"}, "played_at": "2026-07-13T10:00:00Z", "ms_played": 240000}
+            ]
+            mock_spotify_cls.return_value = mock_sp
+            listener = Listener("dummy_cookie", email="alice@example.com", get_credentials=get_credentials)
+
+        listener._lastWebApiPollTime = 0
+        onWebApiSnapshot = MagicMock()
+
+        listener._checkWebApiBackfill(MagicMock(), onWebApiSnapshot=onWebApiSnapshot)
+
+        onWebApiSnapshot.assert_called_once_with(apiItems)
+
+    def test_check_web_api_backfill_without_snapshot_callback_does_not_raise(self):
+        """onWebApiSnapshot is optional - existing callers that don't pass it
+        (e.g. tests, or a Database without reconciliation wired up) must be
+        unaffected."""
+        listener = Listener.__new__(Listener)
+        listener.get_credentials = None
+
+        listener._checkWebApiBackfill(MagicMock())  # must not raise

@@ -22,14 +22,14 @@ try:
     from Database.repository import (
         Repository, IMAGE_KIND_TRACK, IMAGE_KIND_ARTIST, IMAGE_STATUS_OK, IMAGE_STATUS_FAILED,
     )
-    from Database.utils import parseError, convertToDatetime, dateToString, startOfDay, startOfWeek, startOfMonth
+    from Database.utils import parseError, convertToDatetime, dateToString, startOfDay, startOfWeek, startOfMonth, timeToInt
 except ModuleNotFoundError:
     from Formatters.spotifyClient import Client
     from Importers.StreamingHistoryImporter import Importer
     from Importers.AutoImporter import AutoImporter
     from Listeners.spotifyListener import Listener
     from repository import Repository, IMAGE_KIND_TRACK, IMAGE_KIND_ARTIST, IMAGE_STATUS_OK, IMAGE_STATUS_FAILED
-    from utils import parseError, convertToDatetime, dateToString, startOfDay, startOfWeek, startOfMonth
+    from utils import parseError, convertToDatetime, dateToString, startOfDay, startOfWeek, startOfMonth, timeToInt
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +48,7 @@ class Database:
     RECONNECT_MAX_RETRIES = 10  #< max reconnection attempts before giving up (~30 min window with backoff)
     RECONNECT_INITIAL_DELAY = 1  #< initial backoff in seconds
     RECONNECT_MAX_DELAY = 300  #< cap backoff at 5 minutes
+    WEB_API_RECONCILE_TOLERANCE_SECONDS = 2  #< matches the precision slack _checkWebApiBackfill already tolerates
 
     # Shared across every Database instance (every user) in this process. Image
     # download de-duplication is enforced by the `images` table (atomic across
@@ -403,14 +404,16 @@ class Database:
         JSON-backed API (it always took one entry despite the plural name)."""
         if not entry:
             return
-        self.repo.insertPlay(self.user, entry["id"], entry["playedAt"], entry["timePlayed"], entry.get("playedFrom"))
+        self.repo.insertPlay(self.user, entry["id"], entry["playedAt"], entry["timePlayed"], entry.get("playedFrom"),
+                              created_reason=f"manual_entry (user: {self.user})")
         self.repo.commit()
 
     def appendMetadata(self, meta: dict, created_reason: str | None = None) -> None:
         self.saveImagesFromTrack(meta)
         entry, track = self._splitEntryAndTrack(meta)
         self.repo.upsertTrack(track, created_reason=created_reason)
-        self.repo.insertPlay(self.user, entry["id"], entry["playedAt"], entry["timePlayed"], entry.get("playedFrom"))
+        self.repo.insertPlay(self.user, entry["id"], entry["playedAt"], entry["timePlayed"], entry.get("playedFrom"),
+                              created_reason=created_reason)
         self.repo.commit()
         self.updatePlaylists(entry.get("playedFrom"))
 
@@ -464,7 +467,8 @@ class Database:
             for track in stagedTracks.values():
                 self.repo.upsertTrack(track, created_reason=f"history_import (user: {self.user})")
             for entry in stagedPlays:
-                self.repo.insertPlay(self.user, entry["id"], entry["playedAt"], entry["timePlayed"], entry.get("playedFrom"))
+                self.repo.insertPlay(self.user, entry["id"], entry["playedAt"], entry["timePlayed"], entry.get("playedFrom"),
+                                      created_reason=f"history_import (user: {self.user})")
             self.repo.commit()
             logger.info("Imported %d tracks and %d plays for user %s", len(stagedTracks), len(stagedPlays), self.user)
 
@@ -879,6 +883,7 @@ class Database:
         self.listener.startListener_thread(
             callback=self._addToDatabaseFromListener,
             onStale=self._makeOnStaleCallback(),
+            onWebApiSnapshot=self._reconcileWithWebApiHistory,
         )
 
     def getUserSpotifyCredentials(self) -> dict | None:
@@ -886,6 +891,55 @@ class Database:
 
     def updateUserSpotifyCredentials(self, clientId: str | None, clientSecret: str | None, refreshToken: str | None) -> None:
         self.repo.updateUserSpotifyCredentials(self.user, clientId, clientSecret, refreshToken)
+
+    def _reconcileWithWebApiHistory(self, apiItems: list[dict]) -> None:
+        """Delete locally-recorded plays that fall inside the time window
+        Spotify's authoritative recently-played Web API response covers, but
+        aren't corroborated by it. Only runs for users with working Spotify
+        Developer API credentials configured (this is only ever invoked from
+        Listener._checkWebApiBackfill's onWebApiSnapshot callback, which is
+        itself gated on credentials being present).
+
+        Unlike the earlier connect-state (prev_tracks) idea - rejected because
+        that queue is scoped to one device/session with no completeness
+        guarantee - this endpoint is documented as an account-wide view of
+        what was actually played, so absence within its window is real
+        evidence, not just a blind spot. Still bounded to the exact
+        [oldest, newest] played_at span the API response covers - never
+        reaches past that window, so it can't touch older/imported history."""
+        if not apiItems:
+            return
+
+        apiTimes = {
+            timeToInt(item["played_at"])
+            for item in apiItems
+            if item.get("played_at")
+        }
+        if not apiTimes:
+            return
+
+        windowStart = min(apiTimes)
+        windowEnd = max(apiTimes)
+
+        localPlays = self.repo.getPlaysInRange(self.user, windowStart, windowEnd)
+        if not localPlays:
+            return
+
+        deletedCount = 0
+        for play in localPlays:
+            isCorroborated = any(
+                abs(play["playedAt"] - apiTime) <= self.WEB_API_RECONCILE_TOLERANCE_SECONDS
+                for apiTime in apiTimes
+            )
+            if not isCorroborated and self.repo.deletePlay(self.user, play["id"], play["playedAt"]):
+                deletedCount += 1
+
+        if deletedCount:
+            self.repo.commit()
+            logger.info(
+                "Web API reconciliation: removed %d local play(s) for user %s not corroborated by "
+                "Spotify's authoritative recently-played history", deletedCount, self.user,
+            )
 
     def startAutoImporter(self):
         self.autoImporter.start()

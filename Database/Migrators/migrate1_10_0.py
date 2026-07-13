@@ -7,8 +7,9 @@ except ModuleNotFoundError:
 
 
 class Migrator(BaseMigrator):
-    """Adds created_at and created_reason columns to tracks table for tracking
-    when and why tracks were added to the catalog (listener fetch, history import, etc)."""
+    """Adds created_at and created_reason columns to tracks and plays tables
+    for tracking when and why each was added (listener fetch/play, history
+    import, etc)."""
 
     def migrate(self):
         self.checkPreconditions()
@@ -16,12 +17,13 @@ class Migrator(BaseMigrator):
         repo = Repository(resolveRuntimeDir(self.baseDir) / "spotify_stats.db")
         try:
             repo.addTrackMetadataColumnsIfMissing()
+            repo.addPlayMetadataColumnsIfMissing()
             repo.addSpotifyApiColumnsToUsersIfMissing()
             repo.commit()
         finally:
             repo.connectionManager.close()
 
-        print("Added tracks.created_at/created_reason columns and users Spotify API columns.")
+        print("Added tracks/plays.created_at/created_reason columns and users Spotify API columns.")
         self.updateAppVersion("1.11.0")
 
 

@@ -68,6 +68,8 @@ class SpotifyDashboardApp:
         # it.
         self.app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_MB * 1024 * 1024
         self.app.config["WTF_CSRF_TIME_LIMIT"] = None
+        if os.environ.get("PYTEST_CURRENT_TEST") or self.app.config.get("TESTING"):
+            self.app.config["WTF_CSRF_ENABLED"] = False
         CSRFProtect(self.app)
         # Users, emails and Spotify session cookies live in the shared database
         # (see Database/repository.py) instead of secrets/users_map.json and

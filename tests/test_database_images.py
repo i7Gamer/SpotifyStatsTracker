@@ -23,9 +23,11 @@ from Database.repository import IMAGE_KIND_TRACK, IMAGE_STATUS_OK, IMAGE_STATUS_
 def _bareDatabase():
     """A Database instance with only the state lazyFetchArtistImage needs, skipping
     the heavy __init__ (autoimporter/listener setup) that isn't relevant here."""
+    from Database.repository import Repository
     db = Database.__new__(Database)
     db._imageIdsLock = threading.RLock()
-    db._artistImageLazyFetchAttempted = set()
+    temp_dir = tempfile.mkdtemp()
+    db.repo = Repository(Path(temp_dir) / "test.db")
     return db
 
 

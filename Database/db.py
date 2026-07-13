@@ -95,6 +95,8 @@ CREATE TABLE IF NOT EXISTS plays (
     played_at       REAL NOT NULL,
     time_played     INTEGER NOT NULL CHECK (time_played >= 1000),
     played_from     TEXT,
+    created_at      REAL,
+    created_reason  TEXT,
     UNIQUE (username, track_id, played_at)
 );
 CREATE INDEX IF NOT EXISTS idx_plays_user_time ON plays(username, played_at);

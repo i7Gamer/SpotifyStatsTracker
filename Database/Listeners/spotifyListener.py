@@ -275,7 +275,7 @@ class Listener:
             logger.error("Reconnect attempt failed: %s", parseError(e))
         return False
 
-    def startListener(self, callback, onStale=None):
+    def startListener(self, callback, onStale=None, onWebApiSnapshot=None):
         self.run = True
         while self.run:
             try:
@@ -283,7 +283,7 @@ class Listener:
                     self.run = False
                     return
                 self._checkConnectStateForMissedTracks()
-                self._checkWebApiBackfill(callback)
+                self._checkWebApiBackfill(callback, onWebApiSnapshot=onWebApiSnapshot)
                 time.sleep(1)
             except Exception as e:
                 if _is_auth_error(e):
@@ -299,7 +299,7 @@ class Listener:
                     logger.error("Error in listener: %s", parseError(e))
                     time.sleep(30)
 
-    def _checkWebApiBackfill(self, callback) -> None:
+    def _checkWebApiBackfill(self, callback, onWebApiSnapshot=None) -> None:
         if not self.get_credentials:
             return
 
@@ -371,11 +371,19 @@ class Listener:
                 for item in missed_items:
                     self.recentlyPlayed_Z1.append(item)
 
+            if onWebApiSnapshot is not None:
+                onWebApiSnapshot(items)
+
         except Exception as e:
             logger.error("Error during Web API backfill: %s", parseError(e))
 
-    def startListener_thread(self, callback, onStale=None):
-        thread = threading.Thread(target=self.startListener, args=(callback,), kwargs={"onStale": onStale}, daemon=True)
+    def startListener_thread(self, callback, onStale=None, onWebApiSnapshot=None):
+        thread = threading.Thread(
+            target=self.startListener,
+            args=(callback,),
+            kwargs={"onStale": onStale, "onWebApiSnapshot": onWebApiSnapshot},
+            daemon=True,
+        )
         thread.start()
 
     def stop(self):

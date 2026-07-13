@@ -36,7 +36,7 @@ class TestStartupReloginFromDatabaseCookies(unittest.TestCase):
         capturedCookiesPayloads = []
         listenerInstances = []
 
-        def fakeListener(cookiesFile, email=None):
+        def fakeListener(cookiesFile, email=None, **kwargs):
             # The temp cookies file is deleted right after this constructor
             # returns, so its content has to be captured now, not afterward.
             capturedCookiesPayloads.append(json.loads(Path(cookiesFile).read_text(encoding="utf-8")))
@@ -80,7 +80,7 @@ class TestStartupReloginFromDatabaseCookies(unittest.TestCase):
 
         capturedByEmail = {}
 
-        def fakeListener(cookiesFile, email=None):
+        def fakeListener(cookiesFile, email=None, **kwargs):
             capturedByEmail[email] = json.loads(Path(cookiesFile).read_text(encoding="utf-8"))[0]["cookies"]
             return MagicMock()
 
@@ -105,7 +105,7 @@ class TestStartupReloginFromDatabaseCookies(unittest.TestCase):
         app.repo.upsertUser("bob", "bob@example.com")
         app.repo.setUserCookies("bob", {"sp_dc": "bob-cookie"})
 
-        def fakeListener(cookiesFile, email=None):
+        def fakeListener(cookiesFile, email=None, **kwargs):
             if email == "alice@example.com":
                 raise RuntimeError("boom")
             return MagicMock()

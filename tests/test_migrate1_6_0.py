@@ -173,7 +173,7 @@ class TestCookiesAndUsersMapMigration(MigratorTestCase):
         self.assertEqual(repo.getUserCookies("alice"), {"sp_dc": "abc123"})
 
     def test_user_without_mapped_email_still_migrates(self):
-        self._writeUser("orphan", entries=[{"id": "t1", "playedAt": 1.0, "timePlayed": 1}],
+        self._writeUser("orphan", entries=[{"id": "t1", "playedAt": 1.0, "timePlayed": 1000}],
                          tracks={"t1": _track("t1")})
 
         migrateModule.Migrator("1.6.0", "1.7.0").migrate()  #< must not raise despite no users_map/cookies files
