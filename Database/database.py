@@ -317,9 +317,6 @@ class Database:
     def saveTrackImg(self, url: str, imgId: str):
         self._saveImg(self.imgDir_tracks, url, imgId, kind=IMAGE_KIND_TRACK)
 
-    def saveArtistImg(self, url: str, imgId: str):
-        self._saveImg(self.imgDir_artists, url, imgId, kind=IMAGE_KIND_ARTIST)
-
     def _lazyFetchArtistImageTask(self, artistId: str, imagePath: Path) -> bool:
         try:
             headers = {"User-Agent": USER_AGENT}
@@ -387,17 +384,6 @@ class Database:
 
     def appendTrackData(self, timestamp, track, timePlayed, context=None):
         self.appendMetadata(Client.formatTrack(track, timestamp, timePlayed, context=context))
-
-    def resortDatabase(self):
-        """No-op: plays are always returned in played_at order via SQL ORDER BY,
-        so there's no persisted ordering left to fix."""
-        logger.info("Resorted Database")
-
-    def deduplicate(self) -> int:
-        """No-op: plays.UNIQUE(username, track_id, played_at) makes it impossible
-        to insert a duplicate in the first place. Kept for API compatibility with
-        callers (app.py's startup path)."""
-        return 0
 
     def importHistory(self, exportedHistory, progressPrefix: str = "", isFinalFile: bool = True):
         importer = self._withCookiesFile(lambda cookiesFile: Importer(cookiesFile=cookiesFile, email=self.email))

@@ -187,10 +187,6 @@ class SpotifyDashboardApp:
                 db.startAutoImporter()
                 db.resetProgress()
                 db.startListener(email=email)
-                try:
-                    db.deduplicate()
-                except Exception as e:
-                    logger.error("Failed to deduplicate database for %s: %s", username, e)
                 self.user_databases[username] = db
             return self.user_databases[username]
 
