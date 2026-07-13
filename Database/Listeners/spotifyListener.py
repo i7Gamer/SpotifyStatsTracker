@@ -47,6 +47,8 @@ CONNECT_STATE_MISSED_TRACK_CACHE_SIZE = 50
 
 WEB_API_POLL_INTERVAL_SECONDS = 15 * 60  #< Query Web API recently-played backfill every 15 minutes
 
+USER_VALIDATION_CACHE_SECONDS = 5 * 60  #< Cache user validation results to reduce bot detection triggers
+
 
 def _is_auth_error(exc: Exception) -> bool:
     """Check if an exception is an authentication-related error (expired/invalid
@@ -197,6 +199,8 @@ class Listener:
         self._warnedMissingTrackUris = collections.OrderedDict()  #< dedupes _checkConnectStateForMissedTracks
                                                                    #  warnings; OrderedDict (not set) so
                                                                    #  eviction can target the oldest entry
+        self._last_user_validation_time = 0  #< track last successful user validation
+        self._last_user_validation_result = True  #< cache validation result
 
     def isLoggedIn(self):
         if self.sp.isLoggedIn() == False:
@@ -209,7 +213,15 @@ class Listener:
 
     def _validateCurrentUser(self) -> bool:
         """Verify that the authenticated Spotify session still belongs to the expected user.
-        Returns True if valid, False if session has changed. Logs warnings if mismatches detected."""
+        Returns True if valid, False if session has changed. Logs warnings if mismatches detected.
+
+        Results are cached for USER_VALIDATION_CACHE_SECONDS to reduce bot detection triggers
+        from excessive polling. Cache is bypassed on errors to detect auth failures quickly."""
+        now = time.monotonic()
+        # Return cached result if still fresh
+        if (now - self._last_user_validation_time) < USER_VALIDATION_CACHE_SECONDS:
+            return self._last_user_validation_result
+
         try:
             current_user = self.sp.current_user()
             current_user_id = current_user.get("id")
@@ -218,8 +230,13 @@ class Listener:
                     "Session user mismatch! Expected %s, got %s - this could indicate cross-user contamination",
                     self._authenticated_user_id, current_user_id
                 )
-                return False
-            return True
+                result = False
+            else:
+                result = True
+
+            self._last_user_validation_time = now
+            self._last_user_validation_result = result
+            return result
         except Exception as e:
             error_str = str(e).lower()
             # Invalid JSON errors usually indicate rate limiting or bad response from Spotify
