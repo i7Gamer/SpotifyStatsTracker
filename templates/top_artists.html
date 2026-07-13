@@ -8,7 +8,7 @@
   </section>
   {% include '_page_card.html' %}
 
-  <section class="track-summary-grid">
+  <section class="track-summary-grid-3">
     <article class="track-summary-card">
       <h3>Total Plays (top list)</h3>
       <p class="summary-value">{{ totalPlays }}</p>
@@ -16,6 +16,10 @@
     <article class="track-summary-card">
       <h3>Unique Songs (top list)</h3>
       <p class="summary-value">{{ totalUnique }}</p>
+    </article>
+    <article class="track-summary-card">
+      <h3>Unique Artists</h3>
+      <p class="summary-value">{{ uniqueArtists }}</p>
     </article>
   </section>
 

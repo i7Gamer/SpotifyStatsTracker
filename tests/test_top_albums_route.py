@@ -94,7 +94,9 @@ class TestTopAlbumsRoute(unittest.TestCase):
         resp = self._getTopAlbums(dash, db, query="?q=foo")
 
         self.assertEqual(resp.status_code, 200)
-        db.getAlbumsCount.assert_called_once_with(None, None, searchQuery="foo")
+        self.assertEqual(db.getAlbumsCount.call_count, 2)
+        db.getAlbumsCount.assert_any_call(None, None)
+        db.getAlbumsCount.assert_any_call(None, None, searchQuery="foo")
         kwargs = db.getTopAlbums.call_args.kwargs
         self.assertEqual(kwargs["limit"], appModule.PAGE_SIZE)
         self.assertEqual(kwargs["offset"], 0)

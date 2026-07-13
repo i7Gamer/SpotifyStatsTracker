@@ -957,11 +957,15 @@ class SpotifyDashboardApp:
             # totalPlays/totalMs are a whole-range aggregate regardless of search -
             # a cheap dedicated query instead of summing every song's metadata.
             totalPlays, totalMs = db.getPlayTotals(startDate, endDate)
+            uniqueSongs = db.getSongsCount(startDate, endDate)
 
             # Only materialize the page being shown - SQL-level LIMIT/OFFSET and
             # WHERE-clause matching (see Repository.getSongsPage) instead of
             # sorting+hydrating+filtering every song ever played in Python.
-            totalCount = db.getSongsCount(startDate, endDate, searchQuery=searchQuery)
+            if searchQuery:
+                totalCount = db.getSongsCount(startDate, endDate, searchQuery=searchQuery)
+            else:
+                totalCount = uniqueSongs
             page, totalPages, startIndex = self._calculatePagination(totalCount)
             tracks = db.getTopSongs(startDate=startDate, endDate=endDate, by=sortBy,
                                      limit=PAGE_SIZE, offset=startIndex, searchQuery=searchQuery)
@@ -987,6 +991,7 @@ class SpotifyDashboardApp:
                 username=username,
                 totalPlays=totalPlays,
                 totalTime=msToString(totalMs),
+                uniqueSongs=uniqueSongs,
                 startIndex=startIndex,
                 section="top_songs",
                 sortBy=sortBy,
@@ -1011,11 +1016,15 @@ class SpotifyDashboardApp:
 
             startDate, endDate = self._getDateRange(interval, customStart, customEnd, default="all time")
             totalPlays, totalMs = db.getPlayTotals(startDate, endDate)
+            uniqueAlbums = db.getAlbumsCount(startDate, endDate)
 
             # Only materialize the page being shown - SQL-level LIMIT/OFFSET and
             # WHERE-clause matching (see Repository.getAlbumsPage) instead of
             # sorting+hydrating+filtering every album ever played in Python.
-            totalCount = db.getAlbumsCount(startDate, endDate, searchQuery=searchQuery)
+            if searchQuery:
+                totalCount = db.getAlbumsCount(startDate, endDate, searchQuery=searchQuery)
+            else:
+                totalCount = uniqueAlbums
             page, totalPages, startIndex = self._calculatePagination(totalCount)
             albums = db.getTopAlbums(startDate=startDate, endDate=endDate, by=sortBy,
                                       limit=PAGE_SIZE, offset=startIndex, searchQuery=searchQuery)
@@ -1040,6 +1049,7 @@ class SpotifyDashboardApp:
                 username=username,
                 totalPlays=totalPlays,
                 totalTime=msToString(totalMs),
+                uniqueAlbums=uniqueAlbums,
                 startIndex=startIndex,
                 section="top_albums",
                 sortBy=sortBy,
@@ -1068,10 +1078,14 @@ class SpotifyDashboardApp:
             # for the songs/albums pages, computed via a dedicated SQL aggregate
             # instead of fetching every artist and summing in Python.
             totalPlays, totalUnique, totalMs = db.getArtistTotals(startDate, endDate)
+            uniqueArtists = db.getArtistsCount(startDate, endDate)
 
             # Only materialize the page being shown - SQL-level LIMIT/OFFSET
             # instead of sorting+hydrating every artist ever played.
-            totalCount = db.getArtistsCount(startDate, endDate, searchQuery=searchQuery)
+            if searchQuery:
+                totalCount = db.getArtistsCount(startDate, endDate, searchQuery=searchQuery)
+            else:
+                totalCount = uniqueArtists
             page, totalPages, startIndex = self._calculatePagination(totalCount)
             artists = db.getTopArtists(startDate=startDate, endDate=endDate, by=sortBy,
                                         limit=PAGE_SIZE, offset=startIndex, searchQuery=searchQuery)
@@ -1095,6 +1109,7 @@ class SpotifyDashboardApp:
                 username=username,
                 totalPlays=totalPlays,
                 totalUnique=totalUnique,
+                uniqueArtists=uniqueArtists,
                 totalTime=msToString(totalMs),
                 startIndex=startIndex,
                 section="top_artists",
