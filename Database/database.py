@@ -34,6 +34,7 @@ except ModuleNotFoundError:
 logger = logging.getLogger(__name__)
 
 IMAGE_DOWNLOAD_WORKERS = 5   #< bounds total concurrent image downloads for the whole process, not per user
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
 # Images are shared across every user (album art / artist photos are the same
 # bytes for everyone), so they live in one directory tree instead of under each
@@ -321,11 +322,12 @@ class Database:
 
     def _lazyFetchArtistImageTask(self, artistId: str, imagePath: Path) -> bool:
         try:
-            res = requests.get(f"https://open.spotify.com/artist/{artistId}", timeout=5)
+            headers = {"User-Agent": USER_AGENT}
+            res = requests.get(f"https://open.spotify.com/artist/{artistId}", headers=headers, timeout=5)
             match = re.search(r'<meta property="og:image" content="([^"]+)"', res.text)
             if not match:
                 return False
-            imgData = requests.get(match.group(1), timeout=5).content
+            imgData = requests.get(match.group(1), headers=headers, timeout=5).content
             imagePath.parent.mkdir(parents=True, exist_ok=True)
             imagePath.write_bytes(imgData)
             return True
