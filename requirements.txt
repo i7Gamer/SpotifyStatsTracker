@@ -4,4 +4,5 @@ spotipyFree
 pillow
 requests
 websockets
-waitress
+waitress
+tzdata
