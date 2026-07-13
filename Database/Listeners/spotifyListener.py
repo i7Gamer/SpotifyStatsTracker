@@ -61,9 +61,11 @@ def _is_auth_error(exc: Exception) -> bool:
 
 
 def _is_rate_limit_error(exc: Exception) -> bool:
-    """Check if an exception is a rate limit error (429 Too Many Requests)."""
+    """Check if an exception is a rate limit error (429 Too Many Requests)
+    or other transient Spotify API error (malformed JSON, etc.)."""
     exc_str = str(exc).lower()
-    return "429" in exc_str or "rate" in exc_str and "limit" in exc_str
+    return ("429" in exc_str or ("rate" in exc_str and "limit" in exc_str) or
+            "json" in exc_str)  # Invalid JSON usually indicates Spotify API issue
 
 
 def _refresh_spotify_access_token(client_id: str, client_secret: str, refresh_token: str) -> str | None:
