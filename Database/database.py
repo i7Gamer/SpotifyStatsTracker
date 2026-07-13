@@ -961,25 +961,15 @@ class Database:
             isCorroborated = trackInApi or timeMatches
 
             if not isCorroborated:
-                # Only delete if we're very confident it's an error
-                # A play is uncorroborated if:
+                # Only delete if we're very confident it's an error:
                 # - Track is NOT in API (user likely skipped it) AND
-                # - Timestamp doesn't match any API play
-                # Log it first to ensure we understand what we're deleting
-                logger.warning(
-                    "Reconciliation candidate for deletion: user=%s track=%s time=%d "
-                    "(not in API, timestamp doesn't match any API play)",
-                    self.user, play["id"], play["playedAt"]
-                )
-
-                # SAFETY CHECK: Only delete if it's clearly marked as backfill
-                # Listener plays and imported plays are preserved
-                # (we can't distinguish them by looking at the play record alone,
-                # so we err on the side of caution and don't delete)
-                # For now, disable deletion to be safe
-                if False:  # DELETE DISABLED - see comment above
-                    if self.repo.deletePlay(self.user, play["id"], play["playedAt"]):
-                        deletedCount += 1
+                # - Timestamp doesn't match any API play (not a timing issue)
+                if self.repo.deletePlay(self.user, play["id"], play["playedAt"]):
+                    deletedCount += 1
+                    logger.debug(
+                        "Reconciliation deleted uncorroborated play: user=%s track=%s time=%d",
+                        self.user, play["id"], play["playedAt"]
+                    )
 
         if deletedCount:
             self.repo.commit()
