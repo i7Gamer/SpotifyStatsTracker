@@ -153,10 +153,11 @@ class Database:
         produces. The caller is responsible for deleting it once the client
         holding it has been constructed - it's only read at construction time."""
         cookies = self.repo.getUserCookies(self.user) or {}
+        email = self.repo.getEmailForUsername(self.user) or self.email
         tmpFd, tmpPath = tempfile.mkstemp(prefix=f"cookies_{self.user}_", suffix=".json")
         os.close(tmpFd)
         tmpPath = Path(tmpPath)
-        tmpPath.write_text(json.dumps([{"identifier": self.email, "cookies": cookies}]), encoding="utf-8")
+        tmpPath.write_text(json.dumps([{"identifier": email, "cookies": cookies}]), encoding="utf-8")
         return tmpPath
 
     def _withCookiesFile(self, factory):
@@ -875,6 +876,12 @@ class Database:
         if cookiesFile:
             self.cookiesFile = cookiesFile
         if email:
+            if self.email and email != self.email:
+                logger.warning(
+                    "Email mismatch in startListener for user %s: was %s, now %s. "
+                    "This could indicate confused session state.",
+                    self.user, self.email, email
+                )
             self.email = email
         self.listener = self._withCookiesFile(lambda cf: Listener(cf, email=self.email, get_credentials=self.getUserSpotifyCredentials))
         with self._health_lock:
