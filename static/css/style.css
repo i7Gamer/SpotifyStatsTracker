@@ -975,7 +975,7 @@ progress::-moz-progress-bar {
   transform: rotate(-45deg) translate(8px, -8px);
 }
 
-@media (max-width: 920px) {
+@media (max-width: 960px) {
   .nav-toggle {
     display: flex;
   }
