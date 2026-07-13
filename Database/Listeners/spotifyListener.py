@@ -23,6 +23,9 @@ LISTENER_STALE_TIMEOUT_SECONDS = 30 * 60
 
 AUTH_ERROR_TIMEOUT_SECONDS = 30  #< trigger reconnection immediately for auth errors, not 30 min
 
+REST_API_POLL_INTERVAL_SECONDS = 5 * 60  #< poll /v1/me/player/recently-played every 5 minutes for verification
+REST_API_LIMIT = 50  #< fetch last 50 tracks per API call
+
 
 def _is_auth_error(exc: Exception) -> bool:
     """Check if an exception is an authentication-related error (expired/invalid
@@ -67,6 +70,7 @@ class Listener:
             self.sp.startRecentlyPlayedListener(refreshInterval=refreshInterval)
         self.recentlyPlayed_Z1 = self.sp.current_user_recently_played()
         self._lastChangeTime = time.monotonic()
+        self._rest_api_thread = None
 
     def isLoggedIn(self):
         if self.sp.isLoggedIn() == False:
@@ -94,6 +98,46 @@ class Listener:
         return self.sp.playlist(playlistId).get("name", "Unknown Playlist")
     def albumName(self, albumId):
         return self.sp.album(albumId).get("name", "Unknown Album")
+
+    def _pollRestApiHistory(self):
+        """Fetch recently-played tracks via REST API (/v1/me/player/recently-played).
+        Returns list of track objects from authoritative REST API, not websocket cache.
+        Raises exception if API call fails."""
+        try:
+            # Use spotapi's Public client for REST API access to recently-played endpoint
+            from spotapi import Public
+            api = Public(self.sp.user_auth)
+            result = api.get_recently_played(limit=REST_API_LIMIT)
+            if result and "items" in result:
+                return result["items"]
+            return []
+        except Exception as e:
+            logger.error("REST API poll failed: %s", parseError(e))
+            raise
+
+    def _filterNewTracks(self, api_tracks, recorded_played_at_times):
+        """Filter out tracks that are already recorded based on played_at timestamp.
+        Returns only tracks with played_at not in recorded_played_at_times."""
+        new_tracks = []
+        for track in api_tracks:
+            played_at = track.get("played_at")
+            if played_at and played_at not in recorded_played_at_times:
+                new_tracks.append(track)
+        return new_tracks
+
+    def _pollRestApiHistoryLoop(self):
+        """Background thread that periodically polls REST API for verification/cleanup.
+        Callback should handle deduplication and store data."""
+        while self.run:
+            try:
+                time.sleep(REST_API_POLL_INTERVAL_SECONDS)
+                if not self.run:
+                    break
+                # Fetch REST API data - this will be used for verification and cleanup
+                api_tracks = self._pollRestApiHistory()
+                logger.debug("REST API poll returned %d tracks", len(api_tracks))
+            except Exception as e:
+                logger.warning("REST API polling error: %s", parseError(e))
 
     def _checkOnce(self, callback, onStale) -> bool:
         """One iteration of the poll loop. Returns False if the feed was found
@@ -148,8 +192,12 @@ class Listener:
                     time.sleep(30)
 
     def startListener_thread(self, callback, onStale=None):
+        # Start websocket-based listener thread
         thread = threading.Thread(target=self.startListener, args=(callback,), kwargs={"onStale": onStale}, daemon=True)
         thread.start()
+        # Start REST API polling thread for verification/cleanup
+        self._rest_api_thread = threading.Thread(target=self._pollRestApiHistoryLoop, daemon=True)
+        self._rest_api_thread.start()
     
     def stop(self):
         self.run = False

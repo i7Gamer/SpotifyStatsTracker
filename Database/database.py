@@ -97,6 +97,10 @@ class Database:
             track = item.get("track")
             timestamp = item.get("played_at")
             msPlayed = item.get("ms_played", 0)
+            # Only record tracks played for at least 1 second (filter out skips/scrubs)
+            if msPlayed < 1000:
+                logger.debug("Skipping track %s: played only %dms (< 1s)", track.get("id") if track else "unknown", msPlayed)
+                continue
             if track:
                 # Per-item isolation: if the callback raised, the listener would
                 # retry the whole batch forever and record nothing new until the
@@ -808,6 +812,49 @@ class Database:
                 "last_error": self.listener_last_error,
                 "seconds_since_last_poll": seconds_since_last_poll,
             }
+
+    def cleanupStaleTracksNotInApiHistory(self, api_track_ids: list[str]) -> int:
+        """Remove recorded plays for tracks that no longer appear in Spotify's API history.
+        Only removes plays older than 7 days to avoid removing recent plays that might
+        just be missing from cache. Returns number of plays deleted."""
+        if not api_track_ids:
+            return 0
+
+        cutoff_time = time.time() - (7 * 24 * 60 * 60)  # 7 days ago
+        conn = self.repo.connection
+
+        # Find all plays older than cutoff_time
+        all_old_plays = self.repo.getPlaysNewestFirst(self.user, count=None)
+        old_plays_to_check = [p for p in all_old_plays if p["playedAt"] < cutoff_time]
+
+        if not old_plays_to_check:
+            logger.debug("No plays older than 7 days to cleanup")
+            return 0
+
+        # Find which track_ids from old plays are NOT in current API history
+        old_track_ids = set(p["id"] for p in old_plays_to_check)
+        missing_track_ids = old_track_ids - set(api_track_ids)
+
+        if not missing_track_ids:
+            logger.debug("All old plays have tracks present in current API history")
+            return 0
+
+        # Delete plays for missing track_ids
+        deleted_count = 0
+        for track_id in missing_track_ids:
+            # Only delete plays for this track_id that are older than 7 days
+            cur = conn.execute(
+                "DELETE FROM plays WHERE username=? AND track_id=? AND played_at < ?",
+                (self.user, track_id, cutoff_time),
+            )
+            deleted_count += cur.rowcount
+
+        if deleted_count > 0:
+            self.repo.commit()
+            logger.info("Cleanup: removed %d plays for %d tracks no longer in Spotify history",
+                       deleted_count, len(missing_track_ids))
+
+        return deleted_count
 
     def stop(self):
         if self.listener is not None:
