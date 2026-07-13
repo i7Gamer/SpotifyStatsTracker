@@ -507,6 +507,26 @@ class Database:
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
         return self.repo.getPlayTotals(self.user, startTs, endTs)
 
+    def getLongestStreak(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> int:
+        """Longest consecutive days of plays in range."""
+        startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
+        return self.repo.getLongestStreak(self.user, startTs, endTs)
+
+    def getPeakListeningTime(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> tuple[str, int] | None:
+        """(day_of_week_name, play_count) for the day with most plays, or None."""
+        startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
+        return self.repo.getPeakListeningDayOfWeek(self.user, startTs, endTs)
+
+    def getDiscoveredSongsCount(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> int:
+        """Count of distinct songs first played within the date range."""
+        startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
+        return self.repo.getDiscoveredSongsCount(self.user, startTs, endTs)
+
+    def getDiscoveredArtistsCount(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> int:
+        """Count of distinct artists first played within the date range."""
+        startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
+        return self.repo.getDiscoveredArtistsCount(self.user, startTs, endTs)
+
     def getAlbumsStats(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None,
                         sortBy: str = "plays", limit: int | None = None, offset: int = 0,
                         albumId: str | None = None, searchQuery: str | None = None) -> list:

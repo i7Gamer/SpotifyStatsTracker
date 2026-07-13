@@ -49,6 +49,37 @@
     </article>
   </section>
 
+  <section class="track-summary-grid-3">
+    <article class="track-summary-card">
+      <h3>Longest Streak</h3>
+      <p class="summary-value">{{ longestStreak }} days</p>
+    </article>
+    <article class="track-summary-card">
+      <h3>Peak Day</h3>
+      <p class="summary-value">{{ peakListeningTime[0] if peakListeningTime else 'N/A' }}</p>
+      <p class="summary-subtitle">{{ peakListeningTime[1] if peakListeningTime else '' }} plays</p>
+    </article>
+    <article class="track-summary-card">
+      <h3>Unique Songs</h3>
+      <p class="summary-value">{{ uniqueSongsCount }}</p>
+    </article>
+  </section>
+
+  <section class="track-summary-grid-3">
+    <article class="track-summary-card">
+      <h3>Unique Artists</h3>
+      <p class="summary-value">{{ uniqueArtistsCount }}</p>
+    </article>
+    <article class="track-summary-card">
+      <h3>Songs Discovered</h3>
+      <p class="summary-value">{{ discoveredSongsCount }}</p>
+    </article>
+    <article class="track-summary-card">
+      <h3>Artists Discovered</h3>
+      <p class="summary-value">{{ discoveredArtistsCount }}</p>
+    </article>
+  </section>
+
   <section class="card chart-card">
     <div class="chart-section">
       <h2>Listening Over {{ year }}</h2>

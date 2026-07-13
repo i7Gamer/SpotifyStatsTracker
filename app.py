@@ -1183,6 +1183,13 @@ class SpotifyDashboardApp:
                 db.getListeningTimeSeries(startDate=yearStart, endDate=yearEnd, groupBy=groupBy)
             )
 
+            longestStreak = db.getLongestStreak(yearStart, yearEnd)
+            peakListeningTime = db.getPeakListeningTime(yearStart, yearEnd)
+            uniqueSongsCount = db.getSongsCount(yearStart, yearEnd)
+            uniqueArtistsCount = db.getArtistsCount(yearStart, yearEnd)
+            discoveredSongsCount = db.getDiscoveredSongsCount(yearStart, yearEnd)
+            discoveredArtistsCount = db.getDiscoveredArtistsCount(yearStart, yearEnd)
+
             topSongs = self._embedSongsTextElements(topSongs)
             topSongs = self._embedTopSongsTextElements(topSongs, sortBy="plays", totalPlays=totalPlays, totalMs=totalMs)
             topArtists = self._embedArtistsTextElements(topArtists, sortBy="plays", totalPlays=totalPlays, totalMs=totalMs)
@@ -1209,6 +1216,12 @@ class SpotifyDashboardApp:
                 discoveredArtists=discoveredArtists,
                 discoveredAlbums=discoveredAlbums,
                 timeSeries=timeSeries,
+                longestStreak=longestStreak,
+                peakListeningTime=peakListeningTime,
+                uniqueSongsCount=uniqueSongsCount,
+                uniqueArtistsCount=uniqueArtistsCount,
+                discoveredSongsCount=discoveredSongsCount,
+                discoveredArtistsCount=discoveredArtistsCount,
             )
 
         @self.app.route("/song/<track_id>", methods=["GET"])

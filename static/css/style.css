@@ -550,6 +550,13 @@ progress::-moz-progress-bar {
   margin-bottom: 24px;
 }
 
+.track-summary-grid-3 {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 20px;
+  margin-bottom: 24px;
+}
+
 .track-summary-card {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -575,6 +582,13 @@ progress::-moz-progress-bar {
   margin: 0;
   font-size: 1.75rem;
   font-weight: 700;
+}
+
+.summary-subtitle {
+  font-size: 0.9rem;
+  font-weight: 400;
+  color: var(--muted);
+  margin-top: 6px !important;
 }
 
 .track-list {
@@ -684,12 +698,22 @@ progress::-moz-progress-bar {
   color: var(--muted);
 }
 
+@media (max-width: 900px) {
+  .track-summary-grid-3 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 @media (max-width: 600px) {
   .dashboard-summary {
     flex-direction: column;
   }
 
   .track-summary-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .track-summary-grid-3 {
     grid-template-columns: 1fr;
   }
 }
