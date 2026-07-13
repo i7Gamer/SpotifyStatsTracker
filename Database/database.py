@@ -90,6 +90,9 @@ class Database:
                                          keyword=filterKeyword)
 
     def _addToDatabaseFromListener(self, data) -> None:
+        """Record plays from the listener. Includes validation to detect cross-user
+        data contamination (a bug that previously caused plays from one user to be
+        recorded under another user's account)."""
         if not data:
             return
         had_errors = False
@@ -97,6 +100,21 @@ class Database:
             track = item.get("track")
             timestamp = item.get("played_at")
             msPlayed = item.get("ms_played", 0)
+
+            # Sanity check: verify the timestamp makes sense (not in far future/past)
+            import time as time_module
+            current_time = time_module.time()
+            if timestamp > current_time + 86400:  # More than 1 day in future
+                logger.error(
+                    "CONTAMINATION CHECK FAILED: Track %s has timestamp %s (%.0f seconds in future). "
+                    "This suggests cross-user data contamination. Skipping this play.",
+                    track.get("id") if track else "unknown",
+                    timestamp,
+                    timestamp - current_time
+                )
+                had_errors = True
+                continue
+
             # Only record tracks played for at least 1 second (filter out skips/scrubs)
             if msPlayed < 1000:
                 logger.debug("Skipping track %s: played only %dms (< 1s)", track.get("id") if track else "unknown", msPlayed)
@@ -164,8 +182,9 @@ class Database:
             return None
         try:
             track = Client.formatTrack(self.listener.track(trackId), embedPlaybackInfo=False)
-            self.repo.upsertTrack(track)
+            self.repo.upsertTrack(track, created_reason=f"listener_fetch (user: {self.user})")
             self.repo.commit()
+            logger.info("Created track %s (%s) via listener fetch", trackId, track.get("name", "unknown"))
             return track
         except Exception:
             logger.error("Failed to download track %s", trackId)
@@ -387,16 +406,23 @@ class Database:
         self.repo.insertPlay(self.user, entry["id"], entry["playedAt"], entry["timePlayed"], entry.get("playedFrom"))
         self.repo.commit()
 
-    def appendMetadata(self, meta: dict) -> None:
+    def appendMetadata(self, meta: dict, created_reason: str | None = None) -> None:
         self.saveImagesFromTrack(meta)
         entry, track = self._splitEntryAndTrack(meta)
-        self.repo.upsertTrack(track)
+        self.repo.upsertTrack(track, created_reason=created_reason)
         self.repo.insertPlay(self.user, entry["id"], entry["playedAt"], entry["timePlayed"], entry.get("playedFrom"))
         self.repo.commit()
         self.updatePlaylists(entry.get("playedFrom"))
 
     def appendTrackData(self, timestamp, track, timePlayed, context=None):
-        self.appendMetadata(Client.formatTrack(track, timestamp, timePlayed, context=context))
+        formatted_track = Client.formatTrack(track, timestamp, timePlayed, context=context)
+        track_id = track.get("id", "unknown")
+        track_name = track.get("name", "unknown")
+        logger.info(
+            "Recording play for user %s: track=%s (%s), timestamp=%.0f, duration=%dms",
+            self.user, track_id, track_name, timestamp, timePlayed
+        )
+        self.appendMetadata(formatted_track, created_reason=f"listener_play (user: {self.user})")
 
     def importHistory(self, exportedHistory, progressPrefix: str = "", isFinalFile: bool = True):
         importer = self._withCookiesFile(lambda cookiesFile: Importer(cookiesFile=cookiesFile, email=self.email))
@@ -436,10 +462,11 @@ class Database:
                     self.writeProgress("running", index, total, f"{progressPrefix}Imported {index} of {total}")
 
             for track in stagedTracks.values():
-                self.repo.upsertTrack(track)
+                self.repo.upsertTrack(track, created_reason=f"history_import (user: {self.user})")
             for entry in stagedPlays:
                 self.repo.insertPlay(self.user, entry["id"], entry["playedAt"], entry["timePlayed"], entry.get("playedFrom"))
             self.repo.commit()
+            logger.info("Imported %d tracks and %d plays for user %s", len(stagedTracks), len(stagedPlays), self.user)
 
             status = "complete" if isFinalFile else "running"
             self.writeProgress(status, total, total, f"{progressPrefix}Import complete")
@@ -845,7 +872,7 @@ class Database:
             self.cookiesFile = cookiesFile
         if email:
             self.email = email
-        self.listener = self._withCookiesFile(lambda cf: Listener(cf, email=self.email))
+        self.listener = self._withCookiesFile(lambda cf: Listener(cf, email=self.email, get_credentials=self.getUserSpotifyCredentials))
         with self._health_lock:
             self.listener_health = "HEALTHY"
             self.listener_error_count = 0
@@ -853,6 +880,12 @@ class Database:
             callback=self._addToDatabaseFromListener,
             onStale=self._makeOnStaleCallback(),
         )
+
+    def getUserSpotifyCredentials(self) -> dict | None:
+        return self.repo.getUserSpotifyCredentials(self.user)
+
+    def updateUserSpotifyCredentials(self, clientId: str | None, clientSecret: str | None, refreshToken: str | None) -> None:
+        self.repo.updateUserSpotifyCredentials(self.user, clientId, clientSecret, refreshToken)
 
     def startAutoImporter(self):
         self.autoImporter.start()

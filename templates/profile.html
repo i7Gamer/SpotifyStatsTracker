@@ -1,0 +1,72 @@
+{% extends "layout.html" %}
+{% block content %}
+
+<div class="login-panel">
+  <div class="login-card" style="max-width: 600px;">
+    <h1>User Profile</h1>
+    <p>Manage your account settings and configure the Spotify Developer API for real-time play backfilling.</p>
+
+    <div class="profile-details" style="margin-bottom: 2rem; padding-bottom: 1.5rem; border-bottom: 1px solid var(--border-color, #2d2d2d);">
+      <p><strong>Username:</strong> {{ username }}</p>
+      <p><strong>Email:</strong> {{ email }}</p>
+    </div>
+
+    {% if error %}
+      <p class="error" style="color: #ff4a4a; margin-bottom: 1rem;">{{ error }}</p>
+    {% endif %}
+    {% if success %}
+      <p class="success" style="color: #4aff4a; margin-bottom: 1rem;">{{ success }}</p>
+    {% endif %}
+
+    <h2>Spotify Developer API Settings</h2>
+    <p style="font-size: 0.9rem; color: #aaa; margin-bottom: 1.5rem;">
+      Configuring this allows the tracker to poll Spotify's Web API and automatically recover any missed plays with precise played-at timestamps.
+    </p>
+
+    <form class="login-form" method="post" action="{{ url_for('profilePage') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+
+      <div class="form-group">
+        <label for="clientId">Spotify Client ID</label>
+        <input type="text" id="clientId" name="client_id" value="{{ client_id or '' }}" placeholder="Enter Client ID from Spotify Developer Dashboard" required>
+      </div>
+
+      <div class="form-group">
+        <label for="clientSecret">Spotify Client Secret</label>
+        <input type="password" id="clientSecret" name="client_secret" value="{{ client_secret or '' }}" placeholder="Enter Client Secret" required>
+      </div>
+
+      <div style="display: flex; gap: 1rem; margin-top: 1.5rem; margin-bottom: 2rem;">
+        <button type="submit" class="primary-button" style="flex: 1;">Save Credentials</button>
+        {% if client_id and client_secret %}
+          <a href="{{ url_for('profileDisconnect') }}" class="primary-button" style="flex: 1; background: #c92a2a; text-align: center; text-decoration: none; display: flex; align-items: center; justify-content: center;">Disconnect API</a>
+        {% endif %}
+      </div>
+    </form>
+
+    <div class="api-status" style="margin-top: 2rem; padding: 1.5rem; background: rgba(255, 255, 255, 0.03); border-radius: 8px; border: 1px solid var(--border-color, #2d2d2d);">
+      <h3>Connection Status</h3>
+      {% if has_api %}
+        <p><strong>Spotify API Configuration:</strong> Saved</p>
+        {% if is_authenticated %}
+          <p><strong>OAuth Authorization:</strong> <span style="color: #4aff4a; font-weight: bold;">Connected & Authorized</span></p>
+          <p style="font-size: 0.85rem; color: #888; margin-top: 0.5rem;">The background tracker is actively querying the Web API every 5 minutes to backfill missed tracks.</p>
+        {% else: %}
+          <p><strong>OAuth Authorization:</strong> <span style="color: #ffaa4a; font-weight: bold;">Not Authorized</span></p>
+          <div style="margin-top: 1rem;">
+            <a href="{{ url_for('spotifyAuthorize') }}" class="primary-button" style="text-decoration: none; display: inline-block; padding: 0.5rem 1.5rem; background: #1db954; color: white;">Authorize with Spotify</a>
+          </div>
+        {% endif %}
+      {% else %}
+        <p><strong>Spotify API Configuration:</strong> Not Configured</p>
+        <p style="font-size: 0.85rem; color: #888; margin-top: 0.5rem;">To connect, register an app in the Spotify Developer Dashboard. Ensure the Redirect URI is set to: <br><code style="color: #1db954; word-break: break-all;">{{ redirect_uri }}</code></p>
+      {% endif %}
+    </div>
+
+    <div style="margin-top: 3rem; text-align: center;">
+      <a href="{{ url_for('logout') }}" class="primary-button" style="background: #555; text-decoration: none; display: inline-block; padding: 0.5rem 2rem;">Log out of Tracker</a>
+    </div>
+  </div>
+</div>
+
+{% endblock %}

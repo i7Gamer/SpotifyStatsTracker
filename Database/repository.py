@@ -77,10 +77,11 @@ class Repository:
 
     # ---- Catalog: tracks / artists / albums ----------------------------------
 
-    def upsertTrack(self, track: dict) -> None:
+    def upsertTrack(self, track: dict, created_reason: str | None = None) -> None:
         """Upsert a track and its nested album/artists (as produced by
         Client.formatTrack). Last write wins, matching the previous
-        tracks[id] = track dict-assignment semantics.
+        tracks[id] = track dict-assignment semantics. If created_reason is provided,
+        it's only set on INSERT (never updated on conflict).
 
         Does NOT commit - callers compose this with insertPlay() into a single
         transaction (one play = one commit; a bulk import = one commit for the
@@ -110,16 +111,27 @@ class Repository:
                 artist,
             )
 
+        trackData = {
+            **track,
+            "albumId": album["id"],
+            "explicit": bool(track.get("explicit", False)),
+            "created_at": None,
+            "created_reason": None,
+        }
+        if created_reason:
+            trackData["created_at"] = time.time()
+            trackData["created_reason"] = created_reason
+
         conn.execute(
             """
-            INSERT INTO tracks (id, name, url, album_id, image_id, duration_ms, explicit, isrc, disc_number, track_number)
-            VALUES (:id, :name, :url, :albumId, :imageId, :duration, :explicit, :isrc, :discNumber, :trackNumber)
+            INSERT INTO tracks (id, name, url, album_id, image_id, duration_ms, explicit, isrc, disc_number, track_number, created_at, created_reason)
+            VALUES (:id, :name, :url, :albumId, :imageId, :duration, :explicit, :isrc, :discNumber, :trackNumber, :created_at, :created_reason)
             ON CONFLICT(id) DO UPDATE SET
                 name=excluded.name, url=excluded.url, album_id=excluded.album_id, image_id=excluded.image_id,
                 duration_ms=excluded.duration_ms, explicit=excluded.explicit, isrc=excluded.isrc,
                 disc_number=excluded.disc_number, track_number=excluded.track_number
             """,
-            {**track, "albumId": album["id"], "explicit": bool(track.get("explicit", False))},
+            trackData,
         )
 
         conn.execute("DELETE FROM track_artists WHERE track_id=?", (track["id"],))
@@ -325,10 +337,23 @@ class Repository:
     def insertPlay(self, username: str, trackId: str, playedAt: float, timePlayed: int,
                    playedFrom: str | None = None) -> bool:
         """Returns True if a new row was inserted, False if this exact
-        (username, trackId, playedAt) play was already recorded.
+        (username, trackId, playedAt) play was already recorded (updates time_played if different).
 
         Does NOT commit - see upsertTrack()'s docstring."""
         conn = self._conn()
+        existing = conn.execute(
+            "SELECT id, time_played FROM plays WHERE username=? AND track_id=? AND played_at=?",
+            (username, trackId, playedAt)
+        ).fetchone()
+
+        if existing:
+            if existing["time_played"] != timePlayed:
+                conn.execute(
+                    "UPDATE plays SET time_played = ?, played_from = COALESCE(?, played_from) WHERE id = ?",
+                    (timePlayed, playedFrom, existing["id"])
+                )
+            return False
+
         cur = conn.execute(
             "INSERT OR IGNORE INTO plays (username, track_id, played_at, time_played, played_from) "
             "VALUES (?, ?, ?, ?, ?)",
@@ -1117,6 +1142,29 @@ class Repository:
         row = conn.execute("SELECT password_hash FROM users WHERE username=?", (username,)).fetchone()
         return row["password_hash"] if row else None
 
+    def getUserSpotifyCredentials(self, username: str) -> dict | None:
+        conn = self._conn()
+        row = conn.execute(
+            "SELECT spotify_client_id, spotify_client_secret, spotify_refresh_token FROM users WHERE username=?",
+            (username,)
+        ).fetchone()
+        if not row:
+            return None
+        return {
+            "client_id": row["spotify_client_id"],
+            "client_secret": row["spotify_client_secret"],
+            "refresh_token": row["spotify_refresh_token"],
+        }
+
+    def updateUserSpotifyCredentials(self, username: str, clientId: str | None,
+                                     clientSecret: str | None, refreshToken: str | None) -> None:
+        conn = self._conn()
+        with conn:
+            conn.execute(
+                "UPDATE users SET spotify_client_id = ?, spotify_client_secret = ?, spotify_refresh_token = ? WHERE username = ?",
+                (clientId, clientSecret, refreshToken, username)
+            )
+
     def addUserPasswordHashColumnIfMissing(self) -> None:
         """SCHEMA's CREATE TABLE IF NOT EXISTS only shapes brand-new databases -
         a users table that already existed before password_hash was added needs
@@ -1127,6 +1175,29 @@ class Repository:
         if "password_hash" not in columns:
             with conn:
                 conn.execute("ALTER TABLE users ADD COLUMN password_hash TEXT")
+
+    def addSpotifyApiColumnsToUsersIfMissing(self) -> None:
+        """Add Spotify API columns to users table if missing."""
+        conn = self._conn()
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
+        with conn:
+            if "spotify_client_id" not in columns:
+                conn.execute("ALTER TABLE users ADD COLUMN spotify_client_id TEXT")
+            if "spotify_client_secret" not in columns:
+                conn.execute("ALTER TABLE users ADD COLUMN spotify_client_secret TEXT")
+            if "spotify_refresh_token" not in columns:
+                conn.execute("ALTER TABLE users ADD COLUMN spotify_refresh_token TEXT")
+
+    def addTrackMetadataColumnsIfMissing(self) -> None:
+        """Add created_at and created_reason columns to tracks table if missing.
+        Guarded so re-running the migration doesn't fail."""
+        conn = self._conn()
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(tracks)").fetchall()}
+        with conn:
+            if "created_at" not in columns:
+                conn.execute("ALTER TABLE tracks ADD COLUMN created_at REAL")
+            if "created_reason" not in columns:
+                conn.execute("ALTER TABLE tracks ADD COLUMN created_reason TEXT")
 
     def getAllUsersWithCookies(self) -> list[tuple[str, str]]:
         """(username, email) for every user who has logged in at least once -

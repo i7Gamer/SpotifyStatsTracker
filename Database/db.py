@@ -39,7 +39,9 @@ CREATE TABLE IF NOT EXISTS tracks (
     explicit        INTEGER NOT NULL DEFAULT 0,
     isrc            TEXT,
     disc_number     INTEGER,
-    track_number    INTEGER
+    track_number    INTEGER,
+    created_at      REAL,
+    created_reason  TEXT
 );
 
 -- Ordered join table: a track can have multiple artists, and display order matters.
@@ -74,11 +76,14 @@ CREATE TABLE IF NOT EXISTS images (
 -- SQLite treats each NULL as distinct for UNIQUE, so multiple email-less users
 -- can coexist without colliding.
 CREATE TABLE IF NOT EXISTS users (
-    username        TEXT PRIMARY KEY,
-    email           TEXT UNIQUE,
-    cookies_json    TEXT,
-    password_hash   TEXT,
-    created_at      REAL NOT NULL
+    username              TEXT PRIMARY KEY,
+    email                 TEXT UNIQUE,
+    cookies_json          TEXT,
+    password_hash         TEXT,
+    created_at            REAL NOT NULL,
+    spotify_client_id     TEXT,
+    spotify_client_secret TEXT,
+    spotify_refresh_token TEXT
 );
 
 -- Per-user play history. This is the only high-cardinality, per-user table -

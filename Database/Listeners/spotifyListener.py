@@ -5,7 +5,7 @@ import threading
 import time
 from contextlib import contextmanager
 from SpotipyFree import Spotify
-from Database.utils import parseError
+from Database.utils import parseError, timeToInt
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +45,47 @@ def _is_auth_error(exc: Exception) -> bool:
     )
 
 
+def _refresh_spotify_access_token(client_id: str, client_secret: str, refresh_token: str) -> str | None:
+    import base64
+    import requests
+    url = "https://accounts.spotify.com/api/token"
+    payload = {
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_token,
+    }
+    auth_header = base64.b64encode(f"{client_id}:{client_secret}".encode("utf-8")).decode("utf-8")
+    headers = {
+        "Authorization": f"Basic {auth_header}",
+        "Content-Type": "application/x-www-form-urlencoded"
+    }
+    try:
+        resp = requests.post(url, data=payload, headers=headers, timeout=10)
+        if resp.status_code == 200:
+            return resp.json().get("access_token")
+        else:
+            logger.error("Failed to refresh Spotify access token: %s %s", resp.status_code, resp.text)
+    except Exception as e:
+        logger.error("Error refreshing Spotify access token: %s", str(e))
+    return None
+
+
+def _fetch_recently_played_from_web_api(access_token: str) -> list[dict]:
+    import requests
+    url = "https://api.spotify.com/v1/me/player/recently-played?limit=50"
+    headers = {
+        "Authorization": f"Bearer {access_token}"
+    }
+    try:
+        resp = requests.get(url, headers=headers, timeout=10)
+        if resp.status_code == 200:
+            return resp.json().get("items", [])
+        else:
+            logger.error("Failed to fetch recently played tracks from Web API: %s %s", resp.status_code, resp.text)
+    except Exception as e:
+        logger.error("Error fetching recently played tracks from Web API: %s", str(e))
+    return []
+
+
 @contextmanager
 def _suppress_signal_in_thread():
     """Temporarily patch signal.signal to skip SIGINT registration when called
@@ -65,11 +106,24 @@ def _suppress_signal_in_thread():
 
 
 class Listener:
-    def __init__(self, cookiesFile, refreshInterval=6, email=None):
+    def __init__(self, cookiesFile, refreshInterval=6, email=None, get_credentials=None):
         self.run = False
+        self.email = email  #< store expected email for validation
+        self._authenticated_user_id = None  #< cache spotify user id for validation
+        self.get_credentials = get_credentials
+        self._lastWebApiPollTime = 0
         with _suppress_signal_in_thread():
             self.sp = Spotify(cookiesFile=cookiesFile, email=email)
             self.sp.startRecentlyPlayedListener(refreshInterval=refreshInterval)
+
+        # Validate that this Spotify client is properly authenticated for the expected user
+        try:
+            current_user = self.sp.current_user()
+            self._authenticated_user_id = current_user.get("id")
+            logger.info("Listener initialized for user %s (Spotify ID: %s)", email, self._authenticated_user_id)
+        except Exception as e:
+            logger.warning("Could not verify authenticated user during listener init: %s", parseError(e))
+
         self.recentlyPlayed_Z1 = self.sp.current_user_recently_played()
         self._lastChangeTime = time.monotonic()
         self._warnedMissingTrackUris = set()  #< dedupes _checkConnectStateForMissedTracks warnings
@@ -81,6 +135,23 @@ class Listener:
             self.sp.current_user()
             return True
         except:
+            return False
+
+    def _validateCurrentUser(self) -> bool:
+        """Verify that the authenticated Spotify session still belongs to the expected user.
+        Returns True if valid, False if session has changed. Logs warnings if mismatches detected."""
+        try:
+            current_user = self.sp.current_user()
+            current_user_id = current_user.get("id")
+            if self._authenticated_user_id and current_user_id != self._authenticated_user_id:
+                logger.error(
+                    "Session user mismatch! Expected %s, got %s - this could indicate cross-user contamination",
+                    self._authenticated_user_id, current_user_id
+                )
+                return False
+            return True
+        except Exception as e:
+            logger.warning("Could not validate current user: %s", parseError(e))
             return False
 
     def getNewItems(self, new: list):
@@ -166,9 +237,22 @@ class Listener:
         stale and handed off to `onStale` for reconnection - the caller should
         stop this listener, since a new one now owns tracking. Raises an exception
         if an auth error is detected so startListener can handle it immediately."""
+        # Validate session identity to detect cross-user contamination
+        if not self._validateCurrentUser():
+            logger.error("Listener session validation failed - triggering reconnection")
+            if onStale is not None:
+                try:
+                    onStale()
+                except Exception as e:
+                    logger.error("Reconnect attempt failed: %s", parseError(e))
+            return False
+
         recentlyPlayed = self.sp.current_user_recently_played()
         if recentlyPlayed != self.recentlyPlayed_Z1:
-            callback(self.getNewItems(recentlyPlayed))
+            newItems = self.getNewItems(recentlyPlayed)
+            if newItems:
+                logger.info("Listener callback: %d new items for user %s", len(newItems), self.email)
+            callback(newItems)
             self.recentlyPlayed_Z1 = recentlyPlayed
             self._lastChangeTime = time.monotonic()
             return True
@@ -199,6 +283,7 @@ class Listener:
                     self.run = False
                     return
                 self._checkConnectStateForMissedTracks()
+                self._checkWebApiBackfill(callback)
                 time.sleep(1)
             except Exception as e:
                 if _is_auth_error(e):
@@ -213,6 +298,81 @@ class Listener:
                 else:
                     logger.error("Error in listener: %s", parseError(e))
                     time.sleep(30)
+
+    def _checkWebApiBackfill(self, callback) -> None:
+        if not self.get_credentials:
+            return
+
+        now = time.monotonic()
+        # Query every 5 minutes (300 seconds)
+        if now - getattr(self, "_lastWebApiPollTime", 0) < 300:
+            return
+
+        self._lastWebApiPollTime = now
+
+        try:
+            creds = self.get_credentials()
+            if not creds or not creds.get("client_id") or not creds.get("client_secret") or not creds.get("refresh_token"):
+                return
+
+            logger.info("Running Spotify Web API recently-played backfill check...")
+            access_token = _refresh_spotify_access_token(creds["client_id"], creds["client_secret"], creds["refresh_token"])
+            if not access_token:
+                logger.warning("Could not obtain access token for Web API backfill.")
+                return
+
+            items = _fetch_recently_played_from_web_api(access_token)
+            if not items:
+                return
+
+            # Compare Web API items against recentlyPlayed_Z1 to see if we missed any
+            recorded_timestamps = {
+                timeToInt(item.get("played_at"))
+                for item in self.recentlyPlayed_Z1
+                if item.get("played_at")
+            }
+
+            missed_items = []
+            for item in items:
+                played_at_str = item.get("played_at")
+                if not played_at_str:
+                    continue
+                
+                timestamp = timeToInt(played_at_str)
+                # Check if we already recorded this play (matching within a 2-second window to handle minor precision diffs)
+                is_recorded = any(abs(timestamp - recorded_t) <= 2 for recorded_t in recorded_timestamps)
+                if not is_recorded:
+                    track = item.get("track")
+                    if not track:
+                        continue
+                    
+                    # Estimate ms_played as the full track duration
+                    duration_ms = track.get("duration_ms", 0)
+                    
+                    context = item.get("context") or {}
+                    
+                    # Convert to the format expected by callback:
+                    # {"track": track, "played_at": played_at_str, "ms_played": duration_ms, "context": context}
+                    missed_items.append({
+                        "track": track,
+                        "played_at": played_at_str,
+                        "ms_played": duration_ms,
+                        "context": context
+                    })
+
+            if missed_items:
+                logger.info("Backfilling %d plays from Web API recently-played history", len(missed_items))
+                # Pass them to callback (it expects a list, newest plays last)
+                # Web API returns newest plays first, so reverse to maintain cron order
+                missed_items.reverse()
+                callback(missed_items)
+                
+                # Update recentlyPlayed_Z1 to include these newly recorded plays
+                for item in missed_items:
+                    self.recentlyPlayed_Z1.append(item)
+
+        except Exception as e:
+            logger.error("Error during Web API backfill: %s", parseError(e))
 
     def startListener_thread(self, callback, onStale=None):
         thread = threading.Thread(target=self.startListener, args=(callback,), kwargs={"onStale": onStale}, daemon=True)
