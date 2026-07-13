@@ -105,6 +105,9 @@ class Database:
         recorded under another user's account)."""
         if not data:
             return
+        source = data[0].get("_source", "unknown") if data else "unknown"
+        logger.debug("_addToDatabaseFromListener called for user=%s with %d items, source=%s",
+                    self.user, len(data), source)
         had_errors = False
         for item in data:
             track = item.get("track")

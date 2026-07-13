@@ -411,6 +411,10 @@ class Listener:
                 return
 
             web_api_user_id = web_api_user.get("id")
+            web_api_user_display = web_api_user.get("display_name", web_api_user_id)
+            logger.info("Web API user: %s (ID: %s), Authenticated user: %s (ID: %s)",
+                       web_api_user_display, web_api_user_id, self.email, self._authenticated_user_id)
+
             if self._authenticated_user_id and web_api_user_id != self._authenticated_user_id:
                 logger.error(
                     "CONTAMINATION CHECK FAILED: Web API access token is for user %s, "
@@ -420,6 +424,7 @@ class Listener:
                 return
 
             items = _fetch_recently_played_from_web_api(access_token)
+            logger.info("Web API returned %d items for backfill check", len(items) if items else 0)
             if not items:
                 return
 
