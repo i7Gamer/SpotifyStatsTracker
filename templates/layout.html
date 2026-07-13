@@ -15,6 +15,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@400;600;700;800&display=swap" rel="stylesheet">
   </head>
   <body>
+    {% include '_listener_status_banner.html' %}
     <header class="topbar">
       <div class="brand">Spotify Tracker</div>
       <div id="version-badge" class="version-badge" style="display:none;">
@@ -127,6 +128,66 @@
 
         checkVersion();
         setInterval(checkVersion, 15 * 60 * 1000);
+      })();
+
+      (function(){
+        const banner = document.getElementById('listener-status-banner');
+        const statusIcon = document.getElementById('listener-status-icon');
+        const statusText = document.getElementById('listener-status-text');
+        const closeBtn = document.getElementById('listener-status-close');
+
+        if (!banner || !statusIcon || !statusText || !closeBtn) return;
+
+        const dismissedUntil = new Map();
+
+        function updateListenerStatus() {
+          fetch('/api/listener-status')
+            .then(r => r.json())
+            .then(data => {
+              if (!data || !data.status) return;
+
+              const status = data.status.toUpperCase();
+              const now = Date.now();
+              const isDismissed = dismissedUntil.get(status) > now;
+
+              if (status === 'HEALTHY') {
+                banner.style.display = 'none';
+                return;
+              }
+
+              if (isDismissed) {
+                banner.style.display = 'none';
+                return;
+              }
+
+              // Update banner appearance
+              banner.className = `listener-status-banner listener-status-${status.toLowerCase()}`;
+              banner.style.display = 'flex';
+
+              // Update status text
+              if (status === 'DEGRADED') {
+                const secondsSince = data.seconds_since_last_poll || '?';
+                statusText.textContent = `⚠️ Tracking having issues, attempting to reconnect... (last update: ${secondsSince}s ago)`;
+              } else if (status === 'DEAD') {
+                statusText.textContent = `❌ Tracking paused. Please re-login to resume tracking.`;
+              } else {
+                statusText.textContent = `Status: ${status}`;
+              }
+            })
+            .catch(() => {});
+        }
+
+        // Close button dismisses the banner for 1 hour
+        closeBtn.addEventListener('click', () => {
+          const status = banner.className.match(/listener-status-(\w+)/)?.[1]?.toUpperCase();
+          if (status) {
+            dismissedUntil.set(status, Date.now() + 60 * 60 * 1000);
+          }
+          banner.style.display = 'none';
+        });
+
+        updateListenerStatus();
+        setInterval(updateListenerStatus, 10 * 1000);
       })();
 
       (function(){

@@ -68,6 +68,13 @@ class Database:
         self.listener = None
         self.baseDir = Path(__file__).resolve().parent
 
+        # Health monitoring: track listener state for graceful degradation
+        self._health_lock = threading.RLock()
+        self.listener_health = "INITIALIZING"  # INITIALIZING, HEALTHY, DEGRADED, DEAD
+        self.listener_last_poll_time = None  # timestamp of last successful poll
+        self.listener_error_count = 0  # consecutive errors
+        self.listener_last_error = None  # last error message
+
         # All Database instances (one per user) share the same underlying SQLite
         # file - catalog data (tracks/artists/albums/images) is global, so it's
         # stored once regardless of how many users have played a given track.
@@ -98,6 +105,13 @@ class Database:
                     self.appendTrackData(timestamp, track, msPlayed, context=item.get("context", None))
                 except Exception as e:
                     logger.error("Error adding track from listener: %s", parseError(e))
+        # Mark successful poll
+        with self._health_lock:
+            self.listener_last_poll_time = time.monotonic()
+            self.listener_error_count = 0
+            if self.listener_health != "HEALTHY":
+                self.listener_health = "HEALTHY"
+                logger.info("Listener recovered to HEALTHY state")
 
     def _materializeCookiesFile(self) -> Path:
         """SpotipyFree/spotapi only know how to read a Spotify session from a file
@@ -725,6 +739,10 @@ class Database:
         Called when the listener detects a stale feed or auth error and needs
         to reconnect with fresh cookies/session."""
         def onStaleWithBackoff():
+            with self._health_lock:
+                self.listener_health = "DEGRADED"
+                self.listener_error_count += 1
+
             for attempt in range(self.RECONNECT_MAX_RETRIES):
                 if attempt > 0:
                     backoff_delay = min(
@@ -744,11 +762,15 @@ class Database:
                     return
                 except Exception as e:
                     logger.warning("Reconnection attempt %d failed: %s", attempt + 1, parseError(e))
+                    with self._health_lock:
+                        self.listener_last_error = parseError(e)
                     if attempt == self.RECONNECT_MAX_RETRIES - 1:
                         logger.error(
                             "Reconnection failed after %d attempts, tracking paused for this user",
                             self.RECONNECT_MAX_RETRIES
                         )
+                        with self._health_lock:
+                            self.listener_health = "DEAD"
 
         return onStaleWithBackoff
 
@@ -758,6 +780,9 @@ class Database:
         if email:
             self.email = email
         self.listener = self._withCookiesFile(lambda cf: Listener(cf, email=self.email))
+        with self._health_lock:
+            self.listener_health = "HEALTHY"
+            self.listener_error_count = 0
         self.listener.startListener_thread(
             callback=self._addToDatabaseFromListener,
             onStale=self._makeOnStaleCallback(),
@@ -770,6 +795,19 @@ class Database:
         if self.listener == None:
             return False
         return self.listener.isLoggedIn()
+
+    def getListenerHealth(self) -> dict:
+        """Get current listener health status for displaying to user."""
+        with self._health_lock:
+            seconds_since_last_poll = None
+            if self.listener_last_poll_time is not None:
+                seconds_since_last_poll = time.monotonic() - self.listener_last_poll_time
+            return {
+                "status": self.listener_health,
+                "error_count": self.listener_error_count,
+                "last_error": self.listener_last_error,
+                "seconds_since_last_poll": seconds_since_last_poll,
+            }
 
     def stop(self):
         if self.listener is not None:

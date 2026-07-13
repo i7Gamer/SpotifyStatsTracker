@@ -840,6 +840,14 @@ class SpotifyDashboardApp:
             else:
                 return jsonify({"current": self.currentVersion, "latest": None})
 
+        @self.app.route("/api/listener-status", methods=["GET"])
+        def listenerStatus():
+            email, username, db = get_current_user_or_redirect()
+            if not email:
+                return jsonify({"error": "Not logged in"}), 401
+            health = db.getListenerHealth()
+            return jsonify(health)
+
         @self.app.route("/", methods=["GET"])
         def dashboard():
             email, username, db = get_current_user_or_redirect()
