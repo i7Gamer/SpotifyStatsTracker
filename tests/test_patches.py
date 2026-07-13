@@ -32,7 +32,9 @@ def setUpModule():
     # (unittest discover imports every test module before running any tests), the
     # real SpotipyFree.Spotify would never get patched for the rest of the process.
     # Re-applying here makes this module correct regardless of import order.
+    from Database.patches import patch_spotapi_user
     patch_spotipy_free()
+    patch_spotapi_user()
 
 
 class TestPatches(unittest.TestCase):
@@ -338,6 +340,99 @@ class TestPatches(unittest.TestCase):
         pool.put(first)
         third = pool.get()
         self.assertIs(third, first)
+
+    def test_patched_user_get_user_info_behavior(self):
+        import spotapi.user
+        from spotapi.exceptions import UserError
+
+        # Create a mock login and mock client
+        mock_login = MagicMock()
+        mock_login.logged_in = True
+
+        # Create user instance
+        user_inst = spotapi.user.User(mock_login)
+
+        # Define mock responses
+        mock_resp_success_json = MagicMock()
+        mock_resp_success_json.status_code = 200
+        mock_resp_success_json.fail = False
+        mock_resp_success_json.response = {"id": "test_user", "email": "test@example.com"}
+        mock_resp_success_json.raw.headers = {"X-Csrf-Token": "test_csrf"}
+
+        mock_login.client.get.return_value = mock_resp_success_json
+
+        # Verify success case
+        res = user_inst.get_user_info()
+        self.assertEqual(res["id"], "test_user")
+        self.assertEqual(user_inst.csrf_token, "test_csrf")
+
+        # Verify non-JSON/non-Mapping success response logs warning and raises UserError
+        mock_resp_non_json = MagicMock()
+        mock_resp_non_json.status_code = 200
+        mock_resp_non_json.fail = False
+        mock_resp_non_json.response = "Invalid HTML / Cloudflare screen"
+        mock_resp_non_json.raw.headers = {}
+        mock_login.client.get.return_value = mock_resp_non_json
+
+        with self.assertLogs("Database.patches", level="WARNING") as log_capture:
+            with self.assertRaises(UserError) as err_ctx:
+                user_inst.get_user_info()
+
+            # Check log and exception message
+            self.assertIn("non-Mapping response", log_capture.output[0])
+            self.assertIn("Invalid JSON", str(err_ctx.exception))
+            self.assertIn("Status: 200", str(err_ctx.exception))
+            self.assertIn("Type: str", str(err_ctx.exception))
+            self.assertIn("Response: Invalid HTML", str(err_ctx.exception))
+
+        # Verify failed request logs warning and raises UserError
+        mock_resp_fail = MagicMock()
+        mock_resp_fail.status_code = 429
+        mock_resp_fail.fail = True
+        mock_resp_fail.error.string = "Too Many Requests"
+        mock_resp_fail.response = "Rate limit hit"
+        mock_resp_fail.raw.headers = {"Retry-After": "60"}
+        mock_login.client.get.return_value = mock_resp_fail
+
+        with self.assertLogs("Database.patches", level="WARNING") as log_capture:
+            with self.assertRaises(UserError) as err_ctx:
+                user_inst.get_user_info()
+
+            self.assertIn("HTTP request failed", log_capture.output[0])
+            self.assertEqual(err_ctx.exception.error, "Too Many Requests")
+
+    def test_patched_user_get_plan_info_behavior(self):
+        import spotapi.user
+        from spotapi.exceptions import UserError
+
+        mock_login = MagicMock()
+        mock_login.logged_in = True
+        user_inst = spotapi.user.User(mock_login)
+
+        # Verify success case
+        mock_resp_success = MagicMock()
+        mock_resp_success.status_code = 200
+        mock_resp_success.fail = False
+        mock_resp_success.response = {"plan": "premium"}
+        mock_login.client.get.return_value = mock_resp_success
+
+        res = user_inst.get_plan_info()
+        self.assertEqual(res["plan"], "premium")
+
+        # Verify non-JSON/non-Mapping success response
+        mock_resp_non_json = MagicMock()
+        mock_resp_non_json.status_code = 200
+        mock_resp_non_json.fail = False
+        mock_resp_non_json.response = "Plan text error"
+        mock_resp_non_json.raw.headers = {}
+        mock_login.client.get.return_value = mock_resp_non_json
+
+        with self.assertLogs("Database.patches", level="WARNING") as log_capture:
+            with self.assertRaises(UserError) as err_ctx:
+                user_inst.get_plan_info()
+
+            self.assertIn("non-Mapping response", log_capture.output[0])
+            self.assertIn("Invalid JSON", str(err_ctx.exception))
 
 
 if __name__ == "__main__":

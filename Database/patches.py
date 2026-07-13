@@ -245,6 +245,94 @@ def patch_spotipy_free() -> bool:
         return False
 
 
+RESPONSE_SNIPPET_MAX_LEN = 1000
+RESPONSE_ERROR_SNIPPET_MAX_LEN = 200
+
+
+def patch_spotapi_user() -> bool:
+    """Patch spotapi.user.User methods to log detailed response information
+    on JSON deserialization failure, helping identify rate-limiting or
+    Cloudflare blocks.
+    """
+    try:
+        import spotapi.user
+        from spotapi.exceptions import UserError
+        from collections.abc import Mapping
+        import logging
+
+        patch_logger = logging.getLogger("Database.patches")
+
+        original_get_user_info = spotapi.user.User.get_user_info
+        original_get_plan_info = spotapi.user.User.get_plan_info
+
+        def patched_get_user_info(self) -> Mapping[str, Any]:
+            url = "https://www.spotify.com/api/account-settings/v1/profile"
+            resp = self.login.client.get(url)
+
+            if resp.fail:
+                patch_logger.warning(
+                    "spotapi.User.get_user_info HTTP request failed: status=%s, error=%s, response=%s, headers=%s",
+                    resp.status_code,
+                    resp.error.string if hasattr(resp.error, "string") else None,
+                    str(resp.response)[:RESPONSE_SNIPPET_MAX_LEN] if resp.response is not None else None,
+                    dict(resp.raw.headers) if hasattr(resp.raw, "headers") else {}
+                )
+                raise UserError("Could not get user info", error=resp.error.string)
+
+            if not isinstance(resp.response, Mapping):
+                patch_logger.warning(
+                    "spotapi.User.get_user_info returned non-Mapping response: status=%s, type=%s, response=%s, headers=%s",
+                    resp.status_code,
+                    type(resp.response).__name__,
+                    str(resp.response)[:RESPONSE_SNIPPET_MAX_LEN] if resp.response is not None else None,
+                    dict(resp.raw.headers) if hasattr(resp.raw, "headers") else {}
+                )
+                raise UserError(
+                    f"Invalid JSON (Status: {resp.status_code}, Type: {type(resp.response).__name__}, "
+                    f"Response: {str(resp.response)[:RESPONSE_ERROR_SNIPPET_MAX_LEN]})"
+                )
+
+            self.csrf_token = resp.raw.headers.get("X-Csrf-Token")
+            return resp.response
+
+        def patched_get_plan_info(self) -> Mapping[str, Any]:
+            url = "https://www.spotify.com/ca-en/api/account/v2/plan/"
+            resp = self.login.client.get(url)
+
+            if resp.fail:
+                patch_logger.warning(
+                    "spotapi.User.get_plan_info HTTP request failed: status=%s, error=%s, response=%s, headers=%s",
+                    resp.status_code,
+                    resp.error.string if hasattr(resp.error, "string") else None,
+                    str(resp.response)[:RESPONSE_SNIPPET_MAX_LEN] if resp.response is not None else None,
+                    dict(resp.raw.headers) if hasattr(resp.raw, "headers") else {}
+                )
+                raise UserError("Could not get user plan info", error=resp.error.string)
+
+            if not isinstance(resp.response, Mapping):
+                patch_logger.warning(
+                    "spotapi.User.get_plan_info returned non-Mapping response: status=%s, type=%s, response=%s, headers=%s",
+                    resp.status_code,
+                    type(resp.response).__name__,
+                    str(resp.response)[:RESPONSE_SNIPPET_MAX_LEN] if resp.response is not None else None,
+                    dict(resp.raw.headers) if hasattr(resp.raw, "headers") else {}
+                )
+                raise UserError(
+                    f"Invalid JSON (Status: {resp.status_code}, Type: {type(resp.response).__name__}, "
+                    f"Response: {str(resp.response)[:RESPONSE_ERROR_SNIPPET_MAX_LEN]})"
+                )
+
+            return resp.response
+
+        spotapi.user.User.get_user_info = patched_get_user_info
+        spotapi.user.User.get_plan_info = patched_get_plan_info
+        return True
+    except (ModuleNotFoundError, ImportError):
+        return False
+
+
 patch_spotipy_free()
+patch_spotapi_user()
+
 
 
