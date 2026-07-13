@@ -4,7 +4,6 @@ import signal
 import threading
 import time
 from contextlib import contextmanager
-from typing import Optional
 from SpotipyFree import Spotify
 from Database.utils import parseError
 
@@ -24,9 +23,10 @@ LISTENER_STALE_TIMEOUT_SECONDS = 30 * 60
 
 AUTH_ERROR_TIMEOUT_SECONDS = 30  #< trigger reconnection immediately for auth errors, not 30 min
 
-REST_API_POLL_INTERVAL_SECONDS = 10 * 60  #< poll /v1/me/player/recently-played every 10 minutes for verification
-REST_API_LIMIT = 50  #< fetch last 50 tracks per API call
-REST_API_BACKOFF_MAX_SECONDS = 3600  #< max backoff time for 429 errors (1 hour)
+# Bounds memory for the missed-track dedup set in _checkConnectStateForMissedTracks -
+# prev_tracks itself is always much shorter than this (it's a rolling local queue
+# history), so this is just a defensive cap, not a tuning knob.
+CONNECT_STATE_MISSED_TRACK_CACHE_SIZE = 50
 
 
 def _is_auth_error(exc: Exception) -> bool:
@@ -43,25 +43,6 @@ def _is_auth_error(exc: Exception) -> bool:
         or re.search(r"invalid\s+.*token", exc_str)
         or re.search(r"session\s+.*expired", exc_str)
     )
-
-
-def _is_rate_limit_error(exc: Exception) -> bool:
-    """Check if exception is a 429 rate-limit error."""
-    return "429" in str(exc)
-
-
-def _get_retry_after_header(exc: Exception) -> Optional[int]:
-    """Extract Retry-After value from error response, in seconds.
-    Returns None if not found or invalid."""
-    exc_str = str(exc)
-    # Try to extract numeric Retry-After value from error message
-    match = re.search(r"Retry-After[:\s]+(\d+)", exc_str, re.IGNORECASE)
-    if match:
-        try:
-            return int(match.group(1))
-        except (ValueError, AttributeError):
-            pass
-    return None
 
 
 @contextmanager
@@ -91,8 +72,7 @@ class Listener:
             self.sp.startRecentlyPlayedListener(refreshInterval=refreshInterval)
         self.recentlyPlayed_Z1 = self.sp.current_user_recently_played()
         self._lastChangeTime = time.monotonic()
-        self._rest_api_thread = None
-        self._rest_api_backoff_seconds = 0  #< current backoff delay for 429 errors
+        self._warnedMissingTrackUris = set()  #< dedupes _checkConnectStateForMissedTracks warnings
 
     def isLoggedIn(self):
         if self.sp.isLoggedIn() == False:
@@ -121,78 +101,65 @@ class Listener:
     def albumName(self, albumId):
         return self.sp.album(albumId).get("name", "Unknown Album")
 
-    def _pollRestApiHistory(self):
-        """Fetch recently-played tracks via REST API (/v1/me/player/recently-played).
-        Returns list of track objects from authoritative REST API, not websocket cache.
-        Raises exception if API call fails."""
+    def _getRecentTrackUrisFromConnectState(self):
+        """Read previously-played track URIs off the same PlayerStatus object
+        SpotipyFree's LastPlayedManger already keeps refreshed every
+        refreshInterval tick (see SpotipyFree/LastPlayed.py) - no extra
+        network call needed.
+
+        Deliberately reads the raw cached `_state` dict rather than calling
+        PlayerStatus.state/.saved_state/.last_songs_played: `.state` makes a
+        fresh connect_device() HTTP request on every access (spotapi's own
+        LastPlayed.py comments that this "often gets rate limited"), and
+        `.saved_state`/`.last_songs_played` are functools.cached_property, so
+        they'd freeze at whatever state existed on first access and never
+        pick up later refreshes.
+
+        Returns None if no connect-state has been captured yet (e.g. the
+        websocket listener hasn't ticked once, or was never started)."""
+        lastPlayedManager = getattr(self.sp, "lastPlayedManager", None)
+        manager = getattr(lastPlayedManager, "manager", None) if lastPlayedManager is not None else None
+        state = getattr(manager, "_state", None) if manager is not None else None
+        if not state:
+            return None
+        return [uri for uri in (track.get("uri") for track in state.get("prev_tracks", [])) if uri]
+
+    def _checkConnectStateForMissedTracks(self) -> None:
+        """Diagnostic cross-check: warn if Spotify's Connect-state queue
+        history (prev_tracks) contains a track we never recorded via
+        current_user_recently_played(). This is a side-channel, not a source
+        of truth - it comes from spotapi's already-running websocket tick, so
+        it costs no extra network calls, but prev_tracks is only the local
+        queue's rolling history (no per-item timestamp), not an account-wide
+        play log - so it can only flag a possible miss, not backfill one.
+
+        Must never raise: a bug here is not allowed to disrupt the primary
+        polling loop."""
         try:
-            # Use spotapi's authenticated client for REST API access to recently-played endpoint
-            client = self.sp.user_auth.client
-            url = "https://api.spotify.com/v1/me/player/recently-played"
-            resp = client.get(url, authenticate=True, params={"limit": REST_API_LIMIT})
-            if resp.fail:
-                raise Exception(f"Failed to fetch recently played: {resp.error.string}")
-            
-            result = resp.response
-            if result and "items" in result:
-                return result["items"]
-            return []
+            recentUris = self._getRecentTrackUrisFromConnectState()
+            if not recentUris:
+                return
+
+            recordedTrackIds = {
+                item.get("track", {}).get("track_id")
+                for item in self.recentlyPlayed_Z1
+                if item.get("track")
+            }
+
+            for uri in recentUris:
+                trackId = uri.removeprefix("spotify:track:")
+                if trackId in recordedTrackIds or uri in self._warnedMissingTrackUris:
+                    continue
+                logger.warning(
+                    "Connect-state queue history shows track %s that was never recorded via "
+                    "current_user_recently_played() - the websocket cache may have missed a play",
+                    uri,
+                )
+                if len(self._warnedMissingTrackUris) >= CONNECT_STATE_MISSED_TRACK_CACHE_SIZE:
+                    self._warnedMissingTrackUris.pop()
+                self._warnedMissingTrackUris.add(uri)
         except Exception as e:
-            logger.error("REST API poll failed: %s", parseError(e))
-            raise
-
-    def _filterNewTracks(self, api_tracks, recorded_played_at_times):
-        """Filter out tracks that are already recorded based on played_at timestamp.
-        Returns only tracks with played_at not in recorded_played_at_times."""
-        new_tracks = []
-        for track in api_tracks:
-            played_at = track.get("played_at")
-            if played_at and played_at not in recorded_played_at_times:
-                new_tracks.append(track)
-        return new_tracks
-
-    def _pollRestApiHistoryLoop(self):
-        """Background thread that periodically polls REST API for verification/cleanup.
-        Implements exponential backoff for 429 rate-limit errors and respects Retry-After headers."""
-        while self.run:
-            try:
-                # Use backoff delay if rate-limited, otherwise use normal interval
-                sleep_duration = self._rest_api_backoff_seconds or REST_API_POLL_INTERVAL_SECONDS
-                time.sleep(sleep_duration)
-                if not self.run:
-                    break
-                # Fetch REST API data - this will be used for verification and cleanup
-                api_tracks = self._pollRestApiHistory()
-                logger.debug("REST API poll returned %d tracks", len(api_tracks))
-                # Success: reset backoff
-                self._rest_api_backoff_seconds = 0
-            except Exception as e:
-                if _is_rate_limit_error(e):
-                    # Handle 429 rate-limit errors with backoff
-                    retry_after = _get_retry_after_header(e)
-                    if retry_after:
-                        # Spotify told us how long to wait
-                        self._rest_api_backoff_seconds = retry_after
-                        logger.warning(
-                            "REST API rate limited (429). Respecting Retry-After: waiting %ds before retry",
-                            retry_after,
-                        )
-                    else:
-                        # Exponential backoff: 2s, 4s, 8s, 16s... up to max (1 hour)
-                        if self._rest_api_backoff_seconds == 0:
-                            self._rest_api_backoff_seconds = 2
-                        else:
-                            self._rest_api_backoff_seconds = min(
-                                self._rest_api_backoff_seconds * 2, REST_API_BACKOFF_MAX_SECONDS
-                            )
-                        logger.warning(
-                            "REST API rate limited (429). Exponential backoff: waiting %ds before retry",
-                            self._rest_api_backoff_seconds,
-                        )
-                else:
-                    # Non-rate-limit errors: log and reset backoff to try again on normal schedule
-                    logger.warning("REST API polling error: %s", parseError(e))
-                    self._rest_api_backoff_seconds = 0
+            logger.debug("Connect-state cross-check failed (non-fatal): %s", parseError(e))
 
     def _checkOnce(self, callback, onStale) -> bool:
         """One iteration of the poll loop. Returns False if the feed was found
@@ -231,6 +198,7 @@ class Listener:
                 if not self._checkOnce(callback, onStale):
                     self.run = False
                     return
+                self._checkConnectStateForMissedTracks()
                 time.sleep(1)
             except Exception as e:
                 if _is_auth_error(e):
@@ -247,13 +215,9 @@ class Listener:
                     time.sleep(30)
 
     def startListener_thread(self, callback, onStale=None):
-        # Start websocket-based listener thread
         thread = threading.Thread(target=self.startListener, args=(callback,), kwargs={"onStale": onStale}, daemon=True)
         thread.start()
-        # Start REST API polling thread for verification/cleanup
-        self._rest_api_thread = threading.Thread(target=self._pollRestApiHistoryLoop, daemon=True)
-        self._rest_api_thread.start()
-    
+
     def stop(self):
         self.run = False
         # Also stop spotapi's own background LastPlayed thread (started via
