@@ -1532,7 +1532,7 @@ html.theme-red {
   position: absolute;
   top: 100%;
   left: 50%;
-  transform: translateX(-50%) translateY(6px);
+  transform: translateX(-50%);
   background: var(--glass-bg);
   backdrop-filter: blur(16px) saturate(180%);
   -webkit-backdrop-filter: blur(16px) saturate(180%);
@@ -1542,6 +1542,17 @@ html.theme-red {
   min-width: 140px;
   box-shadow: 0 10px 25px rgba(0, 0, 0, 0.45);
   z-index: 100;
+}
+
+/* Invisible bridge to prevent hover loss across gaps */
+.dropdown-content::after {
+  content: '';
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  right: 0;
+  height: 12px;
+  background: transparent;
 }
 
 .dropdown-content::before {
@@ -1603,12 +1614,8 @@ html.theme-red {
     display: none;
   }
 
-  .nav-item-dropdown:hover .dropdown-content {
-    display: none;
-  }
-
   .dropdown-content {
-    display: block;
+    display: block !important;
     position: static;
     transform: none;
     background: transparent;
@@ -1618,6 +1625,7 @@ html.theme-red {
     min-width: 0;
   }
 
+  .dropdown-content::after,
   .dropdown-content::before {
     display: none;
   }
