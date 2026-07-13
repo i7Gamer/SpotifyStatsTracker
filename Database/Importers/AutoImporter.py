@@ -15,6 +15,7 @@ except ModuleNotFoundError:
 class Watchdog:
     def __init__(self):
         self.run = True
+        self._stop_event = threading.Event()
 
     def watchFolder_blocking(self, pathToWatch, callback, checkInterval=5, callbackInitialFiles=True):
         print(f"Monitoring {pathToWatch} for new files (Polling)...")
@@ -31,8 +32,10 @@ class Watchdog:
             print(f"Error: The directory {pathToWatch} does not exist.")
             return
         try:
-            while self.run:
-                time.sleep(checkInterval)
+            while self.run and not self._stop_event.is_set():
+                self._stop_event.wait(checkInterval)
+                if not self.run or self._stop_event.is_set():
+                    break
                 filesAfter = {f for f in os.listdir(pathToWatch) if os.path.isfile(os.path.join(pathToWatch, f))}
                 filesAdded = filesAfter - filesBefore
                 
@@ -48,10 +51,19 @@ class Watchdog:
             print(f"\nStopping monitor... {parseError(e)}")
 
     def watchFolder(self, pathToWatch, callback, checkInterval=5):
-        threading.Thread(target=self.watchFolder_blocking, args=(pathToWatch, callback, checkInterval)).start()
+        self._stop_event.clear()
+        self.thread = threading.Thread(
+            target=self.watchFolder_blocking,
+            args=(pathToWatch, callback, checkInterval),
+            daemon=True
+        )
+        self.thread.start()
     
     def stop(self):
+        self._stop_event.set()
         self.run = False
+        if hasattr(self, "thread") and self.thread.is_alive():
+            self.thread.join(timeout=2)
 
 class AutoImporter:
     def __init__(self, folderPath, importCallback, pollInterval=5, keyword=None):

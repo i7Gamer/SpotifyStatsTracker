@@ -113,6 +113,7 @@ def _suppress_signal_in_thread():
 class Listener:
     def __init__(self, cookiesFile, refreshInterval=6, email=None, get_credentials=None):
         self.run = False
+        self._stop_event = threading.Event()
         self.email = email  #< store expected email for validation
         self._authenticated_user_id = None  #< cache spotify user id for validation
         self.get_credentials = get_credentials
@@ -289,14 +290,14 @@ class Listener:
 
     def startListener(self, callback, onStale=None, onWebApiSnapshot=None):
         self.run = True
-        while self.run:
+        while self.run and not self._stop_event.is_set():
             try:
                 if not self._checkOnce(callback, onStale):
                     self.run = False
                     return
                 self._checkConnectStateForMissedTracks()
                 self._checkWebApiBackfill(callback, onWebApiSnapshot=onWebApiSnapshot)
-                time.sleep(1)
+                self._stop_event.wait(1)
             except Exception as e:
                 if _is_auth_error(e):
                     logger.warning("Auth error detected, triggering immediate reconnection: %s", parseError(e))
@@ -309,7 +310,7 @@ class Listener:
                     return
                 else:
                     logger.error("Error in listener: %s", parseError(e))
-                    time.sleep(30)
+                    self._stop_event.wait(30)
 
     def _checkWebApiBackfill(self, callback, onWebApiSnapshot=None) -> None:
         if not self.get_credentials:
@@ -390,15 +391,19 @@ class Listener:
             logger.error("Error during Web API backfill: %s", parseError(e))
 
     def startListener_thread(self, callback, onStale=None, onWebApiSnapshot=None):
-        thread = threading.Thread(
+        self._stop_event.clear()
+        self.thread = threading.Thread(
             target=self.startListener,
             args=(callback,),
             kwargs={"onStale": onStale, "onWebApiSnapshot": onWebApiSnapshot},
             daemon=True,
         )
-        thread.start()
+        self.thread.start()
 
     def stop(self):
+        stop_event = getattr(self, "_stop_event", None)
+        if stop_event is not None:
+            stop_event.set()
         self.run = False
         # Also stop spotapi's own background LastPlayed thread (started via
         # startRecentlyPlayedListener). Left running, it can hit a rate-limited or
@@ -411,3 +416,7 @@ class Listener:
             thread = getattr(lastPlayedManager, "thread", None)
             if thread is not None and thread.is_alive():
                 thread.join(timeout=LISTENER_STOP_JOIN_TIMEOUT_SECONDS)
+
+        # Bounded join on the listener thread itself to wait for clean exit
+        if hasattr(self, "thread") and self.thread.is_alive():
+            self.thread.join(timeout=LISTENER_STOP_JOIN_TIMEOUT_SECONDS)

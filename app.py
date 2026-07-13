@@ -92,6 +92,7 @@ class SpotifyDashboardApp:
             self.currentVersion = "0.0.0"
         self.latestVersion = None
         self._version_lock = threading.Lock()
+        self._stop_event = threading.Event()
         self.startVersionCheck_thread()
         self.checkLogin_thread()
 
@@ -250,9 +251,9 @@ class SpotifyDashboardApp:
                 logger.error("Error initializing user %s: %s", username, e)
     
     def _checkLoginLoop(self):
-        while True:
+        while not self._stop_event.is_set():
             self._ensureAllUsersLogin()
-            time.sleep(60 * 5)  # Check every 5 minutes
+            self._stop_event.wait(60 * 5)  # Check every 5 minutes
 
     def startVersionCheck_thread(self):
         thread = threading.Thread(target=self._versionCheckLoop, daemon=True)
@@ -261,7 +262,7 @@ class SpotifyDashboardApp:
     def _versionCheckLoop(self):
         # Check version from GitHub at startup and then every hour.
         url = "https://raw.githubusercontent.com/i7Gamer/SpotifyStatsTracker/main/Database/VERSION"
-        while True:
+        while not self._stop_event.is_set():
             try:
                 resp = requests.get(url, timeout=6)
                 if resp.status_code == 200:
@@ -278,7 +279,7 @@ class SpotifyDashboardApp:
             except Exception:
                 pass
 
-            time.sleep(60 * 60)
+            self._stop_event.wait(60 * 60)
 
     def _getPercentPlayedText(self, item, sortBy, totalPlays, totalMs):
         if sortBy == "plays":
@@ -1492,6 +1493,7 @@ class SpotifyDashboardApp:
             )
 
     def shutdown(self):
+        self._stop_event.set()
         with self._db_lock:
             for db in self.user_databases.values():
                 try:
