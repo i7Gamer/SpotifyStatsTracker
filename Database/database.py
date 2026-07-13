@@ -542,11 +542,34 @@ class Database:
 
             for track in stagedTracks.values():
                 self.repo.upsertTrack(track, created_reason=f"history_import (user: {self.user})")
+
+            insertedCount = 0
             for entry in stagedPlays:
-                self.repo.insertPlay(self.user, entry["id"], entry["playedAt"], entry["timePlayed"], entry.get("playedFrom"),
-                                      created_reason=f"history_import (user: {self.user})")
+                track_id = entry["id"]
+                played_at = entry["playedAt"]
+                time_played = entry["timePlayed"]
+                played_from = entry.get("playedFrom")
+
+                # Skip if a play for this track already exists within (duration + 60s) tolerance,
+                # same logic as API backfill to handle potential overlap with backfilled data
+                # where Spotify's played_at can be ambiguous (start or end time).
+                track = stagedTracks.get(track_id)
+                durationSeconds = (track.get("duration_ms", 0) or 0) // 1000 if track else 0
+                tolerance = durationSeconds + self.BACKFILL_INSERT_GUARD_EXTRA_SECONDS
+                if self.repo.hasPlayNearTime(self.user, track_id, played_at, tolerance):
+                    logger.info(
+                        "Skipping import play for track %s: an existing play already exists "
+                        "within %ds (duration+60s) of played_at=%s",
+                        track_id, tolerance, played_at,
+                    )
+                    continue
+
+                if self.repo.insertPlay(self.user, track_id, played_at, time_played, played_from,
+                                        created_reason=f"history_import (user: {self.user})"):
+                    insertedCount += 1
+
             self.repo.commit()
-            logger.info("Imported %d tracks and %d plays for user %s", len(stagedTracks), len(stagedPlays), self.user)
+            logger.info("Imported %d tracks and %d plays for user %s", len(stagedTracks), insertedCount, self.user)
 
             status = "complete" if isFinalFile else "running"
             self.writeProgress(status, total, total, f"{progressPrefix}Import complete")
