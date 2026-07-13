@@ -157,6 +157,8 @@ class Listener:
                 return False
             return True
         except Exception as e:
+            if not _is_auth_error(e):
+                raise
             logger.warning("Could not validate current user: %s", parseError(e))
             return False
 

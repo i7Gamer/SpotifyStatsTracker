@@ -132,6 +132,32 @@ class TestAuthErrorDetection(unittest.TestCase):
         self.assertFalse(_is_auth_error(exc))
 
 
+class TestValidateCurrentUser(unittest.TestCase):
+    def test_valid_user_returns_true(self):
+        listener = _bareListener()
+        listener._authenticated_user_id = "user1"
+        listener.sp.current_user.return_value = {"id": "user1"}
+        self.assertTrue(listener._validateCurrentUser())
+
+    def test_mismatched_user_returns_false(self):
+        listener = _bareListener()
+        listener._authenticated_user_id = "user1"
+        listener.sp.current_user.return_value = {"id": "user2"}
+        self.assertFalse(listener._validateCurrentUser())
+
+    def test_auth_error_returns_false_and_does_not_raise(self):
+        listener = _bareListener()
+        listener._authenticated_user_id = "user1"
+        listener.sp.current_user.side_effect = Exception("HTTP 401 Unauthorized")
+        self.assertFalse(listener._validateCurrentUser())
+
+    def test_transient_error_bubbles_up(self):
+        listener = _bareListener()
+        listener._authenticated_user_id = "user1"
+        listener.sp.current_user.side_effect = Exception("HTTP 503 Service Unavailable")
+        with self.assertRaises(Exception) as ctx:
+            listener._validateCurrentUser()
+        self.assertIn("503", str(ctx.exception))
 
 
 if __name__ == "__main__":
