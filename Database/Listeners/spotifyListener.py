@@ -45,6 +45,8 @@ RATE_LIMIT_ERROR_BACKOFF_SECONDS = 60  #< backoff for 429 rate limit errors from
 # history), so this is just a defensive cap, not a tuning knob.
 CONNECT_STATE_MISSED_TRACK_CACHE_SIZE = 50
 
+WEB_API_POLL_INTERVAL_SECONDS = 15 * 60  #< Query Web API recently-played backfill every 15 minutes
+
 
 def _is_auth_error(exc: Exception) -> bool:
     """Check if an exception is an authentication-related error (expired/invalid
@@ -400,8 +402,8 @@ class Listener:
             return
 
         now = time.monotonic()
-        # Query every 5 minutes (300 seconds)
-        if now - getattr(self, "_lastWebApiPollTime", 0) < 300:
+        # Query every 15 minutes
+        if now - getattr(self, "_lastWebApiPollTime", 0) < WEB_API_POLL_INTERVAL_SECONDS:
             return
 
         self._lastWebApiPollTime = now
