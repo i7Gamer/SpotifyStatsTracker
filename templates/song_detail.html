@@ -3,7 +3,11 @@
   <section class="hero">
     <div class="hero-content">
       <h1>{{ song.get('name', '') }}</h1>
-      <p>{{ song.get('artistsText', '') }}</p>
+      <p>
+        {% for artist in song.get('artists', []) %}
+          <a href="{{ url_for('artistDetailPage', artist_id=artist.get('id')) }}">{{ artist.get('name', '') }}</a>{% if not loop.last %}, {% endif %}
+        {% endfor %}
+      </p>
     </div>
   </section>
 

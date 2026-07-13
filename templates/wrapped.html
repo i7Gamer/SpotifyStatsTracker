@@ -56,8 +56,10 @@
     </article>
     <article class="track-summary-card">
       <h3>Peak Day</h3>
-      <p class="summary-value">{{ peakListeningTime[0] if peakListeningTime else 'N/A' }}</p>
-      <p class="summary-subtitle">{{ peakListeningTime[1] if peakListeningTime else '' }} plays</p>
+      <div class="peak-day-container">
+        <span class="summary-value">{{ peakListeningTime[0] if peakListeningTime else 'N/A' }}</span>
+        <span class="summary-subtitle">{{ peakListeningTime[1] if peakListeningTime else '' }} plays</span>
+      </div>
     </article>
     <article class="track-summary-card">
       <h3>Unique Songs</h3>
