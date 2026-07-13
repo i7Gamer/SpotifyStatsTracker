@@ -5,7 +5,7 @@ import threading
 import time
 from contextlib import contextmanager
 from SpotipyFree import Spotify
-from Database.utils import parseError, timeToInt
+from Database.utils import parseError, timeToInt, convertToDatetime
 
 # Suppress ConnectionClosedOK during shutdown - it's not an error, just the websocket closing normally
 import websockets.exceptions
@@ -390,7 +390,7 @@ class Listener:
                 played_at_str = item.get("played_at")
                 if not played_at_str:
                     continue
-                
+
                 timestamp = timeToInt(played_at_str)
                 # Check if we already recorded this play (matching within a 2-second window to handle minor precision diffs)
                 is_recorded = any(abs(timestamp - recorded_t) <= 2 for recorded_t in recorded_timestamps)
@@ -398,17 +398,23 @@ class Listener:
                     track = item.get("track")
                     if not track:
                         continue
-                    
-                    # Estimate ms_played as the full track duration
+
+                    # Web API's played_at is the END time (when track stopped).
+                    # Calculate the START time by subtracting the track duration.
                     duration_ms = track.get("duration_ms", 0)
-                    
+                    start_timestamp = timestamp - (duration_ms // 1000)
+
+                    # Convert start_timestamp back to ISO format
+                    start_dt = convertToDatetime(start_timestamp)
+                    start_time_iso = start_dt.isoformat(timespec='seconds').replace('+00:00', 'Z')
+
                     context = item.get("context") or {}
-                    
+
                     # Convert to the format expected by callback:
-                    # {"track": track, "played_at": played_at_str, "ms_played": duration_ms, "context": context}
+                    # {"track": track, "played_at": start_time, "ms_played": duration_ms, "context": context}
                     missed_items.append({
                         "track": track,
-                        "played_at": played_at_str,
+                        "played_at": start_time_iso,
                         "ms_played": duration_ms,
                         "context": context
                     })

@@ -156,7 +156,10 @@ class ApiBackfillTestCase(unittest.TestCase):
         backfilled = callback.call_args[0][0]
         self.assertEqual(len(backfilled), 1)
         self.assertEqual(backfilled[0]["track"]["id"], "track_new")
-        self.assertEqual(backfilled[0]["played_at"], "2026-07-13T10:05:00Z")
+        # Web API played_at is the END time (10:05:00Z), but we store the START time
+        # Track duration is 180000 ms = 180 seconds = 3 minutes
+        # So START time = 10:05:00 - 3min = 10:02:00
+        self.assertEqual(backfilled[0]["played_at"], "2026-07-13T10:02:00Z")
         self.assertEqual(backfilled[0]["ms_played"], 180000)
 
         # Confirm recentlyPlayed_Z1 was updated
