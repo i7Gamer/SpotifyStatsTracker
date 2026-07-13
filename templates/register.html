@@ -12,7 +12,7 @@
     {% endif %}
 
     <form class="login-form" method="post" action="/register">
-      {{ csrf_token() }}
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
       <div class="form-group">
         <label for="registerEmail">Email</label>
         <input type="email" id="registerEmail" name="email" value="{{ email or '' }}" required autofocus>

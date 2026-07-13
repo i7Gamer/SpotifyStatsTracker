@@ -12,7 +12,7 @@
       <p class="error">That upload is too large (max {{ maxUploadMb }} MB total per request). Try uploading fewer files at once.</p>
     {% endif %}
     <form id="import-form" action="{{ url_for('importHistory') }}" method="post" enctype="multipart/form-data">
-      {{ csrf_token() }}
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
       <label for="history_file">Spotify history JSON file(s)</label>
       <div class="import-input-wrapper">
         <input id="history_file" name="history_file" type="file" accept=".json, .csv" multiple required />
