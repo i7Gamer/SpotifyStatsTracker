@@ -855,8 +855,8 @@ progress::-moz-progress-bar {
   gap: 20px;
   margin-bottom: 24px;
   padding: 16px 20px;
-  background: color-mix(in srgb, var(--surface), #fff 5%);
-  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface), var(--accent) 4%);
+  border: 1px solid color-mix(in srgb, var(--border), var(--accent) 15%);
   border-radius: 14px;
   flex-wrap: wrap;
   color: var(--text);
