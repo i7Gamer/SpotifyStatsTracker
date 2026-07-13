@@ -377,6 +377,19 @@ class Repository:
         )
         return cur.rowcount > 0
 
+    def hasPlayNearTime(self, username: str, trackId: str, playedAt: float, toleranceSeconds: float) -> bool:
+        """True if a play for this exact track already exists for this user
+        within toleranceSeconds of playedAt (inclusive both directions).
+        Reuses idx_plays_user_track. See Database.appendTrackData for why this
+        is a wide, defense-in-depth guard applied only to Web API backfill
+        inserts, not the live listener's own insert path."""
+        conn = self._conn()
+        row = conn.execute(
+            "SELECT 1 FROM plays WHERE username=? AND track_id=? AND played_at BETWEEN ? AND ? LIMIT 1",
+            (username, trackId, playedAt - toleranceSeconds, playedAt + toleranceSeconds),
+        ).fetchone()
+        return row is not None
+
     def deleteZeroDurationPlays(self) -> int:
         """Remove plays with zero (or negative) recorded listening time, across
         every user - leftover skip/error events that older importer versions
@@ -432,20 +445,6 @@ class Repository:
             (username, timestamp),
         )
         return cur.rowcount
-
-    def getPlaysByTrackIds(self, username: str, track_ids: list[str]) -> list[dict]:
-        """Get all plays for this user with track_ids in the given list.
-        Used for cleanup to find which tracks have any recent plays."""
-        if not track_ids:
-            return []
-        conn = self._conn()
-        placeholders = ",".join("?" * len(track_ids))
-        rows = conn.execute(
-            f"SELECT track_id, played_at, time_played, played_from FROM plays "
-            f"WHERE username=? AND track_id IN ({placeholders}) ORDER BY played_at DESC",
-            (username, *track_ids),
-        ).fetchall()
-        return [self._playRowToEntry(r) for r in rows]
 
     @staticmethod
     def _playRowToEntry(row) -> dict:

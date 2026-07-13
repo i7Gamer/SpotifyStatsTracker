@@ -1,4 +1,4 @@
-import datetime
+import collections
 import logging
 import re
 import signal
@@ -6,7 +6,7 @@ import threading
 import time
 from contextlib import contextmanager
 from SpotipyFree import Spotify
-from Database.utils import parseError, timeToInt, fromtimestamp
+from Database.utils import parseError, timeToInt
 
 # Suppress ConnectionClosedOK during shutdown - it's not an error, just the websocket closing normally
 import websockets.exceptions
@@ -155,8 +155,14 @@ class Listener:
             logger.warning("Could not verify authenticated user during listener init: %s", parseError(e))
 
         self.recentlyPlayed_Z1 = self.sp.current_user_recently_played()
+        self.webApiRecentlyPlayed_Z1 = []  #< _checkWebApiBackfill's own dedup bookkeeping, kept
+                                            #  separate from recentlyPlayed_Z1 (live-listener-owned,
+                                            #  different dict shape) so the two polling loops never
+                                            #  stomp on each other's cache
         self._lastChangeTime = time.monotonic()
-        self._warnedMissingTrackUris = set()  #< dedupes _checkConnectStateForMissedTracks warnings
+        self._warnedMissingTrackUris = collections.OrderedDict()  #< dedupes _checkConnectStateForMissedTracks
+                                                                   #  warnings; OrderedDict (not set) so
+                                                                   #  eviction can target the oldest entry
 
     def isLoggedIn(self):
         if self.sp.isLoggedIn() == False:
@@ -271,8 +277,10 @@ class Listener:
                 )
                 for uri in missingUris:
                     if len(self._warnedMissingTrackUris) >= CONNECT_STATE_MISSED_TRACK_CACHE_SIZE:
-                        self._warnedMissingTrackUris.pop()
-                    self._warnedMissingTrackUris.add(uri)
+                        self._warnedMissingTrackUris.popitem(last=False)  #< evict oldest (FIFO) -
+                                                                           #  set.pop() would remove
+                                                                           #  an arbitrary element
+                    self._warnedMissingTrackUris[uri] = None
         except Exception as e:
             logger.debug("Connect-state cross-check failed (non-fatal): %s", parseError(e))
 
@@ -381,19 +389,23 @@ class Listener:
             if not items:
                 return
 
-            # Compare Web API items against recentlyPlayed_Z1 to see if we missed any
+            # Compare Web API items against everything recorded so far - both
+            # the live listener's own cache AND this function's own cache from
+            # a previous poll (kept separate from recentlyPlayed_Z1, which is
+            # exclusively owned by the live-listener path - see webApiRecentlyPlayed_Z1's
+            # own comment in __init__).
             recorded_timestamps = {
                 timeToInt(item.get("played_at"))
-                for item in self.recentlyPlayed_Z1
+                for item in self.recentlyPlayed_Z1 + self.webApiRecentlyPlayed_Z1
                 if item.get("played_at")
             }
 
-            # Pairs of (missed_item, end_time_iso) built in lockstep so each
-            # missed item stays tied to its OWN source API item's END time -
-            # no post-hoc re-matching by track ID, which breaks when the same
-            # track appears more than once in `items` (all copies would
-            # resolve to whichever occurrence next() finds first).
-            missed_pairs = []
+            # Built directly from `items` in one pass so each missed item stays
+            # tied to its OWN source API item's played_at - no post-hoc
+            # re-matching by track ID, which breaks when the same track
+            # appears more than once in `items` (all copies would resolve to
+            # whichever occurrence next() finds first).
+            missed_items = []
 
             for item in items:
                 played_at_str = item.get("played_at")
@@ -404,51 +416,49 @@ class Listener:
 
                 timestamp = timeToInt(played_at_str)
                 duration_ms = track.get("duration_ms", 0)
+                duration_s = duration_ms // 1000
 
-                # Web API's played_at is the END time (when track stopped).
-                # Calculate the START time by subtracting the track duration.
-                start_timestamp = timestamp - (duration_ms // 1000)
-
-                # Convert start_timestamp back to a UTC "Z"-suffixed ISO string,
-                # matching the Web API's own format regardless of the app's
-                # configured local TZ (convertToDatetime would normalize to
-                # that local TZ instead, which is wrong here).
-                start_dt = fromtimestamp(start_timestamp, tz=datetime.timezone.utc)
-                start_time_iso = start_dt.isoformat(timespec='seconds').replace('+00:00', 'Z')
-
-                # Check if we already recorded this play (matching within a 2-second window to handle minor precision diffs)
-                is_recorded = any(abs(timestamp - recorded_t) <= 2 for recorded_t in recorded_timestamps)
+                # Spotify's Web API documents played_at only as "the date and
+                # time the track was played" - it does NOT specify start vs
+                # end, and Spotify's own developer community has confirmed the
+                # same endpoint can report either for different entries (see
+                # spotify/web-api#1083). So this can't assume one direction:
+                # check both interpretations - timestamp itself already being
+                # a start time, or timestamp being an end time duration_s
+                # seconds after the true start - before deciding this play is
+                # genuinely missing.
+                is_recorded = any(
+                    abs(timestamp - recorded_t) <= 2 or abs(timestamp - duration_s - recorded_t) <= 2
+                    for recorded_t in recorded_timestamps
+                )
                 if not is_recorded:
                     context = item.get("context") or {}
 
-                    # Convert to the format expected by callback:
-                    # {"track": track, "played_at": start_time, "ms_played": duration_ms, "context": context}
-                    missed_pairs.append((
-                        {
-                            "track": track,
-                            "played_at": start_time_iso,
-                            "ms_played": duration_ms,
-                            "context": context
-                        },
-                        played_at_str,  # this item's own END time, for caching below
-                    ))
+                    # Store played_at as given, untouched - see comment above
+                    # on why we no longer subtract duration_s here.
+                    missed_items.append({
+                        "track": track,
+                        "played_at": played_at_str,
+                        "ms_played": duration_ms,
+                        "context": context
+                    })
 
-            if missed_pairs:
-                logger.info("Backfilling %d plays from Web API recently-played history", len(missed_pairs))
+            if missed_items:
+                logger.info("Backfilling %d plays from Web API recently-played history", len(missed_items))
                 # Mark these as backfilled so the database can record the source
-                for missed_item, _ in missed_pairs:
+                for missed_item in missed_items:
                     missed_item["_source"] = "web_api_backfill"
                 # Pass them to callback (it expects a list, newest plays last)
                 # Web API returns newest plays first, so reverse to maintain cron order
-                missed_pairs.reverse()
-                callback([missed_item for missed_item, _ in missed_pairs])
+                missed_items.reverse()
+                callback(missed_items)
 
-            # Replace recentlyPlayed_Z1 with this batch (translated to the local
-            # played_at/track/ms_played/context shape, END times as returned by
-            # the API) so it holds exactly the last batch checked - only plays
-            # not in this batch get treated as new/missed on the next run.
-            # Entries missing a track ID or played_at are skipped entirely.
-            self.recentlyPlayed_Z1 = [
+            # Replace webApiRecentlyPlayed_Z1 (NOT recentlyPlayed_Z1 - that
+            # cache belongs to the live listener) with this batch so it holds
+            # exactly the last batch checked - only plays not in this batch
+            # get treated as new/missed on the next run. Entries missing a
+            # track ID or played_at are skipped entirely.
+            self.webApiRecentlyPlayed_Z1 = [
                 {
                     "track": item.get("track"),
                     "played_at": item.get("played_at"),

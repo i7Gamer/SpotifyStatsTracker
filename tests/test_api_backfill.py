@@ -150,33 +150,38 @@ class ApiBackfillTestCase(unittest.TestCase):
         listener._lastWebApiPollTime = 0
         
         listener._checkWebApiBackfill(callback)
-        
+
         # Should have detected and backfilled the play for "track_new"
         callback.assert_called_once()
         backfilled = callback.call_args[0][0]
         self.assertEqual(len(backfilled), 1)
         self.assertEqual(backfilled[0]["track"]["id"], "track_new")
-        # Web API played_at is the END time (10:05:00Z), but we store the START time
-        # Track duration is 180000 ms = 180 seconds = 3 minutes
-        # So START time = 10:05:00 - 3min = 10:02:00
-        self.assertEqual(backfilled[0]["played_at"], "2026-07-13T10:02:00Z")
+        # played_at is stored exactly as the Web API returned it, with no
+        # duration subtraction - Spotify's played_at semantics are documented
+        # as inconsistent about start vs end time (spotify/web-api#1083), so
+        # the code no longer bets on one interpretation for storage.
+        self.assertEqual(backfilled[0]["played_at"], "2026-07-13T10:05:00Z")
         self.assertEqual(backfilled[0]["ms_played"], 180000)
 
-        # recentlyPlayed_Z1 is replaced with this batch (not appended onto the
-        # prior listener-sourced entry) so it holds exactly the last batch
-        # checked, in the API's own order (newest first) with each entry's
-        # own correct END time preserved.
-        self.assertEqual(len(listener.recentlyPlayed_Z1), 2)
-        self.assertEqual(listener.recentlyPlayed_Z1[0]["track"]["id"], "track_new")
-        self.assertEqual(listener.recentlyPlayed_Z1[0]["played_at"], "2026-07-13T10:05:00Z")
-        self.assertEqual(listener.recentlyPlayed_Z1[1]["track"]["id"], "track_recorded")
-        self.assertEqual(listener.recentlyPlayed_Z1[1]["played_at"], "2026-07-13T10:00:00Z")
+        # recentlyPlayed_Z1 (the live listener's own cache) is untouched by
+        # _checkWebApiBackfill - it stays exactly as the listener set it.
+        self.assertEqual(len(listener.recentlyPlayed_Z1), 1)
+        self.assertEqual(listener.recentlyPlayed_Z1[0]["track"]["id"], "track_recorded")
+
+        # webApiRecentlyPlayed_Z1 (this function's OWN cache) is replaced with
+        # this batch, in the API's own order (newest first), each entry
+        # keeping its own played_at unchanged.
+        self.assertEqual(len(listener.webApiRecentlyPlayed_Z1), 2)
+        self.assertEqual(listener.webApiRecentlyPlayed_Z1[0]["track"]["id"], "track_new")
+        self.assertEqual(listener.webApiRecentlyPlayed_Z1[0]["played_at"], "2026-07-13T10:05:00Z")
+        self.assertEqual(listener.webApiRecentlyPlayed_Z1[1]["track"]["id"], "track_recorded")
+        self.assertEqual(listener.webApiRecentlyPlayed_Z1[1]["played_at"], "2026-07-13T10:00:00Z")
 
     @patch("Database.Listeners.spotifyListener._fetch_recently_played_from_web_api")
     @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token")
-    def test_check_web_api_backfill_duplicate_track_gets_own_end_time(self, mock_refresh, mock_fetch):
+    def test_check_web_api_backfill_duplicate_track_gets_own_timestamp(self, mock_refresh, mock_fetch):
         """Same track played twice at different times must each be cached with
-        its OWN end time, not both collapsed onto whichever occurrence a
+        its OWN played_at, not both collapsed onto whichever occurrence a
         track-ID-only lookup finds first."""
         mock_refresh.return_value = "token123"
         mock_fetch.return_value = [
@@ -201,16 +206,16 @@ class ApiBackfillTestCase(unittest.TestCase):
         backfilled = callback.call_args[0][0]
         self.assertEqual(len(backfilled), 2)
 
-        # recentlyPlayed_Z1 must retain each occurrence's own end time, not
-        # duplicate the same timestamp for both.
-        end_times = {item["played_at"] for item in listener.recentlyPlayed_Z1}
-        self.assertEqual(end_times, {"2026-07-13T10:10:00Z", "2026-07-13T10:05:00Z"})
+        # webApiRecentlyPlayed_Z1 must retain each occurrence's own played_at,
+        # not duplicate the same timestamp for both.
+        played_ats = {item["played_at"] for item in listener.webApiRecentlyPlayed_Z1}
+        self.assertEqual(played_ats, {"2026-07-13T10:10:00Z", "2026-07-13T10:05:00Z"})
 
     @patch("Database.Listeners.spotifyListener._fetch_recently_played_from_web_api")
     @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token")
     def test_check_web_api_backfill_skips_items_missing_track_id_or_played_at(self, mock_refresh, mock_fetch):
         """Items missing a track ID or played_at must be skipped from both
-        missed-item detection and the recentlyPlayed_Z1 cache, not cached
+        missed-item detection and the webApiRecentlyPlayed_Z1 cache, not cached
         with a None/missing value that would corrupt later comparisons."""
         mock_refresh.return_value = "token123"
         mock_fetch.return_value = [
@@ -239,8 +244,104 @@ class ApiBackfillTestCase(unittest.TestCase):
         self.assertEqual(len(backfilled), 1)
         self.assertEqual(backfilled[0]["track"]["id"], "track_ok")
 
-        self.assertEqual(len(listener.recentlyPlayed_Z1), 1)
-        self.assertEqual(listener.recentlyPlayed_Z1[0]["track"]["id"], "track_ok")
+        self.assertEqual(len(listener.webApiRecentlyPlayed_Z1), 1)
+        self.assertEqual(listener.webApiRecentlyPlayed_Z1[0]["track"]["id"], "track_ok")
+
+    @patch("Database.Listeners.spotifyListener._fetch_recently_played_from_web_api")
+    @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token")
+    def test_check_web_api_backfill_does_not_resurface_play_reported_as_start_time(self, mock_refresh, mock_fetch):
+        """Regression test for the root-cause bug: the live listener already
+        recorded this exact play (true start time). The Web API reports the
+        SAME track with played_at equal to that same true start time (i.e.
+        Spotify reported it as a start time this time). Must NOT be
+        backfilled - the old code compared this against a duration-shifted
+        value and would have missed the match, causing a duplicate insert."""
+        mock_refresh.return_value = "token123"
+        mock_fetch.return_value = [
+            {"track": {"id": "track_x", "duration_ms": 180000}, "played_at": "2026-07-13T10:00:00Z"},
+        ]
+
+        get_credentials = MagicMock(return_value={
+            "client_id": "cid", "client_secret": "cs", "refresh_token": "rt",
+        })
+
+        with patch("Database.Listeners.spotifyListener.Spotify") as mock_spotify_cls:
+            mock_sp = MagicMock()
+            mock_sp.current_user_recently_played.return_value = [
+                {"track": {"id": "track_x"}, "played_at": "2026-07-13T10:00:00Z", "ms_played": 180000}
+            ]
+            mock_spotify_cls.return_value = mock_sp
+            listener = Listener("dummy_cookie", email="alice@example.com", get_credentials=get_credentials)
+
+        callback = MagicMock()
+        listener._lastWebApiPollTime = 0
+        listener._checkWebApiBackfill(callback)
+
+        callback.assert_not_called()
+
+    @patch("Database.Listeners.spotifyListener._fetch_recently_played_from_web_api")
+    @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token")
+    def test_check_web_api_backfill_does_not_resurface_play_reported_as_end_time(self, mock_refresh, mock_fetch):
+        """Same as above, but this time the Web API reports played_at as an
+        END time (true_start + duration) for the SAME already-recorded play -
+        Spotify is documented as inconsistent about which it reports
+        (spotify/web-api#1083), so is_recorded must check both
+        interpretations, not just a direct match."""
+        mock_refresh.return_value = "token123"
+        true_start = "2026-07-13T10:00:00Z"
+        end_time = "2026-07-13T10:03:00Z"  # true_start + 180s duration
+        mock_fetch.return_value = [
+            {"track": {"id": "track_x", "duration_ms": 180000}, "played_at": end_time},
+        ]
+
+        get_credentials = MagicMock(return_value={
+            "client_id": "cid", "client_secret": "cs", "refresh_token": "rt",
+        })
+
+        with patch("Database.Listeners.spotifyListener.Spotify") as mock_spotify_cls:
+            mock_sp = MagicMock()
+            mock_sp.current_user_recently_played.return_value = [
+                {"track": {"id": "track_x"}, "played_at": true_start, "ms_played": 180000}
+            ]
+            mock_spotify_cls.return_value = mock_sp
+            listener = Listener("dummy_cookie", email="alice@example.com", get_credentials=get_credentials)
+
+        callback = MagicMock()
+        listener._lastWebApiPollTime = 0
+        listener._checkWebApiBackfill(callback)
+
+        callback.assert_not_called()
+
+    @patch("Database.Listeners.spotifyListener._fetch_recently_played_from_web_api")
+    @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token")
+    def test_check_web_api_backfill_honors_its_own_previous_batch(self, mock_refresh, mock_fetch):
+        """An item already surfaced by a PREVIOUS _checkWebApiBackfill poll
+        (cached in webApiRecentlyPlayed_Z1) must not be re-treated as missed
+        on a later poll, even if the live listener's own cache never saw it."""
+        mock_refresh.return_value = "token123"
+        mock_fetch.return_value = [
+            {"track": {"id": "track_y", "duration_ms": 180000}, "played_at": "2026-07-13T10:00:00Z"},
+        ]
+
+        get_credentials = MagicMock(return_value={
+            "client_id": "cid", "client_secret": "cs", "refresh_token": "rt",
+        })
+
+        with patch("Database.Listeners.spotifyListener.Spotify") as mock_spotify_cls:
+            mock_sp = MagicMock()
+            mock_sp.current_user_recently_played.return_value = []
+            mock_spotify_cls.return_value = mock_sp
+            listener = Listener("dummy_cookie", email="alice@example.com", get_credentials=get_credentials)
+
+        listener.webApiRecentlyPlayed_Z1 = [
+            {"track": {"id": "track_y"}, "played_at": "2026-07-13T10:00:00Z", "ms_played": 180000, "context": {}}
+        ]
+
+        callback = MagicMock()
+        listener._lastWebApiPollTime = 0
+        listener._checkWebApiBackfill(callback)
+
+        callback.assert_not_called()
 
     @patch("Database.Listeners.spotifyListener._fetch_recently_played_from_web_api")
     @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token")

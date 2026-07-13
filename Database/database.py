@@ -48,7 +48,11 @@ class Database:
     RECONNECT_MAX_RETRIES = 10  #< max reconnection attempts before giving up (~30 min window with backoff)
     RECONNECT_INITIAL_DELAY = 1  #< initial backoff in seconds
     RECONNECT_MAX_DELAY = 300  #< cap backoff at 5 minutes
-    WEB_API_RECONCILE_TOLERANCE_SECONDS = 2  #< matches the precision slack _checkWebApiBackfill already tolerates
+    BACKFILL_INSERT_GUARD_EXTRA_SECONDS = 60  #< margin added on top of a track's own duration for the
+                                               #  wide, backfill-only insert-time dedup guard (see
+                                               #  appendTrackData) - accounts for Spotify's played_at
+                                               #  field being documented as inconsistent about whether
+                                               #  it reports a track's start or end time (spotify/web-api#1083)
     DUPLICATE_RECORDING_TOLERANCE_SECONDS = 5  #< max gap between two same-track local plays for them to count as
                                                 #  the same real listen recorded twice (once by the live listener,
                                                 #  once by Web API backfill) rather than a genuine replay - a track
@@ -430,6 +434,29 @@ class Database:
         formatted_track = Client.formatTrack(track, timestamp, timePlayed, context=context)
         track_id = track.get("id", "unknown")
         track_name = track.get("name", "unknown")
+
+        if source == "web_api_backfill":
+            # Wide, defense-in-depth guard: skip if this exact track already has a
+            # play within (duration + 60s) of this one. Deliberately NOT applied to
+            # the live listener's own inserts (source == "listener") - the listener
+            # is the primary, trusted source, and a genuine short-track replay
+            # within this window is normal listening behavior that must not be
+            # silently dropped. Backfill is a catch-up mechanism and should be
+            # conservative about re-adding something a trusted source may already
+            # have captured - this window is symmetric so it catches a duplicate
+            # regardless of whether Spotify reported this entry's played_at as a
+            # start or end time (see _checkWebApiBackfill for why that can't be
+            # assumed one way or the other).
+            durationSeconds = (track.get("duration_ms", 0) or 0) // 1000
+            tolerance = durationSeconds + self.BACKFILL_INSERT_GUARD_EXTRA_SECONDS
+            if self.repo.hasPlayNearTime(self.user, track_id, formatted_track["playedAt"], tolerance):
+                logger.info(
+                    "Skipping backfilled play for track %s (%s): an existing play already exists "
+                    "within %ds (duration+60s) of played_at=%s",
+                    track_id, track_name, tolerance, formatted_track["playedAt"],
+                )
+                return False
+
         created_reason = f"{source}_play (user: {self.user})"
         was_inserted = self.appendMetadata(formatted_track, created_reason=created_reason)
         if was_inserted:
@@ -437,6 +464,7 @@ class Database:
                 "Recording play for user %s: track=%s (%s), timestamp=%s, duration=%dms, source=%s",
                 self.user, track_id, track_name, timestamp, timePlayed, source
             )
+        return was_inserted
 
     def importHistory(self, exportedHistory, progressPrefix: str = "", isFinalFile: bool = True):
         importer = self._withCookiesFile(lambda cookiesFile: Importer(cookiesFile=cookiesFile, email=self.email))
@@ -916,9 +944,10 @@ class Database:
         itself - the earlier play has to run (or be skipped) before the next
         one can start - so two such rows can only be the SAME real listen
         recorded twice. This happens when both the live listener and Web API
-        backfill capture the same instant (backfill's own dedup check
-        compares END times while local plays are stored as START times, so it
-        can miss the overlap).
+        backfill capture the same instant (Spotify's played_at field is
+        documented as inconsistent about whether it reports a track's start
+        or end time, per spotify/web-api#1083 - see _checkWebApiBackfill for
+        how that ambiguity is handled on the ingest side).
 
         Deliberately never deletes a play just because it's absent from the
         Web API response: Spotify's recently-played endpoint isn't a complete
@@ -940,7 +969,7 @@ class Database:
         if not apiItems:
             return
 
-        # Group API END times by track ID, to use as a tie-breaker later -
+        # Group API played_at times by track ID, to use as a tie-breaker later -
         # NOT as the deletion trigger.
         apiTimesByTrack: dict[str, list[int]] = {}
         for item in apiItems:
@@ -1041,49 +1070,6 @@ class Database:
                 "last_error": self.listener_last_error,
                 "seconds_since_last_poll": seconds_since_last_poll,
             }
-
-    def cleanupStaleTracksNotInApiHistory(self, api_track_ids: list[str]) -> int:
-        """Remove recorded plays for tracks that no longer appear in Spotify's API history.
-        Only removes plays older than 7 days to avoid removing recent plays that might
-        just be missing from cache. Returns number of plays deleted."""
-        if not api_track_ids:
-            return 0
-
-        cutoff_time = time.time() - (7 * 24 * 60 * 60)  # 7 days ago
-        conn = self.repo.connection
-
-        # Find all plays older than cutoff_time
-        all_old_plays = self.repo.getPlaysNewestFirst(self.user, count=None)
-        old_plays_to_check = [p for p in all_old_plays if p["playedAt"] < cutoff_time]
-
-        if not old_plays_to_check:
-            logger.debug("No plays older than 7 days to cleanup")
-            return 0
-
-        # Find which track_ids from old plays are NOT in current API history
-        old_track_ids = set(p["id"] for p in old_plays_to_check)
-        missing_track_ids = old_track_ids - set(api_track_ids)
-
-        if not missing_track_ids:
-            logger.debug("All old plays have tracks present in current API history")
-            return 0
-
-        # Delete plays for missing track_ids
-        deleted_count = 0
-        for track_id in missing_track_ids:
-            # Only delete plays for this track_id that are older than 7 days
-            cur = conn.execute(
-                "DELETE FROM plays WHERE username=? AND track_id=? AND played_at < ?",
-                (self.user, track_id, cutoff_time),
-            )
-            deleted_count += cur.rowcount
-
-        if deleted_count > 0:
-            self.repo.commit()
-            logger.info("Cleanup: removed %d plays for %d tracks no longer in Spotify history",
-                       deleted_count, len(missing_track_ids))
-
-        return deleted_count
 
     def stop(self):
         if self.listener is not None:

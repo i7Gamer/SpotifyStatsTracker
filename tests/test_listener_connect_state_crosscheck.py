@@ -11,6 +11,7 @@ local queue's play history - at no extra network cost. This cross-checks that
 history against what we've already recorded, purely as a diagnostic signal for
 catching plays the (known-fragile) websocket cache silently missed.
 """
+import collections
 import sys
 import os
 import unittest
@@ -29,7 +30,7 @@ def _bareListener(recentlyPlayed=None):
     listener.run = True
     listener.sp = MagicMock()
     listener.recentlyPlayed_Z1 = recentlyPlayed if recentlyPlayed is not None else []
-    listener._warnedMissingTrackUris = set()
+    listener._warnedMissingTrackUris = collections.OrderedDict()
     return listener
 
 
@@ -109,7 +110,7 @@ class TestCheckConnectStateForMissedTracks(unittest.TestCase):
         # assertNoLogs isn't available on all supported Python versions - assert
         # directly on the dedup cache instead, which only grows on a warning.
         listener._checkConnectStateForMissedTracks()
-        self.assertEqual(listener._warnedMissingTrackUris, set())
+        self.assertEqual(len(listener._warnedMissingTrackUris), 0)
 
     def test_does_not_warn_twice_for_the_same_missing_track(self):
         listener = _bareListener(recentlyPlayed=[])
@@ -153,12 +154,31 @@ class TestCheckConnectStateForMissedTracks(unittest.TestCase):
 
     def test_dedup_cache_is_bounded(self):
         listener = _bareListener(recentlyPlayed=[])
-        listener._warnedMissingTrackUris = {f"spotify:track:{i}" for i in range(CONNECT_STATE_MISSED_TRACK_CACHE_SIZE)}
+        listener._warnedMissingTrackUris = collections.OrderedDict.fromkeys(
+            f"spotify:track:{i}" for i in range(CONNECT_STATE_MISSED_TRACK_CACHE_SIZE)
+        )
         _withConnectState(listener, [{"uri": "spotify:track:new"}])
 
         listener._checkConnectStateForMissedTracks()
 
         self.assertLessEqual(len(listener._warnedMissingTrackUris), CONNECT_STATE_MISSED_TRACK_CACHE_SIZE)
+
+    def test_dedup_cache_evicts_oldest_entry_first(self):
+        """set.pop() would evict an arbitrary element; the OrderedDict-based
+        cache must specifically evict the OLDEST entry (FIFO), so recently
+        warned-about tracks are never forgotten ahead of older ones."""
+        listener = _bareListener(recentlyPlayed=[])
+        listener._warnedMissingTrackUris = collections.OrderedDict.fromkeys(
+            f"spotify:track:{i}" for i in range(CONNECT_STATE_MISSED_TRACK_CACHE_SIZE)
+        )
+        _withConnectState(listener, [{"uri": "spotify:track:new"}])
+
+        listener._checkConnectStateForMissedTracks()
+
+        self.assertNotIn("spotify:track:0", listener._warnedMissingTrackUris)
+        for i in range(1, CONNECT_STATE_MISSED_TRACK_CACHE_SIZE):
+            self.assertIn(f"spotify:track:{i}", listener._warnedMissingTrackUris)
+        self.assertIn("spotify:track:new", listener._warnedMissingTrackUris)
 
 
 if __name__ == "__main__":

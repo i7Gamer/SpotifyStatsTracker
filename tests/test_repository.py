@@ -394,6 +394,34 @@ class TestPlaysHistory(RepositoryTestCase):
         self.assertEqual(self.repo.getPlaysNewestFirst("alice")[0]["timePlayed"], 8000)
 
 
+class TestHasPlayNearTime(RepositoryTestCase):
+    def setUp(self):
+        super().setUp()
+        self.repo.upsertUser("alice", "alice@example.com")
+        self.repo.upsertTrack(makeTrack(trackId="t1"))
+        self.repo.upsertTrack(makeTrack(trackId="t2"))
+        self.repo.insertPlay("alice", "t1", 1000.0, 5000)
+        self.repo.commit()
+
+    def test_true_within_tolerance(self):
+        self.assertTrue(self.repo.hasPlayNearTime("alice", "t1", 1050.0, 100))
+
+    def test_true_at_exact_boundary(self):
+        self.assertTrue(self.repo.hasPlayNearTime("alice", "t1", 1100.0, 100))
+        self.assertTrue(self.repo.hasPlayNearTime("alice", "t1", 900.0, 100))
+
+    def test_false_just_outside_tolerance(self):
+        self.assertFalse(self.repo.hasPlayNearTime("alice", "t1", 1101.0, 100))
+        self.assertFalse(self.repo.hasPlayNearTime("alice", "t1", 899.0, 100))
+
+    def test_false_for_different_track_id(self):
+        self.assertFalse(self.repo.hasPlayNearTime("alice", "t2", 1050.0, 100))
+
+    def test_false_for_different_user(self):
+        self.repo.upsertUser("bob", "bob@example.com")
+        self.assertFalse(self.repo.hasPlayNearTime("bob", "t1", 1050.0, 100))
+
+
 def makeSearchableTrack(trackId, name, artistName, albumName):
     """Unlike makeTrack() (which hardcodes "Artist One"/"Album One" regardless
     of id - fine for id-uniqueness tests, wrong for text-search tests), this
