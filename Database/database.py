@@ -198,7 +198,16 @@ class Database:
         tmpFd, tmpPath = tempfile.mkstemp(prefix=f"cookies_{self.user}_", suffix=".json")
         os.close(tmpFd)
         tmpPath = Path(tmpPath)
-        tmpPath.write_text(json.dumps([{"identifier": email, "cookies": cookies}]), encoding="utf-8")
+        payload = [{"identifier": email, "cookies": cookies}]
+        tmpPath.write_text(json.dumps(payload), encoding="utf-8")
+        logger.debug(
+            "Materialized cookies file for user=%s: path=%s, identifier=%s, has_cookies=%s",
+            self.user, tmpPath, email, bool(cookies)
+        )
+        # CRITICAL DEBUG: log the first cookie key to verify it's not from another user
+        if cookies:
+            first_cookie = next(iter(cookies.keys())) if isinstance(cookies, dict) else "N/A"
+            logger.debug("First cookie in file: %s", first_cookie)
         return tmpPath
 
     def _withCookiesFile(self, factory):
