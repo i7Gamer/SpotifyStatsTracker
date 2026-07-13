@@ -110,6 +110,24 @@ def _fetch_recently_played_from_web_api(access_token: str) -> list[dict]:
     return []
 
 
+def _get_current_user_from_web_api(access_token: str) -> dict | None:
+    """Fetch current user info from Web API to validate the access token belongs to the expected user."""
+    import requests
+    url = "https://api.spotify.com/v1/me"
+    headers = {
+        "Authorization": f"Bearer {access_token}"
+    }
+    try:
+        resp = requests.get(url, headers=headers, timeout=10)
+        if resp.status_code == 200:
+            return resp.json()
+        else:
+            logger.error("Failed to fetch current user from Web API: %s %s", resp.status_code, resp.text)
+    except Exception as e:
+        logger.error("Error fetching current user from Web API: %s", str(e))
+    return None
+
+
 @contextmanager
 def _suppress_signal_in_thread():
     """Temporarily patch signal.signal to skip SIGINT registration when called
@@ -383,6 +401,22 @@ class Listener:
             access_token = _refresh_spotify_access_token(creds["client_id"], creds["client_secret"], creds["refresh_token"])
             if not access_token:
                 logger.warning("Could not obtain access token for Web API backfill.")
+                return
+
+            # Validate that the access token belongs to the authenticated user,
+            # not a different Spotify account (prevents cross-user contamination)
+            web_api_user = _get_current_user_from_web_api(access_token)
+            if not web_api_user:
+                logger.warning("Could not validate Web API user, skipping backfill.")
+                return
+
+            web_api_user_id = web_api_user.get("id")
+            if self._authenticated_user_id and web_api_user_id != self._authenticated_user_id:
+                logger.error(
+                    "CONTAMINATION CHECK FAILED: Web API access token is for user %s, "
+                    "but listener is authenticated as %s. Skipping backfill to prevent cross-user data import.",
+                    web_api_user_id, self._authenticated_user_id
+                )
                 return
 
             items = _fetch_recently_played_from_web_api(access_token)
