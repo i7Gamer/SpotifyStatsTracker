@@ -21,7 +21,8 @@
     {% if feature_enabled %}
     <h2>Spotify Developer API Settings</h2>
     <p style="font-size: 0.9rem; color: #aaa; margin-bottom: 1.5rem;">
-      Configuring this allows the tracker to poll Spotify's Web API and automatically recover any missed plays with precise played-at timestamps.
+      Configuring this allows the tracker to poll Spotify's Web API and automatically recover any missed plays with precise played-at timestamps.<br>
+      To create your App, visit your <a href="https://developer.spotify.com/dashboard" target="_blank" style="color: #1db954; text-decoration: underline;">Spotify Developer Dashboard</a>.
     </p>
 
     <form class="login-form" method="post" action="{{ url_for('profilePage') }}">
@@ -60,7 +61,7 @@
         {% endif %}
       {% else %}
         <p><strong>Spotify API Configuration:</strong> Not Configured</p>
-        <p style="font-size: 0.85rem; color: #888; margin-top: 0.5rem;">To connect, register an app in the Spotify Developer Dashboard. Ensure the Redirect URI is set to: <br><code style="color: #1db954; word-break: break-all;">{{ redirect_uri }}</code></p>
+        <p style="font-size: 0.85rem; color: #888; margin-top: 0.5rem;">To connect, register an app in the <a href="https://developer.spotify.com/dashboard" target="_blank" style="color: #1db954; text-decoration: underline;">Spotify Developer Dashboard</a>. Ensure the Redirect URI is set to: <br><code style="color: #1db954; word-break: break-all;">{{ redirect_uri }}</code></p>
       {% endif %}
     </div>
     {% endif %}
