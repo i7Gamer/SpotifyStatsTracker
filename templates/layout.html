@@ -1,6 +1,12 @@
 <!doctype html>
 <html lang="en">
   <head>
+    <script>
+      (function() {
+        const savedTheme = localStorage.getItem('spotify-stats-theme') || 'theme-rose';
+        document.documentElement.className = savedTheme;
+      })();
+    </script>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#000000" />
@@ -17,7 +23,10 @@
   <body>
     {% include '_listener_status_banner.html' %}
     <header class="topbar">
-      <div class="brand">Spotify Tracker</div>
+      <div class="brand">
+        Spotify Tracker
+        <span id="listener-status-pill" class="status-pill status-initializing" title="Sync Status: Initializing" style="display:none;"></span>
+      </div>
       <div id="version-badge" class="version-badge" style="display:none;">
         <span id="version-badge-text"></span>
       </div>
@@ -36,6 +45,14 @@
         <a class="{{ 'active' if section == 'wrapped' }}" {% if section == 'wrapped' %}aria-current="page"{% endif %} href="{{ url_for('wrappedPage') }}">Wrapped</a>
         <a class="{{ 'active' if section == 'import' }}" {% if section == 'import' %}aria-current="page"{% endif %} href="{{ url_for('importPage') }}">Import</a>
         <a class="{{ 'active' if section == 'profile' }}" {% if section == 'profile' %}aria-current="page"{% endif %} href="{{ url_for('profilePage') }}">Profile</a>
+        <div class="theme-select-container">
+          <select id="theme-selector" class="theme-selector" aria-label="Select Theme">
+            <option value="theme-rose">Sunset Rose</option>
+            <option value="theme-green">Spotify Green</option>
+            <option value="theme-purple">Cyberpunk</option>
+            <option value="theme-red">Crimson</option>
+          </select>
+        </div>
       </nav>
     </header>
 
@@ -131,31 +148,42 @@
       })();
 
       (function(){
+        const statusPill = document.getElementById('listener-status-pill');
         const banner = document.getElementById('listener-status-banner');
         const statusIcon = document.getElementById('listener-status-icon');
         const statusText = document.getElementById('listener-status-text');
         const closeBtn = document.getElementById('listener-status-close');
 
-        if (!banner || !statusIcon || !statusText || !closeBtn) return;
-
         const dismissedUntil = new Map();
 
         function updateListenerStatus() {
           fetch('/api/listener-status')
-            .then(r => r.json())
+            .then(r => {
+              if (r.status === 401) {
+                if (statusPill) statusPill.style.display = 'none';
+                if (banner) banner.style.display = 'none';
+                throw new Error('Not logged in');
+              }
+              return r.json();
+            })
             .then(data => {
               if (!data || !data.status) return;
 
               const status = data.status.toUpperCase();
+
+              // Update topbar status pill
+              if (statusPill) {
+                statusPill.className = `status-pill status-${status.toLowerCase()}`;
+                statusPill.title = `Sync Status: ${status.charAt(0) + status.slice(1).toLowerCase()}`;
+                statusPill.style.display = 'inline-block';
+              }
+
+              if (!banner || !statusText) return;
+
               const now = Date.now();
               const isDismissed = dismissedUntil.get(status) > now;
 
-              if (status === 'HEALTHY') {
-                banner.style.display = 'none';
-                return;
-              }
-
-              if (isDismissed) {
+              if (status === 'HEALTHY' || isDismissed) {
                 banner.style.display = 'none';
                 return;
               }
@@ -178,16 +206,33 @@
         }
 
         // Close button dismisses the banner for 1 hour
-        closeBtn.addEventListener('click', () => {
-          const status = banner.className.match(/listener-status-(\w+)/)?.[1]?.toUpperCase();
-          if (status) {
-            dismissedUntil.set(status, Date.now() + 60 * 60 * 1000);
-          }
-          banner.style.display = 'none';
-        });
+        if (closeBtn && banner) {
+          closeBtn.addEventListener('click', () => {
+            const status = banner.className.match(/listener-status-(\w+)/)?.[1]?.toUpperCase();
+            if (status) {
+              dismissedUntil.set(status, Date.now() + 60 * 60 * 1000);
+            }
+            banner.style.display = 'none';
+          });
+        }
 
         updateListenerStatus();
         setInterval(updateListenerStatus, 10 * 1000);
+      })();
+
+      (function(){
+        const themeSelector = document.getElementById('theme-selector');
+        if (!themeSelector) return;
+
+        // Set initial selected value of dropdown
+        const activeTheme = document.documentElement.className || 'theme-rose';
+        themeSelector.value = activeTheme;
+
+        themeSelector.addEventListener('change', (e) => {
+          const newTheme = e.target.value;
+          document.documentElement.className = newTheme;
+          localStorage.setItem('spotify-stats-theme', newTheme);
+        });
       })();
 
       (function(){
