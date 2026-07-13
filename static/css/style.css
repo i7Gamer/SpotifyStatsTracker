@@ -21,7 +21,7 @@
 }
 
 ::selection {
-  background: rgba(251, 113, 123, 0.3);
+  background: var(--accent-glow);
   color: var(--text);
 }
 
@@ -178,13 +178,13 @@ button {
 .topbar-search input[type="search"]:focus {
   outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 12px rgba(251, 113, 123, 0.4), 0 0 0 2px rgba(251, 113, 123, 0.2);
+  box-shadow: 0 0 12px var(--accent-glow), 0 0 0 2px var(--accent-glow);
 }
 
 .filter-search input[type="search"]:focus {
   outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 12px rgba(251, 113, 123, 0.4), 0 0 0 2px rgba(251, 113, 123, 0.2);
+  box-shadow: 0 0 12px var(--accent-glow), 0 0 0 2px var(--accent-glow);
 }
 
 .topbar-search button {
@@ -380,7 +380,7 @@ button {
 }
 
 #import-form input[type="file"] {
-  background: linear-gradient(135deg, rgba(251, 113, 123, 0.1), rgba(255, 255, 255, 0.03));
+  background: linear-gradient(135deg, var(--accent-glow), rgba(255, 255, 255, 0.03));
   border: 2px dashed var(--accent);
   color: var(--text);
   padding: 20px 16px;
@@ -419,21 +419,21 @@ button {
 }
 
 #import-form input[type="file"]:hover {
-  background: linear-gradient(135deg, rgba(251, 113, 123, 0.15), rgba(255, 255, 255, 0.05));
-  border-color: #ff9fa6;
-  box-shadow: 0 0 0 3px rgba(251, 113, 123, 0.1);
+  background: linear-gradient(135deg, var(--accent-glow), rgba(255, 255, 255, 0.05));
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
 }
 
 #import-form input[type="file"]:focus {
   outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(251, 113, 123, 0.2);
+  box-shadow: 0 0 0 3px var(--accent-glow);
 }
 
 .filter-group input[type="date"]:focus {
   outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 12px rgba(251, 113, 123, 0.4), 0 0 0 2px rgba(251, 113, 123, 0.2);
+  box-shadow: 0 0 12px var(--accent-glow), 0 0 0 2px var(--accent-glow);
 }
 
 #import-form label {
@@ -779,7 +779,7 @@ progress::-moz-progress-bar {
 .form-group textarea:focus {
   outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 12px rgba(251, 113, 123, 0.4), 0 0 0 2px rgba(251, 113, 123, 0.2);
+  box-shadow: 0 0 12px var(--accent-glow), 0 0 0 2px var(--accent-glow);
 }
 
 .error {
@@ -905,7 +905,7 @@ progress::-moz-progress-bar {
   outline: none;
   background: rgba(255, 255, 255, 0.08);
   border-color: var(--accent);
-  box-shadow: 0 0 0 2px rgba(251, 113, 123, 0.2);
+  box-shadow: 0 0 0 2px var(--accent-glow);
 }
 
 .filter-group label {
@@ -938,7 +938,7 @@ progress::-moz-progress-bar {
   outline: none;
   background: rgba(255, 255, 255, 0.08);
   border-color: var(--accent);
-  box-shadow: 0 0 0 2px rgba(251, 113, 123, 0.2);
+  box-shadow: 0 0 0 2px var(--accent-glow);
 }
 
 .custom-dates {
@@ -1283,7 +1283,7 @@ progress::-moz-progress-bar {
 }
 
 .wrapped-year-badge:hover {
-  background: rgba(251, 113, 123, 0.15);
+  background: var(--accent-glow);
 }
 
 .wrapped-year-badge.active {
@@ -1317,7 +1317,7 @@ progress::-moz-progress-bar {
 }
 
 .stats-filter-button:hover {
-  background: rgba(251, 113, 123, 0.15);
+  background: var(--accent-glow);
 }
 
 .stats-filter-button.active {
@@ -1354,7 +1354,7 @@ html.theme-red {
   --accent: #E50914;
   --accent-glow: rgba(229, 9, 20, 0.25);
   --glow-color-1: rgba(229, 9, 20, 0.15);
-  --glow-color-2: rgba(251, 113, 123, 0.08);
+  --glow-color-2: rgba(229, 9, 20, 0.08);
   --glow-color-3: rgba(20, 20, 20, 0.4);
 }
 

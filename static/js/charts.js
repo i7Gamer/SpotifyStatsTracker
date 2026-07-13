@@ -6,6 +6,27 @@
   var GRID_LINE_COUNT = 4;
   var MIN_AXIS_LABEL_SPACING_PX = 70;
 
+  function getAccentColor() {
+    var computedAccent = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim();
+    return computedAccent || '#FB717B';
+  }
+
+  function parseHex(hex) {
+    hex = hex.replace(/^#/, '');
+    if (hex.length === 3) {
+      hex = hex[0] + hex[0] + hex[1] + hex[1] + hex[2] + hex[2];
+    }
+    var num = parseInt(hex, 16);
+    if (isNaN(num)) {
+      return { r: 251, g: 113, b: 123 };
+    }
+    return {
+      r: (num >> 16) & 255,
+      g: (num >> 8) & 255,
+      b: num & 255
+    };
+  }
+
   function setupCanvas(canvas, cssHeight) {
     var dpr = window.devicePixelRatio || 1;
     var width = Math.max(canvas.parentElement.getBoundingClientRect().width, 280);
@@ -168,9 +189,11 @@
     if (clamped === 0) {
       return 'rgba(255,255,255,0.05)';
     }
-    var r = Math.round(30 + (251 - 30) * clamped);
-    var g = Math.round(30 + (113 - 30) * clamped);
-    var b = Math.round(30 + (123 - 30) * clamped);
+    var accent = getAccentColor();
+    var rgb = parseHex(accent);
+    var r = Math.round(30 + (rgb.r - 30) * clamped);
+    var g = Math.round(30 + (rgb.g - 30) * clamped);
+    var b = Math.round(30 + (rgb.b - 30) * clamped);
     return 'rgb(' + r + ',' + g + ',' + b + ')';
   }
 
@@ -341,6 +364,7 @@
   }
 
   function renderAllCharts() {
+    CHART_PALETTE[0] = getAccentColor();
     renderTimeSeriesChart();
     renderHeatmap();
     renderArtistTrend();
@@ -353,4 +377,11 @@
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(renderAllCharts, 150);
   });
+
+  var themeSelector = document.getElementById('theme-selector');
+  if (themeSelector) {
+    themeSelector.addEventListener('change', function () {
+      setTimeout(renderAllCharts, 50);
+    });
+  }
 })();
