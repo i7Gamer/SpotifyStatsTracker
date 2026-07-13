@@ -397,7 +397,7 @@ class Database:
         callers (app.py's startup path)."""
         return 0
 
-    def importHistory(self, exportedHistory, progressPrefix: str = ""):
+    def importHistory(self, exportedHistory, progressPrefix: str = "", isFinalFile: bool = True):
         importer = self._withCookiesFile(lambda cookiesFile: Importer(cookiesFile=cookiesFile, email=self.email))
 
         parsedHistory, exportType = importer._convertToList(exportedHistory)
@@ -440,7 +440,8 @@ class Database:
                 self.repo.insertPlay(self.user, entry["id"], entry["playedAt"], entry["timePlayed"], entry.get("playedFrom"))
             self.repo.commit()
 
-            self.writeProgress("complete", total, total, f"{progressPrefix}Import complete")
+            status = "complete" if isFinalFile else "running"
+            self.writeProgress(status, total, total, f"{progressPrefix}Import complete")
         except Exception as e:
             self.repo.rollback()
             self.writeProgress("failed", index, total, f"{progressPrefix}Import failed: {parseError(e)}", error=True)
@@ -460,7 +461,8 @@ class Database:
         failedCount = 0
         for index, content in enumerate(fileContents, start=1):
             try:
-                self.importHistory(content, progressPrefix=f"File {index}/{total}: ")
+                isFinalFile = (index == total)
+                self.importHistory(content, progressPrefix=f"File {index}/{total}: ", isFinalFile=isFinalFile)
             except Exception as e:
                 failedCount += 1
                 logger.error("Import failed for file %s/%s: %s", index, total, parseError(e))
