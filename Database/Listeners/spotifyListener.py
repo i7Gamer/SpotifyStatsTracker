@@ -16,7 +16,7 @@ def _shutdown_exception_hook(args):
     if isinstance(args.exc_value, websockets.exceptions.ConnectionClosedOK):
         return
     # Otherwise, use the default exception handler
-    sys.__excepthook__(args)
+    sys.__excepthook__(args.exc_type, args.exc_value, args.exc_traceback)
 
 threading.excepthook = _shutdown_exception_hook
 
@@ -35,6 +35,8 @@ LISTENER_STOP_JOIN_TIMEOUT_SECONDS = 5  #< bound how long shutdown waits for spo
 LISTENER_STALE_TIMEOUT_SECONDS = 30 * 60
 
 AUTH_ERROR_TIMEOUT_SECONDS = 30  #< trigger reconnection immediately for auth errors, not 30 min
+
+RATE_LIMIT_ERROR_BACKOFF_SECONDS = 60  #< backoff for 429 rate limit errors from Spotify API
 
 # Bounds memory for the missed-track dedup set in _checkConnectStateForMissedTracks -
 # prev_tracks itself is always much shorter than this (it's a rolling local queue
@@ -56,6 +58,12 @@ def _is_auth_error(exc: Exception) -> bool:
         or re.search(r"invalid\s+.*token", exc_str)
         or re.search(r"session\s+.*expired", exc_str)
     )
+
+
+def _is_rate_limit_error(exc: Exception) -> bool:
+    """Check if an exception is a rate limit error (429 Too Many Requests)."""
+    exc_str = str(exc).lower()
+    return "429" in exc_str or "rate" in exc_str and "limit" in exc_str
 
 
 def _refresh_spotify_access_token(client_id: str, client_secret: str, refresh_token: str) -> str | None:
@@ -170,6 +178,11 @@ class Listener:
                 return False
             return True
         except Exception as e:
+            error_str = str(e).lower()
+            # Invalid JSON errors usually indicate rate limiting or bad response from Spotify
+            if "json" in error_str or _is_rate_limit_error(e):
+                logger.warning("Transient error validating current user (rate limit or malformed response): %s", parseError(e))
+                raise  # Trigger rate limit backoff in startListener
             if not _is_auth_error(e):
                 raise
             logger.warning("Could not validate current user: %s", parseError(e))
@@ -275,7 +288,16 @@ class Listener:
                     logger.error("Reconnect attempt failed: %s", parseError(e))
             return False
 
-        recentlyPlayed = self.sp.current_user_recently_played()
+        try:
+            recentlyPlayed = self.sp.current_user_recently_played()
+        except Exception as e:
+            error_str = str(e).lower()
+            # Invalid JSON errors usually indicate rate limiting or bad response from Spotify
+            if "json" in error_str or _is_rate_limit_error(e):
+                logger.warning("Transient error fetching recently played (rate limit or malformed response): %s", parseError(e))
+                raise  # Trigger rate limit backoff in startListener
+            raise  # Let startListener handle other errors
+
         if recentlyPlayed != self.recentlyPlayed_Z1:
             newItems = self.getNewItems(recentlyPlayed)
             if newItems:
@@ -323,6 +345,9 @@ class Listener:
                             logger.error("Reconnect attempt failed: %s", parseError(reconnect_err))
                     self.run = False
                     return
+                elif _is_rate_limit_error(e):
+                    logger.warning("Rate limit error detected, backing off for %d seconds: %s", RATE_LIMIT_ERROR_BACKOFF_SECONDS, parseError(e))
+                    self._stop_event.wait(RATE_LIMIT_ERROR_BACKOFF_SECONDS)
                 else:
                     logger.error("Error in listener: %s", parseError(e))
                     self._stop_event.wait(30)

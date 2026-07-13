@@ -1,5 +1,6 @@
 import signal
 import threading
+import time
 import websockets.sync.client
 import spotapi.status
 import spotapi.websocket
@@ -85,6 +86,40 @@ spotapi.websocket.WebsocketStreamer.__init__ = patched_websocket_streamer_init
 
 import json
 import sys
+
+
+def _get_track_info_with_retry(trackId: str, max_retries: int = 3):
+    """Fetch track info from spotapi with retry logic for transient failures.
+
+    Args:
+        trackId: Spotify track ID
+        max_retries: Maximum number of retry attempts
+
+    Returns:
+        Track info dict from spotapi.Public.song_info()["data"]["trackUnion"]
+
+    Raises:
+        Exception: If all retries fail
+    """
+    for attempt in range(max_retries):
+        try:
+            return spotapi.Public.song_info(trackId)["data"]["trackUnion"]
+        except Exception as e:
+            error_str = str(e).lower()
+            is_rate_limit = "429" in error_str or ("rate" in error_str and "limit" in error_str)
+            is_session_error = "could not get session" in error_str or "session" in error_str
+
+            # Only retry on transient errors (rate limit, session issues), not on real 404s
+            if not (is_rate_limit or is_session_error):
+                raise
+
+            if attempt < max_retries - 1:
+                backoff_secs = 2 ** attempt  # 1, 2, 4 seconds
+                print(f"[Patches] Track fetch failed (attempt {attempt + 1}/{max_retries}), backing off {backoff_secs}s: {e}")
+                time.sleep(backoff_secs)
+            else:
+                print(f"[Patches] Track fetch failed after {max_retries} attempts: {e}")
+                raise
 
 
 def patch_spotipy_free() -> bool:
@@ -192,7 +227,7 @@ def patch_spotipy_free() -> bool:
             if self.isUrl(trackId):
                 trackId = self.urlToId(trackId)
 
-            track = spotapi.Public.song_info(trackId)["data"]["trackUnion"]
+            track = _get_track_info_with_retry(trackId)
             try:
                 artists = track["firstArtist"]["items"]
                 artists.extend(track["otherArtists"]["items"])
