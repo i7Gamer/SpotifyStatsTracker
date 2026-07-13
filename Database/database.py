@@ -105,9 +105,10 @@ class Database:
         recorded under another user's account)."""
         if not data:
             return
-        source = data[0].get("_source", "unknown") if data else "unknown"
-        logger.debug("_addToDatabaseFromListener called for user=%s with %d items, source=%s",
-                    self.user, len(data), source)
+        if os.environ.get("FLASK_DEBUG"):
+            source = data[0].get("_source", "unknown") if data else "unknown"
+            logger.debug("_addToDatabaseFromListener called for user=%s with %d items, source=%s",
+                        self.user, len(data), source)
         had_errors = False
         for item in data:
             track = item.get("track")
@@ -200,14 +201,11 @@ class Database:
         tmpPath = Path(tmpPath)
         payload = [{"identifier": email, "cookies": cookies}]
         tmpPath.write_text(json.dumps(payload), encoding="utf-8")
-        logger.debug(
-            "Materialized cookies file for user=%s: path=%s, identifier=%s, has_cookies=%s",
-            self.user, tmpPath, email, bool(cookies)
-        )
-        # CRITICAL DEBUG: log the first cookie key to verify it's not from another user
-        if cookies:
-            first_cookie = next(iter(cookies.keys())) if isinstance(cookies, dict) else "N/A"
-            logger.debug("First cookie in file: %s", first_cookie)
+        if os.environ.get("FLASK_DEBUG"):
+            logger.debug(
+                "Materialized cookies file for user=%s: path=%s, identifier=%s, has_cookies=%s",
+                self.user, tmpPath, email, bool(cookies)
+            )
         return tmpPath
 
     def _withCookiesFile(self, factory):

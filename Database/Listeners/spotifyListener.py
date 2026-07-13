@@ -426,8 +426,9 @@ class Listener:
             web_api_user_id = web_api_user.get("id")
             web_api_user_display = web_api_user.get("display_name", web_api_user_id)
             web_api_user_email = web_api_user.get("email", "")
-            logger.info("Web API user: %s (ID: %s, email: %s), Listener email: %s",
-                       web_api_user_display, web_api_user_id, web_api_user_email, self.email)
+            if os.environ.get("FLASK_DEBUG"):
+                logger.info("Web API user: %s (ID: %s, email: %s), Listener email: %s",
+                           web_api_user_display, web_api_user_id, web_api_user_email, self.email)
 
             # Validate that the access token belongs to the authenticated user. Since SpotipyFree
             # may store user IDs differently than the Spotify Web API, check email first (most reliable),
