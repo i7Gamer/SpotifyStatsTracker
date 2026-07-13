@@ -58,6 +58,19 @@ class TestAddToDatabaseFromListener(unittest.TestCase):
         db._addToDatabaseFromListener([])
         db.appendTrackData.assert_not_called()
 
+    def test_skips_future_played_at_and_handles_string_timestamps(self):
+        db = _bareDatabase()
+        import time
+        future_time = time.time() + 100000  # More than 1 day in the future
+        items = [
+            {"track": {"id": "t1"}, "played_at": str(future_time), "ms_played": 1000, "context": None},
+            {"track": {"id": "t2"}, "played_at": "2026-07-13T10:05:00Z", "ms_played": 2000, "context": None},
+        ]
+        db._addToDatabaseFromListener(items)
+        # Should skip the future one (t1) and successfully append t2
+        self.assertEqual(db.appendTrackData.call_count, 1)
+        db.appendTrackData.assert_called_once_with("2026-07-13T10:05:00Z", {"id": "t2"}, 2000, context=None)
+
 
 if __name__ == "__main__":
     unittest.main()
