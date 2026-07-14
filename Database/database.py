@@ -800,7 +800,7 @@ class Database:
             return 0
 
         play_dates = sorted(list({
-            convertToDatetime(p["playedAt"]).strftime("%Y-%m-%d")
+            convertToDatetime(p["playedAt"], tz=self.tz).strftime("%Y-%m-%d")
             for p in plays
         }))
 
@@ -834,7 +834,7 @@ class Database:
         WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
         counts = {}
         for p in plays:
-            dt = convertToDatetime(p["playedAt"])
+            dt = convertToDatetime(p["playedAt"], tz=self.tz)
             day_name = WEEKDAYS[dt.weekday()]
             counts[day_name] = counts.get(day_name, 0) + 1
 
@@ -983,7 +983,7 @@ class Database:
 
         buckets = {}
         for play in plays:
-            date = convertToDatetime(play["playedAt"])
+            date = convertToDatetime(play["playedAt"], tz=self.tz)
             key = self._bucketKey(date, groupBy)
             bucket = buckets.setdefault(key, {"label": key, "totalTimeListened": 0, "plays": 0})
             bucket["totalTimeListened"] += play["timePlayed"]
@@ -992,7 +992,7 @@ class Database:
         if startDate is not None and endDate is not None:
             rangeStart, rangeEnd = startDate, endDate
         elif plays:
-            playedDates = [convertToDatetime(p["playedAt"]) for p in plays]
+            playedDates = [convertToDatetime(p["playedAt"], tz=self.tz) for p in plays]
             rangeStart = min(playedDates)
             rangeEnd = max(playedDates) + datetime.timedelta(seconds=1)
         else:
@@ -1034,7 +1034,7 @@ class Database:
         grid = [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
 
         for play in plays:
-            date = convertToDatetime(play["playedAt"])
+            date = convertToDatetime(play["playedAt"], tz=self.tz)
             cell = grid[date.weekday()][date.hour]
             cell["totalTimeListened"] += play["timePlayed"]
             cell["plays"] += 1
@@ -1052,7 +1052,7 @@ class Database:
         totalPlaysByArtist = {}
         bucketedPairs = []
         for pair in pairs:
-            date = convertToDatetime(pair["playedAt"])
+            date = convertToDatetime(pair["playedAt"], tz=self.tz)
             key = self._bucketKey(date, groupBy)
             name = pair["artistName"]
             bucketedPairs.append((key, name))
