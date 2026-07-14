@@ -11,6 +11,16 @@
     .track-summary-card {
       transition: opacity 0.2s ease-in-out, transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.3s cubic-bezier(0.4, 0, 0.2, 1);
     }
+    [data-category] {
+      margin-top: 36px;
+    }
+    [data-category] h2 {
+      margin: 0 0 18px;
+      font-size: 1.3rem;
+    }
+    .wrapped-stats-filters {
+      margin: 24px 0 12px !important;
+    }
   </style>
   <section class="hero">
     <div class="hero-content">
@@ -147,9 +157,7 @@
   </nav>
 
   <div data-category="top-songs">
-    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem; margin-bottom: 1.5rem;">
-      <h2>Top Songs</h2>
-    </div>
+    <h2>Top Songs</h2>
     <section class="track-list">
       {% if topSongs %}
         {% for track in topSongs %}
@@ -317,6 +325,11 @@
             });
             return;
           }
+
+          const heroTitle = document.querySelector('.hero h1');
+          if (heroTitle) heroTitle.textContent = `Your ${year} Wrapped`;
+          const heroSubtitle = document.querySelector('.hero p');
+          if (heroSubtitle) heroSubtitle.textContent = `A look back at what you listened to in ${year}.`;
 
           // 1. Update general stats if returned
           if (data.totalPlays !== undefined) {

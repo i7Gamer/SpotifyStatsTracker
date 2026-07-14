@@ -1588,12 +1588,12 @@ class SpotifyDashboardApp:
                     res["timeSeries"] = timeSeries
 
                 if update_type in ("all", "lists"):
-                    res["topSongsHtml"] = render_template("_wrapped_list.html", items=topSongs, section="top_songs", username=username)
-                    res["topArtistsHtml"] = render_template("_wrapped_list.html", items=topArtists, section="top_artists", username=username)
-                    res["topAlbumsHtml"] = render_template("_wrapped_list.html", items=topAlbums, section="top_albums", username=username)
-                    res["discoveredSongsHtml"] = render_template("_wrapped_list.html", items=discoveredSongs, section="top_songs", username=username)
-                    res["discoveredArtistsHtml"] = render_template("_wrapped_list.html", items=discoveredArtists, section="top_artists", username=username)
-                    res["discoveredAlbumsHtml"] = render_template("_wrapped_list.html", items=discoveredAlbums, section="top_albums", username=username)
+                    res["topSongsHtml"] = render_template("_wrapped_list.html", items=topSongs, section="top_songs", username=username, year=year)
+                    res["topArtistsHtml"] = render_template("_wrapped_list.html", items=topArtists, section="top_artists", username=username, year=year)
+                    res["topAlbumsHtml"] = render_template("_wrapped_list.html", items=topAlbums, section="top_albums", username=username, year=year)
+                    res["discoveredSongsHtml"] = render_template("_wrapped_list.html", items=discoveredSongs, section="top_songs", username=username, year=year)
+                    res["discoveredArtistsHtml"] = render_template("_wrapped_list.html", items=discoveredArtists, section="top_artists", username=username, year=year)
+                    res["discoveredAlbumsHtml"] = render_template("_wrapped_list.html", items=discoveredAlbums, section="top_albums", username=username, year=year)
 
                 if update_type == "all":
                     topSongText = (
