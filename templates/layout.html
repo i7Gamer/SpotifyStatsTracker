@@ -23,10 +23,10 @@
   <body>
     {% include '_listener_status_banner.html' %}
     <header class="topbar">
-      <div class="brand">
+      <a class="brand" href="{{ url_for('overviewPage') }}">
         Spotify Tracker
         <span id="listener-status-pill" class="status-pill status-initializing" title="Sync Status: Initializing" style="display:none;"></span>
-      </div>
+      </a>
       <div id="version-badge" class="version-badge" style="display:none;">
         <span id="version-badge-text"></span>
       </div>

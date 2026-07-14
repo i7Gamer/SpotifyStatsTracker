@@ -31,6 +31,7 @@ def _bareListener(recentlyPlayed=None):
     listener._lastChangeTime = 0.0
     listener._authenticated_user_id = None
     listener.email = None
+    listener._last_user_validation_time = 0.0
     return listener
 
 

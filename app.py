@@ -1013,6 +1013,64 @@ class SpotifyDashboardApp:
             health = db.getListenerHealth()
             return jsonify(health)
 
+        @self.app.route("/overview", methods=["GET"])
+        def overviewPage():
+            from datetime import datetime
+            global_stats = self.repo.getGlobalDatabaseStats()
+            
+            email = session.get("email")
+            is_logged_in = email is not None and self.is_user_logged_in(email)
+            
+            users_list = []
+            if is_logged_in:
+                all_users = self.repo.getAllUsersDetails()
+                for u in all_users:
+                    u_username = u["username"]
+                    u_email = u["email"]
+                    
+                    # Ensure we have a Database instance initialized to get live sync health
+                    u_db = self.get_user_db(u_username, u_email)
+                    
+                    # Get Listener sync status
+                    if u["cookies_json"]:
+                        health = u_db.getListenerHealth()
+                        sync_status = health.get("status", "UNKNOWN")
+                    else:
+                        sync_status = "Not Configured"
+                    
+                    # Check API backfill configuration status
+                    has_api = bool(u["spotify_client_id"] and u["spotify_refresh_token"])
+                    api_status = "Configured" if has_api else "Not Configured"
+                    
+                    # Total plays for this user
+                    plays_count = self.repo.getPlaysCount(u_username)
+                    
+                    # Format created_at date
+                    created_at_val = u.get("created_at")
+                    created_date_str = ""
+                    if created_at_val:
+                        try:
+                            created_date_str = datetime.fromtimestamp(created_at_val).strftime("%Y-%m-%d %H:%M:%S")
+                        except Exception:
+                            pass
+                    
+                    users_list.append({
+                        "username": u_username,
+                        "email": u_email,
+                        "sync_status": sync_status,
+                        "api_status": api_status,
+                        "plays_count": plays_count,
+                        "created_at": created_date_str
+                    })
+            
+            return render_template(
+                "overview.html",
+                global_stats=global_stats,
+                is_logged_in=is_logged_in,
+                users_list=users_list,
+                section="overview"
+            )
+
         @self.app.route("/", methods=["GET"])
         def dashboard():
             email, username, db = get_current_user_or_redirect()

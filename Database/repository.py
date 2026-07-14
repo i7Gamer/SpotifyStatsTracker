@@ -1278,3 +1278,24 @@ class Repository:
             "message": row["message"],
             "error": bool(row["error"]),
         }
+
+    def getGlobalDatabaseStats(self) -> dict[str, int]:
+        conn = self._conn()
+        tracks_count = conn.execute("SELECT COUNT(*) FROM tracks").fetchone()[0]
+        artists_count = conn.execute("SELECT COUNT(*) FROM artists").fetchone()[0]
+        albums_count = conn.execute("SELECT COUNT(*) FROM albums").fetchone()[0]
+        plays_count = conn.execute("SELECT COUNT(*) FROM plays").fetchone()[0]
+        return {
+            "tracks": tracks_count,
+            "artists": artists_count,
+            "albums": albums_count,
+            "plays": plays_count,
+        }
+
+    def getAllUsersDetails(self) -> list[dict]:
+        conn = self._conn()
+        rows = conn.execute(
+            "SELECT username, email, cookies_json, spotify_client_id, spotify_refresh_token, created_at FROM users"
+        ).fetchall()
+        return [dict(r) for r in rows]
+

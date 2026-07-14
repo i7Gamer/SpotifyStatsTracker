@@ -1,0 +1,150 @@
+{% extends "layout.html" %}
+{% block content %}
+
+<section class="hero">
+  <div class="hero-content">
+    <h1>Spotify Stats Tracker</h1>
+    <p>A central system-wide overview of tracked metrics, platform features, and real-time synchronization status.</p>
+  </div>
+</section>
+
+<!-- Global Statistics Grid -->
+<section class="grid" style="margin-bottom: 2.5rem;">
+  <article class="card stats-card">
+    <div class="stats-card-icon">📊</div>
+    <div class="stats-card-info">
+      <span class="stats-card-label">Total Plays in DB</span>
+      <h2 class="summary-value" style="font-size: 2.2rem; margin: 0.5rem 0 0 0;">{{ "{:,}".format(global_stats.plays) }}</h2>
+    </div>
+  </article>
+
+  <article class="card stats-card">
+    <div class="stats-card-icon">🎵</div>
+    <div class="stats-card-info">
+      <span class="stats-card-label">Unique Tracks</span>
+      <h2 class="summary-value" style="font-size: 2.2rem; margin: 0.5rem 0 0 0;">{{ "{:,}".format(global_stats.tracks) }}</h2>
+    </div>
+  </article>
+
+  <article class="card stats-card">
+    <div class="stats-card-icon">🎙️</div>
+    <div class="stats-card-info">
+      <span class="stats-card-label">Unique Artists</span>
+      <h2 class="summary-value" style="font-size: 2.2rem; margin: 0.5rem 0 0 0;">{{ "{:,}".format(global_stats.artists) }}</h2>
+    </div>
+  </article>
+
+  <article class="card stats-card">
+    <div class="stats-card-icon">💿</div>
+    <div class="stats-card-info">
+      <span class="stats-card-label">Unique Albums</span>
+      <h2 class="summary-value" style="font-size: 2.2rem; margin: 0.5rem 0 0 0;">{{ "{:,}".format(global_stats.albums) }}</h2>
+    </div>
+  </article>
+</section>
+
+<!-- Users Status Monitor (Authenticated Only) -->
+{% if is_logged_in %}
+<section class="card" style="margin-bottom: 2.5rem; overflow-x: auto;">
+  <div class="card-header" style="padding: 1.5rem 1.5rem 0.5rem 1.5rem;">
+    <h2 style="margin: 0; font-family: var(--font-headings);">Registered Users & Sync Status</h2>
+    <p style="color: var(--muted); font-size: 0.9rem; margin-top: 0.25rem;">Monitor real-time sync status and background thread states for all active user profiles.</p>
+  </div>
+  <div style="padding: 0 1.5rem 1.5rem 1.5rem;">
+    <table class="status-table" style="width: 100%; border-collapse: collapse; text-align: left; min-width: 600px;">
+      <thead>
+        <tr style="border-bottom: 2px solid var(--glass-border); color: var(--muted); font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.05em;">
+          <th style="padding: 12px 8px;">Username</th>
+          <th style="padding: 12px 8px;">Email Address</th>
+          <th style="padding: 12px 8px;">Sync Status</th>
+          <th style="padding: 12px 8px;">API Backfill</th>
+          <th style="padding: 12px 8px; text-align: right;">Total Plays</th>
+          <th style="padding: 12px 8px; text-align: right;">Registered</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for u in users_list %}
+        <tr style="border-bottom: 1px solid var(--glass-border); font-size: 0.95rem;">
+          <td style="padding: 16px 8px; font-weight: 600; color: var(--accent);">{{ u.username }}</td>
+          <td style="padding: 16px 8px;">{{ u.email }}</td>
+          <td style="padding: 16px 8px;">
+            {% set status = u.sync_status | lower %}
+            {% if status == 'healthy' %}
+              <span class="badge badge-success">HEALTHY</span>
+            {% elif status == 'initializing' %}
+              <span class="badge badge-warning">INITIALIZING</span>
+            {% elif status == 'degraded' %}
+              <span class="badge badge-orange">DEGRADED</span>
+            {% elif status == 'dead' %}
+              <span class="badge badge-danger">DEAD</span>
+            {% else %}
+              <span class="badge badge-secondary">NOT CONFIGURED</span>
+            {% endif %}
+          </td>
+          <td style="padding: 16px 8px;">
+            {% if u.api_status == 'Configured' %}
+              <span class="badge badge-success">CONFIGURED</span>
+            {% else %}
+              <span class="badge badge-secondary">NOT CONFIGURED</span>
+            {% endif %}
+          </td>
+          <td style="padding: 16px 8px; text-align: right; font-weight: 500;">{{ "{:,}".format(u.plays_count) }}</td>
+          <td style="padding: 16px 8px; text-align: right; color: var(--muted); font-size: 0.85rem;">{{ u.created_at }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+
+<!-- Platform Documentation & Architecture Guide -->
+<section class="grid info-section" style="grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 2rem;">
+  <article class="card">
+    <h3 style="margin-top: 0; color: var(--accent);">🚀 Getting Started & Registering</h3>
+    <p style="font-size: 0.95rem; line-height: 1.6; color: var(--muted);">
+      To track your listening statistics, you need to register an account by choosing a password and adding your Spotify session cookies:
+    </p>
+    <ol style="font-size: 0.9rem; line-height: 1.6; color: var(--muted); padding-left: 1.2rem;">
+      <li style="margin-bottom: 0.5rem;">Go to the <strong>Register</strong> page.</li>
+      <li style="margin-bottom: 0.5rem;">Input your email and choose a strong password.</li>
+      <li style="margin-bottom: 0.5rem;">Locate your <code>open.spotify.com</code> session cookies from developer tools (F12) under application storage.</li>
+      <li style="margin-bottom: 0.5rem;">Paste the cookies JSON or format block into the cookies field and click register.</li>
+    </ol>
+    <p style="font-size: 0.9rem; line-height: 1.6; color: var(--muted); margin-top: 1rem;">
+      Once registered, a dedicated background worker is initialized for your profile to automatically listen for track play updates.
+    </p>
+  </article>
+
+  <article class="card">
+    <h3 style="margin-top: 0; color: var(--accent);">🍪 Cookie-Based Real-time Sync</h3>
+    <p style="font-size: 0.95rem; line-height: 1.6; color: var(--muted);">
+      The primary ingestion method relies on your Spotify Web Player cookie. The background service uses this session token to mimic the active player connection:
+    </p>
+    <ul style="font-size: 0.9rem; line-height: 1.6; color: var(--muted); padding-left: 1.2rem; list-style-type: square;">
+      <li style="margin-bottom: 0.6rem;"><strong>Zero Premium Requirement:</strong> Works seamlessly for Free accounts without requiring subscription tokens.</li>
+      <li style="margin-bottom: 0.6rem;"><strong>Real-time Polling:</strong> Queries your player states every few seconds to record plays and duration stats.</li>
+      <li style="margin-bottom: 0.6rem;"><strong>Safety Guards:</strong> Includes timestamp checks to prevent cross-user contamination or invalid entries.</li>
+    </ul>
+    <p style="font-size: 0.9rem; line-height: 1.6; color: var(--muted); margin-top: 1rem;">
+      <em>Note: If you log out of Spotify globally or your session expires, the sync state will shift to <code>DEAD</code>. Simply update your cookies in the Profile settings to resume.</em>
+    </p>
+  </article>
+
+  <article class="card">
+    <h3 style="margin-top: 0; color: var(--accent);">🔑 Spotify Developer API Backfill</h3>
+    <p style="font-size: 0.95rem; line-height: 1.6; color: var(--muted);">
+      For resilience against cookie expiry or temporary downtime, you can configure Spotify Developer credentials:
+    </p>
+    <ul style="font-size: 0.9rem; line-height: 1.6; color: var(--muted); padding-left: 1.2rem; list-style-type: square;">
+      <li style="margin-bottom: 0.6rem;"><strong>Missed Plays Recovery:</strong> Scans the Spotify Web API recently-played history (up to 50 tracks) to fetch songs missed while offline.</li>
+      <li style="margin-bottom: 0.6rem;"><strong>Automatic Polling:</strong> Triggers backfill routines in the background every 15 minutes.</li>
+      <li style="margin-bottom: 0.6rem;"><strong>Duplicate Prevention:</strong> Uses timestamp-drift filters to avoid duplicating plays recorded via cookies.</li>
+    </ul>
+    <p style="font-size: 0.9rem; line-height: 1.6; color: var(--muted); margin-top: 1rem;">
+      Configure this in your <strong>Profile</strong> by pasting your Spotify Client ID and Client Secret, then authenticating via OAuth.
+    </p>
+  </article>
+</section>
+
+{% endblock %}
