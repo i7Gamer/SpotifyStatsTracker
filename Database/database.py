@@ -1454,19 +1454,29 @@ class Database:
                 if use_fallback:
                     import SpotipyFree
                     import time
-                    sp = SpotipyFree.Spotify()
-                    for album_id in target_ids:
-                        if self.backfiller_stop_event.is_set():
-                            break
-                        try:
-                            album_raw = sp.album(album_id)
-                            if album_raw:
-                                fetched_albums.append(album_raw)
-                        except Exception as fe:
-                            logger.warning("[Backfiller-%s] SpotipyFree failed for album %s: %s", self.user, album_id, fe)
-                        time.sleep(1.0)
+                    try:
+                        cookiesFile = self._materializeCookiesFile()
+                        sp = SpotipyFree.Spotify(cookiesFile=str(cookiesFile))
+                        for album_id in target_ids:
+                            if self.backfiller_stop_event.is_set():
+                                break
+                            try:
+                                album_raw = sp.album(album_id)
+                                if album_raw:
+                                    fetched_albums.append(album_raw)
+                            except Exception as fe:
+                                logger.warning("[Backfiller-%s] SpotipyFree failed for album %s: %s", self.user, album_id, fe)
+                            time.sleep(1.0)
+                    finally:
+                        cookiesFile.unlink(missing_ok=True)
+
+                    if fetched_albums:
+                        logger.info("[Backfiller-%s] SpotipyFree fetched %d album(s)", self.user, len(fetched_albums))
+                    else:
+                        logger.warning("[Backfiller-%s] SpotipyFree fallback failed to fetch any albums", self.user)
 
                 from Database.utils import convertToDatetime
+                updated_count = 0
                 for album_raw in fetched_albums:
                     album_id = album_raw.get("id")
                     release_date_str = album_raw.get("release_date")
@@ -1482,6 +1492,13 @@ class Database:
                             release_date = 0.0
 
                     self.repo.updateAlbumMetadata(album_id, release_date, total_tracks)
+                    updated_count += 1
+
+                if updated_count > 0:
+                    logger.info(
+                        "[Backfiller-%s] Updated metadata for %d album(s)",
+                        self.user, updated_count
+                    )
 
                 # 7. Release lock on the processed IDs
                 with Database._backfill_lock:
