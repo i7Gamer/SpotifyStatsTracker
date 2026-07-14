@@ -1,7 +1,9 @@
 <img width="1438" height="985" alt="SpotifyTrackerDashboardV2" src="https://github.com/user-attachments/assets/378a7f64-0bde-40eb-94e5-a1922984a942" />
 <img width="1438" height="1497" alt="SpotifyTrackerWrappedV2" src="https://github.com/user-attachments/assets/807226de-8ac9-44c5-a3ca-371777976c74" />
 <img width="1438" height="1507" alt="SpotifyTrackerChartsV2" src="https://github.com/user-attachments/assets/584e24b9-7c62-48f3-8bfb-caeab07007e9" />
-# Spotify Stats Tracker
+
+## Spotify Stats Tracker
+
 ### If you found [this repository](https://github.com/i7Gamer/SpotifyStatsTracker) useful, please give it a ⭐!
 A web application that allows users to track and analyze their Spotify listening habits and statistics **without Spotify Premium**.
 
