@@ -393,24 +393,28 @@
     ctx.arc(cx, cy, innerRadius, 0, Math.PI * 2);
     ctx.fill();
 
-    ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.font = '11px sans-serif';
-    
+
     var labelY = height - 20;
     var activeSlices = slices.filter(function(s) { return s.value > 0; });
     var stepX = width / (activeSlices.length + 1);
-    
+
     activeSlices.forEach(function(slice, idx) {
       var x = stepX * (idx + 1);
+      var percentage = Math.round((slice.value / total) * 100);
+      var text = slice.label + ': ' + slice.value + ' (' + percentage + '%)';
+
+      // Draw circle (swatch) first
       ctx.fillStyle = slice.color;
       ctx.beginPath();
-      ctx.arc(x - 50, labelY, 5, 0, Math.PI * 2);
+      ctx.arc(x - 60, labelY, 5, 0, Math.PI * 2);
       ctx.fill();
-      
+
+      // Draw text aligned to the right of the circle
       ctx.fillStyle = '#ffffff';
-      var percentage = Math.round((slice.value / total) * 100);
-      ctx.fillText(slice.label + ': ' + slice.value + ' (' + percentage + '%)', x, labelY);
+      ctx.textAlign = 'left';
+      ctx.fillText(text, x - 45, labelY);
     });
 
     canvas.onmousemove = function(evt) {
