@@ -141,15 +141,9 @@
     <button class="stats-filter-button" data-filter="top-songs">Top Songs</button>
     <button class="stats-filter-button" data-filter="top-artists">Top Artists</button>
     <button class="stats-filter-button" data-filter="top-albums">Top Albums</button>
-    {% if discoveredSongs %}
-    <button class="stats-filter-button" data-filter="discoveries-songs">Discovered Songs</button>
-    {% endif %}
-    {% if discoveredArtists %}
-    <button class="stats-filter-button" data-filter="discoveries-artists">Discovered Artists</button>
-    {% endif %}
-    {% if discoveredAlbums %}
-    <button class="stats-filter-button" data-filter="discoveries-albums">Discovered Albums</button>
-    {% endif %}
+    <button class="stats-filter-button" data-filter="discoveries-songs" {% if not discoveredSongs %}style="display: none;"{% endif %}>Discovered Songs</button>
+    <button class="stats-filter-button" data-filter="discoveries-artists" {% if not discoveredArtists %}style="display: none;"{% endif %}>Discovered Artists</button>
+    <button class="stats-filter-button" data-filter="discoveries-albums" {% if not discoveredAlbums %}style="display: none;"{% endif %}>Discovered Albums</button>
   </nav>
 
   <div data-category="top-songs">
@@ -199,47 +193,47 @@
     </section>
   </div>
 
-  {% if discoveredSongs %}
-    <div data-category="discoveries-songs">
-      <h2>Discovered Songs</h2>
-      <p class="chart-subtitle">Songs you first listened to in {{ year }}.</p>
-      <section class="track-list">
+  <div data-category="discoveries-songs" {% if not discoveredSongs %}style="display: none;"{% endif %}>
+    <h2>Discovered Songs</h2>
+    <p class="chart-subtitle">Songs you first listened to in {{ year }}.</p>
+    <section class="track-list">
+      {% if discoveredSongs %}
         {% for track in discoveredSongs %}
           {% set item_number = loop.index %}
           {% set section = 'top_songs' %}
           {% include '_track_card.html' %}
         {% endfor %}
-      </section>
-    </div>
-  {% endif %}
+      {% endif %}
+    </section>
+  </div>
 
-  {% if discoveredArtists %}
-    <div data-category="discoveries-artists">
-      <h2>Discovered Artists</h2>
-      <p class="chart-subtitle">Artists you first listened to in {{ year }}.</p>
-      <section class="track-list">
+  <div data-category="discoveries-artists" {% if not discoveredArtists %}style="display: none;"{% endif %}>
+    <h2>Discovered Artists</h2>
+    <p class="chart-subtitle">Artists you first listened to in {{ year }}.</p>
+    <section class="track-list">
+      {% if discoveredArtists %}
         {% for track in discoveredArtists %}
           {% set item_number = loop.index %}
           {% set section = 'top_artists' %}
           {% include '_track_card.html' %}
         {% endfor %}
-      </section>
-    </div>
-  {% endif %}
+      {% endif %}
+    </section>
+  </div>
 
-  {% if discoveredAlbums %}
-    <div data-category="discoveries-albums">
-      <h2>Discovered Albums</h2>
-      <p class="chart-subtitle">Albums you first listened to in {{ year }}.</p>
-      <section class="track-list">
+  <div data-category="discoveries-albums" {% if not discoveredAlbums %}style="display: none;"{% endif %}>
+    <h2>Discovered Albums</h2>
+    <p class="chart-subtitle">Albums you first listened to in {{ year }}.</p>
+    <section class="track-list">
+      {% if discoveredAlbums %}
         {% for track in discoveredAlbums %}
           {% set item_number = loop.index %}
           {% set section = 'top_albums' %}
           {% include '_track_card.html' %}
         {% endfor %}
-      </section>
-    </div>
-  {% endif %}
+      {% endif %}
+    </section>
+  </div>
 
   <script>
     window.__chartData = {
@@ -394,6 +388,8 @@
               if (list) list.innerHTML = data.discoveredSongsHtml;
               const hasItems = list && list.querySelector('.track-card') !== null;
               discSongsDiv.style.display = hasItems ? '' : 'none';
+              const btn = document.querySelector('.stats-filter-button[data-filter="discoveries-songs"]');
+              if (btn) btn.style.display = hasItems ? '' : 'none';
             }
             const discArtistsDiv = document.querySelector('[data-category="discoveries-artists"]');
             if (discArtistsDiv) {
@@ -401,6 +397,8 @@
               if (list) list.innerHTML = data.discoveredArtistsHtml;
               const hasItems = list && list.querySelector('.track-card') !== null;
               discArtistsDiv.style.display = hasItems ? '' : 'none';
+              const btn = document.querySelector('.stats-filter-button[data-filter="discoveries-artists"]');
+              if (btn) btn.style.display = hasItems ? '' : 'none';
             }
             const discAlbumsDiv = document.querySelector('[data-category="discoveries-albums"]');
             if (discAlbumsDiv) {
@@ -408,6 +406,15 @@
               if (list) list.innerHTML = data.discoveredAlbumsHtml;
               const hasItems = list && list.querySelector('.track-card') !== null;
               discAlbumsDiv.style.display = hasItems ? '' : 'none';
+              const btn = document.querySelector('.stats-filter-button[data-filter="discoveries-albums"]');
+              if (btn) btn.style.display = hasItems ? '' : 'none';
+            }
+
+            // Fallback focus: if the currently active filter button becomes hidden, select "All Stats"
+            const activeFilterBtn = document.querySelector('.stats-filter-button.active');
+            if (activeFilterBtn && activeFilterBtn.style.display === 'none') {
+              const allBtn = document.querySelector('.stats-filter-button[data-filter="all"]');
+              if (allBtn) allBtn.click();
             }
           }
 

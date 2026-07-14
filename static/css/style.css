@@ -642,7 +642,7 @@ progress::-moz-progress-bar {
 }
 
 .track-card:hover {
-  transform: translateX(6px);
+  transform: translateX(6px) !important;
   background: rgba(255, 255, 255, 0.08);
   border-color: rgba(255, 255, 255, 0.15);
   box-shadow: -4px 0 15px var(--accent-glow);
