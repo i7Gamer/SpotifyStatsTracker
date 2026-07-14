@@ -136,10 +136,20 @@ class Database:
 
 
 
-            # Sanity check: verify the timestamp makes sense (not in far future/past)
+            # Reject completely unparseable or corrupt timestamps
+            numeric_ts = timeToInt(timestamp)
+            if numeric_ts <= 0:
+                logger.warning(
+                    "Skipping track %s: timestamp %s is invalid or could not be parsed.",
+                    track.get("id") if track else "unknown",
+                    timestamp
+                )
+                had_errors = True
+                continue
+
+            # Sanity check: verify the timestamp makes sense (not in far future)
             import time as time_module
             current_time = time_module.time()
-            numeric_ts = timeToInt(timestamp)
             if numeric_ts > current_time + 86400:  # More than 1 day in future
                 logger.error(
                     "CONTAMINATION CHECK FAILED: Track %s has timestamp %s (%.0f seconds in future). "
