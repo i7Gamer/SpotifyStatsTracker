@@ -5,8 +5,11 @@
       opacity: 0.15 !important;
       pointer-events: none;
     }
-    .track-summary-grid, .track-summary-grid-3, .track-summary-card, .track-list, .chart-canvas-wrap, [data-category] {
+    .track-summary-grid, .track-summary-grid-3, .track-list, .chart-canvas-wrap, [data-category] {
       transition: opacity 0.2s ease-in-out;
+    }
+    .track-summary-card {
+      transition: opacity 0.2s ease-in-out, transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.3s cubic-bezier(0.4, 0, 0.2, 1);
     }
   </style>
   <section class="hero">
