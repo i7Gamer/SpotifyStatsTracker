@@ -350,19 +350,22 @@
       const truncate = (str, len) => str.length > len ? str.substring(0, len) + '..' : str;
 
       const drawHighlight = (label, value, y) => {
-        ctx.fillStyle = '#ffffff';
-        ctx.font = 'bold 14px sans-serif';
+        ctx.font = 'bold 17px sans-serif';
         ctx.textAlign = 'left';
-        const fullText = label + ': ' + truncate(value, 38);
-        ctx.fillText(fullText, 65, y);
+        ctx.fillStyle = accentColor;
+        ctx.fillText(label + ':', 65, y);
+
+        ctx.font = '16px sans-serif';
+        ctx.fillStyle = '#e0e0e0';
+        ctx.fillText(truncate(value, 32), 65, y + 25);
       };
 
-      drawHighlight('Top Song', btn.dataset.topsong, 510);
-      drawHighlight('Top Artist', btn.dataset.topartist, 540);
-      drawHighlight('Top Album', btn.dataset.topalbum, 570);
-      drawHighlight('Peak Day', btn.dataset.peakday + ' (' + btn.dataset.peakplays + ' plays)', 600);
-      drawHighlight('Discovered Songs', btn.dataset.discoveredsongs, 630);
-      drawHighlight('Discovered Artists', btn.dataset.discoveredartists, 660);
+      drawHighlight('Top Song', btn.dataset.topsong, 505);
+      drawHighlight('Top Artist', btn.dataset.topartist, 545);
+      drawHighlight('Top Album', btn.dataset.topalbum, 585);
+      drawHighlight('Peak Day', btn.dataset.peakday + ' (' + btn.dataset.peakplays + ' plays)', 625);
+      drawHighlight('Discovered Songs', btn.dataset.discoveredsongs, 665);
+      drawHighlight('Discovered Artists', btn.dataset.discoveredartists, 705);
 
       ctx.fillStyle = '#666666';
       ctx.font = 'italic 12px sans-serif';
