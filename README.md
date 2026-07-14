@@ -1,6 +1,7 @@
-<img width="1438" height="985" alt="SpotifyTrackerDashboardV2" src="https://github.com/user-attachments/assets/378a7f64-0bde-40eb-94e5-a1922984a942" />
-<img width="1438" height="1497" alt="SpotifyTrackerWrappedV2" src="https://github.com/user-attachments/assets/807226de-8ac9-44c5-a3ca-371777976c74" />
-<img width="1438" height="1507" alt="SpotifyTrackerChartsV2" src="https://github.com/user-attachments/assets/584e24b9-7c62-48f3-8bfb-caeab07007e9" />
+<img width="1435" height="1545" alt="SpotifyTrackerOverview" src="https://github.com/user-attachments/assets/4ec167b5-b8a8-4247-b1dd-801e2a8523dc" />
+<img width="1437" height="931" alt="SpotifyTrackerTopSongs" src="https://github.com/user-attachments/assets/b11e504d-399f-46ff-9097-239ef404c7da" />
+<img width="1438" height="2169" alt="SpotifyTrackerChartsV3" src="https://github.com/user-attachments/assets/2dbc0b6a-0d30-4527-a895-582ab30db639" />
+<img width="1437" height="1468" alt="SpotifyTrackerWrappedV3" src="https://github.com/user-attachments/assets/da01ff13-f9a3-4eb0-b2c4-bc72f16f992b" />
 
 ## Spotify Stats Tracker
 
@@ -12,9 +13,10 @@ A web application that allows users to track and analyze their Spotify listening
 - **Top Lists**: View your top songs, artists, and albums with detailed statistics
 - **Listening History**: See your listening history and track Spotify activity in real time
 - **Charts & Analytics**: Visualize your listening patterns and statistics with interactive charts
-- **Yearly Wrapped**: Get a personalized recap of your yearly listening with category filters (Top Songs, Artists, Albums, Discoveries)
+- **Yearly Wrapped**: Get a personalized recap of your yearly listening with category filters (Top Songs, Artists, Albums, Discovered Songs, Artists, Albums)
 - **Detail Pages**: Drill down into individual songs, artists, and albums to see play history and detailed stats
 - **Multi-File Import**: Import multiple Spotify data export files at once with progress tracking
+- **Overview Page**: See total data saved in the database and check list of users, their current sync state and their api backfill configuration.
 - **Auto-Import**: Automatically import files from the 'auto-import' folder with optional keyword filtering
 - **Cross-Linking**: Click on artist names to explore artist pages from any song, and album links to see album details
 
@@ -46,7 +48,8 @@ services:
       - "5000:5000"
     volumes:
       - ./Database/Data:/app/Database/Data
-      - ./Database/Users:/app/Database/Users  #< pre-1.7.0 data dir; only needed for the one restart that migrates it into Data/ above, safe to remove after that
+      - ./Database/Users:/app/Database/Users  #< pre-1.7.0 data dir; only needed for the one restart that<img width="1435" height="1545" alt="SpotifyTrackerOverview" src="https://github.com/user-attachments/assets/a9a80574-4a1d-4f9e-81b1-499b04086175" />
+ migrates it into Data/ above, safe to remove after that
       - ./autoImport:/app/autoImport  #< files put in this folder will be imported automatically
     environment:
       - FLASK_APP=wsgi.py
@@ -113,3 +116,9 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 ## Support
 
 For support, please open an issue on the GitHub repository or contact me.
+
+Additional Screenshots:
+<img width="659" height="1726" alt="SpotifyTrackerProfile" src="https://github.com/user-attachments/assets/5bfd55d5-1af6-4251-9ecd-6c13b3b3c92e" />
+<img width="1437" height="1175" alt="SpotifyTrackerArtistSubpage" src="https://github.com/user-attachments/assets/bdfc8a58-2064-4a19-a1d1-68433a1edb07" />
+<img width="1438" height="1166" alt="SpotifyTrackerSongSubpage" src="https://github.com/user-attachments/assets/82ae38ae-27c8-4311-9e7e-e1317433222d" />
+<img width="1429" height="1190" alt="SpotifyTrackerAlbumSubpage" src="https://github.com/user-attachments/assets/52ae6921-0a03-4a31-9464-dca94ef97d64" />
