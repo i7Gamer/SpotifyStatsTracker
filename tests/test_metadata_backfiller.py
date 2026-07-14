@@ -150,6 +150,108 @@ class TestMetadataBackfiller(DatabaseTestCase):
         self.assertEqual(row["total_tracks"], 8)
         mock_sp.album.assert_called_once_with("alb1")
 
+    @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value="mock_token")
+    @patch("SpotipyFree.Spotify")
+    @patch("requests.get")
+    @patch("Database.database.logger")
+    def test_backfiller_loop_403_warning_logged_only_with_debug(self, mock_logger, mock_get, mock_spotipy_class, mock_refresh):
+        import threading
+        # Setup mock 403 response
+        mock_response = MagicMock()
+        mock_response.status_code = 403
+        mock_get.return_value = mock_response
+
+        mock_sp = MagicMock()
+        mock_spotipy_class.return_value = mock_sp
+        mock_sp.album.return_value = {
+            "id": "alb1",
+            "release_date": "2021-01-01",
+            "total_tracks": 8
+        }
+
+        # Disable the default automatic backfiller
+        with patch.object(Database, "startMetadataBackfiller"):
+            db = self._makeDb({}, [])
+            
+        conn = db.repo._conn()
+        with conn:
+            conn.execute("INSERT INTO albums (id, name, url, release_date, total_tracks) VALUES ('alb1', 'Album 1', '', 0.0, 0)")
+
+        db.getUserSpotifyCredentials = MagicMock(return_value={
+            "client_id": "test_id",
+            "client_secret": "test_secret",
+            "refresh_token": "test_refresh"
+        })
+
+        # Run with FLASK_DEBUG = "1"
+        with patch.dict(os.environ, {"FLASK_DEBUG": "1"}):
+            Database._active_backfills.clear()
+            stop_mock = MagicMock()
+            calls_1 = 0
+            def is_set_1():
+                nonlocal calls_1
+                calls_1 += 1
+                return calls_1 > 1
+            stop_mock.is_set.side_effect = is_set_1
+            stop_mock.wait.return_value = False
+            db.backfiller_stop_event = stop_mock
+            db._metadataBackfillLoop()
+            
+            # Check warning was logged
+            warning_calls = [
+                args[0] for args, _ in mock_logger.warning.call_args_list
+                if "Spotify Web API returned status" in args[0]
+            ]
+            self.assertTrue(len(warning_calls) > 0)
+
+        # Reset mock
+        mock_logger.reset_mock()
+
+        # Run with FLASK_DEBUG = "true"
+        with patch.dict(os.environ, {"FLASK_DEBUG": "true"}):
+            Database._active_backfills.clear()
+            stop_mock = MagicMock()
+            calls_2 = 0
+            def is_set_2():
+                nonlocal calls_2
+                calls_2 += 1
+                return calls_2 > 1
+            stop_mock.is_set.side_effect = is_set_2
+            stop_mock.wait.return_value = False
+            db.backfiller_stop_event = stop_mock
+            db._metadataBackfillLoop()
+            
+            # Check warning was logged
+            warning_calls = [
+                args[0] for args, _ in mock_logger.warning.call_args_list
+                if "Spotify Web API returned status" in args[0]
+            ]
+            self.assertTrue(len(warning_calls) > 0)
+
+        # Reset mock
+        mock_logger.reset_mock()
+
+        # Run with FLASK_DEBUG = "0"
+        with patch.dict(os.environ, {"FLASK_DEBUG": "0"}):
+            Database._active_backfills.clear()
+            stop_mock = MagicMock()
+            calls_3 = 0
+            def is_set_3():
+                nonlocal calls_3
+                calls_3 += 1
+                return calls_3 > 1
+            stop_mock.is_set.side_effect = is_set_3
+            stop_mock.wait.return_value = False
+            db.backfiller_stop_event = stop_mock
+            db._metadataBackfillLoop()
+            
+            # Check warning was NOT logged
+            warning_calls = [
+                args[0] for args, _ in mock_logger.warning.call_args_list
+                if "Spotify Web API returned status" in args[0]
+            ]
+            self.assertEqual(len(warning_calls), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

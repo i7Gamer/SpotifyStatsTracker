@@ -96,6 +96,56 @@ class TestAppendTrackDataDedupGuard(unittest.TestCase):
             "alice", "t1", 1000.0, Database.BACKFILL_INSERT_GUARD_EXTRA_SECONDS
         )
 
+    @patch("Database.database.Client")
+    @patch("Database.database.logger")
+    def test_backfill_skipped_logs_when_debug_enabled(self, mock_logger, mock_client):
+        mock_client.formatTrack.return_value = {"id": "t1", "playedAt": 1000.0}
+        db = _bareDatabase()
+        db.repo.hasPlayNearTime.return_value = True
+
+        with patch.dict(os.environ, {"FLASK_DEBUG": "1"}):
+            result = db.appendTrackData("2026-07-13T10:00:00Z", TRACK, 180000, source="web_api_backfill")
+        
+        self.assertFalse(result)
+        # Check logger.info was called with the skip message
+        info_calls = [args[0] for args, _ in mock_logger.info.call_args_list if "Skipping backfilled play" in args[0]]
+        self.assertTrue(len(info_calls) > 0)
+
+        mock_logger.reset_mock()
+
+        with patch.dict(os.environ, {"FLASK_DEBUG": "true"}):
+            result = db.appendTrackData("2026-07-13T10:00:00Z", TRACK, 180000, source="web_api_backfill")
+        
+        self.assertFalse(result)
+        info_calls = [args[0] for args, _ in mock_logger.info.call_args_list if "Skipping backfilled play" in args[0]]
+        self.assertTrue(len(info_calls) > 0)
+
+    @patch("Database.database.Client")
+    @patch("Database.database.logger")
+    def test_backfill_skipped_does_not_log_when_debug_disabled(self, mock_logger, mock_client):
+        mock_client.formatTrack.return_value = {"id": "t1", "playedAt": 1000.0}
+        db = _bareDatabase()
+        db.repo.hasPlayNearTime.return_value = True
+
+        with patch.dict(os.environ, {"FLASK_DEBUG": "0"}):
+            result = db.appendTrackData("2026-07-13T10:00:00Z", TRACK, 180000, source="web_api_backfill")
+        
+        self.assertFalse(result)
+        # Check logger.info was NOT called with the skip message
+        info_calls = [args[0] for args, _ in mock_logger.info.call_args_list if "Skipping backfilled play" in args[0]]
+        self.assertEqual(len(info_calls), 0)
+
+        mock_logger.reset_mock()
+
+        with patch.dict(os.environ, {}):
+            if "FLASK_DEBUG" in os.environ:
+                del os.environ["FLASK_DEBUG"]
+            result = db.appendTrackData("2026-07-13T10:00:00Z", TRACK, 180000, source="web_api_backfill")
+            
+        self.assertFalse(result)
+        info_calls = [args[0] for args, _ in mock_logger.info.call_args_list if "Skipping backfilled play" in args[0]]
+        self.assertEqual(len(info_calls), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

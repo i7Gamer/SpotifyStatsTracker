@@ -33,6 +33,8 @@ except ModuleNotFoundError:
 
 logger = logging.getLogger(__name__)
 
+TRUTHY_DEBUG_VALUES = {"1", "true"}
+
 IMAGE_DOWNLOAD_WORKERS = 5   #< bounds total concurrent image downloads for the whole process, not per user
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
@@ -494,11 +496,12 @@ class Database:
             durationSeconds = (track.get("duration_ms", 0) or 0) // 1000
             tolerance = durationSeconds + self.BACKFILL_INSERT_GUARD_EXTRA_SECONDS
             if self.repo.hasPlayNearTime(self.user, track_id, formatted_track["playedAt"], tolerance):
-                logger.info(
-                    "Skipping backfilled play for track %s (%s): an existing play already exists "
-                    "within %ds (duration+60s) of played_at=%s",
-                    track_id, track_name, tolerance, formatted_track["playedAt"],
-                )
+                if os.environ.get("FLASK_DEBUG", "").lower() in TRUTHY_DEBUG_VALUES:
+                    logger.info(
+                        "Skipping backfilled play for track %s (%s): an existing play already exists "
+                        "within %ds (duration+60s) of played_at=%s",
+                        track_id, track_name, tolerance, formatted_track["playedAt"],
+                    )
                 return False
 
         created_reason = f"{source}_play (user: {self.user})"
@@ -1372,10 +1375,11 @@ class Database:
                                         fetched_albums.append(album_raw)
                                 use_fallback = False
                             else:
-                                logger.warning(
-                                    "[Backfiller-%s] Spotify Web API returned status %d. Falling back to SpotipyFree.",
-                                    self.user, resp.status_code
-                                )
+                                if os.environ.get("FLASK_DEBUG", "").lower() in TRUTHY_DEBUG_VALUES:
+                                    logger.warning(
+                                        "[Backfiller-%s] Spotify Web API returned status %d. Falling back to SpotipyFree.",
+                                        self.user, resp.status_code
+                                    )
                         else:
                             logger.warning("[Backfiller-%s] Failed to refresh access token. Falling back to SpotipyFree.", self.user)
 
