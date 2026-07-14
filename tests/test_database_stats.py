@@ -297,6 +297,54 @@ class TestGetPlayTotals(DatabaseTestCase):
         self.assertEqual(db.getPlayTotals(), (0, 0))
 
 
+class TestNewChartsStats(DatabaseTestCase):
+    def test_get_explicit_ratio(self):
+        tracks = {
+            "t1": {"id": "t1", "name": "Explicit Song", "artists": [], "explicit": 1},
+            "t2": {"id": "t2", "name": "Clean Song", "artists": [], "explicit": 0}
+        }
+        entries = [
+            {"id": "t1", "playedAt": 100, "timePlayed": 1000},
+            {"id": "t2", "playedAt": 200, "timePlayed": 2000},
+            {"id": "t2", "playedAt": 300, "timePlayed": 2000},
+        ]
+        db = self._makeDb(tracks, entries)
+        ratio = db.getExplicitRatio()
+        self.assertEqual(ratio["explicit"], 1)
+        self.assertEqual(ratio["clean"], 2)
+
+    def test_get_release_decade_distribution(self):
+        tracks = {
+            "t1": {"id": "t1", "name": "Song One", "artists": [], "releaseDate": 1609459200},  # 2021 -> 2020s
+            "t2": {"id": "t2", "name": "Song Two", "artists": [], "releaseDate": 946684800},   # 2000 -> 2000s
+            "t3": {"id": "t3", "name": "Song Three", "artists": [], "releaseDate": -315619200}  # 1960 -> 1960s
+        }
+        entries = [
+            {"id": "t1", "playedAt": 100, "timePlayed": 1000},
+            {"id": "t2", "playedAt": 200, "timePlayed": 2000},
+            {"id": "t3", "playedAt": 300, "timePlayed": 2000},
+        ]
+        db = self._makeDb(tracks, entries)
+        decades = db.getReleaseDecadeDistribution()
+        self.assertEqual(decades, {"1960s": 1, "2000s": 1, "2020s": 1})
+
+    def test_get_completion_stats(self):
+        tracks = {
+            "t1": {"id": "t1", "name": "Song One", "artists": [], "duration": 100000},
+            "t2": {"id": "t2", "name": "Song Two", "artists": [], "duration": 100000}
+        }
+        entries = [
+            {"id": "t1", "playedAt": 100, "timePlayed": 15000},
+            {"id": "t1", "playedAt": 200, "timePlayed": 85000},
+            {"id": "t2", "playedAt": 300, "timePlayed": 50000},
+        ]
+        db = self._makeDb(tracks, entries)
+        stats = db.getCompletionStats()
+        self.assertEqual(stats["skips"], 1)
+        self.assertEqual(stats["completes"], 1)
+        self.assertEqual(stats["partials"], 1)
+
+
 if __name__ == "__main__":
     import unittest
     unittest.main()

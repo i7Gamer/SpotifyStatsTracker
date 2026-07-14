@@ -51,6 +51,8 @@ def fromtimestamp(ts, tz=None):
     Cross-platform safe timestamp conversion.
     Windows cannot handle negative timestamps, so we manually offset from epoch.
     """
+    if tz is not None and not isinstance(tz, datetime.tzinfo):
+        tz = None
     if tz is None:
         tz = datetime.timezone.utc
 
@@ -62,7 +64,11 @@ def fromtimestamp(ts, tz=None):
         epoch = datetime.datetime(1970, 1, 1, tzinfo=tz)
         return epoch + datetime.timedelta(seconds=ts)
 
-def epoch():
+def epoch(tz=None):
+    if tz is not None and not isinstance(tz, datetime.tzinfo):
+        tz = None
+    if tz is None:
+        tz = getTimezone()
     return fromtimestamp(0, tz=tz)
 
 def parseIsoDatetime(value):
@@ -75,10 +81,16 @@ def parseIsoDatetime(value):
 def getTimezone():
     return tz
 
-def now():
+def now(tz=None):
+    if tz is not None and not isinstance(tz, datetime.tzinfo):
+        tz = None
+    if tz is None:
+        tz = getTimezone()
     return datetime.datetime.now(tz=tz)
 
 def toTimezone(dt: datetime.datetime, tz=None):
+    if tz is not None and not isinstance(tz, datetime.tzinfo):
+        tz = None
     if tz is None:
         tz = getTimezone()
     if dt.tzinfo is None:
@@ -86,23 +98,27 @@ def toTimezone(dt: datetime.datetime, tz=None):
     return dt.astimezone(tz)
 
 
-def startOfDay(dt: datetime.datetime = None):
-    dt = toTimezone(dt or now())
+def startOfDay(dt: datetime.datetime = None, tz=None):
+    dt = toTimezone(dt or now(tz=tz), tz=tz)
     return dt.replace(hour=0, minute=0, second=0, microsecond=0)
 
 
-def startOfWeek(dt: datetime.datetime = None):
+def startOfWeek(dt: datetime.datetime = None, tz=None):
     """Monday 00:00 local time for the week containing dt (or now())."""
-    dt = startOfDay(dt)
+    dt = startOfDay(dt, tz=tz)
     return dt - datetime.timedelta(days=dt.weekday())
 
 
-def startOfMonth(dt: datetime.datetime = None):
+def startOfMonth(dt: datetime.datetime = None, tz=None):
     """The 1st of the month, 00:00 local time, for the month containing dt (or now())."""
-    return startOfDay(dt).replace(day=1)
+    return startOfDay(dt, tz=tz).replace(day=1)
 
 
-def parseDateString(dateText: str):
+def parseDateString(dateText: str, tz=None):
+    if tz is not None and not isinstance(tz, datetime.tzinfo):
+        tz = None
+    if tz is None:
+        tz = getTimezone()
     for fmt in DATE_FORMATS:
         try:
             return datetime.datetime.strptime(str(dateText), fmt).replace(tzinfo=tz)
@@ -110,13 +126,13 @@ def parseDateString(dateText: str):
             pass
     return None
 
-def parseDatetime(value):
+def parseDatetime(value, tz=None):
     try:
         return toTimezone(parseIsoDatetime(value), tz)
     except Exception:
-        return parseDateString(value)
+        return parseDateString(value, tz=tz)
 
-def convertToDatetime(timestamp):
+def convertToDatetime(timestamp, tz=None):
     """
     Converts:
     - datetime -> normalized
@@ -127,7 +143,7 @@ def convertToDatetime(timestamp):
     - invalid -> epoch
     """
     if isinstance(timestamp, datetime.datetime):
-        return toTimezone(timestamp)
+        return toTimezone(timestamp, tz=tz)
 
     try:
         return fromtimestamp(float(timestamp), tz=tz)
@@ -135,18 +151,18 @@ def convertToDatetime(timestamp):
         pass
 
     if timestamp == "0000-00-00":
-        return epoch()
+        return epoch(tz=tz)
 
-    parsed = parseDatetime(timestamp)
-    return parsed if parsed is not None else epoch()
+    parsed = parseDatetime(timestamp, tz=tz)
+    return parsed if parsed is not None else epoch(tz=tz)
 
-def dateToString(timestamp):
+def dateToString(timestamp, tz=None):
     if type(timestamp) in (float, int):
         timestamp = fromtimestamp(timestamp, tz=tz)
     elif type(timestamp) != datetime.datetime:
-        timestamp = convertToDatetime(timestamp)
+        timestamp = convertToDatetime(timestamp, tz=tz)
 
-    timestamp = toTimezone(timestamp)
+    timestamp = toTimezone(timestamp, tz=tz)
     return timestamp.strftime("%Y-%m-%d")
 
 def timeToInt(timestampOrStr):

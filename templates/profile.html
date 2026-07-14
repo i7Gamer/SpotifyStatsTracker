@@ -18,6 +18,59 @@
       <p class="success" style="color: #4aff4a; margin-bottom: 1rem;">{{ success }}</p>
     {% endif %}
 
+    <h2>Preferences</h2>
+    <form class="login-form" method="post" action="{{ url_for('profilePage') }}" style="margin-bottom: 2rem; padding-bottom: 2rem; border-bottom: 1px solid var(--border-color, #2d2d2d);">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+      <input type="hidden" name="action" value="save_preferences">
+
+      <div class="form-group">
+        <label for="theme-selector">Visual Theme</label>
+        <select id="theme-selector" class="theme-selector" style="width: 100%; padding: 10px; border-radius: 8px; background: var(--bg-card); color: var(--text); border: 1px solid var(--border-color);">
+          <option value="theme-rose">Sunset Rose</option>
+          <option value="theme-green">Spotify Green</option>
+          <option value="theme-purple">Cyberpunk</option>
+          <option value="theme-red">Crimson</option>
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label for="defaultDashboardWindow">Default Time Window</label>
+        <select id="defaultDashboardWindow" name="default_dashboard_window" style="width: 100%; padding: 10px; border-radius: 8px; background: var(--bg-card); color: var(--text); border: 1px solid var(--border-color);">
+          <option value="today" {% if default_window == 'today' %}selected{% endif %}>Today</option>
+          <option value="day" {% if default_window == 'day' %}selected{% endif %}>Yesterday</option>
+          <option value="week" {% if default_window == 'week' %}selected{% endif %}>Last Week</option>
+          <option value="month" {% if default_window == 'month' %}selected{% endif %}>Last Month</option>
+          <option value="year" {% if default_window == 'year' %}selected{% endif %}>Last Year</option>
+          <option value="5years" {% if default_window == '5years' %}selected{% endif %}>Last 5 Years</option>
+          <option value="all time" {% if default_window == 'all time' %}selected{% endif %}>All Time</option>
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label for="timezone">Timezone Override</label>
+        <select id="timezone" name="timezone" style="width: 100%; padding: 10px; border-radius: 8px; background: var(--bg-card); color: var(--text); border: 1px solid var(--border-color);">
+          <option value="" {% if user_timezone == '' %}selected{% endif %}>Use System Default</option>
+          <option value="UTC" {% if user_timezone == 'UTC' %}selected{% endif %}>UTC</option>
+          <option value="US/Eastern" {% if user_timezone == 'US/Eastern' %}selected{% endif %}>US/Eastern (New York)</option>
+          <option value="US/Central" {% if user_timezone == 'US/Central' %}selected{% endif %}>US/Central (Chicago)</option>
+          <option value="US/Mountain" {% if user_timezone == 'US/Mountain' %}selected{% endif %}>US/Mountain (Denver)</option>
+          <option value="US/Pacific" {% if user_timezone == 'US/Pacific' %}selected{% endif %}>US/Pacific (Los Angeles)</option>
+          <option value="Europe/London" {% if user_timezone == 'Europe/London' %}selected{% endif %}>Europe/London</option>
+          <option value="Europe/Paris" {% if user_timezone == 'Europe/Paris' %}selected{% endif %}>Europe/Paris</option>
+          <option value="Europe/Berlin" {% if user_timezone == 'Europe/Berlin' %}selected{% endif %}>Europe/Berlin</option>
+          <option value="Asia/Tokyo" {% if user_timezone == 'Asia/Tokyo' %}selected{% endif %}>Asia/Tokyo</option>
+          <option value="Asia/Kolkata" {% if user_timezone == 'Asia/Kolkata' %}selected{% endif %}>Asia/Kolkata</option>
+          <option value="Asia/Singapore" {% if user_timezone == 'Asia/Singapore' %}selected{% endif %}>Asia/Singapore</option>
+          <option value="Australia/Sydney" {% if user_timezone == 'Australia/Sydney' %}selected{% endif %}>Australia/Sydney</option>
+          <option value="America/Sao_Paulo" {% if user_timezone == 'America/Sao_Paulo' %}selected{% endif %}>America/Sao_Paulo</option>
+        </select>
+      </div>
+
+      <div style="margin-top: 1.5rem;">
+        <button type="submit" class="primary-button" style="width: 100%;">Save Preferences</button>
+      </div>
+    </form>
+
     {% if feature_enabled %}
     <h2>Spotify Developer API Settings</h2>
     <p style="font-size: 0.9rem; color: #aaa; margin-bottom: 1.5rem;">
@@ -72,4 +125,17 @@
   </div>
 </div>
 
+<script>
+  (function(){
+    const themeSelector = document.getElementById('theme-selector');
+    if (!themeSelector) return;
+    const activeTheme = document.documentElement.className || 'theme-rose';
+    themeSelector.value = activeTheme;
+    themeSelector.addEventListener('change', (e) => {
+      const newTheme = e.target.value;
+      document.documentElement.className = newTheme;
+      localStorage.setItem('spotify-stats-theme', newTheme);
+    });
+  })();
+</script>
 {% endblock %}

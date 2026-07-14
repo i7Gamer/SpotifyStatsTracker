@@ -7,11 +7,37 @@
     </div>
   </section>
 
+  {% if error %}
+    <p class="error" style="color: #ff4a4a; margin-bottom: 1.5rem; text-align: center;">{{ error }}</p>
+  {% endif %}
+  {% if success %}
+    <p class="success" style="color: #4aff4a; margin-bottom: 1.5rem; text-align: center;">{{ success | safe }}</p>
+  {% endif %}
+
   <nav class="wrapped-year-badges" aria-label="Select year">
     {% for y in availableYears %}
       <a class="wrapped-year-badge{{ ' active' if y == year else '' }}" href="{{ url_for('wrappedPage', year=y, groupBy=groupBy, limit=limit) }}">{{ y }}</a>
     {% endfor %}
   </nav>
+
+  <div style="text-align: center; margin-bottom: 2rem; display: flex; justify-content: center; gap: 1rem; align-items: center;">
+    <button id="exportWrappedBtn" class="primary-button" style="background: var(--accent); color: #111; font-weight: bold; border: none; padding: 10px 20px; border-radius: 20px; cursor: pointer; display: flex; align-items: center; gap: 8px;"
+            data-year="{{ year }}"
+            data-user="{{ username }}"
+            data-plays="{{ totalPlays }}"
+            data-time="{{ totalTime }}"
+            data-songs="{{ uniqueSongsCount }}"
+            data-artists="{{ uniqueArtistsCount }}"
+            data-streak="{{ longestStreak }}"
+            data-topsong="{% if topSongs %}{{ topSongs[0]['trackName'] }} - {{ topSongs[0]['artistName'] }}{% else %}N/A{% endif %}"
+            data-topartist="{% if topArtists %}{{ topArtists[0]['artistName'] }}{% else %}N/A{% endif %}">
+      <svg width="16" height="16" fill="currentColor" viewBox="0 0 16 16" style="display:inline-block;">
+        <path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z"/>
+        <path d="M7.646 11.854a.5.5 0 0 0 .708 0l3-3a.5.5 0 0 0-.708-.708L8.5 10.293V1.5a.5.5 0 0 0-1 0v8.793L5.354 8.146a.5.5 0 1 0-.708.708l3 3z"/>
+      </svg>
+      Export Summary Card
+    </button>
+  </div>
 
   <form class="filter-section" method="get" action="{{ url_for('wrappedPage', year=year) }}">
     <input type="hidden" name="year" value="{{ year }}">
@@ -108,7 +134,19 @@
   </nav>
 
   <div data-category="top-songs">
-    <h2>Top Songs</h2>
+    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem; margin-bottom: 1.5rem;">
+      <h2>Top Songs</h2>
+      {% if has_api and is_authenticated %}
+        <form method="post" action="{{ url_for('createPlaylistRoute') }}" style="margin: 0;">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+          <input type="hidden" name="year" value="{{ year }}">
+          <input type="hidden" name="limit" value="{{ limit }}">
+          <button type="submit" class="primary-button" style="background: #1db954; color: white; border: none; font-weight: bold; border-radius: 20px; padding: 8px 16px; cursor: pointer;">
+            Export to Spotify Playlist
+          </button>
+        </form>
+      {% endif %}
+    </div>
     <section class="track-list">
       {% if topSongs %}
         {% for track in topSongs %}
@@ -234,6 +272,107 @@
 
       window.location = window.location.pathname + '?' + params.toString();
     }
+
+    document.getElementById('exportWrappedBtn')?.addEventListener('click', function() {
+      const btn = this;
+      const canvas = document.createElement('canvas');
+      canvas.width = 600;
+      canvas.height = 800;
+      const ctx = canvas.getContext('2d');
+
+      const theme = document.documentElement.className || 'theme-rose';
+      let gradStart = '#3c0b1f';
+      let gradEnd = '#121212';
+      let accentColor = '#FB717B';
+
+      if (theme === 'theme-green') {
+        gradStart = '#0b3c1d';
+        gradEnd = '#121212';
+        accentColor = '#1DB954';
+      } else if (theme === 'theme-purple') {
+        gradStart = '#2b1055';
+        gradEnd = '#121212';
+        accentColor = '#C77DFF';
+      } else if (theme === 'theme-red') {
+        gradStart = '#500505';
+        gradEnd = '#121212';
+        accentColor = '#FF4A4A';
+      }
+
+      const gradient = ctx.createLinearGradient(0, 0, 0, 800);
+      gradient.addColorStop(0, gradStart);
+      gradient.addColorStop(1, gradEnd);
+      ctx.fillStyle = gradient;
+      ctx.fillRect(0, 0, 600, 800);
+
+      ctx.strokeStyle = accentColor + '44';
+      ctx.lineWidth = 15;
+      ctx.strokeRect(15, 15, 570, 770);
+
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 36px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('SPOTIFY TRACKER', 300, 80);
+
+      ctx.fillStyle = accentColor;
+      ctx.font = 'bold 24px sans-serif';
+      ctx.fillText(btn.dataset.year + ' WRAPPED', 300, 120);
+
+      ctx.fillStyle = '#888888';
+      ctx.font = '16px sans-serif';
+      ctx.fillText('Listening Summary for @' + btn.dataset.user, 300, 150);
+
+      const drawStat = (label, val, x, y) => {
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 32px sans-serif';
+        ctx.fillText(val, x, y);
+        ctx.fillStyle = '#aaaaaa';
+        ctx.font = '14px sans-serif';
+        ctx.fillText(label, x, y + 25);
+      };
+
+      drawStat('Total Plays', btn.dataset.plays, 180, 240);
+      drawStat('Total Time', btn.dataset.time, 420, 240);
+      drawStat('Unique Songs', btn.dataset.songs, 180, 340);
+      drawStat('Unique Artists', btn.dataset.artists, 420, 340);
+      drawStat('Longest Streak', btn.dataset.streak + ' days', 300, 440);
+
+      ctx.fillStyle = 'rgba(255,255,255,0.03)';
+      ctx.fillRect(50, 520, 500, 200);
+      ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(50, 520, 500, 200);
+
+      ctx.fillStyle = accentColor;
+      ctx.font = 'bold 18px sans-serif';
+      ctx.textAlign = 'left';
+      ctx.fillText('TOP HIGHLIGHTS', 70, 555);
+
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 16px sans-serif';
+      ctx.fillText('Top Song:', 70, 595);
+      ctx.font = '16px sans-serif';
+      ctx.fillStyle = '#cccccc';
+      ctx.fillText(btn.dataset.topsong, 180, 595);
+
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 16px sans-serif';
+      ctx.fillText('Top Artist:', 70, 645);
+      ctx.font = '16px sans-serif';
+      ctx.fillStyle = '#cccccc';
+      ctx.fillText(btn.dataset.topartist, 180, 645);
+
+      ctx.fillStyle = '#666666';
+      ctx.font = 'italic 12px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('Generated via Spotify Stats Tracker', 300, 760);
+
+      const dataURL = canvas.toDataURL('image/png');
+      const link = document.createElement('a');
+      link.download = btn.dataset.user + '_' + btn.dataset.year + '_wrapped_summary.png';
+      link.href = dataURL;
+      link.click();
+    });
   </script>
   <script src="{{ url_for('static', filename='js/charts.js') }}"></script>
 {% endblock %}

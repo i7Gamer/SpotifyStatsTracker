@@ -447,12 +447,12 @@ class SpotifyDashboardApp:
         """Validate groupBy parameter, falling back to default for unrecognized values."""
         return groupBy if groupBy in ("day", "week", "month") else default
 
-    def _getDateRange(self, interval: str = None, customStart: str = None, customEnd: str = None, default="day"):
+    def _getDateRange(self, interval: str = None, customStart: str = None, customEnd: str = None, default="day", tz=None):
             """Get start and end dates based on interval or custom dates.
 
             Returns a half-open local interval [startDate, endDate).
             """
-            nowLocal = now()
+            nowLocal = now(tz=tz)
             startDate = None
 
             futureBuffer = timedelta(days=1) 
@@ -461,8 +461,8 @@ class SpotifyDashboardApp:
 
             if customStart and customEnd:
                 try:
-                    startLocal = parseDateString(customStart)
-                    endLocal = parseDateString(customEnd)
+                    startLocal = parseDateString(customStart, tz=tz)
+                    endLocal = parseDateString(customEnd, tz=tz)
                     if startLocal is None or endLocal is None:
                         raise ValueError("Invalid custom date")
 
@@ -474,12 +474,12 @@ class SpotifyDashboardApp:
                 interval = default
             if not startDate:
                 if interval == "today":
-                    startDate = convertToDatetime(startOfDay(nowLocal))
-                    endDate = convertToDatetime(startOfDay(nowLocal + timedelta(days=1)))
+                    startDate = convertToDatetime(startOfDay(nowLocal, tz=tz), tz=tz)
+                    endDate = convertToDatetime(startOfDay(nowLocal + timedelta(days=1), tz=tz), tz=tz)
 
                 elif interval == "day":
-                    startDate = convertToDatetime(startOfDay(nowLocal - timedelta(days=1)))
-                    endDate = convertToDatetime(startOfDay(nowLocal))
+                    startDate = convertToDatetime(startOfDay(nowLocal - timedelta(days=1), tz=tz), tz=tz)
+                    endDate = convertToDatetime(startOfDay(nowLocal, tz=tz), tz=tz)
 
                 elif interval == "week":
                     startDate = nowLocal - timedelta(weeks=1)
@@ -864,23 +864,40 @@ class SpotifyDashboardApp:
             feature_enabled = bool(spotify_callback_url)
 
             if request.method == "POST":
-                if not feature_enabled:
-                    abort(404)
-                client_id = request.form.get("client_id")
-                client_secret = request.form.get("client_secret")
-                if client_id and client_secret:
+                action = request.form.get("action")
+                if action == "save_preferences":
+                    default_window = request.form.get("default_dashboard_window")
+                    timezone = request.form.get("timezone")
+                    if timezone == "":
+                        timezone = None
                     try:
-                        db.updateUserSpotifyCredentials(client_id, client_secret, None)
-                        success = "Spotify Developer credentials saved! Please click 'Authorize with Spotify' to connect your account."
+                        db.repo.updateUserSettings(username, default_window, timezone)
+                        db.refreshSettings()
+                        success = "Preferences saved successfully!"
                     except Exception as e:
-                        error = f"Failed to save credentials: {str(e)}"
+                        error = f"Failed to save preferences: {str(e)}"
                 else:
-                    error = "Both Client ID and Client Secret are required."
+                    if not feature_enabled:
+                        abort(404)
+                    client_id = request.form.get("client_id")
+                    client_secret = request.form.get("client_secret")
+                    if client_id and client_secret:
+                        try:
+                            db.updateUserSpotifyCredentials(client_id, client_secret, None)
+                            success = "Spotify Developer credentials saved! Please click 'Authorize with Spotify' to connect your account."
+                        except Exception as e:
+                            error = f"Failed to save credentials: {str(e)}"
+                    else:
+                        error = "Both Client ID and Client Secret are required."
 
             creds = db.getUserSpotifyCredentials() or {}
             client_id = creds.get("client_id")
             client_secret = creds.get("client_secret")
             refresh_token = creds.get("refresh_token")
+
+            settings = db.repo.getUserSettings(username)
+            default_window = settings.get("default_dashboard_window", "day")
+            user_timezone = settings.get("timezone") or ""
 
             return render_template(
                 "profile.html",
@@ -894,7 +911,9 @@ class SpotifyDashboardApp:
                 success=success,
                 error=error,
                 section="profile",
-                feature_enabled=feature_enabled
+                feature_enabled=feature_enabled,
+                default_window=default_window,
+                user_timezone=user_timezone
             )
 
         @self.app.route("/profile/disconnect", methods=["GET"])
@@ -1077,11 +1096,18 @@ class SpotifyDashboardApp:
             if not email:
                 return redirect(url_for("login", next=request.path))
 
+            settings = db.repo.getUserSettings(username)
+            default_window = settings.get("default_dashboard_window", "day")
+
             page = self._getPageParam()
             searchQuery = request.args.get("q", "")
             customStart = request.args.get("startDate", "")
             customEnd = request.args.get("endDate", "")
-            interval = request.args.get("interval", "day")
+            
+            interval = request.args.get("interval", default_window)
+            if interval == "":
+                interval = default_window
+
             if interval == "custom" and not (customStart and customEnd):
                 interval = "all time"
 
@@ -1101,7 +1127,7 @@ class SpotifyDashboardApp:
             tracks = self._embedSongsTextElements(tracks)
 
             intervalLabel = self._getIntervalLabel(interval, customStart, customEnd)
-            startDate, endDate = self._getDateRange(interval, customStart, customEnd, default="day")
+            startDate, endDate = self._getDateRange(interval, customStart, customEnd, default="day", tz=db.tz)
             stats = db.getOverallStats(startDate, endDate) 
 
             totalDurationText = msToString(stats["totalDurationMs"])
@@ -1123,6 +1149,10 @@ class SpotifyDashboardApp:
                 endDate=customEnd,
             )
 
+            creds = db.getUserSpotifyCredentials() or {}
+            has_api = bool(creds.get("client_id") and creds.get("client_secret"))
+            is_authenticated = bool(creds.get("refresh_token"))
+
             return render_template(
                 "tracks.html",
                 tracks=tracks,
@@ -1141,6 +1171,8 @@ class SpotifyDashboardApp:
                 interval=interval,
                 customStart=customStart,
                 customEnd=customEnd,
+                has_api=has_api,
+                is_authenticated=is_authenticated,
                 **pagination,
             )
 
@@ -1157,7 +1189,7 @@ class SpotifyDashboardApp:
             customStart = request.args.get("startDate", "")
             customEnd = request.args.get("endDate", "")
 
-            startDate, endDate = self._getDateRange(interval, customStart, customEnd, default="all time")
+            startDate, endDate = self._getDateRange(interval, customStart, customEnd, default="all time", tz=db.tz)
             # totalPlays/totalMs are a whole-range aggregate regardless of search -
             # a cheap dedicated query instead of summing every song's metadata.
             totalPlays, totalMs = db.getPlayTotals(startDate, endDate)
@@ -1218,7 +1250,7 @@ class SpotifyDashboardApp:
             customStart = request.args.get("startDate", "")
             customEnd = request.args.get("endDate", "")
 
-            startDate, endDate = self._getDateRange(interval, customStart, customEnd, default="all time")
+            startDate, endDate = self._getDateRange(interval, customStart, customEnd, default="all time", tz=db.tz)
             totalPlays, totalMs = db.getPlayTotals(startDate, endDate)
             uniqueAlbums = db.getAlbumsCount(startDate, endDate)
 
@@ -1276,7 +1308,7 @@ class SpotifyDashboardApp:
             customStart = request.args.get("startDate", "")
             customEnd = request.args.get("endDate", "")
 
-            startDate, endDate = self._getDateRange(interval, customStart, customEnd, default="all time")
+            startDate, endDate = self._getDateRange(interval, customStart, customEnd, default="all time", tz=db.tz)
             # totalPlays/totalUnique/totalMs are the whole (date-range-scoped) top
             # list's totals regardless of search - mirrors getPlayTotals()'s role
             # for the songs/albums pages, computed via a dedicated SQL aggregate
@@ -1337,7 +1369,7 @@ class SpotifyDashboardApp:
                 interval = "month"
             groupBy = self._getValidGroupBy(request.args.get("groupBy", "day"))
 
-            startDate, endDate = self._getDateRange(interval, customStart, customEnd, default="month")
+            startDate, endDate = self._getDateRange(interval, customStart, customEnd, default="month", tz=db.tz)
             intervalLabel = self._getIntervalLabel(interval, customStart, customEnd)
 
             isSingleDayView = interval in ("day", "today")
@@ -1350,6 +1382,10 @@ class SpotifyDashboardApp:
             )
             heatmap = self._embedHeatmapTextElements(db.getHourOfDayHeatmap(startDate=startDate, endDate=endDate))
             artistTrend = None if isSingleDayView else db.getArtistTrend(startDate=startDate, endDate=endDate, topN=CHART_ARTIST_TREND_TOP_N, groupBy=groupBy)
+
+            explicitRatio = db.getExplicitRatio(startDate=startDate, endDate=endDate)
+            decadeDistribution = db.getReleaseDecadeDistribution(startDate=startDate, endDate=endDate)
+            completionStats = db.getCompletionStats(startDate=startDate, endDate=endDate)
 
             return render_template(
                 "charts.html",
@@ -1364,6 +1400,9 @@ class SpotifyDashboardApp:
                 timeSeries=timeSeries,
                 heatmap=heatmap,
                 artistTrend=artistTrend,
+                explicitRatio=explicitRatio,
+                decadeDistribution=decadeDistribution,
+                completionStats=completionStats,
             )
 
         @self.app.route("/wrapped", methods=["GET"])
@@ -1372,11 +1411,11 @@ class SpotifyDashboardApp:
             if not email:
                 return redirect(url_for("login", next=request.path))
 
-            nowLocal = now()
+            nowLocal = now(tz=db.tz)
             currentYear = nowLocal.year
 
             oldestEntries = db.getEntriesFromOld(count=1, fullPagination=False)
-            earliestYear = convertToDatetime(oldestEntries[0]["playedAt"]).year if oldestEntries else currentYear
+            earliestYear = convertToDatetime(oldestEntries[0]["playedAt"], tz=db.tz).year if oldestEntries else currentYear
             availableYears = list(range(currentYear, earliestYear - 1, -1))   #< most recent first, for the year badges
 
             year = self._getWrappedYearParam(availableYears, currentYear)
@@ -1426,6 +1465,13 @@ class SpotifyDashboardApp:
             discoveredArtists = self._embedArtistsTextElements(discoveredArtists)
             discoveredAlbums = self._embedAlbumsTextElements(discoveredAlbums)
 
+            creds = db.getUserSpotifyCredentials() or {}
+            has_api = bool(creds.get("client_id") and creds.get("client_secret"))
+            is_authenticated = bool(creds.get("refresh_token"))
+
+            success = request.args.get("success")
+            error = request.args.get("error")
+
             return render_template(
                 "wrapped.html",
                 username=username,
@@ -1450,7 +1496,29 @@ class SpotifyDashboardApp:
                 uniqueArtistsCount=uniqueArtistsCount,
                 discoveredSongsCount=discoveredSongsCount,
                 discoveredArtistsCount=discoveredArtistsCount,
+                has_api=has_api,
+                is_authenticated=is_authenticated,
+                success=success,
+                error=error,
             )
+
+        @self.app.route("/create-playlist", methods=["POST"])
+        def createPlaylistRoute():
+            email, username, db = get_current_user_or_redirect()
+            if not email:
+                return redirect(url_for("login"))
+
+            year = request.form.get("year", type=int)
+            limit = request.form.get("limit", type=int)
+            if not year or not limit:
+                return redirect(url_for("wrappedPage", error="Invalid playlist export request."))
+
+            try:
+                playlist_url = db.exportTopSongsToPlaylist(year, limit)
+                success_msg = f"Successfully created playlist! <a href='{playlist_url}' target='_blank' style='color:#1db954;text-decoration:underline;'>Open on Spotify</a>"
+                return redirect(url_for("wrappedPage", year=year, limit=limit, success=success_msg))
+            except Exception as e:
+                return redirect(url_for("wrappedPage", year=year, limit=limit, error=f"Playlist export failed: {str(e)}"))
 
         @self.app.route("/song/<track_id>", methods=["GET"])
         def songDetailPage(track_id):

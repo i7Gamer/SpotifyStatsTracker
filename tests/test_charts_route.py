@@ -28,6 +28,9 @@ class TestChartsRoute(unittest.TestCase):
         ]
         db.getHourOfDayHeatmap.return_value = [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
         db.getArtistTrend.return_value = {"buckets": [], "series": []}
+        db.getExplicitRatio.return_value = {"explicit": 0, "clean": 0}
+        db.getReleaseDecadeDistribution.return_value = {}
+        db.getCompletionStats.return_value = {"skips": 0, "completes": 0, "partials": 0}
         return db
 
     def _get(self, dash, db, query=""):

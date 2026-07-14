@@ -1191,6 +1191,27 @@ class Repository:
                 (clientId, clientSecret, refreshToken, username)
             )
 
+    def getUserSettings(self, username: str) -> dict:
+        conn = self._conn()
+        row = conn.execute(
+            "SELECT default_dashboard_window, timezone FROM users WHERE username=?",
+            (username,),
+        ).fetchone()
+        if row:
+            return {
+                "default_dashboard_window": row["default_dashboard_window"] or "day",
+                "timezone": row["timezone"]
+            }
+        return {"default_dashboard_window": "day", "timezone": None}
+
+    def updateUserSettings(self, username: str, default_dashboard_window: str, timezone: str | None) -> None:
+        conn = self._conn()
+        with conn:
+            conn.execute(
+                "UPDATE users SET default_dashboard_window=?, timezone=? WHERE username=?",
+                (default_dashboard_window, timezone, username),
+            )
+
     def addUserPasswordHashColumnIfMissing(self) -> None:
         """SCHEMA's CREATE TABLE IF NOT EXISTS only shapes brand-new databases -
         a users table that already existed before password_hash was added needs
@@ -1235,6 +1256,16 @@ class Repository:
                 conn.execute("ALTER TABLE plays ADD COLUMN created_at REAL")
             if "created_reason" not in columns:
                 conn.execute("ALTER TABLE plays ADD COLUMN created_reason TEXT")
+
+    def addUserSettingsColumnsIfMissing(self) -> None:
+        """Add default_dashboard_window and timezone columns to users table if missing."""
+        conn = self._conn()
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
+        with conn:
+            if "default_dashboard_window" not in columns:
+                conn.execute("ALTER TABLE users ADD COLUMN default_dashboard_window TEXT DEFAULT 'day'")
+            if "timezone" not in columns:
+                conn.execute("ALTER TABLE users ADD COLUMN timezone TEXT")
 
     def getAllUsersWithCookies(self) -> list[tuple[str, str]]:
         """(username, email) for every user who has logged in at least once -

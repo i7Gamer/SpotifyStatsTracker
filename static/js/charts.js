@@ -363,11 +363,214 @@
     }
   }
 
+  function drawDonutChart(ctx, width, height, slices, total, canvas) {
+    var cx = width / 2;
+    var cy = height / 2 - 15;
+    var outerRadius = Math.min(width, height) / 2 - 30;
+    var innerRadius = outerRadius * 0.65;
+
+    var startAngle = -Math.PI / 2;
+
+    slices.forEach(function (slice) {
+      if (slice.value === 0) return;
+      var angle = (slice.value / total) * Math.PI * 2;
+      var endAngle = startAngle + angle;
+
+      ctx.fillStyle = slice.color;
+      ctx.beginPath();
+      ctx.arc(cx, cy, outerRadius, startAngle, endAngle);
+      ctx.arc(cx, cy, innerRadius, endAngle, startAngle, true);
+      ctx.closePath();
+      ctx.fill();
+
+      slice.startAngle = startAngle;
+      slice.endAngle = endAngle;
+      startAngle = endAngle;
+    });
+
+    ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--bg-card').trim() || '#1c1c1e';
+    ctx.beginPath();
+    ctx.arc(cx, cy, innerRadius, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = '11px sans-serif';
+    
+    var labelY = height - 20;
+    var activeSlices = slices.filter(function(s) { return s.value > 0; });
+    var stepX = width / (activeSlices.length + 1);
+    
+    activeSlices.forEach(function(slice, idx) {
+      var x = stepX * (idx + 1);
+      ctx.fillStyle = slice.color;
+      ctx.beginPath();
+      ctx.arc(x - 50, labelY, 5, 0, Math.PI * 2);
+      ctx.fill();
+      
+      ctx.fillStyle = '#ffffff';
+      var percentage = Math.round((slice.value / total) * 100);
+      ctx.fillText(slice.label + ': ' + slice.value + ' (' + percentage + '%)', x, labelY);
+    });
+
+    canvas.onmousemove = function(evt) {
+      var rect = canvas.getBoundingClientRect();
+      var mx = evt.clientX - rect.left, my = evt.clientY - rect.top;
+      var dx = mx - cx, dy = my - cy;
+      var dist = Math.hypot(dx, dy);
+
+      if (dist >= innerRadius && dist <= outerRadius) {
+        var angle = Math.atan2(dy, dx);
+        if (angle < -Math.PI / 2) {
+          angle += Math.PI * 2;
+        }
+        var found = null;
+        slices.forEach(function(slice) {
+          if (slice.value > 0) {
+            var start = slice.startAngle;
+            var end = slice.endAngle;
+            if (angle >= start && angle <= end) {
+              found = slice;
+            }
+          }
+        });
+
+        if (found) {
+          var pct = ((found.value / total) * 100).toFixed(1);
+          showTooltip(evt, '<strong>' + found.label + '</strong><br>' + found.value + ' plays (' + pct + '%)');
+        } else {
+          hideTooltip();
+        }
+      } else {
+        hideTooltip();
+      }
+    };
+    canvas.onmouseleave = hideTooltip;
+  }
+
+  function renderExplicitChart() {
+    var canvas = document.getElementById('explicitChart');
+    if (!canvas) return;
+    var data = window.__chartData.explicitRatio;
+    if (!data) return;
+
+    var config = setupCanvas(canvas, 250);
+    var ctx = config.ctx, width = config.width, height = config.height;
+
+    var total = data.explicit + data.clean;
+    if (total === 0) {
+      drawEmptyState(ctx, width, height, 'No listening history in this period.');
+      return;
+    }
+
+    var slices = [
+      { label: 'Explicit', value: data.explicit, color: getAccentColor() },
+      { label: 'Clean', value: data.clean, color: '#5AC8FA' }
+    ];
+
+    drawDonutChart(ctx, width, height, slices, total, canvas);
+  }
+
+  function renderCompletionChart() {
+    var canvas = document.getElementById('completionChart');
+    if (!canvas) return;
+    var data = window.__chartData.completionStats;
+    if (!data) return;
+
+    var config = setupCanvas(canvas, 250);
+    var ctx = config.ctx, width = config.width, height = config.height;
+
+    var total = data.skips + data.completes + data.partials;
+    if (total === 0) {
+      drawEmptyState(ctx, width, height, 'No listening history in this period.');
+      return;
+    }
+
+    var slices = [
+      { label: 'Completed', value: data.completes, color: getAccentColor() },
+      { label: 'Partial', value: data.partials, color: '#FFD166' },
+      { label: 'Skipped', value: data.skips, color: '#C77DFF' }
+    ];
+
+    drawDonutChart(ctx, width, height, slices, total, canvas);
+  }
+
+  function renderDecadeChart() {
+    var canvas = document.getElementById('decadeChart');
+    if (!canvas) return;
+    var data = window.__chartData.decadeDistribution;
+    if (!data) return;
+
+    var config = setupCanvas(canvas, 300);
+    var ctx = config.ctx, width = config.width, height = config.height;
+
+    var keys = Object.keys(data);
+    if (keys.length === 0) {
+      drawEmptyState(ctx, width, height, 'No album release information in this period.');
+      return;
+    }
+
+    var values = keys.map(function(k) { return data[k]; });
+    var maxVal = Math.max.apply(null, values);
+    if (maxVal === 0) maxVal = 1;
+
+    var paddingLeft = 50, paddingRight = 20, paddingTop = 20, paddingBottom = 40;
+    var plotWidth = width - paddingLeft - paddingRight;
+    var plotHeight = height - paddingTop - paddingBottom;
+
+    drawYAxisGrid(ctx, paddingLeft, paddingTop, plotWidth, plotHeight, maxVal, function(v) { return Math.round(v); });
+
+    var barCount = keys.length;
+    var rawBarWidth = plotWidth / barCount;
+    var spacing = Math.max(rawBarWidth * 0.25, 6);
+    var barWidth = rawBarWidth - spacing;
+
+    var bars = keys.map(function(key, i) {
+      var val = data[key];
+      var barHeight = plotHeight * val / maxVal;
+      var x = paddingLeft + i * rawBarWidth + spacing / 2;
+      var y = paddingTop + plotHeight - barHeight;
+
+      ctx.fillStyle = CHART_PALETTE[i % CHART_PALETTE.length];
+      ctx.fillRect(x, y, barWidth, barHeight);
+
+      ctx.fillStyle = '#b0b0b0';
+      ctx.font = '11px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+      ctx.fillText(key, x + barWidth / 2, paddingTop + plotHeight + 8);
+
+      return { key: key, value: val, x: x, y: y, w: barWidth, h: barHeight };
+    });
+
+    canvas.onmousemove = function(evt) {
+      var rect = canvas.getBoundingClientRect();
+      var mx = evt.clientX - rect.left, my = evt.clientY - rect.top;
+      var found = null;
+
+      bars.forEach(function(bar) {
+        if (mx >= bar.x && mx <= bar.x + bar.w && my >= bar.y && my <= bar.y + bar.h) {
+          found = bar;
+        }
+      });
+
+      if (found) {
+        showTooltip(evt, '<strong>' + found.key + '</strong><br>' + found.value + ' plays');
+      } else {
+        hideTooltip();
+      }
+    };
+    canvas.onmouseleave = hideTooltip;
+  }
+
   function renderAllCharts() {
     CHART_PALETTE[0] = getAccentColor();
     renderTimeSeriesChart();
     renderHeatmap();
     renderArtistTrend();
+    renderExplicitChart();
+    renderCompletionChart();
+    renderDecadeChart();
   }
 
   renderAllCharts();

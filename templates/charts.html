@@ -69,6 +69,29 @@
       <div id="artistTrendLegend" class="chart-legend"></div>
     </div>
     {% endif %}
+
+    <div class="chart-section-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 2rem; margin-top: 2rem;">
+      <div class="chart-section">
+        <h2>Explicit vs Clean Content</h2>
+        <div class="chart-canvas-wrap" style="height: 250px;">
+          <canvas id="explicitChart"></canvas>
+        </div>
+      </div>
+
+      <div class="chart-section">
+        <h2>Completion vs Skips</h2>
+        <div class="chart-canvas-wrap" style="height: 250px;">
+          <canvas id="completionChart"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <div class="chart-section" style="margin-top: 2rem;">
+      <h2>Release Era Distribution</h2>
+      <div class="chart-canvas-wrap" style="height: 300px;">
+        <canvas id="decadeChart"></canvas>
+      </div>
+    </div>
   </section>
 
   <script>
@@ -76,6 +99,9 @@
       timeSeries: {{ timeSeries | tojson }},
       heatmap: {{ heatmap | tojson }},
       artistTrend: {{ artistTrend | tojson }},
+      explicitRatio: {{ explicitRatio | tojson }},
+      decadeDistribution: {{ decadeDistribution | tojson }},
+      completionStats: {{ completionStats | tojson }},
       groupBy: {{ groupBy | tojson }},
       interval: {{ interval | tojson }}
     };

@@ -1509,5 +1509,30 @@ class TestImportProgress(RepositoryTestCase):
         self.assertIsNone(self.repo.readProgress("bob"))
 
 
+class TestUserSettings(RepositoryTestCase):
+    def setUp(self):
+        super().setUp()
+        self.repo.upsertUser("alice", "alice@example.com")
+
+    def test_default_settings_returned_for_new_user(self):
+        settings = self.repo.getUserSettings("alice")
+        self.assertEqual(settings["default_dashboard_window"], "day")
+        self.assertIsNone(settings["timezone"])
+
+    def test_update_and_get_settings(self):
+        self.repo.updateUserSettings("alice", "month", "Europe/London")
+        settings = self.repo.getUserSettings("alice")
+        self.assertEqual(settings["default_dashboard_window"], "month")
+        self.assertEqual(settings["timezone"], "Europe/London")
+
+    def test_settings_scoped_per_user(self):
+        self.repo.upsertUser("bob", "bob@example.com")
+        self.repo.updateUserSettings("alice", "week", "Asia/Tokyo")
+        
+        bob_settings = self.repo.getUserSettings("bob")
+        self.assertEqual(bob_settings["default_dashboard_window"], "day")
+        self.assertIsNone(bob_settings["timezone"])
+
+
 if __name__ == "__main__":
     unittest.main()

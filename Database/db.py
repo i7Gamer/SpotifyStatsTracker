@@ -83,7 +83,9 @@ CREATE TABLE IF NOT EXISTS users (
     created_at            REAL NOT NULL,
     spotify_client_id     TEXT,
     spotify_client_secret TEXT,
-    spotify_refresh_token TEXT
+    spotify_refresh_token TEXT,
+    default_dashboard_window TEXT DEFAULT 'day',
+    timezone              TEXT
 );
 
 -- Per-user play history. This is the only high-cardinality, per-user table -

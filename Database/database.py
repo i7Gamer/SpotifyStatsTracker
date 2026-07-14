@@ -90,6 +90,8 @@ class Database:
         self.repo = Repository(dbPath) if dbPath is not None else Repository()
         self.repo.upsertUser(user, email)
 
+        self.refreshSettings()
+
         self.autoImportFolderPath = self.baseDir / ".." / "autoImport" / self.user
 
         filterKeyword = os.environ.get("IMPORT_KEYWORD", None)
@@ -98,6 +100,16 @@ class Database:
                                          importCallback=self.importHistory,
                                          pollInterval=5,
                                          keyword=filterKeyword)
+
+    def refreshSettings(self) -> None:
+        from zoneinfo import ZoneInfo
+        import Database.utils as utils
+        try:
+            self.settings = self.repo.getUserSettings(self.user)
+            tz_name = self.settings.get("timezone")
+            self.tz = ZoneInfo(tz_name) if tz_name else utils.getTimezone()
+        except Exception:
+            self.tz = utils.getTimezone()
 
     def _addToDatabaseFromListener(self, data) -> None:
         """Record plays from the listener. Includes validation to detect cross-user
@@ -645,6 +657,101 @@ class Database:
         endTs = endDate.timestamp() if endDate else None
         return startTs, endTs
 
+    def getExplicitRatio(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> dict:
+        startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
+        conn = self.repo._conn()
+        query = """
+            SELECT t.explicit, COUNT(*) as count
+            FROM plays p
+            JOIN tracks t ON p.track_id = t.id
+            WHERE p.username = ?
+              AND (? IS NULL OR p.played_at >= ?)
+              AND (? IS NULL OR p.played_at < ?)
+            GROUP BY t.explicit
+        """
+        rows = conn.execute(query, (self.user, startTs, startTs, endTs, endTs)).fetchall()
+        
+        explicit_count = 0
+        clean_count = 0
+        for row in rows:
+            if row["explicit"]:
+                explicit_count = row["count"]
+            else:
+                clean_count = row["count"]
+                
+        return {"explicit": explicit_count, "clean": clean_count}
+
+    def getReleaseDecadeDistribution(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> dict:
+        startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
+        conn = self.repo._conn()
+        query = """
+            SELECT al.release_date, COUNT(*) as count
+            FROM plays p
+            JOIN tracks t ON p.track_id = t.id
+            JOIN albums al ON t.album_id = al.id
+            WHERE p.username = ?
+              AND (? IS NULL OR p.played_at >= ?)
+              AND (? IS NULL OR p.played_at < ?)
+              AND al.release_date IS NOT NULL
+            GROUP BY al.release_date
+        """
+        rows = conn.execute(query, (self.user, startTs, startTs, endTs, endTs)).fetchall()
+        
+        from Database.utils import fromtimestamp
+        decades = {}
+        for row in rows:
+            release_ts = row["release_date"]
+            count = row["count"]
+            try:
+                dt = fromtimestamp(release_ts, tz=self.tz)
+                year = dt.year
+                decade = (year // 10) * 10
+                decade_label = f"{decade}s"
+                decades[decade_label] = decades.get(decade_label, 0) + count
+            except Exception:
+                pass
+                
+        sorted_decades = dict(sorted(decades.items()))
+        return sorted_decades
+
+    def getCompletionStats(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> dict:
+        startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
+        conn = self.repo._conn()
+        query = """
+            SELECT p.time_played, t.duration_ms, COUNT(*) as count
+            FROM plays p
+            JOIN tracks t ON p.track_id = t.id
+            WHERE p.username = ?
+              AND (? IS NULL OR p.played_at >= ?)
+              AND (? IS NULL OR p.played_at < ?)
+            GROUP BY p.time_played, t.duration_ms
+        """
+        rows = conn.execute(query, (self.user, startTs, startTs, endTs, endTs)).fetchall()
+        
+        skips = 0
+        completes = 0
+        partials = 0
+        
+        for row in rows:
+            time_played = row["time_played"]
+            duration_ms = row["duration_ms"]
+            count = row["count"]
+            
+            if duration_ms <= 0:
+                if time_played < 30000:
+                    skips += count
+                else:
+                    completes += count
+            else:
+                if time_played < 30000:
+                    skips += count
+                elif time_played >= (duration_ms * 0.8):
+                    completes += count
+                else:
+                    partials += count
+                    
+        return {"skips": skips, "completes": completes, "partials": partials}
+
     def getSongsStats(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None,
                        sortBy: str = "plays", limit: int | None = None, offset: int = 0,
                        trackId: str | None = None, artistId: str | None = None,
@@ -1166,6 +1273,80 @@ class Database:
                 "last_error": self.listener_last_error,
                 "seconds_since_last_poll": seconds_since_last_poll,
             }
+
+    def exportTopSongsToPlaylist(self, year: int, limit: int) -> str | None:
+        """Export the top songs of the given year to a new Spotify playlist.
+        Returns the Spotify URL of the created playlist, or None if failed."""
+        import requests
+        from Database.Listeners.spotifyListener import _refresh_spotify_access_token, _get_current_user_from_web_api
+        from Database.utils import now, convertToDatetime
+
+        creds = self.getUserSpotifyCredentials()
+        if not creds or not creds.get("client_id") or not creds.get("refresh_token"):
+            raise ValueError("Spotify API is not fully configured or authorized.")
+
+        # 1. Refresh access token
+        access_token = _refresh_spotify_access_token(creds["client_id"], creds["client_secret"], creds["refresh_token"])
+        if not access_token:
+            raise ValueError("Failed to refresh Spotify access token.")
+
+        # 2. Get current Spotify user ID
+        user_info = _get_current_user_from_web_api(access_token)
+        if not user_info or "id" not in user_info:
+            raise ValueError("Failed to retrieve Spotify user ID.")
+        spotify_user_id = user_info["id"]
+
+        # 3. Fetch top songs for the year
+        nowLocal = now(tz=self.tz)
+        yearStart = nowLocal.replace(year=year, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+        yearEnd = nowLocal.replace(year=year + 1, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+
+        topSongs = self.getTopSongs(startDate=yearStart, endDate=yearEnd, by="plays", limit=limit)
+        if not topSongs:
+            raise ValueError(f"No top songs found for the year {year} to export.")
+
+        track_uris = []
+        for track in topSongs:
+            track_id = track.get("id")
+            if track_id:
+                track_uris.append(f"spotify:track:{track_id}")
+
+        if not track_uris:
+            raise ValueError("No valid tracks to add to the playlist.")
+
+        # 4. Create the private playlist
+        playlist_name = f"My Top Songs {year}"
+        playlist_desc = f"Top {limit} songs of {year} - Exported from Spotify Stats Tracker"
+        
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json"
+        }
+        
+        create_url = f"https://api.spotify.com/v1/users/{spotify_user_id}/playlists"
+        payload = {
+            "name": playlist_name,
+            "description": playlist_desc,
+            "public": False
+        }
+        
+        resp = requests.post(create_url, json=payload, headers=headers, timeout=10)
+        if resp.status_code not in (200, 201):
+            raise ValueError(f"Failed to create playlist: {resp.status_code} {resp.text}")
+        
+        playlist_data = resp.json()
+        playlist_id = playlist_data["id"]
+        playlist_url = playlist_data.get("external_urls", {}).get("spotify")
+
+        # 5. Add tracks to the playlist
+        add_url = f"https://api.spotify.com/v1/playlists/{playlist_id}/tracks"
+        for i in range(0, len(track_uris), 100):
+            batch = track_uris[i:i+100]
+            add_resp = requests.post(add_url, json={"uris": batch}, headers=headers, timeout=10)
+            if add_resp.status_code not in (200, 201):
+                raise ValueError(f"Failed to add tracks to playlist: {add_resp.status_code} {add_resp.text}")
+
+        return playlist_url
 
     def stop(self):
         if self.listener is not None:

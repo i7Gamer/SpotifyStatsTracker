@@ -51,14 +51,6 @@
         <a class="{{ 'active' if section == 'wrapped' }}" {% if section == 'wrapped' %}aria-current="page"{% endif %} href="{{ url_for('wrappedPage') }}">Wrapped</a>
         <a class="{{ 'active' if section == 'import' }}" {% if section == 'import' %}aria-current="page"{% endif %} href="{{ url_for('importPage') }}">Import</a>
         <a class="{{ 'active' if section == 'profile' }}" {% if section == 'profile' %}aria-current="page"{% endif %} href="{{ url_for('profilePage') }}">Profile</a>
-        <div class="theme-select-container">
-          <select id="theme-selector" class="theme-selector" aria-label="Select Theme">
-            <option value="theme-rose">Sunset Rose</option>
-            <option value="theme-green">Spotify Green</option>
-            <option value="theme-purple">Cyberpunk</option>
-            <option value="theme-red">Crimson</option>
-          </select>
-        </div>
       </nav>
     </header>
 
@@ -226,20 +218,6 @@
         setInterval(updateListenerStatus, 10 * 1000);
       })();
 
-      (function(){
-        const themeSelector = document.getElementById('theme-selector');
-        if (!themeSelector) return;
-
-        // Set initial selected value of dropdown
-        const activeTheme = document.documentElement.className || 'theme-rose';
-        themeSelector.value = activeTheme;
-
-        themeSelector.addEventListener('change', (e) => {
-          const newTheme = e.target.value;
-          document.documentElement.className = newTheme;
-          localStorage.setItem('spotify-stats-theme', newTheme);
-        });
-      })();
 
       (function(){
         const navToggle = document.getElementById('nav-toggle');
