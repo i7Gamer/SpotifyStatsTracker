@@ -2,11 +2,11 @@
 {% block content %}
   <style>
     .wrapped-loading-fade {
-      opacity: 0.35 !important;
+      opacity: 0.15 !important;
       pointer-events: none;
     }
-    .track-summary-card, .track-list, .chart-canvas-wrap, [data-category] {
-      transition: opacity 0.25s ease-in-out;
+    .track-summary-grid, .track-summary-grid-3, .track-summary-card, .track-list, .chart-canvas-wrap, [data-category] {
+      transition: opacity 0.2s ease-in-out;
     }
   </style>
   <section class="hero">
@@ -301,11 +301,23 @@
       const hiddenYear = document.querySelector('form.filter-section input[name="year"]');
       if (hiddenYear) hiddenYear.value = year;
 
-      fetch(`/wrapped?year=${year}&groupBy=${groupBy}&limit=${limit}&ajax=true&type=${updateType}`)
-        .then(response => response.json())
-        .then(data => {
+      const delayPromise = new Promise(resolve => setTimeout(resolve, 200));
+      const fetchPromise = fetch(`/wrapped?year=${year}&groupBy=${groupBy}&limit=${limit}&ajax=true&type=${updateType}`)
+        .then(response => response.json());
+
+      Promise.all([fetchPromise, delayPromise])
+        .then(([data]) => {
           if (data.error) {
             console.error(data.error);
+            targets.forEach(t => {
+              if (t) {
+                if (t instanceof NodeList) {
+                  t.forEach(el => el.classList.remove('wrapped-loading-fade'));
+                } else {
+                  t.classList.remove('wrapped-loading-fade');
+                }
+              }
+            });
             return;
           }
 
@@ -403,6 +415,17 @@
             window.__chartData.interval = groupBy;
             renderTimeSeriesChart();
           }
+
+          // Trigger smooth cover art fade-ins for newly injected track elements
+          document.querySelectorAll('img.track-cover').forEach(img => {
+            if (img.complete) {
+              img.classList.add('loaded');
+            } else {
+              img.addEventListener('load', function() {
+                img.classList.add('loaded');
+              });
+            }
+          });
 
           // 5. Remove transition fades
           targets.forEach(t => {
