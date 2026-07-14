@@ -4,23 +4,30 @@
   {% set section = section if section is defined else 'dashboard' %}
   {% if item_number %}<div class="track-number">{{ item_number }}</div>{% endif %}
   
+  {% if section == 'top_artists' %}
+    {% set detailUrl = url_for('artistDetailPage', artist_id=track.get('id')) if track.get('id') else '#' %}
+  {% elif section == 'top_albums' %}
+    {% set detailUrl = url_for('albumDetailPage', album_id=track.get('id')) if track.get('id') else '#' %}
+  {% else %}
+    {% set detailUrl = url_for('songDetailPage', track_id=track.get('id')) if track.get('id') else '#' %}
+  {% endif %}
+
+  {% if track.get('id') %}
+    <a href="{{ detailUrl }}" class="track-cover-link">
+  {% endif %}
   <!-- Image path depends on section -->
   {% if section == 'top_artists' %}
     <img class="track-cover" loading="lazy" src="/img/{{ username }}/artists/{{ imgId }}.jpeg" alt="Artist image for {{ track.get('name','') }}" onerror="this.onerror=null;this.src=window.PLACEHOLDER_IMG;" />
   {% else %}
     <img class="track-cover" loading="lazy" src="/img/{{ username }}/tracks/{{ imgId }}.jpeg" alt="Album cover for {{ track.get('name','') }}" onerror="this.onerror=null;this.src=window.PLACEHOLDER_IMG;" />
   {% endif %}
+  {% if track.get('id') %}
+    </a>
+  {% endif %}
   
   <div class="track-details">
     <div class="track-details-top">
       <div class="track-header">
-        {% if section == 'top_artists' %}
-          {% set detailUrl = url_for('artistDetailPage', artist_id=track.get('id')) %}
-        {% elif section == 'top_albums' %}
-          {% set detailUrl = url_for('albumDetailPage', album_id=track.get('id')) %}
-        {% else %}
-          {% set detailUrl = url_for('songDetailPage', track_id=track.get('id')) %}
-        {% endif %}
         {% if track.get('id') %}
         <a href="{{ detailUrl }}">
           <h3>{{ track.get('name', '') }}</h3>
