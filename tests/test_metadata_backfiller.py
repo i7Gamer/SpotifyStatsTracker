@@ -97,6 +97,59 @@ class TestMetadataBackfiller(DatabaseTestCase):
         # Clean up
         Database._active_backfills.clear()
 
+    @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value=None)
+    @patch("SpotipyFree.Spotify")
+    @patch("requests.get")
+    def test_backfiller_loop_fallback_to_spotipy_free(self, mock_get, mock_spotipy_class, mock_refresh):
+        # 1. Setup mock response for official API: return 403 Forbidden
+        mock_response = MagicMock()
+        mock_response.status_code = 403
+        mock_get.return_value = mock_response
+
+        # 2. Setup mock for SpotipyFree.Spotify
+        mock_sp = MagicMock()
+        mock_spotipy_class.return_value = mock_sp
+        
+        # Use a real event so we can trigger shutdown naturally
+        import threading
+        event = threading.Event()
+        
+        def mock_album_impl(album_id):
+            event.set()  # Signal loop to stop after this fetch
+            return {
+                "id": "alb1",
+                "release_date": "2021-01-01",
+                "total_tracks": 8
+            }
+        mock_sp.album.side_effect = mock_album_impl
+
+        # Disable the default automatic backfiller
+        with patch.object(Database, "startMetadataBackfiller"):
+            db = self._makeDb({}, [])
+            
+        conn = db.repo._conn()
+        with conn:
+            conn.execute("INSERT INTO albums (id, name, url, release_date, total_tracks) VALUES ('alb1', 'Album 1', '', 0.0, 0)")
+
+        # Mock credentials
+        db.getUserSpotifyCredentials = MagicMock(return_value={
+            "client_id": "test_id",
+            "client_secret": "test_secret",
+            "refresh_token": "test_refresh"
+        })
+
+        db.backfiller_stop_event = event
+        event.wait = MagicMock(return_value=False)
+
+        # Run backfiller
+        db._metadataBackfillLoop()
+
+        # Verify alb1 was updated via SpotipyFree fallback
+        row = conn.execute("SELECT release_date, total_tracks FROM albums WHERE id='alb1'").fetchone()
+        self.assertGreater(row["release_date"], 0)
+        self.assertEqual(row["total_tracks"], 8)
+        mock_sp.album.assert_called_once_with("alb1")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1395,12 +1395,8 @@ class Database:
         while not self.backfiller_stop_event.is_set():
             target_ids = []
             try:
-                # 2. Check if Spotify API credentials are configured
+                # 2. Get Spotify API credentials if configured
                 creds = self.getUserSpotifyCredentials()
-                if not creds or not creds.get("client_id") or not creds.get("refresh_token"):
-                    if self.backfiller_stop_event.wait(300):
-                        break
-                    continue
 
                 # 3. Query up to 50 missing album IDs
                 missing_ids = self.repo.getAlbumsMissingMetadata(limit=50)
@@ -1424,46 +1420,68 @@ class Database:
                         break
                     continue
 
-                # 6. Fetch detailed metadata from Spotify Web API
+                # 6. Fetch detailed metadata
                 logger.info("[Backfiller-%s] Fetching metadata for %d albums", self.user, len(target_ids))
-                from Database.Listeners.spotifyListener import _refresh_spotify_access_token
-                import requests
-                from Database.utils import convertToDatetime
+                fetched_albums = []
+                use_fallback = True
 
-                access_token = _refresh_spotify_access_token(
-                    creds["client_id"], creds["client_secret"], creds["refresh_token"]
-                )
-                if access_token:
-                    headers = {"Authorization": f"Bearer {access_token}"}
-                    ids_str = ",".join(target_ids)
-                    url = f"https://api.spotify.com/v1/albums?ids={ids_str}"
-                    resp = requests.get(url, headers=headers, timeout=10)
-                    if resp.status_code == 200:
-                        albums_data = resp.json().get("albums") or []
-                        for album_raw in albums_data:
-                            if not album_raw:
-                                continue
-                            album_id = album_raw.get("id")
-                            release_date_str = album_raw.get("release_date")
-                            total_tracks = album_raw.get("total_tracks", 0)
-                            
-                            if release_date_str == "0000-00-00" or not release_date_str:
-                                release_date = 0.0
-                            else:
-                                try:
-                                    dt = convertToDatetime(release_date_str)
-                                    release_date = dt.timestamp() if dt else 0.0
-                                except Exception:
-                                    release_date = 0.0
-                            
-                            self.repo.updateAlbumMetadata(album_id, release_date, total_tracks)
+                if creds and creds.get("client_id") and creds.get("refresh_token"):
+                    from Database.Listeners.spotifyListener import _refresh_spotify_access_token
+                    import requests
+
+                    access_token = _refresh_spotify_access_token(
+                        creds["client_id"], creds["client_secret"], creds["refresh_token"]
+                    )
+                    if access_token:
+                        headers = {"Authorization": f"Bearer {access_token}"}
+                        ids_str = ",".join(target_ids)
+                        url = f"https://api.spotify.com/v1/albums?ids={ids_str}"
+                        resp = requests.get(url, headers=headers, timeout=10)
+                        if resp.status_code == 200:
+                            albums_data = resp.json().get("albums") or []
+                            for album_raw in albums_data:
+                                if album_raw:
+                                    fetched_albums.append(album_raw)
+                            use_fallback = False
+                        else:
+                            logger.warning(
+                                "[Backfiller-%s] Spotify Web API returned status %d. Falling back to SpotipyFree.",
+                                self.user, resp.status_code
+                            )
                     else:
-                        logger.error(
-                            "[Backfiller-%s] Spotify API returned error status %d: %s",
-                            self.user, resp.status_code, resp.text
-                        )
-                else:
-                    logger.error("[Backfiller-%s] Failed to refresh access token for backfiller", self.user)
+                        logger.warning("[Backfiller-%s] Failed to refresh access token. Falling back to SpotipyFree.", self.user)
+
+                if use_fallback:
+                    import SpotipyFree
+                    import time
+                    sp = SpotipyFree.Spotify()
+                    for album_id in target_ids:
+                        if self.backfiller_stop_event.is_set():
+                            break
+                        try:
+                            album_raw = sp.album(album_id)
+                            if album_raw:
+                                fetched_albums.append(album_raw)
+                        except Exception as fe:
+                            logger.warning("[Backfiller-%s] SpotipyFree failed for album %s: %s", self.user, album_id, fe)
+                        time.sleep(1.0)
+
+                from Database.utils import convertToDatetime
+                for album_raw in fetched_albums:
+                    album_id = album_raw.get("id")
+                    release_date_str = album_raw.get("release_date")
+                    total_tracks = album_raw.get("total_tracks", 0)
+
+                    if release_date_str == "0000-00-00" or not release_date_str:
+                        release_date = 0.0
+                    else:
+                        try:
+                            dt = convertToDatetime(release_date_str)
+                            release_date = dt.timestamp() if dt else 0.0
+                        except Exception:
+                            release_date = 0.0
+
+                    self.repo.updateAlbumMetadata(album_id, release_date, total_tracks)
 
                 # 7. Release lock on the processed IDs
                 with Database._backfill_lock:
