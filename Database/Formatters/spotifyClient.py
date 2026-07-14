@@ -36,9 +36,12 @@ class Client:
     @staticmethod
     def embedPlayInfo(track, timestamp, timePlayed):
         playedAtTimestamp = timeToInt(timestamp)
-        
+
         track["playedAt"] = playedAtTimestamp
-        track["timePlayed"] = min(timePlayed, track["duration"])   #< sometimes spotipyFree returns extremely large (wrong) values (I think it has to do with pause)
+        if track.get("duration", 0) > 0:
+            track["timePlayed"] = min(timePlayed, track["duration"])   #< sometimes spotipyFree returns extremely large (wrong) values
+        else:
+            track["timePlayed"] = timePlayed
         return track
     
     @staticmethod
