@@ -1536,24 +1536,6 @@ class SpotifyDashboardApp:
                 error=error,
             )
 
-        @self.app.route("/create-playlist", methods=["POST"])
-        def createPlaylistRoute():
-            email, username, db = get_current_user_or_redirect()
-            if not email:
-                return redirect(url_for("login"))
-
-            year = request.form.get("year", type=int)
-            limit = request.form.get("limit", type=int)
-            if not year or not limit:
-                return redirect(url_for("wrappedPage", error="Invalid playlist export request."))
-
-            try:
-                playlist_url = db.exportTopSongsToPlaylist(year, limit)
-                success_msg = f"Successfully created playlist! <a href='{playlist_url}' target='_blank' style='color:#1db954;text-decoration:underline;'>Open on Spotify</a>"
-                return redirect(url_for("wrappedPage", year=year, limit=limit, success=success_msg))
-            except Exception as e:
-                return redirect(url_for("wrappedPage", year=year, limit=limit, error=f"Playlist export failed: {str(e)}"))
-
         @self.app.route("/song/<track_id>", methods=["GET"])
         def songDetailPage(track_id):
             email, username, db = get_current_user_or_redirect()

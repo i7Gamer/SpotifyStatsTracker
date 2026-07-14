@@ -136,16 +136,6 @@
   <div data-category="top-songs">
     <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem; margin-bottom: 1.5rem;">
       <h2>Top Songs</h2>
-      {% if has_api and is_authenticated %}
-        <form method="post" action="{{ url_for('createPlaylistRoute') }}" style="margin: 0;">
-          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
-          <input type="hidden" name="year" value="{{ year }}">
-          <input type="hidden" name="limit" value="{{ limit }}">
-          <button type="submit" class="primary-button" style="background: #1db954; color: white; border: none; font-weight: bold; border-radius: 20px; padding: 8px 16px; cursor: pointer;">
-            Export to Spotify Playlist
-          </button>
-        </form>
-      {% endif %}
     </div>
     <section class="track-list">
       {% if topSongs %}
