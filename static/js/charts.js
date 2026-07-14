@@ -492,8 +492,8 @@
 
     var slices = [
       { label: 'Completed', value: data.completes, color: getAccentColor() },
-      { label: 'Partial', value: data.partials, color: '#FFD166' },
-      { label: 'Skipped', value: data.skips, color: '#C77DFF' }
+      { label: 'Partial', value: data.partials, color: '#5DD97C' },
+      { label: 'Skipped', value: data.skips, color: '#5AC8FA' }
     ];
 
     drawDonutChart(ctx, width, height, slices, total, canvas);
