@@ -25,7 +25,7 @@
 
       <div class="form-group">
         <label for="theme-selector">Visual Theme</label>
-        <select id="theme-selector" class="theme-selector" style="width: 100%; padding: 10px; border-radius: 8px; background: var(--bg-card); color: var(--text); border: 1px solid var(--border-color);">
+        <select id="theme-selector" class="theme-selector" style="width: 100%; box-sizing: border-box; height: 38px;">
           <option value="theme-rose">Sunset Rose</option>
           <option value="theme-green">Spotify Green</option>
           <option value="theme-purple">Cyberpunk</option>
@@ -35,7 +35,7 @@
 
       <div class="form-group">
         <label for="defaultDashboardWindow">Default Time Window</label>
-        <select id="defaultDashboardWindow" name="default_dashboard_window" style="width: 100%; padding: 10px; border-radius: 8px; background: var(--bg-card); color: var(--text); border: 1px solid var(--border-color);">
+        <select id="defaultDashboardWindow" name="default_dashboard_window" class="theme-selector" style="width: 100%; box-sizing: border-box; height: 38px;">
           <option value="today" {% if default_window == 'today' %}selected{% endif %}>Today</option>
           <option value="day" {% if default_window == 'day' %}selected{% endif %}>Yesterday</option>
           <option value="week" {% if default_window == 'week' %}selected{% endif %}>Last Week</option>
@@ -48,7 +48,7 @@
 
       <div class="form-group">
         <label for="timezone">Timezone Override</label>
-        <select id="timezone" name="timezone" style="width: 100%; padding: 10px; border-radius: 8px; background: var(--bg-card); color: var(--text); border: 1px solid var(--border-color);">
+        <select id="timezone" name="timezone" class="theme-selector" style="width: 100%; box-sizing: border-box; height: 38px;">
           <option value="" {% if user_timezone == '' %}selected{% endif %}>Use System Default</option>
           <option value="UTC" {% if user_timezone == 'UTC' %}selected{% endif %}>UTC</option>
           <option value="US/Eastern" {% if user_timezone == 'US/Eastern' %}selected{% endif %}>US/Eastern (New York)</option>

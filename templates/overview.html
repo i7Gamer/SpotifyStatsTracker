@@ -41,6 +41,22 @@
       <h2 class="summary-value" style="font-size: 2.2rem; margin: 0.5rem 0 0 0;">{{ "{:,}".format(global_stats.albums) }}</h2>
     </div>
   </article>
+
+  <article class="card stats-card">
+    <div class="stats-card-icon">⏱️</div>
+    <div class="stats-card-info">
+      <span class="stats-card-label">Total Time Tracked</span>
+      <h2 class="summary-value" style="font-size: 2.2rem; margin: 0.5rem 0 0 0;">{{ global_time_text }}</h2>
+    </div>
+  </article>
+
+  <article class="card stats-card">
+    <div class="stats-card-icon">💾</div>
+    <div class="stats-card-info">
+      <span class="stats-card-label">Database Storage</span>
+      <h2 class="summary-value" style="font-size: 2.2rem; margin: 0.5rem 0 0 0;">{{ global_size_text }}</h2>
+    </div>
+  </article>
 </section>
 
 <!-- Users Status Monitor (Authenticated Only) -->
@@ -55,7 +71,6 @@
       <thead>
         <tr style="border-bottom: 2px solid var(--glass-border); color: var(--muted); font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.05em;">
           <th style="padding: 12px 8px;">Username</th>
-          <th style="padding: 12px 8px;">Email Address</th>
           <th style="padding: 12px 8px;">Sync Status</th>
           <th style="padding: 12px 8px;">API Backfill</th>
           <th style="padding: 12px 8px; text-align: right;">Total Plays</th>
@@ -66,7 +81,6 @@
         {% for u in users_list %}
         <tr style="border-bottom: 1px solid var(--glass-border); font-size: 0.95rem;">
           <td style="padding: 16px 8px; font-weight: 600; color: var(--accent);">{{ u.username }}</td>
-          <td style="padding: 16px 8px;">{{ u.email }}</td>
           <td style="padding: 16px 8px;">
             {% set status = u.sync_status | lower %}
             {% if status == 'healthy' %}

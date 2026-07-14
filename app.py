@@ -1037,6 +1037,23 @@ class SpotifyDashboardApp:
             from datetime import datetime
             global_stats = self.repo.getGlobalDatabaseStats()
             
+            total_time_ms = global_stats.get("total_time_ms", 0)
+            total_hours = total_time_ms // (1000 * 60 * 60)
+            if total_hours >= 24:
+                days = total_hours // 24
+                hours = total_hours % 24
+                global_time_text = f"{days}d {hours}h"
+            else:
+                global_time_text = f"{total_hours}h"
+
+            db_size_bytes = global_stats.get("db_size_bytes", 0)
+            if db_size_bytes >= 1024 * 1024 * 1024:
+                global_size_text = f"{db_size_bytes / (1024 * 1024 * 1024):.2f} GB"
+            elif db_size_bytes >= 1024 * 1024:
+                global_size_text = f"{db_size_bytes / (1024 * 1024):.2f} MB"
+            else:
+                global_size_text = f"{db_size_bytes / 1024:.1f} KB"
+
             email = session.get("email")
             is_logged_in = email is not None and self.is_user_logged_in(email)
             
@@ -1085,6 +1102,8 @@ class SpotifyDashboardApp:
             return render_template(
                 "overview.html",
                 global_stats=global_stats,
+                global_time_text=global_time_text,
+                global_size_text=global_size_text,
                 is_logged_in=is_logged_in,
                 users_list=users_list,
                 section="overview"

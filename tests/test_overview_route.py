@@ -24,7 +24,7 @@ class TestOverviewRoute(unittest.TestCase):
     def test_overview_guest_access(self):
         dash = self._makeApp()
         
-        mock_stats = {"tracks": 10, "artists": 5, "albums": 3, "plays": 100}
+        mock_stats = {"tracks": 10, "artists": 5, "albums": 3, "plays": 100, "total_time_ms": 36000000, "db_size_bytes": 1048576}
         with patch.object(dash.repo, 'getGlobalDatabaseStats', return_value=mock_stats):
             client = dash.app.test_client()
             resp = client.get("/overview")
@@ -39,7 +39,7 @@ class TestOverviewRoute(unittest.TestCase):
     def test_overview_logged_in_access(self):
         dash = self._makeApp()
         
-        mock_stats = {"tracks": 10, "artists": 5, "albums": 3, "plays": 100}
+        mock_stats = {"tracks": 10, "artists": 5, "albums": 3, "plays": 100, "total_time_ms": 36000000, "db_size_bytes": 1048576}
         mock_users = [
             {
                 "username": "alice",
@@ -74,7 +74,6 @@ class TestOverviewRoute(unittest.TestCase):
             self.assertEqual(resp.status_code, 200)
             self.assertIn(b"Registered Users & Sync Status", resp.data)
             self.assertIn(b"alice", resp.data)
-            self.assertIn(b"alice@example.com", resp.data)
             self.assertIn(b"HEALTHY", resp.data)
             self.assertIn(b"CONFIGURED", resp.data)
             self.assertIn(b"123", resp.data)
@@ -90,7 +89,12 @@ class TestOverviewDatabaseStats(unittest.TestCase):
 
     def test_repository_get_global_stats(self):
         stats = self.repo.getGlobalDatabaseStats()
-        self.assertEqual(stats, {"tracks": 0, "artists": 0, "albums": 0, "plays": 0})
+        self.assertEqual(stats["tracks"], 0)
+        self.assertEqual(stats["artists"], 0)
+        self.assertEqual(stats["albums"], 0)
+        self.assertEqual(stats["plays"], 0)
+        self.assertEqual(stats["total_time_ms"], 0)
+        self.assertGreaterEqual(stats["db_size_bytes"], 0)
 
         conn = self.repo._conn()
         with conn:
@@ -101,7 +105,12 @@ class TestOverviewDatabaseStats(unittest.TestCase):
             conn.execute("INSERT INTO plays (username, track_id, played_at, time_played) VALUES ('u1', 't1', 12345.6, 2000)")
 
         stats = self.repo.getGlobalDatabaseStats()
-        self.assertEqual(stats, {"tracks": 1, "artists": 1, "albums": 1, "plays": 1})
+        self.assertEqual(stats["tracks"], 1)
+        self.assertEqual(stats["artists"], 1)
+        self.assertEqual(stats["albums"], 1)
+        self.assertEqual(stats["plays"], 1)
+        self.assertEqual(stats["total_time_ms"], 2000)
+        self.assertGreater(stats["db_size_bytes"], 0)
 
     def test_repository_get_all_users_details(self):
         users = self.repo.getAllUsersDetails()

@@ -1310,17 +1310,26 @@ class Repository:
             "error": bool(row["error"]),
         }
 
-    def getGlobalDatabaseStats(self) -> dict[str, int]:
+    def getGlobalDatabaseStats(self) -> dict:
         conn = self._conn()
         tracks_count = conn.execute("SELECT COUNT(*) FROM tracks").fetchone()[0]
         artists_count = conn.execute("SELECT COUNT(*) FROM artists").fetchone()[0]
         albums_count = conn.execute("SELECT COUNT(*) FROM albums").fetchone()[0]
         plays_count = conn.execute("SELECT COUNT(*) FROM plays").fetchone()[0]
+        total_time_ms = conn.execute("SELECT SUM(time_played) FROM plays").fetchone()[0] or 0
+        
+        try:
+            db_size = self.connectionManager.dbPath.stat().st_size
+        except Exception:
+            db_size = 0
+
         return {
             "tracks": tracks_count,
             "artists": artists_count,
             "albums": albums_count,
             "plays": plays_count,
+            "total_time_ms": total_time_ms,
+            "db_size_bytes": db_size,
         }
 
     def getAllUsersDetails(self) -> list[dict]:

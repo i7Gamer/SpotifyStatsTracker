@@ -1690,6 +1690,7 @@ html.theme-red {
   border: 1px solid var(--glass-border);
   border-radius: 12px;
   transition: transform 0.2s ease, box-shadow 0.2s ease;
+  min-height: 0;
 }
 
 .stats-card:hover {
