@@ -577,6 +577,8 @@
     renderDecadeChart();
   }
 
+  window.renderTimeSeriesChart = renderTimeSeriesChart;
+
   renderAllCharts();
 
   var resizeTimer;
