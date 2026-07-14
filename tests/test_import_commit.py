@@ -163,6 +163,33 @@ class TestImportHistoryBatch(DatabaseTestCase):
         progress = self.db.readProgress()
         self.assertEqual(progress["status"], "complete")
         self.assertIn("1 failed", progress["message"])
+        self.assertTrue(progress["error"])
+
+    def test_error_flag_is_not_cleared_on_subsequent_import_steps(self):
+        def failing():
+            raise RuntimeError("bad file")
+            yield
+
+        def gen2():
+            yield _meta("f2i1", 200)
+
+        capturedErrors = []
+        originalWriteProgress = self.db.writeProgress
+
+        def captureWriteProgress(status, current=0, total=0, message="", error=False):
+            capturedErrors.append(error)
+            originalWriteProgress(status, current, total, message, error)
+
+        self.db.writeProgress = captureWriteProgress
+
+        with patch("Database.database.Importer",
+                    side_effect=[self._mockImporter(failing), self._mockImporter(gen2)]):
+            self.db.importHistoryBatch(["bad export", "good export"])
+
+        # Once the first file fails, all subsequent writeProgress calls must preserve error=True.
+        self.assertTrue(capturedErrors[-1])  # Final status has error=True
+        # Check that starting file 2 sets error=True instead of False.
+        self.assertTrue(capturedErrors[2])
 
     def test_all_files_failing_marks_progress_failed(self):
         def failing():

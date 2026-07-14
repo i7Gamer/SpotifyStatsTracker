@@ -266,12 +266,6 @@ class Database:
         meta["playedFrom"] = entry.get("playedFrom")
         return meta
 
-    def _entryWithTrackMetadata(self, entry: dict) -> dict | None:
-        track = self._ensureTrackMetadata(entry["id"])
-        if track is None:
-            return None
-        return self._mergeEntryWithTrack(entry, track)
-
     def _paginateEntries(self, entries: list) -> list:
         """Merge each play entry with its track's catalog metadata. Track
         metadata for every distinct id in `entries` is fetched in one batched
@@ -319,9 +313,6 @@ class Database:
         self.repo.upsertPlaylistName(playlistId, contextType, name)
 
     # ---- history / entries ----------------------------------------------------------
-
-    def getHistory(self) -> list:
-        return self._paginateEntries(self.repo.getPlaysOldestFirst(self.user))
 
     def getEntriesCount(self) -> int:
         """Return total number of entries in the database."""
@@ -503,7 +494,7 @@ class Database:
             )
         return was_inserted
 
-    def importHistory(self, exportedHistory, progressPrefix: str = "", isFinalFile: bool = True):
+    def importHistory(self, exportedHistory, progressPrefix: str = "", isFinalFile: bool = True, hasPriorError: bool = False):
         importer = self._withCookiesFile(lambda cookiesFile: Importer(cookiesFile=cookiesFile, email=self.email))
 
         parsedHistory, exportType = importer._convertToList(exportedHistory)
@@ -511,10 +502,10 @@ class Database:
             return
 
         total = len(parsedHistory)
-        self.writeProgress("running", 0, total, f"{progressPrefix}Starting import")
+        self.writeProgress("running", 0, total, f"{progressPrefix}Starting import", error=hasPriorError)
 
         def progressCallback(status, current, totalSteps, message):
-            self.writeProgress(status, current, totalSteps, f"{progressPrefix}{message}")
+            self.writeProgress(status, current, totalSteps, f"{progressPrefix}{message}", error=hasPriorError)
 
         # Imported tracks/plays are staged locally and only written to the database
         # once the whole import has succeeded. SQLite only allows one writer
@@ -606,7 +597,7 @@ class Database:
             logger.info("Imported %d tracks; %d new plays, %d plays corrected for user %s", len(stagedTracks), insertedCount, updatedCount, self.user)
 
             status = "complete" if isFinalFile else "running"
-            self.writeProgress(status, total, total, f"{progressPrefix}Import complete")
+            self.writeProgress(status, total, total, f"{progressPrefix}Import complete", error=hasPriorError)
         except Exception as e:
             self.repo.rollback()
             self.writeProgress("failed", index, total, f"{progressPrefix}Import failed: {parseError(e)}", error=True)
@@ -627,7 +618,12 @@ class Database:
         for index, content in enumerate(fileContents, start=1):
             try:
                 isFinalFile = (index == total)
-                self.importHistory(content, progressPrefix=f"File {index}/{total}: ", isFinalFile=isFinalFile)
+                self.importHistory(
+                    content,
+                    progressPrefix=f"File {index}/{total}: ",
+                    isFinalFile=isFinalFile,
+                    hasPriorError=(failedCount > 0)
+                )
             except Exception as e:
                 failedCount += 1
                 logger.error("Import failed for file %s/%s: %s", index, total, parseError(e))
@@ -639,7 +635,7 @@ class Database:
             self.writeProgress("failed", total, total, f"Imported 0/{total} files (all failed)", error=True)
         else:
             self.writeProgress("complete", total, total,
-                                f"Imported {succeededCount}/{total} files ({failedCount} failed)")
+                                f"Imported {succeededCount}/{total} files ({failedCount} failed)", error=True)
 
     # ---- stats -------------------------------------------------------------------------
 
