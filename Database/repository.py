@@ -1339,3 +1339,19 @@ class Repository:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    def getAlbumsMissingMetadata(self, limit: int) -> list[str]:
+        conn = self._conn()
+        rows = conn.execute(
+            "SELECT id FROM albums WHERE release_date = 0 OR release_date IS NULL LIMIT ?",
+            (limit,)
+        ).fetchall()
+        return [row["id"] for row in rows]
+
+    def updateAlbumMetadata(self, album_id: str, release_date: float, total_tracks: int) -> None:
+        conn = self._conn()
+        with conn:
+            conn.execute(
+                "UPDATE albums SET release_date = ?, total_tracks = ? WHERE id = ?",
+                (release_date, total_tracks, album_id)
+            )
+

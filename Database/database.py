@@ -67,6 +67,8 @@ class Database:
     imgDir_tracks = MEDIA_DIR / "tracks"
     imgDir_artists = MEDIA_DIR / "artists"
     _imageDownloadExecutor = concurrent.futures.ThreadPoolExecutor(max_workers=IMAGE_DOWNLOAD_WORKERS)
+    _active_backfills = set()
+    _backfill_lock = threading.Lock()
 
     def __init__(self, user: str, cookiesFile: str | None = None, email: str | None = None, dbPath=None):
         if not user:
@@ -100,6 +102,10 @@ class Database:
                                          importCallback=self.importHistory,
                                          pollInterval=5,
                                          keyword=filterKeyword)
+
+        self.backfiller_thread = None
+        self.backfiller_stop_event = threading.Event()
+        self.startMetadataBackfiller()
 
     def refreshSettings(self) -> None:
         from zoneinfo import ZoneInfo
@@ -1353,6 +1359,131 @@ class Database:
         if self.listener is not None:
             self.listener.stop()
         self.autoImporter.wd.stop()
+        self.stopMetadataBackfiller()
+
+    def startMetadataBackfiller(self) -> None:
+        """Start the background thread to fill in missing album metadata."""
+        if not hasattr(self, "backfiller_thread") or not hasattr(self, "backfiller_stop_event"):
+            return
+        if self.backfiller_thread is not None and self.backfiller_thread.is_alive():
+            return
+        self.backfiller_stop_event.clear()
+        self.backfiller_thread = threading.Thread(
+            target=self._metadataBackfillLoop,
+            name=f"metadata-backfiller-{self.user}",
+            daemon=True
+        )
+        self.backfiller_thread.start()
+
+    def stopMetadataBackfiller(self) -> None:
+        """Signal and wait for the background backfiller thread to stop."""
+        if not hasattr(self, "backfiller_thread") or not hasattr(self, "backfiller_stop_event"):
+            return
+        if self.backfiller_thread is None:
+            return
+        self.backfiller_stop_event.set()
+        self.backfiller_thread.join(timeout=3)
+        self.backfiller_thread = None
+
+    def _metadataBackfillLoop(self) -> None:
+        """Periodically queries Spotify for missing album release dates and tracks."""
+        import random
+        # 1. Random startup offset to prevent multiple user threads from starting at the same moment
+        startup_delay = random.randint(30, 90)
+        logger.info("[Backfiller-%s] Starting with initial delay of %d seconds", self.user, startup_delay)
+        if self.backfiller_stop_event.wait(startup_delay):
+            return
+
+        while not self.backfiller_stop_event.is_set():
+            target_ids = []
+            try:
+                # 2. Check if Spotify API credentials are configured
+                creds = self.getUserSpotifyCredentials()
+                if not creds or not creds.get("client_id") or not creds.get("refresh_token"):
+                    if self.backfiller_stop_event.wait(300):
+                        break
+                    continue
+
+                # 3. Query up to 50 missing album IDs
+                missing_ids = self.repo.getAlbumsMissingMetadata(limit=50)
+                if not missing_ids:
+                    if self.backfiller_stop_event.wait(300):
+                        break
+                    continue
+
+                # 4. Process-wide deduplication: filter out already active backfills
+                with Database._backfill_lock:
+                    for album_id in missing_ids:
+                        if album_id not in Database._active_backfills:
+                            target_ids.append(album_id)
+                            Database._active_backfills.add(album_id)
+                            if len(target_ids) >= 20:  # Spotify bulk limit is 20
+                                break
+
+                # 5. If nothing eligible remains, wait and try next iteration
+                if not target_ids:
+                    if self.backfiller_stop_event.wait(300):
+                        break
+                    continue
+
+                # 6. Fetch detailed metadata from Spotify Web API
+                logger.info("[Backfiller-%s] Fetching metadata for %d albums", self.user, len(target_ids))
+                from Database.Listeners.spotifyListener import _refresh_spotify_access_token
+                import requests
+                from Database.utils import convertToDatetime
+
+                access_token = _refresh_spotify_access_token(
+                    creds["client_id"], creds["client_secret"], creds["refresh_token"]
+                )
+                if access_token:
+                    headers = {"Authorization": f"Bearer {access_token}"}
+                    ids_str = ",".join(target_ids)
+                    url = f"https://api.spotify.com/v1/albums?ids={ids_str}"
+                    resp = requests.get(url, headers=headers, timeout=10)
+                    if resp.status_code == 200:
+                        albums_data = resp.json().get("albums") or []
+                        for album_raw in albums_data:
+                            if not album_raw:
+                                continue
+                            album_id = album_raw.get("id")
+                            release_date_str = album_raw.get("release_date")
+                            total_tracks = album_raw.get("total_tracks", 0)
+                            
+                            if release_date_str == "0000-00-00" or not release_date_str:
+                                release_date = 0.0
+                            else:
+                                try:
+                                    dt = convertToDatetime(release_date_str)
+                                    release_date = dt.timestamp() if dt else 0.0
+                                except Exception:
+                                    release_date = 0.0
+                            
+                            self.repo.updateAlbumMetadata(album_id, release_date, total_tracks)
+                    else:
+                        logger.error(
+                            "[Backfiller-%s] Spotify API returned error status %d: %s",
+                            self.user, resp.status_code, resp.text
+                        )
+                else:
+                    logger.error("[Backfiller-%s] Failed to refresh access token for backfiller", self.user)
+
+                # 7. Release lock on the processed IDs
+                with Database._backfill_lock:
+                    for album_id in target_ids:
+                        Database._active_backfills.discard(album_id)
+
+            except Exception as e:
+                logger.error("[Backfiller-%s] Error in metadata backfiller loop: %s", self.user, e)
+                # Cleanup registry if error occurred mid-process
+                try:
+                    with Database._backfill_lock:
+                        for album_id in target_ids:
+                            Database._active_backfills.discard(album_id)
+                except Exception:
+                    pass
+
+            if self.backfiller_stop_event.wait(300):
+                break
 
 
 if __name__ == "__main__":
