@@ -693,6 +693,7 @@ class Database:
               AND (? IS NULL OR p.played_at >= ?)
               AND (? IS NULL OR p.played_at < ?)
               AND al.release_date IS NOT NULL
+              AND al.release_date != 0
             GROUP BY al.release_date
         """
         rows = conn.execute(query, (self.user, startTs, startTs, endTs, endTs)).fetchall()
