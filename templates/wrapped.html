@@ -243,6 +243,10 @@
       timeSeries: {{ timeSeries | tojson }}
     };
 
+    let currentYear = '{{ year }}';
+    let currentGroupBy = '{{ groupBy }}';
+    let currentLimit = '{{ limit }}';
+
     const filterButtons = document.querySelectorAll('.stats-filter-button');
     const categoryDivs = document.querySelectorAll('[data-category]');
 
@@ -268,13 +272,22 @@
       allButton.click();
     }
 
-    function loadWrappedData(year, groupBy, limit) {
-      const targets = [
-        document.querySelector('.track-summary-grid'),
-        document.querySelectorAll('.track-summary-grid-3'),
-        document.querySelector('.chart-canvas-wrap'),
-        document.querySelectorAll('[data-category]')
-      ];
+    function loadWrappedData(year, groupBy, limit, updateType = 'all') {
+      const targets = [];
+      if (updateType === 'all') {
+        const summaryGrid = document.querySelector('.track-summary-grid');
+        if (summaryGrid) targets.push(summaryGrid);
+        document.querySelectorAll('.track-summary-grid-3').forEach(el => targets.push(el));
+        const chartWrap = document.querySelector('.chart-canvas-wrap');
+        if (chartWrap) targets.push(chartWrap);
+        document.querySelectorAll('[data-category]').forEach(el => targets.push(el));
+      } else if (updateType === 'chart') {
+        const chartWrap = document.querySelector('.chart-canvas-wrap');
+        if (chartWrap) targets.push(chartWrap);
+      } else if (updateType === 'lists') {
+        document.querySelectorAll('[data-category]').forEach(el => targets.push(el));
+      }
+
       targets.forEach(t => {
         if (t) {
           if (t instanceof NodeList) {
@@ -288,91 +301,110 @@
       const hiddenYear = document.querySelector('form.filter-section input[name="year"]');
       if (hiddenYear) hiddenYear.value = year;
 
-      fetch(`/wrapped?year=${year}&groupBy=${groupBy}&limit=${limit}&ajax=true`)
+      fetch(`/wrapped?year=${year}&groupBy=${groupBy}&limit=${limit}&ajax=true&type=${updateType}`)
         .then(response => response.json())
         .then(data => {
           if (data.error) {
             console.error(data.error);
             return;
           }
-          document.querySelector('.track-summary-grid .track-summary-card:nth-child(1) .summary-value').textContent = data.totalPlays;
-          document.querySelector('.track-summary-grid .track-summary-card:nth-child(2) .summary-value').textContent = data.totalTime;
-          
-          const grid3_list = document.querySelectorAll('.track-summary-grid-3');
-          if (grid3_list.length >= 2) {
-            const firstGrid = grid3_list[0];
-            const secondGrid = grid3_list[1];
 
-            const streakVal = firstGrid.querySelector('.track-summary-card:nth-child(1) .summary-value');
-            if (streakVal) streakVal.textContent = data.longestStreak + ' days';
+          // 1. Update general stats if returned
+          if (data.totalPlays !== undefined) {
+            const playsVal = document.querySelector('.track-summary-grid .track-summary-card:nth-child(1) .summary-value');
+            if (playsVal) playsVal.textContent = data.totalPlays;
+            const timeVal = document.querySelector('.track-summary-grid .track-summary-card:nth-child(2) .summary-value');
+            if (timeVal) timeVal.textContent = data.totalTime;
+            
+            const grid3_list = document.querySelectorAll('.track-summary-grid-3');
+            if (grid3_list.length >= 2) {
+              const firstGrid = grid3_list[0];
+              const secondGrid = grid3_list[1];
 
-            const peakVal = firstGrid.querySelector('.track-summary-card:nth-child(2) .summary-value');
-            if (peakVal) peakVal.textContent = data.peakDay;
+              const streakVal = firstGrid.querySelector('.track-summary-card:nth-child(1) .summary-value');
+              if (streakVal) streakVal.textContent = data.longestStreak + ' days';
 
-            const peakSub = firstGrid.querySelector('.track-summary-card:nth-child(2) .summary-subtitle');
-            if (peakSub) peakSub.textContent = data.peakPlays + ' plays';
+              const peakVal = firstGrid.querySelector('.track-summary-card:nth-child(2) .summary-value');
+              if (peakVal) peakVal.textContent = data.peakDay;
 
-            const uniqueSongs = firstGrid.querySelector('.track-summary-card:nth-child(3) .summary-value');
-            if (uniqueSongs) uniqueSongs.textContent = data.uniqueSongsCount;
+              const peakSub = firstGrid.querySelector('.track-summary-card:nth-child(2) .summary-subtitle');
+              if (peakSub) peakSub.textContent = data.peakPlays + ' plays';
 
-            const uniqueArtists = secondGrid.querySelector('.track-summary-card:nth-child(1) .summary-value');
-            if (uniqueArtists) uniqueArtists.textContent = data.uniqueArtistsCount;
+              const uniqueSongs = firstGrid.querySelector('.track-summary-card:nth-child(3) .summary-value');
+              if (uniqueSongs) uniqueSongs.textContent = data.uniqueSongsCount;
 
-            const discSongs = secondGrid.querySelector('.track-summary-card:nth-child(2) .summary-value');
-            if (discSongs) discSongs.textContent = data.discoveredSongsCount;
+              const uniqueArtists = secondGrid.querySelector('.track-summary-card:nth-child(1) .summary-value');
+              if (uniqueArtists) uniqueArtists.textContent = data.uniqueArtistsCount;
 
-            const discArtists = secondGrid.querySelector('.track-summary-card:nth-child(3) .summary-value');
-            if (discArtists) discArtists.textContent = data.discoveredArtistsCount;
+              const discSongs = secondGrid.querySelector('.track-summary-card:nth-child(2) .summary-value');
+              if (discSongs) discSongs.textContent = data.discoveredSongsCount;
+
+              const discArtists = secondGrid.querySelector('.track-summary-card:nth-child(3) .summary-value');
+              if (discArtists) discArtists.textContent = data.discoveredArtistsCount;
+            }
           }
 
+          // 2. Update export button datasets
           const exportBtn = document.getElementById('exportWrappedBtn');
           if (exportBtn) {
             exportBtn.dataset.year = year;
-            exportBtn.dataset.plays = data.totalPlays;
-            exportBtn.dataset.time = data.totalTime;
-            exportBtn.dataset.songs = data.uniqueSongsCount;
-            exportBtn.dataset.artists = data.uniqueArtistsCount;
-            exportBtn.dataset.streak = data.longestStreak;
-            exportBtn.dataset.peakday = data.peakDay;
-            exportBtn.dataset.peakplays = data.peakPlays;
-            exportBtn.dataset.discoveredsongs = data.discoveredSongsCount;
-            exportBtn.dataset.discoveredartists = data.discoveredArtistsCount;
-            exportBtn.dataset.topsong = data.topSongText || 'N/A';
-            exportBtn.dataset.topartist = data.topArtistText || 'N/A';
-            exportBtn.dataset.topalbum = data.topAlbumText || 'N/A';
+            if (data.totalPlays !== undefined) {
+              exportBtn.dataset.plays = data.totalPlays;
+              exportBtn.dataset.time = data.totalTime;
+              exportBtn.dataset.songs = data.uniqueSongsCount;
+              exportBtn.dataset.artists = data.uniqueArtistsCount;
+              exportBtn.dataset.streak = data.longestStreak;
+              exportBtn.dataset.peakday = data.peakDay;
+              exportBtn.dataset.peakplays = data.peakPlays;
+              exportBtn.dataset.discoveredsongs = data.discoveredSongsCount;
+              exportBtn.dataset.discoveredartists = data.discoveredArtistsCount;
+              exportBtn.dataset.topsong = data.topSongText || 'N/A';
+              exportBtn.dataset.topartist = data.topArtistText || 'N/A';
+              exportBtn.dataset.topalbum = data.topAlbumText || 'N/A';
+            }
           }
 
-          document.querySelector('[data-category="top-songs"] .track-list').innerHTML = data.topSongsHtml;
-          document.querySelector('[data-category="top-artists"] .track-list').innerHTML = data.topArtistsHtml;
-          document.querySelector('[data-category="top-albums"] .track-list').innerHTML = data.topAlbumsHtml;
+          // 3. Update lists if returned
+          if (data.topSongsHtml !== undefined) {
+            const topSongsList = document.querySelector('[data-category="top-songs"] .track-list');
+            if (topSongsList) topSongsList.innerHTML = data.topSongsHtml;
+            const topArtistsList = document.querySelector('[data-category="top-artists"] .track-list');
+            if (topArtistsList) topArtistsList.innerHTML = data.topArtistsHtml;
+            const topAlbumsList = document.querySelector('[data-category="top-albums"] .track-list');
+            if (topAlbumsList) topAlbumsList.innerHTML = data.topAlbumsHtml;
 
-          const discSongsDiv = document.querySelector('[data-category="discoveries-songs"]');
-          if (discSongsDiv) {
-            const list = discSongsDiv.querySelector('.track-list');
-            if (list) list.innerHTML = data.discoveredSongsHtml;
-            discSongsDiv.style.display = data.discoveredSongsCount > 0 ? '' : 'none';
+            const discSongsDiv = document.querySelector('[data-category="discoveries-songs"]');
+            if (discSongsDiv) {
+              const list = discSongsDiv.querySelector('.track-list');
+              if (list) list.innerHTML = data.discoveredSongsHtml;
+              discSongsDiv.style.display = data.discoveredSongsCount > 0 ? '' : 'none';
+            }
+            const discArtistsDiv = document.querySelector('[data-category="discoveries-artists"]');
+            if (discArtistsDiv) {
+              const list = discArtistsDiv.querySelector('.track-list');
+              if (list) list.innerHTML = data.discoveredArtistsHtml;
+              discArtistsDiv.style.display = data.discoveredArtistsCount > 0 ? '' : 'none';
+            }
+            const discAlbumsDiv = document.querySelector('[data-category="discoveries-albums"]');
+            if (discAlbumsDiv) {
+              const list = discAlbumsDiv.querySelector('.track-list');
+              if (list) list.innerHTML = data.discoveredAlbumsHtml;
+              discAlbumsDiv.style.display = data.discoveredAlbumsCount > 0 ? '' : 'none';
+            }
           }
-          const discArtistsDiv = document.querySelector('[data-category="discoveries-artists"]');
-          if (discArtistsDiv) {
-            const list = discArtistsDiv.querySelector('.track-list');
-            if (list) list.innerHTML = data.discoveredArtistsHtml;
-            discArtistsDiv.style.display = data.discoveredArtistsCount > 0 ? '' : 'none';
+
+          // 4. Update chart if returned
+          if (data.timeSeries !== undefined) {
+            const chartTitle = document.querySelector('.chart-section h2');
+            if (chartTitle) chartTitle.textContent = `Listening Over ${year}`;
+
+            window.__chartData = window.__chartData || {};
+            window.__chartData.timeSeries = data.timeSeries;
+            window.__chartData.interval = groupBy;
+            renderTimeSeriesChart();
           }
-          const discAlbumsDiv = document.querySelector('[data-category="discoveries-albums"]');
-          if (discAlbumsDiv) {
-            const list = discAlbumsDiv.querySelector('.track-list');
-            if (list) list.innerHTML = data.discoveredAlbumsHtml;
-            discAlbumsDiv.style.display = data.discoveredAlbumsCount > 0 ? '' : 'none';
-          }
 
-          const chartTitle = document.querySelector('.chart-section h2');
-          if (chartTitle) chartTitle.textContent = `Listening Over ${year}`;
-
-          window.__chartData = window.__chartData || {};
-          window.__chartData.timeSeries = data.timeSeries;
-          window.__chartData.interval = groupBy;
-          renderTimeSeriesChart();
-
+          // 5. Remove transition fades
           targets.forEach(t => {
             if (t) {
               if (t instanceof NodeList) {
@@ -403,13 +435,26 @@
       const groupBy = document.getElementById('groupBy').value;
       const limit = document.getElementById('limit').value;
 
+      let updateType = 'all';
+      if (year === currentYear) {
+        if (groupBy !== currentGroupBy && limit === currentLimit) {
+          updateType = 'chart';
+        } else if (limit !== currentLimit && groupBy === currentGroupBy) {
+          updateType = 'lists';
+        }
+      }
+
+      currentYear = year;
+      currentGroupBy = groupBy;
+      currentLimit = limit;
+
       const newParams = new URLSearchParams();
       newParams.set('year', year);
       newParams.set('groupBy', groupBy);
       newParams.set('limit', limit);
       window.history.pushState({}, '', window.location.pathname + '?' + newParams.toString());
 
-      loadWrappedData(year, groupBy, limit);
+      loadWrappedData(year, groupBy, limit, updateType);
     }
 
     document.querySelectorAll('.wrapped-year-badge').forEach(badge => {
@@ -420,6 +465,19 @@
         const groupBy = document.getElementById('groupBy').value;
         const limit = document.getElementById('limit').value;
 
+        let updateType = 'all';
+        if (year === currentYear) {
+          if (groupBy !== currentGroupBy && limit === currentLimit) {
+            updateType = 'chart';
+          } else if (limit !== currentLimit && groupBy === currentGroupBy) {
+            updateType = 'lists';
+          }
+        }
+
+        currentYear = year;
+        currentGroupBy = groupBy;
+        currentLimit = limit;
+
         const newParams = new URLSearchParams();
         newParams.set('year', year);
         newParams.set('groupBy', groupBy);
@@ -429,7 +487,7 @@
         document.querySelectorAll('.wrapped-year-badge').forEach(b => b.classList.remove('active'));
         this.classList.add('active');
 
-        loadWrappedData(year, groupBy, limit);
+        loadWrappedData(year, groupBy, limit, updateType);
       });
     });
 
@@ -451,7 +509,20 @@
       document.getElementById('groupBy').value = groupBy;
       document.getElementById('limit').value = limit;
 
-      loadWrappedData(year, groupBy, limit);
+      let updateType = 'all';
+      if (year === currentYear) {
+        if (groupBy !== currentGroupBy && limit === currentLimit) {
+          updateType = 'chart';
+        } else if (limit !== currentLimit && groupBy === currentGroupBy) {
+          updateType = 'lists';
+        }
+      }
+
+      currentYear = year;
+      currentGroupBy = groupBy;
+      currentLimit = limit;
+
+      loadWrappedData(year, groupBy, limit, updateType);
     });
 
     document.getElementById('exportWrappedBtn')?.addEventListener('click', function() {

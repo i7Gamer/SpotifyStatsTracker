@@ -1581,35 +1581,43 @@ class SpotifyDashboardApp:
 
             # 6. Check if AJAX request and return JSON response if true
             if request.args.get("ajax") == "true":
-                topSongText = (
-                    f"{topSongs[0]['name']} - {topSongs[0]['artists'][0]['name']}"
-                    if topSongs and topSongs[0].get('artists')
-                    else (topSongs[0]['name'] if topSongs else "N/A")
-                )
-                topArtistText = topArtists[0]['name'] if topArtists else "N/A"
-                topAlbumText = topAlbums[0]['name'] if topAlbums else "N/A"
+                update_type = request.args.get("type", "all")
+                res = {}
 
-                return jsonify({
-                    "totalPlays": totalPlays,
-                    "totalTime": msToString(totalMs),
-                    "longestStreak": longestStreak,
-                    "peakDay": peakListeningTime[0] if peakListeningTime else "N/A",
-                    "peakPlays": peakListeningTime[1] if peakListeningTime else 0,
-                    "uniqueSongsCount": uniqueSongsCount,
-                    "uniqueArtistsCount": uniqueArtistsCount,
-                    "discoveredSongsCount": discoveredSongsCount,
-                    "discoveredArtistsCount": discoveredArtistsCount,
-                    "timeSeries": timeSeries,
-                    "topSongsHtml": render_template("_wrapped_list.html", items=topSongs, section="top_songs", username=username),
-                    "topArtistsHtml": render_template("_wrapped_list.html", items=topArtists, section="top_artists", username=username),
-                    "topAlbumsHtml": render_template("_wrapped_list.html", items=topAlbums, section="top_albums", username=username),
-                    "discoveredSongsHtml": render_template("_wrapped_list.html", items=discoveredSongs, section="top_songs", username=username),
-                    "discoveredArtistsHtml": render_template("_wrapped_list.html", items=discoveredArtists, section="top_artists", username=username),
-                    "discoveredAlbumsHtml": render_template("_wrapped_list.html", items=discoveredAlbums, section="top_albums", username=username),
-                    "topSongText": topSongText,
-                    "topArtistText": topArtistText,
-                    "topAlbumText": topAlbumText
-                })
+                if update_type in ("all", "chart"):
+                    res["timeSeries"] = timeSeries
+
+                if update_type in ("all", "lists"):
+                    res["topSongsHtml"] = render_template("_wrapped_list.html", items=topSongs, section="top_songs", username=username)
+                    res["topArtistsHtml"] = render_template("_wrapped_list.html", items=topArtists, section="top_artists", username=username)
+                    res["topAlbumsHtml"] = render_template("_wrapped_list.html", items=topAlbums, section="top_albums", username=username)
+                    res["discoveredSongsHtml"] = render_template("_wrapped_list.html", items=discoveredSongs, section="top_songs", username=username)
+                    res["discoveredArtistsHtml"] = render_template("_wrapped_list.html", items=discoveredArtists, section="top_artists", username=username)
+                    res["discoveredAlbumsHtml"] = render_template("_wrapped_list.html", items=discoveredAlbums, section="top_albums", username=username)
+
+                if update_type == "all":
+                    topSongText = (
+                        f"{topSongs[0]['name']} - {topSongs[0]['artists'][0]['name']}"
+                        if topSongs and topSongs[0].get('artists')
+                        else (topSongs[0]['name'] if topSongs else "N/A")
+                    )
+                    topArtistText = topArtists[0]['name'] if topArtists else "N/A"
+                    topAlbumText = topAlbums[0]['name'] if topAlbums else "N/A"
+                    res.update({
+                        "totalPlays": totalPlays,
+                        "totalTime": msToString(totalMs),
+                        "longestStreak": longestStreak,
+                        "peakDay": peakListeningTime[0] if peakListeningTime else "N/A",
+                        "peakPlays": peakListeningTime[1] if peakListeningTime else 0,
+                        "uniqueSongsCount": uniqueSongsCount,
+                        "uniqueArtistsCount": uniqueArtistsCount,
+                        "discoveredSongsCount": discoveredSongsCount,
+                        "discoveredArtistsCount": discoveredArtistsCount,
+                        "topSongText": topSongText,
+                        "topArtistText": topArtistText,
+                        "topAlbumText": topAlbumText
+                    })
+                return jsonify(res)
 
             creds = db.getUserSpotifyCredentials() or {}
             has_api = bool(creds.get("client_id") and creds.get("client_secret"))
