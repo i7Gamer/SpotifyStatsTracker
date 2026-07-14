@@ -20,25 +20,6 @@
     {% endfor %}
   </nav>
 
-  <div style="text-align: center; margin-bottom: 2rem; display: flex; justify-content: center; gap: 1rem; align-items: center;">
-    <button id="exportWrappedBtn" class="primary-button" style="background: var(--accent); color: #111; font-weight: bold; border: none; padding: 10px 20px; border-radius: 20px; cursor: pointer; display: flex; align-items: center; gap: 8px;"
-            data-year="{{ year }}"
-            data-user="{{ username }}"
-            data-plays="{{ totalPlays }}"
-            data-time="{{ totalTime }}"
-            data-songs="{{ uniqueSongsCount }}"
-            data-artists="{{ uniqueArtistsCount }}"
-            data-streak="{{ longestStreak }}"
-            data-topsong="{% if topSongs %}{{ topSongs[0]['trackName'] }} - {{ topSongs[0]['artistName'] }}{% else %}N/A{% endif %}"
-            data-topartist="{% if topArtists %}{{ topArtists[0]['artistName'] }}{% else %}N/A{% endif %}">
-      <svg width="16" height="16" fill="currentColor" viewBox="0 0 16 16" style="display:inline-block;">
-        <path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z"/>
-        <path d="M7.646 11.854a.5.5 0 0 0 .708 0l3-3a.5.5 0 0 0-.708-.708L8.5 10.293V1.5a.5.5 0 0 0-1 0v8.793L5.354 8.146a.5.5 0 1 0-.708.708l3 3z"/>
-      </svg>
-      Export Summary Card
-    </button>
-  </div>
-
   <form class="filter-section" method="get" action="{{ url_for('wrappedPage', year=year) }}">
     <input type="hidden" name="year" value="{{ year }}">
     <div class="filter-group">
@@ -57,6 +38,30 @@
           <option value="{{ option }}" {% if limit == option %}selected{% endif %}>{{ option }}</option>
         {% endfor %}
       </select>
+    </div>
+
+    <div style="text-align: center;">
+      <button id="exportWrappedBtn" class="primary-button" style="background: var(--accent); color: #111; font-weight: bold; border: none; padding: 10px 20px; border-radius: 20px; cursor: pointer; display: inline-flex; align-items: center; gap: 8px;"
+              data-year="{{ year }}"
+              data-user="{{ username }}"
+              data-plays="{{ totalPlays }}"
+              data-time="{{ totalTime }}"
+              data-songs="{{ uniqueSongsCount }}"
+              data-artists="{{ uniqueArtistsCount }}"
+              data-streak="{{ longestStreak }}"
+              data-peakday="{{ peakListeningTime[0] if peakListeningTime else 'N/A' }}"
+              data-peakplays="{{ peakListeningTime[1] if peakListeningTime else 'N/A' }}"
+              data-discoveredsongs="{{ discoveredSongsCount }}"
+              data-discoveredartists="{{ discoveredArtistsCount }}"
+              data-topsong="{% if topSongs %}{{ topSongs[0]['trackName'] }} - {{ topSongs[0]['artistName'] }}{% else %}N/A{% endif %}"
+              data-topartist="{% if topArtists %}{{ topArtists[0]['artistName'] }}{% else %}N/A{% endif %}"
+              data-topalbum="{% if topAlbums %}{{ topAlbums[0]['albumName'] }}{% else %}N/A{% endif %}">
+        <svg width="16" height="16" fill="currentColor" viewBox="0 0 16 16" style="display:inline-block;">
+          <path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z"/>
+          <path d="M7.646 11.854a.5.5 0 0 0 .708 0l3-3a.5.5 0 0 0-.708-.708L8.5 10.293V1.5a.5.5 0 0 0-1 0v8.793L5.354 8.146a.5.5 0 1 0-.708.708l3 3z"/>
+        </svg>
+        Export Summary Card
+      </button>
     </div>
 
     <noscript>
@@ -267,7 +272,7 @@
       const btn = this;
       const canvas = document.createElement('canvas');
       canvas.width = 600;
-      canvas.height = 800;
+      canvas.height = 900;
       const ctx = canvas.getContext('2d');
 
       const theme = document.documentElement.className || 'theme-rose';
@@ -289,15 +294,15 @@
         accentColor = '#FF4A4A';
       }
 
-      const gradient = ctx.createLinearGradient(0, 0, 0, 800);
+      const gradient = ctx.createLinearGradient(0, 0, 0, 900);
       gradient.addColorStop(0, gradStart);
       gradient.addColorStop(1, gradEnd);
       ctx.fillStyle = gradient;
-      ctx.fillRect(0, 0, 600, 800);
+      ctx.fillRect(0, 0, 600, 900);
 
       ctx.strokeStyle = accentColor + '44';
       ctx.lineWidth = 15;
-      ctx.strokeRect(15, 15, 570, 770);
+      ctx.strokeRect(15, 15, 570, 870);
 
       ctx.fillStyle = '#ffffff';
       ctx.font = 'bold 36px sans-serif';
@@ -328,34 +333,37 @@
       drawStat('Longest Streak', btn.dataset.streak + ' days', 300, 440);
 
       ctx.fillStyle = 'rgba(255,255,255,0.03)';
-      ctx.fillRect(50, 520, 500, 200);
+      ctx.fillRect(50, 470, 500, 280);
       ctx.strokeStyle = 'rgba(255,255,255,0.08)';
       ctx.lineWidth = 1;
-      ctx.strokeRect(50, 520, 500, 200);
+      ctx.strokeRect(50, 470, 500, 280);
 
       ctx.fillStyle = accentColor;
       ctx.font = 'bold 18px sans-serif';
       ctx.textAlign = 'left';
-      ctx.fillText('TOP HIGHLIGHTS', 70, 555);
+      ctx.fillText('TOP HIGHLIGHTS', 70, 505);
 
-      ctx.fillStyle = '#ffffff';
-      ctx.font = 'bold 16px sans-serif';
-      ctx.fillText('Top Song:', 70, 595);
-      ctx.font = '16px sans-serif';
-      ctx.fillStyle = '#cccccc';
-      ctx.fillText(btn.dataset.topsong, 180, 595);
+      const drawHighlight = (label, value, y) => {
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 14px sans-serif';
+        ctx.fillText(label + ':', 70, y);
+        ctx.font = '14px sans-serif';
+        ctx.fillStyle = '#cccccc';
+        const maxWidth = 400;
+        ctx.fillText(value.substring(0, 45), 180, y);
+      };
 
-      ctx.fillStyle = '#ffffff';
-      ctx.font = 'bold 16px sans-serif';
-      ctx.fillText('Top Artist:', 70, 645);
-      ctx.font = '16px sans-serif';
-      ctx.fillStyle = '#cccccc';
-      ctx.fillText(btn.dataset.topartist, 180, 645);
+      drawHighlight('Top Song', btn.dataset.topsong, 540);
+      drawHighlight('Top Artist', btn.dataset.topartist, 565);
+      drawHighlight('Top Album', btn.dataset.topalbum, 590);
+      drawHighlight('Peak Day', btn.dataset.peakday + ' (' + btn.dataset.peakplays + ' plays)', 615);
+      drawHighlight('Discovered Songs', btn.dataset.discoveredsongs, 640);
+      drawHighlight('Discovered Artists', btn.dataset.discoveredartists, 665);
 
       ctx.fillStyle = '#666666';
       ctx.font = 'italic 12px sans-serif';
       ctx.textAlign = 'center';
-      ctx.fillText('Generated via Spotify Stats Tracker', 300, 760);
+      ctx.fillText('Generated via Spotify Stats Tracker', 300, 870);
 
       const dataURL = canvas.toDataURL('image/png');
       const link = document.createElement('a');
