@@ -544,32 +544,66 @@ class Database:
                 self.repo.upsertTrack(track, created_reason=f"history_import (user: {self.user})")
 
             insertedCount = 0
+            updatedCount = 0
             for entry in stagedPlays:
                 track_id = entry["id"]
                 played_at = entry["playedAt"]
                 time_played = entry["timePlayed"]
                 played_from = entry.get("playedFrom")
 
-                # Skip if a play for this track already exists within (duration + 60s) tolerance,
+                # Check if a play for this track already exists within (duration + 60s) tolerance,
                 # same logic as API backfill to handle potential overlap with backfilled data
                 # where Spotify's played_at can be ambiguous (start or end time).
                 track = stagedTracks.get(track_id)
                 durationSeconds = (track.get("duration_ms", 0) or 0) // 1000 if track else 0
                 tolerance = durationSeconds + self.BACKFILL_INSERT_GUARD_EXTRA_SECONDS
-                if self.repo.hasPlayNearTime(self.user, track_id, played_at, tolerance):
-                    logger.info(
-                        "Skipping import play for track %s: an existing play already exists "
-                        "within %ds (duration+60s) of played_at=%s",
-                        track_id, tolerance, played_at,
-                    )
-                    continue
+                matches = self.repo.getPlaysNearTime(self.user, track_id, played_at, tolerance)
 
+                if matches:
+                    if len(matches) == 1:
+                        # Exactly one match - safe to update if data differs
+                        existing_play = matches[0]
+                        data_differs = (
+                            existing_play["time_played"] != time_played or
+                            existing_play["played_at"] != played_at
+                        )
+
+                        if data_differs:
+                            # Update both fields with imported data (more accurate source)
+                            conn = self.repo._conn()
+                            conn.execute(
+                                "UPDATE plays SET played_at = ?, time_played = ? WHERE id = ?",
+                                (played_at, time_played, existing_play["id"])
+                            )
+                            logger.info(
+                                "Updated import play for track %s: played_at=%s, time_played corrected from %dms to %dms",
+                                track_id, played_at, existing_play["time_played"], time_played,
+                            )
+                            updatedCount += 1
+                            continue
+                        else:
+                            # Data matches - skip, no update needed
+                            logger.info(
+                                "Skipping import play for track %s: duplicate found with identical data",
+                                track_id,
+                            )
+                            continue
+                    else:
+                        # Multiple matches - ambiguous, skip to avoid wrong update
+                        logger.info(
+                            "Skipping import play for track %s: %d plays found within tolerance - ambiguous, "
+                            "not updating to avoid wrong match",
+                            track_id, len(matches),
+                        )
+                        continue
+
+                # If no matches, proceed to insert as usual
                 if self.repo.insertPlay(self.user, track_id, played_at, time_played, played_from,
                                         created_reason=f"history_import (user: {self.user})"):
                     insertedCount += 1
 
             self.repo.commit()
-            logger.info("Imported %d tracks and %d plays for user %s", len(stagedTracks), insertedCount, self.user)
+            logger.info("Imported %d tracks; %d new plays, %d plays corrected for user %s", len(stagedTracks), insertedCount, updatedCount, self.user)
 
             status = "complete" if isFinalFile else "running"
             self.writeProgress(status, total, total, f"{progressPrefix}Import complete")

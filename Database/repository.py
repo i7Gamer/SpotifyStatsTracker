@@ -390,6 +390,17 @@ class Repository:
         ).fetchone()
         return row is not None
 
+    def getPlaysNearTime(self, username: str, trackId: str, playedAt: float, toleranceSeconds: float) -> list[dict]:
+        """Return all plays for this exact track already existing for this user
+        within toleranceSeconds of playedAt (inclusive both directions).
+        Used during imports to detect duplicates and decide whether to update."""
+        conn = self._conn()
+        rows = conn.execute(
+            "SELECT id, played_at, time_played FROM plays WHERE username=? AND track_id=? AND played_at BETWEEN ? AND ?",
+            (username, trackId, playedAt - toleranceSeconds, playedAt + toleranceSeconds),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
     def deleteZeroDurationPlays(self) -> int:
         """Remove plays with zero (or negative) recorded listening time, across
         every user - leftover skip/error events that older importer versions
