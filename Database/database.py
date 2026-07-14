@@ -66,6 +66,8 @@ class Database:
     WRAPPED_WORKER_LOOP_INTERVAL = 900         #< interval between consecutive checks in seconds (15 minutes)
     WRAPPED_YEAR_DELAY_SECONDS = 5             #< breathing room delay in seconds between recalculating years
 
+    BACKFILLER_ALBUM_QUEUE_SIZE = 80           #< number of albums queued from DB for backfilling
+
     # Shared across every Database instance (every user) in this process. Image
     # download de-duplication is enforced by the `images` table (atomic across
     # threads *and* users), so a single bounded pool for the whole process is
@@ -1514,8 +1516,8 @@ class Database:
                     # 2. Get Spotify API credentials if configured
                     creds = self.getUserSpotifyCredentials()
 
-                    # 3. Query up to 50 missing album IDs
-                    missing_ids = self.repo.getAlbumsMissingMetadata(limit=50)
+                    # 3. Query up to N missing album IDs
+                    missing_ids = self.repo.getAlbumsMissingMetadata(limit=self.BACKFILLER_ALBUM_QUEUE_SIZE)
                     if not missing_ids:
                         if self.backfiller_stop_event.wait(300):
                             break
