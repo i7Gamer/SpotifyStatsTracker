@@ -61,6 +61,11 @@ class Database:
                                                 #  can't legitimately restart within seconds of itself, since the
                                                 #  earlier play must run (or be skipped) first
 
+    WRAPPED_WORKER_MIN_START_DELAY = 60        #< minimum initial random startup delay in seconds
+    WRAPPED_WORKER_MAX_START_DELAY = 300       #< maximum initial random startup delay in seconds
+    WRAPPED_WORKER_LOOP_INTERVAL = 900         #< interval between consecutive checks in seconds (15 minutes)
+    WRAPPED_YEAR_DELAY_SECONDS = 5             #< breathing room delay in seconds between recalculating years
+
     # Shared across every Database instance (every user) in this process. Image
     # download de-duplication is enforced by the `images` table (atomic across
     # threads *and* users), so a single bounded pool for the whole process is
@@ -1322,7 +1327,7 @@ class Database:
         import random
         try:
             # 1. Random startup delay to distribute CPU load if multiple users are loaded
-            startup_delay = random.randint(10, 40)
+            startup_delay = random.randint(self.WRAPPED_WORKER_MIN_START_DELAY, self.WRAPPED_WORKER_MAX_START_DELAY)
             logger.info("[WrappedWorker-%s] Starting with initial delay of %d seconds", self.user, startup_delay)
             if self.wrapped_stop_event.wait(startup_delay):
                 return
@@ -1333,8 +1338,8 @@ class Database:
                 except Exception as e:
                     logger.error("[WrappedWorker-%s] Error checking wrapped: %s", self.user, parseError(e))
 
-                # Check every 15 minutes (900 seconds)
-                if self.wrapped_stop_event.wait(900):
+                # Check loop interval
+                if self.wrapped_stop_event.wait(self.WRAPPED_WORKER_LOOP_INTERVAL):
                     break
         except Exception as e:
             logger.error("[WrappedWorker-%s] Worker loop crashed: %s", self.user, parseError(e))
@@ -1374,6 +1379,9 @@ class Database:
                 logger.info("[WrappedWorker-%s] Recalculating wrapped for year %d (cached max: %s, actual max: %s, cached plays: %s, actual plays: %s)",
                             self.user, year, str(cached_max), str(max_played_at), str(cached_total), str(current_total))
                 self._calculateAndSaveWrapped(year, yearStart, yearEnd, max_played_at)
+                # Sleep briefly between years to distribute database load
+                if self.wrapped_stop_event.wait(self.WRAPPED_YEAR_DELAY_SECONDS):
+                    break
 
     def _calculateAndSaveWrapped(self, year: int, yearStart: datetime.datetime, yearEnd: datetime.datetime, max_played_at: float) -> None:
         """Runs all queries to precalculate the Spotify Wrapped stats and caches them in user_wrapped table."""
