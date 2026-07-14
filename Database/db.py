@@ -112,6 +112,32 @@ CREATE TABLE IF NOT EXISTS import_progress (
     message     TEXT NOT NULL DEFAULT '',
     error       INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS user_wrapped (
+    username        TEXT NOT NULL REFERENCES users(username),
+    year            INTEGER NOT NULL,
+    calculated_at   REAL NOT NULL,
+    max_played_at   REAL NOT NULL,
+    total_plays     INTEGER NOT NULL,
+    total_ms        INTEGER NOT NULL,
+    longest_streak  INTEGER NOT NULL,
+    peak_day        TEXT,
+    peak_plays      INTEGER,
+    unique_songs    INTEGER NOT NULL,
+    unique_artists  INTEGER NOT NULL,
+    discovered_songs INTEGER NOT NULL,
+    discovered_artists INTEGER NOT NULL,
+    time_series_day   TEXT NOT NULL,
+    time_series_week  TEXT NOT NULL,
+    time_series_month TEXT NOT NULL,
+    top_songs        TEXT NOT NULL,
+    top_artists      TEXT NOT NULL,
+    top_albums       TEXT NOT NULL,
+    discovered_songs_list TEXT NOT NULL,
+    discovered_artists_list TEXT NOT NULL,
+    discovered_albums_list TEXT NOT NULL,
+    PRIMARY KEY (username, year)
+);
 """
 
 

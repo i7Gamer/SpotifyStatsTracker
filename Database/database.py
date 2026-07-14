@@ -109,6 +109,10 @@ class Database:
         self.backfiller_stop_event = threading.Event()
         self.startMetadataBackfiller()
 
+        self.wrapped_thread = None
+        self.wrapped_stop_event = threading.Event()
+        self.startWrappedCalculationsWorker()
+
     def refreshSettings(self) -> None:
         from zoneinfo import ZoneInfo
         import Database.utils as utils
@@ -1287,6 +1291,175 @@ class Database:
             self.listener.stop()
         self.autoImporter.wd.stop()
         self.stopMetadataBackfiller()
+        self.stopWrappedCalculationsWorker()
+
+    def startWrappedCalculationsWorker(self) -> None:
+        """Start the background thread to precalculate wrapped data."""
+        if not hasattr(self, "wrapped_thread") or not hasattr(self, "wrapped_stop_event"):
+            return
+        if self.wrapped_thread is not None and self.wrapped_thread.is_alive():
+            return
+        self.wrapped_stop_event.clear()
+        self.wrapped_thread = threading.Thread(
+            target=self._wrappedCalculationsLoop,
+            name=f"wrapped-worker-{self.user}",
+            daemon=True
+        )
+        self.wrapped_thread.start()
+
+    def stopWrappedCalculationsWorker(self) -> None:
+        """Signal and wait for the background wrapped worker thread to stop."""
+        if not hasattr(self, "wrapped_thread") or not hasattr(self, "wrapped_stop_event"):
+            return
+        if self.wrapped_thread is None:
+            return
+        self.wrapped_stop_event.set()
+        self.wrapped_thread.join(timeout=3)
+        self.wrapped_thread = None
+
+    def _wrappedCalculationsLoop(self) -> None:
+        """Periodically checks if plays have changed and recalculates wrapped stats."""
+        import random
+        try:
+            # 1. Random startup delay to distribute CPU load if multiple users are loaded
+            startup_delay = random.randint(10, 40)
+            logger.info("[WrappedWorker-%s] Starting with initial delay of %d seconds", self.user, startup_delay)
+            if self.wrapped_stop_event.wait(startup_delay):
+                return
+
+            while not self.wrapped_stop_event.is_set():
+                try:
+                    self._checkAndRecalculateWrapped()
+                except Exception as e:
+                    logger.error("[WrappedWorker-%s] Error checking wrapped: %s", self.user, parseError(e))
+
+                # Check every 15 minutes (900 seconds)
+                if self.wrapped_stop_event.wait(900):
+                    break
+        except Exception as e:
+            logger.error("[WrappedWorker-%s] Worker loop crashed: %s", self.user, parseError(e))
+
+    def _checkAndRecalculateWrapped(self) -> None:
+        """Checks for each year if there is new data and triggers recalculation if needed."""
+        nowLocal = datetime.datetime.now(tz=self.tz)
+        currentYear = nowLocal.year
+
+        oldestEntries = self.getEntriesFromOld(count=1, fullPagination=False)
+        earliestYear = convertToDatetime(oldestEntries[0]["playedAt"], tz=self.tz).year if oldestEntries else currentYear
+        availableYears = list(range(currentYear, earliestYear - 1, -1))
+
+        for year in availableYears:
+            if self.wrapped_stop_event.is_set():
+                break
+
+            yearStart = nowLocal.replace(year=year, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+            yearEnd = nowLocal.replace(year=year + 1, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+
+            # Query max played_at for this year
+            max_played_at = self.repo.getMaxPlayedAtInPeriod(self.user, yearStart.timestamp(), yearEnd.timestamp())
+            if max_played_at is None:
+                # No plays for this year. If there is cached data, delete it.
+                self.repo.deleteUserWrapped(self.user, year)
+                continue
+
+            # Query cached max_played_at
+            cached_max = self.repo.getCachedWrappedMaxPlayedAt(self.user, year)
+
+            # If no cache or cache is stale, recalculate
+            if cached_max is None or cached_max < max_played_at:
+                logger.info("[WrappedWorker-%s] Recalculating wrapped for year %d (cached: %s, actual: %s)",
+                            self.user, year, str(cached_max), str(max_played_at))
+                self._calculateAndSaveWrapped(year, yearStart, yearEnd, max_played_at)
+
+    def _calculateAndSaveWrapped(self, year: int, yearStart: datetime.datetime, yearEnd: datetime.datetime, max_played_at: float) -> None:
+        """Runs all queries to precalculate the Spotify Wrapped stats and caches them in user_wrapped table."""
+        # 1. Total plays and milliseconds
+        totalPlays, totalMs = self.getPlayTotals(yearStart, yearEnd)
+
+        # 2. Longest streak
+        longestStreak = self.getLongestStreak(yearStart, yearEnd)
+
+        # 3. Peak listening time
+        peakListeningTime = self.getPeakListeningTime(yearStart, yearEnd)
+        peak_day = peakListeningTime[0] if peakListeningTime else None
+        peak_plays = peakListeningTime[1] if peakListeningTime else None
+
+        # 4. Unique counts
+        uniqueSongs = self.getSongsCount(yearStart, yearEnd)
+        uniqueArtists = self.getArtistsCount(yearStart, yearEnd)
+        discoveredSongsCount = self.getDiscoveredSongsCount(yearStart, yearEnd)
+        discoveredArtistsCount = self.getDiscoveredArtistsCount(yearStart, yearEnd)
+
+        # 5. Timeseries
+        timeSeriesDay = self.getListeningTimeSeries(startDate=yearStart, endDate=yearEnd, groupBy="day")
+        timeSeriesWeek = self.getListeningTimeSeries(startDate=yearStart, endDate=yearEnd, groupBy="week")
+        timeSeriesMonth = self.getListeningTimeSeries(startDate=yearStart, endDate=yearEnd, groupBy="month")
+
+        # 6. Top 100 lists
+        topSongs = self.getTopSongs(startDate=yearStart, endDate=yearEnd, by="plays", limit=100)
+        topArtists = self.getTopArtists(startDate=yearStart, endDate=yearEnd, by="plays", limit=100)
+        topAlbums = self.getTopAlbums(startDate=yearStart, endDate=yearEnd, by="plays", limit=100)
+
+        # 7. Discoveries lists (unbounded query filtered by firstListenedAt)
+        songsStats = self.getSongsStats(sortBy="plays")
+        artistsStats = self.getArtistsStats()
+        albumsStats = self.getAlbumsStats(sortBy="plays")
+
+        yearStartTs, yearEndTs = yearStart.timestamp(), yearEnd.timestamp()
+
+        discoveredSongsList = [
+            item for item in songsStats
+            if item.get("firstListenedAt") is not None and yearStartTs <= item["firstListenedAt"] < yearEndTs
+        ]
+        discoveredSongsList.sort(key=lambda item: item.get("plays", 0), reverse=True)
+        discoveredSongsList = discoveredSongsList[:100]
+
+        discoveredArtistsList = [
+            item for item in artistsStats
+            if item.get("firstListenedAt") is not None and yearStartTs <= item["firstListenedAt"] < yearEndTs
+        ]
+        discoveredArtistsList.sort(key=lambda item: item.get("plays", 0), reverse=True)
+        discoveredArtistsList = discoveredArtistsList[:100]
+
+        discoveredAlbumsList = [
+            item for item in albumsStats
+            if item.get("firstListenedAt") is not None and yearStartTs <= item["firstListenedAt"] < yearEndTs
+        ]
+        discoveredAlbumsList.sort(key=lambda item: item.get("plays", 0), reverse=True)
+        discoveredAlbumsList = discoveredAlbumsList[:100]
+
+        data = {
+            "calculated_at": time.time(),
+            "max_played_at": max_played_at,
+            "total_plays": totalPlays,
+            "total_ms": totalMs,
+            "longest_streak": longestStreak,
+            "peak_day": peak_day,
+            "peak_plays": peak_plays,
+            "unique_songs": uniqueSongs,
+            "unique_artists": uniqueArtists,
+            "discovered_songs": discoveredSongsCount,
+            "discovered_artists": discoveredArtistsCount,
+            "time_series_day": json.dumps(timeSeriesDay),
+            "time_series_week": json.dumps(timeSeriesWeek),
+            "time_series_month": json.dumps(timeSeriesMonth),
+            "top_songs": json.dumps(topSongs),
+            "top_artists": json.dumps(topArtists),
+            "top_albums": json.dumps(topAlbums),
+            "discovered_songs_list": json.dumps(discoveredSongsList),
+            "discovered_artists_list": json.dumps(discoveredArtistsList),
+            "discovered_albums_list": json.dumps(discoveredAlbumsList),
+        }
+        self.repo.saveCachedWrapped(self.user, year, data)
+
+    def recalculateWrappedForYear(self, year: int) -> None:
+        """Calculate and cache wrapped stats for a year immediately (synchronously)."""
+        nowLocal = datetime.datetime.now(tz=self.tz)
+        yearStart = nowLocal.replace(year=year, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+        yearEnd = nowLocal.replace(year=year + 1, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+        max_played_at = self.repo.getMaxPlayedAtInPeriod(self.user, yearStart.timestamp(), yearEnd.timestamp())
+        if max_played_at is not None:
+            self._calculateAndSaveWrapped(year, yearStart, yearEnd, max_played_at)
 
     def startMetadataBackfiller(self) -> None:
         """Start the background thread to fill in missing album metadata."""

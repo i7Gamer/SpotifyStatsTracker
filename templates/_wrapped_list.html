@@ -1,0 +1,8 @@
+{% if items %}
+  {% for track in items %}
+    {% set item_number = loop.index %}
+    {% include '_track_card.html' %}
+  {% endfor %}
+{% else %}
+  <p class="loading">No items played in {{ year }}.</p>
+{% endif %}

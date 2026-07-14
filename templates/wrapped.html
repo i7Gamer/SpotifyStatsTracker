@@ -1,5 +1,14 @@
 {% extends "layout.html" %}
 {% block content %}
+  <style>
+    .wrapped-loading-fade {
+      opacity: 0.35 !important;
+      pointer-events: none;
+    }
+    .track-summary-card, .track-list, .chart-canvas-wrap, [data-category] {
+      transition: opacity 0.25s ease-in-out;
+    }
+  </style>
   <section class="hero">
     <div class="hero-content">
       <h1>Your {{ year }} Wrapped</h1>
@@ -259,16 +268,173 @@
       allButton.click();
     }
 
+    function loadWrappedData(year, groupBy, limit) {
+      const targets = [
+        document.querySelector('.track-summary-grid'),
+        document.querySelectorAll('.track-summary-grid-3'),
+        document.querySelector('.chart-canvas-wrap'),
+        document.querySelectorAll('[data-category]')
+      ];
+      targets.forEach(t => {
+        if (t) {
+          if (t instanceof NodeList) {
+            t.forEach(el => el.classList.add('wrapped-loading-fade'));
+          } else {
+            t.classList.add('wrapped-loading-fade');
+          }
+        }
+      });
+
+      const hiddenYear = document.querySelector('form.filter-section input[name="year"]');
+      if (hiddenYear) hiddenYear.value = year;
+
+      fetch(`/wrapped?year=${year}&groupBy=${groupBy}&limit=${limit}&ajax=true`)
+        .then(response => response.json())
+        .then(data => {
+          if (data.error) {
+            console.error(data.error);
+            return;
+          }
+          document.querySelector('.track-summary-grid .track-summary-card:nth-child(1) .summary-value').textContent = data.totalPlays;
+          document.querySelector('.track-summary-grid .track-summary-card:nth-child(2) .summary-value').textContent = data.totalTime;
+          
+          document.querySelector('.track-summary-grid-3:nth-of-type(1) .track-summary-card:nth-child(1) .summary-value').textContent = data.longestStreak + ' days';
+          document.querySelector('.track-summary-grid-3:nth-of-type(1) .track-summary-card:nth-child(2) .summary-value').textContent = data.peakDay;
+          document.querySelector('.track-summary-grid-3:nth-of-type(1) .track-summary-card:nth-child(2) .summary-subtitle').textContent = data.peakPlays + ' plays';
+          document.querySelector('.track-summary-grid-3:nth-of-type(1) .track-summary-card:nth-child(3) .summary-value').textContent = data.uniqueSongsCount;
+          
+          document.querySelector('.track-summary-grid-3:nth-of-type(2) .track-summary-card:nth-child(1) .summary-value').textContent = data.uniqueArtistsCount;
+          document.querySelector('.track-summary-grid-3:nth-of-type(2) .track-summary-card:nth-child(2) .summary-value').textContent = data.discoveredSongsCount;
+          document.querySelector('.track-summary-grid-3:nth-of-type(2) .track-summary-card:nth-child(3) .summary-value').textContent = data.discoveredArtistsCount;
+
+          const exportBtn = document.getElementById('exportWrappedBtn');
+          if (exportBtn) {
+            exportBtn.dataset.year = year;
+            exportBtn.dataset.plays = data.totalPlays;
+            exportBtn.dataset.time = data.totalTime;
+            exportBtn.dataset.songs = data.uniqueSongsCount;
+            exportBtn.dataset.artists = data.uniqueArtistsCount;
+            exportBtn.dataset.streak = data.longestStreak;
+            exportBtn.dataset.peakday = data.peakDay;
+            exportBtn.dataset.peakplays = data.peakPlays;
+            exportBtn.dataset.discoveredsongs = data.discoveredSongsCount;
+            exportBtn.dataset.discoveredartists = data.discoveredArtistsCount;
+            exportBtn.dataset.topsong = data.topSongText || 'N/A';
+            exportBtn.dataset.topartist = data.topArtistText || 'N/A';
+            exportBtn.dataset.topalbum = data.topAlbumText || 'N/A';
+          }
+
+          document.querySelector('[data-category="top-songs"] .track-list').innerHTML = data.topSongsHtml;
+          document.querySelector('[data-category="top-artists"] .track-list').innerHTML = data.topArtistsHtml;
+          document.querySelector('[data-category="top-albums"] .track-list').innerHTML = data.topAlbumsHtml;
+
+          const discSongsDiv = document.querySelector('[data-category="discoveries-songs"]');
+          if (discSongsDiv) {
+            const list = discSongsDiv.querySelector('.track-list');
+            if (list) list.innerHTML = data.discoveredSongsHtml;
+            discSongsDiv.style.display = data.discoveredSongsCount > 0 ? '' : 'none';
+          }
+          const discArtistsDiv = document.querySelector('[data-category="discoveries-artists"]');
+          if (discArtistsDiv) {
+            const list = discArtistsDiv.querySelector('.track-list');
+            if (list) list.innerHTML = data.discoveredArtistsHtml;
+            discArtistsDiv.style.display = data.discoveredArtistsCount > 0 ? '' : 'none';
+          }
+          const discAlbumsDiv = document.querySelector('[data-category="discoveries-albums"]');
+          if (discAlbumsDiv) {
+            const list = discAlbumsDiv.querySelector('.track-list');
+            if (list) list.innerHTML = data.discoveredAlbumsHtml;
+            discAlbumsDiv.style.display = data.discoveredAlbumsCount > 0 ? '' : 'none';
+          }
+
+          const chartTitle = document.querySelector('.chart-section h2');
+          if (chartTitle) chartTitle.textContent = `Listening Over ${year}`;
+
+          window.__chartData = window.__chartData || {};
+          window.__chartData.timeSeries = data.timeSeries;
+          window.__chartData.interval = groupBy;
+          renderTimeSeriesChart();
+
+          targets.forEach(t => {
+            if (t) {
+              if (t instanceof NodeList) {
+                t.forEach(el => el.classList.remove('wrapped-loading-fade'));
+              } else {
+                t.classList.remove('wrapped-loading-fade');
+              }
+            }
+          });
+        })
+        .catch(err => {
+          console.error(err);
+          targets.forEach(t => {
+            if (t) {
+              if (t instanceof NodeList) {
+                t.forEach(el => el.classList.remove('wrapped-loading-fade'));
+              } else {
+                t.classList.remove('wrapped-loading-fade');
+              }
+            }
+          });
+        });
+    }
+
     function updateWrappedFilters() {
+      const yearBadge = document.querySelector('.wrapped-year-badge.active');
+      const year = yearBadge ? new URL(yearBadge.href).searchParams.get('year') : new URLSearchParams(window.location.search).get('year') || '{{ year }}';
       const groupBy = document.getElementById('groupBy').value;
       const limit = document.getElementById('limit').value;
-      const params = new URLSearchParams(window.location.search);
 
-      params.set('groupBy', groupBy);
-      params.set('limit', limit);
+      const newParams = new URLSearchParams();
+      newParams.set('year', year);
+      newParams.set('groupBy', groupBy);
+      newParams.set('limit', limit);
+      window.history.pushState({}, '', window.location.pathname + '?' + newParams.toString());
 
-      window.location = window.location.pathname + '?' + params.toString();
+      loadWrappedData(year, groupBy, limit);
     }
+
+    document.querySelectorAll('.wrapped-year-badge').forEach(badge => {
+      badge.addEventListener('click', function(e) {
+        e.preventDefault();
+        const url = new URL(this.href);
+        const year = url.searchParams.get('year');
+        const groupBy = document.getElementById('groupBy').value;
+        const limit = document.getElementById('limit').value;
+
+        const newParams = new URLSearchParams();
+        newParams.set('year', year);
+        newParams.set('groupBy', groupBy);
+        newParams.set('limit', limit);
+        window.history.pushState({}, '', window.location.pathname + '?' + newParams.toString());
+
+        document.querySelectorAll('.wrapped-year-badge').forEach(b => b.classList.remove('active'));
+        this.classList.add('active');
+
+        loadWrappedData(year, groupBy, limit);
+      });
+    });
+
+    window.addEventListener('popstate', function() {
+      const params = new URLSearchParams(window.location.search);
+      const year = params.get('year') || '{{ year }}';
+      const groupBy = params.get('groupBy') || 'week';
+      const limit = params.get('limit') || '50';
+
+      document.querySelectorAll('.wrapped-year-badge').forEach(badge => {
+        const badgeYear = new URL(badge.href).searchParams.get('year');
+        if (badgeYear === year) {
+          badge.classList.add('active');
+        } else {
+          badge.classList.remove('active');
+        }
+      });
+
+      document.getElementById('groupBy').value = groupBy;
+      document.getElementById('limit').value = limit;
+
+      loadWrappedData(year, groupBy, limit);
+    });
 
     document.getElementById('exportWrappedBtn')?.addEventListener('click', function() {
       const btn = this;
