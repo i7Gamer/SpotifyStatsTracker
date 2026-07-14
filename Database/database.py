@@ -1386,13 +1386,15 @@ class Database:
     def _metadataBackfillLoop(self) -> None:
         """Periodically queries Spotify for missing album release dates and tracks."""
         import random
-        # 1. Random startup offset to prevent multiple user threads from starting at the same moment
-        startup_delay = random.randint(30, 90)
-        logger.info("[Backfiller-%s] Starting with initial delay of %d seconds", self.user, startup_delay)
-        if self.backfiller_stop_event.wait(startup_delay):
-            return
+        try:
+            # 1. Random startup offset to prevent multiple user threads from starting at the same moment
+            startup_delay = random.randint(30, 90)
+            logger.info("[Backfiller-%s] Starting with initial delay of %d seconds", self.user, startup_delay)
+            if self.backfiller_stop_event.wait(startup_delay):
+                logger.info("[Backfiller-%s] Stopped during startup delay", self.user)
+                return
 
-        while not self.backfiller_stop_event.is_set():
+            while not self.backfiller_stop_event.is_set():
             target_ids = []
             try:
                 # 2. Get Spotify API credentials if configured
@@ -1466,7 +1468,7 @@ class Database:
                                     fetched_albums.append(album_raw)
                             except Exception as fe:
                                 logger.warning("[Backfiller-%s] SpotipyFree failed for album %s: %s", self.user, album_id, fe)
-                            time.sleep(1.0)
+                            self.backfiller_stop_event.wait(1.0)
                     finally:
                         cookiesFile.unlink(missing_ok=True)
 
@@ -1517,6 +1519,9 @@ class Database:
 
             if self.backfiller_stop_event.wait(300):
                 break
+
+        finally:
+            logger.info("[Backfiller-%s] Exited gracefully", self.user)
 
 
 if __name__ == "__main__":
