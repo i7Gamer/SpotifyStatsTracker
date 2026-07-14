@@ -298,14 +298,32 @@
           document.querySelector('.track-summary-grid .track-summary-card:nth-child(1) .summary-value').textContent = data.totalPlays;
           document.querySelector('.track-summary-grid .track-summary-card:nth-child(2) .summary-value').textContent = data.totalTime;
           
-          document.querySelector('.track-summary-grid-3:nth-of-type(1) .track-summary-card:nth-child(1) .summary-value').textContent = data.longestStreak + ' days';
-          document.querySelector('.track-summary-grid-3:nth-of-type(1) .track-summary-card:nth-child(2) .summary-value').textContent = data.peakDay;
-          document.querySelector('.track-summary-grid-3:nth-of-type(1) .track-summary-card:nth-child(2) .summary-subtitle').textContent = data.peakPlays + ' plays';
-          document.querySelector('.track-summary-grid-3:nth-of-type(1) .track-summary-card:nth-child(3) .summary-value').textContent = data.uniqueSongsCount;
-          
-          document.querySelector('.track-summary-grid-3:nth-of-type(2) .track-summary-card:nth-child(1) .summary-value').textContent = data.uniqueArtistsCount;
-          document.querySelector('.track-summary-grid-3:nth-of-type(2) .track-summary-card:nth-child(2) .summary-value').textContent = data.discoveredSongsCount;
-          document.querySelector('.track-summary-grid-3:nth-of-type(2) .track-summary-card:nth-child(3) .summary-value').textContent = data.discoveredArtistsCount;
+          const grid3_list = document.querySelectorAll('.track-summary-grid-3');
+          if (grid3_list.length >= 2) {
+            const firstGrid = grid3_list[0];
+            const secondGrid = grid3_list[1];
+
+            const streakVal = firstGrid.querySelector('.track-summary-card:nth-child(1) .summary-value');
+            if (streakVal) streakVal.textContent = data.longestStreak + ' days';
+
+            const peakVal = firstGrid.querySelector('.track-summary-card:nth-child(2) .summary-value');
+            if (peakVal) peakVal.textContent = data.peakDay;
+
+            const peakSub = firstGrid.querySelector('.track-summary-card:nth-child(2) .summary-subtitle');
+            if (peakSub) peakSub.textContent = data.peakPlays + ' plays';
+
+            const uniqueSongs = firstGrid.querySelector('.track-summary-card:nth-child(3) .summary-value');
+            if (uniqueSongs) uniqueSongs.textContent = data.uniqueSongsCount;
+
+            const uniqueArtists = secondGrid.querySelector('.track-summary-card:nth-child(1) .summary-value');
+            if (uniqueArtists) uniqueArtists.textContent = data.uniqueArtistsCount;
+
+            const discSongs = secondGrid.querySelector('.track-summary-card:nth-child(2) .summary-value');
+            if (discSongs) discSongs.textContent = data.discoveredSongsCount;
+
+            const discArtists = secondGrid.querySelector('.track-summary-card:nth-child(3) .summary-value');
+            if (discArtists) discArtists.textContent = data.discoveredArtistsCount;
+          }
 
           const exportBtn = document.getElementById('exportWrappedBtn');
           if (exportBtn) {
