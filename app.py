@@ -299,7 +299,9 @@ class SpotifyDashboardApp:
 
     def _embedSongTextElements(self, song) -> dict:
         if "playedAt" in song:   #< some tracks just dont have it (top tracks)
-            playedAt = convertToDatetime(song["playedAt"])
+            db = g.get("db", None)
+            tz = db.tz if db else None
+            playedAt = convertToDatetime(song["playedAt"], tz=tz)
             song["playedAtText"] = playedAt.strftime("%d %b %Y, %H:%M")
             song["timePlayedText"] = msToString(song["timePlayed"])
 
@@ -321,13 +323,17 @@ class SpotifyDashboardApp:
 
     def _embedTopSongTextElements(self, song, sortBy=None, totalPlays=0, totalMs=0) -> dict:
         song["totalTimeListenedText"] = msToString(song.get("totalTimeListened", 0))
-        song["firstListenedText"] = convertToDatetime(song.get("firstListenedAt", 0)).strftime("%b %d, %Y")
+        db = g.get("db", None)
+        tz = db.tz if db else None
+        song["firstListenedText"] = convertToDatetime(song.get("firstListenedAt", 0), tz=tz).strftime("%b %d, %Y")
         song["sortPercentText"] = self._getPercentPlayedText(song, sortBy, totalPlays, totalMs)
         return song
 
     def _embedAlbumTextElements(self, album, sortBy=None, totalPlays=0, totalMs=0) -> dict:
         album["totalTimeListenedText"] = msToString(album.get("totalTimeListened", 0))
-        album["firstListenedText"] = convertToDatetime(album.get("firstListenedAt", 0)).strftime("%b %d, %Y")
+        db = g.get("db", None)
+        tz = db.tz if db else None
+        album["firstListenedText"] = convertToDatetime(album.get("firstListenedAt", 0), tz=tz).strftime("%b %d, %Y")
         album["sortPercentText"] = self._getPercentPlayedText(album, sortBy, totalPlays, totalMs)
         album["releaseDateText"] = dateToString(album.get("releaseDate", 0))
         album["artistsText"] = ", ".join(a.get("name", "") for a in album.get("artists", []))
@@ -338,7 +344,9 @@ class SpotifyDashboardApp:
 
     def _embedArtistTextElement(self, artist, sortBy=None, totalPlays=0, totalMs=0) -> dict:
         artist["totalTimeListenedText"] = msToString(artist.get("totalTimeListened", 0))
-        artist["firstListenedText"] = convertToDatetime(artist.get("firstListenedAt", 0)).strftime("%b %d, %Y")
+        db = g.get("db", None)
+        tz = db.tz if db else None
+        artist["firstListenedText"] = convertToDatetime(artist.get("firstListenedAt", 0), tz=tz).strftime("%b %d, %Y")
         artist["sortPercentText"] = self._getPercentPlayedText(artist, sortBy, totalPlays, totalMs)
         return artist
 
