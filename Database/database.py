@@ -1395,130 +1395,130 @@ class Database:
                 return
 
             while not self.backfiller_stop_event.is_set():
-            target_ids = []
-            try:
-                # 2. Get Spotify API credentials if configured
-                creds = self.getUserSpotifyCredentials()
-
-                # 3. Query up to 50 missing album IDs
-                missing_ids = self.repo.getAlbumsMissingMetadata(limit=50)
-                if not missing_ids:
-                    if self.backfiller_stop_event.wait(300):
-                        break
-                    continue
-
-                # 4. Process-wide deduplication: filter out already active backfills
-                with Database._backfill_lock:
-                    for album_id in missing_ids:
-                        if album_id not in Database._active_backfills:
-                            target_ids.append(album_id)
-                            Database._active_backfills.add(album_id)
-                            if len(target_ids) >= 20:  # Spotify bulk limit is 20
-                                break
-
-                # 5. If nothing eligible remains, wait and try next iteration
-                if not target_ids:
-                    if self.backfiller_stop_event.wait(300):
-                        break
-                    continue
-
-                # 6. Fetch detailed metadata
-                logger.info("[Backfiller-%s] Fetching metadata for %d albums", self.user, len(target_ids))
-                fetched_albums = []
-                use_fallback = True
-
-                if creds and creds.get("client_id") and creds.get("refresh_token"):
-                    from Database.Listeners.spotifyListener import _refresh_spotify_access_token
-                    import requests
-
-                    access_token = _refresh_spotify_access_token(
-                        creds["client_id"], creds["client_secret"], creds["refresh_token"]
-                    )
-                    if access_token:
-                        headers = {"Authorization": f"Bearer {access_token}"}
-                        ids_str = ",".join(target_ids)
-                        url = f"https://api.spotify.com/v1/albums?ids={ids_str}"
-                        resp = requests.get(url, headers=headers, timeout=10)
-                        if resp.status_code == 200:
-                            albums_data = resp.json().get("albums") or []
-                            for album_raw in albums_data:
-                                if album_raw:
-                                    fetched_albums.append(album_raw)
-                            use_fallback = False
-                        else:
-                            logger.warning(
-                                "[Backfiller-%s] Spotify Web API returned status %d. Falling back to SpotipyFree.",
-                                self.user, resp.status_code
-                            )
-                    else:
-                        logger.warning("[Backfiller-%s] Failed to refresh access token. Falling back to SpotipyFree.", self.user)
-
-                if use_fallback:
-                    import SpotipyFree
-                    import time
-                    try:
-                        cookiesFile = self._materializeCookiesFile()
-                        sp = SpotipyFree.Spotify(cookiesFile=str(cookiesFile))
-                        for album_id in target_ids:
-                            if self.backfiller_stop_event.is_set():
-                                break
-                            try:
-                                album_raw = sp.album(album_id)
-                                if album_raw:
-                                    fetched_albums.append(album_raw)
-                            except Exception as fe:
-                                logger.warning("[Backfiller-%s] SpotipyFree failed for album %s: %s", self.user, album_id, fe)
-                            self.backfiller_stop_event.wait(1.0)
-                    finally:
-                        cookiesFile.unlink(missing_ok=True)
-
-                    if fetched_albums:
-                        logger.info("[Backfiller-%s] SpotipyFree fetched %d album(s)", self.user, len(fetched_albums))
-                    else:
-                        logger.warning("[Backfiller-%s] SpotipyFree fallback failed to fetch any albums", self.user)
-
-                from Database.utils import convertToDatetime
-                updated_count = 0
-                for album_raw in fetched_albums:
-                    album_id = album_raw.get("id")
-                    release_date_str = album_raw.get("release_date")
-                    total_tracks = album_raw.get("total_tracks", 0)
-
-                    if release_date_str == "0000-00-00" or not release_date_str:
-                        release_date = 0.0
-                    else:
-                        try:
-                            dt = convertToDatetime(release_date_str)
-                            release_date = dt.timestamp() if dt else 0.0
-                        except Exception:
-                            release_date = 0.0
-
-                    self.repo.updateAlbumMetadata(album_id, release_date, total_tracks)
-                    updated_count += 1
-
-                if updated_count > 0:
-                    logger.info(
-                        "[Backfiller-%s] Updated metadata for %d album(s)",
-                        self.user, updated_count
-                    )
-
-                # 7. Release lock on the processed IDs
-                with Database._backfill_lock:
-                    for album_id in target_ids:
-                        Database._active_backfills.discard(album_id)
-
-            except Exception as e:
-                logger.error("[Backfiller-%s] Error in metadata backfiller loop: %s", self.user, e)
-                # Cleanup registry if error occurred mid-process
+                target_ids = []
                 try:
+                    # 2. Get Spotify API credentials if configured
+                    creds = self.getUserSpotifyCredentials()
+
+                    # 3. Query up to 50 missing album IDs
+                    missing_ids = self.repo.getAlbumsMissingMetadata(limit=50)
+                    if not missing_ids:
+                        if self.backfiller_stop_event.wait(300):
+                            break
+                        continue
+
+                    # 4. Process-wide deduplication: filter out already active backfills
+                    with Database._backfill_lock:
+                        for album_id in missing_ids:
+                            if album_id not in Database._active_backfills:
+                                target_ids.append(album_id)
+                                Database._active_backfills.add(album_id)
+                                if len(target_ids) >= 20:  # Spotify bulk limit is 20
+                                    break
+
+                    # 5. If nothing eligible remains, wait and try next iteration
+                    if not target_ids:
+                        if self.backfiller_stop_event.wait(300):
+                            break
+                        continue
+
+                    # 6. Fetch detailed metadata
+                    logger.info("[Backfiller-%s] Fetching metadata for %d albums", self.user, len(target_ids))
+                    fetched_albums = []
+                    use_fallback = True
+
+                    if creds and creds.get("client_id") and creds.get("refresh_token"):
+                        from Database.Listeners.spotifyListener import _refresh_spotify_access_token
+                        import requests
+
+                        access_token = _refresh_spotify_access_token(
+                            creds["client_id"], creds["client_secret"], creds["refresh_token"]
+                        )
+                        if access_token:
+                            headers = {"Authorization": f"Bearer {access_token}"}
+                            ids_str = ",".join(target_ids)
+                            url = f"https://api.spotify.com/v1/albums?ids={ids_str}"
+                            resp = requests.get(url, headers=headers, timeout=10)
+                            if resp.status_code == 200:
+                                albums_data = resp.json().get("albums") or []
+                                for album_raw in albums_data:
+                                    if album_raw:
+                                        fetched_albums.append(album_raw)
+                                use_fallback = False
+                            else:
+                                logger.warning(
+                                    "[Backfiller-%s] Spotify Web API returned status %d. Falling back to SpotipyFree.",
+                                    self.user, resp.status_code
+                                )
+                        else:
+                            logger.warning("[Backfiller-%s] Failed to refresh access token. Falling back to SpotipyFree.", self.user)
+
+                    if use_fallback:
+                        import SpotipyFree
+                        import time
+                        try:
+                            cookiesFile = self._materializeCookiesFile()
+                            sp = SpotipyFree.Spotify(cookiesFile=str(cookiesFile))
+                            for album_id in target_ids:
+                                if self.backfiller_stop_event.is_set():
+                                    break
+                                try:
+                                    album_raw = sp.album(album_id)
+                                    if album_raw:
+                                        fetched_albums.append(album_raw)
+                                except Exception as fe:
+                                    logger.warning("[Backfiller-%s] SpotipyFree failed for album %s: %s", self.user, album_id, fe)
+                                self.backfiller_stop_event.wait(1.0)
+                        finally:
+                            cookiesFile.unlink(missing_ok=True)
+
+                        if fetched_albums:
+                            logger.info("[Backfiller-%s] SpotipyFree fetched %d album(s)", self.user, len(fetched_albums))
+                        else:
+                            logger.warning("[Backfiller-%s] SpotipyFree fallback failed to fetch any albums", self.user)
+
+                    from Database.utils import convertToDatetime
+                    updated_count = 0
+                    for album_raw in fetched_albums:
+                        album_id = album_raw.get("id")
+                        release_date_str = album_raw.get("release_date")
+                        total_tracks = album_raw.get("total_tracks", 0)
+
+                        if release_date_str == "0000-00-00" or not release_date_str:
+                            release_date = 0.0
+                        else:
+                            try:
+                                dt = convertToDatetime(release_date_str)
+                                release_date = dt.timestamp() if dt else 0.0
+                            except Exception:
+                                release_date = 0.0
+
+                        self.repo.updateAlbumMetadata(album_id, release_date, total_tracks)
+                        updated_count += 1
+
+                    if updated_count > 0:
+                        logger.info(
+                            "[Backfiller-%s] Updated metadata for %d album(s)",
+                            self.user, updated_count
+                        )
+
+                    # 7. Release lock on the processed IDs
                     with Database._backfill_lock:
                         for album_id in target_ids:
                             Database._active_backfills.discard(album_id)
-                except Exception:
-                    pass
 
-            if self.backfiller_stop_event.wait(300):
-                break
+                except Exception as e:
+                    logger.error("[Backfiller-%s] Error in metadata backfiller loop: %s", self.user, e)
+                    # Cleanup registry if error occurred mid-process
+                    try:
+                        with Database._backfill_lock:
+                            for album_id in target_ids:
+                                Database._active_backfills.discard(album_id)
+                    except Exception:
+                        pass
+
+                if self.backfiller_stop_event.wait(300):
+                    break
 
         finally:
             logger.info("[Backfiller-%s] Exited gracefully", self.user)
