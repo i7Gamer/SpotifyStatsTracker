@@ -274,7 +274,7 @@
       const btn = this;
       const canvas = document.createElement('canvas');
       canvas.width = 600;
-      canvas.height = 1000;
+      canvas.height = 900;
       const ctx = canvas.getContext('2d');
 
       const theme = document.documentElement.className || 'theme-rose';
@@ -296,15 +296,15 @@
         accentColor = '#FF4A4A';
       }
 
-      const gradient = ctx.createLinearGradient(0, 0, 0, 1000);
+      const gradient = ctx.createLinearGradient(0, 0, 0, 900);
       gradient.addColorStop(0, gradStart);
       gradient.addColorStop(1, gradEnd);
       ctx.fillStyle = gradient;
-      ctx.fillRect(0, 0, 600, 1000);
+      ctx.fillRect(0, 0, 600, 900);
 
       ctx.strokeStyle = accentColor + '44';
       ctx.lineWidth = 15;
-      ctx.strokeRect(15, 15, 570, 970);
+      ctx.strokeRect(15, 15, 570, 870);
 
       ctx.fillStyle = '#ffffff';
       ctx.font = 'bold 36px sans-serif';
@@ -336,40 +336,38 @@
       drawStat('Unique Artists', btn.dataset.artists, 420, 310);
       drawStat('Longest Streak', btn.dataset.streak + ' days', 300, 400);
 
-      ctx.fillStyle = 'rgba(255,255,255,0.03)';
-      ctx.fillRect(50, 450, 500, 320);
-      ctx.strokeStyle = 'rgba(255,255,255,0.08)';
-      ctx.lineWidth = 1;
-      ctx.strokeRect(50, 450, 500, 320);
+      ctx.fillStyle = 'rgba(255,255,255,0.05)';
+      ctx.fillRect(40, 440, 520, 360);
+      ctx.strokeStyle = accentColor + '33';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(40, 440, 520, 360);
 
       ctx.fillStyle = accentColor;
-      ctx.font = 'bold 16px sans-serif';
+      ctx.font = 'bold 18px sans-serif';
       ctx.textAlign = 'left';
-      ctx.fillText('TOP HIGHLIGHTS', 70, 480);
+      ctx.fillText('TOP HIGHLIGHTS', 65, 475);
 
-      const truncate = (str, len) => str.length > len ? str.substring(0, len - 2) + '..' : str;
+      const truncate = (str, len) => str.length > len ? str.substring(0, len) + '..' : str;
 
       const drawHighlight = (label, value, y) => {
         ctx.fillStyle = '#ffffff';
-        ctx.font = 'bold 13px sans-serif';
+        ctx.font = 'bold 14px sans-serif';
         ctx.textAlign = 'left';
-        ctx.fillText(label + ':', 70, y);
-        ctx.font = '13px sans-serif';
-        ctx.fillStyle = '#cccccc';
-        ctx.fillText(truncate(value, 42), 70, y + 18);
+        const fullText = label + ': ' + truncate(value, 38);
+        ctx.fillText(fullText, 65, y);
       };
 
-      drawHighlight('Top Song', btn.dataset.topsong, 505);
+      drawHighlight('Top Song', btn.dataset.topsong, 510);
       drawHighlight('Top Artist', btn.dataset.topartist, 540);
-      drawHighlight('Top Album', btn.dataset.topalbum, 575);
-      drawHighlight('Peak Day', btn.dataset.peakday + ' (' + btn.dataset.peakplays + ' plays)', 610);
-      drawHighlight('Discovered Songs', btn.dataset.discoveredsongs, 645);
-      drawHighlight('Discovered Artists', btn.dataset.discoveredartists, 680);
+      drawHighlight('Top Album', btn.dataset.topalbum, 570);
+      drawHighlight('Peak Day', btn.dataset.peakday + ' (' + btn.dataset.peakplays + ' plays)', 600);
+      drawHighlight('Discovered Songs', btn.dataset.discoveredsongs, 630);
+      drawHighlight('Discovered Artists', btn.dataset.discoveredartists, 660);
 
       ctx.fillStyle = '#666666';
       ctx.font = 'italic 12px sans-serif';
       ctx.textAlign = 'center';
-      ctx.fillText('Generated via Spotify Stats Tracker', 300, 970);
+      ctx.fillText('Generated via Spotify Stats Tracker', 300, 860);
 
       const dataURL = canvas.toDataURL('image/png');
       const link = document.createElement('a');
