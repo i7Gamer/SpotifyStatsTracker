@@ -392,19 +392,22 @@
             if (discSongsDiv) {
               const list = discSongsDiv.querySelector('.track-list');
               if (list) list.innerHTML = data.discoveredSongsHtml;
-              discSongsDiv.style.display = data.discoveredSongsCount > 0 ? '' : 'none';
+              const hasItems = list && list.querySelector('.track-card') !== null;
+              discSongsDiv.style.display = hasItems ? '' : 'none';
             }
             const discArtistsDiv = document.querySelector('[data-category="discoveries-artists"]');
             if (discArtistsDiv) {
               const list = discArtistsDiv.querySelector('.track-list');
               if (list) list.innerHTML = data.discoveredArtistsHtml;
-              discArtistsDiv.style.display = data.discoveredArtistsCount > 0 ? '' : 'none';
+              const hasItems = list && list.querySelector('.track-card') !== null;
+              discArtistsDiv.style.display = hasItems ? '' : 'none';
             }
             const discAlbumsDiv = document.querySelector('[data-category="discoveries-albums"]');
             if (discAlbumsDiv) {
               const list = discAlbumsDiv.querySelector('.track-list');
               if (list) list.innerHTML = data.discoveredAlbumsHtml;
-              discAlbumsDiv.style.display = data.discoveredAlbumsCount > 0 ? '' : 'none';
+              const hasItems = list && list.querySelector('.track-card') !== null;
+              discAlbumsDiv.style.display = hasItems ? '' : 'none';
             }
           }
 

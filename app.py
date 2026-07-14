@@ -1613,6 +1613,7 @@ class SpotifyDashboardApp:
                         "uniqueArtistsCount": uniqueArtistsCount,
                         "discoveredSongsCount": discoveredSongsCount,
                         "discoveredArtistsCount": discoveredArtistsCount,
+                        "discoveredAlbumsCount": len(discoveredAlbums),
                         "topSongText": topSongText,
                         "topArtistText": topArtistText,
                         "topAlbumText": topAlbumText
