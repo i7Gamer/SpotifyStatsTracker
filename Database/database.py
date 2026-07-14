@@ -134,19 +134,7 @@ class Database:
             msPlayed = item.get("ms_played", 0)
             source = item.get("_source", "listener")
 
-            # Sanity check: detect malformed timestamp (Python datetime string repr with microseconds)
-            # e.g., "2026-07-13T13:52:17.200000Z" - the ".200000" is a Python artifact, not valid ISO 8601
-            if isinstance(timestamp, str) and "." in timestamp and timestamp.endswith("Z"):
-                parts = timestamp.split(".")
-                if len(parts[1]) > 1 and parts[1][0:6].isdigit():  # Has microseconds
-                    logger.warning(
-                        "Skipping track %s: timestamp has malformed microseconds %s (SpotipyFree data corruption). "
-                        "This usually indicates a websocket data integrity issue.",
-                        track.get("id") if track else "unknown",
-                        timestamp
-                    )
-                    had_errors = True
-                    continue
+
 
             # Sanity check: verify the timestamp makes sense (not in far future/past)
             import time as time_module
