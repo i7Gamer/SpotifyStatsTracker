@@ -1362,13 +1362,17 @@ class Database:
                 self.repo.deleteUserWrapped(self.user, year)
                 continue
 
-            # Query cached max_played_at
-            cached_max = self.repo.getCachedWrappedMaxPlayedAt(self.user, year)
+            # Query current total plays in period
+            current_total = self.repo.getPlayCountInPeriod(self.user, yearStart.timestamp(), yearEnd.timestamp())
 
-            # If no cache or cache is stale, recalculate
-            if cached_max is None or cached_max < max_played_at:
-                logger.info("[WrappedWorker-%s] Recalculating wrapped for year %d (cached: %s, actual: %s)",
-                            self.user, year, str(cached_max), str(max_played_at))
+            # Query cached max_played_at and cached total_plays
+            cached_max = self.repo.getCachedWrappedMaxPlayedAt(self.user, year)
+            cached_total = self.repo.getCachedWrappedTotalPlays(self.user, year)
+
+            # If no cache, max timestamp is newer, or total play count changed, recalculate
+            if cached_max is None or cached_total is None or cached_max < max_played_at or cached_total != current_total:
+                logger.info("[WrappedWorker-%s] Recalculating wrapped for year %d (cached max: %s, actual max: %s, cached plays: %s, actual plays: %s)",
+                            self.user, year, str(cached_max), str(max_played_at), str(cached_total), str(current_total))
                 self._calculateAndSaveWrapped(year, yearStart, yearEnd, max_played_at)
 
     def _calculateAndSaveWrapped(self, year: int, yearStart: datetime.datetime, yearEnd: datetime.datetime, max_played_at: float) -> None:

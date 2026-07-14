@@ -1362,9 +1362,23 @@ class Repository:
         ).fetchone()
         return row[0] if row else None
 
+    def getPlayCountInPeriod(self, username: str, startTs: float, endTs: float) -> int:
+        row = self._conn().execute(
+            "SELECT COUNT(*) FROM plays WHERE username = ? AND played_at >= ? AND played_at < ?",
+            (username, startTs, endTs)
+        ).fetchone()
+        return row[0] if row else 0
+
     def getCachedWrappedMaxPlayedAt(self, username: str, year: int) -> float | None:
         row = self._conn().execute(
             "SELECT max_played_at FROM user_wrapped WHERE username = ? AND year = ?",
+            (username, year)
+        ).fetchone()
+        return row[0] if row else None
+
+    def getCachedWrappedTotalPlays(self, username: str, year: int) -> int | None:
+        row = self._conn().execute(
+            "SELECT total_plays FROM user_wrapped WHERE username = ? AND year = ?",
             (username, year)
         ).fetchone()
         return row[0] if row else None

@@ -109,6 +109,34 @@ class TestWrappedBackgroundWorker(DatabaseTestCase):
         self.assertEqual(cached["total_plays"], 1)
         self.assertEqual(cached["max_played_at"], 1774000000)
 
+    def test_worker_detects_historical_inserts(self):
+        db = self._makeDb({}, [])
+        # Insert plays in 2026: one late play
+        db.repo.upsertTrack({
+            "id": "t1", "name": "Song 1", "url": "u1", "imageId": "img1", "duration": 30000,
+            "explicit": False, "isrc": "", "discNumber": 1, "trackNumber": 1, "releaseDate": 0,
+            "album": {"id": "alb1", "name": "Album 1", "url": "u", "imageId": "i", "imageUrl": "", "totalTracks": 1, "releaseDate": 0},
+            "artists": [{"id": "art1", "name": "Artist 1", "url": "u", "imageId": "i"}]
+        })
+        db.repo.insertPlay(db.user, "t1", 1775000000, 30000, "listener") # late play
+
+        # Check and populate cache
+        db._checkAndRecalculateWrapped()
+        cached1 = db.repo.getCachedWrapped(db.user, 2026)
+        self.assertEqual(cached1["total_plays"], 1)
+        self.assertEqual(cached1["max_played_at"], 1775000000)
+
+        # Now insert an earlier play (historical, in-between) in 2026
+        db.repo.insertPlay(db.user, "t1", 1774000000, 30000, "listener") # earlier play (max_played_at is still 1775000000)
+
+        # Run check
+        db._checkAndRecalculateWrapped()
+
+        # Cache should have updated and now show 2 plays
+        cached2 = db.repo.getCachedWrapped(db.user, 2026)
+        self.assertEqual(cached2["total_plays"], 2)
+        self.assertEqual(cached2["max_played_at"], 1775000000)
+
 
 class TestWrappedRouteAjax(unittest.TestCase):
     def setUp(self):
