@@ -199,6 +199,75 @@ class TestProfilePageShareListings(ShareRoutesTestCase):
         self.assertIn(b"dave", resp.data)    #< accepted
 
 
+class TestPendingSharesTopbarBadge(ShareRoutesTestCase):
+    """The badge next to the version-badge in the topbar (layout.html) - the
+    only place a user is alerted to an incoming share request without
+    visiting /profile themselves."""
+
+    def test_hidden_with_no_pending_incoming_requests(self):
+        client = self._loginAs("alice", "alice@example.com")
+
+        resp = client.get("/import")
+
+        self.assertNotIn(b"pending-shares-badge", resp.data)
+
+    def test_shows_the_count_of_pending_incoming_requests(self):
+        self.dash.repo.upsertUser("bob", "bob@example.com")
+        self.dash.repo.upsertUser("carol", "carol@example.com")
+        self.dash.repo.upsertUser("alice", "alice@example.com")
+        self.dash.repo.createShareRequest("bob", "alice")
+        self.dash.repo.createShareRequest("carol", "alice")
+        client = self._loginAs("alice", "alice@example.com")
+
+        resp = client.get("/import")
+
+        self.assertIn(b'class="pending-shares-badge"', resp.data)
+        self.assertIn(b"2 share requests", resp.data)
+
+    def test_singular_wording_for_exactly_one_request(self):
+        self.dash.repo.upsertUser("bob", "bob@example.com")
+        self.dash.repo.upsertUser("alice", "alice@example.com")
+        self.dash.repo.createShareRequest("bob", "alice")
+        client = self._loginAs("alice", "alice@example.com")
+
+        resp = client.get("/import")
+
+        self.assertIn(b"1 share request", resp.data)
+        self.assertNotIn(b"1 share requests", resp.data)
+
+    def test_outgoing_requests_do_not_count(self):
+        self.dash.repo.upsertUser("bob", "bob@example.com")
+        self.dash.repo.upsertUser("alice", "alice@example.com")
+        self.dash.repo.createShareRequest("alice", "bob")   #< alice is the requester, not recipient
+        client = self._loginAs("alice", "alice@example.com")
+
+        resp = client.get("/import")
+
+        self.assertNotIn(b"pending-shares-badge", resp.data)
+
+    def test_badge_links_to_profile(self):
+        self.dash.repo.upsertUser("bob", "bob@example.com")
+        self.dash.repo.upsertUser("alice", "alice@example.com")
+        self.dash.repo.createShareRequest("bob", "alice")
+        client = self._loginAs("alice", "alice@example.com")
+
+        resp = client.get("/import")
+
+        self.assertIn(b'href="/profile"', resp.data)
+
+    def test_disappears_once_the_request_is_resolved(self):
+        self.dash.repo.upsertUser("bob", "bob@example.com")
+        self.dash.repo.upsertUser("alice", "alice@example.com")
+        self.dash.repo.createShareRequest("bob", "alice")
+        shareId = self.dash.repo.getPendingIncomingShares("alice")[0]["id"]
+        client = self._loginAs("alice", "alice@example.com")
+
+        client.post(f"/profile/shares/{shareId}", data={"action": "accept"})
+        resp = client.get("/import")
+
+        self.assertNotIn(b"pending-shares-badge", resp.data)
+
+
 class TestShareActionRoute(ShareRoutesTestCase):
     def _pendingShareId(self, requester, recipient):
         self.dash.repo.upsertUser(requester, f"{requester}@example.com")

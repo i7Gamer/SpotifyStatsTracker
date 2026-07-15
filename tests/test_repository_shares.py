@@ -149,6 +149,23 @@ class TestPendingShareLists(RepositorySharesTestCase):
         )
 
 
+class TestGetPendingIncomingSharesCount(RepositorySharesTestCase):
+    def test_counts_incoming_pending_requests(self):
+        self.repo.createShareRequest("bob", "alice")
+        self.repo.createShareRequest("carol", "alice")
+
+        self.assertEqual(self.repo.getPendingIncomingSharesCount("alice"), 2)
+
+    def test_excludes_outgoing_and_accepted(self):
+        self.repo.createShareRequest("alice", "bob")   #< outgoing, not incoming
+        self._accept("alice", "carol")                  #< accepted, not pending
+
+        self.assertEqual(self.repo.getPendingIncomingSharesCount("alice"), 0)
+
+    def test_zero_when_there_are_none(self):
+        self.assertEqual(self.repo.getPendingIncomingSharesCount("alice"), 0)
+
+
 class TestAcceptedShares(RepositorySharesTestCase):
     def test_returns_counterpart_when_username_was_the_requester(self):
         self._accept("alice", "bob")

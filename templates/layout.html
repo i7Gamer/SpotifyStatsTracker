@@ -29,6 +29,11 @@
       <div id="version-badge" class="version-badge" style="display:none;">
         <span id="version-badge-text"></span>
       </div>
+      {% if pendingIncomingSharesCount %}
+      <a href="{{ url_for('profilePage') }}" class="pending-shares-badge" title="Data-sharing requests waiting on you">
+        {{ pendingIncomingSharesCount }} share request{{ 's' if pendingIncomingSharesCount != 1 else '' }}
+      </a>
+      {% endif %}
       <button id="nav-toggle" class="nav-toggle" aria-label="Toggle navigation menu">
         <span></span>
         <span></span>

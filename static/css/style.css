@@ -1085,6 +1085,26 @@ progress::-moz-progress-bar {
   font-size: 0.95rem;
 }
 
+.pending-shares-badge {
+  display: inline-flex;
+  justify-content: flex-start;
+  align-items: center;
+  gap: 8px;
+  margin-left: 12px;
+  margin-right: auto;
+  padding: 3px 6px;
+  background: #f0ad4e;
+  color: #1a1a1a;
+  border-radius: 8px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.pending-shares-badge:hover {
+  opacity: 0.85;
+}
+
 .chart-card {
   margin-bottom: 24px;
 }

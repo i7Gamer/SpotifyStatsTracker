@@ -1364,6 +1364,15 @@ class Repository:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    def getPendingIncomingSharesCount(self, username: str) -> int:
+        """Just the count, for the topbar badge - avoids fetching full rows
+        (requester_username/created_at) when the caller only needs a number."""
+        row = self._conn().execute(
+            "SELECT COUNT(*) AS c FROM user_shares WHERE recipient_username=? AND status=?",
+            (username, self.SHARE_STATUS_PENDING),
+        ).fetchone()
+        return row["c"]
+
     def getPendingOutgoingShares(self, username: str) -> list[dict]:
         conn = self._conn()
         rows = conn.execute(

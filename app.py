@@ -702,19 +702,24 @@ class SpotifyDashboardApp:
         @self.app.context_processor
         def _injectShareStatus():
             # Lets layout.html's nav show a "Compare" link only for users who
-            # have at least one usable accepted share - computed here so every
-            # template gets it without every route remembering to pass it.
-            # Memoized on g: one request can render several templates (the
-            # Wrapped AJAX endpoint renders six partials), and each render
-            # re-runs every context processor - the LIMIT-1 existence query
-            # must not repeat per partial. No is_user_logged_in check: that
-            # can cost a live Spotify round-trip, far too heavy per render,
-            # and a stale session's worst case is a nav link that 302s to
-            # login like every other nav item would.
+            # have at least one usable accepted share, and the topbar badge
+            # show a count of share requests waiting on them - computed here
+            # so every template gets both without every route remembering to
+            # pass them. Memoized on g: one request can render several
+            # templates (the Wrapped AJAX endpoint renders six partials), and
+            # each render re-runs every context processor - these two cheap
+            # queries must not repeat per partial. No is_user_logged_in
+            # check: that can cost a live Spotify round-trip, far too heavy
+            # per render, and a stale session's worst case is a nav
+            # link/badge that 302s to login like every other nav item would.
             if "hasAcceptedShares" not in g:
                 username = session.get("username")
                 g.hasAcceptedShares = self.repo.hasAnyAcceptedShare(username) if username else False
-            return {"hasAcceptedShares": g.hasAcceptedShares}
+                g.pendingIncomingSharesCount = self.repo.getPendingIncomingSharesCount(username) if username else 0
+            return {
+                "hasAcceptedShares": g.hasAcceptedShares,
+                "pendingIncomingSharesCount": g.pendingIncomingSharesCount,
+            }
 
         def _is_version_newer(remote: str, local: str) -> bool:
             try:
