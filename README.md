@@ -5,6 +5,8 @@
 
 ## Spotify Stats Tracker
 
+[![Tests](https://github.com/i7Gamer/SpotifyStatsTracker/actions/workflows/tests.yml/badge.svg)](https://github.com/i7Gamer/SpotifyStatsTracker/actions/workflows/tests.yml)
+
 ### If you found [this repository](https://github.com/i7Gamer/SpotifyStatsTracker) useful, please give it a ⭐!
 A web application that allows users to track and analyze their Spotify listening habits and statistics **without Spotify Premium**.
 
@@ -99,6 +101,16 @@ http://127.0.0.1:5444
 ```
 
 **Note:** The Docker container persists data in the `Database/Data/` directory on your host machine.
+
+### Backups
+
+Listening history, tracks, images, and login sessions all live in one SQLite file at `Database/Data/spotify_stats.db`. The app runs it in [WAL mode](https://www.sqlite.org/wal.html), so **don't just copy the `.db` file** while the container is running - recent writes can still be sitting in a separate `-wal` file that a raw copy would miss, producing a backup that's silently missing data or corrupt. Use SQLite's own online backup API instead, which is safe to run against a live, in-use database:
+
+```bash
+docker compose exec spotify-tracker python -c "import sqlite3; sqlite3.connect('/app/Database/Data/spotify_stats.db').backup(sqlite3.connect('/app/Database/Data/spotify_stats_backup.db'))"
+```
+
+This writes `spotify_stats_backup.db` into the same `Database/Data/` folder on your host machine (via the volume mount). Copy that file somewhere else - a different disk, cloud storage, etc. - for it to actually protect you against data loss, and rename or timestamp it before backing up again if you want to keep more than one snapshot.
 
 ### Spotify Web API Backfilling (Optional)
 
