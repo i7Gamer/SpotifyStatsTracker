@@ -519,6 +519,53 @@ class TestSyntheticTrackLifecycle(RepositoryTestCase):
         self.assertIsNone(songs["t1"]["created_reason"])
 
 
+class TestAvailabilityReason(RepositoryTestCase):
+    def test_roundtrip_and_clear_on_later_upsert(self):
+        """availability_reason reflects the latest lookup (current state, not
+        provenance): stored on upsert, cleared when a later upsert has none."""
+        track = makeTrack(trackId="t1")
+        track["availability_reason"] = "COUNTRY_RESTRICTED"
+        self.repo.upsertTrack(track)
+        self.repo.commit()
+        self.assertEqual(self.repo.getTrack("t1")["availability_reason"], "COUNTRY_RESTRICTED")
+
+        self.repo.upsertTrack(makeTrack(trackId="t1"))
+        self.repo.commit()
+        self.assertIsNone(self.repo.getTrack("t1")["availability_reason"])
+
+    def test_song_rows_include_availability_reason(self):
+        self.repo.upsertUser("alice", "alice@example.com")
+        track = makeTrack(trackId="t1")
+        track["availability_reason"] = "COUNTRY_RESTRICTED"
+        self.repo.upsertTrack(track)
+        self.repo.insertPlay("alice", "t1", 1000.0, 5000)
+        self.repo.commit()
+
+        songs = self.repo.getSongsPage("alice")
+        self.assertEqual(songs[0]["availability_reason"], "COUNTRY_RESTRICTED")
+
+    def test_add_availability_columns_if_missing_on_legacy_db(self):
+        import sqlite3
+
+        legacyPath = Path(self._tmpdir.name) / "legacy.db"
+        conn = sqlite3.connect(legacyPath)
+        conn.execute("CREATE TABLE tracks (id TEXT PRIMARY KEY, name TEXT NOT NULL, url TEXT NOT NULL, album_id TEXT NOT NULL)")
+        conn.execute("CREATE TABLE albums (id TEXT PRIMARY KEY, name TEXT NOT NULL, url TEXT NOT NULL)")
+        conn.commit()
+        conn.close()
+
+        legacyRepo = Repository(legacyPath)
+        try:
+            legacyRepo.addAvailabilityColumnsIfMissing()
+            legacyRepo.addAvailabilityColumnsIfMissing()  #< idempotent
+            trackCols = {r["name"] for r in legacyRepo._conn().execute("PRAGMA table_info(tracks)").fetchall()}
+            albumCols = {r["name"] for r in legacyRepo._conn().execute("PRAGMA table_info(albums)").fetchall()}
+            self.assertIn("availability_reason", trackCols)
+            self.assertIn("backfill_attempted_at", albumCols)
+        finally:
+            legacyRepo.connectionManager.close()
+
+
 class TestHasPlayNearTime(RepositoryTestCase):
     def setUp(self):
         super().setUp()
@@ -1198,6 +1245,7 @@ class TestSongsPage(RepositoryTestCase):
             "track_id": "t1", "name": "Song", "url": "u", "image_id": "img1",
             "duration_ms": 1000, "explicit": 0, "isrc": None,
             "disc_number": 1, "track_number": 1, "created_reason": None,
+            "availability_reason": None,
             "album_id": None, "album_name": None, "album_url": None,
             "album_total_tracks": None, "album_release_date": None,
             "album_image_id": None, "album_image_url": None,

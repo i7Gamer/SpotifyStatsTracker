@@ -17,6 +17,11 @@ IMAGE_STATUS_PENDING = "pending"
 IMAGE_STATUS_OK = "ok"
 IMAGE_STATUS_FAILED = "failed"
 
+# How long the metadata backfiller waits before re-attempting an album it already
+# processed - covers restricted/blanked albums whose metadata Spotify may fill in
+# (or unblock) later, without hammering the API for permanently dateless albums.
+ALBUM_BACKFILL_RETRY_SECONDS = 7 * 24 * 3600
+
 # Whitelist mapping the public sortBy values to the SQL output-column aliases
 # they're allowed to sort by. sortBy is interpolated directly into ORDER BY
 # (column names can't be bound as query parameters), and it's user-controlled
@@ -119,6 +124,7 @@ class Repository:
             "explicit": bool(track.get("explicit", False)),
             "created_at": track.get("created_at"),
             "created_reason": track.get("created_reason"),
+            "availability_reason": track.get("availability_reason"),
             "syntheticReason": SYNTHETIC_FALLBACK_REASON,
             "restrictedReason": RESTRICTED_FALLBACK_REASON,
         }
@@ -133,12 +139,13 @@ class Repository:
         # turned out to be fully available on Spotify after all.
         conn.execute(
             """
-            INSERT INTO tracks (id, name, url, album_id, image_id, duration_ms, explicit, isrc, disc_number, track_number, created_at, created_reason)
-            VALUES (:id, :name, :url, :albumId, :imageId, :duration, :explicit, :isrc, :discNumber, :trackNumber, :created_at, :created_reason)
+            INSERT INTO tracks (id, name, url, album_id, image_id, duration_ms, explicit, isrc, disc_number, track_number, created_at, created_reason, availability_reason)
+            VALUES (:id, :name, :url, :albumId, :imageId, :duration, :explicit, :isrc, :discNumber, :trackNumber, :created_at, :created_reason, :availability_reason)
             ON CONFLICT(id) DO UPDATE SET
                 name=excluded.name, url=excluded.url, album_id=excluded.album_id, image_id=excluded.image_id,
                 duration_ms=excluded.duration_ms, explicit=excluded.explicit, isrc=excluded.isrc,
                 disc_number=excluded.disc_number, track_number=excluded.track_number,
+                availability_reason=excluded.availability_reason,
                 created_at=CASE
                     WHEN tracks.created_reason IN (:syntheticReason, :restrictedReason)
                          AND (excluded.created_reason IS NULL
@@ -264,6 +271,7 @@ class Repository:
                 for r in artistRows
             ],
             "created_reason": trackRow["created_reason"] if "created_reason" in trackRow.keys() else None,
+            "availability_reason": trackRow["availability_reason"] if "availability_reason" in trackRow.keys() else None,
         }
 
     def trackExists(self, trackId: str) -> bool:
@@ -754,7 +762,7 @@ class Repository:
                 t.id AS track_id, t.name AS name, t.url AS url, t.image_id AS image_id,
                 t.duration_ms AS duration_ms, t.explicit AS explicit, t.isrc AS isrc,
                 t.disc_number AS disc_number, t.track_number AS track_number,
-                t.created_reason AS created_reason,
+                t.created_reason AS created_reason, t.availability_reason AS availability_reason,
                 al.id AS album_id, al.name AS album_name, al.url AS album_url,
                 al.total_tracks AS album_total_tracks, al.release_date AS album_release_date,
                 al.image_id AS album_image_id, al.image_url AS album_image_url,
@@ -1027,6 +1035,7 @@ class Repository:
             "totalTimeListened": row["total_time_listened"],
             "firstListenedAt": row["first_listened_at"],
             "created_reason": row["created_reason"],
+            "availability_reason": row["availability_reason"],
         }
 
     def getPlaysInRange(self, username: str, startTs: float | None = None, endTs: float | None = None,
@@ -1289,6 +1298,19 @@ class Repository:
             if "timezone" not in columns:
                 conn.execute("ALTER TABLE users ADD COLUMN timezone TEXT")
 
+    def addAvailabilityColumnsIfMissing(self) -> None:
+        """Add tracks.availability_reason (Spotify playability restriction, e.g.
+        COUNTRY_RESTRICTED) and albums.backfill_attempted_at (backfill retry
+        rate-limiting) if missing. Guarded so re-running doesn't fail."""
+        conn = self._conn()
+        trackColumns = {row["name"] for row in conn.execute("PRAGMA table_info(tracks)").fetchall()}
+        albumColumns = {row["name"] for row in conn.execute("PRAGMA table_info(albums)").fetchall()}
+        with conn:
+            if "availability_reason" not in trackColumns:
+                conn.execute("ALTER TABLE tracks ADD COLUMN availability_reason TEXT")
+            if "backfill_attempted_at" not in albumColumns:
+                conn.execute("ALTER TABLE albums ADD COLUMN backfill_attempted_at REAL")
+
     def getAllUsersWithCookies(self) -> list[tuple[str, str]]:
         """(username, email) for every user who has logged in at least once -
         used at startup to make sure each of them has a running listener."""
@@ -1362,18 +1384,39 @@ class Repository:
         return [dict(r) for r in rows]
 
     def getAlbumsMissingMetadata(self, limit: int) -> list[str]:
-        """total_tracks = 0 doubles as the "never backfilled" marker: the backfiller
-        always writes a track count, so processed albums drop out of this queue even
-        when Spotify has no release date for them (no endless refetching), and
-        synthetic fallback albums (created with totalTracks=1) are never queued.
-        Known gap: an album created with a nonzero track count but no release date
-        is never queued either - rare, and preferable to the refetch loop."""
+        """Albums with incomplete metadata (missing release date or track count),
+        excluding fabricated fallback albums (album_<id> never existed on Spotify).
+        backfill_attempted_at rate-limits retries: each processed album waits
+        ALBUM_BACKFILL_RETRY_SECONDS before being re-queued, so restricted/blanked
+        albums get another chance weekly while permanently dateless albums don't
+        hammer the API every cycle."""
         conn = self._conn()
+        retryCutoff = time.time() - ALBUM_BACKFILL_RETRY_SECONDS
         rows = conn.execute(
-            "SELECT id FROM albums WHERE (release_date = 0 OR release_date IS NULL) AND total_tracks = 0 LIMIT ?",
-            (limit,)
+            r"""
+            SELECT id FROM albums
+            WHERE (release_date = 0 OR release_date IS NULL OR total_tracks = 0)
+              AND id NOT LIKE 'album\_%' ESCAPE '\'
+              AND (backfill_attempted_at IS NULL OR backfill_attempted_at < ?)
+            LIMIT ?
+            """,
+            (retryCutoff, limit)
         ).fetchall()
         return [row["id"] for row in rows]
+
+    def markAlbumsBackfillAttempted(self, albumIds: list[str]) -> None:
+        """Stamp albums as processed by the backfiller so they leave the queue for
+        ALBUM_BACKFILL_RETRY_SECONDS - including albums Spotify returned no data
+        for, which would otherwise be re-fetched every cycle forever."""
+        if not albumIds:
+            return
+        conn = self._conn()
+        placeholders = ",".join("?" for _ in albumIds)
+        with conn:
+            conn.execute(
+                f"UPDATE albums SET backfill_attempted_at = ? WHERE id IN ({placeholders})",
+                [time.time(), *albumIds],
+            )
 
     def updateAlbumMetadata(self, album_id: str, release_date: float, total_tracks: int, name: str | None = None) -> None:
         conn = self._conn()
@@ -1389,13 +1432,22 @@ class Repository:
                     (release_date, total_tracks, album_id)
                 )
 
-    def updateTrackName(self, track_id: str, name: str) -> None:
+    def updateTrackName(self, track_id: str, name: str, duration_ms: int | None = None) -> None:
+        """duration_ms also updates the stored duration when provided (>0) - the
+        album backfill response is the only source of durations for tracks whose
+        own lookup came back blanked (region-restricted)."""
         conn = self._conn()
         with conn:
-            conn.execute(
-                "UPDATE tracks SET name = ? WHERE id = ?",
-                (name, track_id)
-            )
+            if duration_ms:
+                conn.execute(
+                    "UPDATE tracks SET name = ?, duration_ms = ? WHERE id = ?",
+                    (name, duration_ms, track_id)
+                )
+            else:
+                conn.execute(
+                    "UPDATE tracks SET name = ? WHERE id = ?",
+                    (name, track_id)
+                )
 
     def cleanupOrphans(self) -> dict[str, int]:
         """Deletes tracks, track-artists, albums, artists, and images that are no longer

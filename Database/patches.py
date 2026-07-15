@@ -286,14 +286,18 @@ def patch_spotipy_free() -> bool:
             if self.isUrl(trackId):
                 trackId = self.urlToId(trackId)
 
-            track = _get_track_info_with_retry(trackId)
+            raw = _get_track_info_with_retry(trackId)
             try:
-                artists = track["firstArtist"]["items"]
-                artists.extend(track["otherArtists"]["items"])
+                artists = raw["firstArtist"]["items"]
+                artists.extend(raw["otherArtists"]["items"])
             except Exception:
                 artists = ["Not Found"]
             formattedArtists = SpotifyFormatter.formatArtists(artists)
-            track = SpotifyFormatter.formatTrack(track, formattedArtists)
+            track = SpotifyFormatter.formatTrack(raw, formattedArtists)
+            # SpotifyFormatter drops playability; pass it through so downstream
+            # formatting can record why a track isn't playable (e.g.
+            # COUNTRY_RESTRICTED on region-blocked tracks with blanked metadata).
+            track["playability"] = raw.get("playability")
             if self.getIsrc:
                 track["external_ids"] = {"isrc": self._getIsrc(track["track_id"])}
             return track

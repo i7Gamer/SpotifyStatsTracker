@@ -1555,6 +1555,7 @@ class Database:
                     # 6. Fetch detailed metadata
                     logger.info("[Backfiller-%s] Fetching metadata for %d albums", self.user, len(target_ids))
                     fetched_albums = []
+                    attempted_ids = []  #< albums that got a definitive response (incl. "gone") - rate-limits their next retry
                     use_fallback = True
 
                     if creds and creds.get("client_id") and creds.get("refresh_token"):
@@ -1574,6 +1575,10 @@ class Database:
                                 for album_raw in albums_data:
                                     if album_raw:
                                         fetched_albums.append(album_raw)
+                                # Null entries are albums Spotify has no data for -
+                                # count those as attempted too, or they'd be re-queued
+                                # every cycle forever.
+                                attempted_ids = list(target_ids)
                                 use_fallback = False
                             else:
                                 if os.environ.get("FLASK_DEBUG", "").lower() in TRUTHY_DEBUG_VALUES:
@@ -1597,6 +1602,7 @@ class Database:
                                     album_raw = sp.album(album_id)
                                     if album_raw:
                                         fetched_albums.append(album_raw)
+                                    attempted_ids.append(album_id)  #< a clean "no data" reply is definitive; exceptions stay unmarked for a next-cycle retry
                                 except Exception as fe:
                                     logger.warning("[Backfiller-%s] SpotipyFree failed for album %s: %s", self.user, album_id, fe)
                                 self.backfiller_stop_event.wait(1.0)
@@ -1625,19 +1631,28 @@ class Database:
                             except Exception:
                                 release_date = 0.0
 
-                        resolved_album_name = album_name if album_name else "[Deleted/Unavailable Album]"
-                        self.repo.updateAlbumMetadata(album_id, release_date, total_tracks, name=resolved_album_name)
+                        # A blank name isn't data - passing None skips the name update
+                        # so a blanked response can't overwrite a name the importer
+                        # already filled from the user's export.
+                        self.repo.updateAlbumMetadata(album_id, release_date, total_tracks,
+                                                      name=album_name if album_name else None)
 
-                        # Update names for the tracks in this album if returned
+                        # Update names (and durations, when provided) for the tracks
+                        # in this album if returned - the album response is the only
+                        # duration source for tracks whose own lookup came back blanked.
                         tracks_data = album_raw.get("tracks", {}).get("items") or []
                         for track_raw in tracks_data:
                             track_id = track_raw.get("id") or track_raw.get("track_id")
                             track_name = track_raw.get("name")
-                            if track_id:
-                                resolved_track_name = track_name if track_name else "[Deleted/Unavailable Track]"
-                                self.repo.updateTrackName(track_id, resolved_track_name)
+                            if track_id and track_name:
+                                duration_ms = track_raw.get("duration_ms") or 0
+                                self.repo.updateTrackName(track_id, track_name,
+                                                          duration_ms=duration_ms if duration_ms > 0 else None)
 
                         updated_count += 1
+
+                    if attempted_ids:
+                        self.repo.markAlbumsBackfillAttempted(attempted_ids)
 
                     if updated_count > 0:
                         logger.info(

@@ -59,6 +59,12 @@ class Client:
             artists = Client._formatArtists(album)
         album = Client._formatAlbum(album)
 
+        # Spotify reports why a track can't be played (e.g. COUNTRY_RESTRICTED,
+        # PAYWALL_CONTENT); only recorded when playability explicitly says
+        # unplayable - unknown/absent playability means no claim either way.
+        playability = track.get("playability") or {}
+        availabilityReason = playability.get("reason") if playability.get("playable") is False else None
+
         track = {
             "name": track.get("name", "Unknown Track"),
             "releaseDate": album["releaseDate"],
@@ -73,6 +79,7 @@ class Client:
             "isrc": track.get("external_ids", {}).get("isrc", ""),
             "discNumber": track.get("disc_number", 0),
             "trackNumber": track.get("track_number", 0),
+            "availability_reason": availabilityReason,
         }
 
         if not embedPlaybackInfo:

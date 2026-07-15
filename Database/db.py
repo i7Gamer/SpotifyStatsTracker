@@ -40,7 +40,8 @@ CREATE TABLE IF NOT EXISTS albums (
     total_tracks    INTEGER NOT NULL DEFAULT 0,
     release_date    REAL,
     image_id        TEXT,
-    image_url       TEXT
+    image_url       TEXT,
+    backfill_attempted_at REAL
 );
 
 CREATE TABLE IF NOT EXISTS tracks (
@@ -55,7 +56,8 @@ CREATE TABLE IF NOT EXISTS tracks (
     disc_number     INTEGER,
     track_number    INTEGER,
     created_at      REAL,
-    created_reason  TEXT
+    created_reason  TEXT,
+    availability_reason TEXT
 );
 
 -- Ordered join table: a track can have multiple artists, and display order matters.

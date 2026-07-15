@@ -107,6 +107,22 @@ class TestFormatTrackEmbedPlaybackInfo(unittest.TestCase):
 
         self.assertEqual(track["playedFrom"], "playlist:playlist999")
 
+    def test_format_track_records_availability_reason_when_unplayable(self):
+        meta = dict(FAKE_TRACK_METADATA)
+        meta["playability"] = {"playable": False, "reason": "COUNTRY_RESTRICTED"}
+
+        track = Client.formatTrack(meta, embedPlaybackInfo=False)
+
+        self.assertEqual(track["availability_reason"], "COUNTRY_RESTRICTED")
+
+    def test_format_track_no_availability_reason_when_playable_or_absent(self):
+        track = Client.formatTrack(FAKE_TRACK_METADATA, embedPlaybackInfo=False)
+        self.assertIsNone(track["availability_reason"])
+
+        meta = dict(FAKE_TRACK_METADATA)
+        meta["playability"] = {"playable": True, "reason": "PLAYABLE"}
+        self.assertIsNone(Client.formatTrack(meta, embedPlaybackInfo=False)["availability_reason"])
+
 class TestProcessPlayCaching(unittest.TestCase):
     PLAYED_AT = 1620000000
     MS_PLAYED = 120000

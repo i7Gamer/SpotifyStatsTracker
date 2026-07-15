@@ -275,6 +275,20 @@ class TestPatches(unittest.TestCase):
 
     @patch("spotapi.Song")
     @patch("spotapi.Public")
+    def test_spotify_track_passes_playability_through(self, mock_public, mock_song):
+        """SpotifyFormatter drops playability - the patched track() must re-attach
+        it so downstream formatting can record why a track isn't playable."""
+        union = fakeTrackUnion("abc123")
+        union["playability"] = {"playable": False, "reason": "COUNTRY_RESTRICTED"}
+        mock_public.song_info.return_value = {"data": {"trackUnion": union}}
+
+        instance = self._newSpotifyInstance()
+        result = instance.track("abc123")
+
+        self.assertEqual(result["playability"], {"playable": False, "reason": "COUNTRY_RESTRICTED"})
+
+    @patch("spotapi.Song")
+    @patch("spotapi.Public")
     def test_spotify_track_resolves_url_before_lookup(self, mock_public, mock_song):
         """A Spotify URL/URI passed to track() must be resolved to a bare id
         before being handed to Public.song_info (unchanged from the original

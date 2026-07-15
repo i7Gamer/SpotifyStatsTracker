@@ -188,24 +188,15 @@ class Importer:
             track_id = hashlib.md5(f"{name}::{artist}".encode("utf-8")).hexdigest()
 
         album_id = f"album_{track_id}"
-        artist_id = f"artist_{track_id}"
 
         # With a real URI the track's Spotify page still exists (just unplayable),
         # so the link stays useful and is kept. Without one, the md5-based id points
         # at nothing - the url stays empty (like imageUrl), and every template guards
-        # its "Open in Spotify" link on a truthy url. The fabricated album_/artist_
-        # ids never existed on Spotify, so those urls always stay empty.
+        # its "Open in Spotify" link on a truthy url. The fabricated album_ id never
+        # existed on Spotify, so its url always stays empty.
         track_url = f"https://open.spotify.com/track/{track_id}" if trackUri else ""
 
-        artists = [
-            {
-                "name": artist,
-                "url": "",
-                "imageUrl": "",
-                "imageId": artist_id,
-                "id": artist_id,
-            }
-        ]
+        artists = [self._resolveExportArtist(artist)]
 
         album = {
             "name": albumName or name,  #< prefer the export's album name, fall back to the track name
@@ -240,6 +231,41 @@ class Importer:
         errorText = str(e).lower()
         return any(marker in errorText for marker in self.TRANSIENT_LOOKUP_ERROR_MARKERS)
 
+    def _buildCatalogArtistsByName(self, knownIndex: dict) -> dict:
+        """Real (non-fabricated) artists from the seeded catalog, keyed by lowercase
+        name - lets fallback records reuse the true artist id/link when the same
+        artist is already known from other tracks, instead of fabricating one."""
+        artistsByName = {}
+        for track in knownIndex.values():
+            for artistEntry in track.get("artists") or []:
+                artistId = artistEntry.get("id") or ""
+                artistName = (artistEntry.get("name") or "").strip().lower()
+                if not artistName or not artistId or artistId.startswith("artist_"):
+                    continue
+                artistsByName.setdefault(artistName, {
+                    "id": artistId,
+                    "name": artistEntry["name"],
+                    "url": artistEntry.get("url", ""),
+                    "imageUrl": artistEntry.get("imageUrl", ""),
+                    "imageId": artistEntry.get("imageId"),
+                })
+        return artistsByName
+
+    def _resolveExportArtist(self, artist: str) -> dict:
+        """Prefer the real catalog artist with this name (keeps stats grouped and
+        the real Spotify link); fabricate a deterministic name-keyed entry otherwise."""
+        catalogArtist = getattr(self, "_catalogArtistsByName", {}).get(artist.strip().lower())
+        if catalogArtist:
+            return dict(catalogArtist)
+        artist_id = f"artist_{hashlib.md5(artist.encode('utf-8')).hexdigest()}"
+        return {
+            "name": artist,
+            "url": "",
+            "imageUrl": "",
+            "imageId": artist_id,
+            "id": artist_id,
+        }
+
     def _overlayExportMetadata(self, base: dict, name: str, artist: str, albumName: str | None) -> dict:
         """Spotify blanks name/duration and reports the generic "Various Artists"
         profile for region-restricted tracks (playability COUNTRY_RESTRICTED) while
@@ -252,23 +278,14 @@ class Importer:
         base["name"] = name
         base["created_reason"] = RESTRICTED_FALLBACK_REASON
 
-        # The returned artist is untrustworthy on blanked tracks - replace it with
-        # the export's artist unless it already matches. The fabricated id is keyed
-        # by artist name (not track id) so one restricted artist stays one artist
-        # across all their tracks.
+        # The returned artist is untrustworthy on blanked tracks (Spotify reports
+        # the generic Various Artists profile) - replace it with the export's
+        # artist unless it already matches, reusing the real catalog artist id
+        # when the same artist is known from other tracks.
         returnedArtists = base.get("artists") or []
         returnedArtistName = (returnedArtists[0].get("name") or "").strip().lower() if returnedArtists else ""
         if artist and returnedArtistName != artist.strip().lower():
-            artist_id = f"artist_{hashlib.md5(artist.encode('utf-8')).hexdigest()}"
-            base["artists"] = [
-                {
-                    "name": artist,
-                    "url": "",
-                    "imageUrl": "",
-                    "imageId": artist_id,
-                    "id": artist_id,
-                }
-            ]
+            base["artists"] = [self._resolveExportArtist(artist)]
 
         album = base.get("album")
         if album is not None and not album.get("name"):
@@ -315,7 +332,8 @@ class Importer:
         
     def _import(self, dataFunction, history, known=[], progressCallback=None):
         known = self.buildKnownIndex(known)
-        
+        self._catalogArtistsByName = self._buildCatalogArtistsByName(known)
+
         parsedItems = self._parseHistory(dataFunction, history)
         totalItems = len(parsedItems)
         if totalItems == 0:

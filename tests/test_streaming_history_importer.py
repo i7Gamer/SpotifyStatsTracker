@@ -313,6 +313,7 @@ def makeRestrictedTrack(artistName="Various Artists", artistId="0LyfQWJT6nXafLPZ
         "disc_number": 1,
         "track_number": 1,
         "external_ids": {"isrc": ""},
+        "playability": {"playable": False, "reason": "COUNTRY_RESTRICTED"},
         "album": {
             "id": "album123",
             "name": albumName,
@@ -356,6 +357,7 @@ class TestRestrictedTrackOverlay(unittest.TestCase):
         self.assertEqual(track["artists"][0]["name"], "Real Artist")
         self.assertEqual(track["album"]["name"], "Real Album")
         self.assertEqual(track["created_reason"], RESTRICTED_FALLBACK_REASON)
+        self.assertEqual(track["availability_reason"], "COUNTRY_RESTRICTED")
         # The real Spotify ids/links are kept
         self.assertEqual(track["id"], "track123")
         self.assertEqual(track["url"], "https://open.spotify.com/track/track123")
@@ -399,6 +401,45 @@ class TestRestrictedTrackOverlay(unittest.TestCase):
         self.assertEqual(track["name"], "Song One")
         self.assertIsNone(track.get("created_reason"))
         self.assertEqual(track["artists"][0]["id"], "artist123")
+
+    def test_catalog_artist_id_is_reused(self):
+        """When the export artist already exists in the catalog (from other
+        tracks), the fallback must reuse the real artist id/link instead of
+        fabricating one - keeps Top Artists stats grouped."""
+        importer = self._importerReturning(makeRestrictedTrack())
+        catalog = [{
+            "id": "otherTrack1", "name": "Other Song",
+            "artists": [{"id": "realArtist99", "name": "Real Artist",
+                         "url": "https://open.spotify.com/artist/realArtist99",
+                         "imageUrl": "", "imageId": "realArtist99"}],
+        }]
+
+        def dummyDataFunction(item):
+            return item
+        track = list(importer._import(dummyDataFunction, self.HISTORY, known=catalog, progressCallback=None))[0]
+
+        self.assertEqual(track["artists"][0]["id"], "realArtist99")
+        self.assertEqual(track["artists"][0]["url"], "https://open.spotify.com/artist/realArtist99")
+
+    def test_synthetic_track_reuses_catalog_artist(self):
+        importer = Importer()
+        importer.sp = MagicMock()
+        importer.sp.track.side_effect = Exception("Spotify 404 Track Not Found")
+        importer.sp.search.side_effect = Exception("Spotify 404 Search Failed")
+        catalog = [{
+            "id": "otherTrack1", "name": "Other Song",
+            "artists": [{"id": "realArtist99", "name": "Mark Watson",
+                         "url": "https://open.spotify.com/artist/realArtist99",
+                         "imageUrl": "", "imageId": "realArtist99"}],
+        }]
+        history = [("Arctic Future", "Mark Watson", "2023-01-01 00:00:00", 10354, "uriX", None)]
+
+        def dummyDataFunction(item):
+            return item
+        track = list(importer._import(dummyDataFunction, history, known=catalog, progressCallback=None))[0]
+
+        self.assertEqual(track["created_reason"], SYNTHETIC_FALLBACK_REASON)
+        self.assertEqual(track["artists"][0]["id"], "realArtist99")
 
     def test_build_known_index_skips_blank_names(self):
         """Catalog rows stored with blank names (pre-overlay restricted lookups)

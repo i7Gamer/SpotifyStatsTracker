@@ -12,19 +12,34 @@ from Database.database import Database
 
 class TestMetadataBackfiller(DatabaseTestCase):
     def test_repository_get_albums_missing_metadata(self):
+        import time
+        from Database.repository import ALBUM_BACKFILL_RETRY_SECONDS
+
         db = self._makeDb({}, [])
         conn = db.repo._conn()
+        now = time.time()
         with conn:
             conn.execute("INSERT INTO albums (id, name, url, release_date) VALUES ('alb1', 'Album 1', '', 0.0)")
-            conn.execute("INSERT INTO albums (id, name, url, release_date) VALUES ('alb2', 'Album 2', '', 1700000000.0)")
+            conn.execute("INSERT INTO albums (id, name, url, release_date, total_tracks) VALUES ('alb2', 'Album 2', '', 1700000000.0, 12)")
             conn.execute("INSERT INTO albums (id, name, url, release_date) VALUES ('alb3', 'Album 3', '', NULL)")
+            # Restricted-style album: track count known, release date missing - must be queued
             conn.execute("INSERT INTO albums (id, name, url, release_date, total_tracks) VALUES ('alb4', 'Album 4', '', 0.0, 5)")
+            # Fabricated fallback album ids never existed on Spotify - never queued
+            conn.execute("INSERT INTO albums (id, name, url, release_date) VALUES ('album_deadbeef', 'Synthetic', '', 0.0)")
+            # Recently attempted - rate-limited out of the queue
+            conn.execute("INSERT INTO albums (id, name, url, release_date, backfill_attempted_at) VALUES ('alb5', 'Album 5', '', 0.0, ?)", (now,))
+            # Attempted longer than the retry interval ago - queued again
+            conn.execute("INSERT INTO albums (id, name, url, release_date, backfill_attempted_at) VALUES ('alb6', 'Album 6', '', 0.0, ?)",
+                         (now - ALBUM_BACKFILL_RETRY_SECONDS - 60,))
 
         missing = db.repo.getAlbumsMissingMetadata(10)
         self.assertIn("alb1", missing)
         self.assertIn("alb3", missing)
+        self.assertIn("alb4", missing)
+        self.assertIn("alb6", missing)
         self.assertNotIn("alb2", missing)
-        self.assertNotIn("alb4", missing)
+        self.assertNotIn("album_deadbeef", missing)
+        self.assertNotIn("alb5", missing)
 
     def test_repository_update_album_metadata(self):
         db = self._makeDb({}, [])
@@ -46,8 +61,13 @@ class TestMetadataBackfiller(DatabaseTestCase):
             conn.execute("INSERT INTO tracks (id, name, url, album_id) VALUES ('tr1', 'Track 1', '', 'alb1')")
 
         db.repo.updateTrackName("tr1", "Updated Track 1")
-        row = conn.execute("SELECT name FROM tracks WHERE id='tr1'").fetchone()
+        row = conn.execute("SELECT name, duration_ms FROM tracks WHERE id='tr1'").fetchone()
         self.assertEqual(row["name"], "Updated Track 1")
+        self.assertEqual(row["duration_ms"], 0)
+
+        db.repo.updateTrackName("tr1", "Updated Track 1", duration_ms=215000)
+        row = conn.execute("SELECT duration_ms FROM tracks WHERE id='tr1'").fetchone()
+        self.assertEqual(row["duration_ms"], 215000)
 
     @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value="mock_token")
     @patch("requests.get")
@@ -66,7 +86,25 @@ class TestMetadataBackfiller(DatabaseTestCase):
                         "items": [
                             {
                                 "id": "tr1",
-                                "name": "Updated Track Name"
+                                "name": "Updated Track Name",
+                                "duration_ms": 215000
+                            }
+                        ]
+                    }
+                },
+                {
+                    # Blanked response (restricted album): names are not data and
+                    # must not overwrite what the importer filled from the export
+                    "id": "alb3",
+                    "name": "",
+                    "release_date": "2020-01-01",
+                    "total_tracks": 4,
+                    "tracks": {
+                        "items": [
+                            {
+                                "id": "tr3",
+                                "name": "",
+                                "duration_ms": 100000
                             }
                         ]
                     }
@@ -83,7 +121,9 @@ class TestMetadataBackfiller(DatabaseTestCase):
         with conn:
             conn.execute("INSERT INTO albums (id, name, url, release_date, total_tracks) VALUES ('alb1', 'Album 1', '', 0.0, 0)")
             conn.execute("INSERT INTO albums (id, name, url, release_date, total_tracks) VALUES ('alb2', 'Album 2', '', 0.0, 0)")
+            conn.execute("INSERT INTO albums (id, name, url, release_date, total_tracks) VALUES ('alb3', 'Export Album Name', '', 0.0, 0)")
             conn.execute("INSERT INTO tracks (id, name, url, album_id) VALUES ('tr1', 'Track 1', '', 'alb1')")
+            conn.execute("INSERT INTO tracks (id, name, url, album_id) VALUES ('tr3', 'Export Track Name', '', 'alb3')")
 
         # Mock getUserSpotifyCredentials to return active credentials
         db.getUserSpotifyCredentials = MagicMock(return_value={
@@ -111,12 +151,25 @@ class TestMetadataBackfiller(DatabaseTestCase):
         self.assertGreater(row["release_date"], 0)
         self.assertEqual(row["total_tracks"], 10)
 
-        track_row = conn.execute("SELECT name FROM tracks WHERE id='tr1'").fetchone()
+        track_row = conn.execute("SELECT name, duration_ms FROM tracks WHERE id='tr1'").fetchone()
         self.assertEqual(track_row["name"], "Updated Track Name")
+        self.assertEqual(track_row["duration_ms"], 215000)
+
+        # Verify alb1 was stamped as attempted (rate-limits its next retry)
+        self.assertIsNotNone(conn.execute("SELECT backfill_attempted_at FROM albums WHERE id='alb1'").fetchone()[0])
+
+        # Blanked names in the response must not overwrite export-filled names,
+        # but the other metadata still lands
+        alb3 = conn.execute("SELECT name, release_date, total_tracks FROM albums WHERE id='alb3'").fetchone()
+        self.assertEqual(alb3["name"], "Export Album Name")
+        self.assertGreater(alb3["release_date"], 0)
+        self.assertEqual(alb3["total_tracks"], 4)
+        self.assertEqual(conn.execute("SELECT name FROM tracks WHERE id='tr3'").fetchone()["name"], "Export Track Name")
 
         # Verify alb2 was skipped because it was in _active_backfills
-        row2 = conn.execute("SELECT release_date, total_tracks FROM albums WHERE id='alb2'").fetchone()
+        row2 = conn.execute("SELECT release_date, total_tracks, backfill_attempted_at FROM albums WHERE id='alb2'").fetchone()
         self.assertEqual(row2["release_date"], 0.0)
+        self.assertIsNone(row2["backfill_attempted_at"])
 
         # Verify alb2 is still in _active_backfills, but alb1 has been removed after processing
         self.assertIn("alb2", Database._active_backfills)
@@ -172,10 +225,11 @@ class TestMetadataBackfiller(DatabaseTestCase):
         # Run backfiller
         db._metadataBackfillLoop()
 
-        # Verify alb1 was updated via SpotipyFree fallback
-        row = conn.execute("SELECT release_date, total_tracks FROM albums WHERE id='alb1'").fetchone()
+        # Verify alb1 was updated via SpotipyFree fallback and stamped as attempted
+        row = conn.execute("SELECT release_date, total_tracks, backfill_attempted_at FROM albums WHERE id='alb1'").fetchone()
         self.assertGreater(row["release_date"], 0)
         self.assertEqual(row["total_tracks"], 8)
+        self.assertIsNotNone(row["backfill_attempted_at"])
         mock_sp.album.assert_called_once_with("alb1")
 
     @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value="mock_token")
