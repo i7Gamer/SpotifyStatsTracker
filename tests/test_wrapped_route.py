@@ -159,6 +159,32 @@ class TestWrappedYearSelection(_WrappedRouteTestBase):
         self.assertNotIn(b"/wrapped?year=2025", resp.data)
 
 
+class TestWrappedSuccessErrorMessagesAreEscaped(_WrappedRouteTestBase):
+    """?success=/?error= are attacker-controlled query params (e.g. a crafted
+    link to /wrapped?success=...) - they must be HTML-escaped like every other
+    template's error/success message, not rendered with `| safe`."""
+
+    def test_success_message_html_is_escaped_not_executed(self):
+        dash = self._makeApp()
+        db = self._makeDb()
+
+        resp = self._getWrapped(dash, db, query="?success=<script>alert(1)</script>")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotIn(b"<script>alert(1)</script>", resp.data)
+        self.assertIn(b"&lt;script&gt;alert(1)&lt;/script&gt;", resp.data)
+
+    def test_error_message_html_is_escaped(self):
+        dash = self._makeApp()
+        db = self._makeDb()
+
+        resp = self._getWrapped(dash, db, query="?error=<script>alert(1)</script>")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotIn(b"<script>alert(1)</script>", resp.data)
+        self.assertIn(b"&lt;script&gt;alert(1)&lt;/script&gt;", resp.data)
+
+
 class TestWrappedTotals(_WrappedRouteTestBase):
     def test_totals_come_from_get_play_totals(self):
         dash = self._makeApp()
