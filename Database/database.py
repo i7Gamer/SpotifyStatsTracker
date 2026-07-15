@@ -154,6 +154,11 @@ class Database:
 
         self.wrapped_thread = None
         self.wrapped_stop_event = threading.Event()
+        # Guards the lazily-created per-year locks below (not the recalculation
+        # itself) so the periodic worker and an on-demand /wrapped recalculation
+        # never both run _calculateAndSaveWrapped for the same year at once.
+        self._wrapped_recalc_locks_guard = threading.Lock()
+        self._wrapped_recalc_locks: dict[int, threading.Lock] = {}
         self.startWrappedCalculationsWorker()
 
     def refreshSettings(self) -> None:
@@ -1443,6 +1448,26 @@ class Database:
         except Exception as e:
             logger.error("[WrappedWorker-%s] Worker loop crashed: %s", self.user, parseError(e))
 
+    def _getWrappedRecalcLock(self, year: int) -> threading.Lock:
+        """Per-(user instance, year) lock so the periodic worker and an
+        on-demand /wrapped recalculation never run _calculateAndSaveWrapped
+        for the same year at the same time."""
+        with self._wrapped_recalc_locks_guard:
+            lock = self._wrapped_recalc_locks.get(year)
+            if lock is None:
+                lock = threading.Lock()
+                self._wrapped_recalc_locks[year] = lock
+            return lock
+
+    def _wrappedCacheNeedsRecalc(self, year: int, yearStart: datetime.datetime, yearEnd: datetime.datetime, max_played_at: float):
+        """Compares the cached (max_played_at, play_count) snapshot for a year
+        against live values. Returns (isStale, cached_max, cached_total, current_total)."""
+        current_total = self.repo.getPlayCountInPeriod(self.user, yearStart.timestamp(), yearEnd.timestamp())
+        cached_max = self.repo.getCachedWrappedMaxPlayedAt(self.user, year)
+        cached_total = self.repo.getCachedWrappedTotalPlays(self.user, year)
+        isStale = cached_max is None or cached_total is None or cached_max < max_played_at or cached_total != current_total
+        return isStale, cached_max, cached_total, current_total
+
     def _checkAndRecalculateWrapped(self) -> None:
         """Checks for each year if there is new data and triggers recalculation if needed."""
         nowLocal = datetime.datetime.now(tz=self.tz)
@@ -1466,23 +1491,28 @@ class Database:
                 self.repo.deleteUserWrapped(self.user, year)
                 continue
 
-            # Query current total plays in period
-            current_total = self.repo.getPlayCountInPeriod(self.user, yearStart.timestamp(), yearEnd.timestamp())
+            isStale, cached_max, cached_total, current_total = self._wrappedCacheNeedsRecalc(year, yearStart, yearEnd, max_played_at)
+            if not isStale:
+                continue
 
-            # Query cached max_played_at and cached total_plays
-            cached_max = self.repo.getCachedWrappedMaxPlayedAt(self.user, year)
-            cached_total = self.repo.getCachedWrappedTotalPlays(self.user, year)
-
-            # If no cache, max timestamp is newer, or total play count changed, recalculate
-            if cached_max is None or cached_total is None or cached_max < max_played_at or cached_total != current_total:
+            lock = self._getWrappedRecalcLock(year)
+            if not lock.acquire(blocking=False):
+                # An on-demand /wrapped recalculation is already handling this
+                # year; don't duplicate the work or block the periodic loop -
+                # the next cycle will notice if anything is still stale.
+                logger.info("[WrappedWorker-%s] Year %d recalculation already in progress elsewhere, skipping this cycle", self.user, year)
+                continue
+            try:
                 cachedMaxDisplay = convertToDatetime(cached_max, tz=self.tz).isoformat() if cached_max is not None else "none"
                 actualMaxDisplay = convertToDatetime(max_played_at, tz=self.tz).isoformat()
                 logger.info("[WrappedWorker-%s] Recalculating wrapped for year %d (cached max: %s, actual max: %s, cached plays: %s, actual plays: %s)",
                             self.user, year, cachedMaxDisplay, actualMaxDisplay, str(cached_total), str(current_total))
                 self._calculateAndSaveWrapped(year, yearStart, yearEnd, max_played_at)
-                # Sleep briefly between years to distribute database load
-                if self.wrapped_stop_event.wait(self.WRAPPED_YEAR_DELAY_SECONDS):
-                    break
+            finally:
+                lock.release()
+            # Sleep briefly between years to distribute database load
+            if self.wrapped_stop_event.wait(self.WRAPPED_YEAR_DELAY_SECONDS):
+                break
 
     def _calculateAndSaveWrapped(self, year: int, yearStart: datetime.datetime, yearEnd: datetime.datetime, max_played_at: float) -> None:
         """Runs all queries to precalculate the Spotify Wrapped stats and caches them in user_wrapped table."""
@@ -1566,13 +1596,25 @@ class Database:
         self.repo.saveCachedWrapped(self.user, year, data)
 
     def recalculateWrappedForYear(self, year: int) -> None:
-        """Calculate and cache wrapped stats for a year immediately (synchronously)."""
+        """Calculate and cache wrapped stats for a year immediately (synchronously).
+
+        Waits on this year's recalc lock rather than racing the periodic
+        worker: if the worker is already recalculating this exact year, this
+        blocks until it's done instead of duplicating the (expensive) work,
+        then re-checks whether the cache is still stale before doing anything -
+        the worker may have already brought it up to date while we waited.
+        """
         nowLocal = datetime.datetime.now(tz=self.tz)
         yearStart = nowLocal.replace(year=year, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
         yearEnd = nowLocal.replace(year=year + 1, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
         max_played_at = self.repo.getMaxPlayedAtInPeriod(self.user, yearStart.timestamp(), yearEnd.timestamp())
-        if max_played_at is not None:
-            self._calculateAndSaveWrapped(year, yearStart, yearEnd, max_played_at)
+        if max_played_at is None:
+            return
+
+        with self._getWrappedRecalcLock(year):
+            isStale, _, _, _ = self._wrappedCacheNeedsRecalc(year, yearStart, yearEnd, max_played_at)
+            if isStale:
+                self._calculateAndSaveWrapped(year, yearStart, yearEnd, max_played_at)
 
     def startMetadataBackfiller(self) -> None:
         """Start the background thread to fill in missing album metadata."""

@@ -1,5 +1,6 @@
 import datetime
 import json
+import threading
 import time
 import unittest
 from unittest.mock import patch, MagicMock
@@ -198,6 +199,86 @@ class TestWrappedBackgroundWorker(DatabaseTestCase):
         # No new data since the first run - priorYear must not be recalculated again.
         recalculatedYears = [call.args[0] for call in spy.call_args_list]
         self.assertNotIn(priorYear, recalculatedYears)
+
+
+class TestWrappedRecalcLocking(DatabaseTestCase):
+    """The periodic wrapped worker (_checkAndRecalculateWrapped) and the
+    on-demand recompute triggered by a /wrapped cache miss
+    (recalculateWrappedForYear) must never run the expensive
+    _calculateAndSaveWrapped for the same year at the same time."""
+
+    def _seedOnePlayIn2026(self, db):
+        db.repo.upsertTrack({
+            "id": "t1", "name": "Song 1", "url": "u1", "imageId": "img1", "duration": 30000,
+            "explicit": False, "isrc": "", "discNumber": 1, "trackNumber": 1, "releaseDate": 0,
+            "album": {"id": "alb1", "name": "Album 1", "url": "u", "imageId": "i", "imageUrl": "", "totalTracks": 1, "releaseDate": 0},
+            "artists": [{"id": "art1", "name": "Artist 1", "url": "u", "imageId": "i"}]
+        })
+        db.repo.insertPlay(db.user, "t1", 1774000000, 30000, "listener")
+        db.repo.deleteUserWrapped(db.user, 2026)
+
+    def test_concurrent_on_demand_recalculations_only_compute_once(self):
+        """Simulates several near-simultaneous /wrapped requests on a cache
+        miss (e.g. multiple browser tabs): only the first should actually run
+        _calculateAndSaveWrapped - the rest must see the now-fresh cache after
+        waiting for the lock and skip redundant work."""
+        db = self._makeDb({}, [])
+        self._seedOnePlayIn2026(db)
+
+        real = db._calculateAndSaveWrapped
+        callCount = []
+
+        def slowRealCalc(*args, **kwargs):
+            callCount.append(1)
+            time.sleep(0.05)   #< widen the race window
+            return real(*args, **kwargs)
+
+        def recalcThenCloseConnection():
+            # Each thread gets its own thread-local sqlite connection (see
+            # Database/db.py's ConnectionManager) - close it before the thread
+            # exits so the test's tempdir cleanup can delete the file on Windows.
+            db.recalculateWrappedForYear(2026)
+            db.repo.connectionManager.close()
+
+        with patch.object(db, "_calculateAndSaveWrapped", side_effect=slowRealCalc):
+            threads = [threading.Thread(target=recalcThenCloseConnection) for _ in range(5)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=5)
+
+        self.assertEqual(len(callCount), 1)
+        cached = db.repo.getCachedWrapped(db.user, 2026)
+        self.assertEqual(cached["total_plays"], 1)
+
+    def test_background_check_skips_year_being_recalculated_on_demand(self):
+        """If an on-demand recalculation already holds the lock for a year,
+        the periodic worker must skip that year this cycle instead of
+        duplicating the work or blocking the whole loop."""
+        db = self._makeDb({}, [])
+        self._seedOnePlayIn2026(db)
+
+        lock = db._getWrappedRecalcLock(2026)
+        lock.acquire()
+        try:
+            with patch.object(db, "_calculateAndSaveWrapped") as spy:
+                db._checkAndRecalculateWrapped()
+            spy.assert_not_called()
+        finally:
+            lock.release()
+
+    def test_on_demand_recalc_skips_if_already_fresh_after_acquiring_lock(self):
+        """After waiting for the lock, recalculateWrappedForYear must re-check
+        freshness rather than blindly recomputing - otherwise a request that
+        waited behind the periodic worker would redo the same expensive work
+        that worker just finished."""
+        db = self._makeDb({}, [])
+        self._seedOnePlayIn2026(db)
+
+        db._checkAndRecalculateWrapped()   #< populates a fresh cache
+        with patch.object(db, "_calculateAndSaveWrapped") as spy:
+            db.recalculateWrappedForYear(2026)
+        spy.assert_not_called()
 
 
 class TestWrappedRouteAjax(unittest.TestCase):
