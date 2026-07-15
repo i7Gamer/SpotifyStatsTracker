@@ -14,6 +14,7 @@ from flask_wtf.csrf import CSRFProtect
 from werkzeug.security import generate_password_hash, check_password_hash
 
 from Database.database import Database
+from Database.db import SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON
 from Database.repository import Repository
 from Database.Migrators.migrate import migrateIfNeeded
 from Database.Listeners.spotifyListener import _suppress_signal_in_thread
@@ -564,6 +565,16 @@ class SpotifyDashboardApp:
             # minimum instead of a hardcoded number that could drift from
             # PASSWORD_MIN_LENGTH.
             return {"minPasswordLength": PASSWORD_MIN_LENGTH}
+
+        @self.app.context_processor
+        def _injectFallbackMarkers():
+            # Single-sources the created_reason marker values (Database.db) so
+            # templates compare against the constants instead of duplicating the
+            # string literals.
+            return {
+                "SYNTHETIC_FALLBACK_REASON": SYNTHETIC_FALLBACK_REASON,
+                "RESTRICTED_FALLBACK_REASON": RESTRICTED_FALLBACK_REASON,
+            }
 
         def _is_version_newer(remote: str, local: str) -> bool:
             try:

@@ -30,21 +30,21 @@ if hasattr(spotapi.websocket, "connect"):
 # This prevents AttributeError: 'PlayerStatus' object has no attribute 'reconnect'
 # when the websocket drops and LastPlayedManger attempts to reconnect.
 def player_status_reconnect(self):
-    print("[Patches] Reconnecting PlayerStatus websocket...")
-    
+    logger.info("Reconnecting PlayerStatus websocket...")
+
     # Close old connection if possible
     try:
         if hasattr(self, "ws") and self.ws:
             self.ws.close()
     except Exception:
         pass
-    
+
     # Renew session and client token
     try:
         self.base.get_session()
         self.base.get_client_token()
     except Exception as e:
-        print(f"[Patches] Failed to renew session: {e}")
+        logger.warning("Failed to renew session: %s", e)
     
     # Establish new websocket connection using the patched connect function
     uri = f"wss://dealer.spotify.com/?access_token={self.base.access_token}"
@@ -64,8 +64,8 @@ def player_status_reconnect(self):
     if hasattr(self, "keep_alive_thread") and not self.keep_alive_thread.is_alive():
         self.keep_alive_thread = threading.Thread(target=self.keep_alive, daemon=True)
         self.keep_alive_thread.start()
-        
-    print("[Patches] PlayerStatus websocket reconnected successfully.")
+
+    logger.info("PlayerStatus websocket reconnected successfully.")
 
 # Inject the reconnect method into PlayerStatus class
 spotapi.status.PlayerStatus.reconnect = player_status_reconnect
@@ -174,10 +174,10 @@ def _get_track_info_with_retry(trackId: str, max_retries: int = 3):
 
             if attempt < max_retries - 1:
                 backoff_secs = 2 ** attempt  # 1, 2, 4 seconds
-                print(f"[Patches] Track fetch failed (attempt {attempt + 1}/{max_retries}), backing off {backoff_secs}s: {e}")
+                logger.warning("Track fetch failed (attempt %d/%d), backing off %ds: %s", attempt + 1, max_retries, backoff_secs, e)
                 time.sleep(backoff_secs)
             else:
-                print(f"[Patches] Track fetch failed after {max_retries} attempts: {e}")
+                logger.warning("Track fetch failed after %d attempts: %s", max_retries, e)
                 raise
 
 
@@ -255,12 +255,12 @@ def patch_spotipy_free() -> bool:
                     if not identifier and sessions:
                         identifier = sessions[0]["identifier"]
                 except Exception as e:
-                    print("Error loading cookies file:", e)
+                    logger.error("Error loading cookies file: %s", e)
                     return False
 
                 self.user_auth = spotapi.Login.from_saver(saver, cfg, identifier)
             except Exception as e:
-                print(f"[Patches] Failed to login user {identifier if 'identifier' in locals() else 'unknown'}: {e}")
+                logger.error("Failed to login user %s: %s", identifier if 'identifier' in locals() else 'unknown', e)
                 return False
             return True
 
@@ -322,9 +322,6 @@ def patch_spotapi_user() -> bool:
         from spotapi.exceptions import UserError
         from collections.abc import Mapping
         from typing import Any
-        import logging
-
-        patch_logger = logging.getLogger("Database.patches")
 
         original_get_user_info = spotapi.user.User.get_user_info
         original_get_plan_info = spotapi.user.User.get_plan_info
@@ -334,7 +331,7 @@ def patch_spotapi_user() -> bool:
             resp = self.login.client.get(url)
 
             if resp.fail:
-                patch_logger.warning(
+                logger.warning(
                     "spotapi.User.get_user_info HTTP request failed: status=%s, error=%s, response=%s, headers=%s",
                     resp.status_code,
                     resp.error.string if hasattr(resp.error, "string") else None,
@@ -344,7 +341,7 @@ def patch_spotapi_user() -> bool:
                 raise UserError("Could not get user info", error=resp.error.string)
 
             if not isinstance(resp.response, Mapping):
-                patch_logger.warning(
+                logger.warning(
                     "spotapi.User.get_user_info returned non-Mapping response: status=%s, type=%s, response=%s, headers=%s",
                     resp.status_code,
                     type(resp.response).__name__,
@@ -364,7 +361,7 @@ def patch_spotapi_user() -> bool:
             resp = self.login.client.get(url)
 
             if resp.fail:
-                patch_logger.warning(
+                logger.warning(
                     "spotapi.User.get_plan_info HTTP request failed: status=%s, error=%s, response=%s, headers=%s",
                     resp.status_code,
                     resp.error.string if hasattr(resp.error, "string") else None,
@@ -374,7 +371,7 @@ def patch_spotapi_user() -> bool:
                 raise UserError("Could not get user plan info", error=resp.error.string)
 
             if not isinstance(resp.response, Mapping):
-                patch_logger.warning(
+                logger.warning(
                     "spotapi.User.get_plan_info returned non-Mapping response: status=%s, type=%s, response=%s, headers=%s",
                     resp.status_code,
                     type(resp.response).__name__,

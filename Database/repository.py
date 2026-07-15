@@ -270,8 +270,8 @@ class Repository:
                 {"id": r["id"], "name": r["name"], "url": r["url"], "imageUrl": "", "imageId": r["image_id"]}
                 for r in artistRows
             ],
-            "created_reason": trackRow["created_reason"] if "created_reason" in trackRow.keys() else None,
-            "availability_reason": trackRow["availability_reason"] if "availability_reason" in trackRow.keys() else None,
+            "created_reason": trackRow["created_reason"],
+            "availability_reason": trackRow["availability_reason"],
         }
 
     def trackExists(self, trackId: str) -> bool:

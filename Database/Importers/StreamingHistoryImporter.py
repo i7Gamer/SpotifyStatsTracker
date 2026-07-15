@@ -330,8 +330,8 @@ class Importer:
             logger.error("Error processing item: %s", parseError(e))
             return None
         
-    def _import(self, dataFunction, history, known=[], progressCallback=None):
-        known = self.buildKnownIndex(known)
+    def _import(self, dataFunction, history, known=None, progressCallback=None):
+        known = self.buildKnownIndex(known or [])
         self._catalogArtistsByName = self._buildCatalogArtistsByName(known)
 
         parsedItems = self._parseHistory(dataFunction, history)
@@ -360,7 +360,7 @@ class Importer:
                 if meta:
                     yield meta
 
-    def importAcountHistory(self, history, known=[], progressCallback=None):
+    def importAcountHistory(self, history, known=None, progressCallback=None):
         def dataFunction(item):
             # endTime is documented by Spotify as UTC with no timezone marker on
             # the wire - timeToInt would otherwise interpret it as local time.
@@ -374,7 +374,7 @@ class Importer:
         
         yield from self._import(dataFunction, history, known, progressCallback)
 
-    def importExtendedHistory(self, history, known=[], progressCallback=None):
+    def importExtendedHistory(self, history, known=None, progressCallback=None):
         def dataFunction(item):
             ts = item["ts"]
             endTimestamp = timeToInt(ts)
@@ -399,7 +399,7 @@ class Importer:
     # track only adds the new tail of plays.
     MUSICOLET_SYNTHETIC_TIME_ANCHOR = datetime.datetime(2000, 1, 1)
 
-    def importMusicoletCSVExport(self, rows, known=[], progressCallback=None):
+    def importMusicoletCSVExport(self, rows, known=None, progressCallback=None):
         def expand(rows):
             ### Data formatted in: FILE_PATH,TITLE,ARTIST,ALBUM,ALBUM_ARTIST,COMPOSER,GENRE,YEAR,DURATION_MS,PLAY_COUNT
             NAME = 1

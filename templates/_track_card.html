@@ -120,9 +120,9 @@
       
       <!-- Attributes based on section -->
       <div class="track-attributes">
-        {% if track.get('created_reason') == 'synthetic_fallback' %}
+        {% if track.get('created_reason') == SYNTHETIC_FALLBACK_REASON %}
           <span class="track-label danger">Deleted/Unavailable on Spotify</span>
-        {% elif track.get('availability_reason') or track.get('created_reason') == 'restricted_fallback' %}
+        {% elif track.get('availability_reason') or track.get('created_reason') == RESTRICTED_FALLBACK_REASON %}
           {# Spotify's playability reasons - GraphQL and Web API spellings; unknown values fall back to the generic label #}
           {% set availabilityLabels = {
             'COUNTRY_RESTRICTED': 'Not available in your country',
