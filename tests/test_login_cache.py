@@ -121,6 +121,39 @@ class TestLoginCache(unittest.TestCase):
         self.assertFalse(result)
         self.assertEqual(dash._login_cache, {})
 
+    def test_user_not_yet_in_user_databases_is_actually_checked_not_assumed_true(self):
+        """A user with stored cookies but no live Database yet (e.g. a
+        Listener construction failure earlier left them out of
+        user_databases - see _ensureAllUsersLogin's per-user try/except)
+        must be verified via get_user_db()/isListenerLoggedIn(), not
+        blindly trusted - this is the exact check the password-login branch
+        relies on to confirm a stored session is still live."""
+        dash = _make_app()
+        email, username = "grace@example.com", "grace"
+        _seed_cookies(dash, email, username)
+        self.assertNotIn(username, dash.user_databases)   #< the untested gap
+
+        mock_db = self._make_mock_db(return_value=False)
+        with patch.object(dash, 'get_user_db', return_value=mock_db) as mock_get_user_db:
+            result = dash.is_user_logged_in(email)
+
+        self.assertFalse(result)
+        mock_get_user_db.assert_called_once_with(username, email)
+        mock_db.isListenerLoggedIn.assert_called_once()
+
+    def test_database_construction_failure_is_treated_as_logged_out(self):
+        """get_user_db() can raise (e.g. the stored cookies are so broken that
+        constructing the Listener itself fails) - that must resolve to False,
+        not crash the caller (login page, overview page, ...)."""
+        dash = _make_app()
+        email, username = "heidi@example.com", "heidi"
+        _seed_cookies(dash, email, username)
+
+        with patch.object(dash, 'get_user_db', side_effect=RuntimeError("boom")):
+            result = dash.is_user_logged_in(email)
+
+        self.assertFalse(result)
+
     def test_cache_populated_after_first_call(self):
         """After the first call the email must exist in _login_cache with a future expiry."""
         dash = _make_app()

@@ -78,6 +78,62 @@ class TestOverviewRoute(unittest.TestCase):
             self.assertIn(b"CONFIGURED", resp.data)
             self.assertIn(b"123", resp.data)
 
+    def test_overview_does_not_start_listener_for_cookie_less_users(self):
+        """get_user_db() constructs a live Database (starts the listener,
+        auto-importer, and metadata/wrapped background threads) - it must
+        never be called just to render a row for a user who has never
+        logged in (cookies_json is None), only to report their status as
+        "Not Configured"."""
+        dash = self._makeApp()
+
+        mock_stats = {"tracks": 0, "artists": 0, "albums": 0, "plays": 0, "total_time_ms": 0, "db_size_bytes": 0}
+        mock_users = [
+            {
+                "username": "alice",
+                "email": "alice@example.com",
+                "cookies_json": '{"sp_dc": "123"}',
+                "spotify_client_id": None,
+                "spotify_refresh_token": None,
+                "created_at": None,
+            },
+            {
+                "username": "orphan",
+                "email": "orphan@example.com",
+                "cookies_json": None,
+                "spotify_client_id": None,
+                "spotify_refresh_token": None,
+                "created_at": None,
+            },
+        ]
+
+        mock_db = MagicMock()
+        mock_db.getListenerHealth.return_value = {
+            "status": "HEALTHY",
+            "error_count": 0,
+            "last_error": None,
+            "seconds_since_last_poll": 1,
+        }
+
+        with patch.object(dash.repo, 'getGlobalDatabaseStats', return_value=mock_stats), \
+             patch.object(dash.repo, 'getAllUsersDetails', return_value=mock_users), \
+             patch.object(dash.repo, 'getPlaysCount', return_value=0), \
+             patch.object(dash, 'is_user_logged_in', return_value=True), \
+             patch.object(dash, 'get_user_db', return_value=mock_db) as mock_get_user_db:
+
+            client = dash.app.test_client()
+            with client.session_transaction() as sess:
+                sess['email'] = 'alice@example.com'
+
+            resp = client.get("/overview")
+
+            self.assertEqual(resp.status_code, 200)
+            self.assertIn(b"orphan", resp.data)   #< the user's row itself still renders
+
+            calledUsernames = [call.args[0] for call in mock_get_user_db.call_args_list]
+            self.assertNotIn("orphan", calledUsernames)
+            self.assertIn("alice", calledUsernames)   #< the logged-in viewer's own db lookup is still expected
+
+
 class TestOverviewDatabaseStats(unittest.TestCase):
     def setUp(self):
         self._tmpdir = tempfile.TemporaryDirectory()

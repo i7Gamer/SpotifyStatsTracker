@@ -78,6 +78,33 @@ class TestLoginNextRedirect(unittest.TestCase):
         self.assertEqual(resp.status_code, 302)
         self.assertNotIn("evil.example.com", resp.headers["Location"])
 
+    def test_bare_slash_next_is_still_a_valid_same_origin_redirect(self):
+        """A single "/" is a legitimate same-origin target and must not be
+        swept up by the "/\\" / "//" open-redirect guard."""
+        dash = self._makeApp()
+        with patch.object(dash, '_verifyCookiesMatchEmail', return_value=True), \
+             patch.object(dash, 'get_or_create_user', return_value='alice'), \
+             patch.object(dash, 'get_user_db'), \
+             patch.object(dash.repo, 'setUserCookies'):
+            resp, client = self._postLogin(dash, next_url="/")
+
+        self.assertEqual(resp.status_code, 302)
+        self.assertTrue(resp.headers["Location"].endswith("/"))
+
+    def test_backslash_next_is_rejected_as_an_open_redirect(self):
+        """Browsers normalize a leading "/\\" to "//" in a Location header,
+        turning it into a protocol-relative URL - "/\\evil.example.com" must be
+        rejected exactly like "//evil.example.com"."""
+        dash = self._makeApp()
+        with patch.object(dash, '_verifyCookiesMatchEmail', return_value=True), \
+             patch.object(dash, 'get_or_create_user', return_value='alice'), \
+             patch.object(dash, 'get_user_db'), \
+             patch.object(dash.repo, 'setUserCookies'):
+            resp, client = self._postLogin(dash, next_url="/\\evil.example.com/steal")
+
+        self.assertEqual(resp.status_code, 302)
+        self.assertNotIn("evil.example.com", resp.headers["Location"])
+
     def test_next_survives_a_failed_submission(self):
         dash = self._makeApp()
         client = dash.app.test_client()

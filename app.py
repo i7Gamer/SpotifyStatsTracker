@@ -223,15 +223,26 @@ class SpotifyDashboardApp:
         # isListenerLoggedIn() can make a live network call to Spotify - the result
         # is cached per user for LOGIN_CACHE_TTL_SECONDS to avoid a round-trip on
         # every request (the main cause of Waitress queue saturation).
-        if username in self.user_databases:
-            now_ts = time.monotonic()
-            cached = self._login_cache.get(email)
-            if cached is not None and cached[1] > now_ts:
-                return cached[0]
-            result = self.user_databases[username].isListenerLoggedIn()
-            self._login_cache[email] = (result, now_ts + LOGIN_CACHE_TTL_SECONDS)
-            return result
-        return True
+        now_ts = time.monotonic()
+        cached = self._login_cache.get(email)
+        if cached is not None and cached[1] > now_ts:
+            return cached[0]
+
+        # get_user_db is a no-op (returns the existing instance) if this user
+        # already has a live Database - it's only actually constructing one
+        # here for a user _ensureAllUsersLogin hasn't (yet, or ever, if
+        # construction kept failing) loaded. Either way this must never just
+        # assume True for an unloaded user: that's exactly the check the
+        # password-login branch relies on to confirm a stored session is
+        # still live, not merely that cookies exist.
+        try:
+            result = self.get_user_db(username, email).isListenerLoggedIn()
+        except Exception as e:
+            logger.error("Error checking login status for %s: %s", email, e)
+            result = False
+
+        self._login_cache[email] = (result, now_ts + LOGIN_CACHE_TTL_SECONDS)
+        return result
 
     def checkLogin_thread(self):
         self._ensureAllUsersLogin()
@@ -314,7 +325,11 @@ class SpotifyDashboardApp:
 
         artistsText = ", ".join(a.get("name", "") for a in song["artists"])
         album = song.get("album")   #< can be None - see Repository._songRowToDict()'s LEFT JOIN fallback
-        releaseDateText = dateToString(album["releaseDate"]) if album else ""
+        # releaseDate 0/None is the app-wide "unknown" sentinel (synthetic
+        # tracks, albums the metadata backfiller hasn't reached yet - see
+        # Repository.upsertTrack/_createSyntheticTrack) - dateToString would
+        # otherwise render it as the Unix epoch date instead of blank.
+        releaseDateText = dateToString(album["releaseDate"]) if album and album.get("releaseDate") else ""
         song["releaseDateText"] = releaseDateText
         song["artistsText"] = artistsText
         song["durationText"] = formatDuration(song["duration"])
@@ -336,7 +351,9 @@ class SpotifyDashboardApp:
         tz = db.tz if db else None
         album["firstListenedText"] = convertToDatetime(album.get("firstListenedAt", 0), tz=tz).strftime("%b %d, %Y")
         album["sortPercentText"] = self._getPercentPlayedText(album, sortBy, totalPlays, totalMs)
-        album["releaseDateText"] = dateToString(album.get("releaseDate", 0))
+        # See _embedSongTextElements()'s comment: releaseDate 0/None means unknown.
+        releaseDate = album.get("releaseDate")
+        album["releaseDateText"] = dateToString(releaseDate) if releaseDate else ""
         album["artistsText"] = ", ".join(a.get("name", "") for a in album.get("artists", []))
         return album
 
@@ -647,10 +664,29 @@ class SpotifyDashboardApp:
             if not uploads:
                 return redirect(url_for("importPage"))
 
-            contents = [upload.read().decode("utf-8") for upload in uploads]
+            contents = []
+            for upload in uploads:
+                try:
+                    contents.append(upload.read().decode("utf-8"))
+                except UnicodeDecodeError:
+                    # Mirrors AutoImporter._handleImport's per-file resilience
+                    # (see its try/except around open(..., encoding="utf-8"))
+                    # - one unreadable file must not 500 the whole request and
+                    # drop every other file in the same upload.
+                    logger.warning("Skipping upload %r for user %s: not valid UTF-8 text", upload.filename, username)
+            if not contents:
+                return redirect(url_for("importPage"))
+
+            # Marked "running" here, synchronously, rather than via a
+            # post-thread-start time.sleep(1) "give it a moment" delay - that
+            # blocked a Waitress worker thread on every submission and still
+            # couldn't fully guarantee the background thread's own first
+            # writeProgress() call (inside Database.importHistory, gated on
+            # parsing the export first) had actually landed by the time it
+            # returned.
+            db.writeProgress("running", 0, 0, "Starting import")
             thread = threading.Thread(target=db.importHistoryBatch, args=(contents,), daemon=True)
             thread.start()
-            time.sleep(1)  # Give thread time to start and update progress
             return redirect(url_for("importPage"))
 
         @self.app.route("/import", methods=["GET"])
@@ -672,9 +708,13 @@ class SpotifyDashboardApp:
 
         def _safeNextUrl(nextUrl):
             """Only allow same-origin relative redirects after login - a `next`
-            value like `//evil.com` or `https://evil.com` would otherwise send a
-            freshly authenticated session to an attacker-controlled site."""
-            if not nextUrl or not nextUrl.startswith("/") or nextUrl.startswith("//"):
+            value like `//evil.com`, `https://evil.com`, or `/\\evil.com`
+            (browsers normalize a leading "/\\" to "//", making it protocol-
+            relative too) would otherwise send a freshly authenticated session
+            to an attacker-controlled site."""
+            if not nextUrl or nextUrl[0] != "/":
+                return None
+            if len(nextUrl) >= 2 and nextUrl[1] in ("/", "\\"):
                 return None
             return nextUrl
 
@@ -1054,6 +1094,10 @@ class SpotifyDashboardApp:
         @self.app.route("/overview", methods=["GET"])
         def overviewPage():
             from datetime import datetime
+            # Intentionally unauthenticated: aggregate counts/DB size carry no
+            # per-user listening data, so they're shown to any visitor as a
+            # public "is this instance alive" summary - only the per-user
+            # table below (usernames, emails, sync status) is gated on login.
             global_stats = self.repo.getGlobalDatabaseStats()
             
             total_time_ms = global_stats.get("total_time_ms", 0)
@@ -1090,11 +1134,10 @@ class SpotifyDashboardApp:
                     u_username = u["username"]
                     u_email = u["email"]
 
-                    # Ensure we have a Database instance initialized to get live sync health
-                    u_db = self.get_user_db(u_username, u_email)
-
                     # Get Listener sync status
                     if u["cookies_json"]:
+                        # Ensure we have a Database instance initialized to get live sync health
+                        u_db = self.get_user_db(u_username, u_email)
                         health = u_db.getListenerHealth()
                         sync_status = health.get("status", "UNKNOWN")
                     else:
@@ -1624,7 +1667,6 @@ class SpotifyDashboardApp:
                         "uniqueArtistsCount": uniqueArtistsCount,
                         "discoveredSongsCount": discoveredSongsCount,
                         "discoveredArtistsCount": discoveredArtistsCount,
-                        "discoveredAlbumsCount": len(discoveredAlbums),
                         "topSongText": topSongText,
                         "topArtistText": topArtistText,
                         "topAlbumText": topAlbumText

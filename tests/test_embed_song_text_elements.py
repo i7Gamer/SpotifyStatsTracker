@@ -49,13 +49,67 @@ class TestEmbedSongTextElementsMissingAlbum(unittest.TestCase):
 
         self.assertEqual(len(result), 2)
 
-    def test_present_album_still_gets_release_date_text(self):
+    def test_present_album_with_unknown_release_date_gets_blank_text(self):
+        """releaseDate=0 is the app-wide sentinel for "unknown" (used by
+        synthetic tracks and albums the metadata backfiller hasn't reached
+        yet - see Repository.upsertTrack/_createSyntheticTrack) - it must
+        render as blank, not as the Unix epoch date."""
         dash = self._makeApp()
         song = self._song(album={"releaseDate": 0})
 
         result = dash._embedSongTextElements(song)
 
         self.assertIn("releaseDateText", result["album"])
+        self.assertEqual(result["releaseDateText"], "")
+
+    def test_present_album_with_known_release_date_gets_release_date_text(self):
+        dash = self._makeApp()
+        song = self._song(album={"releaseDate": 946684800})   #< 2000-01-01
+
+        result = dash._embedSongTextElements(song)
+
+        self.assertNotEqual(result["releaseDateText"], "")
+
+
+class TestEmbedAlbumTextElementsReleaseDate(unittest.TestCase):
+    """_embedAlbumTextElements() backs the Top Albums, Wrapped, and
+    album-detail pages - same unknown-release-date sentinel (releaseDate=0,
+    the value Repository.upsertTrack/_createSyntheticTrack use for an album
+    with no known release date) as _embedSongTextElements()."""
+
+    @patch('app.SpotifyDashboardApp._get_or_create_secret_key', return_value='test-secret-key')
+    @patch('app.SpotifyDashboardApp.startVersionCheck_thread')
+    @patch('app.SpotifyDashboardApp.checkLogin_thread')
+    @patch('app.migrateIfNeeded')
+    @patch('app.Path.exists')
+    def _makeApp(self, mock_exists, mock_migrate, mock_check, mock_version, mock_secret):
+        mock_exists.return_value = False
+        return SpotifyDashboardApp()
+
+    def _album(self, **overrides):
+        album = {"id": "alb1", "name": "Album One", "artists": []}
+        album.update(overrides)
+        return album
+
+    def test_unknown_release_date_gets_blank_text(self):
+        dash = self._makeApp()
+        with dash.app.app_context():
+            result = dash._embedAlbumTextElements(self._album(releaseDate=0))
+
+        self.assertEqual(result["releaseDateText"], "")
+
+    def test_missing_release_date_key_gets_blank_text(self):
+        dash = self._makeApp()
+        with dash.app.app_context():
+            result = dash._embedAlbumTextElements(self._album())
+
+        self.assertEqual(result["releaseDateText"], "")
+
+    def test_known_release_date_gets_release_date_text(self):
+        dash = self._makeApp()
+        with dash.app.app_context():
+            result = dash._embedAlbumTextElements(self._album(releaseDate=946684800))   #< 2000-01-01
+
         self.assertNotEqual(result["releaseDateText"], "")
 
 
