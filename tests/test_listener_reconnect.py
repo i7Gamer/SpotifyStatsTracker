@@ -19,7 +19,19 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 if isinstance(sys.modules.get("Database.database"), MagicMock):
     del sys.modules["Database.database"]
 
-from Database.Listeners.spotifyListener import Listener, LISTENER_STALE_TIMEOUT_SECONDS, _is_auth_error
+from Database.Listeners.spotifyListener import (
+    Listener,
+    LISTENER_STALE_TIMEOUT_SECONDS,
+    USER_VALIDATION_CACHE_SECONDS,
+    _is_auth_error,
+)
+
+# Comfortably past USER_VALIDATION_CACHE_SECONDS so _validateCurrentUser's
+# freshness-cache branch is deterministically bypassed, regardless of how
+# large time.monotonic() already is on the host running the test (e.g. a
+# freshly booted CI runner has a much smaller monotonic clock than a
+# long-uptime dev machine).
+_MONOTONIC_NOW = USER_VALIDATION_CACHE_SECONDS * 10
 
 
 def _bareListener(recentlyPlayed=None):
@@ -32,6 +44,7 @@ def _bareListener(recentlyPlayed=None):
     listener._authenticated_user_id = None
     listener.email = None
     listener._last_user_validation_time = 0.0
+    listener._last_user_validation_result = True
     return listener
 
 
@@ -138,26 +151,30 @@ class TestValidateCurrentUser(unittest.TestCase):
         listener = _bareListener()
         listener._authenticated_user_id = "user1"
         listener.sp.current_user.return_value = {"id": "user1"}
-        self.assertTrue(listener._validateCurrentUser())
+        with patch("Database.Listeners.spotifyListener.time.monotonic", return_value=_MONOTONIC_NOW):
+            self.assertTrue(listener._validateCurrentUser())
 
     def test_mismatched_user_returns_false(self):
         listener = _bareListener()
         listener._authenticated_user_id = "user1"
         listener.sp.current_user.return_value = {"id": "user2"}
-        self.assertFalse(listener._validateCurrentUser())
+        with patch("Database.Listeners.spotifyListener.time.monotonic", return_value=_MONOTONIC_NOW):
+            self.assertFalse(listener._validateCurrentUser())
 
     def test_auth_error_returns_false_and_does_not_raise(self):
         listener = _bareListener()
         listener._authenticated_user_id = "user1"
         listener.sp.current_user.side_effect = Exception("HTTP 401 Unauthorized")
-        self.assertFalse(listener._validateCurrentUser())
+        with patch("Database.Listeners.spotifyListener.time.monotonic", return_value=_MONOTONIC_NOW):
+            self.assertFalse(listener._validateCurrentUser())
 
     def test_transient_error_bubbles_up(self):
         listener = _bareListener()
         listener._authenticated_user_id = "user1"
         listener.sp.current_user.side_effect = Exception("HTTP 503 Service Unavailable")
-        with self.assertRaises(Exception) as ctx:
-            listener._validateCurrentUser()
+        with patch("Database.Listeners.spotifyListener.time.monotonic", return_value=_MONOTONIC_NOW):
+            with self.assertRaises(Exception) as ctx:
+                listener._validateCurrentUser()
         self.assertIn("503", str(ctx.exception))
 
 

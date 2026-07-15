@@ -10,9 +10,18 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from Database.repository import Repository
 from Database.Listeners.spotifyListener import (
     Listener,
+    WEB_API_POLL_INTERVAL_SECONDS,
     _refresh_spotify_access_token,
     _fetch_recently_played_from_web_api,
 )
+
+# Comfortably past WEB_API_POLL_INTERVAL_SECONDS so _checkWebApiBackfill's
+# poll-interval guard is deterministically bypassed, regardless of how large
+# time.monotonic() already is on the host running the test (e.g. a freshly
+# booted CI runner has a much smaller monotonic clock than a long-uptime dev
+# machine, which previously let a `_lastWebApiPollTime = 0` reset silently
+# fail to force an immediate check).
+_MONOTONIC_NOW = WEB_API_POLL_INTERVAL_SECONDS * 10
 
 def makeTrack(trackId="track1"):
     return {
@@ -152,11 +161,12 @@ class ApiBackfillTestCase(unittest.TestCase):
             listener = Listener("dummy_cookie", email="alice@example.com", get_credentials=get_credentials)
             
         callback = MagicMock()
-        
+
         # Override self._lastWebApiPollTime to trigger check immediately
         listener._lastWebApiPollTime = 0
-        
-        listener._checkWebApiBackfill(callback)
+
+        with patch("Database.Listeners.spotifyListener.time.monotonic", return_value=_MONOTONIC_NOW):
+            listener._checkWebApiBackfill(callback)
 
         # Should have detected and backfilled the play for "track_new"
         callback.assert_called_once()
@@ -208,7 +218,8 @@ class ApiBackfillTestCase(unittest.TestCase):
 
         callback = MagicMock()
         listener._lastWebApiPollTime = 0
-        listener._checkWebApiBackfill(callback)
+        with patch("Database.Listeners.spotifyListener.time.monotonic", return_value=_MONOTONIC_NOW):
+            listener._checkWebApiBackfill(callback)
 
         backfilled = callback.call_args[0][0]
         self.assertEqual(len(backfilled), 2)
@@ -245,7 +256,8 @@ class ApiBackfillTestCase(unittest.TestCase):
 
         callback = MagicMock()
         listener._lastWebApiPollTime = 0
-        listener._checkWebApiBackfill(callback)
+        with patch("Database.Listeners.spotifyListener.time.monotonic", return_value=_MONOTONIC_NOW):
+            listener._checkWebApiBackfill(callback)
 
         backfilled = callback.call_args[0][0]
         self.assertEqual(len(backfilled), 1)
@@ -282,7 +294,8 @@ class ApiBackfillTestCase(unittest.TestCase):
 
         callback = MagicMock()
         listener._lastWebApiPollTime = 0
-        listener._checkWebApiBackfill(callback)
+        with patch("Database.Listeners.spotifyListener.time.monotonic", return_value=_MONOTONIC_NOW):
+            listener._checkWebApiBackfill(callback)
 
         callback.assert_not_called()
 
@@ -315,7 +328,8 @@ class ApiBackfillTestCase(unittest.TestCase):
 
         callback = MagicMock()
         listener._lastWebApiPollTime = 0
-        listener._checkWebApiBackfill(callback)
+        with patch("Database.Listeners.spotifyListener.time.monotonic", return_value=_MONOTONIC_NOW):
+            listener._checkWebApiBackfill(callback)
 
         callback.assert_not_called()
 
@@ -346,7 +360,8 @@ class ApiBackfillTestCase(unittest.TestCase):
 
         callback = MagicMock()
         listener._lastWebApiPollTime = 0
-        listener._checkWebApiBackfill(callback)
+        with patch("Database.Listeners.spotifyListener.time.monotonic", return_value=_MONOTONIC_NOW):
+            listener._checkWebApiBackfill(callback)
 
         callback.assert_not_called()
 
@@ -378,7 +393,8 @@ class ApiBackfillTestCase(unittest.TestCase):
         listener._lastWebApiPollTime = 0
         onWebApiSnapshot = MagicMock()
 
-        listener._checkWebApiBackfill(MagicMock(), onWebApiSnapshot=onWebApiSnapshot)
+        with patch("Database.Listeners.spotifyListener.time.monotonic", return_value=_MONOTONIC_NOW):
+            listener._checkWebApiBackfill(MagicMock(), onWebApiSnapshot=onWebApiSnapshot)
 
         onWebApiSnapshot.assert_called_once_with(apiItems)
 
