@@ -673,6 +673,20 @@ class SpotifyDashboardApp:
             except Exception:
                 return False
 
+        @self.app.route("/health", methods=["GET"])
+        def health():
+            """Cheap, unauthenticated liveness/readiness check for container
+            orchestration and uptime monitoring - does a trivial query rather
+            than just returning 200 unconditionally, so it can tell "process
+            alive" apart from "process alive but the database is unreachable"
+            (the single point of failure for this app)."""
+            try:
+                self.repo.connection().execute("SELECT 1").fetchone()
+                return jsonify({"status": "ok"}), 200
+            except Exception as e:
+                logger.error("Health check failed: %s", e)
+                return jsonify({"status": "error", "detail": str(e)}), 503
+
         def get_current_user_or_redirect():
             email = session.get("email")
             if not email or not self.is_user_logged_in(email):

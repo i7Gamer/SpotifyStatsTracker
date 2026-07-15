@@ -24,5 +24,11 @@ EXPOSE 5000
 ENV FLASK_APP=wsgi.py
 ENV PYTHONUNBUFFERED=1
 
+# Backed by GET /health (checks DB connectivity, not just process liveness) -
+# uses stdlib urllib so no extra package (curl/wget) is needed in this slim
+# image just for the check itself.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:5000/health', timeout=3).getcode() == 200 else 1)"
+
 # Run the Flask app
 CMD ["python", "wsgi.py"]
