@@ -565,6 +565,28 @@ class TestPatches(unittest.TestCase):
         callback.assert_not_called()
         manager.reconnect.assert_not_called()
 
+    def test_player_status_renew_state_handles_missing_keys_gracefully(self):
+        """PlayerStatus.renew_state should not raise KeyError if connect_device returns a dict without devices or player_state."""
+        from spotapi.status import PlayerStatus
+        
+        with patch("spotapi.websocket.WebsocketStreamer.__init__", return_value=None), \
+             patch("spotapi.status.PlayerStatus.register_device"), \
+             patch("spotapi.status.PlayerStatus.connect_device") as mock_connect:
+            
+            # Case 1: returns dict without player_state/devices
+            mock_connect.return_value = {"something": "else"}
+            lps = PlayerStatus(MagicMock())
+            lps.renew_state()
+            self.assertIsNone(lps._state)
+            self.assertIsNone(lps._devices)
+            
+            # Case 2: returns None
+            mock_connect.return_value = None
+            lps = PlayerStatus(MagicMock())
+            lps.renew_state()
+            self.assertIsNone(lps._state)
+            self.assertIsNone(lps._devices)
+
 
 if __name__ == "__main__":
     unittest.main()

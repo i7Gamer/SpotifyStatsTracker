@@ -71,6 +71,24 @@ def player_status_reconnect(self):
 spotapi.status.PlayerStatus.reconnect = player_status_reconnect
 
 
+# Patch renew_state to avoid KeyError: 'devices' or KeyError: 'player_state' on API failures
+def player_status_renew_state(self):
+    try:
+        self._device_dump = self.connect_device()
+        if isinstance(self._device_dump, dict):
+            self._state = self._device_dump.get("player_state")
+            self._devices = self._device_dump.get("devices")
+        else:
+            self._state = None
+            self._devices = None
+    except Exception as e:
+        logger.warning("Error renewing player state: %s", e)
+        self._state = None
+        self._devices = None
+
+spotapi.status.PlayerStatus.renew_state = player_status_renew_state
+
+
 # 3. Prevent WebsocketStreamer.__init__ from hijacking the process's SIGINT handler.
 # It unconditionally does `signal.signal(signal.SIGINT, self.handle_interrupt)`, whose
 # handler just does `self.ws.close(); exit(0)`. That overwrites Flask/Werkzeug's normal
