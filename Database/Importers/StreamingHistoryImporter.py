@@ -178,8 +178,13 @@ class Importer:
         album_id = f"album_{track_id}"
         artist_id = f"artist_{track_id}"
 
-        # urls stay empty (like imageUrl) - these entities don't exist on Spotify,
-        # and every template guards its "Open in Spotify" link on a truthy url.
+        # With a real URI the track's Spotify page still exists (just unplayable),
+        # so the link stays useful and is kept. Without one, the md5-based id points
+        # at nothing - the url stays empty (like imageUrl), and every template guards
+        # its "Open in Spotify" link on a truthy url. The fabricated album_/artist_
+        # ids never existed on Spotify, so those urls always stay empty.
+        track_url = f"https://open.spotify.com/track/{track_id}" if trackUri else ""
+
         artists = [
             {
                 "name": artist,
@@ -204,7 +209,7 @@ class Importer:
             "name": name,
             "releaseDate": 0.0,
             "id": track_id,
-            "url": "",
+            "url": track_url,
             "artists": artists,
             "album": album,
             "imageUrl": "",

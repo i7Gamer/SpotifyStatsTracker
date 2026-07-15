@@ -122,7 +122,8 @@
       <div class="track-attributes">
         {% if track.get('created_reason') == 'synthetic_fallback' %}
           <span class="track-label danger">Deleted/Unavailable on Spotify</span>
-        {% elif track.get('url') %}
+        {% endif %}
+        {% if track.get('url') %}
           <a class="track-label" href="{{ track.get('url') }}" target="_blank" rel="noreferrer noopener">Open in Spotify ↗</a>
         {% endif %}
         {% if section == 'dashboard' %}

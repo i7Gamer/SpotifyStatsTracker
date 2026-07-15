@@ -334,16 +334,31 @@ class TestImportFallbackToSyntheticTrack(unittest.TestCase):
         self.assertEqual(track["album"]["totalTracks"], 1)
         self.assertEqual(track["created_reason"], SYNTHETIC_FALLBACK_REASON)
 
-    def test_synthetic_track_has_no_spotify_urls(self):
-        """Synthetic entities don't exist on Spotify, so no fake open.spotify.com
-        links may be fabricated - templates guard 'Open in Spotify' on a truthy url."""
+    def test_synthetic_track_with_uri_keeps_spotify_link(self):
+        """A removed track's Spotify page still exists (just unplayable), so the
+        link is kept when a real URI is known. The fabricated album_/artist_ ids
+        never existed on Spotify - their urls stay empty (templates guard 'Open
+        in Spotify' on a truthy url)."""
         importer = self._importerFailingWith("Spotify 404 Track Not Found")
 
         track = self._runImport(importer)[0]
 
-        self.assertEqual(track["url"], "")
+        self.assertEqual(track["url"], "https://open.spotify.com/track/uri_2s9mjCqeU26eivqPXY04V8")
         self.assertEqual(track["album"]["url"], "")
         self.assertEqual(track["artists"][0]["url"], "")
+
+    def test_synthetic_track_without_uri_has_no_link(self):
+        """Without a URI the id is an md5 hash - a fabricated open.spotify.com
+        link would point at nothing, so the url stays empty."""
+        importer = self._importerFailingWith("Spotify 404 Track Not Found")
+        history = [("Arctic Future", "Mark Watson", "2023-01-01 00:00:00", 10354, None)]
+
+        def dummyDataFunction(item):
+            return item
+        tracks = list(importer._import(dummyDataFunction, history, known={}, progressCallback=None))
+
+        self.assertEqual(len(tracks), 1)
+        self.assertEqual(tracks[0]["url"], "")
 
     def test_transient_lookup_error_skips_play_instead_of_synthesizing(self):
         """Network/auth/rate-limit failures are temporary - the play must be dropped
