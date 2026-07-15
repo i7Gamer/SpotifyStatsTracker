@@ -335,7 +335,11 @@ class Importer:
                 if base.get("created_reason") in (SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON):
                     if timePlayed > base.get("duration", 0):
                         base["duration"] = timePlayed
-                meta = Client.embedPlayInfo(base.copy(), startTimestamp, timePlayed)
+                # capAtDuration=False: the export's ms_played is authoritative, and the
+                # matched catalog track may be a different (shorter) version of the song
+                # (name+artist match / Spotify relinking) - capping at its duration would
+                # discard real listening time.
+                meta = Client.embedPlayInfo(base.copy(), startTimestamp, timePlayed, capAtDuration=False)
             else:
                 if not name or not artist:
                     return None
@@ -359,7 +363,9 @@ class Importer:
                 if trackUri:
                     known[trackUri] = base
                 known[name + artist] = base
-                meta = Client.embedPlayInfo(base.copy(), startTimestamp, timePlayed)
+                # capAtDuration=False: see the known-track branch above - export
+                # ms_played is authoritative, fetched track may be a relinked version.
+                meta = Client.embedPlayInfo(base.copy(), startTimestamp, timePlayed, capAtDuration=False)
 
             return meta
         except Exception as e:

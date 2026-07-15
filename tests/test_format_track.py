@@ -71,5 +71,36 @@ class TestFormatTrackContext(unittest.TestCase):
         self.assertIsNone(result["playedFrom"])
 
 
+class TestEmbedPlayInfoDurationCap(unittest.TestCase):
+    """The duration cap guards against corrupt play times from the live
+    listener (SpotipyFree sometimes reports absurd values). Sources with
+    authoritative play times (history imports) opt out via capAtDuration=False."""
+
+    TRACK_DURATION_MS = 200000
+    LONGER_THAN_DURATION_MS = 250000
+    PLAYED_AT = 1000
+
+    def _track(self):
+        return {"id": "t1", "duration": self.TRACK_DURATION_MS}
+
+    def test_caps_at_duration_by_default(self):
+        result = Client.embedPlayInfo(self._track(), self.PLAYED_AT, self.LONGER_THAN_DURATION_MS)
+        self.assertEqual(result["timePlayed"], self.TRACK_DURATION_MS)
+
+    def test_capping_can_be_disabled(self):
+        result = Client.embedPlayInfo(self._track(), self.PLAYED_AT, self.LONGER_THAN_DURATION_MS,
+                                      capAtDuration=False)
+        self.assertEqual(result["timePlayed"], self.LONGER_THAN_DURATION_MS)
+
+    def test_no_cap_when_duration_unknown(self):
+        track = {"id": "t1", "duration": 0}
+        result = Client.embedPlayInfo(track, self.PLAYED_AT, self.LONGER_THAN_DURATION_MS)
+        self.assertEqual(result["timePlayed"], self.LONGER_THAN_DURATION_MS)
+
+    def test_listener_format_track_still_caps(self):
+        result = Client.formatTrack(_rawTrack(), self.PLAYED_AT, self.LONGER_THAN_DURATION_MS)
+        self.assertEqual(result["timePlayed"], self.TRACK_DURATION_MS)
+
+
 if __name__ == "__main__":
     unittest.main()

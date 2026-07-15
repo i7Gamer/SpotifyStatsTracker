@@ -34,11 +34,11 @@ class Client:
         }
     
     @staticmethod
-    def embedPlayInfo(track, timestamp, timePlayed):
+    def embedPlayInfo(track, timestamp, timePlayed, capAtDuration=True):
         playedAtTimestamp = timeToInt(timestamp)
 
         track["playedAt"] = playedAtTimestamp
-        if track.get("duration", 0) > 0:
+        if capAtDuration and track.get("duration", 0) > 0:
             track["timePlayed"] = min(timePlayed, track["duration"])   #< sometimes spotipyFree returns extremely large (wrong) values
         else:
             track["timePlayed"] = timePlayed

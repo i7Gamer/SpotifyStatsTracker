@@ -105,6 +105,52 @@ class TestMusicoletImport(unittest.TestCase):
         self.assertEqual(prefetchCalls[1][1], 2)
 
 
+class TestImportTimePlayedNotCapped(unittest.TestCase):
+    """Export ms_played is authoritative (it comes from Spotify's own records).
+    When a play is mapped to a different version of the song - name+artist
+    catalog match or Spotify track relinking - whose duration is shorter, the
+    play time must NOT be capped at that version's duration; the cap only
+    exists to guard against corrupt live-listener values."""
+
+    CATALOG_DURATION_MS = 200000
+    PLAYED_MS = 250000  #< longer than the catalog version's duration
+
+    def test_fetched_track_play_keeps_full_ms_played(self):
+        importer = Importer()
+        importer.sp = MagicMock()
+        importer.sp.track.return_value = FAKE_TRACK  #< duration_ms=200000
+        history = [{
+            "ts": "2023-01-01T00:05:00Z", "ms_played": self.PLAYED_MS,
+            "master_metadata_track_name": "Song One",
+            "master_metadata_album_artist_name": "Artist One",
+            "spotify_track_uri": "spotify:track:track123",
+        }]
+        tracks = list(importer.importExtendedHistory(history, known=[], progressCallback=None))
+        self.assertEqual(len(tracks), 1)
+        self.assertEqual(tracks[0]["timePlayed"], self.PLAYED_MS)
+
+    def test_known_catalog_track_play_keeps_full_ms_played(self):
+        importer = Importer()
+        importer.sp = MagicMock()
+        known = [{
+            "id": "canonical1",
+            "name": "Song One",
+            "artists": [{"name": "Artist One", "id": "a1"}],
+            "album": {"id": "alb1", "name": "Album One"},
+            "duration": self.CATALOG_DURATION_MS,
+        }]
+        history = [{
+            "ts": "2023-01-01T00:05:00Z", "ms_played": self.PLAYED_MS,
+            "master_metadata_track_name": "Song One",
+            "master_metadata_album_artist_name": "Artist One",
+            "spotify_track_uri": None,
+        }]
+        tracks = list(importer.importExtendedHistory(history, known=known, progressCallback=None))
+        self.assertEqual(len(tracks), 1)
+        self.assertEqual(tracks[0]["timePlayed"], self.PLAYED_MS)
+        importer.sp.track.assert_not_called()
+
+
 class TestZeroDurationFiltering(unittest.TestCase):
     """Plays under MIN_TIME_PLAYED_MS (skips/errors) must never reach the
     database - across every export format."""
