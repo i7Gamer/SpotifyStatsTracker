@@ -610,9 +610,15 @@ class Database:
                                 "UPDATE plays SET played_at = ?, time_played = ? WHERE id = ?",
                                 (played_at, time_played, existing_play["id"])
                             )
+                            changes = []
+                            if int(existing_play["played_at"]) != int(played_at):
+                                changes.append(f"played_at corrected from {int(existing_play['played_at'])} to {int(played_at)}")
+                            if existing_play["time_played"] != time_played:
+                                changes.append(f"time_played corrected from {existing_play['time_played']}ms to {time_played}ms")
+
                             logger.info(
-                                "Updated import play for track %s: played_at=%s, time_played corrected from %dms to %dms",
-                                track_id, played_at, existing_play["time_played"], time_played,
+                                "Updated import play for track %s: %s",
+                                track_id, ", ".join(changes)
                             )
                             updatedCount += 1
                             continue

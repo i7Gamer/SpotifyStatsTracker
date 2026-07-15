@@ -212,6 +212,47 @@ class TestDatabaseDeduplication(DatabaseTestCase):
                 except AssertionError:
                     pass
 
+    def test_import_update_log_formatting(self):
+        """Updated import plays should output log messages specifying only the actual fields changed."""
+        # 1. Both played_at and time_played change
+        entries1 = [{"id": "track_x", "playedAt": 100, "timePlayed": 5000}]
+        db1 = self._makeDb({}, entries1)
+        def gen1():
+            yield _meta("track_x", 105, timePlayed=6000)
+
+        with patch("Database.database.Importer", return_value=self._mockImporter(gen1)):
+            with self.assertLogs("Database.database", level="INFO") as log_capture:
+                db1.importHistory("raw export")
+        msg = log_capture.output[0]
+        self.assertIn("played_at corrected from 100 to 105", msg)
+        self.assertIn("time_played corrected from 5000ms to 6000ms", msg)
+
+        # 2. Only played_at changes
+        entries2 = [{"id": "track_x", "playedAt": 100, "timePlayed": 5000}]
+        db2 = self._makeDb({}, entries2)
+        def gen2():
+            yield _meta("track_x", 105, timePlayed=5000)
+
+        with patch("Database.database.Importer", return_value=self._mockImporter(gen2)):
+            with self.assertLogs("Database.database", level="INFO") as log_capture:
+                db2.importHistory("raw export")
+        msg = log_capture.output[0]
+        self.assertIn("played_at corrected from 100 to 105", msg)
+        self.assertNotIn("time_played", msg)
+
+        # 3. Only time_played changes
+        entries3 = [{"id": "track_x", "playedAt": 100, "timePlayed": 5000}]
+        db3 = self._makeDb({}, entries3)
+        def gen3():
+            yield _meta("track_x", 100, timePlayed=6000)
+
+        with patch("Database.database.Importer", return_value=self._mockImporter(gen3)):
+            with self.assertLogs("Database.database", level="INFO") as log_capture:
+                db3.importHistory("raw export")
+        msg = log_capture.output[0]
+        self.assertNotIn("played_at", msg)
+        self.assertIn("time_played corrected from 5000ms to 6000ms", msg)
+
 
 
 if __name__ == "__main__":
