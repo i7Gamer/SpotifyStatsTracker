@@ -398,6 +398,37 @@ class ApiBackfillTestCase(unittest.TestCase):
 
         onWebApiSnapshot.assert_called_once_with(apiItems)
 
+    @patch("Database.Listeners.spotifyListener._fetch_recently_played_from_web_api")
+    @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token")
+    def test_check_web_api_backfill_runs_on_first_poll_even_with_a_low_monotonic_clock(self, mock_refresh, mock_fetch):
+        """Regression test: _lastWebApiPollTime must start as None ("never
+        polled"), not 0, so the very first poll always runs - even on a host
+        where time.monotonic() itself is still small (e.g. shortly after
+        boot), which previously made a freshly constructed Listener look like
+        it had already polled "recently" and silently skip its first check."""
+        mock_refresh.return_value = "token123"
+        mock_fetch.return_value = [
+            {"track": {"id": "track_new", "duration_ms": 180000}, "played_at": "2026-07-13T10:05:00Z"},
+        ]
+
+        get_credentials = MagicMock(return_value={
+            "client_id": "cid", "client_secret": "cs", "refresh_token": "rt",
+        })
+
+        lowUptimeMonotonic = 5.0  # smaller than WEB_API_POLL_INTERVAL_SECONDS
+
+        with patch("Database.Listeners.spotifyListener.time.monotonic", return_value=lowUptimeMonotonic):
+            with patch("Database.Listeners.spotifyListener.Spotify") as mock_spotify_cls:
+                mock_sp = MagicMock()
+                mock_sp.current_user_recently_played.return_value = []
+                mock_spotify_cls.return_value = mock_sp
+                listener = Listener("dummy_cookie", email="alice@example.com", get_credentials=get_credentials)
+
+            callback = MagicMock()
+            listener._checkWebApiBackfill(callback)  # no manual _lastWebApiPollTime reset
+
+        callback.assert_called_once()
+
     def test_check_web_api_backfill_without_snapshot_callback_does_not_raise(self):
         """onWebApiSnapshot is optional - existing callers that don't pass it
         (e.g. tests, or a Database without reconciliation wired up) must be

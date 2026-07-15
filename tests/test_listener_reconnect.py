@@ -43,7 +43,7 @@ def _bareListener(recentlyPlayed=None):
     listener._lastChangeTime = 0.0
     listener._authenticated_user_id = None
     listener.email = None
-    listener._last_user_validation_time = 0.0
+    listener._last_user_validation_time = None  #< matches Listener.__init__: never validated yet
     listener._last_user_validation_result = True
     return listener
 
@@ -176,6 +176,23 @@ class TestValidateCurrentUser(unittest.TestCase):
             with self.assertRaises(Exception) as ctx:
                 listener._validateCurrentUser()
         self.assertIn("503", str(ctx.exception))
+
+    def test_first_check_runs_even_with_a_low_monotonic_clock(self):
+        """Regression test: _last_user_validation_time must start as None
+        ("never validated"), not 0, so the very first check always performs
+        a real validation - even on a host where time.monotonic() itself is
+        still small (e.g. shortly after boot), which previously made a
+        freshly constructed Listener look like it had already validated
+        "recently" and silently return the unvalidated cached default."""
+        listener = _bareListener()
+        listener._authenticated_user_id = "user1"
+        listener.sp.current_user.return_value = {"id": "user1"}
+
+        lowUptimeMonotonic = 1.0  # smaller than USER_VALIDATION_CACHE_SECONDS
+        with patch("Database.Listeners.spotifyListener.time.monotonic", return_value=lowUptimeMonotonic):
+            listener._validateCurrentUser()
+
+        listener.sp.current_user.assert_called_once()
 
 
 if __name__ == "__main__":

@@ -180,7 +180,7 @@ class Listener:
         self.email = email  #< store expected email for validation
         self._authenticated_user_id = None  #< cache spotify user id for validation
         self.get_credentials = get_credentials
-        self._lastWebApiPollTime = 0
+        self._lastWebApiPollTime = None  #< None means "never polled yet" - forces an immediate first poll
         with _suppress_signal_in_thread():
             self.sp = Spotify(cookiesFile=cookiesFile, email=email)
             self.sp.startRecentlyPlayedListener(refreshInterval=refreshInterval)
@@ -215,7 +215,7 @@ class Listener:
         self._warnedMissingTrackUris = collections.OrderedDict()  #< dedupes _checkConnectStateForMissedTracks
                                                                    #  warnings; OrderedDict (not set) so
                                                                    #  eviction can target the oldest entry
-        self._last_user_validation_time = 0  #< track last successful user validation
+        self._last_user_validation_time = None  #< None means "never validated yet" - forces an immediate first check
         self._last_user_validation_result = True  #< cache validation result
 
     def isLoggedIn(self):
@@ -234,8 +234,8 @@ class Listener:
         Results are cached for USER_VALIDATION_CACHE_SECONDS to reduce bot detection triggers
         from excessive polling. Cache is bypassed on errors to detect auth failures quickly."""
         now = time.monotonic()
-        # Return cached result if still fresh
-        if (now - self._last_user_validation_time) < USER_VALIDATION_CACHE_SECONDS:
+        # Return cached result if still fresh (never cached yet on first call)
+        if self._last_user_validation_time is not None and (now - self._last_user_validation_time) < USER_VALIDATION_CACHE_SECONDS:
             return self._last_user_validation_result
 
         try:
@@ -435,8 +435,9 @@ class Listener:
             return
 
         now = time.monotonic()
-        # Query every 15 minutes
-        if now - getattr(self, "_lastWebApiPollTime", 0) < WEB_API_POLL_INTERVAL_SECONDS:
+        # Query every 15 minutes (never polled yet on first call)
+        lastPollTime = getattr(self, "_lastWebApiPollTime", None)
+        if lastPollTime is not None and now - lastPollTime < WEB_API_POLL_INTERVAL_SECONDS:
             return
 
         self._lastWebApiPollTime = now
