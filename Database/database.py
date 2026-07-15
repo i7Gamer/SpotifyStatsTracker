@@ -45,6 +45,29 @@ USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTM
 MEDIA_DIR = Path(__file__).resolve().parent / "Data" / "Media"
 
 
+class _ImportRunState:
+    """Play rows written by the current import run (or multi-file batch).
+
+    The import's duplicate reconciliation matches each incoming entry against
+    nearby existing plays and "corrects" a single differing match instead of
+    inserting. That is only valid against rows from *other* sources (live
+    listener / Web API backfill, where played_at semantics can differ) - but
+    inserts happen inside the same transaction the matching reads from, so
+    without this state an entry would also match the play a previous entry of
+    the same run just wrote, collapsing two genuine plays (e.g. a short skip
+    immediately followed by a replay of the same track) into one row.
+
+    Invariant: an existing row can be claimed by at most one import entry per
+    run - one physical play corresponds to exactly one export entry."""
+
+    def __init__(self):
+        self.claimedRowIds: set[int] = set()      #< existing rows updated or confirmed identical by this run
+        self.insertedPlayKeys: set[tuple] = set() #< (track_id, played_at) of rows inserted by this run
+
+    def isOwnWrite(self, trackId: str, play: dict) -> bool:
+        return play["id"] in self.claimedRowIds or (trackId, play["played_at"]) in self.insertedPlayKeys
+
+
 class Database:
     PROGRESS_UPDATE_INTERVAL = 10   #< Write import progress to disk every N entries instead of every entry
     RECONNECT_MAX_RETRIES = 10  #< max reconnection attempts before giving up (~30 min window with backoff)
@@ -55,6 +78,13 @@ class Database:
                                                #  appendTrackData) - accounts for Spotify's played_at
                                                #  field being documented as inconsistent about whether
                                                #  it reports a track's start or end time (spotify/web-api#1083)
+    IMPORT_MATCH_START_WINDOW_SECONDS = 15     #< an existing play starting within this window of an imported
+                                               #  play is treated as the same physical play recorded with a
+                                               #  slightly different timestamp (e.g. listener vs export)
+    IMPORT_MATCH_END_WINDOW_SECONDS = 60       #< same idea for sources whose played_at recorded the track's
+                                               #  end instead of its start (see the start/end ambiguity note
+                                               #  on BACKFILL_INSERT_GUARD_EXTRA_SECONDS): imported start +
+                                               #  track duration must land within this window of the DB row
     DUPLICATE_RECORDING_TOLERANCE_SECONDS = 5  #< max gap between two same-track local plays for them to count as
                                                 #  the same real listen recorded twice (once by the live listener,
                                                 #  once by Web API backfill) rather than a genuine replay - a track
@@ -527,8 +557,11 @@ class Database:
     def cleanupOrphans(self) -> dict[str, int]:
         return self.repo.cleanupOrphans()
 
-    def importHistory(self, exportedHistory, progressPrefix: str = "", isFinalFile: bool = True, hasPriorError: bool = False, track_file_hash: bool = False):
+    def importHistory(self, exportedHistory, progressPrefix: str = "", isFinalFile: bool = True, hasPriorError: bool = False, track_file_hash: bool = False,
+                      runState: _ImportRunState | None = None):
         importer = self._withCookiesFile(lambda cookiesFile: Importer(cookiesFile=cookiesFile, email=self.email))
+        if runState is None:
+            runState = _ImportRunState()
 
         parsedHistory, exportType = importer._convertToList(exportedHistory)
         if not parsedHistory:
@@ -550,6 +583,9 @@ class Database:
         stagedTracks: dict[str, dict] = {}
         stagedPlays: list[dict] = []
         index = 0
+        # Rolled-back writes must not stay claimed in a batch-shared run state
+        claimedRowIdsBefore = set(runState.claimedRowIds)
+        insertedPlayKeysBefore = set(runState.insertedPlayKeys)
         try:
             knownTracks = self.repo.getAllTracks()
             for index, meta in enumerate(
@@ -579,21 +615,29 @@ class Database:
                 # same logic as API backfill to handle potential overlap with backfilled data
                 # where Spotify's played_at can be ambiguous (start or end time).
                 track = stagedTracks.get(track_id)
-                durationSeconds = (track.get("duration_ms", 0) or 0) // 1000 if track else 0
+                #< staged tracks carry Client.formatTrack's "duration" key (ms)
+                durationSeconds = (track.get("duration", 0) or 0) // 1000 if track else 0
                 tolerance = durationSeconds + self.BACKFILL_INSERT_GUARD_EXTRA_SECONDS
                 raw_matches = self.repo.getPlaysNearTime(self.user, track_id, played_at, tolerance)
                 matches = []
                 for m in raw_matches:
+                    # Rows this run already wrote belong to other import entries and
+                    # are never candidates - otherwise a replay would "correct" the
+                    # skip play inserted moments earlier instead of being recorded
+                    # itself (see _ImportRunState).
+                    if runState.isOwnWrite(track_id, m):
+                        continue
                     db_played_at = m["played_at"]
                     diff_start = abs(db_played_at - played_at)
                     diff_end = abs(db_played_at - (played_at + durationSeconds))
-                    if diff_start <= 15 or diff_end <= 60:
+                    if diff_start <= self.IMPORT_MATCH_START_WINDOW_SECONDS or diff_end <= self.IMPORT_MATCH_END_WINDOW_SECONDS:
                         matches.append(m)
 
                 if matches:
                     if len(matches) == 1:
                         # Exactly one match - safe to update if data differs
                         existing_play = matches[0]
+                        runState.claimedRowIds.add(existing_play["id"])
                         data_differs = (
                             existing_play["time_played"] != time_played or
                             existing_play["played_at"] != played_at
@@ -640,6 +684,7 @@ class Database:
                 if self.repo.insertPlay(self.user, track_id, played_at, time_played, played_from,
                                         created_reason=f"history_import (user: {self.user})"):
                     insertedCount += 1
+                runState.insertedPlayKeys.add((track_id, played_at))
 
             if track_file_hash:
                 import hashlib
@@ -654,6 +699,8 @@ class Database:
             self.writeProgress(status, total, total, f"{progressPrefix}Import complete", error=hasPriorError)
         except Exception as e:
             self.repo.rollback()
+            runState.claimedRowIds = claimedRowIdsBefore
+            runState.insertedPlayKeys = insertedPlayKeysBefore
             self.writeProgress("failed", index, total, f"{progressPrefix}Import failed: {parseError(e)}", error=True)
             raise
 
@@ -671,6 +718,10 @@ class Database:
         total = len(fileContents)
         failedCount = 0
         skippedCount = 0
+        # One run state for the whole batch: files commit separately, so a
+        # skip/replay pair straddling a file boundary would otherwise collapse
+        # (the replay in file N+1 matching the skip committed by file N).
+        runState = _ImportRunState()
         for index, content in enumerate(fileContents, start=1):
             try:
                 isFinalFile = (index == total)
@@ -689,7 +740,8 @@ class Database:
                     progressPrefix=f"File {index}/{total}: ",
                     isFinalFile=isFinalFile,
                     hasPriorError=(failedCount > 0),
-                    track_file_hash=True
+                    track_file_hash=True,
+                    runState=runState
                 )
             except Exception as e:
                 failedCount += 1

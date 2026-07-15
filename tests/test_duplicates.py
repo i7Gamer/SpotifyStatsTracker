@@ -270,6 +270,139 @@ class TestDatabaseDeduplication(DatabaseTestCase):
         played_ats = sorted([p["playedAt"] for p in plays])
         self.assertEqual(played_ats, [1000, 1240])
 
+    def test_import_preserves_skip_then_replay_of_same_track(self):
+        """A short skip followed by a replay of the same track in the same file
+        must produce two plays - the replay must not "correct" (overwrite) the
+        skip row the import itself inserted moments earlier."""
+        db = self._makeDb({}, [])
+        SKIP_START = 1000
+        SKIP_PLAYED_MS = 17002
+        REPLAY_START = SKIP_START + 18  #< replay starts right after the 17s skip ends
+        REPLAY_PLAYED_MS = 192881
+        TRACK_DURATION_MS = 200000
+
+        def gen():
+            skip = _meta("track_x", SKIP_START, timePlayed=SKIP_PLAYED_MS)
+            skip["duration"] = TRACK_DURATION_MS
+            replay = _meta("track_x", REPLAY_START, timePlayed=REPLAY_PLAYED_MS)
+            replay["duration"] = TRACK_DURATION_MS
+            yield skip
+            yield replay
+
+        with patch("Database.database.Importer", return_value=self._mockImporter(gen)):
+            db.importHistory("raw export")
+
+        plays = db.getEntriesFromNew(fullPagination=False)
+        self.assertEqual(len(plays), 2)
+        self.assertEqual(sorted(p["playedAt"] for p in plays), [SKIP_START, REPLAY_START])
+
+    def test_import_preserves_quick_restart_within_start_window(self):
+        """A skip and a restart only a few seconds apart (inside the 15s
+        start-time match window) must still produce two plays on a fresh
+        import - the second entry may not claim the row the first inserted."""
+        db = self._makeDb({}, [])
+        SKIP_START = 1000
+        SKIP_PLAYED_MS = 2538
+        RESTART_START = SKIP_START + 4
+        RESTART_PLAYED_MS = 399803
+        TRACK_DURATION_MS = 400000
+
+        def gen():
+            skip = _meta("track_x", SKIP_START, timePlayed=SKIP_PLAYED_MS)
+            skip["duration"] = TRACK_DURATION_MS
+            restart = _meta("track_x", RESTART_START, timePlayed=RESTART_PLAYED_MS)
+            restart["duration"] = TRACK_DURATION_MS
+            yield skip
+            yield restart
+
+        with patch("Database.database.Importer", return_value=self._mockImporter(gen)):
+            db.importHistory("raw export")
+
+        plays = db.getEntriesFromNew(fullPagination=False)
+        self.assertEqual(len(plays), 2)
+        self.assertEqual(sorted(p["playedAt"] for p in plays), [SKIP_START, RESTART_START])
+
+    def test_import_match_window_uses_track_duration(self):
+        """The end-time match rule must use the track's actual duration: a
+        pre-existing play 33s before an imported one only matches when the gap
+        corresponds to the track's length, not for any gap under 60s."""
+        EXISTING_START = 1000
+        EXISTING_PLAYED_MS = 2670
+        IMPORT_START = EXISTING_START + 33
+        IMPORT_PLAYED_MS = 226826
+        TRACK_DURATION_MS = 240000
+        entries = [{"id": "track_x", "playedAt": EXISTING_START, "timePlayed": EXISTING_PLAYED_MS}]
+        db = self._makeDb({}, entries)
+
+        def gen():
+            meta = _meta("track_x", IMPORT_START, timePlayed=IMPORT_PLAYED_MS)
+            meta["duration"] = TRACK_DURATION_MS
+            yield meta
+
+        with patch("Database.database.Importer", return_value=self._mockImporter(gen)):
+            db.importHistory("raw export")
+
+        plays = db.getEntriesFromNew(fullPagination=False)
+        self.assertEqual(len(plays), 2)
+        self.assertEqual(sorted(p["playedAt"] for p in plays), [EXISTING_START, IMPORT_START])
+        # The pre-existing play must be untouched
+        self.assertIn(EXISTING_PLAYED_MS, [p["timePlayed"] for p in plays])
+
+    def test_import_identical_entry_claims_row_so_neighbor_is_not_overwritten(self):
+        """Re-importing a file over existing data: an entry identical to its DB
+        row claims that row, so a later nearby entry can't mistake the already-
+        matched row for its own play and overwrite it."""
+        EXISTING_START = 1000
+        EXISTING_PLAYED_MS = 5000
+        NEW_START = EXISTING_START + 10
+        NEW_PLAYED_MS = 300000
+        entries = [{"id": "track_x", "playedAt": EXISTING_START, "timePlayed": EXISTING_PLAYED_MS}]
+        db = self._makeDb({}, entries)
+
+        def gen():
+            yield _meta("track_x", EXISTING_START, timePlayed=EXISTING_PLAYED_MS)  #< identical to DB row
+            yield _meta("track_x", NEW_START, timePlayed=NEW_PLAYED_MS)  #< genuinely new play
+
+        with patch("Database.database.Importer", return_value=self._mockImporter(gen)):
+            db.importHistory("raw export")
+
+        plays = db.getEntriesFromNew(fullPagination=False)
+        self.assertEqual(len(plays), 2)
+        self.assertEqual(sorted(p["playedAt"] for p in plays), [EXISTING_START, NEW_START])
+        self.assertIn(EXISTING_PLAYED_MS, [p["timePlayed"] for p in plays])
+
+    def test_import_batch_preserves_replays_across_file_boundary(self):
+        """A skip at the end of one file and its replay at the start of the next
+        must both survive a batch import - run-state claims span the batch even
+        though each file commits separately."""
+        db = self._makeDb({}, [])
+        SKIP_START = 1000
+        SKIP_PLAYED_MS = 2538
+        REPLAY_START = SKIP_START + 4
+        REPLAY_PLAYED_MS = 399803
+        TRACK_DURATION_MS = 400000
+
+        def gen1():
+            skip = _meta("track_x", SKIP_START, timePlayed=SKIP_PLAYED_MS)
+            skip["duration"] = TRACK_DURATION_MS
+            yield skip
+
+        def gen2():
+            replay = _meta("track_x", REPLAY_START, timePlayed=REPLAY_PLAYED_MS)
+            replay["duration"] = TRACK_DURATION_MS
+            yield replay
+
+        importer = MagicMock()
+        importer._convertToList.return_value = ([{}], "spotifyAcountExport")
+        importer.importHistory.side_effect = [gen1(), gen2()]
+
+        with patch("Database.database.Importer", return_value=importer):
+            db.importHistoryBatch(["file one", "file two"])
+
+        plays = db.getEntriesFromNew(fullPagination=False)
+        self.assertEqual(len(plays), 2)
+        self.assertEqual(sorted(p["playedAt"] for p in plays), [SKIP_START, REPLAY_START])
+
     def test_import_updates_synthetic_track_duration(self):
         """Synthetic track durations should be updated in the catalog when a longer play duration is imported."""
         # Create a synthetic fallback track with duration 10s
