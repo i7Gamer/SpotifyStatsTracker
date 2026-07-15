@@ -434,7 +434,31 @@ class TestPatches(unittest.TestCase):
             self.assertIn("non-Mapping response", log_capture.output[0])
             self.assertIn("Invalid JSON", str(err_ctx.exception))
 
+    def test_patched_keep_alive_suppresses_connection_closed(self):
+        """WebsocketStreamer.keep_alive must catch websockets.exceptions.ConnectionClosed and exit gracefully."""
+        from Database.patches import patched_keep_alive
+        import websockets.exceptions
+
+        # Create a mock exception
+        exc = websockets.exceptions.ConnectionClosedError(rcvd=None, sent=None)
+
+        # Mock the original keep_alive to raise this exception
+        mock_original = MagicMock(side_effect=exc)
+
+        # Temporarily mock original_keep_alive in Database.patches
+        with patch("Database.patches.original_keep_alive", mock_original):
+            # Calling patched_keep_alive should NOT raise ConnectionClosedError
+            instance = MagicMock()
+            try:
+                patched_keep_alive(instance)
+            except websockets.exceptions.ConnectionClosed as e:
+                self.fail(f"patched_keep_alive did not suppress ConnectionClosed exception: {e}")
+
+            # Verify the original keep_alive was called once
+            mock_original.assert_called_once_with(instance)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

@@ -2,6 +2,7 @@ import signal
 import threading
 import time
 import websockets.sync.client
+import websockets.exceptions
 import spotapi.status
 import spotapi.websocket
 
@@ -85,6 +86,20 @@ def patched_websocket_streamer_init(self, *args, **kwargs):
         pass  # signal.signal only works in main thread; silently skip if in worker thread
 
 spotapi.websocket.WebsocketStreamer.__init__ = patched_websocket_streamer_init
+
+
+# 4. Patch WebsocketStreamer.keep_alive to gracefully handle websockets.exceptions.ConnectionClosed.
+# The original keep_alive only catches ConnectionError and KeyboardInterrupt, allowing
+# ConnectionClosedError to propagate and crash the background thread, generating noisy tracebacks.
+original_keep_alive = spotapi.websocket.WebsocketStreamer.keep_alive
+
+def patched_keep_alive(self):
+    try:
+        original_keep_alive(self)
+    except websockets.exceptions.ConnectionClosed:
+        pass
+
+spotapi.websocket.WebsocketStreamer.keep_alive = patched_keep_alive
 
 
 import json
