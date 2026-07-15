@@ -9,33 +9,36 @@ from contextlib import contextmanager
 from SpotipyFree import Spotify
 from Database.utils import parseError, timeToInt
 
-# Suppress ConnectionClosedOK during shutdown - it's not an error, just the websocket closing normally
+# A background thread's websocket ping (e.g. spotapi's keep_alive) can raise
+# websockets.exceptions.ConnectionClosed/ConnectionAbortedError for many reasons -
+# a graceful shutdown close, or the connection simply dropping. Either way it's
+# already handled: patched_keep_alive (Database/patches.py) reconnects on a drop,
+# and the stale-feed watchdog below rebuilds the whole listener if pings stay
+# dead. So log one clean line instead of letting threading's default excepthook
+# dump a raw traceback. Anything else (a real bug) still gets the default
+# handler so it stays loud and visible.
 import websockets.exceptions
 import sys
 
+logger = logging.getLogger(__name__)
+
 def _shutdown_exception_hook(args):
-    """Suppress harmless websocket close exceptions - they're not errors, just the connection closing normally."""
+    """Log expected websocket-close exceptions from background threads instead of
+    letting them print a raw traceback; forward anything else to the default handler."""
     exc = args.exc_value
 
-    # Suppress normal close (status 1000)
-    if isinstance(exc, websockets.exceptions.ConnectionClosedOK):
+    if isinstance(exc, (websockets.exceptions.ConnectionClosed, ConnectionAbortedError)):
+        threadName = args.thread.name if args.thread is not None else "unknown"
+        logger.warning(
+            "Background thread '%s' exited after websocket close (%s); reconnect/stale-feed recovery will handle it.",
+            threadName, exc,
+        )
         return
-
-    # Also suppress ConnectionClosedError if it's a graceful close (status 1000).
-    # Some websocket implementations raise ConnectionClosedError instead of ConnectionClosedOK
-    # even when the close was initiated with status 1000 (normal close).
-    if isinstance(exc, websockets.exceptions.ConnectionClosedError):
-        # Check if close reason indicates graceful shutdown (1000 = OK)
-        exc_str = str(exc)
-        if "1000" in exc_str or "sent 1000" in exc_str:
-            return
 
     # Otherwise, use the default exception handler
     sys.__excepthook__(args.exc_type, args.exc_value, args.exc_traceback)
 
 threading.excepthook = _shutdown_exception_hook
-
-logger = logging.getLogger(__name__)
 
 LISTENER_STOP_JOIN_TIMEOUT_SECONDS = 5  #< bound how long shutdown waits for spotapi's background LastPlayed thread to exit
 

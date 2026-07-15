@@ -109,6 +109,28 @@ class TestWrappedBackgroundWorker(DatabaseTestCase):
         self.assertEqual(cached["total_plays"], 1)
         self.assertEqual(cached["max_played_at"], 1774000000)
 
+    def test_recalculation_log_uses_readable_timestamps(self):
+        """cached max/actual max should be logged as ISO timestamps, not raw
+        epoch floats, so the log is readable without doing math in your head."""
+        db = self._makeDb({}, [])
+        db.repo.upsertTrack({
+            "id": "t1", "name": "Song 1", "url": "u1", "imageId": "img1", "duration": 30000,
+            "explicit": False, "isrc": "", "discNumber": 1, "trackNumber": 1, "releaseDate": 0,
+            "album": {"id": "alb1", "name": "Album 1", "url": "u", "imageId": "i", "imageUrl": "", "totalTracks": 1, "releaseDate": 0},
+            "artists": [{"id": "art1", "name": "Artist 1", "url": "u", "imageId": "i"}]
+        })
+        db.repo.insertPlay(db.user, "t1", 1774000000, 30000, "listener")  # somewhere in 2026
+        db.repo.deleteUserWrapped(db.user, 2026)
+
+        with self.assertLogs("Database.database", level="INFO") as cm:
+            db._checkAndRecalculateWrapped()
+
+        recalcLines = [line for line in cm.output if "Recalculating wrapped" in line]
+        self.assertEqual(len(recalcLines), 1)
+        self.assertIn("cached max: none", recalcLines[0])   #< no prior cache yet
+        self.assertRegex(recalcLines[0], r"actual max: 2026-\d{2}-\d{2}T")
+        self.assertNotIn("1774000000", recalcLines[0])
+
     def test_worker_detects_historical_inserts(self):
         db = self._makeDb({}, [])
         # Insert plays in 2026: one late play

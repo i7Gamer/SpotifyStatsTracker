@@ -1475,8 +1475,10 @@ class Database:
 
             # If no cache, max timestamp is newer, or total play count changed, recalculate
             if cached_max is None or cached_total is None or cached_max < max_played_at or cached_total != current_total:
+                cachedMaxDisplay = convertToDatetime(cached_max, tz=self.tz).isoformat() if cached_max is not None else "none"
+                actualMaxDisplay = convertToDatetime(max_played_at, tz=self.tz).isoformat()
                 logger.info("[WrappedWorker-%s] Recalculating wrapped for year %d (cached max: %s, actual max: %s, cached plays: %s, actual plays: %s)",
-                            self.user, year, str(cached_max), str(max_played_at), str(cached_total), str(current_total))
+                            self.user, year, cachedMaxDisplay, actualMaxDisplay, str(cached_total), str(current_total))
                 self._calculateAndSaveWrapped(year, yearStart, yearEnd, max_played_at)
                 # Sleep briefly between years to distribute database load
                 if self.wrapped_stop_event.wait(self.WRAPPED_YEAR_DELAY_SECONDS):

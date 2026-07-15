@@ -1,105 +1,84 @@
-"""Tests for websocket exception hook that suppresses harmless close exceptions."""
-import sys
+"""Tests for _shutdown_exception_hook, the threading.excepthook that logs
+expected websocket-close exceptions from background threads (e.g. spotapi's
+keep_alive ping) as one clean line instead of letting Python print a raw
+traceback. Exercises the real hook, not a re-implementation of its logic."""
 import unittest
-from unittest.mock import MagicMock
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import websockets.exceptions
+import websockets.frames
+
+from Database.Listeners.spotifyListener import _shutdown_exception_hook
+
+
+def _makeArgs(exc, threadName="worker-thread"):
+    return SimpleNamespace(exc_type=type(exc), exc_value=exc, exc_traceback=None,
+                            thread=SimpleNamespace(name=threadName))
 
 
 class TestWebsocketExceptionHook(unittest.TestCase):
-    """Verify that harmless websocket close exceptions are suppressed."""
+    """Verify harmless/expected websocket-close exceptions are logged instead
+    of dumped as a raw traceback, while anything else still is."""
+
+    def _invoke(self, exc):
+        with patch("Database.Listeners.spotifyListener.sys.__excepthook__") as mockDefaultHook, \
+             self.assertLogs("Database.Listeners.spotifyListener", level="WARNING") as logs:
+            _shutdown_exception_hook(_makeArgs(exc))
+        return mockDefaultHook, logs.output
 
     def test_suppresses_connection_closed_ok(self):
-        """Test that ConnectionClosedOK exceptions are suppressed."""
-        # Simulate the exception hook behavior
-        class ConnectionClosedOK(Exception):
-            pass
+        exc = websockets.exceptions.ConnectionClosedOK(None, None)
+        mockDefaultHook, logOutput = self._invoke(exc)
+        mockDefaultHook.assert_not_called()
+        self.assertTrue(any("worker-thread" in line for line in logOutput))
 
-        exc = ConnectionClosedOK("connection closed normally")
-        args = MagicMock()
-        args.exc_value = exc
+    def test_suppresses_connection_closed_error_graceful_close(self):
+        close = websockets.frames.Close(1000, "OK")
+        exc = websockets.exceptions.ConnectionClosedOK(close, close, rcvd_then_sent=True)
+        mockDefaultHook, _ = self._invoke(exc)
+        mockDefaultHook.assert_not_called()
 
-        # This should return without calling the default handler
-        result = None
-        if isinstance(args.exc_value, ConnectionClosedOK):
-            result = "suppressed"
+    def test_suppresses_connection_closed_error_abnormal_close(self):
+        """Previously only a status-1000 (graceful) close was suppressed; an
+        abnormal close used to fall through to a raw traceback even though the
+        same reconnect/stale-feed recovery handles either case."""
+        close = websockets.frames.Close(1006, "ABNORMAL CLOSURE")
+        exc = websockets.exceptions.ConnectionClosedError(close, None)
+        mockDefaultHook, _ = self._invoke(exc)
+        mockDefaultHook.assert_not_called()
 
-        self.assertEqual(result, "suppressed",
-                        "ConnectionClosedOK should be suppressed")
+    def test_suppresses_real_world_no_close_frame_error(self):
+        """Regression test for the production traceback: a keep-alive ping hit
+        ConnectionAbortedError, which surfaced as this exact ConnectionClosedError
+        ('no close frame received or sent') and used to print a raw traceback."""
+        exc = websockets.exceptions.ConnectionClosedError(None, None)
+        self.assertEqual(str(exc), "no close frame received or sent")
+        mockDefaultHook, logOutput = self._invoke(exc)
+        mockDefaultHook.assert_not_called()
+        self.assertTrue(any("no close frame received or sent" in line for line in logOutput))
 
-    def test_suppresses_connection_closed_error_with_status_1000(self):
-        """Test that ConnectionClosedError with status 1000 is suppressed.
+    def test_suppresses_connection_aborted_error(self):
+        exc = ConnectionAbortedError("[Errno 10053] An established connection was aborted")
+        mockDefaultHook, _ = self._invoke(exc)
+        mockDefaultHook.assert_not_called()
 
-        Status 1000 = normal close, so this should not be reported as an error.
-        """
-        # Simulate ConnectionClosedError with graceful close status
-        class ConnectionClosedError(Exception):
-            pass
+    def test_does_not_suppress_unrelated_exceptions(self):
+        """A genuine bug (anything other than a websocket close) must still
+        surface loudly via the default exception handler."""
+        exc = TypeError("unexpected")
+        with patch("Database.Listeners.spotifyListener.sys.__excepthook__") as mockDefaultHook:
+            _shutdown_exception_hook(_makeArgs(exc))
+        mockDefaultHook.assert_called_once_with(TypeError, exc, None)
 
-        exc = ConnectionClosedError("sent 1000 (OK); no close frame received")
-        args = MagicMock()
-        args.exc_value = exc
-        exc_str = str(args.exc_value)
-
-        # Check the hook logic
-        result = None
-        if isinstance(args.exc_value, ConnectionClosedError):
-            if "1000" in exc_str or "sent 1000" in exc_str:
-                result = "suppressed"
-
-        self.assertEqual(result, "suppressed",
-                        "ConnectionClosedError with status 1000 should be suppressed")
-
-    def test_does_not_suppress_other_connection_errors(self):
-        """Test that ConnectionClosedError with abnormal status codes is NOT suppressed."""
-        class ConnectionClosedError(Exception):
-            pass
-
-        # Abnormal close (status 1006)
-        exc = ConnectionClosedError("sent 1006 (ABNORMAL CLOSURE); no close frame received")
-        args = MagicMock()
-        args.exc_value = exc
-        exc_str = str(args.exc_value)
-
-        # Check the hook logic
-        result = None
-        if isinstance(args.exc_value, ConnectionClosedError):
-            if "1000" in exc_str or "sent 1000" in exc_str:
-                result = "suppressed"
-            else:
-                result = "not_suppressed"
-        else:
-            result = "not_suppressed"
-
-        self.assertEqual(result, "not_suppressed",
-                        "ConnectionClosedError with abnormal status should NOT be suppressed")
-
-    def test_status_1000_variations(self):
-        """Test that various status 1000 strings are recognized."""
-        error_messages = [
-            "sent 1000 (OK); no close frame received",
-            "1000 (NORMAL CLOSURE)",
-            "Connection closed with status 1000",
-            "sent 1000",
-            "1000 OK",
-        ]
-
-        for msg in error_messages:
-            should_suppress = "1000" in msg or "sent 1000" in msg
-            self.assertTrue(should_suppress,
-                           f"Should recognize status 1000 in: {msg}")
-
-    def test_status_non_1000_variations(self):
-        """Test that non-1000 status codes are NOT recognized as graceful."""
-        error_messages = [
-            "sent 1006 (ABNORMAL CLOSURE)",
-            "Connection closed with status 1011",
-            "sent 1002 (PROTOCOL ERROR)",
-            "1003 (UNSUPPORTED DATA)",
-        ]
-
-        for msg in error_messages:
-            should_suppress = "1000" in msg or "sent 1000" in msg
-            self.assertFalse(should_suppress,
-                            f"Should NOT recognize as graceful: {msg}")
+    def test_handles_missing_thread_info(self):
+        """args.thread can be None; the hook must not crash formatting the log message."""
+        exc = websockets.exceptions.ConnectionClosedError(None, None)
+        args = SimpleNamespace(exc_type=type(exc), exc_value=exc, exc_traceback=None, thread=None)
+        with patch("Database.Listeners.spotifyListener.sys.__excepthook__") as mockDefaultHook, \
+             self.assertLogs("Database.Listeners.spotifyListener", level="WARNING"):
+            _shutdown_exception_hook(args)
+        mockDefaultHook.assert_not_called()
 
 
 if __name__ == "__main__":
