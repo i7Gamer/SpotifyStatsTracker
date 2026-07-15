@@ -160,6 +160,25 @@ CREATE TABLE IF NOT EXISTS imported_files (
     file_hash   TEXT NOT NULL,
     PRIMARY KEY (username, file_hash)
 );
+
+-- Mutual data-sharing: a row starts 'pending' (requester -> recipient), and
+-- becomes 'accepted' only once the recipient agrees - at which point access
+-- is bidirectional (either side can compare against the other), not just
+-- requester-can-view-recipient. Either side can revoke an accepted share;
+-- the recipient can decline (or the requester cancel) a pending one. Both
+-- of those just delete the row, so re-requesting later starts clean.
+CREATE TABLE IF NOT EXISTS user_shares (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    requester_username  TEXT NOT NULL REFERENCES users(username),
+    recipient_username  TEXT NOT NULL REFERENCES users(username),
+    status              TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'accepted')),
+    created_at          REAL NOT NULL,
+    responded_at        REAL,
+    UNIQUE (requester_username, recipient_username),
+    CHECK (requester_username != recipient_username)
+);
+CREATE INDEX IF NOT EXISTS idx_user_shares_recipient ON user_shares(recipient_username, status);
+CREATE INDEX IF NOT EXISTS idx_user_shares_requester ON user_shares(requester_username, status);
 """
 
 

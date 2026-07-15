@@ -12,7 +12,7 @@ from Database.db import ConnectionManager
 
 EXPECTED_TABLES = {
     "artists", "albums", "tracks", "track_artists", "playlists",
-    "images", "users", "plays", "import_progress",
+    "images", "users", "plays", "import_progress", "user_shares",
 }
 
 

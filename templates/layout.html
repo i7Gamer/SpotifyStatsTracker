@@ -48,6 +48,9 @@
         </div>
         <a class="{{ 'active' if section == 'charts' }}" {% if section == 'charts' %}aria-current="page"{% endif %} href="{{ url_for('chartsPage') }}">Charts</a>
         <a class="{{ 'active' if section == 'wrapped' }}" {% if section == 'wrapped' %}aria-current="page"{% endif %} href="{{ url_for('wrappedPage') }}">Wrapped</a>
+        {% if hasAcceptedShares %}
+        <a class="{{ 'active' if section == 'compare' }}" {% if section == 'compare' %}aria-current="page"{% endif %} href="{{ url_for('comparePage') }}">Compare</a>
+        {% endif %}
         <a class="{{ 'active' if section == 'import' }}" {% if section == 'import' %}aria-current="page"{% endif %} href="{{ url_for('importPage') }}">Import</a>
         <a class="{{ 'active' if section == 'profile' }}" {% if section == 'profile' %}aria-current="page"{% endif %} href="{{ url_for('profilePage') }}">Profile</a>
       </nav>

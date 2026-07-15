@@ -30,6 +30,8 @@ LOGIN_CACHE_TTL_SECONDS = 180  #< seconds to cache isListenerLoggedIn result per
 CHART_ARTIST_TREND_TOP_N = 5   #< how many top artists are plotted on the trend line chart
 WRAPPED_LIST_SIZE = 10          #< default/fallback for ?limit= - how many items per category the Wrapped page shows
 WRAPPED_LIMIT_OPTIONS = (10, 25, 50, 100)   #< selectable values for Wrapped's items-per-category dropdown
+COMPARE_TOP_LIST_SIZE = 10                #< items per top-songs/artists/albums list shown on the Compare page
+COMPARE_OVERLAP_POOL_SIZE = 100           #< how deep each side's top-artists list is searched for shared taste overlap
 MAX_UPLOAD_MB = 500              #< cap on a single import-history request's total upload size
 DEFAULT_SORT_BY = "totalTimeListened"
 # The only sortBy values Repository.SONG_SORT_COLUMNS/ALBUM_SORT_COLUMNS/
@@ -667,6 +669,14 @@ class SpotifyDashboardApp:
                 "RESTRICTED_FALLBACK_REASON": RESTRICTED_FALLBACK_REASON,
             }
 
+        @self.app.context_processor
+        def _injectShareStatus():
+            # Lets layout.html's nav show a "Compare" link only for users who
+            # have at least one accepted mutual share - computed here so every
+            # template gets it without every route remembering to pass it.
+            username = session.get("username")
+            return {"hasAcceptedShares": bool(self.repo.getAcceptedShareUsernames(username)) if username else False}
+
         def _is_version_newer(remote: str, local: str) -> bool:
             try:
                 return versionTuple(remote) > versionTuple(local)
@@ -1043,6 +1053,20 @@ class SpotifyDashboardApp:
                         success = "Preferences saved successfully!"
                     except Exception as e:
                         error = f"Failed to save preferences: {str(e)}"
+                elif action == "request_share":
+                    target_username = request.form.get("target_username", "").strip()
+                    if not target_username:
+                        error = "Please choose a user to request a share with."
+                    elif target_username == username:
+                        error = "You cannot request a share with yourself."
+                    elif not self.repo.usernameExists(target_username):
+                        error = "That username does not exist."
+                    else:
+                        result = self.repo.createShareRequest(username, target_username)
+                        if result == "accepted":
+                            success = f"You and {target_username} are now sharing data with each other!"
+                        else:
+                            success = f"Share request sent to {target_username}."
                 else:
                     if not feature_enabled:
                         abort(404)
@@ -1080,7 +1104,11 @@ class SpotifyDashboardApp:
                 section="profile",
                 feature_enabled=feature_enabled,
                 default_window=default_window,
-                user_timezone=user_timezone
+                user_timezone=user_timezone,
+                pendingIncoming=self.repo.getPendingIncomingShares(username),
+                pendingOutgoing=self.repo.getPendingOutgoingShares(username),
+                acceptedShares=self.repo.getAcceptedShares(username),
+                shareCandidates=self.repo.getAllUsernamesExcept(username),
             )
 
         @self.app.route("/profile/disconnect", methods=["GET"])
@@ -1096,6 +1124,36 @@ class SpotifyDashboardApp:
                 return redirect(url_for("profilePage", success="Successfully disconnected Spotify API credentials."))
             except Exception as e:
                 return redirect(url_for("profilePage", error=f"Failed to disconnect: {str(e)}"))
+
+        @self.app.route("/profile/shares/<int:share_id>", methods=["POST"])
+        def profileShareAction(share_id):
+            email, username, db = get_current_user_or_redirect()
+            if not email:
+                return redirect(url_for("login"))
+
+            action = request.form.get("action")
+            # Each branch's repo call is itself ownership-checked (only the
+            # recipient can accept/decline, only the requester can cancel,
+            # either party can revoke) - `ok=False` here covers both "no such
+            # share_id" and "share_id exists but isn't yours", identically.
+            if action == "accept":
+                ok = self.repo.respondToShareRequest(share_id, username, accept=True)
+                successMsg, errorMsg = "Share accepted - you're now comparing data with each other!", "Could not accept that request."
+            elif action == "decline":
+                ok = self.repo.respondToShareRequest(share_id, username, accept=False)
+                successMsg, errorMsg = "Share request declined.", "Could not decline that request."
+            elif action == "cancel":
+                ok = self.repo.cancelShareRequest(share_id, username)
+                successMsg, errorMsg = "Share request canceled.", "Could not cancel that request."
+            elif action == "revoke":
+                ok = self.repo.revokeShare(share_id, username)
+                successMsg, errorMsg = "Share revoked.", "Could not revoke that share."
+            else:
+                ok, errorMsg = False, "Unknown action."
+
+            if ok:
+                return redirect(url_for("profilePage", success=successMsg))
+            return redirect(url_for("profilePage", error=errorMsg))
 
         @self.app.route("/spotify-authorize", methods=["GET"])
         def spotifyAuthorize():
@@ -1816,6 +1874,133 @@ class SpotifyDashboardApp:
                 is_authenticated=is_authenticated,
                 success=success,
                 error=error,
+            )
+
+        @self.app.route("/compare", methods=["GET"])
+        def comparePage():
+            email, username, db = get_current_user_or_redirect()
+            if not email:
+                return redirect(url_for("login", next=request.path))
+
+            # Mirrors /overview's cookies_json guard: get_user_db starts a
+            # live listener, which needs stored cookies - a share counterpart
+            # without them (only creatable by seeding user_shares directly;
+            # the UI can't accept a share while logged out) must be skipped,
+            # not crash the page.
+            acceptedUsernames = [
+                u for u in self.repo.getAcceptedShareUsernames(username)
+                if self.repo.getUserCookies(u) is not None
+            ]
+            if not acceptedUsernames:
+                abort(404)
+
+            withUsername = request.args.get("with", acceptedUsernames[0])
+            if withUsername not in acceptedUsernames:
+                # ?with= is untrusted input - never let it select a user's data
+                # the session user hasn't mutually accepted a share with. Fall
+                # back to a real choice rather than 404ing, which would leak
+                # whether an unrelated username exists at all.
+                withUsername = acceptedUsernames[0]
+
+            otherEmail = self.repo.getEmailForUsername(withUsername)
+            otherDb = self.get_user_db(withUsername, otherEmail)
+
+            interval = request.args.get("interval", "")
+            customStart = request.args.get("startDate", "")
+            customEnd = request.args.get("endDate", "")
+            startDate, endDate = self._getDateRange(interval, customStart, customEnd, default="all time", tz=db.tz)
+            groupBy = self._getValidGroupBy(request.args.get("groupBy", "day"))
+            # Single-day ranges bucket by hour, mirroring chartsPage's
+            # isSingleDayView - one 'day' bucket would collapse the whole
+            # trend into a single point.
+            trendGroupBy = "hour" if interval in ("day", "today") else groupBy
+
+            myTotalPlays, myTotalMs = db.getPlayTotals(startDate, endDate)
+            theirTotalPlays, theirTotalMs = otherDb.getPlayTotals(startDate, endDate)
+
+            # Same embed step every other page feeding _track_card.html runs -
+            # without it the cards render with blank time/first-listened/
+            # duration/percent lines.
+            myTopSongs = self._embedTopSongsTextElements(
+                self._embedSongsTextElements(db.getTopSongs(startDate, endDate, limit=COMPARE_TOP_LIST_SIZE)),
+                sortBy="plays", totalPlays=myTotalPlays, totalMs=myTotalMs)
+            theirTopSongs = self._embedTopSongsTextElements(
+                self._embedSongsTextElements(otherDb.getTopSongs(startDate, endDate, limit=COMPARE_TOP_LIST_SIZE)),
+                sortBy="plays", totalPlays=theirTotalPlays, totalMs=theirTotalMs)
+            myTopAlbums = self._embedAlbumsTextElements(
+                db.getTopAlbums(startDate, endDate, limit=COMPARE_TOP_LIST_SIZE),
+                sortBy="plays", totalPlays=myTotalPlays, totalMs=myTotalMs)
+            theirTopAlbums = self._embedAlbumsTextElements(
+                otherDb.getTopAlbums(startDate, endDate, limit=COMPARE_TOP_LIST_SIZE),
+                sortBy="plays", totalPlays=theirTotalPlays, totalMs=theirTotalMs)
+
+            # The displayed top-artist lists are sliced from the same 100-deep
+            # pools the "you both love" overlap intersects, so the lists, the
+            # summary row, and the overlap all agree on one by-plays ranking -
+            # and each side's artist aggregation runs once, not twice.
+            myTopArtistsPool = db.getTopArtists(startDate, endDate, limit=COMPARE_OVERLAP_POOL_SIZE)
+            theirTopArtistsPool = otherDb.getTopArtists(startDate, endDate, limit=COMPARE_OVERLAP_POOL_SIZE)
+            myTopArtists = self._embedArtistsTextElements(
+                myTopArtistsPool[:COMPARE_TOP_LIST_SIZE],
+                sortBy="plays", totalPlays=myTotalPlays, totalMs=myTotalMs)
+            theirTopArtists = self._embedArtistsTextElements(
+                theirTopArtistsPool[:COMPARE_TOP_LIST_SIZE],
+                sortBy="plays", totalPlays=theirTotalPlays, totalMs=theirTotalMs)
+            theirArtistIds = {a["id"] for a in theirTopArtistsPool}
+            # No percent text here - it would mix two different users' totals.
+            sharedArtists = self._embedArtistsTextElements(
+                [a for a in myTopArtistsPool if a["id"] in theirArtistIds])
+
+            trendStartDate, trendEndDate = startDate, endDate
+            if trendStartDate is None or trendEndDate is None:
+                # "All Time" passes no explicit range, and getListeningTimeSeries
+                # then gap-fills each user only across their own first-to-last
+                # play - two users with disjoint listening eras would union into
+                # an axis with the years between them missing entirely. Pin both
+                # series to one combined range instead.
+                playRanges = [r for r in (self.repo.getPlayTimeRange(username),
+                                          self.repo.getPlayTimeRange(withUsername)) if r]
+                if playRanges:
+                    trendStartDate = convertToDatetime(min(r[0] for r in playRanges), tz=db.tz)
+                    trendEndDate = convertToDatetime(max(r[1] for r in playRanges), tz=db.tz) + timedelta(seconds=1)
+
+            # Each Database instance buckets time-series labels in its own
+            # user's timezone, so the two series can still have edge buckets
+            # the other lacks - built from the union of both sides' labels
+            # rather than assumed to line up positionally.
+            myByLabel = {b["label"]: b["totalTimeListened"] for b in db.getListeningTimeSeries(trendStartDate, trendEndDate, groupBy=trendGroupBy)}
+            theirByLabel = {b["label"]: b["totalTimeListened"] for b in otherDb.getListeningTimeSeries(trendStartDate, trendEndDate, groupBy=trendGroupBy)}
+            allLabels = sorted(set(myByLabel) | set(theirByLabel))
+            comparisonTrend = {
+                "buckets": allLabels,
+                "series": [
+                    {"name": username, "data": [myByLabel.get(label, 0) for label in allLabels]},
+                    {"name": withUsername, "data": [theirByLabel.get(label, 0) for label in allLabels]},
+                ],
+            }
+
+            return render_template(
+                "compare.html",
+                section="compare",
+                username=username,
+                withUsername=withUsername,
+                acceptedUsernames=acceptedUsernames,
+                myTotalPlays=myTotalPlays,
+                theirTotalPlays=theirTotalPlays,
+                myTotalTimeText=msToString(myTotalMs),
+                theirTotalTimeText=msToString(theirTotalMs),
+                myTopSongs=myTopSongs,
+                theirTopSongs=theirTopSongs,
+                myTopArtists=myTopArtists,
+                theirTopArtists=theirTopArtists,
+                myTopAlbums=myTopAlbums,
+                theirTopAlbums=theirTopAlbums,
+                sharedArtists=sharedArtists,
+                comparisonTrend=comparisonTrend,
+                interval=interval,
+                customStart=customStart,
+                customEnd=customEnd,
+                groupBy=groupBy,
             )
 
         @self.app.route("/song/<track_id>", methods=["GET"])

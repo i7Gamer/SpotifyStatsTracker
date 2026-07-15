@@ -2,6 +2,12 @@
   {% set imgId = track.get('imageId', '') %}
   {% set item_number = item_number if item_number is defined else '' %}
   {% set section = section if section is defined else 'dashboard' %}
+  {# Detail pages always resolve against the viewing session's own data, so a
+     caller rendering ANOTHER user's items (the Compare page's counterpart
+     columns) sets suppressDetailLinks to render plain text instead of links
+     that would dead-end or show the wrong user's stats. #}
+  {% set suppressDetailLinks = suppressDetailLinks if suppressDetailLinks is defined else false %}
+  {% set linkableId = track.get('id') if not suppressDetailLinks else none %}
   {% if item_number %}<div class="track-number">{{ item_number }}</div>{% endif %}
   
   {% if section == 'top_artists' %}
@@ -12,7 +18,7 @@
     {% set detailUrl = url_for('songDetailPage', track_id=track.get('id')) if track.get('id') else '#' %}
   {% endif %}
 
-  {% if track.get('id') %}
+  {% if linkableId %}
     <a href="{{ detailUrl }}" class="track-cover-link">
   {% endif %}
   <!-- Image path depends on section -->
@@ -21,14 +27,14 @@
   {% else %}
     <img class="track-cover" loading="lazy" src="/img/{{ username }}/tracks/{{ imgId }}.jpeg" alt="Album cover for {{ track.get('name','') }}" onerror="this.onerror=null;this.src=window.PLACEHOLDER_IMG;" />
   {% endif %}
-  {% if track.get('id') %}
+  {% if linkableId %}
     </a>
   {% endif %}
   
   <div class="track-details">
     <div class="track-details-top">
       <div class="track-header">
-        {% if track.get('id') %}
+        {% if linkableId %}
         <a href="{{ detailUrl }}">
           <h3>{{ track.get('name', '') }}</h3>
         </a>
@@ -89,7 +95,7 @@
         <div class="track-meta">
           {% if track.get('artists') %}
             {% for artist in track.get('artists') %}
-              <a href="{{ url_for('artistDetailPage', artist_id=artist.get('id')) }}">{{ artist.get('name', '') }}</a>{% if not loop.last %}, {% endif %}
+              {% if suppressDetailLinks %}{{ artist.get('name', '') }}{% else %}<a href="{{ url_for('artistDetailPage', artist_id=artist.get('id')) }}">{{ artist.get('name', '') }}</a>{% endif %}{% if not loop.last %}, {% endif %}
             {% endfor %}
           {% else %}
             {{ track.get('artistsText') }}
@@ -99,12 +105,12 @@
         <div class="track-meta">
           {% if track.get('artists') %}
             {% for artist in track.get('artists') %}
-              <a href="{{ url_for('artistDetailPage', artist_id=artist.get('id')) }}">{{ artist.get('name', '') }}</a>{% if not loop.last %}, {% endif %}
+              {% if suppressDetailLinks %}{{ artist.get('name', '') }}{% else %}<a href="{{ url_for('artistDetailPage', artist_id=artist.get('id')) }}">{{ artist.get('name', '') }}</a>{% endif %}{% if not loop.last %}, {% endif %}
             {% endfor %}
           {% else %}
             {{ track.get('artistsText') or track.get('artist','') }}
           {% endif %}
-          {% if track.get('album') and track.get('album').get('id') %}
+          {% if track.get('album') and track.get('album').get('id') and not suppressDetailLinks %}
             · <a href="{{ url_for('albumDetailPage', album_id=track.get('album').get('id')) }}">{{ track.get('album').get('name') }}</a>
           {% elif track.get('album') and track.get('album').get('name') %}
             · {{ track.get('album').get('name') }}

@@ -285,19 +285,34 @@
     canvas.onmouseleave = hideTooltip;
   }
 
-  function renderArtistTrend() {
-    var canvas = document.getElementById('artistTrendChart');
-    var legendEl = document.getElementById('artistTrendLegend');
+  // Parameterized so the Compare page can reuse this exact multi-series line
+  // renderer for a two-user overlay (a different canvas/legend id and
+  // window.__chartData key) instead of duplicating the drawing code - the
+  // /charts page call below keeps using the original ids/key via the
+  // defaults. `options` adapts the presentation to the series' unit: the
+  // artist trend plots play counts, the comparison trend plots listening
+  // time in milliseconds, so axis/tooltip formatting and the empty-state
+  // wording must come from the caller, not stay hardcoded to plays.
+  function renderArtistTrend(canvasId, legendId, dataKey, options) {
+    canvasId = canvasId || 'artistTrendChart';
+    legendId = legendId || 'artistTrendLegend';
+    dataKey = dataKey || 'artistTrend';
+    options = options || {};
+    var formatValue = options.formatValue || function (v) { return Math.round(v) + ' plays'; };
+    var formatAxisValue = options.formatAxisValue || function (v) { return Math.round(v); };
+    var emptyMessage = options.emptyMessage || 'Not enough data yet to show an artist trend.';
+    var canvas = document.getElementById(canvasId);
+    var legendEl = document.getElementById(legendId);
     if (!canvas) {
       return;
     }
-    var data = (window.__chartData && window.__chartData.artistTrend) || { buckets: [], series: [] };
+    var data = (window.__chartData && window.__chartData[dataKey]) || { buckets: [], series: [] };
     var setup = setupCanvas(canvas, 260);
     var ctx = setup.ctx, width = setup.width, height = setup.height;
     ctx.clearRect(0, 0, width, height);
 
     if (!data.buckets.length || !data.series.length) {
-      drawEmptyState(ctx, width, height, 'Not enough data yet to show an artist trend.');
+      drawEmptyState(ctx, width, height, emptyMessage);
       if (legendEl) {
         legendEl.innerHTML = '';
       }
@@ -313,7 +328,7 @@
     });
     var stepX = data.buckets.length > 1 ? plotWidth / (data.buckets.length - 1) : 0;
 
-    drawYAxisGrid(ctx, paddingLeft, paddingTop, plotWidth, plotHeight, maxPlays, function (v) { return Math.round(v); });
+    drawYAxisGrid(ctx, paddingLeft, paddingTop, plotWidth, plotHeight, maxPlays, formatAxisValue);
     drawSparseXLabels(ctx, data.buckets, paddingLeft, plotWidth, plotHeight, paddingTop, function (i) {
       return paddingLeft + i * stepX;
     }, MIN_AXIS_LABEL_SPACING_PX);
@@ -360,7 +375,7 @@
         });
       });
       if (closest) {
-        showTooltip(evt, '<strong>' + escapeHtml(closest.name) + '</strong><br>' + closest.bucket + ' &middot; ' + closest.value + ' plays');
+        showTooltip(evt, '<strong>' + escapeHtml(closest.name) + '</strong><br>' + closest.bucket + ' &middot; ' + formatValue(closest.value));
       } else {
         hideTooltip();
       }
@@ -583,6 +598,13 @@
     renderTimeSeriesChart();
     renderHeatmap();
     renderArtistTrend();
+    // The comparison overlay plots listening time (milliseconds), not play
+    // counts - same renderer, time-based formatting.
+    renderArtistTrend('comparisonTrendChart', 'comparisonTrendLegend', 'comparisonTrend', {
+      formatValue: msToShortLabel,
+      formatAxisValue: msToShortLabel,
+      emptyMessage: 'No listening data in this period yet.'
+    });
     renderExplicitChart();
     renderCompletionChart();
     renderDecadeChart();

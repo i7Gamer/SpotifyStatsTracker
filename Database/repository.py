@@ -1303,6 +1303,149 @@ class Repository:
                 (default_dashboard_window, timezone, username),
             )
 
+    # ---- Per-user: mutual data-sharing --------------------------------------
+
+    def createShareRequest(self, requester: str, recipient: str) -> str:
+        """Returns "accepted" if the two are (now) mutually sharing, or
+        "requested" if a new pending request is (still) waiting on `recipient`.
+
+        A reverse-direction pending row (recipient already asked requester
+        first) is treated as requester accepting that existing request rather
+        than creating a second, independent pending row for the same intended
+        relationship."""
+        conn = self._conn()
+        with conn:
+            if conn.execute(
+                "SELECT 1 FROM user_shares WHERE status='accepted' AND "
+                "((requester_username=? AND recipient_username=?) OR (requester_username=? AND recipient_username=?))",
+                (requester, recipient, recipient, requester),
+            ).fetchone():
+                return "accepted"
+
+            reverseRow = conn.execute(
+                "SELECT id FROM user_shares WHERE requester_username=? AND recipient_username=? AND status='pending'",
+                (recipient, requester),
+            ).fetchone()
+            if reverseRow:
+                conn.execute(
+                    "UPDATE user_shares SET status='accepted', responded_at=? WHERE id=?",
+                    (time.time(), reverseRow["id"]),
+                )
+                return "accepted"
+
+            conn.execute(
+                "INSERT INTO user_shares (requester_username, recipient_username, status, created_at) "
+                "VALUES (?, ?, 'pending', ?) "
+                "ON CONFLICT(requester_username, recipient_username) DO NOTHING",
+                (requester, recipient, time.time()),
+            )
+            return "requested"
+
+    def getPendingIncomingShares(self, username: str) -> list[dict]:
+        conn = self._conn()
+        rows = conn.execute(
+            "SELECT id, requester_username, created_at FROM user_shares WHERE recipient_username=? AND status='pending'",
+            (username,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def getPendingOutgoingShares(self, username: str) -> list[dict]:
+        conn = self._conn()
+        rows = conn.execute(
+            "SELECT id, recipient_username, created_at FROM user_shares WHERE requester_username=? AND status='pending'",
+            (username,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def getAcceptedShareUsernames(self, username: str) -> list[str]:
+        """The other username on each of `username`'s accepted shares,
+        regardless of which side originally sent the request. Used where only
+        the counterpart names matter (nav visibility, the Compare page's
+        authorized-user set) - see getAcceptedShares() for the id-bearing
+        version a "Revoke" button needs."""
+        conn = self._conn()
+        rows = conn.execute(
+            "SELECT CASE WHEN requester_username=? THEN recipient_username ELSE requester_username END AS counterpart "
+            "FROM user_shares WHERE status='accepted' AND (requester_username=? OR recipient_username=?)",
+            (username, username, username),
+        ).fetchall()
+        return [r["counterpart"] for r in rows]
+
+    def getAcceptedShares(self, username: str) -> list[dict]:
+        """Like getAcceptedShareUsernames(), but keeping each row's `id` too -
+        the Profile page's "Active shares" list needs it to target a specific
+        share when revoking."""
+        conn = self._conn()
+        rows = conn.execute(
+            "SELECT id, CASE WHEN requester_username=? THEN recipient_username ELSE requester_username END AS counterpart "
+            "FROM user_shares WHERE status='accepted' AND (requester_username=? OR recipient_username=?)",
+            (username, username, username),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def hasAcceptedShare(self, userA: str, userB: str) -> bool:
+        """True iff userA/userB have an active mutual share, in either
+        direction - the authorization check a cross-user data view must pass
+        before it's allowed to read the other user's stats."""
+        conn = self._conn()
+        row = conn.execute(
+            "SELECT 1 FROM user_shares WHERE status='accepted' AND "
+            "((requester_username=? AND recipient_username=?) OR (requester_username=? AND recipient_username=?))",
+            (userA, userB, userB, userA),
+        ).fetchone()
+        return row is not None
+
+    def respondToShareRequest(self, shareId: int, actingUsername: str, accept: bool) -> bool:
+        """Only the recipient of a still-pending request may respond. Returns
+        whether a row was actually affected, so the caller can tell "not
+        found/not yours/already resolved" apart from "done"."""
+        conn = self._conn()
+        with conn:
+            if accept:
+                cursor = conn.execute(
+                    "UPDATE user_shares SET status='accepted', responded_at=? "
+                    "WHERE id=? AND recipient_username=? AND status='pending'",
+                    (time.time(), shareId, actingUsername),
+                )
+            else:
+                cursor = conn.execute(
+                    "DELETE FROM user_shares WHERE id=? AND recipient_username=? AND status='pending'",
+                    (shareId, actingUsername),
+                )
+            return cursor.rowcount > 0
+
+    def cancelShareRequest(self, shareId: int, requesterUsername: str) -> bool:
+        """Only the original requester may cancel their own still-pending
+        request."""
+        conn = self._conn()
+        with conn:
+            cursor = conn.execute(
+                "DELETE FROM user_shares WHERE id=? AND requester_username=? AND status='pending'",
+                (shareId, requesterUsername),
+            )
+            return cursor.rowcount > 0
+
+    def revokeShare(self, shareId: int, actingUsername: str) -> bool:
+        """Either party to an already-accepted share may end it unilaterally -
+        deleting the row ends mutual access for both sides, not just the
+        acting user's own view."""
+        conn = self._conn()
+        with conn:
+            cursor = conn.execute(
+                "DELETE FROM user_shares WHERE id=? AND status='accepted' AND (requester_username=? OR recipient_username=?)",
+                (shareId, actingUsername, actingUsername),
+            )
+            return cursor.rowcount > 0
+
+    def getAllUsernamesExcept(self, username: str) -> list[str]:
+        """Plain username list for a "who can I request a share with" picker -
+        deliberately narrower than getAllUsersDetails(), which also selects
+        cookies_json/spotify_refresh_token that this list has no reason to
+        touch."""
+        conn = self._conn()
+        rows = conn.execute("SELECT username FROM users WHERE username != ? ORDER BY username", (username,)).fetchall()
+        return [r["username"] for r in rows]
+
     def addUserPasswordHashColumnIfMissing(self) -> None:
         """SCHEMA's CREATE TABLE IF NOT EXISTS only shapes brand-new databases -
         a users table that already existed before password_hash was added needs
@@ -1534,6 +1677,19 @@ class Repository:
             (username, startTs, endTs)
         ).fetchone()
         return row[0] if row else None
+
+    def getPlayTimeRange(self, username: str) -> tuple[float, float] | None:
+        """(earliest, latest) played_at across the user's whole history, or
+        None if they have no plays - lets a caller pin an "all time" query to
+        an explicit range (e.g. the Compare page aligning two users' trend
+        buckets over one shared axis)."""
+        row = self._conn().execute(
+            "SELECT MIN(played_at) AS minTs, MAX(played_at) AS maxTs FROM plays WHERE username = ?",
+            (username,),
+        ).fetchone()
+        if row is None or row["minTs"] is None:
+            return None
+        return row["minTs"], row["maxTs"]
 
     def getPlayCountInPeriod(self, username: str, startTs: float, endTs: float) -> int:
         row = self._conn().execute(

@@ -71,6 +71,102 @@
       </div>
     </form>
 
+    <h2>Data Sharing</h2>
+    <p style="font-size: 0.9rem; color: #aaa; margin-bottom: 1.5rem;">
+      Request to share your listening stats with another user. Once they accept, you'll both be able to compare stats on the Compare page.
+    </p>
+
+    {% if shareCandidates %}
+    <form class="login-form" method="post" action="{{ url_for('profilePage') }}" style="margin-bottom: 1.5rem;">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+      <input type="hidden" name="action" value="request_share">
+      <div class="form-group" style="display: flex; gap: 0.75rem; align-items: flex-end;">
+        <div style="flex: 1;">
+          <label for="targetUsername">Request a share with</label>
+          <select id="targetUsername" name="target_username" style="width: 100%; box-sizing: border-box; height: 38px;">
+            <option value="">Choose a user&hellip;</option>
+            {% for candidate in shareCandidates %}
+              <option value="{{ candidate }}">{{ candidate }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <button type="submit" class="primary-button" style="flex-shrink: 0;">Request Share</button>
+      </div>
+    </form>
+    {% endif %}
+
+    {% if pendingIncoming %}
+    <div style="margin-bottom: 1.5rem;">
+      <h3 style="font-size: 1rem;">Requests waiting on you</h3>
+      <table class="status-table" style="width: 100%; border-collapse: collapse;">
+        <tbody>
+          {% for share in pendingIncoming %}
+          <tr style="border-bottom: 1px solid var(--glass-border);">
+            <td style="padding: 8px;"><span class="badge badge-warning">{{ share.requester_username }}</span> wants to share data with you</td>
+            <td style="padding: 8px; text-align: right; white-space: nowrap;">
+              <form method="post" action="{{ url_for('profileShareAction', share_id=share.id) }}" style="display: inline-block;">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+                <input type="hidden" name="action" value="accept">
+                <button type="submit" class="primary-button" style="padding: 4px 12px;">Accept</button>
+              </form>
+              <form method="post" action="{{ url_for('profileShareAction', share_id=share.id) }}" style="display: inline-block;">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+                <input type="hidden" name="action" value="decline">
+                <button type="submit" class="primary-button" style="padding: 4px 12px; background: #555;">Decline</button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+
+    {% if pendingOutgoing %}
+    <div style="margin-bottom: 1.5rem;">
+      <h3 style="font-size: 1rem;">Requests you sent</h3>
+      <table class="status-table" style="width: 100%; border-collapse: collapse;">
+        <tbody>
+          {% for share in pendingOutgoing %}
+          <tr style="border-bottom: 1px solid var(--glass-border);">
+            <td style="padding: 8px;">Waiting on <span class="badge badge-secondary">{{ share.recipient_username }}</span></td>
+            <td style="padding: 8px; text-align: right;">
+              <form method="post" action="{{ url_for('profileShareAction', share_id=share.id) }}" style="display: inline-block;">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+                <input type="hidden" name="action" value="cancel">
+                <button type="submit" class="primary-button" style="padding: 4px 12px; background: #555;">Cancel</button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+
+    {% if acceptedShares %}
+    <div style="margin-bottom: 2rem; padding-bottom: 1.5rem; border-bottom: 1px solid var(--border-color, #2d2d2d);">
+      <h3 style="font-size: 1rem;">Active shares</h3>
+      <table class="status-table" style="width: 100%; border-collapse: collapse;">
+        <tbody>
+          {% for share in acceptedShares %}
+          <tr style="border-bottom: 1px solid var(--glass-border);">
+            <td style="padding: 8px;"><span class="badge badge-success">{{ share.counterpart }}</span></td>
+            <td style="padding: 8px; text-align: right; white-space: nowrap;">
+              <a href="{{ url_for('comparePage', with=share.counterpart) }}" class="primary-button" style="padding: 4px 12px; text-decoration: none; display: inline-block;">Compare</a>
+              <form method="post" action="{{ url_for('profileShareAction', share_id=share.id) }}" style="display: inline-block;">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+                <input type="hidden" name="action" value="revoke">
+                <button type="submit" class="primary-button" style="padding: 4px 12px; background: #c92a2a;">Revoke</button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+
     {% if feature_enabled %}
     <h2>Spotify Developer API Settings</h2>
     <p style="font-size: 0.9rem; color: #aaa; margin-bottom: 1.5rem;">

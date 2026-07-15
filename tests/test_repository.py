@@ -1198,6 +1198,27 @@ class TestStatsAggregates(RepositoryTestCase):
         self.assertEqual(earlierRange, (0, 0))
         self.assertEqual(laterRange, (1, 1000))
 
+    def test_play_time_range_returns_first_and_last_played_at(self):
+        self.repo.upsertTrack(self._track("t1", "alb1", "a1"))
+        self.repo.insertPlay("alice", "t1", 500.0, 1000)
+        self.repo.insertPlay("alice", "t1", 100.0, 1000)
+        self.repo.insertPlay("alice", "t1", 900.0, 1000)
+        self.repo.commit()
+
+        self.assertEqual(self.repo.getPlayTimeRange("alice"), (100.0, 900.0))
+
+    def test_play_time_range_is_scoped_to_the_user(self):
+        self.repo.upsertUser("bob", "bob@example.com")
+        self.repo.upsertTrack(self._track("t1", "alb1", "a1"))
+        self.repo.insertPlay("alice", "t1", 100.0, 1000)
+        self.repo.insertPlay("bob", "t1", 999.0, 1000)
+        self.repo.commit()
+
+        self.assertEqual(self.repo.getPlayTimeRange("alice"), (100.0, 100.0))
+
+    def test_play_time_range_with_no_plays_is_none(self):
+        self.assertIsNone(self.repo.getPlayTimeRange("alice"))
+
 
 class TestSongsPage(RepositoryTestCase):
     """getSongsPage()/getSongsCount() replace the old N+1 getTrack()-per-row

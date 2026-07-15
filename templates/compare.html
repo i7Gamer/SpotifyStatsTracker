@@ -1,0 +1,205 @@
+{% extends "layout.html" %}
+{% block content %}
+
+<section class="hero">
+  <div class="hero-content">
+    <h1>Compare with {{ withUsername }}</h1>
+    <p>See how your listening stats stack up against someone who shares their data with you.</p>
+  </div>
+</section>
+
+{% if acceptedUsernames|length > 1 %}
+<nav class="wrapped-year-badges" aria-label="Select user to compare with">
+  {% for candidate in acceptedUsernames %}
+    <a class="wrapped-year-badge{{ ' active' if candidate == withUsername else '' }}"
+       href="{{ url_for('comparePage', with=candidate, interval=interval, startDate=customStart, endDate=customEnd, groupBy=groupBy) }}">{{ candidate }}</a>
+  {% endfor %}
+</nav>
+{% endif %}
+
+<form class="filter-section" method="get" action="{{ url_for('comparePage') }}" style="display: flex; flex-wrap: wrap; gap: 1rem; align-items: center;">
+  <input type="hidden" name="with" value="{{ withUsername }}">
+  <div class="filter-group">
+    <label for="interval">Time Period:</label>
+    <select id="interval" name="interval" onchange="this.form.submit()">
+      <option value="" {% if not interval %}selected{% endif %}>All Time</option>
+      <option value="today" {% if interval == 'today' %}selected{% endif %}>Today</option>
+      <option value="day" {% if interval == 'day' %}selected{% endif %}>Yesterday</option>
+      <option value="week" {% if interval == 'week' %}selected{% endif %}>Last Week</option>
+      <option value="month" {% if interval == 'month' %}selected{% endif %}>Last Month</option>
+      <option value="year" {% if interval == 'year' %}selected{% endif %}>Last Year</option>
+      <option value="5years" {% if interval == '5years' %}selected{% endif %}>Last 5 Years</option>
+    </select>
+  </div>
+</form>
+
+<section class="card" style="margin: 1.5rem 0; overflow-x: auto;">
+  <div style="padding: 1.5rem;">
+    <table class="status-table" style="width: 100%; border-collapse: collapse; text-align: left;">
+      <thead>
+        <tr style="border-bottom: 2px solid var(--glass-border); color: var(--muted); font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.05em;">
+          <th style="padding: 12px 8px;">Stat</th>
+          <th style="padding: 12px 8px; text-align: right;">{{ username }}</th>
+          <th style="padding: 12px 8px; text-align: right;">{{ withUsername }}</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr style="border-bottom: 1px solid var(--glass-border);">
+          <td style="padding: 12px 8px;">Total Plays</td>
+          <td style="padding: 12px 8px; text-align: right; font-weight: 600;">{{ "{:,}".format(myTotalPlays) }}</td>
+          <td style="padding: 12px 8px; text-align: right; font-weight: 600;">{{ "{:,}".format(theirTotalPlays) }}</td>
+        </tr>
+        <tr style="border-bottom: 1px solid var(--glass-border);">
+          <td style="padding: 12px 8px;">Total Time Listened</td>
+          <td style="padding: 12px 8px; text-align: right; font-weight: 600;">{{ myTotalTimeText }}</td>
+          <td style="padding: 12px 8px; text-align: right; font-weight: 600;">{{ theirTotalTimeText }}</td>
+        </tr>
+        {# Summary entries come from the same lists rendered below, so the
+           summary row and the lists can never disagree on the #1 entry. #}
+        <tr style="border-bottom: 1px solid var(--glass-border);">
+          <td style="padding: 12px 8px;">Top Song</td>
+          <td style="padding: 12px 8px; text-align: right;">{{ myTopSongs[0].name if myTopSongs else "—" }}</td>
+          <td style="padding: 12px 8px; text-align: right;">{{ theirTopSongs[0].name if theirTopSongs else "—" }}</td>
+        </tr>
+        <tr style="border-bottom: 1px solid var(--glass-border);">
+          <td style="padding: 12px 8px;">Top Artist</td>
+          <td style="padding: 12px 8px; text-align: right;">{{ myTopArtists[0].name if myTopArtists else "—" }}</td>
+          <td style="padding: 12px 8px; text-align: right;">{{ theirTopArtists[0].name if theirTopArtists else "—" }}</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="chart-section" style="margin-bottom: 2rem;">
+  <h2>Listening Trend</h2>
+  <div class="chart-canvas-wrap">
+    <canvas id="comparisonTrendChart"></canvas>
+  </div>
+  <div id="comparisonTrendLegend" class="chart-legend"></div>
+</section>
+
+{# The counterpart's columns set suppressDetailLinks: detail pages resolve
+   against the VIEWER's own data, so linking the other user's items either
+   dead-ends (never played) or silently shows the viewer's stats under the
+   counterpart's numbers. #}
+{% set section = 'top_songs' %}
+<section class="grid" style="grid-template-columns: 1fr 1fr; gap: 2rem; margin-bottom: 2.5rem;">
+  <div>
+    <h2>{{ username }}'s Top Songs</h2>
+    <div class="track-list">
+      {% set suppressDetailLinks = false %}
+      {% if myTopSongs %}
+        {% for track in myTopSongs %}
+          {% set item_number = loop.index %}
+          {% include '_track_card.html' %}
+        {% endfor %}
+      {% else %}
+        <p class="loading">No plays in this period.</p>
+      {% endif %}
+    </div>
+  </div>
+  <div>
+    <h2>{{ withUsername }}'s Top Songs</h2>
+    <div class="track-list">
+      {% set suppressDetailLinks = true %}
+      {% if theirTopSongs %}
+        {% for track in theirTopSongs %}
+          {% set item_number = loop.index %}
+          {% include '_track_card.html' %}
+        {% endfor %}
+      {% else %}
+        <p class="loading">No plays in this period.</p>
+      {% endif %}
+    </div>
+  </div>
+</section>
+
+{% set section = 'top_artists' %}
+<section class="grid" style="grid-template-columns: 1fr 1fr; gap: 2rem; margin-bottom: 2.5rem;">
+  <div>
+    <h2>{{ username }}'s Top Artists</h2>
+    <div class="track-list">
+      {% set suppressDetailLinks = false %}
+      {% if myTopArtists %}
+        {% for track in myTopArtists %}
+          {% set item_number = loop.index %}
+          {% include '_track_card.html' %}
+        {% endfor %}
+      {% else %}
+        <p class="loading">No plays in this period.</p>
+      {% endif %}
+    </div>
+  </div>
+  <div>
+    <h2>{{ withUsername }}'s Top Artists</h2>
+    <div class="track-list">
+      {% set suppressDetailLinks = true %}
+      {% if theirTopArtists %}
+        {% for track in theirTopArtists %}
+          {% set item_number = loop.index %}
+          {% include '_track_card.html' %}
+        {% endfor %}
+      {% else %}
+        <p class="loading">No plays in this period.</p>
+      {% endif %}
+    </div>
+  </div>
+</section>
+
+{% set section = 'top_albums' %}
+<section class="grid" style="grid-template-columns: 1fr 1fr; gap: 2rem; margin-bottom: 2.5rem;">
+  <div>
+    <h2>{{ username }}'s Top Albums</h2>
+    <div class="track-list">
+      {% set suppressDetailLinks = false %}
+      {% if myTopAlbums %}
+        {% for track in myTopAlbums %}
+          {% set item_number = loop.index %}
+          {% include '_track_card.html' %}
+        {% endfor %}
+      {% else %}
+        <p class="loading">No plays in this period.</p>
+      {% endif %}
+    </div>
+  </div>
+  <div>
+    <h2>{{ withUsername }}'s Top Albums</h2>
+    <div class="track-list">
+      {% set suppressDetailLinks = true %}
+      {% if theirTopAlbums %}
+        {% for track in theirTopAlbums %}
+          {% set item_number = loop.index %}
+          {% include '_track_card.html' %}
+        {% endfor %}
+      {% else %}
+        <p class="loading">No plays in this period.</p>
+      {% endif %}
+    </div>
+  </div>
+</section>
+
+{# The overlap entries come from the viewer's own pool, so their detail
+   links resolve correctly - keep them linked. #}
+{% set section = 'top_artists' %}
+{% set suppressDetailLinks = false %}
+<section style="margin-bottom: 2.5rem;">
+  <h2>You Both Love</h2>
+  <div class="track-list">
+    {% if sharedArtists %}
+      {% for track in sharedArtists %}
+        {% set item_number = loop.index %}
+        {% include '_track_card.html' %}
+      {% endfor %}
+    {% else %}
+      <p class="loading">No shared top artists in this period yet.</p>
+    {% endif %}
+  </div>
+</section>
+
+<script>
+  window.__chartData = window.__chartData || {};
+  window.__chartData.comparisonTrend = {{ comparisonTrend | tojson }};
+</script>
+<script src="{{ url_for('static', filename='js/charts.js') }}"></script>
+{% endblock %}
