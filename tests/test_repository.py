@@ -236,6 +236,113 @@ class TestUpsertTrackRobustness(RepositoryTestCase):
         self.assertEqual(db_track["album"]["name"], "Song No Album")
 
 
+class TestUpsertTrackGuards(RepositoryTestCase):
+    """upsertTrack is last-write-wins for real metadata, but degraded records
+    must never clobber good catalog data."""
+
+    def _syntheticTrack(self, trackId="t1"):
+        return {
+            "id": trackId,
+            "name": "Fabricated Name",
+            "url": "",
+            "artists": [{"id": "artist_md5", "name": "X", "url": "", "imageUrl": "", "imageId": "artist_md5"}],
+            "album": {
+                "id": f"album_{trackId}", "name": "Fabricated Name", "url": "",
+                "imageId": f"album_{trackId}", "imageUrl": "", "totalTracks": 1, "releaseDate": 0.0,
+            },
+            "imageUrl": "", "imageId": f"album_{trackId}",
+            "duration": 1000, "explicit": False, "isrc": "",
+            "discNumber": 1, "trackNumber": 1, "releaseDate": 0.0,
+            "created_reason": SYNTHETIC_FALLBACK_REASON,
+        }
+
+    def test_fallback_record_never_degrades_real_metadata(self):
+        self.repo.upsertTrack(makeTrack())  #< real row with real album/artists
+
+        self.repo.upsertTrack(self._syntheticTrack())
+
+        fetched = self.repo.getTrack("t1")
+        self.assertEqual(fetched["name"], "Song One")
+        self.assertEqual(fetched["url"], "http://example.com/track/t1")
+        self.assertEqual(fetched["album"]["id"], "alb1")
+        self.assertEqual([a["id"] for a in fetched["artists"]], ["art1"])
+        self.assertIsNone(fetched["created_reason"])
+
+    def test_fallback_record_still_overwrites_blanked_row(self):
+        """A row stored from a blanked (region-restricted) lookup has no name -
+        fallback data carrying the export's own names must keep healing it."""
+        blanked = makeTrack()
+        blanked["name"] = ""
+        self.repo.upsertTrack(blanked)
+
+        self.repo.upsertTrack(self._syntheticTrack())
+
+        self.assertEqual(self.repo.getTrack("t1")["name"], "Fabricated Name")
+
+    def test_fallback_record_still_updates_existing_fallback_row(self):
+        self.repo.upsertTrack(self._syntheticTrack())
+
+        longer = self._syntheticTrack()
+        longer["duration"] = 240000
+        self.repo.upsertTrack(longer)
+
+        self.assertEqual(self.repo.getTrack("t1")["duration"], 240000)
+
+    def test_real_record_still_replaces_fallback_row(self):
+        self.repo.upsertTrack(self._syntheticTrack())
+
+        self.repo.upsertTrack(makeTrack())
+
+        fetched = self.repo.getTrack("t1")
+        self.assertEqual(fetched["name"], "Song One")
+        self.assertIsNone(fetched["created_reason"])
+
+    def test_empty_artists_list_preserves_existing_artist_links(self):
+        self.repo.upsertTrack(makeTrack())
+
+        noArtists = makeTrack()
+        noArtists["artists"] = []
+        self.repo.upsertTrack(noArtists)
+
+        fetched = self.repo.getTrack("t1")
+        self.assertEqual([a["id"] for a in fetched["artists"]], ["art1"])
+
+
+class TestAlbumMetadataGuards(RepositoryTestCase):
+    """A partial backfill response must never regress album fields another
+    source already filled."""
+
+    def test_blank_values_do_not_regress_existing_metadata(self):
+        self.repo.upsertTrack(makeTrack())  #< alb1: releaseDate 12345.0, totalTracks 10, "Album One"
+
+        self.repo.updateAlbumMetadata("alb1", 0.0, 0, name=None)
+
+        album = self.repo.getTrack("t1")["album"]
+        self.assertEqual(album["releaseDate"], 12345.0)
+        self.assertEqual(album["totalTracks"], 10)
+        self.assertEqual(album["name"], "Album One")
+
+    def test_real_values_update_metadata(self):
+        self.repo.upsertTrack(makeTrack())
+
+        self.repo.updateAlbumMetadata("alb1", 1600000000.0, 12, name="New Name")
+
+        album = self.repo.getTrack("t1")["album"]
+        self.assertEqual(album["releaseDate"], 1600000000.0)
+        self.assertEqual(album["totalTracks"], 12)
+        self.assertEqual(album["name"], "New Name")
+
+    def test_partial_response_updates_only_provided_fields(self):
+        self.repo.upsertTrack(makeTrack())
+
+        self.repo.updateAlbumMetadata("alb1", 1600000000.0, 0, name=None)
+
+        album = self.repo.getTrack("t1")["album"]
+        self.assertEqual(album["releaseDate"], 1600000000.0)
+        self.assertEqual(album["totalTracks"], 10)
+        self.assertEqual(album["name"], "Album One")
+
+
 class TestPlaysHistory(RepositoryTestCase):
     def setUp(self):
         super().setUp()

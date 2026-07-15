@@ -85,14 +85,32 @@ class Repository:
     def upsertTrack(self, track: dict, created_reason: str | None = None) -> None:
         """Upsert a track and its nested album/artists (as produced by
         Client.formatTrack). Last write wins, matching the previous
-        tracks[id] = track dict-assignment semantics. If created_reason is provided,
-        it's only set on INSERT (never updated on conflict) - except that real
-        metadata replacing a fallback row (SYNTHETIC_FALLBACK_REASON /
-        RESTRICTED_FALLBACK_REASON) also replaces the fallback marker.
+        tracks[id] = track dict-assignment semantics - with one exception: a
+        fallback record (SYNTHETIC_FALLBACK_REASON / RESTRICTED_FALLBACK_REASON)
+        never overwrites a row that already has real metadata; it only heals
+        blanked rows or refreshes other fallback rows. If created_reason is
+        provided, it's only set on INSERT (never updated on conflict) - except
+        that real metadata replacing a fallback row also replaces the fallback
+        marker.
 
         Does NOT commit - callers compose this with insertPlay() into a single
         transaction (one play = one commit; a bulk import = one commit for the
         whole batch), then call commit()/rollback() themselves."""
+        conn = self._conn()
+
+        # Defense in depth: the importer normally prevents a fallback record
+        # from ever targeting a track with real metadata (its known-track index
+        # resolves those first), but no caller may rely on that - degraded data
+        # must never clobber good catalog data at this level either.
+        if track.get("created_reason") in (SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON):
+            existing = conn.execute(
+                "SELECT name, created_reason FROM tracks WHERE id=?", (track["id"],)
+            ).fetchone()
+            if existing and existing["name"] and existing["created_reason"] not in (
+                SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON,
+            ):
+                return
+
         album = track.get("album")
         if not album:
             album_id = track.get("albumId") or f"album_{track['id']}"
@@ -105,7 +123,6 @@ class Repository:
                 "imageUrl": "",
             }
         artists = track.get("artists") or []
-        conn = self._conn()
         conn.execute(
             """
             INSERT INTO albums (id, name, url, total_tracks, release_date, image_id, image_url)
@@ -170,12 +187,16 @@ class Repository:
             trackData,
         )
 
-        conn.execute("DELETE FROM track_artists WHERE track_id=?", (track["id"],))
-        for position, artist in enumerate(artists):
-            conn.execute(
-                "INSERT INTO track_artists (track_id, artist_id, position) VALUES (?, ?, ?)",
-                (track["id"], artist["id"], position),
-            )
+        # An empty artists list means the caller had no artist data - not that
+        # the track lost its artists. Keep whatever links are already recorded
+        # instead of wiping them.
+        if artists:
+            conn.execute("DELETE FROM track_artists WHERE track_id=?", (track["id"],))
+            for position, artist in enumerate(artists):
+                conn.execute(
+                    "INSERT INTO track_artists (track_id, artist_id, position) VALUES (?, ?, ?)",
+                    (track["id"], artist["id"], position),
+                )
 
     def getTrack(self, trackId: str) -> dict | None:
         conn = self._conn()
@@ -1467,18 +1488,22 @@ class Repository:
             )
 
     def updateAlbumMetadata(self, album_id: str, release_date: float, total_tracks: int, name: str | None = None) -> None:
+        """Blank fields aren't data: a zero release_date/total_tracks or an
+        empty name never overwrites an existing value, so a partial backfill
+        response (e.g. an album Spotify returns without a usable release date)
+        can't regress metadata another source already filled."""
         conn = self._conn()
         with conn:
-            if name:
-                conn.execute(
-                    "UPDATE albums SET release_date = ?, total_tracks = ?, name = ? WHERE id = ?",
-                    (release_date, total_tracks, name, album_id)
-                )
-            else:
-                conn.execute(
-                    "UPDATE albums SET release_date = ?, total_tracks = ? WHERE id = ?",
-                    (release_date, total_tracks, album_id)
-                )
+            conn.execute(
+                """
+                UPDATE albums SET
+                    release_date = CASE WHEN :release_date > 0 THEN :release_date ELSE release_date END,
+                    total_tracks = CASE WHEN :total_tracks > 0 THEN :total_tracks ELSE total_tracks END,
+                    name = CASE WHEN :name IS NOT NULL AND :name != '' THEN :name ELSE name END
+                WHERE id = :id
+                """,
+                {"id": album_id, "release_date": release_date, "total_tracks": total_tracks, "name": name},
+            )
 
     def updateTrackName(self, track_id: str, name: str, duration_ms: int | None = None) -> None:
         """duration_ms also updates the stored duration when provided (>0) - the
