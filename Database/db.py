@@ -174,6 +174,12 @@ CREATE TABLE IF NOT EXISTS user_shares (
     status              TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'accepted')),
     created_at          REAL NOT NULL,
     responded_at        REAL,
+    -- Only the requester side needs an unseen/seen flag for the "your
+    -- request was accepted" topbar notification - the recipient's own
+    -- accept click is already their acknowledgment. Defaults to 0/unseen at
+    -- row creation (while still pending) and is left untouched by the
+    -- accept transition, so an accepted share always starts unseen.
+    requester_seen_accepted INTEGER NOT NULL DEFAULT 0,
     UNIQUE (requester_username, recipient_username),
     CHECK (requester_username != recipient_username)
 );

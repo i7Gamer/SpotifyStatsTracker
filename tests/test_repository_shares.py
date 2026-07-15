@@ -166,6 +166,65 @@ class TestGetPendingIncomingSharesCount(RepositorySharesTestCase):
         self.assertEqual(self.repo.getPendingIncomingSharesCount("alice"), 0)
 
 
+class TestUnseenAcceptedShareNotifications(RepositorySharesTestCase):
+    """The requester side's "your share request was accepted" notification -
+    the recipient doesn't need one, since accepting is itself their
+    acknowledgment."""
+
+    def test_counts_as_unseen_right_after_acceptance(self):
+        self._accept("alice", "bob")
+
+        self.assertEqual(self.repo.getUnseenAcceptedShareCount("alice"), 1)
+
+    def test_recipient_side_is_not_counted(self):
+        """bob accepted it himself - he doesn't need to be told."""
+        self._accept("alice", "bob")
+
+        self.assertEqual(self.repo.getUnseenAcceptedShareCount("bob"), 0)
+
+    def test_reverse_pending_auto_accept_notifies_the_original_requester(self):
+        """alice originally asked bob; bob crossing-requesting alice back
+        auto-accepts alice's original row (see createShareRequest) - alice,
+        the original requester, still gets notified that it's now active."""
+        self.repo.createShareRequest("alice", "bob")
+        self.repo.createShareRequest("bob", "alice")   #< auto-accepts
+
+        self.assertEqual(self.repo.getUnseenAcceptedShareCount("alice"), 1)
+
+    def test_pending_requests_are_not_counted(self):
+        self.repo.createShareRequest("alice", "bob")
+
+        self.assertEqual(self.repo.getUnseenAcceptedShareCount("alice"), 0)
+
+    def test_marking_seen_clears_the_count(self):
+        self._accept("alice", "bob")
+
+        self.repo.markAcceptedSharesSeenByRequester("alice")
+
+        self.assertEqual(self.repo.getUnseenAcceptedShareCount("alice"), 0)
+
+    def test_marking_seen_does_not_affect_other_users(self):
+        self._accept("alice", "bob")
+        self._accept("carol", "dave")
+
+        self.repo.markAcceptedSharesSeenByRequester("alice")
+
+        self.assertEqual(self.repo.getUnseenAcceptedShareCount("carol"), 1)
+
+    def test_a_later_unrelated_share_is_unseen_again(self):
+        """Marking seen must not permanently silence the requester - a
+        second, later-accepted share should still notify them."""
+        self._accept("alice", "bob")
+        self.repo.markAcceptedSharesSeenByRequester("alice")
+
+        self._accept("alice", "carol")
+
+        self.assertEqual(self.repo.getUnseenAcceptedShareCount("alice"), 1)
+
+    def test_zero_when_there_are_no_shares_at_all(self):
+        self.assertEqual(self.repo.getUnseenAcceptedShareCount("alice"), 0)
+
+
 class TestAcceptedShares(RepositorySharesTestCase):
     def test_returns_counterpart_when_username_was_the_requester(self):
         self._accept("alice", "bob")

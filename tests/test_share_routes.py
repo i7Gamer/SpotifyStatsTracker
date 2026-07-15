@@ -268,6 +268,76 @@ class TestPendingSharesTopbarBadge(ShareRoutesTestCase):
         self.assertNotIn(b"pending-shares-badge", resp.data)
 
 
+class TestAcceptedShareTopbarBadge(ShareRoutesTestCase):
+    """The green "your request was accepted" badge - the requester's only
+    signal that their pending request became active, since accepting itself
+    is the recipient's acknowledgment and needs no such badge."""
+
+    def test_hidden_with_no_accepted_shares(self):
+        client = self._loginAs("alice", "alice@example.com")
+
+        resp = client.get("/import")
+
+        self.assertNotIn(b"accepted-share-badge", resp.data)
+
+    def test_appears_once_the_recipient_accepts(self):
+        self.dash.repo.upsertUser("bob", "bob@example.com")
+        self.dash.repo.upsertUser("alice", "alice@example.com")
+        self.dash.repo.createShareRequest("alice", "bob")
+        shareId = self.dash.repo.getPendingIncomingShares("bob")[0]["id"]
+        client = self._loginAs("alice", "alice@example.com")
+
+        self.dash.repo.respondToShareRequest(shareId, "bob", accept=True)
+        resp = client.get("/import")
+
+        self.assertIn(b'class="accepted-share-badge"', resp.data)
+        self.assertIn(b"1 share request accepted!", resp.data)
+
+    def test_the_recipient_does_not_see_their_own_acceptance_as_a_notification(self):
+        """bob just clicked Accept himself - he doesn't need to be told."""
+        self.dash.repo.upsertUser("bob", "bob@example.com")
+        self.dash.repo.upsertUser("alice", "alice@example.com")
+        self.dash.repo.createShareRequest("alice", "bob")
+        shareId = self.dash.repo.getPendingIncomingShares("bob")[0]["id"]
+        client = self._loginAs("bob", "bob@example.com")
+
+        client.post(f"/profile/shares/{shareId}", data={"action": "accept"})
+        resp = client.get("/import")
+
+        self.assertNotIn(b"accepted-share-badge", resp.data)
+
+    def test_visiting_profile_clears_the_badge(self):
+        self.dash.repo.upsertUser("bob", "bob@example.com")
+        self.dash.repo.upsertUser("alice", "alice@example.com")
+        self.dash.repo.createShareRequest("alice", "bob")
+        shareId = self.dash.repo.getPendingIncomingShares("bob")[0]["id"]
+        self.dash.repo.respondToShareRequest(shareId, "bob", accept=True)
+        client = self._loginAs("alice", "alice@example.com")
+
+        profileResp = client.get("/profile")
+        importResp = client.get("/import")
+
+        self.assertNotIn(b"accepted-share-badge", profileResp.data)   #< cleared on the very same load
+        self.assertNotIn(b"accepted-share-badge", importResp.data)    #< and stays cleared afterward
+
+    def test_a_later_share_still_notifies_after_an_earlier_one_was_seen(self):
+        self.dash.repo.upsertUser("bob", "bob@example.com")
+        self.dash.repo.upsertUser("carol", "carol@example.com")
+        self.dash.repo.upsertUser("alice", "alice@example.com")
+        self.dash.repo.createShareRequest("alice", "bob")
+        bobShareId = self.dash.repo.getPendingIncomingShares("bob")[0]["id"]
+        self.dash.repo.respondToShareRequest(bobShareId, "bob", accept=True)
+        client = self._loginAs("alice", "alice@example.com")
+        client.get("/profile")   #< sees and clears the bob notification
+
+        self.dash.repo.createShareRequest("alice", "carol")
+        carolShareId = self.dash.repo.getPendingIncomingShares("carol")[0]["id"]
+        self.dash.repo.respondToShareRequest(carolShareId, "carol", accept=True)
+        resp = client.get("/import")
+
+        self.assertIn(b"accepted-share-badge", resp.data)
+
+
 class TestShareActionRoute(ShareRoutesTestCase):
     def _pendingShareId(self, requester, recipient):
         self.dash.repo.upsertUser(requester, f"{requester}@example.com")

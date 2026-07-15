@@ -753,6 +753,20 @@ progress::-moz-progress-bar {
   .grid {
     grid-template-columns: 1fr;
   }
+
+  .compare-columns {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Compare page's side-by-side "you" / "them" sections - a plain two-column
+   grid rather than .grid's repeat(3, ...), since it's always exactly two
+   columns wide until the mobile breakpoint above collapses it to one. */
+.compare-columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2rem;
+  margin-bottom: 2.5rem;
 }
 
 .form-group {
@@ -1102,6 +1116,26 @@ progress::-moz-progress-bar {
 }
 
 .pending-shares-badge:hover {
+  opacity: 0.85;
+}
+
+.accepted-share-badge {
+  display: inline-flex;
+  justify-content: flex-start;
+  align-items: center;
+  gap: 8px;
+  margin-left: 12px;
+  margin-right: auto;
+  padding: 3px 6px;
+  background: #4aff4a;
+  color: #0a1a0a;
+  border-radius: 8px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.accepted-share-badge:hover {
   opacity: 0.85;
 }
 

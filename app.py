@@ -702,12 +702,13 @@ class SpotifyDashboardApp:
         @self.app.context_processor
         def _injectShareStatus():
             # Lets layout.html's nav show a "Compare" link only for users who
-            # have at least one usable accepted share, and the topbar badge
-            # show a count of share requests waiting on them - computed here
-            # so every template gets both without every route remembering to
-            # pass them. Memoized on g: one request can render several
+            # have at least one usable accepted share, and the topbar badges
+            # show a count of share requests waiting on them plus a count of
+            # their own requests that were just accepted - computed here so
+            # every template gets all three without every route remembering
+            # to pass them. Memoized on g: one request can render several
             # templates (the Wrapped AJAX endpoint renders six partials), and
-            # each render re-runs every context processor - these two cheap
+            # each render re-runs every context processor - these cheap
             # queries must not repeat per partial. No is_user_logged_in
             # check: that can cost a live Spotify round-trip, far too heavy
             # per render, and a stale session's worst case is a nav
@@ -716,9 +717,11 @@ class SpotifyDashboardApp:
                 username = session.get("username")
                 g.hasAcceptedShares = self.repo.hasAnyAcceptedShare(username) if username else False
                 g.pendingIncomingSharesCount = self.repo.getPendingIncomingSharesCount(username) if username else 0
+                g.unseenAcceptedShareCount = self.repo.getUnseenAcceptedShareCount(username) if username else 0
             return {
                 "hasAcceptedShares": g.hasAcceptedShares,
                 "pendingIncomingSharesCount": g.pendingIncomingSharesCount,
+                "unseenAcceptedShareCount": g.unseenAcceptedShareCount,
             }
 
         def _is_version_newer(remote: str, local: str) -> bool:
@@ -1144,6 +1147,11 @@ class SpotifyDashboardApp:
             settings = db.repo.getUserSettings(username)
             default_window = settings.get("default_dashboard_window", "day")
             user_timezone = settings.get("timezone") or ""
+
+            # Reaching this render means the Active Shares list below is
+            # about to show whatever the notification was about - clears the
+            # topbar's "your request was accepted" badge for next page load.
+            self.repo.markAcceptedSharesSeenByRequester(username)
 
             pendingIncoming = self.repo.getPendingIncomingShares(username)
             pendingOutgoing = self.repo.getPendingOutgoingShares(username)

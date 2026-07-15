@@ -282,6 +282,38 @@ class TestCompareRoute(unittest.TestCase):
 
         self.assertEqual(resp.status_code, 200)
 
+    def test_custom_date_range_query_params_narrow_the_query(self):
+        """_getDateRange prioritizes startDate/endDate over the interval
+        string whenever both are present - comparePage already threads them
+        through, the UI just needed the option to set them."""
+        self._accept("alice", "bob")
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare?interval=custom&startDate=2026-01-01&endDate=2026-01-31")
+
+        self.assertEqual(resp.status_code, 200)
+        startDate, endDate = self.dbs["alice"].getPlayTotals.call_args.args
+        self.assertEqual(startDate.strftime("%Y-%m-%d"), "2026-01-01")
+        self.assertEqual(endDate.strftime("%Y-%m-%d"), "2026-02-01")   #< _getDateRange's exclusive end
+
+    def test_custom_date_range_control_is_prefilled_from_query_params(self):
+        self._accept("alice", "bob")
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare?interval=custom&startDate=2026-01-01&endDate=2026-01-31")
+
+        self.assertIn(b'value="2026-01-01"', resp.data)
+        self.assertIn(b'value="2026-01-31"', resp.data)
+        self.assertIn(b'<option value="custom" selected>Custom Date Range</option>', resp.data)
+
+    def test_custom_date_inputs_are_hidden_by_default(self):
+        self._accept("alice", "bob")
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        self.assertIn(b'id="compareCustomDates" style="display: none;"', resp.data)
+
     def test_shared_artist_overlap_is_capped_like_every_other_list(self):
         """"You Both Love" is built from the 100-deep pools but must render at
         most COMPARE_TOP_LIST_SIZE cards, matching the adjacent lists."""

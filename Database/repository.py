@@ -1373,6 +1373,28 @@ class Repository:
         ).fetchone()
         return row["c"]
 
+    def getUnseenAcceptedShareCount(self, username: str) -> int:
+        """How many of `username`'s share REQUESTS (not requests they
+        received) were accepted since they last visited /profile - the
+        recipient doesn't get one of these, since accepting is itself their
+        acknowledgment."""
+        row = self._conn().execute(
+            "SELECT COUNT(*) AS c FROM user_shares WHERE requester_username=? AND status=? AND requester_seen_accepted=0",
+            (username, self.SHARE_STATUS_ACCEPTED),
+        ).fetchone()
+        return row["c"]
+
+    def markAcceptedSharesSeenByRequester(self, username: str) -> None:
+        """Clears the "your share request was accepted" notification - called
+        when `username` visits /profile, where the newly-active share is
+        actually visible in their Active Shares list."""
+        conn = self._conn()
+        with conn:
+            conn.execute(
+                "UPDATE user_shares SET requester_seen_accepted=1 WHERE requester_username=? AND status=? AND requester_seen_accepted=0",
+                (username, self.SHARE_STATUS_ACCEPTED),
+            )
+
     def getPendingOutgoingShares(self, username: str) -> list[dict]:
         conn = self._conn()
         rows = conn.execute(
@@ -1539,6 +1561,16 @@ class Repository:
                 conn.execute("ALTER TABLE tracks ADD COLUMN availability_reason TEXT")
             if "backfill_attempted_at" not in albumColumns:
                 conn.execute("ALTER TABLE albums ADD COLUMN backfill_attempted_at REAL")
+
+    def addRequesterSeenAcceptedColumnIfMissing(self) -> None:
+        """Add user_shares.requester_seen_accepted (the "your share request
+        was accepted" topbar notification's dismissal flag) if missing.
+        Guarded so re-running doesn't fail."""
+        conn = self._conn()
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(user_shares)").fetchall()}
+        if "requester_seen_accepted" not in columns:
+            with conn:
+                conn.execute("ALTER TABLE user_shares ADD COLUMN requester_seen_accepted INTEGER NOT NULL DEFAULT 0")
 
     def getAllUsersWithCookies(self) -> list[tuple[str, str]]:
         """(username, email) for every user who has logged in at least once -

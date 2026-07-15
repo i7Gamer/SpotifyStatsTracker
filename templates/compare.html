@@ -17,11 +17,10 @@
 </nav>
 {% endif %}
 
-<form class="filter-section" method="get" action="{{ url_for('comparePage') }}" style="display: flex; flex-wrap: wrap; gap: 1rem; align-items: center;">
-  <input type="hidden" name="with" value="{{ withUsername }}">
+<section class="filter-section" style="display: flex; flex-wrap: wrap; gap: 1rem; align-items: center;">
   <div class="filter-group">
     <label for="interval">Time Period:</label>
-    <select id="interval" name="interval" onchange="this.form.submit()">
+    <select id="interval" name="interval" onchange="updateCompareIntervalFilter()">
       <option value="" {% if not interval %}selected{% endif %}>All Time</option>
       <option value="today" {% if interval == 'today' %}selected{% endif %}>Today</option>
       <option value="day" {% if interval == 'day' %}selected{% endif %}>Yesterday</option>
@@ -29,9 +28,50 @@
       <option value="month" {% if interval == 'month' %}selected{% endif %}>Last Month</option>
       <option value="year" {% if interval == 'year' %}selected{% endif %}>Last Year</option>
       <option value="5years" {% if interval == '5years' %}selected{% endif %}>Last 5 Years</option>
+      <option value="custom" {% if customStart and customEnd %}selected{% endif %}>Custom Date Range</option>
     </select>
   </div>
-</form>
+
+  <div class="filter-group custom-dates" id="compareCustomDates" {% if not (customStart and customEnd) %}style="display: none;"{% endif %}>
+    <label for="startDate">From:</label>
+    <input type="date" id="startDate" value="{{ customStart }}" onchange="updateCompareDateFilter()">
+    <label for="endDate">To:</label>
+    <input type="date" id="endDate" value="{{ customEnd }}" onchange="updateCompareDateFilter()">
+  </div>
+</section>
+
+<script>
+  function updateCompareIntervalFilter() {
+    const interval = document.getElementById('interval').value;
+    const customDates = document.getElementById('compareCustomDates');
+
+    if (interval === 'custom') {
+      customDates.style.display = 'flex';
+      return;
+    }
+
+    customDates.style.display = 'none';
+    const params = new URLSearchParams(window.location.search);
+    params.set('interval', interval);
+    params.delete('startDate');
+    params.delete('endDate');
+    window.location = window.location.pathname + '?' + params.toString();
+  }
+
+  function updateCompareDateFilter() {
+    const startDate = document.getElementById('startDate').value;
+    const endDate = document.getElementById('endDate').value;
+    if (!startDate || !endDate) {
+      return;
+    }
+
+    const params = new URLSearchParams(window.location.search);
+    params.set('interval', 'custom');
+    params.set('startDate', startDate);
+    params.set('endDate', endDate);
+    window.location = window.location.pathname + '?' + params.toString();
+  }
+</script>
 
 <section class="card" style="margin: 1.5rem 0; overflow-x: auto;">
   <div style="padding: 1.5rem;">
@@ -86,7 +126,7 @@
 {% set emptyMessage = 'No plays in this period.' %}
 
 {% set section = 'top_songs' %}
-<section class="grid" style="grid-template-columns: 1fr 1fr; gap: 2rem; margin-bottom: 2.5rem;">
+<section class="compare-columns">
   <div>
     <h2>{{ username }}'s Top Songs</h2>
     <div class="track-list">
@@ -106,7 +146,7 @@
 </section>
 
 {% set section = 'top_artists' %}
-<section class="grid" style="grid-template-columns: 1fr 1fr; gap: 2rem; margin-bottom: 2.5rem;">
+<section class="compare-columns">
   <div>
     <h2>{{ username }}'s Top Artists</h2>
     <div class="track-list">
@@ -126,7 +166,7 @@
 </section>
 
 {% set section = 'top_albums' %}
-<section class="grid" style="grid-template-columns: 1fr 1fr; gap: 2rem; margin-bottom: 2.5rem;">
+<section class="compare-columns">
   <div>
     <h2>{{ username }}'s Top Albums</h2>
     <div class="track-list">

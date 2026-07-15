@@ -2,7 +2,7 @@
 {% block content %}
 
 <div class="login-panel">
-  <div class="login-card" style="max-width: 600px;">
+  <div class="login-card" style="width: min(900px, 100%);">
     <h1>User Profile</h1>
     <p>Manage your account settings{% if feature_enabled %} and configure the Spotify Developer API for real-time play backfilling{% endif %}.</p>
 
@@ -83,7 +83,7 @@
       <div class="form-group" style="display: flex; gap: 0.75rem; align-items: flex-end;">
         <div style="flex: 1;">
           <label for="targetUsername">Request a share with</label>
-          <select id="targetUsername" name="target_username" style="width: 100%; box-sizing: border-box; height: 38px;">
+          <select id="targetUsername" name="target_username" class="theme-selector" style="width: 100%; box-sizing: border-box; height: 38px;">
             <option value="">Choose a user&hellip;</option>
             {% for candidate in shareCandidates %}
               <option value="{{ candidate }}">{{ candidate }}</option>
