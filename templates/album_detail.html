@@ -69,40 +69,13 @@
     {% endif %}
   </section>
 
+  <script src="{{ url_for('static', filename='js/back-button.js') }}"></script>
   <script>
     window.__chartData = {
       timeSeries: {{ timeSeries | tojson }}
     };
 
-    const backButton = document.getElementById('back-button');
-    if (backButton) {
-      const referrer = document.referrer;
-      let backText = '← Back to Top Albums';
-      let useHistoryBack = false;
-
-      if (referrer.includes('wrapped')) {
-        backText = '← Back to Wrapped';
-        useHistoryBack = true;
-      } else if (referrer.includes('top-songs')) {
-        backText = '← Back to Top Songs';
-        useHistoryBack = true;
-      } else if (referrer.includes('top-artists')) {
-        backText = '← Back to Top Artists';
-        useHistoryBack = true;
-      } else if (referrer.includes('/song/') || referrer.includes('/artist/') || referrer.includes('/album/')) {
-        backText = '← Back';
-        useHistoryBack = true;
-      }
-
-      backButton.textContent = backText;
-      if (useHistoryBack) {
-        backButton.href = '#';
-        backButton.onclick = (e) => {
-          e.preventDefault();
-          history.back();
-        };
-      }
-    }
+    initBackButton();
   </script>
   <script src="{{ url_for('static', filename='js/charts.js') }}"></script>
 {% endblock %}
