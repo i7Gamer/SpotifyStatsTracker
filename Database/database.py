@@ -87,9 +87,12 @@ class Database:
                                                #  track duration must land within this window of the DB row
     DUPLICATE_RECORDING_TOLERANCE_SECONDS = 5  #< max gap between two same-track local plays for them to count as
                                                 #  the same real listen recorded twice (once by the live listener,
-                                                #  once by Web API backfill) rather than a genuine replay - a track
-                                                #  can't legitimately restart within seconds of itself, since the
-                                                #  earlier play must run (or be skipped) first
+                                                #  once by Web API backfill) rather than a genuine replay. Proximity
+                                                #  alone is NOT proof - real exports contain skip-then-restart pairs
+                                                #  seconds apart - so reconciliation additionally requires the
+                                                #  cluster to span different sources (see _reconcileWithWebApiHistory)
+    WEB_API_BACKFILL_SOURCE = "web_api_backfill"  #< play source recorded by the Web API backfill; its
+                                                   #  created_reason is "<source>_play (user: ...)" (appendTrackData)
 
     WRAPPED_WORKER_MIN_START_DELAY = 60        #< minimum initial random startup delay in seconds
     WRAPPED_WORKER_MAX_START_DELAY = 300       #< maximum initial random startup delay in seconds
@@ -522,7 +525,7 @@ class Database:
         track_id = track.get("id", "unknown")
         track_name = track.get("name", "unknown")
 
-        if source == "web_api_backfill":
+        if source == self.WEB_API_BACKFILL_SOURCE:
             # Wide, defense-in-depth guard: skip if this exact track already has a
             # play within (duration + 60s) of this one. Deliberately NOT applied to
             # the live listener's own inserts (source == "listener") - the listener
@@ -1252,56 +1255,55 @@ class Database:
         self.repo.updateUserSpotifyCredentials(self.user, clientId, clientSecret, refreshToken)
 
     def _reconcileWithWebApiHistory(self, apiItems: list[dict]) -> None:
-        """Remove PROVABLE duplicate local plays: two local rows for the exact
-        same track within DUPLICATE_RECORDING_TOLERANCE_SECONDS of each other.
-        A track can't legitimately be played twice within a few seconds of
-        itself - the earlier play has to run (or be skipped) before the next
-        one can start - so two such rows can only be the SAME real listen
-        recorded twice. This happens when both the live listener and Web API
-        backfill capture the same instant (Spotify's played_at field is
-        documented as inconsistent about whether it reports a track's start
-        or end time, per spotify/web-api#1083 - see _checkWebApiBackfill for
-        how that ambiguity is handled on the ingest side).
+        """Remove PROVABLE duplicate local plays: Web API backfill copies of a
+        play another source already recorded. Both the live listener and the
+        backfill can capture the same instant with different timestamps
+        (Spotify's played_at field is documented as inconsistent about whether
+        it reports a track's start or end time, per spotify/web-api#1083 - see
+        _checkWebApiBackfill for how that ambiguity is handled on the ingest
+        side), leaving two rows for the same track seconds apart.
+
+        Deletion requires BOTH proofs:
+        - proximity: a same-track sibling row within
+          DUPLICATE_RECORDING_TOLERANCE_SECONDS, AND
+        - mixed sources: the cluster holds a backfill row plus at least one
+          row from another source (listener / import / legacy-NULL).
+        Only the backfill copies are deleted - backfill is the only secondary
+        recorder, so rows from primary sources are never deleted. Proximity
+        alone proves nothing: real exports genuinely contain a short skip
+        followed by a restart of the same track seconds later, and such
+        same-source clusters must survive untouched.
 
         Deliberately never deletes a play just because it's absent from the
         Web API response: Spotify's recently-played endpoint isn't a complete
         log (limited item count, its own internal play-duration threshold,
         track relinking can return a different ID for the same song), so a
         lone play with no same-track sibling is always left alone - only a
-        genuine nearby duplicate counts as proof. The API response is used
-        only to break ties within a duplicate pair: prefer to keep whichever
-        row's timestamp is closest to an actual API-reported time for that
-        track.
+        genuine nearby cross-source duplicate counts as proof.
 
         Only runs for users with working Spotify Developer API credentials
         configured (invoked from Listener._checkWebApiBackfill's
         onWebApiSnapshot callback).
 
         Bounded to the exact [oldest, newest] played_at span the API response
-        covers - never reaches past that window, so it can't touch older/
-        imported history."""
+        covers - never reaches past that window, so it can't touch older
+        history."""
         if not apiItems:
             return
 
-        # Group API played_at times by track ID, to use as a tie-breaker later -
-        # NOT as the deletion trigger.
-        apiTimesByTrack: dict[str, list[int]] = {}
-        for item in apiItems:
-            trackId = item.get("track", {}).get("id")
-            playedAtStr = item.get("played_at")
-            if not trackId or not playedAtStr:
-                continue
-            apiTimesByTrack.setdefault(trackId, []).append(timeToInt(playedAtStr))
-
-        if not apiTimesByTrack:
+        apiTimes = [
+            timeToInt(item["played_at"])
+            for item in apiItems
+            if item.get("track", {}).get("id") and item.get("played_at")
+        ]
+        if not apiTimes:
             logger.debug("Reconciliation skipped: no API items with both track id and played_at")
             return
 
-        allApiTimes = [t for times in apiTimesByTrack.values() for t in times]
-        windowStart = min(allApiTimes)
-        windowEnd = max(allApiTimes)
+        windowStart = min(apiTimes)
+        windowEnd = max(apiTimes)
 
-        localPlays = self.repo.getPlaysInRange(self.user, windowStart, windowEnd)
+        localPlays = self.repo.getPlaysWithSourceInRange(self.user, windowStart, windowEnd)
         if not localPlays:
             return
 
@@ -1314,15 +1316,8 @@ class Database:
             if len(group) < 2:
                 continue  # no sibling for this track - nothing proves duplication, never delete
 
-            apiTimesForTrack = apiTimesByTrack.get(trackId, [])
-
-            def closestApiDistance(play, _apiTimesForTrack=apiTimesForTrack):
-                if not _apiTimesForTrack:
-                    return None
-                return min(abs(play["playedAt"] - t) for t in _apiTimesForTrack)
-
             # Cluster same-track plays that are within tolerance of a shared
-            # anchor - each cluster of 2+ can only be the same real listen
+            # anchor - each cluster of 2+ might be the same real listen
             # recorded more than once.
             remaining = list(group)
             while remaining:
@@ -1339,17 +1334,17 @@ class Database:
                 if len(cluster) < 2:
                     continue  # no close-in-time sibling for this one either
 
-                # Keep exactly one row from the cluster: whichever timestamp
-                # is closest to an actual API-reported time for this track,
-                # falling back to the earliest recorded copy if the API gives
-                # no signal either way.
-                cluster.sort(key=lambda play: (
-                    closestApiDistance(play) if closestApiDistance(play) is not None else float("inf"),
-                    play["playedAt"],
-                ))
-                toDelete = cluster[1:]
+                backfillCopies = [
+                    play for play in cluster
+                    if (play.get("createdReason") or "").startswith(self.WEB_API_BACKFILL_SOURCE)
+                ]
+                if not backfillCopies or len(backfillCopies) == len(cluster):
+                    # Same-source cluster: without a second source there is no
+                    # proof of double-recording (could be a genuine skip-then-
+                    # restart) - never guess, never delete.
+                    continue
 
-                for play in toDelete:
+                for play in backfillCopies:
                     if self.repo.deletePlay(self.user, play["id"], play["playedAt"]):
                         deletedCount += 1
                         logger.debug(

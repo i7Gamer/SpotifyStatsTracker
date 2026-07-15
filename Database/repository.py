@@ -485,6 +485,29 @@ class Repository:
         ).fetchall()
         return {row["played_at"] for row in rows}
 
+    def getPlaysWithSourceInRange(self, username: str, startTs: float, endTs: float) -> list[dict]:
+        """Plays in the closed [startTs, endTs] window including their
+        created_reason. The Web API reconciliation needs the source to
+        guarantee it only deletes provable double-recordings (a backfill row
+        next to a row from another source) - proximity alone is not proof,
+        since real exports contain genuine same-track plays seconds apart
+        (skip, then restart)."""
+        conn = self._conn()
+        rows = conn.execute(
+            "SELECT track_id, played_at, time_played, created_reason FROM plays "
+            "WHERE username=? AND played_at BETWEEN ? AND ?",
+            (username, startTs, endTs),
+        ).fetchall()
+        return [
+            {
+                "id": r["track_id"],
+                "playedAt": r["played_at"],
+                "timePlayed": r["time_played"],
+                "createdReason": r["created_reason"],
+            }
+            for r in rows
+        ]
+
     def deletePlaysBefore(self, username: str, timestamp: float) -> int:
         """Delete all plays for this user before the given timestamp (unix seconds).
         Returns the number of rows deleted. Does NOT commit."""

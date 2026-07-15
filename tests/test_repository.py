@@ -296,6 +296,23 @@ class TestPlaysHistory(RepositoryTestCase):
         entries = self.repo.getPlaysNewestFirst("alice")
         self.assertEqual(entries[0]["playedFrom"], "playlist:xyz")
 
+    def test_get_plays_with_source_in_range_returns_created_reason_and_respects_window(self):
+        self.repo.insertPlay("alice", "t1", 1000.0, 5000, created_reason="listener_play (user: alice)")
+        self.repo.insertPlay("alice", "t1", 1003.0, 5000, created_reason="web_api_backfill_play (user: alice)")
+        self.repo.insertPlay("alice", "t2", 1500.0, 5000)  #< legacy row, no created_reason
+        self.repo.insertPlay("alice", "t1", 3000.0, 5000, created_reason="history_import (user: alice)")
+        self.repo.commit()
+
+        plays = self.repo.getPlaysWithSourceInRange("alice", 900.0, 2000.0)
+
+        self.assertEqual(len(plays), 3)
+        byTime = {p["playedAt"]: p for p in plays}
+        self.assertEqual(byTime[1000.0]["id"], "t1")
+        self.assertEqual(byTime[1000.0]["createdReason"], "listener_play (user: alice)")
+        self.assertEqual(byTime[1003.0]["createdReason"], "web_api_backfill_play (user: alice)")
+        self.assertIsNone(byTime[1500.0]["createdReason"])
+        self.assertEqual(byTime[1500.0]["timePlayed"], 5000)
+
     def test_delete_zero_duration_plays_removes_only_zero_and_negative(self):
         conn = self.repo._conn()
         with conn:
