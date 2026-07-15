@@ -204,6 +204,54 @@ class TestZeroDurationFiltering(unittest.TestCase):
         # Verify the cached track duration was updated in place
         self.assertEqual(known["track_x"]["duration"], 240000)
 
+    def test_process_play_repairs_missing_album_from_spotify_or_import_data(self):
+        importer = self._importer()
+        
+        known = {
+            "track_real": {
+                "id": "track_real",
+                "name": "Song Real",
+                "artists": [{"id": "artist_real", "name": "Artist Real"}],
+                "duration": 240000,
+                "album": None
+            }
+        }
+        
+        # 1. Test repairing via Spotify API (mocked)
+        with patch.object(importer.sp, "track") as mock_track:
+            mock_track.return_value = {
+                "id": "track_real",
+                "name": "Song Real",
+                "duration_ms": 240000,
+                "external_urls": {"spotify": "https://open.spotify.com/track/track_real"},
+                "album": {
+                    "id": "album_real",
+                    "name": "Album Real Refetched",
+                    "external_urls": {"spotify": "https://open.spotify.com/album/album_real"},
+                    "images": [{"url": "http://img.url"}],
+                    "total_tracks": 10,
+                    "release_date": "2026-01-01"
+                },
+                "artists": [{"id": "artist_real", "name": "Artist Real"}]
+            }
+            
+            item = ("Song Real", "Artist Real", 1000, 240000, "track_real", "Album Real Exported")
+            importer._processPlay(item, known)
+            
+            self.assertIsNotNone(known["track_real"]["album"])
+            self.assertEqual(known["track_real"]["album"]["name"], "Album Real Refetched")
+            self.assertEqual(known["track_real"]["album"]["id"], "album_real")
+            
+        # 2. Test repairing via export data fallback when Spotify API fails
+        known["track_real"]["album"] = None  # reset
+        with patch.object(importer.sp, "track", side_effect=Exception("API failure")):
+            item = ("Song Real", "Artist Real", 1000, 240000, "track_real", "Album Real Exported")
+            importer._processPlay(item, known)
+            
+            self.assertIsNotNone(known["track_real"]["album"])
+            self.assertEqual(known["track_real"]["album"]["name"], "Album Real Exported")
+            self.assertTrue(known["track_real"]["album"]["id"].startswith("album_"))
+
 
 class TestResolveKnownKey(unittest.TestCase):
     def _importer(self):

@@ -300,6 +300,38 @@ class Importer:
 
             if matchedId:
                 base = known[matchedId]
+                if base.get("album") is None:
+                    repaired = False
+                    track_id = base.get("id")
+                    if track_id and not track_id.startswith("synth_"):
+                        try:
+                            logger.info("Track %s (%s) is missing its album in DB. Querying Spotify API...", base.get("name"), track_id)
+                            track_meta = self.sp.track(track_id)
+                            formatted = Client.formatTrack(track_meta, embedPlaybackInfo=False)
+                            if formatted.get("album"):
+                                base["album"] = formatted["album"]
+                                base["releaseDate"] = formatted["releaseDate"]
+                                base["imageUrl"] = formatted["imageUrl"]
+                                base["imageId"] = formatted["imageId"]
+                                repaired = True
+                                logger.info("Successfully refetched and repaired album for track %s from Spotify API", base.get("name"))
+                        except Exception as e:
+                            logger.warning("Failed to query Spotify API for track %s to repair album: %s", base.get("name"), e)
+                    
+                    if not repaired and albumName:
+                        album_id = f"album_{base['id']}"
+                        base["album"] = {
+                            "id": album_id,
+                            "name": albumName,
+                            "url": "",
+                            "imageId": album_id,
+                            "imageUrl": "",
+                            "totalTracks": 1,
+                            "releaseDate": 0.0,
+                        }
+                        base["imageId"] = album_id
+                        logger.info("Repaired missing album for track %s using import data: %s", base.get("name"), albumName)
+
                 if base.get("created_reason") in (SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON):
                     if timePlayed > base.get("duration", 0):
                         base["duration"] = timePlayed
