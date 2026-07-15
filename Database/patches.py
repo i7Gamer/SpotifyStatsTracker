@@ -392,8 +392,56 @@ def patch_spotapi_user() -> bool:
         return False
 
 
+def patch_last_played() -> bool:
+    """Patch SpotipyFree.LastPlayed.LastPlayedManger.updateLoop to handle
+    situations where state or state.timestamp is None (e.g. inactive device)
+    without raising TypeError, spamming tracebacks, or forcing constant reconnects.
+    """
+    try:
+        from SpotipyFree.LastPlayed import LastPlayedManger
+        import datetime
+
+        def patched_update_loop(self, callback, refreshInterval=3):
+            while self.run:
+                try:
+                    state = self.manager.state
+                    if (state is None or 
+                        getattr(state, "timestamp", None) is None or 
+                        getattr(state, "track", None) is None or 
+                        getattr(state.track, "uid", None) is None):
+                        time.sleep(refreshInterval)
+                        continue
+
+                    timestamp = int(state.timestamp) / 1000
+                    if self.lastPLayed != state.track.uid:
+                        if self.lastTrackUri is not None:
+                            timePlayed = max(0, int((time.time() - self.lastPlayedAt.timestamp()) * 1000))
+                            callback(self.lastTrackUri, self.lastPlayedAtText, self.lastContextUri, timePlayed)
+                        self.lastTrackUri = state.track.uri
+                        self.lastPlayedAt = datetime.datetime.fromtimestamp(
+                            timestamp, tz=datetime.timezone.utc
+                        )
+                        self.lastPlayedAtText = self.lastPlayedAt.isoformat().replace("+00:00", "Z")
+                        self.lastContextUri = state.context_uri
+                        self.lastPLayed = state.track.uid
+                    time.sleep(refreshInterval)
+                except Exception as e:
+                    logger.error("[SpotipyFree] Error in Recently Played: %s", e, exc_info=True)
+                    time.sleep(10)
+                    try:
+                        self.manager.reconnect()
+                    except Exception as reconnect_err:
+                        logger.error("[SpotipyFree] Listener stopped due to websocket disconnection: %s", reconnect_err, exc_info=True)
+
+        LastPlayedManger.updateLoop = patched_update_loop
+        return True
+    except (ModuleNotFoundError, ImportError):
+        return False
+
+
 patch_spotipy_free()
 patch_spotapi_user()
+patch_last_played()
 
 
 

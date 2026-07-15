@@ -32,9 +32,10 @@ def setUpModule():
     # (unittest discover imports every test module before running any tests), the
     # real SpotipyFree.Spotify would never get patched for the rest of the process.
     # Re-applying here makes this module correct regardless of import order.
-    from Database.patches import patch_spotapi_user
+    from Database.patches import patch_spotapi_user, patch_last_played
     patch_spotipy_free()
     patch_spotapi_user()
+    patch_last_played()
 
 
 class TestPatches(unittest.TestCase):
@@ -535,6 +536,34 @@ class TestPatches(unittest.TestCase):
             patched_keep_alive(instance)
 
         mock_original.assert_called_once_with(instance)
+
+    def test_patched_update_loop_handles_none_timestamp_gracefully(self):
+        """The patched updateLoop should sleep and continue without raising or calling reconnect when state or timestamp is None."""
+        from SpotipyFree.LastPlayed import LastPlayedManger
+        import time
+        
+        manager = MagicMock()
+        callback = MagicMock()
+        
+        state_none_timestamp = MagicMock()
+        state_none_timestamp.timestamp = None
+        state_none_timestamp.track = None
+        
+        manager.state = state_none_timestamp
+        
+        with patch("SpotipyFree.LastPlayed.PlayerStatus"):
+            lpm = LastPlayedManger(MagicMock())
+        lpm.manager = manager
+        lpm.run = True
+        
+        def mock_sleep(secs):
+            lpm.run = False
+            
+        with patch("time.sleep", side_effect=mock_sleep):
+            lpm.updateLoop(callback, refreshInterval=1)
+            
+        callback.assert_not_called()
+        manager.reconnect.assert_not_called()
 
 
 if __name__ == "__main__":
