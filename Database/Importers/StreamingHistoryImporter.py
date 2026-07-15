@@ -1,9 +1,12 @@
 import csv
 import json
 import datetime
+import logging
 import SpotipyFree
 import concurrent.futures
 import threading
+
+logger = logging.getLogger(__name__)
 
 try:
     from Database.Formatters.spotifyClient import Client
@@ -121,7 +124,7 @@ class Importer:
             try:
                 meta = self._fetchTrackMeta(name, artist, trackUri)
             except Exception as e:
-                print(f"Error fetching {name} by {artist}: {parseError(e)}")
+                logger.warning("Error fetching %s by %s: %s", name, artist, parseError(e))
             return key, meta
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.MAX_PREFETCH_WORKERS) as executor:
@@ -147,7 +150,56 @@ class Importer:
                             nameArtistKey = formatted["name"] + formatted["artists"][0]["name"]
                             known[nameArtistKey] = formatted
                 except Exception as e:
-                    print(f"Error saving pre-fetched track: {parseError(e)}")
+                    logger.error("Error saving pre-fetched track: %s", parseError(e))
+
+    def _createSyntheticTrack(self, name: str, artist: str, trackUri: str | None, timePlayed: int) -> dict:
+        import hashlib
+        
+        # Determine track, album, and artist IDs
+        if trackUri:
+            track_id = trackUri
+        else:
+            # Generate deterministic unique ID based on name and artist
+            track_id = hashlib.md5(f"{name}::{artist}".encode("utf-8")).hexdigest()
+            
+        album_id = f"album_{track_id}"
+        artist_id = f"artist_{track_id}"
+        
+        artists = [
+            {
+                "name": artist,
+                "url": f"https://open.spotify.com/artist/{artist_id}",
+                "imageUrl": "",
+                "imageId": artist_id,
+                "id": artist_id,
+            }
+        ]
+        
+        album = {
+            "name": name,  # Fallback: use track name as album name
+            "url": f"https://open.spotify.com/album/{album_id}",
+            "id": album_id,
+            "imageId": album_id,
+            "imageUrl": "",
+            "totalTracks": 1,
+            "releaseDate": 0.0,
+        }
+        
+        return {
+            "name": name,
+            "releaseDate": 0.0,
+            "id": track_id,
+            "url": f"https://open.spotify.com/track/{track_id}",
+            "artists": artists,
+            "album": album,
+            "imageUrl": "",
+            "imageId": album_id,
+            "duration": timePlayed,  # Use play time as default duration
+            "explicit": False,
+            "isrc": "",
+            "discNumber": 1,
+            "trackNumber": 1,
+        }
 
     def _processPlay(self, item, known):
         name, artist, startTimestamp, timePlayed, trackUri = item
@@ -160,15 +212,23 @@ class Importer:
                 if not name or not artist:
                     return None
 
-                meta = self._fetchTrackMeta(name, artist, trackUri)
-                base = Client.formatTrack(meta, embedPlaybackInfo=False)
+                try:
+                    meta = self._fetchTrackMeta(name, artist, trackUri)
+                    base = Client.formatTrack(meta, embedPlaybackInfo=False)
+                except Exception as e:
+                    # Fallback to synthetic track
+                    logger.info("Spotify lookup failed for %s by %s (URI: %s), using synthetic record: %s", name, artist, trackUri, parseError(e))
+                    base = self._createSyntheticTrack(name, artist, trackUri, timePlayed)
+
                 known[base["id"]] = base
+                if trackUri:
+                    known[trackUri] = base
                 known[name + artist] = base
                 meta = Client.embedPlayInfo(base.copy(), startTimestamp, timePlayed)
 
             return meta
         except Exception as e:
-            print(f"Error processing item: {parseError(e)}")
+            logger.error("Error processing item: %s", parseError(e))
             return None
         
     def _import(self, dataFunction, history, known=[], progressCallback=None):

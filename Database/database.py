@@ -78,6 +78,7 @@ class Database:
     _imageDownloadExecutor = concurrent.futures.ThreadPoolExecutor(max_workers=IMAGE_DOWNLOAD_WORKERS)
     _active_backfills = set()
     _backfill_lock = threading.Lock()
+    _cleanup_done = False
 
     def __init__(self, user: str, cookiesFile: str | None = None, email: str | None = None, dbPath=None):
         if not user:
@@ -100,6 +101,16 @@ class Database:
         # stored once regardless of how many users have played a given track.
         self.repo = Repository(dbPath) if dbPath is not None else Repository()
         self.repo.upsertUser(user, email)
+
+        # Run database orphans cleanup once on startup
+        if not Database._cleanup_done:
+            Database._cleanup_done = True
+            try:
+                logger.info("Running database orphans cleanup...")
+                deleted = self.repo.cleanupOrphans()
+                logger.info("Database orphans cleanup complete: %s", deleted)
+            except Exception as e:
+                logger.error("Failed to run database orphans cleanup: %s", e)
 
         self.refreshSettings()
 
@@ -523,6 +534,9 @@ class Database:
                 self.user, track_id, track_name, timestamp, timePlayed, source
             )
         return was_inserted
+
+    def cleanupOrphans(self) -> dict[str, int]:
+        return self.repo.cleanupOrphans()
 
     def importHistory(self, exportedHistory, progressPrefix: str = "", isFinalFile: bool = True, hasPriorError: bool = False):
         importer = self._withCookiesFile(lambda cookiesFile: Importer(cookiesFile=cookiesFile, email=self.email))
@@ -1600,6 +1614,7 @@ class Database:
                         album_id = album_raw.get("id")
                         release_date_str = album_raw.get("release_date")
                         total_tracks = album_raw.get("total_tracks", 0)
+                        album_name = album_raw.get("name")
 
                         if release_date_str == "0000-00-00" or not release_date_str:
                             release_date = 0.0
@@ -1610,7 +1625,18 @@ class Database:
                             except Exception:
                                 release_date = 0.0
 
-                        self.repo.updateAlbumMetadata(album_id, release_date, total_tracks)
+                        resolved_album_name = album_name if album_name else "[Deleted/Unavailable Album]"
+                        self.repo.updateAlbumMetadata(album_id, release_date, total_tracks, name=resolved_album_name)
+
+                        # Update names for the tracks in this album if returned
+                        tracks_data = album_raw.get("tracks", {}).get("items") or []
+                        for track_raw in tracks_data:
+                            track_id = track_raw.get("id") or track_raw.get("track_id")
+                            track_name = track_raw.get("name")
+                            if track_id:
+                                resolved_track_name = track_name if track_name else "[Deleted/Unavailable Track]"
+                                self.repo.updateTrackName(track_id, resolved_track_name)
+
                         updated_count += 1
 
                     if updated_count > 0:

@@ -18,11 +18,13 @@ class TestMetadataBackfiller(DatabaseTestCase):
             conn.execute("INSERT INTO albums (id, name, url, release_date) VALUES ('alb1', 'Album 1', '', 0.0)")
             conn.execute("INSERT INTO albums (id, name, url, release_date) VALUES ('alb2', 'Album 2', '', 1700000000.0)")
             conn.execute("INSERT INTO albums (id, name, url, release_date) VALUES ('alb3', 'Album 3', '', NULL)")
+            conn.execute("INSERT INTO albums (id, name, url, release_date, total_tracks) VALUES ('alb4', 'Album 4', '', 0.0, 5)")
 
         missing = db.repo.getAlbumsMissingMetadata(10)
         self.assertIn("alb1", missing)
         self.assertIn("alb3", missing)
         self.assertNotIn("alb2", missing)
+        self.assertNotIn("alb4", missing)
 
     def test_repository_update_album_metadata(self):
         db = self._makeDb({}, [])
@@ -30,10 +32,22 @@ class TestMetadataBackfiller(DatabaseTestCase):
         with conn:
             conn.execute("INSERT INTO albums (id, name, url, release_date, total_tracks) VALUES ('alb1', 'Album 1', '', 0.0, 0)")
 
-        db.repo.updateAlbumMetadata("alb1", 1600000000.0, 12)
-        row = conn.execute("SELECT release_date, total_tracks FROM albums WHERE id='alb1'").fetchone()
+        db.repo.updateAlbumMetadata("alb1", 1600000000.0, 12, "Updated Album 1")
+        row = conn.execute("SELECT name, release_date, total_tracks FROM albums WHERE id='alb1'").fetchone()
+        self.assertEqual(row["name"], "Updated Album 1")
         self.assertEqual(row["release_date"], 1600000000.0)
         self.assertEqual(row["total_tracks"], 12)
+
+    def test_repository_update_track_name(self):
+        db = self._makeDb({}, [])
+        conn = db.repo._conn()
+        with conn:
+            conn.execute("INSERT INTO albums (id, name, url) VALUES ('alb1', 'Album 1', '')")
+            conn.execute("INSERT INTO tracks (id, name, url, album_id) VALUES ('tr1', 'Track 1', '', 'alb1')")
+
+        db.repo.updateTrackName("tr1", "Updated Track 1")
+        row = conn.execute("SELECT name FROM tracks WHERE id='tr1'").fetchone()
+        self.assertEqual(row["name"], "Updated Track 1")
 
     @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value="mock_token")
     @patch("requests.get")
@@ -45,8 +59,17 @@ class TestMetadataBackfiller(DatabaseTestCase):
             "albums": [
                 {
                     "id": "alb1",
+                    "name": "Updated Album Name",
                     "release_date": "2020-05-05",
-                    "total_tracks": 10
+                    "total_tracks": 10,
+                    "tracks": {
+                        "items": [
+                            {
+                                "id": "tr1",
+                                "name": "Updated Track Name"
+                            }
+                        ]
+                    }
                 }
             ]
         }
@@ -60,6 +83,7 @@ class TestMetadataBackfiller(DatabaseTestCase):
         with conn:
             conn.execute("INSERT INTO albums (id, name, url, release_date, total_tracks) VALUES ('alb1', 'Album 1', '', 0.0, 0)")
             conn.execute("INSERT INTO albums (id, name, url, release_date, total_tracks) VALUES ('alb2', 'Album 2', '', 0.0, 0)")
+            conn.execute("INSERT INTO tracks (id, name, url, album_id) VALUES ('tr1', 'Track 1', '', 'alb1')")
 
         # Mock getUserSpotifyCredentials to return active credentials
         db.getUserSpotifyCredentials = MagicMock(return_value={
@@ -81,10 +105,14 @@ class TestMetadataBackfiller(DatabaseTestCase):
         # Run one iteration of the backfiller
         db._metadataBackfillLoop()
 
-        # Verify alb1 was updated
-        row = conn.execute("SELECT release_date, total_tracks FROM albums WHERE id='alb1'").fetchone()
+        # Verify alb1 was updated (including its name and tracks)
+        row = conn.execute("SELECT name, release_date, total_tracks FROM albums WHERE id='alb1'").fetchone()
+        self.assertEqual(row["name"], "Updated Album Name")
         self.assertGreater(row["release_date"], 0)
         self.assertEqual(row["total_tracks"], 10)
+
+        track_row = conn.execute("SELECT name FROM tracks WHERE id='tr1'").fetchone()
+        self.assertEqual(track_row["name"], "Updated Track Name")
 
         # Verify alb2 was skipped because it was in _active_backfills
         row2 = conn.execute("SELECT release_date, total_tracks FROM albums WHERE id='alb2'").fetchone()

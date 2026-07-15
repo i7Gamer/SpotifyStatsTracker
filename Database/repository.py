@@ -1342,18 +1342,69 @@ class Repository:
     def getAlbumsMissingMetadata(self, limit: int) -> list[str]:
         conn = self._conn()
         rows = conn.execute(
-            "SELECT id FROM albums WHERE release_date = 0 OR release_date IS NULL LIMIT ?",
+            "SELECT id FROM albums WHERE (release_date = 0 OR release_date IS NULL) AND total_tracks = 0 LIMIT ?",
             (limit,)
         ).fetchall()
         return [row["id"] for row in rows]
 
-    def updateAlbumMetadata(self, album_id: str, release_date: float, total_tracks: int) -> None:
+    def updateAlbumMetadata(self, album_id: str, release_date: float, total_tracks: int, name: str | None = None) -> None:
+        conn = self._conn()
+        with conn:
+            if name:
+                conn.execute(
+                    "UPDATE albums SET release_date = ?, total_tracks = ?, name = ? WHERE id = ?",
+                    (release_date, total_tracks, name, album_id)
+                )
+            else:
+                conn.execute(
+                    "UPDATE albums SET release_date = ?, total_tracks = ? WHERE id = ?",
+                    (release_date, total_tracks, album_id)
+                )
+
+    def updateTrackName(self, track_id: str, name: str) -> None:
         conn = self._conn()
         with conn:
             conn.execute(
-                "UPDATE albums SET release_date = ?, total_tracks = ? WHERE id = ?",
-                (release_date, total_tracks, album_id)
+                "UPDATE tracks SET name = ? WHERE id = ?",
+                (name, track_id)
             )
+
+    def cleanupOrphans(self) -> dict[str, int]:
+        """Deletes tracks, track-artists, albums, artists, and images that are no longer
+        referenced by any plays. Returns the count of deleted rows per category."""
+        conn = self._conn()
+        deleted = {}
+        with conn:
+            # 1. Delete orphaned track_artists (tracks with no plays)
+            cur = conn.execute("DELETE FROM track_artists WHERE track_id NOT IN (SELECT DISTINCT track_id FROM plays)")
+            deleted["track_artists"] = cur.rowcount
+
+            # 2. Delete orphaned tracks (not in plays)
+            cur = conn.execute("DELETE FROM tracks WHERE id NOT IN (SELECT DISTINCT track_id FROM plays)")
+            deleted["tracks"] = cur.rowcount
+
+            # 3. Delete orphaned albums (no tracks reference them)
+            cur = conn.execute("DELETE FROM albums WHERE id NOT IN (SELECT DISTINCT album_id FROM tracks)")
+            deleted["albums"] = cur.rowcount
+
+            # 4. Delete orphaned artists (no track_artists reference them)
+            cur = conn.execute("DELETE FROM artists WHERE id NOT IN (SELECT DISTINCT artist_id FROM track_artists)")
+            deleted["artists"] = cur.rowcount
+
+            # 5. Delete orphaned images (no longer referenced by tracks, albums, or artists)
+            cur = conn.execute("""
+                DELETE FROM images 
+                WHERE id NOT IN (
+                    SELECT DISTINCT image_id FROM albums WHERE image_id IS NOT NULL
+                    UNION
+                    SELECT DISTINCT image_id FROM artists WHERE image_id IS NOT NULL
+                    UNION
+                    SELECT DISTINCT image_id FROM tracks WHERE image_id IS NOT NULL
+                )
+            """)
+            deleted["images"] = cur.rowcount
+            
+        return deleted
 
     def getMaxPlayedAtInPeriod(self, username: str, startTs: float, endTs: float) -> float | None:
         row = self._conn().execute(

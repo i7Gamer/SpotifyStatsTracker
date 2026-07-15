@@ -300,5 +300,32 @@ class TestMusicoletSyntheticTimestampsAreDeterministic(unittest.TestCase):
         self.assertEqual(len(set(laterRun)), 5)
 
 
+class TestImportFallbackToSyntheticTrack(unittest.TestCase):
+    def test_fallback_when_spotify_lookup_fails(self):
+        importer = Importer()
+        importer.sp = MagicMock()
+        # Mock SpotipyFree lookup to fail to simulate deleted/unavailable track
+        importer.sp.track.side_effect = Exception("Spotify 404 Track Not Found")
+        importer.sp.search.side_effect = Exception("Spotify 404 Search Failed")
+
+        history = [("Arctic Future", "Mark Watson", "2023-01-01 00:00:00", 10354, "uri_2s9mjCqeU26eivqPXY04V8")]
+
+        def dummyDataFunction(item):
+            return item
+
+        tracks = list(importer._import(dummyDataFunction, history, known={}, progressCallback=None))
+
+        # Verify that we did NOT drop the play and successfully resolved it to a synthetic track/album
+        self.assertEqual(len(tracks), 1)
+        track = tracks[0]
+        self.assertEqual(track["name"], "Arctic Future")
+        self.assertEqual(track["id"], "uri_2s9mjCqeU26eivqPXY04V8")
+        self.assertEqual(track["duration"], 10354)
+        self.assertEqual(track["artists"][0]["name"], "Mark Watson")
+        self.assertEqual(track["album"]["name"], "Arctic Future")
+        self.assertEqual(track["album"]["totalTracks"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()
+
