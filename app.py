@@ -43,6 +43,35 @@ RATE_LIMIT_MAX_ATTEMPTS = 10     #< max POSTs allowed per window, per source IP,
 RATE_LIMIT_WINDOW_SECONDS = 300  #< 5 minutes
 RATE_LIMIT_ERROR_MESSAGE = "Too many attempts. Please wait a few minutes and try again."
 
+# Baseline defense-in-depth headers applied to every response (see
+# registerRoutes' after_request hook below).
+#
+# script-src/style-src keep 'unsafe-inline': every template in this app relies
+# on inline <script> blocks and inline event-handler attributes (onclick=,
+# onerror=, style=...), none of which are nonce/hash-tagged - disallowing
+# unsafe-inline here would break the app outright, not just tighten it.
+# Google Fonts is the only external resource any template actually loads.
+# No Strict-Transport-Security: this app is normally self-hosted over plain
+# HTTP on a local network/Docker host (see README), and HSTS would force
+# HTTPS for the origin going forward - actively breaking that expected setup.
+SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "same-origin",
+    "Content-Security-Policy": (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+        "font-src 'self' https://fonts.gstatic.com; "
+        "img-src 'self' data:; "
+        "connect-src 'self'; "
+        "object-src 'none'; "
+        "base-uri 'self'; "
+        "form-action 'self'; "
+        "frame-ancestors 'none'"
+    ),
+}
+
 
 def _passwordPolicyError(password: str) -> str | None:
     """None if `password` satisfies the account password policy, otherwise a
@@ -615,6 +644,12 @@ class SpotifyDashboardApp:
         return discovered[:limit]
 
     def registerRoutes(self):
+        @self.app.after_request
+        def _setSecurityHeaders(response):
+            for header, value in SECURITY_HEADERS.items():
+                response.headers.setdefault(header, value)
+            return response
+
         @self.app.context_processor
         def _injectPasswordPolicy():
             # Lets register.html/reset_password.html show the actual configured
