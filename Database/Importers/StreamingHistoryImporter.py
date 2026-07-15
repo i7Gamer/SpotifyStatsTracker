@@ -299,7 +299,11 @@ class Importer:
             matchedId = self._resolveKnownKey(trackUri, name, artist, known)
 
             if matchedId:
-                meta = Client.embedPlayInfo(known[matchedId].copy(), startTimestamp, timePlayed)
+                base = known[matchedId]
+                if base.get("created_reason") in (SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON):
+                    if timePlayed > base.get("duration", 0):
+                        base["duration"] = timePlayed
+                meta = Client.embedPlayInfo(base.copy(), startTimestamp, timePlayed)
             else:
                 if not name or not artist:
                     return None

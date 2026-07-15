@@ -182,6 +182,28 @@ class TestZeroDurationFiltering(unittest.TestCase):
         self.assertEqual(len(tracks), 1)
         self.assertEqual(tracks[0]["timePlayed"], 200000)
 
+    def test_process_play_updates_synthetic_track_duration_in_cache(self):
+        from Database.db import SYNTHETIC_FALLBACK_REASON
+        importer = self._importer()
+        
+        # Setup cached synthetic track with 10s duration
+        known = {
+            "track_x": {
+                "id": "track_x",
+                "name": "Song X",
+                "artists": [{"id": "artist_x", "name": "Artist X"}],
+                "duration": 10000,
+                "created_reason": SYNTHETIC_FALLBACK_REASON
+            }
+        }
+        
+        # Process a play with 240s duration
+        item = ("Song X", "Artist X", 1000, 240000, "track_x", "Album X")
+        meta = importer._processPlay(item, known)
+        
+        # Verify the cached track duration was updated in place
+        self.assertEqual(known["track_x"]["duration"], 240000)
+
 
 class TestResolveKnownKey(unittest.TestCase):
     def _importer(self):

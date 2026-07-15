@@ -253,6 +253,49 @@ class TestDatabaseDeduplication(DatabaseTestCase):
         self.assertNotIn("played_at", msg)
         self.assertIn("time_played corrected from 5000ms to 6000ms", msg)
 
+    def test_import_preserves_consecutive_plays_of_same_song(self):
+        """Consecutive plays of the same song must not be collapsed/overwritten."""
+        # Song has 240s duration. Play 1 starts at 1000. Play 2 starts at 1240.
+        db = self._makeDb({}, [])
+
+        def gen():
+            yield _meta("track_x", 1000, timePlayed=240000)
+            yield _meta("track_x", 1240, timePlayed=240000)
+
+        with patch("Database.database.Importer", return_value=self._mockImporter(gen)):
+            db.importHistory("raw export")
+
+        plays = db.getEntriesFromNew(fullPagination=False)
+        self.assertEqual(len(plays), 2)
+        played_ats = sorted([p["playedAt"] for p in plays])
+        self.assertEqual(played_ats, [1000, 1240])
+
+    def test_import_updates_synthetic_track_duration(self):
+        """Synthetic track durations should be updated in the catalog when a longer play duration is imported."""
+        # Create a synthetic fallback track with duration 10s
+        from Database.db import SYNTHETIC_FALLBACK_REASON
+        db = self._makeDb({}, [])
+        
+        # Populate catalog with synthetic track
+        synthetic_track = _meta("track_x", 1000, timePlayed=10000)
+        synthetic_track["created_reason"] = SYNTHETIC_FALLBACK_REASON
+        synthetic_track["duration"] = 10000  # 10s
+        db.repo.upsertTrack(synthetic_track)
+        db.repo.commit()
+
+        # Import a longer play (e.g. 240s)
+        def gen():
+            track = _meta("track_x", 2000, timePlayed=240000)
+            track["duration"] = 240000
+            yield track
+
+        with patch("Database.database.Importer", return_value=self._mockImporter(gen)):
+            db.importHistory("raw export")
+
+        # Verify catalog track duration was updated
+        track = db.repo.getTrack("track_x")
+        self.assertEqual(track["duration"], 240000)
+
 
 
 if __name__ == "__main__":

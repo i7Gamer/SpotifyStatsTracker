@@ -592,7 +592,14 @@ class Database:
                 track = stagedTracks.get(track_id)
                 durationSeconds = (track.get("duration_ms", 0) or 0) // 1000 if track else 0
                 tolerance = durationSeconds + self.BACKFILL_INSERT_GUARD_EXTRA_SECONDS
-                matches = self.repo.getPlaysNearTime(self.user, track_id, played_at, tolerance)
+                raw_matches = self.repo.getPlaysNearTime(self.user, track_id, played_at, tolerance)
+                matches = []
+                for m in raw_matches:
+                    db_played_at = m["played_at"]
+                    diff_start = abs(db_played_at - played_at)
+                    diff_end = abs(db_played_at - (played_at + durationSeconds))
+                    if diff_start <= 15 or diff_end <= 60:
+                        matches.append(m)
 
                 if matches:
                     if len(matches) == 1:
