@@ -140,8 +140,11 @@ class Database:
 
         filterKeyword = os.environ.get("IMPORT_KEYWORD", None)
         logger.info("auto import filtering by %s", filterKeyword)
+        # importHistoryBatch (not importHistory): files dropped together share
+        # one import run state, so a skip/replay pair straddling a file
+        # boundary isn't collapsed - and a bad file doesn't abort the rest.
         self.autoImporter = AutoImporter(folderPath=self.autoImportFolderPath,
-                                         importCallback=self.importHistory,
+                                         importCallback=self.importHistoryBatch,
                                          pollInterval=5,
                                          keyword=filterKeyword)
 

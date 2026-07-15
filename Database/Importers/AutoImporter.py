@@ -21,16 +21,21 @@ class Watchdog:
         self._stop_event = threading.Event()
 
     def watchFolder_blocking(self, pathToWatch, callback, checkInterval=5, callbackInitialFiles=True):
+        """`callback` receives the LIST of files discovered in one scan (sorted
+        by path), not one call per file: files dropped together must be
+        processed as a single batch so batch-scoped import state (duplicate-
+        claim tracking across file boundaries, see Database.importHistoryBatch)
+        covers all of them."""
         logger.info(f"Monitoring {pathToWatch} for new files (Polling)...")
         if not os.path.exists(pathToWatch):
             os.makedirs(pathToWatch)
         try:
             filesBefore = {f for f in os.listdir(pathToWatch) if os.path.isfile(os.path.join(pathToWatch, f))}
-            if callbackInitialFiles:
-                for path in filesBefore:
-                    fullPath = os.path.join(pathToWatch, path)
+            if callbackInitialFiles and filesBefore:
+                fullPaths = sorted(os.path.join(pathToWatch, f) for f in filesBefore)
+                for fullPath in fullPaths:
                     logger.info(f"File found: {fullPath}")
-                    callback(fullPath)
+                callback(fullPaths)
         except FileNotFoundError:
             logger.error(f"Error: The directory {pathToWatch} does not exist.")
             return
@@ -41,12 +46,12 @@ class Watchdog:
                     break
                 filesAfter = {f for f in os.listdir(pathToWatch) if os.path.isfile(os.path.join(pathToWatch, f))}
                 filesAdded = filesAfter - filesBefore
-                
+
                 if filesAdded:
-                    for targetFile in filesAdded:
-                        fullPath = os.path.join(pathToWatch, targetFile)
+                    fullPaths = sorted(os.path.join(pathToWatch, f) for f in filesAdded)
+                    for fullPath in fullPaths:
                         logger.info(f"New file created: {fullPath}")
-                        callback(fullPath)
+                    callback(fullPaths)
                 filesBefore = filesAfter
             logger.info("Watchdog stopped peacefully")
 
@@ -76,35 +81,59 @@ class AutoImporter:
         self.keyword = keyword
         self.wd = Watchdog()
 
-    def _handleImport(self, path):
-        try:
-            fileDirectory = os.path.dirname(path)
-            fileName = os.path.basename(path)
-            doneDirectory = os.path.join(fileDirectory, "DONE")
-            if not os.path.exists(doneDirectory):
-                os.makedirs(doneDirectory)
-                logger.info(f"Created directory: {doneDirectory}")
-            destinationPath = os.path.join(doneDirectory, fileName)
-            if os.path.exists(destinationPath):
-                base, ext = os.path.splitext(fileName)
-                counter = 1
-                while os.path.exists(os.path.join(doneDirectory, f"{base}_{counter}{ext}")):
-                    counter += 1
-                destinationPath = os.path.join(doneDirectory, f"{base}_{counter}{ext}")
+    def _destinationPath(self, path):
+        fileDirectory = os.path.dirname(path)
+        fileName = os.path.basename(path)
+        doneDirectory = os.path.join(fileDirectory, "DONE")
+        if not os.path.exists(doneDirectory):
+            os.makedirs(doneDirectory)
+            logger.info(f"Created directory: {doneDirectory}")
+        destinationPath = os.path.join(doneDirectory, fileName)
+        if os.path.exists(destinationPath):
+            base, ext = os.path.splitext(fileName)
+            counter = 1
+            while os.path.exists(os.path.join(doneDirectory, f"{base}_{counter}{ext}")):
+                counter += 1
+            destinationPath = os.path.join(doneDirectory, f"{base}_{counter}{ext}")
+        return destinationPath
 
-            if self.keyword is not None and self.keyword not in fileName:
-                logger.info(f"Keyword '{self.keyword}' not found in '{fileName}'. Skipping import and moving directly to DONE.")
-            else:
-                # Import the file normally if keyword matches or keyword is None
+    def _handleImport(self, paths):
+        """Import one watchdog batch. Every file dropped in the same poll cycle
+        goes through a single importCallback call (Database.importHistoryBatch)
+        so batch-scoped import state - the duplicate-claim tracking that stops
+        a replay at the start of one file from "correcting away" the skip play
+        at the end of the previous file - spans the whole batch."""
+        toImport = []  #< (path, content) of keyword-matching, readable files
+        for path in sorted(paths):
+            try:
+                fileName = os.path.basename(path)
+                if self.keyword is not None and self.keyword not in fileName:
+                    logger.info(f"Keyword '{self.keyword}' not found in '{fileName}'. Skipping import and moving directly to DONE.")
+                    shutil.move(path, self._destinationPath(path))
+                    continue
                 with open(path, "r", encoding="utf-8") as f:
-                    self.importCallback(f.read())
-                logger.info(f"Successfully imported {fileName}")
+                    toImport.append((path, f.read()))
+            except Exception as e:
+                logger.error(f"Error reading file {path}: {e}")
 
-            shutil.move(path, destinationPath)
-            logger.info(f"Successfully moved {fileName} to DONE/")
-            
+        if not toImport:
+            return
+
+        try:
+            self.importCallback([content for _, content in toImport])
         except Exception as e:
-            logger.error(f"Error importing file {path}: {e}")
+            # Files stay in the watch folder so a restart retries them.
+            logger.error(f"Error importing batch of {len(toImport)} file(s): {parseError(e)}")
+            return
+
+        for path, _ in toImport:
+            fileName = os.path.basename(path)
+            try:
+                logger.info(f"Successfully imported {fileName}")
+                shutil.move(path, self._destinationPath(path))
+                logger.info(f"Successfully moved {fileName} to DONE/")
+            except Exception as e:
+                logger.error(f"Error moving file {path}: {e}")
 
     def start(self):
         self.wd.watchFolder(self.folderPath, self._handleImport, self.pollInterval)
