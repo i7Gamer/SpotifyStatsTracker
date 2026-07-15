@@ -583,9 +583,16 @@ class Database:
         # once the whole import has succeeded. SQLite only allows one writer
         # transaction at a time, so committing incrementally here would either
         # block progress-polling reads for the whole import, or (worse) let a
-        # failure partway through leave a half-imported batch committed. Progress
-        # writes go through their own connection/commit (Repository.writeProgress),
-        # so they stay live throughout regardless.
+        # failure partway through leave a half-imported batch committed.
+        #
+        # INVARIANT: repo methods that self-commit ("with conn:" - writeProgress,
+        # image-status writes, playlist upserts) run on this same thread-local
+        # connection, and "with conn:" commits WHATEVER is pending on it. They
+        # are therefore only safe while no import rows are staged in the
+        # transaction: during the staging loop below (which writes nothing to
+        # the tracks/plays tables) or after the final commit()/rollback().
+        # Never call one between the first upsertTrack and the commit, or it
+        # silently commits a partial import.
         stagedTracks: dict[str, dict] = {}
         stagedPlays: list[dict] = []
         index = 0
