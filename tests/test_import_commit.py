@@ -226,6 +226,23 @@ class TestImportHistoryBatch(DatabaseTestCase):
         self.db.importHistoryBatch([])
         self.assertEqual(self._ids(), [])
 
+    def test_import_history_batch_skips_already_imported_files(self):
+        """importHistoryBatch should skip already imported files by checking their hash and update progress accordingly."""
+        def gen():
+            yield _meta("i1", 100)
+
+        with patch("Database.database.Importer", return_value=self._mockImporter(gen, parsedCount=1)):
+            self.db.importHistoryBatch(["content-a", "content-b"])
+        
+        self.assertIsNotNone(self.db.repo.getTrack("i1"))
+        
+        self.db.writeProgress("idle", 0, 0, "", False)
+        
+        original_import_history = self.db.importHistory
+        with patch.object(self.db, "importHistory", side_effect=original_import_history) as mock_import:
+            self.db.importHistoryBatch(["content-a", "content-c"])
+            self.assertEqual(mock_import.call_count, 1)
+
 
 if __name__ == "__main__":
     import unittest

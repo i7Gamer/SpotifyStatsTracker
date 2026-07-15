@@ -527,7 +527,7 @@ class Database:
     def cleanupOrphans(self) -> dict[str, int]:
         return self.repo.cleanupOrphans()
 
-    def importHistory(self, exportedHistory, progressPrefix: str = "", isFinalFile: bool = True, hasPriorError: bool = False):
+    def importHistory(self, exportedHistory, progressPrefix: str = "", isFinalFile: bool = True, hasPriorError: bool = False, track_file_hash: bool = False):
         importer = self._withCookiesFile(lambda cookiesFile: Importer(cookiesFile=cookiesFile, email=self.email))
 
         parsedHistory, exportType = importer._convertToList(exportedHistory)
@@ -641,6 +641,12 @@ class Database:
                                         created_reason=f"history_import (user: {self.user})"):
                     insertedCount += 1
 
+            if track_file_hash:
+                import hashlib
+                content_bytes = exportedHistory.encode("utf-8") if isinstance(exportedHistory, str) else str(exportedHistory).encode("utf-8")
+                file_hash = hashlib.sha256(content_bytes).hexdigest()
+                self.repo.markFileImported(self.user, file_hash)
+
             self.repo.commit()
             logger.info("Imported %d tracks; %d new plays, %d plays corrected for user %s", len(stagedTracks), insertedCount, updatedCount, self.user)
 
@@ -661,29 +667,45 @@ class Database:
         if not fileContents:
             return
 
+        import hashlib
         total = len(fileContents)
         failedCount = 0
+        skippedCount = 0
         for index, content in enumerate(fileContents, start=1):
             try:
                 isFinalFile = (index == total)
+                content_bytes = content.encode("utf-8") if isinstance(content, str) else str(content).encode("utf-8")
+                file_hash = hashlib.sha256(content_bytes).hexdigest()
+
+                if self.repo.isFileImported(self.user, file_hash):
+                    logger.info("File %s/%s already imported (hash: %s). Skipping.", index, total, file_hash)
+                    skippedCount += 1
+                    status = "complete" if isFinalFile else "running"
+                    self.writeProgress(status, index, total, f"File {index}/{total}: Skipping already imported file", error=(failedCount > 0))
+                    continue
+
                 self.importHistory(
                     content,
                     progressPrefix=f"File {index}/{total}: ",
                     isFinalFile=isFinalFile,
-                    hasPriorError=(failedCount > 0)
+                    hasPriorError=(failedCount > 0),
+                    track_file_hash=True
                 )
             except Exception as e:
                 failedCount += 1
                 logger.error("Import failed for file %s/%s: %s", index, total, parseError(e))
 
-        succeededCount = total - failedCount
+        succeededCount = total - failedCount - skippedCount
         if failedCount == 0:
-            self.writeProgress("complete", total, total, f"Imported {succeededCount}/{total} files")
-        elif succeededCount == 0:
+            if skippedCount == total:
+                self.writeProgress("complete", total, total, "All files were already imported")
+            else:
+                self.writeProgress("complete", total, total, f"Imported {succeededCount}/{total} files ({skippedCount} skipped)")
+        elif succeededCount == 0 and skippedCount == 0:
             self.writeProgress("failed", total, total, f"Imported 0/{total} files (all failed)", error=True)
         else:
             self.writeProgress("complete", total, total,
-                                f"Imported {succeededCount}/{total} files ({failedCount} failed)", error=True)
+                                f"Imported {succeededCount}/{total} files ({skippedCount} skipped, {failedCount} failed)", error=True)
 
     # ---- stats -------------------------------------------------------------------------
 

@@ -154,6 +154,12 @@ CREATE TABLE IF NOT EXISTS user_wrapped (
     discovered_albums_list TEXT NOT NULL,
     PRIMARY KEY (username, year)
 );
+
+CREATE TABLE IF NOT EXISTS imported_files (
+    username    TEXT NOT NULL REFERENCES users(username),
+    file_hash   TEXT NOT NULL,
+    PRIMARY KEY (username, file_hash)
+);
 """
 
 

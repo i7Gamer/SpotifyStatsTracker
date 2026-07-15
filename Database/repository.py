@@ -1364,6 +1364,21 @@ class Repository:
             "error": bool(row["error"]),
         }
 
+    def isFileImported(self, username: str, file_hash: str) -> bool:
+        conn = self._conn()
+        row = conn.execute(
+            "SELECT 1 FROM imported_files WHERE username = ? AND file_hash = ?",
+            (username, file_hash)
+        ).fetchone()
+        return row is not None
+
+    def markFileImported(self, username: str, file_hash: str) -> None:
+        conn = self._conn()
+        conn.execute(
+            "INSERT OR IGNORE INTO imported_files (username, file_hash) VALUES (?, ?)",
+            (username, file_hash)
+        )
+
     def getGlobalDatabaseStats(self) -> dict:
         conn = self._conn()
         tracks_count = conn.execute("SELECT COUNT(*) FROM tracks").fetchone()[0]
