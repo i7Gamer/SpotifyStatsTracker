@@ -11,6 +11,17 @@
     return computedAccent || '#FB717B';
   }
 
+  // Artist names (unlike every other label this file builds tooltip/legend
+  // HTML strings from - date buckets, day names, decade labels, hardcoded
+  // stat labels) come from the user's own imported listening history and
+  // aren't guaranteed HTML-safe - escape before splicing one into an
+  // innerHTML string.
+  function escapeHtml(str) {
+    var div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+  }
+
   function parseHex(hex) {
     hex = hex.replace(/^#/, '');
     if (hex.length === 3) {
@@ -349,7 +360,7 @@
         });
       });
       if (closest) {
-        showTooltip(evt, '<strong>' + closest.name + '</strong><br>' + closest.bucket + ' &middot; ' + closest.value + ' plays');
+        showTooltip(evt, '<strong>' + escapeHtml(closest.name) + '</strong><br>' + closest.bucket + ' &middot; ' + closest.value + ' plays');
       } else {
         hideTooltip();
       }
@@ -358,7 +369,7 @@
 
     if (legendEl) {
       legendEl.innerHTML = lines.map(function (l) {
-        return '<span class="chart-legend-item"><span class="chart-legend-swatch" style="background:' + l.color + '"></span>' + l.name + '</span>';
+        return '<span class="chart-legend-item"><span class="chart-legend-swatch" style="background:' + l.color + '"></span>' + escapeHtml(l.name) + '</span>';
       }).join('');
     }
   }
