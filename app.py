@@ -39,6 +39,9 @@ DEFAULT_SORT_BY = "totalTimeListened"
 VALID_SORT_BY = {"totalTimeListened", "plays", "name"}
 TRUTHY_ENV_VALUES = {"1", "true", "yes", "on"}
 PASSWORD_MIN_LENGTH = 8   #< also enforced client-side via the minlength attribute
+RATE_LIMIT_MAX_ATTEMPTS = 10     #< max POSTs allowed per window, per source IP, per route
+RATE_LIMIT_WINDOW_SECONDS = 300  #< 5 minutes
+RATE_LIMIT_ERROR_MESSAGE = "Too many attempts. Please wait a few minutes and try again."
 
 
 def _passwordPolicyError(password: str) -> str | None:
@@ -53,6 +56,37 @@ def _passwordPolicyError(password: str) -> str | None:
     if not any(c.isdigit() or not c.isalnum() for c in password):
         return "Password must contain at least one number or special character."
     return None
+
+
+class _RateLimiter:
+    """In-memory fixed-window rate limiter, keyed by (bucket, identifier).
+
+    Single-process only (state isn't shared across workers and doesn't
+    survive a restart) - adequate for this app's single-process Waitress
+    deployment, and mirrors the existing in-memory _login_cache pattern
+    rather than pulling in an external dependency for a personal, low-
+    traffic self-hosted app."""
+
+    def __init__(self, maxAttempts: int, windowSeconds: float):
+        self.maxAttempts = maxAttempts
+        self.windowSeconds = windowSeconds
+        self._hits: dict[tuple[str, str], list[float]] = {}
+        self._lock = threading.Lock()
+
+    def hit(self, bucket: str, identifier: str) -> bool:
+        """Record one attempt for (bucket, identifier). Returns True if it's
+        allowed (under the limit), False if this attempt should be rejected."""
+        key = (bucket, identifier)
+        now_ts = time.monotonic()
+        cutoff = now_ts - self.windowSeconds
+        with self._lock:
+            hits = [t for t in self._hits.get(key, []) if t >= cutoff]
+            if len(hits) >= self.maxAttempts:
+                self._hits[key] = hits
+                return False
+            hits.append(now_ts)
+            self._hits[key] = hits
+            return True
 
 
 class SpotifyDashboardApp:
@@ -81,6 +115,11 @@ class SpotifyDashboardApp:
         self._db_lock = threading.RLock()
         self._session_lock = threading.RLock()
         self._login_cache: dict = {}  #< {email: (result: bool, expires_at: float)}
+        # Throttles POSTs to /login, /register, /reset-password per source IP -
+        # without this, a network-reachable instance is brute-forceable
+        # indefinitely (check_password_hash costs some compute, but nothing
+        # stops an unlimited number of attempts).
+        self._authRateLimiter = _RateLimiter(RATE_LIMIT_MAX_ATTEMPTS, RATE_LIMIT_WINDOW_SECONDS)
         # Lets a self-hoster turn off the "do these cookies actually belong to
         # this email" check at login, e.g. if Spotify starts blocking the
         # verification request for their account. Off by default since it's
@@ -718,6 +757,13 @@ class SpotifyDashboardApp:
                 return None
             return nextUrl
 
+        def _rateLimited(bucket: str) -> bool:
+            """True if this request's source IP has exceeded RATE_LIMIT_MAX_ATTEMPTS
+            for `bucket` within RATE_LIMIT_WINDOW_SECONDS - callers should reject
+            the request with RATE_LIMIT_ERROR_MESSAGE when this returns True."""
+            identifier = request.remote_addr or "unknown"
+            return not self._authRateLimiter.hit(bucket, identifier)
+
         @self.app.route("/login", methods=["GET", "POST"])
         def login():
             if request.method == "GET":
@@ -725,6 +771,11 @@ class SpotifyDashboardApp:
 
             email = request.form.get("email", "").strip()
             nextUrl = _safeNextUrl(request.form.get("next"))
+
+            if _rateLimited("login"):
+                return render_template(
+                    "login.html", email=email, next=nextUrl,
+                    error=RATE_LIMIT_ERROR_MESSAGE), 429
 
             # The password form and the (collapsed, fallback) cookies form are
             # separate <form>s on login.html - only the submitted one's fields
@@ -808,6 +859,10 @@ class SpotifyDashboardApp:
             confirmPassword = request.form.get("confirm_password", "")
             cookies = request.form.get("cookies", "")
 
+            if _rateLimited("register"):
+                return render_template(
+                    "register.html", email=email, error=RATE_LIMIT_ERROR_MESSAGE), 429
+
             if not email or not password or not confirmPassword or not cookies:
                 return render_template(
                     "register.html", email=email,
@@ -863,6 +918,10 @@ class SpotifyDashboardApp:
             password = request.form.get("password", "")
             confirmPassword = request.form.get("confirm_password", "")
             cookies = request.form.get("cookies", "")
+
+            if _rateLimited("reset-password"):
+                return render_template(
+                    "reset_password.html", email=email, error=RATE_LIMIT_ERROR_MESSAGE), 429
 
             if not email or not password or not confirmPassword or not cookies:
                 return render_template(
