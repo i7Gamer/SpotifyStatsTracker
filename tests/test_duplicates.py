@@ -145,6 +145,73 @@ class TestDatabaseDeduplication(DatabaseTestCase):
         played_ats = sorted([p["playedAt"] for p in plays])
         self.assertEqual(played_ats, [100, 200])
 
+    def test_import_duplicate_logging_with_debug(self):
+        """Skip messages should be logged when FLASK_DEBUG is enabled."""
+        # 1. Duplicate with identical data
+        entries = [{"id": "track_x", "playedAt": 100, "timePlayed": 5000}]
+        db = self._makeDb({}, entries)
+        def gen_identical():
+            yield _meta("track_x", 100, timePlayed=5000)
+
+        with patch.dict(os.environ, {"FLASK_DEBUG": "1"}):
+            with patch("Database.database.Importer", return_value=self._mockImporter(gen_identical)):
+                with self.assertLogs("Database.database", level="INFO") as log_capture:
+                    db.importHistory("raw export")
+        self.assertTrue(any("duplicate found with identical data" in record for record in log_capture.output))
+
+        # 2. Multiple matches (ambiguous)
+        entries_multi = [
+            {"id": "track_x", "playedAt": 100, "timePlayed": 5000},
+            {"id": "track_x", "playedAt": 110, "timePlayed": 4500},
+        ]
+        db_multi = self._makeDb({}, entries_multi)
+        def gen_multi():
+            yield _meta("track_x", 105, timePlayed=6000)
+
+        with patch.dict(os.environ, {"FLASK_DEBUG": "true"}):
+            with patch("Database.database.Importer", return_value=self._mockImporter(gen_multi)):
+                with self.assertLogs("Database.database", level="INFO") as log_capture:
+                    db_multi.importHistory("raw export")
+        self.assertTrue(any("plays found within tolerance - ambiguous" in record for record in log_capture.output))
+
+    def test_import_duplicate_logging_without_debug(self):
+        """Skip messages should not be logged when FLASK_DEBUG is disabled or missing."""
+        # 1. Duplicate with identical data
+        entries = [{"id": "track_x", "playedAt": 100, "timePlayed": 5000}]
+        db = self._makeDb({}, entries)
+        def gen_identical():
+            yield _meta("track_x", 100, timePlayed=5000)
+
+        with patch.dict(os.environ, {"FLASK_DEBUG": "0"}):
+            with patch("Database.database.Importer", return_value=self._mockImporter(gen_identical)):
+                try:
+                    with self.assertLogs("Database.database", level="INFO") as log_capture:
+                        db.importHistory("raw export")
+                    self.assertFalse(any("duplicate found with identical data" in record for record in log_capture.output))
+                except AssertionError:
+                    pass
+
+        # 2. Multiple matches (ambiguous)
+        entries_multi = [
+            {"id": "track_x", "playedAt": 100, "timePlayed": 5000},
+            {"id": "track_x", "playedAt": 110, "timePlayed": 4500},
+        ]
+        db_multi = self._makeDb({}, entries_multi)
+        def gen_multi():
+            yield _meta("track_x", 105, timePlayed=6000)
+
+        env_copy = os.environ.copy()
+        if "FLASK_DEBUG" in env_copy:
+            del env_copy["FLASK_DEBUG"]
+        with patch.dict(os.environ, env_copy, clear=True):
+            with patch("Database.database.Importer", return_value=self._mockImporter(gen_multi)):
+                try:
+                    with self.assertLogs("Database.database", level="INFO") as log_capture:
+                        db_multi.importHistory("raw export")
+                    self.assertFalse(any("plays found within tolerance - ambiguous" in record for record in log_capture.output))
+                except AssertionError:
+                    pass
+
 
 
 if __name__ == "__main__":

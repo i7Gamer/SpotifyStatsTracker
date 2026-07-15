@@ -618,18 +618,20 @@ class Database:
                             continue
                         else:
                             # Data matches - skip, no update needed
-                            logger.info(
-                                "Skipping import play for track %s: duplicate found with identical data",
-                                track_id,
-                            )
+                            if os.environ.get("FLASK_DEBUG", "").lower() in TRUTHY_DEBUG_VALUES:
+                                logger.info(
+                                    "Skipping import play for track %s: duplicate found with identical data",
+                                    track_id,
+                                )
                             continue
                     else:
                         # Multiple matches - ambiguous, skip to avoid wrong update
-                        logger.info(
-                            "Skipping import play for track %s: %d plays found within tolerance - ambiguous, "
-                            "not updating to avoid wrong match",
-                            track_id, len(matches),
-                        )
+                        if os.environ.get("FLASK_DEBUG", "").lower() in TRUTHY_DEBUG_VALUES:
+                            logger.info(
+                                "Skipping import play for track %s: %d plays found within tolerance - ambiguous, "
+                                "not updating to avoid wrong match",
+                                track_id, len(matches),
+                            )
                         continue
 
                 # If no matches, proceed to insert as usual

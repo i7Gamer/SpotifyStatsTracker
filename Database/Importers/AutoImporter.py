@@ -2,6 +2,9 @@ import os
 import time
 import threading
 import shutil
+import logging
+
+logger = logging.getLogger(__name__)
 
 try:
     from Database.utils import parseError
@@ -18,7 +21,7 @@ class Watchdog:
         self._stop_event = threading.Event()
 
     def watchFolder_blocking(self, pathToWatch, callback, checkInterval=5, callbackInitialFiles=True):
-        print(f"Monitoring {pathToWatch} for new files (Polling)...")
+        logger.info(f"Monitoring {pathToWatch} for new files (Polling)...")
         if not os.path.exists(pathToWatch):
             os.makedirs(pathToWatch)
         try:
@@ -26,10 +29,10 @@ class Watchdog:
             if callbackInitialFiles:
                 for path in filesBefore:
                     fullPath = os.path.join(pathToWatch, path)
-                    print(f"File found: {fullPath}")
+                    logger.info(f"File found: {fullPath}")
                     callback(fullPath)
         except FileNotFoundError:
-            print(f"Error: The directory {pathToWatch} does not exist.")
+            logger.error(f"Error: The directory {pathToWatch} does not exist.")
             return
         try:
             while self.run and not self._stop_event.is_set():
@@ -42,13 +45,13 @@ class Watchdog:
                 if filesAdded:
                     for targetFile in filesAdded:
                         fullPath = os.path.join(pathToWatch, targetFile)
-                        print(f"New file created: {fullPath}")
+                        logger.info(f"New file created: {fullPath}")
                         callback(fullPath)
                 filesBefore = filesAfter
-            print("Watchdog stopped peacefully")
+            logger.info("Watchdog stopped peacefully")
 
         except Exception as e:
-            print(f"\nStopping monitor... {parseError(e)}")
+            logger.error(f"Stopping monitor... {parseError(e)}")
 
     def watchFolder(self, pathToWatch, callback, checkInterval=5):
         self._stop_event.clear()
@@ -80,7 +83,7 @@ class AutoImporter:
             doneDirectory = os.path.join(fileDirectory, "DONE")
             if not os.path.exists(doneDirectory):
                 os.makedirs(doneDirectory)
-                print(f"Created directory: {doneDirectory}")
+                logger.info(f"Created directory: {doneDirectory}")
             destinationPath = os.path.join(doneDirectory, fileName)
             if os.path.exists(destinationPath):
                 base, ext = os.path.splitext(fileName)
@@ -90,18 +93,18 @@ class AutoImporter:
                 destinationPath = os.path.join(doneDirectory, f"{base}_{counter}{ext}")
 
             if self.keyword is not None and self.keyword not in fileName:
-                print(f"Keyword '{self.keyword}' not found in '{fileName}'. Skipping import and moving directly to DONE.")
+                logger.info(f"Keyword '{self.keyword}' not found in '{fileName}'. Skipping import and moving directly to DONE.")
             else:
                 # Import the file normally if keyword matches or keyword is None
                 with open(path, "r", encoding="utf-8") as f:
                     self.importCallback(f.read())
-                print(f"Successfully imported {fileName}")
+                logger.info(f"Successfully imported {fileName}")
 
             shutil.move(path, destinationPath)
-            print(f"Successfully moved {fileName} to DONE/")
+            logger.info(f"Successfully moved {fileName} to DONE/")
             
         except Exception as e:
-            print(f"Error importing file {path}: {e}")
+            logger.error(f"Error importing file {path}: {e}")
 
     def start(self):
         self.wd.watchFolder(self.folderPath, self._handleImport, self.pollInterval)
