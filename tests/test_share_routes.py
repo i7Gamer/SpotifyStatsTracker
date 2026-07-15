@@ -8,7 +8,7 @@ import sys
 import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from app import SpotifyDashboardApp
+from app import SpotifyDashboardApp, RATE_LIMIT_MAX_ATTEMPTS
 
 _SECRET_KEY_PATCH = 'app.SpotifyDashboardApp._get_or_create_secret_key'
 
@@ -73,7 +73,7 @@ class TestRequestShareAction(ShareRoutesTestCase):
 
         self.assertEqual(resp.status_code, 200)
         self.assertIn(b"now sharing", resp.data)
-        self.assertTrue(self.dash.repo.hasAcceptedShare("alice", "bob"))
+        self.assertIn("bob", self.dash.repo.getAcceptedShareUsernames("alice"))
 
     def test_cannot_request_a_share_with_yourself(self):
         client = self._loginAs("alice", "alice@example.com")
@@ -102,8 +102,83 @@ class TestRequestShareAction(ShareRoutesTestCase):
         self.assertIn(b"error", resp.data.lower())
         self.assertEqual(self.dash.repo.getPendingOutgoingShares("alice"), [])
 
+    def test_re_requesting_a_pending_share_says_already_pending(self):
+        """createShareRequest treats a repeat as a no-op - the message must
+        say so, not claim a new request was just sent."""
+        self.dash.repo.upsertUser("bob", "bob@example.com")
+        client = self._loginAs("alice", "alice@example.com")
+        client.post("/profile", data={"action": "request_share", "target_username": "bob"})
+
+        resp = client.post("/profile", data={"action": "request_share", "target_username": "bob"})
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn(b"already pending", resp.data)
+        self.assertNotIn(b"Share request sent", resp.data)
+
+    def test_re_requesting_an_accepted_share_says_already_sharing(self):
+        self.dash.repo.upsertUser("alice", "alice@example.com")
+        self.dash.repo.upsertUser("bob", "bob@example.com")
+        self.dash.repo.createShareRequest("alice", "bob")
+        shareId = self.dash.repo.getPendingIncomingShares("bob")[0]["id"]
+        self.dash.repo.respondToShareRequest(shareId, "bob", accept=True)
+        client = self._loginAs("alice", "alice@example.com")
+
+        resp = client.post("/profile", data={"action": "request_share", "target_username": "bob"})
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn(b"already share data with bob", resp.data)
+        self.assertNotIn(b"now sharing data with each other", resp.data)
+
+    def test_request_share_is_rate_limited(self):
+        """Declines delete the share row, so without a throttle a rejected
+        requester could re-request (or fan out to every user) indefinitely -
+        request_share shares the same per-IP limiter as /login and /register."""
+        self.dash.repo.upsertUser("bob", "bob@example.com")
+        client = self._loginAs("alice", "alice@example.com")
+
+        for _ in range(RATE_LIMIT_MAX_ATTEMPTS):
+            resp = client.post("/profile", data={"action": "request_share", "target_username": "bob"})
+            self.assertEqual(resp.status_code, 200)
+
+        resp = client.post("/profile", data={"action": "request_share", "target_username": "bob"})
+
+        self.assertEqual(resp.status_code, 429)
+        self.assertIn(b"Too many attempts", resp.data)
+
+    def test_rate_limit_does_not_affect_other_profile_actions(self):
+        self.dash.repo.upsertUser("bob", "bob@example.com")
+        client = self._loginAs("alice", "alice@example.com")
+        for _ in range(RATE_LIMIT_MAX_ATTEMPTS + 1):
+            client.post("/profile", data={"action": "request_share", "target_username": "bob"})
+
+        resp = client.post("/profile", data={"action": "save_preferences",
+                                             "default_dashboard_window": "week", "timezone": ""})
+
+        self.assertEqual(resp.status_code, 200)
+
 
 class TestProfilePageShareListings(ShareRoutesTestCase):
+    def test_picker_excludes_users_already_in_a_share_relationship(self):
+        """Re-requesting an existing counterpart is always a no-op, so the
+        dropdown must only offer users with no pending/accepted relationship."""
+        for u in ("bob", "carol", "dave", "erin"):
+            self.dash.repo.upsertUser(u, f"{u}@example.com")
+        self.dash.repo.upsertUser("alice", "alice@example.com")
+        self.dash.repo.createShareRequest("alice", "bob")
+        bobShareId = self.dash.repo.getPendingIncomingShares("bob")[0]["id"]
+        self.dash.repo.respondToShareRequest(bobShareId, "bob", accept=True)   #< accepted
+        self.dash.repo.createShareRequest("alice", "carol")                    #< pending outgoing
+        self.dash.repo.createShareRequest("dave", "alice")                     #< pending incoming
+
+        client = self._loginAs("alice", "alice@example.com")
+        resp = client.get("/profile")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn(b'<option value="erin">', resp.data)   #< unrelated user still offered
+        self.assertNotIn(b'<option value="bob">', resp.data)
+        self.assertNotIn(b'<option value="carol">', resp.data)
+        self.assertNotIn(b'<option value="dave">', resp.data)
+
     def test_lists_pending_incoming_outgoing_and_accepted_and_candidates(self):
         self.dash.repo.upsertUser("alice", "alice@example.com")
         self.dash.repo.upsertUser("bob", "bob@example.com")
@@ -139,7 +214,7 @@ class TestShareActionRoute(ShareRoutesTestCase):
         resp = client.post(f"/profile/shares/{shareId}", data={"action": "accept"})
 
         self.assertEqual(resp.status_code, 302)
-        self.assertTrue(self.dash.repo.hasAcceptedShare("alice", "bob"))
+        self.assertIn("bob", self.dash.repo.getAcceptedShareUsernames("alice"))
 
     def test_recipient_can_decline(self):
         self.dash.repo.upsertUser("bob", "bob@example.com")
@@ -170,7 +245,7 @@ class TestShareActionRoute(ShareRoutesTestCase):
         resp = client.post(f"/profile/shares/{shareId}", data={"action": "revoke"})
 
         self.assertEqual(resp.status_code, 302)
-        self.assertFalse(self.dash.repo.hasAcceptedShare("alice", "bob"))
+        self.assertNotIn("bob", self.dash.repo.getAcceptedShareUsernames("alice"))
 
     def test_an_unrelated_user_cannot_act_on_someone_elses_share(self):
         self.dash.repo.upsertUser("bob", "bob@example.com")
@@ -181,7 +256,7 @@ class TestShareActionRoute(ShareRoutesTestCase):
         resp = client.post(f"/profile/shares/{shareId}", data={"action": "accept"})
 
         self.assertEqual(resp.status_code, 302)
-        self.assertFalse(self.dash.repo.hasAcceptedShare("alice", "bob"))
+        self.assertNotIn("bob", self.dash.repo.getAcceptedShareUsernames("alice"))
         self.assertEqual(len(self.dash.repo.getPendingIncomingShares("bob")), 1)
 
     def test_unknown_action_value_is_rejected(self):

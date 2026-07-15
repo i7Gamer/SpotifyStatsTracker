@@ -1,8 +1,9 @@
+{% set emptyMessage = emptyMessage if emptyMessage is defined else 'No items played in ' ~ year ~ '.' %}
 {% if items %}
   {% for track in items %}
     {% set item_number = loop.index %}
     {% include '_track_card.html' %}
   {% endfor %}
 {% else %}
-  <p class="loading">No items played in {{ year }}.</p>
+  <p class="loading">{{ emptyMessage }}</p>
 {% endif %}

@@ -46,25 +46,25 @@
       <tbody>
         <tr style="border-bottom: 1px solid var(--glass-border);">
           <td style="padding: 12px 8px;">Total Plays</td>
-          <td style="padding: 12px 8px; text-align: right; font-weight: 600;">{{ "{:,}".format(myTotalPlays) }}</td>
-          <td style="padding: 12px 8px; text-align: right; font-weight: 600;">{{ "{:,}".format(theirTotalPlays) }}</td>
+          <td style="padding: 12px 8px; text-align: right; font-weight: 600;">{{ "{:,}".format(my.totalPlays) }}</td>
+          <td style="padding: 12px 8px; text-align: right; font-weight: 600;">{{ "{:,}".format(their.totalPlays) }}</td>
         </tr>
         <tr style="border-bottom: 1px solid var(--glass-border);">
           <td style="padding: 12px 8px;">Total Time Listened</td>
-          <td style="padding: 12px 8px; text-align: right; font-weight: 600;">{{ myTotalTimeText }}</td>
-          <td style="padding: 12px 8px; text-align: right; font-weight: 600;">{{ theirTotalTimeText }}</td>
+          <td style="padding: 12px 8px; text-align: right; font-weight: 600;">{{ my.totalTimeText }}</td>
+          <td style="padding: 12px 8px; text-align: right; font-weight: 600;">{{ their.totalTimeText }}</td>
         </tr>
         {# Summary entries come from the same lists rendered below, so the
            summary row and the lists can never disagree on the #1 entry. #}
         <tr style="border-bottom: 1px solid var(--glass-border);">
           <td style="padding: 12px 8px;">Top Song</td>
-          <td style="padding: 12px 8px; text-align: right;">{{ myTopSongs[0].name if myTopSongs else "—" }}</td>
-          <td style="padding: 12px 8px; text-align: right;">{{ theirTopSongs[0].name if theirTopSongs else "—" }}</td>
+          <td style="padding: 12px 8px; text-align: right;">{{ my.topSongs[0].name if my.topSongs else "—" }}</td>
+          <td style="padding: 12px 8px; text-align: right;">{{ their.topSongs[0].name if their.topSongs else "—" }}</td>
         </tr>
         <tr style="border-bottom: 1px solid var(--glass-border);">
           <td style="padding: 12px 8px;">Top Artist</td>
-          <td style="padding: 12px 8px; text-align: right;">{{ myTopArtists[0].name if myTopArtists else "—" }}</td>
-          <td style="padding: 12px 8px; text-align: right;">{{ theirTopArtists[0].name if theirTopArtists else "—" }}</td>
+          <td style="padding: 12px 8px; text-align: right;">{{ my.topArtists[0].name if my.topArtists else "—" }}</td>
+          <td style="padding: 12px 8px; text-align: right;">{{ their.topArtists[0].name if their.topArtists else "—" }}</td>
         </tr>
       </tbody>
     </table>
@@ -83,34 +83,24 @@
    against the VIEWER's own data, so linking the other user's items either
    dead-ends (never played) or silently shows the viewer's stats under the
    counterpart's numbers. #}
+{% set emptyMessage = 'No plays in this period.' %}
+
 {% set section = 'top_songs' %}
 <section class="grid" style="grid-template-columns: 1fr 1fr; gap: 2rem; margin-bottom: 2.5rem;">
   <div>
     <h2>{{ username }}'s Top Songs</h2>
     <div class="track-list">
       {% set suppressDetailLinks = false %}
-      {% if myTopSongs %}
-        {% for track in myTopSongs %}
-          {% set item_number = loop.index %}
-          {% include '_track_card.html' %}
-        {% endfor %}
-      {% else %}
-        <p class="loading">No plays in this period.</p>
-      {% endif %}
+      {% set items = my.topSongs %}
+      {% include '_wrapped_list.html' %}
     </div>
   </div>
   <div>
     <h2>{{ withUsername }}'s Top Songs</h2>
     <div class="track-list">
       {% set suppressDetailLinks = true %}
-      {% if theirTopSongs %}
-        {% for track in theirTopSongs %}
-          {% set item_number = loop.index %}
-          {% include '_track_card.html' %}
-        {% endfor %}
-      {% else %}
-        <p class="loading">No plays in this period.</p>
-      {% endif %}
+      {% set items = their.topSongs %}
+      {% include '_wrapped_list.html' %}
     </div>
   </div>
 </section>
@@ -121,28 +111,16 @@
     <h2>{{ username }}'s Top Artists</h2>
     <div class="track-list">
       {% set suppressDetailLinks = false %}
-      {% if myTopArtists %}
-        {% for track in myTopArtists %}
-          {% set item_number = loop.index %}
-          {% include '_track_card.html' %}
-        {% endfor %}
-      {% else %}
-        <p class="loading">No plays in this period.</p>
-      {% endif %}
+      {% set items = my.topArtists %}
+      {% include '_wrapped_list.html' %}
     </div>
   </div>
   <div>
     <h2>{{ withUsername }}'s Top Artists</h2>
     <div class="track-list">
       {% set suppressDetailLinks = true %}
-      {% if theirTopArtists %}
-        {% for track in theirTopArtists %}
-          {% set item_number = loop.index %}
-          {% include '_track_card.html' %}
-        {% endfor %}
-      {% else %}
-        <p class="loading">No plays in this period.</p>
-      {% endif %}
+      {% set items = their.topArtists %}
+      {% include '_wrapped_list.html' %}
     </div>
   </div>
 </section>
@@ -153,28 +131,16 @@
     <h2>{{ username }}'s Top Albums</h2>
     <div class="track-list">
       {% set suppressDetailLinks = false %}
-      {% if myTopAlbums %}
-        {% for track in myTopAlbums %}
-          {% set item_number = loop.index %}
-          {% include '_track_card.html' %}
-        {% endfor %}
-      {% else %}
-        <p class="loading">No plays in this period.</p>
-      {% endif %}
+      {% set items = my.topAlbums %}
+      {% include '_wrapped_list.html' %}
     </div>
   </div>
   <div>
     <h2>{{ withUsername }}'s Top Albums</h2>
     <div class="track-list">
       {% set suppressDetailLinks = true %}
-      {% if theirTopAlbums %}
-        {% for track in theirTopAlbums %}
-          {% set item_number = loop.index %}
-          {% include '_track_card.html' %}
-        {% endfor %}
-      {% else %}
-        <p class="loading">No plays in this period.</p>
-      {% endif %}
+      {% set items = their.topAlbums %}
+      {% include '_wrapped_list.html' %}
     </div>
   </div>
 </section>
@@ -186,14 +152,9 @@
 <section style="margin-bottom: 2.5rem;">
   <h2>You Both Love</h2>
   <div class="track-list">
-    {% if sharedArtists %}
-      {% for track in sharedArtists %}
-        {% set item_number = loop.index %}
-        {% include '_track_card.html' %}
-      {% endfor %}
-    {% else %}
-      <p class="loading">No shared top artists in this period yet.</p>
-    {% endif %}
+    {% set items = sharedArtists %}
+    {% set emptyMessage = 'No shared top artists in this period yet.' %}
+    {% include '_wrapped_list.html' %}
   </div>
 </section>
 

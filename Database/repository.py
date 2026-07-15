@@ -1,6 +1,7 @@
 from __future__ import annotations
 import datetime
 import json
+import threading
 import time
 from pathlib import Path
 
@@ -1305,93 +1306,109 @@ class Repository:
 
     # ---- Per-user: mutual data-sharing --------------------------------------
 
+    # user_shares.status values (mirrors the IMAGE_STATUS_* convention above;
+    # the CHECK constraint in Database/db.py's SCHEMA lists the same literals).
+    SHARE_STATUS_PENDING = "pending"
+    SHARE_STATUS_ACCEPTED = "accepted"
+
+    # Serializes createShareRequest's check-then-insert: two crossing requests
+    # (A->B and B->A) on different Waitress threads could otherwise both pass
+    # the reverse-pending check before either INSERT lands, leaving two
+    # opposite-direction pending rows the same-direction UNIQUE constraint
+    # doesn't cover. Class-level so every Repository instance over the shared
+    # database file serializes on the same lock (single-process deployment,
+    # like the in-memory rate limiter in app.py).
+    _shareWriteLock = threading.Lock()
+
     def createShareRequest(self, requester: str, recipient: str) -> str:
-        """Returns "accepted" if the two are (now) mutually sharing, or
-        "requested" if a new pending request is (still) waiting on `recipient`.
+        """Outcome as a string the caller can word a message around:
+        "requested" (new pending row), "already_requested" (this exact request
+        was already pending - nothing changed), "accepted" (a reverse-direction
+        pending request existed, so this counts as accepting it), or
+        "already_accepted" (the two already share - nothing changed)."""
+        with self._shareWriteLock:
+            conn = self._conn()
+            with conn:
+                if conn.execute(
+                    "SELECT 1 FROM user_shares WHERE status=? AND "
+                    "((requester_username=? AND recipient_username=?) OR (requester_username=? AND recipient_username=?))",
+                    (self.SHARE_STATUS_ACCEPTED, requester, recipient, recipient, requester),
+                ).fetchone():
+                    return "already_accepted"
 
-        A reverse-direction pending row (recipient already asked requester
-        first) is treated as requester accepting that existing request rather
-        than creating a second, independent pending row for the same intended
-        relationship."""
-        conn = self._conn()
-        with conn:
-            if conn.execute(
-                "SELECT 1 FROM user_shares WHERE status='accepted' AND "
-                "((requester_username=? AND recipient_username=?) OR (requester_username=? AND recipient_username=?))",
-                (requester, recipient, recipient, requester),
-            ).fetchone():
-                return "accepted"
+                reverseRow = conn.execute(
+                    "SELECT id FROM user_shares WHERE requester_username=? AND recipient_username=? AND status=?",
+                    (recipient, requester, self.SHARE_STATUS_PENDING),
+                ).fetchone()
+                if reverseRow:
+                    conn.execute(
+                        "UPDATE user_shares SET status=?, responded_at=? WHERE id=?",
+                        (self.SHARE_STATUS_ACCEPTED, time.time(), reverseRow["id"]),
+                    )
+                    return "accepted"
 
-            reverseRow = conn.execute(
-                "SELECT id FROM user_shares WHERE requester_username=? AND recipient_username=? AND status='pending'",
-                (recipient, requester),
-            ).fetchone()
-            if reverseRow:
-                conn.execute(
-                    "UPDATE user_shares SET status='accepted', responded_at=? WHERE id=?",
-                    (time.time(), reverseRow["id"]),
+                cursor = conn.execute(
+                    "INSERT INTO user_shares (requester_username, recipient_username, status, created_at) "
+                    "VALUES (?, ?, ?, ?) "
+                    "ON CONFLICT(requester_username, recipient_username) DO NOTHING",
+                    (requester, recipient, self.SHARE_STATUS_PENDING, time.time()),
                 )
-                return "accepted"
-
-            conn.execute(
-                "INSERT INTO user_shares (requester_username, recipient_username, status, created_at) "
-                "VALUES (?, ?, 'pending', ?) "
-                "ON CONFLICT(requester_username, recipient_username) DO NOTHING",
-                (requester, recipient, time.time()),
-            )
-            return "requested"
+                return "requested" if cursor.rowcount > 0 else "already_requested"
 
     def getPendingIncomingShares(self, username: str) -> list[dict]:
         conn = self._conn()
         rows = conn.execute(
-            "SELECT id, requester_username, created_at FROM user_shares WHERE recipient_username=? AND status='pending'",
-            (username,),
+            "SELECT id, requester_username, created_at FROM user_shares "
+            "WHERE recipient_username=? AND status=? ORDER BY created_at, id",
+            (username, self.SHARE_STATUS_PENDING),
         ).fetchall()
         return [dict(r) for r in rows]
 
     def getPendingOutgoingShares(self, username: str) -> list[dict]:
         conn = self._conn()
         rows = conn.execute(
-            "SELECT id, recipient_username, created_at FROM user_shares WHERE requester_username=? AND status='pending'",
-            (username,),
+            "SELECT id, recipient_username, created_at FROM user_shares "
+            "WHERE requester_username=? AND status=? ORDER BY created_at, id",
+            (username, self.SHARE_STATUS_PENDING),
         ).fetchall()
         return [dict(r) for r in rows]
 
     def getAcceptedShareUsernames(self, username: str) -> list[str]:
         """The other username on each of `username`'s accepted shares,
         regardless of which side originally sent the request. Used where only
-        the counterpart names matter (nav visibility, the Compare page's
-        authorized-user set) - see getAcceptedShares() for the id-bearing
-        version a "Revoke" button needs."""
-        conn = self._conn()
-        rows = conn.execute(
-            "SELECT CASE WHEN requester_username=? THEN recipient_username ELSE requester_username END AS counterpart "
-            "FROM user_shares WHERE status='accepted' AND (requester_username=? OR recipient_username=?)",
-            (username, username, username),
-        ).fetchall()
-        return [r["counterpart"] for r in rows]
+        the counterpart names matter (the Compare page's authorized-user set) -
+        see getAcceptedShares() for the id-bearing version a "Revoke" button
+        needs."""
+        return [share["counterpart"] for share in self.getAcceptedShares(username)]
 
     def getAcceptedShares(self, username: str) -> list[dict]:
-        """Like getAcceptedShareUsernames(), but keeping each row's `id` too -
-        the Profile page's "Active shares" list needs it to target a specific
-        share when revoking."""
+        """[{id, counterpart}] for each of `username`'s accepted shares,
+        ordered by counterpart name so pickers and lists render stably -
+        SQLite's row order is otherwise unspecified, which would make e.g.
+        the Compare page's default counterpart flap between requests."""
         conn = self._conn()
         rows = conn.execute(
             "SELECT id, CASE WHEN requester_username=? THEN recipient_username ELSE requester_username END AS counterpart "
-            "FROM user_shares WHERE status='accepted' AND (requester_username=? OR recipient_username=?)",
-            (username, username, username),
+            "FROM user_shares WHERE status=? AND (requester_username=? OR recipient_username=?) "
+            "ORDER BY counterpart",
+            (username, self.SHARE_STATUS_ACCEPTED, username, username),
         ).fetchall()
         return [dict(r) for r in rows]
 
-    def hasAcceptedShare(self, userA: str, userB: str) -> bool:
-        """True iff userA/userB have an active mutual share, in either
-        direction - the authorization check a cross-user data view must pass
-        before it's allowed to read the other user's stats."""
+    def hasAnyAcceptedShare(self, username: str) -> bool:
+        """True iff `username` has at least one accepted share whose
+        counterpart also has stored cookies - the exact set of shares the
+        Compare page can actually load (it skips cookie-less counterparts),
+        so the nav link this backs never points at a page that would 404.
+        LIMIT 1 existence check: this runs on every template render (see
+        app.py's _injectShareStatus)."""
         conn = self._conn()
         row = conn.execute(
-            "SELECT 1 FROM user_shares WHERE status='accepted' AND "
-            "((requester_username=? AND recipient_username=?) OR (requester_username=? AND recipient_username=?))",
-            (userA, userB, userB, userA),
+            "SELECT 1 FROM user_shares us "
+            "JOIN users u ON u.username = CASE WHEN us.requester_username=? THEN us.recipient_username ELSE us.requester_username END "
+            "WHERE us.status=? AND (us.requester_username=? OR us.recipient_username=?) "
+            "AND u.cookies_json IS NOT NULL LIMIT 1",
+            (username, self.SHARE_STATUS_ACCEPTED, username, username),
         ).fetchone()
         return row is not None
 
@@ -1403,14 +1420,14 @@ class Repository:
         with conn:
             if accept:
                 cursor = conn.execute(
-                    "UPDATE user_shares SET status='accepted', responded_at=? "
-                    "WHERE id=? AND recipient_username=? AND status='pending'",
-                    (time.time(), shareId, actingUsername),
+                    "UPDATE user_shares SET status=?, responded_at=? "
+                    "WHERE id=? AND recipient_username=? AND status=?",
+                    (self.SHARE_STATUS_ACCEPTED, time.time(), shareId, actingUsername, self.SHARE_STATUS_PENDING),
                 )
             else:
                 cursor = conn.execute(
-                    "DELETE FROM user_shares WHERE id=? AND recipient_username=? AND status='pending'",
-                    (shareId, actingUsername),
+                    "DELETE FROM user_shares WHERE id=? AND recipient_username=? AND status=?",
+                    (shareId, actingUsername, self.SHARE_STATUS_PENDING),
                 )
             return cursor.rowcount > 0
 
@@ -1420,8 +1437,8 @@ class Repository:
         conn = self._conn()
         with conn:
             cursor = conn.execute(
-                "DELETE FROM user_shares WHERE id=? AND requester_username=? AND status='pending'",
-                (shareId, requesterUsername),
+                "DELETE FROM user_shares WHERE id=? AND requester_username=? AND status=?",
+                (shareId, requesterUsername, self.SHARE_STATUS_PENDING),
             )
             return cursor.rowcount > 0
 
@@ -1432,8 +1449,8 @@ class Repository:
         conn = self._conn()
         with conn:
             cursor = conn.execute(
-                "DELETE FROM user_shares WHERE id=? AND status='accepted' AND (requester_username=? OR recipient_username=?)",
-                (shareId, actingUsername, actingUsername),
+                "DELETE FROM user_shares WHERE id=? AND status=? AND (requester_username=? OR recipient_username=?)",
+                (shareId, self.SHARE_STATUS_ACCEPTED, actingUsername, actingUsername),
             )
             return cursor.rowcount > 0
 

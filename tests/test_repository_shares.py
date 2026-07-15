@@ -1,4 +1,5 @@
 import sqlite3
+import threading
 import unittest
 import sys
 import os
@@ -14,12 +15,21 @@ class RepositorySharesTestCase(unittest.TestCase):
     def setUp(self):
         self._tmpdir = tempfile.TemporaryDirectory()
         self.repo = Repository(Path(self._tmpdir.name) / "test.db")
+        # dave deliberately gets no cookies - hasAnyAcceptedShare() only
+        # counts counterparts the Compare page can actually load.
         for username in ("alice", "bob", "carol"):
             self.repo.upsertUser(username, f"{username}@example.com")
+            self.repo.setUserCookies(username, {"sp_dc": "test"})
+        self.repo.upsertUser("dave", "dave@example.com")
 
     def tearDown(self):
         self.repo.connectionManager.close()
         self._tmpdir.cleanup()
+
+    def _accept(self, requester, recipient):
+        self.repo.createShareRequest(requester, recipient)
+        shareId = self.repo.getPendingIncomingShares(recipient)[0]["id"]
+        self.repo.respondToShareRequest(shareId, recipient, accept=True)
 
 
 class TestCreateShareRequest(RepositorySharesTestCase):
@@ -31,11 +41,14 @@ class TestCreateShareRequest(RepositorySharesTestCase):
         self.assertEqual(len(incoming), 1)
         self.assertEqual(incoming[0]["requester_username"], "alice")
 
-    def test_repeating_the_same_pending_request_does_not_duplicate(self):
+    def test_repeating_the_same_pending_request_reports_already_requested(self):
+        """A repeat is a no-op - the caller must be able to word its message
+        honestly ("already pending") instead of claiming a new request was
+        just sent."""
         self.repo.createShareRequest("alice", "bob")
         result = self.repo.createShareRequest("alice", "bob")
 
-        self.assertEqual(result, "requested")
+        self.assertEqual(result, "already_requested")
         self.assertEqual(len(self.repo.getPendingIncomingShares("bob")), 1)
 
     def test_reverse_pending_request_auto_accepts_instead_of_duplicating(self):
@@ -50,21 +63,49 @@ class TestCreateShareRequest(RepositorySharesTestCase):
         self.assertEqual(result, "accepted")
         self.assertEqual(self.repo.getPendingIncomingShares("bob"), [])
         self.assertEqual(self.repo.getPendingIncomingShares("alice"), [])
-        self.assertTrue(self.repo.hasAcceptedShare("alice", "bob"))
+        self.assertEqual(self.repo.getAcceptedShareUsernames("alice"), ["bob"])
 
-    def test_requesting_an_already_accepted_share_is_a_noop(self):
-        self.repo.createShareRequest("alice", "bob")
-        shareId = self.repo.getPendingIncomingShares("bob")[0]["id"]
-        self.repo.respondToShareRequest(shareId, "bob", accept=True)
+    def test_requesting_an_already_accepted_share_reports_already_accepted(self):
+        self._accept("alice", "bob")
 
         result = self.repo.createShareRequest("bob", "alice")
 
-        self.assertEqual(result, "accepted")
+        self.assertEqual(result, "already_accepted")
         self.assertEqual(len(self.repo.getAcceptedShareUsernames("alice")), 1)
 
     def test_self_share_is_rejected_at_the_database_level(self):
         with self.assertRaises(sqlite3.IntegrityError):
             self.repo.createShareRequest("alice", "alice")
+
+
+class TestCreateShareRequestConcurrency(RepositorySharesTestCase):
+    def test_crossing_requests_on_two_threads_yield_exactly_one_accepted_row(self):
+        """Two users requesting each other at the same instant (two Waitress
+        worker threads) must resolve into ONE accepted relationship - without
+        serialization, both check-then-insert paths could pass their reverse-
+        pending SELECT before either INSERT lands, leaving two opposite-
+        direction rows the same-direction UNIQUE constraint doesn't cover."""
+        barrier = threading.Barrier(2)
+        results = {}
+
+        def requestShare(requester, recipient):
+            barrier.wait()
+            results[requester] = self.repo.createShareRequest(requester, recipient)
+            self.repo.connectionManager.close()   #< thread-local conn - must close for tmpdir cleanup on Windows
+
+        threads = [
+            threading.Thread(target=requestShare, args=("alice", "bob")),
+            threading.Thread(target=requestShare, args=("bob", "alice")),
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        rows = self.repo._conn().execute("SELECT status FROM user_shares").fetchall()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["status"], "accepted")
+        self.assertEqual(sorted(results.values()), ["accepted", "requested"])
 
 
 class TestPendingShareLists(RepositorySharesTestCase):
@@ -89,6 +130,14 @@ class TestPendingShareLists(RepositorySharesTestCase):
         )
         self.assertEqual(self.repo.getPendingOutgoingShares("bob"), [])
 
+    def test_pending_lists_are_ordered_oldest_request_first(self):
+        """SQLite's row order is unspecified without ORDER BY - the request
+        lists must render in a stable (arrival) order."""
+        self.assertEqual(
+            [r["recipient_username"] for r in self.repo.getPendingOutgoingShares("alice")],
+            ["bob", "carol"],   #< insertion order, not whatever SQLite returns
+        )
+
     def test_accepted_shares_no_longer_appear_as_pending(self):
         shareId = self.repo.getPendingIncomingShares("bob")[0]["id"]
         self.repo.respondToShareRequest(shareId, "bob", accept=True)
@@ -100,12 +149,7 @@ class TestPendingShareLists(RepositorySharesTestCase):
         )
 
 
-class TestAcceptedShareUsernames(RepositorySharesTestCase):
-    def _accept(self, requester, recipient):
-        self.repo.createShareRequest(requester, recipient)
-        shareId = self.repo.getPendingIncomingShares(recipient)[0]["id"]
-        self.repo.respondToShareRequest(shareId, recipient, accept=True)
-
+class TestAcceptedShares(RepositorySharesTestCase):
     def test_returns_counterpart_when_username_was_the_requester(self):
         self._accept("alice", "bob")
 
@@ -120,15 +164,8 @@ class TestAcceptedShareUsernames(RepositorySharesTestCase):
         self.repo.createShareRequest("alice", "carol")
 
         self.assertEqual(self.repo.getAcceptedShareUsernames("carol"), [])
+        self.assertEqual(self.repo.getAcceptedShares("carol"), [])
 
-    def test_multiple_accepted_shares_all_listed(self):
-        self._accept("alice", "bob")
-        self._accept("alice", "carol")
-
-        self.assertEqual(sorted(self.repo.getAcceptedShareUsernames("alice")), ["bob", "carol"])
-
-
-class TestGetAcceptedShares(RepositorySharesTestCase):
     def test_includes_the_share_id_alongside_the_counterpart(self):
         self.repo.createShareRequest("alice", "bob")
         shareId = self.repo.getPendingIncomingShares("bob")[0]["id"]
@@ -138,28 +175,37 @@ class TestGetAcceptedShares(RepositorySharesTestCase):
 
         self.assertEqual(shares, [{"id": shareId, "counterpart": "bob"}])
 
-    def test_pending_only_requests_are_excluded(self):
-        self.repo.createShareRequest("alice", "carol")
+    def test_accepted_shares_are_ordered_by_counterpart_name(self):
+        """acceptedUsernames[0] is the Compare page's default counterpart -
+        without a stable order it would flap between requests."""
+        self._accept("alice", "carol")   #< accepted first, but sorts second
+        self._accept("alice", "bob")
 
-        self.assertEqual(self.repo.getAcceptedShares("carol"), [])
+        self.assertEqual(self.repo.getAcceptedShareUsernames("alice"), ["bob", "carol"])
 
 
-class TestHasAcceptedShare(RepositorySharesTestCase):
-    def test_true_once_accepted_regardless_of_argument_order(self):
-        self.repo.createShareRequest("alice", "bob")
-        shareId = self.repo.getPendingIncomingShares("bob")[0]["id"]
-        self.repo.respondToShareRequest(shareId, "bob", accept=True)
+class TestHasAnyAcceptedShare(RepositorySharesTestCase):
+    def test_true_once_a_cookie_bearing_counterpart_accepted(self):
+        self._accept("alice", "bob")
 
-        self.assertTrue(self.repo.hasAcceptedShare("alice", "bob"))
-        self.assertTrue(self.repo.hasAcceptedShare("bob", "alice"))
+        self.assertTrue(self.repo.hasAnyAcceptedShare("alice"))
+        self.assertTrue(self.repo.hasAnyAcceptedShare("bob"))
 
     def test_false_while_only_pending(self):
         self.repo.createShareRequest("alice", "bob")
 
-        self.assertFalse(self.repo.hasAcceptedShare("alice", "bob"))
+        self.assertFalse(self.repo.hasAnyAcceptedShare("alice"))
 
     def test_false_with_no_relationship_at_all(self):
-        self.assertFalse(self.repo.hasAcceptedShare("alice", "carol"))
+        self.assertFalse(self.repo.hasAnyAcceptedShare("alice"))
+
+    def test_false_when_the_only_counterpart_has_no_cookies(self):
+        """The Compare page skips cookie-less counterparts (it can't load a
+        live Database for them), so the nav link this backs must not point
+        at a page that would 404."""
+        self._accept("alice", "dave")   #< dave has no cookies (see setUp)
+
+        self.assertFalse(self.repo.hasAnyAcceptedShare("alice"))
 
 
 class TestRespondToShareRequest(RepositorySharesTestCase):
@@ -172,20 +218,20 @@ class TestRespondToShareRequest(RepositorySharesTestCase):
         result = self.repo.respondToShareRequest(self.shareId, "bob", accept=True)
 
         self.assertTrue(result)
-        self.assertTrue(self.repo.hasAcceptedShare("alice", "bob"))
+        self.assertEqual(self.repo.getAcceptedShareUsernames("alice"), ["bob"])
 
     def test_decline_removes_the_row_entirely(self):
         result = self.repo.respondToShareRequest(self.shareId, "bob", accept=False)
 
         self.assertTrue(result)
         self.assertEqual(self.repo.getPendingIncomingShares("bob"), [])
-        self.assertFalse(self.repo.hasAcceptedShare("alice", "bob"))
+        self.assertEqual(self.repo.getAcceptedShareUsernames("alice"), [])
 
     def test_someone_other_than_the_recipient_cannot_respond(self):
         result = self.repo.respondToShareRequest(self.shareId, "carol", accept=True)
 
         self.assertFalse(result)
-        self.assertFalse(self.repo.hasAcceptedShare("alice", "bob"))
+        self.assertEqual(self.repo.getAcceptedShareUsernames("alice"), [])
 
     def test_the_requester_cannot_respond_to_their_own_request(self):
         result = self.repo.respondToShareRequest(self.shareId, "alice", accept=True)
@@ -198,7 +244,7 @@ class TestRespondToShareRequest(RepositorySharesTestCase):
         result = self.repo.respondToShareRequest(self.shareId, "bob", accept=False)
 
         self.assertFalse(result)
-        self.assertTrue(self.repo.hasAcceptedShare("alice", "bob"))
+        self.assertEqual(self.repo.getAcceptedShareUsernames("alice"), ["bob"])
 
 
 class TestCancelShareRequest(RepositorySharesTestCase):
@@ -225,7 +271,7 @@ class TestCancelShareRequest(RepositorySharesTestCase):
         result = self.repo.cancelShareRequest(self.shareId, "alice")
 
         self.assertFalse(result)
-        self.assertTrue(self.repo.hasAcceptedShare("alice", "bob"))
+        self.assertEqual(self.repo.getAcceptedShareUsernames("alice"), ["bob"])
 
 
 class TestRevokeShare(RepositorySharesTestCase):
@@ -240,19 +286,19 @@ class TestRevokeShare(RepositorySharesTestCase):
         result = self.repo.revokeShare(self.shareId, "alice")
 
         self.assertTrue(result)
-        self.assertFalse(self.repo.hasAcceptedShare("alice", "bob"))
+        self.assertEqual(self.repo.getAcceptedShareUsernames("alice"), [])
 
     def test_the_recipient_can_also_revoke(self):
         result = self.repo.revokeShare(self.shareId, "bob")
 
         self.assertTrue(result)
-        self.assertFalse(self.repo.hasAcceptedShare("alice", "bob"))
+        self.assertEqual(self.repo.getAcceptedShareUsernames("alice"), [])
 
     def test_an_unrelated_user_cannot_revoke(self):
         result = self.repo.revokeShare(self.shareId, "carol")
 
         self.assertFalse(result)
-        self.assertTrue(self.repo.hasAcceptedShare("alice", "bob"))
+        self.assertEqual(self.repo.getAcceptedShareUsernames("alice"), ["bob"])
 
     def test_cannot_revoke_a_merely_pending_request(self):
         self.repo.createShareRequest("alice", "carol")
@@ -268,17 +314,15 @@ class TestGetAllUsernamesExcept(RepositorySharesTestCase):
     def test_excludes_only_the_given_username(self):
         others = self.repo.getAllUsernamesExcept("alice")
 
-        self.assertEqual(others, ["bob", "carol"])
+        self.assertEqual(others, ["bob", "carol", "dave"])
 
     def test_does_not_pull_sensitive_columns(self):
         """This backs a plain "who can I share with" dropdown - it must not
         reuse getAllUsersDetails()'s SELECT, which includes cookies_json/
         spotify_refresh_token that this list has no reason to touch."""
-        self.repo.setUserCookies("bob", {"sp_dc": "secret"})
-
         others = self.repo.getAllUsernamesExcept("alice")
 
-        self.assertEqual(others, ["bob", "carol"])
+        self.assertEqual(others, ["bob", "carol", "dave"])
         self.assertTrue(all(isinstance(u, str) for u in others))
 
 

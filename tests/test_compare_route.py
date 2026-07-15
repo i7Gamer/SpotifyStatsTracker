@@ -282,6 +282,22 @@ class TestCompareRoute(unittest.TestCase):
 
         self.assertEqual(resp.status_code, 200)
 
+    def test_shared_artist_overlap_is_capped_like_every_other_list(self):
+        """"You Both Love" is built from the 100-deep pools but must render at
+        most COMPARE_TOP_LIST_SIZE cards, matching the adjacent lists."""
+        self._accept("alice", "bob")
+        sharedPool = [_artist(f"s{i}", f"SharedArtist{i}") for i in range(12)]
+        self.dbs["alice"].getTopArtists.return_value = sharedPool
+        self.dbs["bob"].getTopArtists.return_value = sharedPool
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn(b"SharedArtist9", resp.data)      #< 10th kept everywhere
+        self.assertNotIn(b"SharedArtist10", resp.data)  #< 11th/12th sliced from every list
+        self.assertNotIn(b"SharedArtist11", resp.data)
+
     def test_nav_link_appears_only_once_a_share_is_accepted(self):
         client = self._loginAs("alice")
 
@@ -291,6 +307,32 @@ class TestCompareRoute(unittest.TestCase):
 
         self.assertNotIn(b'href="/compare"', respBefore.data)
         self.assertIn(b'href="/compare"', respAfter.data)
+
+    def test_nav_link_stays_hidden_when_the_only_share_is_with_a_cookie_less_user(self):
+        """/compare filters cookie-less counterparts and 404s when none remain,
+        so the nav link must apply the same filter - otherwise it would point
+        at a page that always 404s."""
+        self._accept("alice", "dave")   #< dave has no cookies (see setUp)
+        client = self._loginAs("alice")
+
+        resp = client.get("/import")
+
+        self.assertNotIn(b'href="/compare"', resp.data)
+
+    def test_share_status_is_computed_once_per_request(self):
+        """One request can render several templates (the Wrapped AJAX endpoint
+        renders six partials) and every render re-runs all context processors -
+        the share-existence query must be memoized on flask.g."""
+        with patch.object(self.dash.repo, 'hasAnyAcceptedShare', return_value=True) as mock_check:
+            with self.dash.app.test_request_context("/"):
+                from flask import session as flaskSession
+                flaskSession["username"] = "alice"
+                processors = self.dash.app.template_context_processors[None]
+                for _ in range(2):   #< two simulated render_template calls
+                    for processor in processors:
+                        processor()
+
+        self.assertEqual(mock_check.call_count, 1)
 
 
 if __name__ == "__main__":

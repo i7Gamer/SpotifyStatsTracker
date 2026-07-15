@@ -447,6 +447,36 @@ class SpotifyDashboardApp:
     def _embedArtistsTextElements(self, songs, sortBy=None, totalPlays=0, totalMs=0) -> list[dict]:
         return [self._embedArtistTextElement(song, sortBy, totalPlays, totalMs) for song in songs]
 
+    def _gatherCompareStats(self, db, startDate, endDate) -> dict:
+        """One Compare-page side's stats, gathered identically for the viewer
+        and the counterpart so the two columns can't drift apart. Runs the
+        same _embed*TextElements step every other page feeding
+        _track_card.html uses - without it the cards render with blank
+        time/first-listened/duration/percent lines. The displayed top-artist
+        list is sliced from the same pool the "you both love" overlap
+        intersects, so the list, the summary row, and the overlap all agree
+        on one by-plays ranking (and each side's artist aggregation runs
+        once, not twice)."""
+        totalPlays, totalMs = db.getPlayTotals(startDate, endDate)
+        topSongs = self._embedTopSongsTextElements(
+            self._embedSongsTextElements(db.getTopSongs(startDate, endDate, limit=COMPARE_TOP_LIST_SIZE)),
+            sortBy="plays", totalPlays=totalPlays, totalMs=totalMs)
+        topAlbums = self._embedAlbumsTextElements(
+            db.getTopAlbums(startDate, endDate, limit=COMPARE_TOP_LIST_SIZE),
+            sortBy="plays", totalPlays=totalPlays, totalMs=totalMs)
+        topArtistsPool = db.getTopArtists(startDate, endDate, limit=COMPARE_OVERLAP_POOL_SIZE)
+        topArtists = self._embedArtistsTextElements(
+            topArtistsPool[:COMPARE_TOP_LIST_SIZE],
+            sortBy="plays", totalPlays=totalPlays, totalMs=totalMs)
+        return {
+            "totalPlays": totalPlays,
+            "totalTimeText": msToString(totalMs),
+            "topSongs": topSongs,
+            "topArtists": topArtists,
+            "topAlbums": topAlbums,
+            "topArtistsPool": topArtistsPool,
+        }
+
     def _buildPageUrl(self, endpoint, page, **queryArgs):
         cleanArgs = {key: value for key, value in queryArgs.items() if value not in (None, "")}
         cleanArgs["page"] = page
@@ -672,10 +702,19 @@ class SpotifyDashboardApp:
         @self.app.context_processor
         def _injectShareStatus():
             # Lets layout.html's nav show a "Compare" link only for users who
-            # have at least one accepted mutual share - computed here so every
+            # have at least one usable accepted share - computed here so every
             # template gets it without every route remembering to pass it.
-            username = session.get("username")
-            return {"hasAcceptedShares": bool(self.repo.getAcceptedShareUsernames(username)) if username else False}
+            # Memoized on g: one request can render several templates (the
+            # Wrapped AJAX endpoint renders six partials), and each render
+            # re-runs every context processor - the LIMIT-1 existence query
+            # must not repeat per partial. No is_user_logged_in check: that
+            # can cost a live Spotify round-trip, far too heavy per render,
+            # and a stale session's worst case is a nav link that 302s to
+            # login like every other nav item would.
+            if "hasAcceptedShares" not in g:
+                username = session.get("username")
+                g.hasAcceptedShares = self.repo.hasAnyAcceptedShare(username) if username else False
+            return {"hasAcceptedShares": g.hasAcceptedShares}
 
         def _is_version_newer(remote: str, local: str) -> bool:
             try:
@@ -1036,6 +1075,7 @@ class SpotifyDashboardApp:
 
             success = request.args.get("success")
             error = request.args.get("error")
+            responseStatus = 200   #< 429 when a POST action was rate limited
 
             spotify_callback_url = os.environ.get("SPOTIFY_CALLBACK_URL")
             feature_enabled = bool(spotify_callback_url)
@@ -1055,7 +1095,13 @@ class SpotifyDashboardApp:
                         error = f"Failed to save preferences: {str(e)}"
                 elif action == "request_share":
                     target_username = request.form.get("target_username", "").strip()
-                    if not target_username:
+                    # Throttled like login/register: declines delete the row,
+                    # so nothing else stops a rejected requester from re-
+                    # requesting (or fanning out to every user) indefinitely.
+                    if _rateLimited("request_share"):
+                        error = RATE_LIMIT_ERROR_MESSAGE
+                        responseStatus = 429
+                    elif not target_username:
                         error = "Please choose a user to request a share with."
                     elif target_username == username:
                         error = "You cannot request a share with yourself."
@@ -1065,8 +1111,12 @@ class SpotifyDashboardApp:
                         result = self.repo.createShareRequest(username, target_username)
                         if result == "accepted":
                             success = f"You and {target_username} are now sharing data with each other!"
-                        else:
+                        elif result == "requested":
                             success = f"Share request sent to {target_username}."
+                        elif result == "already_accepted":
+                            success = f"You already share data with {target_username}."
+                        else:   #< "already_requested"
+                            success = f"A share request to {target_username} is already pending."
                 else:
                     if not feature_enabled:
                         abort(404)
@@ -1090,6 +1140,18 @@ class SpotifyDashboardApp:
             default_window = settings.get("default_dashboard_window", "day")
             user_timezone = settings.get("timezone") or ""
 
+            pendingIncoming = self.repo.getPendingIncomingShares(username)
+            pendingOutgoing = self.repo.getPendingOutgoingShares(username)
+            acceptedShares = self.repo.getAcceptedShares(username)
+            # Users already in a share relationship (either direction, pending
+            # or accepted) are excluded from the request picker - re-requesting
+            # them is always a no-op, so offering them just invites confusion.
+            existingCounterparts = ({share["counterpart"] for share in acceptedShares}
+                                    | {r["requester_username"] for r in pendingIncoming}
+                                    | {r["recipient_username"] for r in pendingOutgoing})
+            shareCandidates = [u for u in self.repo.getAllUsernamesExcept(username)
+                               if u not in existingCounterparts]
+
             return render_template(
                 "profile.html",
                 username=username,
@@ -1105,11 +1167,11 @@ class SpotifyDashboardApp:
                 feature_enabled=feature_enabled,
                 default_window=default_window,
                 user_timezone=user_timezone,
-                pendingIncoming=self.repo.getPendingIncomingShares(username),
-                pendingOutgoing=self.repo.getPendingOutgoingShares(username),
-                acceptedShares=self.repo.getAcceptedShares(username),
-                shareCandidates=self.repo.getAllUsernamesExcept(username),
-            )
+                pendingIncoming=pendingIncoming,
+                pendingOutgoing=pendingOutgoing,
+                acceptedShares=acceptedShares,
+                shareCandidates=shareCandidates,
+            ), responseStatus
 
         @self.app.route("/profile/disconnect", methods=["GET"])
         def profileDisconnect():
@@ -1915,41 +1977,14 @@ class SpotifyDashboardApp:
             # trend into a single point.
             trendGroupBy = "hour" if interval in ("day", "today") else groupBy
 
-            myTotalPlays, myTotalMs = db.getPlayTotals(startDate, endDate)
-            theirTotalPlays, theirTotalMs = otherDb.getPlayTotals(startDate, endDate)
+            my = self._gatherCompareStats(db, startDate, endDate)
+            their = self._gatherCompareStats(otherDb, startDate, endDate)
 
-            # Same embed step every other page feeding _track_card.html runs -
-            # without it the cards render with blank time/first-listened/
-            # duration/percent lines.
-            myTopSongs = self._embedTopSongsTextElements(
-                self._embedSongsTextElements(db.getTopSongs(startDate, endDate, limit=COMPARE_TOP_LIST_SIZE)),
-                sortBy="plays", totalPlays=myTotalPlays, totalMs=myTotalMs)
-            theirTopSongs = self._embedTopSongsTextElements(
-                self._embedSongsTextElements(otherDb.getTopSongs(startDate, endDate, limit=COMPARE_TOP_LIST_SIZE)),
-                sortBy="plays", totalPlays=theirTotalPlays, totalMs=theirTotalMs)
-            myTopAlbums = self._embedAlbumsTextElements(
-                db.getTopAlbums(startDate, endDate, limit=COMPARE_TOP_LIST_SIZE),
-                sortBy="plays", totalPlays=myTotalPlays, totalMs=myTotalMs)
-            theirTopAlbums = self._embedAlbumsTextElements(
-                otherDb.getTopAlbums(startDate, endDate, limit=COMPARE_TOP_LIST_SIZE),
-                sortBy="plays", totalPlays=theirTotalPlays, totalMs=theirTotalMs)
-
-            # The displayed top-artist lists are sliced from the same 100-deep
-            # pools the "you both love" overlap intersects, so the lists, the
-            # summary row, and the overlap all agree on one by-plays ranking -
-            # and each side's artist aggregation runs once, not twice.
-            myTopArtistsPool = db.getTopArtists(startDate, endDate, limit=COMPARE_OVERLAP_POOL_SIZE)
-            theirTopArtistsPool = otherDb.getTopArtists(startDate, endDate, limit=COMPARE_OVERLAP_POOL_SIZE)
-            myTopArtists = self._embedArtistsTextElements(
-                myTopArtistsPool[:COMPARE_TOP_LIST_SIZE],
-                sortBy="plays", totalPlays=myTotalPlays, totalMs=myTotalMs)
-            theirTopArtists = self._embedArtistsTextElements(
-                theirTopArtistsPool[:COMPARE_TOP_LIST_SIZE],
-                sortBy="plays", totalPlays=theirTotalPlays, totalMs=theirTotalMs)
-            theirArtistIds = {a["id"] for a in theirTopArtistsPool}
-            # No percent text here - it would mix two different users' totals.
+            theirArtistIds = {a["id"] for a in their["topArtistsPool"]}
+            # Sliced like every other list on the page. No percent text here -
+            # it would mix two different users' totals.
             sharedArtists = self._embedArtistsTextElements(
-                [a for a in myTopArtistsPool if a["id"] in theirArtistIds])
+                [a for a in my["topArtistsPool"] if a["id"] in theirArtistIds][:COMPARE_TOP_LIST_SIZE])
 
             trendStartDate, trendEndDate = startDate, endDate
             if trendStartDate is None or trendEndDate is None:
@@ -1985,16 +2020,8 @@ class SpotifyDashboardApp:
                 username=username,
                 withUsername=withUsername,
                 acceptedUsernames=acceptedUsernames,
-                myTotalPlays=myTotalPlays,
-                theirTotalPlays=theirTotalPlays,
-                myTotalTimeText=msToString(myTotalMs),
-                theirTotalTimeText=msToString(theirTotalMs),
-                myTopSongs=myTopSongs,
-                theirTopSongs=theirTopSongs,
-                myTopArtists=myTopArtists,
-                theirTopArtists=theirTopArtists,
-                myTopAlbums=myTopAlbums,
-                theirTopAlbums=theirTopAlbums,
+                my=my,
+                their=their,
                 sharedArtists=sharedArtists,
                 comparisonTrend=comparisonTrend,
                 interval=interval,
