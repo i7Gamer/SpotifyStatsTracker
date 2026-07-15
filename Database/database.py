@@ -560,9 +560,6 @@ class Database:
             )
         return was_inserted
 
-    def cleanupOrphans(self) -> dict[str, int]:
-        return self.repo.cleanupOrphans()
-
     def importHistory(self, exportedHistory, progressPrefix: str = "", isFinalFile: bool = True, hasPriorError: bool = False, track_file_hash: bool = False,
                       runState: _ImportRunState | None = None):
         importer = self._withCookiesFile(lambda cookiesFile: Importer(cookiesFile=cookiesFile, email=self.email))
@@ -1328,8 +1325,11 @@ class Database:
 
             # Cluster same-track plays that are within tolerance of a shared
             # anchor - each cluster of 2+ might be the same real listen
-            # recorded more than once.
-            remaining = list(group)
+            # recorded more than once. Sorted chronologically first (the DB
+            # query has no ORDER BY) so the anchor - and therefore which
+            # plays end up in which cluster - is deterministic and doesn't
+            # depend on the arbitrary order SQLite happens to return rows in.
+            remaining = sorted(group, key=lambda play: play["playedAt"])
             while remaining:
                 anchor = remaining.pop(0)
                 cluster = [anchor]

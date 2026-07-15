@@ -137,6 +137,46 @@ class TestWrappedBackgroundWorker(DatabaseTestCase):
         self.assertEqual(cached2["total_plays"], 2)
         self.assertEqual(cached2["max_played_at"], 1775000000)
 
+    def test_boundary_play_does_not_cause_perpetual_recalculation(self):
+        """A play landing exactly at a year's end boundary (midnight Jan 1 of
+        the following year) belongs to that following year only.
+        getPlayTotals() (cached as total_plays, via Repository's date-range
+        clause) and getPlayCountInPeriod() (used here to detect drift, always
+        exclusive) must agree on that boundary - otherwise a year's cached
+        total permanently disagrees with the freshly queried total and the
+        worker recalculates that year every single cycle forever."""
+        db = self._makeDb({}, [])
+        db.repo.upsertTrack({
+            "id": "t1", "name": "Song 1", "url": "u1", "imageId": "img1", "duration": 30000,
+            "explicit": False, "isrc": "", "discNumber": 1, "trackNumber": 1, "releaseDate": 0,
+            "album": {"id": "alb1", "name": "Album 1", "url": "u", "imageId": "i", "imageUrl": "", "totalTracks": 1, "releaseDate": 0},
+            "artists": [{"id": "art1", "name": "Artist 1", "url": "u", "imageId": "i"}]
+        })
+
+        nowLocal = datetime.datetime.now(tz=db.tz)
+        priorYear = nowLocal.year - 1
+        priorYearStart = nowLocal.replace(year=priorYear, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+        priorYearEnd = nowLocal.replace(year=nowLocal.year, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+
+        # Strictly inside priorYear - keeps it from being skipped as "no plays".
+        db.repo.insertPlay(db.user, "t1", (priorYearStart + datetime.timedelta(days=1)).timestamp(), 30000, "listener")
+        # Exactly at priorYear's end boundary - belongs to nowLocal.year, not priorYear.
+        db.repo.insertPlay(db.user, "t1", priorYearEnd.timestamp(), 30000, "listener")
+
+        # Recalculating multiple years each sleeps WRAPPED_YEAR_DELAY_SECONDS
+        # for real (no test currently mocks this) - skip that stall here.
+        with patch.object(db.wrapped_stop_event, "wait", return_value=False):
+            db._checkAndRecalculateWrapped()
+            firstRunTotal = db.repo.getCachedWrappedTotalPlays(db.user, priorYear)
+            self.assertEqual(firstRunTotal, 1)   #< only the play strictly inside priorYear
+
+            with patch.object(db, "_calculateAndSaveWrapped", wraps=db._calculateAndSaveWrapped) as spy:
+                db._checkAndRecalculateWrapped()
+
+        # No new data since the first run - priorYear must not be recalculated again.
+        recalculatedYears = [call.args[0] for call in spy.call_args_list]
+        self.assertNotIn(priorYear, recalculatedYears)
+
 
 class TestWrappedRouteAjax(unittest.TestCase):
     def setUp(self):
@@ -206,3 +246,8 @@ class TestWrappedRouteAjax(unittest.TestCase):
             self.assertEqual(data["peakDay"], "2026-03-04")
             self.assertIn("topSongsHtml", data)
             self.assertIn("topArtistsHtml", data)
+            # discoveredAlbumsCount has no consumer - the front-end reads
+            # discoveredSongsCount/discoveredArtistsCount but never this key
+            # (see templates/wrapped.html's AJAX handler) - it must not be
+            # computed and shipped for nothing.
+            self.assertNotIn("discoveredAlbumsCount", data)

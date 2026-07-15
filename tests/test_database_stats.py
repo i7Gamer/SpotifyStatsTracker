@@ -167,6 +167,26 @@ class TestGetOverallStats(DatabaseTestCase):
         self.assertEqual(stats["totalSongsPlayed"], 0)
         self.assertEqual(stats["totalDurationMs"], 0)
 
+    def test_play_at_period_boundary_is_not_double_counted(self):
+        """_getDateRange documents its result as the half-open interval
+        [startDate, endDate) - the previous period is computed as
+        [startDate - duration, startDate), immediately adjacent to the
+        current [startDate, endDate). A play landing exactly on that shared
+        boundary must count in exactly one of the two periods, not both."""
+        import datetime
+        boundary = datetime.datetime(2026, 6, 1, tzinfo=datetime.timezone.utc)
+        tracks = {"t1": {"id": "t1", "name": "Song One", "artists": []}}
+        entries = [{"id": "t1", "playedAt": boundary.timestamp(), "timePlayed": 1000}]
+        db = self._makeDb(tracks, entries)
+
+        startDate = boundary
+        endDate = boundary + datetime.timedelta(days=1)
+
+        stats = db.getOverallStats(startDate, endDate)
+
+        self.assertEqual(stats["totalSongsPlayed"], 1)
+        self.assertEqual(stats["previousSongsPlayed"], 0)
+
 
 class TestGetAlbumsStats(DatabaseTestCase):
     def _sampleData(self):

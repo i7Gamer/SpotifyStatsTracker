@@ -226,6 +226,26 @@ class TestReconcileWithWebApiHistory(unittest.TestCase):
         deletedTimes = sorted(call.args[2] for call in db.repo.deletePlay.call_args_list)
         self.assertEqual(deletedTimes, [API_TS + 2, API_TS + 4])
 
+    def test_clustering_is_independent_of_row_return_order(self):
+        """getPlaysWithSourceInRange() has no ORDER BY, so SQLite can return
+        same-track plays in any order. The clustering below picks an "anchor"
+        via list order (remaining.pop(0)) - it must process rows in a fixed
+        (chronological) order internally so the same underlying data always
+        produces the same deletions, regardless of what order the DB
+        happened to hand the rows back in."""
+        db = _bareDatabase()
+        listenerRow = _listenerRow("t1", API_TS)
+        closeBackfill = _backfillRow("t1", API_TS + 3)   #< within tolerance of the listener row
+        farBackfill = _backfillRow("t1", API_TS + 6)     #< within tolerance of closeBackfill only, not of the listener row
+
+        # Deliberately not in chronological order.
+        db.repo.getPlaysWithSourceInRange.return_value = [farBackfill, listenerRow, closeBackfill]
+
+        db._reconcileWithWebApiHistory([{"track": {"id": "t1"}, "played_at": API_PLAYED_AT}])
+
+        deletedTimes = [call.args[2] for call in db.repo.deletePlay.call_args_list]
+        self.assertEqual(deletedTimes, [API_TS + 3])
+
     def test_commit_is_not_called_when_nothing_is_deleted(self):
         db = _bareDatabase()
         db.repo.getPlaysWithSourceInRange.return_value = [_listenerRow("t1", API_TS)]

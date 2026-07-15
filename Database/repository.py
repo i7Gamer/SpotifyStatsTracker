@@ -625,7 +625,13 @@ class Repository:
 
     @staticmethod
     def _dateRangeClause() -> str:
-        return "AND (? IS NULL OR played_at >= ?) AND (? IS NULL OR played_at <= ?)"
+        """Half-open [startTs, endTs) range, matching app.py's _getDateRange()
+        documented half-open interval - a play landing exactly on endTs
+        belongs to the next adjacent range, not this one. (The endTs bound
+        used to be inclusive, which double-counted a boundary play into both
+        a period and the immediately-following one, e.g. getOverallStats()'s
+        current vs. previous period comparison.)"""
+        return "AND (? IS NULL OR played_at >= ?) AND (? IS NULL OR played_at < ?)"
 
     def getPlayAggregatesByTrack(self, username: str, startTs: float | None = None,
                                   endTs: float | None = None) -> list[dict]:
@@ -1521,11 +1527,6 @@ class Repository:
                     "UPDATE tracks SET name = ? WHERE id = ?",
                     (name, track_id)
                 )
-
-    def cleanupOrphans(self) -> dict[str, int]:
-        """Deletes tracks, track-artists, albums, artists, and images that are no longer
-        referenced by any plays. Returns the count of deleted rows per category."""
-        return {"track_artists": 0, "tracks": 0, "albums": 0, "artists": 0, "images": 0}
 
     def getMaxPlayedAtInPeriod(self, username: str, startTs: float, endTs: float) -> float | None:
         row = self._conn().execute(

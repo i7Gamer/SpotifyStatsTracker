@@ -1183,6 +1183,21 @@ class TestStatsAggregates(RepositoryTestCase):
         count, total = self.repo.getPlayTotals("alice")
         self.assertEqual((count, total), (0, 0))
 
+    def test_play_at_boundary_belongs_to_exactly_one_adjacent_range(self):
+        """The date-range clause implements the half-open interval
+        [startTs, endTs) documented by app.py's _getDateRange - a play
+        landing exactly on a shared boundary between two adjacent ranges
+        must be counted in the later range only, not both."""
+        self.repo.upsertTrack(self._track("t1", "alb1", "a1"))
+        self.repo.insertPlay("alice", "t1", 1000.0, 1000)
+        self.repo.commit()
+
+        earlierRange = self.repo.getPlayTotals("alice", startTs=0, endTs=1000.0)
+        laterRange = self.repo.getPlayTotals("alice", startTs=1000.0, endTs=2000.0)
+
+        self.assertEqual(earlierRange, (0, 0))
+        self.assertEqual(laterRange, (1, 1000))
+
 
 class TestSongsPage(RepositoryTestCase):
     """getSongsPage()/getSongsCount() replace the old N+1 getTrack()-per-row
