@@ -178,7 +178,8 @@ class Importer:
                 except Exception as e:
                     logger.error("Error saving pre-fetched track: %s", parseError(e))
 
-    def _createSyntheticTrack(self, name: str, artist: str, trackUri: str | None, timePlayed: int) -> dict:
+    def _createSyntheticTrack(self, name: str, artist: str, trackUri: str | None, timePlayed: int,
+                               albumName: str | None = None) -> dict:
         # Determine track, album, and artist IDs
         if trackUri:
             track_id = trackUri
@@ -207,7 +208,7 @@ class Importer:
         ]
 
         album = {
-            "name": name,  # Fallback: use track name as album name
+            "name": albumName or name,  #< prefer the export's album name, fall back to the track name
             "url": "",
             "id": album_id,
             "imageId": album_id,
@@ -299,7 +300,7 @@ class Importer:
                         return None
                     # Fallback to synthetic track
                     logger.info("Spotify lookup failed for %s by %s (URI: %s), using synthetic record: %s", name, artist, trackUri, parseError(e))
-                    base = self._createSyntheticTrack(name, artist, trackUri, timePlayed)
+                    base = self._createSyntheticTrack(name, artist, trackUri, timePlayed, albumName=albumName)
 
                 known[base["id"]] = base
                 if trackUri:

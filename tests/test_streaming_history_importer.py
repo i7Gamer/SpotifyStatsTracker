@@ -473,6 +473,17 @@ class TestImportFallbackToSyntheticTrack(unittest.TestCase):
         self.assertEqual(len(tracks), 1)
         self.assertEqual(tracks[0]["url"], "")
 
+    def test_synthetic_album_uses_export_album_name(self):
+        importer = self._importerFailingWith("Spotify 404 Track Not Found")
+        history = [("Arctic Future", "Mark Watson", "2023-01-01 00:00:00", 10354,
+                    "uri_2s9mjCqeU26eivqPXY04V8", "Polar Sounds")]
+
+        def dummyDataFunction(item):
+            return item
+        track = list(importer._import(dummyDataFunction, history, known={}, progressCallback=None))[0]
+
+        self.assertEqual(track["album"]["name"], "Polar Sounds")
+
     def test_transient_lookup_error_skips_play_instead_of_synthesizing(self):
         """Network/auth/rate-limit failures are temporary - the play must be dropped
         (recoverable via re-import) rather than frozen into a synthetic record."""
