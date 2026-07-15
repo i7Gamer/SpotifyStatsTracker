@@ -1,9 +1,14 @@
-Flask
-Flask-WTF
-spotipyFree
-pillow
-requests
-websockets
-waitress
-tzdata
-redis
+Flask==3.1.3
+Flask-WTF==1.3.0
+spotipyFree==1.9.13
+pillow==12.3.0
+requests==2.34.2
+websockets==16.1
+waitress==3.0.2
+tzdata==2026.3
+# Transitive dependency of spotapi (pulled in via spotipyFree), not used directly
+# anywhere in this codebase - spotapi/utils/saver.py does an unconditional
+# `import redis` for its optional Redis-backed session saver, even though this
+# app only ever uses spotapi's JSONSaver. Required for `import spotapi` (and
+# therefore spotipyFree) to succeed at all - do not remove as "unused".
+redis==8.0.1
