@@ -38,12 +38,12 @@ class TestDatabaseCleanup(DatabaseTestCase):
         db_new = Database(user="testuser", dbPath=db.repo.connectionManager.dbPath)
         self.addCleanup(db_new.repo.connectionManager.close)
 
-        # Verify orphaned records are deleted
-        self.assertEqual(conn.execute("SELECT COUNT(*) FROM tracks WHERE id='tr_orphan'").fetchone()[0], 0)
-        self.assertEqual(conn.execute("SELECT COUNT(*) FROM track_artists WHERE track_id='tr_orphan'").fetchone()[0], 0)
-        self.assertEqual(conn.execute("SELECT COUNT(*) FROM albums WHERE id='alb_orphan'").fetchone()[0], 0)
-        self.assertEqual(conn.execute("SELECT COUNT(*) FROM artists WHERE id='art_orphan'").fetchone()[0], 0)
-        self.assertEqual(conn.execute("SELECT COUNT(*) FROM images WHERE id='img_orphan'").fetchone()[0], 0)
+        # Verify orphaned records are NOT deleted (feature removed)
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM tracks WHERE id='tr_orphan'").fetchone()[0], 1)
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM track_artists WHERE track_id='tr_orphan'").fetchone()[0], 1)
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM albums WHERE id='alb_orphan'").fetchone()[0], 1)
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM artists WHERE id='art_orphan'").fetchone()[0], 1)
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM images WHERE id='img_orphan'").fetchone()[0], 1)
 
         # Verify kept records remain intact
         self.assertEqual(conn.execute("SELECT COUNT(*) FROM tracks WHERE id='tr_kept'").fetchone()[0], 1)

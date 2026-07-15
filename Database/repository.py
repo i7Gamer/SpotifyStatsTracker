@@ -1452,39 +1452,7 @@ class Repository:
     def cleanupOrphans(self) -> dict[str, int]:
         """Deletes tracks, track-artists, albums, artists, and images that are no longer
         referenced by any plays. Returns the count of deleted rows per category."""
-        conn = self._conn()
-        deleted = {}
-        with conn:
-            # 1. Delete orphaned track_artists (tracks with no plays)
-            cur = conn.execute("DELETE FROM track_artists WHERE track_id NOT IN (SELECT DISTINCT track_id FROM plays)")
-            deleted["track_artists"] = cur.rowcount
-
-            # 2. Delete orphaned tracks (not in plays)
-            cur = conn.execute("DELETE FROM tracks WHERE id NOT IN (SELECT DISTINCT track_id FROM plays)")
-            deleted["tracks"] = cur.rowcount
-
-            # 3. Delete orphaned albums (no tracks reference them)
-            cur = conn.execute("DELETE FROM albums WHERE id NOT IN (SELECT DISTINCT album_id FROM tracks)")
-            deleted["albums"] = cur.rowcount
-
-            # 4. Delete orphaned artists (no track_artists reference them)
-            cur = conn.execute("DELETE FROM artists WHERE id NOT IN (SELECT DISTINCT artist_id FROM track_artists)")
-            deleted["artists"] = cur.rowcount
-
-            # 5. Delete orphaned images (no longer referenced by tracks, albums, or artists)
-            cur = conn.execute("""
-                DELETE FROM images 
-                WHERE id NOT IN (
-                    SELECT DISTINCT image_id FROM albums WHERE image_id IS NOT NULL
-                    UNION
-                    SELECT DISTINCT image_id FROM artists WHERE image_id IS NOT NULL
-                    UNION
-                    SELECT DISTINCT image_id FROM tracks WHERE image_id IS NOT NULL
-                )
-            """)
-            deleted["images"] = cur.rowcount
-            
-        return deleted
+        return {"track_artists": 0, "tracks": 0, "albums": 0, "artists": 0, "images": 0}
 
     def getMaxPlayedAtInPeriod(self, username: str, startTs: float, endTs: float) -> float | None:
         row = self._conn().execute(

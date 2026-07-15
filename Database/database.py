@@ -78,7 +78,6 @@ class Database:
     _imageDownloadExecutor = concurrent.futures.ThreadPoolExecutor(max_workers=IMAGE_DOWNLOAD_WORKERS)
     _active_backfills = set()
     _backfill_lock = threading.Lock()
-    _cleanup_done = False
 
     def __init__(self, user: str, cookiesFile: str | None = None, email: str | None = None, dbPath=None):
         if not user:
@@ -101,16 +100,6 @@ class Database:
         # stored once regardless of how many users have played a given track.
         self.repo = Repository(dbPath) if dbPath is not None else Repository()
         self.repo.upsertUser(user, email)
-
-        # Run database orphans cleanup once on startup
-        if not Database._cleanup_done:
-            Database._cleanup_done = True
-            try:
-                logger.info("Running database orphans cleanup...")
-                deleted = self.repo.cleanupOrphans()
-                logger.info("Database orphans cleanup complete: %s", deleted)
-            except Exception as e:
-                logger.error("Failed to run database orphans cleanup: %s", e)
 
         self.refreshSettings()
 
