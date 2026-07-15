@@ -8,6 +8,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 from Database.repository import (
     Repository, IMAGE_KIND_TRACK, IMAGE_STATUS_OK, IMAGE_STATUS_FAILED,
+    SYNTHETIC_FALLBACK_REASON,
 )
 
 
@@ -392,6 +393,105 @@ class TestPlaysHistory(RepositoryTestCase):
         createdAt, createdReason = self._playCreatedColumns("alice", "t1", 1000.0)
         self.assertEqual(createdReason, "listener_play (user: alice)")
         self.assertEqual(self.repo.getPlaysNewestFirst("alice")[0]["timePlayed"], 8000)
+
+
+def makeSyntheticTrack(trackId="synth1", name="Ghost Song", artist="Ghost Artist"):
+    """Mirrors Importer._createSyntheticTrack's output shape: empty urls and the
+    synthetic created_reason marker, no created_at."""
+    return {
+        "id": trackId,
+        "name": name,
+        "url": "",
+        "artists": [
+            {"id": f"artist_{trackId}", "name": artist, "url": "", "imageUrl": "", "imageId": f"artist_{trackId}"},
+        ],
+        "album": {
+            "id": f"album_{trackId}", "name": name, "url": "", "imageId": f"album_{trackId}",
+            "imageUrl": "", "totalTracks": 1, "releaseDate": 0.0,
+        },
+        "imageUrl": "",
+        "imageId": f"album_{trackId}",
+        "duration": 10354,
+        "explicit": False,
+        "isrc": "",
+        "discNumber": 1,
+        "trackNumber": 1,
+        "releaseDate": 0.0,
+        "created_reason": SYNTHETIC_FALLBACK_REASON,
+    }
+
+
+class TestSyntheticTrackLifecycle(RepositoryTestCase):
+    def _trackCreatedColumns(self, trackId):
+        row = self.repo._conn().execute(
+            "SELECT created_at, created_reason FROM tracks WHERE id=?", (trackId,)
+        ).fetchone()
+        return row["created_at"], row["created_reason"]
+
+    def test_synthetic_insert_stamps_created_at(self):
+        """A created_reason without a created_at breaks the 'reason implies
+        timestamp' invariant insertPlay() documents - the repo must stamp it."""
+        self.repo.upsertTrack(makeSyntheticTrack())
+        self.repo.commit()
+
+        createdAt, createdReason = self._trackCreatedColumns("synth1")
+        self.assertEqual(createdReason, SYNTHETIC_FALLBACK_REASON)
+        self.assertIsNotNone(createdAt)
+
+    def test_synthetic_reupsert_keeps_marker(self):
+        """Re-importing history round-trips the synthetic dict (via getAllTracks)
+        - the marker must survive, matching the created-on-INSERT-only rule."""
+        self.repo.upsertTrack(makeSyntheticTrack())
+        self.repo.upsertTrack(makeSyntheticTrack(), created_reason="history_import (user: alice)")
+        self.repo.commit()
+
+        _, createdReason = self._trackCreatedColumns("synth1")
+        self.assertEqual(createdReason, SYNTHETIC_FALLBACK_REASON)
+
+    def test_real_metadata_promotes_synthetic_row(self):
+        """A track that turns out to exist on Spotify (e.g. the listener fetches
+        the same id later) must lose the synthetic marker so the UI stops badging
+        it as Deleted/Unavailable."""
+        self.repo.upsertTrack(makeSyntheticTrack(trackId="t1"))
+        self.repo.upsertTrack(makeTrack(trackId="t1"), created_reason="listener_fetch (user: alice)")
+        self.repo.commit()
+
+        createdAt, createdReason = self._trackCreatedColumns("t1")
+        self.assertEqual(createdReason, "listener_fetch (user: alice)")
+        self.assertIsNotNone(createdAt)
+        self.assertEqual(self.repo.getTrack("t1")["url"], "http://example.com/track/t1")
+
+    def test_real_metadata_without_reason_clears_synthetic_marker(self):
+        self.repo.upsertTrack(makeSyntheticTrack(trackId="t1"))
+        self.repo.upsertTrack(makeTrack(trackId="t1"))
+        self.repo.commit()
+
+        _, createdReason = self._trackCreatedColumns("t1")
+        self.assertIsNone(createdReason)
+
+    def test_conflict_keeps_non_synthetic_created_reason(self):
+        """The promotion exception applies only to synthetic rows - a real row's
+        provenance is still never overwritten on conflict."""
+        self.repo.upsertTrack(makeTrack(trackId="t1"), created_reason="history_import (user: alice)")
+        self.repo.upsertTrack(makeTrack(trackId="t1"), created_reason="listener_fetch (user: alice)")
+        self.repo.commit()
+
+        _, createdReason = self._trackCreatedColumns("t1")
+        self.assertEqual(createdReason, "history_import (user: alice)")
+
+    def test_song_rows_include_created_reason(self):
+        """getSongsPage feeds the top-songs/dashboard track cards - it must
+        carry created_reason so the Deleted/Unavailable badge can render there."""
+        self.repo.upsertUser("alice", "alice@example.com")
+        self.repo.upsertTrack(makeSyntheticTrack(trackId="synth1"))
+        self.repo.upsertTrack(makeTrack(trackId="t1"))
+        self.repo.insertPlay("alice", "synth1", 1000.0, 5000)
+        self.repo.insertPlay("alice", "t1", 2000.0, 5000)
+        self.repo.commit()
+
+        songs = {song["id"]: song for song in self.repo.getSongsPage("alice")}
+        self.assertEqual(songs["synth1"]["created_reason"], SYNTHETIC_FALLBACK_REASON)
+        self.assertIsNone(songs["t1"]["created_reason"])
 
 
 class TestHasPlayNearTime(RepositoryTestCase):
@@ -1072,7 +1172,7 @@ class TestSongsPage(RepositoryTestCase):
         row = {
             "track_id": "t1", "name": "Song", "url": "u", "image_id": "img1",
             "duration_ms": 1000, "explicit": 0, "isrc": None,
-            "disc_number": 1, "track_number": 1,
+            "disc_number": 1, "track_number": 1, "created_reason": None,
             "album_id": None, "album_name": None, "album_url": None,
             "album_total_tracks": None, "album_release_date": None,
             "album_image_id": None, "album_image_url": None,

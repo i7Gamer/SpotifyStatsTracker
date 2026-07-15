@@ -600,6 +600,12 @@ class Listener:
             # Close the websocket connection so background threads stop trying to use it
             manager = getattr(lastPlayedManager, "manager", None)
             if manager is not None:
+                # Tell the patched keep_alive (Database.patches) this close is
+                # intentional so it exits instead of trying to reconnect.
+                try:
+                    manager._deliberate_close = True
+                except AttributeError:
+                    pass  # __slots__-only instance; keep_alive treats missing flag as False
                 ws = getattr(manager, "ws", None)
                 if ws is not None:
                     try:

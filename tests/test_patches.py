@@ -434,28 +434,93 @@ class TestPatches(unittest.TestCase):
             self.assertIn("non-Mapping response", log_capture.output[0])
             self.assertIn("Invalid JSON", str(err_ctx.exception))
 
-    def test_patched_keep_alive_suppresses_connection_closed(self):
-        """WebsocketStreamer.keep_alive must catch websockets.exceptions.ConnectionClosed and exit gracefully."""
+    def test_patched_keep_alive_exits_quietly_on_clean_close(self):
+        """A clean close handshake (ConnectionClosedOK) must end the ping loop
+        without any reconnect attempt."""
         from Database.patches import patched_keep_alive
         import websockets.exceptions
 
-        # Create a mock exception
-        exc = websockets.exceptions.ConnectionClosedError(rcvd=None, sent=None)
-
-        # Mock the original keep_alive to raise this exception
+        exc = websockets.exceptions.ConnectionClosedOK(rcvd=None, sent=None)
         mock_original = MagicMock(side_effect=exc)
 
-        # Temporarily mock original_keep_alive in Database.patches
         with patch("Database.patches.original_keep_alive", mock_original):
-            # Calling patched_keep_alive should NOT raise ConnectionClosedError
             instance = MagicMock()
-            try:
-                patched_keep_alive(instance)
-            except websockets.exceptions.ConnectionClosed as e:
-                self.fail(f"patched_keep_alive did not suppress ConnectionClosed exception: {e}")
+            patched_keep_alive(instance)
 
-            # Verify the original keep_alive was called once
-            mock_original.assert_called_once_with(instance)
+        mock_original.assert_called_once_with(instance)
+        instance.reconnect.assert_not_called()
+
+    def test_patched_keep_alive_exits_on_deliberate_close_flag(self):
+        """spotifyListener.stop() sets _deliberate_close before closing the ws -
+        keep_alive must exit instead of reconnecting, even if the close handshake
+        was abnormal (ConnectionClosedError)."""
+        from Database.patches import patched_keep_alive
+        import websockets.exceptions
+
+        exc = websockets.exceptions.ConnectionClosedError(rcvd=None, sent=None)
+        mock_original = MagicMock(side_effect=exc)
+
+        with patch("Database.patches.original_keep_alive", mock_original):
+            instance = MagicMock()
+            instance._deliberate_close = True
+            patched_keep_alive(instance)
+
+        mock_original.assert_called_once_with(instance)
+        instance.reconnect.assert_not_called()
+
+    def test_patched_keep_alive_reconnects_on_unexpected_drop(self):
+        """An unexpected drop (ConnectionClosedError) must trigger self.reconnect()
+        and resume the ping loop on the new connection."""
+        from Database.patches import patched_keep_alive
+        import websockets.exceptions
+
+        exc = websockets.exceptions.ConnectionClosedError(rcvd=None, sent=None)
+        # First run drops the connection, second run (after reconnect) exits normally
+        mock_original = MagicMock(side_effect=[exc, None])
+
+        with patch("Database.patches.original_keep_alive", mock_original):
+            instance = MagicMock()
+            instance._deliberate_close = False
+            patched_keep_alive(instance)
+
+        self.assertEqual(mock_original.call_count, 2)
+        instance.reconnect.assert_called_once_with()
+
+    def test_patched_keep_alive_gives_up_after_max_reconnect_failures(self):
+        """If reconnect() keeps failing, the loop must stop after
+        WS_KEEP_ALIVE_MAX_RECONNECT_FAILURES attempts instead of spinning forever."""
+        from Database.patches import patched_keep_alive, WS_KEEP_ALIVE_MAX_RECONNECT_FAILURES
+        import websockets.exceptions
+
+        exc = websockets.exceptions.ConnectionClosedError(rcvd=None, sent=None)
+        mock_original = MagicMock(side_effect=exc)
+
+        with patch("Database.patches.original_keep_alive", mock_original), \
+                patch("Database.patches.time") as mock_time:
+            instance = MagicMock()
+            instance._deliberate_close = False
+            instance.reconnect.side_effect = Exception("Spotify unreachable")
+            patched_keep_alive(instance)
+
+        self.assertEqual(instance.reconnect.call_count, WS_KEEP_ALIVE_MAX_RECONNECT_FAILURES)
+        # Backoff sleeps between attempts, but not after the final give-up
+        self.assertEqual(mock_time.sleep.call_count, WS_KEEP_ALIVE_MAX_RECONNECT_FAILURES - 1)
+
+    def test_patched_keep_alive_without_reconnect_method_exits(self):
+        """A plain WebsocketStreamer (no injected reconnect) must exit gracefully
+        instead of raising AttributeError."""
+        from Database.patches import patched_keep_alive
+        import types
+        import websockets.exceptions
+
+        exc = websockets.exceptions.ConnectionClosedError(rcvd=None, sent=None)
+        mock_original = MagicMock(side_effect=exc)
+
+        with patch("Database.patches.original_keep_alive", mock_original):
+            instance = types.SimpleNamespace()  #< no reconnect attribute
+            patched_keep_alive(instance)
+
+        mock_original.assert_called_once_with(instance)
 
 
 if __name__ == "__main__":

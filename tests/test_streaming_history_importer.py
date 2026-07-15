@@ -7,6 +7,7 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from Database.Importers.StreamingHistoryImporter import Importer
+from Database.db import SYNTHETIC_FALLBACK_REASON
 import Database.utils as utilsModule
 
 MUSICOLET_CSV = (
@@ -301,19 +302,26 @@ class TestMusicoletSyntheticTimestampsAreDeterministic(unittest.TestCase):
 
 
 class TestImportFallbackToSyntheticTrack(unittest.TestCase):
-    def test_fallback_when_spotify_lookup_fails(self):
+    HISTORY = [("Arctic Future", "Mark Watson", "2023-01-01 00:00:00", 10354, "uri_2s9mjCqeU26eivqPXY04V8")]
+
+    @staticmethod
+    def _importerFailingWith(message):
         importer = Importer()
         importer.sp = MagicMock()
-        # Mock SpotipyFree lookup to fail to simulate deleted/unavailable track
-        importer.sp.track.side_effect = Exception("Spotify 404 Track Not Found")
-        importer.sp.search.side_effect = Exception("Spotify 404 Search Failed")
+        importer.sp.track.side_effect = Exception(message)
+        importer.sp.search.side_effect = Exception(message)
+        return importer
 
-        history = [("Arctic Future", "Mark Watson", "2023-01-01 00:00:00", 10354, "uri_2s9mjCqeU26eivqPXY04V8")]
-
+    def _runImport(self, importer):
         def dummyDataFunction(item):
             return item
+        return list(importer._import(dummyDataFunction, self.HISTORY, known={}, progressCallback=None))
 
-        tracks = list(importer._import(dummyDataFunction, history, known={}, progressCallback=None))
+    def test_fallback_when_spotify_lookup_fails(self):
+        # Simulate deleted/unavailable track (permanent failure)
+        importer = self._importerFailingWith("Spotify 404 Track Not Found")
+
+        tracks = self._runImport(importer)
 
         # Verify that we did NOT drop the play and successfully resolved it to a synthetic track/album
         self.assertEqual(len(tracks), 1)
@@ -324,7 +332,33 @@ class TestImportFallbackToSyntheticTrack(unittest.TestCase):
         self.assertEqual(track["artists"][0]["name"], "Mark Watson")
         self.assertEqual(track["album"]["name"], "Arctic Future")
         self.assertEqual(track["album"]["totalTracks"], 1)
-        self.assertEqual(track["created_reason"], "synthetic_fallback")
+        self.assertEqual(track["created_reason"], SYNTHETIC_FALLBACK_REASON)
+
+    def test_synthetic_track_has_no_spotify_urls(self):
+        """Synthetic entities don't exist on Spotify, so no fake open.spotify.com
+        links may be fabricated - templates guard 'Open in Spotify' on a truthy url."""
+        importer = self._importerFailingWith("Spotify 404 Track Not Found")
+
+        track = self._runImport(importer)[0]
+
+        self.assertEqual(track["url"], "")
+        self.assertEqual(track["album"]["url"], "")
+        self.assertEqual(track["artists"][0]["url"], "")
+
+    def test_transient_lookup_error_skips_play_instead_of_synthesizing(self):
+        """Network/auth/rate-limit failures are temporary - the play must be dropped
+        (recoverable via re-import) rather than frozen into a synthetic record."""
+        for message in ("Connection reset by peer", "429 Too Many Requests",
+                        "Could not get session", "Read timed out"):
+            with self.subTest(error=message):
+                importer = self._importerFailingWith(message)
+                self.assertEqual(self._runImport(importer), [])
+
+    def test_builtin_connection_and_timeout_errors_are_transient(self):
+        importer = Importer()
+        self.assertTrue(importer._isTransientLookupError(ConnectionError("boom")))
+        self.assertTrue(importer._isTransientLookupError(TimeoutError("boom")))
+        self.assertFalse(importer._isTransientLookupError(IndexError("list index out of range")))
 
 
 if __name__ == "__main__":

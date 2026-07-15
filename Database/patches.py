@@ -1,3 +1,4 @@
+import logging
 import signal
 import threading
 import time
@@ -5,6 +6,8 @@ import websockets.sync.client
 import websockets.exceptions
 import spotapi.status
 import spotapi.websocket
+
+logger = logging.getLogger(__name__)
 
 # 1. Monkey patch websockets.sync.client.connect to disable the built-in keepalive ping
 # that causes ConnectionClosedError during CPU blockages / imports.
@@ -88,16 +91,54 @@ def patched_websocket_streamer_init(self, *args, **kwargs):
 spotapi.websocket.WebsocketStreamer.__init__ = patched_websocket_streamer_init
 
 
-# 4. Patch WebsocketStreamer.keep_alive to gracefully handle websockets.exceptions.ConnectionClosed.
-# The original keep_alive only catches ConnectionError and KeyboardInterrupt, allowing
-# ConnectionClosedError to propagate and crash the background thread, generating noisy tracebacks.
+# 4. Patch WebsocketStreamer.keep_alive to handle websockets.exceptions.ConnectionClosed.
+# The original keep_alive only catches ConnectionError and KeyboardInterrupt, so a
+# ConnectionClosed crashed the ping thread with a full traceback - after which pings
+# silently stopped and the feed stayed frozen until the listener's 30-minute stale-feed
+# detector rebuilt the session. Instead: a deliberate close (spotifyListener.stop() sets
+# _deliberate_close before closing the ws, and a clean close handshake raises
+# ConnectionClosedOK) ends the loop quietly, while an unexpected drop logs one concise
+# line (no traceback) and retries self.reconnect() (injected in patch 2 above) so the
+# feed recovers within a ping interval instead of half an hour.
+WS_KEEP_ALIVE_MAX_RECONNECT_FAILURES = 3
+WS_KEEP_ALIVE_RECONNECT_BACKOFF_SECONDS = 10
+
 original_keep_alive = spotapi.websocket.WebsocketStreamer.keep_alive
 
 def patched_keep_alive(self):
-    try:
-        original_keep_alive(self)
-    except websockets.exceptions.ConnectionClosed:
-        pass
+    consecutiveFailures = 0
+    while True:
+        try:
+            original_keep_alive(self)
+            return  #< original loop exited on its own (ConnectionError/KeyboardInterrupt)
+        except websockets.exceptions.ConnectionClosedOK:
+            logger.info("Websocket closed cleanly, stopping keep-alive pings.")
+            return
+        except websockets.exceptions.ConnectionClosed as e:
+            if getattr(self, "_deliberate_close", False):
+                logger.info("Websocket closed on shutdown, stopping keep-alive pings.")
+                return
+            reconnect = getattr(self, "reconnect", None)
+            if reconnect is None:
+                logger.warning("Websocket connection lost (%s) and no reconnect() available, stopping keep-alive pings.", e)
+                return
+            logger.warning("Websocket connection lost (%s), attempting reconnect...", e)
+            try:
+                reconnect()
+                consecutiveFailures = 0
+            except Exception as reconnectError:
+                consecutiveFailures += 1
+                logger.warning(
+                    "Websocket reconnect failed (%d/%d): %s",
+                    consecutiveFailures, WS_KEEP_ALIVE_MAX_RECONNECT_FAILURES, reconnectError,
+                )
+                if consecutiveFailures >= WS_KEEP_ALIVE_MAX_RECONNECT_FAILURES:
+                    logger.error(
+                        "Giving up websocket reconnects after %d attempts; the stale-feed detector will rebuild the session.",
+                        WS_KEEP_ALIVE_MAX_RECONNECT_FAILURES,
+                    )
+                    return
+                time.sleep(WS_KEEP_ALIVE_RECONNECT_BACKOFF_SECONDS)
 
 spotapi.websocket.WebsocketStreamer.keep_alive = patched_keep_alive
 

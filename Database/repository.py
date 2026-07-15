@@ -6,10 +6,10 @@ from pathlib import Path
 
 try:
     import Database.db as db
-    from Database.db import ConnectionManager
+    from Database.db import ConnectionManager, SYNTHETIC_FALLBACK_REASON
 except ModuleNotFoundError:
     import db
-    from db import ConnectionManager
+    from db import ConnectionManager, SYNTHETIC_FALLBACK_REASON
 
 IMAGE_KIND_TRACK = "track"
 IMAGE_KIND_ARTIST = "artist"
@@ -81,7 +81,9 @@ class Repository:
         """Upsert a track and its nested album/artists (as produced by
         Client.formatTrack). Last write wins, matching the previous
         tracks[id] = track dict-assignment semantics. If created_reason is provided,
-        it's only set on INSERT (never updated on conflict).
+        it's only set on INSERT (never updated on conflict) - except that real
+        metadata replacing a SYNTHETIC_FALLBACK_REASON row also replaces the
+        synthetic marker.
 
         Does NOT commit - callers compose this with insertPlay() into a single
         transaction (one play = one commit; a bulk import = one commit for the
@@ -117,11 +119,17 @@ class Repository:
             "explicit": bool(track.get("explicit", False)),
             "created_at": track.get("created_at"),
             "created_reason": track.get("created_reason"),
+            "syntheticReason": SYNTHETIC_FALLBACK_REASON,
         }
         if created_reason and not trackData["created_reason"]:
-            trackData["created_at"] = time.time()
             trackData["created_reason"] = created_reason
+        if trackData["created_reason"] and trackData["created_at"] is None:
+            trackData["created_at"] = time.time()
 
+        # created_at/created_reason are never updated on conflict, with one exception:
+        # a synthetic fallback row (see SYNTHETIC_FALLBACK_REASON) being overwritten by
+        # real metadata drops the synthetic marker, so the UI stops badging a track
+        # that turned out to exist on Spotify after all.
         conn.execute(
             """
             INSERT INTO tracks (id, name, url, album_id, image_id, duration_ms, explicit, isrc, disc_number, track_number, created_at, created_reason)
@@ -129,7 +137,15 @@ class Repository:
             ON CONFLICT(id) DO UPDATE SET
                 name=excluded.name, url=excluded.url, album_id=excluded.album_id, image_id=excluded.image_id,
                 duration_ms=excluded.duration_ms, explicit=excluded.explicit, isrc=excluded.isrc,
-                disc_number=excluded.disc_number, track_number=excluded.track_number
+                disc_number=excluded.disc_number, track_number=excluded.track_number,
+                created_at=CASE
+                    WHEN tracks.created_reason = :syntheticReason
+                         AND (excluded.created_reason IS NULL OR excluded.created_reason != :syntheticReason)
+                    THEN excluded.created_at ELSE tracks.created_at END,
+                created_reason=CASE
+                    WHEN tracks.created_reason = :syntheticReason
+                         AND (excluded.created_reason IS NULL OR excluded.created_reason != :syntheticReason)
+                    THEN excluded.created_reason ELSE tracks.created_reason END
             """,
             trackData,
         )
@@ -735,6 +751,7 @@ class Repository:
                 t.id AS track_id, t.name AS name, t.url AS url, t.image_id AS image_id,
                 t.duration_ms AS duration_ms, t.explicit AS explicit, t.isrc AS isrc,
                 t.disc_number AS disc_number, t.track_number AS track_number,
+                t.created_reason AS created_reason,
                 al.id AS album_id, al.name AS album_name, al.url AS album_url,
                 al.total_tracks AS album_total_tracks, al.release_date AS album_release_date,
                 al.image_id AS album_image_id, al.image_url AS album_image_url,
@@ -1006,6 +1023,7 @@ class Repository:
             "plays": row["plays"],
             "totalTimeListened": row["total_time_listened"],
             "firstListenedAt": row["first_listened_at"],
+            "created_reason": row["created_reason"],
         }
 
     def getPlaysInRange(self, username: str, startTs: float | None = None, endTs: float | None = None,
@@ -1341,6 +1359,12 @@ class Repository:
         return [dict(r) for r in rows]
 
     def getAlbumsMissingMetadata(self, limit: int) -> list[str]:
+        """total_tracks = 0 doubles as the "never backfilled" marker: the backfiller
+        always writes a track count, so processed albums drop out of this queue even
+        when Spotify has no release date for them (no endless refetching), and
+        synthetic fallback albums (created with totalTracks=1) are never queued.
+        Known gap: an album created with a nonzero track count but no release date
+        is never queued either - rare, and preferable to the refetch loop."""
         conn = self._conn()
         rows = conn.execute(
             "SELECT id FROM albums WHERE (release_date = 0 OR release_date IS NULL) AND total_tracks = 0 LIMIT ?",

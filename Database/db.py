@@ -5,6 +5,12 @@ from pathlib import Path
 
 SQLITE_BUSY_TIMEOUT_MS = 5000   #< how long a writer waits for a lock before raising "database is locked"
 
+# tracks.created_reason value marking catalog rows the importer fabricated because a
+# Spotify lookup definitively failed (deleted/unavailable track). The UI badges these
+# instead of linking to Spotify, and Repository.upsertTrack() lets later real metadata
+# (e.g. a listener fetch of the same id) overwrite the marker.
+SYNTHETIC_FALLBACK_REASON = "synthetic_fallback"
+
 # Database/Data/ is the directory the Docker volume mounts for persistence (see
 # docker-compose.yml). Named "Data" rather than "Users" since its main contents
 # (this database, the shared media cache) aren't per-user - migrate1_6_0.py

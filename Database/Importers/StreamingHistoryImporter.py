@@ -1,6 +1,7 @@
 import csv
 import json
 import datetime
+import hashlib
 import logging
 import SpotipyFree
 import concurrent.futures
@@ -10,9 +11,11 @@ logger = logging.getLogger(__name__)
 
 try:
     from Database.Formatters.spotifyClient import Client
+    from Database.db import SYNTHETIC_FALLBACK_REASON
     from Database.utils import timeToInt, timeToIntUTC, parseError
 except ModuleNotFoundError:
     from Formatters.spotifyClient import Client
+    from db import SYNTHETIC_FALLBACK_REASON
     from utils import timeToInt, timeToIntUTC, parseError
 
 
@@ -25,6 +28,18 @@ class Importer:
     # a second played - below this threshold it's not a real listen and must not
     # be imported as one.
     MIN_TIME_PLAYED_MS = 1000
+
+    # Error-text markers for lookup failures that are likely temporary (network,
+    # auth/session, rate limiting). Synthesizing a fallback record for these would
+    # freeze bad data into the shared catalog permanently, so the play is skipped
+    # instead - a later re-import retries cleanly, and plays already imported are
+    # deduped by the plays UNIQUE constraint. Everything else (no search results,
+    # 404s) is treated as the track genuinely being gone from Spotify.
+    TRANSIENT_LOOKUP_ERROR_MARKERS = (
+        "429", "rate limit", "timeout", "timed out", "connection",
+        "session", "unauthorized", "forbidden", "temporarily",
+        "500", "502", "503", "504",
+    )
 
     def __init__(self, cookiesFile=None, email=None):
         self.sp = SpotipyFree.Spotify(cookiesFile=cookiesFile, email=email)
@@ -153,43 +168,43 @@ class Importer:
                     logger.error("Error saving pre-fetched track: %s", parseError(e))
 
     def _createSyntheticTrack(self, name: str, artist: str, trackUri: str | None, timePlayed: int) -> dict:
-        import hashlib
-        
         # Determine track, album, and artist IDs
         if trackUri:
             track_id = trackUri
         else:
             # Generate deterministic unique ID based on name and artist
             track_id = hashlib.md5(f"{name}::{artist}".encode("utf-8")).hexdigest()
-            
+
         album_id = f"album_{track_id}"
         artist_id = f"artist_{track_id}"
-        
+
+        # urls stay empty (like imageUrl) - these entities don't exist on Spotify,
+        # and every template guards its "Open in Spotify" link on a truthy url.
         artists = [
             {
                 "name": artist,
-                "url": f"https://open.spotify.com/artist/{artist_id}",
+                "url": "",
                 "imageUrl": "",
                 "imageId": artist_id,
                 "id": artist_id,
             }
         ]
-        
+
         album = {
             "name": name,  # Fallback: use track name as album name
-            "url": f"https://open.spotify.com/album/{album_id}",
+            "url": "",
             "id": album_id,
             "imageId": album_id,
             "imageUrl": "",
             "totalTracks": 1,
             "releaseDate": 0.0,
         }
-        
+
         return {
             "name": name,
             "releaseDate": 0.0,
             "id": track_id,
-            "url": f"https://open.spotify.com/track/{track_id}",
+            "url": "",
             "artists": artists,
             "album": album,
             "imageUrl": "",
@@ -199,8 +214,14 @@ class Importer:
             "isrc": "",
             "discNumber": 1,
             "trackNumber": 1,
-            "created_reason": "synthetic_fallback",
+            "created_reason": SYNTHETIC_FALLBACK_REASON,
         }
+
+    def _isTransientLookupError(self, e: Exception) -> bool:
+        if isinstance(e, (ConnectionError, TimeoutError)):
+            return True
+        errorText = str(e).lower()
+        return any(marker in errorText for marker in self.TRANSIENT_LOOKUP_ERROR_MARKERS)
 
     def _processPlay(self, item, known):
         name, artist, startTimestamp, timePlayed, trackUri = item
@@ -217,6 +238,12 @@ class Importer:
                     meta = self._fetchTrackMeta(name, artist, trackUri)
                     base = Client.formatTrack(meta, embedPlaybackInfo=False)
                 except Exception as e:
+                    if self._isTransientLookupError(e):
+                        # Don't freeze a synthetic record into the catalog over what's
+                        # likely a temporary failure - skip the play; a re-import
+                        # after the outage retries it (existing plays dedup).
+                        logger.warning("Transient Spotify lookup failure for %s by %s (URI: %s) - skipping play, re-import to retry: %s", name, artist, trackUri, parseError(e))
+                        return None
                     # Fallback to synthetic track
                     logger.info("Spotify lookup failed for %s by %s (URI: %s), using synthetic record: %s", name, artist, trackUri, parseError(e))
                     base = self._createSyntheticTrack(name, artist, trackUri, timePlayed)
