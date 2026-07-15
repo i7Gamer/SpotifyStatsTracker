@@ -324,6 +324,7 @@ class TestImportFallbackToSyntheticTrack(unittest.TestCase):
         self.assertEqual(track["artists"][0]["name"], "Mark Watson")
         self.assertEqual(track["album"]["name"], "Arctic Future")
         self.assertEqual(track["album"]["totalTracks"], 1)
+        self.assertEqual(track["created_reason"], "synthetic_fallback")
 
 
 if __name__ == "__main__":

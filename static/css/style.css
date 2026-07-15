@@ -710,6 +710,12 @@ progress::-moz-progress-bar {
   border-radius: 999px;
 }
 
+.track-label.danger {
+  background: rgba(220, 53, 69, 0.15);
+  color: #ff6b6b;
+  border: 1px solid rgba(220, 53, 69, 0.3);
+}
+
 .profile-grid {
   display: grid;
   gap: 12px 4px;

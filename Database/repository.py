@@ -115,10 +115,10 @@ class Repository:
             **track,
             "albumId": album["id"],
             "explicit": bool(track.get("explicit", False)),
-            "created_at": None,
-            "created_reason": None,
+            "created_at": track.get("created_at"),
+            "created_reason": track.get("created_reason"),
         }
-        if created_reason:
+        if created_reason and not trackData["created_reason"]:
             trackData["created_at"] = time.time()
             trackData["created_reason"] = created_reason
 
@@ -244,6 +244,7 @@ class Repository:
                 {"id": r["id"], "name": r["name"], "url": r["url"], "imageUrl": "", "imageId": r["image_id"]}
                 for r in artistRows
             ],
+            "created_reason": trackRow["created_reason"] if "created_reason" in trackRow.keys() else None,
         }
 
     def trackExists(self, trackId: str) -> bool:

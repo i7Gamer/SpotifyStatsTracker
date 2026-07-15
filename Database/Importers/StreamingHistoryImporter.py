@@ -199,6 +199,7 @@ class Importer:
             "isrc": "",
             "discNumber": 1,
             "trackNumber": 1,
+            "created_reason": "synthetic_fallback",
         }
 
     def _processPlay(self, item, known):

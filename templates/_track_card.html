@@ -120,7 +120,11 @@
       
       <!-- Attributes based on section -->
       <div class="track-attributes">
-        {% if track.get('url') %}<a class="track-label" href="{{ track.get('url') }}" target="_blank" rel="noreferrer noopener">Open in Spotify ↗</a>{% endif %}
+        {% if track.get('created_reason') == 'synthetic_fallback' %}
+          <span class="track-label danger">Deleted/Unavailable on Spotify</span>
+        {% elif track.get('url') %}
+          <a class="track-label" href="{{ track.get('url') }}" target="_blank" rel="noreferrer noopener">Open in Spotify ↗</a>
+        {% endif %}
         {% if section == 'dashboard' %}
           <!-- Dashboard: show duration, time played, track info, explicit, isrc -->
           {% if track.get('durationText') %}<span class="track-label">Duration: {{ track.get('durationText') }}</span>{% endif %}

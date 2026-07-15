@@ -51,6 +51,50 @@ class TestDatabaseCleanup(DatabaseTestCase):
         self.assertEqual(conn.execute("SELECT COUNT(*) FROM albums WHERE id='alb_kept'").fetchone()[0], 1)
         self.assertEqual(conn.execute("SELECT COUNT(*) FROM artists WHERE id='art_kept'").fetchone()[0], 1)
 
+    def test_synthetic_track_preserves_created_reason(self):
+        db = self._makeDb({}, [])
+        
+        # Staged synthetic track
+        synthetic_track = {
+            "name": "Arctic Future",
+            "releaseDate": 0.0,
+            "id": "uri_2s9mjCqeU26eivqPXY04V8",
+            "url": "https://open.spotify.com/track/uri_2s9mjCqeU26eivqPXY04V8",
+            "artists": [
+                {
+                    "name": "Mark Watson",
+                    "url": "https://open.spotify.com/artist/art_synthetic",
+                    "imageUrl": "",
+                    "imageId": "art_synthetic",
+                    "id": "art_synthetic",
+                }
+            ],
+            "album": {
+                "name": "Arctic Future",
+                "url": "https://open.spotify.com/album/alb_synthetic",
+                "id": "alb_synthetic",
+                "imageId": "alb_synthetic",
+                "imageUrl": "",
+                "totalTracks": 1,
+                "releaseDate": 0.0,
+            },
+            "imageUrl": "",
+            "imageId": "alb_synthetic",
+            "duration": 10354,
+            "explicit": False,
+            "isrc": "",
+            "discNumber": 1,
+            "trackNumber": 1,
+            "created_reason": "synthetic_fallback",
+        }
+        
+        db.repo.upsertTrack(synthetic_track, created_reason="history_import (user: testuser)")
+        
+        # Verify it is stored as "synthetic_fallback" in the DB, not overridden by "history_import"
+        db_track = db.repo.getTrack("uri_2s9mjCqeU26eivqPXY04V8")
+        self.assertIsNotNone(db_track)
+        self.assertEqual(db_track["created_reason"], "synthetic_fallback")
+
 
 if __name__ == "__main__":
     unittest.main()
