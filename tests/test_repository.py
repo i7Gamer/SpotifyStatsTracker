@@ -211,6 +211,31 @@ class TestImageClaiming(RepositoryTestCase):
         self.assertTrue(self.repo.tryClaimImageDownload("shared-id", "artist"))
 
 
+class TestUpsertTrackRobustness(RepositoryTestCase):
+    def test_upsert_track_handles_missing_album_and_artists(self):
+        """upsertTrack should construct a fallback album and default to no artists if they are None/missing, avoiding ProgrammingError."""
+        track = {
+            "id": "t_no_album",
+            "name": "Song No Album",
+            "url": "https://open.spotify.com/track/t_no_album",
+            "imageId": "album_t_no_album",
+            "imageUrl": "",
+            "duration": 180000,
+            "explicit": False,
+            "isrc": "",
+            "discNumber": 1,
+            "trackNumber": 1,
+        }
+        
+        self.repo.upsertTrack(track)
+        self.repo.commit()
+        
+        db_track = self.repo.getTrack("t_no_album")
+        self.assertIsNotNone(db_track)
+        self.assertEqual(db_track["name"], "Song No Album")
+        self.assertEqual(db_track["album"]["name"], "Song No Album")
+
+
 class TestPlaysHistory(RepositoryTestCase):
     def setUp(self):
         super().setUp()

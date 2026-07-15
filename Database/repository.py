@@ -93,8 +93,18 @@ class Repository:
         Does NOT commit - callers compose this with insertPlay() into a single
         transaction (one play = one commit; a bulk import = one commit for the
         whole batch), then call commit()/rollback() themselves."""
-        album = track["album"]
-        artists = track["artists"]
+        album = track.get("album")
+        if not album:
+            album_id = track.get("albumId") or f"album_{track['id']}"
+            album = {
+                "id": album_id,
+                "name": track.get("name", "Unknown Album"),
+                "url": "",
+                "totalTracks": 1,
+                "releaseDate": 0.0,
+                "imageUrl": "",
+            }
+        artists = track.get("artists") or []
         conn = self._conn()
         conn.execute(
             """
