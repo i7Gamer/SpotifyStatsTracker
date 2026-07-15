@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 from Database.repository import (
     Repository, IMAGE_KIND_TRACK, IMAGE_STATUS_OK, IMAGE_STATUS_FAILED,
-    SYNTHETIC_FALLBACK_REASON,
+    SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON,
 )
 
 
@@ -468,6 +468,31 @@ class TestSyntheticTrackLifecycle(RepositoryTestCase):
 
         _, createdReason = self._trackCreatedColumns("t1")
         self.assertIsNone(createdReason)
+
+    def test_real_metadata_promotes_restricted_row(self):
+        """Same promotion as synthetic rows: a restricted-fallback row overwritten
+        by real metadata loses its May-be-unavailable marker."""
+        restricted = makeTrack(trackId="t1")
+        restricted["created_reason"] = RESTRICTED_FALLBACK_REASON
+        self.repo.upsertTrack(restricted)
+        self.repo.upsertTrack(makeTrack(trackId="t1"), created_reason="listener_fetch (user: alice)")
+        self.repo.commit()
+
+        createdAt, createdReason = self._trackCreatedColumns("t1")
+        self.assertEqual(createdReason, "listener_fetch (user: alice)")
+        self.assertIsNotNone(createdAt)
+
+    def test_restricted_reupsert_keeps_marker(self):
+        """Re-imports round-trip the restricted marker through the catalog cache -
+        it must survive, like the synthetic marker does."""
+        restricted = makeTrack(trackId="t1")
+        restricted["created_reason"] = RESTRICTED_FALLBACK_REASON
+        self.repo.upsertTrack(restricted)
+        self.repo.upsertTrack(dict(restricted), created_reason="history_import (user: alice)")
+        self.repo.commit()
+
+        _, createdReason = self._trackCreatedColumns("t1")
+        self.assertEqual(createdReason, RESTRICTED_FALLBACK_REASON)
 
     def test_conflict_keeps_non_synthetic_created_reason(self):
         """The promotion exception applies only to synthetic rows - a real row's

@@ -7,7 +7,7 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from Database.Importers.StreamingHistoryImporter import Importer
-from Database.db import SYNTHETIC_FALLBACK_REASON
+from Database.db import SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON
 import Database.utils as utilsModule
 
 MUSICOLET_CSV = (
@@ -299,6 +299,119 @@ class TestMusicoletSyntheticTimestampsAreDeterministic(unittest.TestCase):
         self.assertEqual(laterRun[:2], earlierRun)
         self.assertEqual(len(laterRun), 5)
         self.assertEqual(len(set(laterRun)), 5)
+
+
+def makeRestrictedTrack(artistName="Various Artists", artistId="0LyfQWJT6nXafLPZqxe9Of", albumName=""):
+    """Raw meta shape Spotify returns for region-restricted tracks: real track and
+    album ids, but blanked name/duration and the generic Various Artists profile."""
+    return {
+        "id": "track123",
+        "name": "",
+        "external_urls": {"spotify": "https://open.spotify.com/track/track123"},
+        "duration_ms": 0,
+        "explicit": False,
+        "disc_number": 1,
+        "track_number": 1,
+        "external_ids": {"isrc": ""},
+        "album": {
+            "id": "album123",
+            "name": albumName,
+            "external_urls": {"spotify": "https://open.spotify.com/album/album123"},
+            "images": [],
+            "total_tracks": 1,
+            "release_date": "0000-00-00",
+            "artists": [{
+                "name": artistName,
+                "id": artistId,
+                "external_urls": {"spotify": f"https://open.spotify.com/artist/{artistId}"},
+            }],
+        },
+    }
+
+
+class TestRestrictedTrackOverlay(unittest.TestCase):
+    HISTORY = [("Real Song", "Real Artist", "2023-01-01 00:00:00", 10354, "track123", "Real Album")]
+
+    @staticmethod
+    def _importerReturning(meta):
+        importer = Importer()
+        importer.sp = MagicMock()
+        importer.sp.track.return_value = meta
+        return importer
+
+    def _runImport(self, importer, history=None):
+        def dummyDataFunction(item):
+            return item
+        return list(importer._import(dummyDataFunction, history or self.HISTORY, known={}, progressCallback=None))
+
+    def test_blank_lookup_gets_export_metadata_and_tag(self):
+        importer = self._importerReturning(makeRestrictedTrack())
+
+        tracks = self._runImport(importer)
+
+        self.assertEqual(len(tracks), 1)
+        track = tracks[0]
+        # Export data fills the blanked fields
+        self.assertEqual(track["name"], "Real Song")
+        self.assertEqual(track["artists"][0]["name"], "Real Artist")
+        self.assertEqual(track["album"]["name"], "Real Album")
+        self.assertEqual(track["created_reason"], RESTRICTED_FALLBACK_REASON)
+        # The real Spotify ids/links are kept
+        self.assertEqual(track["id"], "track123")
+        self.assertEqual(track["url"], "https://open.spotify.com/track/track123")
+        self.assertEqual(track["album"]["id"], "album123")
+        self.assertEqual(track["album"]["url"], "https://open.spotify.com/album/album123")
+        # Replacement artist is fabricated (keyed by name), not the Various Artists profile
+        self.assertNotEqual(track["artists"][0]["id"], "0LyfQWJT6nXafLPZqxe9Of")
+        self.assertTrue(track["artists"][0]["id"].startswith("artist_"))
+        self.assertEqual(track["artists"][0]["url"], "")
+
+    def test_matching_returned_artist_is_kept(self):
+        """If Spotify returned the true artist despite the blanked name, keep its
+        real id and link instead of fabricating one."""
+        importer = self._importerReturning(makeRestrictedTrack(artistName="Real Artist", artistId="realArtist1"))
+
+        track = self._runImport(importer)[0]
+
+        self.assertEqual(track["artists"][0]["id"], "realArtist1")
+        self.assertEqual(track["artists"][0]["url"], "https://open.spotify.com/artist/realArtist1")
+
+    def test_album_name_falls_back_to_track_name_without_export_album(self):
+        importer = self._importerReturning(makeRestrictedTrack())
+        history = [("Real Song", "Real Artist", "2023-01-01 00:00:00", 10354, "track123")]  #< 5-tuple, no album
+
+        track = self._runImport(importer, history)[0]
+
+        self.assertEqual(track["album"]["name"], "Real Song")
+
+    def test_returned_album_name_is_not_overwritten(self):
+        importer = self._importerReturning(makeRestrictedTrack(albumName="Spotify Album"))
+
+        track = self._runImport(importer)[0]
+
+        self.assertEqual(track["album"]["name"], "Spotify Album")
+
+    def test_available_track_is_untouched(self):
+        importer = self._importerReturning(FAKE_TRACK)
+
+        track = self._runImport(importer)[0]
+
+        self.assertEqual(track["name"], "Song One")
+        self.assertIsNone(track.get("created_reason"))
+        self.assertEqual(track["artists"][0]["id"], "artist123")
+
+    def test_build_known_index_skips_blank_names(self):
+        """Catalog rows stored with blank names (pre-overlay restricted lookups)
+        must not seed the cache, so a re-import re-fetches and heals them."""
+        importer = Importer()
+        blank = {"id": "t1", "name": "", "artists": [{"name": "Various Artists"}]}
+        named = {"id": "t2", "name": "Song", "artists": [{"name": "Artist"}]}
+
+        index = importer.buildKnownIndex([blank, named])
+
+        self.assertNotIn("t1", index)
+        self.assertIn("t2", index)
+        self.assertIn("SongArtist", index)
 
 
 class TestImportFallbackToSyntheticTrack(unittest.TestCase):

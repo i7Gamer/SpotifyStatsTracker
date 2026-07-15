@@ -11,11 +11,11 @@ logger = logging.getLogger(__name__)
 
 try:
     from Database.Formatters.spotifyClient import Client
-    from Database.db import SYNTHETIC_FALLBACK_REASON
+    from Database.db import SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON
     from Database.utils import timeToInt, timeToIntUTC, parseError
 except ModuleNotFoundError:
     from Formatters.spotifyClient import Client
-    from db import SYNTHETIC_FALLBACK_REASON
+    from db import SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON
     from utils import timeToInt, timeToIntUTC, parseError
 
 
@@ -87,6 +87,11 @@ class Importer:
     def buildKnownIndex(self, knownTrack):
         index = {}
         for item in knownTrack:
+            if not item.get("name"):
+                # Stored from a blanked (region-restricted) lookup before the export
+                # overlay existed - leave it out of the cache so a re-import
+                # re-fetches it and heals the record.
+                continue
             index[item["id"]] = item
             if len(item["artists"]) == 0:
                 continue
@@ -97,10 +102,14 @@ class Importer:
         parsedItems = []
         for item in history:
             try:
-                name, artist, startTimestamp, timePlayed, trackUri = dataFunction(item)
+                parsed = dataFunction(item)
+                # albumName (6th element) is optional - account exports and older
+                # callers produce 5-tuples with no album information.
+                name, artist, startTimestamp, timePlayed, trackUri = parsed[:5]
+                albumName = parsed[5] if len(parsed) > 5 else None
                 if timePlayed < self.MIN_TIME_PLAYED_MS:
                     continue
-                parsedItems.append((name, artist, startTimestamp, timePlayed, trackUri))
+                parsedItems.append((name, artist, startTimestamp, timePlayed, trackUri, albumName))
             except Exception:
                 continue
         return parsedItems
@@ -119,22 +128,22 @@ class Importer:
 
     def _identifyMissingTracks(self, chunk, known):
         missingTracks = {}
-        for name, artist, startTimestamp, timePlayed, trackUri in chunk:
+        for name, artist, startTimestamp, timePlayed, trackUri, albumName in chunk:
             if self._resolveKnownKey(trackUri, name, artist, known) is not None:
                 continue
 
             if trackUri:
-                missingTracks[trackUri] = (name, artist, trackUri)
+                missingTracks[trackUri] = (name, artist, trackUri, albumName)
             elif name and artist:
-                missingTracks[name + artist] = (name, artist, None)
+                missingTracks[name + artist] = (name, artist, None, albumName)
         return missingTracks
 
     def _prefetchMissingTracks(self, missingTracks, chunkStart, totalItems, known, progressCallback):
         totalMissing = len(missingTracks)
         fetchedCount = 0
-        
+
         def fetchOne(key, info):
-            name, artist, trackUri = info
+            name, artist, trackUri, albumName = info
             meta = None
             try:
                 meta = self._fetchTrackMeta(name, artist, trackUri)
@@ -148,16 +157,18 @@ class Importer:
                 fetchedCount += 1
                 if progressCallback:
                     progressCallback(
-                        "running", 
-                        chunkStart + fetchedCount, 
-                        totalItems, 
+                        "running",
+                        chunkStart + fetchedCount,
+                        totalItems,
                         f"Pre-fetching batch metadata ({fetchedCount}/{totalMissing})..."
                     )
-                
+
                 try:
                     key, meta = future.result()
                     if meta:
+                        name, artist, trackUri, albumName = missingTracks[key]
                         formatted = Client.formatTrack(meta, embedPlaybackInfo=False)
+                        formatted = self._overlayExportMetadata(formatted, name, artist, albumName)
                         known[formatted["id"]] = formatted
                         if key != formatted["id"]:
                             known[key] = formatted
@@ -228,8 +239,44 @@ class Importer:
         errorText = str(e).lower()
         return any(marker in errorText for marker in self.TRANSIENT_LOOKUP_ERROR_MARKERS)
 
+    def _overlayExportMetadata(self, base: dict, name: str, artist: str, albumName: str | None) -> dict:
+        """Spotify blanks name/duration and reports the generic "Various Artists"
+        profile for region-restricted tracks (playability COUNTRY_RESTRICTED) while
+        still returning the real track and album ids. Keep the real ids/links but
+        fill the blanked fields from the export's own data, and tag the record so
+        the UI shows a "May be unavailable" badge."""
+        if base.get("name") or not name:
+            return base
+
+        base["name"] = name
+        base["created_reason"] = RESTRICTED_FALLBACK_REASON
+
+        # The returned artist is untrustworthy on blanked tracks - replace it with
+        # the export's artist unless it already matches. The fabricated id is keyed
+        # by artist name (not track id) so one restricted artist stays one artist
+        # across all their tracks.
+        returnedArtists = base.get("artists") or []
+        returnedArtistName = (returnedArtists[0].get("name") or "").strip().lower() if returnedArtists else ""
+        if artist and returnedArtistName != artist.strip().lower():
+            artist_id = f"artist_{hashlib.md5(artist.encode('utf-8')).hexdigest()}"
+            base["artists"] = [
+                {
+                    "name": artist,
+                    "url": "",
+                    "imageUrl": "",
+                    "imageId": artist_id,
+                    "id": artist_id,
+                }
+            ]
+
+        album = base.get("album")
+        if album is not None and not album.get("name"):
+            album["name"] = albumName or name
+
+        return base
+
     def _processPlay(self, item, known):
-        name, artist, startTimestamp, timePlayed, trackUri = item
+        name, artist, startTimestamp, timePlayed, trackUri, albumName = item
         try:
             matchedId = self._resolveKnownKey(trackUri, name, artist, known)
 
@@ -242,6 +289,7 @@ class Importer:
                 try:
                     meta = self._fetchTrackMeta(name, artist, trackUri)
                     base = Client.formatTrack(meta, embedPlaybackInfo=False)
+                    base = self._overlayExportMetadata(base, name, artist, albumName)
                 except Exception as e:
                     if self._isTransientLookupError(e):
                         # Don't freeze a synthetic record into the catalog over what's
@@ -303,7 +351,7 @@ class Importer:
             startTimestamp = endTimestamp-timePlayed//1000
             name=item["trackName"]
             artist=item["artistName"]
-            return name, artist, startTimestamp, timePlayed, None
+            return name, artist, startTimestamp, timePlayed, None, None  #< account export carries no album name
         
         yield from self._import(dataFunction, history, known, progressCallback)
 
@@ -316,9 +364,10 @@ class Importer:
 
             name = item["master_metadata_track_name"]
             artist = item["master_metadata_album_artist_name"]
+            albumName = item.get("master_metadata_album_album_name")
             uri = item.get("spotify_track_uri")
             trackUri = uri.split(":")[-1] if uri else None
-            return name, artist, startTimestamp, timePlayed, trackUri
+            return name, artist, startTimestamp, timePlayed, trackUri, albumName
         
         yield from self._import(dataFunction, history, known, progressCallback)
 
@@ -336,6 +385,7 @@ class Importer:
             ### Data formatted in: FILE_PATH,TITLE,ARTIST,ALBUM,ALBUM_ARTIST,COMPOSER,GENRE,YEAR,DURATION_MS,PLAY_COUNT
             NAME = 1
             ARTISTS = 2
+            ALBUM = 3
             DURATION_MS = 8
             PLAYCOUNT = 9
 
@@ -349,6 +399,7 @@ class Importer:
                 try:
                     name = song[NAME]
                     mainArtist = song[ARTISTS].split("/")[0]
+                    albumName = song[ALBUM]
                     timePlayed = int(song[DURATION_MS])
                     playCount = int(song[PLAYCOUNT])
 
@@ -359,7 +410,8 @@ class Importer:
                             name,
                             mainArtist,
                             startTimestamp,
-                            timePlayed
+                            timePlayed,
+                            albumName
                         ))
                         trackTime += datetime.timedelta(milliseconds=timePlayed)
 
@@ -369,7 +421,7 @@ class Importer:
             return formatedData
 
         def dataFunction(item):
-            name, mainArtist, startTimestamp, timePlayed = item
-            return name, mainArtist, startTimestamp, timePlayed, None
+            name, mainArtist, startTimestamp, timePlayed, albumName = item
+            return name, mainArtist, startTimestamp, timePlayed, None, albumName
 
         yield from self._import(dataFunction, expand(rows), known, progressCallback)

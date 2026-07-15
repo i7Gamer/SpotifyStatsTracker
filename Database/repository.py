@@ -6,10 +6,10 @@ from pathlib import Path
 
 try:
     import Database.db as db
-    from Database.db import ConnectionManager, SYNTHETIC_FALLBACK_REASON
+    from Database.db import ConnectionManager, SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON
 except ModuleNotFoundError:
     import db
-    from db import ConnectionManager, SYNTHETIC_FALLBACK_REASON
+    from db import ConnectionManager, SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON
 
 IMAGE_KIND_TRACK = "track"
 IMAGE_KIND_ARTIST = "artist"
@@ -82,8 +82,8 @@ class Repository:
         Client.formatTrack). Last write wins, matching the previous
         tracks[id] = track dict-assignment semantics. If created_reason is provided,
         it's only set on INSERT (never updated on conflict) - except that real
-        metadata replacing a SYNTHETIC_FALLBACK_REASON row also replaces the
-        synthetic marker.
+        metadata replacing a fallback row (SYNTHETIC_FALLBACK_REASON /
+        RESTRICTED_FALLBACK_REASON) also replaces the fallback marker.
 
         Does NOT commit - callers compose this with insertPlay() into a single
         transaction (one play = one commit; a bulk import = one commit for the
@@ -120,6 +120,7 @@ class Repository:
             "created_at": track.get("created_at"),
             "created_reason": track.get("created_reason"),
             "syntheticReason": SYNTHETIC_FALLBACK_REASON,
+            "restrictedReason": RESTRICTED_FALLBACK_REASON,
         }
         if created_reason and not trackData["created_reason"]:
             trackData["created_reason"] = created_reason
@@ -127,9 +128,9 @@ class Repository:
             trackData["created_at"] = time.time()
 
         # created_at/created_reason are never updated on conflict, with one exception:
-        # a synthetic fallback row (see SYNTHETIC_FALLBACK_REASON) being overwritten by
-        # real metadata drops the synthetic marker, so the UI stops badging a track
-        # that turned out to exist on Spotify after all.
+        # a fallback row (synthetic or restricted, see db.py) being overwritten by real
+        # metadata drops the fallback marker, so the UI stops badging a track that
+        # turned out to be fully available on Spotify after all.
         conn.execute(
             """
             INSERT INTO tracks (id, name, url, album_id, image_id, duration_ms, explicit, isrc, disc_number, track_number, created_at, created_reason)
@@ -139,12 +140,14 @@ class Repository:
                 duration_ms=excluded.duration_ms, explicit=excluded.explicit, isrc=excluded.isrc,
                 disc_number=excluded.disc_number, track_number=excluded.track_number,
                 created_at=CASE
-                    WHEN tracks.created_reason = :syntheticReason
-                         AND (excluded.created_reason IS NULL OR excluded.created_reason != :syntheticReason)
+                    WHEN tracks.created_reason IN (:syntheticReason, :restrictedReason)
+                         AND (excluded.created_reason IS NULL
+                              OR excluded.created_reason NOT IN (:syntheticReason, :restrictedReason))
                     THEN excluded.created_at ELSE tracks.created_at END,
                 created_reason=CASE
-                    WHEN tracks.created_reason = :syntheticReason
-                         AND (excluded.created_reason IS NULL OR excluded.created_reason != :syntheticReason)
+                    WHEN tracks.created_reason IN (:syntheticReason, :restrictedReason)
+                         AND (excluded.created_reason IS NULL
+                              OR excluded.created_reason NOT IN (:syntheticReason, :restrictedReason))
                     THEN excluded.created_reason ELSE tracks.created_reason END
             """,
             trackData,

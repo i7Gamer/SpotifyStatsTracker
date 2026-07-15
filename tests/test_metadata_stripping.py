@@ -60,7 +60,7 @@ class TestMetadataStripping(DatabaseTestCase):
         importer.sp.track.return_value = FAKE_TRACK_METADATA
         
         missing_tracks = {
-            "track999": ("Metadata Only Song", "Artist Name", "track999")
+            "track999": ("Metadata Only Song", "Artist Name", "track999", None)
         }
         known = {}
         
@@ -117,7 +117,7 @@ class TestProcessPlayCaching(unittest.TestCase):
         importer.sp.track.return_value = FAKE_TRACK_METADATA
 
         known = {}
-        item = ("Metadata Only Song", "Artist Name", self.PLAYED_AT, self.MS_PLAYED, "track999")
+        item = ("Metadata Only Song", "Artist Name", self.PLAYED_AT, self.MS_PLAYED, "track999", None)
         meta = importer._processPlay(item, known)
 
         # The yielded play carries the playback info

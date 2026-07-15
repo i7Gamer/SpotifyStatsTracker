@@ -11,6 +11,14 @@ SQLITE_BUSY_TIMEOUT_MS = 5000   #< how long a writer waits for a lock before rai
 # (e.g. a listener fetch of the same id) overwrite the marker.
 SYNTHETIC_FALLBACK_REASON = "synthetic_fallback"
 
+# tracks.created_reason value for tracks whose lookup succeeded but came back blanked
+# (Spotify returns empty name/duration and a generic "Various Artists" profile for
+# region-restricted tracks, playability reason COUNTRY_RESTRICTED). The real track and
+# album ids/links are kept, the blanked fields are filled from the user's own export
+# data, and the UI shows a "May be unavailable" badge. Like SYNTHETIC_FALLBACK_REASON,
+# real metadata arriving later overwrites the marker.
+RESTRICTED_FALLBACK_REASON = "restricted_fallback"
+
 # Database/Data/ is the directory the Docker volume mounts for persistence (see
 # docker-compose.yml). Named "Data" rather than "Users" since its main contents
 # (this database, the shared media cache) aren't per-user - migrate1_6_0.py
