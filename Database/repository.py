@@ -564,6 +564,66 @@ class Repository:
         )
         return cur.rowcount
 
+    def getPlayedTrackIds(self, username: str, trackIds: list[str]) -> set[str]:
+        """The subset of `trackIds` this user has at least one play of - the
+        Compare page's "does the viewer have their own data for this
+        counterpart item" check (see app.py's comparePage), so a counterpart
+        song only links out to Spotify when the viewer's own detail page
+        would have nothing to show. Deliberately a real play-history lookup,
+        not membership in the viewer's own top-N pool: a track can rank
+        outside someone's top 100 while they've still genuinely played it,
+        and getSongsPage's own trackId lookup (what the detail page actually
+        renders from) has no pool-depth limit either - this matches that
+        exactly."""
+        if not trackIds:
+            return set()
+        conn = self._conn()
+        placeholders = ",".join("?" for _ in trackIds)
+        rows = conn.execute(
+            f"SELECT DISTINCT track_id FROM plays WHERE username=? AND track_id IN ({placeholders})",
+            [username, *trackIds],
+        ).fetchall()
+        return {r["track_id"] for r in rows}
+
+    def getPlayedArtistIds(self, username: str, artistIds: list[str]) -> set[str]:
+        """The subset of `artistIds` this user has at least one play of a
+        track crediting (any billing position) - the artist counterpart to
+        getPlayedTrackIds(), matching getArtistAggregates' own artistId
+        lookup exactly."""
+        if not artistIds:
+            return set()
+        conn = self._conn()
+        placeholders = ",".join("?" for _ in artistIds)
+        rows = conn.execute(
+            f"""
+            SELECT DISTINCT ta.artist_id AS artist_id
+            FROM plays p
+            JOIN track_artists ta ON ta.track_id = p.track_id
+            WHERE p.username=? AND ta.artist_id IN ({placeholders})
+            """,
+            [username, *artistIds],
+        ).fetchall()
+        return {r["artist_id"] for r in rows}
+
+    def getPlayedAlbumIds(self, username: str, albumIds: list[str]) -> set[str]:
+        """The subset of `albumIds` this user has at least one play of a
+        track from - the album counterpart to getPlayedTrackIds(), matching
+        getAlbumsPage's own albumId lookup exactly."""
+        if not albumIds:
+            return set()
+        conn = self._conn()
+        placeholders = ",".join("?" for _ in albumIds)
+        rows = conn.execute(
+            f"""
+            SELECT DISTINCT t.album_id AS album_id
+            FROM plays p
+            JOIN tracks t ON t.id = p.track_id
+            WHERE p.username=? AND t.album_id IN ({placeholders})
+            """,
+            [username, *albumIds],
+        ).fetchall()
+        return {r["album_id"] for r in rows}
+
     @staticmethod
     def _playRowToEntry(row) -> dict:
         return {

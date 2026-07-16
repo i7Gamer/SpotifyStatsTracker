@@ -1,17 +1,31 @@
-{# Own items link to the viewer's detail pages; counterpart items can't
-   (detail pages resolve against the VIEWER's data - see _track_card.html),
-   so they link to Spotify instead, and only when a real URL exists
-   (fabricated ids for removed tracks carry an empty url). #}
+{# Own items always link to the viewer's own detail pages - the viewer
+   definitely has data for them, since that's where the item came from. #}
 {% macro detailCell(item, endpoint, idKey) -%}
   {%- if item -%}
     <a class="compare-cell-link" href="{{ url_for(endpoint, **{idKey: item.id}) }}">{{ item.name }}</a>
   {%- else -%}—{%- endif -%}
 {%- endmacro %}
 
+{# Counterpart items: detail pages resolve against the VIEWER's data, so an
+   item the viewer has never played would dead-end there - link to Spotify
+   instead, and only when a real URL exists (fabricated ids for removed
+   tracks carry an empty url). #}
 {% macro spotifyCell(item) -%}
   {%- if item and item.url -%}
     <a class="compare-cell-link" href="{{ item.url }}" target="_blank" rel="noreferrer noopener">{{ item.name }} ↗</a>
   {%- elif item -%}{{ item.name }}{%- else -%}—{%- endif -%}
+{%- endmacro %}
+
+{# A counterpart item's cell: Spotify only when item.linkExternally (set by
+   app.py's _markLinkExternally - true when the viewer has NO plays of it),
+   otherwise the viewer genuinely has their own data for it, so it links to
+   their own detail page exactly like an own item would. #}
+{% macro theirCell(item, endpoint, idKey) -%}
+  {%- if item and item.get('linkExternally') -%}
+    {{ spotifyCell(item) }}
+  {%- elif item -%}
+    {{ detailCell(item, endpoint, idKey) }}
+  {%- else -%}—{%- endif -%}
 {%- endmacro %}
 
 {# Cover thumbnail for a compare card. Images are shared across users; the

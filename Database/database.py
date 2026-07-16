@@ -931,6 +931,11 @@ class Database:
         results = self.getSongsStats(sortBy="plays", limit=1, trackId=trackId)
         return results[0] if results else None
 
+    def getPlayedTrackIds(self, trackIds: list[str]) -> set[str]:
+        """The subset of `trackIds` this user has at least one play of - see
+        Repository.getPlayedTrackIds."""
+        return self.repo.getPlayedTrackIds(self.user, trackIds)
+
     def getSongsCount(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None,
                        searchQuery: str | None = None) -> int:
         """Number of distinct songs played in range - the paging counterpart to
@@ -1025,6 +1030,11 @@ class Database:
         results = self.getAlbumsStats(sortBy="plays", limit=1, albumId=albumId)
         return results[0] if results else None
 
+    def getPlayedAlbumIds(self, albumIds: list[str]) -> set[str]:
+        """The subset of `albumIds` this user has at least one play from - see
+        Repository.getPlayedAlbumIds."""
+        return self.repo.getPlayedAlbumIds(self.user, albumIds)
+
     def getAlbumsCount(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None,
                         searchQuery: str | None = None) -> int:
         """Number of distinct albums played in range - the paging counterpart to
@@ -1057,6 +1067,11 @@ class Database:
         """A single artist's aggregate stats - the artist-detail page's lookup."""
         results = self.getArtistsStats(startDate, endDate, artistId=artistId, limit=1)
         return results[0] if results else None
+
+    def getPlayedArtistIds(self, artistIds: list[str]) -> set[str]:
+        """The subset of `artistIds` this user has at least one play of a
+        track crediting - see Repository.getPlayedArtistIds."""
+        return self.repo.getPlayedArtistIds(self.user, artistIds)
 
     def getArtistsCount(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None,
                          searchQuery: str | None = None) -> int:

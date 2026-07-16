@@ -412,9 +412,10 @@ class TestCompareRoute(unittest.TestCase):
         self.assertIn(b'<a class="compare-cell-link" href="/album/al1">', resp.data)
 
     def test_summary_rows_link_counterpart_items_to_spotify(self):
-        """The counterpart's summary cells can't use detail links (they resolve
-        against the viewer's db) - they link to Spotify instead, and only when
-        a real URL exists (fabricated ids carry an empty url)."""
+        """A counterpart summary cell links to Spotify only when the viewer
+        has ZERO plays of that item (a detail link would dead-end then) -
+        alice's stub db reports no plays of anything here - and only when a
+        real URL exists (fabricated ids carry an empty url)."""
         self._accept("alice", "bob")
         self.dbs["bob"].getTopSongs.return_value = [
             _song("their-song-1", "TheirSong", url="https://open.spotify.com/track/xyz1")]
@@ -428,6 +429,8 @@ class TestCompareRoute(unittest.TestCase):
         self.assertNotIn(b"/artist/their-artist-1", resp.data)   #< empty url: plain text, no link
 
     def test_counterpart_card_titles_link_to_spotify_when_url_exists(self):
+        """Card-title variant of the zero-data rule above: alice's stub db
+        reports no plays of bob's song, so it links out to Spotify."""
         self._accept("alice", "bob")
         self.dbs["bob"].getTopSongs.return_value = [
             _song("their-song-1", "TheirSong", url="https://open.spotify.com/track/xyz1")]
@@ -438,6 +441,47 @@ class TestCompareRoute(unittest.TestCase):
         # external cover link marker (internal covers have no target attr)
         self.assertIn(b'class="track-cover-link" target="_blank"', resp.data)
         self.assertNotIn(b"/song/their-song-1", resp.data)
+
+    def test_counterpart_items_the_viewer_played_link_to_their_own_detail_pages(self):
+        """The viewer may well have their own plays of a counterpart's top
+        item without it ranking in their own displayed lists - their detail
+        page then has real data to show, so the card links there like any
+        own item instead of bouncing out to Spotify."""
+        self._accept("alice", "bob")
+        self.dbs["bob"].getTopSongs.return_value = [
+            _song("known-song", "KnownSong", url="https://open.spotify.com/track/xyz1")]
+        self.dbs["bob"].getTopArtists.return_value = [
+            _artist("known-artist", "KnownArtist", url="https://open.spotify.com/artist/xyz2")]
+        self.dbs["bob"].getTopAlbums.return_value = [
+            _album("known-album", "KnownAlbum", url="https://open.spotify.com/album/xyz3")]
+        self.dbs["alice"].getPlayedTrackIds.return_value = {"known-song"}
+        self.dbs["alice"].getPlayedArtistIds.return_value = {"known-artist"}
+        self.dbs["alice"].getPlayedAlbumIds.return_value = {"known-album"}
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        self.assertIn(b"/song/known-song", resp.data)
+        self.assertIn(b"/artist/known-artist", resp.data)
+        self.assertIn(b"/album/known-album", resp.data)
+        #< no external card links anywhere: every counterpart item resolves
+        #  internally (the "Open in Spotify" attribute label is separate and
+        #  carries class track-label, not track-cover-link)
+        self.assertNotIn(b'class="track-cover-link" target="_blank"', resp.data)
+
+    def test_played_lookup_is_batched_over_the_displayed_counterpart_ids(self):
+        """One query per category over exactly the displayed items - not one
+        query per card."""
+        self._accept("alice", "bob")
+        self.dbs["bob"].getTopSongs.return_value = [
+            _song("ts1", "TheirSong1"), _song("ts2", "TheirSong2")]
+        client = self._loginAs("alice")
+
+        client.get("/compare")
+
+        self.dbs["alice"].getPlayedTrackIds.assert_called_once_with(["ts1", "ts2"])
+        self.dbs["alice"].getPlayedArtistIds.assert_called_once_with([])
+        self.dbs["alice"].getPlayedAlbumIds.assert_called_once_with([])
 
     def test_shared_artist_cards_show_both_users_stats(self):
         """'You Both Love' cards lead with the COMBINED plays/time (the

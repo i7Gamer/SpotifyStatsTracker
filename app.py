@@ -630,6 +630,15 @@ class SpotifyDashboardApp:
             "peakDayText": WEEKDAY_NAMES[dayTotals.index(max(dayTotals))] if any(dayTotals) else "—",
         }
 
+    @staticmethod
+    def _markLinkExternally(items: list[dict], playedIds: set) -> None:
+        """In place: sets item['linkExternally'] so _track_card.html (and
+        _compare_stats_table.html's theirCell macro) link this counterpart
+        item to Spotify only when it's NOT in `playedIds` - i.e. only when
+        the viewer has no data of their own for it."""
+        for item in items:
+            item["linkExternally"] = item["id"] not in playedIds
+
     def _buildSharedItems(self, myPool, theirPool, embedFn, limit) -> list[dict]:
         """Shared entries of one category (viewer-ranked, sliced to `limit`)
         with the per-user versus data the "You Both Love" cards render.
@@ -2400,6 +2409,18 @@ class SpotifyDashboardApp:
             my = self._gatherCompareStats(db, startDate, endDate, limit=limit)
             their = self._gatherCompareStats(otherDb, startDate, endDate, limit=limit)
 
+            # A counterpart item links to Spotify only when the viewer has NO
+            # plays of that exact song/artist/album - the viewer's own detail
+            # page has nothing to show them then. Otherwise it links there
+            # like any other item, since the viewer genuinely does have data
+            # for it (a real play-history lookup, not "is in the viewer's own
+            # top list" - a track can be true for the former and not the
+            # latter). Batched to one query per category rather than one per
+            # displayed item.
+            self._markLinkExternally(their["topSongs"], db.getPlayedTrackIds([s["id"] for s in their["topSongs"]]))
+            self._markLinkExternally(their["topArtists"], db.getPlayedArtistIds([a["id"] for a in their["topArtists"]]))
+            self._markLinkExternally(their["topAlbums"], db.getPlayedAlbumIds([a["id"] for a in their["topAlbums"]]))
+
             # Sliced like every other list on the page. No percent text here -
             # it would mix two different users' totals.
             sharedArtists = self._buildSharedItems(
@@ -2506,19 +2527,17 @@ class SpotifyDashboardApp:
                         emptyMessage="No shared top albums in this period yet."),
                     "myTopSongsHtml": render_template(
                         "_wrapped_list.html", items=my["topSongs"], section="top_songs", **listArgs),
+                    #< each item's own linkExternally decides internal vs. Spotify (see _markLinkExternally)
                     "theirTopSongsHtml": render_template(
-                        "_wrapped_list.html", items=their["topSongs"], section="top_songs",
-                        suppressDetailLinks=True, **listArgs),
+                        "_wrapped_list.html", items=their["topSongs"], section="top_songs", **listArgs),
                     "myTopArtistsHtml": render_template(
                         "_wrapped_list.html", items=my["topArtists"], section="top_artists", **listArgs),
                     "theirTopArtistsHtml": render_template(
-                        "_wrapped_list.html", items=their["topArtists"], section="top_artists",
-                        suppressDetailLinks=True, **listArgs),
+                        "_wrapped_list.html", items=their["topArtists"], section="top_artists", **listArgs),
                     "myTopAlbumsHtml": render_template(
                         "_wrapped_list.html", items=my["topAlbums"], section="top_albums", **listArgs),
                     "theirTopAlbumsHtml": render_template(
-                        "_wrapped_list.html", items=their["topAlbums"], section="top_albums",
-                        suppressDetailLinks=True, **listArgs),
+                        "_wrapped_list.html", items=their["topAlbums"], section="top_albums", **listArgs),
                     "comparisonTrend": comparisonTrend,
                 })
 

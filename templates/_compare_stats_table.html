@@ -1,4 +1,4 @@
-{% from '_compare_macros.html' import detailCell, spotifyCell, coverImg %}
+{% from '_compare_macros.html' import detailCell, theirCell, coverImg %}
 {# The leader's ▲ + hidden "(higher)" keep the signal readable without
    color (color-blind users, screen readers). `side` is 'mine'/'theirs' so
    the leading cell colors in its own row's identity color. #}
@@ -62,7 +62,9 @@
    squeezed everything) into one row of cards mirroring the Common Top
    cards. Summary entries come from the same lists rendered below, so
    these cards and the lists can never disagree on the #1 entry. Own
-   items link to detail pages; counterpart items link to Spotify. #}
+   items always link to detail pages; counterpart items link there too
+   whenever the viewer has their own data for that exact item, and to
+   Spotify only when they don't (see theirCell in _compare_macros.html). #}
 <div class="compare-top-items">
   <article class="track-summary-card">
     <h3>Top Day</h3>
@@ -74,20 +76,20 @@
     {{ topItemSide('mine', username, my.topSongs[0] if my.topSongs else none, 'song',
                    detailCell(my.topSongs[0] if my.topSongs else none, 'songDetailPage', 'track_id')) }}
     {{ topItemSide('theirs', withUsername, their.topSongs[0] if their.topSongs else none, 'song',
-                   spotifyCell(their.topSongs[0] if their.topSongs else none)) }}
+                   theirCell(their.topSongs[0] if their.topSongs else none, 'songDetailPage', 'track_id')) }}
   </article>
   <article class="track-summary-card">
     <h3>Top Artist</h3>
     {{ topItemSide('mine', username, my.topArtists[0] if my.topArtists else none, 'artist',
                    detailCell(my.topArtists[0] if my.topArtists else none, 'artistDetailPage', 'artist_id')) }}
     {{ topItemSide('theirs', withUsername, their.topArtists[0] if their.topArtists else none, 'artist',
-                   spotifyCell(their.topArtists[0] if their.topArtists else none)) }}
+                   theirCell(their.topArtists[0] if their.topArtists else none, 'artistDetailPage', 'artist_id')) }}
   </article>
   <article class="track-summary-card">
     <h3>Top Album</h3>
     {{ topItemSide('mine', username, my.topAlbums[0] if my.topAlbums else none, 'album',
                    detailCell(my.topAlbums[0] if my.topAlbums else none, 'albumDetailPage', 'album_id')) }}
     {{ topItemSide('theirs', withUsername, their.topAlbums[0] if their.topAlbums else none, 'album',
-                   spotifyCell(their.topAlbums[0] if their.topAlbums else none)) }}
+                   theirCell(their.topAlbums[0] if their.topAlbums else none, 'albumDetailPage', 'album_id')) }}
   </article>
 </div>

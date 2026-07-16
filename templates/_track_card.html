@@ -7,8 +7,13 @@
      caller rendering ANOTHER user's items (the Compare page's counterpart
      columns) sets suppressDetailLinks. Those cards link to Spotify instead of
      a detail page that would dead-end or show the wrong user's stats - and
-     only when a real URL exists (fabricated ids carry an empty url). #}
-  {% set suppressDetailLinks = suppressDetailLinks if suppressDetailLinks is defined else false %}
+     only when a real URL exists (fabricated ids carry an empty url).
+     track['linkExternally'], when present, overrides the call-site default
+     per item: the Compare page's counterpart lists set it individually (see
+     app.py's _markLinkExternally) so an item the viewer HAS played (even if
+     it's not one of the viewer's own top items) still links to their own
+     detail page instead of always going external. #}
+  {% set suppressDetailLinks = track.get('linkExternally', suppressDetailLinks if suppressDetailLinks is defined else false) %}
   {% set compareWith = compareWith if compareWith is defined else '' %}
   {% set linkableId = track.get('id') if not suppressDetailLinks else none %}
   {% set externalUrl = track.get('url') if suppressDetailLinks and track.get('url') else none %}

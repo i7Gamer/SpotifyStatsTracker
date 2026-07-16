@@ -1212,16 +1212,6 @@ progress::-moz-progress-bar {
   color: var(--compare-theirs);
 }
 
-.compare-user-label::before {
-  content: '';
-  display: inline-block;
-  width: 9px;
-  height: 9px;
-  border-radius: 999px;
-  background: currentColor;
-  margin-right: 6px;
-}
-
 .form-group {
   display: flex;
   flex-direction: column;
