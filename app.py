@@ -2608,6 +2608,40 @@ class SpotifyDashboardApp:
             }
             tasteMatch = self._tasteMatchPercent(my, their)
 
+            # Genre comparison requires BOTH sides past the unlock gate -
+            # comparing a complete genre profile against a half-backfilled one
+            # would misrepresent the half-backfilled user's taste. Deliberately
+            # not folded into _tasteMatchPercent in v1: the score would jump
+            # for everyone the day genre data finishes backfilling.
+            myGenreCoverage = resolveGenreCoverage(db, startDate, endDate)
+            theirGenreCoverage = resolveGenreCoverage(otherDb, startDate, endDate)
+            genresUnlocked = genreGatePasses(myGenreCoverage) and genreGatePasses(theirGenreCoverage)
+            myTopGenres = None
+            theirTopGenres = None
+            sharedGenres = None
+            if genresUnlocked:
+                myGenrePool = db.getGenreDistribution(startDate=startDate, endDate=endDate,
+                                                      limit=COMPARE_GENRE_POOL_SIZE)
+                theirGenrePool = otherDb.getGenreDistribution(startDate=startDate, endDate=endDate,
+                                                              limit=COMPARE_GENRE_POOL_SIZE)
+                if not isinstance(myGenrePool, dict):
+                    myGenrePool = {}
+                if not isinstance(theirGenrePool, dict):
+                    theirGenrePool = {}
+                myTopGenres = dict(list(myGenrePool.items())[:COMPARE_TOP_GENRES_LIMIT])
+                theirTopGenres = dict(list(theirGenrePool.items())[:COMPARE_TOP_GENRES_LIMIT])
+                # Shared genres: the pools' intersection, ordered by combined
+                # plays (name breaks ties) - like the shared-item lists, the
+                # overlap runs over the deeper pools, not just the displayed top.
+                sharedGenres = [
+                    {"genre": genre, "myPlays": myGenrePool[genre],
+                     "theirPlays": theirGenrePool[genre],
+                     "combinedPlays": myGenrePool[genre] + theirGenrePool[genre]}
+                    for genre in set(myGenrePool) & set(theirGenrePool)
+                ]
+                sharedGenres.sort(key=lambda item: (-item["combinedPlays"], item["genre"]))
+                sharedGenres = sharedGenres[:COMPARE_TOP_GENRES_LIMIT]
+
             trendStartDate, trendEndDate = startDate, endDate
             if trendStartDate is None or trendEndDate is None:
                 # "All Time" passes no explicit range, and getListeningTimeSeries
@@ -2668,6 +2702,11 @@ class SpotifyDashboardApp:
                     "similaritiesHtml": render_template(
                         "_compare_similarities.html", similarities=similarities,
                         username=username),   #< the cover-image URLs' session-authorization segment
+                    "genresHtml": render_template(
+                        "_compare_genres.html", username=username, withUsername=withUsername,
+                        myTopGenres=myTopGenres, theirTopGenres=theirTopGenres,
+                        sharedGenres=sharedGenres, myGenreCoverage=myGenreCoverage,
+                        theirGenreCoverage=theirGenreCoverage, genresUnlocked=genresUnlocked),
                     "sharedArtistsHtml": render_template(
                         "_wrapped_list.html", items=sharedArtists, section="top_artists",
                         username=username, compareWith=withUsername,
@@ -2709,6 +2748,12 @@ class SpotifyDashboardApp:
                 sharedAlbums=sharedAlbums,
                 similarities=similarities,
                 tasteMatch=tasteMatch,
+                myTopGenres=myTopGenres,
+                theirTopGenres=theirTopGenres,
+                sharedGenres=sharedGenres,
+                myGenreCoverage=myGenreCoverage,
+                theirGenreCoverage=theirGenreCoverage,
+                genresUnlocked=genresUnlocked,
                 comparisonTrend=comparisonTrend,
                 interval=interval,
                 customStart=customStart,

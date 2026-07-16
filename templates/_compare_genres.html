@@ -1,0 +1,86 @@
+{# Genre comparison block, swapped whole into #compareGenres by the ajax
+   filter updates. Renders only when BOTH users pass the unlock gate -
+   otherwise a compact per-user coverage table explains what's missing.
+   Expects: username, withUsername, myTopGenres/theirTopGenres ({genre:
+   plays}, most-played first), sharedGenres (list of {genre, myPlays,
+   theirPlays, combinedPlays}), myGenreCoverage/theirGenreCoverage,
+   genresUnlocked. #}
+
+{% macro genreRows(genres) %}
+  {% if genres %}
+    {% set maxPlays = genres.values() | max %}
+    <div style="display: flex; flex-direction: column; gap: 0.5rem; margin-top: 0.75rem;">
+      {% for genre, plays in genres.items() %}
+      <div style="display: flex; align-items: center; gap: 0.6rem;">
+        <span style="flex: 0 0 1.4rem; font-weight: 600; color: var(--accent); font-size: 0.9rem;">{{ loop.index }}.</span>
+        <span style="flex: 0 0 9rem; text-transform: capitalize; font-size: 0.9rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ genre }}</span>
+        <div style="flex: 1; background: rgba(255, 255, 255, 0.08); border-radius: 4px; height: 10px; overflow: hidden;">
+          <div style="width: {{ (plays / maxPlays * 100) | round(1) }}%; background: var(--accent); height: 100%; border-radius: 4px;"></div>
+        </div>
+        <span style="flex: 0 0 5rem; text-align: right; font-size: 0.8rem; color: var(--muted, #aaa);">{{ "{:,}".format(plays) }}</span>
+      </div>
+      {% endfor %}
+    </div>
+  {% else %}
+    <p class="loading">No genre data in this period.</p>
+  {% endif %}
+{% endmacro %}
+
+{% if genresUnlocked %}
+  <div class="compare-columns">
+    <div>
+      <h3 style="margin: 0;"><span class="compare-user-mine compare-user-label js-my-username">{{ username }}</span>'s Top Genres</h3>
+      {{ genreRows(myTopGenres) }}
+    </div>
+    <div>
+      <h3 style="margin: 0;"><span class="compare-user-theirs compare-user-label js-with-username">{{ withUsername }}</span>'s Top Genres</h3>
+      {{ genreRows(theirTopGenres) }}
+    </div>
+  </div>
+
+  <div style="margin-top: 1.5rem;">
+    <h3 style="margin: 0 0 0.5rem 0;">You both listen to</h3>
+    {% if sharedGenres %}
+      <div style="display: flex; flex-wrap: wrap; gap: 0.5rem;">
+        {% for shared in sharedGenres %}
+        <span class="badge badge-success" style="text-transform: capitalize; font-size: 0.85rem;"
+              title="{{ username }}: {{ "{:,}".format(shared.myPlays) }} plays &middot; {{ withUsername }}: {{ "{:,}".format(shared.theirPlays) }} plays">
+          {{ shared.genre }}
+        </span>
+        {% endfor %}
+      </div>
+    {% else %}
+      <p class="loading">No overlapping genres in this period.</p>
+    {% endif %}
+  </div>
+  <p style="font-size: 0.75rem; color: #666; margin-top: 1rem;">Genre data powered by <a href="https://www.last.fm" target="_blank" style="color: #888;">Last.fm</a>.</p>
+{% else %}
+  <p style="font-size: 0.9rem; color: var(--muted, #aaa); margin-bottom: 1rem;">
+    Genre comparison unlocks once <strong>both</strong> of you have enough genre data from Last.fm:
+    more than {{ genreGateOverallMinPercent }}% overall and at least {{ genreGateCategoryMinPercent }}%
+    each for songs, albums and artists (over the selected period).
+  </p>
+  <table class="compare-table">
+    <thead>
+      <tr>
+        <th>User</th>
+        <th class="value">Overall</th>
+        <th class="value">Songs</th>
+        <th class="value">Albums</th>
+        <th class="value">Artists</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for name, coverage in [(username, myGenreCoverage), (withUsername, theirGenreCoverage)] %}
+      <tr>
+        <td style="font-weight: 600; color: var(--accent);">{{ name }}</td>
+        <td class="value">{{ coverage.overall.percent }}%</td>
+        <td class="value">{{ coverage.song.percent }}%</td>
+        <td class="value">{{ coverage.album.percent }}%</td>
+        <td class="value">{{ coverage.artist.percent }}%</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p style="font-size: 0.75rem; color: #666; margin-top: 0.75rem;">Genre data powered by <a href="https://www.last.fm" target="_blank" style="color: #888;">Last.fm</a>.</p>
+{% endif %}
