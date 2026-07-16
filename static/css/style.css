@@ -845,9 +845,29 @@ progress::-moz-progress-bar {
   font-weight: 600;
 }
 
-/* the side with the larger count/time of a head-to-head row */
+/* The side with the larger count/time of a head-to-head row. The ▲ marker
+   (plus visually-hidden text) carries the signal for color-blind users and
+   screen readers - color alone isn't enough. */
 .compare-table td.value.leader {
   color: var(--accent);
+}
+
+.leader-marker {
+  font-size: 0.7em;
+  vertical-align: 0.15em;
+}
+
+/* Standard screen-reader-only utility: visually removed, still announced. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .compare-cell-link {

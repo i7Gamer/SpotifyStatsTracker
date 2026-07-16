@@ -754,6 +754,46 @@ class TestCompareRoute(unittest.TestCase):
 
         self.assertEqual(resp.status_code, 404)
 
+    def test_leader_cells_carry_a_non_color_marker(self):
+        """The accent color alone can't mark the leading side for color-blind
+        users or screen readers - the winning cell gets a ▲ plus hidden
+        '(higher)' text, and only the winning cell."""
+        self._accept("alice", "bob")
+        self.dbs["alice"].getPlayTotals.return_value = (10, 1000)
+        self.dbs["bob"].getPlayTotals.return_value = (5, 500)
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        marker = ' <span class="leader-marker" aria-hidden="true">▲</span><span class="visually-hidden">(higher)</span>'.encode("utf-8")
+        #< alice leads plays AND time: exactly two marked cells
+        self.assertEqual(resp.data.count(marker), 2)
+        self.assertIn(b'class="value leader">10' , resp.data)
+
+    def test_split_bar_carries_an_accessible_description(self):
+        self._accept("alice", "bob")
+        self.dbs["alice"].getTopArtists.return_value = [
+            _artist("sh1", "SharedArtist", plays=10, totalTimeListened=3_600_000)]
+        self.dbs["bob"].getTopArtists.return_value = [
+            _artist("sh1", "SharedArtist", plays=5, totalTimeListened=1_800_000)]
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        #< apostrophes render autoescaped (&#39;) inside the attributes
+        self.assertIn(
+            b'role="img" title="67% of the combined listening time is alice&#39;s, 33% bob&#39;s" '
+            b'aria-label="67% of the combined listening time is alice&#39;s, 33% bob&#39;s"',
+            resp.data)
+
+    def test_trend_canvas_has_an_accessible_label(self):
+        self._accept("alice", "bob")
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        self.assertIn(b'id="comparisonTrendChart" role="img"', resp.data)
+
     def test_share_status_is_computed_once_per_request(self):
         """One request can render several templates (the Wrapped AJAX endpoint
         renders six partials) and every render re-runs all context processors -

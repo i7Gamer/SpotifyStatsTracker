@@ -143,7 +143,8 @@
         {% if track.get('compareData') %}
           {% set cmp = track.get('compareData') %}
           <div class="compare-versus">
-            <div class="compare-split-bar" title="{{ cmp.myTimePercent }}% of the combined listening time is {{ username }}'s">
+            {% set splitBarText = cmp.myTimePercent ~ '% of the combined listening time is ' ~ username ~ "'s, " ~ (100 - cmp.myTimePercent) ~ '% ' ~ compareWith ~ "'s" %}
+            <div class="compare-split-bar" role="img" title="{{ splitBarText }}" aria-label="{{ splitBarText }}">
               <span class="mine" style="width: {{ cmp.myTimePercent }}%"></span><span class="theirs" style="width: {{ 100 - cmp.myTimePercent }}%"></span>
             </div>
             {# song cards carry no per-user unique-song counts - only
