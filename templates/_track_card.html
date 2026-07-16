@@ -1,3 +1,4 @@
+{% from '_artist_links.html' import artistLinks with context %}
 <article class="track-card">
   {% set imgId = track.get('imageId', '') %}
   {% set item_number = item_number if item_number is defined else '' %}
@@ -107,9 +108,7 @@
         {% if section == 'top_albums' %}
         <div class="track-meta">
           {% if track.get('artists') %}
-            {% for artist in track.get('artists') %}
-              {% if not suppressDetailLinks %}<a href="{{ url_for('artistDetailPage', artist_id=artist.get('id')) }}">{{ artist.get('name', '') }}</a>{% elif artist.get('url') %}<a href="{{ artist.get('url') }}" target="_blank" rel="noreferrer noopener">{{ artist.get('name', '') }}</a>{% else %}{{ artist.get('name', '') }}{% endif %}{% if not loop.last %}, {% endif %}
-            {% endfor %}
+            {{ artistLinks(track.get('artists'), suppressDetailLinks) }}
           {% else %}
             {{ track.get('artistsText') }}
           {% endif %}
@@ -117,9 +116,7 @@
         {% elif section != 'top_artists' %}
         <div class="track-meta">
           {% if track.get('artists') %}
-            {% for artist in track.get('artists') %}
-              {% if not suppressDetailLinks %}<a href="{{ url_for('artistDetailPage', artist_id=artist.get('id')) }}">{{ artist.get('name', '') }}</a>{% elif artist.get('url') %}<a href="{{ artist.get('url') }}" target="_blank" rel="noreferrer noopener">{{ artist.get('name', '') }}</a>{% else %}{{ artist.get('name', '') }}{% endif %}{% if not loop.last %}, {% endif %}
-            {% endfor %}
+            {{ artistLinks(track.get('artists'), suppressDetailLinks) }}
           {% else %}
             {{ track.get('artistsText') or track.get('artist','') }}
           {% endif %}

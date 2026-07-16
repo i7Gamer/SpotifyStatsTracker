@@ -1,0 +1,41 @@
+{# Comma-separated artist links, shared by every artist-list render site
+   (_track_card.html's song/album cards and the song/album detail heroes).
+   Lists longer than MAX_INLINE_ARTISTS collapse: the first
+   MAX_INLINE_ARTISTS names stay visible, the rest move into a hidden span
+   behind a "+N more"/"Show less" toggle (static/js/artist-toggle.js) - but
+   only when at least MIN_HIDDEN_ARTISTS names would be hidden, since a
+   "+1 more" button takes about as much space as the name it hides.
+   Import `with context` - the thresholds arrive via a context processor,
+   and suppressDetailLinks follows _track_card.html's rule: counterpart
+   items (Compare page) link to Spotify instead of detail pages, and only
+   when a real URL exists. #}
+{% macro artistLink(artist, suppressDetailLinks) -%}
+  {%- if not suppressDetailLinks -%}
+    <a href="{{ url_for('artistDetailPage', artist_id=artist.get('id')) }}">{{ artist.get('name', '') }}</a>
+  {%- elif artist.get('url') -%}
+    <a href="{{ artist.get('url') }}" target="_blank" rel="noreferrer noopener">{{ artist.get('name', '') }}</a>
+  {%- else -%}
+    {{- artist.get('name', '') -}}
+  {%- endif -%}
+{%- endmacro %}
+
+{% macro artistLinks(artists, suppressDetailLinks=false) -%}
+  {%- set hiddenCount = artists|length - MAX_INLINE_ARTISTS -%}
+  {%- if hiddenCount >= MIN_HIDDEN_ARTISTS -%}
+    <span class="artist-links">
+      {%- for artist in artists[:MAX_INLINE_ARTISTS] -%}
+        {{ artistLink(artist, suppressDetailLinks) }}{% if not loop.last %}, {% endif %}
+      {%- endfor -%}
+      <span class="artist-overflow" hidden>
+        {%- for artist in artists[MAX_INLINE_ARTISTS:] -%}
+          , {{ artistLink(artist, suppressDetailLinks) }}
+        {%- endfor -%}
+      </span>
+      <button type="button" class="artist-toggle" aria-expanded="false" data-hidden-count="{{ hiddenCount }}">+{{ hiddenCount }} more</button>
+    </span>
+  {%- else -%}
+    {%- for artist in artists -%}
+      {{ artistLink(artist, suppressDetailLinks) }}{% if not loop.last %}, {% endif %}
+    {%- endfor -%}
+  {%- endif -%}
+{%- endmacro %}

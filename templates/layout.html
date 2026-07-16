@@ -67,6 +67,7 @@
     </header>
 
     <main class="page">{% block content %}{% endblock %}</main>
+    <script src="{{ url_for('static', filename='js/artist-toggle.js') }}"></script>
     <script>
       // Shown in place of a track/artist/album cover that 404s or fails to
       // load (not yet downloaded, or the fetch failed) instead of a broken-
