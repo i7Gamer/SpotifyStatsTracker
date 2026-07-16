@@ -12,11 +12,13 @@ A web application that allows users to track and analyze their Spotify listening
 
 - **Top Lists**: View your top songs, artists, and albums with detailed statistics
 - **Listening History**: See your listening history and track Spotify activity in real time
-- **Charts & Analytics**: Visualize your listening patterns and statistics with interactive charts
-- **Yearly Wrapped**: Get a personalized recap of your yearly listening with category filters (Top Songs, Artists, Albums, Discovered Songs, Artists, Albums)
+- **Charts & Analytics**: Visualize your listening patterns and statistics with interactive charts, including a Top Genres breakdown once enough genre data has been backfilled (see Genre Insights below)
+- **Yearly Wrapped**: Get a personalized recap of your yearly listening with category filters (Top Songs, Artists, Albums, Discovered Songs, Artists, Albums) plus your top genres of the year
+- **Data Sharing & Comparison**: Request to share your listening stats with another user - once they accept, compare top songs/artists/albums, a taste-match score, and shared genres side by side on the Compare page
+- **Genre Insights**: Add a free Last.fm API key on your Profile page to backfill genre tags for your library in the background; once enough of your history is covered, genre breakdowns unlock on Charts, Wrapped and Compare (see [Genre Data](#genre-data-optional) below)
 - **Detail Pages**: Drill down into individual songs, artists, and albums to see play history and detailed stats
 - **Multi-File Import**: Import multiple Spotify data export files at once with progress tracking
-- **Overview Page**: See total data saved in the database and check list of users, their current sync state and their api backfill configuration.
+- **Overview Page**: See total data saved in the database and, once logged in, your (or - for the instance admin - every user's) sync status, API backfill configuration, and genre-backfill progress
 - **Auto-Import**: Automatically import files from the 'auto-import' folder with optional keyword filtering
 - **Cross-Linking**: Click on artist names to explore artist pages from any song, and album links to see album details
 
@@ -136,6 +138,17 @@ To enable automatic backfilling of missed plays via the Spotify Developer API, y
 2. Set the **Redirect URI** in your Spotify app configuration to match your public callback URL (e.g. `http://localhost:5000/spotify-callback`).
 3. Set the `SPOTIFY_CALLBACK_URL` environment variable in your `docker-compose.yml` to this exact callback URL.
 4. Once set, the Spotify Developer settings section will become visible on your User Profile page, allowing you to link your account.
+
+### Genre Data (Optional)
+
+Each user can add their own [Last.fm](https://www.last.fm) API key to have a background worker fetch genre tags for the artists, albums, and songs in their listening history:
+
+1. Create a free key on the [Last.fm API account page](https://www.last.fm/api/account/create) (no Last.fm scrobbling account required).
+2. Paste it into the Last.fm API Settings section on your Profile page.
+3. A background worker starts fetching genre tags for your most-played artists, albums, and songs first, respecting Last.fm's request-rate limits. Once your own library is covered, it keeps helping backfill genres for everyone else's, since the artist/album/song catalog is shared across all users.
+4. Track progress on the Overview page. Once enough of your history has genre data, genre breakdowns unlock on the Charts, Wrapped, and Compare pages.
+
+Songs or albums Last.fm has no tags for inherit their artist's genres; the instance admin can toggle whether those inherited genres count towards backfill progress and genre stats from the Overview page.
 
 ## License
 
