@@ -23,6 +23,7 @@ try:
         Repository, IMAGE_KIND_TRACK, IMAGE_KIND_ARTIST, IMAGE_STATUS_OK, IMAGE_STATUS_FAILED,
     )
     from Database.utils import parseError, convertToDatetime, dateToString, startOfDay, startOfWeek, startOfMonth, timeToInt
+    from Database.lastfm import LastfmClient, filterTagsToGenres, OUTCOME_OK, OUTCOME_TRANSIENT, OUTCOME_INVALID_KEY
 except ModuleNotFoundError:
     from Formatters.spotifyClient import Client
     from Importers.StreamingHistoryImporter import Importer
@@ -30,6 +31,7 @@ except ModuleNotFoundError:
     from Listeners.spotifyListener import Listener
     from repository import Repository, IMAGE_KIND_TRACK, IMAGE_KIND_ARTIST, IMAGE_STATUS_OK, IMAGE_STATUS_FAILED
     from utils import parseError, convertToDatetime, dateToString, startOfDay, startOfWeek, startOfMonth, timeToInt
+    from lastfm import LastfmClient, filterTagsToGenres, OUTCOME_OK, OUTCOME_TRANSIENT, OUTCOME_INVALID_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +51,12 @@ USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTM
 # user's own folder. Inside Data/ (see Database/db.py's DEFAULT_DB_PATH) so the
 # Docker volume mount that persists the database also covers it.
 MEDIA_DIR = Path(__file__).resolve().parent / "Data" / "Media"
+
+
+class _LastfmInvalidKeyError(Exception):
+    """The stored Last.fm key is invalid/suspended (error 10/26): raised out
+    of a worker batch so the loop idles instead of burning 4 failing requests
+    per second. A fixed key is picked up on the next cycle's fresh read."""
 
 
 class _ImportRunState:
@@ -114,6 +122,11 @@ class Database:
 
     BACKFILLER_ALBUM_QUEUE_SIZE = 80           #< number of albums queued from DB for backfilling
 
+    LASTFM_BACKFILLER_MIN_START_DELAY = 30     #< random startup-offset bounds for the Last.fm genre
+    LASTFM_BACKFILLER_MAX_START_DELAY = 90     #  backfiller, in seconds - staggers per-user threads
+    LASTFM_QUEUE_BATCH_SIZE = 30               #< entities claimed per kind (artists/albums/tracks) per cycle
+    LASTFM_IDLE_WAIT_SECONDS = 300             #< wait between cycles once both queues are drained (or after errors)
+
     # Shared across every Database instance (every user) in this process. Image
     # download de-duplication is enforced by the `images` table (atomic across
     # threads *and* users), so a single bounded pool for the whole process is
@@ -124,6 +137,10 @@ class Database:
     _imageDownloadExecutor = concurrent.futures.ThreadPoolExecutor(max_workers=IMAGE_DOWNLOAD_WORKERS)
     _active_backfills = set()
     _backfill_lock = threading.Lock()
+    # Same idea for the Last.fm genre backfillers: catalog entities are shared,
+    # so two users' workers must not fetch the same (kind, id) concurrently.
+    _lastfm_active = set()
+    _lastfm_active_lock = threading.Lock()
 
     def __init__(self, user: str, cookiesFile: str | None = None, email: str | None = None, dbPath=None):
         if not user:
@@ -183,6 +200,12 @@ class Database:
         self._wrapped_recalc_locks_guard = threading.Lock()
         self._wrapped_recalc_locks: dict[int, threading.Lock] = {}
         self.startWrappedCalculationsWorker()
+
+        self.lastfm_thread = None
+        self.lastfm_stop_event = threading.Event()
+        # No-op for users without a stored Last.fm key (no idle thread); the
+        # profile page's key save re-invokes it once a key lands.
+        self.startLastfmGenreBackfiller()
 
     def refreshSettings(self) -> None:
         from zoneinfo import ZoneInfo
@@ -1430,6 +1453,18 @@ class Database:
     def updateUserSpotifyCredentials(self, clientId: str | None, clientSecret: str | None, refreshToken: str | None) -> None:
         self.repo.updateUserSpotifyCredentials(self.user, clientId, clientSecret, refreshToken)
 
+    def getUserLastfmApiKey(self) -> str | None:
+        return self.repo.getUserLastfmApiKey(self.user)
+
+    def updateUserLastfmApiKey(self, apiKey: str | None) -> None:
+        self.repo.updateUserLastfmApiKey(self.user, apiKey)
+
+    def getLastfmWorkerStatus(self) -> dict:
+        return {
+            "configured": bool(self.repo.getUserLastfmApiKey(self.user)),
+            "running": self.lastfm_thread is not None and self.lastfm_thread.is_alive(),
+        }
+
     def _reconcileWithWebApiHistory(self, apiItems: list[dict]) -> None:
         """Remove PROVABLE duplicate local plays: Web API backfill copies of a
         play another source already recorded. Both the live listener and the
@@ -1630,6 +1665,7 @@ class Database:
         self.autoImporter.wd.stop()
         self.stopMetadataBackfiller()
         self.stopWrappedCalculationsWorker()
+        self.stopLastfmGenreBackfiller()
 
     def startWrappedCalculationsWorker(self) -> None:
         """Start the background thread to precalculate wrapped data."""
@@ -2036,6 +2072,223 @@ class Database:
 
         finally:
             logger.info("[Backfiller-%s] Exited gracefully", self.user)
+
+    def startLastfmGenreBackfiller(self) -> None:
+        """Start the background thread that backfills genres from Last.fm.
+        No-op without a stored API key - keyless users get no idle thread,
+        and the profile page's key save calls this again once a key exists."""
+        if not hasattr(self, "lastfm_thread") or not hasattr(self, "lastfm_stop_event"):
+            return
+        if self.lastfm_thread is not None and self.lastfm_thread.is_alive():
+            return
+        if not self.repo.getUserLastfmApiKey(self.user):
+            return
+        self.lastfm_stop_event.clear()
+        self.lastfm_thread = threading.Thread(
+            target=self._lastfmGenreBackfillLoop,
+            name=f"lastfm-genres-{self.user}",
+            daemon=True
+        )
+        self.lastfm_thread.start()
+
+    def stopLastfmGenreBackfiller(self) -> None:
+        """Signal and wait for the background genre backfiller to stop."""
+        if not hasattr(self, "lastfm_thread") or not hasattr(self, "lastfm_stop_event"):
+            return
+        if self.lastfm_thread is None:
+            return
+        self.lastfm_stop_event.set()
+        self.lastfm_thread.join(timeout=3)
+        self.lastfm_thread = None
+
+    def _lastfmGenreBackfillLoop(self) -> None:
+        """Fetches Last.fm genre tags for this user's played artists, albums
+        and tracks (most-played first), then - once the own queue is drained -
+        for everyone else's (the catalog is shared, so one keyed user's worker
+        converges the whole instance). Pacing comes from the process-wide rate
+        limiter inside LastfmClient, not from this loop."""
+        import random
+        try:
+            # Random startup offset so per-user threads don't stampede after a restart.
+            startup_delay = random.randint(self.LASTFM_BACKFILLER_MIN_START_DELAY,
+                                           self.LASTFM_BACKFILLER_MAX_START_DELAY)
+            logger.info("[LastfmWorker-%s] Starting with initial delay of %d seconds", self.user, startup_delay)
+            if self.lastfm_stop_event.wait(startup_delay):
+                logger.info("[LastfmWorker-%s] Stopped during startup delay", self.user)
+                return
+
+            while not self.lastfm_stop_event.is_set():
+                try:
+                    # Fresh read each cycle: a rotated key is picked up here, a
+                    # removed key ends the thread (the save handler restarts it).
+                    apiKey = self.repo.getUserLastfmApiKey(self.user)
+                    if not apiKey:
+                        logger.info("[LastfmWorker-%s] No API key stored anymore - exiting", self.user)
+                        return
+                    client = LastfmClient(apiKey)
+
+                    processedAny = self._runLastfmCycle(client, self.user)
+                    if not processedAny and not self.lastfm_stop_event.is_set():
+                        processedAny = self._runLastfmCycle(client, None)   #< global queue
+                    if not processedAny:
+                        if self.lastfm_stop_event.wait(self.LASTFM_IDLE_WAIT_SECONDS):
+                            break
+                except _LastfmInvalidKeyError:
+                    logger.warning("[LastfmWorker-%s] Last.fm rejected the API key (invalid/suspended) - "
+                                   "idling; fix the key on the profile page", self.user)
+                    if self.lastfm_stop_event.wait(self.LASTFM_IDLE_WAIT_SECONDS):
+                        break
+                except Exception as e:
+                    logger.error("[LastfmWorker-%s] Error in genre backfill loop: %s", self.user, parseError(e))
+                    if self.lastfm_stop_event.wait(self.LASTFM_IDLE_WAIT_SECONDS):
+                        break
+        finally:
+            logger.info("[LastfmWorker-%s] Exited gracefully", self.user)
+
+    def _runLastfmCycle(self, client: LastfmClient, scopeUsername: str | None) -> bool:
+        """One batch each of artists -> albums -> tracks (that order is what
+        makes same-cycle inheritance work: by the time a tag-less track is
+        processed, its primary artist usually has a definitive result).
+        Returns whether anything got a definitive result - False means the
+        scope's queue is drained (or everything failed transiently) and the
+        caller should fall through to the global queue / idle."""
+        processedAny = self._processLastfmArtistBatch(client, scopeUsername)
+        if self.lastfm_stop_event.is_set():
+            return processedAny
+        processedAny = self._processLastfmAlbumBatch(client, scopeUsername) or processedAny
+        if self.lastfm_stop_event.is_set():
+            return processedAny
+        return self._processLastfmTrackBatch(client, scopeUsername) or processedAny
+
+    def _claimLastfmEntities(self, kind: str, rows: list[dict]) -> list[dict]:
+        """Process-wide in-flight dedup across users' workers (the catalog is
+        shared): only rows not already claimed elsewhere are returned, and the
+        caller must release them via _releaseLastfmEntities."""
+        claimed = []
+        with Database._lastfm_active_lock:
+            for row in rows:
+                key = (kind, row["id"])
+                if key not in Database._lastfm_active:
+                    Database._lastfm_active.add(key)
+                    claimed.append(row)
+        return claimed
+
+    def _releaseLastfmEntities(self, kind: str, rows: list[dict]) -> None:
+        with Database._lastfm_active_lock:
+            for row in rows:
+                Database._lastfm_active.discard((kind, row["id"]))
+
+    @staticmethod
+    def _lastfmOutcomeGenres(outcome) -> tuple[bool, list[str]]:
+        """(isDefinitive, filteredGenres) for a fetch outcome. Transient
+        outcomes aren't definitive - the entity stays unmarked and retries
+        next cycle. Invalid-key outcomes escalate to pause the whole loop."""
+        if outcome.status == OUTCOME_INVALID_KEY:
+            raise _LastfmInvalidKeyError()
+        if outcome.status == OUTCOME_TRANSIENT:
+            return False, []
+        # OK (tags, possibly empty) and NOT_FOUND are both definitive.
+        genres = filterTagsToGenres(outcome.tags) if outcome.status == OUTCOME_OK else []
+        return True, genres
+
+    def _processLastfmArtistBatch(self, client: LastfmClient, scopeUsername: str | None) -> bool:
+        rows = self.repo.getArtistsMissingGenres(self.LASTFM_QUEUE_BATCH_SIZE, scopeUsername)
+        claimed = self._claimLastfmEntities("artist", rows)
+        processedAny = False
+        try:
+            for row in claimed:
+                if self.lastfm_stop_event.is_set():
+                    break
+                outcome = client.getArtistTopTags(row["name"], stop_event=self.lastfm_stop_event)
+                if outcome is None:   #< rate-limit slot aborted: we're stopping
+                    break
+                definitive, genres = self._lastfmOutcomeGenres(outcome)
+                if not definitive:
+                    continue
+                if genres:
+                    self.repo.replaceArtistGenres(row["id"], genres)
+                self.repo.markArtistsLastfmAttempted([row["id"]])
+                processedAny = True
+        finally:
+            self._releaseLastfmEntities("artist", claimed)
+        return processedAny
+
+    def _processLastfmAlbumBatch(self, client: LastfmClient, scopeUsername: str | None) -> bool:
+        rows = self.repo.getAlbumsMissingGenres(self.LASTFM_QUEUE_BATCH_SIZE, scopeUsername)
+        claimed = self._claimLastfmEntities("album", rows)
+        processedAny = False
+        try:
+            primaries = self.repo.getAlbumPrimaryArtists([row["id"] for row in claimed])
+            for row in claimed:
+                if self.lastfm_stop_event.is_set():
+                    break
+                primary = primaries.get(row["id"])
+                if primary is None:
+                    # No derivable artist: album.getTopTags needs artist+album,
+                    # and there's nothing to inherit from either.
+                    self.repo.markAlbumsLastfmAttempted([row["id"]])
+                    processedAny = True
+                    continue
+                outcome = client.getAlbumTopTags(primary["artist_name"], row["name"],
+                                                 stop_event=self.lastfm_stop_event)
+                if outcome is None:
+                    break
+                definitive, genres = self._lastfmOutcomeGenres(outcome)
+                if not definitive:
+                    continue
+                if self._storeLastfmGenresWithInheritance(
+                        "album", row["id"], genres, primary["artist_id"]):
+                    processedAny = True
+        finally:
+            self._releaseLastfmEntities("album", claimed)
+        return processedAny
+
+    def _processLastfmTrackBatch(self, client: LastfmClient, scopeUsername: str | None) -> bool:
+        rows = self.repo.getTracksMissingGenres(self.LASTFM_QUEUE_BATCH_SIZE, scopeUsername)
+        claimed = self._claimLastfmEntities("track", rows)
+        processedAny = False
+        try:
+            for row in claimed:
+                if self.lastfm_stop_event.is_set():
+                    break
+                outcome = client.getTrackTopTags(row["artist_name"], row["name"],
+                                                 stop_event=self.lastfm_stop_event)
+                if outcome is None:
+                    break
+                definitive, genres = self._lastfmOutcomeGenres(outcome)
+                if not definitive:
+                    continue
+                if self._storeLastfmGenresWithInheritance(
+                        "track", row["id"], genres, row["artist_id"]):
+                    processedAny = True
+        finally:
+            self._releaseLastfmEntities("track", claimed)
+        return processedAny
+
+    def _storeLastfmGenresWithInheritance(self, kind: str, entityId: str,
+                                          ownGenres: list[str], artistId: str) -> bool:
+        """Store a definitive lookup result for a track/album. Own tags win;
+        with none, the primary artist's genres are materialized as inherited
+        rows. An artist that hasn't been attempted yet leaves the entity
+        UNMARKED (returns False) so it requeues after the artist lands -
+        that's the one definitive outcome that doesn't stamp attempted."""
+        replaceGenres = (self.repo.replaceTrackGenres if kind == "track"
+                         else self.repo.replaceAlbumGenres)
+        markAttempted = (self.repo.markTracksLastfmAttempted if kind == "track"
+                         else self.repo.markAlbumsLastfmAttempted)
+        if ownGenres:
+            replaceGenres(entityId, ownGenres, inherited=False)
+            markAttempted([entityId])
+            return True
+        artistState = self.repo.getArtistLastfmState(artistId)   #< fresh: this cycle's artist batch is visible
+        if artistState["genres"]:
+            replaceGenres(entityId, artistState["genres"], inherited=True)
+            markAttempted([entityId])
+            return True
+        if artistState["attempted_at"] is not None:
+            markAttempted([entityId])   #< definitively tag-less everywhere
+            return True
+        return False
 
 
 if __name__ == "__main__":
