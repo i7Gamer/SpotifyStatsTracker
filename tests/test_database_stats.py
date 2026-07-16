@@ -1,3 +1,4 @@
+import datetime
 import sys
 import os
 from unittest.mock import patch
@@ -5,6 +6,7 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from conftest import DatabaseTestCase
+import Database.utils as utilsModule
 
 
 class TestGetArtistsStatsDoesNotMutateCache(DatabaseTestCase):
@@ -347,6 +349,24 @@ class TestNewChartsStats(DatabaseTestCase):
         db = self._makeDb(tracks, entries)
         decades = db.getReleaseDecadeDistribution()
         self.assertEqual(decades, {"1960s": 1, "2000s": 1, "2020s": 1})
+
+    def test_release_decade_uses_the_calendar_date_not_the_app_timezone(self):
+        """Release dates are stored as midnight-UTC timestamps of a calendar
+        date, so the decade must come from the UTC year. The old Python
+        conversion applied the app timezone, which shifted every Jan 1
+        release into the previous year - and previous DECADE for years
+        ending in 0 - whenever the offset was negative."""
+        tracks = {
+            #< 2020-01-01T00:00Z: the exact boundary case
+            "t1": {"id": "t1", "name": "Song", "artists": [], "releaseDate": 1577836800},
+        }
+        entries = [{"id": "t1", "playedAt": 100, "timePlayed": 1000}]
+        with patch.object(utilsModule, "tz", datetime.timezone(datetime.timedelta(hours=-5))):
+            db = self._makeDb(tracks, entries)
+
+            decades = db.getReleaseDecadeDistribution()
+
+        self.assertEqual(decades, {"2020s": 1})
 
     def test_get_completion_stats(self):
         tracks = {

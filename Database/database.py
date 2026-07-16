@@ -809,8 +809,16 @@ class Database:
     def getReleaseDecadeDistribution(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> dict:
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
         conn = self.repo._conn()
+        # Decades computed fully in SQL. Release dates are stored as
+        # midnight-UTC timestamps of a calendar date, so the year is read
+        # back in UTC too - applying the app timezone here (as the Python
+        # loop this replaced did) shifted every Jan 1 release into the
+        # previous year whenever the offset was negative. HAVING drops the
+        # NULL decade a timestamp outside strftime's supported year range
+        # would produce, matching the old loop's swallow-and-skip.
         query = """
-            SELECT al.release_date, COUNT(*) as count
+            SELECT (CAST(strftime('%Y', al.release_date, 'unixepoch') AS INTEGER) / 10) * 10 AS decade,
+                   COUNT(*) AS count
             FROM plays p
             JOIN tracks t ON p.track_id = t.id
             JOIN albums al ON t.album_id = al.id
@@ -819,26 +827,12 @@ class Database:
               AND (? IS NULL OR p.played_at < ?)
               AND al.release_date IS NOT NULL
               AND al.release_date != 0
-            GROUP BY al.release_date
+            GROUP BY decade
+            HAVING decade IS NOT NULL
+            ORDER BY decade
         """
         rows = conn.execute(query, (self.user, startTs, startTs, endTs, endTs)).fetchall()
-        
-        from Database.utils import fromtimestamp
-        decades = {}
-        for row in rows:
-            release_ts = row["release_date"]
-            count = row["count"]
-            try:
-                dt = fromtimestamp(release_ts, tz=self.tz)
-                year = dt.year
-                decade = (year // 10) * 10
-                decade_label = f"{decade}s"
-                decades[decade_label] = decades.get(decade_label, 0) + count
-            except Exception:
-                pass
-                
-        sorted_decades = dict(sorted(decades.items()))
-        return sorted_decades
+        return {f"{row['decade']}s": row["count"] for row in rows}
 
     def getCompletionStats(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> dict:
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
