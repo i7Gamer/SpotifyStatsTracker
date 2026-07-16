@@ -65,6 +65,8 @@
 
 <section class="card" style="margin: 1.5rem 0; overflow-x: auto;">
   <div style="padding: 1.5rem;">
+    {# Outside #compareStatsTable so the AJAX swap doesn't re-render it. #}
+    <h2 style="margin: 0 0 0.75rem 0; font-family: var(--font-headings);">Stats Comparison</h2>
     <div id="compareStatsTable">
       {% include '_compare_stats_table.html' %}
     </div>
