@@ -90,7 +90,9 @@
 
 <nav class="wrapped-stats-filters" aria-label="Filter comparison categories">
   <button class="stats-filter-button active" data-filter="all">All Stats</button>
-  <button class="stats-filter-button" data-filter="you-both-love">You Both Love</button>
+  <button class="stats-filter-button" data-filter="common-top-songs">Top Common Songs</button>
+  <button class="stats-filter-button" data-filter="common-top-artists">Top Common Artists</button>
+  <button class="stats-filter-button" data-filter="common-top-albums">Top Common Albums</button>
   <button class="stats-filter-button" data-filter="top-songs">Top Songs</button>
   <button class="stats-filter-button" data-filter="top-artists">Top Artists</button>
   <button class="stats-filter-button" data-filter="top-albums">Top Albums</button>
@@ -101,27 +103,33 @@
    per-card versus block (both users' plays/time and the split bar). #}
 {% set suppressDetailLinks = false %}
 {% set compareWith = withUsername %}
-<div data-category="you-both-love">
+<div data-category="common-top-songs">
   <section style="margin-bottom: 2.5rem;">
-    <h2>You Both Love</h2>
-
-    <h3 class="compare-shared-heading">Artists</h3>
-    {% set section = 'top_artists' %}
-    <div class="track-list" id="sharedArtistsList">
-      {% set items = sharedArtists %}
-      {% set emptyMessage = 'No shared top artists in this period yet.' %}
-      {% include '_wrapped_list.html' %}
-    </div>
-
-    <h3 class="compare-shared-heading">Songs</h3>
+    <h2>Top Common Songs</h2>
     {% set section = 'top_songs' %}
     <div class="track-list" id="sharedSongsList">
       {% set items = sharedSongs %}
       {% set emptyMessage = 'No shared top songs in this period yet.' %}
       {% include '_wrapped_list.html' %}
     </div>
+  </section>
+</div>
 
-    <h3 class="compare-shared-heading">Albums</h3>
+<div data-category="common-top-artists">
+  <section style="margin-bottom: 2.5rem;">
+    <h2>Top Common Artists</h2>
+    {% set section = 'top_artists' %}
+    <div class="track-list" id="sharedArtistsList">
+      {% set items = sharedArtists %}
+      {% set emptyMessage = 'No shared top artists in this period yet.' %}
+      {% include '_wrapped_list.html' %}
+    </div>
+  </section>
+</div>
+
+<div data-category="common-top-albums">
+  <section style="margin-bottom: 2.5rem;">
+    <h2>Top Common Albums</h2>
     {% set section = 'top_albums' %}
     <div class="track-list" id="sharedAlbumsList">
       {% set items = sharedAlbums %}

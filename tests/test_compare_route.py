@@ -215,7 +215,7 @@ class TestCompareRoute(unittest.TestCase):
         self.assertIn(b"[0, 200]", resp.data)   #< bob zero-filled on alice's day
 
     def test_overlap_includes_shared_artists_beyond_the_displayed_top_ten(self):
-        """The 'You Both Love' intersection runs over the 100-deep pools, not
+        """The Top Common intersection runs over the 100-deep pools, not
         the displayed top 10 - and the displayed lists are the pools' first
         10 entries (one aggregation per user, not two)."""
         self._accept("alice", "bob")
@@ -231,7 +231,7 @@ class TestCompareRoute(unittest.TestCase):
 
         self.assertEqual(resp.status_code, 200)
         # Each rendered card mentions the name twice (img alt= + <h3>). The
-        # artist must appear in bob's column AND in "You Both Love", but NOT
+        # artist must appear in bob's column AND in Top Common Artists, but NOT
         # in alice's top-ten column (it's her #11) - exactly 2 cards, plus one
         # mention as the "Common Top Artist" similarity cell.
         self.assertEqual(resp.data.count(b"OverlapOnlyArtist"), 5)
@@ -329,7 +329,7 @@ class TestCompareRoute(unittest.TestCase):
         self.assertIn(b'id="compareCustomDates" style="display: none;"', resp.data)
 
     def test_shared_artist_overlap_is_capped_like_every_other_list(self):
-        """"You Both Love" is built from the 100-deep pools but must render at
+        """The Top Common lists are built from the 100-deep pools but must render at
         most COMPARE_TOP_LIST_SIZE cards, matching the adjacent lists."""
         self._accept("alice", "bob")
         sharedPool = [_artist(f"s{i}", f"SharedArtist{i}") for i in range(12)]
@@ -497,7 +497,7 @@ class TestCompareRoute(unittest.TestCase):
         self.dbs["alice"].getPlayedAlbumIds.assert_called_once_with([])
 
     def test_shared_artist_cards_show_both_users_stats(self):
-        """'You Both Love' cards lead with the COMBINED plays/time (the
+        """Top Common cards lead with the COMBINED plays/time (the
         per-user numbers live in the versus block below), plus a split bar
         proportioned by time."""
         self._accept("alice", "bob")
@@ -599,8 +599,8 @@ class TestCompareRoute(unittest.TestCase):
 
     def test_similarities_sit_above_the_chart_and_shared_lists_join_categories(self):
         """Common Top Artist/Song/Album cards come directly above the trend
-        chart; "You Both Love" is a filterable category ahead of the top
-        lists."""
+        chart; the shared lists are filterable Top Common Songs/Artists/
+        Albums categories ahead of the per-user top lists."""
         self._accept("alice", "bob")
         client = self._loginAs("alice")
 
@@ -608,11 +608,15 @@ class TestCompareRoute(unittest.TestCase):
 
         chartIdx = resp.data.index(b'id="comparisonTrendChart"')
         similaritiesIdx = resp.data.index(b'id="compareSimilarities"')
-        sharedIdx = resp.data.index(b'data-category="you-both-love"')
+        commonSongsIdx = resp.data.index(b'data-category="common-top-songs"')
+        commonArtistsIdx = resp.data.index(b'data-category="common-top-artists"')
+        commonAlbumsIdx = resp.data.index(b'data-category="common-top-albums"')
         listsIdx = resp.data.index(b'data-category="top-songs"')
         self.assertLess(similaritiesIdx, chartIdx)
-        self.assertLess(chartIdx, sharedIdx)
-        self.assertLess(sharedIdx, listsIdx)
+        self.assertLess(chartIdx, commonSongsIdx)
+        self.assertLess(commonSongsIdx, commonArtistsIdx)
+        self.assertLess(commonArtistsIdx, commonAlbumsIdx)
+        self.assertLess(commonAlbumsIdx, listsIdx)
 
     def test_similarity_card_covers_link_to_the_viewers_detail_pages(self):
         """The Common Top cards' covers are linked just like the stats-table
@@ -638,12 +642,21 @@ class TestCompareRoute(unittest.TestCase):
 
         resp = client.get("/compare")
 
-        for marker in (b'data-filter="all"', b'data-filter="you-both-love"',
+        for marker in (b'data-filter="all"',
+                       b'data-filter="common-top-songs"',
+                       b'data-filter="common-top-artists"',
+                       b'data-filter="common-top-albums"',
                        b'data-filter="top-songs"',
                        b'data-filter="top-artists"', b'data-filter="top-albums"',
-                       b'data-category="you-both-love"',
+                       b'data-category="common-top-songs"',
+                       b'data-category="common-top-artists"',
+                       b'data-category="common-top-albums"',
                        b'data-category="top-artists"', b'data-category="top-albums"'):
             self.assertIn(marker, resp.data)
+        #< the combined "You Both Love" category is gone - each shared list
+        #  filters on its own
+        self.assertNotIn(b"you-both-love", resp.data)
+        self.assertNotIn(b"You Both Love", resp.data)
 
     def test_stats_table_styling_is_class_based(self):
         """Row borders moved from inline styles to .compare-table so the last

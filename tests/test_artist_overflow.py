@@ -165,7 +165,7 @@ class TestAlbumPagesArtistOverflow(_ArtistOverflowTestBase):
 class TestCompareArtistOverflow(unittest.TestCase):
     """The Compare page renders the same track three ways: the viewer's own
     column (detail links), the counterpart's column (suppressDetailLinks -
-    Spotify links only), and the shared "You Both Love" card (detail links).
+    Spotify links only), and the shared Top Common card (detail links).
     Hidden overflow artists must follow the same link rules as visible ones."""
 
     @patch(_SECRET_KEY_PATCH, return_value='test-secret-key')
@@ -238,7 +238,7 @@ class TestCompareArtistOverflow(unittest.TestCase):
         data = resp.data.decode()
         overflows = OVERFLOW_SPAN_RE.findall(data)
         self.assertEqual(len(overflows), 3)
-        # Page order: shared "You Both Love" card, then my column, then theirs.
+        # Page order: shared Top Common card, then my column, then theirs.
         sharedOverflow, myOverflow, theirOverflow = overflows
         self.assertIn('/artist/', sharedOverflow)
         self.assertIn('/artist/', myOverflow)

@@ -656,7 +656,8 @@ class SpotifyDashboardApp:
 
     def _buildSharedItems(self, myPool, theirPool, embedFn, limit) -> list[dict]:
         """Shared entries of one category (viewer-ranked, sliced to `limit`)
-        with the per-user versus data the "You Both Love" cards render.
+        with the per-user versus data the Top Common Songs/Artists/Albums
+        cards render.
         Copied dicts: the pool entries also feed the viewer's own top-list
         column, and the versus block / combined totals must only show on the
         shared cards. The unique-song counts are only attached where the

@@ -824,16 +824,17 @@ progress::-moz-progress-bar {
   }
 }
 
-/* "You Both Love" cards keep the original side rail (number LEFT of the
-   cover) on every viewport - their versus block makes the cards tall
-   enough that the full-height rail fits naturally. Higher specificity
-   than the desktop column rules above, so this wins there too. */
-[data-category="you-both-love"] .track-media {
+/* Top Common Songs/Artists/Albums cards keep the original side rail
+   (number LEFT of the cover) on every viewport - their versus block makes
+   the cards tall enough that the full-height rail fits naturally. Higher
+   specificity than the desktop column rules above, so this wins there
+   too. */
+[data-category^="common-top-"] .track-media {
   flex-direction: row;
   gap: 18px;
 }
 
-[data-category="you-both-love"] .track-media .track-number {
+[data-category^="common-top-"] .track-media .track-number {
   width: 56px;
   min-height: 120px;
   padding: 10px 8px;
@@ -1168,9 +1169,9 @@ progress::-moz-progress-bar {
   }
 }
 
-/* "You Both Love" versus block. .mine mirrors the trend chart's first
-   series color (the theme accent), .theirs its second (CHART_PALETTE[1]
-   in charts.js). */
+/* Versus block on the Top Common Songs/Artists/Albums cards. .mine mirrors
+   the trend chart's first series color (the theme accent), .theirs its
+   second (CHART_PALETTE[1] in charts.js). */
 .compare-versus {
   display: flex;
   flex-direction: column;
@@ -1208,16 +1209,6 @@ progress::-moz-progress-bar {
 
 .compare-versus-theirs {
   color: var(--compare-theirs);
-}
-
-/* Sub-headings for the "You Both Love" artists/songs/albums groups. */
-.compare-shared-heading {
-  margin: 24px 0 12px;
-  font-size: 0.9rem;
-  font-weight: 700;
-  color: var(--muted);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
 }
 
 /* Taste-match headline badge, pinned to the Compare hero's top right
