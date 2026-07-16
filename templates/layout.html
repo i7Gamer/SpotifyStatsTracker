@@ -6,6 +6,14 @@
         const savedTheme = localStorage.getItem('spotify-stats-theme') || 'theme-rose';
         document.documentElement.className = savedTheme;
       })();
+
+      // Shown in place of a track/artist/album cover that 404s or fails to
+      // load (not yet downloaded, or the fetch failed) instead of a broken-
+      // image icon - a plain music-note glyph on the app's surface color.
+      // Must be defined here in <head>: an <img onerror> can fire while the
+      // body is still parsing, before any end-of-body script has run, and
+      // would then assign the string "undefined" as its src (GET /undefined).
+      window.PLACEHOLDER_IMG = "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='16' fill='%231d1d1d'/><path d='M62 24v34.8a12 12 0 1 0 6 10.4V36l10-3v-9l-16 4z' fill='%23555'/></svg>";
     </script>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -69,11 +77,6 @@
     <main class="page">{% block content %}{% endblock %}</main>
     <script src="{{ url_for('static', filename='js/artist-toggle.js') }}"></script>
     <script>
-      // Shown in place of a track/artist/album cover that 404s or fails to
-      // load (not yet downloaded, or the fetch failed) instead of a broken-
-      // image icon - a plain music-note glyph on the app's surface color.
-      window.PLACEHOLDER_IMG = "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='16' fill='%231d1d1d'/><path d='M62 24v34.8a12 12 0 1 0 6 10.4V36l10-3v-9l-16 4z' fill='%23555'/></svg>";
-
       window.__searchDebounceTimers = window.__searchDebounceTimers || {};
 
       window.scheduleSearchFilter = function(searchInputId, applyFilterFn, delayMs = 500) {

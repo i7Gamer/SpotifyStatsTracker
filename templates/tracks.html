@@ -48,7 +48,11 @@
         <div class="summary-card now-playing-card" id="nowPlayingCard" style="display: none;">
           <h2>Now playing <span id="nowPlayingState" class="now-playing-state">Playing</span></h2>
           <div class="now-playing-body">
-            <img id="nowPlayingCover" class="now-playing-cover" src="" alt="Album cover"
+            {# No src attribute until the now-playing JS assigns one: src=""
+               fails at parse time, firing (and burning) the one-shot onerror
+               fallback before there was ever a real cover URL to fall back
+               from. #}
+            <img id="nowPlayingCover" class="now-playing-cover" alt="Album cover"
                  onerror="this.onerror=null;this.src=window.PLACEHOLDER_IMG;" />
             <div class="now-playing-meta">
               <a id="nowPlayingName" class="now-playing-name" href="#"></a>
