@@ -1896,11 +1896,26 @@ class SpotifyDashboardApp:
             current_user_tz = None
             current_username = None
             is_admin = False
+            genre_coverage = emptyGenreCoverage()
+            genre_unlocked = False
+            genre_worker = {"configured": False, "running": False}
             if is_logged_in:
                 current_username = self.get_username_for_email(email) or self.get_or_create_user(email)
                 current_db = self.get_user_db(current_username, email)
                 current_user_tz = current_db.tz if current_db else None
                 is_admin = self.repo.isAdmin(current_username)
+                if current_db is not None:
+                    # All-time coverage: the progress card tracks the whole
+                    # library, unlike the range-scoped gates on charts/wrapped.
+                    genre_coverage = resolveGenreCoverage(current_db, None, None)
+                    genre_unlocked = genreGatePasses(genre_coverage)
+                    try:
+                        workerStatus = current_db.getLastfmWorkerStatus()
+                        if isinstance(workerStatus, dict):
+                            genre_worker = {"configured": bool(workerStatus.get("configured")),
+                                            "running": bool(workerStatus.get("running"))}
+                    except Exception as e:
+                        logger.warning("Last.fm worker status lookup failed: %s", e)
 
             users_list = []
             if is_logged_in:
@@ -1945,10 +1960,13 @@ class SpotifyDashboardApp:
                         "email": u_email,
                         "sync_status": sync_status,
                         "api_status": api_status,
+                        #< .get(): raw row presence check only - the stored key
+                        #  is encrypted and never needs decrypting here
+                        "genre_status": "Configured" if u.get("lastfm_api_key") else "Not Configured",
                         "plays_count": plays_count,
                         "created_at": created_date_str
                     })
-            
+
             return render_template(
                 "overview.html",
                 global_stats=global_stats,
@@ -1957,8 +1975,26 @@ class SpotifyDashboardApp:
                 is_logged_in=is_logged_in,
                 is_admin=is_admin,
                 users_list=users_list,
+                genre_coverage=genre_coverage,
+                genre_unlocked=genre_unlocked,
+                genre_worker=genre_worker,
+                inherited_genres_enabled=self.repo.isInheritedGenresEnabled(),
                 section="overview"
             )
+
+        @self.app.route("/overview/genre_settings", methods=["POST"])
+        def overviewGenreSettings():
+            """Admin-only: flips the instance-wide inherited-genres toggle
+            (whether artist-derived genre rows count in genre stats and
+            coverage - see Database/repository.py's app_settings)."""
+            email, username, db = get_current_user_or_redirect()
+            if not email:
+                return redirect(url_for("login", next=url_for("overviewPage")))
+            if not self.repo.isAdmin(username):
+                abort(403)
+            # Unchecked checkboxes aren't submitted: absence means disable.
+            self.repo.setInheritedGenresEnabled(request.form.get("include_inherited") == "1")
+            return redirect(url_for("overviewPage"))
 
         @self.app.route("/", methods=["GET"])
         def dashboard():

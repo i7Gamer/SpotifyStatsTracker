@@ -78,6 +78,7 @@
           <th style="padding: 12px 8px;">Username</th>
           <th style="padding: 12px 8px;">Sync Status</th>
           <th style="padding: 12px 8px;">API Backfill</th>
+          <th style="padding: 12px 8px;">Genre Data</th>
           <th style="padding: 12px 8px; text-align: right;">Total Plays</th>
           <th style="padding: 12px 8px; text-align: right;">Registered</th>
         </tr>
@@ -107,12 +108,65 @@
               <span class="badge badge-secondary">NOT CONFIGURED</span>
             {% endif %}
           </td>
+          <td style="padding: 16px 8px;">
+            {% if u.genre_status == 'Configured' %}
+              <span class="badge badge-success">CONFIGURED</span>
+            {% else %}
+              <span class="badge badge-secondary">NOT CONFIGURED</span>
+            {% endif %}
+          </td>
           <td style="padding: 16px 8px; text-align: right; font-weight: 500;">{{ "{:,}".format(u.plays_count) }}</td>
           <td style="padding: 16px 8px; text-align: right; color: var(--muted); font-size: 0.85rem;">{{ u.created_at }}</td>
         </tr>
         {% endfor %}
       </tbody>
     </table>
+  </div>
+</section>
+
+<!-- Last.fm genre backfill: the logged-in user's own all-time coverage -->
+<section class="card" style="margin-bottom: 2.5rem;">
+  <div class="card-header" style="padding: 1.5rem 1.5rem 0.5rem 1.5rem;">
+    <h2 style="margin: 0; font-family: var(--font-headings);">Genre Backfill Progress</h2>
+    <p style="color: var(--muted); font-size: 0.9rem; margin-top: 0.25rem;">
+      How much of your listening history already has genre data from Last.fm - genre insights on Charts, Wrapped and Compare unlock once the thresholds below are met.
+    </p>
+  </div>
+  <div style="padding: 0 1.5rem 1.5rem 1.5rem;">
+    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem;">
+      {% if genre_worker.configured %}
+        {% if genre_worker.running %}
+          <span class="badge badge-success">WORKER RUNNING</span>
+        {% else %}
+          <span class="badge badge-warning">WORKER IDLE</span>
+        {% endif %}
+      {% else %}
+        <span class="badge badge-secondary">NO API KEY</span>
+      {% endif %}
+      {% if genre_unlocked %}
+        <span class="badge badge-success">GENRE INSIGHTS UNLOCKED</span>
+      {% else %}
+        <span class="badge badge-secondary">GENRE INSIGHTS LOCKED</span>
+      {% endif %}
+    </div>
+    {% with coverage = genre_coverage %}{% include "_genre_progress.html" %}{% endwith %}
+    {% if not genre_worker.configured %}
+      <p style="font-size: 0.85rem; color: var(--muted); margin-top: 0.75rem;">
+        Add a Last.fm API key on your <a href="{{ url_for('profilePage') }}" style="color: var(--accent);">profile</a> to start backfilling.
+      </p>
+    {% endif %}
+    {% if is_admin %}
+    <form method="post" action="{{ url_for('overviewGenreSettings') }}"
+          style="margin-top: 1.25rem; padding-top: 1rem; border-top: 1px solid var(--glass-border); display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap;">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+      <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer;">
+        <input type="checkbox" name="include_inherited" value="1" {% if inherited_genres_enabled %}checked{% endif %}>
+        Count inherited genres (songs/albums without own Last.fm tags use their artist's genres)
+      </label>
+      <button type="submit" class="primary-button" style="padding: 4px 16px;">Save</button>
+      <span class="badge badge-secondary" title="Instance-wide admin setting">ADMIN</span>
+    </form>
+    {% endif %}
   </div>
 </section>
 {% endif %}
