@@ -185,6 +185,7 @@ class Listener:
         self._stop_event = threading.Event()
         self.email = email  #< store expected email for validation
         self._authenticated_user_id = None  #< cache spotify user id for validation
+        self.contaminationDetected = False  #< True when the cookies authenticate as a DIFFERENT account than self.email
         self.get_credentials = get_credentials
         self._lastWebApiPollTime = None  #< None means "never polled yet" - forces an immediate first poll
         with _suppress_signal_in_thread():
@@ -195,15 +196,23 @@ class Listener:
         try:
             current_user = self.sp.current_user()
             self._authenticated_user_id = current_user.get("id")
-            authenticated_email = current_user.get("email", "").lower()
+            authenticated_email = current_user.get("email")
 
-            # CRITICAL: Verify cookies actually belong to the expected user, not a different account
-            if authenticated_email and email:
-                email_lower = email.lower()
-                if authenticated_email != email_lower:
+            # CRITICAL: Verify cookies actually belong to the expected user, not a
+            # different account. Detection alone isn't enough - the flag set here
+            # makes this listener refuse to record anything (see startListener/
+            # isLoggedIn): without it, plays from the wrong account kept being
+            # recorded under this user, and _validateCurrentUser was no help
+            # because it baselines on _authenticated_user_id, i.e. the WRONG
+            # account's own id, so the ongoing check always passed. Only a real,
+            # non-empty string email is proof of a mismatch - Spotify can return
+            # "email": null, which must not read as contamination.
+            if isinstance(authenticated_email, str) and authenticated_email and email:
+                if authenticated_email.lower() != email.lower():
+                    self.contaminationDetected = True
                     logger.error(
                         "CRITICAL: Cookie contamination detected! Cookies for %s are actually authenticated as %s. "
-                        "This will cause plays from %s to be recorded under %s's account. "
+                        "Recording is disabled for this listener so plays from %s are NOT recorded under %s's account. "
                         "The stored cookies must be re-authorized.",
                         email, authenticated_email, authenticated_email, email
                     )
@@ -225,6 +234,11 @@ class Listener:
         self._last_user_validation_result = True  #< cache validation result
 
     def isLoggedIn(self):
+        # A contaminated session is technically logged in - as the WRONG
+        # account. Reporting False routes the user back through the login
+        # flow, whose cookie verification requires the matching account.
+        if self.contaminationDetected:
+            return False
         if self.sp.isLoggedIn() == False:
             return False
         try:
@@ -410,6 +424,16 @@ class Listener:
         return False
 
     def startListener(self, callback, onStale=None, onWebApiSnapshot=None):
+        if self.contaminationDetected:
+            # Never record from a session that belongs to a different account -
+            # see the contamination check in __init__.
+            logger.error(
+                "Listener for %s not started: the stored cookies authenticate as a "
+                "different Spotify account. Re-login with matching cookies to resume tracking.",
+                self.email,
+            )
+            self.run = False
+            return
         self.run = True
         while self.run and not self._stop_event.is_set():
             try:

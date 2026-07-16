@@ -1251,6 +1251,19 @@ class Database:
             except Exception as e:
                 logger.error("Failed to stop existing listener for user %s: %s", self.user, parseError(e))
         self.listener = self._withCookiesFile(lambda cf: Listener(cf, email=self.email, get_credentials=self.getUserSpotifyCredentials))
+        if self.listener.contaminationDetected:
+            # The cookies authenticate as a different Spotify account (see
+            # Listener.__init__'s contamination check). The listener itself
+            # refuses to record; reflect that as DEAD so the UI shows the user
+            # something actionable instead of a listener that looks healthy
+            # while recording nothing.
+            with self._health_lock:
+                self.listener_health = "DEAD"
+                self.listener_last_error = (
+                    "Stored cookies belong to a different Spotify account - "
+                    "re-login with matching cookies to resume tracking"
+                )
+            return
         with self._health_lock:
             self.listener_health = "HEALTHY"
             self.listener_error_count = 0

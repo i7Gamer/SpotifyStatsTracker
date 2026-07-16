@@ -16,6 +16,15 @@ from app import SpotifyDashboardApp
 _SECRET_KEY_PATCH = 'app.SpotifyDashboardApp._get_or_create_secret_key'
 
 
+def _healthyListenerMock():
+    """A fake Listener whose contamination flag is explicitly clear - a bare
+    MagicMock's auto-created contaminationDetected attribute is truthy, which
+    would make Database.startListener treat it as contaminated."""
+    listener = MagicMock()
+    listener.contaminationDetected = False
+    return listener
+
+
 def _makeApp():
     with patch(_SECRET_KEY_PATCH, return_value='test-secret-key'), \
          patch('app.SpotifyDashboardApp.startVersionCheck_thread'), \
@@ -40,7 +49,7 @@ class TestStartupReloginFromDatabaseCookies(unittest.TestCase):
             # The temp cookies file is deleted right after this constructor
             # returns, so its content has to be captured now, not afterward.
             capturedCookiesPayloads.append(json.loads(Path(cookiesFile).read_text(encoding="utf-8")))
-            listener = MagicMock()
+            listener = _healthyListenerMock()
             listenerInstances.append(listener)
             return listener
 
@@ -82,7 +91,7 @@ class TestStartupReloginFromDatabaseCookies(unittest.TestCase):
 
         def fakeListener(cookiesFile, email=None, **kwargs):
             capturedByEmail[email] = json.loads(Path(cookiesFile).read_text(encoding="utf-8"))[0]["cookies"]
-            return MagicMock()
+            return _healthyListenerMock()
 
         with patch("Database.database.Listener", side_effect=fakeListener), \
              patch("Database.database.AutoImporter") as mockAutoImporterClass:
@@ -108,7 +117,7 @@ class TestStartupReloginFromDatabaseCookies(unittest.TestCase):
         def fakeListener(cookiesFile, email=None, **kwargs):
             if email == "alice@example.com":
                 raise RuntimeError("boom")
-            return MagicMock()
+            return _healthyListenerMock()
 
         with patch("Database.database.Listener", side_effect=fakeListener), \
              patch("Database.database.AutoImporter") as mockAutoImporterClass:
@@ -125,7 +134,7 @@ class TestStartupReloginFromDatabaseCookies(unittest.TestCase):
         app.repo.upsertUser("alice", "alice@example.com")
         app.repo.setUserCookies("alice", {"sp_dc": "abc123"})
 
-        with patch("Database.database.Listener", return_value=MagicMock()), \
+        with patch("Database.database.Listener", return_value=_healthyListenerMock()), \
              patch("Database.database.AutoImporter") as mockAutoImporterClass:
             mockAutoImporterClass.return_value = MagicMock()
             app._ensureAllUsersLogin()

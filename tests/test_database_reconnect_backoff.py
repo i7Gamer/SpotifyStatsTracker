@@ -55,6 +55,7 @@ class TestReconnectBackoff(unittest.TestCase):
         with patch.object(db, '_withCookiesFile') as mock_cookies, \
              patch('Database.database.Listener') as MockListener:
             mock_listener = MagicMock()
+            mock_listener.contaminationDetected = False  #< a bare MagicMock's auto-attribute is truthy = contaminated
             MockListener.return_value = mock_listener
             mock_cookies.return_value = mock_listener
 
