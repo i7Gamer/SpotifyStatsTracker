@@ -976,8 +976,9 @@ progress::-moz-progress-bar {
   transition: opacity 0.2s ease-in-out;
 }
 
-/* Profile's "Requests you sent" / "Active shares" tables: row borders as a
-   class (not inline styles) so the last row can drop its bottom border. */
+/* Profile's share tables ("Requests waiting on you" / "Requests you sent" /
+   "Active shares"): row borders as a class (not inline styles) so the last
+   row can drop its bottom border. */
 .share-table tr {
   border-bottom: 1px solid var(--glass-border);
 }

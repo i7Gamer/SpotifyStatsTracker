@@ -111,10 +111,10 @@
     {% if pendingIncoming %}
     <div style="margin-bottom: 1.5rem;">
       <h3 style="font-size: 1rem;">Requests waiting on you</h3>
-      <table class="status-table" style="width: 100%; border-collapse: collapse;">
+      <table class="status-table share-table" style="width: 100%; border-collapse: collapse;">
         <tbody>
           {% for share in pendingIncoming %}
-          <tr style="border-bottom: 1px solid var(--glass-border);">
+          <tr>
             <td style="padding: 8px;"><span class="badge badge-warning">{{ share.requester_username }}</span> wants to share data with you</td>
             <td style="padding: 8px; text-align: right; white-space: nowrap;">
               <form method="post" action="{{ url_for('profileShareAction', share_id=share.id) }}" style="display: inline-block;">
