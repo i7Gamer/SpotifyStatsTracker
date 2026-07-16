@@ -138,10 +138,10 @@
     {% if pendingOutgoing %}
     <div style="margin-bottom: 1.5rem;">
       <h3 style="font-size: 1rem;">Requests you sent</h3>
-      <table class="status-table" style="width: 100%; border-collapse: collapse;">
+      <table class="status-table share-table" style="width: 100%; border-collapse: collapse;">
         <tbody>
           {% for share in pendingOutgoing %}
-          <tr style="border-bottom: 1px solid var(--glass-border);">
+          <tr>
             <td style="padding: 8px;">Waiting on <span class="badge badge-secondary">{{ share.recipient_username }}</span></td>
             <td style="padding: 8px; text-align: right;">
               <form method="post" action="{{ url_for('profileShareAction', share_id=share.id) }}" style="display: inline-block;">
@@ -160,10 +160,10 @@
     {% if acceptedShares %}
     <div style="margin-bottom: 2rem; padding-bottom: 1.5rem; border-bottom: 1px solid var(--border-color, #2d2d2d);">
       <h3 style="font-size: 1rem;">Active shares</h3>
-      <table class="status-table" style="width: 100%; border-collapse: collapse;">
+      <table class="status-table share-table" style="width: 100%; border-collapse: collapse;">
         <tbody>
           {% for share in acceptedShares %}
-          <tr style="border-bottom: 1px solid var(--glass-border);">
+          <tr>
             <td style="padding: 8px;"><span class="badge badge-success">{{ share.counterpart }}</span></td>
             <td style="padding: 8px; text-align: right; white-space: nowrap;">
               <a href="{{ url_for('comparePage', with=share.counterpart) }}" class="primary-button" style="padding: 4px 12px; text-decoration: none; display: inline-block;">Compare</a>

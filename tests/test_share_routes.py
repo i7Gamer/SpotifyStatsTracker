@@ -198,6 +198,26 @@ class TestProfilePageShareListings(ShareRoutesTestCase):
         self.assertIn(b"carol", resp.data)   #< pending outgoing
         self.assertIn(b"dave", resp.data)    #< accepted
 
+    def test_sent_and_active_tables_style_rows_via_share_table_class(self):
+        """"Requests you sent" and "Active shares" rows carry their border
+        via .share-table instead of inline styles, so the last row can drop
+        its bottom border via :last-child (same pattern as .compare-table)."""
+        self.dash.repo.upsertUser("alice", "alice@example.com")
+        self.dash.repo.upsertUser("carol", "carol@example.com")
+        self.dash.repo.upsertUser("dave", "dave@example.com")
+        self.dash.repo.createShareRequest("alice", "carol")     #< pending outgoing
+        self.dash.repo.createShareRequest("alice", "dave")
+        daveShareId = self.dash.repo.getPendingOutgoingShares("alice")[-1]["id"]
+        self.dash.repo.respondToShareRequest(daveShareId, "dave", accept=True)   #< accepted
+
+        client = self._loginAs("alice", "alice@example.com")
+        resp = client.get("/profile")
+
+        self.assertEqual(resp.data.count(b'class="status-table share-table"'), 2)
+        #< no inline-bordered rows left on the page (the incoming table isn't
+        #  rendered here - alice has no pending incoming requests)
+        self.assertNotIn(b'<tr style="border-bottom: 1px solid var(--glass-border);">', resp.data)
+
 
 class TestPendingSharesTopbarBadge(ShareRoutesTestCase):
     """The badge next to the version-badge in the topbar (layout.html) - the

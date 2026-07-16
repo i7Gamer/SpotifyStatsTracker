@@ -976,6 +976,16 @@ progress::-moz-progress-bar {
   transition: opacity 0.2s ease-in-out;
 }
 
+/* Profile's "Requests you sent" / "Active shares" tables: row borders as a
+   class (not inline styles) so the last row can drop its bottom border. */
+.share-table tr {
+  border-bottom: 1px solid var(--glass-border);
+}
+
+.share-table tr:last-child {
+  border-bottom: none;
+}
+
 /* Compare page's head-to-head stats table (replaces per-row inline styles
    so the last row can drop its bottom border). */
 .compare-table {
