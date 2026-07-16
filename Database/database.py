@@ -880,6 +880,96 @@ class Database:
         rows = conn.execute(query, params).fetchall()
         return {f"{row['decade']}s": row["count"] for row in rows}
 
+    def _resolveIncludeInherited(self, includeInherited: bool | None) -> int:
+        """None means "whatever the admin's instance-wide toggle says" - the
+        default for every genre stat, so flipping the toggle changes charts/
+        wrapped/compare/coverage everywhere without touching callers."""
+        if includeInherited is None:
+            includeInherited = self.repo.isInheritedGenresEnabled()
+        return 1 if includeInherited else 0
+
+    def getGenreCoverage(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None,
+                         includeInherited: bool | None = None) -> dict:
+        """Play-weighted Last.fm genre coverage over a date range: for each
+        category, the share of this user's plays whose song/album/primary
+        artist carries at least one genre row. All three categories share the
+        same denominator (every play has exactly one track, album and primary
+        artist - a play whose track lacks a position-0 artist row just never
+        counts as artist-covered). "overall" is the mean of the three - the
+        unlock gate for genre features compares against it."""
+        startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
+        inherited = self._resolveIncludeInherited(includeInherited)
+        conn = self.repo._conn()
+        params = [inherited, inherited, self.user]
+        rangeClause = self.repo._dateRangeClause(params, startTs, endTs, column="p.played_at")
+        # GROUP BY track first so the three EXISTS probes run once per distinct
+        # track, not once per play.
+        query = f"""
+            SELECT
+                COALESCE(SUM(cnt), 0) AS total,
+                COALESCE(SUM(CASE WHEN track_covered THEN cnt ELSE 0 END), 0) AS song_covered,
+                COALESCE(SUM(CASE WHEN album_covered THEN cnt ELSE 0 END), 0) AS album_covered,
+                COALESCE(SUM(CASE WHEN artist_covered THEN cnt ELSE 0 END), 0) AS artist_covered
+            FROM (
+                SELECT COUNT(*) AS cnt,
+                    EXISTS(SELECT 1 FROM track_genres g
+                           WHERE g.track_id = p.track_id AND (? OR g.inherited = 0)) AS track_covered,
+                    EXISTS(SELECT 1 FROM tracks t
+                           JOIN album_genres g ON g.album_id = t.album_id
+                           WHERE t.id = p.track_id AND (? OR g.inherited = 0)) AS album_covered,
+                    EXISTS(SELECT 1 FROM track_artists ta
+                           JOIN artist_genres g ON g.artist_id = ta.artist_id
+                           WHERE ta.track_id = p.track_id AND ta.position = 0) AS artist_covered
+                FROM plays p
+                WHERE p.username = ?{rangeClause}
+                GROUP BY p.track_id
+            )
+        """
+        row = conn.execute(query, params).fetchone()
+        total = row["total"]
+
+        def category(covered: int) -> dict:
+            percent = round(covered / total * 100, 1) if total else 0.0
+            return {"covered": covered, "total": total, "percent": percent}
+
+        coverage = {
+            "song": category(row["song_covered"]),
+            "album": category(row["album_covered"]),
+            "artist": category(row["artist_covered"]),
+        }
+        coveredSum = row["song_covered"] + row["album_covered"] + row["artist_covered"]
+        overallPercent = round(coveredSum / (3 * total) * 100, 1) if total else 0.0
+        coverage["overall"] = {"percent": overallPercent}
+        return coverage
+
+    def getGenreDistribution(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None,
+                             limit: int | None = None, includeInherited: bool | None = None) -> dict:
+        """{genre: plays} over the range, most-played first (name breaks ties -
+        Last.fm counts tie constantly). A play with N genres counts once per
+        genre, the standard reading for tag distributions. Track-level genres
+        only: they're the finest granularity, and inherited rows already carry
+        artist genres down to tag-less tracks when the toggle allows."""
+        startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
+        inherited = self._resolveIncludeInherited(includeInherited)
+        conn = self.repo._conn()
+        params = [inherited, self.user]
+        rangeClause = self.repo._dateRangeClause(params, startTs, endTs, column="p.played_at")
+        limitClause = ""
+        if limit is not None:
+            limitClause = " LIMIT ?"
+        query = f"""
+            SELECT g.genre AS genre, COUNT(*) AS plays
+            FROM plays p
+            JOIN track_genres g ON g.track_id = p.track_id
+            WHERE (? OR g.inherited = 0) AND p.username = ?{rangeClause}
+            GROUP BY g.genre
+            ORDER BY plays DESC, g.genre ASC{limitClause}
+        """
+        if limit is not None:
+            params.append(limit)
+        rows = conn.execute(query, params).fetchall()
+        return {row["genre"]: row["plays"] for row in rows}
+
     def getCompletionStats(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> dict:
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
         conn = self.repo._conn()

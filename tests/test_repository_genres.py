@@ -1,0 +1,404 @@
+"""Repository/Database layer for the Last.fm genre backfill: key storage,
+app settings, genre join tables, the backfill queue queries, play-weighted
+coverage and the genre distribution."""
+import datetime
+import sys
+import os
+import time
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+from conftest import DatabaseTestCase
+from Database.repository import GENRE_BACKFILL_RETRY_SECONDS, INHERITED_GENRES_SETTING_KEY
+
+
+def _dt(ts: float) -> datetime.datetime:
+    return datetime.datetime.fromtimestamp(ts, tz=datetime.timezone.utc)
+
+
+class LastfmApiKeyTestCase(DatabaseTestCase):
+    def test_key_round_trips_and_is_encrypted_at_rest(self):
+        db = self._makeDb({}, [])
+        db.repo.updateUserLastfmApiKey("testuser", "my-api-key-123")
+
+        raw = db.repo._conn().execute(
+            "SELECT lastfm_api_key FROM users WHERE username=?", ("testuser",)
+        ).fetchone()["lastfm_api_key"]
+        self.assertTrue(raw.startswith("enc:v1:"))
+        self.assertNotIn("my-api-key-123", raw)
+        self.assertEqual(db.repo.getUserLastfmApiKey("testuser"), "my-api-key-123")
+
+    def test_none_clears_the_key(self):
+        db = self._makeDb({}, [])
+        db.repo.updateUserLastfmApiKey("testuser", "my-api-key-123")
+        db.repo.updateUserLastfmApiKey("testuser", None)
+        self.assertIsNone(db.repo.getUserLastfmApiKey("testuser"))
+
+    def test_unknown_user_reads_as_none(self):
+        db = self._makeDb({}, [])
+        self.assertIsNone(db.repo.getUserLastfmApiKey("nobody"))
+
+    def test_legacy_plaintext_value_passes_through(self):
+        db = self._makeDb({}, [])
+        conn = db.repo._conn()
+        with conn:
+            conn.execute("UPDATE users SET lastfm_api_key=? WHERE username=?",
+                         ("plain-legacy-key", "testuser"))
+        self.assertEqual(db.repo.getUserLastfmApiKey("testuser"), "plain-legacy-key")
+
+
+class AppSettingsTestCase(DatabaseTestCase):
+    def test_missing_key_returns_default(self):
+        db = self._makeDb({}, [])
+        self.assertIsNone(db.repo.getAppSetting("nope"))
+        self.assertEqual(db.repo.getAppSetting("nope", "fallback"), "fallback")
+
+    def test_set_get_and_overwrite(self):
+        db = self._makeDb({}, [])
+        db.repo.setAppSetting("some_key", "one")
+        self.assertEqual(db.repo.getAppSetting("some_key"), "one")
+        db.repo.setAppSetting("some_key", "two")
+        self.assertEqual(db.repo.getAppSetting("some_key"), "two")
+
+    def test_inherited_genres_defaults_on_and_flips(self):
+        db = self._makeDb({}, [])
+        self.assertTrue(db.repo.isInheritedGenresEnabled())
+        db.repo.setInheritedGenresEnabled(False)
+        self.assertFalse(db.repo.isInheritedGenresEnabled())
+        self.assertIsNotNone(db.repo.getAppSetting(INHERITED_GENRES_SETTING_KEY))
+        db.repo.setInheritedGenresEnabled(True)
+        self.assertTrue(db.repo.isInheritedGenresEnabled())
+
+
+class GenreWriteTestCase(DatabaseTestCase):
+    def _db(self):
+        tracks = {"t1": {"id": "t1", "name": "Song", "artists": [{"id": "a1", "name": "Artist"}]}}
+        entries = [{"id": "t1", "playedAt": 1000, "timePlayed": 5000}]
+        return self._makeDb(tracks, entries)
+
+    def test_artist_genres_round_trip_in_position_order(self):
+        db = self._db()
+        db.repo.replaceArtistGenres("a1", ["rock", "indie rock", "shoegaze"])
+        self.assertEqual(db.repo.getArtistGenres("a1"), ["rock", "indie rock", "shoegaze"])
+
+    def test_replace_overwrites_all_previous_rows(self):
+        db = self._db()
+        db.repo.replaceArtistGenres("a1", ["rock", "indie rock", "shoegaze"])
+        db.repo.replaceArtistGenres("a1", ["pop"])
+        self.assertEqual(db.repo.getArtistGenres("a1"), ["pop"])
+
+    def test_track_genres_carry_the_inherited_flag(self):
+        db = self._db()
+        db.repo.replaceTrackGenres("t1", ["rock"], inherited=True)
+        self.assertEqual(db.repo.getTrackGenres("t1"),
+                         [{"genre": "rock", "inherited": True}])
+
+        # An own-tags result later replaces inherited rows entirely.
+        db.repo.replaceTrackGenres("t1", ["dream pop"], inherited=False)
+        self.assertEqual(db.repo.getTrackGenres("t1"),
+                         [{"genre": "dream pop", "inherited": False}])
+
+    def test_album_genres_carry_the_inherited_flag(self):
+        db = self._db()
+        albumId = db.repo._conn().execute(
+            "SELECT album_id FROM tracks WHERE id='t1'").fetchone()["album_id"]
+        db.repo.replaceAlbumGenres(albumId, ["rock", "pop"], inherited=True)
+        self.assertEqual(db.repo.getAlbumGenres(albumId),
+                         [{"genre": "rock", "inherited": True},
+                          {"genre": "pop", "inherited": True}])
+
+    def test_mark_lastfm_attempted_stamps_each_kind(self):
+        db = self._db()
+        albumId = db.repo._conn().execute(
+            "SELECT album_id FROM tracks WHERE id='t1'").fetchone()["album_id"]
+        before = time.time()
+        db.repo.markArtistsLastfmAttempted(["a1"])
+        db.repo.markAlbumsLastfmAttempted([albumId])
+        db.repo.markTracksLastfmAttempted(["t1"])
+        conn = db.repo._conn()
+        for table, idValue in (("artists", "a1"), ("albums", albumId), ("tracks", "t1")):
+            stamp = conn.execute(
+                f"SELECT lastfm_attempted_at FROM {table} WHERE id=?", (idValue,)
+            ).fetchone()["lastfm_attempted_at"]
+            self.assertIsNotNone(stamp)
+            self.assertGreaterEqual(stamp, before)
+
+    def test_mark_with_empty_list_is_a_noop(self):
+        db = self._db()
+        db.repo.markArtistsLastfmAttempted([])   #< must not raise
+
+    def test_artist_lastfm_state_reflects_attempt_and_genres(self):
+        db = self._db()
+        state = db.repo.getArtistLastfmState("a1")
+        self.assertIsNone(state["attempted_at"])
+        self.assertEqual(state["genres"], [])
+
+        db.repo.replaceArtistGenres("a1", ["rock"])
+        db.repo.markArtistsLastfmAttempted(["a1"])
+        state = db.repo.getArtistLastfmState("a1")
+        self.assertIsNotNone(state["attempted_at"])
+        self.assertEqual(state["genres"], ["rock"])
+
+
+class GenreQueueTestCase(DatabaseTestCase):
+    """Queue semantics: play-count priority, own vs global scope, and the
+    retry TTL (attempted entities leave the queue; empty ones come back after
+    GENRE_BACKFILL_RETRY_SECONDS; entities with own genres never do)."""
+
+    def _db(self):
+        tracks = {
+            "tA": {"id": "tA", "name": "Song A",
+                   "artists": [{"id": "aX", "name": "Artist X"}, {"id": "aF", "name": "Feature"}],
+                   "album": self._album("alP", "Album P")},
+            "tB": {"id": "tB", "name": "Song B",
+                   "artists": [{"id": "aY", "name": "Artist Y"}],
+                   "album": self._album("alQ", "Album Q")},
+        }
+        entries = [
+            {"id": "tA", "playedAt": 1000, "timePlayed": 5000},
+            {"id": "tA", "playedAt": 2000, "timePlayed": 5000},
+            {"id": "tA", "playedAt": 3000, "timePlayed": 5000},
+            {"id": "tB", "playedAt": 4000, "timePlayed": 5000},
+        ]
+        db = self._makeDb(tracks, entries, username="user1")
+        # A second user in the same shared DB, playing their own track.
+        db.repo.upsertUser("user2", "user2@example.com")
+        from conftest import normalizeTrackForTest
+        db.repo.upsertTrack(normalizeTrackForTest(
+            {"id": "tC", "name": "Song C",
+             "artists": [{"id": "aZ", "name": "Artist Z"}],
+             "album": self._album("alR", "Album R")}))
+        db.repo.insertPlay("user2", "tC", 5000, 5000, None)
+        db.repo.commit()
+        return db
+
+    @staticmethod
+    def _album(albumId, name):
+        return {"id": albumId, "name": name, "url": "http://example.com/album",
+                "imageId": albumId, "imageUrl": "", "totalTracks": 1, "releaseDate": 0}
+
+    def test_artist_queue_is_play_count_ordered_within_own_scope(self):
+        db = self._db()
+        rows = db.repo.getArtistsMissingGenres(10, username="user1")
+        self.assertEqual([r["id"] for r in rows], ["aX", "aY"])
+        self.assertEqual(rows[0]["play_count"], 3)
+        self.assertEqual(rows[0]["name"], "Artist X")
+
+    def test_featured_artists_are_not_queued(self):
+        db = self._db()
+        rows = db.repo.getArtistsMissingGenres(10, username="user1")
+        self.assertNotIn("aF", [r["id"] for r in rows])   #< only position-0 artists
+
+    def test_global_scope_spans_all_users(self):
+        db = self._db()
+        rows = db.repo.getArtistsMissingGenres(10)
+        self.assertEqual([r["id"] for r in rows], ["aX", "aY", "aZ"])   #< 3 plays, then ties by id
+
+    def test_limit_is_respected(self):
+        db = self._db()
+        rows = db.repo.getArtistsMissingGenres(1, username="user1")
+        self.assertEqual([r["id"] for r in rows], ["aX"])
+
+    def test_recently_attempted_entities_leave_the_queue(self):
+        db = self._db()
+        db.repo.markArtistsLastfmAttempted(["aX"])
+        rows = db.repo.getArtistsMissingGenres(10, username="user1")
+        self.assertEqual([r["id"] for r in rows], ["aY"])
+
+    def test_empty_entities_requeue_after_the_retry_ttl(self):
+        db = self._db()
+        db.repo.markArtistsLastfmAttempted(["aX"])
+        conn = db.repo._conn()
+        staleStamp = time.time() - GENRE_BACKFILL_RETRY_SECONDS - 1
+        with conn:
+            conn.execute("UPDATE artists SET lastfm_attempted_at=? WHERE id='aX'", (staleStamp,))
+        rows = db.repo.getArtistsMissingGenres(10, username="user1")
+        self.assertIn("aX", [r["id"] for r in rows])
+
+    def test_entities_with_own_genres_never_requeue(self):
+        db = self._db()
+        db.repo.replaceArtistGenres("aX", ["rock"])
+        db.repo.markArtistsLastfmAttempted(["aX"])
+        conn = db.repo._conn()
+        staleStamp = time.time() - GENRE_BACKFILL_RETRY_SECONDS - 1
+        with conn:
+            conn.execute("UPDATE artists SET lastfm_attempted_at=? WHERE id='aX'", (staleStamp,))
+        rows = db.repo.getArtistsMissingGenres(10, username="user1")
+        self.assertNotIn("aX", [r["id"] for r in rows])
+
+    def test_track_queue_carries_the_primary_artist(self):
+        db = self._db()
+        rows = db.repo.getTracksMissingGenres(10, username="user1")
+        self.assertEqual([r["id"] for r in rows], ["tA", "tB"])
+        self.assertEqual(rows[0]["artist_id"], "aX")
+        self.assertEqual(rows[0]["artist_name"], "Artist X")
+        self.assertEqual(rows[0]["name"], "Song A")
+
+    def test_tracks_with_inherited_only_genres_requeue_after_the_ttl(self):
+        db = self._db()
+        db.repo.replaceTrackGenres("tA", ["rock"], inherited=True)
+        db.repo.markTracksLastfmAttempted(["tA"])
+
+        rows = db.repo.getTracksMissingGenres(10, username="user1")
+        self.assertNotIn("tA", [r["id"] for r in rows])   #< fresh attempt: out of the queue
+
+        conn = db.repo._conn()
+        staleStamp = time.time() - GENRE_BACKFILL_RETRY_SECONDS - 1
+        with conn:
+            conn.execute("UPDATE tracks SET lastfm_attempted_at=? WHERE id='tA'", (staleStamp,))
+        rows = db.repo.getTracksMissingGenres(10, username="user1")
+        self.assertIn("tA", [r["id"] for r in rows])      #< inherited rows don't satisfy it
+
+        db.repo.replaceTrackGenres("tA", ["rock"], inherited=False)
+        rows = db.repo.getTracksMissingGenres(10, username="user1")
+        self.assertNotIn("tA", [r["id"] for r in rows])   #< own rows do
+
+    def test_tracks_without_a_primary_artist_are_not_queued(self):
+        tracks = {"tOrphan": {"id": "tOrphan", "name": "No Artist", "artists": []}}
+        entries = [{"id": "tOrphan", "playedAt": 1000, "timePlayed": 5000}]
+        db = self._makeDb(tracks, entries)
+        rows = db.repo.getTracksMissingGenres(10, username="testuser")
+        self.assertEqual(rows, [])
+
+    def test_album_queue_mirrors_track_semantics(self):
+        db = self._db()
+        rows = db.repo.getAlbumsMissingGenres(10, username="user1")
+        self.assertEqual([r["id"] for r in rows], ["alP", "alQ"])
+        self.assertEqual(rows[0]["name"], "Album P")
+        self.assertEqual(rows[0]["play_count"], 3)
+
+    def test_album_primary_artists_are_derived_from_their_tracks(self):
+        db = self._db()
+        primaries = db.repo.getAlbumPrimaryArtists(["alP", "alQ"])
+        self.assertEqual(primaries["alP"], {"artist_id": "aX", "artist_name": "Artist X"})
+        self.assertEqual(primaries["alQ"], {"artist_id": "aY", "artist_name": "Artist Y"})
+
+    def test_album_primary_artist_prefers_the_most_frequent_with_stable_ties(self):
+        from conftest import normalizeTrackForTest
+        db = self._db()
+        # alS has two tracks with different primary artists -> tie broken by id.
+        for trackId, artistId in (("tS1", "aM"), ("tS2", "aB")):
+            db.repo.upsertTrack(normalizeTrackForTest(
+                {"id": trackId, "name": trackId,
+                 "artists": [{"id": artistId, "name": artistId}],
+                 "album": self._album("alS", "Album S")}))
+        db.repo.commit()
+        primaries = db.repo.getAlbumPrimaryArtists(["alS"])
+        self.assertEqual(primaries["alS"]["artist_id"], "aB")
+
+    def test_album_primary_artists_with_no_input_or_unknown_ids(self):
+        db = self._db()
+        self.assertEqual(db.repo.getAlbumPrimaryArtists([]), {})
+        self.assertEqual(db.repo.getAlbumPrimaryArtists(["missing"]), {})
+
+
+class GenreCoverageTestCase(DatabaseTestCase):
+    """Play-weighted coverage: t1 fully covered (2 plays), t2 covered only via
+    an inherited track genre + its artist (1 play), t3 uncovered (1 play)."""
+
+    def _db(self):
+        album = lambda albumId: {"id": albumId, "name": albumId, "url": "u",
+                                 "imageId": albumId, "imageUrl": "", "totalTracks": 1, "releaseDate": 0}
+        tracks = {
+            "t1": {"id": "t1", "name": "One", "artists": [{"id": "aX", "name": "X"}], "album": album("alP")},
+            "t2": {"id": "t2", "name": "Two", "artists": [{"id": "aX", "name": "X"}], "album": album("alQ")},
+            "t3": {"id": "t3", "name": "Three", "artists": [{"id": "aZ", "name": "Z"}], "album": album("alR")},
+        }
+        entries = [
+            {"id": "t1", "playedAt": 1000, "timePlayed": 5000},
+            {"id": "t1", "playedAt": 2000, "timePlayed": 5000},
+            {"id": "t2", "playedAt": 3000, "timePlayed": 5000},
+            {"id": "t3", "playedAt": 4000, "timePlayed": 5000},
+        ]
+        db = self._makeDb(tracks, entries)
+        db.repo.replaceArtistGenres("aX", ["rock"])
+        db.repo.replaceTrackGenres("t1", ["rock"], inherited=False)
+        db.repo.replaceAlbumGenres("alP", ["rock"], inherited=False)
+        db.repo.replaceTrackGenres("t2", ["rock"], inherited=True)
+        return db
+
+    def test_counts_and_percentages_including_inherited(self):
+        db = self._db()
+        coverage = db.getGenreCoverage(includeInherited=True)
+        self.assertEqual(coverage["song"], {"covered": 3, "total": 4, "percent": 75.0})
+        self.assertEqual(coverage["album"], {"covered": 2, "total": 4, "percent": 50.0})
+        self.assertEqual(coverage["artist"], {"covered": 3, "total": 4, "percent": 75.0})
+        self.assertAlmostEqual(coverage["overall"]["percent"], 66.7, places=1)
+
+    def test_excluding_inherited_drops_only_inherited_categories(self):
+        db = self._db()
+        coverage = db.getGenreCoverage(includeInherited=False)
+        self.assertEqual(coverage["song"]["covered"], 2)     #< t2's inherited row no longer counts
+        self.assertEqual(coverage["album"]["covered"], 2)
+        self.assertEqual(coverage["artist"]["covered"], 3)   #< artists have no inherited concept
+
+    def test_default_reads_the_app_setting(self):
+        db = self._db()
+        db.repo.setInheritedGenresEnabled(False)
+        self.assertEqual(db.getGenreCoverage()["song"]["covered"], 2)
+        db.repo.setInheritedGenresEnabled(True)
+        self.assertEqual(db.getGenreCoverage()["song"]["covered"], 3)
+
+    def test_date_range_scopes_the_denominator(self):
+        db = self._db()
+        coverage = db.getGenreCoverage(startDate=_dt(2500), endDate=_dt(4500), includeInherited=True)
+        self.assertEqual(coverage["song"], {"covered": 1, "total": 2, "percent": 50.0})
+
+    def test_no_plays_yields_zeros_without_dividing(self):
+        db = self._makeDb({}, [])
+        coverage = db.getGenreCoverage()
+        for category in ("song", "album", "artist"):
+            self.assertEqual(coverage[category], {"covered": 0, "total": 0, "percent": 0.0})
+        self.assertEqual(coverage["overall"]["percent"], 0.0)
+
+
+class GenreDistributionTestCase(DatabaseTestCase):
+    def _db(self):
+        tracks = {
+            "t1": {"id": "t1", "name": "One", "artists": [{"id": "aX", "name": "X"}]},
+            "t2": {"id": "t2", "name": "Two", "artists": [{"id": "aX", "name": "X"}]},
+        }
+        entries = [
+            {"id": "t1", "playedAt": 1000, "timePlayed": 5000},
+            {"id": "t1", "playedAt": 2000, "timePlayed": 5000},
+            {"id": "t2", "playedAt": 3000, "timePlayed": 5000},
+        ]
+        db = self._makeDb(tracks, entries)
+        db.repo.replaceTrackGenres("t1", ["rock", "indie rock"], inherited=False)
+        db.repo.replaceTrackGenres("t2", ["rock"], inherited=True)
+        return db
+
+    def test_counts_each_play_once_per_genre_ordered_by_plays_then_name(self):
+        db = self._db()
+        distribution = db.getGenreDistribution(includeInherited=True)
+        self.assertEqual(distribution, {"rock": 3, "indie rock": 2})
+        self.assertEqual(list(distribution), ["rock", "indie rock"])
+
+    def test_inherited_rows_can_be_excluded(self):
+        db = self._db()
+        distribution = db.getGenreDistribution(includeInherited=False)
+        self.assertEqual(distribution, {"rock": 2, "indie rock": 2})
+
+    def test_default_reads_the_app_setting(self):
+        db = self._db()
+        db.repo.setInheritedGenresEnabled(False)
+        self.assertEqual(db.getGenreDistribution()["rock"], 2)
+
+    def test_limit_and_range(self):
+        db = self._db()
+        distribution = db.getGenreDistribution(limit=1, includeInherited=True)
+        self.assertEqual(distribution, {"rock": 3})
+        distribution = db.getGenreDistribution(startDate=_dt(2500), includeInherited=True)
+        self.assertEqual(distribution, {"rock": 1})
+
+    def test_alphabetical_tiebreak(self):
+        db = self._db()
+        db.repo.replaceTrackGenres("t1", ["zeta", "alpha"], inherited=False)
+        db.repo.replaceTrackGenres("t2", [], inherited=False)
+        distribution = db.getGenreDistribution(includeInherited=True)
+        self.assertEqual(list(distribution), ["alpha", "zeta"])
+
+
+if __name__ == "__main__":
+    import unittest
+    unittest.main()
