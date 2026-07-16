@@ -1,0 +1,31 @@
+{# Top Genres card for Wrapped, computed live per request (never cached in
+   user_wrapped - the Last.fm backfill keeps growing coverage and the admin's
+   inherited-genres toggle changes the numbers retroactively). Expects
+   `topGenres` ({genre: plays}, most-played first), `genreCoverage`,
+   `genreUnlocked` and `year`. Also returned as the ajax "topGenresHtml"
+   chunk, swapped into #wrappedGenresCard on year changes. #}
+<div class="chart-section">
+  <h2>Top Genres of {{ year }}</h2>
+  {% if genreUnlocked %}
+    {% if topGenres %}
+      {% set maxPlays = topGenres.values() | max %}
+      <div style="display: flex; flex-direction: column; gap: 0.6rem; margin-top: 1rem;">
+        {% for genre, plays in topGenres.items() %}
+        <div style="display: flex; align-items: center; gap: 0.75rem;">
+          <span style="flex: 0 0 1.5rem; font-weight: 600; color: var(--accent);">{{ loop.index }}.</span>
+          <span style="flex: 0 0 12rem; text-transform: capitalize; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ genre }}</span>
+          <div style="flex: 1; background: rgba(255, 255, 255, 0.08); border-radius: 4px; height: 12px; overflow: hidden;">
+            <div style="width: {{ (plays / maxPlays * 100) | round(1) }}%; background: var(--accent); height: 100%; border-radius: 4px;"></div>
+          </div>
+          <span style="flex: 0 0 6rem; text-align: right; font-size: 0.85rem; color: var(--muted, #aaa);">{{ "{:,}".format(plays) }} plays</span>
+        </div>
+        {% endfor %}
+      </div>
+      <p style="font-size: 0.75rem; color: #666; margin-top: 1rem;">Genre data powered by <a href="https://www.last.fm" target="_blank" style="color: #888;">Last.fm</a>.</p>
+    {% else %}
+      <p class="loading">No genre data for your {{ year }} plays yet.</p>
+    {% endif %}
+  {% else %}
+    {% with coverage = genreCoverage %}{% include "_genre_progress.html" %}{% endwith %}
+  {% endif %}
+</div>

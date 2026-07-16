@@ -2307,6 +2307,22 @@ class SpotifyDashboardApp:
             if limit not in WRAPPED_LIMIT_OPTIONS:
                 limit = WRAPPED_LIST_SIZE
 
+            yearStart = nowLocal.replace(year=year, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+            yearEnd = nowLocal.replace(year=year + 1, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+
+            # Genre data is deliberately computed live on every request - never
+            # from the user_wrapped cache below: coverage keeps growing while
+            # the Last.fm backfill runs, and the admin's inherited-genres
+            # toggle changes the numbers retroactively. One GROUP BY per view.
+            genreCoverage = resolveGenreCoverage(db, yearStart, yearEnd)
+            genreUnlocked = genreGatePasses(genreCoverage)
+            topGenres = None
+            if genreUnlocked:
+                topGenres = db.getGenreDistribution(startDate=yearStart, endDate=yearEnd,
+                                                    limit=WRAPPED_TOP_GENRES_LIMIT)
+                if not isinstance(topGenres, dict):
+                    topGenres = {}
+
             # 1. Fetch precalculated cached wrapped stats from database (unless db is a mock)
             from unittest.mock import MagicMock
             is_mock = isinstance(db, MagicMock) or (hasattr(db, "repo") and isinstance(db.repo, MagicMock))
@@ -2390,9 +2406,6 @@ class SpotifyDashboardApp:
                 discoveredAlbums = discoveredAlbums[:limit]
             else:
                 # Dynamic calculations for mocks (unit tests compatibility)
-                yearStart = nowLocal.replace(year=year, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
-                yearEnd = nowLocal.replace(year=year + 1, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
-
                 topSongs = db.getTopSongs(startDate=yearStart, endDate=yearEnd, by="plays", limit=limit)
                 topArtists = db.getTopArtists(startDate=yearStart, endDate=yearEnd, by="plays", limit=limit)
                 topAlbums = db.getTopAlbums(startDate=yearStart, endDate=yearEnd, by="plays", limit=limit)
@@ -2444,6 +2457,9 @@ class SpotifyDashboardApp:
                     res["discoveredAlbumsHtml"] = render_template("_wrapped_list.html", items=discoveredAlbums, section="top_albums", username=username, year=year)
 
                 if update_type == "all":
+                    res["topGenresHtml"] = render_template(
+                        "_wrapped_genres.html", topGenres=topGenres,
+                        genreCoverage=genreCoverage, genreUnlocked=genreUnlocked, year=year)
                     topSongText = (
                         f"{topSongs[0]['name']} - {topSongs[0]['artists'][0]['name']}"
                         if topSongs and topSongs[0].get('artists')
@@ -2498,6 +2514,9 @@ class SpotifyDashboardApp:
                 uniqueArtistsCount=uniqueArtistsCount,
                 discoveredSongsCount=discoveredSongsCount,
                 discoveredArtistsCount=discoveredArtistsCount,
+                topGenres=topGenres,
+                genreCoverage=genreCoverage,
+                genreUnlocked=genreUnlocked,
                 has_api=has_api,
                 is_authenticated=is_authenticated,
                 success=success,
