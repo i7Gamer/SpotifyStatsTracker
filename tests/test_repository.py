@@ -1105,6 +1105,31 @@ class TestStatsAggregates(RepositoryTestCase):
     def test_get_artist_totals_empty_range_returns_zeros(self):
         self.assertEqual(self.repo.getArtistTotals("alice"), (0, 0, 0))
 
+    def test_ranged_play_queries_use_the_time_index(self):
+        """The old static '(? IS NULL OR played_at >= ?)' range clause is
+        non-sargable - SQLite can't use played_at as an index range bound
+        through the OR, so every ranged query walked the user's whole play
+        history. The clause must emit only the bounds that exist, letting
+        the (username, played_at) index prune the scan."""
+        self.repo.upsertTrack(self._track("t1", "alb1", "a1"))
+        self.repo.insertPlay("alice", "t1", 100.0, 1000)
+        self.repo.commit()
+        conn = self.repo._conn()
+
+        params = ["alice"]
+        clause = self.repo._dateRangeClause(params, 50.0, 150.0)
+        plan = "\n".join(row[3] for row in conn.execute(
+            f"EXPLAIN QUERY PLAN SELECT COUNT(*) FROM plays WHERE username = ?{clause}", params))
+
+        self.assertIn("idx_plays_user_time", plan)
+        self.assertIn("played_at", plan)   #< the index is used as a RANGE scan, not just the username prefix
+
+    def test_date_range_clause_emits_no_conditions_for_all_time(self):
+        params = ["alice"]
+        clause = self.repo._dateRangeClause(params, None, None)
+        self.assertEqual(clause, "")
+        self.assertEqual(params, ["alice"])
+
     def test_bucketed_play_totals_sums_within_a_bucket(self):
         self.repo.upsertTrack(self._track("t1", "alb1", "a1"))
         self.repo.insertPlay("alice", "t1", 100.0, 1000)

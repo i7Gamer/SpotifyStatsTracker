@@ -791,19 +791,19 @@ class Database:
     def getExplicitRatio(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> dict:
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
         conn = self.repo._conn()
+        params = [self.user]
+        rangeClause = self.repo._dateRangeClause(params, startTs, endTs, column="p.played_at")
         # Single aggregated row instead of GROUP BY t.explicit: NULL and 0
         # both mean "not explicit" and must land in the same clean count.
-        query = """
+        query = f"""
             SELECT
                 COALESCE(SUM(CASE WHEN t.explicit THEN 1 ELSE 0 END), 0) AS explicit_count,
                 COALESCE(SUM(CASE WHEN t.explicit THEN 0 ELSE 1 END), 0) AS clean_count
             FROM plays p
             JOIN tracks t ON p.track_id = t.id
-            WHERE p.username = ?
-              AND (? IS NULL OR p.played_at >= ?)
-              AND (? IS NULL OR p.played_at < ?)
+            WHERE p.username = ?{rangeClause}
         """
-        row = conn.execute(query, (self.user, startTs, startTs, endTs, endTs)).fetchone()
+        row = conn.execute(query, params).fetchone()
         return {"explicit": row["explicit_count"], "clean": row["clean_count"]}
 
     def getReleaseDecadeDistribution(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> dict:
@@ -816,22 +816,22 @@ class Database:
         # previous year whenever the offset was negative. HAVING drops the
         # NULL decade a timestamp outside strftime's supported year range
         # would produce, matching the old loop's swallow-and-skip.
-        query = """
+        params = [self.user]
+        rangeClause = self.repo._dateRangeClause(params, startTs, endTs, column="p.played_at")
+        query = f"""
             SELECT (CAST(strftime('%Y', al.release_date, 'unixepoch') AS INTEGER) / 10) * 10 AS decade,
                    COUNT(*) AS count
             FROM plays p
             JOIN tracks t ON p.track_id = t.id
             JOIN albums al ON t.album_id = al.id
-            WHERE p.username = ?
-              AND (? IS NULL OR p.played_at >= ?)
-              AND (? IS NULL OR p.played_at < ?)
+            WHERE p.username = ?{rangeClause}
               AND al.release_date IS NOT NULL
               AND al.release_date != 0
             GROUP BY decade
             HAVING decade IS NOT NULL
             ORDER BY decade
         """
-        rows = conn.execute(query, (self.user, startTs, startTs, endTs, endTs)).fetchall()
+        rows = conn.execute(query, params).fetchall()
         return {f"{row['decade']}s": row["count"] for row in rows}
 
     def getCompletionStats(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> dict:
@@ -841,28 +841,27 @@ class Database:
         # distinct (time_played, duration) pair. Unknown (<=0) durations
         # can't distinguish partial from complete, so anything past the skip
         # threshold counts as complete for them.
-        query = """
+        params = [
+            COMPLETION_SKIP_THRESHOLD_MS,
+            COMPLETION_SKIP_THRESHOLD_MS, COMPLETION_COMPLETE_RATIO,
+            COMPLETION_SKIP_THRESHOLD_MS, COMPLETION_COMPLETE_RATIO,
+            self.user,
+        ]
+        rangeClause = self.repo._dateRangeClause(params, startTs, endTs, column="p.played_at")
+        query = f"""
             SELECT
-                COALESCE(SUM(CASE WHEN p.time_played < :skipMs THEN 1 ELSE 0 END), 0) AS skips,
-                COALESCE(SUM(CASE WHEN p.time_played >= :skipMs
-                                   AND (t.duration_ms <= 0 OR p.time_played >= t.duration_ms * :completeRatio)
+                COALESCE(SUM(CASE WHEN p.time_played < ? THEN 1 ELSE 0 END), 0) AS skips,
+                COALESCE(SUM(CASE WHEN p.time_played >= ?
+                                   AND (t.duration_ms <= 0 OR p.time_played >= t.duration_ms * ?)
                                   THEN 1 ELSE 0 END), 0) AS completes,
-                COALESCE(SUM(CASE WHEN p.time_played >= :skipMs
-                                   AND t.duration_ms > 0 AND p.time_played < t.duration_ms * :completeRatio
+                COALESCE(SUM(CASE WHEN p.time_played >= ?
+                                   AND t.duration_ms > 0 AND p.time_played < t.duration_ms * ?
                                   THEN 1 ELSE 0 END), 0) AS partials
             FROM plays p
             JOIN tracks t ON p.track_id = t.id
-            WHERE p.username = :username
-              AND (:startTs IS NULL OR p.played_at >= :startTs)
-              AND (:endTs IS NULL OR p.played_at < :endTs)
+            WHERE p.username = ?{rangeClause}
         """
-        row = conn.execute(query, {
-            "username": self.user,
-            "startTs": startTs,
-            "endTs": endTs,
-            "skipMs": COMPLETION_SKIP_THRESHOLD_MS,
-            "completeRatio": COMPLETION_COMPLETE_RATIO,
-        }).fetchone()
+        row = conn.execute(query, params).fetchone()
         return {"skips": row["skips"], "completes": row["completes"], "partials": row["partials"]}
 
     def getSongsStats(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None,

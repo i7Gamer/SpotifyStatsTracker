@@ -632,27 +632,44 @@ class Repository:
     # the full history) -----------------------------------------------------------
 
     @staticmethod
-    def _dateRangeClause() -> str:
+    def _dateRangeClause(params: list, startTs: float | None, endTs: float | None,
+                          column: str = "played_at") -> str:
         """Half-open [startTs, endTs) range, matching app.py's _getDateRange()
         documented half-open interval - a play landing exactly on endTs
         belongs to the next adjacent range, not this one. (The endTs bound
         used to be inclusive, which double-counted a boundary play into both
         a period and the immediately-following one, e.g. getOverallStats()'s
-        current vs. previous period comparison.)"""
-        return "AND (? IS NULL OR played_at >= ?) AND (? IS NULL OR played_at < ?)"
+        current vs. previous period comparison.)
+
+        Emits only the conditions whose bound exists, appending the bound
+        values to `params` in clause order. The previous static
+        '(? IS NULL OR played_at >= ?)' form was non-sargable: SQLite can't
+        use played_at as an index range bound through the OR, so every
+        ranged query walked the user's whole play history via the username
+        index prefix instead of range-scanning (username, played_at)."""
+        clause = ""
+        if startTs is not None:
+            clause += f" AND {column} >= ?"
+            params.append(startTs)
+        if endTs is not None:
+            clause += f" AND {column} < ?"
+            params.append(endTs)
+        return clause
 
     def getPlayAggregatesByTrack(self, username: str, startTs: float | None = None,
                                   endTs: float | None = None) -> list[dict]:
         conn = self._conn()
+        params = [username]
+        rangeClause = self._dateRangeClause(params, startTs, endTs)
         rows = conn.execute(
             f"""
             SELECT track_id, COUNT(*) AS plays, SUM(time_played) AS total_time_listened,
                    MIN(played_at) AS first_listened_at
             FROM plays
-            WHERE username = ? {self._dateRangeClause()}
+            WHERE username = ?{rangeClause}
             GROUP BY track_id
             """,
-            (username, startTs, startTs, endTs, endTs),
+            params,
         ).fetchall()
         return [
             {"trackId": r["track_id"], "plays": r["plays"], "totalTimeListened": r["total_time_listened"],
@@ -682,7 +699,8 @@ class Repository:
         limitValue = -1 if limit is None else limit
 
         conn = self._conn()
-        params = [username, startTs, startTs, endTs, endTs]
+        params = [username]
+        rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
         extraClauses = ""
         if artistId is not None:
             extraClauses += " AND ar.id = ?"
@@ -699,7 +717,7 @@ class Repository:
             FROM plays p
             JOIN track_artists ta ON ta.track_id = p.track_id
             JOIN artists ar ON ar.id = ta.artist_id
-            WHERE p.username = ? {self._dateRangeClause().replace("played_at", "p.played_at")}{extraClauses}
+            WHERE p.username = ?{rangeClause}{extraClauses}
             GROUP BY ar.id
             ORDER BY {sortColumn} {direction}, total_time_listened {direction}, name COLLATE NOCASE {direction}, id ASC
             LIMIT ? OFFSET ?
@@ -721,7 +739,8 @@ class Repository:
         to getArtistAggregates(), used to compute total page count without
         fetching every artist's metadata."""
         conn = self._conn()
-        params = [username, startTs, startTs, endTs, endTs]
+        params = [username]
+        rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
         searchClause = ""
         if searchQuery:
             searchClause = " AND ar.name LIKE ? ESCAPE '\\'"
@@ -732,7 +751,7 @@ class Repository:
                 SELECT ta.artist_id FROM plays p
                 JOIN track_artists ta ON ta.track_id = p.track_id
                 JOIN artists ar ON ar.id = ta.artist_id
-                WHERE p.username = ? {self._dateRangeClause().replace("played_at", "p.played_at")}{searchClause}
+                WHERE p.username = ?{rangeClause}{searchClause}
                 GROUP BY ta.artist_id
             )
             """,
@@ -750,7 +769,8 @@ class Repository:
         total - matches the totals the old fetch-everything-then-sum-in-Python
         code computed, just without hydrating every artist's name/url first."""
         conn = self._conn()
-        params = [username, startTs, startTs, endTs, endTs]
+        params = [username]
+        rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
         row = conn.execute(
             f"""
             SELECT COALESCE(SUM(plays), 0) AS total_plays,
@@ -761,7 +781,7 @@ class Repository:
                        SUM(p.time_played) AS total_time_listened
                 FROM plays p
                 JOIN track_artists ta ON ta.track_id = p.track_id
-                WHERE p.username = ? {self._dateRangeClause().replace("played_at", "p.played_at")}
+                WHERE p.username = ?{rangeClause}
                 GROUP BY ta.artist_id
             )
             """,
@@ -800,7 +820,8 @@ class Repository:
         limitValue = -1 if limit is None else limit
 
         conn = self._conn()
-        params = [username, startTs, startTs, endTs, endTs]
+        params = [username]
+        rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
         extraClauses = ""
         if trackId is not None:
             extraClauses += " AND t.id = ?"
@@ -839,7 +860,7 @@ class Repository:
             FROM plays p
             JOIN tracks t ON t.id = p.track_id
             LEFT JOIN albums al ON al.id = t.album_id
-            WHERE p.username = ? {self._dateRangeClause().replace("played_at", "p.played_at")}{extraClauses}
+            WHERE p.username = ?{rangeClause}{extraClauses}
             GROUP BY t.id
             ORDER BY {sortColumn} {direction}, total_time_listened {direction}, name COLLATE NOCASE {direction}, track_id ASC
             LIMIT ? OFFSET ?
@@ -859,26 +880,30 @@ class Repository:
         if not searchQuery:
             # No name/artist/album lookup needed, so skip the joins entirely -
             # this stays exactly as cheap as before search support was added.
+            params = [username]
+            rangeClause = self._dateRangeClause(params, startTs, endTs)
             row = conn.execute(
                 f"""
                 SELECT COUNT(*) AS c FROM (
-                    SELECT track_id FROM plays WHERE username = ? {self._dateRangeClause()}
+                    SELECT track_id FROM plays WHERE username = ?{rangeClause}
                     GROUP BY track_id
                 )
                 """,
-                (username, startTs, startTs, endTs, endTs),
+                params,
             ).fetchone()
             return row["c"]
 
         pattern = self._likePattern(searchQuery)
-        params = [username, startTs, startTs, endTs, endTs, pattern, pattern, pattern]
+        params = [username]
+        rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
+        params += [pattern, pattern, pattern]
         row = conn.execute(
             f"""
             SELECT COUNT(*) AS c FROM (
                 SELECT p.track_id FROM plays p
                 JOIN tracks t ON t.id = p.track_id
                 LEFT JOIN albums al ON al.id = t.album_id
-                WHERE p.username = ? {self._dateRangeClause().replace("played_at", "p.played_at")}
+                WHERE p.username = ?{rangeClause}
                 AND (
                     t.name LIKE ? ESCAPE '\\'
                     OR al.name LIKE ? ESCAPE '\\'
@@ -918,7 +943,8 @@ class Repository:
         limitValue = -1 if limit is None else limit
 
         conn = self._conn()
-        params = [username, startTs, startTs, endTs, endTs]
+        params = [username]
+        rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
         extraClauses = ""
         if albumId is not None:
             extraClauses += " AND al.id = ?"
@@ -947,7 +973,7 @@ class Repository:
             FROM plays p
             JOIN tracks t ON t.id = p.track_id
             JOIN albums al ON al.id = t.album_id
-            WHERE p.username = ? {self._dateRangeClause().replace("played_at", "p.played_at")}{extraClauses}
+            WHERE p.username = ?{rangeClause}{extraClauses}
             GROUP BY al.id
             ORDER BY {sortColumn} {direction}, total_time_listened {direction}, name COLLATE NOCASE {direction}, album_id ASC
             LIMIT ? OFFSET ?
@@ -967,28 +993,32 @@ class Repository:
         if not searchQuery:
             # No name/artist lookup needed, so skip the joins entirely - stays
             # exactly as cheap as before search support was added.
+            params = [username]
+            rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
             row = conn.execute(
                 f"""
                 SELECT COUNT(*) AS c FROM (
                     SELECT t.album_id FROM plays p
                     JOIN tracks t ON t.id = p.track_id
-                    WHERE p.username = ? {self._dateRangeClause().replace("played_at", "p.played_at")}
+                    WHERE p.username = ?{rangeClause}
                     GROUP BY t.album_id
                 )
                 """,
-                (username, startTs, startTs, endTs, endTs),
+                params,
             ).fetchone()
             return row["c"]
 
         pattern = self._likePattern(searchQuery)
-        params = [username, startTs, startTs, endTs, endTs, pattern, pattern]
+        params = [username]
+        rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
+        params += [pattern, pattern]
         row = conn.execute(
             f"""
             SELECT COUNT(*) AS c FROM (
                 SELECT t.album_id FROM plays p
                 JOIN tracks t ON t.id = p.track_id
                 JOIN albums al ON al.id = t.album_id
-                WHERE p.username = ? {self._dateRangeClause().replace("played_at", "p.played_at")}
+                WHERE p.username = ?{rangeClause}
                 AND (
                     al.name LIKE ? ESCAPE '\\'
                     OR EXISTS (
@@ -1138,7 +1168,8 @@ class Repository:
         reused by the song/artist/album detail pages' "play history over
         time" chart and heatmap."""
         conn = self._conn()
-        params = [username, startTs, startTs, endTs, endTs]
+        params = [username]
+        rangeClause = self._dateRangeClause(params, startTs, endTs)
         extraClauses = self._itemFilterClauses(params, trackId, artistId, albumId)
 
         rows = conn.execute(
@@ -1146,7 +1177,7 @@ class Repository:
             SELECT CAST(played_at / {PLAY_BUCKET_SECONDS} AS INTEGER) AS bucket,
                    COUNT(*) AS plays,
                    COALESCE(SUM(time_played), 0) AS total_time
-            FROM plays WHERE username = ? {self._dateRangeClause()}{extraClauses}
+            FROM plays WHERE username = ?{rangeClause}{extraClauses}
             GROUP BY bucket
             ORDER BY bucket
             """,
@@ -1165,6 +1196,8 @@ class Repository:
         the Python aggregation this replaces: same-named artists merge either
         way. Ordered by bucket so callers iterate in play-time order."""
         conn = self._conn()
+        params = [username]
+        rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
         rows = conn.execute(
             f"""
             SELECT CAST(p.played_at / {PLAY_BUCKET_SECONDS} AS INTEGER) AS bucket,
@@ -1173,11 +1206,11 @@ class Repository:
             FROM plays p
             JOIN track_artists ta ON ta.track_id = p.track_id
             JOIN artists ar ON ar.id = ta.artist_id
-            WHERE p.username = ? {self._dateRangeClause().replace("played_at", "p.played_at")}
+            WHERE p.username = ?{rangeClause}
             GROUP BY bucket, ar.name
             ORDER BY bucket, ar.name
             """,
-            (username, startTs, startTs, endTs, endTs),
+            params,
         ).fetchall()
         return [{"bucketStartTs": r["bucket"] * PLAY_BUCKET_SECONDS,
                  "artistName": r["artist_name"],
@@ -1186,10 +1219,12 @@ class Repository:
     def getPlayTotals(self, username: str, startTs: float | None = None,
                        endTs: float | None = None) -> tuple[int, int]:
         conn = self._conn()
+        params = [username]
+        rangeClause = self._dateRangeClause(params, startTs, endTs)
         row = conn.execute(
             f"SELECT COUNT(*) AS c, COALESCE(SUM(time_played), 0) AS total FROM plays "
-            f"WHERE username = ? {self._dateRangeClause()}",
-            (username, startTs, startTs, endTs, endTs),
+            f"WHERE username = ?{rangeClause}",
+            params,
         ).fetchone()
         return row["c"], row["total"]
 
