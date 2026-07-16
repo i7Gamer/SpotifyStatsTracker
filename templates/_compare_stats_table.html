@@ -1,80 +1,63 @@
 {% from '_compare_macros.html' import detailCell, spotifyCell %}
 {# The leader's ▲ + hidden "(higher)" keep the signal readable without
    color (color-blind users, screen readers). `side` is 'mine'/'theirs' so
-   the leading cell colors in its own column's identity color. #}
+   the leading cell colors in its own row's identity color. #}
 {% macro leaderCell(value, isLeader, side) -%}
 <td class="value{{ ' leader leader-' ~ side if isLeader else '' }}">{{ value }}{% if isLeader %} <span class="leader-marker" aria-hidden="true">▲</span><span class="visually-hidden">(higher)</span>{% endif %}</td>
 {%- endmacro %}
-<table class="status-table compare-table">
+{# Transposed layout: stats run across as COLUMNS with one row per user - a
+   head-to-head scoreboard that fits since the page widened to 1600px. The
+   enclosing card scrolls horizontally on narrower screens. #}
+<table class="status-table compare-table compare-table-columns">
   <thead>
     <tr>
-      <th>Stat</th>
-      <th class="value"><span class="compare-user-mine compare-user-label js-my-username">{{ username }}</span></th>
-      <th class="value"><span class="compare-user-theirs compare-user-label js-with-username">{{ withUsername }}</span></th>
+      <th>User</th>
+      <th class="value">Plays</th>
+      <th class="value">Time Listened</th>
+      <th class="value">Unique Songs</th>
+      <th class="value">Unique Artists</th>
+      <th class="value">Avg. per Play</th>
+      <th class="value">Skip Rate</th>
+      <th class="value">Explicit</th>
+      <th class="value">Peak Hour</th>
+      <th class="value">Top Day</th>
+      <th class="value">Top Song</th>
+      <th class="value">Top Artist</th>
+      <th class="value">Top Album</th>
     </tr>
   </thead>
   <tbody>
     <tr>
-      <td>Total Plays</td>
+      <td><span class="compare-user-mine compare-user-label js-my-username">{{ username }}</span></td>
       {{ leaderCell("{:,}".format(my.totalPlays), my.totalPlays > their.totalPlays, 'mine') }}
-      {{ leaderCell("{:,}".format(their.totalPlays), their.totalPlays > my.totalPlays, 'theirs') }}
-    </tr>
-    <tr>
-      <td>Total Time Listened</td>
       {{ leaderCell(my.totalTimeText, my.totalMs > their.totalMs, 'mine') }}
-      {{ leaderCell(their.totalTimeText, their.totalMs > my.totalMs, 'theirs') }}
-    </tr>
-    <tr>
-      <td>Unique Songs</td>
       {{ leaderCell("{:,}".format(my.uniqueSongs), my.uniqueSongs > their.uniqueSongs, 'mine') }}
-      {{ leaderCell("{:,}".format(their.uniqueSongs), their.uniqueSongs > my.uniqueSongs, 'theirs') }}
-    </tr>
-    <tr>
-      <td>Unique Artists</td>
       {{ leaderCell("{:,}".format(my.uniqueArtists), my.uniqueArtists > their.uniqueArtists, 'mine') }}
-      {{ leaderCell("{:,}".format(their.uniqueArtists), their.uniqueArtists > my.uniqueArtists, 'theirs') }}
-    </tr>
-    <tr>
-      <td>Avg. Listen per Play</td>
       <td class="value">{{ my.avgPlayTimeText }}</td>
-      <td class="value">{{ their.avgPlayTimeText }}</td>
-    </tr>
-    <tr>
-      <td>Skip Rate</td>
       <td class="value">{{ my.skipRateText }}</td>
-      <td class="value">{{ their.skipRateText }}</td>
-    </tr>
-    <tr>
-      <td>Explicit Share</td>
       <td class="value">{{ my.explicitShareText }}</td>
-      <td class="value">{{ their.explicitShareText }}</td>
-    </tr>
-    <tr>
-      <td>Peak Listening Hour</td>
       <td class="value">{{ my.peakHourText }}</td>
-      <td class="value">{{ their.peakHourText }}</td>
-    </tr>
-    <tr>
-      <td>Most Active Day</td>
       <td class="value">{{ my.peakDayText }}</td>
+      {# Summary entries come from the same lists rendered below, so the
+         summary cells and the lists can never disagree on the #1 entry. #}
+      <td class="value top-item">{{ detailCell(my.topSongs[0] if my.topSongs else none, 'songDetailPage', 'track_id') }}</td>
+      <td class="value top-item">{{ detailCell(my.topArtists[0] if my.topArtists else none, 'artistDetailPage', 'artist_id') }}</td>
+      <td class="value top-item">{{ detailCell(my.topAlbums[0] if my.topAlbums else none, 'albumDetailPage', 'album_id') }}</td>
+    </tr>
+    <tr>
+      <td><span class="compare-user-theirs compare-user-label js-with-username">{{ withUsername }}</span></td>
+      {{ leaderCell("{:,}".format(their.totalPlays), their.totalPlays > my.totalPlays, 'theirs') }}
+      {{ leaderCell(their.totalTimeText, their.totalMs > my.totalMs, 'theirs') }}
+      {{ leaderCell("{:,}".format(their.uniqueSongs), their.uniqueSongs > my.uniqueSongs, 'theirs') }}
+      {{ leaderCell("{:,}".format(their.uniqueArtists), their.uniqueArtists > my.uniqueArtists, 'theirs') }}
+      <td class="value">{{ their.avgPlayTimeText }}</td>
+      <td class="value">{{ their.skipRateText }}</td>
+      <td class="value">{{ their.explicitShareText }}</td>
+      <td class="value">{{ their.peakHourText }}</td>
       <td class="value">{{ their.peakDayText }}</td>
-    </tr>
-    {# Summary entries come from the same lists rendered below, so the
-       summary row and the lists can never disagree on the #1 entry. #}
-    <tr>
-      <td>Top Song</td>
-      <td class="value">{{ detailCell(my.topSongs[0] if my.topSongs else none, 'songDetailPage', 'track_id') }}</td>
-      <td class="value">{{ spotifyCell(their.topSongs[0] if their.topSongs else none) }}</td>
-    </tr>
-    <tr>
-      <td>Top Artist</td>
-      <td class="value">{{ detailCell(my.topArtists[0] if my.topArtists else none, 'artistDetailPage', 'artist_id') }}</td>
-      <td class="value">{{ spotifyCell(their.topArtists[0] if their.topArtists else none) }}</td>
-    </tr>
-    <tr>
-      <td>Top Album</td>
-      <td class="value">{{ detailCell(my.topAlbums[0] if my.topAlbums else none, 'albumDetailPage', 'album_id') }}</td>
-      <td class="value">{{ spotifyCell(their.topAlbums[0] if their.topAlbums else none) }}</td>
+      <td class="value top-item">{{ spotifyCell(their.topSongs[0] if their.topSongs else none) }}</td>
+      <td class="value top-item">{{ spotifyCell(their.topArtists[0] if their.topArtists else none) }}</td>
+      <td class="value top-item">{{ spotifyCell(their.topAlbums[0] if their.topAlbums else none) }}</td>
     </tr>
   </tbody>
 </table>

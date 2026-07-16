@@ -207,7 +207,7 @@ button {
 }
 
 .page {
-  width: min(1200px, 100%);
+  width: min(1600px, 100%);
   margin: 0 auto;
   padding: 24px 16px 40px;
 }
@@ -955,9 +955,33 @@ progress::-moz-progress-bar {
   font-weight: 600;
 }
 
-/* The side with the larger count/time of a head-to-head row, tinted in that
-   COLUMN's identity color (one shared leader color broke the you-vs-them
-   mapping whenever the counterpart led a row). The ▲ marker (plus
+/* Transposed variant: stats run across as columns with one row per user
+   (fits since .page widened to 1600px). Headers shrink and may wrap onto
+   two lines; value cells keep their numbers on one line; top song/artist/
+   album names ellipsize so one long title can't blow a column apart. The
+   enclosing card scrolls horizontally on narrower screens. */
+.compare-table-columns thead tr {
+  font-size: 0.78rem;
+}
+
+.compare-table-columns th,
+.compare-table-columns td {
+  padding: 12px 10px;
+}
+
+.compare-table-columns td.value {
+  white-space: nowrap;
+}
+
+.compare-table-columns td.top-item {
+  max-width: 170px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The side with the larger count/time of a head-to-head stat, tinted in that
+   USER's identity color (one shared leader color broke the you-vs-them
+   mapping whenever the counterpart led a stat). The ▲ marker (plus
    visually-hidden text) carries the signal for color-blind users and
    screen readers - color alone isn't enough. */
 .compare-table td.value.leader-mine {
