@@ -735,6 +735,8 @@
   }
 
   window.renderTimeSeriesChart = renderTimeSeriesChart;
+  // The Compare page re-renders the mirror chart after AJAX filter swaps.
+  window.renderComparisonMirror = renderComparisonMirror;
 
   renderAllCharts();
 

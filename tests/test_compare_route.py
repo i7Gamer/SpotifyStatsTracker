@@ -542,6 +542,44 @@ class TestCompareRoute(unittest.TestCase):
 
         self.assertEqual(self.dbs["alice"].getListeningTimeSeries.call_args.kwargs["groupBy"], "day")
 
+    def test_ajax_returns_partial_chunks_not_a_full_page(self):
+        """The filter controls swap regions in place via ?ajax=true, mirroring
+        the Wrapped page's fade-and-swap pattern."""
+        self._accept("alice", "bob")
+        self.dbs["alice"].getTopSongs.return_value = [_song("s1", "MyAjaxSong")]
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare?ajax=true")
+
+        data = resp.get_json()
+        for key in ("withUsername", "statsTableHtml", "similaritiesHtml", "sharedArtistsHtml",
+                    "myTopSongsHtml", "theirTopSongsHtml", "myTopArtistsHtml",
+                    "theirTopArtistsHtml", "myTopAlbumsHtml", "theirTopAlbumsHtml",
+                    "comparisonTrend"):
+            self.assertIn(key, data)
+        self.assertEqual(data["withUsername"], "bob")
+        self.assertIn("MyAjaxSong", data["myTopSongsHtml"])
+        self.assertIn("compare-table", data["statsTableHtml"])
+        self.assertNotIn("<html", data["statsTableHtml"].lower())   #< chunks, not a page
+
+    def test_ajax_counterpart_lists_stay_unlinked_from_detail_pages(self):
+        self._accept("alice", "bob")
+        self.dbs["bob"].getTopSongs.return_value = [_song("their-song-1", "TheirSong")]
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare?ajax=true")
+
+        data = resp.get_json()
+        self.assertIn("TheirSong", data["theirTopSongsHtml"])
+        self.assertNotIn("/song/their-song-1", data["theirTopSongsHtml"])
+
+    def test_ajax_requires_an_accepted_share_like_the_full_page(self):
+        client = self._loginAs("alice")   #< no accepted shares
+
+        resp = client.get("/compare?ajax=true")
+
+        self.assertEqual(resp.status_code, 404)
+
     def test_share_status_is_computed_once_per_request(self):
         """One request can render several templates (the Wrapped AJAX endpoint
         renders six partials) and every render re-runs all context processors -

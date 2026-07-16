@@ -1,0 +1,15 @@
+{# Own items link to the viewer's detail pages; counterpart items can't
+   (detail pages resolve against the VIEWER's data - see _track_card.html),
+   so they link to Spotify instead, and only when a real URL exists
+   (fabricated ids for removed tracks carry an empty url). #}
+{% macro detailCell(item, endpoint, idKey) -%}
+  {%- if item -%}
+    <a class="compare-cell-link" href="{{ url_for(endpoint, **{idKey: item.id}) }}">{{ item.name }}</a>
+  {%- else -%}—{%- endif -%}
+{%- endmacro %}
+
+{% macro spotifyCell(item) -%}
+  {%- if item and item.url -%}
+    <a class="compare-cell-link" href="{{ item.url }}" target="_blank" rel="noreferrer noopener">{{ item.name }} ↗</a>
+  {%- elif item -%}{{ item.name }}{%- else -%}—{%- endif -%}
+{%- endmacro %}

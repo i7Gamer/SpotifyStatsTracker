@@ -1,25 +1,9 @@
 {% extends "layout.html" %}
 {% block content %}
 
-{# Own items link to the viewer's detail pages; counterpart items can't
-   (detail pages resolve against the VIEWER's data - see _track_card.html),
-   so they link to Spotify instead, and only when a real URL exists
-   (fabricated ids for removed tracks carry an empty url). #}
-{% macro detailCell(item, endpoint, idKey) -%}
-  {%- if item -%}
-    <a class="compare-cell-link" href="{{ url_for(endpoint, **{idKey: item.id}) }}">{{ item.name }}</a>
-  {%- else -%}—{%- endif -%}
-{%- endmacro %}
-
-{% macro spotifyCell(item) -%}
-  {%- if item and item.url -%}
-    <a class="compare-cell-link" href="{{ item.url }}" target="_blank" rel="noreferrer noopener">{{ item.name }} ↗</a>
-  {%- elif item -%}{{ item.name }}{%- else -%}—{%- endif -%}
-{%- endmacro %}
-
 <section class="hero">
   <div class="hero-content">
-    <h1>Compare with {{ withUsername }}</h1>
+    <h1>Compare with <span class="js-with-username">{{ withUsername }}</span></h1>
     <p>See how your listening stats stack up against someone who shares their data with you.</p>
   </div>
 </section>
@@ -56,114 +40,11 @@
   </div>
 </section>
 
-<script>
-  function updateCompareIntervalFilter() {
-    const interval = document.getElementById('interval').value;
-    const customDates = document.getElementById('compareCustomDates');
-
-    if (interval === 'custom') {
-      customDates.style.display = 'flex';
-      return;
-    }
-
-    customDates.style.display = 'none';
-    const params = new URLSearchParams(window.location.search);
-    params.set('interval', interval);
-    params.delete('startDate');
-    params.delete('endDate');
-    window.location = window.location.pathname + '?' + params.toString();
-  }
-
-  function updateCompareDateFilter() {
-    const startDate = document.getElementById('startDate').value;
-    const endDate = document.getElementById('endDate').value;
-    if (!startDate || !endDate) {
-      return;
-    }
-
-    const params = new URLSearchParams(window.location.search);
-    params.set('interval', 'custom');
-    params.set('startDate', startDate);
-    params.set('endDate', endDate);
-    window.location = window.location.pathname + '?' + params.toString();
-  }
-</script>
-
 <section class="card" style="margin: 1.5rem 0; overflow-x: auto;">
   <div style="padding: 1.5rem;">
-    <table class="status-table compare-table">
-      <thead>
-        <tr>
-          <th>Stat</th>
-          <th class="value">{{ username }}</th>
-          <th class="value">{{ withUsername }}</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td>Total Plays</td>
-          <td class="value{{ ' leader' if my.totalPlays > their.totalPlays else '' }}">{{ "{:,}".format(my.totalPlays) }}</td>
-          <td class="value{{ ' leader' if their.totalPlays > my.totalPlays else '' }}">{{ "{:,}".format(their.totalPlays) }}</td>
-        </tr>
-        <tr>
-          <td>Total Time Listened</td>
-          <td class="value{{ ' leader' if my.totalMs > their.totalMs else '' }}">{{ my.totalTimeText }}</td>
-          <td class="value{{ ' leader' if their.totalMs > my.totalMs else '' }}">{{ their.totalTimeText }}</td>
-        </tr>
-        <tr>
-          <td>Unique Songs</td>
-          <td class="value{{ ' leader' if my.uniqueSongs > their.uniqueSongs else '' }}">{{ "{:,}".format(my.uniqueSongs) }}</td>
-          <td class="value{{ ' leader' if their.uniqueSongs > my.uniqueSongs else '' }}">{{ "{:,}".format(their.uniqueSongs) }}</td>
-        </tr>
-        <tr>
-          <td>Unique Artists</td>
-          <td class="value{{ ' leader' if my.uniqueArtists > their.uniqueArtists else '' }}">{{ "{:,}".format(my.uniqueArtists) }}</td>
-          <td class="value{{ ' leader' if their.uniqueArtists > my.uniqueArtists else '' }}">{{ "{:,}".format(their.uniqueArtists) }}</td>
-        </tr>
-        <tr>
-          <td>Avg. Listen per Play</td>
-          <td class="value">{{ my.avgPlayTimeText }}</td>
-          <td class="value">{{ their.avgPlayTimeText }}</td>
-        </tr>
-        <tr>
-          <td>Skip Rate</td>
-          <td class="value">{{ my.skipRateText }}</td>
-          <td class="value">{{ their.skipRateText }}</td>
-        </tr>
-        <tr>
-          <td>Explicit Share</td>
-          <td class="value">{{ my.explicitShareText }}</td>
-          <td class="value">{{ their.explicitShareText }}</td>
-        </tr>
-        <tr>
-          <td>Peak Listening Hour</td>
-          <td class="value">{{ my.peakHourText }}</td>
-          <td class="value">{{ their.peakHourText }}</td>
-        </tr>
-        <tr>
-          <td>Most Active Day</td>
-          <td class="value">{{ my.peakDayText }}</td>
-          <td class="value">{{ their.peakDayText }}</td>
-        </tr>
-        {# Summary entries come from the same lists rendered below, so the
-           summary row and the lists can never disagree on the #1 entry. #}
-        <tr>
-          <td>Top Song</td>
-          <td class="value">{{ detailCell(my.topSongs[0] if my.topSongs else none, 'songDetailPage', 'track_id') }}</td>
-          <td class="value">{{ spotifyCell(their.topSongs[0] if their.topSongs else none) }}</td>
-        </tr>
-        <tr>
-          <td>Top Artist</td>
-          <td class="value">{{ detailCell(my.topArtists[0] if my.topArtists else none, 'artistDetailPage', 'artist_id') }}</td>
-          <td class="value">{{ spotifyCell(their.topArtists[0] if their.topArtists else none) }}</td>
-        </tr>
-        <tr>
-          <td>Top Album</td>
-          <td class="value">{{ detailCell(my.topAlbums[0] if my.topAlbums else none, 'albumDetailPage', 'album_id') }}</td>
-          <td class="value">{{ spotifyCell(their.topAlbums[0] if their.topAlbums else none) }}</td>
-        </tr>
-      </tbody>
-    </table>
+    <div id="compareStatsTable">
+      {% include '_compare_stats_table.html' %}
+    </div>
   </div>
 </section>
 
@@ -183,7 +64,7 @@
 {% set compareWith = withUsername %}
 <section style="margin-bottom: 2.5rem;">
   <h2>You Both Love</h2>
-  <div class="track-list">
+  <div class="track-list" id="sharedArtistsList">
     {% set items = sharedArtists %}
     {% set emptyMessage = 'No shared top artists in this period yet.' %}
     {% include '_wrapped_list.html' %}
@@ -191,24 +72,8 @@
 </section>
 {% set compareWith = none %}
 
-{# Similarity cells run over the 100-deep pools, so they can surface a
-   common favorite neither displayed top ten shows. #}
-<section class="track-summary-grid-3 compare-similarities">
-  <article class="track-summary-card">
-    <h3>Common Top Artist</h3>
-    <p class="summary-value">{{ detailCell(similarities.commonTopArtist, 'artistDetailPage', 'artist_id') }}</p>
-    <span class="summary-subtitle">{{ similarities.sharedArtistCount }} shared in your top {{ similarities.poolSize }}s</span>
-  </article>
-  <article class="track-summary-card">
-    <h3>Common Top Song</h3>
-    <p class="summary-value">{{ detailCell(similarities.commonTopSong, 'songDetailPage', 'track_id') }}</p>
-    <span class="summary-subtitle">{{ similarities.sharedSongCount }} shared in your top {{ similarities.poolSize }}s</span>
-  </article>
-  <article class="track-summary-card">
-    <h3>Common Top Album</h3>
-    <p class="summary-value">{{ detailCell(similarities.commonTopAlbum, 'albumDetailPage', 'album_id') }}</p>
-    <span class="summary-subtitle">{{ similarities.sharedAlbumCount }} shared in your top {{ similarities.poolSize }}s</span>
-  </article>
+<section class="track-summary-grid-3 compare-similarities" id="compareSimilarities">
+  {% include '_compare_similarities.html' %}
 </section>
 
 <nav class="wrapped-stats-filters" aria-label="Filter comparison categories">
@@ -224,16 +89,16 @@
 <div data-category="top-songs">
   <section class="compare-columns">
     <div>
-      <h2>{{ username }}'s Top Songs</h2>
-      <div class="track-list">
+      <h2><span class="js-my-username">{{ username }}</span>'s Top Songs</h2>
+      <div class="track-list" id="myTopSongsList">
         {% set suppressDetailLinks = false %}
         {% set items = my.topSongs %}
         {% include '_wrapped_list.html' %}
       </div>
     </div>
     <div>
-      <h2>{{ withUsername }}'s Top Songs</h2>
-      <div class="track-list">
+      <h2><span class="js-with-username">{{ withUsername }}</span>'s Top Songs</h2>
+      <div class="track-list" id="theirTopSongsList">
         {% set suppressDetailLinks = true %}
         {% set items = their.topSongs %}
         {% include '_wrapped_list.html' %}
@@ -246,16 +111,16 @@
 <div data-category="top-artists">
   <section class="compare-columns">
     <div>
-      <h2>{{ username }}'s Top Artists</h2>
-      <div class="track-list">
+      <h2><span class="js-my-username">{{ username }}</span>'s Top Artists</h2>
+      <div class="track-list" id="myTopArtistsList">
         {% set suppressDetailLinks = false %}
         {% set items = my.topArtists %}
         {% include '_wrapped_list.html' %}
       </div>
     </div>
     <div>
-      <h2>{{ withUsername }}'s Top Artists</h2>
-      <div class="track-list">
+      <h2><span class="js-with-username">{{ withUsername }}</span>'s Top Artists</h2>
+      <div class="track-list" id="theirTopArtistsList">
         {% set suppressDetailLinks = true %}
         {% set items = their.topArtists %}
         {% include '_wrapped_list.html' %}
@@ -268,16 +133,16 @@
 <div data-category="top-albums">
   <section class="compare-columns">
     <div>
-      <h2>{{ username }}'s Top Albums</h2>
-      <div class="track-list">
+      <h2><span class="js-my-username">{{ username }}</span>'s Top Albums</h2>
+      <div class="track-list" id="myTopAlbumsList">
         {% set suppressDetailLinks = false %}
         {% set items = my.topAlbums %}
         {% include '_wrapped_list.html' %}
       </div>
     </div>
     <div>
-      <h2>{{ withUsername }}'s Top Albums</h2>
-      <div class="track-list">
+      <h2><span class="js-with-username">{{ withUsername }}</span>'s Top Albums</h2>
+      <div class="track-list" id="theirTopAlbumsList">
         {% set suppressDetailLinks = true %}
         {% set items = their.topAlbums %}
         {% include '_wrapped_list.html' %}
@@ -290,8 +155,133 @@
   window.__chartData = window.__chartData || {};
   window.__chartData.comparisonTrend = {{ comparisonTrend | tojson }};
 
-  // Category filter badges - same show/hide + staggered fade-in pattern as
-  // the Wrapped page ([data-category].visible in style.css).
+  // ---- AJAX filter updates: interval/date/user switches swap the dynamic
+  // regions in place (same fade-and-swap pattern as the Wrapped page)
+  // instead of a full page reload. ----
+  const COMPARE_FADE_MS = 200;
+
+  function compareSwapTargets() {
+    return [
+      document.getElementById('compareStatsTable'),
+      document.querySelector('.chart-canvas-wrap'),
+      document.getElementById('compareSimilarities'),
+      document.getElementById('sharedArtistsList'),
+      ...document.querySelectorAll('[data-category] .track-list'),
+    ].filter(Boolean);
+  }
+
+  function loadCompareData() {
+    const targets = compareSwapTargets();
+    targets.forEach(t => t.classList.add('loading-fade'));
+
+    const params = new URLSearchParams(window.location.search);
+    params.set('ajax', 'true');
+    const delay = new Promise(resolve => setTimeout(resolve, COMPARE_FADE_MS));
+    const fetched = fetch(window.location.pathname + '?' + params.toString())
+      .then(response => response.json());
+
+    Promise.all([fetched, delay])
+      .then(([data]) => {
+        document.getElementById('compareStatsTable').innerHTML = data.statsTableHtml;
+        document.getElementById('compareSimilarities').innerHTML = data.similaritiesHtml;
+        document.getElementById('sharedArtistsList').innerHTML = data.sharedArtistsHtml;
+        document.getElementById('myTopSongsList').innerHTML = data.myTopSongsHtml;
+        document.getElementById('theirTopSongsList').innerHTML = data.theirTopSongsHtml;
+        document.getElementById('myTopArtistsList').innerHTML = data.myTopArtistsHtml;
+        document.getElementById('theirTopArtistsList').innerHTML = data.theirTopArtistsHtml;
+        document.getElementById('myTopAlbumsList').innerHTML = data.myTopAlbumsHtml;
+        document.getElementById('theirTopAlbumsList').innerHTML = data.theirTopAlbumsHtml;
+
+        document.querySelectorAll('.js-with-username').forEach(el => el.textContent = data.withUsername);
+
+        window.__chartData.comparisonTrend = data.comparisonTrend;
+        if (window.renderComparisonMirror) {
+          window.renderComparisonMirror();
+        }
+
+        // smooth cover-art fade-ins for the freshly injected cards
+        document.querySelectorAll('img.track-cover').forEach(img => {
+          if (img.complete) {
+            img.classList.add('loaded');
+          } else {
+            img.addEventListener('load', () => img.classList.add('loaded'));
+          }
+        });
+      })
+      .catch(err => console.error(err))
+      .finally(() => targets.forEach(t => t.classList.remove('loading-fade')));
+  }
+
+  function pushCompareUrl(mutate) {
+    const params = new URLSearchParams(window.location.search);
+    mutate(params);
+    params.delete('ajax');
+    const query = params.toString();
+    window.history.pushState({}, '', window.location.pathname + (query ? '?' + query : ''));
+  }
+
+  function updateCompareIntervalFilter() {
+    const interval = document.getElementById('interval').value;
+    const customDates = document.getElementById('compareCustomDates');
+
+    if (interval === 'custom') {
+      customDates.style.display = 'flex';
+      return;
+    }
+
+    customDates.style.display = 'none';
+    pushCompareUrl(params => {
+      params.set('interval', interval);
+      params.delete('startDate');
+      params.delete('endDate');
+    });
+    loadCompareData();
+  }
+
+  function updateCompareDateFilter() {
+    const startDate = document.getElementById('startDate').value;
+    const endDate = document.getElementById('endDate').value;
+    if (!startDate || !endDate) {
+      return;
+    }
+
+    pushCompareUrl(params => {
+      params.set('interval', 'custom');
+      params.set('startDate', startDate);
+      params.set('endDate', endDate);
+    });
+    loadCompareData();
+  }
+
+  document.querySelectorAll('.wrapped-year-badge').forEach(badge => {
+    badge.addEventListener('click', function (e) {
+      e.preventDefault();
+      const withUser = new URL(this.href).searchParams.get('with');
+      document.querySelectorAll('.wrapped-year-badge').forEach(b => b.classList.remove('active'));
+      this.classList.add('active');
+      pushCompareUrl(params => params.set('with', withUser));
+      loadCompareData();
+    });
+  });
+
+  window.addEventListener('popstate', function () {
+    const params = new URLSearchParams(window.location.search);
+    const interval = params.get('interval') || '';
+    document.getElementById('interval').value = (params.get('startDate') && params.get('endDate')) ? 'custom' : interval;
+    document.getElementById('startDate').value = params.get('startDate') || '';
+    document.getElementById('endDate').value = params.get('endDate') || '';
+    document.getElementById('compareCustomDates').style.display =
+      (params.get('startDate') && params.get('endDate')) ? 'flex' : 'none';
+    const withUser = params.get('with');
+    document.querySelectorAll('.wrapped-year-badge').forEach(badge => {
+      const badgeUser = new URL(badge.href).searchParams.get('with');
+      badge.classList.toggle('active', withUser !== null && badgeUser === withUser);
+    });
+    loadCompareData();
+  });
+
+  // ---- Category filter badges - same show/hide + staggered fade-in pattern
+  // as the Wrapped page ([data-category].visible in style.css). ----
   const compareFilterButtons = document.querySelectorAll('.stats-filter-button');
   const compareCategoryDivs = document.querySelectorAll('[data-category]');
 

@@ -792,6 +792,20 @@ progress::-moz-progress-bar {
   margin-bottom: 2.5rem;
 }
 
+/* AJAX partial-update fade: regions being swapped dim out, new content
+   fades back in (mirrors the Wrapped page's loading treatment). */
+.loading-fade {
+  opacity: 0.15 !important;
+  pointer-events: none;
+}
+
+#compareStatsTable,
+.compare-similarities,
+.chart-canvas-wrap,
+.track-list {
+  transition: opacity 0.2s ease-in-out;
+}
+
 /* Compare page's head-to-head stats table (replaces per-row inline styles
    so the last row can drop its bottom border). */
 .compare-table {

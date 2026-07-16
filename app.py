@@ -2101,6 +2101,41 @@ class SpotifyDashboardApp:
                 ],
             }
 
+            if request.args.get("ajax") == "true":
+                # Same fade-and-swap partial updates as the Wrapped page: the
+                # filter controls fetch these chunks and swap them in place
+                # instead of a full page reload.
+                emptyMessage = "No plays in this period."
+                listArgs = dict(username=username, compareWith=withUsername, emptyMessage=emptyMessage)
+                return jsonify({
+                    "withUsername": withUsername,
+                    "statsTableHtml": render_template(
+                        "_compare_stats_table.html", my=my, their=their,
+                        username=username, withUsername=withUsername),
+                    "similaritiesHtml": render_template(
+                        "_compare_similarities.html", similarities=similarities),
+                    "sharedArtistsHtml": render_template(
+                        "_wrapped_list.html", items=sharedArtists, section="top_artists",
+                        username=username, compareWith=withUsername,
+                        emptyMessage="No shared top artists in this period yet."),
+                    "myTopSongsHtml": render_template(
+                        "_wrapped_list.html", items=my["topSongs"], section="top_songs", **listArgs),
+                    "theirTopSongsHtml": render_template(
+                        "_wrapped_list.html", items=their["topSongs"], section="top_songs",
+                        suppressDetailLinks=True, **listArgs),
+                    "myTopArtistsHtml": render_template(
+                        "_wrapped_list.html", items=my["topArtists"], section="top_artists", **listArgs),
+                    "theirTopArtistsHtml": render_template(
+                        "_wrapped_list.html", items=their["topArtists"], section="top_artists",
+                        suppressDetailLinks=True, **listArgs),
+                    "myTopAlbumsHtml": render_template(
+                        "_wrapped_list.html", items=my["topAlbums"], section="top_albums", **listArgs),
+                    "theirTopAlbumsHtml": render_template(
+                        "_wrapped_list.html", items=their["topAlbums"], section="top_albums",
+                        suppressDetailLinks=True, **listArgs),
+                    "comparisonTrend": comparisonTrend,
+                })
+
             return render_template(
                 "compare.html",
                 section="compare",
