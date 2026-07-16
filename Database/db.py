@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS artists (
     id          TEXT PRIMARY KEY,
     name        TEXT NOT NULL,
     url         TEXT NOT NULL,
+    lastfm_attempted_at REAL,
     image_id    TEXT
 );
 
@@ -41,6 +42,7 @@ CREATE TABLE IF NOT EXISTS albums (
     release_date    REAL,
     image_id        TEXT,
     image_url       TEXT,
+    lastfm_attempted_at REAL,
     backfill_attempted_at REAL
 );
 
@@ -57,6 +59,7 @@ CREATE TABLE IF NOT EXISTS tracks (
     track_number    INTEGER,
     created_at      REAL,
     created_reason  TEXT,
+    lastfm_attempted_at REAL,
     availability_reason TEXT
 );
 
@@ -68,6 +71,45 @@ CREATE TABLE IF NOT EXISTS track_artists (
     PRIMARY KEY (track_id, position)
 );
 CREATE INDEX IF NOT EXISTS idx_track_artists_artist ON track_artists(artist_id);
+
+-- Last.fm genre join tables, ordered like track_artists: position preserves
+-- the tag ranking (by count) after whitelist filtering. inherited=1 rows are
+-- materialized copies of the entity's PRIMARY artist's genres, written only
+-- when the entity's own Last.fm lookup came back empty/not-found - an
+-- instance-wide app_settings toggle controls whether they count in stats.
+-- Artists have nothing to inherit from, so artist_genres carries no flag.
+CREATE TABLE IF NOT EXISTS artist_genres (
+    artist_id   TEXT NOT NULL REFERENCES artists(id),
+    genre       TEXT NOT NULL,
+    position    INTEGER NOT NULL,
+    PRIMARY KEY (artist_id, position)
+);
+CREATE INDEX IF NOT EXISTS idx_artist_genres_genre ON artist_genres(genre);
+
+CREATE TABLE IF NOT EXISTS album_genres (
+    album_id    TEXT NOT NULL REFERENCES albums(id),
+    genre       TEXT NOT NULL,
+    position    INTEGER NOT NULL,
+    inherited   INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (album_id, position)
+);
+CREATE INDEX IF NOT EXISTS idx_album_genres_genre ON album_genres(genre);
+
+CREATE TABLE IF NOT EXISTS track_genres (
+    track_id    TEXT NOT NULL REFERENCES tracks(id),
+    genre       TEXT NOT NULL,
+    position    INTEGER NOT NULL,
+    inherited   INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (track_id, position)
+);
+CREATE INDEX IF NOT EXISTS idx_track_genres_genre ON track_genres(genre);
+
+-- Instance-wide key/value settings (first consumer: the admin's toggle for
+-- counting inherited genres in genre stats and coverage).
+CREATE TABLE IF NOT EXISTS app_settings (
+    key     TEXT PRIMARY KEY,
+    value   TEXT NOT NULL
+);
 
 -- Playlist/album id -> display name cache (global: Spotify playlist/album ids are
 -- globally unique, so the same id always resolves to the same name for everyone).
@@ -100,6 +142,7 @@ CREATE TABLE IF NOT EXISTS users (
     spotify_client_id     TEXT,
     spotify_client_secret TEXT,
     spotify_refresh_token TEXT,
+    lastfm_api_key        TEXT,
     default_dashboard_window TEXT DEFAULT 'day',
     is_admin              INTEGER NOT NULL DEFAULT 0,
     timezone              TEXT

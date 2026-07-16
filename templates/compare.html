@@ -77,6 +77,16 @@
   {% include '_compare_similarities.html' %}
 </section>
 
+<section class="card" style="margin: 1.5rem 0;">
+  <div style="padding: 1.5rem;">
+    {# Outside #compareGenres so the AJAX swap doesn't re-render it. #}
+    <h2 style="margin: 0 0 0.75rem 0; font-family: var(--font-headings);">Genres</h2>
+    <div id="compareGenres">
+      {% include '_compare_genres.html' %}
+    </div>
+  </div>
+</section>
+
 {# border-bottom: none - the chart-section divider is for stacked charts
    (charts.html); here the filter badges below separate the sections. #}
 <section class="chart-section" style="margin-bottom: 2rem; border-bottom: none;">
@@ -225,6 +235,7 @@
       document.getElementById('compareStatsTable'),
       document.querySelector('.chart-canvas-wrap'),
       document.getElementById('compareSimilarities'),
+      document.getElementById('compareGenres'),
       document.getElementById('sharedArtistsList'),
       document.getElementById('sharedSongsList'),
       document.getElementById('sharedAlbumsList'),
@@ -246,6 +257,7 @@
       .then(([data]) => {
         document.getElementById('compareStatsTable').innerHTML = data.statsTableHtml;
         document.getElementById('compareSimilarities').innerHTML = data.similaritiesHtml;
+        document.getElementById('compareGenres').innerHTML = data.genresHtml;
         document.getElementById('sharedArtistsList').innerHTML = data.sharedArtistsHtml;
         document.getElementById('sharedSongsList').innerHTML = data.sharedSongsHtml;
         document.getElementById('sharedAlbumsList').innerHTML = data.sharedAlbumsHtml;

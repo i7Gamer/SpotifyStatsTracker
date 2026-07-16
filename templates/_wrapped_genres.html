@@ -1,0 +1,20 @@
+{# Top Genres card for Wrapped, computed live per request (never cached in
+   user_wrapped - the Last.fm backfill keeps growing coverage and the admin's
+   inherited-genres toggle changes the numbers retroactively). Expects
+   `topGenres` ({genre: plays}, most-played first), `genreCoverage`,
+   `genreUnlocked` and `year`. Also returned as the ajax "topGenresHtml"
+   chunk, swapped into #wrappedGenresCard on year changes. #}
+{% import "_genre_macros.html" as genreMacros %}
+<div class="chart-section">
+  <h2>Top Genres of {{ year }}</h2>
+  {% if genreUnlocked %}
+    {% if topGenres %}
+      {{ genreMacros.genreBarList(topGenres) }}
+      {{ genreMacros.lastfmAttribution(marginTop='1rem') }}
+    {% else %}
+      <p class="loading">No genre data for your {{ year }} plays yet.</p>
+    {% endif %}
+  {% else %}
+    {% with coverage = genreCoverage %}{% include "_genre_progress.html" %}{% endwith %}
+  {% endif %}
+</div>
