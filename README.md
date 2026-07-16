@@ -1,5 +1,5 @@
-<img width="1435" height="1545" alt="SpotifyTrackerOverview" src="https://github.com/user-attachments/assets/4ec167b5-b8a8-4247-b1dd-801e2a8523dc" />
-<img width="1437" height="931" alt="SpotifyTrackerTopSongs" src="https://github.com/user-attachments/assets/b11e504d-399f-46ff-9097-239ef404c7da" />
+<img width="1437" height="1946" alt="SpotifyTrackerOverviewV2" src="https://github.com/user-attachments/assets/7ca9d5f5-3e97-4cd3-b0f8-f57376733c6f" />
+<img width="1438" height="2350" alt="SpotifyTrackerCompare" src="https://github.com/user-attachments/assets/d1637725-5bb6-4755-af5d-88d8c501d45a" />
 <img width="1438" height="2169" alt="SpotifyTrackerChartsV3" src="https://github.com/user-attachments/assets/2dbc0b6a-0d30-4527-a895-582ab30db639" />
 <img width="1437" height="1468" alt="SpotifyTrackerWrappedV3" src="https://github.com/user-attachments/assets/da01ff13-f9a3-4eb0-b2c4-bc72f16f992b" />
 
@@ -159,6 +159,7 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 For support, please open an issue on the GitHub repository or contact me.
 
 Additional Screenshots:
+<img width="1437" height="931" alt="SpotifyTrackerTopSongs" src="https://github.com/user-attachments/assets/b11e504d-399f-46ff-9097-239ef404c7da" />
 <img width="659" height="1726" alt="SpotifyTrackerProfile" src="https://github.com/user-attachments/assets/5bfd55d5-1af6-4251-9ecd-6c13b3b3c92e" />
 <img width="1437" height="1175" alt="SpotifyTrackerArtistSubpage" src="https://github.com/user-attachments/assets/bdfc8a58-2064-4a19-a1d1-68433a1edb07" />
 <img width="1438" height="1166" alt="SpotifyTrackerSongSubpage" src="https://github.com/user-attachments/assets/82ae38ae-27c8-4311-9e7e-e1317433222d" />
