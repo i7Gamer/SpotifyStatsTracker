@@ -92,6 +92,18 @@
         <canvas id="decadeChart"></canvas>
       </div>
     </div>
+
+    <div class="chart-section" style="margin-top: 2rem;">
+      <h2>Top Genres</h2>
+      {% if genreUnlocked %}
+      <div class="chart-canvas-wrap" style="height: 300px;">
+        <canvas id="genreChart"></canvas>
+      </div>
+      <p class="chart-subtitle" style="margin-top: 0.5rem;">Genre data powered by <a href="https://www.last.fm" target="_blank" style="color: #888;">Last.fm</a>.</p>
+      {% else %}
+      {% with coverage = genreCoverage %}{% include "_genre_progress.html" %}{% endwith %}
+      {% endif %}
+    </div>
   </section>
 
   <script>
@@ -102,6 +114,7 @@
       explicitRatio: {{ explicitRatio | tojson }},
       decadeDistribution: {{ decadeDistribution | tojson }},
       completionStats: {{ completionStats | tojson }},
+      genreDistribution: {{ genreDistribution | tojson }},
       groupBy: {{ groupBy | tojson }},
       interval: {{ interval | tojson }}
     };

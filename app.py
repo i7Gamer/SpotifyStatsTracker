@@ -35,6 +35,17 @@ logger = logging.getLogger(__name__)
 PAGE_SIZE = 50                  #< list items shown per page
 LOGIN_CACHE_TTL_SECONDS = 180  #< seconds to cache isListenerLoggedIn result per user
 CHART_ARTIST_TREND_TOP_N = 5   #< how many top artists are plotted on the trend line chart
+CHART_TOP_GENRES_LIMIT = 10    #< bars on the Charts page's Top Genres chart
+WRAPPED_TOP_GENRES_LIMIT = 5   #< genres listed on the Wrapped genre card
+COMPARE_TOP_GENRES_LIMIT = 10  #< per-side genres (and shared genres) shown on Compare
+COMPARE_GENRE_POOL_SIZE = 50   #< per-side genre pool the shared-genre intersection is computed over
+# The genre-feature unlock gate: genre insights on Charts/Wrapped/Compare only
+# render once the play-weighted Last.fm coverage over the page's date range is
+# strictly above the overall minimum (mean of the three categories) AND at
+# least at the per-category minimum for songs, albums and artists - partial
+# data would silently misrepresent someone's taste otherwise.
+GENRE_GATE_OVERALL_MIN_PERCENT = 50
+GENRE_GATE_CATEGORY_MIN_PERCENT = 30
 WRAPPED_LIST_SIZE = 10          #< default/fallback for ?limit= - how many items per category the Wrapped page shows
 WRAPPED_LIMIT_OPTIONS = (10, 25, 50, 100)   #< selectable values for Wrapped's items-per-category dropdown
 COMPARE_TOP_LIST_SIZE = 10                #< items per top-songs/artists/albums list shown on the Compare page
@@ -165,6 +176,62 @@ def _passwordPolicyError(password: str) -> str | None:
     return None
 
 
+def emptyGenreCoverage() -> dict:
+    """The all-zeros coverage shape - what guests, empty ranges and sanitize
+    failures all resolve to (and the gate always rejects)."""
+    def category():
+        return {"covered": 0, "total": 0, "percent": 0.0}
+    return {"song": category(), "album": category(), "artist": category(),
+            "overall": {"percent": 0.0}}
+
+
+def sanitizeGenreCoverage(coverage) -> dict:
+    """`coverage` if it is shaped like Database.getGenreCoverage's result,
+    else all zeros. Route code must only ever consume coverage through this:
+    stubbed dbs in tests (and any unexpected failure) then degrade to the
+    locked state instead of crashing template rendering."""
+    if not isinstance(coverage, dict):
+        return emptyGenreCoverage()
+    result = emptyGenreCoverage()
+    for categoryName in ("song", "album", "artist"):
+        category = coverage.get(categoryName)
+        if not isinstance(category, dict):
+            return emptyGenreCoverage()
+        for field in ("covered", "total", "percent"):
+            value = category.get(field)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                return emptyGenreCoverage()
+            result[categoryName][field] = value
+    overall = coverage.get("overall")
+    if not isinstance(overall, dict):
+        return emptyGenreCoverage()
+    overallPercent = overall.get("percent")
+    if isinstance(overallPercent, bool) or not isinstance(overallPercent, (int, float)):
+        return emptyGenreCoverage()
+    result["overall"]["percent"] = overallPercent
+    return result
+
+
+def resolveGenreCoverage(db, startDate, endDate) -> dict:
+    """Sanitized genre coverage for a user db over a range; zeros when the
+    lookup fails for any reason (never let the genre gate break a page)."""
+    try:
+        return sanitizeGenreCoverage(db.getGenreCoverage(startDate=startDate, endDate=endDate))
+    except Exception as e:
+        logger.warning("Genre coverage lookup failed: %s", e)
+        return emptyGenreCoverage()
+
+
+def genreGatePasses(coverage: dict) -> bool:
+    """The unlock rule on a sanitized coverage dict: overall strictly above
+    GENRE_GATE_OVERALL_MIN_PERCENT and every category at or above
+    GENRE_GATE_CATEGORY_MIN_PERCENT."""
+    if coverage["overall"]["percent"] <= GENRE_GATE_OVERALL_MIN_PERCENT:
+        return False
+    return all(coverage[categoryName]["percent"] >= GENRE_GATE_CATEGORY_MIN_PERCENT
+               for categoryName in ("song", "album", "artist"))
+
+
 class _RateLimiter:
     """In-memory fixed-window rate limiter, keyed by (bucket, identifier).
 
@@ -201,6 +268,13 @@ class SpotifyDashboardApp:
         configureLogging()
         migrateIfNeeded()
         self.app = Flask(__name__)
+        # The genre-gate thresholds are quoted in templates (the locked-state
+        # progress card) - exposed as globals so every include sees them
+        # without each route re-passing them.
+        self.app.jinja_env.globals.update(
+            genreGateOverallMinPercent=GENRE_GATE_OVERALL_MIN_PERCENT,
+            genreGateCategoryMinPercent=GENRE_GATE_CATEGORY_MIN_PERCENT,
+        )
         proxyHops = _trustedProxyCount()
         if proxyHops:
             # Restores the real client address (and scheme/host) from the
@@ -2183,6 +2257,15 @@ class SpotifyDashboardApp:
             decadeDistribution = db.getReleaseDecadeDistribution(startDate=startDate, endDate=endDate)
             completionStats = db.getCompletionStats(startDate=startDate, endDate=endDate)
 
+            genreCoverage = resolveGenreCoverage(db, startDate, endDate)
+            genreUnlocked = genreGatePasses(genreCoverage)
+            genreDistribution = None
+            if genreUnlocked:
+                genreDistribution = db.getGenreDistribution(startDate=startDate, endDate=endDate,
+                                                            limit=CHART_TOP_GENRES_LIMIT)
+                if not isinstance(genreDistribution, dict):
+                    genreDistribution = {}
+
             return render_template(
                 "charts.html",
                 username=username,
@@ -2199,6 +2282,9 @@ class SpotifyDashboardApp:
                 explicitRatio=explicitRatio,
                 decadeDistribution=decadeDistribution,
                 completionStats=completionStats,
+                genreCoverage=genreCoverage,
+                genreUnlocked=genreUnlocked,
+                genreDistribution=genreDistribution,
             )
 
         @self.app.route("/wrapped", methods=["GET"])
