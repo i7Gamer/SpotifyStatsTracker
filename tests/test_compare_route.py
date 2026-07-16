@@ -526,16 +526,20 @@ class TestCompareRoute(unittest.TestCase):
         self.assertIn("sharedSongsHtml", data)
         self.assertIn("sharedAlbumsHtml", data)
 
-    def test_you_both_love_sits_between_chart_and_category_lists(self):
+    def test_similarities_sit_under_the_chart_and_shared_lists_join_categories(self):
+        """Common Top Artist/Song/Album cards come directly under the chart;
+        "You Both Love" is a filterable category ahead of the top lists."""
         self._accept("alice", "bob")
         client = self._loginAs("alice")
 
         resp = client.get("/compare")
 
         chartIdx = resp.data.index(b'id="comparisonTrendChart"')
-        sharedIdx = resp.data.index(b"You Both Love")
+        similaritiesIdx = resp.data.index(b'id="compareSimilarities"')
+        sharedIdx = resp.data.index(b'data-category="you-both-love"')
         listsIdx = resp.data.index(b'data-category="top-songs"')
-        self.assertLess(chartIdx, sharedIdx)
+        self.assertLess(chartIdx, similaritiesIdx)
+        self.assertLess(similaritiesIdx, sharedIdx)
         self.assertLess(sharedIdx, listsIdx)
 
     def test_filter_badges_render_for_each_category(self):
@@ -544,8 +548,10 @@ class TestCompareRoute(unittest.TestCase):
 
         resp = client.get("/compare")
 
-        for marker in (b'data-filter="all"', b'data-filter="top-songs"',
+        for marker in (b'data-filter="all"', b'data-filter="you-both-love"',
+                       b'data-filter="top-songs"',
                        b'data-filter="top-artists"', b'data-filter="top-albums"',
+                       b'data-category="you-both-love"',
                        b'data-category="top-artists"', b'data-category="top-albums"'):
             self.assertIn(marker, resp.data)
 
