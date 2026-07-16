@@ -526,6 +526,7 @@ class SpotifyDashboardApp:
                 "theirPlays": theirItem.get("plays", 0),
                 "myTimeText": msToString(myMs),
                 "theirTimeText": msToString(theirMs),
+                "combinedTimeText": msToString(combinedMs),
                 #< an even split when neither side has recorded time - a
                 #  bar of two zero-width halves would just look broken
                 "myTimePercent": round(myMs / combinedMs * 100) if combinedMs else 50,
