@@ -432,13 +432,19 @@ button {
 }
 
 /* Desktop: Now Playing / Top song / Top artist cards stack the cover on its
-   own row under the heading with the text below it; mobile keeps the
-   compact side-by-side row. */
+   own row under the heading with the text below it, at double the mobile
+   thumbnail size; mobile keeps the compact side-by-side row. */
 @media (min-width: 901px) {
   .now-playing-body,
   .summary-top-item {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .now-playing-cover,
+  .summary-top-cover {
+    width: 112px;
+    height: 112px;
   }
 
   .now-playing-meta,
@@ -1172,20 +1178,13 @@ progress::-moz-progress-bar {
   margin-top: 12px !important;   /* breathing room under the value line (base rule: 6px) */
 }
 
-/* Desktop: the cover spans the card's full content height. */
+/* Desktop: a fixed 112px cover - roughly double the Top Song/Artist/Album
+   comparison thumbnails above (stretching to the full card height grew
+   MUCH too big). */
 @media (min-width: 901px) {
-  .compare-similarity-card {
-    align-items: stretch;
-  }
-
-  .compare-similarity-card .compare-cover-link {
-    align-self: stretch;
-  }
-
   .compare-similarity-card .compare-cover {
-    height: 100%;
-    width: auto;
-    aspect-ratio: 1 / 1;
+    width: 112px;
+    height: 112px;
     border-radius: 12px;
   }
 }
