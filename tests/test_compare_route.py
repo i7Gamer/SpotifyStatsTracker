@@ -440,8 +440,9 @@ class TestCompareRoute(unittest.TestCase):
         self.assertNotIn(b"/song/their-song-1", resp.data)
 
     def test_shared_artist_cards_show_both_users_stats(self):
-        """Item on 'You Both Love' cards: both users' plays/time/unique songs,
-        the combined listening time, and a split bar proportioned by time."""
+        """'You Both Love' cards lead with the COMBINED plays/time (the
+        per-user numbers live in the versus block below), plus a split bar
+        proportioned by time."""
         self._accept("alice", "bob")
         self.dbs["alice"].getTopArtists.return_value = [
             _artist("sh1", "SharedArtist", plays=10, totalTimeListened=3_600_000, uniqueSongCount=4)]
@@ -451,14 +452,18 @@ class TestCompareRoute(unittest.TestCase):
 
         resp = client.get("/compare")
 
+        self.assertIn(b"15 plays", resp.data)        #< combined, on the card's top stat line
+        self.assertIn(b"1h 30m 0s", resp.data)       #< combined listening time
         self.assertIn(b"alice: 10 plays", resp.data)
         self.assertIn(b"bob: 5 plays", resp.data)
-        self.assertIn(b"Together: 1h 30m 0s", resp.data)
+        self.assertNotIn(b"Together:", resp.data)    #< redundant now that the top line is combined
         self.assertIn(b'style="width: 67%"', resp.data)   #< round(3.6/5.4*100)
         # The versus block must appear ONLY on the shared card - the same dict
         # also feeds alice's own Top Artists column, so it must be copied
         # before the comparison data is attached.
         self.assertEqual(resp.data.count(b"compare-split-bar\""), 1)
+        #< the copy also keeps the combined totals off her own column's card
+        self.assertIn(b"10 plays", resp.data)
 
     def test_similarities_come_from_the_deep_pools(self):
         """Common top song/album cells run over the 100-deep pools, not the
@@ -485,7 +490,7 @@ class TestCompareRoute(unittest.TestCase):
         self.dbs["alice"].getTopSongs.return_value = [
             _song("sh-song", "SharedSong", plays=3, totalTimeListened=60_000)]
         self.dbs["bob"].getTopSongs.return_value = [
-            _song("sh-song", "SharedSong", plays=1, totalTimeListened=60_000)]
+            _song("sh-song", "SharedSong", plays=8, totalTimeListened=30_000)]
         self.dbs["alice"].getTopAlbums.return_value = [
             _album("sh-alb", "SharedAlbum", plays=4, totalTimeListened=120_000, uniqueSongCount=2)]
         self.dbs["bob"].getTopAlbums.return_value = [
@@ -494,9 +499,16 @@ class TestCompareRoute(unittest.TestCase):
 
         resp = client.get("/compare")
 
-        self.assertIn(b"alice: 3 plays", resp.data)                #< shared song, mine
-        self.assertIn(b"Together: 2m 0s", resp.data)               #< shared song combined
-        self.assertIn("alice: 4 plays · 2m 0s · 2 songs".encode("utf-8"), resp.data)   #< shared album keeps song counts
+        self.assertIn(b"alice: 3 plays", resp.data)   #< shared song, mine (versus block)
+        self.assertIn(b"11 plays", resp.data)         #< shared song top line: combined plays
+        self.assertIn(b"1m 30s", resp.data)           #< ...and combined time
+        self.assertIn(b"10 plays", resp.data)         #< shared album combined plays
+        self.assertIn(b"6m 0s", resp.data)            #< shared album combined time
+        self.assertIn("alice: 4 plays · 2m 0s · 2 songs".encode("utf-8"), resp.data)   #< versus keeps song counts
+        # the viewer-specific "You played N songs from X" line stays on the
+        # album card in alice's own column (1 mention) but is replaced by the
+        # versus block's per-user counts on the shared card (not 2)
+        self.assertEqual(resp.data.count(b"You played 2 songs from SharedAlbum"), 1)
         # song cards carry no unique-song counts - the segment is omitted,
         # not rendered as "0 songs"
         self.assertNotIn(b"0 songs", resp.data)

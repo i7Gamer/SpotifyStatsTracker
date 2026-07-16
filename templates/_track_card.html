@@ -82,7 +82,8 @@
               </div>
               {% endif %}
 
-              {% if track.get('uniqueSongCount') %}
+              {# the versus block below already shows both users' song counts #}
+              {% if track.get('uniqueSongCount') and not track.get('compareData') %}
               <div>You played {{ track.get('uniqueSongCount') }} song{{ 's' if track.get('uniqueSongCount') != 1 else '' }} from {{ track.get('name', '') }}</div>
               {% endif %}
           </div>
@@ -149,10 +150,11 @@
             </div>
             {# song cards carry no per-user unique-song counts - only
                artist/album aggregates do #}
+            {# no "combined" line here - the card's top stat line already
+               shows the combined plays/time for shared items #}
             <div class="compare-versus-stats">
               <span class="compare-versus-mine">{{ username }}: {{ cmp.myPlays }} plays · {{ cmp.myTimeText }}{% if 'myUniqueSongs' in cmp %} · {{ cmp.myUniqueSongs }} song{{ 's' if cmp.myUniqueSongs != 1 else '' }}{% endif %}</span>
               <span class="compare-versus-theirs">{{ compareWith }}: {{ cmp.theirPlays }} plays · {{ cmp.theirTimeText }}{% if 'theirUniqueSongs' in cmp %} · {{ cmp.theirUniqueSongs }} song{{ 's' if cmp.theirUniqueSongs != 1 else '' }}{% endif %}</span>
-              <span class="compare-versus-combined">Together: {{ cmp.combinedTimeText }}</span>
             </div>
           </div>
         {% endif %}

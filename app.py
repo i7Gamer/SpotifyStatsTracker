@@ -509,22 +509,23 @@ class SpotifyDashboardApp:
         """Shared entries of one category (viewer-ranked, sliced to `limit`)
         with the per-user versus data the "You Both Love" cards render.
         Copied dicts: the pool entries also feed the viewer's own top-list
-        column, and the versus block must only render on the shared cards.
-        The unique-song counts are only attached where the aggregates carry
-        them (artists/albums) - a song card has nothing to count."""
+        column, and the versus block / combined totals must only show on the
+        shared cards. The unique-song counts are only attached where the
+        aggregates carry them (artists/albums) - a song card has nothing to
+        count."""
         theirById = {item["id"]: item for item in theirPool}
         shared = embedFn([dict(item) for item in myPool if item["id"] in theirById][:limit])
         for item in shared:
             theirItem = theirById[item["id"]]
+            myPlays = item.get("plays", 0)
             myMs = item.get("totalTimeListened", 0)
             theirMs = theirItem.get("totalTimeListened", 0)
             combinedMs = myMs + theirMs
             compareData = {
-                "myPlays": item.get("plays", 0),
+                "myPlays": myPlays,
                 "theirPlays": theirItem.get("plays", 0),
                 "myTimeText": msToString(myMs),
                 "theirTimeText": msToString(theirMs),
-                "combinedTimeText": msToString(combinedMs),
                 #< an even split when neither side has recorded time - a
                 #  bar of two zero-width halves would just look broken
                 "myTimePercent": round(myMs / combinedMs * 100) if combinedMs else 50,
@@ -533,6 +534,12 @@ class SpotifyDashboardApp:
                 compareData["myUniqueSongs"] = item.get("uniqueSongCount", 0)
                 compareData["theirUniqueSongs"] = theirItem.get("uniqueSongCount", 0)
             item["compareData"] = compareData
+            # The card's top stat line shows the COMBINED totals - the
+            # per-user numbers live in the versus block right below it.
+            # Overwritten after embedFn so the embedded text matches.
+            item["plays"] = myPlays + compareData["theirPlays"]
+            item["totalTimeListened"] = combinedMs
+            item["totalTimeListenedText"] = msToString(combinedMs)
         return shared
 
     def _tasteMatchPercent(self, my, their, similarities) -> int | None:
