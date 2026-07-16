@@ -144,6 +144,16 @@ class Database:
 
         self.autoImportFolderPath = self.baseDir / ".." / "autoImport" / self.user
 
+        # Serializes this user's imports across entry points - the web upload
+        # route runs importHistoryBatch on its own thread while AutoImporter
+        # runs it on the watchdog thread, with nothing else coordinating them.
+        # Concurrent runs interleave their staged transactions and defeat the
+        # batch-scoped duplicate reconciliation (_ImportRunState); serialized,
+        # a double-submit resolves cleanly instead (the second run sees the
+        # first's recorded file hash and skips). RLock: importHistoryBatch
+        # calls importHistory, which takes the same lock.
+        self._importLock = threading.RLock()
+
         filterKeyword = os.environ.get("IMPORT_KEYWORD", None)
         logger.info("auto import filtering by %s", filterKeyword)
         # importHistoryBatch (not importHistory): files dropped together share
@@ -573,6 +583,14 @@ class Database:
 
     def importHistory(self, exportedHistory, progressPrefix: str = "", isFinalFile: bool = True, hasPriorError: bool = False, track_file_hash: bool = False,
                       runState: _ImportRunState | None = None):
+        """Import one export file. Serialized per user via _importLock (see
+        its comment in __init__); the actual work is in _importHistoryLocked."""
+        with self._importLock:
+            return self._importHistoryLocked(exportedHistory, progressPrefix, isFinalFile, hasPriorError,
+                                             track_file_hash, runState)
+
+    def _importHistoryLocked(self, exportedHistory, progressPrefix: str = "", isFinalFile: bool = True, hasPriorError: bool = False, track_file_hash: bool = False,
+                             runState: _ImportRunState | None = None):
         importer = self._withCookiesFile(lambda cookiesFile: Importer(cookiesFile=cookiesFile, email=self.email))
         if runState is None:
             runState = _ImportRunState()
@@ -739,11 +757,16 @@ class Database:
         processed one after another, mirroring AutoImporter's existing
         one-file-at-a-time folder-watching behavior. A failure in one file is
         logged and skipped rather than aborting the whole batch, so a single bad
-        upload doesn't block the rest.
+        upload doesn't block the rest. Serialized per user via _importLock (see
+        its comment in __init__).
 
         Returns one outcome per input file, in order - "imported", "skipped"
         (already imported before, by hash), or "failed" - so AutoImporter can
         route each file to DONE/ or FAILED/ instead of assuming success."""
+        with self._importLock:
+            return self._importHistoryBatchLocked(fileContents)
+
+    def _importHistoryBatchLocked(self, fileContents: list[str]) -> list[str]:
         if not fileContents:
             return []
 
