@@ -24,6 +24,7 @@ from Database.db import SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON
 from Database.repository import Repository
 from Database.Migrators.migrate import migrateIfNeeded
 from Database.Listeners.spotifyListener import _suppress_signal_in_thread
+from Database.lastfm import LastfmClient
 from Database.logging_config import configureLogging
 from Database.utils import msToString, convertToDatetime, formatDuration, dateToString, versionTuple, now, startOfDay, parseDateString
 import SpotipyFree
@@ -1539,6 +1540,38 @@ class SpotifyDashboardApp:
                             success = f"You already share data with {target_username}."
                         else:   #< "already_requested"
                             success = f"A share request to {target_username} is already pending."
+                elif action == "save_lastfm":
+                    # Throttled like request_share: every save fires a live
+                    # validation request against Last.fm.
+                    if _rateLimited("save_lastfm"):
+                        error = RATE_LIMIT_ERROR_MESSAGE
+                        responseStatus = 429
+                    else:
+                        lastfm_api_key = (request.form.get("lastfm_api_key") or "").strip()
+                        if not lastfm_api_key:
+                            error = "A Last.fm API key is required."
+                        else:
+                            validation = LastfmClient(lastfm_api_key).validateApiKey()
+                            if validation["ok"]:
+                                try:
+                                    db.updateUserLastfmApiKey(lastfm_api_key)
+                                    db.startLastfmGenreBackfiller()
+                                    success = "Last.fm API key saved! Genre data is now backfilling in the background."
+                                except Exception as e:
+                                    error = f"Failed to save the Last.fm API key: {str(e)}"
+                            elif validation["error"] == "invalid_key":
+                                error = "Last.fm rejected that API key - double-check it and try again."
+                            elif validation["error"] == "busy":
+                                error = "The Last.fm request budget is busy right now - try again in a few seconds."
+                            else:
+                                error = "Could not reach Last.fm to verify the key - try again later."
+                elif action == "remove_lastfm":
+                    try:
+                        db.updateUserLastfmApiKey(None)
+                        db.stopLastfmGenreBackfiller()
+                        success = "Last.fm API key removed."
+                    except Exception as e:
+                        error = f"Failed to remove the Last.fm API key: {str(e)}"
                 else:
                     if not feature_enabled:
                         abort(404)
@@ -1586,6 +1619,7 @@ class SpotifyDashboardApp:
                 client_id=client_id,
                 client_secret=client_secret,
                 has_api=bool(client_id and client_secret),
+                has_lastfm=bool(db.getUserLastfmApiKey()),
                 is_authenticated=bool(refresh_token),
                 redirect_uri=spotify_callback_url,
                 success=success,
