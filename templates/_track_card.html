@@ -147,10 +147,11 @@
             </div>
             {# song cards carry no per-user unique-song counts - only
                artist/album aggregates do #}
+            {# No combined "Together" line here - the card's top stat line
+               already shows the combined plays/time. #}
             <div class="compare-versus-stats">
               <span class="compare-versus-mine">{{ username }}: {{ cmp.myPlays }} plays · {{ cmp.myTimeText }}{% if 'myUniqueSongs' in cmp %} · {{ cmp.myUniqueSongs }} song{{ 's' if cmp.myUniqueSongs != 1 else '' }}{% endif %}</span>
               <span class="compare-versus-theirs">{{ compareWith }}: {{ cmp.theirPlays }} plays · {{ cmp.theirTimeText }}{% if 'theirUniqueSongs' in cmp %} · {{ cmp.theirUniqueSongs }} song{{ 's' if cmp.theirUniqueSongs != 1 else '' }}{% endif %}</span>
-              <span class="compare-versus-combined">Together: {{ cmp.combinedTimeText }}</span>
             </div>
           </div>
         {% endif %}

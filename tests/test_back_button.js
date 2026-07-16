@@ -36,6 +36,16 @@ run('wrapped referrer', () => {
   assert.deepStrictEqual(resolveBackTarget(`${ORIGIN}/wrapped`, ORIGIN), { label: '← Back to Wrapped' });
 });
 
+run('compare referrer', () => {
+  assert.deepStrictEqual(resolveBackTarget(`${ORIGIN}/compare`, ORIGIN), { label: '← Back to Compare' });
+});
+
+run('compare referrer with filters keeps its label', () => {
+  assert.deepStrictEqual(
+    resolveBackTarget(`${ORIGIN}/compare?with=bob&interval=year&limit=25`, ORIGIN),
+    { label: '← Back to Compare' });
+});
+
 run('top-songs referrer', () => {
   assert.deepStrictEqual(resolveBackTarget(`${ORIGIN}/top-songs`, ORIGIN), { label: '← Back to Top Songs' });
 });

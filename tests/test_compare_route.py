@@ -456,7 +456,9 @@ class TestCompareRoute(unittest.TestCase):
         self.assertIn(b"1h 30m 0s", resp.data)       #< combined listening time
         self.assertIn(b"alice: 10 plays", resp.data)
         self.assertIn(b"bob: 5 plays", resp.data)
-        self.assertIn(b"Together: 1h 30m 0s", resp.data)   #< combined summary inside the versus block
+        #< no separate "Together" line in the versus block - the combined
+        #  totals already lead the card's top stat line (asserted above)
+        self.assertNotIn(b"Together:", resp.data)
         self.assertIn(b'style="width: 67%"', resp.data)   #< round(3.6/5.4*100)
         # The versus block must appear ONLY on the shared card - the same dict
         # also feeds alice's own Top Artists column, so it must be copied

@@ -7,6 +7,7 @@
 const BACK_BUTTON_PATH_LABELS = [
   { test: (pathname) => pathname === '/', label: 'Dashboard' },
   { test: (pathname) => pathname === '/wrapped', label: 'Wrapped' },
+  { test: (pathname) => pathname === '/compare', label: 'Compare' },
   { test: (pathname) => pathname === '/top-songs', label: 'Top Songs' },
   { test: (pathname) => pathname === '/top-albums', label: 'Top Albums' },
   { test: (pathname) => pathname === '/top-artists', label: 'Top Artists' },
