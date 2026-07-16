@@ -52,7 +52,6 @@ jobs:
         exit 1
 
     - name: Push Docker image
-      if: github.event_name == 'push'
       run: |
         echo "Pushing image..."
         docker push i7gamer/spotify-tracker:nightly
