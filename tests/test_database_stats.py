@@ -1,3 +1,4 @@
+import datetime
 import sys
 import os
 from unittest.mock import patch
@@ -5,6 +6,7 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from conftest import DatabaseTestCase
+import Database.utils as utilsModule
 
 
 class TestGetArtistsStatsDoesNotMutateCache(DatabaseTestCase):
@@ -348,6 +350,24 @@ class TestNewChartsStats(DatabaseTestCase):
         decades = db.getReleaseDecadeDistribution()
         self.assertEqual(decades, {"1960s": 1, "2000s": 1, "2020s": 1})
 
+    def test_release_decade_uses_the_calendar_date_not_the_app_timezone(self):
+        """Release dates are stored as midnight-UTC timestamps of a calendar
+        date, so the decade must come from the UTC year. The old Python
+        conversion applied the app timezone, which shifted every Jan 1
+        release into the previous year - and previous DECADE for years
+        ending in 0 - whenever the offset was negative."""
+        tracks = {
+            #< 2020-01-01T00:00Z: the exact boundary case
+            "t1": {"id": "t1", "name": "Song", "artists": [], "releaseDate": 1577836800},
+        }
+        entries = [{"id": "t1", "playedAt": 100, "timePlayed": 1000}]
+        with patch.object(utilsModule, "tz", datetime.timezone(datetime.timedelta(hours=-5))):
+            db = self._makeDb(tracks, entries)
+
+            decades = db.getReleaseDecadeDistribution()
+
+        self.assertEqual(decades, {"2020s": 1})
+
     def test_get_completion_stats(self):
         tracks = {
             "t1": {"id": "t1", "name": "Song One", "artists": [], "duration": 100000},
@@ -363,6 +383,34 @@ class TestNewChartsStats(DatabaseTestCase):
         self.assertEqual(stats["skips"], 1)
         self.assertEqual(stats["completes"], 1)
         self.assertEqual(stats["partials"], 1)
+
+    def test_completion_stats_boundaries(self):
+        """Pins the classification edges: exactly the 30s skip threshold is
+        NOT a skip, exactly 80% of the duration IS a complete, and unknown
+        (<=0) durations split on the skip threshold alone."""
+        tracks = {
+            "zero": {"id": "zero", "name": "No Duration", "artists": [], "duration": 0},
+            "t1": {"id": "t1", "name": "Song", "artists": [], "duration": 100000},
+        }
+        entries = [
+            {"id": "zero", "playedAt": 100, "timePlayed": 30000},   #< at threshold, no duration -> complete
+            {"id": "zero", "playedAt": 200, "timePlayed": 29999},   #< under threshold -> skip
+            {"id": "t1", "playedAt": 300, "timePlayed": 80000},     #< exactly 80% -> complete
+            {"id": "t1", "playedAt": 400, "timePlayed": 79999},     #< just under 80% -> partial
+        ]
+        db = self._makeDb(tracks, entries)
+
+        stats = db.getCompletionStats()
+
+        self.assertEqual(stats, {"skips": 1, "completes": 2, "partials": 1})
+
+    def test_completion_stats_empty_database_returns_zeros(self):
+        db = self._makeDb({}, [])
+        self.assertEqual(db.getCompletionStats(), {"skips": 0, "completes": 0, "partials": 0})
+
+    def test_explicit_ratio_empty_database_returns_zeros(self):
+        db = self._makeDb({}, [])
+        self.assertEqual(db.getExplicitRatio(), {"explicit": 0, "clean": 0})
 
 
 if __name__ == "__main__":

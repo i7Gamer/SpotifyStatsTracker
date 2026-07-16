@@ -285,28 +285,16 @@
     canvas.onmouseleave = hideTooltip;
   }
 
-  // Parameterized so the Compare page can reuse this exact multi-series line
-  // renderer for a two-user overlay (a different canvas/legend id and
-  // window.__chartData key) instead of duplicating the drawing code - the
-  // /charts page call below keeps using the original ids/key via the
-  // defaults. `options` adapts the presentation to the series' unit: the
-  // artist trend plots play counts, the comparison trend plots listening
-  // time in milliseconds, so axis/tooltip formatting and the empty-state
-  // wording must come from the caller, not stay hardcoded to plays.
-  function renderArtistTrend(canvasId, legendId, dataKey, options) {
-    canvasId = canvasId || 'artistTrendChart';
-    legendId = legendId || 'artistTrendLegend';
-    dataKey = dataKey || 'artistTrend';
-    options = options || {};
-    var formatValue = options.formatValue || function (v) { return Math.round(v) + ' plays'; };
-    var formatAxisValue = options.formatAxisValue || function (v) { return Math.round(v); };
-    var emptyMessage = options.emptyMessage || 'Not enough data yet to show an artist trend.';
-    var canvas = document.getElementById(canvasId);
-    var legendEl = document.getElementById(legendId);
+  function renderArtistTrend() {
+    var formatValue = function (v) { return Math.round(v) + ' plays'; };
+    var formatAxisValue = function (v) { return Math.round(v); };
+    var emptyMessage = 'Not enough data yet to show an artist trend.';
+    var canvas = document.getElementById('artistTrendChart');
+    var legendEl = document.getElementById('artistTrendLegend');
     if (!canvas) {
       return;
     }
-    var data = (window.__chartData && window.__chartData[dataKey]) || { buckets: [], series: [] };
+    var data = (window.__chartData && window.__chartData.artistTrend) || { buckets: [], series: [] };
     var setup = setupCanvas(canvas, 260);
     var ctx = setup.ctx, width = setup.width, height = setup.height;
     ctx.clearRect(0, 0, width, height);
@@ -385,6 +373,200 @@
     if (legendEl) {
       legendEl.innerHTML = lines.map(function (l) {
         return '<span class="chart-legend-item"><span class="chart-legend-swatch" style="background:' + l.color + '"></span>' + escapeHtml(l.name) + '</span>';
+      }).join('');
+    }
+  }
+
+  // Compare page: two users' listening time as a MIRRORED area chart - the
+  // viewer's series filled above a center baseline, the counterpart's
+  // mirrored below it. Replaces a two-line overlay where similar series sat
+  // on top of each other and only one stayed visible; mirrored halves can't
+  // overlap, and both halves share one symmetric scale so their areas stay
+  // comparable. Values are milliseconds listened per bucket.
+  var MIRROR_DOT_MAX_BUCKETS = 60;   //< point markers only while they don't smear into a thick line
+
+  function withAlpha(hexColor, alpha) {
+    var rgb = parseHex(hexColor);
+    return 'rgba(' + rgb.r + ',' + rgb.g + ',' + rgb.b + ',' + alpha + ')';
+  }
+
+  // The counterpart's identity color, shared with the CSS (--compare-theirs
+  // drives the split bars, table headers, and column headings) so the chart
+  // series can never drift from the rest of the page.
+  function getTheirsColor() {
+    var value = getComputedStyle(document.documentElement).getPropertyValue('--compare-theirs').trim();
+    return value || CHART_PALETTE[1];
+  }
+
+  function renderComparisonMirror() {
+    var canvas = document.getElementById('comparisonTrendChart');
+    var legendEl = document.getElementById('comparisonTrendLegend');
+    if (!canvas) {
+      return;
+    }
+    var data = (window.__chartData && window.__chartData.comparisonTrend) || { buckets: [], series: [] };
+    var setup = setupCanvas(canvas, 320);
+    var ctx = setup.ctx, width = setup.width, height = setup.height;
+    ctx.clearRect(0, 0, width, height);
+
+    if (!data.buckets.length || data.series.length < 2) {
+      drawEmptyState(ctx, width, height, 'No listening data in this period yet.');
+      if (legendEl) {
+        legendEl.innerHTML = '';
+      }
+      return;
+    }
+
+    var paddingLeft = 46, paddingBottom = 26, paddingTop = 16, paddingRight = 16;
+    var plotWidth = width - paddingLeft - paddingRight;
+    var plotHeight = height - paddingTop - paddingBottom;
+    var half = plotHeight / 2;
+    var midY = paddingTop + half;
+    var maxMs = 1;
+    data.series.forEach(function (s) {
+      maxMs = Math.max(maxMs, Math.max.apply(null, s.data));
+    });
+    var stepX = data.buckets.length > 1 ? plotWidth / (data.buckets.length - 1) : 0;
+    var colors = [CHART_PALETTE[0], getTheirsColor()];
+
+    // Hour buckets are "YYYY-MM-DD HH:00" - drawSparseXLabels' 7-char slice
+    // would render them all as the same date prefix, so show the time part
+    // (like renderTimeSeriesChart's single-day handling).
+    var isHourly = data.buckets[0].indexOf(' ') > -1;
+    var axisLabels = isHourly
+      ? data.buckets.map(function (b) { return b.split(' ')[1]; })
+      : data.buckets;
+    var labelSpacing = isHourly ? 42 : MIN_AXIS_LABEL_SPACING_PX;
+
+    // The whole frame is drawn by one closure so the hover crosshair can
+    // redraw cleanly whenever the highlighted bucket changes.
+    function draw(highlightIdx) {
+      ctx.clearRect(0, 0, width, height);
+
+      // Symmetric grid: time labels at 50%/100% above and below the baseline.
+      ctx.font = '11px sans-serif';
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'middle';
+      [0.5, 1].forEach(function (fraction) {
+        [-1, 1].forEach(function (direction) {
+          var y = midY - direction * half * fraction;
+          ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+          ctx.beginPath();
+          ctx.moveTo(paddingLeft, y);
+          ctx.lineTo(paddingLeft + plotWidth, y);
+          ctx.stroke();
+          ctx.fillStyle = '#b0b0b0';
+          ctx.fillText(msToShortLabel(maxMs * fraction), paddingLeft - 8, y);
+        });
+      });
+      // stronger center baseline separating the two users
+      ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+      ctx.beginPath();
+      ctx.moveTo(paddingLeft, midY);
+      ctx.lineTo(paddingLeft + plotWidth, midY);
+      ctx.stroke();
+      ctx.fillStyle = '#b0b0b0';
+      ctx.fillText('0', paddingLeft - 8, midY);
+
+      drawSparseXLabels(ctx, axisLabels, paddingLeft, plotWidth, plotHeight, paddingTop, function (i) {
+        return paddingLeft + i * stepX;
+      }, labelSpacing);
+
+      // vertical crosshair under the areas, aligning both halves' values
+      if (highlightIdx !== null) {
+        var hx = paddingLeft + highlightIdx * stepX;
+        ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(hx, paddingTop);
+        ctx.lineTo(hx, paddingTop + plotHeight);
+        ctx.stroke();
+      }
+
+      data.series.slice(0, 2).forEach(function (series, si) {
+        var direction = si === 0 ? 1 : -1;   //< first series up, second mirrored down
+        var color = colors[si];
+        var points = series.data.map(function (v, i) {
+          return { x: paddingLeft + i * stepX, y: midY - direction * (half * v / maxMs) };
+        });
+
+        ctx.fillStyle = withAlpha(color, 0.3);
+        ctx.beginPath();
+        ctx.moveTo(points[0].x, midY);
+        points.forEach(function (p) { ctx.lineTo(p.x, p.y); });
+        ctx.lineTo(points[points.length - 1].x, midY);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        points.forEach(function (p, i) {
+          if (i === 0) {
+            ctx.moveTo(p.x, p.y);
+          } else {
+            ctx.lineTo(p.x, p.y);
+          }
+        });
+        ctx.stroke();
+
+        if (points.length <= MIRROR_DOT_MAX_BUCKETS) {
+          ctx.fillStyle = color;
+          points.forEach(function (p) {
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
+            ctx.fill();
+          });
+        }
+
+        // highlighted bucket gets an emphasized marker on both series
+        if (highlightIdx !== null) {
+          var hp = points[highlightIdx];
+          ctx.fillStyle = color;
+          ctx.beginPath();
+          ctx.arc(hp.x, hp.y, 4.5, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      });
+    }
+
+    draw(null);
+    var highlightedIdx = null;
+
+    canvas.onmousemove = function (evt) {
+      var rect = canvas.getBoundingClientRect();
+      var mx = evt.clientX - rect.left, my = evt.clientY - rect.top;
+      if (mx < paddingLeft || mx > paddingLeft + plotWidth || my < paddingTop || my > paddingTop + plotHeight) {
+        if (highlightedIdx !== null) {
+          highlightedIdx = null;
+          draw(null);
+        }
+        hideTooltip();
+        return;
+      }
+      var idx = stepX > 0 ? Math.round((mx - paddingLeft) / stepX) : 0;
+      idx = Math.max(0, Math.min(data.buckets.length - 1, idx));
+      if (idx !== highlightedIdx) {
+        highlightedIdx = idx;
+        draw(idx);
+      }
+      var rows = data.series.slice(0, 2).map(function (series, si) {
+        return '<span style="color:' + colors[si] + '">&#9679;</span> ' +
+          escapeHtml(series.name) + ': ' + msToShortLabel(series.data[idx]);
+      });
+      showTooltip(evt, '<strong>' + data.buckets[idx] + '</strong><br>' + rows.join('<br>'));
+    };
+    canvas.onmouseleave = function () {
+      if (highlightedIdx !== null) {
+        highlightedIdx = null;
+        draw(null);
+      }
+      hideTooltip();
+    };
+
+    if (legendEl) {
+      legendEl.innerHTML = data.series.slice(0, 2).map(function (series, si) {
+        return '<span class="chart-legend-item"><span class="chart-legend-swatch" style="background:' + colors[si] + '"></span>' + escapeHtml(series.name) + '</span>';
       }).join('');
     }
   }
@@ -598,19 +780,15 @@
     renderTimeSeriesChart();
     renderHeatmap();
     renderArtistTrend();
-    // The comparison overlay plots listening time (milliseconds), not play
-    // counts - same renderer, time-based formatting.
-    renderArtistTrend('comparisonTrendChart', 'comparisonTrendLegend', 'comparisonTrend', {
-      formatValue: msToShortLabel,
-      formatAxisValue: msToShortLabel,
-      emptyMessage: 'No listening data in this period yet.'
-    });
+    renderComparisonMirror();
     renderExplicitChart();
     renderCompletionChart();
     renderDecadeChart();
   }
 
   window.renderTimeSeriesChart = renderTimeSeriesChart;
+  // The Compare page re-renders the mirror chart after AJAX filter swaps.
+  window.renderComparisonMirror = renderComparisonMirror;
 
   renderAllCharts();
 

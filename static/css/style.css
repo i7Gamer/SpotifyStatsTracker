@@ -14,6 +14,10 @@
   --glow-color-1: rgba(251, 113, 123, 0.15);
   --glow-color-2: rgba(29, 185, 84, 0.1);
   --glow-color-3: rgba(25, 25, 25, 0.3);
+  /* Compare page identity colors: "you" is always the theme accent, "them"
+     is always this green (CHART_PALETTE[1] in charts.js reads it back so
+     the canvas series match the CSS exactly). */
+  --compare-theirs: #5DD97C;
 }
 
 * {
@@ -663,6 +667,29 @@ progress::-moz-progress-bar {
   flex-shrink: 0;
 }
 
+/* Rank number + cover art column. Mobile keeps the original side-by-side
+   rail; on desktop the number sits as a slim badge above the cover. */
+.track-media {
+  display: flex;
+  gap: 18px;
+  align-items: flex-start;
+  flex-shrink: 0;
+}
+
+@media (min-width: 601px) {
+  .track-media {
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .track-media .track-number {
+    width: 120px;
+    min-height: 0;
+    padding: 4px 0;
+    box-sizing: border-box;
+  }
+}
+
 .track-cover {
   width: 120px;
   height: 120px;
@@ -767,6 +794,196 @@ progress::-moz-progress-bar {
   grid-template-columns: 1fr 1fr;
   gap: 2rem;
   margin-bottom: 2.5rem;
+}
+
+/* AJAX partial-update fade: regions being swapped dim out, new content
+   fades back in (mirrors the Wrapped page's loading treatment). */
+.loading-fade {
+  opacity: 0.15 !important;
+  pointer-events: none;
+}
+
+#compareStatsTable,
+.compare-similarities,
+.chart-canvas-wrap,
+.track-list {
+  transition: opacity 0.2s ease-in-out;
+}
+
+/* Compare page's head-to-head stats table (replaces per-row inline styles
+   so the last row can drop its bottom border). */
+.compare-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+}
+
+.compare-table th,
+.compare-table td {
+  padding: 12px 8px;
+}
+
+.compare-table thead tr {
+  border-bottom: 2px solid var(--glass-border);
+  color: var(--muted);
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.compare-table tbody tr {
+  border-bottom: 1px solid var(--glass-border);
+}
+
+.compare-table tbody tr:last-child {
+  border-bottom: none;
+}
+
+.compare-table th.value,
+.compare-table td.value {
+  text-align: right;
+  font-weight: 600;
+}
+
+/* The side with the larger count/time of a head-to-head row. The ▲ marker
+   (plus visually-hidden text) carries the signal for color-blind users and
+   screen readers - color alone isn't enough. */
+.compare-table td.value.leader {
+  color: var(--accent);
+}
+
+.leader-marker {
+  font-size: 0.7em;
+  vertical-align: 0.15em;
+}
+
+/* Standard screen-reader-only utility: visually removed, still announced. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.compare-cell-link {
+  color: inherit;
+}
+
+.compare-cell-link:hover {
+  color: var(--accent);
+}
+
+/* Similarity summary cards - long song/album names need a smaller value
+   size than the numeric summary cards the grid was designed for. */
+.compare-similarities {
+  margin-bottom: 2rem;
+}
+
+.compare-similarities .summary-value {
+  font-size: 1.25rem;
+}
+
+/* "You Both Love" versus block. .mine mirrors the trend chart's first
+   series color (the theme accent), .theirs its second (CHART_PALETTE[1]
+   in charts.js). */
+.compare-versus {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.compare-split-bar {
+  display: flex;
+  height: 8px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.compare-split-bar .mine {
+  background: var(--accent);
+}
+
+.compare-split-bar .theirs {
+  background: var(--compare-theirs);
+}
+
+.compare-versus-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.compare-versus-mine {
+  color: var(--accent);
+}
+
+.compare-versus-theirs {
+  color: var(--compare-theirs);
+}
+
+/* Sub-headings for the "You Both Love" artists/songs/albums groups. */
+.compare-shared-heading {
+  margin: 24px 0 12px;
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* Taste-match headline badge in the Compare hero. */
+.taste-match {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-top: 16px;
+  padding: 10px 22px;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  background: var(--accent-glow);
+}
+
+.taste-match-value {
+  font-family: var(--font-headings);
+  font-size: 1.6rem;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.taste-match-label {
+  font-size: 0.9rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+/* "You vs. them" identity carried through table headers, column headings,
+   and the hero - same colors as the trend chart's two series. */
+.compare-user-mine {
+  color: var(--accent);
+}
+
+.compare-user-theirs {
+  color: var(--compare-theirs);
+}
+
+.compare-user-label::before {
+  content: '';
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  background: currentColor;
+  margin-right: 6px;
 }
 
 .form-group {

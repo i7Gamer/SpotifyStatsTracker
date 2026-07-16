@@ -271,6 +271,73 @@ class TestGetHourOfDayHeatmap(ChartStatsTestCase):
         self.assertEqual(grid[0][9]["plays"], 1)
 
 
+class TestGetBucketedPlayTotals(ChartStatsTestCase):
+    """The SQL half of the date-bucketed charts: plays pre-aggregated into
+    fixed 15-minute UTC buckets, so Python only maps bucket starts to the
+    user's IANA timezone instead of iterating every play row."""
+
+    def test_aggregates_plays_within_the_same_bucket(self):
+        entries = [
+            {"id": "t1", "playedAt": _ts(2026, 7, 1, 12, 1), "timePlayed": 1000},
+            {"id": "t1", "playedAt": _ts(2026, 7, 1, 12, 14), "timePlayed": 2000},   #< same 15-min bucket
+            {"id": "t1", "playedAt": _ts(2026, 7, 1, 12, 16), "timePlayed": 4000},   #< next bucket
+        ]
+        db = self._makeDb({}, entries)
+
+        rows = db.repo.getBucketedPlayTotals("testuser")
+
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["bucketStartTs"], _ts(2026, 7, 1, 12, 0))
+        self.assertEqual(rows[0]["plays"], 2)
+        self.assertEqual(rows[0]["totalTimeListened"], 3000)
+        self.assertEqual(rows[1]["bucketStartTs"], _ts(2026, 7, 1, 12, 15))
+        self.assertEqual(rows[1]["plays"], 1)
+
+
+class TestBucketedTimezoneCorrectness(ChartStatsTestCase):
+    """Buckets are aggregated in UTC by SQL, but chart labels must follow the
+    app's configurable timezone - these pin the boundary cases that would
+    break if the SQL buckets ever got coarser than the smallest real-world
+    UTC offset granularity (15 minutes)."""
+
+    def _patchTz(self, offsetHours, offsetMinutes=0):
+        fixedTz = datetime.timezone(datetime.timedelta(hours=offsetHours, minutes=offsetMinutes))
+        patcher = patch.object(utilsModule, "tz", fixedTz)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_time_series_buckets_by_local_day_across_utc_midnight(self):
+        self._patchTz(2)
+        #< 22:30 UTC July 1 = 00:30 local July 2
+        entries = [{"id": "t1", "playedAt": _ts(2026, 7, 1, 22, 30), "timePlayed": 1000}]
+        db = self._makeDb({}, entries)
+
+        result = db.getListeningTimeSeries(groupBy="day")
+
+        self.assertEqual([b["label"] for b in result], ["2026-07-02"])
+
+    def test_time_series_respects_half_hour_offset_timezones(self):
+        self._patchTz(5, 30)   #< e.g. Asia/Kolkata
+        #< 18:45 UTC July 1 = 00:15 local July 2
+        entries = [{"id": "t1", "playedAt": _ts(2026, 7, 1, 18, 45), "timePlayed": 1000}]
+        db = self._makeDb({}, entries)
+
+        result = db.getListeningTimeSeries(groupBy="day")
+
+        self.assertEqual([b["label"] for b in result], ["2026-07-02"])
+
+    def test_heatmap_maps_weekday_and_hour_in_local_time(self):
+        self._patchTz(2)
+        #< Monday 23:30 UTC = Tuesday 01:30 local
+        entries = [{"id": "t1", "playedAt": _ts(2026, 7, 6, 23, 30), "timePlayed": 1000}]
+        db = self._makeDb({}, entries)
+
+        grid = db.getHourOfDayHeatmap()
+
+        self.assertEqual(grid[1][1]["plays"], 1)
+        self.assertEqual(grid[0][23]["plays"], 0)   #< NOT the UTC cell
+
+
 class TestGetArtistTrend(ChartStatsTestCase):
     def _sampleData(self):
         artistA = {"name": "Artist A", "id": "a1"}

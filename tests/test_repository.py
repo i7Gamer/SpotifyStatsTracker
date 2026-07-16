@@ -1105,68 +1105,88 @@ class TestStatsAggregates(RepositoryTestCase):
     def test_get_artist_totals_empty_range_returns_zeros(self):
         self.assertEqual(self.repo.getArtistTotals("alice"), (0, 0, 0))
 
-    def test_plays_in_range(self):
-        self.repo.upsertTrack(self._track("t1", "alb1", "a1"))
-        self.repo.insertPlay("alice", "t1", 100.0, 1000)
-        self.repo.insertPlay("alice", "t1", 200.0, 2000)
-        self.repo.commit()
-
-        plays = self.repo.getPlaysInRange("alice")
-
-        self.assertEqual(sorted(p["playedAt"] for p in plays), [100.0, 200.0])
-
-    def test_plays_in_range_includes_track_id(self):
-        """Needed by Database._reconcileWithWebApiHistory to target deletePlay()
-        precisely - not just for chart bucketing, which ignores the extra key."""
+    def test_ranged_play_queries_use_the_time_index(self):
+        """The old static '(? IS NULL OR played_at >= ?)' range clause is
+        non-sargable - SQLite can't use played_at as an index range bound
+        through the OR, so every ranged query walked the user's whole play
+        history. The clause must emit only the bounds that exist, letting
+        the (username, played_at) index prune the scan."""
         self.repo.upsertTrack(self._track("t1", "alb1", "a1"))
         self.repo.insertPlay("alice", "t1", 100.0, 1000)
         self.repo.commit()
+        conn = self.repo._conn()
 
-        plays = self.repo.getPlaysInRange("alice")
+        params = ["alice"]
+        clause = self.repo._dateRangeClause(params, 50.0, 150.0)
+        plan = "\n".join(row[3] for row in conn.execute(
+            f"EXPLAIN QUERY PLAN SELECT COUNT(*) FROM plays WHERE username = ?{clause}", params))
 
-        self.assertEqual(plays[0]["id"], "t1")
+        self.assertIn("idx_plays_user_time", plan)
+        self.assertIn("played_at", plan)   #< the index is used as a RANGE scan, not just the username prefix
 
-    def test_plays_in_range_filtered_by_track_id(self):
+    def test_date_range_clause_emits_no_conditions_for_all_time(self):
+        params = ["alice"]
+        clause = self.repo._dateRangeClause(params, None, None)
+        self.assertEqual(clause, "")
+        self.assertEqual(params, ["alice"])
+
+    def test_bucketed_play_totals_sums_within_a_bucket(self):
+        self.repo.upsertTrack(self._track("t1", "alb1", "a1"))
+        self.repo.insertPlay("alice", "t1", 100.0, 1000)
+        self.repo.insertPlay("alice", "t1", 200.0, 2000)   #< same 15-minute bucket as 100.0
+        self.repo.commit()
+
+        rows = self.repo.getBucketedPlayTotals("alice")
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["bucketStartTs"], 0)
+        self.assertEqual(rows[0]["plays"], 2)
+        self.assertEqual(rows[0]["totalTimeListened"], 3000)
+
+    def test_bucketed_play_totals_filtered_by_track_id(self):
         self.repo.upsertTrack(self._track("t1", "alb1", "a1"))
         self.repo.upsertTrack(self._track("t2", "alb1", "a1"))
         self.repo.insertPlay("alice", "t1", 100.0, 1000)
         self.repo.insertPlay("alice", "t2", 200.0, 2000)
         self.repo.commit()
 
-        plays = self.repo.getPlaysInRange("alice", trackId="t1")
+        rows = self.repo.getBucketedPlayTotals("alice", trackId="t1")
 
-        self.assertEqual([p["playedAt"] for p in plays], [100.0])
+        self.assertEqual([(r["plays"], r["totalTimeListened"]) for r in rows], [(1, 1000)])
 
-    def test_plays_in_range_filtered_by_artist_id(self):
+    def test_bucketed_play_totals_filtered_by_artist_id(self):
         self.repo.upsertTrack(self._track("t1", "alb1", "a1"))
         self.repo.upsertTrack(self._track("t2", "alb1", "a2"))
         self.repo.insertPlay("alice", "t1", 100.0, 1000)
         self.repo.insertPlay("alice", "t2", 200.0, 2000)
         self.repo.commit()
 
-        plays = self.repo.getPlaysInRange("alice", artistId="a1")
+        rows = self.repo.getBucketedPlayTotals("alice", artistId="a1")
 
-        self.assertEqual([p["playedAt"] for p in plays], [100.0])
+        self.assertEqual([(r["plays"], r["totalTimeListened"]) for r in rows], [(1, 1000)])
 
-    def test_plays_in_range_filtered_by_album_id(self):
+    def test_bucketed_play_totals_filtered_by_album_id(self):
         self.repo.upsertTrack(self._track("t1", "alb1", "a1"))
         self.repo.upsertTrack(self._track("t2", "alb2", "a1"))
         self.repo.insertPlay("alice", "t1", 100.0, 1000)
         self.repo.insertPlay("alice", "t2", 200.0, 2000)
         self.repo.commit()
 
-        plays = self.repo.getPlaysInRange("alice", albumId="alb1")
+        rows = self.repo.getBucketedPlayTotals("alice", albumId="alb1")
 
-        self.assertEqual([p["playedAt"] for p in plays], [100.0])
+        self.assertEqual([(r["plays"], r["totalTimeListened"]) for r in rows], [(1, 1000)])
 
-    def test_play_artist_pairs_yields_one_row_per_artist(self):
+    def test_bucketed_artist_play_counts_yield_one_count_per_artist(self):
+        """A play whose track has N artists counts once per artist, matching
+        the per-(play, artist) increment the old Python loop did."""
         self.repo.upsertTrack(self._track("t1", "alb1", "a1", "a2"))
         self.repo.insertPlay("alice", "t1", 100.0, 1000)
         self.repo.commit()
 
-        pairs = self.repo.getPlayArtistPairsInRange("alice")
+        rows = self.repo.getBucketedArtistPlayCounts("alice")
 
-        self.assertEqual(sorted(p["artistName"] for p in pairs), ["Artist a1", "Artist a2"])
+        self.assertEqual(sorted((r["artistName"], r["plays"]) for r in rows),
+                         [("Artist a1", 1), ("Artist a2", 1)])
 
     def test_play_totals(self):
         self.repo.upsertTrack(self._track("t1", "alb1", "a1"))

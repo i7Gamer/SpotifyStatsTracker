@@ -13,14 +13,22 @@ from app import SpotifyDashboardApp
 _SECRET_KEY_PATCH = 'app.SpotifyDashboardApp._get_or_create_secret_key'
 
 
-def _artist(artistId, name):
-    return {"id": artistId, "name": name}
+def _artist(artistId, name, **extra):
+    return {"id": artistId, "name": name, **extra}
 
 
-def _song(trackId, name):
+def _song(trackId, name, **extra):
     # duration/artists are required by _embedSongTextElements (direct key
     # access), everything else the card template reads via .get().
-    return {"id": trackId, "name": name, "artists": [], "duration": 60000}
+    return {"id": trackId, "name": name, "artists": [], "duration": 60000, **extra}
+
+
+def _album(albumId, name, **extra):
+    return {"id": albumId, "name": name, "artists": [], **extra}
+
+
+def _zeroHeatmapGrid():
+    return [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
 
 
 class TestCompareRoute(unittest.TestCase):
@@ -41,6 +49,11 @@ class TestCompareRoute(unittest.TestCase):
         db.getTopArtists.return_value = []
         db.getTopAlbums.return_value = []
         db.getListeningTimeSeries.return_value = []
+        db.getSongsCount.return_value = 0
+        db.getArtistsCount.return_value = 0
+        db.getCompletionStats.return_value = {"skips": 0, "completes": 0, "partials": 0}
+        db.getExplicitRatio.return_value = {"explicit": 0, "clean": 0}
+        db.getHourOfDayHeatmap.return_value = _zeroHeatmapGrid()
         db.readProgress.return_value = {"status": "idle", "current": 0, "total": 0, "percentage": 0, "message": "", "error": False}
         return db
 
@@ -219,8 +232,9 @@ class TestCompareRoute(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         # Each rendered card mentions the name twice (img alt= + <h3>). The
         # artist must appear in bob's column AND in "You Both Love", but NOT
-        # in alice's top-ten column (it's her #11) - exactly 2 cards.
-        self.assertEqual(resp.data.count(b"OverlapOnlyArtist"), 4)
+        # in alice's top-ten column (it's her #11) - exactly 2 cards, plus one
+        # mention as the "Common Top Artist" similarity cell.
+        self.assertEqual(resp.data.count(b"OverlapOnlyArtist"), 5)
         self.assertIn(b"AliceArtist9", resp.data)   #< her actual top ten still renders
 
     def test_summary_row_derives_from_the_same_lists_the_page_shows(self):
@@ -350,6 +364,435 @@ class TestCompareRoute(unittest.TestCase):
         resp = client.get("/import")
 
         self.assertNotIn(b'href="/compare"', resp.data)
+
+    def test_stats_table_shows_listening_style_rows(self):
+        """The 'differences in listening style' rows: unique songs/artists,
+        skip rate, explicit share, and peak hour/day derived from the
+        heatmap grid."""
+        self._accept("alice", "bob")
+        self.dbs["alice"].getSongsCount.return_value = 1111
+        self.dbs["alice"].getArtistsCount.return_value = 222
+        self.dbs["alice"].getCompletionStats.return_value = {"skips": 1, "completes": 3, "partials": 0}
+        self.dbs["alice"].getExplicitRatio.return_value = {"explicit": 1, "clean": 3}
+        grid = _zeroHeatmapGrid()
+        grid[2][14] = {"totalTimeListened": 999, "plays": 5}   #< Wednesday 14:00
+        self.dbs["alice"].getHourOfDayHeatmap.return_value = grid
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn(b"1,111", resp.data)       #< unique songs, thousands-formatted
+        self.assertIn(b"222", resp.data)         #< unique artists
+        self.assertIn(b"25%", resp.data)         #< skip rate AND explicit share: 1 of 4
+        self.assertIn(b"14:00", resp.data)       #< peak listening hour
+        self.assertIn(b"Wednesday", resp.data)   #< most active weekday
+
+    def test_style_rows_show_placeholder_without_any_plays(self):
+        """Zero plays must render placeholders, not divide by zero."""
+        self._accept("alice", "bob")
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("—".encode("utf-8"), resp.data)
+
+    def test_summary_rows_link_own_items_to_detail_pages(self):
+        self._accept("alice", "bob")
+        self.dbs["alice"].getTopSongs.return_value = [_song("s1", "AliceTopSong")]
+        self.dbs["alice"].getTopArtists.return_value = [_artist("f1", "AliceFavArtist")]
+        self.dbs["alice"].getTopAlbums.return_value = [_album("al1", "AliceTopAlbum")]
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        self.assertIn(b'<a class="compare-cell-link" href="/song/s1">', resp.data)
+        self.assertIn(b'<a class="compare-cell-link" href="/artist/f1">', resp.data)
+        self.assertIn(b'<a class="compare-cell-link" href="/album/al1">', resp.data)
+
+    def test_summary_rows_link_counterpart_items_to_spotify(self):
+        """The counterpart's summary cells can't use detail links (they resolve
+        against the viewer's db) - they link to Spotify instead, and only when
+        a real URL exists (fabricated ids carry an empty url)."""
+        self._accept("alice", "bob")
+        self.dbs["bob"].getTopSongs.return_value = [
+            _song("their-song-1", "TheirSong", url="https://open.spotify.com/track/xyz1")]
+        self.dbs["bob"].getTopArtists.return_value = [_artist("their-artist-1", "TheirArtist", url="")]
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        self.assertIn(b'href="https://open.spotify.com/track/xyz1" target="_blank"', resp.data)
+        self.assertNotIn(b"/song/their-song-1", resp.data)
+        self.assertNotIn(b"/artist/their-artist-1", resp.data)   #< empty url: plain text, no link
+
+    def test_counterpart_card_titles_link_to_spotify_when_url_exists(self):
+        self._accept("alice", "bob")
+        self.dbs["bob"].getTopSongs.return_value = [
+            _song("their-song-1", "TheirSong", url="https://open.spotify.com/track/xyz1")]
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        # external cover link marker (internal covers have no target attr)
+        self.assertIn(b'class="track-cover-link" target="_blank"', resp.data)
+        self.assertNotIn(b"/song/their-song-1", resp.data)
+
+    def test_shared_artist_cards_show_both_users_stats(self):
+        """Item on 'You Both Love' cards: both users' plays/time/unique songs,
+        the combined listening time, and a split bar proportioned by time."""
+        self._accept("alice", "bob")
+        self.dbs["alice"].getTopArtists.return_value = [
+            _artist("sh1", "SharedArtist", plays=10, totalTimeListened=3_600_000, uniqueSongCount=4)]
+        self.dbs["bob"].getTopArtists.return_value = [
+            _artist("sh1", "SharedArtist", plays=5, totalTimeListened=1_800_000, uniqueSongCount=2)]
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        self.assertIn(b"alice: 10 plays", resp.data)
+        self.assertIn(b"bob: 5 plays", resp.data)
+        self.assertIn(b"Together: 1h 30m 0s", resp.data)
+        self.assertIn(b'style="width: 67%"', resp.data)   #< round(3.6/5.4*100)
+        # The versus block must appear ONLY on the shared card - the same dict
+        # also feeds alice's own Top Artists column, so it must be copied
+        # before the comparison data is attached.
+        self.assertEqual(resp.data.count(b"compare-split-bar\""), 1)
+
+    def test_similarities_come_from_the_deep_pools(self):
+        """Common top song/album cells run over the 100-deep pools, not the
+        displayed top ten."""
+        self._accept("alice", "bob")
+        aliceSongs = [_song(f"a{i}", f"AliceSong{i}") for i in range(10)]
+        bobSongs = [_song(f"b{i}", f"BobSong{i}") for i in range(10)]
+        shared = _song("shdeep", "DeepSharedSong")
+        self.dbs["alice"].getTopSongs.return_value = aliceSongs + [shared]   #< her #11
+        self.dbs["bob"].getTopSongs.return_value = bobSongs + [shared]       #< his #11
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        # Neither column displays it (rank 11 on both sides), so it shows in
+        # the "Common Top Song" similarity cell (1 mention) plus its shared-
+        # songs card (img alt + h3 = 2) - linked to the viewer's own detail
+        # page, which resolves since she played it.
+        self.assertEqual(resp.data.count(b"DeepSharedSong"), 3)
+        self.assertIn(b"/song/shdeep", resp.data)
+
+    def test_shared_songs_and_albums_render_with_versus_data(self):
+        self._accept("alice", "bob")
+        self.dbs["alice"].getTopSongs.return_value = [
+            _song("sh-song", "SharedSong", plays=3, totalTimeListened=60_000)]
+        self.dbs["bob"].getTopSongs.return_value = [
+            _song("sh-song", "SharedSong", plays=1, totalTimeListened=60_000)]
+        self.dbs["alice"].getTopAlbums.return_value = [
+            _album("sh-alb", "SharedAlbum", plays=4, totalTimeListened=120_000, uniqueSongCount=2)]
+        self.dbs["bob"].getTopAlbums.return_value = [
+            _album("sh-alb", "SharedAlbum", plays=6, totalTimeListened=240_000, uniqueSongCount=3)]
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        self.assertIn(b"alice: 3 plays", resp.data)                #< shared song, mine
+        self.assertIn(b"Together: 2m 0s", resp.data)               #< shared song combined
+        self.assertIn("alice: 4 plays · 2m 0s · 2 songs".encode("utf-8"), resp.data)   #< shared album keeps song counts
+        # song cards carry no unique-song counts - the segment is omitted,
+        # not rendered as "0 songs"
+        self.assertNotIn(b"0 songs", resp.data)
+        #< one split bar per shared card: song + album (no shared artists here)
+        self.assertEqual(resp.data.count(b'class="compare-split-bar"'), 2)
+
+    def test_shared_song_and_album_lists_are_capped(self):
+        self._accept("alice", "bob")
+        sharedSongs = [_song(f"s{i}", f"CapSong{i}") for i in range(12)]
+        self.dbs["alice"].getTopSongs.return_value = sharedSongs
+        self.dbs["bob"].getTopSongs.return_value = sharedSongs
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        self.assertIn(b"CapSong9", resp.data)
+        self.assertNotIn(b"CapSong10", resp.data)
+        self.assertNotIn(b"CapSong11", resp.data)
+
+    def test_ajax_includes_shared_song_and_album_chunks(self):
+        self._accept("alice", "bob")
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare?ajax=true")
+
+        data = resp.get_json()
+        self.assertIn("sharedSongsHtml", data)
+        self.assertIn("sharedAlbumsHtml", data)
+
+    def test_you_both_love_sits_between_chart_and_category_lists(self):
+        self._accept("alice", "bob")
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        chartIdx = resp.data.index(b'id="comparisonTrendChart"')
+        sharedIdx = resp.data.index(b"You Both Love")
+        listsIdx = resp.data.index(b'data-category="top-songs"')
+        self.assertLess(chartIdx, sharedIdx)
+        self.assertLess(sharedIdx, listsIdx)
+
+    def test_filter_badges_render_for_each_category(self):
+        self._accept("alice", "bob")
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        for marker in (b'data-filter="all"', b'data-filter="top-songs"',
+                       b'data-filter="top-artists"', b'data-filter="top-albums"',
+                       b'data-category="top-artists"', b'data-category="top-albums"'):
+            self.assertIn(marker, resp.data)
+
+    def test_stats_table_styling_is_class_based(self):
+        """Row borders moved from inline styles to .compare-table so the last
+        row's bottom border can be dropped via :last-child."""
+        self._accept("alice", "bob")
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        self.assertIn(b"compare-table", resp.data)
+        self.assertNotIn(b'<tr style="border-bottom', resp.data)
+
+    def test_track_cards_wrap_number_and_cover_in_a_media_column(self):
+        self._accept("alice", "bob")
+        self.dbs["alice"].getTopSongs.return_value = [_song("s1", "AliceTopSong")]
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        self.assertIn(b'class="track-media"', resp.data)
+
+    def test_trend_groupby_auto_coarsens_with_the_range_span(self):
+        """Without an explicit groupBy, day buckets over a 5-year range mean
+        ~1800 sub-pixel points - the trend picks day/week/month from the span."""
+        self._accept("alice", "bob")
+        client = self._loginAs("alice")
+
+        for interval, expected in (("month", "day"), ("year", "week"), ("5years", "month")):
+            client.get(f"/compare?interval={interval}")
+            self.assertEqual(
+                self.dbs["alice"].getListeningTimeSeries.call_args.kwargs["groupBy"],
+                expected, f"interval={interval}")
+
+    def test_trend_bucket_dropdown_defaults_to_auto(self):
+        """The visible groupBy control: Auto (empty value, server derives the
+        bucketing from the range span) is preselected unless an explicit
+        groupBy was passed."""
+        self._accept("alice", "bob")
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+        respExplicit = client.get("/compare?groupBy=week")
+
+        self.assertIn(b'id="groupBy"', resp.data)
+        self.assertIn(b'<option value="" selected>Auto</option>', resp.data)
+        self.assertIn(b'<option value="week" selected>Week</option>', respExplicit.data)
+
+    def test_explicit_groupby_param_overrides_the_auto_choice(self):
+        self._accept("alice", "bob")
+        client = self._loginAs("alice")
+
+        client.get("/compare?interval=5years&groupBy=day")
+
+        self.assertEqual(self.dbs["alice"].getListeningTimeSeries.call_args.kwargs["groupBy"], "day")
+
+    def test_user_identity_colors_mark_table_headers_and_column_headings(self):
+        """"You" is always the accent color, "them" always --compare-theirs -
+        the classes must appear on the table headers and both columns'
+        headings so every section reads with the same color mapping as the
+        trend chart."""
+        self._accept("alice", "bob")
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        self.assertIn(b'compare-user-mine compare-user-label js-my-username">alice</span>', resp.data)
+        self.assertIn(b'compare-user-theirs compare-user-label js-with-username">bob</span>', resp.data)
+        #< four mine-labels: table header + three column headings
+        self.assertEqual(resp.data.count(b"compare-user-mine"), 4)
+        #< theirs additionally colors the hero name (no label dot there)
+        self.assertEqual(resp.data.count(b"compare-user-theirs"), 5)
+
+    def test_limit_param_controls_displayed_list_sizes(self):
+        """The dropdown slices the displayed lists (and shared lists) deeper
+        into the same 100-deep pools - the pools themselves stay fixed since
+        the overlap/similarity math needs their full depth."""
+        self._accept("alice", "bob")
+        self.dbs["alice"].getTopArtists.return_value = [
+            _artist(f"pa{i}", f"PagedArtist{i}") for i in range(30)]
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare?limit=25")
+
+        self.assertIn(b"PagedArtist24", resp.data)
+        self.assertNotIn(b"PagedArtist25", resp.data)
+
+    def test_invalid_limit_falls_back_to_the_default(self):
+        self._accept("alice", "bob")
+        self.dbs["alice"].getTopArtists.return_value = [
+            _artist(f"pa{i}", f"PagedArtist{i}") for i in range(30)]
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare?limit=13")
+
+        self.assertIn(b"PagedArtist9", resp.data)
+        self.assertNotIn(b"PagedArtist10", resp.data)
+
+    def test_limit_applies_to_the_shared_lists_too(self):
+        self._accept("alice", "bob")
+        sharedSongs = [_song(f"s{i}", f"CapSong{i}") for i in range(30)]
+        self.dbs["alice"].getTopSongs.return_value = sharedSongs
+        self.dbs["bob"].getTopSongs.return_value = sharedSongs
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare?limit=25")
+
+        self.assertIn(b"CapSong24", resp.data)
+        self.assertNotIn(b"CapSong25", resp.data)
+
+    def test_items_per_category_dropdown_renders(self):
+        self._accept("alice", "bob")
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        self.assertIn(b'id="limit"', resp.data)
+        self.assertIn(b'<option value="10" selected>10</option>', resp.data)
+        self.assertIn(b'<option value="100" >100</option>', resp.data)
+
+    def test_taste_match_weights_category_overlaps(self):
+        """artists 5/10 shared (weight .5), songs 2/10 (weight .3), albums
+        0/10 (weight .2) -> 0.25 + 0.06 + 0 = 31%."""
+        self._accept("alice", "bob")
+        sharedArtists = [_artist(f"sa{i}", f"SharedA{i}") for i in range(5)]
+        self.dbs["alice"].getTopArtists.return_value = sharedArtists + [_artist(f"a{i}", f"A{i}") for i in range(5)]
+        self.dbs["bob"].getTopArtists.return_value = sharedArtists + [_artist(f"b{i}", f"B{i}") for i in range(5)]
+        sharedSongs = [_song(f"ss{i}", f"SharedS{i}") for i in range(2)]
+        self.dbs["alice"].getTopSongs.return_value = sharedSongs + [_song(f"as{i}", f"AS{i}") for i in range(8)]
+        self.dbs["bob"].getTopSongs.return_value = sharedSongs + [_song(f"bs{i}", f"BS{i}") for i in range(8)]
+        self.dbs["alice"].getTopAlbums.return_value = [_album(f"aal{i}", f"AAl{i}") for i in range(10)]
+        self.dbs["bob"].getTopAlbums.return_value = [_album(f"bal{i}", f"BAl{i}") for i in range(10)]
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        self.assertIn(b'class="taste-match-value js-taste-match">31%</span>', resp.data)
+
+    def test_taste_match_excludes_categories_without_data_on_both_sides(self):
+        """Only artists have data: 5 of 10 shared -> 50%, with the empty
+        song/album categories excluded instead of dragging the score down."""
+        self._accept("alice", "bob")
+        sharedArtists = [_artist(f"sa{i}", f"SharedA{i}") for i in range(5)]
+        self.dbs["alice"].getTopArtists.return_value = sharedArtists + [_artist(f"a{i}", f"A{i}") for i in range(5)]
+        self.dbs["bob"].getTopArtists.return_value = sharedArtists + [_artist(f"b{i}", f"B{i}") for i in range(5)]
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        self.assertIn(b'class="taste-match-value js-taste-match">50%</span>', resp.data)
+
+    def test_taste_match_hidden_without_any_pool_data(self):
+        self._accept("alice", "bob")
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        self.assertIn(b'id="tasteMatch" style="display: none;"', resp.data)
+
+    def test_ajax_includes_the_taste_match(self):
+        self._accept("alice", "bob")
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare?ajax=true")
+
+        data = resp.get_json()
+        self.assertIn("tasteMatch", data)
+        self.assertIsNone(data["tasteMatch"])   #< empty stub pools -> hidden, not 0%
+
+    def test_ajax_returns_partial_chunks_not_a_full_page(self):
+        """The filter controls swap regions in place via ?ajax=true, mirroring
+        the Wrapped page's fade-and-swap pattern."""
+        self._accept("alice", "bob")
+        self.dbs["alice"].getTopSongs.return_value = [_song("s1", "MyAjaxSong")]
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare?ajax=true")
+
+        data = resp.get_json()
+        for key in ("withUsername", "statsTableHtml", "similaritiesHtml", "sharedArtistsHtml",
+                    "myTopSongsHtml", "theirTopSongsHtml", "myTopArtistsHtml",
+                    "theirTopArtistsHtml", "myTopAlbumsHtml", "theirTopAlbumsHtml",
+                    "comparisonTrend"):
+            self.assertIn(key, data)
+        self.assertEqual(data["withUsername"], "bob")
+        self.assertIn("MyAjaxSong", data["myTopSongsHtml"])
+        self.assertIn("compare-table", data["statsTableHtml"])
+        self.assertNotIn("<html", data["statsTableHtml"].lower())   #< chunks, not a page
+
+    def test_ajax_counterpart_lists_stay_unlinked_from_detail_pages(self):
+        self._accept("alice", "bob")
+        self.dbs["bob"].getTopSongs.return_value = [_song("their-song-1", "TheirSong")]
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare?ajax=true")
+
+        data = resp.get_json()
+        self.assertIn("TheirSong", data["theirTopSongsHtml"])
+        self.assertNotIn("/song/their-song-1", data["theirTopSongsHtml"])
+
+    def test_ajax_requires_an_accepted_share_like_the_full_page(self):
+        client = self._loginAs("alice")   #< no accepted shares
+
+        resp = client.get("/compare?ajax=true")
+
+        self.assertEqual(resp.status_code, 404)
+
+    def test_leader_cells_carry_a_non_color_marker(self):
+        """The accent color alone can't mark the leading side for color-blind
+        users or screen readers - the winning cell gets a ▲ plus hidden
+        '(higher)' text, and only the winning cell."""
+        self._accept("alice", "bob")
+        self.dbs["alice"].getPlayTotals.return_value = (10, 1000)
+        self.dbs["bob"].getPlayTotals.return_value = (5, 500)
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        marker = ' <span class="leader-marker" aria-hidden="true">▲</span><span class="visually-hidden">(higher)</span>'.encode("utf-8")
+        #< alice leads plays AND time: exactly two marked cells
+        self.assertEqual(resp.data.count(marker), 2)
+        self.assertIn(b'class="value leader">10' , resp.data)
+
+    def test_split_bar_carries_an_accessible_description(self):
+        self._accept("alice", "bob")
+        self.dbs["alice"].getTopArtists.return_value = [
+            _artist("sh1", "SharedArtist", plays=10, totalTimeListened=3_600_000)]
+        self.dbs["bob"].getTopArtists.return_value = [
+            _artist("sh1", "SharedArtist", plays=5, totalTimeListened=1_800_000)]
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        #< apostrophes render autoescaped (&#39;) inside the attributes
+        self.assertIn(
+            b'role="img" title="67% of the combined listening time is alice&#39;s, 33% bob&#39;s" '
+            b'aria-label="67% of the combined listening time is alice&#39;s, 33% bob&#39;s"',
+            resp.data)
+
+    def test_trend_canvas_has_an_accessible_label(self):
+        self._accept("alice", "bob")
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        self.assertIn(b'id="comparisonTrendChart" role="img"', resp.data)
 
     def test_share_status_is_computed_once_per_request(self):
         """One request can render several templates (the Wrapped AJAX endpoint
