@@ -181,4 +181,9 @@ class TestOverviewDatabaseStats(unittest.TestCase):
         self.assertEqual(users[0]["username"], "u1")
         self.assertEqual(users[0]["email"], "u1@example.com")
         self.assertEqual(users[0]["spotify_client_id"], "client")
-        self.assertEqual(users[0]["spotify_refresh_token"], "refresh")
+        # The overview page only checks token PRESENCE (bool) - this listing
+        # deliberately returns the raw stored value, which is encrypted at
+        # rest (see Database/secret_store.py), never the decrypted secret.
+        from Database.secret_store import ENCRYPTED_PREFIX
+        self.assertTrue(users[0]["spotify_refresh_token"])
+        self.assertTrue(users[0]["spotify_refresh_token"].startswith(ENCRYPTED_PREFIX))

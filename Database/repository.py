@@ -8,9 +8,11 @@ from pathlib import Path
 try:
     import Database.db as db
     from Database.db import ConnectionManager, SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON
+    from Database.secret_store import encryptSecret, decryptSecret, isEncrypted
 except ModuleNotFoundError:
     import db
     from db import ConnectionManager, SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON
+    from secret_store import encryptSecret, decryptSecret, isEncrypted
 
 IMAGE_KIND_TRACK = "track"
 IMAGE_KIND_ARTIST = "artist"
@@ -1320,11 +1322,13 @@ class Repository:
             conn.execute("UPDATE users SET email=? WHERE username=?", (email, username))
 
     def setUserCookies(self, username: str, cookies: dict) -> None:
+        # Encrypted at rest: these are a live Spotify session - see
+        # Database/secret_store.py.
         conn = self._conn()
         with conn:
             conn.execute(
                 "UPDATE users SET cookies_json=? WHERE username=?",
-                (json.dumps(cookies), username),
+                (encryptSecret(json.dumps(cookies)), username),
             )
 
     def getUserCookies(self, username: str) -> dict | None:
@@ -1332,7 +1336,13 @@ class Repository:
         row = conn.execute("SELECT cookies_json FROM users WHERE username=?", (username,)).fetchone()
         if row is None or row["cookies_json"] is None:
             return None
-        return json.loads(row["cookies_json"])
+        # Legacy plaintext rows pass through decryptSecret unchanged; an
+        # undecryptable row (rotated/lost key) reads as "no cookies stored",
+        # which routes the user through re-login instead of crashing.
+        decrypted = decryptSecret(row["cookies_json"])
+        if decrypted is None:
+            return None
+        return json.loads(decrypted)
 
     def setUserPassword(self, username: str, passwordHash: str) -> None:
         conn = self._conn()
@@ -1357,18 +1367,44 @@ class Repository:
             return None
         return {
             "client_id": row["spotify_client_id"],
-            "client_secret": row["spotify_client_secret"],
-            "refresh_token": row["spotify_refresh_token"],
+            "client_secret": decryptSecret(row["spotify_client_secret"]),
+            "refresh_token": decryptSecret(row["spotify_refresh_token"]),
         }
 
     def updateUserSpotifyCredentials(self, username: str, clientId: str | None,
                                      clientSecret: str | None, refreshToken: str | None) -> None:
+        # The client id is public (it appears in the OAuth authorize URL);
+        # the secret and refresh token are encrypted at rest - see
+        # Database/secret_store.py.
         conn = self._conn()
         with conn:
             conn.execute(
                 "UPDATE users SET spotify_client_id = ?, spotify_client_secret = ?, spotify_refresh_token = ? WHERE username = ?",
-                (clientId, clientSecret, refreshToken, username)
+                (clientId,
+                 encryptSecret(clientSecret) if clientSecret else clientSecret,
+                 encryptSecret(refreshToken) if refreshToken else refreshToken,
+                 username)
             )
+
+    def encryptStoredSecretsIfPlaintext(self) -> int:
+        """Encrypt any users-table secret still stored as plaintext (rows
+        written before encryption existed) - the 1.16.0 -> 1.17.0 migration.
+        Already-encrypted and empty values are left untouched, so re-running
+        is safe. Returns the number of users updated. Does NOT commit - the
+        caller (migrator) owns the transaction."""
+        conn = self._conn()
+        secretColumns = ("cookies_json", "spotify_client_secret", "spotify_refresh_token")
+        updated = 0
+        for row in conn.execute(f"SELECT username, {', '.join(secretColumns)} FROM users").fetchall():
+            changes = {column: encryptSecret(row[column])
+                       for column in secretColumns
+                       if row[column] and not isEncrypted(row[column])}
+            if changes:
+                setClause = ", ".join(f"{column}=?" for column in changes)
+                conn.execute(f"UPDATE users SET {setClause} WHERE username=?",
+                             (*changes.values(), row["username"]))
+                updated += 1
+        return updated
 
     def getUserSettings(self, username: str) -> dict:
         conn = self._conn()

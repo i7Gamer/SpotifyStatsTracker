@@ -25,6 +25,19 @@ def _blockNetwork(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolateEncryptionKey(tmp_path, monkeypatch):
+    """No test may read or write the real secrets/data_encryption_key.txt, nor
+    pick up a DATA_ENCRYPTION_KEY/FLASK_SECRET_KEY from the host environment -
+    each test gets its own key file path (auto-created on first use), so
+    encryption is deterministic within a test and isolated between tests."""
+    import Database.secret_store as secretStore
+
+    monkeypatch.delenv(secretStore.ENCRYPTION_KEY_ENV_VAR, raising=False)
+    monkeypatch.delenv(secretStore.FLASK_SECRET_KEY_ENV_VAR, raising=False)
+    monkeypatch.setattr(secretStore, "DEFAULT_KEY_PATH", tmp_path / "test_data_encryption_key.txt")
+
+
+@pytest.fixture(autouse=True)
 def _isolateDefaultDbPath(tmp_path, monkeypatch):
     """No test should ever touch the real Database/Users/spotify_stats.db - only
     tests that explicitly pass dbPath= are meant to touch a database at all.
