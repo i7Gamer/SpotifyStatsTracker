@@ -5,6 +5,10 @@
   <div class="hero-content">
     <h1>Compare with <span class="compare-user-theirs js-with-username">{{ withUsername }}</span></h1>
     <p>See how your listening stats stack up against someone who shares their data with you.</p>
+    <div class="taste-match" id="tasteMatch"{% if tasteMatch is none %} style="display: none;"{% endif %}>
+      <span class="taste-match-value js-taste-match">{{ tasteMatch if tasteMatch is not none else '' }}%</span>
+      <span class="taste-match-label">taste match</span>
+    </div>
   </div>
 </section>
 
@@ -193,6 +197,14 @@
         document.getElementById('theirTopAlbumsList').innerHTML = data.theirTopAlbumsHtml;
 
         document.querySelectorAll('.js-with-username').forEach(el => el.textContent = data.withUsername);
+
+        const tasteMatchEl = document.getElementById('tasteMatch');
+        if (tasteMatchEl) {
+          tasteMatchEl.style.display = data.tasteMatch === null ? 'none' : '';
+          if (data.tasteMatch !== null) {
+            tasteMatchEl.querySelector('.js-taste-match').textContent = data.tasteMatch + '%';
+          }
+        }
 
         window.__chartData.comparisonTrend = data.comparisonTrend;
         if (window.renderComparisonMirror) {

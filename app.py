@@ -34,6 +34,10 @@ COMPARE_TOP_LIST_SIZE = 10                #< items per top-songs/artists/albums 
 COMPARE_OVERLAP_POOL_SIZE = 100           #< how deep each side's top songs/artists/albums lists are searched for shared taste overlap
 COMPARE_TREND_WEEK_SPAN_DAYS = 120        #< comparison trends spanning more days than this auto-bucket by week...
 COMPARE_TREND_MONTH_SPAN_DAYS = 730       #< ...and more than this by month (day buckets over years are sub-pixel)
+# Taste-match weighting: artists say more about shared taste than one song
+# both happened to play, albums sit between. Categories without data on both
+# sides are excluded and the remaining weights renormalized.
+TASTE_MATCH_WEIGHTS = {"artists": 0.5, "songs": 0.3, "albums": 0.2}
 WEEKDAY_NAMES = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
 MAX_UPLOAD_MB = 500              #< cap on a single import-history request's total upload size
 DEFAULT_SORT_BY = "totalTimeListened"
@@ -500,6 +504,27 @@ class SpotifyDashboardApp:
             "peakHourText": f"{hourTotals.index(max(hourTotals)):02d}:00" if any(hourTotals) else "—",
             "peakDayText": WEEKDAY_NAMES[dayTotals.index(max(dayTotals))] if any(dayTotals) else "—",
         }
+
+    def _tasteMatchPercent(self, my, their, similarities) -> int | None:
+        """One headline number for how much two users' pools overlap: the
+        weighted share of the smaller side's pool the other side also has,
+        per category (see TASTE_MATCH_WEIGHTS). None when no category has
+        data on both sides - the UI hides the badge instead of showing a
+        misleading 0%."""
+        categories = {
+            "artists": (similarities["sharedArtistCount"], my["topArtistsPool"], their["topArtistsPool"]),
+            "songs": (similarities["sharedSongCount"], my["topSongsPool"], their["topSongsPool"]),
+            "albums": (similarities["sharedAlbumCount"], my["topAlbumsPool"], their["topAlbumsPool"]),
+        }
+        parts = []
+        for kind, (sharedCount, myPool, theirPool) in categories.items():
+            denominator = min(len(myPool), len(theirPool))
+            if denominator:
+                parts.append((sharedCount / denominator, TASTE_MATCH_WEIGHTS[kind]))
+        if not parts:
+            return None
+        return round(sum(fraction * weight for fraction, weight in parts)
+                     / sum(weight for _, weight in parts) * 100)
 
     def _buildPageUrl(self, endpoint, page, **queryArgs):
         cleanArgs = {key: value for key, value in queryArgs.items() if value not in (None, "")}
@@ -2055,6 +2080,7 @@ class SpotifyDashboardApp:
                 "sharedAlbumCount": sum(1 for a in my["topAlbumsPool"] if a["id"] in theirAlbumIds),
                 "poolSize": COMPARE_OVERLAP_POOL_SIZE,
             }
+            tasteMatch = self._tasteMatchPercent(my, their, similarities)
 
             trendStartDate, trendEndDate = startDate, endDate
             if trendStartDate is None or trendEndDate is None:
@@ -2109,6 +2135,7 @@ class SpotifyDashboardApp:
                 listArgs = dict(username=username, compareWith=withUsername, emptyMessage=emptyMessage)
                 return jsonify({
                     "withUsername": withUsername,
+                    "tasteMatch": tasteMatch,
                     "statsTableHtml": render_template(
                         "_compare_stats_table.html", my=my, their=their,
                         username=username, withUsername=withUsername),
@@ -2146,6 +2173,7 @@ class SpotifyDashboardApp:
                 their=their,
                 sharedArtists=sharedArtists,
                 similarities=similarities,
+                tasteMatch=tasteMatch,
                 comparisonTrend=comparisonTrend,
                 interval=interval,
                 customStart=customStart,

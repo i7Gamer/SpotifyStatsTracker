@@ -910,6 +910,32 @@ progress::-moz-progress-bar {
   color: var(--compare-theirs);
 }
 
+/* Taste-match headline badge in the Compare hero. */
+.taste-match {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-top: 16px;
+  padding: 10px 22px;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  background: var(--accent-glow);
+}
+
+.taste-match-value {
+  font-family: var(--font-headings);
+  font-size: 1.6rem;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.taste-match-label {
+  font-size: 0.9rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
 /* "You vs. them" identity carried through table headers, column headings,
    and the hero - same colors as the trend chart's two series. */
 .compare-user-mine {

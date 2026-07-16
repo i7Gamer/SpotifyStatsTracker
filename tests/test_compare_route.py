@@ -559,6 +559,55 @@ class TestCompareRoute(unittest.TestCase):
         #< theirs additionally colors the hero name (no label dot there)
         self.assertEqual(resp.data.count(b"compare-user-theirs"), 5)
 
+    def test_taste_match_weights_category_overlaps(self):
+        """artists 5/10 shared (weight .5), songs 2/10 (weight .3), albums
+        0/10 (weight .2) -> 0.25 + 0.06 + 0 = 31%."""
+        self._accept("alice", "bob")
+        sharedArtists = [_artist(f"sa{i}", f"SharedA{i}") for i in range(5)]
+        self.dbs["alice"].getTopArtists.return_value = sharedArtists + [_artist(f"a{i}", f"A{i}") for i in range(5)]
+        self.dbs["bob"].getTopArtists.return_value = sharedArtists + [_artist(f"b{i}", f"B{i}") for i in range(5)]
+        sharedSongs = [_song(f"ss{i}", f"SharedS{i}") for i in range(2)]
+        self.dbs["alice"].getTopSongs.return_value = sharedSongs + [_song(f"as{i}", f"AS{i}") for i in range(8)]
+        self.dbs["bob"].getTopSongs.return_value = sharedSongs + [_song(f"bs{i}", f"BS{i}") for i in range(8)]
+        self.dbs["alice"].getTopAlbums.return_value = [_album(f"aal{i}", f"AAl{i}") for i in range(10)]
+        self.dbs["bob"].getTopAlbums.return_value = [_album(f"bal{i}", f"BAl{i}") for i in range(10)]
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        self.assertIn(b'class="taste-match-value js-taste-match">31%</span>', resp.data)
+
+    def test_taste_match_excludes_categories_without_data_on_both_sides(self):
+        """Only artists have data: 5 of 10 shared -> 50%, with the empty
+        song/album categories excluded instead of dragging the score down."""
+        self._accept("alice", "bob")
+        sharedArtists = [_artist(f"sa{i}", f"SharedA{i}") for i in range(5)]
+        self.dbs["alice"].getTopArtists.return_value = sharedArtists + [_artist(f"a{i}", f"A{i}") for i in range(5)]
+        self.dbs["bob"].getTopArtists.return_value = sharedArtists + [_artist(f"b{i}", f"B{i}") for i in range(5)]
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        self.assertIn(b'class="taste-match-value js-taste-match">50%</span>', resp.data)
+
+    def test_taste_match_hidden_without_any_pool_data(self):
+        self._accept("alice", "bob")
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        self.assertIn(b'id="tasteMatch" style="display: none;"', resp.data)
+
+    def test_ajax_includes_the_taste_match(self):
+        self._accept("alice", "bob")
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare?ajax=true")
+
+        data = resp.get_json()
+        self.assertIn("tasteMatch", data)
+        self.assertIsNone(data["tasteMatch"])   #< empty stub pools -> hidden, not 0%
+
     def test_ajax_returns_partial_chunks_not_a_full_page(self):
         """The filter controls swap regions in place via ?ajax=true, mirroring
         the Wrapped page's fade-and-swap pattern."""
