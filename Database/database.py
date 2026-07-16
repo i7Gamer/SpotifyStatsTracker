@@ -1675,9 +1675,13 @@ class Database:
             return
         if self.wrapped_thread is not None and self.wrapped_thread.is_alive():
             return
-        self.wrapped_stop_event.clear()
+        # A FRESH event per run (see startLastfmGenreBackfiller): never revive
+        # a thread that outlived stop()'s join timeout by clearing its event.
+        stop_event = threading.Event()
+        self.wrapped_stop_event = stop_event
         self.wrapped_thread = threading.Thread(
             target=self._wrappedCalculationsLoop,
+            args=(stop_event,),
             name=f"wrapped-worker-{self.user}",
             daemon=True
         )
@@ -1693,24 +1697,30 @@ class Database:
         self.wrapped_thread.join(timeout=3)
         self.wrapped_thread = None
 
-    def _wrappedCalculationsLoop(self) -> None:
-        """Periodically checks if plays have changed and recalculates wrapped stats."""
+    def _wrappedCalculationsLoop(self, stop_event: threading.Event | None = None) -> None:
+        """Periodically checks if plays have changed and recalculates wrapped stats.
+
+        `stop_event` is THIS run's private event (see the fresh-event note in
+        startWrappedCalculationsWorker) - a later restart can never revive
+        this thread."""
         import random
+        if stop_event is None:
+            stop_event = self.wrapped_stop_event
         try:
             # 1. Random startup delay to distribute CPU load if multiple users are loaded
             startup_delay = random.randint(self.WRAPPED_WORKER_MIN_START_DELAY, self.WRAPPED_WORKER_MAX_START_DELAY)
             logger.info("[WrappedWorker-%s] Starting with initial delay of %d seconds", self.user, startup_delay)
-            if self.wrapped_stop_event.wait(startup_delay):
+            if stop_event.wait(startup_delay):
                 return
 
-            while not self.wrapped_stop_event.is_set():
+            while not stop_event.is_set():
                 try:
-                    self._checkAndRecalculateWrapped()
+                    self._checkAndRecalculateWrapped(stop_event)
                 except Exception as e:
                     logger.error("[WrappedWorker-%s] Error checking wrapped: %s", self.user, parseError(e))
 
                 # Check loop interval
-                if self.wrapped_stop_event.wait(self.WRAPPED_WORKER_LOOP_INTERVAL):
+                if stop_event.wait(self.WRAPPED_WORKER_LOOP_INTERVAL):
                     break
         except Exception as e:
             logger.error("[WrappedWorker-%s] Worker loop crashed: %s", self.user, parseError(e))
@@ -1735,8 +1745,10 @@ class Database:
         isStale = cached_max is None or cached_total is None or cached_max < max_played_at or cached_total != current_total
         return isStale, cached_max, cached_total, current_total
 
-    def _checkAndRecalculateWrapped(self) -> None:
+    def _checkAndRecalculateWrapped(self, stop_event: threading.Event | None = None) -> None:
         """Checks for each year if there is new data and triggers recalculation if needed."""
+        if stop_event is None:
+            stop_event = self.wrapped_stop_event
         nowLocal = datetime.datetime.now(tz=self.tz)
         currentYear = nowLocal.year
 
@@ -1745,7 +1757,7 @@ class Database:
         availableYears = list(range(currentYear, earliestYear - 1, -1))
 
         for year in availableYears:
-            if self.wrapped_stop_event.is_set():
+            if stop_event.is_set():
                 break
 
             yearStart = nowLocal.replace(year=year, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
@@ -1778,7 +1790,7 @@ class Database:
             finally:
                 lock.release()
             # Sleep briefly between years to distribute database load
-            if self.wrapped_stop_event.wait(self.WRAPPED_YEAR_DELAY_SECONDS):
+            if stop_event.wait(self.WRAPPED_YEAR_DELAY_SECONDS):
                 break
 
     def _calculateAndSaveWrapped(self, year: int, yearStart: datetime.datetime, yearEnd: datetime.datetime, max_played_at: float) -> None:
@@ -1889,9 +1901,15 @@ class Database:
             return
         if self.backfiller_thread is not None and self.backfiller_thread.is_alive():
             return
-        self.backfiller_stop_event.clear()
+        # A FRESH event per run (see startLastfmGenreBackfiller): stop() joins
+        # with a timeout, so a thread blocked in a slow fetch can outlive it -
+        # clearing a shared event here would revive that zombie alongside the
+        # new thread. With its own still-set event it exits on its own instead.
+        stop_event = threading.Event()
+        self.backfiller_stop_event = stop_event
         self.backfiller_thread = threading.Thread(
             target=self._metadataBackfillLoop,
+            args=(stop_event,),
             name=f"metadata-backfiller-{self.user}",
             daemon=True
         )
@@ -1907,18 +1925,24 @@ class Database:
         self.backfiller_thread.join(timeout=3)
         self.backfiller_thread = None
 
-    def _metadataBackfillLoop(self) -> None:
-        """Periodically queries Spotify for missing album release dates and tracks."""
+    def _metadataBackfillLoop(self, stop_event: threading.Event | None = None) -> None:
+        """Periodically queries Spotify for missing album release dates and tracks.
+
+        `stop_event` is THIS run's private event (see the fresh-event note in
+        startMetadataBackfiller) - a later restart can never revive this
+        thread."""
         import random
+        if stop_event is None:
+            stop_event = self.backfiller_stop_event
         try:
             # 1. Random startup offset to prevent multiple user threads from starting at the same moment
             startup_delay = random.randint(self.BACKFILLER_MIN_START_DELAY, self.BACKFILLER_MAX_START_DELAY)
             logger.info("[Backfiller-%s] Starting with initial delay of %d seconds", self.user, startup_delay)
-            if self.backfiller_stop_event.wait(startup_delay):
+            if stop_event.wait(startup_delay):
                 logger.info("[Backfiller-%s] Stopped during startup delay", self.user)
                 return
 
-            while not self.backfiller_stop_event.is_set():
+            while not stop_event.is_set():
                 target_ids = []
                 try:
                     # 2. Get Spotify API credentials if configured
@@ -1927,7 +1951,7 @@ class Database:
                     # 3. Query up to N missing album IDs
                     missing_ids = self.repo.getAlbumsMissingMetadata(limit=self.BACKFILLER_ALBUM_QUEUE_SIZE)
                     if not missing_ids:
-                        if self.backfiller_stop_event.wait(300):
+                        if stop_event.wait(300):
                             break
                         continue
 
@@ -1942,7 +1966,7 @@ class Database:
 
                     # 5. If nothing eligible remains, wait and try next iteration
                     if not target_ids:
-                        if self.backfiller_stop_event.wait(300):
+                        if stop_event.wait(300):
                             break
                         continue
 
@@ -1990,7 +2014,7 @@ class Database:
                             cookiesFile = self._materializeCookiesFile()
                             sp = SpotipyFree.Spotify(cookiesFile=str(cookiesFile))
                             for album_id in target_ids:
-                                if self.backfiller_stop_event.is_set():
+                                if stop_event.is_set():
                                     break
                                 try:
                                     album_raw = sp.album(album_id)
@@ -1999,7 +2023,7 @@ class Database:
                                     attempted_ids.append(album_id)  #< a clean "no data" reply is definitive; exceptions stay unmarked for a next-cycle retry
                                 except Exception as fe:
                                     logger.warning("[Backfiller-%s] SpotipyFree failed for album %s: %s", self.user, album_id, fe)
-                                self.backfiller_stop_event.wait(1.0)
+                                stop_event.wait(1.0)
                         finally:
                             cookiesFile.unlink(missing_ok=True)
 
@@ -2069,7 +2093,7 @@ class Database:
                     except Exception:
                         pass
 
-                if self.backfiller_stop_event.wait(300):
+                if stop_event.wait(300):
                     break
 
         finally:

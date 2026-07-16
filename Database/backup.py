@@ -131,17 +131,21 @@ class BackupWorker:
             except OSError as e:
                 logger.warning("Could not delete old backup %s: %s", stale, e)
 
-    def _loop(self) -> None:
-        if self._stop_event.wait(random.randint(BACKUP_STARTUP_MIN_DELAY_SECONDS,
-                                                BACKUP_STARTUP_MAX_DELAY_SECONDS)):
+    def _loop(self, stop_event: threading.Event | None = None) -> None:
+        # `stop_event` is THIS run's private event (see the fresh-event note
+        # in start()) - a later restart can never revive this thread.
+        if stop_event is None:
+            stop_event = self._stop_event
+        if stop_event.wait(random.randint(BACKUP_STARTUP_MIN_DELAY_SECONDS,
+                                          BACKUP_STARTUP_MAX_DELAY_SECONDS)):
             return
-        while not self._stop_event.is_set():
+        while not stop_event.is_set():
             try:
                 if self.isDue():
                     self.runBackup()
             except Exception as e:
                 logger.error("Scheduled backup failed: %s", e)
-            if self._stop_event.wait(BACKUP_CHECK_INTERVAL_SECONDS):
+            if stop_event.wait(BACKUP_CHECK_INTERVAL_SECONDS):
                 return
 
     def start(self) -> None:
@@ -152,8 +156,14 @@ class BackupWorker:
             return
         if self.thread is not None and self.thread.is_alive():
             return
-        self._stop_event.clear()
-        self.thread = threading.Thread(target=self._loop, name="backup-worker", daemon=True)
+        # A FRESH event per run: stop() joins with a timeout, so a thread
+        # blocked in a long backup can outlive it - clearing a shared event
+        # here would revive that zombie alongside the new thread. With its
+        # own still-set event it exits on its own instead.
+        stop_event = threading.Event()
+        self._stop_event = stop_event
+        self.thread = threading.Thread(target=self._loop, args=(stop_event,),
+                                       name="backup-worker", daemon=True)
         self.thread.start()
 
     def stop(self) -> None:
