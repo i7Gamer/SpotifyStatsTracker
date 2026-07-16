@@ -23,6 +23,13 @@ IMAGE_STATUS_FAILED = "failed"
 # (or unblock) later, without hammering the API for permanently dateless albums.
 ALBUM_BACKFILL_RETRY_SECONDS = 7 * 24 * 3600
 
+# getBucketedPlayTotals' fixed UTC bucket width. 15 minutes is the smallest
+# granularity any real-world UTC offset uses (e.g. Asia/Kathmandu +5:45), so
+# every play in one bucket maps to the same local day/hour/weekday no matter
+# which IANA timezone Python later applies - which is what lets the heavy
+# per-play aggregation move into SQL without losing timezone correctness.
+PLAY_BUCKET_SECONDS = 15 * 60
+
 # Whitelist mapping the public sortBy values to the SQL output-column aliases
 # they're allowed to sort by. sortBy is interpolated directly into ORDER BY
 # (column names can't be bound as query parameters), and it's user-controlled
@@ -1099,19 +1106,10 @@ class Repository:
             "availability_reason": row["availability_reason"],
         }
 
-    def getPlaysInRange(self, username: str, startTs: float | None = None, endTs: float | None = None,
-                         trackId: str | None = None, artistId: str | None = None,
-                         albumId: str | None = None) -> list[dict]:
-        """Raw (playedAt, timePlayed) pairs for date-bucketed charts (time series,
-        hour-of-day heatmap) - bucketing itself stays in Python since it depends on
-        the app's configurable IANA timezone, which SQLite's date functions can't
-        express correctly.
-
-        `trackId`/`artistId`/`albumId` narrow this to one item's plays - reused
-        by the song/artist/album detail pages' "play history over time" chart,
-        which otherwise reads the exact same shape as the main Charts page."""
-        conn = self._conn()
-        params = [username, startTs, startTs, endTs, endTs]
+    def _itemFilterClauses(self, params: list, trackId: str | None, artistId: str | None,
+                            albumId: str | None) -> str:
+        """The shared track/artist/album narrowing used by the play-scan
+        queries; appends the bound values to `params` in clause order."""
         extraClauses = ""
         if trackId is not None:
             extraClauses += " AND track_id = ?"
@@ -1122,29 +1120,68 @@ class Repository:
         if albumId is not None:
             extraClauses += " AND EXISTS (SELECT 1 FROM tracks t WHERE t.id = plays.track_id AND t.album_id = ?)"
             params.append(albumId)
+        return extraClauses
+
+    def getBucketedPlayTotals(self, username: str, startTs: float | None = None,
+                               endTs: float | None = None, trackId: str | None = None,
+                               artistId: str | None = None, albumId: str | None = None) -> list[dict]:
+        """Play count and listened time summed per fixed PLAY_BUCKET_SECONDS
+        UTC bucket, ordered by bucket start - the SQL half of the
+        date-bucketed charts (time series, heatmap, streak/peak-day stats).
+        The buckets are deliberately timezone-agnostic: callers map each
+        bucket's start timestamp to the app's configurable IANA timezone in
+        Python, which SQLite's date functions can't express correctly, while
+        SQL does the per-play heavy lifting (see PLAY_BUCKET_SECONDS for why
+        the mapping is lossless).
+
+        `trackId`/`artistId`/`albumId` narrow this to one item's plays -
+        reused by the song/artist/album detail pages' "play history over
+        time" chart and heatmap."""
+        conn = self._conn()
+        params = [username, startTs, startTs, endTs, endTs]
+        extraClauses = self._itemFilterClauses(params, trackId, artistId, albumId)
 
         rows = conn.execute(
-            f"SELECT track_id, played_at, time_played FROM plays WHERE username = ? {self._dateRangeClause()}{extraClauses}",
+            f"""
+            SELECT CAST(played_at / {PLAY_BUCKET_SECONDS} AS INTEGER) AS bucket,
+                   COUNT(*) AS plays,
+                   COALESCE(SUM(time_played), 0) AS total_time
+            FROM plays WHERE username = ? {self._dateRangeClause()}{extraClauses}
+            GROUP BY bucket
+            ORDER BY bucket
+            """,
             params,
         ).fetchall()
-        return [{"id": r["track_id"], "playedAt": r["played_at"], "timePlayed": r["time_played"]} for r in rows]
+        return [{"bucketStartTs": r["bucket"] * PLAY_BUCKET_SECONDS,
+                 "plays": r["plays"],
+                 "totalTimeListened": r["total_time"]} for r in rows]
 
-    def getPlayArtistPairsInRange(self, username: str, startTs: float | None = None,
-                                   endTs: float | None = None) -> list[dict]:
-        """One row per (play, artist) pair - a play whose track has N artists
-        yields N rows, matching the per-artist increment the old Python loop did."""
+    def getBucketedArtistPlayCounts(self, username: str, startTs: float | None = None,
+                                     endTs: float | None = None) -> list[dict]:
+        """Play counts per (fixed PLAY_BUCKET_SECONDS UTC bucket, artist name)
+        - the SQL half of the artist-trend chart, replacing a row-per-
+        (play, artist) transfer. A play whose track has N artists still
+        counts once per artist, and grouping by artist NAME (not id) matches
+        the Python aggregation this replaces: same-named artists merge either
+        way. Ordered by bucket so callers iterate in play-time order."""
         conn = self._conn()
         rows = conn.execute(
             f"""
-            SELECT p.played_at AS played_at, ar.name AS artist_name
+            SELECT CAST(p.played_at / {PLAY_BUCKET_SECONDS} AS INTEGER) AS bucket,
+                   ar.name AS artist_name,
+                   COUNT(*) AS plays
             FROM plays p
             JOIN track_artists ta ON ta.track_id = p.track_id
             JOIN artists ar ON ar.id = ta.artist_id
             WHERE p.username = ? {self._dateRangeClause().replace("played_at", "p.played_at")}
+            GROUP BY bucket, ar.name
+            ORDER BY bucket, ar.name
             """,
             (username, startTs, startTs, endTs, endTs),
         ).fetchall()
-        return [{"playedAt": r["played_at"], "artistName": r["artist_name"]} for r in rows]
+        return [{"bucketStartTs": r["bucket"] * PLAY_BUCKET_SECONDS,
+                 "artistName": r["artist_name"],
+                 "plays": r["plays"]} for r in rows]
 
     def getPlayTotals(self, username: str, startTs: float | None = None,
                        endTs: float | None = None) -> tuple[int, int]:

@@ -36,6 +36,12 @@ logger = logging.getLogger(__name__)
 TRUTHY_DEBUG_VALUES = {"1", "true"}
 
 IMAGE_DOWNLOAD_WORKERS = 5   #< bounds total concurrent image downloads for the whole process, not per user
+
+# getCompletionStats' play classification thresholds: under 30s counts as a
+# skip (Spotify's own royalty threshold), at/over 80% of the track's duration
+# counts as a completed listen, anything between is a partial.
+COMPLETION_SKIP_THRESHOLD_MS = 30_000
+COMPLETION_COMPLETE_RATIO = 0.8
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
 # Images are shared across every user (album art / artist photos are the same
@@ -785,26 +791,20 @@ class Database:
     def getExplicitRatio(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> dict:
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
         conn = self.repo._conn()
+        # Single aggregated row instead of GROUP BY t.explicit: NULL and 0
+        # both mean "not explicit" and must land in the same clean count.
         query = """
-            SELECT t.explicit, COUNT(*) as count
+            SELECT
+                COALESCE(SUM(CASE WHEN t.explicit THEN 1 ELSE 0 END), 0) AS explicit_count,
+                COALESCE(SUM(CASE WHEN t.explicit THEN 0 ELSE 1 END), 0) AS clean_count
             FROM plays p
             JOIN tracks t ON p.track_id = t.id
             WHERE p.username = ?
               AND (? IS NULL OR p.played_at >= ?)
               AND (? IS NULL OR p.played_at < ?)
-            GROUP BY t.explicit
         """
-        rows = conn.execute(query, (self.user, startTs, startTs, endTs, endTs)).fetchall()
-        
-        explicit_count = 0
-        clean_count = 0
-        for row in rows:
-            if row["explicit"]:
-                explicit_count = row["count"]
-            else:
-                clean_count = row["count"]
-                
-        return {"explicit": explicit_count, "clean": clean_count}
+        row = conn.execute(query, (self.user, startTs, startTs, endTs, endTs)).fetchone()
+        return {"explicit": row["explicit_count"], "clean": row["clean_count"]}
 
     def getReleaseDecadeDistribution(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> dict:
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
@@ -843,40 +843,33 @@ class Database:
     def getCompletionStats(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> dict:
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
         conn = self.repo._conn()
+        # Fully classified in SQL - one aggregate row instead of a row per
+        # distinct (time_played, duration) pair. Unknown (<=0) durations
+        # can't distinguish partial from complete, so anything past the skip
+        # threshold counts as complete for them.
         query = """
-            SELECT p.time_played, t.duration_ms, COUNT(*) as count
+            SELECT
+                COALESCE(SUM(CASE WHEN p.time_played < :skipMs THEN 1 ELSE 0 END), 0) AS skips,
+                COALESCE(SUM(CASE WHEN p.time_played >= :skipMs
+                                   AND (t.duration_ms <= 0 OR p.time_played >= t.duration_ms * :completeRatio)
+                                  THEN 1 ELSE 0 END), 0) AS completes,
+                COALESCE(SUM(CASE WHEN p.time_played >= :skipMs
+                                   AND t.duration_ms > 0 AND p.time_played < t.duration_ms * :completeRatio
+                                  THEN 1 ELSE 0 END), 0) AS partials
             FROM plays p
             JOIN tracks t ON p.track_id = t.id
-            WHERE p.username = ?
-              AND (? IS NULL OR p.played_at >= ?)
-              AND (? IS NULL OR p.played_at < ?)
-            GROUP BY p.time_played, t.duration_ms
+            WHERE p.username = :username
+              AND (:startTs IS NULL OR p.played_at >= :startTs)
+              AND (:endTs IS NULL OR p.played_at < :endTs)
         """
-        rows = conn.execute(query, (self.user, startTs, startTs, endTs, endTs)).fetchall()
-        
-        skips = 0
-        completes = 0
-        partials = 0
-        
-        for row in rows:
-            time_played = row["time_played"]
-            duration_ms = row["duration_ms"]
-            count = row["count"]
-            
-            if duration_ms <= 0:
-                if time_played < 30000:
-                    skips += count
-                else:
-                    completes += count
-            else:
-                if time_played < 30000:
-                    skips += count
-                elif time_played >= (duration_ms * 0.8):
-                    completes += count
-                else:
-                    partials += count
-                    
-        return {"skips": skips, "completes": completes, "partials": partials}
+        row = conn.execute(query, {
+            "username": self.user,
+            "startTs": startTs,
+            "endTs": endTs,
+            "skipMs": COMPLETION_SKIP_THRESHOLD_MS,
+            "completeRatio": COMPLETION_COMPLETE_RATIO,
+        }).fetchone()
+        return {"skips": row["skips"], "completes": row["completes"], "partials": row["partials"]}
 
     def getSongsStats(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None,
                        sortBy: str = "plays", limit: int | None = None, offset: int = 0,
@@ -914,16 +907,19 @@ class Database:
         return self.repo.getPlayTotals(self.user, startTs, endTs)
 
     def getLongestStreak(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> int:
-        """Longest consecutive days of plays in range."""
+        """Longest consecutive days of plays in range. Works off SQL-side
+        15-minute buckets (getBucketedPlayTotals) - a bucket's start shares
+        its local date with every play inside it, so the distinct-dates set
+        is identical to a per-play scan's."""
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
-        plays = self.repo.getPlaysInRange(self.user, startTs, endTs)
-        if not plays:
+        rows = self.repo.getBucketedPlayTotals(self.user, startTs, endTs)
+        if not rows:
             return 0
 
-        play_dates = sorted(list({
-            convertToDatetime(p["playedAt"], tz=self.tz).strftime("%Y-%m-%d")
-            for p in plays
-        }))
+        play_dates = sorted({
+            convertToDatetime(r["bucketStartTs"], tz=self.tz).strftime("%Y-%m-%d")
+            for r in rows
+        })
 
         max_streak = 1
         current_streak = 1
@@ -945,19 +941,21 @@ class Database:
         return max_streak
 
     def getPeakListeningTime(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> tuple[str, int] | None:
-        """(day_of_week_name, play_count) for the day with most plays, or None."""
+        """(day_of_week_name, play_count) for the day with most plays, or None.
+        Counting runs in SQL (getBucketedPlayTotals); Python maps each bucket
+        to its local weekday."""
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
-        plays = self.repo.getPlaysInRange(self.user, startTs, endTs)
-        if not plays:
+        rows = self.repo.getBucketedPlayTotals(self.user, startTs, endTs)
+        if not rows:
             return None
 
         # Map Python's locale-independent weekday index to English names
         WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
         counts = {}
-        for p in plays:
-            dt = convertToDatetime(p["playedAt"], tz=self.tz)
+        for row in rows:
+            dt = convertToDatetime(row["bucketStartTs"], tz=self.tz)
             day_name = WEEKDAYS[dt.weekday()]
-            counts[day_name] = counts.get(day_name, 0) + 1
+            counts[day_name] = counts.get(day_name, 0) + row["plays"]
 
         peak_day = max(counts, key=counts.get)
         return peak_day, counts[peak_day]
@@ -1097,25 +1095,30 @@ class Database:
         `trackId`/`artistId`/`albumId` narrow this to one item's plays only -
         reused as-is by the song/artist/album detail pages' play-history chart
         (same output shape, so the frontend's existing renderTimeSeriesChart
-        needs no changes)."""
+        needs no changes).
+
+        The per-play summing happens in SQL (see getBucketedPlayTotals);
+        Python only re-buckets the pre-aggregated 15-minute rows into the
+        app's configurable IANA timezone, which SQLite can't express."""
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
-        plays = self.repo.getPlaysInRange(self.user, startTs, endTs, trackId=trackId, artistId=artistId,
-                                           albumId=albumId)
+        rows = self.repo.getBucketedPlayTotals(self.user, startTs, endTs, trackId=trackId, artistId=artistId,
+                                                albumId=albumId)
 
         buckets = {}
-        for play in plays:
-            date = convertToDatetime(play["playedAt"], tz=self.tz)
+        for row in rows:
+            date = convertToDatetime(row["bucketStartTs"], tz=self.tz)
             key = self._bucketKey(date, groupBy)
             bucket = buckets.setdefault(key, {"label": key, "totalTimeListened": 0, "plays": 0})
-            bucket["totalTimeListened"] += play["timePlayed"]
-            bucket["plays"] += 1
+            bucket["totalTimeListened"] += row["totalTimeListened"]
+            bucket["plays"] += row["plays"]
 
         if startDate is not None and endDate is not None:
             rangeStart, rangeEnd = startDate, endDate
-        elif plays:
-            playedDates = [convertToDatetime(p["playedAt"], tz=self.tz) for p in plays]
-            rangeStart = min(playedDates)
-            rangeEnd = max(playedDates) + datetime.timedelta(seconds=1)
+        elif rows:
+            # rows are ordered by bucket start; the first/last bucket start in
+            # local time bounds the same chart buckets the raw plays would.
+            rangeStart = convertToDatetime(rows[0]["bucketStartTs"], tz=self.tz)
+            rangeEnd = convertToDatetime(rows[-1]["bucketStartTs"], tz=self.tz) + datetime.timedelta(seconds=1)
         else:
             return []
 
@@ -1148,17 +1151,19 @@ class Database:
         listening time and play count, for a 'when do I listen' heatmap.
         `trackId`/`artistId`/`albumId` narrow this to one item's plays only -
         reused by the song detail page's 'when you listen to this song' heatmap,
-        same as getListeningTimeSeries's item filters."""
+        same as getListeningTimeSeries's item filters. Summing runs in SQL
+        (getBucketedPlayTotals); Python maps each 15-minute bucket to its
+        local weekday/hour cell."""
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
-        plays = self.repo.getPlaysInRange(self.user, startTs, endTs, trackId=trackId, artistId=artistId,
-                                           albumId=albumId)
+        rows = self.repo.getBucketedPlayTotals(self.user, startTs, endTs, trackId=trackId, artistId=artistId,
+                                                albumId=albumId)
         grid = [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
 
-        for play in plays:
-            date = convertToDatetime(play["playedAt"], tz=self.tz)
+        for row in rows:
+            date = convertToDatetime(row["bucketStartTs"], tz=self.tz)
             cell = grid[date.weekday()][date.hour]
-            cell["totalTimeListened"] += play["timePlayed"]
-            cell["plays"] += 1
+            cell["totalTimeListened"] += row["totalTimeListened"]
+            cell["plays"] += row["plays"]
 
         return grid
 
@@ -1168,27 +1173,29 @@ class Database:
         any activity - unlike getListeningTimeSeries, a trend line doesn't need a
         gap-filled timeline the way a bar chart's x-axis does."""
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
-        pairs = self.repo.getPlayArtistPairsInRange(self.user, startTs, endTs)
+        # Per-(bucket, artist) counts pre-summed in SQL; Python only re-maps
+        # the 15-minute buckets into the chart's local-timezone buckets.
+        rows = self.repo.getBucketedArtistPlayCounts(self.user, startTs, endTs)
 
         totalPlaysByArtist = {}
-        bucketedPairs = []
-        for pair in pairs:
-            date = convertToDatetime(pair["playedAt"], tz=self.tz)
+        bucketedCounts = []
+        for row in rows:
+            date = convertToDatetime(row["bucketStartTs"], tz=self.tz)
             key = self._bucketKey(date, groupBy)
-            name = pair["artistName"]
-            bucketedPairs.append((key, name))
-            totalPlaysByArtist[name] = totalPlaysByArtist.get(name, 0) + 1
+            name = row["artistName"]
+            bucketedCounts.append((key, name, row["plays"]))
+            totalPlaysByArtist[name] = totalPlaysByArtist.get(name, 0) + row["plays"]
 
         if not totalPlaysByArtist:
             return {"buckets": [], "series": []}
 
         topNames = [name for name, _ in sorted(totalPlaysByArtist.items(), key=lambda kv: kv[1], reverse=True)[:topN]]
 
-        bucketKeys = sorted({key for key, _ in bucketedPairs})
+        bucketKeys = sorted({key for key, _, _ in bucketedCounts})
         seriesData = {name: {key: 0 for key in bucketKeys} for name in topNames}
-        for key, name in bucketedPairs:
+        for key, name, plays in bucketedCounts:
             if name in seriesData:
-                seriesData[name][key] += 1
+                seriesData[name][key] += plays
 
         series = [{"name": name, "data": [seriesData[name][key] for key in bucketKeys]} for name in topNames]
         return {"buckets": bucketKeys, "series": series}
