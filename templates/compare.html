@@ -51,6 +51,16 @@
       {% endfor %}
     </select>
   </div>
+
+  <div class="filter-group">
+    <label for="groupBy">Trend buckets:</label>
+    <select id="groupBy" name="groupBy" onchange="updateCompareGroupByFilter()">
+      <option value="" {% if not groupBy %}selected{% endif %}>Auto</option>
+      <option value="day" {% if groupBy == 'day' %}selected{% endif %}>Day</option>
+      <option value="week" {% if groupBy == 'week' %}selected{% endif %}>Week</option>
+      <option value="month" {% if groupBy == 'month' %}selected{% endif %}>Month</option>
+    </select>
+  </div>
 </section>
 
 <section class="card" style="margin: 1.5rem 0; overflow-x: auto;">
@@ -302,6 +312,18 @@
     loadCompareData();
   }
 
+  function updateCompareGroupByFilter() {
+    const groupBy = document.getElementById('groupBy').value;
+    pushCompareUrl(params => {
+      if (groupBy) {
+        params.set('groupBy', groupBy);
+      } else {
+        params.delete('groupBy');   //< Auto: let the server pick from the range span
+      }
+    });
+    loadCompareData();
+  }
+
   document.querySelectorAll('.wrapped-year-badge').forEach(badge => {
     badge.addEventListener('click', function (e) {
       e.preventDefault();
@@ -322,6 +344,7 @@
     document.getElementById('compareCustomDates').style.display =
       (params.get('startDate') && params.get('endDate')) ? 'flex' : 'none';
     document.getElementById('limit').value = params.get('limit') || '{{ limitOptions[0] }}';
+    document.getElementById('groupBy').value = params.get('groupBy') || '';
     const withUser = params.get('with');
     document.querySelectorAll('.wrapped-year-badge').forEach(badge => {
       const badgeUser = new URL(badge.href).searchParams.get('with');

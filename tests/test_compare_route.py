@@ -581,6 +581,20 @@ class TestCompareRoute(unittest.TestCase):
                 self.dbs["alice"].getListeningTimeSeries.call_args.kwargs["groupBy"],
                 expected, f"interval={interval}")
 
+    def test_trend_bucket_dropdown_defaults_to_auto(self):
+        """The visible groupBy control: Auto (empty value, server derives the
+        bucketing from the range span) is preselected unless an explicit
+        groupBy was passed."""
+        self._accept("alice", "bob")
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+        respExplicit = client.get("/compare?groupBy=week")
+
+        self.assertIn(b'id="groupBy"', resp.data)
+        self.assertIn(b'<option value="" selected>Auto</option>', resp.data)
+        self.assertIn(b'<option value="week" selected>Week</option>', respExplicit.data)
+
     def test_explicit_groupby_param_overrides_the_auto_choice(self):
         self._accept("alice", "bob")
         client = self._loginAs("alice")
