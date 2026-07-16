@@ -41,6 +41,12 @@ COMPARE_TREND_MONTH_SPAN_DAYS = 730       #< ...and more than this by month (day
 # without data on both sides are excluded and the remaining weights
 # renormalized.
 TASTE_MATCH_WEIGHTS = {"artists": 0.7, "songs": 0.1, "albums": 0.2}
+# Rank-weighted overlap normalizes against an "ideal" match capped at this
+# depth rather than the full COMPARE_OVERLAP_POOL_SIZE: requiring near-total
+# overlap of a 100-deep pool for 100% meant even two listeners who share
+# their entire top 20 favorite artists scored ~34%, since agreement past
+# rank ~30 barely matters to how similar two people's taste feels.
+TASTE_MATCH_IDEAL_DEPTH = 30
 WEEKDAY_NAMES = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
 MAX_INLINE_ARTISTS = 5   #< artist lists longer than this collapse behind a "+N more" toggle (_artist_links.html)...
 MIN_HIDDEN_ARTISTS = 2   #< ...but only when at least this many names would be hidden - "+1 more" saves no space
@@ -557,19 +563,22 @@ class SpotifyDashboardApp:
     def _rankWeightedOverlap(self, myPool, theirPool) -> float | None:
         """0..1 rank-weighted overlap of two ranked pools: each shared item
         contributes its rank discount from BOTH sides, normalized against
-        the score two identical pools would reach - so a shared #1 counts
-        far more than a shared #90. Bounded by 1 (each side's contribution
-        is at most the ideal prefix sum). None when either side is empty,
-        so the category can be excluded rather than scored 0."""
+        the score two pools would reach if they agreed on their top
+        TASTE_MATCH_IDEAL_DEPTH items - so a shared #1 counts far more than
+        a shared #90, and matching core taste can reach 100% without also
+        requiring overlap across the entire deep pool. Clamped to 1 since
+        overlap past that depth can push the raw ratio above it. None when
+        either side is empty, so the category can be excluded rather than
+        scored 0."""
         if not myPool or not theirPool:
             return None
         myRanks = {item["id"]: rank for rank, item in enumerate(myPool, start=1)}
         theirRanks = {item["id"]: rank for rank, item in enumerate(theirPool, start=1)}
         actual = sum(self._rankWeight(myRanks[itemId]) + self._rankWeight(theirRanks[itemId])
                      for itemId in myRanks if itemId in theirRanks)
-        idealDepth = min(len(myPool), len(theirPool))
+        idealDepth = min(len(myPool), len(theirPool), TASTE_MATCH_IDEAL_DEPTH)
         ideal = sum(2 * self._rankWeight(rank) for rank in range(1, idealDepth + 1))
-        return actual / ideal
+        return min(1.0, actual / ideal)
 
     def _tasteMatchPercent(self, my, their) -> int | None:
         """One headline number for how much two users' taste overlaps: the

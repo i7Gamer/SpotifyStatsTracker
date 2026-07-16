@@ -747,6 +747,22 @@ class TestCompareRoute(unittest.TestCase):
 
         self.assertIn(b'class="taste-match-value js-taste-match">65%</span>', resp.data)
 
+    def test_taste_match_caps_the_ideal_at_top_taste_match_ideal_depth(self):
+        """Sharing an entire top-20 (out of 100-deep pools) should score high
+        even though the other 80 slots are disjoint: the ideal is capped at
+        TASTE_MATCH_IDEAL_DEPTH=30 rather than the full 100-deep pool, so
+        agreement on core taste isn't diluted by requiring near-total
+        long-tail overlap too. sum(w(1..20))/sum(w(1..30)) -> 77%."""
+        self._accept("alice", "bob")
+        sharedArtists = [_artist(f"sa{i}", f"SharedA{i}") for i in range(20)]
+        self.dbs["alice"].getTopArtists.return_value = sharedArtists + [_artist(f"a{i}", f"A{i}") for i in range(80)]
+        self.dbs["bob"].getTopArtists.return_value = sharedArtists + [_artist(f"b{i}", f"B{i}") for i in range(80)]
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        self.assertIn(b'class="taste-match-value js-taste-match">77%</span>', resp.data)
+
     def test_taste_match_hidden_without_any_pool_data(self):
         self._accept("alice", "bob")
         client = self._loginAs("alice")
