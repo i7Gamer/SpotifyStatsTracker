@@ -4,6 +4,7 @@ import logging
 import math
 import os
 import json
+import random
 import secrets
 import tempfile
 import threading
@@ -79,6 +80,15 @@ RATE_LIMIT_ERROR_MESSAGE = "Too many attempts. Please wait a few minutes and try
 EXPORT_CHUNK_SIZE = 5000         #< plays hydrated per round-trip while streaming an export
 EXPORT_FORMATS = ("json", "csv")
 EXPORT_CSV_COLUMNS = ("played_at_utc", "track_name", "artists", "album", "ms_played", "spotify_track_uri", "played_from")
+# Random startup-offset bounds for this module's periodic workers, so a
+# restart doesn't fire every worker at the same instant (the metadata
+# backfiller and wrapped worker in Database/database.py already stagger
+# themselves the same way). The Spotify listener is deliberately NOT
+# staggered - delaying it would lose plays.
+VERSION_CHECK_MIN_START_DELAY_SECONDS = 30
+VERSION_CHECK_MAX_START_DELAY_SECONDS = 180
+LOGIN_CHECK_MIN_START_DELAY_SECONDS = 60
+LOGIN_CHECK_MAX_START_DELAY_SECONDS = 300
 
 # Baseline defense-in-depth headers applied to every response (see
 # registerRoutes' after_request hook below).
@@ -435,6 +445,13 @@ class SpotifyDashboardApp:
                 logger.error("Error initializing user %s: %s", username, e)
     
     def _checkLoginLoop(self):
+        # checkLogin_thread() already ran _ensureAllUsersLogin synchronously
+        # before this thread started (listeners must come up immediately), so
+        # the loop's own first pass can wait out a random offset - staggering
+        # the periodic re-checks against the other workers after a restart.
+        if self._stop_event.wait(random.randint(LOGIN_CHECK_MIN_START_DELAY_SECONDS,
+                                                LOGIN_CHECK_MAX_START_DELAY_SECONDS)):
+            return
         while not self._stop_event.is_set():
             self._ensureAllUsersLogin()
             self._stop_event.wait(60 * 5)  # Check every 5 minutes
@@ -444,8 +461,12 @@ class SpotifyDashboardApp:
         thread.start()
 
     def _versionCheckLoop(self):
-        # Check version from GitHub at startup and then every hour.
+        # Check version from GitHub shortly after startup (random offset, so a
+        # restart doesn't fire every worker at once) and then every hour.
         url = "https://raw.githubusercontent.com/i7Gamer/SpotifyStatsTracker/main/Database/VERSION"
+        if self._stop_event.wait(random.randint(VERSION_CHECK_MIN_START_DELAY_SECONDS,
+                                                VERSION_CHECK_MAX_START_DELAY_SECONDS)):
+            return
         while not self._stop_event.is_set():
             try:
                 resp = requests.get(url, timeout=6)

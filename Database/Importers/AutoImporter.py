@@ -1,10 +1,18 @@
 import os
+import random
 import time
 import threading
 import shutil
 import logging
 
 logger = logging.getLogger(__name__)
+
+# Random startup-offset bounds for the folder watchdog: with several users,
+# every per-user scan (and any initial-file import) used to hit the disk at
+# the same instant after a restart. Kept short - the poll cadence itself is
+# only a few seconds.
+AUTO_IMPORT_MIN_START_DELAY_SECONDS = 5
+AUTO_IMPORT_MAX_START_DELAY_SECONDS = 30
 
 try:
     from Database.utils import parseError
@@ -30,7 +38,8 @@ class Watchdog:
         except OSError:
             return None
 
-    def watchFolder_blocking(self, pathToWatch, callback, checkInterval=5, callbackInitialFiles=True):
+    def watchFolder_blocking(self, pathToWatch, callback, checkInterval=5, callbackInitialFiles=True,
+                             startupDelaySeconds=0):
         """`callback` receives the LIST of files discovered in one scan (sorted
         by path), not one call per file: files dropped together must be
         processed as a single batch so batch-scoped import state (duplicate-
@@ -41,7 +50,13 @@ class Watchdog:
         between two consecutive polls: a large export still being copied into
         the folder used to be read mid-copy, fail to parse, and be swallowed.
         Files already present at startup are delivered immediately - they've
-        been sitting there since before this process started."""
+        been sitting there since before this process started.
+
+        `startupDelaySeconds` postpones the whole watcher (including the
+        initial scan) - AutoImporter passes a random offset so per-user
+        watchers don't all hit the disk at the same instant after a restart."""
+        if startupDelaySeconds and self._stop_event.wait(startupDelaySeconds):
+            return
         logger.info(f"Monitoring {pathToWatch} for new files (Polling)...")
         if not os.path.exists(pathToWatch):
             os.makedirs(pathToWatch)
@@ -99,11 +114,12 @@ class Watchdog:
         except Exception as e:
             logger.error(f"Stopping monitor... {parseError(e)}")
 
-    def watchFolder(self, pathToWatch, callback, checkInterval=5):
+    def watchFolder(self, pathToWatch, callback, checkInterval=5, startupDelaySeconds=0):
         self._stop_event.clear()
         self.thread = threading.Thread(
             target=self.watchFolder_blocking,
             args=(pathToWatch, callback, checkInterval),
+            kwargs={"startupDelaySeconds": startupDelaySeconds},
             daemon=True
         )
         self.thread.start()
@@ -192,7 +208,9 @@ class AutoImporter:
                 logger.error(f"Error moving file {path}: {e}")
 
     def start(self):
-        self.wd.watchFolder(self.folderPath, self._handleImport, self.pollInterval)
+        self.wd.watchFolder(self.folderPath, self._handleImport, self.pollInterval,
+                            startupDelaySeconds=random.randint(AUTO_IMPORT_MIN_START_DELAY_SECONDS,
+                                                               AUTO_IMPORT_MAX_START_DELAY_SECONDS))
 
 
 if __name__ == "__main__":

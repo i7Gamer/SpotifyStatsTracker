@@ -104,6 +104,9 @@ class Database:
                                                 #  since the last connect-state update is a frozen/stale feed,
                                                 #  not a real playback - report nothing instead
 
+    BACKFILLER_MIN_START_DELAY = 30            #< random startup-offset bounds for the metadata backfiller,
+    BACKFILLER_MAX_START_DELAY = 90            #  in seconds - staggers per-user threads after a restart
+
     WRAPPED_WORKER_MIN_START_DELAY = 60        #< minimum initial random startup delay in seconds
     WRAPPED_WORKER_MAX_START_DELAY = 300       #< maximum initial random startup delay in seconds
     WRAPPED_WORKER_LOOP_INTERVAL = 900         #< interval between consecutive checks in seconds (15 minutes)
@@ -1766,7 +1769,7 @@ class Database:
         import random
         try:
             # 1. Random startup offset to prevent multiple user threads from starting at the same moment
-            startup_delay = random.randint(30, 90)
+            startup_delay = random.randint(self.BACKFILLER_MIN_START_DELAY, self.BACKFILLER_MAX_START_DELAY)
             logger.info("[Backfiller-%s] Starting with initial delay of %d seconds", self.user, startup_delay)
             if self.backfiller_stop_event.wait(startup_delay):
                 logger.info("[Backfiller-%s] Stopped during startup delay", self.user)

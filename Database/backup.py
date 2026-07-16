@@ -16,6 +16,7 @@ sensitive.
 import datetime
 import logging
 import os
+import random
 import sqlite3
 import threading
 from pathlib import Path
@@ -33,7 +34,9 @@ DEFAULT_BACKUP_INTERVAL_HOURS = 24
 DEFAULT_BACKUP_RETENTION_COUNT = 7
 BACKUP_DIR_NAME = "Backups"                 #< created next to the database file, inside the persisted Data/ volume
 BACKUP_FILENAME_PREFIX = "spotify_stats_backup_"
-BACKUP_STARTUP_DELAY_SECONDS = 60           #< don't race app startup (migrations just ran, listeners are spinning up)
+BACKUP_STARTUP_MIN_DELAY_SECONDS = 60       #< random startup-offset bounds: don't race app startup (migrations
+BACKUP_STARTUP_MAX_DELAY_SECONDS = 300      #  just ran, listeners are spinning up), and stagger against the other
+                                            #  periodic workers instead of all firing at the same instant
 BACKUP_CHECK_INTERVAL_SECONDS = 15 * 60     #< how often the worker re-checks whether a backup is due
 BACKUP_TIMESTAMP_FORMAT = "%Y%m%d_%H%M%S"   #< lexicographic order == chronological order, which rotation relies on
 
@@ -129,7 +132,8 @@ class BackupWorker:
                 logger.warning("Could not delete old backup %s: %s", stale, e)
 
     def _loop(self) -> None:
-        if self._stop_event.wait(BACKUP_STARTUP_DELAY_SECONDS):
+        if self._stop_event.wait(random.randint(BACKUP_STARTUP_MIN_DELAY_SECONDS,
+                                                BACKUP_STARTUP_MAX_DELAY_SECONDS)):
             return
         while not self._stop_event.is_set():
             try:
