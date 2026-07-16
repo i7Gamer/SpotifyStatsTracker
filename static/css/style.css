@@ -826,7 +826,7 @@ progress::-moz-progress-bar {
 .compare-table thead tr {
   border-bottom: 2px solid var(--glass-border);
   color: var(--muted);
-  font-size: 0.85rem;
+  font-size: 1.05rem;
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
@@ -845,11 +845,17 @@ progress::-moz-progress-bar {
   font-weight: 600;
 }
 
-/* The side with the larger count/time of a head-to-head row. The ▲ marker
-   (plus visually-hidden text) carries the signal for color-blind users and
+/* The side with the larger count/time of a head-to-head row, tinted in that
+   COLUMN's identity color (one shared leader color broke the you-vs-them
+   mapping whenever the counterpart led a row). The ▲ marker (plus
+   visually-hidden text) carries the signal for color-blind users and
    screen readers - color alone isn't enough. */
-.compare-table td.value.leader {
+.compare-table td.value.leader-mine {
   color: var(--accent);
+}
+
+.compare-table td.value.leader-theirs {
+  color: var(--compare-theirs);
 }
 
 .leader-marker {

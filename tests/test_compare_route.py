@@ -786,7 +786,21 @@ class TestCompareRoute(unittest.TestCase):
         marker = ' <span class="leader-marker" aria-hidden="true">▲</span><span class="visually-hidden">(higher)</span>'.encode("utf-8")
         #< alice leads plays AND time: exactly two marked cells
         self.assertEqual(resp.data.count(marker), 2)
-        self.assertIn(b'class="value leader">10' , resp.data)
+        self.assertIn(b'class="value leader leader-mine">10', resp.data)
+
+    def test_leader_color_follows_the_columns_identity(self):
+        """A leading counterpart cell must carry the counterpart's identity
+        color class, not the viewer's accent - one leader color for both
+        columns broke the you-vs-them color mapping."""
+        self._accept("alice", "bob")
+        self.dbs["alice"].getPlayTotals.return_value = (5, 500)
+        self.dbs["bob"].getPlayTotals.return_value = (12, 1200)
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        self.assertIn(b'class="value leader leader-theirs">12', resp.data)
+        self.assertNotIn(b'class="value leader leader-mine"', resp.data)   #< alice leads nothing here
 
     def test_split_bar_carries_an_accessible_description(self):
         self._accept("alice", "bob")
