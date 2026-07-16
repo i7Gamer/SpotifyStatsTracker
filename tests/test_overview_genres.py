@@ -97,6 +97,16 @@ class TestOverviewGenreCard(OverviewGenresTestBase):
         self.assertIn(b"Genre Backfill Progress", resp.data)
         self.assertIn(b"NO API KEY", resp.data)   #< sanitized worker status defaults
 
+    def test_worker_status_exception_degrades_to_the_unconfigured_badge(self):
+        dash = self._makeApp()
+        db = self._makeDb(coverage=coverageDict(10, 10, 10))
+        db.getLastfmWorkerStatus.side_effect = RuntimeError("boom")
+
+        resp = self._getOverview(dash, db)
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn(b"NO API KEY", resp.data)
+
     def test_worker_badges_reflect_the_real_status(self):
         dash = self._makeApp()
         db = self._makeDb(coverage=coverageDict(80, 60, 90),

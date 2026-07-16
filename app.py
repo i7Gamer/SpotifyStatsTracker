@@ -18,7 +18,7 @@ from flask_wtf.csrf import CSRFProtect
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import generate_password_hash, check_password_hash
 
-from Database.database import Database
+from Database.database import Database, GENRE_COVERAGE_CATEGORIES
 from Database.backup import BackupWorker
 from Database.db import SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON
 from Database.repository import Repository
@@ -179,10 +179,19 @@ def _passwordPolicyError(password: str) -> str | None:
 def emptyGenreCoverage() -> dict:
     """The all-zeros coverage shape - what guests, empty ranges and sanitize
     failures all resolve to (and the gate always rejects)."""
-    def category():
-        return {"covered": 0, "total": 0, "percent": 0.0}
-    return {"song": category(), "album": category(), "artist": category(),
-            "overall": {"percent": 0.0}}
+    coverage = {categoryName: {"covered": 0, "total": 0, "percent": 0.0}
+                for categoryName in GENRE_COVERAGE_CATEGORIES}
+    coverage["overall"] = {"percent": 0.0}
+    return coverage
+
+
+def _requireNumber(value):
+    """The value if it's a real number. Explicit isinstance rather than
+    int()/float() coercion: MagicMock happily answers __int__ with 1, which
+    would let an unstubbed test db masquerade as real coverage."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError(f"not a number: {value!r}")
+    return value
 
 
 def sanitizeGenreCoverage(coverage) -> dict:
@@ -190,26 +199,16 @@ def sanitizeGenreCoverage(coverage) -> dict:
     else all zeros. Route code must only ever consume coverage through this:
     stubbed dbs in tests (and any unexpected failure) then degrade to the
     locked state instead of crashing template rendering."""
-    if not isinstance(coverage, dict):
+    try:
+        sanitized = {
+            categoryName: {field: _requireNumber(coverage[categoryName][field])
+                           for field in ("covered", "total", "percent")}
+            for categoryName in GENRE_COVERAGE_CATEGORIES
+        }
+        sanitized["overall"] = {"percent": _requireNumber(coverage["overall"]["percent"])}
+        return sanitized
+    except (TypeError, KeyError):
         return emptyGenreCoverage()
-    result = emptyGenreCoverage()
-    for categoryName in ("song", "album", "artist"):
-        category = coverage.get(categoryName)
-        if not isinstance(category, dict):
-            return emptyGenreCoverage()
-        for field in ("covered", "total", "percent"):
-            value = category.get(field)
-            if isinstance(value, bool) or not isinstance(value, (int, float)):
-                return emptyGenreCoverage()
-            result[categoryName][field] = value
-    overall = coverage.get("overall")
-    if not isinstance(overall, dict):
-        return emptyGenreCoverage()
-    overallPercent = overall.get("percent")
-    if isinstance(overallPercent, bool) or not isinstance(overallPercent, (int, float)):
-        return emptyGenreCoverage()
-    result["overall"]["percent"] = overallPercent
-    return result
 
 
 def resolveGenreCoverage(db, startDate, endDate) -> dict:
@@ -222,6 +221,19 @@ def resolveGenreCoverage(db, startDate, endDate) -> dict:
         return emptyGenreCoverage()
 
 
+def resolveGenreDistribution(db, startDate, endDate, limit) -> dict:
+    """Genre distribution for a user db over a range; {} when the lookup
+    fails or returns a non-dict (stubbed dbs) - the same degradation
+    contract as resolveGenreCoverage, so every genre surface consumes
+    distributions through this one chokepoint."""
+    try:
+        distribution = db.getGenreDistribution(startDate=startDate, endDate=endDate, limit=limit)
+    except Exception as e:
+        logger.warning("Genre distribution lookup failed: %s", e)
+        return {}
+    return distribution if isinstance(distribution, dict) else {}
+
+
 def genreGatePasses(coverage: dict) -> bool:
     """The unlock rule on a sanitized coverage dict: overall strictly above
     GENRE_GATE_OVERALL_MIN_PERCENT and every category at or above
@@ -229,7 +241,7 @@ def genreGatePasses(coverage: dict) -> bool:
     if coverage["overall"]["percent"] <= GENRE_GATE_OVERALL_MIN_PERCENT:
         return False
     return all(coverage[categoryName]["percent"] >= GENRE_GATE_CATEGORY_MIN_PERCENT
-               for categoryName in ("song", "album", "artist"))
+               for categoryName in GENRE_COVERAGE_CATEGORIES)
 
 
 class _RateLimiter:
@@ -2297,10 +2309,8 @@ class SpotifyDashboardApp:
             genreUnlocked = genreGatePasses(genreCoverage)
             genreDistribution = None
             if genreUnlocked:
-                genreDistribution = db.getGenreDistribution(startDate=startDate, endDate=endDate,
-                                                            limit=CHART_TOP_GENRES_LIMIT)
-                if not isinstance(genreDistribution, dict):
-                    genreDistribution = {}
+                genreDistribution = resolveGenreDistribution(db, startDate, endDate,
+                                                             CHART_TOP_GENRES_LIMIT)
 
             return render_template(
                 "charts.html",
@@ -2346,18 +2356,23 @@ class SpotifyDashboardApp:
             yearStart = nowLocal.replace(year=year, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
             yearEnd = nowLocal.replace(year=year + 1, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
 
-            # Genre data is deliberately computed live on every request - never
-            # from the user_wrapped cache below: coverage keeps growing while
-            # the Last.fm backfill runs, and the admin's inherited-genres
-            # toggle changes the numbers retroactively. One GROUP BY per view.
-            genreCoverage = resolveGenreCoverage(db, yearStart, yearEnd)
-            genreUnlocked = genreGatePasses(genreCoverage)
+            # Genre data is deliberately computed live - never from the
+            # user_wrapped cache below: coverage keeps growing while the
+            # Last.fm backfill runs, and the admin's inherited-genres toggle
+            # changes the numbers retroactively. Only computed for responses
+            # that actually render the card (the full page and ajax type=all -
+            # chart/lists partial updates would compute and discard it).
+            isAjaxRequest = request.args.get("ajax") == "true"
+            ajaxUpdateType = request.args.get("type", "all")
+            genreCoverage = emptyGenreCoverage()
+            genreUnlocked = False
             topGenres = None
-            if genreUnlocked:
-                topGenres = db.getGenreDistribution(startDate=yearStart, endDate=yearEnd,
-                                                    limit=WRAPPED_TOP_GENRES_LIMIT)
-                if not isinstance(topGenres, dict):
-                    topGenres = {}
+            if not isAjaxRequest or ajaxUpdateType == "all":
+                genreCoverage = resolveGenreCoverage(db, yearStart, yearEnd)
+                genreUnlocked = genreGatePasses(genreCoverage)
+                if genreUnlocked:
+                    topGenres = resolveGenreDistribution(db, yearStart, yearEnd,
+                                                         WRAPPED_TOP_GENRES_LIMIT)
 
             # 1. Fetch precalculated cached wrapped stats from database (unless db is a mock)
             from unittest.mock import MagicMock
@@ -2477,8 +2492,8 @@ class SpotifyDashboardApp:
             discoveredAlbums = self._embedAlbumsTextElements(discoveredAlbums)
 
             # 6. Check if AJAX request and return JSON response if true
-            if request.args.get("ajax") == "true":
-                update_type = request.args.get("type", "all")
+            if isAjaxRequest:
+                update_type = ajaxUpdateType
                 res = {}
 
                 if update_type in ("all", "chart"):
@@ -2656,14 +2671,10 @@ class SpotifyDashboardApp:
             theirTopGenres = None
             sharedGenres = None
             if genresUnlocked:
-                myGenrePool = db.getGenreDistribution(startDate=startDate, endDate=endDate,
-                                                      limit=COMPARE_GENRE_POOL_SIZE)
-                theirGenrePool = otherDb.getGenreDistribution(startDate=startDate, endDate=endDate,
-                                                              limit=COMPARE_GENRE_POOL_SIZE)
-                if not isinstance(myGenrePool, dict):
-                    myGenrePool = {}
-                if not isinstance(theirGenrePool, dict):
-                    theirGenrePool = {}
+                myGenrePool = resolveGenreDistribution(db, startDate, endDate,
+                                                       COMPARE_GENRE_POOL_SIZE)
+                theirGenrePool = resolveGenreDistribution(otherDb, startDate, endDate,
+                                                          COMPARE_GENRE_POOL_SIZE)
                 myTopGenres = dict(list(myGenrePool.items())[:COMPARE_TOP_GENRES_LIMIT])
                 theirTopGenres = dict(list(theirGenrePool.items())[:COMPARE_TOP_GENRES_LIMIT])
                 # Shared genres: the pools' intersection, ordered by combined

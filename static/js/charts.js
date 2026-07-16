@@ -707,10 +707,13 @@
     drawDonutChart(ctx, width, height, slices, total, canvas);
   }
 
-  function renderDecadeChart() {
-    var canvas = document.getElementById('decadeChart');
+  /* Shared vertical-bar renderer for the categorical distributions (release
+     decades, genres). fitLabel, when given, shrinks an axis label to its bar
+     slot - tooltips always keep the full key. */
+  function renderCategoryBarChart(canvasId, dataKey, emptyMessage, fitLabel) {
+    var canvas = document.getElementById(canvasId);
     if (!canvas) return;
-    var data = window.__chartData.decadeDistribution;
+    var data = window.__chartData[dataKey];
     if (!data) return;
 
     var config = setupCanvas(canvas, 300);
@@ -718,7 +721,7 @@
 
     var keys = Object.keys(data);
     if (keys.length === 0) {
-      drawEmptyState(ctx, width, height, 'No album release information in this period.');
+      drawEmptyState(ctx, width, height, emptyMessage);
       return;
     }
 
@@ -746,79 +749,7 @@
       ctx.fillStyle = CHART_PALETTE[i % CHART_PALETTE.length];
       ctx.fillRect(x, y, barWidth, barHeight);
 
-      ctx.fillStyle = '#b0b0b0';
-      ctx.font = '11px sans-serif';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'top';
-      ctx.fillText(key, x + barWidth / 2, paddingTop + plotHeight + 8);
-
-      return { key: key, value: val, x: x, y: y, w: barWidth, h: barHeight };
-    });
-
-    canvas.onmousemove = function(evt) {
-      var rect = canvas.getBoundingClientRect();
-      var mx = evt.clientX - rect.left, my = evt.clientY - rect.top;
-      var found = null;
-
-      bars.forEach(function(bar) {
-        if (mx >= bar.x && mx <= bar.x + bar.w && my >= bar.y && my <= bar.y + bar.h) {
-          found = bar;
-        }
-      });
-
-      if (found) {
-        showTooltip(evt, '<strong>' + found.key + '</strong><br>' + found.value + ' plays');
-      } else {
-        hideTooltip();
-      }
-    };
-    canvas.onmouseleave = hideTooltip;
-  }
-
-  function renderGenreChart() {
-    var canvas = document.getElementById('genreChart');
-    if (!canvas) return;
-    var data = window.__chartData.genreDistribution;
-    if (!data) return;
-
-    var config = setupCanvas(canvas, 300);
-    var ctx = config.ctx, width = config.width, height = config.height;
-
-    var keys = Object.keys(data);
-    if (keys.length === 0) {
-      drawEmptyState(ctx, width, height, 'No genre data for the plays in this period.');
-      return;
-    }
-
-    var values = keys.map(function(k) { return data[k]; });
-    var maxVal = Math.max.apply(null, values);
-    if (maxVal === 0) maxVal = 1;
-
-    var paddingLeft = 50, paddingRight = 20, paddingTop = 20, paddingBottom = 40;
-    var plotWidth = width - paddingLeft - paddingRight;
-    var plotHeight = height - paddingTop - paddingBottom;
-
-    drawYAxisGrid(ctx, paddingLeft, paddingTop, plotWidth, plotHeight, maxVal, function(v) { return Math.round(v); });
-
-    var barCount = keys.length;
-    var rawBarWidth = plotWidth / barCount;
-    var spacing = Math.max(rawBarWidth * 0.25, 6);
-    var barWidth = rawBarWidth - spacing;
-
-    // Genre names run long ("progressive electronic") - fit the axis label to
-    // the bar slot and keep the full name for the tooltip.
-    var maxLabelChars = Math.max(4, Math.floor(rawBarWidth / 7));
-
-    var bars = keys.map(function(key, i) {
-      var val = data[key];
-      var barHeight = plotHeight * val / maxVal;
-      var x = paddingLeft + i * rawBarWidth + spacing / 2;
-      var y = paddingTop + plotHeight - barHeight;
-
-      ctx.fillStyle = CHART_PALETTE[i % CHART_PALETTE.length];
-      ctx.fillRect(x, y, barWidth, barHeight);
-
-      var label = key.length > maxLabelChars ? key.slice(0, maxLabelChars - 1) + '…' : key;
+      var label = fitLabel ? fitLabel(key, rawBarWidth) : key;
       ctx.fillStyle = '#b0b0b0';
       ctx.font = '11px sans-serif';
       ctx.textAlign = 'center';
@@ -846,6 +777,22 @@
       }
     };
     canvas.onmouseleave = hideTooltip;
+  }
+
+  function renderDecadeChart() {
+    renderCategoryBarChart('decadeChart', 'decadeDistribution',
+      'No album release information in this period.');
+  }
+
+  function renderGenreChart() {
+    // Genre names run long ("progressive electronic") - fit the axis label
+    // to the bar slot.
+    renderCategoryBarChart('genreChart', 'genreDistribution',
+      'No genre data for the plays in this period.',
+      function(key, rawBarWidth) {
+        var maxLabelChars = Math.max(4, Math.floor(rawBarWidth / 7));
+        return key.length > maxLabelChars ? key.slice(0, maxLabelChars - 1) + '…' : key;
+      });
   }
 
   function renderAllCharts() {

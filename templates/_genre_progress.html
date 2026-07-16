@@ -25,5 +25,6 @@
       &mdash; add a Last.fm API key on your <a href="{{ url_for('profilePage') }}" style="color: var(--accent);">profile</a> to start backfilling genre data.
     {% endif %}
   </p>
-  <p style="font-size: 0.75rem; color: #666; margin-top: 0.5rem;">Genre data powered by <a href="https://www.last.fm" target="_blank" style="color: #888;">Last.fm</a>.</p>
+  {% import "_genre_macros.html" as genreMacros %}
+  {{ genreMacros.lastfmAttribution(marginTop='0.5rem') }}
 </div>

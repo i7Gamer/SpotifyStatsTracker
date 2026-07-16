@@ -266,7 +266,8 @@
       {% else %}
         <p><strong>Last.fm API Key:</strong> Not Configured</p>
       {% endif %}
-      <p style="font-size: 0.8rem; color: #666; margin-top: 0.75rem;">Genre data powered by <a href="https://www.last.fm" target="_blank" style="color: #888;">Last.fm</a>.</p>
+      {% import "_genre_macros.html" as genreMacros %}
+      {{ genreMacros.lastfmAttribution() }}
     </div>
 
     <div style="margin-top: 3rem; text-align: center;">

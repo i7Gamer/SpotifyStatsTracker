@@ -99,7 +99,8 @@
       <div class="chart-canvas-wrap" style="height: 300px;">
         <canvas id="genreChart"></canvas>
       </div>
-      <p class="chart-subtitle" style="margin-top: 0.5rem;">Genre data powered by <a href="https://www.last.fm" target="_blank" style="color: #888;">Last.fm</a>.</p>
+      {% import "_genre_macros.html" as genreMacros %}
+      {{ genreMacros.lastfmAttribution(marginTop='0.5rem') }}
       {% else %}
       {% with coverage = genreCoverage %}{% include "_genre_progress.html" %}{% endwith %}
       {% endif %}

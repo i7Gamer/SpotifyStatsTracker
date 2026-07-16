@@ -1,0 +1,27 @@
+{# Shared building blocks for every genre surface (charts, wrapped, compare,
+   overview progress, profile). Imported with {% import %} - macros carry no
+   caller context, so they stay drop-in anywhere. #}
+
+{% macro lastfmAttribution(marginTop='0.75rem') -%}
+<p style="font-size: 0.75rem; color: #666; margin-top: {{ marginTop }};">Genre data powered by <a href="https://www.last.fm" target="_blank" style="color: #888;">Last.fm</a>.</p>
+{%- endmacro %}
+
+{# Ranked genre list: rank / capitalized name / accent bar (normalized to the
+   list's top count) / play count. `genres` is a {genre: plays} dict already
+   ordered most-played first; callers guard the empty case themselves (their
+   empty-state wording differs). #}
+{% macro genreBarList(genres, nameWidth='12rem', barHeight='12px', gap='0.6rem') -%}
+{% set maxPlays = genres.values() | max %}
+<div style="display: flex; flex-direction: column; gap: {{ gap }}; margin-top: 0.75rem;">
+  {% for genre, plays in genres.items() %}
+  <div style="display: flex; align-items: center; gap: 0.6rem;">
+    <span style="flex: 0 0 1.5rem; font-weight: 600; color: var(--accent);">{{ loop.index }}.</span>
+    <span style="flex: 0 0 {{ nameWidth }}; text-transform: capitalize; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ genre }}</span>
+    <div style="flex: 1; background: rgba(255, 255, 255, 0.08); border-radius: 4px; height: {{ barHeight }}; overflow: hidden;">
+      <div style="width: {{ (plays / maxPlays * 100) | round(1) }}%; background: var(--accent); height: 100%; border-radius: 4px;"></div>
+    </div>
+    <span style="flex: 0 0 6rem; text-align: right; font-size: 0.85rem; color: var(--muted, #aaa);">{{ "{:,}".format(plays) }} plays</span>
+  </div>
+  {% endfor %}
+</div>
+{%- endmacro %}

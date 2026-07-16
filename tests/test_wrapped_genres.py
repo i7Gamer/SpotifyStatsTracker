@@ -149,6 +149,19 @@ class TestWrappedGenreCard(WrappedGenresTestBase):
         payload = json.loads(resp.data)
         self.assertNotIn("topGenresHtml", payload)
 
+    def test_ajax_chart_and_lists_requests_never_run_the_genre_queries(self):
+        """type=chart/type=lists responses don't include the genre card, so
+        the (year-wide) coverage and distribution aggregations must not run
+        for them - they'd be computed and discarded on every filter click."""
+        dash = self._makeApp()
+        db = self._makeDb(coverage=coverageDict(80, 60, 90), distribution={"rock": 1})
+
+        self._getWrapped(dash, db, query="?ajax=true&type=chart")
+        self._getWrapped(dash, db, query="?ajax=true&type=lists")
+
+        db.getGenreCoverage.assert_not_called()
+        db.getGenreDistribution.assert_not_called()
+
     def test_cached_wrapped_path_still_computes_genres_live(self):
         """The genre card must never come from the user_wrapped cache - even
         when the rest of the page renders from it."""

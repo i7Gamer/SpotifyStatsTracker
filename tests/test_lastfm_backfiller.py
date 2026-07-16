@@ -87,6 +87,34 @@ class WorkerLifecycleTestCase(LastfmWorkerBase):
         self.assertIs(db.lastfm_thread, firstThread)
         db.stopLastfmGenreBackfiller()
 
+    def test_restart_uses_a_fresh_stop_event_so_a_lingering_thread_cannot_revive(self):
+        """stop() joins with a timeout - a worker blocked in a slow HTTP call
+        can outlive it. A restart must NOT clear the event that zombie still
+        watches (that would revive it, doubling the request volume forever);
+        each run gets its own event instead."""
+        db = self._makeDbWithPlays()
+        db.repo.updateUserLastfmApiKey("user1", "key123")
+        db.startLastfmGenreBackfiller()
+        firstEvent = db.lastfm_stop_event
+        db.stopLastfmGenreBackfiller()
+
+        db.startLastfmGenreBackfiller()
+        self.assertIsNot(db.lastfm_stop_event, firstEvent)
+        self.assertTrue(firstEvent.is_set())            #< the old thread's signal stays set
+        self.assertFalse(db.lastfm_stop_event.is_set())
+        db.stopLastfmGenreBackfiller()
+
+    def test_autostart_survives_a_pre_migration_schema(self):
+        """Database() constructed against a pre-1.19 file outside the app's
+        migration path (standalone script/REPL) must not crash in __init__
+        just because users.lastfm_api_key doesn't exist yet."""
+        import sqlite3 as sqlite3Module
+        db = self._makeDbWithPlays()
+        with patch.object(db.repo, "getUserLastfmApiKey",
+                          side_effect=sqlite3Module.OperationalError("no such column: lastfm_api_key")):
+            db.startLastfmGenreBackfiller()   #< must not raise
+        self.assertIsNone(db.lastfm_thread)
+
     def test_database_stop_stops_the_worker(self):
         db = self._makeDbWithPlays()
         db.repo.updateUserLastfmApiKey("user1", "key123")
@@ -242,9 +270,29 @@ class WorkerBatchTestCase(LastfmWorkerBase):
         self.assertIsNotNone(conn.execute(
             "SELECT lastfm_attempted_at FROM tracks WHERE id='tB'").fetchone()[0])
 
-    def test_tagless_track_of_a_pending_artist_stays_unmarked(self):
+    def test_tagless_track_resolves_its_pending_artist_inline(self):
+        """A tag-less entity whose artist has no definitive result yet must
+        resolve the artist with one inline request instead of staying
+        unmarked - the artist may never appear in any queue (see the album
+        test below), and an unmarked entity is re-fetched every cycle."""
         db = self._makeDbWithPlays()   #< artists never attempted
-        client = self._clientReturning(getTrackTopTags=OK_EMPTY)
+        client = self._clientReturning(getTrackTopTags=OK_EMPTY, getArtistTopTags=ROCK_TAGS)
+
+        db._processLastfmTrackBatch(client, "user1")
+
+        self.assertEqual(db.repo.getArtistGenres("aX"), ["rock", "indie rock"])
+        self.assertEqual(db.repo.getTrackGenres("tA"),
+                         [{"genre": "rock", "inherited": True},
+                          {"genre": "indie rock", "inherited": True}])
+        conn = db.repo._conn()
+        for table, entityId in (("tracks", "tA"), ("artists", "aX")):
+            self.assertIsNotNone(conn.execute(
+                f"SELECT lastfm_attempted_at FROM {table} WHERE id=?", (entityId,)).fetchone()[0])
+
+    def test_tagless_track_stays_unmarked_when_the_inline_artist_lookup_fails(self):
+        db = self._makeDbWithPlays()
+        client = self._clientReturning(getTrackTopTags=OK_EMPTY,
+                                       getArtistTopTags=FetchOutcome(OUTCOME_TRANSIENT, []))
 
         db._processLastfmTrackBatch(client, "user1")
 
@@ -252,6 +300,30 @@ class WorkerBatchTestCase(LastfmWorkerBase):
         self.assertIsNone(conn.execute(
             "SELECT lastfm_attempted_at FROM tracks WHERE id='tA'").fetchone()[0])
         self.assertEqual(db.repo.getTrackGenres("tA"), [])   #< requeues next cycle
+
+    def test_album_with_an_unplayed_primary_artist_is_resolved_in_one_pass(self):
+        """Starvation regression: an album's derived primary artist can come
+        from never-played sibling tracks, so it never enters the artist queue.
+        Waiting for it would leave the album unmarked (re-fetched every cycle,
+        permanently occupying a batch slot) - the inline resolution must
+        finish it in a single pass."""
+        db = self._makeDbWithPlays()
+        for trackId in ("tA2", "tA3"):   #< aM outvotes aX as alP's primary artist, but was never played
+            db.repo.upsertTrack(normalizeTrackForTest(
+                {"id": trackId, "name": trackId,
+                 "artists": [{"id": "aM", "name": "Artist M"}], "album": _album("alP", "Album P")}))
+        db.repo.commit()
+        client = self._clientReturning(getAlbumTopTags=OK_EMPTY, getArtistTopTags=ROCK_TAGS)
+
+        db._processLastfmAlbumBatch(client, "user1")
+
+        client.getArtistTopTags.assert_any_call("Artist M", stop_event=db.lastfm_stop_event)
+        self.assertEqual(db.repo.getArtistGenres("aM"), ["rock", "indie rock"])
+        self.assertEqual([g["genre"] for g in db.repo.getAlbumGenres("alP")], ["rock", "indie rock"])
+        self.assertTrue(all(g["inherited"] for g in db.repo.getAlbumGenres("alP")))
+        conn = db.repo._conn()
+        self.assertIsNotNone(conn.execute(
+            "SELECT lastfm_attempted_at FROM albums WHERE id='alP'").fetchone()[0])
 
     def test_transient_outcomes_leave_entities_unmarked_and_report_no_progress(self):
         db = self._makeDbWithPlays()

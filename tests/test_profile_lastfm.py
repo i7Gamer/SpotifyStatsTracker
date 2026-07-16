@@ -128,6 +128,29 @@ class TestSaveLastfmKey(ProfileLastfmTestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertIn(b"required", resp.data)
 
+    def test_busy_rate_limit_budget_reports_without_storing(self):
+        with patch("app.LastfmClient") as mockClientClass:
+            mockClientClass.return_value.validateApiKey.return_value = {"ok": False, "error": "busy"}
+            client = self._loginAs("alice", "alice@example.com")
+
+            resp = client.post("/profile", data={"action": "save_lastfm", "lastfm_api_key": "somekey"})
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn(b"busy right now", resp.data)
+        self.assertIsNone(self.dash.repo.getUserLastfmApiKey("alice"))
+
+    @patch("Database.lastfm.requests.get")
+    def test_storage_failure_after_validation_reports_an_error(self, mockGet):
+        mockGet.return_value = _lastfmResponse()
+        client = self._loginAs("alice", "alice@example.com")
+        self.db.updateUserLastfmApiKey.side_effect = RuntimeError("disk full")
+
+        resp = client.post("/profile", data={"action": "save_lastfm", "lastfm_api_key": "goodkey123"})
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn(b"Failed to save the Last.fm API key", resp.data)
+        self.assertNotIn(b"Last.fm API key saved", resp.data)
+
     @patch("Database.lastfm.requests.get")
     def test_save_is_rate_limited(self, mockGet):
         """Every save fires a live validation request against Last.fm - the
@@ -155,6 +178,17 @@ class TestRemoveLastfmKey(ProfileLastfmTestCase):
         self.assertIn(b"Last.fm API key removed", resp.data)
         self.assertIsNone(self.dash.repo.getUserLastfmApiKey("alice"))
         self.db.stopLastfmGenreBackfiller.assert_called_once()
+
+    def test_remove_failure_reports_an_error(self):
+        client = self._loginAs("alice", "alice@example.com")
+        self.dash.repo.updateUserLastfmApiKey("alice", "key123")
+        self.db.stopLastfmGenreBackfiller.side_effect = RuntimeError("thread wedged")
+
+        resp = client.post("/profile", data={"action": "remove_lastfm"})
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn(b"Failed to remove the Last.fm API key", resp.data)
+        self.assertNotIn(b"Last.fm API key removed", resp.data)
 
 
 if __name__ == "__main__":
