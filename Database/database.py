@@ -1630,9 +1630,14 @@ class Database:
                 name = stateMeta.get("title")
                 artistsText = stateMeta.get("artist_name") or ""
             else:
+                logger.warning(
+                    "getNowPlaying: unexpected metadata type %s (value=%r); "
+                    "falling back to getattr", type(stateMeta).__name__, stateMeta,
+                )
                 name = getattr(stateMeta, "title", None)
                 artistsText = getattr(stateMeta, "artist_name", None) or ""
             imageId = None
+
         if not name:
             return None   #< nothing presentable to show
 
