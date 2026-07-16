@@ -2433,7 +2433,8 @@ class SpotifyDashboardApp:
                         "_compare_stats_table.html", my=my, their=their,
                         username=username, withUsername=withUsername),
                     "similaritiesHtml": render_template(
-                        "_compare_similarities.html", similarities=similarities),
+                        "_compare_similarities.html", similarities=similarities,
+                        username=username),   #< the cover-image URLs' session-authorization segment
                     "sharedArtistsHtml": render_template(
                         "_wrapped_list.html", items=sharedArtists, section="top_artists",
                         username=username, compareWith=withUsername,

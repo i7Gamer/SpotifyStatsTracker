@@ -973,10 +973,48 @@ progress::-moz-progress-bar {
   white-space: nowrap;
 }
 
-.compare-table-columns td.top-item {
-  max-width: 170px;
+/* Per-user Top Day/Song/Artist/Album cards directly under the stats table -
+   moved out of the table (as columns they squeezed everything) into one row
+   of cards mirroring the Common Top cards. Each card stacks the two users'
+   entries, cover first (Top Day has none). */
+.compare-top-items {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.compare-top-side {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+  min-width: 0;
+}
+
+.compare-top-meta {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.compare-top-meta .compare-user-label {
+  font-size: 0.75rem;
+}
+
+.compare-top-name {
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Cover thumbnails on compare cards (top-item sides, Common Top values). */
+.compare-cover {
+  width: 44px;
+  height: 44px;
+  border-radius: 8px;
+  object-fit: cover;
+  flex-shrink: 0;
 }
 
 /* The side with the larger count/time of a head-to-head stat, tinted in that
@@ -1026,6 +1064,15 @@ progress::-moz-progress-bar {
 
 .compare-similarities .summary-value {
   font-size: 1.25rem;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.compare-similarities .summary-value .compare-cover {
+  width: 36px;
+  height: 36px;
 }
 
 /* "You Both Love" versus block. .mine mirrors the trend chart's first

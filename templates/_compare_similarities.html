@@ -1,18 +1,18 @@
-{% from '_compare_macros.html' import detailCell %}
+{% from '_compare_macros.html' import detailCell, coverImg %}
 {# Similarity cells run over the 100-deep pools, so they can surface a
    common favorite neither displayed top ten shows. #}
 <article class="track-summary-card">
   <h3>Common Top Artist</h3>
-  <p class="summary-value">{{ detailCell(similarities.commonTopArtist, 'artistDetailPage', 'artist_id') }}</p>
+  <p class="summary-value">{{ coverImg(similarities.commonTopArtist, username, 'artist') }}{{ detailCell(similarities.commonTopArtist, 'artistDetailPage', 'artist_id') }}</p>
   <span class="summary-subtitle">{{ similarities.sharedArtistCount }} shared in your top {{ similarities.poolSize }}s</span>
 </article>
 <article class="track-summary-card">
   <h3>Common Top Song</h3>
-  <p class="summary-value">{{ detailCell(similarities.commonTopSong, 'songDetailPage', 'track_id') }}</p>
+  <p class="summary-value">{{ coverImg(similarities.commonTopSong, username, 'song') }}{{ detailCell(similarities.commonTopSong, 'songDetailPage', 'track_id') }}</p>
   <span class="summary-subtitle">{{ similarities.sharedSongCount }} shared in your top {{ similarities.poolSize }}s</span>
 </article>
 <article class="track-summary-card">
   <h3>Common Top Album</h3>
-  <p class="summary-value">{{ detailCell(similarities.commonTopAlbum, 'albumDetailPage', 'album_id') }}</p>
+  <p class="summary-value">{{ coverImg(similarities.commonTopAlbum, username, 'album') }}{{ detailCell(similarities.commonTopAlbum, 'albumDetailPage', 'album_id') }}</p>
   <span class="summary-subtitle">{{ similarities.sharedAlbumCount }} shared in your top {{ similarities.poolSize }}s</span>
 </article>

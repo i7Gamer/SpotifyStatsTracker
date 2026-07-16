@@ -633,10 +633,11 @@ class TestCompareRoute(unittest.TestCase):
 
         self.assertIn(b'compare-user-mine compare-user-label js-my-username">alice</span>', resp.data)
         self.assertIn(b'compare-user-theirs compare-user-label js-with-username">bob</span>', resp.data)
-        #< four mine-labels: table header + three column headings
-        self.assertEqual(resp.data.count(b"compare-user-mine"), 4)
+        #< eight mine-labels: table row header + three column headings + the
+        #  four Top Day/Song/Artist/Album card sides under the stats table
+        self.assertEqual(resp.data.count(b"compare-user-mine"), 8)
         #< theirs additionally colors the hero name (no label dot there)
-        self.assertEqual(resp.data.count(b"compare-user-theirs"), 5)
+        self.assertEqual(resp.data.count(b"compare-user-theirs"), 9)
 
     def test_limit_param_controls_displayed_list_sizes(self):
         """The dropdown slices the displayed lists (and shared lists) deeper

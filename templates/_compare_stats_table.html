@@ -1,9 +1,20 @@
-{% from '_compare_macros.html' import detailCell, spotifyCell %}
+{% from '_compare_macros.html' import detailCell, spotifyCell, coverImg %}
 {# The leader's ▲ + hidden "(higher)" keep the signal readable without
    color (color-blind users, screen readers). `side` is 'mine'/'theirs' so
    the leading cell colors in its own row's identity color. #}
 {% macro leaderCell(value, isLeader, side) -%}
 <td class="value{{ ' leader leader-' ~ side if isLeader else '' }}">{{ value }}{% if isLeader %} <span class="leader-marker" aria-hidden="true">▲</span><span class="visually-hidden">(higher)</span>{% endif %}</td>
+{%- endmacro %}
+{# One side of a Top Day/Song/Artist/Album card below the table. `kind` is
+   ''/'song'/'artist'/'album': empty renders no cover (Top Day has none). #}
+{% macro topItemSide(side, name, item, kind, valueHtml) -%}
+<div class="compare-top-side">
+  {% if kind %}{{ coverImg(item, username, kind) }}{% endif %}
+  <div class="compare-top-meta">
+    <span class="compare-user-{{ side }} compare-user-label js-{{ 'my' if side == 'mine' else 'with' }}-username">{{ name }}</span>
+    <span class="compare-top-name">{{ valueHtml }}</span>
+  </div>
+</div>
 {%- endmacro %}
 {# Transposed layout: stats run across as COLUMNS with one row per user - a
    head-to-head scoreboard that fits since the page widened to 1600px. The
@@ -20,10 +31,6 @@
       <th class="value">Skip Rate</th>
       <th class="value">Explicit</th>
       <th class="value">Peak Hour</th>
-      <th class="value">Top Day</th>
-      <th class="value">Top Song</th>
-      <th class="value">Top Artist</th>
-      <th class="value">Top Album</th>
     </tr>
   </thead>
   <tbody>
@@ -37,12 +44,6 @@
       <td class="value">{{ my.skipRateText }}</td>
       <td class="value">{{ my.explicitShareText }}</td>
       <td class="value">{{ my.peakHourText }}</td>
-      <td class="value">{{ my.peakDayText }}</td>
-      {# Summary entries come from the same lists rendered below, so the
-         summary cells and the lists can never disagree on the #1 entry. #}
-      <td class="value top-item">{{ detailCell(my.topSongs[0] if my.topSongs else none, 'songDetailPage', 'track_id') }}</td>
-      <td class="value top-item">{{ detailCell(my.topArtists[0] if my.topArtists else none, 'artistDetailPage', 'artist_id') }}</td>
-      <td class="value top-item">{{ detailCell(my.topAlbums[0] if my.topAlbums else none, 'albumDetailPage', 'album_id') }}</td>
     </tr>
     <tr>
       <td><span class="compare-user-theirs compare-user-label js-with-username">{{ withUsername }}</span></td>
@@ -54,10 +55,39 @@
       <td class="value">{{ their.skipRateText }}</td>
       <td class="value">{{ their.explicitShareText }}</td>
       <td class="value">{{ their.peakHourText }}</td>
-      <td class="value">{{ their.peakDayText }}</td>
-      <td class="value top-item">{{ spotifyCell(their.topSongs[0] if their.topSongs else none) }}</td>
-      <td class="value top-item">{{ spotifyCell(their.topArtists[0] if their.topArtists else none) }}</td>
-      <td class="value top-item">{{ spotifyCell(their.topAlbums[0] if their.topAlbums else none) }}</td>
     </tr>
   </tbody>
 </table>
+{# Top Day/Song/Artist/Album moved out of the table (as columns they
+   squeezed everything) into one row of cards mirroring the Common Top
+   cards. Summary entries come from the same lists rendered below, so
+   these cards and the lists can never disagree on the #1 entry. Own
+   items link to detail pages; counterpart items link to Spotify. #}
+<div class="compare-top-items">
+  <article class="track-summary-card">
+    <h3>Top Day</h3>
+    {{ topItemSide('mine', username, none, '', my.peakDayText) }}
+    {{ topItemSide('theirs', withUsername, none, '', their.peakDayText) }}
+  </article>
+  <article class="track-summary-card">
+    <h3>Top Song</h3>
+    {{ topItemSide('mine', username, my.topSongs[0] if my.topSongs else none, 'song',
+                   detailCell(my.topSongs[0] if my.topSongs else none, 'songDetailPage', 'track_id')) }}
+    {{ topItemSide('theirs', withUsername, their.topSongs[0] if their.topSongs else none, 'song',
+                   spotifyCell(their.topSongs[0] if their.topSongs else none)) }}
+  </article>
+  <article class="track-summary-card">
+    <h3>Top Artist</h3>
+    {{ topItemSide('mine', username, my.topArtists[0] if my.topArtists else none, 'artist',
+                   detailCell(my.topArtists[0] if my.topArtists else none, 'artistDetailPage', 'artist_id')) }}
+    {{ topItemSide('theirs', withUsername, their.topArtists[0] if their.topArtists else none, 'artist',
+                   spotifyCell(their.topArtists[0] if their.topArtists else none)) }}
+  </article>
+  <article class="track-summary-card">
+    <h3>Top Album</h3>
+    {{ topItemSide('mine', username, my.topAlbums[0] if my.topAlbums else none, 'album',
+                   detailCell(my.topAlbums[0] if my.topAlbums else none, 'albumDetailPage', 'album_id')) }}
+    {{ topItemSide('theirs', withUsername, their.topAlbums[0] if their.topAlbums else none, 'album',
+                   spotifyCell(their.topAlbums[0] if their.topAlbums else none)) }}
+  </article>
+</div>
