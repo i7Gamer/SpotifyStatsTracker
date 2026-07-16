@@ -28,7 +28,19 @@ import secrets
 import threading
 from pathlib import Path
 
-from cryptography.fernet import Fernet, InvalidToken
+# Re-raised as a plain ImportError (NOT ModuleNotFoundError) on purpose: the
+# Database modules' try/except ModuleNotFoundError dual-import blocks would
+# otherwise swallow a genuinely missing dependency and fall into their
+# bare-import branches, burying this actionable message under a cascade of
+# unrelated "No module named 'db'/'Formatters'" errors.
+try:
+    from cryptography.fernet import Fernet, InvalidToken
+except ModuleNotFoundError as e:
+    raise ImportError(
+        "The 'cryptography' package is missing - it was added as a dependency for "
+        "encrypting stored Spotify sessions at rest. Install it with: "
+        "pip install -r requirements.txt"
+    ) from e
 
 logger = logging.getLogger(__name__)
 
