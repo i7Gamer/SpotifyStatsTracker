@@ -107,25 +107,37 @@ class TestLazyFetchArtistImage(unittest.TestCase):
     def test_dispatch_does_not_block_the_calling_thread(self):
         """The whole point of routing this through the shared executor: an
         HTTP request thread calling this must get control back immediately
-        instead of blocking on up to two sequential network calls."""
-        import time
+        instead of blocking on up to two sequential network calls.
+
+        Proven with an event gate rather than a wall-clock threshold (a
+        previous `elapsed < 0.1s` assertion flaked on loaded CI runners
+        where thread spin-up alone costs hundreds of ms): the mocked
+        network call can't finish until the test opens the gate, so
+        lazyFetchArtistImage returning at all - with the fetch still
+        pending - means the calling thread never ran it inline."""
         db = _bareDatabase()
         with tempfile.TemporaryDirectory() as tmpdir:
             imagePath = Path(tmpdir) / "artistSlow.jpeg"
 
-            def slowGet(*args, **kwargs):
-                time.sleep(0.3)
+            gate = threading.Event()
+
+            def gatedGet(*args, **kwargs):
+                #< the timeout turns an inline-fetch regression into a test
+                #  failure (the gate only opens after dispatch returns, so
+                #  running this on the calling thread would otherwise hang)
+                gate.wait(timeout=5)
                 response = MagicMock()
                 response.text = "<html>no og:image here</html>"
                 return response
 
-            with patch("Database.database.requests.get", side_effect=slowGet):
-                start = time.monotonic()
+            with patch("Database.database.requests.get", side_effect=gatedGet):
                 future = db.lazyFetchArtistImage("artistSlow", imagePath)
-                elapsed = time.monotonic() - start
 
-                self.assertLess(elapsed, 0.1)
-                future.result(timeout=5)   #< let the background task finish before tmpdir cleanup
+                self.assertFalse(future.done())   #< fetch is parked on the gate, dispatch already returned
+                gate.set()
+                #< no og:image in the response -> False; also ensures the
+                #  background task finishes before tmpdir cleanup
+                self.assertFalse(future.result(timeout=5))
 
 
 class TestDownloadImageTaskExtension(DatabaseTestCase):
