@@ -5,12 +5,14 @@ stored in the database - no re-login through the web UI should be required.
 import json
 import sys
 import os
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+import app as appModule
 from app import SpotifyDashboardApp
 
 _SECRET_KEY_PATCH = 'app.SpotifyDashboardApp._get_or_create_secret_key'
@@ -126,6 +128,70 @@ class TestStartupReloginFromDatabaseCookies(unittest.TestCase):
 
         self.assertNotIn("alice", app.user_databases)
         self.assertIn("bob", app.user_databases)
+
+    def test_failed_listener_start_stops_orphaned_background_workers(self):
+        """Database.__init__ starts the wrapped worker and metadata backfiller
+        immediately, but get_user_db() only stores the instance in
+        user_databases as its very last step. When a later step raised (seen
+        in production: Listener construction failing on a Spotify 504), the
+        instance was dropped unreferenced with all of its threads still
+        running - and every retry (the 5-minute _checkLoginLoop, any web
+        request) leaked another full set, so one user ended up with 4 wrapped
+        workers recalculating their stats every couple of minutes. The
+        failure path must stop the orphan's workers before propagating."""
+        app = _makeApp()
+        app.repo.upsertUser("leakuser", "leakuser@example.com")
+        app.repo.setUserCookies("leakuser", {"sp_dc": "broken"})
+
+        createdDatabases = []
+        realDatabase = appModule.Database
+
+        def recordingDatabase(*args, **kwargs):
+            db = realDatabase(*args, **kwargs)
+            createdDatabases.append(db)
+            return db
+
+        with patch("app.Database", side_effect=recordingDatabase), \
+             patch("Database.database.Listener",
+                   side_effect=RuntimeError("Could not GET https://open.spotify.com/. Status Code: 504")), \
+             patch("Database.database.AutoImporter") as mockAutoImporterClass:
+            mockAutoImporterClass.return_value = MagicMock()
+            app._ensureAllUsersLogin()  # must not raise
+
+        self.assertNotIn("leakuser", app.user_databases)
+        self.assertEqual(len(createdDatabases), 1)
+        liveThreadNames = {t.name for t in threading.enumerate()}
+        self.assertNotIn("wrapped-worker-leakuser", liveThreadNames)
+        self.assertNotIn("metadata-backfiller-leakuser", liveThreadNames)
+        createdDatabases[0].autoImporter.wd.stop.assert_called()
+
+    def test_retry_after_failed_start_does_not_stack_workers(self):
+        """Once a previously-failing user finally comes up, exactly one
+        wrapped worker may be running for them - not the failed attempts'
+        workers plus the live one, each recalculating on its own offset
+        15-minute schedule."""
+        app = _makeApp()
+        app.repo.upsertUser("retryuser", "retryuser@example.com")
+        app.repo.setUserCookies("retryuser", {"sp_dc": "cookie"})
+
+        attempts = []
+
+        def flakyListener(cookiesFile, email=None, **kwargs):
+            attempts.append(email)
+            if len(attempts) == 1:
+                raise RuntimeError("Could not GET https://open.spotify.com/. Status Code: 504")
+            return _healthyListenerMock()
+
+        with patch("Database.database.Listener", side_effect=flakyListener), \
+             patch("Database.database.AutoImporter") as mockAutoImporterClass:
+            mockAutoImporterClass.return_value = MagicMock()
+            app._ensureAllUsersLogin()  #< first pass: listener startup fails
+            app._ensureAllUsersLogin()  #< retry pass (5 minutes later in production): succeeds
+
+        self.assertIn("retryuser", app.user_databases)
+        self.addCleanup(app.user_databases["retryuser"].stop)
+        workerThreads = [t for t in threading.enumerate() if t.name == "wrapped-worker-retryuser"]
+        self.assertEqual(len(workerThreads), 1)
 
     def test_second_call_does_not_recreate_already_running_databases(self):
         """_checkLoginLoop() re-runs this every 5 minutes - a user already

@@ -382,9 +382,24 @@ class SpotifyDashboardApp:
         with self._db_lock:
             if username not in self.user_databases:
                 db = Database(user=username, email=email)
-                db.startAutoImporter()
-                db.resetProgress()
-                db.startListener(email=email)
+                try:
+                    db.startAutoImporter()
+                    db.resetProgress()
+                    db.startListener(email=email)
+                except Exception:
+                    # Database.__init__ already started this instance's
+                    # background threads (wrapped worker, metadata
+                    # backfiller); startAutoImporter added its watchdog. If a
+                    # later step fails (startListener is a live Spotify call)
+                    # the instance never reaches user_databases, so those
+                    # threads would run unreachable forever - and every retry
+                    # would stack another full set per user.
+                    try:
+                        db.stop()
+                    except Exception as stopError:
+                        logger.error("Failed to stop partially-started Database for user %s: %s",
+                                     username, stopError)
+                    raise
                 self.user_databases[username] = db
             return self.user_databases[username]
 
