@@ -606,6 +606,53 @@ class TestCompareRoute(unittest.TestCase):
         #< theirs additionally colors the hero name (no label dot there)
         self.assertEqual(resp.data.count(b"compare-user-theirs"), 5)
 
+    def test_limit_param_controls_displayed_list_sizes(self):
+        """The dropdown slices the displayed lists (and shared lists) deeper
+        into the same 100-deep pools - the pools themselves stay fixed since
+        the overlap/similarity math needs their full depth."""
+        self._accept("alice", "bob")
+        self.dbs["alice"].getTopArtists.return_value = [
+            _artist(f"pa{i}", f"PagedArtist{i}") for i in range(30)]
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare?limit=25")
+
+        self.assertIn(b"PagedArtist24", resp.data)
+        self.assertNotIn(b"PagedArtist25", resp.data)
+
+    def test_invalid_limit_falls_back_to_the_default(self):
+        self._accept("alice", "bob")
+        self.dbs["alice"].getTopArtists.return_value = [
+            _artist(f"pa{i}", f"PagedArtist{i}") for i in range(30)]
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare?limit=13")
+
+        self.assertIn(b"PagedArtist9", resp.data)
+        self.assertNotIn(b"PagedArtist10", resp.data)
+
+    def test_limit_applies_to_the_shared_lists_too(self):
+        self._accept("alice", "bob")
+        sharedSongs = [_song(f"s{i}", f"CapSong{i}") for i in range(30)]
+        self.dbs["alice"].getTopSongs.return_value = sharedSongs
+        self.dbs["bob"].getTopSongs.return_value = sharedSongs
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare?limit=25")
+
+        self.assertIn(b"CapSong24", resp.data)
+        self.assertNotIn(b"CapSong25", resp.data)
+
+    def test_items_per_category_dropdown_renders(self):
+        self._accept("alice", "bob")
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        self.assertIn(b'id="limit"', resp.data)
+        self.assertIn(b'<option value="10" selected>10</option>', resp.data)
+        self.assertIn(b'<option value="100" >100</option>', resp.data)
+
     def test_taste_match_weights_category_overlaps(self):
         """artists 5/10 shared (weight .5), songs 2/10 (weight .3), albums
         0/10 (weight .2) -> 0.25 + 0.06 + 0 = 31%."""

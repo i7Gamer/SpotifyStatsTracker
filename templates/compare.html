@@ -16,7 +16,7 @@
 <nav class="wrapped-year-badges" aria-label="Select user to compare with">
   {% for candidate in acceptedUsernames %}
     <a class="wrapped-year-badge{{ ' active' if candidate == withUsername else '' }}"
-       href="{{ url_for('comparePage', with=candidate, interval=interval, startDate=customStart, endDate=customEnd, groupBy=groupBy) }}">{{ candidate }}</a>
+       href="{{ url_for('comparePage', with=candidate, interval=interval, startDate=customStart, endDate=customEnd, groupBy=groupBy, limit=limit) }}">{{ candidate }}</a>
   {% endfor %}
 </nav>
 {% endif %}
@@ -41,6 +41,15 @@
     <input type="date" id="startDate" value="{{ customStart }}" onchange="updateCompareDateFilter()">
     <label for="endDate">To:</label>
     <input type="date" id="endDate" value="{{ customEnd }}" onchange="updateCompareDateFilter()">
+  </div>
+
+  <div class="filter-group">
+    <label for="limit">Items per category:</label>
+    <select id="limit" name="limit" onchange="updateCompareLimitFilter()">
+      {% for option in limitOptions %}
+        <option value="{{ option }}" {% if limit == option %}selected{% endif %}>{{ option }}</option>
+      {% endfor %}
+    </select>
   </div>
 </section>
 
@@ -287,6 +296,12 @@
     loadCompareData();
   }
 
+  function updateCompareLimitFilter() {
+    const limit = document.getElementById('limit').value;
+    pushCompareUrl(params => params.set('limit', limit));
+    loadCompareData();
+  }
+
   document.querySelectorAll('.wrapped-year-badge').forEach(badge => {
     badge.addEventListener('click', function (e) {
       e.preventDefault();
@@ -306,6 +321,7 @@
     document.getElementById('endDate').value = params.get('endDate') || '';
     document.getElementById('compareCustomDates').style.display =
       (params.get('startDate') && params.get('endDate')) ? 'flex' : 'none';
+    document.getElementById('limit').value = params.get('limit') || '{{ limitOptions[0] }}';
     const withUser = params.get('with');
     document.querySelectorAll('.wrapped-year-badge').forEach(badge => {
       const badgeUser = new URL(badge.href).searchParams.get('with');

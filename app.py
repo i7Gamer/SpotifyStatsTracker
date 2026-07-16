@@ -454,28 +454,28 @@ class SpotifyDashboardApp:
     def _embedArtistsTextElements(self, songs, sortBy=None, totalPlays=0, totalMs=0) -> list[dict]:
         return [self._embedArtistTextElement(song, sortBy, totalPlays, totalMs) for song in songs]
 
-    def _gatherCompareStats(self, db, startDate, endDate) -> dict:
+    def _gatherCompareStats(self, db, startDate, endDate, limit=COMPARE_TOP_LIST_SIZE) -> dict:
         """One Compare-page side's stats, gathered identically for the viewer
         and the counterpart so the two columns can't drift apart. Runs the
         same _embed*TextElements step every other page feeding
         _track_card.html uses - without it the cards render with blank
         time/first-listened/duration/percent lines. Every displayed top list
-        is sliced from the same COMPARE_OVERLAP_POOL_SIZE-deep pool the
-        similarity/overlap intersections run over, so the lists, the summary
-        rows, and the overlaps all agree on one by-plays ranking (and each
-        side's aggregation runs once, not twice)."""
+        is the first `limit` entries of the same COMPARE_OVERLAP_POOL_SIZE-
+        deep pool the similarity/overlap intersections run over, so the
+        lists, the summary rows, and the overlaps all agree on one by-plays
+        ranking (and each side's aggregation runs once, not twice)."""
         totalPlays, totalMs = db.getPlayTotals(startDate, endDate)
         topSongsPool = db.getTopSongs(startDate, endDate, limit=COMPARE_OVERLAP_POOL_SIZE)
         topSongs = self._embedTopSongsTextElements(
-            self._embedSongsTextElements(topSongsPool[:COMPARE_TOP_LIST_SIZE]),
+            self._embedSongsTextElements(topSongsPool[:limit]),
             sortBy="plays", totalPlays=totalPlays, totalMs=totalMs)
         topAlbumsPool = db.getTopAlbums(startDate, endDate, limit=COMPARE_OVERLAP_POOL_SIZE)
         topAlbums = self._embedAlbumsTextElements(
-            topAlbumsPool[:COMPARE_TOP_LIST_SIZE],
+            topAlbumsPool[:limit],
             sortBy="plays", totalPlays=totalPlays, totalMs=totalMs)
         topArtistsPool = db.getTopArtists(startDate, endDate, limit=COMPARE_OVERLAP_POOL_SIZE)
         topArtists = self._embedArtistsTextElements(
-            topArtistsPool[:COMPARE_TOP_LIST_SIZE],
+            topArtistsPool[:limit],
             sortBy="plays", totalPlays=totalPlays, totalMs=totalMs)
 
         completion = db.getCompletionStats(startDate, endDate)
@@ -2064,22 +2064,25 @@ class SpotifyDashboardApp:
             customEnd = request.args.get("endDate", "")
             startDate, endDate = self._getDateRange(interval, customStart, customEnd, default="all time", tz=db.tz)
             groupByParam = request.args.get("groupBy", "")
+            limit = request.args.get("limit", type=int)
+            if limit not in WRAPPED_LIMIT_OPTIONS:
+                limit = COMPARE_TOP_LIST_SIZE
 
-            my = self._gatherCompareStats(db, startDate, endDate)
-            their = self._gatherCompareStats(otherDb, startDate, endDate)
+            my = self._gatherCompareStats(db, startDate, endDate, limit=limit)
+            their = self._gatherCompareStats(otherDb, startDate, endDate, limit=limit)
 
             # Sliced like every other list on the page. No percent text here -
             # it would mix two different users' totals.
             sharedArtists = self._buildSharedItems(
                 my["topArtistsPool"], their["topArtistsPool"],
-                self._embedArtistsTextElements, COMPARE_TOP_LIST_SIZE)
+                self._embedArtistsTextElements, limit)
             sharedSongs = self._buildSharedItems(
                 my["topSongsPool"], their["topSongsPool"],
                 lambda items: self._embedTopSongsTextElements(self._embedSongsTextElements(items)),
-                COMPARE_TOP_LIST_SIZE)
+                limit)
             sharedAlbums = self._buildSharedItems(
                 my["topAlbumsPool"], their["topAlbumsPool"],
-                self._embedAlbumsTextElements, COMPARE_TOP_LIST_SIZE)
+                self._embedAlbumsTextElements, limit)
 
             # Similarities run over the full pools, not the displayed top ten:
             # a #40-ranked common favorite is still a common favorite. The
@@ -2206,6 +2209,8 @@ class SpotifyDashboardApp:
                 interval=interval,
                 customStart=customStart,
                 customEnd=customEnd,
+                limit=limit,
+                limitOptions=WRAPPED_LIMIT_OPTIONS,
                 #< the raw param, not the resolved bucketing - links that pin
                 #  the auto-derived value would freeze auto mode
                 groupBy=groupByParam,
