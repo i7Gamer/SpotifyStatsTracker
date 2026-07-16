@@ -437,3 +437,57 @@ class ApiBackfillTestCase(unittest.TestCase):
         listener.get_credentials = None
 
         listener._checkWebApiBackfill(MagicMock())  # must not raise
+
+    def _makeQuietBackfillListener(self):
+        """Listener whose _checkWebApiBackfill runs the happy path with an empty
+        Web API result - so the only possible INFO logs are the routine
+        'Running ... backfill check' / 'Web API returned ...' progress lines."""
+        get_credentials = MagicMock(return_value={
+            "client_id": "cid", "client_secret": "cs", "refresh_token": "rt",
+        })
+        with patch("Database.Listeners.spotifyListener.Spotify") as mock_spotify_cls:
+            mock_sp = MagicMock()
+            mock_sp.current_user_recently_played.return_value = []
+            mock_spotify_cls.return_value = mock_sp
+            listener = Listener("dummy_cookie", email="alice@example.com", get_credentials=get_credentials)
+        listener._lastWebApiPollTime = 0
+        return listener
+
+    def _runQuietBackfill(self, listener):
+        with patch("Database.Listeners.spotifyListener.time.monotonic", return_value=_MONOTONIC_NOW):
+            listener._checkWebApiBackfill(MagicMock())
+
+    @patch("Database.Listeners.spotifyListener._fetch_recently_played_from_web_api", return_value=[])
+    @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value="token123")
+    def test_backfill_progress_logs_hidden_without_flask_debug(self, mock_refresh, mock_fetch):
+        """The routine backfill progress INFO lines must stay silent when
+        FLASK_DEBUG is unset."""
+        listener = self._makeQuietBackfillListener()
+
+        envWithoutDebug = {k: v for k, v in os.environ.items() if k != "FLASK_DEBUG"}
+        with patch.dict(os.environ, envWithoutDebug, clear=True):
+            with self.assertNoLogs("Database.Listeners.spotifyListener", level="INFO"):
+                self._runQuietBackfill(listener)
+
+    @patch("Database.Listeners.spotifyListener._fetch_recently_played_from_web_api", return_value=[])
+    @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value="token123")
+    def test_backfill_progress_logs_hidden_with_falsy_flask_debug(self, mock_refresh, mock_fetch):
+        """FLASK_DEBUG=0 must count as disabled, not merely 'set'."""
+        listener = self._makeQuietBackfillListener()
+
+        with patch.dict(os.environ, {"FLASK_DEBUG": "0"}):
+            with self.assertNoLogs("Database.Listeners.spotifyListener", level="INFO"):
+                self._runQuietBackfill(listener)
+
+    @patch("Database.Listeners.spotifyListener._fetch_recently_played_from_web_api", return_value=[])
+    @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value="token123")
+    def test_backfill_progress_logs_shown_with_flask_debug(self, mock_refresh, mock_fetch):
+        """With FLASK_DEBUG=1 both progress lines must be logged."""
+        listener = self._makeQuietBackfillListener()
+
+        with patch.dict(os.environ, {"FLASK_DEBUG": "1"}):
+            with self.assertLogs("Database.Listeners.spotifyListener", level="INFO") as cm:
+                self._runQuietBackfill(listener)
+
+        self.assertTrue(any("Running Spotify Web API recently-played backfill check" in m for m in cm.output))
+        self.assertTrue(any("Web API returned 0 items for backfill check" in m for m in cm.output))

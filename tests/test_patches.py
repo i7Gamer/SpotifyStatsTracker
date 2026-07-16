@@ -25,6 +25,31 @@ def fakeTrackUnion(trackId):
     }
 
 
+class _ScriptedStateManager:
+    """Stands in for LastPlayedManger.manager: each `state` access consumes the
+    next scripted result - Exception instances are raised, anything else is
+    returned. reconnect() is a plain MagicMock for call assertions."""
+    def __init__(self, results):
+        self._results = list(results)
+        self.reconnect = MagicMock()
+
+    @property
+    def state(self):
+        result = self._results.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+
+def makeIdleState():
+    """A state the update loop skips gracefully (no timestamp/track) - fetching
+    it still counts as a successful poll."""
+    state = MagicMock()
+    state.timestamp = None
+    state.track = None
+    return state
+
+
 def setUpModule():
     # Database.patches applies its SpotipyFree patch once, at whatever moment
     # Database (the package) first gets imported. If that happened to be while
@@ -564,6 +589,96 @@ class TestPatches(unittest.TestCase):
             
         callback.assert_not_called()
         manager.reconnect.assert_not_called()
+
+    def _runUpdateLoopIterations(self, manager, iterations):
+        """Run the patched updateLoop for exactly `iterations` passes (each pass
+        ends in one time.sleep call), returning the callback mock."""
+        from SpotipyFree.LastPlayed import LastPlayedManger
+
+        callback = MagicMock()
+        with patch("SpotipyFree.LastPlayed.PlayerStatus"):
+            lpm = LastPlayedManger(MagicMock())
+        lpm.manager = manager
+        lpm.run = True
+
+        sleepCount = [0]
+
+        def mockSleep(_secs):
+            sleepCount[0] += 1
+            if sleepCount[0] >= iterations:
+                lpm.run = False
+
+        with patch("time.sleep", side_effect=mockSleep):
+            lpm.updateLoop(callback, refreshInterval=1)
+        return callback
+
+    def test_patched_update_loop_transient_state_valueerror_does_not_reconnect(self):
+        """A ValueError from manager.state (spotapi's 'Could not get player state')
+        below the escalation threshold must be treated like state=None: warn
+        concisely and retry - no reconnect, no callback, no ERROR-level spam."""
+        from Database.patches import STATE_FAILURE_RECONNECT_THRESHOLD
+
+        failures = STATE_FAILURE_RECONNECT_THRESHOLD - 1
+        manager = _ScriptedStateManager(
+            [ValueError("Could not get player state")] * failures
+        )
+
+        with self.assertLogs("Database.patches", level="WARNING") as cm:
+            callback = self._runUpdateLoopIterations(manager, failures)
+
+        manager.reconnect.assert_not_called()
+        callback.assert_not_called()
+        self.assertTrue(all(record.levelname == "WARNING" for record in cm.records))
+        self.assertEqual(len(cm.records), failures)
+
+    def test_patched_update_loop_reconnects_after_consecutive_state_failures(self):
+        """Once manager.state fails STATE_FAILURE_RECONNECT_THRESHOLD times in a
+        row, the loop must escalate to exactly one manager.reconnect()."""
+        from Database.patches import STATE_FAILURE_RECONNECT_THRESHOLD
+
+        manager = _ScriptedStateManager(
+            [ValueError("Could not get player state")] * STATE_FAILURE_RECONNECT_THRESHOLD
+        )
+
+        self._runUpdateLoopIterations(manager, STATE_FAILURE_RECONNECT_THRESHOLD)
+
+        manager.reconnect.assert_called_once_with()
+
+    def test_patched_update_loop_successful_poll_resets_failure_counter(self):
+        """A successful state fetch between failure streaks must reset the
+        consecutive-failure counter, so two sub-threshold streaks separated by a
+        success never trigger a reconnect."""
+        from Database.patches import STATE_FAILURE_RECONNECT_THRESHOLD
+
+        streak = STATE_FAILURE_RECONNECT_THRESHOLD - 1
+        results = (
+            [ValueError("Could not get player state")] * streak
+            + [makeIdleState()]
+            + [ValueError("Could not get player state")] * streak
+        )
+        manager = _ScriptedStateManager(results)
+
+        self._runUpdateLoopIterations(manager, len(results))
+
+        manager.reconnect.assert_not_called()
+
+    def test_player_status_renew_state_logs_error_detail_attribute(self):
+        """spotapi's ParentException keeps the HTTP detail in .error, not in
+        str(e) - the renew_state warning must surface it."""
+        from spotapi.exceptions import WebSocketError
+        from spotapi.status import PlayerStatus
+
+        exc = WebSocketError("Could not connect device", error="429: rate limited")
+
+        with patch("spotapi.websocket.WebsocketStreamer.__init__", return_value=None), \
+             patch("spotapi.status.PlayerStatus.register_device"), \
+             patch("spotapi.status.PlayerStatus.connect_device", side_effect=exc):
+            lps = PlayerStatus(MagicMock())
+            with self.assertLogs("Database.patches", level="WARNING") as cm:
+                lps.renew_state()
+
+        self.assertIsNone(lps._state)
+        self.assertTrue(any("429: rate limited" in message for message in cm.output))
 
     def test_player_status_renew_state_handles_missing_keys_gracefully(self):
         """PlayerStatus.renew_state should not raise KeyError if connect_device returns a dict without devices or player_state."""

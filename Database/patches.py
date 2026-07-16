@@ -82,7 +82,14 @@ def player_status_renew_state(self):
             self._state = None
             self._devices = None
     except Exception as e:
-        logger.warning("Error renewing player state: %s", e)
+        # spotapi's ParentException keeps the HTTP detail (e.g. the status code)
+        # in .error, not in str(e) - surface it or the log can't distinguish
+        # throttling from a real outage.
+        errorDetail = getattr(e, "error", None)
+        if errorDetail:
+            logger.warning("Error renewing player state: %s (%s)", e, errorDetail)
+        else:
+            logger.warning("Error renewing player state: %s", e)
         self._state = None
         self._devices = None
 
@@ -410,22 +417,59 @@ def patch_spotapi_user() -> bool:
         return False
 
 
+# Reading manager.state PUTs to Spotify's connect-state endpoint every poll, and a
+# single failed PUT (usually throttling) surfaces as ValueError("Could not get
+# player state") from spotapi's state property. Reconnecting the whole websocket -
+# session renewal included - for each one just adds churn that can itself trip rate
+# limits, so escalate to a reconnect only after this many consecutive failures
+# (~15s of outage at the default 3s poll interval).
+STATE_FAILURE_RECONNECT_THRESHOLD = 5
+
+UPDATE_LOOP_ERROR_SLEEP_SECONDS = 10  #< back off after an unexpected updateLoop error before reconnecting
+
+
 def patch_last_played() -> bool:
     """Patch SpotipyFree.LastPlayed.LastPlayedManger.updateLoop to handle
     situations where state or state.timestamp is None (e.g. inactive device)
     without raising TypeError, spamming tracebacks, or forcing constant reconnects.
+    Transient "Could not get player state" failures are retried in place and only
+    escalate to a websocket reconnect after a persistent streak (see
+    STATE_FAILURE_RECONNECT_THRESHOLD above).
     """
     try:
         from SpotipyFree.LastPlayed import LastPlayedManger
         import datetime
 
         def patched_update_loop(self, callback, refreshInterval=3):
+            consecutiveStateFailures = 0
             while self.run:
                 try:
-                    state = self.manager.state
-                    if (state is None or 
-                        getattr(state, "timestamp", None) is None or 
-                        getattr(state, "track", None) is None or 
+                    try:
+                        state = self.manager.state
+                    except ValueError as stateError:
+                        consecutiveStateFailures += 1
+                        if consecutiveStateFailures < STATE_FAILURE_RECONNECT_THRESHOLD:
+                            logger.warning(
+                                "[SpotipyFree] Player state unavailable (%d/%d), retrying: %s",
+                                consecutiveStateFailures, STATE_FAILURE_RECONNECT_THRESHOLD, stateError,
+                            )
+                        else:
+                            logger.error(
+                                "[SpotipyFree] Player state unavailable %d times in a row, reconnecting websocket: %s",
+                                consecutiveStateFailures, stateError,
+                            )
+                            consecutiveStateFailures = 0
+                            try:
+                                self.manager.reconnect()
+                            except Exception as reconnect_err:
+                                logger.error("[SpotipyFree] Listener stopped due to websocket disconnection: %s", reconnect_err, exc_info=True)
+                        time.sleep(refreshInterval)
+                        continue
+
+                    consecutiveStateFailures = 0
+                    if (state is None or
+                        getattr(state, "timestamp", None) is None or
+                        getattr(state, "track", None) is None or
                         getattr(state.track, "uid", None) is None):
                         time.sleep(refreshInterval)
                         continue
@@ -445,7 +489,7 @@ def patch_last_played() -> bool:
                     time.sleep(refreshInterval)
                 except Exception as e:
                     logger.error("[SpotipyFree] Error in Recently Played: %s", e, exc_info=True)
-                    time.sleep(10)
+                    time.sleep(UPDATE_LOOP_ERROR_SLEEP_SECONDS)
                     try:
                         self.manager.reconnect()
                     except Exception as reconnect_err:
