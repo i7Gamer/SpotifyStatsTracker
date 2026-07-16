@@ -14,6 +14,10 @@
   --glow-color-1: rgba(251, 113, 123, 0.15);
   --glow-color-2: rgba(29, 185, 84, 0.1);
   --glow-color-3: rgba(25, 25, 25, 0.3);
+  /* Compare page identity colors: "you" is always the theme accent, "them"
+     is always this green (CHART_PALETTE[1] in charts.js reads it back so
+     the canvas series match the CSS exactly). */
+  --compare-theirs: #5DD97C;
 }
 
 * {
@@ -887,7 +891,7 @@ progress::-moz-progress-bar {
 }
 
 .compare-split-bar .theirs {
-  background: #5DD97C;
+  background: var(--compare-theirs);
 }
 
 .compare-versus-stats {
@@ -903,7 +907,27 @@ progress::-moz-progress-bar {
 }
 
 .compare-versus-theirs {
-  color: #5DD97C;
+  color: var(--compare-theirs);
+}
+
+/* "You vs. them" identity carried through table headers, column headings,
+   and the hero - same colors as the trend chart's two series. */
+.compare-user-mine {
+  color: var(--accent);
+}
+
+.compare-user-theirs {
+  color: var(--compare-theirs);
+}
+
+.compare-user-label::before {
+  content: '';
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  background: currentColor;
+  margin-right: 6px;
 }
 
 .form-group {

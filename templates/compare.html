@@ -3,7 +3,7 @@
 
 <section class="hero">
   <div class="hero-content">
-    <h1>Compare with <span class="js-with-username">{{ withUsername }}</span></h1>
+    <h1>Compare with <span class="compare-user-theirs js-with-username">{{ withUsername }}</span></h1>
     <p>See how your listening stats stack up against someone who shares their data with you.</p>
   </div>
 </section>
@@ -89,7 +89,7 @@
 <div data-category="top-songs">
   <section class="compare-columns">
     <div>
-      <h2><span class="js-my-username">{{ username }}</span>'s Top Songs</h2>
+      <h2><span class="compare-user-mine compare-user-label js-my-username">{{ username }}</span>'s Top Songs</h2>
       <div class="track-list" id="myTopSongsList">
         {% set suppressDetailLinks = false %}
         {% set items = my.topSongs %}
@@ -97,7 +97,7 @@
       </div>
     </div>
     <div>
-      <h2><span class="js-with-username">{{ withUsername }}</span>'s Top Songs</h2>
+      <h2><span class="compare-user-theirs compare-user-label js-with-username">{{ withUsername }}</span>'s Top Songs</h2>
       <div class="track-list" id="theirTopSongsList">
         {% set suppressDetailLinks = true %}
         {% set items = their.topSongs %}
@@ -111,7 +111,7 @@
 <div data-category="top-artists">
   <section class="compare-columns">
     <div>
-      <h2><span class="js-my-username">{{ username }}</span>'s Top Artists</h2>
+      <h2><span class="compare-user-mine compare-user-label js-my-username">{{ username }}</span>'s Top Artists</h2>
       <div class="track-list" id="myTopArtistsList">
         {% set suppressDetailLinks = false %}
         {% set items = my.topArtists %}
@@ -119,7 +119,7 @@
       </div>
     </div>
     <div>
-      <h2><span class="js-with-username">{{ withUsername }}</span>'s Top Artists</h2>
+      <h2><span class="compare-user-theirs compare-user-label js-with-username">{{ withUsername }}</span>'s Top Artists</h2>
       <div class="track-list" id="theirTopArtistsList">
         {% set suppressDetailLinks = true %}
         {% set items = their.topArtists %}
@@ -133,7 +133,7 @@
 <div data-category="top-albums">
   <section class="compare-columns">
     <div>
-      <h2><span class="js-my-username">{{ username }}</span>'s Top Albums</h2>
+      <h2><span class="compare-user-mine compare-user-label js-my-username">{{ username }}</span>'s Top Albums</h2>
       <div class="track-list" id="myTopAlbumsList">
         {% set suppressDetailLinks = false %}
         {% set items = my.topAlbums %}
@@ -141,7 +141,7 @@
       </div>
     </div>
     <div>
-      <h2><span class="js-with-username">{{ withUsername }}</span>'s Top Albums</h2>
+      <h2><span class="compare-user-theirs compare-user-label js-with-username">{{ withUsername }}</span>'s Top Albums</h2>
       <div class="track-list" id="theirTopAlbumsList">
         {% set suppressDetailLinks = true %}
         {% set items = their.topAlbums %}

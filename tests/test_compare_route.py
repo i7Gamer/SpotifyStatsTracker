@@ -542,6 +542,23 @@ class TestCompareRoute(unittest.TestCase):
 
         self.assertEqual(self.dbs["alice"].getListeningTimeSeries.call_args.kwargs["groupBy"], "day")
 
+    def test_user_identity_colors_mark_table_headers_and_column_headings(self):
+        """"You" is always the accent color, "them" always --compare-theirs -
+        the classes must appear on the table headers and both columns'
+        headings so every section reads with the same color mapping as the
+        trend chart."""
+        self._accept("alice", "bob")
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        self.assertIn(b'compare-user-mine compare-user-label js-my-username">alice</span>', resp.data)
+        self.assertIn(b'compare-user-theirs compare-user-label js-with-username">bob</span>', resp.data)
+        #< four mine-labels: table header + three column headings
+        self.assertEqual(resp.data.count(b"compare-user-mine"), 4)
+        #< theirs additionally colors the hero name (no label dot there)
+        self.assertEqual(resp.data.count(b"compare-user-theirs"), 5)
+
     def test_ajax_returns_partial_chunks_not_a_full_page(self):
         """The filter controls swap regions in place via ?ajax=true, mirroring
         the Wrapped page's fade-and-swap pattern."""

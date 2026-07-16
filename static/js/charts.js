@@ -390,6 +390,14 @@
     return 'rgba(' + rgb.r + ',' + rgb.g + ',' + rgb.b + ',' + alpha + ')';
   }
 
+  // The counterpart's identity color, shared with the CSS (--compare-theirs
+  // drives the split bars, table headers, and column headings) so the chart
+  // series can never drift from the rest of the page.
+  function getTheirsColor() {
+    var value = getComputedStyle(document.documentElement).getPropertyValue('--compare-theirs').trim();
+    return value || CHART_PALETTE[1];
+  }
+
   function renderComparisonMirror() {
     var canvas = document.getElementById('comparisonTrendChart');
     var legendEl = document.getElementById('comparisonTrendLegend');
@@ -419,7 +427,7 @@
       maxMs = Math.max(maxMs, Math.max.apply(null, s.data));
     });
     var stepX = data.buckets.length > 1 ? plotWidth / (data.buckets.length - 1) : 0;
-    var colors = [CHART_PALETTE[0], CHART_PALETTE[1]];
+    var colors = [CHART_PALETTE[0], getTheirsColor()];
 
     // Symmetric grid: time labels at 50%/100% above and below the baseline.
     ctx.font = '11px sans-serif';
