@@ -410,6 +410,11 @@ class TestCompareRoute(unittest.TestCase):
         self.assertIn(b'<a class="compare-cell-link" href="/song/s1">', resp.data)
         self.assertIn(b'<a class="compare-cell-link" href="/artist/f1">', resp.data)
         self.assertIn(b'<a class="compare-cell-link" href="/album/al1">', resp.data)
+        # the cover next to each cell links to the same detail page (skipped
+        # for keyboard/screen-reader users - the name link sits right there)
+        self.assertIn(b'<a class="compare-cover-link" href="/song/s1"', resp.data)
+        self.assertIn(b'<a class="compare-cover-link" href="/artist/f1"', resp.data)
+        self.assertIn(b'<a class="compare-cover-link" href="/album/al1"', resp.data)
 
     def test_summary_rows_link_counterpart_items_to_spotify(self):
         """A counterpart summary cell links to Spotify only when the viewer
@@ -427,6 +432,10 @@ class TestCompareRoute(unittest.TestCase):
         self.assertIn(b'href="https://open.spotify.com/track/xyz1" target="_blank"', resp.data)
         self.assertNotIn(b"/song/their-song-1", resp.data)
         self.assertNotIn(b"/artist/their-artist-1", resp.data)   #< empty url: plain text, no link
+        # the cover mirrors the cell: Spotify link for the song, and the
+        # empty-url artist cover renders unlinked (song is the only linked one)
+        self.assertIn(b'<a class="compare-cover-link" href="https://open.spotify.com/track/xyz1" target="_blank"', resp.data)
+        self.assertEqual(resp.data.count(b"compare-cover-link"), 1)
 
     def test_counterpart_card_titles_link_to_spotify_when_url_exists(self):
         """Card-title variant of the zero-data rule above: alice's stub db
@@ -464,6 +473,10 @@ class TestCompareRoute(unittest.TestCase):
         self.assertIn(b"/song/known-song", resp.data)
         self.assertIn(b"/artist/known-artist", resp.data)
         self.assertIn(b"/album/known-album", resp.data)
+        #< the summary-card covers follow the same rule and link internally
+        self.assertIn(b'<a class="compare-cover-link" href="/song/known-song"', resp.data)
+        self.assertIn(b'<a class="compare-cover-link" href="/artist/known-artist"', resp.data)
+        self.assertIn(b'<a class="compare-cover-link" href="/album/known-album"', resp.data)
         #< no external card links anywhere: every counterpart item resolves
         #  internally (the "Open in Spotify" attribute label is separate and
         #  carries class track-label, not track-cover-link)
@@ -584,9 +597,10 @@ class TestCompareRoute(unittest.TestCase):
         self.assertIn("sharedSongsHtml", data)
         self.assertIn("sharedAlbumsHtml", data)
 
-    def test_similarities_sit_under_the_chart_and_shared_lists_join_categories(self):
-        """Common Top Artist/Song/Album cards come directly under the chart;
-        "You Both Love" is a filterable category ahead of the top lists."""
+    def test_similarities_sit_above_the_chart_and_shared_lists_join_categories(self):
+        """Common Top Artist/Song/Album cards come directly above the trend
+        chart; "You Both Love" is a filterable category ahead of the top
+        lists."""
         self._accept("alice", "bob")
         client = self._loginAs("alice")
 
@@ -596,9 +610,27 @@ class TestCompareRoute(unittest.TestCase):
         similaritiesIdx = resp.data.index(b'id="compareSimilarities"')
         sharedIdx = resp.data.index(b'data-category="you-both-love"')
         listsIdx = resp.data.index(b'data-category="top-songs"')
-        self.assertLess(chartIdx, similaritiesIdx)
-        self.assertLess(similaritiesIdx, sharedIdx)
+        self.assertLess(similaritiesIdx, chartIdx)
+        self.assertLess(chartIdx, sharedIdx)
         self.assertLess(sharedIdx, listsIdx)
+
+    def test_similarity_card_covers_link_to_the_viewers_detail_pages(self):
+        """The Common Top cards' covers are linked just like the stats-table
+        cards' - similarity items come from the viewer's own pool, so their
+        detail pages always resolve."""
+        self._accept("alice", "bob")
+        # distinct dicts per user (like real queries return) - bob's copy gets
+        # linkExternally attached in place, which must not taint alice's
+        self.dbs["alice"].getTopSongs.return_value = [_song("shsong", "CommonSong")]
+        self.dbs["bob"].getTopSongs.return_value = [_song("shsong", "CommonSong")]
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        # once on the stats-table Top Song card (mine side), once on the
+        # Common Top Song similarity card
+        self.assertEqual(
+            resp.data.count(b'<a class="compare-cover-link" href="/song/shsong"'), 2)
 
     def test_filter_badges_render_for_each_category(self):
         self._accept("alice", "bob")

@@ -1,18 +1,30 @@
-{% from '_compare_macros.html' import detailCell, coverImg %}
+{% from '_compare_macros.html' import detailCell, coverLink %}
 {# Similarity cells run over the 100-deep pools, so they can surface a
-   common favorite neither displayed top ten shows. #}
-<article class="track-summary-card">
-  <h3>Common Top Artist</h3>
-  <p class="summary-value">{{ coverImg(similarities.commonTopArtist, username, 'artist') }}{{ detailCell(similarities.commonTopArtist, 'artistDetailPage', 'artist_id') }}</p>
-  <span class="summary-subtitle">{{ similarities.sharedArtistCount }} shared in your top {{ similarities.poolSize }}s</span>
+   common favorite neither displayed top ten shows. Items come from the
+   viewer's own pool, so covers and names link to their own detail pages.
+   The cover sits outside the text column: on desktop it spans the card's
+   full content height on the right (see .compare-similarity-card). #}
+<article class="track-summary-card compare-similarity-card">
+  <div class="compare-similarity-info">
+    <h3>Common Top Artist</h3>
+    <p class="summary-value">{{ detailCell(similarities.commonTopArtist, 'artistDetailPage', 'artist_id') }}</p>
+    <span class="summary-subtitle">{{ similarities.sharedArtistCount }} shared in your top {{ similarities.poolSize }}s</span>
+  </div>
+  {{ coverLink(similarities.commonTopArtist, username, 'artist') }}
 </article>
-<article class="track-summary-card">
-  <h3>Common Top Song</h3>
-  <p class="summary-value">{{ coverImg(similarities.commonTopSong, username, 'song') }}{{ detailCell(similarities.commonTopSong, 'songDetailPage', 'track_id') }}</p>
-  <span class="summary-subtitle">{{ similarities.sharedSongCount }} shared in your top {{ similarities.poolSize }}s</span>
+<article class="track-summary-card compare-similarity-card">
+  <div class="compare-similarity-info">
+    <h3>Common Top Song</h3>
+    <p class="summary-value">{{ detailCell(similarities.commonTopSong, 'songDetailPage', 'track_id') }}</p>
+    <span class="summary-subtitle">{{ similarities.sharedSongCount }} shared in your top {{ similarities.poolSize }}s</span>
+  </div>
+  {{ coverLink(similarities.commonTopSong, username, 'song') }}
 </article>
-<article class="track-summary-card">
-  <h3>Common Top Album</h3>
-  <p class="summary-value">{{ coverImg(similarities.commonTopAlbum, username, 'album') }}{{ detailCell(similarities.commonTopAlbum, 'albumDetailPage', 'album_id') }}</p>
-  <span class="summary-subtitle">{{ similarities.sharedAlbumCount }} shared in your top {{ similarities.poolSize }}s</span>
+<article class="track-summary-card compare-similarity-card">
+  <div class="compare-similarity-info">
+    <h3>Common Top Album</h3>
+    <p class="summary-value">{{ detailCell(similarities.commonTopAlbum, 'albumDetailPage', 'album_id') }}</p>
+    <span class="summary-subtitle">{{ similarities.sharedAlbumCount }} shared in your top {{ similarities.poolSize }}s</span>
+  </div>
+  {{ coverLink(similarities.commonTopAlbum, username, 'album') }}
 </article>

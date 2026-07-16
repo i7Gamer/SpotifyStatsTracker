@@ -1,4 +1,4 @@
-{% from '_compare_macros.html' import detailCell, theirCell, coverImg %}
+{% from '_compare_macros.html' import detailCell, theirCell, coverLink %}
 {# The leader's ▲ + hidden "(higher)" keep the signal readable without
    color (color-blind users, screen readers). `side` is 'mine'/'theirs' so
    the leading cell colors in its own row's identity color. #}
@@ -9,7 +9,7 @@
    ''/'song'/'artist'/'album': empty renders no cover (Top Day has none). #}
 {% macro topItemSide(side, name, item, kind, valueHtml) -%}
 <div class="compare-top-side">
-  {% if kind %}{{ coverImg(item, username, kind) }}{% endif %}
+  {% if kind %}{{ coverLink(item, username, kind) }}{% endif %}
   <div class="compare-top-meta">
     <span class="compare-user-{{ side }} compare-user-label js-{{ 'my' if side == 'mine' else 'with' }}-username">{{ name }}</span>
     <span class="compare-top-name">{{ valueHtml }}</span>

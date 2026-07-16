@@ -268,6 +268,7 @@ button {
   min-height: 0;
   display: grid;
   gap: 8px;
+  align-content: start;   /* content hugs the heading instead of spreading to the card's bottom */
   transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
@@ -428,6 +429,22 @@ button {
 
 .summary-top-name:hover {
   text-decoration: underline;
+}
+
+/* Desktop: Now Playing / Top song / Top artist cards stack the cover on its
+   own row under the heading with the text below it; mobile keeps the
+   compact side-by-side row. */
+@media (min-width: 901px) {
+  .now-playing-body,
+  .summary-top-item {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .now-playing-meta,
+  .summary-top-meta {
+    width: 100%;
+  }
 }
 
 .summary-change {
@@ -1055,6 +1072,13 @@ progress::-moz-progress-bar {
   flex-shrink: 0;
 }
 
+/* Anchor around a compare cover (see coverLink in _compare_macros.html) -
+   sized by the image, no extra clickable dead space. */
+.compare-cover-link {
+  display: inline-flex;
+  flex-shrink: 0;
+}
+
 /* The side with the larger count/time of a head-to-head stat, tinted in that
    USER's identity color (one shared leader color broke the you-vs-them
    mapping whenever the counterpart led a stat). The ▲ marker (plus
@@ -1102,15 +1126,46 @@ progress::-moz-progress-bar {
 
 .compare-similarities .summary-value {
   font-size: 1.25rem;
-  display: flex;
-  align-items: center;
-  gap: 10px;
   min-width: 0;
 }
 
-.compare-similarities .summary-value .compare-cover {
-  width: 36px;
-  height: 36px;
+.compare-similarities .track-summary-card h3 {
+  font-size: 1.1rem;
+}
+
+/* Card layout: text column on the left, cover on the right. */
+.compare-similarity-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.compare-similarity-info {
+  min-width: 0;
+}
+
+.compare-similarities .summary-subtitle {
+  display: block;
+  margin-top: 12px !important;   /* breathing room under the value line (base rule: 6px) */
+}
+
+/* Desktop: the cover spans the card's full content height. */
+@media (min-width: 901px) {
+  .compare-similarity-card {
+    align-items: stretch;
+  }
+
+  .compare-similarity-card .compare-cover-link {
+    align-self: stretch;
+  }
+
+  .compare-similarity-card .compare-cover {
+    height: 100%;
+    width: auto;
+    aspect-ratio: 1 / 1;
+    border-radius: 12px;
+  }
 }
 
 /* "You Both Love" versus block. .mine mirrors the trend chart's first

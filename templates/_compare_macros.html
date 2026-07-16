@@ -36,3 +36,24 @@
 {% macro coverImg(item, username, kind) -%}
   {%- if item -%}<img class="compare-cover" loading="lazy" alt="" src="/img/{{ username }}/{{ 'artists' if kind == 'artist' else 'tracks' }}/{{ item.imageId }}.jpeg" onerror="this.onerror=null;this.src=window.PLACEHOLDER_IMG;" />{%- endif -%}
 {%- endmacro %}
+
+{# Linked cover: mirrors the neighboring text cell's target - own items and
+   counterpart items the viewer played go to the viewer's detail pages,
+   never-played counterpart items go to Spotify, and only when a real URL
+   exists (fabricated ids for removed tracks carry an empty url and render
+   unlinked). tabindex/aria-hidden skip the link for keyboard/screen-reader
+   users - it duplicates the name link right next to it. #}
+{% macro coverLink(item, username, kind) -%}
+  {%- if item and item.get('linkExternally') -%}
+    {%- if item.url -%}
+      <a class="compare-cover-link" href="{{ item.url }}" target="_blank" rel="noreferrer noopener" tabindex="-1" aria-hidden="true">{{ coverImg(item, username, kind) }}</a>
+    {%- else -%}
+      {{- coverImg(item, username, kind) -}}
+    {%- endif -%}
+  {%- elif item -%}
+    {%- if kind == 'artist' -%}{%- set href = url_for('artistDetailPage', artist_id=item.id) -%}
+    {%- elif kind == 'album' -%}{%- set href = url_for('albumDetailPage', album_id=item.id) -%}
+    {%- else -%}{%- set href = url_for('songDetailPage', track_id=item.id) -%}{%- endif -%}
+    <a class="compare-cover-link" href="{{ href }}" tabindex="-1" aria-hidden="true">{{ coverImg(item, username, kind) }}</a>
+  {%- endif -%}
+{%- endmacro %}

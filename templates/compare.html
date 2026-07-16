@@ -73,17 +73,19 @@
   </div>
 </section>
 
-<section class="chart-section" style="margin-bottom: 2rem;">
+<section class="track-summary-grid-3 compare-similarities" id="compareSimilarities">
+  {% include '_compare_similarities.html' %}
+</section>
+
+{# border-bottom: none - the chart-section divider is for stacked charts
+   (charts.html); here the filter badges below separate the sections. #}
+<section class="chart-section" style="margin-bottom: 2rem; border-bottom: none;">
   <h2>Listening Trend</h2>
   <div class="chart-canvas-wrap">
     <canvas id="comparisonTrendChart" role="img"
             aria-label="Mirrored listening trend chart: your listening time above the center baseline, the other user's below it."></canvas>
   </div>
   <div id="comparisonTrendLegend" class="chart-legend"></div>
-</section>
-
-<section class="track-summary-grid-3 compare-similarities" id="compareSimilarities">
-  {% include '_compare_similarities.html' %}
 </section>
 
 <nav class="wrapped-stats-filters" aria-label="Filter comparison categories">
