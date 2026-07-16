@@ -45,6 +45,18 @@
         </noscript>
       </form>
       <div class="dashboard-summary">
+        <div class="summary-card now-playing-card" id="nowPlayingCard" style="display: none;">
+          <h2>Now playing <span id="nowPlayingState" class="now-playing-state">Playing</span></h2>
+          <div class="now-playing-body">
+            <img id="nowPlayingCover" class="now-playing-cover" src="" alt="Album cover"
+                 onerror="this.onerror=null;this.src=window.PLACEHOLDER_IMG;" />
+            <div class="now-playing-meta">
+              <a id="nowPlayingName" class="now-playing-name" href="#"></a>
+              <div id="nowPlayingArtists" class="now-playing-artists"></div>
+              <div class="now-playing-progress"><div id="nowPlayingBar" class="now-playing-bar"></div></div>
+            </div>
+          </div>
+        </div>
         <div class="summary-card">
           <h2>Total songs played</h2>
           <p class="summary-value">{{ totalSongsPlayed or 0 }}</p>
@@ -168,5 +180,54 @@
       params.delete('page');
       window.location = window.location.pathname + '?' + params.toString();
     }
+
+    // Now Playing: poll the listener's cached connect state (no Spotify
+    // calls server-side) and show the card only while something is playing.
+    (function () {
+      var NOW_PLAYING_POLL_MS = 15000;
+      var USERNAME = {{ username | tojson }};
+      var card = document.getElementById('nowPlayingCard');
+      if (!card) return;
+
+      function render(np) {
+        if (!np || !np.name) {
+          card.style.display = 'none';
+          return;
+        }
+        var nameEl = document.getElementById('nowPlayingName');
+        nameEl.textContent = np.name;
+        nameEl.href = '/song/' + encodeURIComponent(np.trackId);
+        document.getElementById('nowPlayingArtists').textContent = np.artistsText || '';
+        var stateEl = document.getElementById('nowPlayingState');
+        stateEl.textContent = np.isPaused ? 'Paused' : 'Playing';
+        stateEl.classList.toggle('paused', !!np.isPaused);
+        var cover = document.getElementById('nowPlayingCover');
+        if (np.imageId) {
+          var src = '/img/' + encodeURIComponent(USERNAME) + '/tracks/' + encodeURIComponent(np.imageId) + '.jpeg';
+          if (cover.getAttribute('src') !== src) cover.src = src;
+          cover.style.display = '';
+        } else {
+          cover.style.display = 'none';
+        }
+        var bar = document.getElementById('nowPlayingBar');
+        if (np.durationMs > 0) {
+          bar.parentElement.style.display = '';
+          bar.style.width = Math.min(100, (np.positionMs / np.durationMs) * 100) + '%';
+        } else {
+          bar.parentElement.style.display = 'none';
+        }
+        card.style.display = '';
+      }
+
+      function poll() {
+        fetch('/api/now-playing')
+          .then(function (resp) { return resp.ok ? resp.json() : null; })
+          .then(function (data) { if (data) render(data.nowPlaying); })
+          .catch(function () { /* transient network error - keep last state */ });
+      }
+
+      poll();
+      setInterval(poll, NOW_PLAYING_POLL_MS);
+    })();
   </script>
 {% endblock %}

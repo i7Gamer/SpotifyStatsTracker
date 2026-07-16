@@ -100,6 +100,10 @@ class Database:
     WEB_API_BACKFILL_SOURCE = "web_api_backfill"  #< play source recorded by the Web API backfill; its
                                                    #  created_reason is "<source>_play (user: ...)" (appendTrackData)
 
+    NOW_PLAYING_STALE_GRACE_MS = 60_000        #< a "playing" track whose duration (plus this) has fully elapsed
+                                                #  since the last connect-state update is a frozen/stale feed,
+                                                #  not a real playback - report nothing instead
+
     WRAPPED_WORKER_MIN_START_DELAY = 60        #< minimum initial random startup delay in seconds
     WRAPPED_WORKER_MAX_START_DELAY = 300       #< maximum initial random startup delay in seconds
     WRAPPED_WORKER_LOOP_INTERVAL = 900         #< interval between consecutive checks in seconds (15 minutes)
@@ -1425,6 +1429,71 @@ class Database:
                 "Web API reconciliation: removed %d duplicate play(s) for user %s",
                 deletedCount, self.user,
             )
+
+    @staticmethod
+    def _connectStateInt(value) -> int:
+        """Connect-state numeric fields arrive as strings ("duration":
+        "215000"); 0 for anything missing or malformed."""
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return 0
+
+    def getNowPlaying(self) -> dict | None:
+        """What this user is playing right now, read from the listener's
+        cached connect player_state (zero extra network calls - see
+        Listener.getConnectPlayerState). None when nothing is playing, the
+        state looks stale, or the track can't be identified. Track metadata
+        comes from the catalog; a first-ever listen isn't in the catalog yet
+        (metadata is only fetched when a play completes), so the connect
+        state's own metadata is the fallback."""
+        if self.listener is None:
+            return None
+        state = self.listener.getConnectPlayerState()
+        if not state or not state.get("is_playing"):
+            return None
+        stateTrack = state.get("track") or {}
+        trackUri = stateTrack.get("uri") or ""
+        if not trackUri.startswith("spotify:track:"):
+            return None   #< ads/episodes aren't tracks we can show
+        trackId = trackUri.rsplit(":", 1)[-1]
+        isPaused = bool(state.get("is_paused"))
+
+        timestampMs = self._connectStateInt(state.get("timestamp"))
+        positionMs = self._connectStateInt(state.get("position_as_of_timestamp"))
+        durationMs = self._connectStateInt(state.get("duration"))
+        # Standard connect-state position math: the state only updates on
+        # play/pause/seek/track change, so the live position is the snapshot
+        # position plus time elapsed since the snapshot (unless paused).
+        elapsedMs = max(0, int(time.time() * 1000) - timestampMs) if timestampMs else 0
+        currentPositionMs = positionMs if isPaused else positionMs + elapsedMs
+        if not isPaused and durationMs and timestampMs and currentPositionMs > durationMs + self.NOW_PLAYING_STALE_GRACE_MS:
+            return None
+        if durationMs:
+            currentPositionMs = min(currentPositionMs, durationMs)
+
+        track = self.repo.getTrack(trackId)
+        if track:
+            name = track.get("name")
+            artistsText = ", ".join(a.get("name", "") for a in track.get("artists", []))
+            imageId = track.get("imageId")
+        else:
+            stateMeta = stateTrack.get("metadata") or {}
+            name = stateMeta.get("title")
+            artistsText = stateMeta.get("artist_name") or ""
+            imageId = None
+        if not name:
+            return None   #< nothing presentable to show
+
+        return {
+            "trackId": trackId,
+            "name": name,
+            "artistsText": artistsText,
+            "imageId": imageId,
+            "isPaused": isPaused,
+            "positionMs": currentPositionMs,
+            "durationMs": durationMs,
+        }
 
     def startAutoImporter(self):
         self.autoImporter.start()

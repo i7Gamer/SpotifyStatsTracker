@@ -1598,6 +1598,15 @@ class SpotifyDashboardApp:
             health = db.getListenerHealth()
             return jsonify(health)
 
+        @self.app.route("/api/now-playing", methods=["GET"])
+        def nowPlayingStatus():
+            """What the user is playing right now, from the listener's cached
+            connect state (no Spotify calls) - polled by the dashboard."""
+            email, username, db = get_current_user_or_redirect()
+            if not email:
+                return jsonify({"error": "Not logged in"}), 401
+            return jsonify({"nowPlaying": db.getNowPlaying()})
+
         @self.app.route("/overview", methods=["GET"])
         def overviewPage():
             from datetime import datetime

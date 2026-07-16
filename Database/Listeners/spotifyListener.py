@@ -302,11 +302,12 @@ class Listener:
     def albumName(self, albumId):
         return self.sp.album(albumId).get("name", "Unknown Album")
 
-    def _getRecentTrackUrisFromConnectState(self):
-        """Read previously-played track URIs off the same PlayerStatus object
+    def getConnectPlayerState(self) -> dict | None:
+        """The raw connect player_state dict off the same PlayerStatus object
         SpotipyFree's LastPlayedManger already keeps refreshed every
         refreshInterval tick (see SpotipyFree/LastPlayed.py) - no extra
-        network call needed.
+        network call needed. Feeds both the missed-track cross-check and the
+        dashboard's Now Playing.
 
         Deliberately reads the raw cached `_state` dict rather than calling
         PlayerStatus.state/.saved_state/.last_songs_played: `.state` makes a
@@ -321,6 +322,12 @@ class Listener:
         lastPlayedManager = getattr(self.sp, "lastPlayedManager", None)
         manager = getattr(lastPlayedManager, "manager", None) if lastPlayedManager is not None else None
         state = getattr(manager, "_state", None) if manager is not None else None
+        return state or None
+
+    def _getRecentTrackUrisFromConnectState(self):
+        """Previously-played track URIs from the connect state, or None if no
+        state has been captured yet - see getConnectPlayerState()."""
+        state = self.getConnectPlayerState()
         if not state:
             return None
         return [uri for uri in (track.get("uri") for track in state.get("prev_tracks", [])) if uri]
