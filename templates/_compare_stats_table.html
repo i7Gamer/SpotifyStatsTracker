@@ -1,8 +1,9 @@
 {% from '_compare_macros.html' import detailCell, spotifyCell %}
 {# The leader's ▲ + hidden "(higher)" keep the signal readable without
-   color (color-blind users, screen readers). #}
-{% macro leaderCell(value, isLeader) -%}
-<td class="value{{ ' leader' if isLeader else '' }}">{{ value }}{% if isLeader %} <span class="leader-marker" aria-hidden="true">▲</span><span class="visually-hidden">(higher)</span>{% endif %}</td>
+   color (color-blind users, screen readers). `side` is 'mine'/'theirs' so
+   the leading cell colors in its own column's identity color. #}
+{% macro leaderCell(value, isLeader, side) -%}
+<td class="value{{ ' leader leader-' ~ side if isLeader else '' }}">{{ value }}{% if isLeader %} <span class="leader-marker" aria-hidden="true">▲</span><span class="visually-hidden">(higher)</span>{% endif %}</td>
 {%- endmacro %}
 <table class="status-table compare-table">
   <thead>
@@ -15,23 +16,23 @@
   <tbody>
     <tr>
       <td>Total Plays</td>
-      {{ leaderCell("{:,}".format(my.totalPlays), my.totalPlays > their.totalPlays) }}
-      {{ leaderCell("{:,}".format(their.totalPlays), their.totalPlays > my.totalPlays) }}
+      {{ leaderCell("{:,}".format(my.totalPlays), my.totalPlays > their.totalPlays, 'mine') }}
+      {{ leaderCell("{:,}".format(their.totalPlays), their.totalPlays > my.totalPlays, 'theirs') }}
     </tr>
     <tr>
       <td>Total Time Listened</td>
-      {{ leaderCell(my.totalTimeText, my.totalMs > their.totalMs) }}
-      {{ leaderCell(their.totalTimeText, their.totalMs > my.totalMs) }}
+      {{ leaderCell(my.totalTimeText, my.totalMs > their.totalMs, 'mine') }}
+      {{ leaderCell(their.totalTimeText, their.totalMs > my.totalMs, 'theirs') }}
     </tr>
     <tr>
       <td>Unique Songs</td>
-      {{ leaderCell("{:,}".format(my.uniqueSongs), my.uniqueSongs > their.uniqueSongs) }}
-      {{ leaderCell("{:,}".format(their.uniqueSongs), their.uniqueSongs > my.uniqueSongs) }}
+      {{ leaderCell("{:,}".format(my.uniqueSongs), my.uniqueSongs > their.uniqueSongs, 'mine') }}
+      {{ leaderCell("{:,}".format(their.uniqueSongs), their.uniqueSongs > my.uniqueSongs, 'theirs') }}
     </tr>
     <tr>
       <td>Unique Artists</td>
-      {{ leaderCell("{:,}".format(my.uniqueArtists), my.uniqueArtists > their.uniqueArtists) }}
-      {{ leaderCell("{:,}".format(their.uniqueArtists), their.uniqueArtists > my.uniqueArtists) }}
+      {{ leaderCell("{:,}".format(my.uniqueArtists), my.uniqueArtists > their.uniqueArtists, 'mine') }}
+      {{ leaderCell("{:,}".format(their.uniqueArtists), their.uniqueArtists > my.uniqueArtists, 'theirs') }}
     </tr>
     <tr>
       <td>Avg. Listen per Play</td>

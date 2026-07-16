@@ -80,50 +80,53 @@
   <div id="comparisonTrendLegend" class="chart-legend"></div>
 </section>
 
-{# The overlap entries come from the viewer's own pool, so their detail
-   links resolve correctly - keep them linked. compareWith feeds the
-   per-card versus block (both users' plays/time and the split bar). #}
-{% set suppressDetailLinks = false %}
-{% set compareWith = withUsername %}
-<section style="margin-bottom: 2.5rem;">
-  <h2>You Both Love</h2>
-
-  <h3 class="compare-shared-heading">Artists</h3>
-  {% set section = 'top_artists' %}
-  <div class="track-list" id="sharedArtistsList">
-    {% set items = sharedArtists %}
-    {% set emptyMessage = 'No shared top artists in this period yet.' %}
-    {% include '_wrapped_list.html' %}
-  </div>
-
-  <h3 class="compare-shared-heading">Songs</h3>
-  {% set section = 'top_songs' %}
-  <div class="track-list" id="sharedSongsList">
-    {% set items = sharedSongs %}
-    {% set emptyMessage = 'No shared top songs in this period yet.' %}
-    {% include '_wrapped_list.html' %}
-  </div>
-
-  <h3 class="compare-shared-heading">Albums</h3>
-  {% set section = 'top_albums' %}
-  <div class="track-list" id="sharedAlbumsList">
-    {% set items = sharedAlbums %}
-    {% set emptyMessage = 'No shared top albums in this period yet.' %}
-    {% include '_wrapped_list.html' %}
-  </div>
-</section>
-{% set compareWith = none %}
-
 <section class="track-summary-grid-3 compare-similarities" id="compareSimilarities">
   {% include '_compare_similarities.html' %}
 </section>
 
 <nav class="wrapped-stats-filters" aria-label="Filter comparison categories">
   <button class="stats-filter-button active" data-filter="all">All Stats</button>
+  <button class="stats-filter-button" data-filter="you-both-love">You Both Love</button>
   <button class="stats-filter-button" data-filter="top-songs">Top Songs</button>
   <button class="stats-filter-button" data-filter="top-artists">Top Artists</button>
   <button class="stats-filter-button" data-filter="top-albums">Top Albums</button>
 </nav>
+
+{# The overlap entries come from the viewer's own pool, so their detail
+   links resolve correctly - keep them linked. compareWith feeds the
+   per-card versus block (both users' plays/time and the split bar). #}
+{% set suppressDetailLinks = false %}
+{% set compareWith = withUsername %}
+<div data-category="you-both-love">
+  <section style="margin-bottom: 2.5rem;">
+    <h2>You Both Love</h2>
+
+    <h3 class="compare-shared-heading">Artists</h3>
+    {% set section = 'top_artists' %}
+    <div class="track-list" id="sharedArtistsList">
+      {% set items = sharedArtists %}
+      {% set emptyMessage = 'No shared top artists in this period yet.' %}
+      {% include '_wrapped_list.html' %}
+    </div>
+
+    <h3 class="compare-shared-heading">Songs</h3>
+    {% set section = 'top_songs' %}
+    <div class="track-list" id="sharedSongsList">
+      {% set items = sharedSongs %}
+      {% set emptyMessage = 'No shared top songs in this period yet.' %}
+      {% include '_wrapped_list.html' %}
+    </div>
+
+    <h3 class="compare-shared-heading">Albums</h3>
+    {% set section = 'top_albums' %}
+    <div class="track-list" id="sharedAlbumsList">
+      {% set items = sharedAlbums %}
+      {% set emptyMessage = 'No shared top albums in this period yet.' %}
+      {% include '_wrapped_list.html' %}
+    </div>
+  </section>
+</div>
+{% set compareWith = none %}
 
 {% set emptyMessage = 'No plays in this period.' %}
 

@@ -82,7 +82,8 @@
               </div>
               {% endif %}
 
-              {% if track.get('uniqueSongCount') %}
+              {# the versus block below already shows both users' song counts #}
+              {% if track.get('uniqueSongCount') and not track.get('compareData') %}
               <div>You played {{ track.get('uniqueSongCount') }} song{{ 's' if track.get('uniqueSongCount') != 1 else '' }} from {{ track.get('name', '') }}</div>
               {% endif %}
           </div>

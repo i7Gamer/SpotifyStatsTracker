@@ -213,6 +213,8 @@ button {
 }
 
 .hero {
+  /* positioning context for the Compare page's .taste-match badge */
+  position: relative;
   margin-bottom: 24px;
   padding: 28px 24px;
   border-radius: 20px;
@@ -690,6 +692,21 @@ progress::-moz-progress-bar {
   }
 }
 
+/* "You Both Love" cards keep the original side rail (number LEFT of the
+   cover) on every viewport - their versus block makes the cards tall
+   enough that the full-height rail fits naturally. Higher specificity
+   than the desktop column rules above, so this wins there too. */
+[data-category="you-both-love"] .track-media {
+  flex-direction: row;
+  gap: 18px;
+}
+
+[data-category="you-both-love"] .track-media .track-number {
+  width: 56px;
+  min-height: 120px;
+  padding: 10px 8px;
+}
+
 .track-cover {
   width: 120px;
   height: 120px;
@@ -826,7 +843,7 @@ progress::-moz-progress-bar {
 .compare-table thead tr {
   border-bottom: 2px solid var(--glass-border);
   color: var(--muted);
-  font-size: 0.85rem;
+  font-size: 1.05rem;
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
@@ -845,11 +862,17 @@ progress::-moz-progress-bar {
   font-weight: 600;
 }
 
-/* The side with the larger count/time of a head-to-head row. The ▲ marker
-   (plus visually-hidden text) carries the signal for color-blind users and
+/* The side with the larger count/time of a head-to-head row, tinted in that
+   COLUMN's identity color (one shared leader color broke the you-vs-them
+   mapping whenever the counterpart led a row). The ▲ marker (plus
+   visually-hidden text) carries the signal for color-blind users and
    screen readers - color alone isn't enough. */
-.compare-table td.value.leader {
+.compare-table td.value.leader-mine {
   color: var(--accent);
+}
+
+.compare-table td.value.leader-theirs {
+  color: var(--compare-theirs);
 }
 
 .leader-marker {
@@ -940,16 +963,27 @@ progress::-moz-progress-bar {
   letter-spacing: 0.05em;
 }
 
-/* Taste-match headline badge in the Compare hero. */
+/* Taste-match headline badge, pinned to the Compare hero's top right
+   (the hero itself is the positioning context - see .hero). On narrow
+   screens it drops back under the text so it can't overlap the title. */
 .taste-match {
   display: inline-flex;
   align-items: baseline;
   gap: 8px;
-  margin-top: 16px;
+  position: absolute;
+  top: 24px;
+  right: 24px;
   padding: 10px 22px;
   border: 1px solid var(--accent);
   border-radius: 999px;
   background: var(--accent-glow);
+}
+
+@media (max-width: 700px) {
+  .taste-match {
+    position: static;
+    margin-top: 16px;
+  }
 }
 
 .taste-match-value {

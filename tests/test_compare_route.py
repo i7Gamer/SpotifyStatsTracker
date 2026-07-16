@@ -440,8 +440,9 @@ class TestCompareRoute(unittest.TestCase):
         self.assertNotIn(b"/song/their-song-1", resp.data)
 
     def test_shared_artist_cards_show_both_users_stats(self):
-        """Item on 'You Both Love' cards: both users' plays/time/unique songs,
-        the combined listening time, and a split bar proportioned by time."""
+        """'You Both Love' cards lead with the COMBINED plays/time (the
+        per-user numbers live in the versus block below), plus a split bar
+        proportioned by time."""
         self._accept("alice", "bob")
         self.dbs["alice"].getTopArtists.return_value = [
             _artist("sh1", "SharedArtist", plays=10, totalTimeListened=3_600_000, uniqueSongCount=4)]
@@ -451,14 +452,18 @@ class TestCompareRoute(unittest.TestCase):
 
         resp = client.get("/compare")
 
+        self.assertIn(b"15 plays", resp.data)        #< combined, on the card's top stat line
+        self.assertIn(b"1h 30m 0s", resp.data)       #< combined listening time
         self.assertIn(b"alice: 10 plays", resp.data)
         self.assertIn(b"bob: 5 plays", resp.data)
-        self.assertIn(b"Together: 1h 30m 0s", resp.data)
+        self.assertIn(b"Together: 1h 30m 0s", resp.data)   #< combined summary inside the versus block
         self.assertIn(b'style="width: 67%"', resp.data)   #< round(3.6/5.4*100)
         # The versus block must appear ONLY on the shared card - the same dict
         # also feeds alice's own Top Artists column, so it must be copied
         # before the comparison data is attached.
         self.assertEqual(resp.data.count(b"compare-split-bar\""), 1)
+        #< the copy also keeps the combined totals off her own column's card
+        self.assertIn(b"10 plays", resp.data)
 
     def test_similarities_come_from_the_deep_pools(self):
         """Common top song/album cells run over the 100-deep pools, not the
@@ -485,7 +490,7 @@ class TestCompareRoute(unittest.TestCase):
         self.dbs["alice"].getTopSongs.return_value = [
             _song("sh-song", "SharedSong", plays=3, totalTimeListened=60_000)]
         self.dbs["bob"].getTopSongs.return_value = [
-            _song("sh-song", "SharedSong", plays=1, totalTimeListened=60_000)]
+            _song("sh-song", "SharedSong", plays=8, totalTimeListened=30_000)]
         self.dbs["alice"].getTopAlbums.return_value = [
             _album("sh-alb", "SharedAlbum", plays=4, totalTimeListened=120_000, uniqueSongCount=2)]
         self.dbs["bob"].getTopAlbums.return_value = [
@@ -494,9 +499,16 @@ class TestCompareRoute(unittest.TestCase):
 
         resp = client.get("/compare")
 
-        self.assertIn(b"alice: 3 plays", resp.data)                #< shared song, mine
-        self.assertIn(b"Together: 2m 0s", resp.data)               #< shared song combined
-        self.assertIn("alice: 4 plays · 2m 0s · 2 songs".encode("utf-8"), resp.data)   #< shared album keeps song counts
+        self.assertIn(b"alice: 3 plays", resp.data)   #< shared song, mine (versus block)
+        self.assertIn(b"11 plays", resp.data)         #< shared song top line: combined plays
+        self.assertIn(b"1m 30s", resp.data)           #< ...and combined time
+        self.assertIn(b"10 plays", resp.data)         #< shared album combined plays
+        self.assertIn(b"6m 0s", resp.data)            #< shared album combined time
+        self.assertIn("alice: 4 plays · 2m 0s · 2 songs".encode("utf-8"), resp.data)   #< versus keeps song counts
+        # the viewer-specific "You played N songs from X" line stays on the
+        # album card in alice's own column (1 mention) but is replaced by the
+        # versus block's per-user counts on the shared card (not 2)
+        self.assertEqual(resp.data.count(b"You played 2 songs from SharedAlbum"), 1)
         # song cards carry no unique-song counts - the segment is omitted,
         # not rendered as "0 songs"
         self.assertNotIn(b"0 songs", resp.data)
@@ -526,16 +538,20 @@ class TestCompareRoute(unittest.TestCase):
         self.assertIn("sharedSongsHtml", data)
         self.assertIn("sharedAlbumsHtml", data)
 
-    def test_you_both_love_sits_between_chart_and_category_lists(self):
+    def test_similarities_sit_under_the_chart_and_shared_lists_join_categories(self):
+        """Common Top Artist/Song/Album cards come directly under the chart;
+        "You Both Love" is a filterable category ahead of the top lists."""
         self._accept("alice", "bob")
         client = self._loginAs("alice")
 
         resp = client.get("/compare")
 
         chartIdx = resp.data.index(b'id="comparisonTrendChart"')
-        sharedIdx = resp.data.index(b"You Both Love")
+        similaritiesIdx = resp.data.index(b'id="compareSimilarities"')
+        sharedIdx = resp.data.index(b'data-category="you-both-love"')
         listsIdx = resp.data.index(b'data-category="top-songs"')
-        self.assertLess(chartIdx, sharedIdx)
+        self.assertLess(chartIdx, similaritiesIdx)
+        self.assertLess(similaritiesIdx, sharedIdx)
         self.assertLess(sharedIdx, listsIdx)
 
     def test_filter_badges_render_for_each_category(self):
@@ -544,8 +560,10 @@ class TestCompareRoute(unittest.TestCase):
 
         resp = client.get("/compare")
 
-        for marker in (b'data-filter="all"', b'data-filter="top-songs"',
+        for marker in (b'data-filter="all"', b'data-filter="you-both-love"',
+                       b'data-filter="top-songs"',
                        b'data-filter="top-artists"', b'data-filter="top-albums"',
+                       b'data-category="you-both-love"',
                        b'data-category="top-artists"', b'data-category="top-albums"'):
             self.assertIn(marker, resp.data)
 
@@ -667,27 +685,58 @@ class TestCompareRoute(unittest.TestCase):
         self.assertIn(b'<option value="10" selected>10</option>', resp.data)
         self.assertIn(b'<option value="100" >100</option>', resp.data)
 
-    def test_taste_match_weights_category_overlaps(self):
-        """artists 5/10 shared (weight .5), songs 2/10 (weight .3), albums
-        0/10 (weight .2) -> 0.25 + 0.06 + 0 = 31%."""
+    def test_taste_match_is_full_for_identical_pools(self):
         self._accept("alice", "bob")
-        sharedArtists = [_artist(f"sa{i}", f"SharedA{i}") for i in range(5)]
-        self.dbs["alice"].getTopArtists.return_value = sharedArtists + [_artist(f"a{i}", f"A{i}") for i in range(5)]
-        self.dbs["bob"].getTopArtists.return_value = sharedArtists + [_artist(f"b{i}", f"B{i}") for i in range(5)]
-        sharedSongs = [_song(f"ss{i}", f"SharedS{i}") for i in range(2)]
-        self.dbs["alice"].getTopSongs.return_value = sharedSongs + [_song(f"as{i}", f"AS{i}") for i in range(8)]
-        self.dbs["bob"].getTopSongs.return_value = sharedSongs + [_song(f"bs{i}", f"BS{i}") for i in range(8)]
-        self.dbs["alice"].getTopAlbums.return_value = [_album(f"aal{i}", f"AAl{i}") for i in range(10)]
-        self.dbs["bob"].getTopAlbums.return_value = [_album(f"bal{i}", f"BAl{i}") for i in range(10)]
+        pool = [_artist(f"sa{i}", f"SharedA{i}") for i in range(10)]
+        self.dbs["alice"].getTopArtists.return_value = pool
+        self.dbs["bob"].getTopArtists.return_value = list(pool)
         client = self._loginAs("alice")
 
         resp = client.get("/compare")
 
-        self.assertIn(b'class="taste-match-value js-taste-match">31%</span>', resp.data)
+        self.assertIn(b'class="taste-match-value js-taste-match">100%</span>', resp.data)
+
+    def test_taste_match_rewards_shared_favorites_over_deep_overlap(self):
+        """Rank weighting (1/log2(rank+1) from both sides, normalized against
+        identical pools): sharing the #1 of two-item pools scores
+        2 / (2*(1 + 1/log2(3))) = 61%, sharing only the #2 just 39%."""
+        self._accept("alice", "bob")
+        client = self._loginAs("alice")
+
+        self.dbs["alice"].getTopArtists.return_value = [_artist("top", "SharedTop"), _artist("a2", "A2")]
+        self.dbs["bob"].getTopArtists.return_value = [_artist("top", "SharedTop"), _artist("b2", "B2")]
+        respTop = client.get("/compare")
+
+        self.dbs["alice"].getTopArtists.return_value = [_artist("a1", "A1"), _artist("deep", "SharedDeep")]
+        self.dbs["bob"].getTopArtists.return_value = [_artist("b1", "B1"), _artist("deep", "SharedDeep")]
+        respDeep = client.get("/compare")
+
+        self.assertIn(b'class="taste-match-value js-taste-match">61%</span>', respTop.data)
+        self.assertIn(b'class="taste-match-value js-taste-match">39%</span>', respDeep.data)
+
+    def test_taste_match_weights_category_overlaps(self):
+        """artists identical (1.0, weight .7), albums identical (1.0, weight
+        .2), songs disjoint (0.0, weight .1) -> 90%."""
+        self._accept("alice", "bob")
+        artistPool = [_artist(f"sa{i}", f"SharedA{i}") for i in range(5)]
+        self.dbs["alice"].getTopArtists.return_value = artistPool
+        self.dbs["bob"].getTopArtists.return_value = list(artistPool)
+        albumPool = [_album(f"sal{i}", f"SharedAl{i}") for i in range(5)]
+        self.dbs["alice"].getTopAlbums.return_value = albumPool
+        self.dbs["bob"].getTopAlbums.return_value = list(albumPool)
+        self.dbs["alice"].getTopSongs.return_value = [_song(f"as{i}", f"AS{i}") for i in range(5)]
+        self.dbs["bob"].getTopSongs.return_value = [_song(f"bs{i}", f"BS{i}") for i in range(5)]
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        self.assertIn(b'class="taste-match-value js-taste-match">90%</span>', resp.data)
 
     def test_taste_match_excludes_categories_without_data_on_both_sides(self):
-        """Only artists have data: 5 of 10 shared -> 50%, with the empty
-        song/album categories excluded instead of dragging the score down."""
+        """Only artists have data: 5 shared at ranks 1-5 of 10 on both sides.
+        Rank-weighted: sum(w(1..5)) / sum(w(1..10)) = 2.9485/4.5436 -> 65%,
+        with the empty song/album categories excluded instead of dragging
+        the score down."""
         self._accept("alice", "bob")
         sharedArtists = [_artist(f"sa{i}", f"SharedA{i}") for i in range(5)]
         self.dbs["alice"].getTopArtists.return_value = sharedArtists + [_artist(f"a{i}", f"A{i}") for i in range(5)]
@@ -696,7 +745,7 @@ class TestCompareRoute(unittest.TestCase):
 
         resp = client.get("/compare")
 
-        self.assertIn(b'class="taste-match-value js-taste-match">50%</span>', resp.data)
+        self.assertIn(b'class="taste-match-value js-taste-match">65%</span>', resp.data)
 
     def test_taste_match_hidden_without_any_pool_data(self):
         self._accept("alice", "bob")
@@ -768,7 +817,21 @@ class TestCompareRoute(unittest.TestCase):
         marker = ' <span class="leader-marker" aria-hidden="true">▲</span><span class="visually-hidden">(higher)</span>'.encode("utf-8")
         #< alice leads plays AND time: exactly two marked cells
         self.assertEqual(resp.data.count(marker), 2)
-        self.assertIn(b'class="value leader">10' , resp.data)
+        self.assertIn(b'class="value leader leader-mine">10', resp.data)
+
+    def test_leader_color_follows_the_columns_identity(self):
+        """A leading counterpart cell must carry the counterpart's identity
+        color class, not the viewer's accent - one leader color for both
+        columns broke the you-vs-them color mapping."""
+        self._accept("alice", "bob")
+        self.dbs["alice"].getPlayTotals.return_value = (5, 500)
+        self.dbs["bob"].getPlayTotals.return_value = (12, 1200)
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        self.assertIn(b'class="value leader leader-theirs">12', resp.data)
+        self.assertNotIn(b'class="value leader leader-mine"', resp.data)   #< alice leads nothing here
 
     def test_split_bar_carries_an_accessible_description(self):
         self._accept("alice", "bob")

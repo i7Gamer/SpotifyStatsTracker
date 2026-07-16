@@ -1,4 +1,5 @@
 import logging
+import math
 import os
 import json
 import secrets
@@ -34,10 +35,12 @@ COMPARE_TOP_LIST_SIZE = 10                #< items per top-songs/artists/albums 
 COMPARE_OVERLAP_POOL_SIZE = 100           #< how deep each side's top songs/artists/albums lists are searched for shared taste overlap
 COMPARE_TREND_WEEK_SPAN_DAYS = 120        #< comparison trends spanning more days than this auto-bucket by week...
 COMPARE_TREND_MONTH_SPAN_DAYS = 730       #< ...and more than this by month (day buckets over years are sub-pixel)
-# Taste-match weighting: artists say more about shared taste than one song
-# both happened to play, albums sit between. Categories without data on both
-# sides are excluded and the remaining weights renormalized.
-TASTE_MATCH_WEIGHTS = {"artists": 0.5, "songs": 0.3, "albums": 0.2}
+# Taste-match weighting: artists dominate - exact-song collisions between
+# two top-100s are structurally rare even for very similar listeners (huge
+# catalog, low odds), so songs barely count; albums sit between. Categories
+# without data on both sides are excluded and the remaining weights
+# renormalized.
+TASTE_MATCH_WEIGHTS = {"artists": 0.7, "songs": 0.1, "albums": 0.2}
 WEEKDAY_NAMES = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
 MAX_UPLOAD_MB = 500              #< cap on a single import-history request's total upload size
 DEFAULT_SORT_BY = "totalTimeListened"
@@ -509,18 +512,20 @@ class SpotifyDashboardApp:
         """Shared entries of one category (viewer-ranked, sliced to `limit`)
         with the per-user versus data the "You Both Love" cards render.
         Copied dicts: the pool entries also feed the viewer's own top-list
-        column, and the versus block must only render on the shared cards.
-        The unique-song counts are only attached where the aggregates carry
-        them (artists/albums) - a song card has nothing to count."""
+        column, and the versus block / combined totals must only show on the
+        shared cards. The unique-song counts are only attached where the
+        aggregates carry them (artists/albums) - a song card has nothing to
+        count."""
         theirById = {item["id"]: item for item in theirPool}
         shared = embedFn([dict(item) for item in myPool if item["id"] in theirById][:limit])
         for item in shared:
             theirItem = theirById[item["id"]]
+            myPlays = item.get("plays", 0)
             myMs = item.get("totalTimeListened", 0)
             theirMs = theirItem.get("totalTimeListened", 0)
             combinedMs = myMs + theirMs
             compareData = {
-                "myPlays": item.get("plays", 0),
+                "myPlays": myPlays,
                 "theirPlays": theirItem.get("plays", 0),
                 "myTimeText": msToString(myMs),
                 "theirTimeText": msToString(theirMs),
@@ -533,24 +538,52 @@ class SpotifyDashboardApp:
                 compareData["myUniqueSongs"] = item.get("uniqueSongCount", 0)
                 compareData["theirUniqueSongs"] = theirItem.get("uniqueSongCount", 0)
             item["compareData"] = compareData
+            # The card's top stat line shows the COMBINED totals - the
+            # per-user numbers live in the versus block right below it.
+            # Overwritten after embedFn so the embedded text matches.
+            item["plays"] = myPlays + compareData["theirPlays"]
+            item["totalTimeListened"] = combinedMs
+            item["totalTimeListenedText"] = msToString(combinedMs)
         return shared
 
-    def _tasteMatchPercent(self, my, their, similarities) -> int | None:
-        """One headline number for how much two users' pools overlap: the
-        weighted share of the smaller side's pool the other side also has,
-        per category (see TASTE_MATCH_WEIGHTS). None when no category has
-        data on both sides - the UI hides the badge instead of showing a
-        misleading 0%."""
+    @staticmethod
+    def _rankWeight(rank: int) -> float:
+        """DCG-style discount for a 1-based rank: the #1 spot weighs 1,
+        deeper ranks fall off logarithmically."""
+        return 1 / math.log2(rank + 1)
+
+    def _rankWeightedOverlap(self, myPool, theirPool) -> float | None:
+        """0..1 rank-weighted overlap of two ranked pools: each shared item
+        contributes its rank discount from BOTH sides, normalized against
+        the score two identical pools would reach - so a shared #1 counts
+        far more than a shared #90. Bounded by 1 (each side's contribution
+        is at most the ideal prefix sum). None when either side is empty,
+        so the category can be excluded rather than scored 0."""
+        if not myPool or not theirPool:
+            return None
+        myRanks = {item["id"]: rank for rank, item in enumerate(myPool, start=1)}
+        theirRanks = {item["id"]: rank for rank, item in enumerate(theirPool, start=1)}
+        actual = sum(self._rankWeight(myRanks[itemId]) + self._rankWeight(theirRanks[itemId])
+                     for itemId in myRanks if itemId in theirRanks)
+        idealDepth = min(len(myPool), len(theirPool))
+        ideal = sum(2 * self._rankWeight(rank) for rank in range(1, idealDepth + 1))
+        return actual / ideal
+
+    def _tasteMatchPercent(self, my, their) -> int | None:
+        """One headline number for how much two users' taste overlaps: the
+        rank-weighted pool overlap per category, weighted by
+        TASTE_MATCH_WEIGHTS. None when no category has data on both sides -
+        the UI hides the badge instead of showing a misleading 0%."""
         categories = {
-            "artists": (similarities["sharedArtistCount"], my["topArtistsPool"], their["topArtistsPool"]),
-            "songs": (similarities["sharedSongCount"], my["topSongsPool"], their["topSongsPool"]),
-            "albums": (similarities["sharedAlbumCount"], my["topAlbumsPool"], their["topAlbumsPool"]),
+            "artists": (my["topArtistsPool"], their["topArtistsPool"]),
+            "songs": (my["topSongsPool"], their["topSongsPool"]),
+            "albums": (my["topAlbumsPool"], their["topAlbumsPool"]),
         }
         parts = []
-        for kind, (sharedCount, myPool, theirPool) in categories.items():
-            denominator = min(len(myPool), len(theirPool))
-            if denominator:
-                parts.append((sharedCount / denominator, TASTE_MATCH_WEIGHTS[kind]))
+        for kind, (myPool, theirPool) in categories.items():
+            fraction = self._rankWeightedOverlap(myPool, theirPool)
+            if fraction is not None:
+                parts.append((fraction, TASTE_MATCH_WEIGHTS[kind]))
         if not parts:
             return None
         return round(sum(fraction * weight for fraction, weight in parts)
@@ -2101,7 +2134,7 @@ class SpotifyDashboardApp:
                 "sharedAlbumCount": sum(1 for a in my["topAlbumsPool"] if a["id"] in theirAlbumIds),
                 "poolSize": COMPARE_OVERLAP_POOL_SIZE,
             }
-            tasteMatch = self._tasteMatchPercent(my, their, similarities)
+            tasteMatch = self._tasteMatchPercent(my, their)
 
             trendStartDate, trendEndDate = startDate, endDate
             if trendStartDate is None or trendEndDate is None:
