@@ -392,6 +392,44 @@ button {
   line-height: 1.35;
 }
 
+/* Top song / Top artist summary cards: linked cover next to the linked
+   name, mirroring the Now Playing card's layout so the summary row reads
+   as one family. */
+.summary-top-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.summary-top-cover {
+  width: 56px;
+  height: 56px;
+  border-radius: 10px;
+  object-fit: cover;
+  flex-shrink: 0;
+  display: block;
+}
+
+.summary-top-meta {
+  min-width: 0;
+}
+
+.summary-top-meta strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.summary-top-name {
+  color: var(--text);
+  text-decoration: none;
+}
+
+.summary-top-name:hover {
+  text-decoration: underline;
+}
+
 .summary-change {
   margin-top: 4px;
   font-size: 0.9rem;
