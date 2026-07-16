@@ -1003,6 +1003,39 @@ progress::-moz-progress-bar {
   border-bottom: none;
 }
 
+/* Profile's "Request a share with" row: select + button side by side on
+   desktop. .form-group's own flex-direction: column (used everywhere else
+   on the page for stacked label/input pairs) would otherwise win here too,
+   since only display/gap were ever overridden inline - stacking the select
+   and button and right-aligning each on its own line via align-items:
+   flex-end, a layout bug that only got more visible once the profile card
+   widened from 600px to 900px. Collapses to a stacked, full-width column
+   below the same 600px breakpoint the rest of the page treats as mobile. */
+.share-request-row {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-end;
+  gap: 0.75rem;
+}
+
+.share-request-row .form-field {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.share-request-row button {
+  flex-shrink: 0;
+}
+
+@media (max-width: 600px) {
+  .share-request-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+
 /* Compare page's head-to-head stats table (replaces per-row inline styles
    so the last row can drop its bottom border). */
 .compare-table {
