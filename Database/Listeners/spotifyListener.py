@@ -65,6 +65,12 @@ WEB_API_POLL_INTERVAL_SECONDS = 15 * 60  #< Query Web API recently-played backfi
 
 USER_VALIDATION_CACHE_SECONDS = 5 * 60  #< Cache user validation results to reduce bot detection triggers
 
+TRUTHY_DEBUG_VALUES = {"1", "true"}  #< FLASK_DEBUG values that enable verbose diagnostics (mirrors Database.database)
+
+
+def _flaskDebugEnabled() -> bool:
+    return os.environ.get("FLASK_DEBUG", "").lower() in TRUTHY_DEBUG_VALUES
+
 
 def _is_auth_error(exc: Exception) -> bool:
     """Check if an exception is an authentication-related error (expired/invalid
@@ -447,7 +453,8 @@ class Listener:
             if not creds or not creds.get("client_id") or not creds.get("client_secret") or not creds.get("refresh_token"):
                 return
 
-            logger.info("Running Spotify Web API recently-played backfill check...")
+            if _flaskDebugEnabled():
+                logger.info("Running Spotify Web API recently-played backfill check...")
             access_token = _refresh_spotify_access_token(creds["client_id"], creds["client_secret"], creds["refresh_token"])
             if not access_token:
                 logger.warning("Could not obtain access token for Web API backfill.")
@@ -463,7 +470,7 @@ class Listener:
             web_api_user_id = web_api_user.get("id")
             web_api_user_display = web_api_user.get("display_name", web_api_user_id)
             web_api_user_email = web_api_user.get("email", "")
-            if os.environ.get("FLASK_DEBUG"):
+            if _flaskDebugEnabled():
                 logger.info("Web API user: %s (ID: %s, email: %s), Listener email: %s",
                            web_api_user_display, web_api_user_id, web_api_user_email, self.email)
 
@@ -488,7 +495,8 @@ class Listener:
                 return
 
             items = _fetch_recently_played_from_web_api(access_token)
-            logger.info("Web API returned %d items for backfill check", len(items) if items else 0)
+            if _flaskDebugEnabled():
+                logger.info("Web API returned %d items for backfill check", len(items) if items else 0)
             if not items:
                 return
 

@@ -92,15 +92,19 @@ class TestImportHistoryRoute(unittest.TestCase):
 
         db.writeProgress.assert_called_once_with("running", 0, 0, "Starting import")
 
-    def test_request_does_not_block_for_a_full_second(self):
+    def test_request_does_not_block_on_a_sleep(self):
+        """The route used to time.sleep(1) after spawning the import thread
+        (see test_progress_is_marked_running_synchronously_before_the_
+        redirect). Guarded by asserting no sleep happens on the request path
+        at all, rather than a wall-clock elapsed bound - timing thresholds
+        flake on loaded CI runners."""
         dash = self._makeApp()
         db = self._makeDb()
 
-        start = time.monotonic()
-        self._postImport(dash, db, {'history_file': (io.BytesIO(b'{}'), 'history.json')})
-        elapsed = time.monotonic() - start
+        with patch("app.time.sleep") as mock_sleep:
+            self._postImport(dash, db, {'history_file': (io.BytesIO(b'{}'), 'history.json')})
 
-        self.assertLess(elapsed, 0.5)
+        mock_sleep.assert_not_called()
 
 
 if __name__ == "__main__":
