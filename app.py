@@ -67,6 +67,11 @@ TRUTHY_ENV_VALUES = {"1", "true", "yes", "on"}
 # proxy's IP, so the per-IP auth rate limiter would let any one client lock
 # the entire instance out of /login for the whole window.
 TRUST_PROXY_HEADERS_ENV_VAR = "TRUST_PROXY_HEADERS"
+# When set, the user with this email is made the instance's ONLY admin at
+# startup (see _ensureAdminExists) - the explicit-configuration path, and the
+# recovery path if the automatic earliest-user promotion picked the wrong
+# account.
+ADMIN_EMAIL_ENV_VAR = "ADMIN_EMAIL"
 PASSWORD_MIN_LENGTH = 8   #< also enforced client-side via the minlength attribute
 RATE_LIMIT_MAX_ATTEMPTS = 10     #< max POSTs allowed per window, per source IP, per route
 RATE_LIMIT_WINDOW_SECONDS = 300  #< 5 minutes
@@ -198,6 +203,7 @@ class SpotifyDashboardApp:
         staleImageClaims = self.repo.deleteStalePendingImages()
         if staleImageClaims:
             logger.info("Cleared %d stale pending image download claim(s) from a previous run", staleImageClaims)
+        self._ensureAdminExists()
 
         self.user_databases = {}
         self._db_lock = threading.RLock()
@@ -248,6 +254,35 @@ class SpotifyDashboardApp:
         keyFile.parent.mkdir(parents=True, exist_ok=True)
         keyFile.write_text(newKey, encoding="utf-8")
         return newKey
+
+    def _ensureAdminExists(self):
+        """Admin bootstrap, run at every startup. ADMIN_EMAIL (when set) is
+        authoritative: that user becomes the ONLY admin - demoting anyone
+        else, which is what makes it the recovery path when the automatic
+        promotion picked the wrong account. A typo'd ADMIN_EMAIL changes
+        nothing (losing all admins to a typo would be worse than keeping a
+        stale one). Without the env var, the earliest-created user is
+        promoted once if no admin exists yet, so fresh installs converge on
+        the instance owner (migration 1.17.0 does the same for upgrades)."""
+        adminEmail = os.environ.get(ADMIN_EMAIL_ENV_VAR, "").strip()
+        if adminEmail:
+            username = self.repo.getUsernameForEmailCaseInsensitive(adminEmail)
+            if not username:
+                logger.warning("%s=%s does not match any user - admin assignment unchanged",
+                               ADMIN_EMAIL_ENV_VAR, adminEmail)
+                return
+            for other in self.repo.getAdminUsernames():
+                if other != username:
+                    self.repo.setUserAdmin(other, False)
+                    logger.info("Demoted %s from admin (%s designates %s)", other, ADMIN_EMAIL_ENV_VAR, username)
+            if not self.repo.isAdmin(username):
+                self.repo.setUserAdmin(username, True)
+                logger.info("Promoted %s to admin (%s)", username, ADMIN_EMAIL_ENV_VAR)
+            return
+
+        promoted = self.repo.promoteEarliestUserToAdminIfNoneExists()
+        if promoted:
+            logger.info("Promoted earliest-created user %s to admin (no admin existed yet)", promoted)
 
     def get_username_for_email(self, email):
         return self.repo.getUsernameForEmail(email)
@@ -940,6 +975,16 @@ class SpotifyDashboardApp:
                 "MAX_INLINE_ARTISTS": MAX_INLINE_ARTISTS,
                 "MIN_HIDDEN_ARTISTS": MIN_HIDDEN_ARTISTS,
             }
+
+        @self.app.context_processor
+        def _injectAdminStatus():
+            # Lets templates show admin-only affordances (the profile page's
+            # ADMIN chip). Memoized on g like _injectShareStatus below - one
+            # request can render several templates.
+            if "isAdmin" not in g:
+                username = session.get("username")
+                g.isAdmin = self.repo.isAdmin(username) if username else False
+            return {"isAdmin": g.isAdmin}
 
         @self.app.context_processor
         def _injectShareStatus():
@@ -1638,14 +1683,23 @@ class SpotifyDashboardApp:
 
             # Get current user's timezone for consistent date display
             current_user_tz = None
+            current_username = None
+            is_admin = False
             if is_logged_in:
                 current_username = self.get_username_for_email(email) or self.get_or_create_user(email)
                 current_db = self.get_user_db(current_username, email)
                 current_user_tz = current_db.tz if current_db else None
+                is_admin = self.repo.isAdmin(current_username)
 
             users_list = []
             if is_logged_in:
-                all_users = self.repo.getAllUsersDetails()
+                # The full listing (every account's username, sync state, play
+                # count) is admin-only; a regular user gets just their own row,
+                # so they can still check their own sync status here.
+                if is_admin:
+                    all_users = self.repo.getAllUsersDetails()
+                else:
+                    all_users = self.repo.getAllUsersDetails(username=current_username)
                 for u in all_users:
                     u_username = u["username"]
                     u_email = u["email"]
@@ -1690,6 +1744,7 @@ class SpotifyDashboardApp:
                 global_time_text=global_time_text,
                 global_size_text=global_size_text,
                 is_logged_in=is_logged_in,
+                is_admin=is_admin,
                 users_list=users_list,
                 section="overview"
             )

@@ -1316,6 +1316,17 @@ class Repository:
         row = conn.execute("SELECT email FROM users WHERE username=?", (username,)).fetchone()
         return row["email"] if row else None
 
+    def getUsernameForEmailCaseInsensitive(self, email: str) -> str | None:
+        """getUsernameForEmail with case-insensitive matching - emails are
+        stored as typed at login, so an ADMIN_EMAIL differing only in case
+        must still resolve. ASCII-only folding (SQLite NOCASE), which is all
+        email addresses need."""
+        conn = self._conn()
+        row = conn.execute(
+            "SELECT username FROM users WHERE email=? COLLATE NOCASE", (email,)
+        ).fetchone()
+        return row["username"] if row else None
+
     def setUserEmail(self, username: str, email: str) -> None:
         conn = self._conn()
         with conn:
@@ -1405,6 +1416,58 @@ class Repository:
                              (*changes.values(), row["username"]))
                 updated += 1
         return updated
+
+    # ---- Per-user: admin role -------------------------------------------------
+    # Single-admin model (see docs/proposal-admin-and-share-links.md): the
+    # earliest-created user is promoted when no admin exists, and app.py's
+    # ADMIN_EMAIL bootstrap is the explicit/recovery path. There's
+    # deliberately no in-app grant/revoke UI.
+
+    def isAdmin(self, username: str | None) -> bool:
+        if not username:
+            return False
+        conn = self._conn()
+        row = conn.execute("SELECT is_admin FROM users WHERE username=?", (username,)).fetchone()
+        return bool(row["is_admin"]) if row else False
+
+    def setUserAdmin(self, username: str, isAdmin: bool) -> None:
+        conn = self._conn()
+        with conn:
+            conn.execute("UPDATE users SET is_admin=? WHERE username=?", (1 if isAdmin else 0, username))
+
+    def getAdminUsernames(self) -> list[str]:
+        conn = self._conn()
+        rows = conn.execute("SELECT username FROM users WHERE is_admin=1 ORDER BY username").fetchall()
+        return [r["username"] for r in rows]
+
+    def promoteEarliestUserToAdminIfNoneExists(self) -> str | None:
+        """Promote the earliest-created user (whoever set the instance up) to
+        admin - only when no admin exists at all, so re-running (every app
+        startup, plus migration 1.17.0) never creates a second admin or
+        overrides a deliberate reassignment. Returns the promoted username,
+        or None if nothing changed."""
+        conn = self._conn()
+        with conn:
+            if conn.execute("SELECT 1 FROM users WHERE is_admin=1 LIMIT 1").fetchone():
+                return None
+            row = conn.execute(
+                "SELECT username FROM users ORDER BY created_at ASC, username ASC LIMIT 1"
+            ).fetchone()
+            if row is None:
+                return None
+            conn.execute("UPDATE users SET is_admin=1 WHERE username=?", (row["username"],))
+            return row["username"]
+
+    def addUserIsAdminColumnIfMissing(self) -> None:
+        """SCHEMA's CREATE TABLE IF NOT EXISTS only shapes brand-new databases -
+        a users table that already existed before is_admin was added needs an
+        explicit ALTER TABLE (migrate1_17_0). Guarded so re-running the
+        migration against an already-migrated database doesn't fail."""
+        conn = self._conn()
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
+        if "is_admin" not in columns:
+            with conn:
+                conn.execute("ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0")
 
     def getUserSettings(self, username: str) -> dict:
         conn = self._conn()
@@ -1775,11 +1838,17 @@ class Repository:
             "db_size_bytes": db_size,
         }
 
-    def getAllUsersDetails(self) -> list[dict]:
+    def getAllUsersDetails(self, username: str | None = None) -> list[dict]:
+        """The overview page's per-user rows. `username` narrows to a single
+        user's own row - what a non-admin viewer is allowed to see (the full
+        listing is admin-only, see app.py's overviewPage)."""
         conn = self._conn()
-        rows = conn.execute(
-            "SELECT username, email, cookies_json, spotify_client_id, spotify_refresh_token, created_at FROM users"
-        ).fetchall()
+        query = "SELECT username, email, cookies_json, spotify_client_id, spotify_refresh_token, created_at FROM users"
+        params: tuple = ()
+        if username is not None:
+            query += " WHERE username=?"
+            params = (username,)
+        rows = conn.execute(query, params).fetchall()
         return [dict(r) for r in rows]
 
     def getAlbumsMissingMetadata(self, limit: int) -> list[str]:

@@ -36,21 +36,34 @@ class TestOverviewRoute(unittest.TestCase):
             self.assertIn(b"100", resp.data) # Plays
             self.assertNotIn(b"Registered Users & Sync Status", resp.data)
 
-    def test_overview_logged_in_access(self):
-        dash = self._makeApp()
-        
+    _MOCK_USERS = [
+        {
+            "username": "alice",
+            "email": "alice@example.com",
+            "cookies_json": '{"sp_dc": "123"}',
+            "spotify_client_id": "client_id",
+            "spotify_refresh_token": "refresh_token",
+            "created_at": 1718000000.0
+        },
+        {
+            "username": "bob",
+            "email": "bob@example.com",
+            "cookies_json": '{"sp_dc": "456"}',
+            "spotify_client_id": None,
+            "spotify_refresh_token": None,
+            "created_at": 1718000001.0
+        },
+    ]
+
+    def _usersDetailsSideEffect(self):
+        """Respects getAllUsersDetails' username filter, so response-content
+        assertions reflect what the route actually requested."""
+        def fake(username=None):
+            return [u for u in self._MOCK_USERS if username is None or u["username"] == username]
+        return fake
+
+    def _getOverviewAs(self, dash, isAdmin):
         mock_stats = {"tracks": 10, "artists": 5, "albums": 3, "plays": 100, "total_time_ms": 36000000, "db_size_bytes": 1048576}
-        mock_users = [
-            {
-                "username": "alice",
-                "email": "alice@example.com",
-                "cookies_json": '{"sp_dc": "123"}',
-                "spotify_client_id": "client_id",
-                "spotify_refresh_token": "refresh_token",
-                "created_at": 1718000000.0
-            }
-        ]
-        
         mock_db = MagicMock()
         mock_db.getListenerHealth.return_value = {
             "status": "HEALTHY",
@@ -58,25 +71,45 @@ class TestOverviewRoute(unittest.TestCase):
             "last_error": None,
             "seconds_since_last_poll": 5
         }
-        
+
         with patch.object(dash.repo, 'getGlobalDatabaseStats', return_value=mock_stats), \
-             patch.object(dash.repo, 'getAllUsersDetails', return_value=mock_users), \
+             patch.object(dash.repo, 'getAllUsersDetails', side_effect=self._usersDetailsSideEffect()), \
+             patch.object(dash.repo, 'isAdmin', return_value=isAdmin), \
              patch.object(dash.repo, 'getPlaysCount', return_value=123), \
              patch.object(dash, 'is_user_logged_in', return_value=True), \
              patch.object(dash, 'get_user_db', return_value=mock_db):
-            
+
             client = dash.app.test_client()
             with client.session_transaction() as sess:
                 sess['email'] = 'alice@example.com'
-                
-            resp = client.get("/overview")
-            
-            self.assertEqual(resp.status_code, 200)
-            self.assertIn(b"Registered Users & Sync Status", resp.data)
-            self.assertIn(b"alice", resp.data)
-            self.assertIn(b"HEALTHY", resp.data)
-            self.assertIn(b"CONFIGURED", resp.data)
-            self.assertIn(b"123", resp.data)
+
+            return client.get("/overview")
+
+    def test_overview_admin_sees_every_user(self):
+        dash = self._makeApp()
+
+        resp = self._getOverviewAs(dash, isAdmin=True)
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn(b"Registered Users & Sync Status", resp.data)
+        self.assertIn(b"alice", resp.data)
+        self.assertIn(b"bob", resp.data)
+        self.assertIn(b"HEALTHY", resp.data)
+        self.assertIn(b"CONFIGURED", resp.data)
+        self.assertIn(b"123", resp.data)
+
+    def test_overview_non_admin_sees_only_their_own_row(self):
+        """The per-user table (usernames, sync state, play counts of OTHER
+        accounts) is admin-only - a regular user still sees their own sync
+        status, but nobody else's."""
+        dash = self._makeApp()
+
+        resp = self._getOverviewAs(dash, isAdmin=False)
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn(b"Your Sync Status", resp.data)
+        self.assertIn(b"alice", resp.data)
+        self.assertNotIn(b"bob", resp.data)
 
     def test_overview_does_not_start_listener_for_cookie_less_users(self):
         """get_user_db() constructs a live Database (starts the listener,
@@ -116,6 +149,7 @@ class TestOverviewRoute(unittest.TestCase):
 
         with patch.object(dash.repo, 'getGlobalDatabaseStats', return_value=mock_stats), \
              patch.object(dash.repo, 'getAllUsersDetails', return_value=mock_users), \
+             patch.object(dash.repo, 'isAdmin', return_value=True), \
              patch.object(dash.repo, 'getPlaysCount', return_value=0), \
              patch.object(dash, 'is_user_logged_in', return_value=True), \
              patch.object(dash, 'get_user_db', return_value=mock_db) as mock_get_user_db:

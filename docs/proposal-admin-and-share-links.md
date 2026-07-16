@@ -1,6 +1,6 @@
 # Proposal: Admin role + read-only share links
 
-Status: **proposal — not implemented**. Two related features, shippable independently, in this order:
+Status: **Part A (admin role) implemented** — migration `1.17.0 → 1.18.0`, `ADMIN_EMAIL` bootstrap, `/overview` gating. Part B (share links) remains a proposal; its `share_links` table now goes into its own future migration (`1.18.0 → 1.19.0`) rather than sharing one with `is_admin`. Two related features, shippable independently, in this order:
 
 1. **Admin role** — small, fixes an existing exposure (every logged-in user currently sees every other user's email on `/overview`).
 2. **Read-only share links** — public tokenized URLs for a user's Wrapped page, no login required for viewers.
@@ -130,8 +130,9 @@ CREATE INDEX IF NOT EXISTS idx_share_links_username ON share_links(username);
 
 ## Suggested implementation order
 
-1. `migrate1_17_0`: `is_admin` column + `share_links` table (one migration, both features' schema).
-2. Admin bootstrap + `/overview` gating (ship it — standalone value).
-3. `_buildWrappedContext` extraction, no behavior change.
-4. Public route + token image routes + public template variant.
-5. Creation/revocation UI + rate limiting + noindex.
+1. ~~`migrate1_17_0`: `is_admin` column, earliest-user promotion~~ — **done**.
+2. ~~Admin bootstrap (`ADMIN_EMAIL`) + `/overview` gating~~ — **done**.
+3. `migrate1_18_0`: `share_links` table.
+4. `_buildWrappedContext` extraction, no behavior change.
+5. Public route + token image routes + public template variant.
+6. Creation/revocation UI + rate limiting + noindex.

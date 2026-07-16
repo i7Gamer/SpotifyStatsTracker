@@ -101,6 +101,7 @@ CREATE TABLE IF NOT EXISTS users (
     spotify_client_secret TEXT,
     spotify_refresh_token TEXT,
     default_dashboard_window TEXT DEFAULT 'day',
+    is_admin              INTEGER NOT NULL DEFAULT 0,
     timezone              TEXT
 );
 
