@@ -137,6 +137,20 @@ class TestGetNowPlaying(DatabaseTestCase):
         nowPlaying = self._makeDbWithState(_playingState("brandnew")).getNowPlaying()
         self.assertIsNone(nowPlaying)
 
+    def test_metadata_as_dataclass_object_does_not_crash(self):
+        """Regression: spotapi sometimes stores metadata as an already-hydrated
+        object (truthy, but has no .get()), causing AttributeError in the
+        connect-state fallback branch. The fix must handle both dicts and
+        any attribute-bearing object."""
+        from types import SimpleNamespace
+        metaNs = SimpleNamespace(title="Dataclass Track", artist_name="NS Artist")
+        state = _playingState("brandnew")
+        state["track"]["metadata"] = metaNs
+        nowPlaying = self._makeDbWithState(state).getNowPlaying()
+        self.assertEqual(nowPlaying["name"], "Dataclass Track")
+        self.assertEqual(nowPlaying["artistsText"], "NS Artist")
+        self.assertIsNone(nowPlaying["imageId"])
+
 
 class TestNowPlayingRoute(unittest.TestCase):
     @patch(_SECRET_KEY_PATCH, return_value='test-secret-key')

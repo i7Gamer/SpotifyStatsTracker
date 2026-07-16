@@ -1497,8 +1497,14 @@ class Database:
             imageId = track.get("imageId")
         else:
             stateMeta = stateTrack.get("metadata") or {}
-            name = stateMeta.get("title")
-            artistsText = stateMeta.get("artist_name") or ""
+            # spotapi may have already hydrated metadata into a Metadata
+            # dataclass (which is truthy but has no .get()), so handle both.
+            if isinstance(stateMeta, dict):
+                name = stateMeta.get("title")
+                artistsText = stateMeta.get("artist_name") or ""
+            else:
+                name = getattr(stateMeta, "title", None)
+                artistsText = getattr(stateMeta, "artist_name", None) or ""
             imageId = None
         if not name:
             return None   #< nothing presentable to show
