@@ -701,6 +701,42 @@ class TestPatches(unittest.TestCase):
             lps.renew_state()
             self.assertIsNone(lps._state)
             self.assertIsNone(lps._devices)
+    def test_player_status_renew_state_deep_copies_player_state_to_prevent_mutation(self):
+        """Regression: spotapi's Track.from_dict() mutates its input dict in-place,
+        replacing metadata dict with a Metadata dataclass:
+            data["metadata"] = Metadata.from_dict(metadata)
+        The patched state property passes a deep copy of _state to
+        PlayerState.from_dict, so _state itself is never mutated. Without this
+        patch, _state["track"]["metadata"] becomes a Metadata object after the
+        property is accessed, and a subsequent getConnectPlayerState() read then
+        calls .get("title") on a Metadata object -> AttributeError."""
+        from spotapi.status import PlayerStatus
+
+        raw_track = {"uri": "spotify:track:abc", "uid": "u1",
+                     "metadata": {"title": "Test", "artist_name": "Artist"}}
+        raw_state = {"is_playing": True, "track": raw_track,
+                     "timestamp": "0", "position_as_of_timestamp": "0", "duration": "0",
+                     "is_paused": False}
+        device_dump = {"player_state": raw_state, "devices": []}
+
+        with patch("spotapi.websocket.WebsocketStreamer.__init__", return_value=None), \
+             patch("spotapi.status.PlayerStatus.register_device"), \
+             patch("spotapi.status.PlayerStatus.connect_device", return_value=device_dump):
+            lps = PlayerStatus(MagicMock())
+            lps.renew_state()
+
+        # Access the patched state property - this calls PlayerState.from_dict
+        # internally, which would mutate _state without our fix.
+        with patch.object(lps, "renew_state"):  # skip renew inside the property
+            lps.state  # exercises the patched property
+
+        # _state["track"]["metadata"] must still be a plain dict.
+        stored_meta = lps._state["track"]["metadata"]
+        self.assertIsInstance(stored_meta, dict,
+            f"_state was mutated by state property: metadata is "
+            f"{type(stored_meta).__name__}, expected dict")
+        self.assertEqual(stored_meta.get("title"), "Test")
+        self.assertEqual(stored_meta.get("artist_name"), "Artist")
 
 
 if __name__ == "__main__":

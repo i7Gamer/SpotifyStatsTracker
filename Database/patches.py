@@ -1,3 +1,4 @@
+import copy
 import logging
 import signal
 import threading
@@ -71,7 +72,10 @@ def player_status_reconnect(self):
 spotapi.status.PlayerStatus.reconnect = player_status_reconnect
 
 
-# Patch renew_state to avoid KeyError: 'devices' or KeyError: 'player_state' on API failures
+# Patch renew_state to:
+# 1. Avoid KeyError: 'devices' or KeyError: 'player_state' on API failures.
+# 2. Note: we do NOT deepcopy here - see the state/saved_state property patches
+#    below for where the mutation is actually prevented.
 def player_status_renew_state(self):
     try:
         self._device_dump = self.connect_device()
@@ -94,6 +98,44 @@ def player_status_renew_state(self):
         self._devices = None
 
 spotapi.status.PlayerStatus.renew_state = player_status_renew_state
+
+
+# Patch the `state` and `saved_state` properties to pass a shallow copy of
+# _state to PlayerState.from_dict, preventing Track.from_dict from corrupting
+# the cached _state dict.
+#
+# Root cause: spotapi's Track.from_dict() mutates its input dict in-place:
+#   data["metadata"] = Metadata.from_dict(metadata)
+# PlayerState.from_dict(_state) passes _state["track"] directly to
+# Track.from_dict, so without a copy, _state["track"]["metadata"] becomes a
+# Metadata dataclass. The next call to getConnectPlayerState() then reads
+# _state["track"]["metadata"] and tries to call .get("title") on a Metadata
+# object -> AttributeError.
+#
+# copy.copy(_state) is a shallow copy of the outer dict; that's enough because
+# Track.from_dict only replaces the "metadata" key on the track dict (a
+# nested value), which means we also need to copy the nested "track" dict.
+# We use copy.deepcopy for correctness, but only on the _state snapshot -
+# this is called once per 3-second poll, so the overhead is negligible.
+def _player_status_state_property(self):
+    """Gets the current state of the player (patched to prevent _state mutation)."""
+    self.renew_state()
+    if self._state is None:
+        raise ValueError("Could not get player state")
+    return spotapi.status.PlayerState.from_dict(copy.deepcopy(self._state))
+
+
+def _player_status_saved_state_property(self):
+    """Gets the last saved state of the player (patched to prevent _state mutation)."""
+    if self._state is None:
+        self.renew_state()
+    if self._state is None:
+        raise ValueError("Could not get player state")
+    return spotapi.status.PlayerState.from_dict(copy.deepcopy(self._state))
+
+
+spotapi.status.PlayerStatus.state = property(_player_status_state_property)
+spotapi.status.PlayerStatus.saved_state = property(_player_status_saved_state_property)
 
 
 # 3. Prevent WebsocketStreamer.__init__ from hijacking the process's SIGINT handler.
