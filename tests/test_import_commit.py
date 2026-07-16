@@ -85,12 +85,32 @@ class TestImportHistoryCommit(DatabaseTestCase):
         self.assertIn("L1", ids)
         self.assertEqual(self._playedAts(), [50, 100, 200, 250, 300])
 
-    def test_unrecognized_export_is_a_noop(self):
+    def test_unrecognized_export_raises_and_marks_progress_failed(self):
+        """A file that parses as no known export type (corrupt JSON, a
+        partially-copied file, the wrong file entirely) must FAIL loudly.
+        It used to return silently, so AutoImporter moved never-imported
+        files to DONE/ as successes and the web UI reported 'complete'."""
         importer = MagicMock()
         importer._convertToList.return_value = ([], "None")
 
         with patch("Database.database.Importer", return_value=importer):
-            self.db.importHistory("not an export")
+            with self.assertRaises(ValueError):
+                self.db.importHistory("not an export")
+
+        self.assertEqual(len(self._playedAts()), 2)
+        importer.importHistory.assert_not_called()
+        progress = self.db.readProgress()
+        self.assertEqual(progress["status"], "failed")
+        self.assertTrue(progress["error"])
+
+    def test_recognized_but_empty_export_is_a_noop(self):
+        """An empty-but-valid export (e.g. a JSON []) has nothing to import,
+        which is not an error."""
+        importer = MagicMock()
+        importer._convertToList.return_value = ([], "emptyExport")
+
+        with patch("Database.database.Importer", return_value=importer):
+            self.db.importHistory("[]")   #< must not raise
 
         self.assertEqual(len(self._playedAts()), 2)
         importer.importHistory.assert_not_called()
@@ -225,6 +245,33 @@ class TestImportHistoryBatch(DatabaseTestCase):
     def test_empty_file_list_is_a_noop(self):
         self.db.importHistoryBatch([])
         self.assertEqual(self._ids(), [])
+
+    def test_batch_returns_per_file_outcomes(self):
+        """AutoImporter routes each file to DONE/ or FAILED/ based on the
+        outcome importHistoryBatch reports for it."""
+        def gen():
+            yield _meta("f1i1", 100)
+
+        def failing():
+            raise RuntimeError("bad file")
+            yield  # unreachable - keeps this a generator function
+
+        with patch("Database.database.Importer",
+                    side_effect=[self._mockImporter(gen), self._mockImporter(failing)]):
+            outcomes = self.db.importHistoryBatch(["good export", "bad export"])
+
+        self.assertEqual(outcomes, ["imported", "failed"])
+
+    def test_batch_reports_already_imported_files_as_skipped(self):
+        def gen():
+            yield _meta("i1", 100)
+
+        with patch("Database.database.Importer", return_value=self._mockImporter(gen)):
+            firstOutcomes = self.db.importHistoryBatch(["same content"])
+            secondOutcomes = self.db.importHistoryBatch(["same content"])
+
+        self.assertEqual(firstOutcomes, ["imported"])
+        self.assertEqual(secondOutcomes, ["skipped"])
 
     def test_import_history_batch_skips_already_imported_files(self):
         """importHistoryBatch should skip already imported files by checking their hash and update progress accordingly."""

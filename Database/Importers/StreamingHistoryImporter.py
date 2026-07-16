@@ -60,11 +60,19 @@ class Importer:
         return self._searchForSong(name=name, artist=artist)
 
     def _convertToList(self, export):
+        """(parsed entries, export type). "emptyExport" marks a file that IS a
+        recognized export with nothing in it (a valid but empty JSON list) -
+        distinct from "None", which means the content matched no known export
+        format at all (corrupt, truncated mid-copy, or the wrong file) and
+        which Database.importHistory treats as a failed import rather than
+        silently succeeding."""
         export = export.lstrip("\ufeff")
         if export.lstrip().startswith("FILE_PATH,"):
             return export.splitlines()[1:], "musicoletPremium"
         try:
             export = json.loads(export)
+            if isinstance(export, list) and not export:
+                return [], "emptyExport"
             if "msPlayed" in export[0]:   #< Acount export
                 return export, "spotifyAcountExport"
             if "ts" in export[0]:         #< Extended export

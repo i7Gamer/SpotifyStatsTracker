@@ -578,6 +578,14 @@ class Database:
             runState = _ImportRunState()
 
         parsedHistory, exportType = importer._convertToList(exportedHistory)
+        if exportType == "None":
+            # Unrecognized content (corrupt JSON, a file read mid-copy, the
+            # wrong file entirely) must fail loudly: returning silently here
+            # used to make AutoImporter move never-imported files to DONE/ as
+            # successes and the web UI report the import as complete.
+            self.writeProgress("failed", 0, 0,
+                               f"{progressPrefix}Import failed: unrecognized or corrupt export file", error=True)
+            raise ValueError("Unrecognized or corrupt export file - expected a Spotify JSON export or Musicolet CSV backup")
         if not parsedHistory:
             return
 
@@ -725,25 +733,29 @@ class Database:
             self.writeProgress("failed", index, total, f"{progressPrefix}Import failed: {parseError(e)}", error=True)
             raise
 
-    def importHistoryBatch(self, fileContents: list[str]) -> None:
+    def importHistoryBatch(self, fileContents: list[str]) -> list[str]:
         """Import multiple export files sequentially - cached up front by the
         caller (app.py reads every upload before starting this thread) and then
         processed one after another, mirroring AutoImporter's existing
         one-file-at-a-time folder-watching behavior. A failure in one file is
         logged and skipped rather than aborting the whole batch, so a single bad
-        upload doesn't block the rest."""
+        upload doesn't block the rest.
+
+        Returns one outcome per input file, in order - "imported", "skipped"
+        (already imported before, by hash), or "failed" - so AutoImporter can
+        route each file to DONE/ or FAILED/ instead of assuming success."""
         if not fileContents:
-            return
+            return []
 
         import hashlib
         total = len(fileContents)
-        failedCount = 0
-        skippedCount = 0
+        outcomes: list[str] = []
         # One run state for the whole batch: files commit separately, so a
         # skip/replay pair straddling a file boundary would otherwise collapse
         # (the replay in file N+1 matching the skip committed by file N).
         runState = _ImportRunState()
         for index, content in enumerate(fileContents, start=1):
+            failedSoFar = outcomes.count("failed")
             try:
                 isFinalFile = (index == total)
                 content_bytes = content.encode("utf-8") if isinstance(content, str) else str(content).encode("utf-8")
@@ -751,23 +763,26 @@ class Database:
 
                 if self.repo.isFileImported(self.user, file_hash):
                     logger.info("File %s/%s already imported (hash: %s). Skipping.", index, total, file_hash)
-                    skippedCount += 1
+                    outcomes.append("skipped")
                     status = "complete" if isFinalFile else "running"
-                    self.writeProgress(status, index, total, f"File {index}/{total}: Skipping already imported file", error=(failedCount > 0))
+                    self.writeProgress(status, index, total, f"File {index}/{total}: Skipping already imported file", error=(failedSoFar > 0))
                     continue
 
                 self.importHistory(
                     content,
                     progressPrefix=f"File {index}/{total}: ",
                     isFinalFile=isFinalFile,
-                    hasPriorError=(failedCount > 0),
+                    hasPriorError=(failedSoFar > 0),
                     track_file_hash=True,
                     runState=runState
                 )
+                outcomes.append("imported")
             except Exception as e:
-                failedCount += 1
+                outcomes.append("failed")
                 logger.error("Import failed for file %s/%s: %s", index, total, parseError(e))
 
+        failedCount = outcomes.count("failed")
+        skippedCount = outcomes.count("skipped")
         succeededCount = total - failedCount - skippedCount
         if failedCount == 0:
             if skippedCount == total:
@@ -779,6 +794,7 @@ class Database:
         else:
             self.writeProgress("complete", total, total,
                                 f"Imported {succeededCount}/{total} files ({skippedCount} skipped, {failedCount} failed)", error=True)
+        return outcomes
 
     # ---- stats -------------------------------------------------------------------------
 
