@@ -18,12 +18,13 @@ from flask_wtf.csrf import CSRFProtect
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import generate_password_hash, check_password_hash
 
-from Database.database import Database
+from Database.database import Database, GENRE_COVERAGE_CATEGORIES
 from Database.backup import BackupWorker
 from Database.db import SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON
 from Database.repository import Repository
 from Database.Migrators.migrate import migrateIfNeeded
 from Database.Listeners.spotifyListener import _suppress_signal_in_thread
+from Database.lastfm import LastfmClient
 from Database.logging_config import configureLogging
 from Database.utils import msToString, convertToDatetime, formatDuration, dateToString, versionTuple, now, startOfDay, parseDateString
 import SpotipyFree
@@ -34,6 +35,17 @@ logger = logging.getLogger(__name__)
 PAGE_SIZE = 50                  #< list items shown per page
 LOGIN_CACHE_TTL_SECONDS = 180  #< seconds to cache isListenerLoggedIn result per user
 CHART_ARTIST_TREND_TOP_N = 5   #< how many top artists are plotted on the trend line chart
+CHART_TOP_GENRES_LIMIT = 10    #< bars on the Charts page's Top Genres chart
+WRAPPED_TOP_GENRES_LIMIT = 5   #< genres listed on the Wrapped genre card
+COMPARE_TOP_GENRES_LIMIT = 10  #< per-side genres (and shared genres) shown on Compare
+COMPARE_GENRE_POOL_SIZE = 50   #< per-side genre pool the shared-genre intersection is computed over
+# The genre-feature unlock gate: genre insights on Charts/Wrapped/Compare only
+# render once the play-weighted Last.fm coverage over the page's date range is
+# strictly above the overall minimum (mean of the three categories) AND at
+# least at the per-category minimum for songs, albums and artists - partial
+# data would silently misrepresent someone's taste otherwise.
+GENRE_GATE_OVERALL_MIN_PERCENT = 50
+GENRE_GATE_CATEGORY_MIN_PERCENT = 30
 WRAPPED_LIST_SIZE = 10          #< default/fallback for ?limit= - how many items per category the Wrapped page shows
 WRAPPED_LIMIT_OPTIONS = (10, 25, 50, 100)   #< selectable values for Wrapped's items-per-category dropdown
 COMPARE_TOP_LIST_SIZE = 10                #< items per top-songs/artists/albums list shown on the Compare page
@@ -164,6 +176,74 @@ def _passwordPolicyError(password: str) -> str | None:
     return None
 
 
+def emptyGenreCoverage() -> dict:
+    """The all-zeros coverage shape - what guests, empty ranges and sanitize
+    failures all resolve to (and the gate always rejects)."""
+    coverage = {categoryName: {"covered": 0, "total": 0, "percent": 0.0}
+                for categoryName in GENRE_COVERAGE_CATEGORIES}
+    coverage["overall"] = {"percent": 0.0}
+    return coverage
+
+
+def _requireNumber(value):
+    """The value if it's a real number. Explicit isinstance rather than
+    int()/float() coercion: MagicMock happily answers __int__ with 1, which
+    would let an unstubbed test db masquerade as real coverage."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError(f"not a number: {value!r}")
+    return value
+
+
+def sanitizeGenreCoverage(coverage) -> dict:
+    """`coverage` if it is shaped like Database.getGenreCoverage's result,
+    else all zeros. Route code must only ever consume coverage through this:
+    stubbed dbs in tests (and any unexpected failure) then degrade to the
+    locked state instead of crashing template rendering."""
+    try:
+        sanitized = {
+            categoryName: {field: _requireNumber(coverage[categoryName][field])
+                           for field in ("covered", "total", "percent")}
+            for categoryName in GENRE_COVERAGE_CATEGORIES
+        }
+        sanitized["overall"] = {"percent": _requireNumber(coverage["overall"]["percent"])}
+        return sanitized
+    except (TypeError, KeyError):
+        return emptyGenreCoverage()
+
+
+def resolveGenreCoverage(db, startDate, endDate) -> dict:
+    """Sanitized genre coverage for a user db over a range; zeros when the
+    lookup fails for any reason (never let the genre gate break a page)."""
+    try:
+        return sanitizeGenreCoverage(db.getGenreCoverage(startDate=startDate, endDate=endDate))
+    except Exception as e:
+        logger.warning("Genre coverage lookup failed: %s", e)
+        return emptyGenreCoverage()
+
+
+def resolveGenreDistribution(db, startDate, endDate, limit) -> dict:
+    """Genre distribution for a user db over a range; {} when the lookup
+    fails or returns a non-dict (stubbed dbs) - the same degradation
+    contract as resolveGenreCoverage, so every genre surface consumes
+    distributions through this one chokepoint."""
+    try:
+        distribution = db.getGenreDistribution(startDate=startDate, endDate=endDate, limit=limit)
+    except Exception as e:
+        logger.warning("Genre distribution lookup failed: %s", e)
+        return {}
+    return distribution if isinstance(distribution, dict) else {}
+
+
+def genreGatePasses(coverage: dict) -> bool:
+    """The unlock rule on a sanitized coverage dict: overall strictly above
+    GENRE_GATE_OVERALL_MIN_PERCENT and every category at or above
+    GENRE_GATE_CATEGORY_MIN_PERCENT."""
+    if coverage["overall"]["percent"] <= GENRE_GATE_OVERALL_MIN_PERCENT:
+        return False
+    return all(coverage[categoryName]["percent"] >= GENRE_GATE_CATEGORY_MIN_PERCENT
+               for categoryName in GENRE_COVERAGE_CATEGORIES)
+
+
 class _RateLimiter:
     """In-memory fixed-window rate limiter, keyed by (bucket, identifier).
 
@@ -200,6 +280,13 @@ class SpotifyDashboardApp:
         configureLogging()
         migrateIfNeeded()
         self.app = Flask(__name__)
+        # The genre-gate thresholds are quoted in templates (the locked-state
+        # progress card) - exposed as globals so every include sees them
+        # without each route re-passing them.
+        self.app.jinja_env.globals.update(
+            genreGateOverallMinPercent=GENRE_GATE_OVERALL_MIN_PERCENT,
+            genreGateCategoryMinPercent=GENRE_GATE_CATEGORY_MIN_PERCENT,
+        )
         proxyHops = _trustedProxyCount()
         if proxyHops:
             # Restores the real client address (and scheme/host) from the
@@ -1539,6 +1626,38 @@ class SpotifyDashboardApp:
                             success = f"You already share data with {target_username}."
                         else:   #< "already_requested"
                             success = f"A share request to {target_username} is already pending."
+                elif action == "save_lastfm":
+                    # Throttled like request_share: every save fires a live
+                    # validation request against Last.fm.
+                    if _rateLimited("save_lastfm"):
+                        error = RATE_LIMIT_ERROR_MESSAGE
+                        responseStatus = 429
+                    else:
+                        lastfm_api_key = (request.form.get("lastfm_api_key") or "").strip()
+                        if not lastfm_api_key:
+                            error = "A Last.fm API key is required."
+                        else:
+                            validation = LastfmClient(lastfm_api_key).validateApiKey()
+                            if validation["ok"]:
+                                try:
+                                    db.updateUserLastfmApiKey(lastfm_api_key)
+                                    db.startLastfmGenreBackfiller()
+                                    success = "Last.fm API key saved! Genre data is now backfilling in the background."
+                                except Exception as e:
+                                    error = f"Failed to save the Last.fm API key: {str(e)}"
+                            elif validation["error"] == "invalid_key":
+                                error = "Last.fm rejected that API key - double-check it and try again."
+                            elif validation["error"] == "busy":
+                                error = "The Last.fm request budget is busy right now - try again in a few seconds."
+                            else:
+                                error = "Could not reach Last.fm to verify the key - try again later."
+                elif action == "remove_lastfm":
+                    try:
+                        db.updateUserLastfmApiKey(None)
+                        db.stopLastfmGenreBackfiller()
+                        success = "Last.fm API key removed."
+                    except Exception as e:
+                        error = f"Failed to remove the Last.fm API key: {str(e)}"
                 else:
                     if not feature_enabled:
                         abort(404)
@@ -1586,6 +1705,7 @@ class SpotifyDashboardApp:
                 client_id=client_id,
                 client_secret=client_secret,
                 has_api=bool(client_id and client_secret),
+                has_lastfm=bool(db.getUserLastfmApiKey()),
                 is_authenticated=bool(refresh_token),
                 redirect_uri=spotify_callback_url,
                 success=success,
@@ -1788,11 +1908,26 @@ class SpotifyDashboardApp:
             current_user_tz = None
             current_username = None
             is_admin = False
+            genre_coverage = emptyGenreCoverage()
+            genre_unlocked = False
+            genre_worker = {"configured": False, "running": False}
             if is_logged_in:
                 current_username = self.get_username_for_email(email) or self.get_or_create_user(email)
                 current_db = self.get_user_db(current_username, email)
                 current_user_tz = current_db.tz if current_db else None
                 is_admin = self.repo.isAdmin(current_username)
+                if current_db is not None:
+                    # All-time coverage: the progress card tracks the whole
+                    # library, unlike the range-scoped gates on charts/wrapped.
+                    genre_coverage = resolveGenreCoverage(current_db, None, None)
+                    genre_unlocked = genreGatePasses(genre_coverage)
+                    try:
+                        workerStatus = current_db.getLastfmWorkerStatus()
+                        if isinstance(workerStatus, dict):
+                            genre_worker = {"configured": bool(workerStatus.get("configured")),
+                                            "running": bool(workerStatus.get("running"))}
+                    except Exception as e:
+                        logger.warning("Last.fm worker status lookup failed: %s", e)
 
             users_list = []
             if is_logged_in:
@@ -1837,10 +1972,13 @@ class SpotifyDashboardApp:
                         "email": u_email,
                         "sync_status": sync_status,
                         "api_status": api_status,
+                        #< .get(): raw row presence check only - the stored key
+                        #  is encrypted and never needs decrypting here
+                        "genre_status": "Configured" if u.get("lastfm_api_key") else "Not Configured",
                         "plays_count": plays_count,
                         "created_at": created_date_str
                     })
-            
+
             return render_template(
                 "overview.html",
                 global_stats=global_stats,
@@ -1849,8 +1987,26 @@ class SpotifyDashboardApp:
                 is_logged_in=is_logged_in,
                 is_admin=is_admin,
                 users_list=users_list,
+                genre_coverage=genre_coverage,
+                genre_unlocked=genre_unlocked,
+                genre_worker=genre_worker,
+                inherited_genres_enabled=self.repo.isInheritedGenresEnabled(),
                 section="overview"
             )
+
+        @self.app.route("/overview/genre_settings", methods=["POST"])
+        def overviewGenreSettings():
+            """Admin-only: flips the instance-wide inherited-genres toggle
+            (whether artist-derived genre rows count in genre stats and
+            coverage - see Database/repository.py's app_settings)."""
+            email, username, db = get_current_user_or_redirect()
+            if not email:
+                return redirect(url_for("login", next=url_for("overviewPage")))
+            if not self.repo.isAdmin(username):
+                abort(403)
+            # Unchecked checkboxes aren't submitted: absence means disable.
+            self.repo.setInheritedGenresEnabled(request.form.get("include_inherited") == "1")
+            return redirect(url_for("overviewPage"))
 
         @self.app.route("/", methods=["GET"])
         def dashboard():
@@ -2149,6 +2305,13 @@ class SpotifyDashboardApp:
             decadeDistribution = db.getReleaseDecadeDistribution(startDate=startDate, endDate=endDate)
             completionStats = db.getCompletionStats(startDate=startDate, endDate=endDate)
 
+            genreCoverage = resolveGenreCoverage(db, startDate, endDate)
+            genreUnlocked = genreGatePasses(genreCoverage)
+            genreDistribution = None
+            if genreUnlocked:
+                genreDistribution = resolveGenreDistribution(db, startDate, endDate,
+                                                             CHART_TOP_GENRES_LIMIT)
+
             return render_template(
                 "charts.html",
                 username=username,
@@ -2165,6 +2328,9 @@ class SpotifyDashboardApp:
                 explicitRatio=explicitRatio,
                 decadeDistribution=decadeDistribution,
                 completionStats=completionStats,
+                genreCoverage=genreCoverage,
+                genreUnlocked=genreUnlocked,
+                genreDistribution=genreDistribution,
             )
 
         @self.app.route("/wrapped", methods=["GET"])
@@ -2186,6 +2352,27 @@ class SpotifyDashboardApp:
             limit = request.args.get("limit", type=int)
             if limit not in WRAPPED_LIMIT_OPTIONS:
                 limit = WRAPPED_LIST_SIZE
+
+            yearStart = nowLocal.replace(year=year, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+            yearEnd = nowLocal.replace(year=year + 1, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+
+            # Genre data is deliberately computed live - never from the
+            # user_wrapped cache below: coverage keeps growing while the
+            # Last.fm backfill runs, and the admin's inherited-genres toggle
+            # changes the numbers retroactively. Only computed for responses
+            # that actually render the card (the full page and ajax type=all -
+            # chart/lists partial updates would compute and discard it).
+            isAjaxRequest = request.args.get("ajax") == "true"
+            ajaxUpdateType = request.args.get("type", "all")
+            genreCoverage = emptyGenreCoverage()
+            genreUnlocked = False
+            topGenres = None
+            if not isAjaxRequest or ajaxUpdateType == "all":
+                genreCoverage = resolveGenreCoverage(db, yearStart, yearEnd)
+                genreUnlocked = genreGatePasses(genreCoverage)
+                if genreUnlocked:
+                    topGenres = resolveGenreDistribution(db, yearStart, yearEnd,
+                                                         WRAPPED_TOP_GENRES_LIMIT)
 
             # 1. Fetch precalculated cached wrapped stats from database (unless db is a mock)
             from unittest.mock import MagicMock
@@ -2270,9 +2457,6 @@ class SpotifyDashboardApp:
                 discoveredAlbums = discoveredAlbums[:limit]
             else:
                 # Dynamic calculations for mocks (unit tests compatibility)
-                yearStart = nowLocal.replace(year=year, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
-                yearEnd = nowLocal.replace(year=year + 1, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
-
                 topSongs = db.getTopSongs(startDate=yearStart, endDate=yearEnd, by="plays", limit=limit)
                 topArtists = db.getTopArtists(startDate=yearStart, endDate=yearEnd, by="plays", limit=limit)
                 topAlbums = db.getTopAlbums(startDate=yearStart, endDate=yearEnd, by="plays", limit=limit)
@@ -2308,8 +2492,8 @@ class SpotifyDashboardApp:
             discoveredAlbums = self._embedAlbumsTextElements(discoveredAlbums)
 
             # 6. Check if AJAX request and return JSON response if true
-            if request.args.get("ajax") == "true":
-                update_type = request.args.get("type", "all")
+            if isAjaxRequest:
+                update_type = ajaxUpdateType
                 res = {}
 
                 if update_type in ("all", "chart"):
@@ -2324,6 +2508,9 @@ class SpotifyDashboardApp:
                     res["discoveredAlbumsHtml"] = render_template("_wrapped_list.html", items=discoveredAlbums, section="top_albums", username=username, year=year)
 
                 if update_type == "all":
+                    res["topGenresHtml"] = render_template(
+                        "_wrapped_genres.html", topGenres=topGenres,
+                        genreCoverage=genreCoverage, genreUnlocked=genreUnlocked, year=year)
                     topSongText = (
                         f"{topSongs[0]['name']} - {topSongs[0]['artists'][0]['name']}"
                         if topSongs and topSongs[0].get('artists')
@@ -2378,6 +2565,9 @@ class SpotifyDashboardApp:
                 uniqueArtistsCount=uniqueArtistsCount,
                 discoveredSongsCount=discoveredSongsCount,
                 discoveredArtistsCount=discoveredArtistsCount,
+                topGenres=topGenres,
+                genreCoverage=genreCoverage,
+                genreUnlocked=genreUnlocked,
                 has_api=has_api,
                 is_authenticated=is_authenticated,
                 success=success,
@@ -2469,6 +2659,36 @@ class SpotifyDashboardApp:
             }
             tasteMatch = self._tasteMatchPercent(my, their)
 
+            # Genre comparison requires BOTH sides past the unlock gate -
+            # comparing a complete genre profile against a half-backfilled one
+            # would misrepresent the half-backfilled user's taste. Deliberately
+            # not folded into _tasteMatchPercent in v1: the score would jump
+            # for everyone the day genre data finishes backfilling.
+            myGenreCoverage = resolveGenreCoverage(db, startDate, endDate)
+            theirGenreCoverage = resolveGenreCoverage(otherDb, startDate, endDate)
+            genresUnlocked = genreGatePasses(myGenreCoverage) and genreGatePasses(theirGenreCoverage)
+            myTopGenres = None
+            theirTopGenres = None
+            sharedGenres = None
+            if genresUnlocked:
+                myGenrePool = resolveGenreDistribution(db, startDate, endDate,
+                                                       COMPARE_GENRE_POOL_SIZE)
+                theirGenrePool = resolveGenreDistribution(otherDb, startDate, endDate,
+                                                          COMPARE_GENRE_POOL_SIZE)
+                myTopGenres = dict(list(myGenrePool.items())[:COMPARE_TOP_GENRES_LIMIT])
+                theirTopGenres = dict(list(theirGenrePool.items())[:COMPARE_TOP_GENRES_LIMIT])
+                # Shared genres: the pools' intersection, ordered by combined
+                # plays (name breaks ties) - like the shared-item lists, the
+                # overlap runs over the deeper pools, not just the displayed top.
+                sharedGenres = [
+                    {"genre": genre, "myPlays": myGenrePool[genre],
+                     "theirPlays": theirGenrePool[genre],
+                     "combinedPlays": myGenrePool[genre] + theirGenrePool[genre]}
+                    for genre in set(myGenrePool) & set(theirGenrePool)
+                ]
+                sharedGenres.sort(key=lambda item: (-item["combinedPlays"], item["genre"]))
+                sharedGenres = sharedGenres[:COMPARE_TOP_GENRES_LIMIT]
+
             trendStartDate, trendEndDate = startDate, endDate
             if trendStartDate is None or trendEndDate is None:
                 # "All Time" passes no explicit range, and getListeningTimeSeries
@@ -2529,6 +2749,11 @@ class SpotifyDashboardApp:
                     "similaritiesHtml": render_template(
                         "_compare_similarities.html", similarities=similarities,
                         username=username),   #< the cover-image URLs' session-authorization segment
+                    "genresHtml": render_template(
+                        "_compare_genres.html", username=username, withUsername=withUsername,
+                        myTopGenres=myTopGenres, theirTopGenres=theirTopGenres,
+                        sharedGenres=sharedGenres, myGenreCoverage=myGenreCoverage,
+                        theirGenreCoverage=theirGenreCoverage, genresUnlocked=genresUnlocked),
                     "sharedArtistsHtml": render_template(
                         "_wrapped_list.html", items=sharedArtists, section="top_artists",
                         username=username, compareWith=withUsername,
@@ -2570,6 +2795,12 @@ class SpotifyDashboardApp:
                 sharedAlbums=sharedAlbums,
                 similarities=similarities,
                 tasteMatch=tasteMatch,
+                myTopGenres=myTopGenres,
+                theirTopGenres=theirTopGenres,
+                sharedGenres=sharedGenres,
+                myGenreCoverage=myGenreCoverage,
+                theirGenreCoverage=theirGenreCoverage,
+                genresUnlocked=genresUnlocked,
                 comparisonTrend=comparisonTrend,
                 interval=interval,
                 customStart=customStart,

@@ -707,10 +707,13 @@
     drawDonutChart(ctx, width, height, slices, total, canvas);
   }
 
-  function renderDecadeChart() {
-    var canvas = document.getElementById('decadeChart');
+  /* Shared vertical-bar renderer for the categorical distributions (release
+     decades, genres). fitLabel, when given, shrinks an axis label to its bar
+     slot - tooltips always keep the full key. */
+  function renderCategoryBarChart(canvasId, dataKey, emptyMessage, fitLabel) {
+    var canvas = document.getElementById(canvasId);
     if (!canvas) return;
-    var data = window.__chartData.decadeDistribution;
+    var data = window.__chartData[dataKey];
     if (!data) return;
 
     var config = setupCanvas(canvas, 300);
@@ -718,7 +721,7 @@
 
     var keys = Object.keys(data);
     if (keys.length === 0) {
-      drawEmptyState(ctx, width, height, 'No album release information in this period.');
+      drawEmptyState(ctx, width, height, emptyMessage);
       return;
     }
 
@@ -746,11 +749,12 @@
       ctx.fillStyle = CHART_PALETTE[i % CHART_PALETTE.length];
       ctx.fillRect(x, y, barWidth, barHeight);
 
+      var label = fitLabel ? fitLabel(key, rawBarWidth) : key;
       ctx.fillStyle = '#b0b0b0';
       ctx.font = '11px sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'top';
-      ctx.fillText(key, x + barWidth / 2, paddingTop + plotHeight + 8);
+      ctx.fillText(label, x + barWidth / 2, paddingTop + plotHeight + 8);
 
       return { key: key, value: val, x: x, y: y, w: barWidth, h: barHeight };
     });
@@ -775,6 +779,22 @@
     canvas.onmouseleave = hideTooltip;
   }
 
+  function renderDecadeChart() {
+    renderCategoryBarChart('decadeChart', 'decadeDistribution',
+      'No album release information in this period.');
+  }
+
+  function renderGenreChart() {
+    // Genre names run long ("progressive electronic") - fit the axis label
+    // to the bar slot.
+    renderCategoryBarChart('genreChart', 'genreDistribution',
+      'No genre data for the plays in this period.',
+      function(key, rawBarWidth) {
+        var maxLabelChars = Math.max(4, Math.floor(rawBarWidth / 7));
+        return key.length > maxLabelChars ? key.slice(0, maxLabelChars - 1) + '…' : key;
+      });
+  }
+
   function renderAllCharts() {
     CHART_PALETTE[0] = getAccentColor();
     renderTimeSeriesChart();
@@ -784,6 +804,7 @@
     renderExplicitChart();
     renderCompletionChart();
     renderDecadeChart();
+    renderGenreChart();
   }
 
   window.renderTimeSeriesChart = renderTimeSeriesChart;

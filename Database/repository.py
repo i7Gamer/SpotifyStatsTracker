@@ -25,6 +25,18 @@ IMAGE_STATUS_FAILED = "failed"
 # (or unblock) later, without hammering the API for permanently dateless albums.
 ALBUM_BACKFILL_RETRY_SECONDS = 7 * 24 * 3600
 
+# How long the Last.fm genre backfiller waits before re-attempting an entity
+# whose lookup came back empty/not-found. Entities that got real (non-inherited)
+# genres never re-enter the queue - community tags are stable enough that a
+# one-time fetch is the whole point of marking them attempted.
+GENRE_BACKFILL_RETRY_SECONDS = 30 * 24 * 3600
+
+# app_settings key for the admin's instance-wide toggle: do inherited (artist-
+# derived) genre rows count in genre stats and coverage? Absent row = enabled.
+INHERITED_GENRES_SETTING_KEY = "genres_include_inherited"
+APP_SETTING_TRUE = "1"
+APP_SETTING_FALSE = "0"
+
 # getBucketedPlayTotals' fixed UTC bucket width. 15 minutes is the smallest
 # granularity any real-world UTC offset uses (e.g. Asia/Kathmandu +5:45), so
 # every play in one bucket maps to the same local day/hour/weekday no matter
@@ -1477,6 +1489,25 @@ class Repository:
                 updated += 1
         return updated
 
+    def getUserLastfmApiKey(self, username: str) -> str | None:
+        conn = self._conn()
+        row = conn.execute(
+            "SELECT lastfm_api_key FROM users WHERE username=?", (username,)
+        ).fetchone()
+        if not row:
+            return None
+        # Encrypted at rest like the Spotify client secret - see
+        # Database/secret_store.py. Legacy plaintext passes through.
+        return decryptSecret(row["lastfm_api_key"])
+
+    def updateUserLastfmApiKey(self, username: str, apiKey: str | None) -> None:
+        conn = self._conn()
+        with conn:
+            conn.execute(
+                "UPDATE users SET lastfm_api_key = ? WHERE username = ?",
+                (encryptSecret(apiKey) if apiKey else None, username),
+            )
+
     # ---- Per-user: admin role -------------------------------------------------
     # Single-admin model (see docs/proposal-admin-and-share-links.md): the
     # earliest-created user is promoted when no admin exists, and app.py's
@@ -1808,6 +1839,22 @@ class Repository:
             if "backfill_attempted_at" not in albumColumns:
                 conn.execute("ALTER TABLE albums ADD COLUMN backfill_attempted_at REAL")
 
+    def addLastfmColumnsIfMissing(self) -> None:
+        """Add users.lastfm_api_key and the lastfm_attempted_at queue columns on
+        artists/albums/tracks (migrate1_18_0) if missing. The genre join tables
+        and app_settings are plain CREATE TABLE IF NOT EXISTS in SCHEMA, so only
+        these columns on pre-existing tables need an ALTER. Guarded so re-running
+        the migration doesn't fail."""
+        conn = self._conn()
+        userColumns = {row["name"] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
+        with conn:
+            if "lastfm_api_key" not in userColumns:
+                conn.execute("ALTER TABLE users ADD COLUMN lastfm_api_key TEXT")
+            for table in ("artists", "albums", "tracks"):
+                columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+                if "lastfm_attempted_at" not in columns:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN lastfm_attempted_at REAL")
+
     def addRequesterSeenAcceptedColumnIfMissing(self) -> None:
         """Add user_shares.requester_seen_accepted (the "your share request
         was accepted" topbar notification's dismissal flag) if missing.
@@ -1903,7 +1950,7 @@ class Repository:
         user's own row - what a non-admin viewer is allowed to see (the full
         listing is admin-only, see app.py's overviewPage)."""
         conn = self._conn()
-        query = "SELECT username, email, cookies_json, spotify_client_id, spotify_refresh_token, created_at FROM users"
+        query = "SELECT username, email, cookies_json, spotify_client_id, spotify_refresh_token, lastfm_api_key, created_at FROM users"
         params: tuple = ()
         if username is not None:
             query += " WHERE username=?"
@@ -1980,6 +2027,240 @@ class Repository:
                     "UPDATE tracks SET name = ? WHERE id = ?",
                     (name, track_id)
                 )
+
+    # ---- Catalog: Last.fm genres ---------------------------------------------
+    # Genres are catalog data (shared across users) fetched from Last.fm by the
+    # per-user genre backfiller (Database.startLastfmGenreBackfiller). Queue
+    # semantics mirror getAlbumsMissingMetadata: lastfm_attempted_at rate-limits
+    # retries, entities holding own (non-inherited) genre rows never requeue.
+
+    _GENRE_TABLES = {
+        "artist": ("artist_genres", "artist_id"),
+        "album": ("album_genres", "album_id"),
+        "track": ("track_genres", "track_id"),
+    }
+
+    def _replaceGenres(self, kind: str, entityId: str, genres: list[str], inherited: bool) -> None:
+        table, idColumn = self._GENRE_TABLES[kind]
+        conn = self._conn()
+        with conn:
+            conn.execute(f"DELETE FROM {table} WHERE {idColumn}=?", (entityId,))
+            if kind == "artist":
+                conn.executemany(
+                    f"INSERT INTO {table} ({idColumn}, genre, position) VALUES (?, ?, ?)",
+                    [(entityId, genre, position) for position, genre in enumerate(genres)],
+                )
+            else:
+                conn.executemany(
+                    f"INSERT INTO {table} ({idColumn}, genre, position, inherited) VALUES (?, ?, ?, ?)",
+                    [(entityId, genre, position, int(inherited)) for position, genre in enumerate(genres)],
+                )
+
+    def replaceArtistGenres(self, artistId: str, genres: list[str]) -> None:
+        self._replaceGenres("artist", artistId, genres, inherited=False)
+
+    def replaceAlbumGenres(self, albumId: str, genres: list[str], inherited: bool = False) -> None:
+        self._replaceGenres("album", albumId, genres, inherited)
+
+    def replaceTrackGenres(self, trackId: str, genres: list[str], inherited: bool = False) -> None:
+        self._replaceGenres("track", trackId, genres, inherited)
+
+    def getArtistGenres(self, artistId: str) -> list[str]:
+        rows = self._conn().execute(
+            "SELECT genre FROM artist_genres WHERE artist_id=? ORDER BY position", (artistId,)
+        ).fetchall()
+        return [r["genre"] for r in rows]
+
+    def getAlbumGenres(self, albumId: str) -> list[dict]:
+        rows = self._conn().execute(
+            "SELECT genre, inherited FROM album_genres WHERE album_id=? ORDER BY position", (albumId,)
+        ).fetchall()
+        return [{"genre": r["genre"], "inherited": bool(r["inherited"])} for r in rows]
+
+    def getTrackGenres(self, trackId: str) -> list[dict]:
+        rows = self._conn().execute(
+            "SELECT genre, inherited FROM track_genres WHERE track_id=? ORDER BY position", (trackId,)
+        ).fetchall()
+        return [{"genre": r["genre"], "inherited": bool(r["inherited"])} for r in rows]
+
+    def _markLastfmAttempted(self, table: str, ids: list[str]) -> None:
+        """Stamp entities as processed so they leave the backfill queue -
+        including empty/not-found lookups, which would otherwise be re-fetched
+        every cycle forever (mirrors markAlbumsBackfillAttempted)."""
+        if not ids:
+            return
+        conn = self._conn()
+        placeholders = ",".join("?" for _ in ids)
+        with conn:
+            conn.execute(
+                f"UPDATE {table} SET lastfm_attempted_at = ? WHERE id IN ({placeholders})",
+                [time.time(), *ids],
+            )
+
+    def markArtistsLastfmAttempted(self, artistIds: list[str]) -> None:
+        self._markLastfmAttempted("artists", artistIds)
+
+    def markAlbumsLastfmAttempted(self, albumIds: list[str]) -> None:
+        self._markLastfmAttempted("albums", albumIds)
+
+    def markTracksLastfmAttempted(self, trackIds: list[str]) -> None:
+        self._markLastfmAttempted("tracks", trackIds)
+
+    def getArtistLastfmState(self, artistId: str) -> dict:
+        """Attempt stamp + current genres for one artist - the inheritance
+        decision for a tag-less track/album re-reads this at process time (the
+        same worker cycle has usually just processed the artist batch)."""
+        row = self._conn().execute(
+            "SELECT lastfm_attempted_at FROM artists WHERE id=?", (artistId,)
+        ).fetchone()
+        return {
+            "attempted_at": row["lastfm_attempted_at"] if row else None,
+            "genres": self.getArtistGenres(artistId),
+        }
+
+    def getArtistsMissingGenres(self, limit: int, username: str | None = None) -> list[dict]:
+        """Played PRIMARY (position-0) artists still needing a Last.fm lookup,
+        most-played first. `username` scopes the queue (and the play counts) to
+        one user's history; None is the global queue a worker falls back to
+        once its owner's entities are done."""
+        conn = self._conn()
+        params: list = []
+        userClause = self._queueUserClause(params, username)
+        params.extend([time.time() - GENRE_BACKFILL_RETRY_SECONDS, limit])
+        rows = conn.execute(
+            f"""
+            SELECT ar.id AS id, ar.name AS name, COUNT(*) AS play_count
+            FROM plays p
+            JOIN track_artists ta ON ta.track_id = p.track_id AND ta.position = 0
+            JOIN artists ar ON ar.id = ta.artist_id
+            WHERE {userClause}(ar.lastfm_attempted_at IS NULL
+                   OR (ar.lastfm_attempted_at < ?
+                       AND NOT EXISTS (SELECT 1 FROM artist_genres ag WHERE ag.artist_id = ar.id)))
+            GROUP BY ar.id
+            ORDER BY play_count DESC, ar.id ASC
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def getAlbumsMissingGenres(self, limit: int, username: str | None = None) -> list[dict]:
+        conn = self._conn()
+        params: list = []
+        userClause = self._queueUserClause(params, username)
+        params.extend([time.time() - GENRE_BACKFILL_RETRY_SECONDS, limit])
+        rows = conn.execute(
+            f"""
+            SELECT al.id AS id, al.name AS name, COUNT(*) AS play_count
+            FROM plays p
+            JOIN tracks t ON t.id = p.track_id
+            JOIN albums al ON al.id = t.album_id
+            WHERE {userClause}(al.lastfm_attempted_at IS NULL
+                   OR (al.lastfm_attempted_at < ?
+                       AND NOT EXISTS (SELECT 1 FROM album_genres ag
+                                       WHERE ag.album_id = al.id AND ag.inherited = 0)))
+            GROUP BY al.id
+            ORDER BY play_count DESC, al.id ASC
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def getTracksMissingGenres(self, limit: int, username: str | None = None) -> list[dict]:
+        """Rows carry the primary artist - both the track.getTopTags lookup and
+        genre inheritance need it. Tracks with no position-0 artist row are
+        structurally excluded: they can neither be looked up nor inherit."""
+        conn = self._conn()
+        params: list = []
+        userClause = self._queueUserClause(params, username)
+        params.extend([time.time() - GENRE_BACKFILL_RETRY_SECONDS, limit])
+        rows = conn.execute(
+            f"""
+            SELECT t.id AS id, t.name AS name, ar.id AS artist_id, ar.name AS artist_name,
+                   COUNT(*) AS play_count
+            FROM plays p
+            JOIN tracks t ON t.id = p.track_id
+            JOIN track_artists ta ON ta.track_id = t.id AND ta.position = 0
+            JOIN artists ar ON ar.id = ta.artist_id
+            WHERE {userClause}(t.lastfm_attempted_at IS NULL
+                   OR (t.lastfm_attempted_at < ?
+                       AND NOT EXISTS (SELECT 1 FROM track_genres tg
+                                       WHERE tg.track_id = t.id AND tg.inherited = 0)))
+            GROUP BY t.id
+            ORDER BY play_count DESC, t.id ASC
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    @staticmethod
+    def _queueUserClause(params: list, username: str | None) -> str:
+        """'p.username = ? AND ' with the bind appended, or '' for the global
+        queue - the username filter must be dropped entirely (not IS-NULL-
+        parameterized) so SQLite can still range the (username, ...) index
+        when scoped and skip it when not."""
+        if username is None:
+            return ""
+        params.append(username)
+        return "p.username = ? AND "
+
+    def getAlbumPrimaryArtists(self, albumIds: list[str]) -> dict[str, dict]:
+        """albumId -> {artist_id, artist_name} via each album's tracks'
+        position-0 artists (albums carry no artist column of their own). The
+        most frequent primary artist wins; ties break by artist id so repeated
+        runs derive the same lookup name. Albums with no resolvable artist are
+        simply absent - the worker marks those attempted without a lookup."""
+        if not albumIds:
+            return {}
+        conn = self._conn()
+        placeholders = ",".join("?" for _ in albumIds)
+        rows = conn.execute(
+            f"""
+            SELECT t.album_id AS album_id, ar.id AS artist_id, ar.name AS artist_name,
+                   COUNT(*) AS cnt
+            FROM tracks t
+            JOIN track_artists ta ON ta.track_id = t.id AND ta.position = 0
+            JOIN artists ar ON ar.id = ta.artist_id
+            WHERE t.album_id IN ({placeholders})
+            GROUP BY t.album_id, ar.id
+            ORDER BY t.album_id, cnt DESC, ar.id ASC
+            """,
+            albumIds,
+        ).fetchall()
+        primaries: dict[str, dict] = {}
+        for row in rows:
+            if row["album_id"] not in primaries:   #< rows are sorted best-first per album
+                primaries[row["album_id"]] = {"artist_id": row["artist_id"],
+                                              "artist_name": row["artist_name"]}
+        return primaries
+
+    # ---- Instance-wide app settings -------------------------------------------
+
+    def getAppSetting(self, key: str, default: str | None = None) -> str | None:
+        row = self._conn().execute(
+            "SELECT value FROM app_settings WHERE key=?", (key,)
+        ).fetchone()
+        return row["value"] if row else default
+
+    def setAppSetting(self, key: str, value: str) -> None:
+        conn = self._conn()
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO app_settings (key, value) VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value=excluded.value
+                """,
+                (key, value),
+            )
+
+    def isInheritedGenresEnabled(self) -> bool:
+        return self.getAppSetting(INHERITED_GENRES_SETTING_KEY, APP_SETTING_TRUE) != APP_SETTING_FALSE
+
+    def setInheritedGenresEnabled(self, enabled: bool) -> None:
+        self.setAppSetting(INHERITED_GENRES_SETTING_KEY,
+                           APP_SETTING_TRUE if enabled else APP_SETTING_FALSE)
 
     def getMaxPlayedAtInPeriod(self, username: str, startTs: float, endTs: float) -> float | None:
         row = self._conn().execute(

@@ -228,6 +228,48 @@
     </div>
     {% endif %}
 
+    <h2 style="margin-top: 2rem;">Last.fm API Settings</h2>
+    <p style="font-size: 0.9rem; color: #aaa; margin-bottom: 1.5rem;">
+      Adding a Last.fm API key lets a background worker fill in genre data for the music you listen to -
+      once enough of your library is covered, genre insights unlock on the Charts, Wrapped and Compare pages.<br>
+      Create a free key on the <a href="https://www.last.fm/api/account/create" target="_blank" style="color: #d51007; text-decoration: underline;">Last.fm API account page</a> (no Last.fm scrobbling account required).
+    </p>
+
+    <form class="login-form" method="post" action="{{ url_for('profilePage') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+      <input type="hidden" name="action" value="save_lastfm">
+
+      <div class="form-group">
+        <label for="lastfmApiKey">Last.fm API Key</label>
+        <input type="password" id="lastfmApiKey" name="lastfm_api_key" value=""
+               placeholder="{% if has_lastfm %}A key is saved - enter a new one to replace it{% else %}Enter your Last.fm API key{% endif %}" required>
+      </div>
+
+      <div style="display: flex; gap: 1rem; margin-top: 1.5rem; margin-bottom: 1rem;">
+        <button type="submit" class="primary-button" style="flex: 1;">Save API Key</button>
+      </div>
+    </form>
+
+    {% if has_lastfm %}
+    <form method="post" action="{{ url_for('profilePage') }}" style="margin-bottom: 1rem;">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+      <input type="hidden" name="action" value="remove_lastfm">
+      <button type="submit" class="primary-button" style="width: 100%; background: #c92a2a;">Remove Key &amp; Stop Genre Backfilling</button>
+    </form>
+    {% endif %}
+
+    <div class="api-status" style="margin-top: 1rem; padding: 1.5rem; background: rgba(255, 255, 255, 0.03); border-radius: 8px; border: 1px solid var(--border-color, #2d2d2d);">
+      <h3>Genre Backfill Status</h3>
+      {% if has_lastfm %}
+        <p><strong>Last.fm API Key:</strong> <span style="color: #4aff4a; font-weight: bold;">Saved</span></p>
+        <p style="font-size: 0.85rem; color: #888; margin-top: 0.5rem;">A background worker is fetching genre tags for your most-played artists, albums and songs. Progress is shown on the <a href="{{ url_for('overviewPage') }}" style="color: #d51007; text-decoration: underline;">Overview</a> page.</p>
+      {% else %}
+        <p><strong>Last.fm API Key:</strong> Not Configured</p>
+      {% endif %}
+      {% import "_genre_macros.html" as genreMacros %}
+      {{ genreMacros.lastfmAttribution() }}
+    </div>
+
     <div style="margin-top: 3rem; text-align: center;">
       <a href="{{ url_for('logout') }}" class="primary-button" style="background: #555; text-decoration: none; display: inline-block; padding: 0.5rem 2rem;">Log out of Tracker</a>
     </div>
