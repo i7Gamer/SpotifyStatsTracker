@@ -623,6 +623,16 @@ progress::-moz-progress-bar {
   place-items: center;
 }
 
+/* Profile page variant: no vertical centering. .login-panel's min-height
+   ignores the topbar's real height plus .page's vertical padding, so it
+   always overshoots the viewport - on the login pages that's a tolerable
+   trade for a centered card, but on the tall profile card it only adds
+   top/bottom gaps and a needless scrollbar. */
+.profile-panel {
+  min-height: 0;
+  place-items: start center;
+}
+
 .login-card {
   width: min(420px, 100%);
   padding: 32px;
