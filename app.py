@@ -1,3 +1,5 @@
+import csv
+import io
 import logging
 import math
 import os
@@ -8,14 +10,15 @@ import threading
 import requests
 from pathlib import Path
 import time
-from datetime import timedelta
+from datetime import timedelta, datetime, timezone
 
-from flask import Flask, render_template, redirect, request, url_for, jsonify, send_from_directory, session, g, abort
+from flask import Flask, render_template, redirect, request, url_for, jsonify, send_from_directory, session, g, abort, Response, stream_with_context
 from flask_wtf.csrf import CSRFProtect
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import generate_password_hash, check_password_hash
 
 from Database.database import Database
+from Database.backup import BackupWorker
 from Database.db import SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON
 from Database.repository import Repository
 from Database.Migrators.migrate import migrateIfNeeded
@@ -68,6 +71,9 @@ PASSWORD_MIN_LENGTH = 8   #< also enforced client-side via the minlength attribu
 RATE_LIMIT_MAX_ATTEMPTS = 10     #< max POSTs allowed per window, per source IP, per route
 RATE_LIMIT_WINDOW_SECONDS = 300  #< 5 minutes
 RATE_LIMIT_ERROR_MESSAGE = "Too many attempts. Please wait a few minutes and try again."
+EXPORT_CHUNK_SIZE = 5000         #< plays hydrated per round-trip while streaming an export
+EXPORT_FORMATS = ("json", "csv")
+EXPORT_CSV_COLUMNS = ("played_at_utc", "track_name", "artists", "album", "ms_played", "spotify_track_uri", "played_from")
 
 # Baseline defense-in-depth headers applied to every response (see
 # registerRoutes' after_request hook below).
@@ -215,6 +221,10 @@ class SpotifyDashboardApp:
         self.latestVersion = None
         self._version_lock = threading.Lock()
         self._stop_event = threading.Event()
+        # Snapshots the shared database on a schedule (see Database/backup.py) -
+        # a manual backup command in the README protects nobody who doesn't run it.
+        self.backupWorker = BackupWorker()
+        self.backupWorker.start()
         self.startVersionCheck_thread()
         self.checkLogin_thread()
 
@@ -831,6 +841,72 @@ class SpotifyDashboardApp:
         discovered.sort(key=lambda item: item.get("plays", 0), reverse=True)
         return discovered[:limit]
 
+    def _iterExportEntries(self, db):
+        """Every play (oldest first) with hydrated track metadata, fetched in
+        EXPORT_CHUNK_SIZE batches so an export never holds the whole history
+        in memory. Plays recorded while the export streams have the newest
+        played_at, so they can only appear at the very end - earlier chunks
+        can't shift underneath the OFFSET pagination."""
+        startIndex = 0
+        while True:
+            entries = db.getEntriesFromOld(count=EXPORT_CHUNK_SIZE, startIndex=startIndex)
+            if not entries:
+                return
+            yield from entries
+            startIndex += EXPORT_CHUNK_SIZE
+
+    @staticmethod
+    def _isoUtc(timestamp: float) -> str:
+        return datetime.fromtimestamp(timestamp, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def _exportEntryToDict(self, entry) -> dict:
+        """One play in Spotify's own extended-streaming-history shape, so the
+        export re-imports through the existing pipeline. `ts` is the play's
+        END time - Spotify's convention, which importExtendedHistory converts
+        back to a start time by subtracting ms_played."""
+        artists = entry.get("artists") or []
+        album = entry.get("album") or {}
+        return {
+            "ts": self._isoUtc(entry["playedAt"] + entry["timePlayed"] // 1000),
+            "ms_played": entry["timePlayed"],
+            "master_metadata_track_name": entry.get("name"),
+            "master_metadata_album_artist_name": artists[0].get("name") if artists else None,
+            "master_metadata_album_album_name": album.get("name") if album else None,
+            "spotify_track_uri": f"spotify:track:{entry['id']}",
+            "played_from": entry.get("playedFrom"),   #< extra field; the importer ignores it
+        }
+
+    def _generateJsonExport(self, db):
+        yield "[\n"
+        first = True
+        for entry in self._iterExportEntries(db):
+            prefix = "" if first else ",\n"
+            first = False
+            yield prefix + json.dumps(self._exportEntryToDict(entry), ensure_ascii=False)
+        yield "\n]\n"
+
+    def _generateCsvExport(self, db):
+        buffer = io.StringIO()
+        writer = csv.writer(buffer, lineterminator="\n")
+        writer.writerow(EXPORT_CSV_COLUMNS)
+        for entry in self._iterExportEntries(db):
+            artists = entry.get("artists") or []
+            album = entry.get("album") or {}
+            writer.writerow([
+                self._isoUtc(entry["playedAt"]),   #< the START time - more intuitive for spreadsheet use
+                entry.get("name") or "",
+                ", ".join(a.get("name", "") for a in artists),
+                album.get("name") or "" if album else "",
+                entry["timePlayed"],
+                f"spotify:track:{entry['id']}",
+                entry.get("playedFrom") or "",
+            ])
+            if buffer.tell() >= 64 * 1024:   #< flush in ~64KB chunks instead of per row or all at once
+                yield buffer.getvalue()
+                buffer.seek(0)
+                buffer.truncate(0)
+        yield buffer.getvalue()
+
     def registerRoutes(self):
         @self.app.after_request
         def _setSecurityHeaders(response):
@@ -1016,6 +1092,30 @@ class SpotifyDashboardApp:
         @self.app.errorhandler(413)
         def _uploadTooLarge(error):
             return redirect(url_for("importPage", error="upload_too_large"))
+
+        @self.app.route("/export-history", methods=["GET"])
+        def exportHistory():
+            """Stream the current user's full play history as a download.
+            JSON is shaped like Spotify's own extended export (re-importable
+            through /import-history); CSV is for spreadsheets."""
+            email, username, db = get_current_user_or_redirect()
+            if not email:
+                return redirect(url_for("login", next=request.path))
+
+            exportFormat = request.args.get("format", "json")
+            if exportFormat not in EXPORT_FORMATS:
+                exportFormat = "json"
+
+            dateText = now(tz=db.tz).strftime("%Y-%m-%d")
+            filename = f"spotify_stats_export_{username}_{dateText}.{exportFormat}"
+            if exportFormat == "csv":
+                generator, mimetype = self._generateCsvExport(db), "text/csv; charset=utf-8"
+            else:
+                generator, mimetype = self._generateJsonExport(db), "application/json"
+
+            response = Response(stream_with_context(generator), mimetype=mimetype)
+            response.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+            return response
 
         def _safeNextUrl(nextUrl):
             """Only allow same-origin relative redirects after login - a `next`
@@ -2409,6 +2509,7 @@ class SpotifyDashboardApp:
 
     def shutdown(self):
         self._stop_event.set()
+        self.backupWorker.stop()
         with self._db_lock:
             for db in self.user_databases.values():
                 try:

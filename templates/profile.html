@@ -71,6 +71,19 @@
       </div>
     </form>
 
+    <h2>Your Data</h2>
+    <p style="font-size: 0.9rem; color: #aaa; margin-bottom: 1rem;">
+      Download your full play history. The JSON export uses Spotify's extended-streaming-history
+      format, so it can be re-imported here (or into another instance) via the Import page;
+      the CSV is for spreadsheets and analysis.
+    </p>
+    <div style="display: flex; gap: 0.75rem; margin-bottom: 2rem; padding-bottom: 2rem; border-bottom: 1px solid var(--border-color, #2d2d2d);">
+      <a class="primary-button" style="flex: 1; text-align: center; text-decoration: none;"
+         href="{{ url_for('exportHistory', format='json') }}">Export as JSON</a>
+      <a class="primary-button" style="flex: 1; text-align: center; text-decoration: none;"
+         href="{{ url_for('exportHistory', format='csv') }}">Export as CSV</a>
+    </div>
+
     <h2>Data Sharing</h2>
     <p style="font-size: 0.9rem; color: #aaa; margin-bottom: 1.5rem;">
       Request to share your listening stats with another user. Once they accept, you'll both be able to compare stats on the Compare page.

@@ -106,7 +106,20 @@ http://127.0.0.1:5444
 
 ### Backups
 
-Listening history, tracks, images, and login sessions all live in one SQLite file at `Database/Data/spotify_stats.db`. The app runs it in [WAL mode](https://www.sqlite.org/wal.html), so **don't just copy the `.db` file** while the container is running - recent writes can still be sitting in a separate `-wal` file that a raw copy would miss, producing a backup that's silently missing data or corrupt. Use SQLite's own online backup API instead, which is safe to run against a live, in-use database:
+Listening history, tracks, images, and login sessions all live in one SQLite file at `Database/Data/spotify_stats.db`.
+
+**Automatic backups are on by default**: the app snapshots the database every 24 hours into `Database/Data/Backups/` (covered by the standard volume mount) and keeps the newest 7 snapshots. Tune or disable via environment variables:
+
+```yaml
+      # - BACKUP_INTERVAL_HOURS=24   #< how often to snapshot; 0 disables automatic backups
+      # - BACKUP_RETENTION_COUNT=7   #< how many snapshots to keep; 0 disables automatic backups
+```
+
+These snapshots live on the same disk as the database, so they protect against corruption and accidental deletion - copy them somewhere else (a different disk, cloud storage) for real disaster protection.
+
+You can also export your own play history from the Profile page (JSON in Spotify's extended-export format - re-importable via the Import page - or CSV).
+
+To take a manual snapshot: the app runs the database in [WAL mode](https://www.sqlite.org/wal.html), so **don't just copy the `.db` file** while the container is running - recent writes can still be sitting in a separate `-wal` file that a raw copy would miss, producing a backup that's silently missing data or corrupt. Use SQLite's own online backup API instead, which is safe to run against a live, in-use database:
 
 ```bash
 docker compose exec spotify-tracker python -c "import sqlite3; sqlite3.connect('/app/Database/Data/spotify_stats.db').backup(sqlite3.connect('/app/Database/Data/spotify_stats_backup.db'))"
