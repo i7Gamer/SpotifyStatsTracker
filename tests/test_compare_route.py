@@ -700,9 +700,13 @@ class TestCompareRoute(unittest.TestCase):
         self.assertIn(b'class="taste-match-value js-taste-match">100%</span>', resp.data)
 
     def test_taste_match_rewards_shared_favorites_over_deep_overlap(self):
-        """Rank weighting (1/log2(rank+1) from both sides, normalized against
-        identical pools): sharing the #1 of two-item pools scores
-        2 / (2*(1 + 1/log2(3))) = 61%, sharing only the #2 just 39%."""
+        """Rank weighting (2x the shared item's better-side rank discount,
+        normalized against identical pools), then the concave display curve
+        (raw**TASTE_MATCH_CURVE_EXPONENT): sharing the #1 of two-item pools
+        scores 2/(2*(1+1/log2(3)))=61% raw -> round(100*0.61^0.6)=75%
+        displayed; sharing only the #2 scores 39% raw either way (both sides
+        rank it #2, so the better-side pairing doesn't move it) ->
+        round(100*0.39^0.6)=57% displayed."""
         self._accept("alice", "bob")
         client = self._loginAs("alice")
 
@@ -714,12 +718,58 @@ class TestCompareRoute(unittest.TestCase):
         self.dbs["bob"].getTopArtists.return_value = [_artist("b1", "B1"), _artist("deep", "SharedDeep")]
         respDeep = client.get("/compare")
 
-        self.assertIn(b'class="taste-match-value js-taste-match">61%</span>', respTop.data)
-        self.assertIn(b'class="taste-match-value js-taste-match">39%</span>', respDeep.data)
+        self.assertIn(b'class="taste-match-value js-taste-match">75%</span>', respTop.data)
+        self.assertIn(b'class="taste-match-value js-taste-match">57%</span>', respDeep.data)
+
+    def test_taste_match_mutual_favorite_credited_at_its_better_rank(self):
+        """A shared artist ranked #1 by one side and #10 by the other is
+        credited at 2x the BETTER (shallower) side's rank discount - not the
+        sum of both sides' discounts, which would badly punish the deep
+        side. actual=2*w(1)=2, ideal=sum(2*w(1..10))=9.087 -> 22% raw ->
+        round(100*0.22^0.6)=40% displayed. (The old sum-of-both-discounts
+        approach would have scored this pair only 14%.)"""
+        self._accept("alice", "bob")
+        myArtists = [_artist("mutual", "Mutual")] + [_artist(f"a{i}", f"A{i}") for i in range(9)]
+        theirArtists = [_artist(f"b{i}", f"B{i}") for i in range(9)] + [_artist("mutual", "Mutual")]
+        self.dbs["alice"].getTopArtists.return_value = myArtists
+        self.dbs["bob"].getTopArtists.return_value = theirArtists
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        self.assertIn(b'class="taste-match-value js-taste-match">40%</span>', resp.data)
+
+    def test_taste_match_credits_a_song_by_a_shared_artist_even_without_an_exact_match(self):
+        """A song that isn't itself an exact match still earns
+        ARTIST_MEDIATED_CREDIT_FACTOR of its rank discount when its primary
+        artist is in the counterpart's top artist pool - loving the same
+        ARTIST without happening to share the exact same song is real
+        overlap, not zero. Isolated to the songs category alone (artists/
+        albums pools empty on both sides -> excluded) so the two requests'
+        difference is purely the artist-credit mechanism: fully unrelated
+        songs score 0%; when alice's song's artist is in bob's top artists,
+        credit=0.4*w(1)=0.4, ideal=2*w(1)=2 -> 20% raw ->
+        round(100*0.2^0.6)=38% displayed."""
+        self._accept("alice", "bob")
+        client = self._loginAs("alice")
+
+        self.dbs["alice"].getTopSongs.return_value = [_song("as1", "AS1", artists=[_artist("ax1", "Unrelated1")])]
+        self.dbs["bob"].getTopSongs.return_value = [_song("bs1", "BS1", artists=[_artist("bx1", "Unrelated2")])]
+        respUnrelated = client.get("/compare")
+
+        self.dbs["alice"].getTopSongs.return_value = [
+            _song("as1", "AS1", artists=[_artist("shared1", "SharedArtist")])]
+        self.dbs["bob"].getTopArtists.return_value = [_artist("shared1", "SharedArtist")]
+        self.dbs["bob"].getTopSongs.return_value = [_song("bs1", "BS1", artists=[_artist("bx1", "Unrelated2")])]
+        respRelated = client.get("/compare")
+
+        self.assertIn(b'class="taste-match-value js-taste-match">0%</span>', respUnrelated.data)
+        self.assertIn(b'class="taste-match-value js-taste-match">38%</span>', respRelated.data)
 
     def test_taste_match_weights_category_overlaps(self):
         """artists identical (1.0, weight .7), albums identical (1.0, weight
-        .2), songs disjoint (0.0, weight .1) -> 90%."""
+        .2), songs disjoint with no artist relation (0.0, weight .1) -> 90%
+        raw -> round(100*0.9^0.6)=94% displayed."""
         self._accept("alice", "bob")
         artistPool = [_artist(f"sa{i}", f"SharedA{i}") for i in range(5)]
         self.dbs["alice"].getTopArtists.return_value = artistPool
@@ -733,13 +783,13 @@ class TestCompareRoute(unittest.TestCase):
 
         resp = client.get("/compare")
 
-        self.assertIn(b'class="taste-match-value js-taste-match">90%</span>', resp.data)
+        self.assertIn(b'class="taste-match-value js-taste-match">94%</span>', resp.data)
 
     def test_taste_match_excludes_categories_without_data_on_both_sides(self):
         """Only artists have data: 5 shared at ranks 1-5 of 10 on both sides.
-        Rank-weighted: sum(w(1..5)) / sum(w(1..10)) = 2.9485/4.5436 -> 65%,
-        with the empty song/album categories excluded instead of dragging
-        the score down."""
+        Rank-weighted: sum(w(1..5)) / sum(w(1..10)) = 2.9485/4.5436 -> 65%
+        raw, with the empty song/album categories excluded instead of
+        dragging the score down -> round(100*0.65^0.6)=77% displayed."""
         self._accept("alice", "bob")
         sharedArtists = [_artist(f"sa{i}", f"SharedA{i}") for i in range(5)]
         self.dbs["alice"].getTopArtists.return_value = sharedArtists + [_artist(f"a{i}", f"A{i}") for i in range(5)]
@@ -748,14 +798,15 @@ class TestCompareRoute(unittest.TestCase):
 
         resp = client.get("/compare")
 
-        self.assertIn(b'class="taste-match-value js-taste-match">65%</span>', resp.data)
+        self.assertIn(b'class="taste-match-value js-taste-match">77%</span>', resp.data)
 
     def test_taste_match_caps_the_ideal_at_top_taste_match_ideal_depth(self):
         """Sharing an entire top-20 (out of 100-deep pools) should score high
         even though the other 80 slots are disjoint: the ideal is capped at
         TASTE_MATCH_IDEAL_DEPTH=30 rather than the full 100-deep pool, so
         agreement on core taste isn't diluted by requiring near-total
-        long-tail overlap too. sum(w(1..20))/sum(w(1..30)) -> 77%."""
+        long-tail overlap too. sum(w(1..20))/sum(w(1..30)) -> 77% raw ->
+        round(100*0.77^0.6)=85% displayed."""
         self._accept("alice", "bob")
         sharedArtists = [_artist(f"sa{i}", f"SharedA{i}") for i in range(20)]
         self.dbs["alice"].getTopArtists.return_value = sharedArtists + [_artist(f"a{i}", f"A{i}") for i in range(80)]
@@ -764,7 +815,7 @@ class TestCompareRoute(unittest.TestCase):
 
         resp = client.get("/compare")
 
-        self.assertIn(b'class="taste-match-value js-taste-match">77%</span>', resp.data)
+        self.assertIn(b'class="taste-match-value js-taste-match">85%</span>', resp.data)
 
     def test_taste_match_hidden_without_any_pool_data(self):
         self._accept("alice", "bob")

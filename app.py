@@ -52,6 +52,21 @@ TASTE_MATCH_WEIGHTS = {"artists": 0.7, "songs": 0.1, "albums": 0.2}
 # their entire top 20 favorite artists scored ~34%, since agreement past
 # rank ~30 barely matters to how similar two people's taste feels.
 TASTE_MATCH_IDEAL_DEPTH = 30
+# A song/album that ISN'T an exact match still earns this fraction of its own
+# rank discount when its primary artist appears in the counterpart's top
+# artist pool (see _rankWeightedOverlap) - loving the same ARTIST without
+# happening to share the exact same song/album is real taste overlap, not
+# zero. Doesn't apply to the artist category itself (no secondary "artist of
+# an artist" concept there).
+ARTIST_MEDIATED_CREDIT_FACTOR = 0.4
+# The final taste-match score (0..1 weighted average across categories) is
+# raised to this power before display: a concave response curve, since real
+# people rarely share MOST of their top taste even when they genuinely have
+# similar taste - a linear score reads as harshly low for overlap that
+# actually feels like "we like a lot of the same stuff." Monotonic, so it
+# never reorders which of two pairs is the better match, just stretches the
+# low-to-mid range upward (raw 0.25 -> ~50%, raw 0.5 -> ~71%).
+TASTE_MATCH_CURVE_EXPONENT = 0.6
 WEEKDAY_NAMES = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
 MAX_INLINE_ARTISTS = 5   #< artist lists longer than this collapse behind a "+N more" toggle (_artist_links.html)...
 MIN_HIDDEN_ARTISTS = 2   #< ...but only when at least this many names would be hidden - "+1 more" saves no space
@@ -658,45 +673,88 @@ class SpotifyDashboardApp:
         deeper ranks fall off logarithmically."""
         return 1 / math.log2(rank + 1)
 
-    def _rankWeightedOverlap(self, myPool, theirPool) -> float | None:
-        """0..1 rank-weighted overlap of two ranked pools: each shared item
-        contributes its rank discount from BOTH sides, normalized against
+    @staticmethod
+    def _primaryArtistId(item: dict) -> str | None:
+        """The first-listed (primary) artist's id for a song/album pool item -
+        track_artists.position 0, i.e. how Spotify itself orders credited
+        artists - or None if the item somehow carries no artists."""
+        artists = item.get("artists") or []
+        return artists[0]["id"] if artists else None
+
+    def _rankWeightedOverlap(self, myPool, theirPool, myArtistIds=None, theirArtistIds=None) -> float | None:
+        """0..1 rank-weighted overlap of two ranked pools, normalized against
         the score two pools would reach if they agreed on their top
         TASTE_MATCH_IDEAL_DEPTH items - so a shared #1 counts far more than
         a shared #90, and matching core taste can reach 100% without also
         requiring overlap across the entire deep pool. Clamped to 1 since
-        overlap past that depth can push the raw ratio above it. None when
-        either side is empty, so the category can be excluded rather than
-        scored 0."""
+        overlap (or artist-mediated credit, see below) can push the raw
+        ratio above it. None when either side is empty, so the category can
+        be excluded rather than scored 0.
+
+        An exact id match contributes 2x the rank discount of its BETTER
+        (shallower/lower-numbered) side's rank, not the sum of both sides'
+        discounts - matches `ideal`'s own 2x-one-rank shape (the case where
+        both sides tie at the same rank r), and means a mutual favorite
+        ranked #3 by one person and #40 by the other still counts close to
+        a #3/#3 match instead of being dragged down by whichever side
+        ranks it deeper.
+
+        When myArtistIds/theirArtistIds are given (songs/albums only - the
+        artist category has no secondary "artist of an artist" concept), a
+        non-exact item still earns ARTIST_MEDIATED_CREDIT_FACTOR of its own
+        rank discount when its primary artist (see _primaryArtistId)
+        appears in the counterpart's top artist pool."""
         if not myPool or not theirPool:
             return None
         myRanks = {item["id"]: rank for rank, item in enumerate(myPool, start=1)}
         theirRanks = {item["id"]: rank for rank, item in enumerate(theirPool, start=1)}
-        actual = sum(self._rankWeight(myRanks[itemId]) + self._rankWeight(theirRanks[itemId])
-                     for itemId in myRanks if itemId in theirRanks)
+        exactIds = myRanks.keys() & theirRanks.keys()
+        actual = sum(2 * self._rankWeight(min(myRanks[itemId], theirRanks[itemId])) for itemId in exactIds)
+
+        if myArtistIds is not None and theirArtistIds is not None:
+            myById = {item["id"]: item for item in myPool}
+            theirById = {item["id"]: item for item in theirPool}
+            for itemId, rank in myRanks.items():
+                if itemId in exactIds:
+                    continue
+                artistId = self._primaryArtistId(myById[itemId])
+                if artistId is not None and artistId in theirArtistIds:
+                    actual += ARTIST_MEDIATED_CREDIT_FACTOR * self._rankWeight(rank)
+            for itemId, rank in theirRanks.items():
+                if itemId in exactIds:
+                    continue
+                artistId = self._primaryArtistId(theirById[itemId])
+                if artistId is not None and artistId in myArtistIds:
+                    actual += ARTIST_MEDIATED_CREDIT_FACTOR * self._rankWeight(rank)
+
         idealDepth = min(len(myPool), len(theirPool), TASTE_MATCH_IDEAL_DEPTH)
         ideal = sum(2 * self._rankWeight(rank) for rank in range(1, idealDepth + 1))
         return min(1.0, actual / ideal)
 
     def _tasteMatchPercent(self, my, their) -> int | None:
         """One headline number for how much two users' taste overlaps: the
-        rank-weighted pool overlap per category, weighted by
-        TASTE_MATCH_WEIGHTS. None when no category has data on both sides -
-        the UI hides the badge instead of showing a misleading 0%."""
+        rank-weighted pool overlap per category (with artist-mediated credit
+        for songs/albums - see _rankWeightedOverlap), weighted by
+        TASTE_MATCH_WEIGHTS and passed through a concave response curve
+        (see TASTE_MATCH_CURVE_EXPONENT). None when no category has data on
+        both sides - the UI hides the badge instead of showing a misleading
+        0%."""
+        myArtistIds = {a["id"] for a in my["topArtistsPool"]}
+        theirArtistIds = {a["id"] for a in their["topArtistsPool"]}
         categories = {
-            "artists": (my["topArtistsPool"], their["topArtistsPool"]),
-            "songs": (my["topSongsPool"], their["topSongsPool"]),
-            "albums": (my["topAlbumsPool"], their["topAlbumsPool"]),
+            "artists": (my["topArtistsPool"], their["topArtistsPool"], None, None),
+            "songs": (my["topSongsPool"], their["topSongsPool"], myArtistIds, theirArtistIds),
+            "albums": (my["topAlbumsPool"], their["topAlbumsPool"], myArtistIds, theirArtistIds),
         }
         parts = []
-        for kind, (myPool, theirPool) in categories.items():
-            fraction = self._rankWeightedOverlap(myPool, theirPool)
+        for kind, (myPool, theirPool, myAIds, theirAIds) in categories.items():
+            fraction = self._rankWeightedOverlap(myPool, theirPool, myAIds, theirAIds)
             if fraction is not None:
                 parts.append((fraction, TASTE_MATCH_WEIGHTS[kind]))
         if not parts:
             return None
-        return round(sum(fraction * weight for fraction, weight in parts)
-                     / sum(weight for _, weight in parts) * 100)
+        raw = sum(fraction * weight for fraction, weight in parts) / sum(weight for _, weight in parts)
+        return round(100 * raw ** TASTE_MATCH_CURVE_EXPONENT)
 
     def _buildPageUrl(self, endpoint, page, **queryArgs):
         cleanArgs = {key: value for key, value in queryArgs.items() if value not in (None, "")}
