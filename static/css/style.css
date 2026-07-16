@@ -679,12 +679,12 @@ progress::-moz-progress-bar {
 }
 
 @media (min-width: 601px) {
-  .track-media {
+  .compare-columns .track-media {
     flex-direction: column;
     gap: 8px;
   }
 
-  .track-media .track-number {
+  .compare-columns .track-media .track-number {
     width: 120px;
     min-height: 0;
     padding: 4px 0;
