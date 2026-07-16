@@ -12,6 +12,7 @@ from datetime import timedelta
 
 from flask import Flask, render_template, redirect, request, url_for, jsonify, send_from_directory, session, g, abort
 from flask_wtf.csrf import CSRFProtect
+from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import generate_password_hash, check_password_hash
 
 from Database.database import Database
@@ -58,6 +59,11 @@ DEFAULT_SORT_BY = "totalTimeListened"
 # falling back to the default.
 VALID_SORT_BY = {"totalTimeListened", "plays", "name"}
 TRUTHY_ENV_VALUES = {"1", "true", "yes", "on"}
+# Opt-in to honoring X-Forwarded-* headers from a reverse proxy (see
+# _trustedProxyCount). Without it, every visitor behind a proxy shares the
+# proxy's IP, so the per-IP auth rate limiter would let any one client lock
+# the entire instance out of /login for the whole window.
+TRUST_PROXY_HEADERS_ENV_VAR = "TRUST_PROXY_HEADERS"
 PASSWORD_MIN_LENGTH = 8   #< also enforced client-side via the minlength attribute
 RATE_LIMIT_MAX_ATTEMPTS = 10     #< max POSTs allowed per window, per source IP, per route
 RATE_LIMIT_WINDOW_SECONDS = 300  #< 5 minutes
@@ -91,6 +97,21 @@ SECURITY_HEADERS = {
         "frame-ancestors 'none'"
     ),
 }
+
+
+def _trustedProxyCount() -> int:
+    """How many reverse-proxy hops to trust X-Forwarded-* headers from, per the
+    TRUST_PROXY_HEADERS env var: a hop count ("2"), or a plain truthy value
+    ("true") meaning one proxy. 0/unset/junk disables it - trusting forwarded
+    headers while NOT behind a proxy would let clients forge their source IP
+    straight past the auth rate limiter, so this must stay opt-in."""
+    raw = os.environ.get(TRUST_PROXY_HEADERS_ENV_VAR, "").strip().lower()
+    if not raw:
+        return 0
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 1 if raw in TRUTHY_ENV_VALUES else 0
 
 
 def _passwordPolicyError(password: str) -> str | None:
@@ -143,6 +164,12 @@ class SpotifyDashboardApp:
         configureLogging()
         migrateIfNeeded()
         self.app = Flask(__name__)
+        proxyHops = _trustedProxyCount()
+        if proxyHops:
+            # Restores the real client address (and scheme/host) from the
+            # X-Forwarded-* headers set by the reverse proxy in front of this
+            # app - request.remote_addr is what the auth rate limiter keys on.
+            self.app.wsgi_app = ProxyFix(self.app.wsgi_app, x_for=proxyHops, x_proto=proxyHops, x_host=proxyHops)
         self.baseDir = Path(__file__).resolve().parent
         self.app.secret_key = self._get_or_create_secret_key()
         self.app.permanent_session_lifetime = timedelta(days=30)
