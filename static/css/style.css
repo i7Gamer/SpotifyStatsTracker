@@ -663,6 +663,29 @@ progress::-moz-progress-bar {
   flex-shrink: 0;
 }
 
+/* Rank number + cover art column. Mobile keeps the original side-by-side
+   rail; on desktop the number sits as a slim badge above the cover. */
+.track-media {
+  display: flex;
+  gap: 18px;
+  align-items: flex-start;
+  flex-shrink: 0;
+}
+
+@media (min-width: 601px) {
+  .track-media {
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .track-media .track-number {
+    width: 120px;
+    min-height: 0;
+    padding: 4px 0;
+    box-sizing: border-box;
+  }
+}
+
 .track-cover {
   width: 120px;
   height: 120px;
@@ -767,6 +790,106 @@ progress::-moz-progress-bar {
   grid-template-columns: 1fr 1fr;
   gap: 2rem;
   margin-bottom: 2.5rem;
+}
+
+/* Compare page's head-to-head stats table (replaces per-row inline styles
+   so the last row can drop its bottom border). */
+.compare-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+}
+
+.compare-table th,
+.compare-table td {
+  padding: 12px 8px;
+}
+
+.compare-table thead tr {
+  border-bottom: 2px solid var(--glass-border);
+  color: var(--muted);
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.compare-table tbody tr {
+  border-bottom: 1px solid var(--glass-border);
+}
+
+.compare-table tbody tr:last-child {
+  border-bottom: none;
+}
+
+.compare-table th.value,
+.compare-table td.value {
+  text-align: right;
+  font-weight: 600;
+}
+
+/* the side with the larger count/time of a head-to-head row */
+.compare-table td.value.leader {
+  color: var(--accent);
+}
+
+.compare-cell-link {
+  color: inherit;
+}
+
+.compare-cell-link:hover {
+  color: var(--accent);
+}
+
+/* Similarity summary cards - long song/album names need a smaller value
+   size than the numeric summary cards the grid was designed for. */
+.compare-similarities {
+  margin-bottom: 2rem;
+}
+
+.compare-similarities .summary-value {
+  font-size: 1.25rem;
+}
+
+/* "You Both Love" versus block. .mine mirrors the trend chart's first
+   series color (the theme accent), .theirs its second (CHART_PALETTE[1]
+   in charts.js). */
+.compare-versus {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.compare-split-bar {
+  display: flex;
+  height: 8px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.compare-split-bar .mine {
+  background: var(--accent);
+}
+
+.compare-split-bar .theirs {
+  background: #5DD97C;
+}
+
+.compare-versus-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.compare-versus-mine {
+  color: var(--accent);
+}
+
+.compare-versus-theirs {
+  color: #5DD97C;
 }
 
 .form-group {

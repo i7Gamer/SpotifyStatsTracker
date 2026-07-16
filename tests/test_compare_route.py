@@ -13,14 +13,22 @@ from app import SpotifyDashboardApp
 _SECRET_KEY_PATCH = 'app.SpotifyDashboardApp._get_or_create_secret_key'
 
 
-def _artist(artistId, name):
-    return {"id": artistId, "name": name}
+def _artist(artistId, name, **extra):
+    return {"id": artistId, "name": name, **extra}
 
 
-def _song(trackId, name):
+def _song(trackId, name, **extra):
     # duration/artists are required by _embedSongTextElements (direct key
     # access), everything else the card template reads via .get().
-    return {"id": trackId, "name": name, "artists": [], "duration": 60000}
+    return {"id": trackId, "name": name, "artists": [], "duration": 60000, **extra}
+
+
+def _album(albumId, name, **extra):
+    return {"id": albumId, "name": name, "artists": [], **extra}
+
+
+def _zeroHeatmapGrid():
+    return [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
 
 
 class TestCompareRoute(unittest.TestCase):
@@ -41,6 +49,11 @@ class TestCompareRoute(unittest.TestCase):
         db.getTopArtists.return_value = []
         db.getTopAlbums.return_value = []
         db.getListeningTimeSeries.return_value = []
+        db.getSongsCount.return_value = 0
+        db.getArtistsCount.return_value = 0
+        db.getCompletionStats.return_value = {"skips": 0, "completes": 0, "partials": 0}
+        db.getExplicitRatio.return_value = {"explicit": 0, "clean": 0}
+        db.getHourOfDayHeatmap.return_value = _zeroHeatmapGrid()
         db.readProgress.return_value = {"status": "idle", "current": 0, "total": 0, "percentage": 0, "message": "", "error": False}
         return db
 
@@ -219,8 +232,9 @@ class TestCompareRoute(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         # Each rendered card mentions the name twice (img alt= + <h3>). The
         # artist must appear in bob's column AND in "You Both Love", but NOT
-        # in alice's top-ten column (it's her #11) - exactly 2 cards.
-        self.assertEqual(resp.data.count(b"OverlapOnlyArtist"), 4)
+        # in alice's top-ten column (it's her #11) - exactly 2 cards, plus one
+        # mention as the "Common Top Artist" similarity cell.
+        self.assertEqual(resp.data.count(b"OverlapOnlyArtist"), 5)
         self.assertIn(b"AliceArtist9", resp.data)   #< her actual top ten still renders
 
     def test_summary_row_derives_from_the_same_lists_the_page_shows(self):
@@ -350,6 +364,183 @@ class TestCompareRoute(unittest.TestCase):
         resp = client.get("/import")
 
         self.assertNotIn(b'href="/compare"', resp.data)
+
+    def test_stats_table_shows_listening_style_rows(self):
+        """The 'differences in listening style' rows: unique songs/artists,
+        skip rate, explicit share, and peak hour/day derived from the
+        heatmap grid."""
+        self._accept("alice", "bob")
+        self.dbs["alice"].getSongsCount.return_value = 1111
+        self.dbs["alice"].getArtistsCount.return_value = 222
+        self.dbs["alice"].getCompletionStats.return_value = {"skips": 1, "completes": 3, "partials": 0}
+        self.dbs["alice"].getExplicitRatio.return_value = {"explicit": 1, "clean": 3}
+        grid = _zeroHeatmapGrid()
+        grid[2][14] = {"totalTimeListened": 999, "plays": 5}   #< Wednesday 14:00
+        self.dbs["alice"].getHourOfDayHeatmap.return_value = grid
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn(b"1,111", resp.data)       #< unique songs, thousands-formatted
+        self.assertIn(b"222", resp.data)         #< unique artists
+        self.assertIn(b"25%", resp.data)         #< skip rate AND explicit share: 1 of 4
+        self.assertIn(b"14:00", resp.data)       #< peak listening hour
+        self.assertIn(b"Wednesday", resp.data)   #< most active weekday
+
+    def test_style_rows_show_placeholder_without_any_plays(self):
+        """Zero plays must render placeholders, not divide by zero."""
+        self._accept("alice", "bob")
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("—".encode("utf-8"), resp.data)
+
+    def test_summary_rows_link_own_items_to_detail_pages(self):
+        self._accept("alice", "bob")
+        self.dbs["alice"].getTopSongs.return_value = [_song("s1", "AliceTopSong")]
+        self.dbs["alice"].getTopArtists.return_value = [_artist("f1", "AliceFavArtist")]
+        self.dbs["alice"].getTopAlbums.return_value = [_album("al1", "AliceTopAlbum")]
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        self.assertIn(b'<a class="compare-cell-link" href="/song/s1">', resp.data)
+        self.assertIn(b'<a class="compare-cell-link" href="/artist/f1">', resp.data)
+        self.assertIn(b'<a class="compare-cell-link" href="/album/al1">', resp.data)
+
+    def test_summary_rows_link_counterpart_items_to_spotify(self):
+        """The counterpart's summary cells can't use detail links (they resolve
+        against the viewer's db) - they link to Spotify instead, and only when
+        a real URL exists (fabricated ids carry an empty url)."""
+        self._accept("alice", "bob")
+        self.dbs["bob"].getTopSongs.return_value = [
+            _song("their-song-1", "TheirSong", url="https://open.spotify.com/track/xyz1")]
+        self.dbs["bob"].getTopArtists.return_value = [_artist("their-artist-1", "TheirArtist", url="")]
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        self.assertIn(b'href="https://open.spotify.com/track/xyz1" target="_blank"', resp.data)
+        self.assertNotIn(b"/song/their-song-1", resp.data)
+        self.assertNotIn(b"/artist/their-artist-1", resp.data)   #< empty url: plain text, no link
+
+    def test_counterpart_card_titles_link_to_spotify_when_url_exists(self):
+        self._accept("alice", "bob")
+        self.dbs["bob"].getTopSongs.return_value = [
+            _song("their-song-1", "TheirSong", url="https://open.spotify.com/track/xyz1")]
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        # external cover link marker (internal covers have no target attr)
+        self.assertIn(b'class="track-cover-link" target="_blank"', resp.data)
+        self.assertNotIn(b"/song/their-song-1", resp.data)
+
+    def test_shared_artist_cards_show_both_users_stats(self):
+        """Item on 'You Both Love' cards: both users' plays/time/unique songs,
+        the combined listening time, and a split bar proportioned by time."""
+        self._accept("alice", "bob")
+        self.dbs["alice"].getTopArtists.return_value = [
+            _artist("sh1", "SharedArtist", plays=10, totalTimeListened=3_600_000, uniqueSongCount=4)]
+        self.dbs["bob"].getTopArtists.return_value = [
+            _artist("sh1", "SharedArtist", plays=5, totalTimeListened=1_800_000, uniqueSongCount=2)]
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        self.assertIn(b"alice: 10 plays", resp.data)
+        self.assertIn(b"bob: 5 plays", resp.data)
+        self.assertIn(b"Together: 1h 30m 0s", resp.data)
+        self.assertIn(b'style="width: 67%"', resp.data)   #< round(3.6/5.4*100)
+        # The versus block must appear ONLY on the shared card - the same dict
+        # also feeds alice's own Top Artists column, so it must be copied
+        # before the comparison data is attached.
+        self.assertEqual(resp.data.count(b"compare-split-bar\""), 1)
+
+    def test_similarities_come_from_the_deep_pools(self):
+        """Common top song/album cells run over the 100-deep pools, not the
+        displayed top ten."""
+        self._accept("alice", "bob")
+        aliceSongs = [_song(f"a{i}", f"AliceSong{i}") for i in range(10)]
+        bobSongs = [_song(f"b{i}", f"BobSong{i}") for i in range(10)]
+        shared = _song("shdeep", "DeepSharedSong")
+        self.dbs["alice"].getTopSongs.return_value = aliceSongs + [shared]   #< her #11
+        self.dbs["bob"].getTopSongs.return_value = bobSongs + [shared]       #< his #11
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        # Neither column displays it (rank 11 on both sides), so the only
+        # mention is the "Common Top Song" similarity cell - linked to the
+        # viewer's own detail page, which resolves since she played it.
+        self.assertEqual(resp.data.count(b"DeepSharedSong"), 1)
+        self.assertIn(b"/song/shdeep", resp.data)
+
+    def test_you_both_love_sits_between_chart_and_category_lists(self):
+        self._accept("alice", "bob")
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        chartIdx = resp.data.index(b'id="comparisonTrendChart"')
+        sharedIdx = resp.data.index(b"You Both Love")
+        listsIdx = resp.data.index(b'data-category="top-songs"')
+        self.assertLess(chartIdx, sharedIdx)
+        self.assertLess(sharedIdx, listsIdx)
+
+    def test_filter_badges_render_for_each_category(self):
+        self._accept("alice", "bob")
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        for marker in (b'data-filter="all"', b'data-filter="top-songs"',
+                       b'data-filter="top-artists"', b'data-filter="top-albums"',
+                       b'data-category="top-artists"', b'data-category="top-albums"'):
+            self.assertIn(marker, resp.data)
+
+    def test_stats_table_styling_is_class_based(self):
+        """Row borders moved from inline styles to .compare-table so the last
+        row's bottom border can be dropped via :last-child."""
+        self._accept("alice", "bob")
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        self.assertIn(b"compare-table", resp.data)
+        self.assertNotIn(b'<tr style="border-bottom', resp.data)
+
+    def test_track_cards_wrap_number_and_cover_in_a_media_column(self):
+        self._accept("alice", "bob")
+        self.dbs["alice"].getTopSongs.return_value = [_song("s1", "AliceTopSong")]
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        self.assertIn(b'class="track-media"', resp.data)
+
+    def test_trend_groupby_auto_coarsens_with_the_range_span(self):
+        """Without an explicit groupBy, day buckets over a 5-year range mean
+        ~1800 sub-pixel points - the trend picks day/week/month from the span."""
+        self._accept("alice", "bob")
+        client = self._loginAs("alice")
+
+        for interval, expected in (("month", "day"), ("year", "week"), ("5years", "month")):
+            client.get(f"/compare?interval={interval}")
+            self.assertEqual(
+                self.dbs["alice"].getListeningTimeSeries.call_args.kwargs["groupBy"],
+                expected, f"interval={interval}")
+
+    def test_explicit_groupby_param_overrides_the_auto_choice(self):
+        self._accept("alice", "bob")
+        client = self._loginAs("alice")
+
+        client.get("/compare?interval=5years&groupBy=day")
+
+        self.assertEqual(self.dbs["alice"].getListeningTimeSeries.call_args.kwargs["groupBy"], "day")
 
     def test_share_status_is_computed_once_per_request(self):
         """One request can render several templates (the Wrapped AJAX endpoint

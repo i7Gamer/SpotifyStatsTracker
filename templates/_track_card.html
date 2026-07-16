@@ -4,12 +4,14 @@
   {% set section = section if section is defined else 'dashboard' %}
   {# Detail pages always resolve against the viewing session's own data, so a
      caller rendering ANOTHER user's items (the Compare page's counterpart
-     columns) sets suppressDetailLinks to render plain text instead of links
-     that would dead-end or show the wrong user's stats. #}
+     columns) sets suppressDetailLinks. Those cards link to Spotify instead of
+     a detail page that would dead-end or show the wrong user's stats - and
+     only when a real URL exists (fabricated ids carry an empty url). #}
   {% set suppressDetailLinks = suppressDetailLinks if suppressDetailLinks is defined else false %}
+  {% set compareWith = compareWith if compareWith is defined else '' %}
   {% set linkableId = track.get('id') if not suppressDetailLinks else none %}
-  {% if item_number %}<div class="track-number">{{ item_number }}</div>{% endif %}
-  
+  {% set externalUrl = track.get('url') if suppressDetailLinks and track.get('url') else none %}
+
   {% if section == 'top_artists' %}
     {% set detailUrl = url_for('artistDetailPage', artist_id=track.get('id')) if track.get('id') else '#' %}
   {% elif section == 'top_albums' %}
@@ -18,8 +20,12 @@
     {% set detailUrl = url_for('songDetailPage', track_id=track.get('id')) if track.get('id') else '#' %}
   {% endif %}
 
+  <div class="track-media">
+  {% if item_number %}<div class="track-number">{{ item_number }}</div>{% endif %}
   {% if linkableId %}
     <a href="{{ detailUrl }}" class="track-cover-link">
+  {% elif externalUrl %}
+    <a href="{{ externalUrl }}" class="track-cover-link" target="_blank" rel="noreferrer noopener">
   {% endif %}
   <!-- Image path depends on section -->
   {% if section == 'top_artists' %}
@@ -27,15 +33,20 @@
   {% else %}
     <img class="track-cover" loading="lazy" src="/img/{{ username }}/tracks/{{ imgId }}.jpeg" alt="Album cover for {{ track.get('name','') }}" onerror="this.onerror=null;this.src=window.PLACEHOLDER_IMG;" />
   {% endif %}
-  {% if linkableId %}
+  {% if linkableId or externalUrl %}
     </a>
   {% endif %}
+  </div>
   
   <div class="track-details">
     <div class="track-details-top">
       <div class="track-header">
         {% if linkableId %}
         <a href="{{ detailUrl }}">
+          <h3>{{ track.get('name', '') }}</h3>
+        </a>
+        {% elif externalUrl %}
+        <a href="{{ externalUrl }}" target="_blank" rel="noreferrer noopener">
           <h3>{{ track.get('name', '') }}</h3>
         </a>
         {% else %}
@@ -54,7 +65,8 @@
               </div>
               {% endif %}
 
-              {% if track.get('uniqueSongCount') %}
+              {# the versus block below already shows both users' song counts #}
+              {% if track.get('uniqueSongCount') and not track.get('compareData') %}
               <div>You played {{ track.get('uniqueSongCount') }} different songs by {{ track.get('name', '') }}</div>
               {% endif %}
           </div>
@@ -95,7 +107,7 @@
         <div class="track-meta">
           {% if track.get('artists') %}
             {% for artist in track.get('artists') %}
-              {% if suppressDetailLinks %}{{ artist.get('name', '') }}{% else %}<a href="{{ url_for('artistDetailPage', artist_id=artist.get('id')) }}">{{ artist.get('name', '') }}</a>{% endif %}{% if not loop.last %}, {% endif %}
+              {% if not suppressDetailLinks %}<a href="{{ url_for('artistDetailPage', artist_id=artist.get('id')) }}">{{ artist.get('name', '') }}</a>{% elif artist.get('url') %}<a href="{{ artist.get('url') }}" target="_blank" rel="noreferrer noopener">{{ artist.get('name', '') }}</a>{% else %}{{ artist.get('name', '') }}{% endif %}{% if not loop.last %}, {% endif %}
             {% endfor %}
           {% else %}
             {{ track.get('artistsText') }}
@@ -105,13 +117,15 @@
         <div class="track-meta">
           {% if track.get('artists') %}
             {% for artist in track.get('artists') %}
-              {% if suppressDetailLinks %}{{ artist.get('name', '') }}{% else %}<a href="{{ url_for('artistDetailPage', artist_id=artist.get('id')) }}">{{ artist.get('name', '') }}</a>{% endif %}{% if not loop.last %}, {% endif %}
+              {% if not suppressDetailLinks %}<a href="{{ url_for('artistDetailPage', artist_id=artist.get('id')) }}">{{ artist.get('name', '') }}</a>{% elif artist.get('url') %}<a href="{{ artist.get('url') }}" target="_blank" rel="noreferrer noopener">{{ artist.get('name', '') }}</a>{% else %}{{ artist.get('name', '') }}{% endif %}{% if not loop.last %}, {% endif %}
             {% endfor %}
           {% else %}
             {{ track.get('artistsText') or track.get('artist','') }}
           {% endif %}
           {% if track.get('album') and track.get('album').get('id') and not suppressDetailLinks %}
             · <a href="{{ url_for('albumDetailPage', album_id=track.get('album').get('id')) }}">{{ track.get('album').get('name') }}</a>
+          {% elif suppressDetailLinks and track.get('album') and track.get('album').get('url') %}
+            · <a href="{{ track.get('album').get('url') }}" target="_blank" rel="noreferrer noopener">{{ track.get('album').get('name') }}</a>
           {% elif track.get('album') and track.get('album').get('name') %}
             · {{ track.get('album').get('name') }}
           {% endif %}
@@ -121,6 +135,23 @@
         <!-- Played at - only for dashboard -->
         {% if section == 'dashboard' and track.get('playedAtText') %}
           <div class="track-meta">Played at {{ track.get('playedAtText') }}</div>
+        {% endif %}
+
+        {# Compare page's "You Both Love" cards: both users' stats plus a
+           split bar proportioned by each side's share of the combined
+           listening time. Colors mirror the trend chart's two series. #}
+        {% if track.get('compareData') %}
+          {% set cmp = track.get('compareData') %}
+          <div class="compare-versus">
+            <div class="compare-split-bar" title="{{ cmp.myTimePercent }}% of the combined listening time is {{ username }}'s">
+              <span class="mine" style="width: {{ cmp.myTimePercent }}%"></span><span class="theirs" style="width: {{ 100 - cmp.myTimePercent }}%"></span>
+            </div>
+            <div class="compare-versus-stats">
+              <span class="compare-versus-mine">{{ username }}: {{ cmp.myPlays }} plays · {{ cmp.myTimeText }} · {{ cmp.myUniqueSongs }} song{{ 's' if cmp.myUniqueSongs != 1 else '' }}</span>
+              <span class="compare-versus-theirs">{{ compareWith }}: {{ cmp.theirPlays }} plays · {{ cmp.theirTimeText }} · {{ cmp.theirUniqueSongs }} song{{ 's' if cmp.theirUniqueSongs != 1 else '' }}</span>
+              <span class="compare-versus-combined">Together: {{ cmp.combinedTimeText }}</span>
+            </div>
+          </div>
         {% endif %}
       </div>
       

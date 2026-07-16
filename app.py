@@ -31,7 +31,10 @@ CHART_ARTIST_TREND_TOP_N = 5   #< how many top artists are plotted on the trend 
 WRAPPED_LIST_SIZE = 10          #< default/fallback for ?limit= - how many items per category the Wrapped page shows
 WRAPPED_LIMIT_OPTIONS = (10, 25, 50, 100)   #< selectable values for Wrapped's items-per-category dropdown
 COMPARE_TOP_LIST_SIZE = 10                #< items per top-songs/artists/albums list shown on the Compare page
-COMPARE_OVERLAP_POOL_SIZE = 100           #< how deep each side's top-artists list is searched for shared taste overlap
+COMPARE_OVERLAP_POOL_SIZE = 100           #< how deep each side's top songs/artists/albums lists are searched for shared taste overlap
+COMPARE_TREND_WEEK_SPAN_DAYS = 120        #< comparison trends spanning more days than this auto-bucket by week...
+COMPARE_TREND_MONTH_SPAN_DAYS = 730       #< ...and more than this by month (day buckets over years are sub-pixel)
+WEEKDAY_NAMES = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
 MAX_UPLOAD_MB = 500              #< cap on a single import-history request's total upload size
 DEFAULT_SORT_BY = "totalTimeListened"
 # The only sortBy values Repository.SONG_SORT_COLUMNS/ALBUM_SORT_COLUMNS/
@@ -452,29 +455,50 @@ class SpotifyDashboardApp:
         and the counterpart so the two columns can't drift apart. Runs the
         same _embed*TextElements step every other page feeding
         _track_card.html uses - without it the cards render with blank
-        time/first-listened/duration/percent lines. The displayed top-artist
-        list is sliced from the same pool the "you both love" overlap
-        intersects, so the list, the summary row, and the overlap all agree
-        on one by-plays ranking (and each side's artist aggregation runs
-        once, not twice)."""
+        time/first-listened/duration/percent lines. Every displayed top list
+        is sliced from the same COMPARE_OVERLAP_POOL_SIZE-deep pool the
+        similarity/overlap intersections run over, so the lists, the summary
+        rows, and the overlaps all agree on one by-plays ranking (and each
+        side's aggregation runs once, not twice)."""
         totalPlays, totalMs = db.getPlayTotals(startDate, endDate)
+        topSongsPool = db.getTopSongs(startDate, endDate, limit=COMPARE_OVERLAP_POOL_SIZE)
         topSongs = self._embedTopSongsTextElements(
-            self._embedSongsTextElements(db.getTopSongs(startDate, endDate, limit=COMPARE_TOP_LIST_SIZE)),
+            self._embedSongsTextElements(topSongsPool[:COMPARE_TOP_LIST_SIZE]),
             sortBy="plays", totalPlays=totalPlays, totalMs=totalMs)
+        topAlbumsPool = db.getTopAlbums(startDate, endDate, limit=COMPARE_OVERLAP_POOL_SIZE)
         topAlbums = self._embedAlbumsTextElements(
-            db.getTopAlbums(startDate, endDate, limit=COMPARE_TOP_LIST_SIZE),
+            topAlbumsPool[:COMPARE_TOP_LIST_SIZE],
             sortBy="plays", totalPlays=totalPlays, totalMs=totalMs)
         topArtistsPool = db.getTopArtists(startDate, endDate, limit=COMPARE_OVERLAP_POOL_SIZE)
         topArtists = self._embedArtistsTextElements(
             topArtistsPool[:COMPARE_TOP_LIST_SIZE],
             sortBy="plays", totalPlays=totalPlays, totalMs=totalMs)
+
+        completion = db.getCompletionStats(startDate, endDate)
+        completionTotal = completion["skips"] + completion["completes"] + completion["partials"]
+        explicitRatio = db.getExplicitRatio(startDate, endDate)
+        explicitTotal = explicitRatio["explicit"] + explicitRatio["clean"]
+        heatmap = db.getHourOfDayHeatmap(startDate, endDate)
+        hourTotals = [sum(day[hour]["totalTimeListened"] for day in heatmap) for hour in range(24)]
+        dayTotals = [sum(cell["totalTimeListened"] for cell in day) for day in heatmap]
+
         return {
             "totalPlays": totalPlays,
+            "totalMs": totalMs,
             "totalTimeText": msToString(totalMs),
             "topSongs": topSongs,
             "topArtists": topArtists,
             "topAlbums": topAlbums,
+            "topSongsPool": topSongsPool,
             "topArtistsPool": topArtistsPool,
+            "topAlbumsPool": topAlbumsPool,
+            "uniqueSongs": db.getSongsCount(startDate, endDate),
+            "uniqueArtists": db.getArtistsCount(startDate, endDate),
+            "avgPlayTimeText": msToString(totalMs // totalPlays) if totalPlays else "—",
+            "skipRateText": f"{completion['skips'] / completionTotal * 100:.0f}%" if completionTotal else "—",
+            "explicitShareText": f"{explicitRatio['explicit'] / explicitTotal * 100:.0f}%" if explicitTotal else "—",
+            "peakHourText": f"{hourTotals.index(max(hourTotals)):02d}:00" if any(hourTotals) else "—",
+            "peakDayText": WEEKDAY_NAMES[dayTotals.index(max(dayTotals))] if any(dayTotals) else "—",
         }
 
     def _buildPageUrl(self, endpoint, page, **queryArgs):
@@ -1984,20 +2008,53 @@ class SpotifyDashboardApp:
             customStart = request.args.get("startDate", "")
             customEnd = request.args.get("endDate", "")
             startDate, endDate = self._getDateRange(interval, customStart, customEnd, default="all time", tz=db.tz)
-            groupBy = self._getValidGroupBy(request.args.get("groupBy", "day"))
-            # Single-day ranges bucket by hour, mirroring chartsPage's
-            # isSingleDayView - one 'day' bucket would collapse the whole
-            # trend into a single point.
-            trendGroupBy = "hour" if interval in ("day", "today") else groupBy
+            groupByParam = request.args.get("groupBy", "")
 
             my = self._gatherCompareStats(db, startDate, endDate)
             their = self._gatherCompareStats(otherDb, startDate, endDate)
 
             theirArtistIds = {a["id"] for a in their["topArtistsPool"]}
+            theirArtistsById = {a["id"]: a for a in their["topArtistsPool"]}
             # Sliced like every other list on the page. No percent text here -
-            # it would mix two different users' totals.
+            # it would mix two different users' totals. Copied dicts: the pool
+            # entries also feed the viewer's own Top Artists column, and the
+            # compareData block below must only render on the shared cards.
             sharedArtists = self._embedArtistsTextElements(
-                [a for a in my["topArtistsPool"] if a["id"] in theirArtistIds][:COMPARE_TOP_LIST_SIZE])
+                [dict(a) for a in my["topArtistsPool"] if a["id"] in theirArtistIds][:COMPARE_TOP_LIST_SIZE])
+            for artist in sharedArtists:
+                theirArtist = theirArtistsById[artist["id"]]
+                myMs = artist.get("totalTimeListened", 0)
+                theirMs = theirArtist.get("totalTimeListened", 0)
+                combinedMs = myMs + theirMs
+                artist["compareData"] = {
+                    "myPlays": artist.get("plays", 0),
+                    "theirPlays": theirArtist.get("plays", 0),
+                    "myTimeText": msToString(myMs),
+                    "theirTimeText": msToString(theirMs),
+                    "myUniqueSongs": artist.get("uniqueSongCount", 0),
+                    "theirUniqueSongs": theirArtist.get("uniqueSongCount", 0),
+                    "combinedTimeText": msToString(combinedMs),
+                    #< an even split when neither side has recorded time - a
+                    #  bar of two zero-width halves would just look broken
+                    "myTimePercent": round(myMs / combinedMs * 100) if combinedMs else 50,
+                }
+
+            # Similarities run over the full pools, not the displayed top ten:
+            # a #40-ranked common favorite is still a common favorite. The
+            # "common top X" is the viewer's highest-ranked item the
+            # counterpart also has - deterministic, and its detail link
+            # resolves because the viewer played it.
+            theirSongIds = {s["id"] for s in their["topSongsPool"]}
+            theirAlbumIds = {a["id"] for a in their["topAlbumsPool"]}
+            similarities = {
+                "commonTopArtist": sharedArtists[0] if sharedArtists else None,
+                "commonTopSong": next((s for s in my["topSongsPool"] if s["id"] in theirSongIds), None),
+                "commonTopAlbum": next((a for a in my["topAlbumsPool"] if a["id"] in theirAlbumIds), None),
+                "sharedArtistCount": sum(1 for a in my["topArtistsPool"] if a["id"] in theirArtistIds),
+                "sharedSongCount": sum(1 for s in my["topSongsPool"] if s["id"] in theirSongIds),
+                "sharedAlbumCount": sum(1 for a in my["topAlbumsPool"] if a["id"] in theirAlbumIds),
+                "poolSize": COMPARE_OVERLAP_POOL_SIZE,
+            }
 
             trendStartDate, trendEndDate = startDate, endDate
             if trendStartDate is None or trendEndDate is None:
@@ -2011,6 +2068,23 @@ class SpotifyDashboardApp:
                 if playRanges:
                     trendStartDate = convertToDatetime(min(r[0] for r in playRanges), tz=db.tz)
                     trendEndDate = convertToDatetime(max(r[1] for r in playRanges), tz=db.tz) + timedelta(seconds=1)
+
+            if groupByParam:
+                groupBy = self._getValidGroupBy(groupByParam)
+            else:
+                # No explicit choice: bucket so the trend stays readable at any
+                # range - day buckets across a multi-year span are sub-pixel.
+                spanDays = (trendEndDate - trendStartDate).days if trendStartDate and trendEndDate else 0
+                if spanDays > COMPARE_TREND_MONTH_SPAN_DAYS:
+                    groupBy = "month"
+                elif spanDays > COMPARE_TREND_WEEK_SPAN_DAYS:
+                    groupBy = "week"
+                else:
+                    groupBy = "day"
+            # Single-day ranges bucket by hour, mirroring chartsPage's
+            # isSingleDayView - one 'day' bucket would collapse the whole
+            # trend into a single point.
+            trendGroupBy = "hour" if interval in ("day", "today") else groupBy
 
             # Each Database instance buckets time-series labels in its own
             # user's timezone, so the two series can still have edge buckets
@@ -2036,11 +2110,14 @@ class SpotifyDashboardApp:
                 my=my,
                 their=their,
                 sharedArtists=sharedArtists,
+                similarities=similarities,
                 comparisonTrend=comparisonTrend,
                 interval=interval,
                 customStart=customStart,
                 customEnd=customEnd,
-                groupBy=groupBy,
+                #< the raw param, not the resolved bucketing - links that pin
+                #  the auto-derived value would freeze auto mode
+                groupBy=groupByParam,
             )
 
         @self.app.route("/song/<track_id>", methods=["GET"])

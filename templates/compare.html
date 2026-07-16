@@ -1,6 +1,22 @@
 {% extends "layout.html" %}
 {% block content %}
 
+{# Own items link to the viewer's detail pages; counterpart items can't
+   (detail pages resolve against the VIEWER's data - see _track_card.html),
+   so they link to Spotify instead, and only when a real URL exists
+   (fabricated ids for removed tracks carry an empty url). #}
+{% macro detailCell(item, endpoint, idKey) -%}
+  {%- if item -%}
+    <a class="compare-cell-link" href="{{ url_for(endpoint, **{idKey: item.id}) }}">{{ item.name }}</a>
+  {%- else -%}—{%- endif -%}
+{%- endmacro %}
+
+{% macro spotifyCell(item) -%}
+  {%- if item and item.url -%}
+    <a class="compare-cell-link" href="{{ item.url }}" target="_blank" rel="noreferrer noopener">{{ item.name }} ↗</a>
+  {%- elif item -%}{{ item.name }}{%- else -%}—{%- endif -%}
+{%- endmacro %}
+
 <section class="hero">
   <div class="hero-content">
     <h1>Compare with {{ withUsername }}</h1>
@@ -75,36 +91,76 @@
 
 <section class="card" style="margin: 1.5rem 0; overflow-x: auto;">
   <div style="padding: 1.5rem;">
-    <table class="status-table" style="width: 100%; border-collapse: collapse; text-align: left;">
+    <table class="status-table compare-table">
       <thead>
-        <tr style="border-bottom: 2px solid var(--glass-border); color: var(--muted); font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.05em;">
-          <th style="padding: 12px 8px;">Stat</th>
-          <th style="padding: 12px 8px; text-align: right;">{{ username }}</th>
-          <th style="padding: 12px 8px; text-align: right;">{{ withUsername }}</th>
+        <tr>
+          <th>Stat</th>
+          <th class="value">{{ username }}</th>
+          <th class="value">{{ withUsername }}</th>
         </tr>
       </thead>
       <tbody>
-        <tr style="border-bottom: 1px solid var(--glass-border);">
-          <td style="padding: 12px 8px;">Total Plays</td>
-          <td style="padding: 12px 8px; text-align: right; font-weight: 600;">{{ "{:,}".format(my.totalPlays) }}</td>
-          <td style="padding: 12px 8px; text-align: right; font-weight: 600;">{{ "{:,}".format(their.totalPlays) }}</td>
+        <tr>
+          <td>Total Plays</td>
+          <td class="value{{ ' leader' if my.totalPlays > their.totalPlays else '' }}">{{ "{:,}".format(my.totalPlays) }}</td>
+          <td class="value{{ ' leader' if their.totalPlays > my.totalPlays else '' }}">{{ "{:,}".format(their.totalPlays) }}</td>
         </tr>
-        <tr style="border-bottom: 1px solid var(--glass-border);">
-          <td style="padding: 12px 8px;">Total Time Listened</td>
-          <td style="padding: 12px 8px; text-align: right; font-weight: 600;">{{ my.totalTimeText }}</td>
-          <td style="padding: 12px 8px; text-align: right; font-weight: 600;">{{ their.totalTimeText }}</td>
+        <tr>
+          <td>Total Time Listened</td>
+          <td class="value{{ ' leader' if my.totalMs > their.totalMs else '' }}">{{ my.totalTimeText }}</td>
+          <td class="value{{ ' leader' if their.totalMs > my.totalMs else '' }}">{{ their.totalTimeText }}</td>
+        </tr>
+        <tr>
+          <td>Unique Songs</td>
+          <td class="value{{ ' leader' if my.uniqueSongs > their.uniqueSongs else '' }}">{{ "{:,}".format(my.uniqueSongs) }}</td>
+          <td class="value{{ ' leader' if their.uniqueSongs > my.uniqueSongs else '' }}">{{ "{:,}".format(their.uniqueSongs) }}</td>
+        </tr>
+        <tr>
+          <td>Unique Artists</td>
+          <td class="value{{ ' leader' if my.uniqueArtists > their.uniqueArtists else '' }}">{{ "{:,}".format(my.uniqueArtists) }}</td>
+          <td class="value{{ ' leader' if their.uniqueArtists > my.uniqueArtists else '' }}">{{ "{:,}".format(their.uniqueArtists) }}</td>
+        </tr>
+        <tr>
+          <td>Avg. Listen per Play</td>
+          <td class="value">{{ my.avgPlayTimeText }}</td>
+          <td class="value">{{ their.avgPlayTimeText }}</td>
+        </tr>
+        <tr>
+          <td>Skip Rate</td>
+          <td class="value">{{ my.skipRateText }}</td>
+          <td class="value">{{ their.skipRateText }}</td>
+        </tr>
+        <tr>
+          <td>Explicit Share</td>
+          <td class="value">{{ my.explicitShareText }}</td>
+          <td class="value">{{ their.explicitShareText }}</td>
+        </tr>
+        <tr>
+          <td>Peak Listening Hour</td>
+          <td class="value">{{ my.peakHourText }}</td>
+          <td class="value">{{ their.peakHourText }}</td>
+        </tr>
+        <tr>
+          <td>Most Active Day</td>
+          <td class="value">{{ my.peakDayText }}</td>
+          <td class="value">{{ their.peakDayText }}</td>
         </tr>
         {# Summary entries come from the same lists rendered below, so the
            summary row and the lists can never disagree on the #1 entry. #}
-        <tr style="border-bottom: 1px solid var(--glass-border);">
-          <td style="padding: 12px 8px;">Top Song</td>
-          <td style="padding: 12px 8px; text-align: right;">{{ my.topSongs[0].name if my.topSongs else "—" }}</td>
-          <td style="padding: 12px 8px; text-align: right;">{{ their.topSongs[0].name if their.topSongs else "—" }}</td>
+        <tr>
+          <td>Top Song</td>
+          <td class="value">{{ detailCell(my.topSongs[0] if my.topSongs else none, 'songDetailPage', 'track_id') }}</td>
+          <td class="value">{{ spotifyCell(their.topSongs[0] if their.topSongs else none) }}</td>
         </tr>
-        <tr style="border-bottom: 1px solid var(--glass-border);">
-          <td style="padding: 12px 8px;">Top Artist</td>
-          <td style="padding: 12px 8px; text-align: right;">{{ my.topArtists[0].name if my.topArtists else "—" }}</td>
-          <td style="padding: 12px 8px; text-align: right;">{{ their.topArtists[0].name if their.topArtists else "—" }}</td>
+        <tr>
+          <td>Top Artist</td>
+          <td class="value">{{ detailCell(my.topArtists[0] if my.topArtists else none, 'artistDetailPage', 'artist_id') }}</td>
+          <td class="value">{{ spotifyCell(their.topArtists[0] if their.topArtists else none) }}</td>
+        </tr>
+        <tr>
+          <td>Top Album</td>
+          <td class="value">{{ detailCell(my.topAlbums[0] if my.topAlbums else none, 'albumDetailPage', 'album_id') }}</td>
+          <td class="value">{{ spotifyCell(their.topAlbums[0] if their.topAlbums else none) }}</td>
         </tr>
       </tbody>
     </table>
@@ -119,76 +175,12 @@
   <div id="comparisonTrendLegend" class="chart-legend"></div>
 </section>
 
-{# The counterpart's columns set suppressDetailLinks: detail pages resolve
-   against the VIEWER's own data, so linking the other user's items either
-   dead-ends (never played) or silently shows the viewer's stats under the
-   counterpart's numbers. #}
-{% set emptyMessage = 'No plays in this period.' %}
-
-{% set section = 'top_songs' %}
-<section class="compare-columns">
-  <div>
-    <h2>{{ username }}'s Top Songs</h2>
-    <div class="track-list">
-      {% set suppressDetailLinks = false %}
-      {% set items = my.topSongs %}
-      {% include '_wrapped_list.html' %}
-    </div>
-  </div>
-  <div>
-    <h2>{{ withUsername }}'s Top Songs</h2>
-    <div class="track-list">
-      {% set suppressDetailLinks = true %}
-      {% set items = their.topSongs %}
-      {% include '_wrapped_list.html' %}
-    </div>
-  </div>
-</section>
-
-{% set section = 'top_artists' %}
-<section class="compare-columns">
-  <div>
-    <h2>{{ username }}'s Top Artists</h2>
-    <div class="track-list">
-      {% set suppressDetailLinks = false %}
-      {% set items = my.topArtists %}
-      {% include '_wrapped_list.html' %}
-    </div>
-  </div>
-  <div>
-    <h2>{{ withUsername }}'s Top Artists</h2>
-    <div class="track-list">
-      {% set suppressDetailLinks = true %}
-      {% set items = their.topArtists %}
-      {% include '_wrapped_list.html' %}
-    </div>
-  </div>
-</section>
-
-{% set section = 'top_albums' %}
-<section class="compare-columns">
-  <div>
-    <h2>{{ username }}'s Top Albums</h2>
-    <div class="track-list">
-      {% set suppressDetailLinks = false %}
-      {% set items = my.topAlbums %}
-      {% include '_wrapped_list.html' %}
-    </div>
-  </div>
-  <div>
-    <h2>{{ withUsername }}'s Top Albums</h2>
-    <div class="track-list">
-      {% set suppressDetailLinks = true %}
-      {% set items = their.topAlbums %}
-      {% include '_wrapped_list.html' %}
-    </div>
-  </div>
-</section>
-
 {# The overlap entries come from the viewer's own pool, so their detail
-   links resolve correctly - keep them linked. #}
+   links resolve correctly - keep them linked. compareWith feeds the
+   per-card versus block (both users' plays/time and the split bar). #}
 {% set section = 'top_artists' %}
 {% set suppressDetailLinks = false %}
+{% set compareWith = withUsername %}
 <section style="margin-bottom: 2.5rem;">
   <h2>You Both Love</h2>
   <div class="track-list">
@@ -197,10 +189,133 @@
     {% include '_wrapped_list.html' %}
   </div>
 </section>
+{% set compareWith = none %}
+
+{# Similarity cells run over the 100-deep pools, so they can surface a
+   common favorite neither displayed top ten shows. #}
+<section class="track-summary-grid-3 compare-similarities">
+  <article class="track-summary-card">
+    <h3>Common Top Artist</h3>
+    <p class="summary-value">{{ detailCell(similarities.commonTopArtist, 'artistDetailPage', 'artist_id') }}</p>
+    <span class="summary-subtitle">{{ similarities.sharedArtistCount }} shared in your top {{ similarities.poolSize }}s</span>
+  </article>
+  <article class="track-summary-card">
+    <h3>Common Top Song</h3>
+    <p class="summary-value">{{ detailCell(similarities.commonTopSong, 'songDetailPage', 'track_id') }}</p>
+    <span class="summary-subtitle">{{ similarities.sharedSongCount }} shared in your top {{ similarities.poolSize }}s</span>
+  </article>
+  <article class="track-summary-card">
+    <h3>Common Top Album</h3>
+    <p class="summary-value">{{ detailCell(similarities.commonTopAlbum, 'albumDetailPage', 'album_id') }}</p>
+    <span class="summary-subtitle">{{ similarities.sharedAlbumCount }} shared in your top {{ similarities.poolSize }}s</span>
+  </article>
+</section>
+
+<nav class="wrapped-stats-filters" aria-label="Filter comparison categories">
+  <button class="stats-filter-button active" data-filter="all">All Stats</button>
+  <button class="stats-filter-button" data-filter="top-songs">Top Songs</button>
+  <button class="stats-filter-button" data-filter="top-artists">Top Artists</button>
+  <button class="stats-filter-button" data-filter="top-albums">Top Albums</button>
+</nav>
+
+{% set emptyMessage = 'No plays in this period.' %}
+
+{% set section = 'top_songs' %}
+<div data-category="top-songs">
+  <section class="compare-columns">
+    <div>
+      <h2>{{ username }}'s Top Songs</h2>
+      <div class="track-list">
+        {% set suppressDetailLinks = false %}
+        {% set items = my.topSongs %}
+        {% include '_wrapped_list.html' %}
+      </div>
+    </div>
+    <div>
+      <h2>{{ withUsername }}'s Top Songs</h2>
+      <div class="track-list">
+        {% set suppressDetailLinks = true %}
+        {% set items = their.topSongs %}
+        {% include '_wrapped_list.html' %}
+      </div>
+    </div>
+  </section>
+</div>
+
+{% set section = 'top_artists' %}
+<div data-category="top-artists">
+  <section class="compare-columns">
+    <div>
+      <h2>{{ username }}'s Top Artists</h2>
+      <div class="track-list">
+        {% set suppressDetailLinks = false %}
+        {% set items = my.topArtists %}
+        {% include '_wrapped_list.html' %}
+      </div>
+    </div>
+    <div>
+      <h2>{{ withUsername }}'s Top Artists</h2>
+      <div class="track-list">
+        {% set suppressDetailLinks = true %}
+        {% set items = their.topArtists %}
+        {% include '_wrapped_list.html' %}
+      </div>
+    </div>
+  </section>
+</div>
+
+{% set section = 'top_albums' %}
+<div data-category="top-albums">
+  <section class="compare-columns">
+    <div>
+      <h2>{{ username }}'s Top Albums</h2>
+      <div class="track-list">
+        {% set suppressDetailLinks = false %}
+        {% set items = my.topAlbums %}
+        {% include '_wrapped_list.html' %}
+      </div>
+    </div>
+    <div>
+      <h2>{{ withUsername }}'s Top Albums</h2>
+      <div class="track-list">
+        {% set suppressDetailLinks = true %}
+        {% set items = their.topAlbums %}
+        {% include '_wrapped_list.html' %}
+      </div>
+    </div>
+  </section>
+</div>
 
 <script>
   window.__chartData = window.__chartData || {};
   window.__chartData.comparisonTrend = {{ comparisonTrend | tojson }};
+
+  // Category filter badges - same show/hide + staggered fade-in pattern as
+  // the Wrapped page ([data-category].visible in style.css).
+  const compareFilterButtons = document.querySelectorAll('.stats-filter-button');
+  const compareCategoryDivs = document.querySelectorAll('[data-category]');
+
+  compareFilterButtons.forEach(button => {
+    button.addEventListener('click', () => {
+      const filter = button.dataset.filter;
+
+      compareFilterButtons.forEach(btn => btn.classList.remove('active'));
+      button.classList.add('active');
+
+      compareCategoryDivs.forEach(div => {
+        if (filter === 'all' || div.dataset.category === filter) {
+          div.classList.add('visible');
+        } else {
+          div.classList.remove('visible');
+        }
+      });
+    });
+  });
+
+  const compareAllButton = document.querySelector('.stats-filter-button[data-filter="all"]');
+  if (compareAllButton) {
+    compareAllButton.click();
+  }
 </script>
 <script src="{{ url_for('static', filename='js/charts.js') }}"></script>
 {% endblock %}
