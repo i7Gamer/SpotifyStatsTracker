@@ -399,6 +399,21 @@ class Repository:
         row = conn.execute("SELECT status FROM images WHERE id=? AND kind=?", (imageId, kind)).fetchone()
         return row["status"] if row else None
 
+    def deleteStalePendingImages(self) -> int:
+        """Forget every 'pending' download claim. Only safe at process startup,
+        before any download can be in flight: a pending row surviving from a
+        previous run means the claimer died (crash, or its status write failed
+        against a locked database) - tryClaimImageDownload would refuse to
+        reclaim it forever, leaving that artwork permanently missing. Deleted
+        rather than marked failed: lazyFetchArtistImage treats 'failed' as
+        permanent, while a missing row means never-attempted, so both the
+        track and artist paths retry naturally. Returns the number of claims
+        cleared."""
+        conn = self._conn()
+        with conn:
+            cur = conn.execute("DELETE FROM images WHERE status=?", (IMAGE_STATUS_PENDING,))
+            return cur.rowcount
+
     # ---- Per-user: plays (play history) -----------------------------------------
 
     def insertPlay(self, username: str, trackId: str, playedAt: float, timePlayed: int,

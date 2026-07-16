@@ -186,6 +186,12 @@ class SpotifyDashboardApp:
         # (see Database/repository.py) instead of secrets/users_map.json and
         # secrets/cookies.json.
         self.repo = Repository()
+        # No download is in flight this early, so any surviving 'pending'
+        # image claim is stale (a previous run died mid-download) and would
+        # block that image from ever being fetched.
+        staleImageClaims = self.repo.deleteStalePendingImages()
+        if staleImageClaims:
+            logger.info("Cleared %d stale pending image download claim(s) from a previous run", staleImageClaims)
 
         self.user_databases = {}
         self._db_lock = threading.RLock()
