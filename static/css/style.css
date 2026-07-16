@@ -748,6 +748,22 @@ progress::-moz-progress-bar {
   font-size: 0.92rem;
 }
 
+/* "+N more" / "Show less" toggle on long artist lists (_artist_links.html) */
+.artist-toggle {
+  background: none;
+  border: none;
+  padding: 0;
+  margin-left: 6px;
+  color: var(--accent);
+  font: inherit;
+  font-size: 0.9em;
+  cursor: pointer;
+}
+
+.artist-toggle:hover {
+  text-decoration: underline;
+}
+
 .track-label {
   background: rgba(255, 255, 255, 0.05);
   padding: 6px 10px;

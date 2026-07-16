@@ -1,13 +1,10 @@
 {% extends "layout.html" %}
+{% from '_artist_links.html' import artistLinks with context %}
 {% block content %}
   <section class="hero">
     <div class="hero-content">
       <h1>{{ album.get('name', '') }}</h1>
-      <p>
-        {% for artist in album.get('artists', []) %}
-          <a href="{{ url_for('artistDetailPage', artist_id=artist.get('id')) }}">{{ artist.get('name', '') }}</a>{% if not loop.last %}, {% endif %}
-        {% endfor %}
-      </p>
+      <p>{{ artistLinks(album.get('artists', [])) }}</p>
     </div>
   </section>
 

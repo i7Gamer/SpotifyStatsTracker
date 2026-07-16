@@ -42,6 +42,8 @@ COMPARE_TREND_MONTH_SPAN_DAYS = 730       #< ...and more than this by month (day
 # renormalized.
 TASTE_MATCH_WEIGHTS = {"artists": 0.7, "songs": 0.1, "albums": 0.2}
 WEEKDAY_NAMES = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+MAX_INLINE_ARTISTS = 5   #< artist lists longer than this collapse behind a "+N more" toggle (_artist_links.html)...
+MIN_HIDDEN_ARTISTS = 2   #< ...but only when at least this many names would be hidden - "+1 more" saves no space
 MAX_UPLOAD_MB = 500              #< cap on a single import-history request's total upload size
 DEFAULT_SORT_BY = "totalTimeListened"
 # The only sortBy values Repository.SONG_SORT_COLUMNS/ALBUM_SORT_COLUMNS/
@@ -809,6 +811,16 @@ class SpotifyDashboardApp:
             return {
                 "SYNTHETIC_FALLBACK_REASON": SYNTHETIC_FALLBACK_REASON,
                 "RESTRICTED_FALLBACK_REASON": RESTRICTED_FALLBACK_REASON,
+            }
+
+        @self.app.context_processor
+        def _injectArtistListLimits():
+            # _artist_links.html collapses long artist lists behind a
+            # "+N more" toggle - single-sources the thresholds so the macro
+            # compares against the constants instead of magic numbers.
+            return {
+                "MAX_INLINE_ARTISTS": MAX_INLINE_ARTISTS,
+                "MIN_HIDDEN_ARTISTS": MIN_HIDDEN_ARTISTS,
             }
 
         @self.app.context_processor
