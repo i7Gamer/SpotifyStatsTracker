@@ -146,9 +146,11 @@
             <div class="compare-split-bar" title="{{ cmp.myTimePercent }}% of the combined listening time is {{ username }}'s">
               <span class="mine" style="width: {{ cmp.myTimePercent }}%"></span><span class="theirs" style="width: {{ 100 - cmp.myTimePercent }}%"></span>
             </div>
+            {# song cards carry no per-user unique-song counts - only
+               artist/album aggregates do #}
             <div class="compare-versus-stats">
-              <span class="compare-versus-mine">{{ username }}: {{ cmp.myPlays }} plays · {{ cmp.myTimeText }} · {{ cmp.myUniqueSongs }} song{{ 's' if cmp.myUniqueSongs != 1 else '' }}</span>
-              <span class="compare-versus-theirs">{{ compareWith }}: {{ cmp.theirPlays }} plays · {{ cmp.theirTimeText }} · {{ cmp.theirUniqueSongs }} song{{ 's' if cmp.theirUniqueSongs != 1 else '' }}</span>
+              <span class="compare-versus-mine">{{ username }}: {{ cmp.myPlays }} plays · {{ cmp.myTimeText }}{% if 'myUniqueSongs' in cmp %} · {{ cmp.myUniqueSongs }} song{{ 's' if cmp.myUniqueSongs != 1 else '' }}{% endif %}</span>
+              <span class="compare-versus-theirs">{{ compareWith }}: {{ cmp.theirPlays }} plays · {{ cmp.theirTimeText }}{% if 'theirUniqueSongs' in cmp %} · {{ cmp.theirUniqueSongs }} song{{ 's' if cmp.theirUniqueSongs != 1 else '' }}{% endif %}</span>
               <span class="compare-versus-combined">Together: {{ cmp.combinedTimeText }}</span>
             </div>
           </div>

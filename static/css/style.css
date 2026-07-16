@@ -910,6 +910,16 @@ progress::-moz-progress-bar {
   color: var(--compare-theirs);
 }
 
+/* Sub-headings for the "You Both Love" artists/songs/albums groups. */
+.compare-shared-heading {
+  margin: 24px 0 12px;
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
 /* Taste-match headline badge in the Compare hero. */
 .taste-match {
   display: inline-flex;

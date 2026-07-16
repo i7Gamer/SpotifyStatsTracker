@@ -505,6 +505,36 @@ class SpotifyDashboardApp:
             "peakDayText": WEEKDAY_NAMES[dayTotals.index(max(dayTotals))] if any(dayTotals) else "—",
         }
 
+    def _buildSharedItems(self, myPool, theirPool, embedFn, limit) -> list[dict]:
+        """Shared entries of one category (viewer-ranked, sliced to `limit`)
+        with the per-user versus data the "You Both Love" cards render.
+        Copied dicts: the pool entries also feed the viewer's own top-list
+        column, and the versus block must only render on the shared cards.
+        The unique-song counts are only attached where the aggregates carry
+        them (artists/albums) - a song card has nothing to count."""
+        theirById = {item["id"]: item for item in theirPool}
+        shared = embedFn([dict(item) for item in myPool if item["id"] in theirById][:limit])
+        for item in shared:
+            theirItem = theirById[item["id"]]
+            myMs = item.get("totalTimeListened", 0)
+            theirMs = theirItem.get("totalTimeListened", 0)
+            combinedMs = myMs + theirMs
+            compareData = {
+                "myPlays": item.get("plays", 0),
+                "theirPlays": theirItem.get("plays", 0),
+                "myTimeText": msToString(myMs),
+                "theirTimeText": msToString(theirMs),
+                "combinedTimeText": msToString(combinedMs),
+                #< an even split when neither side has recorded time - a
+                #  bar of two zero-width halves would just look broken
+                "myTimePercent": round(myMs / combinedMs * 100) if combinedMs else 50,
+            }
+            if "uniqueSongCount" in item or "uniqueSongCount" in theirItem:
+                compareData["myUniqueSongs"] = item.get("uniqueSongCount", 0)
+                compareData["theirUniqueSongs"] = theirItem.get("uniqueSongCount", 0)
+            item["compareData"] = compareData
+        return shared
+
     def _tasteMatchPercent(self, my, their, similarities) -> int | None:
         """One headline number for how much two users' pools overlap: the
         weighted share of the smaller side's pool the other side also has,
@@ -2038,43 +2068,31 @@ class SpotifyDashboardApp:
             my = self._gatherCompareStats(db, startDate, endDate)
             their = self._gatherCompareStats(otherDb, startDate, endDate)
 
-            theirArtistIds = {a["id"] for a in their["topArtistsPool"]}
-            theirArtistsById = {a["id"]: a for a in their["topArtistsPool"]}
             # Sliced like every other list on the page. No percent text here -
-            # it would mix two different users' totals. Copied dicts: the pool
-            # entries also feed the viewer's own Top Artists column, and the
-            # compareData block below must only render on the shared cards.
-            sharedArtists = self._embedArtistsTextElements(
-                [dict(a) for a in my["topArtistsPool"] if a["id"] in theirArtistIds][:COMPARE_TOP_LIST_SIZE])
-            for artist in sharedArtists:
-                theirArtist = theirArtistsById[artist["id"]]
-                myMs = artist.get("totalTimeListened", 0)
-                theirMs = theirArtist.get("totalTimeListened", 0)
-                combinedMs = myMs + theirMs
-                artist["compareData"] = {
-                    "myPlays": artist.get("plays", 0),
-                    "theirPlays": theirArtist.get("plays", 0),
-                    "myTimeText": msToString(myMs),
-                    "theirTimeText": msToString(theirMs),
-                    "myUniqueSongs": artist.get("uniqueSongCount", 0),
-                    "theirUniqueSongs": theirArtist.get("uniqueSongCount", 0),
-                    "combinedTimeText": msToString(combinedMs),
-                    #< an even split when neither side has recorded time - a
-                    #  bar of two zero-width halves would just look broken
-                    "myTimePercent": round(myMs / combinedMs * 100) if combinedMs else 50,
-                }
+            # it would mix two different users' totals.
+            sharedArtists = self._buildSharedItems(
+                my["topArtistsPool"], their["topArtistsPool"],
+                self._embedArtistsTextElements, COMPARE_TOP_LIST_SIZE)
+            sharedSongs = self._buildSharedItems(
+                my["topSongsPool"], their["topSongsPool"],
+                lambda items: self._embedTopSongsTextElements(self._embedSongsTextElements(items)),
+                COMPARE_TOP_LIST_SIZE)
+            sharedAlbums = self._buildSharedItems(
+                my["topAlbumsPool"], their["topAlbumsPool"],
+                self._embedAlbumsTextElements, COMPARE_TOP_LIST_SIZE)
 
             # Similarities run over the full pools, not the displayed top ten:
             # a #40-ranked common favorite is still a common favorite. The
             # "common top X" is the viewer's highest-ranked item the
             # counterpart also has - deterministic, and its detail link
             # resolves because the viewer played it.
+            theirArtistIds = {a["id"] for a in their["topArtistsPool"]}
             theirSongIds = {s["id"] for s in their["topSongsPool"]}
             theirAlbumIds = {a["id"] for a in their["topAlbumsPool"]}
             similarities = {
                 "commonTopArtist": sharedArtists[0] if sharedArtists else None,
-                "commonTopSong": next((s for s in my["topSongsPool"] if s["id"] in theirSongIds), None),
-                "commonTopAlbum": next((a for a in my["topAlbumsPool"] if a["id"] in theirAlbumIds), None),
+                "commonTopSong": sharedSongs[0] if sharedSongs else None,
+                "commonTopAlbum": sharedAlbums[0] if sharedAlbums else None,
                 "sharedArtistCount": sum(1 for a in my["topArtistsPool"] if a["id"] in theirArtistIds),
                 "sharedSongCount": sum(1 for s in my["topSongsPool"] if s["id"] in theirSongIds),
                 "sharedAlbumCount": sum(1 for a in my["topAlbumsPool"] if a["id"] in theirAlbumIds),
@@ -2145,6 +2163,14 @@ class SpotifyDashboardApp:
                         "_wrapped_list.html", items=sharedArtists, section="top_artists",
                         username=username, compareWith=withUsername,
                         emptyMessage="No shared top artists in this period yet."),
+                    "sharedSongsHtml": render_template(
+                        "_wrapped_list.html", items=sharedSongs, section="top_songs",
+                        username=username, compareWith=withUsername,
+                        emptyMessage="No shared top songs in this period yet."),
+                    "sharedAlbumsHtml": render_template(
+                        "_wrapped_list.html", items=sharedAlbums, section="top_albums",
+                        username=username, compareWith=withUsername,
+                        emptyMessage="No shared top albums in this period yet."),
                     "myTopSongsHtml": render_template(
                         "_wrapped_list.html", items=my["topSongs"], section="top_songs", **listArgs),
                     "theirTopSongsHtml": render_template(
@@ -2172,6 +2198,8 @@ class SpotifyDashboardApp:
                 my=my,
                 their=their,
                 sharedArtists=sharedArtists,
+                sharedSongs=sharedSongs,
+                sharedAlbums=sharedAlbums,
                 similarities=similarities,
                 tasteMatch=tasteMatch,
                 comparisonTrend=comparisonTrend,

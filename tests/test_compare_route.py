@@ -473,11 +473,58 @@ class TestCompareRoute(unittest.TestCase):
 
         resp = client.get("/compare")
 
-        # Neither column displays it (rank 11 on both sides), so the only
-        # mention is the "Common Top Song" similarity cell - linked to the
-        # viewer's own detail page, which resolves since she played it.
-        self.assertEqual(resp.data.count(b"DeepSharedSong"), 1)
+        # Neither column displays it (rank 11 on both sides), so it shows in
+        # the "Common Top Song" similarity cell (1 mention) plus its shared-
+        # songs card (img alt + h3 = 2) - linked to the viewer's own detail
+        # page, which resolves since she played it.
+        self.assertEqual(resp.data.count(b"DeepSharedSong"), 3)
         self.assertIn(b"/song/shdeep", resp.data)
+
+    def test_shared_songs_and_albums_render_with_versus_data(self):
+        self._accept("alice", "bob")
+        self.dbs["alice"].getTopSongs.return_value = [
+            _song("sh-song", "SharedSong", plays=3, totalTimeListened=60_000)]
+        self.dbs["bob"].getTopSongs.return_value = [
+            _song("sh-song", "SharedSong", plays=1, totalTimeListened=60_000)]
+        self.dbs["alice"].getTopAlbums.return_value = [
+            _album("sh-alb", "SharedAlbum", plays=4, totalTimeListened=120_000, uniqueSongCount=2)]
+        self.dbs["bob"].getTopAlbums.return_value = [
+            _album("sh-alb", "SharedAlbum", plays=6, totalTimeListened=240_000, uniqueSongCount=3)]
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        self.assertIn(b"alice: 3 plays", resp.data)                #< shared song, mine
+        self.assertIn(b"Together: 2m 0s", resp.data)               #< shared song combined
+        self.assertIn("alice: 4 plays · 2m 0s · 2 songs".encode("utf-8"), resp.data)   #< shared album keeps song counts
+        # song cards carry no unique-song counts - the segment is omitted,
+        # not rendered as "0 songs"
+        self.assertNotIn(b"0 songs", resp.data)
+        #< one split bar per shared card: song + album (no shared artists here)
+        self.assertEqual(resp.data.count(b'class="compare-split-bar"'), 2)
+
+    def test_shared_song_and_album_lists_are_capped(self):
+        self._accept("alice", "bob")
+        sharedSongs = [_song(f"s{i}", f"CapSong{i}") for i in range(12)]
+        self.dbs["alice"].getTopSongs.return_value = sharedSongs
+        self.dbs["bob"].getTopSongs.return_value = sharedSongs
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        self.assertIn(b"CapSong9", resp.data)
+        self.assertNotIn(b"CapSong10", resp.data)
+        self.assertNotIn(b"CapSong11", resp.data)
+
+    def test_ajax_includes_shared_song_and_album_chunks(self):
+        self._accept("alice", "bob")
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare?ajax=true")
+
+        data = resp.get_json()
+        self.assertIn("sharedSongsHtml", data)
+        self.assertIn("sharedAlbumsHtml", data)
 
     def test_you_both_love_sits_between_chart_and_category_lists(self):
         self._accept("alice", "bob")

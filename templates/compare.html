@@ -63,14 +63,32 @@
 {# The overlap entries come from the viewer's own pool, so their detail
    links resolve correctly - keep them linked. compareWith feeds the
    per-card versus block (both users' plays/time and the split bar). #}
-{% set section = 'top_artists' %}
 {% set suppressDetailLinks = false %}
 {% set compareWith = withUsername %}
 <section style="margin-bottom: 2.5rem;">
   <h2>You Both Love</h2>
+
+  <h3 class="compare-shared-heading">Artists</h3>
+  {% set section = 'top_artists' %}
   <div class="track-list" id="sharedArtistsList">
     {% set items = sharedArtists %}
     {% set emptyMessage = 'No shared top artists in this period yet.' %}
+    {% include '_wrapped_list.html' %}
+  </div>
+
+  <h3 class="compare-shared-heading">Songs</h3>
+  {% set section = 'top_songs' %}
+  <div class="track-list" id="sharedSongsList">
+    {% set items = sharedSongs %}
+    {% set emptyMessage = 'No shared top songs in this period yet.' %}
+    {% include '_wrapped_list.html' %}
+  </div>
+
+  <h3 class="compare-shared-heading">Albums</h3>
+  {% set section = 'top_albums' %}
+  <div class="track-list" id="sharedAlbumsList">
+    {% set items = sharedAlbums %}
+    {% set emptyMessage = 'No shared top albums in this period yet.' %}
     {% include '_wrapped_list.html' %}
   </div>
 </section>
@@ -170,6 +188,8 @@
       document.querySelector('.chart-canvas-wrap'),
       document.getElementById('compareSimilarities'),
       document.getElementById('sharedArtistsList'),
+      document.getElementById('sharedSongsList'),
+      document.getElementById('sharedAlbumsList'),
       ...document.querySelectorAll('[data-category] .track-list'),
     ].filter(Boolean);
   }
@@ -189,6 +209,8 @@
         document.getElementById('compareStatsTable').innerHTML = data.statsTableHtml;
         document.getElementById('compareSimilarities').innerHTML = data.similaritiesHtml;
         document.getElementById('sharedArtistsList').innerHTML = data.sharedArtistsHtml;
+        document.getElementById('sharedSongsList').innerHTML = data.sharedSongsHtml;
+        document.getElementById('sharedAlbumsList').innerHTML = data.sharedAlbumsHtml;
         document.getElementById('myTopSongsList').innerHTML = data.myTopSongsHtml;
         document.getElementById('theirTopSongsList').innerHTML = data.theirTopSongsHtml;
         document.getElementById('myTopArtistsList').innerHTML = data.myTopArtistsHtml;
