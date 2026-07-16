@@ -685,27 +685,58 @@ class TestCompareRoute(unittest.TestCase):
         self.assertIn(b'<option value="10" selected>10</option>', resp.data)
         self.assertIn(b'<option value="100" >100</option>', resp.data)
 
-    def test_taste_match_weights_category_overlaps(self):
-        """artists 5/10 shared (weight .5), songs 2/10 (weight .3), albums
-        0/10 (weight .2) -> 0.25 + 0.06 + 0 = 31%."""
+    def test_taste_match_is_full_for_identical_pools(self):
         self._accept("alice", "bob")
-        sharedArtists = [_artist(f"sa{i}", f"SharedA{i}") for i in range(5)]
-        self.dbs["alice"].getTopArtists.return_value = sharedArtists + [_artist(f"a{i}", f"A{i}") for i in range(5)]
-        self.dbs["bob"].getTopArtists.return_value = sharedArtists + [_artist(f"b{i}", f"B{i}") for i in range(5)]
-        sharedSongs = [_song(f"ss{i}", f"SharedS{i}") for i in range(2)]
-        self.dbs["alice"].getTopSongs.return_value = sharedSongs + [_song(f"as{i}", f"AS{i}") for i in range(8)]
-        self.dbs["bob"].getTopSongs.return_value = sharedSongs + [_song(f"bs{i}", f"BS{i}") for i in range(8)]
-        self.dbs["alice"].getTopAlbums.return_value = [_album(f"aal{i}", f"AAl{i}") for i in range(10)]
-        self.dbs["bob"].getTopAlbums.return_value = [_album(f"bal{i}", f"BAl{i}") for i in range(10)]
+        pool = [_artist(f"sa{i}", f"SharedA{i}") for i in range(10)]
+        self.dbs["alice"].getTopArtists.return_value = pool
+        self.dbs["bob"].getTopArtists.return_value = list(pool)
         client = self._loginAs("alice")
 
         resp = client.get("/compare")
 
-        self.assertIn(b'class="taste-match-value js-taste-match">31%</span>', resp.data)
+        self.assertIn(b'class="taste-match-value js-taste-match">100%</span>', resp.data)
+
+    def test_taste_match_rewards_shared_favorites_over_deep_overlap(self):
+        """Rank weighting (1/log2(rank+1) from both sides, normalized against
+        identical pools): sharing the #1 of two-item pools scores
+        2 / (2*(1 + 1/log2(3))) = 61%, sharing only the #2 just 39%."""
+        self._accept("alice", "bob")
+        client = self._loginAs("alice")
+
+        self.dbs["alice"].getTopArtists.return_value = [_artist("top", "SharedTop"), _artist("a2", "A2")]
+        self.dbs["bob"].getTopArtists.return_value = [_artist("top", "SharedTop"), _artist("b2", "B2")]
+        respTop = client.get("/compare")
+
+        self.dbs["alice"].getTopArtists.return_value = [_artist("a1", "A1"), _artist("deep", "SharedDeep")]
+        self.dbs["bob"].getTopArtists.return_value = [_artist("b1", "B1"), _artist("deep", "SharedDeep")]
+        respDeep = client.get("/compare")
+
+        self.assertIn(b'class="taste-match-value js-taste-match">61%</span>', respTop.data)
+        self.assertIn(b'class="taste-match-value js-taste-match">39%</span>', respDeep.data)
+
+    def test_taste_match_weights_category_overlaps(self):
+        """artists identical (1.0, weight .7), albums identical (1.0, weight
+        .2), songs disjoint (0.0, weight .1) -> 90%."""
+        self._accept("alice", "bob")
+        artistPool = [_artist(f"sa{i}", f"SharedA{i}") for i in range(5)]
+        self.dbs["alice"].getTopArtists.return_value = artistPool
+        self.dbs["bob"].getTopArtists.return_value = list(artistPool)
+        albumPool = [_album(f"sal{i}", f"SharedAl{i}") for i in range(5)]
+        self.dbs["alice"].getTopAlbums.return_value = albumPool
+        self.dbs["bob"].getTopAlbums.return_value = list(albumPool)
+        self.dbs["alice"].getTopSongs.return_value = [_song(f"as{i}", f"AS{i}") for i in range(5)]
+        self.dbs["bob"].getTopSongs.return_value = [_song(f"bs{i}", f"BS{i}") for i in range(5)]
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        self.assertIn(b'class="taste-match-value js-taste-match">90%</span>', resp.data)
 
     def test_taste_match_excludes_categories_without_data_on_both_sides(self):
-        """Only artists have data: 5 of 10 shared -> 50%, with the empty
-        song/album categories excluded instead of dragging the score down."""
+        """Only artists have data: 5 shared at ranks 1-5 of 10 on both sides.
+        Rank-weighted: sum(w(1..5)) / sum(w(1..10)) = 2.9485/4.5436 -> 65%,
+        with the empty song/album categories excluded instead of dragging
+        the score down."""
         self._accept("alice", "bob")
         sharedArtists = [_artist(f"sa{i}", f"SharedA{i}") for i in range(5)]
         self.dbs["alice"].getTopArtists.return_value = sharedArtists + [_artist(f"a{i}", f"A{i}") for i in range(5)]
@@ -714,7 +745,7 @@ class TestCompareRoute(unittest.TestCase):
 
         resp = client.get("/compare")
 
-        self.assertIn(b'class="taste-match-value js-taste-match">50%</span>', resp.data)
+        self.assertIn(b'class="taste-match-value js-taste-match">65%</span>', resp.data)
 
     def test_taste_match_hidden_without_any_pool_data(self):
         self._accept("alice", "bob")
