@@ -5,6 +5,9 @@
   var CHART_PALETTE = ['#FB717B', '#5DD97C', '#5AC8FA', '#FFD166', '#C77DFF', '#FF9F45'];
   var GRID_LINE_COUNT = 4;
   var MIN_AXIS_LABEL_SPACING_PX = 70;
+  var Y_AXIS_LABEL_FONT = '11px sans-serif';
+  var Y_AXIS_LABEL_GAP_PX = 8;     //< space between a y-axis label's right edge and the axis line
+  var Y_AXIS_MIN_PADDING_PX = 34;  //< floor so narrow labels (e.g. "0m") still get consistent left padding
 
   function getAccentColor() {
     var computedAccent = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim();
@@ -97,10 +100,29 @@
     return minutes + 'm';
   }
 
+  // A fixed left padding either wastes space (short labels like "45m") or
+  // clips the widest one off the left edge (long ones like "150h30m" - the
+  // longer the time-listened axis's labels, the more room they need). Size
+  // it to what the grid's own labels will actually render as, sampling the
+  // same GRID_LINE_COUNT fractions drawYAxisGrid draws.
+  function yAxisPaddingLeft(ctx, maxValue, formatLabel) {
+    var prevFont = ctx.font;
+    ctx.font = Y_AXIS_LABEL_FONT;
+    var maxWidth = 0;
+    for (var i = 0; i <= GRID_LINE_COUNT; i++) {
+      var width = ctx.measureText(formatLabel(maxValue * i / GRID_LINE_COUNT)).width;
+      if (width > maxWidth) {
+        maxWidth = width;
+      }
+    }
+    ctx.font = prevFont;
+    return Math.max(Y_AXIS_MIN_PADDING_PX, maxWidth + Y_AXIS_LABEL_GAP_PX * 2);
+  }
+
   function drawYAxisGrid(ctx, paddingLeft, paddingTop, plotWidth, plotHeight, maxValue, formatLabel) {
     ctx.strokeStyle = 'rgba(255,255,255,0.08)';
     ctx.fillStyle = '#b0b0b0';
-    ctx.font = '11px sans-serif';
+    ctx.font = Y_AXIS_LABEL_FONT;
     ctx.textAlign = 'right';
     ctx.textBaseline = 'middle';
     for (var i = 0; i <= GRID_LINE_COUNT; i++) {
@@ -109,23 +131,28 @@
       ctx.moveTo(paddingLeft, y);
       ctx.lineTo(paddingLeft + plotWidth, y);
       ctx.stroke();
-      ctx.fillText(formatLabel(maxValue * i / GRID_LINE_COUNT), paddingLeft - 8, y);
+      ctx.fillText(formatLabel(maxValue * i / GRID_LINE_COUNT), paddingLeft - Y_AXIS_LABEL_GAP_PX, y);
     }
   }
 
   function drawSparseXLabels(ctx, labels, paddingLeft, plotWidth, plotHeight, paddingTop, labelForIndex, minSpacing) {
-    ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
     ctx.fillStyle = '#b0b0b0';
     ctx.font = '11px sans-serif';
     var spacing = minSpacing !== undefined ? minSpacing : MIN_AXIS_LABEL_SPACING_PX;
     var maxLabels = Math.max(2, Math.floor(plotWidth / spacing));
     var step = Math.max(1, Math.ceil(labels.length / maxLabels));
+    var lastIndex = labels.length - 1;
     for (var i = 0; i < labels.length; i++) {
-      if (i % step !== 0 && i !== labels.length - 1) {
+      if (i % step !== 0 && i !== lastIndex) {
         continue;
       }
       var x = labelForIndex(i);
+      // Every other label centers on its tick; the last one sits exactly at
+      // the plot's right edge, so centering it would push half its text past
+      // the canvas edge, clipping it - right-align just this one instead so
+      // it hugs the edge without overflowing.
+      ctx.textAlign = (i === lastIndex) ? 'right' : 'center';
       ctx.fillText(labels[i].slice(0, 7), x, paddingTop + plotHeight + 8);
     }
   }
@@ -147,10 +174,10 @@
       return;
     }
 
-    var paddingLeft = 46, paddingBottom = 26, paddingTop = 16, paddingRight = 16;
+    var maxMs = Math.max(1, Math.max.apply(null, data.map(function (d) { return d.totalTimeListened; })));
+    var paddingLeft = yAxisPaddingLeft(ctx, maxMs, msToShortLabel), paddingBottom = 26, paddingTop = 16, paddingRight = 16;
     var plotWidth = width - paddingLeft - paddingRight;
     var plotHeight = height - paddingTop - paddingBottom;
-    var maxMs = Math.max(1, Math.max.apply(null, data.map(function (d) { return d.totalTimeListened; })));
     var slotWidth = plotWidth / data.length;
     var barGap = 4;
     var barWidth = Math.max(2, slotWidth - barGap);
@@ -417,15 +444,15 @@
       return;
     }
 
-    var paddingLeft = 46, paddingBottom = 26, paddingTop = 16, paddingRight = 16;
-    var plotWidth = width - paddingLeft - paddingRight;
-    var plotHeight = height - paddingTop - paddingBottom;
-    var half = plotHeight / 2;
-    var midY = paddingTop + half;
     var maxMs = 1;
     data.series.forEach(function (s) {
       maxMs = Math.max(maxMs, Math.max.apply(null, s.data));
     });
+    var paddingLeft = yAxisPaddingLeft(ctx, maxMs, msToShortLabel), paddingBottom = 26, paddingTop = 16, paddingRight = 16;
+    var plotWidth = width - paddingLeft - paddingRight;
+    var plotHeight = height - paddingTop - paddingBottom;
+    var half = plotHeight / 2;
+    var midY = paddingTop + half;
     var stepX = data.buckets.length > 1 ? plotWidth / (data.buckets.length - 1) : 0;
     var colors = [CHART_PALETTE[0], getTheirsColor()];
 
@@ -444,7 +471,7 @@
       ctx.clearRect(0, 0, width, height);
 
       // Symmetric grid: time labels at 50%/100% above and below the baseline.
-      ctx.font = '11px sans-serif';
+      ctx.font = Y_AXIS_LABEL_FONT;
       ctx.textAlign = 'right';
       ctx.textBaseline = 'middle';
       [0.5, 1].forEach(function (fraction) {
@@ -456,7 +483,7 @@
           ctx.lineTo(paddingLeft + plotWidth, y);
           ctx.stroke();
           ctx.fillStyle = '#b0b0b0';
-          ctx.fillText(msToShortLabel(maxMs * fraction), paddingLeft - 8, y);
+          ctx.fillText(msToShortLabel(maxMs * fraction), paddingLeft - Y_AXIS_LABEL_GAP_PX, y);
         });
       });
       // stronger center baseline separating the two users
@@ -466,7 +493,7 @@
       ctx.lineTo(paddingLeft + plotWidth, midY);
       ctx.stroke();
       ctx.fillStyle = '#b0b0b0';
-      ctx.fillText('0', paddingLeft - 8, midY);
+      ctx.fillText('0', paddingLeft - Y_AXIS_LABEL_GAP_PX, midY);
 
       drawSparseXLabels(ctx, axisLabels, paddingLeft, plotWidth, plotHeight, paddingTop, function (i) {
         return paddingLeft + i * stepX;
