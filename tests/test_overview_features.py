@@ -126,5 +126,48 @@ class TestFeatureSettingsForm(OverviewFeaturesTestBase):
         self.assertNotIn("checked", dataSharingInput[:dataSharingInput.find(">")])
 
 
+class TestUsersTableDisabledQualifier(OverviewFeaturesTestBase):
+    """The Registered Users & Sync Status table's API Backfill/Genre Data
+    columns stay visible either way (an admin should be able to see who's
+    configured regardless of the current toggle) - but a "(disabled)"
+    qualifier on the header clarifies the badges below it aren't doing
+    anything right now."""
+
+    def test_headers_carry_no_qualifier_when_both_enabled(self):
+        dash = self._makeApp()
+        resp = self._getOverview(dash, isAdmin=True)
+        body = resp.data.decode()
+        self.assertNotIn("API Backfill (disabled)", body)
+        self.assertNotIn("Genre Data (disabled)", body)
+
+    def test_spotify_backfill_header_gets_the_qualifier(self):
+        dash = self._makeApp()
+        dash.repo.setSpotifyApiBackfillEnabled(False)
+        resp = self._getOverview(dash, isAdmin=True)
+        body = resp.data.decode()
+        self.assertIn("API Backfill", body)
+        self.assertIn("(disabled)", body)
+        self.assertNotIn("Genre Data (disabled)", body)
+
+    def test_lastfm_backfill_header_gets_the_qualifier(self):
+        dash = self._makeApp()
+        dash.repo.setLastfmGenreBackfillEnabled(False)
+        resp = self._getOverview(dash, isAdmin=True)
+        body = resp.data.decode()
+        self.assertIn("Genre Data", body)
+        self.assertIn("(disabled)", body)
+        self.assertNotIn("API Backfill (disabled)", body)
+
+    def test_qualifier_shows_for_a_non_admins_own_row_too(self):
+        """The table isn't admin-only - a regular user sees their own row and
+        the same misleading-badge risk, so the qualifier must render for them
+        too, not just when is_admin gates the settings form."""
+        dash = self._makeApp()
+        dash.repo.setLastfmGenreBackfillEnabled(False)
+        resp = self._getOverview(dash, isAdmin=False)
+        body = resp.data.decode()
+        self.assertIn("(disabled)", body)
+
+
 if __name__ == "__main__":
     unittest.main()
