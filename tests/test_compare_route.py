@@ -1,6 +1,7 @@
 """GET /compare: a Compare page only visible/reachable for users with at
 least one accepted mutual share - see app.py's comparePage() route.
 """
+import re
 import unittest
 from unittest.mock import patch, MagicMock
 
@@ -26,6 +27,11 @@ def _song(trackId, name, **extra):
 
 def _album(albumId, name, **extra):
     return {"id": albumId, "name": name, "artists": [], **extra}
+
+
+def _tasteMatchFromResponse(resp):
+    match = re.search(rb'taste-match-value js-taste-match">(\d+)%', resp.data)
+    return match.group(1) if match else None
 
 
 def _zeroHeatmapGrid():
@@ -904,10 +910,14 @@ class TestCompareRoute(unittest.TestCase):
         self.assertIn(b'<option value="10" selected>10</option>', resp.data)
         self.assertIn(b'<option value="100" >100</option>', resp.data)
 
-    def test_default_sort_reuses_the_pool_without_an_extra_query(self):
-        """sortBy defaults to 'plays' - the displayed my/their top lists must
-        keep slicing the existing 100-deep pool query (today's behavior),
-        not issue a second live query, when the control is left untouched."""
+    def test_default_sort_reuses_the_shared_pool_for_display_without_an_extra_query(self):
+        """sortBy defaults to 'plays' - a single COMPARE_SHARED_POOL_SIZE-deep
+        query per category serves BOTH the displayed my/their top lists
+        (sliced to `limit`) AND taste-match's topXPool (sliced to
+        COMPARE_OVERLAP_POOL_SIZE): the top 100 of a 300-row plays-ranked
+        result is identical to a dedicated top-100 query, so there's no need
+        to fetch it twice. Only one live query per category, same as before
+        the deeper shared-pool feature existed - just at a deeper LIMIT."""
         self._accept("alice", "bob")
         client = self._loginAs("alice")
 
@@ -916,12 +926,16 @@ class TestCompareRoute(unittest.TestCase):
         self.assertEqual(self.dbs["alice"].getTopSongs.call_count, 1)
         self.assertEqual(self.dbs["alice"].getTopArtists.call_count, 1)
         self.assertEqual(self.dbs["alice"].getTopAlbums.call_count, 1)
+        self.assertEqual(
+            self.dbs["alice"].getTopSongs.call_args.kwargs.get("limit"),
+            appModule.COMPARE_SHARED_POOL_SIZE)
 
     def test_sort_by_param_requeries_the_individual_top_lists(self):
         """Choosing a non-default sort re-fetches the displayed my/their Top
         Songs/Artists/Albums lists at that metric (membership AND order both
         reflect it, matching Top Songs page's own behavior) - the shared/
-        overlap pool query stays untouched (plays, full pool depth)."""
+        taste-match pool query (COMPARE_SHARED_POOL_SIZE, plays-ranked)
+        stays untouched."""
         self._accept("alice", "bob")
         client = self._loginAs("alice")
 
@@ -929,10 +943,67 @@ class TestCompareRoute(unittest.TestCase):
 
         calls = self.dbs["alice"].getTopSongs.call_args_list
         self.assertEqual(len(calls), 2)
-        poolCall = next(c for c in calls if c.kwargs.get("limit") == appModule.COMPARE_OVERLAP_POOL_SIZE)
+        poolCall = next(c for c in calls if c.kwargs.get("limit") == appModule.COMPARE_SHARED_POOL_SIZE)
         self.assertEqual(poolCall.kwargs.get("by", "plays"), "plays")
         displayCall = next(c for c in calls if c.kwargs.get("limit") == appModule.COMPARE_TOP_LIST_SIZE)
         self.assertEqual(displayCall.kwargs.get("by"), "totalTimeListened")
+
+    def test_shared_lists_search_deeper_than_the_taste_match_pool(self):
+        """Top Common Songs/Artists/Albums search COMPARE_SHARED_POOL_SIZE
+        deep - wider than COMPARE_OVERLAP_POOL_SIZE, which taste-match's
+        pools stay pinned to (derived as the shared pool's first
+        COMPARE_OVERLAP_POOL_SIZE entries). A mutual favorite ranked beyond
+        that cutoff on just ONE side used to be invisible to the
+        intersection entirely - that side's 100-deep-only pool didn't have
+        it at all, exact-match or not. The deeper search finds it."""
+        self._accept("alice", "bob")
+        mutual = _artist("mutual", "MutualFavorite")
+        bobFiller = [_artist(f"bf{i}", f"BobFiller{i}") for i in range(appModule.COMPARE_OVERLAP_POOL_SIZE)]
+        self.dbs["alice"].getTopArtists.return_value = [mutual]              #< alice's #1
+        self.dbs["bob"].getTopArtists.return_value = bobFiller + [mutual]    #< bob's #101
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        commonSection = resp.data[
+            resp.data.index(b'data-category="common-top-artists"'):
+            resp.data.index(b'data-category="common-top-albums"')]
+        self.assertIn(b"MutualFavorite", commonSection)
+
+    def test_deeper_shared_pool_does_not_change_the_taste_match_score(self):
+        """Widening the shared-item search must never move taste-match - its
+        topArtistsPool is the shared pool's first COMPARE_OVERLAP_POOL_SIZE
+        entries only. Compares two requests, identical except for one extra
+        mutual favorite landing at rank 101 on both sides (within the Top
+        Common search depth but past taste-match's cutoff) - if taste-match
+        read the full shared pool, adding a brand new exact match would
+        obviously move the score. It must not, even though the extra match
+        DOES belong in the Top Common list."""
+        self._accept("alice", "bob")
+        aliceFiller = [_artist(f"af{i}", f"AliceFiller{i}") for i in range(appModule.COMPARE_OVERLAP_POOL_SIZE - 1)]
+        bobFiller = [_artist(f"bf{i}", f"BobFiller{i}") for i in range(appModule.COMPARE_OVERLAP_POOL_SIZE - 1)]
+        baseAlice = [_artist("top", "SharedTop")] + aliceFiller   #< 100 items
+        baseBob = [_artist("top", "SharedTop")] + bobFiller       #< 100 items
+        client = self._loginAs("alice")
+
+        self.dbs["alice"].getTopArtists.return_value = baseAlice
+        self.dbs["bob"].getTopArtists.return_value = baseBob
+        respWithout = client.get("/compare")
+
+        extraMatch = _artist("extra-deep-match", "ExtraDeepMatch")   #< rank 101 on both sides
+        self.dbs["alice"].getTopArtists.return_value = baseAlice + [extraMatch]
+        self.dbs["bob"].getTopArtists.return_value = baseBob + [extraMatch]
+        respWith = client.get("/compare")
+
+        tasteMatchWithout = _tasteMatchFromResponse(respWithout)
+        tasteMatchWith = _tasteMatchFromResponse(respWith)
+        self.assertIsNotNone(tasteMatchWithout)
+        self.assertEqual(tasteMatchWithout, tasteMatchWith)
+
+        commonSection = respWith.data[
+            respWith.data.index(b'data-category="common-top-artists"'):
+            respWith.data.index(b'data-category="common-top-albums"')]
+        self.assertIn(b"ExtraDeepMatch", commonSection)
 
     def test_invalid_sort_by_falls_back_to_plays(self):
         self._accept("alice", "bob")
@@ -940,7 +1011,10 @@ class TestCompareRoute(unittest.TestCase):
 
         client.get("/compare?sortBy=bogus")
 
-        self.assertEqual(self.dbs["alice"].getTopSongs.call_count, 1)   #< no extra by= query
+        #< no extra display query at the "plays" default - the one
+        #  COMPARE_SHARED_POOL_SIZE-deep query serves both taste-match's
+        #  sliced topXPool and the displayed list
+        self.assertEqual(self.dbs["alice"].getTopSongs.call_count, 1)
 
     def test_sort_by_dropdown_renders_and_preselects(self):
         self._accept("alice", "bob")
@@ -973,7 +1047,10 @@ class TestCompareRoute(unittest.TestCase):
 
         self.assertNotIn(b"Name (A-Z)", resp.data)
         self.assertIn(b'<option value="plays" selected>Number of Plays</option>', resp.data)
-        self.assertEqual(self.dbs["alice"].getTopSongs.call_count, 1)   #< no extra by= query
+        #< no extra display query at the "plays" default - the one
+        #  COMPARE_SHARED_POOL_SIZE-deep query serves both taste-match's
+        #  sliced topXPool and the displayed list
+        self.assertEqual(self.dbs["alice"].getTopSongs.call_count, 1)
 
     def test_sort_by_reorders_the_shared_common_lists(self):
         """A chosen sortBy must also reorder the Top Common (shared) lists -

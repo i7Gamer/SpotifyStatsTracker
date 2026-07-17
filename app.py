@@ -50,7 +50,13 @@ GENRE_GATE_CATEGORY_MIN_PERCENT = 30
 WRAPPED_LIST_SIZE = 10          #< default/fallback for ?limit= - how many items per category the Wrapped page shows
 WRAPPED_LIMIT_OPTIONS = (10, 25, 50, 100)   #< selectable values for Wrapped's items-per-category dropdown
 COMPARE_TOP_LIST_SIZE = 10                #< items per top-songs/artists/albums list shown on the Compare page
-COMPARE_OVERLAP_POOL_SIZE = 100           #< how deep each side's top songs/artists/albums lists are searched for shared taste overlap
+COMPARE_OVERLAP_POOL_SIZE = 100           #< how deep each side's top songs/artists/albums lists are searched for taste-match overlap
+# Top Common Songs/Artists/Albums search a SEPARATE, deeper pool than
+# COMPARE_OVERLAP_POOL_SIZE - decoupled on purpose so widening the shared-
+# item search can never move the taste-match score (see _tasteMatchPercent,
+# which only ever reads the shallower topXPool fields). First knob to
+# revisit if the Top Common lists still feel too sparse.
+COMPARE_SHARED_POOL_SIZE = 300
 COMPARE_TREND_WEEK_SPAN_DAYS = 120        #< comparison trends spanning more days than this auto-bucket by week...
 COMPARE_TREND_MONTH_SPAN_DAYS = 730       #< ...and more than this by month (day buckets over years are sub-pixel)
 # Taste-match weighting: artists dominate - exact-song collisions between
@@ -759,30 +765,46 @@ class SpotifyDashboardApp:
         and the counterpart so the two columns can't drift apart. Runs the
         same _embed*TextElements step every other page feeding
         _track_card.html uses - without it the cards render with blank
-        time/first-listened/duration/percent lines. The overlap pools
-        (topSongsPool/topArtistsPool/topAlbumsPool - what the similarity/
-        overlap intersections and taste-match run over) always stay
-        COMPARE_OVERLAP_POOL_SIZE-deep and plays-ranked, regardless of
-        `sortBy` - that math is tuned around a plays-ranked pool. The
-        DISPLAYED my/their top lists default to the same pool's first
-        `limit` entries (no extra query - matches today's single
-        aggregation), but re-query live at `sortBy` when it's not "plays",
-        so both membership and order reflect the chosen metric like Top
-        Songs page's own sortBy does."""
+        time/first-listened/duration/percent lines.
+
+        Every category is fetched ONCE, at COMPARE_SHARED_POOL_SIZE depth
+        (sharedSongsPool/sharedArtistsPool/sharedAlbumsPool) - the query
+        that feeds Top Common Songs/Artists/Albums (_buildSharedItems) and
+        the similarity counts. topSongsPool/topArtistsPool/topAlbumsPool
+        (what taste-match runs over) are DERIVED as that same pool's first
+        COMPARE_OVERLAP_POOL_SIZE entries rather than a second DB query: a
+        plays-ranked LIMIT 300 query's first 100 rows are, by construction,
+        identical to a dedicated LIMIT 100 query (same WHERE/ORDER BY) - so
+        there's no need to pay for the full GROUP BY/ORDER BY aggregation
+        (the expensive part on a many-year "All Time" range) twice just to
+        get two different cutoffs of the same ranking. This also means
+        widening the shared-item search can never move the taste-match
+        score - it only ever sees the first COMPARE_OVERLAP_POOL_SIZE of
+        whatever the shared pool returns, unaffected by anything beyond it.
+
+        The DISPLAYED my/their top lists default to the same pool's first
+        `limit` entries (no extra query), but re-query live at `sortBy`
+        when it's not "plays", so both membership and order reflect the
+        chosen metric like Top Songs page's own sortBy does - that one
+        query genuinely can't be derived by slicing, since it's a different
+        sort order entirely."""
         totalPlays, totalMs = db.getPlayTotals(startDate, endDate)
-        topSongsPool = db.getTopSongs(startDate, endDate, limit=COMPARE_OVERLAP_POOL_SIZE)
+        sharedSongsPool = db.getTopSongs(startDate, endDate, limit=COMPARE_SHARED_POOL_SIZE)
+        topSongsPool = sharedSongsPool[:COMPARE_OVERLAP_POOL_SIZE]
         topSongsDisplay = topSongsPool[:limit] if sortBy == "plays" \
             else db.getTopSongs(startDate, endDate, limit=limit, by=sortBy)
         topSongs = self._embedTopSongsTextElements(
             self._embedSongsTextElements(topSongsDisplay),
             sortBy=sortBy, totalPlays=totalPlays, totalMs=totalMs)
-        topAlbumsPool = db.getTopAlbums(startDate, endDate, limit=COMPARE_OVERLAP_POOL_SIZE)
+        sharedAlbumsPool = db.getTopAlbums(startDate, endDate, limit=COMPARE_SHARED_POOL_SIZE)
+        topAlbumsPool = sharedAlbumsPool[:COMPARE_OVERLAP_POOL_SIZE]
         topAlbumsDisplay = topAlbumsPool[:limit] if sortBy == "plays" \
             else db.getTopAlbums(startDate, endDate, limit=limit, by=sortBy)
         topAlbums = self._embedAlbumsTextElements(
             topAlbumsDisplay,
             sortBy=sortBy, totalPlays=totalPlays, totalMs=totalMs)
-        topArtistsPool = db.getTopArtists(startDate, endDate, limit=COMPARE_OVERLAP_POOL_SIZE)
+        sharedArtistsPool = db.getTopArtists(startDate, endDate, limit=COMPARE_SHARED_POOL_SIZE)
+        topArtistsPool = sharedArtistsPool[:COMPARE_OVERLAP_POOL_SIZE]
         topArtistsDisplay = topArtistsPool[:limit] if sortBy == "plays" \
             else db.getTopArtists(startDate, endDate, limit=limit, by=sortBy)
         topArtists = self._embedArtistsTextElements(
@@ -810,6 +832,9 @@ class SpotifyDashboardApp:
             "topSongsPool": topSongsPool,
             "topArtistsPool": topArtistsPool,
             "topAlbumsPool": topAlbumsPool,
+            "sharedSongsPool": sharedSongsPool,
+            "sharedArtistsPool": sharedArtistsPool,
+            "sharedAlbumsPool": sharedAlbumsPool,
             "uniqueSongs": db.getSongsCount(startDate, endDate),
             "uniqueArtists": db.getArtistsCount(startDate, endDate),
             "avgPlayTimeText": msToString(totalMs // totalPlays) if totalPlays else "—",
@@ -2806,16 +2831,18 @@ class SpotifyDashboardApp:
             self._markLinkExternally(their["topAlbums"], db.getPlayedAlbumIds([a["id"] for a in their["topAlbums"]]))
 
             # Sliced like every other list on the page. No percent text here -
-            # it would mix two different users' totals.
+            # it would mix two different users' totals. Searches the deeper
+            # sharedXPool (COMPARE_SHARED_POOL_SIZE), not the shallower
+            # topXPool taste-match uses - see _gatherCompareStats.
             sharedArtists = self._buildSharedItems(
-                my["topArtistsPool"], their["topArtistsPool"],
+                my["sharedArtistsPool"], their["sharedArtistsPool"],
                 self._embedArtistsTextElements, limit, sortBy=sortBy)
             sharedSongs = self._buildSharedItems(
-                my["topSongsPool"], their["topSongsPool"],
+                my["sharedSongsPool"], their["sharedSongsPool"],
                 lambda items: self._embedTopSongsTextElements(self._embedSongsTextElements(items)),
                 limit, sortBy=sortBy)
             sharedAlbums = self._buildSharedItems(
-                my["topAlbumsPool"], their["topAlbumsPool"],
+                my["sharedAlbumsPool"], their["sharedAlbumsPool"],
                 self._embedAlbumsTextElements, limit, sortBy=sortBy)
             # Genre tables are entity-keyed, not user-scoped, so either
             # side's db returns the same result here - db (the viewer's) is
@@ -2824,22 +2851,23 @@ class SpotifyDashboardApp:
             sharedSongs = self._attachGenres(db, sharedSongs, "track")
             sharedAlbums = self._attachGenres(db, sharedAlbums, "album")
 
-            # Similarities run over the full pools, not the displayed top ten:
-            # a #40-ranked common favorite is still a common favorite. The
-            # "common top X" is the viewer's highest-ranked item the
-            # counterpart also has - deterministic, and its detail link
-            # resolves because the viewer played it.
-            theirArtistIds = {a["id"] for a in their["topArtistsPool"]}
-            theirSongIds = {s["id"] for s in their["topSongsPool"]}
-            theirAlbumIds = {a["id"] for a in their["topAlbumsPool"]}
+            # Similarities run over the deeper sharedXPool, not the displayed
+            # top ten (nor the shallower topXPool taste-match uses) - a #200-
+            # ranked common favorite is still a common favorite. The
+            # "common top X" is combined-metric-ranked (see _buildSharedItems)
+            # so it's the same regardless of who's viewing, and its detail
+            # link resolves because the viewer played it.
+            theirArtistIds = {a["id"] for a in their["sharedArtistsPool"]}
+            theirSongIds = {s["id"] for s in their["sharedSongsPool"]}
+            theirAlbumIds = {a["id"] for a in their["sharedAlbumsPool"]}
             similarities = {
                 "commonTopArtist": sharedArtists[0] if sharedArtists else None,
                 "commonTopSong": sharedSongs[0] if sharedSongs else None,
                 "commonTopAlbum": sharedAlbums[0] if sharedAlbums else None,
-                "sharedArtistCount": sum(1 for a in my["topArtistsPool"] if a["id"] in theirArtistIds),
-                "sharedSongCount": sum(1 for s in my["topSongsPool"] if s["id"] in theirSongIds),
-                "sharedAlbumCount": sum(1 for a in my["topAlbumsPool"] if a["id"] in theirAlbumIds),
-                "poolSize": COMPARE_OVERLAP_POOL_SIZE,
+                "sharedArtistCount": sum(1 for a in my["sharedArtistsPool"] if a["id"] in theirArtistIds),
+                "sharedSongCount": sum(1 for s in my["sharedSongsPool"] if s["id"] in theirSongIds),
+                "sharedAlbumCount": sum(1 for a in my["sharedAlbumsPool"] if a["id"] in theirAlbumIds),
+                "poolSize": COMPARE_SHARED_POOL_SIZE,
             }
             # Genre comparison (and the genre category folded into taste
             # match below) requires BOTH sides past the unlock gate -
