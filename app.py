@@ -1214,10 +1214,22 @@ class SpotifyDashboardApp:
         docs) without re-querying the DB. Used where a pool was fetched at
         one fixed ranking but the displayed order should follow the user's
         chosen metric instead (Wrapped's cached pools, which are only ever
-        stored plays-ranked)."""
+        stored plays-ranked).
+
+        Ties on `sortBy` fall back to the other metric, then name - mirrors
+        Repository.getSongsPage's plays -> totalTimeListened -> name tiebreak
+        chain instead of leaning on the input pool's incidental order."""
         if sortBy == "name":
             return sorted(items, key=lambda item: item.get("name", "").lower())
-        return sorted(items, key=lambda item: item.get(sortBy, 0), reverse=True)
+        otherMetric = "plays" if sortBy == "totalTimeListened" else "totalTimeListened"
+        return sorted(
+            items,
+            key=lambda item: (
+                -item.get(sortBy, 0),
+                -item.get(otherMetric, 0),
+                (item.get("name") or "").lower(),
+            ),
+        )
 
     def _discoveriesInYear(self, items: list, yearStart, yearEnd, limit: int, sortBy: str = "plays") -> list:
         """Items (songs or artists) whose true, all-time first listen falls
