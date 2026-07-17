@@ -123,8 +123,14 @@ class BackupWorker:
         return finalPath
 
     def _rotate(self) -> None:
+        # retentionCount 0 disables scheduled backups outright (see isEnabled),
+        # so rotation must be a no-op: reading it as "keep zero snapshots"
+        # would make a direct runBackup() call delete every existing snapshot -
+        # including the one runBackup() itself just wrote.
+        if not self.retentionCount:
+            return
         files = self._backupFiles()
-        for stale in files[:-self.retentionCount] if self.retentionCount else files:
+        for stale in files[:-self.retentionCount]:
             try:
                 stale.unlink()
                 logger.info("Rotated out old backup %s", stale.name)

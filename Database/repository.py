@@ -533,16 +533,6 @@ class Repository:
         ).fetchall()
         return [self._playRowToEntry(r) for r in rows]
 
-    def getRecordedPlayedAtTimes(self, username: str) -> set:
-        """Return set of all recorded played_at timestamps for this user.
-        Used for deduplication when polling REST API."""
-        conn = self._conn()
-        rows = conn.execute(
-            "SELECT played_at FROM plays WHERE username=?",
-            (username,),
-        ).fetchall()
-        return {row["played_at"] for row in rows}
-
     def getPlaysWithSourceInRange(self, username: str, startTs: float, endTs: float) -> list[dict]:
         """Plays in the closed [startTs, endTs] window including their
         created_reason. The Web API reconciliation needs the source to
@@ -565,16 +555,6 @@ class Repository:
             }
             for r in rows
         ]
-
-    def deletePlaysBefore(self, username: str, timestamp: float) -> int:
-        """Delete all plays for this user before the given timestamp (unix seconds).
-        Returns the number of rows deleted. Does NOT commit."""
-        conn = self._conn()
-        cur = conn.execute(
-            "DELETE FROM plays WHERE username=? AND played_at < ?",
-            (username, timestamp),
-        )
-        return cur.rowcount
 
     def getPlayedTrackIds(self, username: str, trackIds: list[str]) -> set[str]:
         """The subset of `trackIds` this user has at least one play of - the

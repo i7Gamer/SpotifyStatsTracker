@@ -89,6 +89,22 @@ class TestRunBackup(BackupWorkerTestCase):
 
         self.assertTrue(unrelated.exists())
 
+    def test_zero_retention_rotates_nothing(self):
+        """retentionCount=0 disables scheduled backups (isEnabled is False), so
+        a DIRECT runBackup() call must rotate nothing - not read 0 as "keep
+        zero snapshots" and delete every existing snapshot including the one
+        runBackup() itself just wrote."""
+        worker = self._makeWorker(retentionCount=0)
+        backupDir = self.root / "Backups"
+        backupDir.mkdir()
+        preexisting = backupDir / f"{backupModule.BACKUP_FILENAME_PREFIX}20250101_000000.db"
+        preexisting.write_bytes(b"old")
+
+        newest = worker.runBackup()
+
+        self.assertTrue(newest.exists())
+        self.assertTrue(preexisting.exists())
+
 
 class TestIsDue(BackupWorkerTestCase):
     def test_due_when_no_backup_exists_yet(self):

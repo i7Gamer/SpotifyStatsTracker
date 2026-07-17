@@ -105,6 +105,16 @@ TRUST_PROXY_HEADERS_ENV_VAR = "TRUST_PROXY_HEADERS"
 # account.
 ADMIN_EMAIL_ENV_VAR = "ADMIN_EMAIL"
 PASSWORD_MIN_LENGTH = 8   #< also enforced client-side via the minlength attribute
+# The Spotify OAuth CSRF `state` round-trip (RFC 6749 §10.12): /spotify-authorize
+# stores a one-shot random value under this session key and sends it along to
+# Spotify; /spotify-callback refuses to exchange a code unless the request
+# echoes that exact value back. Without it, anyone sharing this instance's
+# Spotify app credentials could complete the consent themselves and trick a
+# logged-in victim into loading the callback URL - storing the ATTACKER's
+# refresh token (and, via backfill, their listening history) on the victim's
+# account.
+SPOTIFY_OAUTH_STATE_SESSION_KEY = "spotify_oauth_state"
+SPOTIFY_OAUTH_STATE_NUM_BYTES = 32   #< entropy fed to secrets.token_urlsafe
 RATE_LIMIT_MAX_ATTEMPTS = 10     #< max POSTs allowed per window, per source IP, per route
 RATE_LIMIT_WINDOW_SECONDS = 300  #< 5 minutes
 RATE_LIMIT_ERROR_MESSAGE = "Too many attempts. Please wait a few minutes and try again."
@@ -1874,13 +1884,18 @@ class SpotifyDashboardApp:
                 return redirect(url_for("profilePage", error="API Credentials not configured."))
 
             scope = "user-read-recently-played"
-            
+            # One-shot CSRF state - see SPOTIFY_OAUTH_STATE_SESSION_KEY's
+            # comment. token_urlsafe output needs no URL-encoding.
+            state = secrets.token_urlsafe(SPOTIFY_OAUTH_STATE_NUM_BYTES)
+            session[SPOTIFY_OAUTH_STATE_SESSION_KEY] = state
+
             auth_url = (
                 f"https://accounts.spotify.com/authorize"
                 f"?client_id={client_id}"
                 f"&response_type=code"
                 f"&redirect_uri={spotify_callback_url}"
                 f"&scope={scope}"
+                f"&state={state}"
             )
             return redirect(auth_url)
 
@@ -1892,6 +1907,16 @@ class SpotifyDashboardApp:
             email, username, db = get_current_user_or_redirect()
             if not email:
                 return redirect(url_for("login"))
+
+            # CSRF guard - see SPOTIFY_OAUTH_STATE_SESSION_KEY's comment.
+            # pop(): a state value is single-use, so a replayed callback URL
+            # is rejected even after a successful exchange.
+            expectedState = session.pop(SPOTIFY_OAUTH_STATE_SESSION_KEY, None)
+            if not expectedState or request.args.get("state") != expectedState:
+                return redirect(url_for(
+                    "profilePage",
+                    error="Spotify authorization failed: missing or mismatched state - "
+                          "please start over with 'Authorize with Spotify'."))
 
             code = request.args.get("code")
             error = request.args.get("error")
