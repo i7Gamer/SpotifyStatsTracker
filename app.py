@@ -3055,11 +3055,11 @@ class SpotifyDashboardApp:
             if not self.repo.isShareLinksEnabled():
                 abort(404)
             if _rateLimited("share_link_create"):
-                return redirect(url_for("wrappedPage", error=RATE_LIMIT_ERROR_MESSAGE))
+                return redirect(url_for("wrappedPage", error=RATE_LIMIT_ERROR_MESSAGE, openShareModal=1))
 
             expiresInSeconds = SHARE_LINK_EXPIRY_CHOICES.get(request.form.get("expiry", "never"))
             self.repo.createShareLink(username, Repository.SHARE_LINK_KIND_WRAPPED, year, expiresInSeconds)
-            return redirect(url_for("wrappedPage", year=year, success="Share link created."))
+            return redirect(url_for("wrappedPage", year=year, success="Share link created.", openShareModal=1))
 
         @self.app.route("/shared/<token>", methods=["GET"])
         def sharedWrappedPage(token):

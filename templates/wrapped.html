@@ -21,6 +21,43 @@
     .wrapped-stats-filters {
       margin: 24px 0 12px !important;
     }
+    .share-modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.6);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 200;
+      padding: 1rem;
+    }
+    .share-modal-card {
+      position: relative;
+      width: 100%;
+      max-width: 480px;
+      padding: 1.5rem;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      backdrop-filter: blur(12px) saturate(180%);
+      -webkit-backdrop-filter: blur(12px) saturate(180%);
+      box-shadow: 0 12px 28px rgba(0, 0, 0, 0.45), 0 0 15px var(--accent-glow);
+    }
+    .share-modal-close {
+      position: absolute;
+      top: 0.5rem;
+      right: 0.75rem;
+      background: none;
+      border: none;
+      color: var(--muted);
+      font-size: 1.5rem;
+      line-height: 1;
+      cursor: pointer;
+      padding: 4px;
+    }
+    .share-modal-close:hover {
+      color: var(--accent);
+    }
   </style>
   <section class="hero">
     <div class="hero-content">
@@ -74,7 +111,7 @@
       </div>
     </div>
 
-    <div style="flex-shrink: 0;">
+    <div style="flex-shrink: 0; display: flex; gap: 0.75rem; align-items: center;">
       <button id="exportWrappedBtn" class="primary-button" style="background: var(--accent); color: #111; font-weight: bold; border: none; padding: 10px 20px; border-radius: 20px; cursor: pointer; display: inline-flex; align-items: center; gap: 8px;"
               data-year="{{ year }}"
               data-user="{{ username }}"
@@ -96,6 +133,14 @@
         </svg>
         Export Summary Card
       </button>
+      {% if share_links_enabled %}
+      <button type="button" id="shareWrappedBtn" class="primary-button" style="background: var(--accent); color: #111; font-weight: bold; border: none; padding: 10px 20px; border-radius: 20px; cursor: pointer; display: inline-flex; align-items: center; gap: 8px;">
+        <svg width="16" height="16" fill="currentColor" viewBox="0 0 16 16" style="display:inline-block;">
+          <path d="M13.5 1a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3zM11 2.5a2.5 2.5 0 1 1 .603 1.628l-6.718 3.12a2.499 2.499 0 0 1 0 1.504l6.718 3.12a2.5 2.5 0 1 1-.488.876l-6.718-3.12a2.5 2.5 0 1 1 0-3.256l6.718-3.12A2.5 2.5 0 0 1 11 2.5zm-8.5 4a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3zm11 5.5a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3z"/>
+        </svg>
+        Share
+      </button>
+      {% endif %}
     </div>
 
     <noscript>
@@ -104,33 +149,36 @@
   </form>
 
   {% if share_links_enabled %}
-  <section class="card" style="margin: 0 0 24px; padding: 1rem 1.5rem;">
-    {% set currentLink = shareLinks | selectattr('year', 'equalto', year) | first %}
-    <h3 style="margin: 0 0 0.75rem;">Share this Wrapped</h3>
-    {% if currentLink %}
-      <p style="color: var(--muted); font-size: 0.9rem; margin: 0 0 0.75rem;">Anyone with this link can view your {{ year }} Wrapped - no login required.</p>
-      <div style="display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap;">
-        <input id="shareLinkUrl" type="text" readonly value="{{ url_for('sharedWrappedPage', token=currentLink.token, _external=True) }}" style="flex: 1; min-width: 220px;" onclick="this.select()">
-        <button type="button" class="primary-button" style="padding: 4px 12px;" onclick="navigator.clipboard.writeText(document.getElementById('shareLinkUrl').value)">Copy</button>
-        <form method="post" action="{{ url_for('profileShareLinkAction', link_id=currentLink.id) }}" style="margin: 0; display: inline-block;">
+  {% set currentLink = shareLinks | selectattr('year', 'equalto', year) | first %}
+  <div id="shareLinkModal" class="share-modal-overlay" style="display: {{ 'flex' if request.args.get('openShareModal') else 'none' }};">
+    <div class="share-modal-card" role="dialog" aria-modal="true" aria-labelledby="shareLinkModalTitle">
+      <button type="button" class="share-modal-close" aria-label="Close" onclick="document.getElementById('shareLinkModal').style.display = 'none';">&times;</button>
+      <h3 id="shareLinkModalTitle" style="margin: 0 0 0.75rem;">Share this Wrapped</h3>
+      {% if currentLink %}
+        <p style="color: var(--muted); font-size: 0.9rem; margin: 0 0 0.75rem;">Anyone with this link can view your {{ year }} Wrapped - no login required.</p>
+        <div style="display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap;">
+          <input id="shareLinkUrl" type="text" readonly value="{{ url_for('sharedWrappedPage', token=currentLink.token, _external=True) }}" style="flex: 1; min-width: 220px;" onclick="this.select()">
+          <button type="button" class="primary-button" style="padding: 4px 12px;" onclick="navigator.clipboard.writeText(document.getElementById('shareLinkUrl').value)">Copy</button>
+          <form method="post" action="{{ url_for('profileShareLinkAction', link_id=currentLink.id) }}" style="margin: 0; display: inline-block;">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+            <button type="submit" class="primary-button" style="padding: 4px 12px; background: #c92a2a;">Revoke</button>
+          </form>
+        </div>
+      {% else %}
+        <p style="color: var(--muted); font-size: 0.9rem; margin: 0 0 0.75rem;">Create a public, no-login link to share your {{ year }} Wrapped.</p>
+        <form method="post" action="{{ url_for('createWrappedShareLink', year=year) }}" style="display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap;">
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
-          <button type="submit" class="primary-button" style="padding: 4px 12px; background: #c92a2a;">Revoke</button>
+          <label for="shareLinkExpiry">Expires:</label>
+          <select id="shareLinkExpiry" name="expiry">
+            {% for choice in shareLinkExpiryChoices %}
+              <option value="{{ choice }}" {% if choice == 'never' %}selected{% endif %}>{{ 'Never' if choice == 'never' else choice.replace('d', ' days') }}</option>
+            {% endfor %}
+          </select>
+          <button type="submit" class="primary-button">Create Share Link</button>
         </form>
-      </div>
-    {% else %}
-      <p style="color: var(--muted); font-size: 0.9rem; margin: 0 0 0.75rem;">Create a public, no-login link to share your {{ year }} Wrapped.</p>
-      <form method="post" action="{{ url_for('createWrappedShareLink', year=year) }}" style="display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap;">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
-        <label for="shareLinkExpiry">Expires:</label>
-        <select id="shareLinkExpiry" name="expiry">
-          {% for choice in shareLinkExpiryChoices %}
-            <option value="{{ choice }}" {% if choice == 'never' %}selected{% endif %}>{{ 'Never' if choice == 'never' else choice.replace('d', ' days') }}</option>
-          {% endfor %}
-        </select>
-        <button type="submit" class="primary-button">Create Share Link</button>
-      </form>
-    {% endif %}
-  </section>
+      {% endif %}
+    </div>
+  </div>
   {% endif %}
   {% endif %}
 
@@ -748,6 +796,22 @@
       link.download = btn.dataset.user + '_' + btn.dataset.year + '_wrapped_summary.png';
       link.href = dataURL;
       link.click();
+    });
+
+    document.getElementById('shareWrappedBtn')?.addEventListener('click', function() {
+      const modal = document.getElementById('shareLinkModal');
+      if (modal) modal.style.display = 'flex';
+    });
+
+    document.getElementById('shareLinkModal')?.addEventListener('click', function(e) {
+      if (e.target === this) this.style.display = 'none';
+    });
+
+    document.addEventListener('keydown', function(e) {
+      if (e.key === 'Escape') {
+        const modal = document.getElementById('shareLinkModal');
+        if (modal) modal.style.display = 'none';
+      }
     });
     {% endif %}
   </script>

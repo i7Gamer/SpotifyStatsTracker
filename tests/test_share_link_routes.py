@@ -85,6 +85,7 @@ class TestCreateShareLink(ShareLinkRoutesTestCase):
 
         self.assertEqual(resp.status_code, 302)
         self.assertIn("/wrapped", resp.headers["Location"])
+        self.assertIn("openShareModal=1", resp.headers["Location"])
         links = self.dash.repo.getShareLinksForUser("alice")
         self.assertEqual(len(links), 1)
         self.assertEqual(links[0]["year"], 2026)
@@ -124,6 +125,7 @@ class TestCreateShareLink(ShareLinkRoutesTestCase):
 
         self.assertEqual(resp.status_code, 302)
         self.assertIn("error=", resp.headers["Location"])
+        self.assertIn("openShareModal=1", resp.headers["Location"])
         self.assertEqual(len(self.dash.repo.getShareLinksForUser("alice")), RATE_LIMIT_MAX_ATTEMPTS)
 
 
@@ -378,6 +380,32 @@ class TestShareLinkPanelOnWrappedPage(ShareLinkRoutesTestCase):
         resp = client.get("/wrapped?year=2026")
 
         self.assertNotIn(b"Share this Wrapped", resp.data)
+        self.assertNotIn(b'id="shareWrappedBtn"', resp.data)
+
+    def test_share_button_sits_next_to_the_export_button(self):
+        client = self._loginAs("alice", "alice@example.com")
+
+        resp = client.get("/wrapped?year=2026")
+        body = resp.data.decode()
+
+        self.assertIn('id="shareWrappedBtn"', body)
+        self.assertIn('id="exportWrappedBtn"', body)
+
+    def test_modal_closed_by_default(self):
+        client = self._loginAs("alice", "alice@example.com")
+
+        resp = client.get("/wrapped?year=2026")
+        body = resp.data.decode()
+
+        self.assertIn('id="shareLinkModal" class="share-modal-overlay" style="display: none;"', body)
+
+    def test_modal_open_when_openShareModal_param_present(self):
+        client = self._loginAs("alice", "alice@example.com")
+
+        resp = client.get("/wrapped?year=2026&openShareModal=1")
+        body = resp.data.decode()
+
+        self.assertIn('id="shareLinkModal" class="share-modal-overlay" style="display: flex;"', body)
 
 
 class TestSharedImageRoutes(ShareLinkRoutesTestCase):
