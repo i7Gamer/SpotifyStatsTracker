@@ -886,10 +886,10 @@ class TestCompareRoute(unittest.TestCase):
         self._accept("alice", "bob")
         client = self._loginAs("alice")
 
-        resp = client.get("/compare?sortBy=name")
+        resp = client.get("/compare?sortBy=totalTimeListened")
 
         self.assertIn(b'id="sortBy"', resp.data)
-        self.assertIn(b'<option value="name" selected>Name (A-Z)</option>', resp.data)
+        self.assertIn(b'<option value="totalTimeListened" selected>Time Played</option>', resp.data)
         self.assertIn(b'<option value="plays" >Number of Plays</option>', resp.data)
 
     def test_sort_by_dropdown_defaults_to_plays(self):
@@ -900,24 +900,52 @@ class TestCompareRoute(unittest.TestCase):
 
         self.assertIn(b'<option value="plays" selected>Number of Plays</option>', resp.data)
 
-    def test_sort_by_leaves_shared_lists_and_taste_match_untouched(self):
-        """Confirmed scope: the shared/common lists and the taste-match pool
-        stay ranked by plays regardless of sortBy - only the individual my/
-        their top lists change. SharedArtist ordering by combined plays
-        (see the viewer-symmetry fix) must survive a sortBy=name request."""
+    def test_sort_by_name_is_not_offered_and_falls_back_to_plays(self):
+        """Compare's dropdown doesn't offer "Name (A-Z)" (unlike Top Songs/
+        Artists/Albums) - there's no sensible combined-both-users alphabetical
+        ranking for the Top Common lists (see app.py's COMPARE_SORT_BY). An
+        explicit ?sortBy=name must fall back to the "plays" default rather
+        than reaching the DB layer with an unsupported value."""
         self._accept("alice", "bob")
-        pool = [_artist(f"sa{i}", f"SharedA{i}", plays=10 - i) for i in range(5)]
-        self.dbs["alice"].getTopArtists.return_value = list(pool)
-        self.dbs["bob"].getTopArtists.return_value = list(pool)
         client = self._loginAs("alice")
 
         resp = client.get("/compare?sortBy=name")
 
-        self.assertIn(b'class="taste-match-value js-taste-match">100%</span>', resp.data)
-        commonSection = resp.data[
-            resp.data.index(b'data-category="common-top-artists"'):
-            resp.data.index(b'data-category="common-top-albums"')]
-        self.assertIn(b"SharedA0", commonSection)   #< still ranked by (combined) plays, not name
+        self.assertNotIn(b"Name (A-Z)", resp.data)
+        self.assertIn(b'<option value="plays" selected>Number of Plays</option>', resp.data)
+        self.assertEqual(self.dbs["alice"].getTopSongs.call_count, 1)   #< no extra by= query
+
+    def test_sort_by_reorders_the_shared_common_lists(self):
+        """A chosen sortBy must also reorder the Top Common (shared) lists -
+        combined across both users at that metric - not just the individual
+        my/their columns (see app.py's _buildSharedItems sortBy param). The
+        taste-match score stays unaffected: it runs over the fixed
+        plays-ranked overlap pool regardless of sortBy."""
+        self._accept("alice", "bob")
+        pool = [
+            _artist(f"sa{i}", f"SharedA{i}", plays=10 - i, totalTimeListened=i * 100000)
+            for i in range(5)
+        ]
+        self.dbs["alice"].getTopArtists.return_value = list(pool)
+        self.dbs["bob"].getTopArtists.return_value = list(pool)
+        client = self._loginAs("alice")
+
+        byPlays = client.get("/compare")
+        byTime = client.get("/compare?sortBy=totalTimeListened")
+
+        def commonSection(resp):
+            return resp.data[
+                resp.data.index(b'data-category="common-top-artists"'):
+                resp.data.index(b'data-category="common-top-albums"')]
+
+        playsSection = commonSection(byPlays)
+        timeSection = commonSection(byTime)
+        #< SharedA0 has the most plays but the least totalTimeListened, and
+        #  vice versa for SharedA4 - so a real reorder flips their relative
+        #  positions between the two responses.
+        self.assertLess(playsSection.index(b"SharedA0"), playsSection.index(b"SharedA4"))
+        self.assertLess(timeSection.index(b"SharedA4"), timeSection.index(b"SharedA0"))
+        self.assertIn(b'class="taste-match-value js-taste-match">100%</span>', byTime.data)
 
     def test_taste_match_is_full_for_identical_pools(self):
         self._accept("alice", "bob")

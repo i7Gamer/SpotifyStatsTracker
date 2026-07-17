@@ -62,15 +62,18 @@
     </select>
   </div>
 
-  {# Only reorders the individual my/their Top Songs/Artists/Albums lists
-     below - the Top Common (shared) lists and the taste-match score stay
-     ranked by plays, see app.py's _gatherCompareStats. #}
+  {# Reorders both the individual my/their Top Songs/Artists/Albums lists
+     AND the Top Common (shared) lists by this metric (combined across both
+     users for the shared lists) - see app.py's _gatherCompareStats/
+     _buildSharedItems. The taste-match score is unaffected: it runs over a
+     fixed plays-ranked pool regardless of this control. No "Name" option
+     here (unlike Top Songs/Artists/Albums) - there's no sensible combined-
+     both-users alphabetical ranking for the shared lists. #}
   <div class="filter-group">
     <label for="sortBy">Sort by:</label>
     <select id="sortBy" name="sortBy" onchange="updateCompareSortByFilter()">
       <option value="totalTimeListened" {% if sortBy == 'totalTimeListened' %}selected{% endif %}>Time Played</option>
       <option value="plays" {% if sortBy == 'plays' %}selected{% endif %}>Number of Plays</option>
-      <option value="name" {% if sortBy == 'name' %}selected{% endif %}>Name (A-Z)</option>
     </select>
   </div>
 </section>
