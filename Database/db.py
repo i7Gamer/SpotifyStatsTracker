@@ -19,6 +19,22 @@ SYNTHETIC_FALLBACK_REASON = "synthetic_fallback"
 # real metadata arriving later overwrites the marker.
 RESTRICTED_FALLBACK_REASON = "restricted_fallback"
 
+# Events played shorter than this are skip events (play_skips table), not
+# listens (plays table). Spotify's export has no duration-based skip
+# definition (its `skipped` flag only means "user pressed next"; 30s is the
+# royalty "counted stream" line) - 5s is this app's own boundary. Shared by
+# the importer and the live listener so both classify identically.
+SKIP_THRESHOLD_MS = 5000
+
+# Per-play behavioral metadata from Spotify's extended export, stored as
+# nullable columns on both plays and play_skips (NULL = source didn't carry
+# it, e.g. listener-recorded plays or pre-1.23.0 imports). ip_addr is
+# deliberately never stored. Order matters: SQL builders zip these with values.
+BEHAVIORAL_COLUMNS = (
+    "platform", "conn_country", "reason_start", "reason_end",
+    "shuffle", "skipped", "offline", "incognito",
+)
+
 # Database/Data/ is the directory the Docker volume mounts for persistence (see
 # docker-compose.yml). Named "Data" rather than "Users" since its main contents
 # (this database, the shared media cache) aren't per-user - migrate1_6_0.py
@@ -160,10 +176,41 @@ CREATE TABLE IF NOT EXISTS plays (
     played_from     TEXT,
     created_at      REAL,
     created_reason  TEXT,
+    platform        TEXT,
+    conn_country    TEXT,
+    reason_start    TEXT,
+    reason_end      TEXT,
+    shuffle         INTEGER,
+    skipped         INTEGER,
+    offline         INTEGER,
+    incognito       INTEGER,
     UNIQUE (username, track_id, played_at)
 );
 CREATE INDEX IF NOT EXISTS idx_plays_user_time ON plays(username, played_at);
 CREATE INDEX IF NOT EXISTS idx_plays_user_track ON plays(username, track_id);
+
+-- Skip events: plays shorter than SKIP_THRESHOLD_MS. Kept out of plays so
+-- every play count/time aggregation stays a plain query over plays - skip
+-- analytics explicitly opts into this table instead.
+CREATE TABLE IF NOT EXISTS play_skips (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    username        TEXT NOT NULL REFERENCES users(username),
+    track_id        TEXT NOT NULL REFERENCES tracks(id),
+    played_at       REAL NOT NULL,
+    time_played     INTEGER NOT NULL CHECK (time_played >= 0),
+    created_at      REAL,
+    created_reason  TEXT,
+    platform        TEXT,
+    conn_country    TEXT,
+    reason_start    TEXT,
+    reason_end      TEXT,
+    shuffle         INTEGER,
+    skipped         INTEGER,
+    offline         INTEGER,
+    incognito       INTEGER,
+    UNIQUE (username, track_id, played_at)
+);
+CREATE INDEX IF NOT EXISTS idx_play_skips_user_time ON play_skips(username, played_at);
 
 CREATE TABLE IF NOT EXISTS import_progress (
     username    TEXT PRIMARY KEY REFERENCES users(username),

@@ -8,11 +8,12 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from Database.db import ConnectionManager
+from Database.db import ConnectionManager, BEHAVIORAL_COLUMNS
 
 EXPECTED_TABLES = {
     "artists", "albums", "tracks", "track_artists", "playlists",
     "images", "users", "plays", "import_progress", "user_shares",
+    "play_skips",
 }
 
 
@@ -70,6 +71,48 @@ class TestConnectionManagerSchema(unittest.TestCase):
             conn.execute(
                 "INSERT INTO plays (username, track_id, played_at, time_played) VALUES (?, ?, ?, ?)",
                 ("alice", "t1", 1000.0, 5000),
+            )
+
+    def test_plays_has_behavioral_columns(self):
+        conn = self.manager.connection()
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(plays)").fetchall()}
+        for column in BEHAVIORAL_COLUMNS:
+            self.assertIn(column, columns)
+
+    def _insertSkipDeps(self, conn):
+        conn.execute("INSERT INTO users (username, email, created_at) VALUES (?, ?, ?)",
+                     ("alice", "alice@example.com", 0))
+        conn.execute("INSERT INTO albums (id, name, url) VALUES (?, ?, ?)",
+                     ("alb1", "Album", "http://example.com"))
+        conn.execute("INSERT INTO tracks (id, name, url, album_id) VALUES (?, ?, ?, ?)",
+                     ("t1", "Song", "http://example.com", "alb1"))
+
+    def test_play_skips_unique_constraint_blocks_exact_duplicate(self):
+        conn = self.manager.connection()
+        self._insertSkipDeps(conn)
+        conn.execute(
+            "INSERT INTO play_skips (username, track_id, played_at, time_played) VALUES (?, ?, ?, ?)",
+            ("alice", "t1", 1000.0, 400),
+        )
+        conn.commit()
+
+        with self.assertRaises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO play_skips (username, track_id, played_at, time_played) VALUES (?, ?, ?, ?)",
+                ("alice", "t1", 1000.0, 400),
+            )
+
+    def test_play_skips_accepts_zero_but_not_negative_time_played(self):
+        conn = self.manager.connection()
+        self._insertSkipDeps(conn)
+        conn.execute(
+            "INSERT INTO play_skips (username, track_id, played_at, time_played) VALUES (?, ?, ?, ?)",
+            ("alice", "t1", 2000.0, 0),
+        )
+        with self.assertRaises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO play_skips (username, track_id, played_at, time_played) VALUES (?, ?, ?, ?)",
+                ("alice", "t1", 3000.0, -1),
             )
 
     def test_same_thread_reuses_connection(self):

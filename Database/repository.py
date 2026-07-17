@@ -8,11 +8,11 @@ from pathlib import Path
 
 try:
     import Database.db as db
-    from Database.db import ConnectionManager, SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON
+    from Database.db import ConnectionManager, SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON, BEHAVIORAL_COLUMNS
     from Database.secret_store import encryptSecret, decryptSecret, isEncrypted
 except ModuleNotFoundError:
     import db
-    from db import ConnectionManager, SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON
+    from db import ConnectionManager, SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON, BEHAVIORAL_COLUMNS
     from secret_store import encryptSecret, decryptSecret, isEncrypted
 
 IMAGE_KIND_TRACK = "track"
@@ -1909,6 +1909,19 @@ class Repository:
                 conn.execute("ALTER TABLE plays ADD COLUMN created_at REAL")
             if "created_reason" not in columns:
                 conn.execute("ALTER TABLE plays ADD COLUMN created_reason TEXT")
+
+    def addPlayBehavioralColumnsIfMissing(self) -> None:
+        """Add the behavioral metadata columns (BEHAVIORAL_COLUMNS) to plays if
+        missing (migrate1_22_0). play_skips is a plain CREATE TABLE IF NOT
+        EXISTS in SCHEMA, so only the pre-existing plays table needs ALTERs.
+        Guarded so re-running the migration doesn't fail."""
+        conn = self._conn()
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(plays)").fetchall()}
+        columnTypes = {"shuffle": "INTEGER", "skipped": "INTEGER", "offline": "INTEGER", "incognito": "INTEGER"}
+        with conn:
+            for column in BEHAVIORAL_COLUMNS:
+                if column not in columns:
+                    conn.execute(f"ALTER TABLE plays ADD COLUMN {column} {columnTypes.get(column, 'TEXT')}")
 
     def addUserSettingsColumnsIfMissing(self) -> None:
         """Add default_dashboard_window and timezone columns to users table if missing."""
