@@ -85,6 +85,16 @@ class TestPlaceholderImgDefinition(unittest.TestCase):
         self.assertNotIn('src=""', tag)
         self.assertNotIn("src=''", tag)
 
+    def test_now_playing_name_links_to_spotify_not_internal_song_page(self):
+        """A currently-playing track usually has no completed play logged
+        yet, so /song/<id> would find nothing and silently redirect to Top
+        Songs. The now-playing name must link straight to the real Spotify
+        track page instead."""
+        html = self._getDashboardHtml(self._makeApp())
+
+        self.assertIn("nameEl.href = 'https://open.spotify.com/track/' + encodeURIComponent(np.trackId);", html)
+        self.assertNotIn("nameEl.href = '/song/' + encodeURIComponent(np.trackId);", html)
+
 
 if __name__ == "__main__":
     unittest.main()

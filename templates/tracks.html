@@ -217,7 +217,13 @@
         }
         var nameEl = document.getElementById('nowPlayingName');
         nameEl.textContent = np.name;
-        nameEl.href = '/song/' + encodeURIComponent(np.trackId);
+        // Links to the real Spotify track page rather than our own
+        // /song/<id> route: a currently-playing track usually has no
+        // completed play logged yet, so the internal detail page would
+        // have nothing to show and silently redirect to Top Songs.
+        nameEl.href = 'https://open.spotify.com/track/' + encodeURIComponent(np.trackId);
+        nameEl.target = '_blank';
+        nameEl.rel = 'noreferrer noopener';
         document.getElementById('nowPlayingArtists').textContent = np.artistsText || '';
         var stateEl = document.getElementById('nowPlayingState');
         stateEl.textContent = np.isPaused ? 'Paused' : 'Playing';
