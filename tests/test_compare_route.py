@@ -925,7 +925,7 @@ class TestCompareRoute(unittest.TestCase):
         """sortBy defaults to 'plays' - a single COMPARE_SHARED_POOL_SIZE-deep
         query per category serves BOTH the displayed my/their top lists
         (sliced to `limit`) AND taste-match's topXPool (sliced to
-        COMPARE_OVERLAP_POOL_SIZE): the top 100 of a 300-row plays-ranked
+        COMPARE_OVERLAP_POOL_SIZE): the top 100 of a 200-row plays-ranked
         result is identical to a dedicated top-100 query, so there's no need
         to fetch it twice. Only one live query per category, same as before
         the deeper shared-pool feature existed - just at a deeper LIMIT."""

@@ -55,8 +55,9 @@ COMPARE_OVERLAP_POOL_SIZE = 100           #< how deep each side's top songs/arti
 # COMPARE_OVERLAP_POOL_SIZE - decoupled on purpose so widening the shared-
 # item search can never move the taste-match score (see _tasteMatchPercent,
 # which only ever reads the shallower topXPool fields). First knob to
-# revisit if the Top Common lists still feel too sparse.
-COMPARE_SHARED_POOL_SIZE = 300
+# revisit if the Top Common lists feel too sparse (raise it) or too full of
+# irrelevant long-tail matches (lower it) - 300 was tried and felt too deep.
+COMPARE_SHARED_POOL_SIZE = 200
 COMPARE_TREND_WEEK_SPAN_DAYS = 120        #< comparison trends spanning more days than this auto-bucket by week...
 COMPARE_TREND_MONTH_SPAN_DAYS = 730       #< ...and more than this by month (day buckets over years are sub-pixel)
 # Taste-match weighting: artists dominate - exact-song collisions between
@@ -783,7 +784,7 @@ class SpotifyDashboardApp:
         the similarity counts. topSongsPool/topArtistsPool/topAlbumsPool
         (what taste-match runs over) are DERIVED as that same pool's first
         COMPARE_OVERLAP_POOL_SIZE entries rather than a second DB query: a
-        plays-ranked LIMIT 300 query's first 100 rows are, by construction,
+        plays-ranked LIMIT 200 query's first 100 rows are, by construction,
         identical to a dedicated LIMIT 100 query (same WHERE/ORDER BY) - so
         there's no need to pay for the full GROUP BY/ORDER BY aggregation
         (the expensive part on a many-year "All Time" range) twice just to
