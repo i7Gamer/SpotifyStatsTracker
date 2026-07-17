@@ -218,6 +218,21 @@
       Configure this in your <strong>Profile</strong> by pasting your Spotify Client ID and Client Secret, then authenticating via OAuth.
     </p>
   </article>
+
+  <article class="card">
+    <h3 style="margin-top: 0; color: var(--accent);">🎧 Last.fm Genre Backfill</h3>
+    <p style="font-size: 0.95rem; line-height: 1.6; color: var(--muted);">
+      A background worker matches your listening history against Last.fm's tag database to fill in genre data, which powers genre insights on Charts, Wrapped and Compare:
+    </p>
+    <ul style="font-size: 0.9rem; line-height: 1.6; color: var(--muted); padding-left: 1.2rem; list-style-type: square;">
+      <li style="margin-bottom: 0.6rem;"><strong>Most-Played First:</strong> Looks up artists, then albums, then songs, prioritizing your most-played entities.</li>
+      <li style="margin-bottom: 0.6rem;"><strong>Genre Inheritance:</strong> A song or album without its own Last.fm tags falls back to its primary artist's genres, so coverage climbs even where Last.fm's own data is thin.</li>
+      <li style="margin-bottom: 0.6rem;"><strong>Shared Catalog:</strong> Since songs, albums and artists are shared across all accounts, any one user's key advances the backfill for everyone.</li>
+    </ul>
+    <p style="font-size: 0.9rem; line-height: 1.6; color: var(--muted); margin-top: 1rem;">
+      Create a free key on the <a href="https://www.last.fm/api/account/create" target="_blank" style="color: var(--accent);">Last.fm API account page</a> (no Last.fm scrobbling account required) and add it in your <strong>Profile</strong> to start backfilling.
+    </p>
+  </article>
 </section>
 
 {% endblock %}
