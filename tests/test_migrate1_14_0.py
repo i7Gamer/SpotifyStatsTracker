@@ -12,6 +12,7 @@ import sqlite3
 import Database.db as dbModule
 import Database.Migrators.base as baseModule
 import Database.Migrators.migrate1_14_0 as migrateModule
+from Database.Migrators import dbversion
 from Database.repository import Repository
 
 
@@ -97,6 +98,7 @@ class TestMigrate1_14_0(unittest.TestCase):
 
         migrateModule.Migrator("1.14.0", "1.15.0").migrate()
         (self.dataDir / "VERSION").write_text("1.14.0", encoding="utf-8")   #< simulate a retry
+        dbversion.writeDbVersion(self.dbPath, "1.14.0")   #< the in-db marker is authoritative now too
         migrateModule.Migrator("1.14.0", "1.15.0").migrate()   #< must not raise
 
         self.assertEqual((self.dataDir / "VERSION").read_text(encoding="utf-8").strip(), "1.15.0")

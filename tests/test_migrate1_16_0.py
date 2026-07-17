@@ -10,6 +10,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 import Database.Migrators.base as baseModule
 import Database.Migrators.migrate1_16_0 as migrateModule
+from Database.Migrators import dbversion
 from Database.repository import Repository
 from Database.secret_store import ENCRYPTED_PREFIX
 
@@ -86,6 +87,7 @@ class TestMigrate1_16_0(unittest.TestCase):
         rowAfterFirst = dict(self._rawUserRow())
 
         (self.dataDir / "VERSION").write_text("1.16.0", encoding="utf-8")   #< simulate a retry
+        dbversion.writeDbVersion(self.dbPath, "1.16.0")   #< the in-db marker is authoritative now too
         migrateModule.Migrator("1.16.0", "1.17.0").migrate()   #< must not raise
 
         self.assertEqual(dict(self._rawUserRow()), rowAfterFirst)

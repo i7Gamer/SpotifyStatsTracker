@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 import Database.Migrators.base as baseModule
 import Database.Migrators.migrate1_6_0 as migrateModule
+from Database.Migrators import dbversion
 from Database.repository import Repository, IMAGE_KIND_TRACK
 
 
@@ -192,11 +193,28 @@ class TestIdempotentRetry(MigratorTestCase):
         # crash right after migrate() returned): the rename to Data/ already
         # happened, so the "stale" marker lives there now, not under Users/.
         (self.dataDir / "VERSION").write_text("1.6.0", encoding="utf-8")
+        dbversion.writeDbVersion(self.dataDir / "spotify_stats.db", "1.6.0")   #< the in-db marker is authoritative now too
         migrateModule.Migrator("1.6.0", "1.7.0").migrate()
 
         self.assertFalse(self.usersDir.exists())
         repo = self._repo()
         self.assertEqual(repo.getPlaysCount("alice"), 1)
+
+
+class TestVersionMarkerMovesIntoTheDatabase(MigratorTestCase):
+    """migrate1_6_0 is the migrator that creates spotify_stats.db in the
+    first place (JSON files -> SQLite) - it's therefore also the exact
+    transition point where the version marker starts living inside the
+    database instead of only in the sibling VERSION file."""
+
+    def test_in_db_marker_is_absent_before_and_present_after(self):
+        self._writeUser("alice", entries=[{"id": "t1", "playedAt": 100.0, "timePlayed": 5000}],
+                         tracks={"t1": _track("t1")})
+        self.assertFalse((self.usersDir / "spotify_stats.db").exists())
+
+        migrateModule.Migrator("1.6.0", "1.7.0").migrate()
+
+        self.assertEqual(dbversion.readDbVersion(self.dataDir / "spotify_stats.db"), "1.7.0")
 
 
 class TestNoUsersDirectory(MigratorTestCase):

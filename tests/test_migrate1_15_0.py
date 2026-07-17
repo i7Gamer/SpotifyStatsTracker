@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 import Database.db as dbModule
 import Database.Migrators.base as baseModule
 import Database.Migrators.migrate1_15_0 as migrateModule
+from Database.Migrators import dbversion
 from Database.repository import Repository
 
 
@@ -84,6 +85,7 @@ class TestMigrate1_15_0(unittest.TestCase):
 
         migrateModule.Migrator("1.15.0", "1.16.0").migrate()
         (self.dataDir / "VERSION").write_text("1.15.0", encoding="utf-8")   #< simulate a retry
+        dbversion.writeDbVersion(self.dbPath, "1.15.0")   #< the in-db marker is authoritative now too
         migrateModule.Migrator("1.15.0", "1.16.0").migrate()   #< must not raise
 
         self.assertEqual((self.dataDir / "VERSION").read_text(encoding="utf-8").strip(), "1.16.0")

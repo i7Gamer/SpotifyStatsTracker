@@ -150,7 +150,9 @@ class Migrator(BaseMigrator):
             # across a mount boundary - shutil.move falls back to copy+delete
             # when that happens, same end result either way.
             shutil.move(str(self.usersDir), str(dataDir))
-        self.databaseVersionFile = dataDir / "VERSION"
+        # updateAppVersion() re-resolves the runtime dir itself (see base.py),
+        # so it picks up the Data/ rename above without needing this reassigned
+        # here first.
         self.updateAppVersion("1.7.0")
         print(f"Migration complete: {len(usernames)} user(s) migrated to SQLite.")
 
