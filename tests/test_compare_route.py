@@ -8,6 +8,7 @@ import sys
 import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+import app as appModule
 from app import SpotifyDashboardApp
 
 _SECRET_KEY_PATCH = 'app.SpotifyDashboardApp._get_or_create_secret_key'
@@ -288,6 +289,39 @@ class TestCompareRoute(unittest.TestCase):
         self.assertIn(b"TheirSong", resp.data)
         self.assertNotIn(b"/song/their-song-1", resp.data)
 
+    def test_default_time_window_setting_is_used_when_no_interval_given(self):
+        """Compare's initial view must honor the user's saved
+        default_dashboard_window profile setting (like the dashboard route
+        already does), not hardcode All Time."""
+        self._accept("alice", "bob")
+        self.dash.repo.updateUserSettings("alice", "month", None)
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        self.assertIn(b'<option value="month" selected>Last Month</option>', resp.data)
+
+    def test_explicit_interval_param_overrides_the_default_time_window_setting(self):
+        self._accept("alice", "bob")
+        self.dash.repo.updateUserSettings("alice", "month", None)
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare?interval=week")
+
+        self.assertIn(b'<option value="week" selected>Last Week</option>', resp.data)
+
+    def test_default_time_window_all_time_setting_maps_to_compares_all_time_option(self):
+        """The profile setting stores the literal 'all time' string, but
+        Compare's own dropdown represents All Time as an empty value -
+        the two conventions must be reconciled."""
+        self._accept("alice", "bob")
+        self.dash.repo.updateUserSettings("alice", "all time", None)
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        self.assertIn(b'<option value="" selected>All Time</option>', resp.data)
+
     def test_date_range_query_params_are_accepted(self):
         self._accept("alice", "bob")
         client = self._loginAs("alice")
@@ -327,6 +361,39 @@ class TestCompareRoute(unittest.TestCase):
         resp = client.get("/compare")
 
         self.assertIn(b'id="compareCustomDates" style="display: none;"', resp.data)
+
+    def test_shared_artists_ranked_by_combined_plays_not_the_viewers_own_order(self):
+        """Bug: 'Top Common Artists' used to be built by walking the VIEWER's
+        own pool order and slicing to the first `limit` shared matches - so
+        the same mutual-share pair could see a DIFFERENT top-10 shared set
+        depending on who was viewing. Fixed by ranking the shared
+        intersection by combined plays (symmetric under swap) instead.
+
+        11 shared artists: in alice's OWN rank order, 'LowCombined' (her
+        plays=2) would beat 'HighCombined' (her plays=1) into the top ten,
+        even though HighCombined's COMBINED total (1+100=101, bob loves it)
+        dwarfs LowCombined's (2+1=3, neither loves it much). The old
+        viewer-order slice would cut HighCombined; the new combined-plays
+        ranking must cut LowCombined instead."""
+        self._accept("alice", "bob")
+        filler = [_artist(f"f{i}", f"Filler{i}", plays=50) for i in range(9)]
+        self.dbs["alice"].getTopArtists.return_value = filler + [
+            _artist("low", "LowCombined", plays=2),
+            _artist("high", "HighCombined", plays=1),
+        ]
+        self.dbs["bob"].getTopArtists.return_value = filler + [
+            _artist("low", "LowCombined", plays=1),
+            _artist("high", "HighCombined", plays=100),
+        ]
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        commonSection = resp.data[
+            resp.data.index(b'data-category="common-top-artists"'):
+            resp.data.index(b'data-category="common-top-albums"')]
+        self.assertIn(b"HighCombined", commonSection)
+        self.assertNotIn(b"LowCombined", commonSection)
 
     def test_shared_artist_overlap_is_capped_like_every_other_list(self):
         """The Top Common lists are built from the 100-deep pools but must render at
@@ -776,6 +843,81 @@ class TestCompareRoute(unittest.TestCase):
         self.assertIn(b'id="limit"', resp.data)
         self.assertIn(b'<option value="10" selected>10</option>', resp.data)
         self.assertIn(b'<option value="100" >100</option>', resp.data)
+
+    def test_default_sort_reuses_the_pool_without_an_extra_query(self):
+        """sortBy defaults to 'plays' - the displayed my/their top lists must
+        keep slicing the existing 100-deep pool query (today's behavior),
+        not issue a second live query, when the control is left untouched."""
+        self._accept("alice", "bob")
+        client = self._loginAs("alice")
+
+        client.get("/compare")
+
+        self.assertEqual(self.dbs["alice"].getTopSongs.call_count, 1)
+        self.assertEqual(self.dbs["alice"].getTopArtists.call_count, 1)
+        self.assertEqual(self.dbs["alice"].getTopAlbums.call_count, 1)
+
+    def test_sort_by_param_requeries_the_individual_top_lists(self):
+        """Choosing a non-default sort re-fetches the displayed my/their Top
+        Songs/Artists/Albums lists at that metric (membership AND order both
+        reflect it, matching Top Songs page's own behavior) - the shared/
+        overlap pool query stays untouched (plays, full pool depth)."""
+        self._accept("alice", "bob")
+        client = self._loginAs("alice")
+
+        client.get("/compare?sortBy=totalTimeListened")
+
+        calls = self.dbs["alice"].getTopSongs.call_args_list
+        self.assertEqual(len(calls), 2)
+        poolCall = next(c for c in calls if c.kwargs.get("limit") == appModule.COMPARE_OVERLAP_POOL_SIZE)
+        self.assertEqual(poolCall.kwargs.get("by", "plays"), "plays")
+        displayCall = next(c for c in calls if c.kwargs.get("limit") == appModule.COMPARE_TOP_LIST_SIZE)
+        self.assertEqual(displayCall.kwargs.get("by"), "totalTimeListened")
+
+    def test_invalid_sort_by_falls_back_to_plays(self):
+        self._accept("alice", "bob")
+        client = self._loginAs("alice")
+
+        client.get("/compare?sortBy=bogus")
+
+        self.assertEqual(self.dbs["alice"].getTopSongs.call_count, 1)   #< no extra by= query
+
+    def test_sort_by_dropdown_renders_and_preselects(self):
+        self._accept("alice", "bob")
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare?sortBy=name")
+
+        self.assertIn(b'id="sortBy"', resp.data)
+        self.assertIn(b'<option value="name" selected>Name (A-Z)</option>', resp.data)
+        self.assertIn(b'<option value="plays" >Number of Plays</option>', resp.data)
+
+    def test_sort_by_dropdown_defaults_to_plays(self):
+        self._accept("alice", "bob")
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        self.assertIn(b'<option value="plays" selected>Number of Plays</option>', resp.data)
+
+    def test_sort_by_leaves_shared_lists_and_taste_match_untouched(self):
+        """Confirmed scope: the shared/common lists and the taste-match pool
+        stay ranked by plays regardless of sortBy - only the individual my/
+        their top lists change. SharedArtist ordering by combined plays
+        (see the viewer-symmetry fix) must survive a sortBy=name request."""
+        self._accept("alice", "bob")
+        pool = [_artist(f"sa{i}", f"SharedA{i}", plays=10 - i) for i in range(5)]
+        self.dbs["alice"].getTopArtists.return_value = list(pool)
+        self.dbs["bob"].getTopArtists.return_value = list(pool)
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare?sortBy=name")
+
+        self.assertIn(b'class="taste-match-value js-taste-match">100%</span>', resp.data)
+        commonSection = resp.data[
+            resp.data.index(b'data-category="common-top-artists"'):
+            resp.data.index(b'data-category="common-top-albums"')]
+        self.assertIn(b"SharedA0", commonSection)   #< still ranked by (combined) plays, not name
 
     def test_taste_match_is_full_for_identical_pools(self):
         self._accept("alice", "bob")

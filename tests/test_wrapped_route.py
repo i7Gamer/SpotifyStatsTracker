@@ -267,6 +267,67 @@ class TestWrappedLimit(_WrappedRouteTestBase):
         self.assertNotIn("Discovery 1<", body)  #< lowest play count, must be cut by a 25-item cap
 
 
+class TestWrappedSortBy(_WrappedRouteTestBase):
+    def test_sort_by_param_is_passed_through_to_top_lists(self):
+        dash = self._makeApp()
+        db = self._makeDb()
+
+        self._getWrapped(dash, db, query="?sortBy=totalTimeListened")
+
+        self.assertEqual(db.getTopSongs.call_args.kwargs["by"], "totalTimeListened")
+        self.assertEqual(db.getTopArtists.call_args.kwargs["by"], "totalTimeListened")
+        self.assertEqual(db.getTopAlbums.call_args.kwargs["by"], "totalTimeListened")
+
+    def test_default_sort_by_is_plays(self):
+        dash = self._makeApp()
+        db = self._makeDb()
+
+        self._getWrapped(dash, db)
+
+        self.assertEqual(db.getTopSongs.call_args.kwargs["by"], "plays")
+
+    def test_invalid_sort_by_falls_back_to_plays(self):
+        dash = self._makeApp()
+        db = self._makeDb()
+
+        self._getWrapped(dash, db, query="?sortBy=bogus")
+
+        self.assertEqual(db.getTopSongs.call_args.kwargs["by"], "plays")
+
+    def test_discoveries_are_ranked_by_the_chosen_sort_by(self):
+        """Discoveries default to most-played first, but a totalTimeListened
+        sort must be able to promote a low-play, long-duration discovery
+        ahead of a high-play, short one."""
+        dash = self._makeApp()
+        db = self._makeDb(earliestPlayedAt=_ts(2024))
+        manyShort = _song("many", "ManyShortPlays", plays=10, firstListenedAt=_ts(2026, 3))
+        fewLong = _song("long", "FewLongPlays", plays=2, firstListenedAt=_ts(2026, 3))
+        fewLong["totalTimeListened"] = 999999
+        db.getSongsStats.return_value = [manyShort, fewLong]
+
+        resp = self._getWrapped(dash, db, query="?sortBy=totalTimeListened")
+
+        body = resp.data.decode()
+        self.assertLess(body.index("FewLongPlays"), body.index("ManyShortPlays"))
+
+    def test_sort_by_dropdown_renders_and_preselects(self):
+        dash = self._makeApp()
+        db = self._makeDb()
+
+        resp = self._getWrapped(dash, db, query="?sortBy=name")
+
+        self.assertIn(b'id="sortBy"', resp.data)
+        self.assertIn(b'<option value="name" selected>Name (A-Z)</option>', resp.data)
+
+    def test_sort_by_dropdown_defaults_to_plays(self):
+        dash = self._makeApp()
+        db = self._makeDb()
+
+        resp = self._getWrapped(dash, db)
+
+        self.assertIn(b'<option value="plays" selected>Number of Plays</option>', resp.data)
+
+
 class TestWrappedDiscoveries(_WrappedRouteTestBase):
     def test_only_items_first_listened_in_the_selected_year_are_discoveries(self):
         dash = self._makeApp()

@@ -38,7 +38,7 @@
 
   <nav class="wrapped-year-badges" aria-label="Select year">
     {% for y in availableYears %}
-      <a class="wrapped-year-badge{{ ' active' if y == year else '' }}" href="{{ url_for('wrappedPage', year=y, groupBy=groupBy, limit=limit) }}">{{ y }}</a>
+      <a class="wrapped-year-badge{{ ' active' if y == year else '' }}" href="{{ url_for('wrappedPage', year=y, groupBy=groupBy, limit=limit, sortBy=sortBy) }}">{{ y }}</a>
     {% endfor %}
   </nav>
 
@@ -60,6 +60,15 @@
           {% for option in limitOptions %}
             <option value="{{ option }}" {% if limit == option %}selected{% endif %}>{{ option }}</option>
           {% endfor %}
+        </select>
+      </div>
+
+      <div class="filter-group">
+        <label for="sortBy">Sort by:</label>
+        <select id="sortBy" name="sortBy" onchange="updateWrappedFilters()">
+          <option value="totalTimeListened" {% if sortBy == 'totalTimeListened' %}selected{% endif %}>Time Played</option>
+          <option value="plays" {% if sortBy == 'plays' %}selected{% endif %}>Number of Plays</option>
+          <option value="name" {% if sortBy == 'name' %}selected{% endif %}>Name (A-Z)</option>
         </select>
       </div>
     </div>
@@ -255,6 +264,7 @@
     let currentYear = '{{ year }}';
     let currentGroupBy = '{{ groupBy }}';
     let currentLimit = '{{ limit }}';
+    let currentSortBy = '{{ sortBy }}';
 
     const filterButtons = document.querySelectorAll('.stats-filter-button');
     const categoryDivs = document.querySelectorAll('[data-category]');
@@ -281,7 +291,7 @@
       allButton.click();
     }
 
-    function loadWrappedData(year, groupBy, limit, updateType = 'all') {
+    function loadWrappedData(year, groupBy, limit, sortBy, updateType = 'all') {
       const targets = [];
       if (updateType === 'all') {
         const summaryGrid = document.querySelector('.track-summary-grid');
@@ -311,7 +321,7 @@
       if (hiddenYear) hiddenYear.value = year;
 
       const delayPromise = new Promise(resolve => setTimeout(resolve, 200));
-      const fetchPromise = fetch(`/wrapped?year=${year}&groupBy=${groupBy}&limit=${limit}&ajax=true&type=${updateType}`)
+      const fetchPromise = fetch(`/wrapped?year=${year}&groupBy=${groupBy}&limit=${limit}&sortBy=${sortBy}&ajax=true&type=${updateType}`)
         .then(response => response.json());
 
       Promise.all([fetchPromise, delayPromise])
@@ -494,12 +504,13 @@
       const year = yearBadge ? new URL(yearBadge.href).searchParams.get('year') : new URLSearchParams(window.location.search).get('year') || '{{ year }}';
       const groupBy = document.getElementById('groupBy').value;
       const limit = document.getElementById('limit').value;
+      const sortBy = document.getElementById('sortBy').value;
 
       let updateType = 'all';
       if (year === currentYear) {
-        if (groupBy !== currentGroupBy && limit === currentLimit) {
+        if (groupBy !== currentGroupBy && limit === currentLimit && sortBy === currentSortBy) {
           updateType = 'chart';
-        } else if (limit !== currentLimit && groupBy === currentGroupBy) {
+        } else if ((limit !== currentLimit || sortBy !== currentSortBy) && groupBy === currentGroupBy) {
           updateType = 'lists';
         }
       }
@@ -507,14 +518,16 @@
       currentYear = year;
       currentGroupBy = groupBy;
       currentLimit = limit;
+      currentSortBy = sortBy;
 
       const newParams = new URLSearchParams();
       newParams.set('year', year);
       newParams.set('groupBy', groupBy);
       newParams.set('limit', limit);
+      newParams.set('sortBy', sortBy);
       window.history.pushState({}, '', window.location.pathname + '?' + newParams.toString());
 
-      loadWrappedData(year, groupBy, limit, updateType);
+      loadWrappedData(year, groupBy, limit, sortBy, updateType);
     }
 
     document.querySelectorAll('.wrapped-year-badge').forEach(badge => {
@@ -524,12 +537,13 @@
         const year = url.searchParams.get('year');
         const groupBy = document.getElementById('groupBy').value;
         const limit = document.getElementById('limit').value;
+        const sortBy = document.getElementById('sortBy').value;
 
         let updateType = 'all';
         if (year === currentYear) {
-          if (groupBy !== currentGroupBy && limit === currentLimit) {
+          if (groupBy !== currentGroupBy && limit === currentLimit && sortBy === currentSortBy) {
             updateType = 'chart';
-          } else if (limit !== currentLimit && groupBy === currentGroupBy) {
+          } else if ((limit !== currentLimit || sortBy !== currentSortBy) && groupBy === currentGroupBy) {
             updateType = 'lists';
           }
         }
@@ -537,17 +551,19 @@
         currentYear = year;
         currentGroupBy = groupBy;
         currentLimit = limit;
+        currentSortBy = sortBy;
 
         const newParams = new URLSearchParams();
         newParams.set('year', year);
         newParams.set('groupBy', groupBy);
         newParams.set('limit', limit);
+        newParams.set('sortBy', sortBy);
         window.history.pushState({}, '', window.location.pathname + '?' + newParams.toString());
 
         document.querySelectorAll('.wrapped-year-badge').forEach(b => b.classList.remove('active'));
         this.classList.add('active');
 
-        loadWrappedData(year, groupBy, limit, updateType);
+        loadWrappedData(year, groupBy, limit, sortBy, updateType);
       });
     });
 
@@ -556,6 +572,7 @@
       const year = params.get('year') || '{{ year }}';
       const groupBy = params.get('groupBy') || 'week';
       const limit = params.get('limit') || '50';
+      const sortBy = params.get('sortBy') || 'plays';
 
       document.querySelectorAll('.wrapped-year-badge').forEach(badge => {
         const badgeYear = new URL(badge.href).searchParams.get('year');
@@ -568,12 +585,13 @@
 
       document.getElementById('groupBy').value = groupBy;
       document.getElementById('limit').value = limit;
+      document.getElementById('sortBy').value = sortBy;
 
       let updateType = 'all';
       if (year === currentYear) {
-        if (groupBy !== currentGroupBy && limit === currentLimit) {
+        if (groupBy !== currentGroupBy && limit === currentLimit && sortBy === currentSortBy) {
           updateType = 'chart';
-        } else if (limit !== currentLimit && groupBy === currentGroupBy) {
+        } else if ((limit !== currentLimit || sortBy !== currentSortBy) && groupBy === currentGroupBy) {
           updateType = 'lists';
         }
       }
@@ -581,8 +599,9 @@
       currentYear = year;
       currentGroupBy = groupBy;
       currentLimit = limit;
+      currentSortBy = sortBy;
 
-      loadWrappedData(year, groupBy, limit, updateType);
+      loadWrappedData(year, groupBy, limit, sortBy, updateType);
     });
 
     document.getElementById('exportWrappedBtn')?.addEventListener('click', function() {

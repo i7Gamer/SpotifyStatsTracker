@@ -10,6 +10,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from app import (
     SpotifyDashboardApp, sanitizeGenreCoverage, genreGatePasses, emptyGenreCoverage,
     GENRE_GATE_OVERALL_MIN_PERCENT, GENRE_GATE_CATEGORY_MIN_PERCENT, CHART_TOP_GENRES_LIMIT,
+    resolveGenresForTrack, resolveGenresForAlbum, resolveGenresForArtist,
 )
 
 
@@ -54,6 +55,44 @@ class GateHelperTestCase(unittest.TestCase):
     def test_thresholds_are_the_agreed_values(self):
         self.assertEqual(GENRE_GATE_OVERALL_MIN_PERCENT, 50)
         self.assertEqual(GENRE_GATE_CATEGORY_MIN_PERCENT, 30)
+
+
+class ResolveGenresForEntityTestCase(unittest.TestCase):
+    """resolveGenresFor{Track,Album,Artist} - the same never-let-a-genre-
+    lookup-break-a-page degradation contract as resolveGenreCoverage/
+    resolveGenreDistribution, at per-item scope: a stubbed test db (or a
+    real lookup failure) must degrade to [] rather than raise or leak a
+    non-list value into a card's genre badge."""
+
+    def _cases(self):
+        return (
+            (resolveGenresForTrack, "getGenresForTrack"),
+            (resolveGenresForAlbum, "getGenresForAlbum"),
+            (resolveGenresForArtist, "getGenresForArtist"),
+        )
+
+    def test_well_formed_list_passes_through(self):
+        for resolver, dbMethod in self._cases():
+            with self.subTest(resolver=resolver.__name__):
+                db = MagicMock()
+                getattr(db, dbMethod).return_value = ["rock", "dream pop"]
+                self.assertEqual(resolver(db, "id1"), ["rock", "dream pop"])
+
+    def test_exception_degrades_to_empty_list(self):
+        for resolver, dbMethod in self._cases():
+            with self.subTest(resolver=resolver.__name__):
+                db = MagicMock()
+                getattr(db, dbMethod).side_effect = RuntimeError("boom")
+                self.assertEqual(resolver(db, "id1"), [])
+
+    def test_unstubbed_magicmock_return_degrades_to_empty_list(self):
+        """An un-configured MagicMock method returns another MagicMock, not
+        a list - the exact shape every route test's bare `db = MagicMock()`
+        produces when it doesn't set up genre methods."""
+        for resolver, _ in self._cases():
+            with self.subTest(resolver=resolver.__name__):
+                db = MagicMock()
+                self.assertEqual(resolver(db, "id1"), [])
 
 
 class ChartsGenresTestCase(unittest.TestCase):
@@ -149,6 +188,25 @@ class ChartsGenresTestCase(unittest.TestCase):
         db = self._makeDb(coverage=coverageDict(80, 60, 90), distribution={"rock": 1})
         resp = self._get(dash, db)
         self.assertIn(b"Last.fm", resp.data)
+
+    def test_unlocked_chart_displays_genres_in_ascending_play_count_order(self):
+        """getGenreDistribution still returns most-played-first (unchanged
+        query/selection - Wrapped and Compare both rely on that order) but
+        chartsPage() reverses its own copy so the bar chart reads smallest
+        first."""
+        dash = self._makeApp()
+        db = self._makeDb(coverage=coverageDict(80, 60, 90),
+                          distribution={"rock": 120, "indie rock": 80, "jazz": 40})
+
+        resp = self._get(dash, db)
+
+        self.assertEqual(resp.status_code, 200)
+        body = resp.data.decode()
+        jazzPos = body.index('"jazz"')
+        indieRockPos = body.index('"indie rock"')
+        rockPos = body.index('"rock"')
+        self.assertLess(jazzPos, indieRockPos)
+        self.assertLess(indieRockPos, rockPos)
 
     def test_coverage_errors_degrade_to_the_locked_state(self):
         dash = self._makeApp()

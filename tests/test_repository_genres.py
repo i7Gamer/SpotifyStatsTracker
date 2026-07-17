@@ -399,6 +399,65 @@ class GenreDistributionTestCase(DatabaseTestCase):
         self.assertEqual(list(distribution), ["alpha", "zeta"])
 
 
+class GenresForEntityTestCase(DatabaseTestCase):
+    """Database.getGenresFor{Track,Album,Artist} - the per-item lookups the
+    track-card genre badge uses, exposing Repository.getTrackGenres/
+    getAlbumGenres/getArtistGenres on the Database facade with the same
+    inherited-genre toggle every other genre stat respects (artists have no
+    inherited concept - nothing to toggle there)."""
+
+    def _db(self):
+        album = lambda albumId: {"id": albumId, "name": albumId, "url": "u",
+                                 "imageId": albumId, "imageUrl": "", "totalTracks": 1, "releaseDate": 0}
+        tracks = {
+            "t1": {"id": "t1", "name": "One", "artists": [{"id": "aX", "name": "X"}], "album": album("alP")},
+        }
+        entries = [{"id": "t1", "playedAt": 1000, "timePlayed": 5000}]
+        db = self._makeDb(tracks, entries)
+        db.repo.replaceArtistGenres("aX", ["rock", "post-punk"])
+        db.repo.replaceTrackGenres("t1", ["dream pop"], inherited=False)
+        db.repo.replaceAlbumGenres("alP", ["indie rock"], inherited=True)
+        return db
+
+    def test_track_genres_returns_names_in_position_order(self):
+        db = self._db()
+        self.assertEqual(db.getGenresForTrack("t1"), ["dream pop"])
+
+    def test_track_genres_empty_for_untagged_track(self):
+        db = self._db()
+        self.assertEqual(db.getGenresForTrack("nope"), [])
+
+    def test_track_genres_respects_inherited_toggle(self):
+        db = self._db()
+        db.repo.replaceTrackGenres("t1", ["dream pop"], inherited=True)
+        self.assertEqual(db.getGenresForTrack("t1", includeInherited=True), ["dream pop"])
+        self.assertEqual(db.getGenresForTrack("t1", includeInherited=False), [])
+
+    def test_album_genres_respects_inherited_toggle(self):
+        db = self._db()
+        self.assertEqual(db.getGenresForAlbum("alP", includeInherited=True), ["indie rock"])
+        self.assertEqual(db.getGenresForAlbum("alP", includeInherited=False), [])
+
+    def test_album_genres_default_reads_the_app_setting(self):
+        db = self._db()
+        db.repo.setInheritedGenresEnabled(False)
+        self.assertEqual(db.getGenresForAlbum("alP"), [])
+        db.repo.setInheritedGenresEnabled(True)
+        self.assertEqual(db.getGenresForAlbum("alP"), ["indie rock"])
+
+    def test_album_genres_empty_for_untagged_album(self):
+        db = self._db()
+        self.assertEqual(db.getGenresForAlbum("nope"), [])
+
+    def test_artist_genres_returns_names_in_position_order(self):
+        db = self._db()
+        self.assertEqual(db.getGenresForArtist("aX"), ["rock", "post-punk"])
+
+    def test_artist_genres_empty_for_untagged_artist(self):
+        db = self._db()
+        self.assertEqual(db.getGenresForArtist("nope"), [])
+
+
 if __name__ == "__main__":
     import unittest
     unittest.main()

@@ -58,6 +58,28 @@ class TestChartsRoute(unittest.TestCase):
 
         self.assertEqual(resp.status_code, 200)
         db.getListeningTimeSeries.assert_called_once()
+
+    def test_decade_distribution_order_survives_json_serialization(self):
+        """getReleaseDecadeDistribution returns decades chronologically
+        (Database/database.py's `ORDER BY decade`). Flask's JSON provider
+        sorts plain dict keys alphabetically on serialization, which for
+        decade labels happens to look identical (chronological order and
+        alphabetical order agree for '1990s' < '2000s' < '2010s') - this
+        pins the real mechanism (ordered [label, value] pairs, not a dict)
+        rather than relying on that coincidence."""
+        dash = self._makeApp()
+        db = self._makeDb()
+        db.getReleaseDecadeDistribution.return_value = {"1990s": 5, "2000s": 40, "2010s": 15}
+
+        resp = self._get(dash, db)
+
+        self.assertEqual(resp.status_code, 200)
+        body = resp.data.decode()
+        idx1990 = body.index('"1990s"')
+        idx2000 = body.index('"2000s"')
+        idx2010 = body.index('"2010s"')
+        self.assertLess(idx1990, idx2000)
+        self.assertLess(idx2000, idx2010)
         _, kwargs = db.getListeningTimeSeries.call_args
         self.assertEqual(kwargs["groupBy"], "day")
         self.assertIsNotNone(kwargs["startDate"])

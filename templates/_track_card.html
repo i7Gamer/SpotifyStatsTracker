@@ -164,6 +164,9 @@
       
       <!-- Attributes based on section -->
       <div class="track-attributes">
+        {% for genre in track.get('genres', []) %}
+          <span class="track-label genre-label">{{ genre }}</span>
+        {% endfor %}
         {% if track.get('created_reason') == SYNTHETIC_FALLBACK_REASON %}
           <span class="track-label danger">Deleted/Unavailable on Spotify</span>
         {% elif track.get('availability_reason') or track.get('created_reason') == RESTRICTED_FALLBACK_REASON %}

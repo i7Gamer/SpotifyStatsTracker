@@ -16,7 +16,7 @@
 <nav class="wrapped-year-badges" aria-label="Select user to compare with">
   {% for candidate in acceptedUsernames %}
     <a class="wrapped-year-badge{{ ' active' if candidate == withUsername else '' }}"
-       href="{{ url_for('comparePage', with=candidate, interval=interval, startDate=customStart, endDate=customEnd, groupBy=groupBy, limit=limit) }}">{{ candidate }}</a>
+       href="{{ url_for('comparePage', with=candidate, interval=interval, startDate=customStart, endDate=customEnd, groupBy=groupBy, limit=limit, sortBy=sortBy) }}">{{ candidate }}</a>
   {% endfor %}
 </nav>
 {% endif %}
@@ -59,6 +59,18 @@
       <option value="day" {% if groupBy == 'day' %}selected{% endif %}>Day</option>
       <option value="week" {% if groupBy == 'week' %}selected{% endif %}>Week</option>
       <option value="month" {% if groupBy == 'month' %}selected{% endif %}>Month</option>
+    </select>
+  </div>
+
+  {# Only reorders the individual my/their Top Songs/Artists/Albums lists
+     below - the Top Common (shared) lists and the taste-match score stay
+     ranked by plays, see app.py's _gatherCompareStats. #}
+  <div class="filter-group">
+    <label for="sortBy">Sort by:</label>
+    <select id="sortBy" name="sortBy" onchange="updateCompareSortByFilter()">
+      <option value="totalTimeListened" {% if sortBy == 'totalTimeListened' %}selected{% endif %}>Time Played</option>
+      <option value="plays" {% if sortBy == 'plays' %}selected{% endif %}>Number of Plays</option>
+      <option value="name" {% if sortBy == 'name' %}selected{% endif %}>Name (A-Z)</option>
     </select>
   </div>
 </section>
@@ -355,6 +367,12 @@
     loadCompareData();
   }
 
+  function updateCompareSortByFilter() {
+    const sortBy = document.getElementById('sortBy').value;
+    pushCompareUrl(params => params.set('sortBy', sortBy));
+    loadCompareData();
+  }
+
   document.querySelectorAll('.wrapped-year-badge').forEach(badge => {
     badge.addEventListener('click', function (e) {
       e.preventDefault();
@@ -376,6 +394,7 @@
       (params.get('startDate') && params.get('endDate')) ? 'flex' : 'none';
     document.getElementById('limit').value = params.get('limit') || '{{ limitOptions[0] }}';
     document.getElementById('groupBy').value = params.get('groupBy') || '';
+    document.getElementById('sortBy').value = params.get('sortBy') || 'plays';
     const withUser = params.get('with');
     document.querySelectorAll('.wrapped-year-badge').forEach(badge => {
       const badgeUser = new URL(badge.href).searchParams.get('with');

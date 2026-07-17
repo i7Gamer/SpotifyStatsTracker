@@ -102,6 +102,21 @@ class TestTopAlbumsRoute(unittest.TestCase):
         self.assertEqual(kwargs["offset"], 0)
         self.assertEqual(kwargs["searchQuery"], "foo")
 
+    def test_genre_badge_renders_on_list_cards_when_data_present(self):
+        dash = self._makeApp()
+        db = self._makeDb()
+        db.getTopAlbums.return_value = [{
+            "id": "alb1", "name": "Album One", "url": "u", "imageId": "alb1",
+            "imageUrl": "", "totalTracks": 2, "releaseDate": 0, "artists": [],
+            "plays": 5, "totalTimeListened": 50000, "firstListenedAt": 100,
+        }]
+        db.getGenresForAlbum.return_value = ["indie rock"]
+
+        resp = self._getTopAlbums(dash, db)
+
+        self.assertIn(b'<span class="track-label genre-label">indie rock</span>', resp.data)
+        db.getGenresForAlbum.assert_called_once_with("alb1")
+
     def test_totals_come_from_get_play_totals(self):
         dash = self._makeApp()
         db = self._makeDb()

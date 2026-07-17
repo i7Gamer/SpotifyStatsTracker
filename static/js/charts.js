@@ -713,19 +713,21 @@
   function renderCategoryBarChart(canvasId, dataKey, emptyMessage, fitLabel) {
     var canvas = document.getElementById(canvasId);
     if (!canvas) return;
-    var data = window.__chartData[dataKey];
-    if (!data) return;
+    /* [label, value] pairs, not a {label: value} object - object key order
+       isn't guaranteed to survive JSON serialization (Flask sorts dict keys
+       alphabetically), so the server ships pre-ordered pairs instead. */
+    var pairs = window.__chartData[dataKey];
+    if (!pairs) return;
 
     var config = setupCanvas(canvas, 300);
     var ctx = config.ctx, width = config.width, height = config.height;
 
-    var keys = Object.keys(data);
-    if (keys.length === 0) {
+    if (pairs.length === 0) {
       drawEmptyState(ctx, width, height, emptyMessage);
       return;
     }
 
-    var values = keys.map(function(k) { return data[k]; });
+    var values = pairs.map(function(p) { return p[1]; });
     var maxVal = Math.max.apply(null, values);
     if (maxVal === 0) maxVal = 1;
 
@@ -735,13 +737,13 @@
 
     drawYAxisGrid(ctx, paddingLeft, paddingTop, plotWidth, plotHeight, maxVal, function(v) { return Math.round(v); });
 
-    var barCount = keys.length;
+    var barCount = pairs.length;
     var rawBarWidth = plotWidth / barCount;
     var spacing = Math.max(rawBarWidth * 0.25, 6);
     var barWidth = rawBarWidth - spacing;
 
-    var bars = keys.map(function(key, i) {
-      var val = data[key];
+    var bars = pairs.map(function(pair, i) {
+      var key = pair[0], val = pair[1];
       var barHeight = plotHeight * val / maxVal;
       var x = paddingLeft + i * rawBarWidth + spacing / 2;
       var y = paddingTop + plotHeight - barHeight;

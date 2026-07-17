@@ -931,6 +931,10 @@ progress::-moz-progress-bar {
   border: 1px solid rgba(255, 193, 7, 0.3);
 }
 
+.track-label.genre-label {
+  text-transform: capitalize;
+}
+
 .profile-grid {
   display: grid;
   gap: 12px 4px;

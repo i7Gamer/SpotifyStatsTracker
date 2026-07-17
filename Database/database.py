@@ -1032,6 +1032,27 @@ class Database:
         rows = conn.execute(query, params).fetchall()
         return {row["genre"]: row["plays"] for row in rows}
 
+    def getGenresForTrack(self, trackId: str, includeInherited: bool | None = None) -> list[str]:
+        """This track's own genre names, position-ordered - the track-card
+        badge's data source. Respects the same inherited-genre toggle as
+        every other genre stat (None = read the admin's instance-wide
+        setting)."""
+        inherited = self._resolveIncludeInherited(includeInherited)
+        return [row["genre"] for row in self.repo.getTrackGenres(trackId)
+                if inherited or not row["inherited"]]
+
+    def getGenresForAlbum(self, albumId: str, includeInherited: bool | None = None) -> list[str]:
+        """This album's own genre names, position-ordered - see
+        getGenresForTrack."""
+        inherited = self._resolveIncludeInherited(includeInherited)
+        return [row["genre"] for row in self.repo.getAlbumGenres(albumId)
+                if inherited or not row["inherited"]]
+
+    def getGenresForArtist(self, artistId: str) -> list[str]:
+        """This artist's own genre names, position-ordered. Artists have no
+        inherited concept (nothing to inherit FROM), so no toggle here."""
+        return self.repo.getArtistGenres(artistId)
+
     def getCompletionStats(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> dict:
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
         conn = self.repo._conn()

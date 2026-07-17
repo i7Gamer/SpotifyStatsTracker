@@ -126,20 +126,46 @@ class CompareGenresTestCase(unittest.TestCase):
         self.assertIn("genresHtml", payload)
         self.assertIn("shoegaze", payload["genresHtml"])
 
-    def test_taste_match_is_untouched_by_genre_data(self):
-        """v1 deliberately keeps genres out of the taste-match score."""
-        self._unlockBoth()
+    def test_taste_match_includes_genre_overlap_when_gate_passes_both_sides(self):
+        """Genres fold into taste match like any other category (see
+        test_compare_route.py's taste-match suite for the core arithmetic),
+        gated on genresUnlocked instead of raw row presence - a sparse
+        partial backfill shouldn't swing the score. Artists/songs/albums
+        pools are empty on both stub sides, so genres end up the ONLY
+        category with data and the category weight cancels out of the
+        normalization: actual=2*w(1)+2*w(2)=3.2619 (rock/jazz exact matches
+        at ranks 1/2 on both sides), ideal=sum(2*w(1..3))=4.2619 -> 76.5%
+        raw -> round(100*0.765^0.6)=85% displayed."""
+        self.dbs["alice"] = self._makeStubDb(
+            coverage=coverageDict(80, 60, 90),
+            distribution={"rock": 100, "jazz": 50, "indie": 10})
+        self.dbs["bob"] = self._makeStubDb(
+            coverage=coverageDict(70, 55, 65),
+            distribution={"rock": 90, "jazz": 40, "blues": 5})
         client = self._loginAs("alice")
 
-        respUnlocked = client.get("/compare?ajax=true")
-        unlockedMatch = json.loads(respUnlocked.data)["tasteMatch"]
+        resp = client.get("/compare?ajax=true")
 
-        self.dbs["alice"] = self._makeStubDb()
-        self.dbs["bob"] = self._makeStubDb()
-        respLocked = client.get("/compare?ajax=true")
-        lockedMatch = json.loads(respLocked.data)["tasteMatch"]
+        self.assertEqual(json.loads(resp.data)["tasteMatch"], 85)
 
-        self.assertEqual(unlockedMatch, lockedMatch)
+    def test_taste_match_excludes_genre_when_gate_fails_for_either_side(self):
+        """Same genre pools as the unlocked test above, but alice's coverage
+        no longer passes the gate - genres must stay excluded (not scored as
+        0% overlap), and with every other category also empty on both stub
+        sides the match is hidden entirely, matching pre-genre behavior."""
+        self.dbs["alice"] = self._makeStubDb(
+            coverage=coverageDict(20, 20, 20),   #< below the gate
+            distribution={"rock": 100, "jazz": 50, "indie": 10})
+        self.dbs["bob"] = self._makeStubDb(
+            coverage=coverageDict(70, 55, 65),
+            distribution={"rock": 90, "jazz": 40, "blues": 5})
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare?ajax=true")
+
+        self.assertIsNone(json.loads(resp.data)["tasteMatch"])
+        self.dbs["alice"].getGenreDistribution.assert_not_called()
+        self.dbs["bob"].getGenreDistribution.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -59,6 +59,48 @@ class TestSongDetailRoute(_DetailRouteTestBase):
         self.assertEqual(db.getListeningTimeSeries.call_args.kwargs.get("trackId"), "t1")
         self.assertEqual(db.getHourOfDayHeatmap.call_args.kwargs.get("trackId"), "t1")
 
+    def test_genre_badge_renders_when_track_has_genres(self):
+        dash = self._makeApp()
+        db = MagicMock()
+        db.getSong.return_value = self._song()
+        db.getListeningTimeSeries.return_value = []
+        db.getHourOfDayHeatmap.return_value = [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
+        db.getGenresForTrack.return_value = ["dream pop", "shoegaze"]
+
+        resp = self._getPath(dash, db, "/song/t1")
+
+        self.assertIn(b'<span class="track-label genre-label">dream pop</span>', resp.data)
+        self.assertIn(b'<span class="track-label genre-label">shoegaze</span>', resp.data)
+        db.getGenresForTrack.assert_called_once_with("t1")
+
+    def test_genre_badge_is_capped_at_track_card_genre_limit(self):
+        dash = self._makeApp()
+        db = MagicMock()
+        db.getSong.return_value = self._song()
+        db.getListeningTimeSeries.return_value = []
+        db.getHourOfDayHeatmap.return_value = [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
+        db.getGenresForTrack.return_value = ["one", "two", "three", "four"]
+
+        resp = self._getPath(dash, db, "/song/t1")
+
+        from app import TRACK_CARD_GENRE_LIMIT
+        self.assertEqual(TRACK_CARD_GENRE_LIMIT, 3)
+        for genre in ("one", "two", "three"):
+            self.assertIn(f'<span class="track-label genre-label">{genre}</span>'.encode(), resp.data)
+        self.assertNotIn(b"genre-label\">four<", resp.data)
+
+    def test_genre_badge_absent_without_genre_data(self):
+        dash = self._makeApp()
+        db = MagicMock()
+        db.getSong.return_value = self._song()
+        db.getListeningTimeSeries.return_value = []
+        db.getHourOfDayHeatmap.return_value = [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
+        db.getGenresForTrack.return_value = []
+
+        resp = self._getPath(dash, db, "/song/t1")
+
+        self.assertNotIn(b"genre-label", resp.data)
+
     def test_unknown_song_redirects_to_top_songs(self):
         dash = self._makeApp()
         db = MagicMock()
@@ -122,6 +164,19 @@ class TestArtistDetailRoute(_DetailRouteTestBase):
         db.getArtist.assert_called_once_with("a1")
         self.assertEqual(db.getSongsStats.call_args.kwargs.get("artistId"), "a1")
         self.assertEqual(db.getListeningTimeSeries.call_args.kwargs.get("artistId"), "a1")
+
+    def test_genre_badge_renders_when_artist_has_genres(self):
+        dash = self._makeApp()
+        db = MagicMock()
+        db.getArtist.return_value = self._artist()
+        db.getSongsStats.return_value = []
+        db.getListeningTimeSeries.return_value = []
+        db.getGenresForArtist.return_value = ["indie rock"]
+
+        resp = self._getPath(dash, db, "/artist/a1")
+
+        self.assertIn(b'<span class="track-label genre-label">indie rock</span>', resp.data)
+        db.getGenresForArtist.assert_called_once_with("a1")
 
     def test_unknown_artist_redirects_to_top_artists(self):
         dash = self._makeApp()
@@ -202,6 +257,19 @@ class TestAlbumDetailRoute(_DetailRouteTestBase):
         db.getAlbum.assert_called_once_with("alb1")
         self.assertEqual(db.getSongsStats.call_args.kwargs.get("albumId"), "alb1")
         self.assertEqual(db.getListeningTimeSeries.call_args.kwargs.get("albumId"), "alb1")
+
+    def test_genre_badge_renders_when_album_has_genres(self):
+        dash = self._makeApp()
+        db = MagicMock()
+        db.getAlbum.return_value = self._album()
+        db.getSongsStats.return_value = []
+        db.getListeningTimeSeries.return_value = []
+        db.getGenresForAlbum.return_value = ["indie rock"]
+
+        resp = self._getPath(dash, db, "/album/alb1")
+
+        self.assertIn(b'<span class="track-label genre-label">indie rock</span>', resp.data)
+        db.getGenresForAlbum.assert_called_once_with("alb1")
 
     def test_unknown_album_redirects_to_top_albums(self):
         dash = self._makeApp()

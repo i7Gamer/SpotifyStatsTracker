@@ -39,6 +39,7 @@ CHART_TOP_GENRES_LIMIT = 10    #< bars on the Charts page's Top Genres chart
 WRAPPED_TOP_GENRES_LIMIT = 5   #< genres listed on the Wrapped genre card
 COMPARE_TOP_GENRES_LIMIT = 10  #< per-side genres (and shared genres) shown on Compare
 COMPARE_GENRE_POOL_SIZE = 50   #< per-side genre pool the shared-genre intersection is computed over
+TRACK_CARD_GENRE_LIMIT = 3     #< genre pills shown per track/artist/album card, position-ordered
 # The genre-feature unlock gate: genre insights on Charts/Wrapped/Compare only
 # render once the play-weighted Last.fm coverage over the page's date range is
 # strictly above the overall minimum (mean of the three categories) AND at
@@ -54,10 +55,13 @@ COMPARE_TREND_WEEK_SPAN_DAYS = 120        #< comparison trends spanning more day
 COMPARE_TREND_MONTH_SPAN_DAYS = 730       #< ...and more than this by month (day buckets over years are sub-pixel)
 # Taste-match weighting: artists dominate - exact-song collisions between
 # two top-100s are structurally rare even for very similar listeners (huge
-# catalog, low odds), so songs barely count; albums sit between. Categories
-# without data on both sides are excluded and the remaining weights
-# renormalized.
-TASTE_MATCH_WEIGHTS = {"artists": 0.7, "songs": 0.1, "albums": 0.2}
+# catalog, low odds), so songs barely count; albums sit between. Genres are
+# coarser still (many listeners share broad tags without similar taste), so
+# they weigh less than albums - present only when both sides pass the genre
+# unlock gate (see genreGatePasses), same bar every other genre surface
+# uses. Categories without data on both sides are excluded and the
+# remaining weights renormalized.
+TASTE_MATCH_WEIGHTS = {"artists": 0.7, "songs": 0.1, "albums": 0.2, "genres": 0.15}
 # Rank-weighted overlap normalizes against an "ideal" match capped at this
 # depth rather than the full COMPARE_OVERLAP_POOL_SIZE: requiring near-total
 # overlap of a 100-deep pool for 100% meant even two listeners who share
@@ -242,6 +246,31 @@ def genreGatePasses(coverage: dict) -> bool:
         return False
     return all(coverage[categoryName]["percent"] >= GENRE_GATE_CATEGORY_MIN_PERCENT
                for categoryName in GENRE_COVERAGE_CATEGORIES)
+
+
+def _resolveGenresFor(db, entityId, dbMethodName: str) -> list[str]:
+    """Shared degradation contract for the per-item genre lookups below: a
+    lookup failure, or a stubbed test db whose genre method was never
+    configured (a bare MagicMock() return value), degrades to [] instead of
+    breaking every page that renders a track/artist/album card."""
+    try:
+        genres = getattr(db, dbMethodName)(entityId)
+    except Exception as e:
+        logger.warning("%s(%r) failed: %s", dbMethodName, entityId, e)
+        return []
+    return genres if isinstance(genres, list) else []
+
+
+def resolveGenresForTrack(db, trackId) -> list[str]:
+    return _resolveGenresFor(db, trackId, "getGenresForTrack")
+
+
+def resolveGenresForAlbum(db, albumId) -> list[str]:
+    return _resolveGenresFor(db, albumId, "getGenresForAlbum")
+
+
+def resolveGenresForArtist(db, artistId) -> list[str]:
+    return _resolveGenresFor(db, artistId, "getGenresForArtist")
 
 
 class _RateLimiter:
@@ -681,29 +710,64 @@ class SpotifyDashboardApp:
     def _embedArtistsTextElements(self, songs, sortBy=None, totalPlays=0, totalMs=0) -> list[dict]:
         return [self._embedArtistTextElement(song, sortBy, totalPlays, totalMs) for song in songs]
 
-    def _gatherCompareStats(self, db, startDate, endDate, limit=COMPARE_TOP_LIST_SIZE) -> dict:
+    _GENRE_RESOLVERS = {
+        "track": resolveGenresForTrack,
+        "album": resolveGenresForAlbum,
+        "artist": resolveGenresForArtist,
+    }
+
+    def _attachGenres(self, db, items: list[dict], kind: str) -> list[dict]:
+        """Sets item['genres'] (a list of genre name strings, [] when none,
+        capped to TRACK_CARD_GENRE_LIMIT) for _track_card.html's genre badge
+        - one indexed per-item lookup per item, cheap enough against the
+        local SQLite file that no batch query is warranted (see
+        resolveGenresForTrack/Album/Artist's degrade-to-[] contract, which
+        keeps this safe against stubbed test dbs too). Truncated here rather
+        than in the template so every caller (including detail pages, which
+        wrap a single item) gets the same cap without threading a constant
+        through every render_template() call."""
+        resolver = self._GENRE_RESOLVERS[kind]
+        for item in items:
+            item["genres"] = resolver(db, item["id"])[:TRACK_CARD_GENRE_LIMIT] if item.get("id") else []
+        return items
+
+    def _gatherCompareStats(self, db, startDate, endDate, limit=COMPARE_TOP_LIST_SIZE, sortBy="plays") -> dict:
         """One Compare-page side's stats, gathered identically for the viewer
         and the counterpart so the two columns can't drift apart. Runs the
         same _embed*TextElements step every other page feeding
         _track_card.html uses - without it the cards render with blank
-        time/first-listened/duration/percent lines. Every displayed top list
-        is the first `limit` entries of the same COMPARE_OVERLAP_POOL_SIZE-
-        deep pool the similarity/overlap intersections run over, so the
-        lists, the summary rows, and the overlaps all agree on one by-plays
-        ranking (and each side's aggregation runs once, not twice)."""
+        time/first-listened/duration/percent lines. The overlap pools
+        (topSongsPool/topArtistsPool/topAlbumsPool - what the similarity/
+        overlap intersections and taste-match run over) always stay
+        COMPARE_OVERLAP_POOL_SIZE-deep and plays-ranked, regardless of
+        `sortBy` - that math is tuned around a plays-ranked pool. The
+        DISPLAYED my/their top lists default to the same pool's first
+        `limit` entries (no extra query - matches today's single
+        aggregation), but re-query live at `sortBy` when it's not "plays",
+        so both membership and order reflect the chosen metric like Top
+        Songs page's own sortBy does."""
         totalPlays, totalMs = db.getPlayTotals(startDate, endDate)
         topSongsPool = db.getTopSongs(startDate, endDate, limit=COMPARE_OVERLAP_POOL_SIZE)
+        topSongsDisplay = topSongsPool[:limit] if sortBy == "plays" \
+            else db.getTopSongs(startDate, endDate, limit=limit, by=sortBy)
         topSongs = self._embedTopSongsTextElements(
-            self._embedSongsTextElements(topSongsPool[:limit]),
-            sortBy="plays", totalPlays=totalPlays, totalMs=totalMs)
+            self._embedSongsTextElements(topSongsDisplay),
+            sortBy=sortBy, totalPlays=totalPlays, totalMs=totalMs)
         topAlbumsPool = db.getTopAlbums(startDate, endDate, limit=COMPARE_OVERLAP_POOL_SIZE)
+        topAlbumsDisplay = topAlbumsPool[:limit] if sortBy == "plays" \
+            else db.getTopAlbums(startDate, endDate, limit=limit, by=sortBy)
         topAlbums = self._embedAlbumsTextElements(
-            topAlbumsPool[:limit],
-            sortBy="plays", totalPlays=totalPlays, totalMs=totalMs)
+            topAlbumsDisplay,
+            sortBy=sortBy, totalPlays=totalPlays, totalMs=totalMs)
         topArtistsPool = db.getTopArtists(startDate, endDate, limit=COMPARE_OVERLAP_POOL_SIZE)
+        topArtistsDisplay = topArtistsPool[:limit] if sortBy == "plays" \
+            else db.getTopArtists(startDate, endDate, limit=limit, by=sortBy)
         topArtists = self._embedArtistsTextElements(
-            topArtistsPool[:limit],
-            sortBy="plays", totalPlays=totalPlays, totalMs=totalMs)
+            topArtistsDisplay,
+            sortBy=sortBy, totalPlays=totalPlays, totalMs=totalMs)
+        topSongs = self._attachGenres(db, topSongs, "track")
+        topArtists = self._attachGenres(db, topArtists, "artist")
+        topAlbums = self._attachGenres(db, topAlbums, "album")
 
         completion = db.getCompletionStats(startDate, endDate)
         completionTotal = completion["skips"] + completion["completes"] + completion["partials"]
@@ -742,16 +806,24 @@ class SpotifyDashboardApp:
             item["linkExternally"] = item["id"] not in playedIds
 
     def _buildSharedItems(self, myPool, theirPool, embedFn, limit) -> list[dict]:
-        """Shared entries of one category (viewer-ranked, sliced to `limit`)
-        with the per-user versus data the Top Common Songs/Artists/Albums
-        cards render.
+        """Shared entries of one category, ranked by COMBINED plays across
+        both users (symmetric under swapping myPool/theirPool) and sliced to
+        `limit`, with the per-user versus data the Top Common Songs/Artists/
+        Albums cards render.
+        Combined-plays ranking - not either side's own pool order - so the
+        same mutual-share pair sees the same Top Common list regardless of
+        who's viewing. Ranking by the viewer's own order used to silently
+        cut different overlapping items depending on whose pool was walked.
         Copied dicts: the pool entries also feed the viewer's own top-list
         column, and the versus block / combined totals must only show on the
         shared cards. The unique-song counts are only attached where the
         aggregates carry them (artists/albums) - a song card has nothing to
         count."""
         theirById = {item["id"]: item for item in theirPool}
-        shared = embedFn([dict(item) for item in myPool if item["id"] in theirById][:limit])
+        sharedItems = [dict(item) for item in myPool if item["id"] in theirById]
+        sharedItems.sort(key=lambda item: item.get("plays", 0) + theirById[item["id"]].get("plays", 0),
+                          reverse=True)
+        shared = embedFn(sharedItems[:limit])
         for item in shared:
             theirItem = theirById[item["id"]]
             myPlays = item.get("plays", 0)
@@ -843,20 +915,30 @@ class SpotifyDashboardApp:
         ideal = sum(2 * self._rankWeight(rank) for rank in range(1, idealDepth + 1))
         return min(1.0, actual / ideal)
 
-    def _tasteMatchPercent(self, my, their) -> int | None:
+    def _tasteMatchPercent(self, my, their, myGenrePool=None, theirGenrePool=None) -> int | None:
         """One headline number for how much two users' taste overlaps: the
         rank-weighted pool overlap per category (with artist-mediated credit
         for songs/albums - see _rankWeightedOverlap), weighted by
         TASTE_MATCH_WEIGHTS and passed through a concave response curve
         (see TASTE_MATCH_CURVE_EXPONENT). None when no category has data on
         both sides - the UI hides the badge instead of showing a misleading
-        0%."""
+        0%.
+
+        myGenrePool/theirGenrePool are {genre: plays} distributions (see
+        Database.getGenreDistribution), or None/empty when the caller's
+        genre unlock gate hasn't passed for both sides - the genre category
+        behaves like "artists" (exact string match only, no secondary
+        mediation) and is naturally excluded by _rankWeightedOverlap when
+        either pool is empty."""
         myArtistIds = {a["id"] for a in my["topArtistsPool"]}
         theirArtistIds = {a["id"] for a in their["topArtistsPool"]}
+        myGenresPool = [{"id": genre} for genre in (myGenrePool or {})]
+        theirGenresPool = [{"id": genre} for genre in (theirGenrePool or {})]
         categories = {
             "artists": (my["topArtistsPool"], their["topArtistsPool"], None, None),
             "songs": (my["topSongsPool"], their["topSongsPool"], myArtistIds, theirArtistIds),
             "albums": (my["topAlbumsPool"], their["topAlbumsPool"], myArtistIds, theirArtistIds),
+            "genres": (myGenresPool, theirGenresPool, None, None),
         }
         parts = []
         for kind, (myPool, theirPool, myAIds, theirAIds) in categories.items():
@@ -1052,18 +1134,31 @@ class SpotifyDashboardApp:
             return defaultYear
         return year if year in availableYears else defaultYear
 
-    def _discoveriesInYear(self, items: list, yearStart, yearEnd, limit: int) -> list:
+    @staticmethod
+    def _resortByMetric(items: list, sortBy: str) -> list:
+        """Re-sorts an already-fetched list of song/artist/album dicts by
+        `sortBy` (plays/totalTimeListened descending, name ascending) -
+        matches VALID_SORT_BY's semantics (see app.py's sortBy query param
+        docs) without re-querying the DB. Used where a pool was fetched at
+        one fixed ranking but the displayed order should follow the user's
+        chosen metric instead (Wrapped's cached pools, which are only ever
+        stored plays-ranked)."""
+        if sortBy == "name":
+            return sorted(items, key=lambda item: item.get("name", "").lower())
+        return sorted(items, key=lambda item: item.get(sortBy, 0), reverse=True)
+
+    def _discoveriesInYear(self, items: list, yearStart, yearEnd, limit: int, sortBy: str = "plays") -> list:
         """Items (songs or artists) whose true, all-time first listen falls
         within [yearStart, yearEnd) - not just their earliest play *within* that
         range, which a date-scoped query would report instead. `items` must
         therefore come from an unbounded (no date range) stats call. Sorted by
-        play count, most-played discovery first."""
+        `sortBy`, most-played discovery first by default."""
         yearStartTs, yearEndTs = yearStart.timestamp(), yearEnd.timestamp()
         discovered = [
             item for item in items
             if item.get("firstListenedAt") is not None and yearStartTs <= item["firstListenedAt"] < yearEndTs
         ]
-        discovered.sort(key=lambda item: item.get("plays", 0), reverse=True)
+        discovered = self._resortByMetric(discovered, sortBy)
         return discovered[:limit]
 
     def _iterExportEntries(self, db):
@@ -2043,6 +2138,7 @@ class SpotifyDashboardApp:
                 page, totalPages, startIndex = self._calculatePagination(totalCount)
                 tracks = db.getEntriesFromNew(count=PAGE_SIZE, startIndex=startIndex)
             tracks = self._embedSongsTextElements(tracks)
+            tracks = self._attachGenres(db, tracks, "track")
 
             intervalLabel = self._getIntervalLabel(interval, customStart, customEnd)
             startDate, endDate = self._getDateRange(interval, customStart, customEnd, default="day", tz=db.tz)
@@ -2138,6 +2234,7 @@ class SpotifyDashboardApp:
 
             tracks = self._embedSongsTextElements(tracks)
             tracks = self._embedTopSongsTextElements(tracks, sortBy=sortBy, totalPlays=totalPlays, totalMs=totalMs)
+            tracks = self._attachGenres(db, tracks, "track")
 
             return render_template(
                 "top_songs.html",
@@ -2196,6 +2293,7 @@ class SpotifyDashboardApp:
             )
 
             albums = self._embedAlbumsTextElements(albums, sortBy=sortBy, totalPlays=totalPlays, totalMs=totalMs)
+            albums = self._attachGenres(db, albums, "album")
 
             return render_template(
                 "top_albums.html",
@@ -2245,6 +2343,7 @@ class SpotifyDashboardApp:
                                         limit=PAGE_SIZE, offset=startIndex, searchQuery=searchQuery)
 
             artists = self._embedArtistsTextElements(artists, sortBy=sortBy, totalPlays=totalPlays, totalMs=totalMs)
+            artists = self._attachGenres(db, artists, "artist")
             pagination = self._buildPaginationContext(
                 "topArtistsPage",
                 page,
@@ -2302,15 +2401,25 @@ class SpotifyDashboardApp:
             artistTrend = None if isSingleDayView else db.getArtistTrend(startDate=startDate, endDate=endDate, topN=CHART_ARTIST_TREND_TOP_N, groupBy=groupBy)
 
             explicitRatio = db.getExplicitRatio(startDate=startDate, endDate=endDate)
-            decadeDistribution = db.getReleaseDecadeDistribution(startDate=startDate, endDate=endDate)
+            # Flask's JSON provider sorts dict keys alphabetically on
+            # serialization (app.json.sort_keys, on by default) - a {label:
+            # value} dict handed to |tojson loses whatever order the SQL
+            # produced. A JSON array preserves element order regardless, so
+            # both bar-chart datasets are shipped as [label, value] pairs
+            # instead (see renderCategoryBarChart in charts.js).
+            decadeDistribution = list(db.getReleaseDecadeDistribution(startDate=startDate, endDate=endDate).items())
             completionStats = db.getCompletionStats(startDate=startDate, endDate=endDate)
 
             genreCoverage = resolveGenreCoverage(db, startDate, endDate)
             genreUnlocked = genreGatePasses(genreCoverage)
             genreDistribution = None
             if genreUnlocked:
-                genreDistribution = resolveGenreDistribution(db, startDate, endDate,
-                                                             CHART_TOP_GENRES_LIMIT)
+                distribution = resolveGenreDistribution(db, startDate, endDate,
+                                                        CHART_TOP_GENRES_LIMIT)
+                # Selection stays the same top-N by plays as every other
+                # genre surface (Wrapped/Compare keep descending) - only this
+                # bar chart's own display order is reversed to read ascending.
+                genreDistribution = list(reversed(distribution.items()))
 
             return render_template(
                 "charts.html",
@@ -2352,6 +2461,9 @@ class SpotifyDashboardApp:
             limit = request.args.get("limit", type=int)
             if limit not in WRAPPED_LIMIT_OPTIONS:
                 limit = WRAPPED_LIST_SIZE
+            # Default stays "plays" (not DEFAULT_SORT_BY) so nobody's Wrapped
+            # changes unless they touch the control.
+            sortBy = self._getSortByParam(default="plays")
 
             yearStart = nowLocal.replace(year=year, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
             yearEnd = nowLocal.replace(year=year + 1, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
@@ -2448,28 +2560,32 @@ class SpotifyDashboardApp:
                 else:
                     timeSeries = timeSeriesWeek
 
-                # 4. Slice to requested limit (precalculated lists store up to 100 items)
-                topSongs = topSongs[:limit]
-                topArtists = topArtists[:limit]
-                topAlbums = topAlbums[:limit]
-                discoveredSongs = discoveredSongs[:limit]
-                discoveredArtists = discoveredArtists[:limit]
-                discoveredAlbums = discoveredAlbums[:limit]
+                # 4. Re-sort the cached (up to 100-item) pools by the chosen
+                # metric, then slice to the requested limit. The cache itself
+                # is only ever stored plays-ranked, so membership stays
+                # whatever that plays-ranked capture included - only order/
+                # what survives the limit cut within it follows sortBy.
+                topSongs = self._resortByMetric(topSongs, sortBy)[:limit]
+                topArtists = self._resortByMetric(topArtists, sortBy)[:limit]
+                topAlbums = self._resortByMetric(topAlbums, sortBy)[:limit]
+                discoveredSongs = self._resortByMetric(discoveredSongs, sortBy)[:limit]
+                discoveredArtists = self._resortByMetric(discoveredArtists, sortBy)[:limit]
+                discoveredAlbums = self._resortByMetric(discoveredAlbums, sortBy)[:limit]
             else:
                 # Dynamic calculations for mocks (unit tests compatibility)
-                topSongs = db.getTopSongs(startDate=yearStart, endDate=yearEnd, by="plays", limit=limit)
-                topArtists = db.getTopArtists(startDate=yearStart, endDate=yearEnd, by="plays", limit=limit)
-                topAlbums = db.getTopAlbums(startDate=yearStart, endDate=yearEnd, by="plays", limit=limit)
+                topSongs = db.getTopSongs(startDate=yearStart, endDate=yearEnd, by=sortBy, limit=limit)
+                topArtists = db.getTopArtists(startDate=yearStart, endDate=yearEnd, by=sortBy, limit=limit)
+                topAlbums = db.getTopAlbums(startDate=yearStart, endDate=yearEnd, by=sortBy, limit=limit)
                 totalPlays, totalMs = db.getPlayTotals(yearStart, yearEnd)
 
                 discoveredSongs = self._discoveriesInYear(
-                    db.getSongsStats(sortBy="plays"), yearStart, yearEnd, limit
+                    db.getSongsStats(sortBy="plays"), yearStart, yearEnd, limit, sortBy=sortBy
                 )
                 discoveredArtists = self._discoveriesInYear(
-                    db.getArtistsStats(), yearStart, yearEnd, limit
+                    db.getArtistsStats(), yearStart, yearEnd, limit, sortBy=sortBy
                 )
                 discoveredAlbums = self._discoveriesInYear(
-                    db.getAlbumsStats(sortBy="plays"), yearStart, yearEnd, limit
+                    db.getAlbumsStats(sortBy="plays"), yearStart, yearEnd, limit, sortBy=sortBy
                 )
 
                 timeSeries = db.getListeningTimeSeries(startDate=yearStart, endDate=yearEnd, groupBy=groupBy)
@@ -2484,12 +2600,18 @@ class SpotifyDashboardApp:
             # 5. Embed presentation elements
             timeSeries = self._embedTimeSeriesTextElements(timeSeries)
             topSongs = self._embedSongsTextElements(topSongs)
-            topSongs = self._embedTopSongsTextElements(topSongs, sortBy="plays", totalPlays=totalPlays, totalMs=totalMs)
-            topArtists = self._embedArtistsTextElements(topArtists, sortBy="plays", totalPlays=totalPlays, totalMs=totalMs)
-            topAlbums = self._embedAlbumsTextElements(topAlbums, sortBy="plays", totalPlays=totalPlays, totalMs=totalMs)
+            topSongs = self._embedTopSongsTextElements(topSongs, sortBy=sortBy, totalPlays=totalPlays, totalMs=totalMs)
+            topArtists = self._embedArtistsTextElements(topArtists, sortBy=sortBy, totalPlays=totalPlays, totalMs=totalMs)
+            topAlbums = self._embedAlbumsTextElements(topAlbums, sortBy=sortBy, totalPlays=totalPlays, totalMs=totalMs)
             discoveredSongs = self._embedTopSongsTextElements(self._embedSongsTextElements(discoveredSongs))
             discoveredArtists = self._embedArtistsTextElements(discoveredArtists)
             discoveredAlbums = self._embedAlbumsTextElements(discoveredAlbums)
+            topSongs = self._attachGenres(db, topSongs, "track")
+            topArtists = self._attachGenres(db, topArtists, "artist")
+            topAlbums = self._attachGenres(db, topAlbums, "album")
+            discoveredSongs = self._attachGenres(db, discoveredSongs, "track")
+            discoveredArtists = self._attachGenres(db, discoveredArtists, "artist")
+            discoveredAlbums = self._attachGenres(db, discoveredAlbums, "album")
 
             # 6. Check if AJAX request and return JSON response if true
             if isAjaxRequest:
@@ -2550,6 +2672,7 @@ class SpotifyDashboardApp:
                 groupBy=groupBy,
                 limit=limit,
                 limitOptions=WRAPPED_LIMIT_OPTIONS,
+                sortBy=sortBy,
                 totalPlays=totalPlays,
                 totalTime=msToString(totalMs),
                 topSongs=topSongs,
@@ -2603,7 +2726,15 @@ class SpotifyDashboardApp:
             otherEmail = self.repo.getEmailForUsername(withUsername)
             otherDb = self.get_user_db(withUsername, otherEmail)
 
-            interval = request.args.get("interval", "")
+            # Same default-window setting the dashboard route reads - "all
+            # time" is that setting's own stored spelling, but Compare's own
+            # dropdown represents All Time as "" (see compare.html), so it's
+            # normalized before feeding either the resolver or the template.
+            settings = self.repo.getUserSettings(username)
+            defaultWindow = settings.get("default_dashboard_window", "day")
+            if defaultWindow == "all time":
+                defaultWindow = ""
+            interval = request.args.get("interval", defaultWindow)
             customStart = request.args.get("startDate", "")
             customEnd = request.args.get("endDate", "")
             startDate, endDate = self._getDateRange(interval, customStart, customEnd, default="all time", tz=db.tz)
@@ -2611,9 +2742,13 @@ class SpotifyDashboardApp:
             limit = request.args.get("limit", type=int)
             if limit not in WRAPPED_LIMIT_OPTIONS:
                 limit = COMPARE_TOP_LIST_SIZE
+            # Default stays "plays" (not DEFAULT_SORT_BY) so nobody's view
+            # changes unless they touch the control - matches every other
+            # value on this page defaulting to the pre-existing behavior.
+            sortBy = self._getSortByParam(default="plays")
 
-            my = self._gatherCompareStats(db, startDate, endDate, limit=limit)
-            their = self._gatherCompareStats(otherDb, startDate, endDate, limit=limit)
+            my = self._gatherCompareStats(db, startDate, endDate, limit=limit, sortBy=sortBy)
+            their = self._gatherCompareStats(otherDb, startDate, endDate, limit=limit, sortBy=sortBy)
 
             # A counterpart item links to Spotify only when the viewer has NO
             # plays of that exact song/artist/album - the viewer's own detail
@@ -2639,6 +2774,12 @@ class SpotifyDashboardApp:
             sharedAlbums = self._buildSharedItems(
                 my["topAlbumsPool"], their["topAlbumsPool"],
                 self._embedAlbumsTextElements, limit)
+            # Genre tables are entity-keyed, not user-scoped, so either
+            # side's db returns the same result here - db (the viewer's) is
+            # just what's already in scope.
+            sharedArtists = self._attachGenres(db, sharedArtists, "artist")
+            sharedSongs = self._attachGenres(db, sharedSongs, "track")
+            sharedAlbums = self._attachGenres(db, sharedAlbums, "album")
 
             # Similarities run over the full pools, not the displayed top ten:
             # a #40-ranked common favorite is still a common favorite. The
@@ -2657,16 +2798,15 @@ class SpotifyDashboardApp:
                 "sharedAlbumCount": sum(1 for a in my["topAlbumsPool"] if a["id"] in theirAlbumIds),
                 "poolSize": COMPARE_OVERLAP_POOL_SIZE,
             }
-            tasteMatch = self._tasteMatchPercent(my, their)
-
-            # Genre comparison requires BOTH sides past the unlock gate -
-            # comparing a complete genre profile against a half-backfilled one
-            # would misrepresent the half-backfilled user's taste. Deliberately
-            # not folded into _tasteMatchPercent in v1: the score would jump
-            # for everyone the day genre data finishes backfilling.
+            # Genre comparison (and the genre category folded into taste
+            # match below) requires BOTH sides past the unlock gate -
+            # comparing a complete genre profile against a half-backfilled
+            # one would misrepresent the half-backfilled user's taste.
             myGenreCoverage = resolveGenreCoverage(db, startDate, endDate)
             theirGenreCoverage = resolveGenreCoverage(otherDb, startDate, endDate)
             genresUnlocked = genreGatePasses(myGenreCoverage) and genreGatePasses(theirGenreCoverage)
+            myGenrePool = None
+            theirGenrePool = None
             myTopGenres = None
             theirTopGenres = None
             sharedGenres = None
@@ -2688,6 +2828,8 @@ class SpotifyDashboardApp:
                 ]
                 sharedGenres.sort(key=lambda item: (-item["combinedPlays"], item["genre"]))
                 sharedGenres = sharedGenres[:COMPARE_TOP_GENRES_LIMIT]
+
+            tasteMatch = self._tasteMatchPercent(my, their, myGenrePool, theirGenrePool)
 
             trendStartDate, trendEndDate = startDate, endDate
             if trendStartDate is None or trendEndDate is None:
@@ -2810,6 +2952,7 @@ class SpotifyDashboardApp:
                 #< the raw param, not the resolved bucketing - links that pin
                 #  the auto-derived value would freeze auto mode
                 groupBy=groupByParam,
+                sortBy=sortBy,
             )
 
         @self.app.route("/song/<track_id>", methods=["GET"])
@@ -2826,6 +2969,7 @@ class SpotifyDashboardApp:
 
             song = self._embedSongTextElements(song)
             song = self._embedTopSongTextElements(song)
+            song = self._attachGenres(db, [song], "track")[0]
 
             timeSeries = self._embedTimeSeriesTextElements(
                 db.getListeningTimeSeries(trackId=track_id, groupBy=groupBy)
@@ -2862,7 +3006,9 @@ class SpotifyDashboardApp:
             songs = self._embedTopSongsTextElements(
                 songs, sortBy="plays", totalPlays=artist.get("plays", 0), totalMs=artist.get("totalTimeListened", 0)
             )
+            songs = self._attachGenres(db, songs, "track")
             artist = self._embedArtistTextElement(artist)
+            artist = self._attachGenres(db, [artist], "artist")[0]
 
             timeSeries = self._embedTimeSeriesTextElements(
                 db.getListeningTimeSeries(artistId=artist_id, groupBy=groupBy)
@@ -2899,7 +3045,9 @@ class SpotifyDashboardApp:
             songs = self._embedTopSongsTextElements(
                 songs, sortBy="plays", totalPlays=album.get("plays", 0), totalMs=album.get("totalTimeListened", 0)
             )
+            songs = self._attachGenres(db, songs, "track")
             album = self._embedAlbumTextElements(album)
+            album = self._attachGenres(db, [album], "album")[0]
 
             timeSeries = self._embedTimeSeriesTextElements(
                 db.getListeningTimeSeries(albumId=album_id, groupBy=groupBy)

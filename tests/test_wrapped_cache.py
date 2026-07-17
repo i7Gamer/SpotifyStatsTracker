@@ -354,3 +354,45 @@ class TestWrappedRouteAjax(unittest.TestCase):
             # (see templates/wrapped.html's AJAX handler) - it must not be
             # computed and shipped for nothing.
             self.assertNotIn("discoveredAlbumsCount", data)
+
+    def test_sort_by_resorts_the_cached_top_songs_pool(self):
+        """The cache stores top_songs pre-ranked by plays (up to 100 items) -
+        sortBy re-sorts that already-fetched pool by the chosen field before
+        slicing to the requested limit. Membership stays whatever the
+        plays-ranked cache captured; only order/what survives the limit cut
+        within it follows sortBy."""
+        dash = self._makeApp()
+
+        db = MagicMock()
+        db.tz = datetime.timezone.utc
+        db.user = "alice"
+        db.getEntriesFromOld.return_value = [{"playedAt": 1774000000}]
+
+        dummy_cached = {
+            "total_plays": 12, "total_ms": 360000, "longest_streak": 3,
+            "peak_day": "2026-03-04", "peak_plays": 4, "unique_songs": 2, "unique_artists": 0,
+            "discovered_songs": 0, "discovered_artists": 0,
+            "time_series_day": "[]", "time_series_week": "[]", "time_series_month": "[]",
+            "top_songs": json.dumps([
+                {"id": "many", "name": "ManyShortPlays", "artists": [], "duration": 60000,
+                 "plays": 10, "totalTimeListened": 10000},
+                {"id": "long", "name": "FewLongPlays", "artists": [], "duration": 60000,
+                 "plays": 2, "totalTimeListened": 999999},
+            ]),
+            "top_artists": "[]", "top_albums": "[]",
+            "discovered_songs_list": "[]", "discovered_artists_list": "[]", "discovered_albums_list": "[]",
+        }
+        db.repo.getCachedWrapped.return_value = dummy_cached
+
+        client = dash.app.test_client()
+        with patch.object(dash, 'is_user_logged_in', return_value=True), \
+             patch.object(dash, 'get_username_for_email', return_value='alice'), \
+             patch.object(dash, 'get_user_db', return_value=db):
+            with client.session_transaction() as sess:
+                sess['email'] = 'alice@example.com'
+
+            resp = client.get("/wrapped?year=2026&sortBy=totalTimeListened")
+
+        self.assertEqual(resp.status_code, 200)
+        body = resp.data.decode()
+        self.assertLess(body.index("FewLongPlays"), body.index("ManyShortPlays"))
