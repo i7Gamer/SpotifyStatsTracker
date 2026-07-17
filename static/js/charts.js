@@ -143,17 +143,21 @@
     var maxLabels = Math.max(2, Math.floor(plotWidth / spacing));
     var step = Math.max(1, Math.ceil(labels.length / maxLabels));
     var lastIndex = labels.length - 1;
-    for (var i = 0; i < labels.length; i++) {
-      if (i % step !== 0 && i !== lastIndex) {
-        continue;
-      }
-      var x = labelForIndex(i);
-      // Every other label centers on its tick; the last one sits exactly at
-      // the plot's right edge, so centering it would push half its text past
-      // the canvas edge, clipping it - right-align just this one instead so
-      // it hugs the edge without overflowing.
-      ctx.textAlign = (i === lastIndex) ? 'right' : 'center';
-      ctx.fillText(labels[i].slice(0, 7), x, paddingTop + plotHeight + 8);
+    var lastStepIndex = Math.floor(lastIndex / step) * step;
+
+    ctx.textAlign = 'center';
+    for (var i = 0; i <= lastStepIndex; i += step) {
+      ctx.fillText(labels[i].slice(0, 7), labelForIndex(i), paddingTop + plotHeight + 8);
+    }
+
+    // The final bucket rarely lands exactly on a step boundary. Force-
+    // showing it anyway (so the chart's right end always has a date) is
+    // only safe when it's far enough from the last stepped label not to
+    // overlap it - otherwise drop it rather than crowd two labels together.
+    if (lastIndex !== lastStepIndex &&
+        labelForIndex(lastIndex) - labelForIndex(lastStepIndex) >= spacing) {
+      ctx.textAlign = 'right';
+      ctx.fillText(labels[lastIndex].slice(0, 7), labelForIndex(lastIndex), paddingTop + plotHeight + 8);
     }
   }
 
