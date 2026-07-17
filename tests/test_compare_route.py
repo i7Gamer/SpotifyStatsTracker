@@ -416,7 +416,7 @@ class TestCompareRoute(unittest.TestCase):
         """The Top Common lists are built from the 100-deep pools but must render at
         most COMPARE_TOP_LIST_SIZE cards, matching the adjacent lists."""
         self._accept("alice", "bob")
-        sharedPool = [_artist(f"s{i}", f"SharedArtist{i}") for i in range(12)]
+        sharedPool = [_artist(f"s{i}", f"SharedArtist{i}", plays=12 - i) for i in range(12)]
         self.dbs["alice"].getTopArtists.return_value = sharedPool
         self.dbs["bob"].getTopArtists.return_value = sharedPool
         client = self._loginAs("alice")
@@ -719,7 +719,7 @@ class TestCompareRoute(unittest.TestCase):
 
     def test_shared_song_and_album_lists_are_capped(self):
         self._accept("alice", "bob")
-        sharedSongs = [_song(f"s{i}", f"CapSong{i}") for i in range(12)]
+        sharedSongs = [_song(f"s{i}", f"CapSong{i}", plays=12 - i) for i in range(12)]
         self.dbs["alice"].getTopSongs.return_value = sharedSongs
         self.dbs["bob"].getTopSongs.return_value = sharedSongs
         client = self._loginAs("alice")
@@ -901,7 +901,7 @@ class TestCompareRoute(unittest.TestCase):
 
     def test_limit_applies_to_the_shared_lists_too(self):
         self._accept("alice", "bob")
-        sharedSongs = [_song(f"s{i}", f"CapSong{i}") for i in range(30)]
+        sharedSongs = [_song(f"s{i}", f"CapSong{i}", plays=30 - i) for i in range(30)]
         self.dbs["alice"].getTopSongs.return_value = sharedSongs
         self.dbs["bob"].getTopSongs.return_value = sharedSongs
         client = self._loginAs("alice")
@@ -1094,6 +1094,47 @@ class TestCompareRoute(unittest.TestCase):
         self.assertLess(playsSection.index(b"SharedA0"), playsSection.index(b"SharedA4"))
         self.assertLess(timeSection.index(b"SharedA4"), timeSection.index(b"SharedA0"))
         self.assertIn(b'class="taste-match-value js-taste-match">100%</span>', byTime.data)
+
+    def test_shared_list_ties_break_by_combined_time_played(self):
+        """Two shared artists tied on combined plays must not fall back to
+        input-pool order (see app.py's _buildSharedItems) - the one with
+        more combined totalTimeListened ("Time Played") wins, matching the
+        tiebreak Top Artists/Songs/Albums already use in SQL
+        (Repository.getArtistAggregates etc.)."""
+        self._accept("alice", "bob")
+        pool = [
+            _artist("lo", "Bravo", plays=5, totalTimeListened=1000),
+            _artist("hi", "Alpha", plays=5, totalTimeListened=5000),
+        ]
+        self.dbs["alice"].getTopArtists.return_value = list(pool)
+        self.dbs["bob"].getTopArtists.return_value = list(pool)
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        section = resp.data[
+            resp.data.index(b'data-category="common-top-artists"'):
+            resp.data.index(b'data-category="common-top-albums"')]
+        self.assertLess(section.index(b"Alpha"), section.index(b"Bravo"))
+
+    def test_shared_list_full_ties_fall_back_to_name(self):
+        """Shared artists tied on both combined plays and combined
+        totalTimeListened fall back to alphabetical name, not pool order."""
+        self._accept("alice", "bob")
+        pool = [
+            _artist("z", "Zeta", plays=5, totalTimeListened=1000),
+            _artist("a", "Alpha", plays=5, totalTimeListened=1000),
+        ]
+        self.dbs["alice"].getTopArtists.return_value = list(pool)
+        self.dbs["bob"].getTopArtists.return_value = list(pool)
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        section = resp.data[
+            resp.data.index(b'data-category="common-top-artists"'):
+            resp.data.index(b'data-category="common-top-albums"')]
+        self.assertLess(section.index(b"Alpha"), section.index(b"Zeta"))
 
     def test_taste_match_is_full_for_identical_pools(self):
         self._accept("alice", "bob")

@@ -880,8 +880,18 @@ class SpotifyDashboardApp:
         count."""
         theirById = {item["id"]: item for item in theirPool}
         sharedItems = [dict(item) for item in myPool if item["id"] in theirById]
-        sharedItems.sort(key=lambda item: item.get(sortBy, 0) + theirById[item["id"]].get(sortBy, 0),
-                          reverse=True)
+
+        def sortKey(item):
+            theirItem = theirById[item["id"]]
+            combinedMetric = item.get(sortBy, 0) + theirItem.get(sortBy, 0)
+            combinedTime = item.get("totalTimeListened", 0) + theirItem.get("totalTimeListened", 0)
+            #< descending combinedMetric/combinedTime via negation, ascending
+            #  name/id - mirrors Repository.getSongsPage's plays -> totalTimeListened
+            #  -> name -> id tiebreak chain so ties render the same way here as
+            #  everywhere else "plays" is ranked.
+            return (-combinedMetric, -combinedTime, (item.get("name") or "").lower(), item["id"])
+
+        sharedItems.sort(key=sortKey)
         shared = embedFn(sharedItems[:limit])
         for item in shared:
             theirItem = theirById[item["id"]]
