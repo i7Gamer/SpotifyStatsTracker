@@ -76,7 +76,7 @@ class TestDashboardPagination(_ListRouteTestBase):
         resp = self._getDashboard(dash, db)
 
         self.assertEqual(resp.status_code, 200)
-        db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=0)
+        db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=0, startDate=None, endDate=None)
         self.assertIn(b"Page 1 of 3", resp.data)
 
     def test_without_search_requests_correct_offset_for_page(self):
@@ -85,7 +85,7 @@ class TestDashboardPagination(_ListRouteTestBase):
 
         resp = self._getDashboard(dash, db, query="?page=2")
 
-        db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=appModule.PAGE_SIZE)
+        db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=appModule.PAGE_SIZE, startDate=None, endDate=None)
         self.assertIn(b"Page 2 of 3", resp.data)
 
     def test_without_search_clamps_page_beyond_range(self):
@@ -94,7 +94,7 @@ class TestDashboardPagination(_ListRouteTestBase):
 
         resp = self._getDashboard(dash, db, query="?page=99")
 
-        db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=2 * appModule.PAGE_SIZE)
+        db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=2 * appModule.PAGE_SIZE, startDate=None, endDate=None)
         self.assertIn(b"Page 3 of 3", resp.data)
 
     def test_without_search_handles_empty_database(self):
@@ -104,7 +104,7 @@ class TestDashboardPagination(_ListRouteTestBase):
         resp = self._getDashboard(dash, db)
 
         self.assertEqual(resp.status_code, 200)
-        db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=0)
+        db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=0, startDate=None, endDate=None)
         self.assertIn(b"Page 1 of 1", resp.data)
 
     def test_with_search_paginates_and_matches_in_sql(self):
@@ -118,8 +118,8 @@ class TestDashboardPagination(_ListRouteTestBase):
         resp = self._getDashboard(dash, db, query="?q=foo")
 
         self.assertEqual(resp.status_code, 200)
-        db.searchEntriesCount.assert_called_once_with("foo")
-        db.searchEntries.assert_called_once_with("foo", count=appModule.PAGE_SIZE, startIndex=0)
+        db.searchEntriesCount.assert_called_once_with("foo", startDate=None, endDate=None)
+        db.searchEntries.assert_called_once_with("foo", count=appModule.PAGE_SIZE, startIndex=0, startDate=None, endDate=None)
         db.getEntriesFromNew.assert_not_called()
         db.getEntriesCount.assert_not_called()
 
@@ -131,8 +131,81 @@ class TestDashboardPagination(_ListRouteTestBase):
         resp = self._getDashboard(dash, db, query="?q=foo&page=9999")
 
         self.assertEqual(resp.status_code, 200)
-        db.searchEntries.assert_called_once_with("foo", count=appModule.PAGE_SIZE, startIndex=2 * appModule.PAGE_SIZE)
+        db.searchEntries.assert_called_once_with("foo", count=appModule.PAGE_SIZE, startIndex=2 * appModule.PAGE_SIZE, startDate=None, endDate=None)
         self.assertIn(b"Page 3 of 3", resp.data)
+
+
+class TestDashboardCustomRangeListScoping(_ListRouteTestBase):
+    """A custom date range (the querystring shape a chart click-through
+    produces - see static/js/charts.js) must scope the play-history list
+    below, not just the stats cards above. A named interval (day/week/...),
+    including whatever the user's default_dashboard_window resolves to on a
+    plain visit, must NOT scope the list - only the stats cards - preserving
+    today's "list always shows full history" behavior for everything except
+    an explicit custom range."""
+
+    def test_custom_range_scopes_the_list(self):
+        dash = self._makeApp()
+        db = self._makeDb(entryCount=0)
+
+        resp = self._getDashboard(dash, db, query="?interval=custom&startDate=2026-07-01&endDate=2026-07-05")
+
+        self.assertEqual(resp.status_code, 200)
+        kwargs = db.getEntriesFromNew.call_args.kwargs
+        self.assertIsNotNone(kwargs["startDate"])
+        self.assertIsNotNone(kwargs["endDate"])
+        self.assertEqual(kwargs["startDate"].date(), appModule.datetime(2026, 7, 1).date())
+        countKwargs = db.getEntriesCount.call_args.kwargs
+        self.assertIsNotNone(countKwargs["startDate"])
+        self.assertIsNotNone(countKwargs["endDate"])
+
+    def test_custom_range_scopes_search_too(self):
+        dash = self._makeApp()
+        db = self._makeDb(entryCount=0)
+
+        resp = self._getDashboard(
+            dash, db, query="?q=foo&interval=custom&startDate=2026-07-01&endDate=2026-07-05")
+
+        self.assertEqual(resp.status_code, 200)
+        kwargs = db.searchEntries.call_args.kwargs
+        self.assertIsNotNone(kwargs["startDate"])
+        self.assertIsNotNone(kwargs["endDate"])
+
+    def test_named_interval_does_not_scope_the_list(self):
+        dash = self._makeApp()
+        db = self._makeDb(entryCount=0)
+
+        resp = self._getDashboard(dash, db, query="?interval=week")
+
+        self.assertEqual(resp.status_code, 200)
+        db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=0, startDate=None, endDate=None)
+        # The stats card is still scoped to the named interval - only the list is exempt.
+        statsArgs = db.getOverallStats.call_args.args
+        self.assertIsNotNone(statsArgs[0])
+        self.assertIsNotNone(statsArgs[1])
+
+    def test_default_unscoped_visit_does_not_scope_the_list(self):
+        """A plain visit to '/' (no query params) resolves interval to the
+        user's default_dashboard_window, which is not 'custom' - the list
+        must still show full history, matching today's behavior."""
+        dash = self._makeApp()
+        db = self._makeDb(entryCount=0)
+
+        resp = self._getDashboard(dash, db)
+
+        self.assertEqual(resp.status_code, 200)
+        db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=0, startDate=None, endDate=None)
+
+    def test_custom_without_valid_dates_falls_back_and_does_not_scope_the_list(self):
+        """interval=custom with no/invalid startDate+endDate falls back to
+        'all time' (see dashboard()'s own fallback) - not a scoped range."""
+        dash = self._makeApp()
+        db = self._makeDb(entryCount=0)
+
+        resp = self._getDashboard(dash, db, query="?interval=custom")
+
+        self.assertEqual(resp.status_code, 200)
+        db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=0, startDate=None, endDate=None)
 
 
 class TestTopSongsPagination(_ListRouteTestBase):
@@ -263,7 +336,7 @@ class TestPageParamParsing(_ListRouteTestBase):
         resp = self._getDashboard(dash, db, query="?page=abc")
 
         self.assertEqual(resp.status_code, 200)
-        db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=0)
+        db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=0, startDate=None, endDate=None)
         self.assertIn(b"Page 1 of 3", resp.data)
 
     def test_dashboard_clamps_negative_page(self):
@@ -273,7 +346,7 @@ class TestPageParamParsing(_ListRouteTestBase):
         resp = self._getDashboard(dash, db, query="?page=-5")
 
         self.assertEqual(resp.status_code, 200)
-        db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=0)
+        db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=0, startDate=None, endDate=None)
 
     def test_top_songs_survives_non_numeric_page(self):
         dash = self._makeApp()

@@ -534,28 +534,38 @@ class Repository:
         cur = conn.execute("DELETE FROM plays WHERE time_played <= 0")
         return cur.rowcount
 
-    def getPlaysCount(self, username: str) -> int:
+    def getPlaysCount(self, username: str, startTs: float | None = None, endTs: float | None = None) -> int:
         conn = self._conn()
-        row = conn.execute("SELECT COUNT(*) AS c FROM plays WHERE username=?", (username,)).fetchone()
+        params = [username]
+        rangeClause = self._dateRangeClause(params, startTs, endTs)
+        row = conn.execute(f"SELECT COUNT(*) AS c FROM plays WHERE username=?{rangeClause}", params).fetchone()
         return row["c"]
 
-    def getPlaysNewestFirst(self, username: str, count: int | None = None, startIndex: int = 0) -> list[dict]:
+    def getPlaysNewestFirst(self, username: str, count: int | None = None, startIndex: int = 0,
+                             startTs: float | None = None, endTs: float | None = None) -> list[dict]:
         conn = self._conn()
         limit = -1 if count is None else count
+        params = [username]
+        rangeClause = self._dateRangeClause(params, startTs, endTs)
+        params += [limit, startIndex]
         rows = conn.execute(
-            "SELECT track_id, played_at, time_played, played_from FROM plays "
-            "WHERE username=? ORDER BY played_at DESC, id DESC LIMIT ? OFFSET ?",
-            (username, limit, startIndex),
+            f"SELECT track_id, played_at, time_played, played_from FROM plays "
+            f"WHERE username=?{rangeClause} ORDER BY played_at DESC, id DESC LIMIT ? OFFSET ?",
+            params,
         ).fetchall()
         return [self._playRowToEntry(r) for r in rows]
 
-    def getPlaysOldestFirst(self, username: str, count: int | None = None, startIndex: int = 0) -> list[dict]:
+    def getPlaysOldestFirst(self, username: str, count: int | None = None, startIndex: int = 0,
+                             startTs: float | None = None, endTs: float | None = None) -> list[dict]:
         conn = self._conn()
         limit = -1 if count is None else count
+        params = [username]
+        rangeClause = self._dateRangeClause(params, startTs, endTs)
+        params += [limit, startIndex]
         rows = conn.execute(
-            "SELECT track_id, played_at, time_played, played_from FROM plays "
-            "WHERE username=? ORDER BY played_at ASC, id ASC LIMIT ? OFFSET ?",
-            (username, limit, startIndex),
+            f"SELECT track_id, played_at, time_played, played_from FROM plays "
+            f"WHERE username=?{rangeClause} ORDER BY played_at ASC, id ASC LIMIT ? OFFSET ?",
+            params,
         ).fetchall()
         return [self._playRowToEntry(r) for r in rows]
 
@@ -686,40 +696,47 @@ class Repository:
         )
     """
 
-    def searchPlays(self, username: str, query: str, limit: int | None = None, offset: int = 0) -> list[dict]:
+    def searchPlays(self, username: str, query: str, limit: int | None = None, offset: int = 0,
+                     startTs: float | None = None, endTs: float | None = None) -> list[dict]:
         """Plays (newest first) whose track name, artist(s), album, or source
         playlist/album match `query` - the SQL-pushed-down, paginated
         replacement for fetching every play and filtering in Python."""
         conn = self._conn()
         limitValue = -1 if limit is None else limit
         pattern = self._likePattern(query)
+        params = [username, pattern, pattern, pattern, pattern]
+        rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
+        params += [limitValue, offset]
         rows = conn.execute(
             f"""
             SELECT p.track_id AS track_id, p.played_at AS played_at,
                    p.time_played AS time_played, p.played_from AS played_from
             FROM plays p
             {self._SEARCH_JOIN_CLAUSE}
-            WHERE p.username = ? {self._SEARCH_MATCH_CLAUSE}
+            WHERE p.username = ? {self._SEARCH_MATCH_CLAUSE}{rangeClause}
             ORDER BY p.played_at DESC, p.id DESC
             LIMIT ? OFFSET ?
             """,
-            (username, pattern, pattern, pattern, pattern, limitValue, offset),
+            params,
         ).fetchall()
         return [self._playRowToEntry(r) for r in rows]
 
-    def searchPlaysCount(self, username: str, query: str) -> int:
+    def searchPlaysCount(self, username: str, query: str,
+                          startTs: float | None = None, endTs: float | None = None) -> int:
         """The paging counterpart to searchPlays() - total matching plays,
         for computing total page count without fetching every match."""
         conn = self._conn()
         pattern = self._likePattern(query)
+        params = [username, pattern, pattern, pattern, pattern]
+        rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
         row = conn.execute(
             f"""
             SELECT COUNT(*) AS c
             FROM plays p
             {self._SEARCH_JOIN_CLAUSE}
-            WHERE p.username = ? {self._SEARCH_MATCH_CLAUSE}
+            WHERE p.username = ? {self._SEARCH_MATCH_CLAUSE}{rangeClause}
             """,
-            (username, pattern, pattern, pattern, pattern),
+            params,
         ).fetchone()
         return row["c"]
 
@@ -1284,30 +1301,34 @@ class Repository:
 
     def getBucketedArtistPlayCounts(self, username: str, startTs: float | None = None,
                                      endTs: float | None = None) -> list[dict]:
-        """Play counts per (fixed PLAY_BUCKET_SECONDS UTC bucket, artist name)
-        - the SQL half of the artist-trend chart, replacing a row-per-
+        """Play counts per (fixed PLAY_BUCKET_SECONDS UTC bucket, artist id) -
+        the SQL half of the artist-trend chart, replacing a row-per-
         (play, artist) transfer. A play whose track has N artists still
-        counts once per artist, and grouping by artist NAME (not id) matches
-        the Python aggregation this replaces: same-named artists merge either
-        way. Ordered by bucket so callers iterate in play-time order."""
+        counts once per artist. artist_id rides along per row so the caller
+        (Database.getArtistTrend) can pick a representative id for same-
+        named artists, which still merge into one series/line there exactly
+        as before - this only adds data, it doesn't change that merge.
+        Ordered by bucket so callers iterate in play-time order."""
         conn = self._conn()
         params = [username]
         rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
         rows = conn.execute(
             f"""
             SELECT CAST(p.played_at / {PLAY_BUCKET_SECONDS} AS INTEGER) AS bucket,
+                   ar.id AS artist_id,
                    ar.name AS artist_name,
                    COUNT(*) AS plays
             FROM plays p
             JOIN track_artists ta ON ta.track_id = p.track_id
             JOIN artists ar ON ar.id = ta.artist_id
             WHERE p.username = ?{rangeClause}
-            GROUP BY bucket, ar.name
+            GROUP BY bucket, ar.id, ar.name
             ORDER BY bucket, ar.name
             """,
             params,
         ).fetchall()
         return [{"bucketStartTs": r["bucket"] * PLAY_BUCKET_SECONDS,
+                 "artistId": r["artist_id"],
                  "artistName": r["artist_name"],
                  "plays": r["plays"]} for r in rows]
 

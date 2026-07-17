@@ -393,6 +393,63 @@ class TestGetArtistTrend(ChartStatsTestCase):
 
         self.assertEqual(result, {"buckets": [], "series": []})
 
+    def test_series_carries_the_artists_id_for_click_through(self):
+        tracks, entries = self._sampleData()
+        db = self._makeDb(tracks, entries)
+
+        result = db.getArtistTrend(topN=2, groupBy="week")
+
+        idsByName = {series["name"]: series["id"] for series in result["series"]}
+        self.assertEqual(idsByName, {"Artist A": "a1", "Artist B": "a2"})
+
+    def _twoIdsSharingAName(self, plays1, plays2):
+        """Two distinct artist ids both named 'Shared Name', with plays1/plays2
+        total plays respectively - same-named-artist-merge test fixture."""
+        artist1 = {"name": "Shared Name", "id": "id1"}
+        artist2 = {"name": "Shared Name", "id": "id2"}
+        tracks = {
+            "song1": {"id": "song1", "name": "Song 1", "artists": [artist1]},
+            "song2": {"id": "song2", "name": "Song 2", "artists": [artist2]},
+        }
+        entries = (
+            [{"id": "song1", "playedAt": _ts(2026, 7, 6, h=i), "timePlayed": 1000} for i in range(plays1)]
+            + [{"id": "song2", "playedAt": _ts(2026, 7, 6, h=12 + i), "timePlayed": 1000} for i in range(plays2)]
+        )
+        return tracks, entries
+
+    def test_same_name_different_ids_merge_into_one_line_with_the_plurality_id(self):
+        """Two different artist ids sharing a display name still merge into
+        one series (by design, see getBucketedArtistPlayCounts's docstring) -
+        the id representing that line for click-through must be whichever id
+        contributed more plays under that name."""
+        tracks, entries = self._twoIdsSharingAName(plays1=1, plays2=3)
+        db = self._makeDb(tracks, entries)
+
+        result = db.getArtistTrend(topN=1, groupBy="week")
+
+        self.assertEqual(len(result["series"]), 1)
+        self.assertEqual(result["series"][0]["id"], "id2")
+        self.assertEqual(result["series"][0]["data"], [4])   #< the merged line's totals are unaffected by id choice
+
+    def test_same_name_different_ids_reversed_play_counts_still_pick_the_plurality_id(self):
+        """Same as above with the play counts swapped, to pin that the winner
+        is determined by play count and not by which id happened to be
+        inserted/queried first."""
+        tracks, entries = self._twoIdsSharingAName(plays1=3, plays2=1)
+        db = self._makeDb(tracks, entries)
+
+        result = db.getArtistTrend(topN=1, groupBy="week")
+
+        self.assertEqual(result["series"][0]["id"], "id1")
+
+    def test_same_name_different_ids_tie_breaks_deterministically_by_id(self):
+        tracks, entries = self._twoIdsSharingAName(plays1=2, plays2=2)
+        db = self._makeDb(tracks, entries)
+
+        result = db.getArtistTrend(topN=1, groupBy="week")
+
+        self.assertEqual(result["series"][0]["id"], "id1")   #< lexicographically smaller id wins ties
+
 
 if __name__ == "__main__":
     import unittest

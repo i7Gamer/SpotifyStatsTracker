@@ -112,6 +112,43 @@ class TestChartsRoute(unittest.TestCase):
         self.assertEqual(trendKwargs["groupBy"], "month")
         self.assertIn(b'<option value="month" selected>Month</option>', resp.data)
 
+    def test_time_series_range_is_embedded_for_click_through(self):
+        dash = self._makeApp()
+        db = self._makeDb()   #< default label "2026-07-01", default groupBy "day"
+
+        resp = self._get(dash, db)
+
+        body = resp.data.decode()
+        self.assertIn('"rangeStart": "2026-07-01"', body)
+        self.assertIn('"rangeEnd": "2026-07-01"', body)
+
+    def test_single_day_view_hourly_buckets_get_no_range(self):
+        """chartsPage() switches to hourly buckets for a single-day interval
+        (see timeSeriesGroupBy) - those have no clean calendar-date mapping,
+        so they must not carry a (wrong) rangeStart/rangeEnd."""
+        dash = self._makeApp()
+        db = self._makeDb()
+        db.getListeningTimeSeries.return_value = [
+            {"label": "2026-07-01 14:00", "totalTimeListened": 1000, "plays": 1},
+        ]
+
+        resp = self._get(dash, db, query="?interval=day")
+
+        body = resp.data.decode()
+        self.assertNotIn("rangeStart", body)
+
+    def test_artist_trend_series_id_is_embedded_for_click_through(self):
+        dash = self._makeApp()
+        db = self._makeDb()
+        db.getArtistTrend.return_value = {
+            "buckets": ["2026-07-01"],
+            "series": [{"name": "Artist A", "id": "artist-123", "data": [5]}],
+        }
+
+        resp = self._get(dash, db)
+
+        self.assertIn(b'"id": "artist-123"', resp.data)
+
     def test_invalid_groupby_falls_back_to_day(self):
         dash = self._makeApp()
         db = self._makeDb()

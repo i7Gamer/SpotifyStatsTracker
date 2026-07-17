@@ -403,6 +403,45 @@ class TestPlaysHistory(RepositoryTestCase):
         entries = self.repo.getPlaysNewestFirst("alice")
         self.assertEqual(entries[0]["playedFrom"], "playlist:xyz")
 
+    def test_newest_first_respects_date_range(self):
+        self.repo.insertPlay("alice", "t1", 1000.0, 5000)
+        self.repo.insertPlay("alice", "t2", 2000.0, 5000)
+        self.repo.insertPlay("alice", "t1", 3000.0, 5000)
+
+        entries = self.repo.getPlaysNewestFirst("alice", startTs=1500.0, endTs=2500.0)
+
+        self.assertEqual([e["playedAt"] for e in entries], [2000.0])
+
+    def test_oldest_first_respects_date_range(self):
+        self.repo.insertPlay("alice", "t1", 1000.0, 5000)
+        self.repo.insertPlay("alice", "t2", 2000.0, 5000)
+        self.repo.insertPlay("alice", "t1", 3000.0, 5000)
+
+        entries = self.repo.getPlaysOldestFirst("alice", startTs=1500.0, endTs=2500.0)
+
+        self.assertEqual([e["playedAt"] for e in entries], [2000.0])
+
+    def test_count_respects_date_range(self):
+        self.repo.insertPlay("alice", "t1", 1000.0, 5000)
+        self.repo.insertPlay("alice", "t2", 2000.0, 5000)
+        self.repo.insertPlay("alice", "t1", 3000.0, 5000)
+
+        self.assertEqual(self.repo.getPlaysCount("alice", startTs=1500.0, endTs=2500.0), 1)
+
+    def test_date_range_end_bound_is_exclusive(self):
+        """Matches _dateRangeClause's documented half-open [start, end) -
+        a play landing exactly on endTs belongs to the next range, not this
+        one."""
+        self.repo.insertPlay("alice", "t1", 2000.0, 5000)
+
+        self.assertEqual(self.repo.getPlaysCount("alice", startTs=1000.0, endTs=2000.0), 0)
+        self.assertEqual(self.repo.getPlaysCount("alice", startTs=1000.0, endTs=2001.0), 1)
+
+    def test_date_range_start_bound_is_inclusive(self):
+        self.repo.insertPlay("alice", "t1", 2000.0, 5000)
+
+        self.assertEqual(self.repo.getPlaysCount("alice", startTs=2000.0, endTs=3000.0), 1)
+
     def test_get_plays_with_source_in_range_returns_created_reason_and_respects_window(self):
         self.repo.insertPlay("alice", "t1", 1000.0, 5000, created_reason="listener_play (user: alice)")
         self.repo.insertPlay("alice", "t1", 1003.0, 5000, created_reason="web_api_backfill_play (user: alice)")
@@ -838,6 +877,20 @@ class TestSearchPlays(RepositoryTestCase):
 
         self.assertEqual(self.repo.searchPlaysCount("alice", "bohemian"), 1)
         self.assertEqual(len(self.repo.searchPlays("bob", "bohemian")), 1)
+
+    def test_search_respects_date_range(self):
+        self.repo.insertPlay("alice", "t1", 1000.0, 5000)
+        self.repo.insertPlay("alice", "t1", 2000.0, 5000)
+
+        results = self.repo.searchPlays("alice", "bohemian", startTs=1500.0, endTs=2500.0)
+
+        self.assertEqual([r["playedAt"] for r in results], [2000.0])
+
+    def test_search_count_respects_date_range(self):
+        self.repo.insertPlay("alice", "t1", 1000.0, 5000)
+        self.repo.insertPlay("alice", "t1", 2000.0, 5000)
+
+        self.assertEqual(self.repo.searchPlaysCount("alice", "bohemian", startTs=1500.0, endTs=2500.0), 1)
 
     def test_ordered_newest_first(self):
         """"the" matches t1 via its album ("A Night at the Opera") and t2 via

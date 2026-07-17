@@ -205,25 +205,49 @@
       return paddingLeft + i * slotWidth + slotWidth / 2;
     }, labelSpacing);
 
-    canvas.onmousemove = function (evt) {
-      var rect = canvas.getBoundingClientRect();
-      var mx = evt.clientX - rect.left, my = evt.clientY - rect.top;
-      var hit = null;
+    function findBarAt(mx, my) {
       for (var i = 0; i < bars.length; i++) {
         var b = bars[i];
         if (mx >= b.x && mx <= b.x + b.width && my >= paddingTop && my <= paddingTop + plotHeight) {
-          hit = b;
-          break;
+          return b;
         }
       }
+      return null;
+    }
+
+    canvas.onmousemove = function (evt) {
+      var rect = canvas.getBoundingClientRect();
+      var mx = evt.clientX - rect.left, my = evt.clientY - rect.top;
+      var hit = findBarAt(mx, my);
       if (hit) {
         var label = isLastDay ? hit.d.label.split(' ')[1] : hit.d.label;
         showTooltip(evt, '<strong>' + label + '</strong><br>' + (hit.d.totalTimeListenedText || '0s') + ' &middot; ' + hit.d.plays + ' plays');
+        // rangeStart is only stamped for buckets with a clean calendar-date
+        // mapping (see app.py's _timeSeriesBucketRange) - the single-day
+        // view's hourly buckets don't get one, so they stay un-clickable.
+        canvas.style.cursor = hit.d.rangeStart ? 'pointer' : 'crosshair';
       } else {
         hideTooltip();
+        canvas.style.cursor = 'crosshair';
       }
     };
-    canvas.onmouseleave = hideTooltip;
+    canvas.onmouseleave = function () {
+      hideTooltip();
+      canvas.style.cursor = 'crosshair';
+    };
+    // Clicking a bar scopes the Dashboard's stats and play list to that
+    // exact bucket's date range - see app.py's dashboard() route, which
+    // only applies list-filtering for an explicit interval=custom range
+    // (not the named day/week/month intervals).
+    canvas.onclick = function (evt) {
+      var rect = canvas.getBoundingClientRect();
+      var mx = evt.clientX - rect.left, my = evt.clientY - rect.top;
+      var hit = findBarAt(mx, my);
+      if (hit && hit.d.rangeStart && hit.d.rangeEnd) {
+        window.location.href = '/?interval=custom&startDate=' + encodeURIComponent(hit.d.rangeStart) +
+          '&endDate=' + encodeURIComponent(hit.d.rangeEnd);
+      }
+    };
   }
 
   function heatColor(intensity) {
@@ -377,29 +401,50 @@
         ctx.fill();
       });
 
-      return { name: series.name, color: color, points: points };
+      return { name: series.name, id: series.id, color: color, points: points };
     });
 
-    canvas.onmousemove = function (evt) {
-      var rect = canvas.getBoundingClientRect();
-      var mx = evt.clientX - rect.left, my = evt.clientY - rect.top;
+    function findClosestPoint(mx, my) {
       var closest = null, closestDist = 12;
       lines.forEach(function (line) {
         line.points.forEach(function (p, i) {
           var dist = Math.hypot(p.x - mx, p.y - my);
           if (dist < closestDist) {
             closestDist = dist;
-            closest = { name: line.name, bucket: data.buckets[i], value: p.v };
+            closest = { name: line.name, id: line.id, bucket: data.buckets[i], value: p.v };
           }
         });
       });
+      return closest;
+    }
+
+    canvas.onmousemove = function (evt) {
+      var rect = canvas.getBoundingClientRect();
+      var mx = evt.clientX - rect.left, my = evt.clientY - rect.top;
+      var closest = findClosestPoint(mx, my);
       if (closest) {
         showTooltip(evt, '<strong>' + escapeHtml(closest.name) + '</strong><br>' + closest.bucket + ' &middot; ' + formatValue(closest.value));
+        canvas.style.cursor = closest.id ? 'pointer' : 'crosshair';
       } else {
         hideTooltip();
+        canvas.style.cursor = 'crosshair';
       }
     };
-    canvas.onmouseleave = hideTooltip;
+    canvas.onmouseleave = function () {
+      hideTooltip();
+      canvas.style.cursor = 'crosshair';
+    };
+    // Clicking a line/point navigates to that artist's detail page - see
+    // app.py's getArtistTrend, which picks a representative id for
+    // same-named artists sharing one merged line.
+    canvas.onclick = function (evt) {
+      var rect = canvas.getBoundingClientRect();
+      var mx = evt.clientX - rect.left, my = evt.clientY - rect.top;
+      var closest = findClosestPoint(mx, my);
+      if (closest && closest.id) {
+        window.location.href = '/artist/' + encodeURIComponent(closest.id);
+      }
+    };
 
     if (legendEl) {
       legendEl.innerHTML = lines.map(function (l) {

@@ -1231,10 +1231,49 @@ class SpotifyDashboardApp:
 
         return labels.get(interval or "day", "Yesterday")
 
-    def _embedTimeSeriesTextElements(self, timeSeries: list) -> list:
+    def _embedTimeSeriesTextElements(self, timeSeries: list, groupBy: str | None = None) -> list:
+        """groupBy: when given (Charts page only - see chartsPage()'s call
+        site), also stamps rangeStart/rangeEnd onto each bucket so
+        static/js/charts.js's click-to-navigate can link a clicked bar to
+        the Dashboard scoped to that exact bucket. Omitted elsewhere
+        (Wrapped's own time-series chart, detail pages) since those charts
+        don't support click-navigation."""
         for bucket in timeSeries:
             bucket["totalTimeListenedText"] = msToString(bucket["totalTimeListened"])
+            bucketRange = self._timeSeriesBucketRange(bucket["label"], groupBy)
+            if bucketRange is not None:
+                bucket["rangeStart"], bucket["rangeEnd"] = bucketRange
         return timeSeries
+
+    @staticmethod
+    def _timeSeriesBucketRange(label: str, groupBy: str | None) -> tuple[str, str] | None:
+        """The [inclusive start day, inclusive end day] a time-series
+        bucket's label represents, as plain "YYYY-MM-DD" strings - matches
+        _getDateRange's custom-range contract, which treats its own endDate
+        as inclusive (it adds one day itself), so these values round-trip
+        straight into a `?interval=custom&startDate=...&endDate=...` link.
+        None for a groupBy without a clean calendar-date mapping (e.g. the
+        Charts single-day view's hourly buckets - see chartsPage's
+        timeSeriesGroupBy) or a label that doesn't parse, so a bucket like
+        that is simply left un-clickable rather than linking somewhere
+        wrong."""
+        if groupBy not in ("day", "week", "month"):
+            return None
+        try:
+            if groupBy == "week":
+                start = datetime.strptime(label, "%Y-%m-%d")
+                end = start + timedelta(days=6)
+            elif groupBy == "month":
+                start = datetime.strptime(label, "%Y-%m")
+                nextMonth = (datetime(start.year + 1, 1, 1) if start.month == 12
+                             else datetime(start.year, start.month + 1, 1))
+                end = nextMonth - timedelta(days=1)
+            else:
+                start = datetime.strptime(label, "%Y-%m-%d")
+                end = start
+        except ValueError:
+            return None
+        return start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
 
     def _embedHeatmapTextElements(self, heatmap: list) -> list:
         for row in heatmap:
@@ -2521,25 +2560,37 @@ class SpotifyDashboardApp:
             if interval == "custom" and not (customStart and customEnd):
                 interval = "all time"
 
+            intervalLabel = self._getIntervalLabel(interval, customStart, customEnd)
+            startDate, endDate = self._getDateRange(interval, customStart, customEnd, default="day", tz=db.tz)
+
+            # Only an explicit custom range (typically a chart click-through -
+            # see static/js/charts.js) scopes the play-history list below. The
+            # named intervals (day/week/...) only ever scoped the stats cards
+            # above; making every default/named-interval visit also filter the
+            # list would silently hide most of a user's history behind
+            # whatever their default dashboard window happens to be.
+            listStartDate = startDate if interval == "custom" else None
+            listEndDate = endDate if interval == "custom" else None
+
             if searchQuery:
                 # Matching and pagination both happen in SQL (Repository.searchPlays)
                 # instead of fetching every play ever recorded and filtering in Python.
-                totalCount = db.searchEntriesCount(searchQuery)
+                totalCount = db.searchEntriesCount(searchQuery, startDate=listStartDate, endDate=listEndDate)
                 page, totalPages, startIndex = self._calculatePagination(totalCount)
-                tracks = db.searchEntries(searchQuery, count=PAGE_SIZE, startIndex=startIndex)
+                tracks = db.searchEntries(searchQuery, count=PAGE_SIZE, startIndex=startIndex,
+                                          startDate=listStartDate, endDate=listEndDate)
             else:
                 # Only materialize the page being shown - joining full track
                 # metadata onto every entry ever recorded on every request gets
                 # slow once the history grows large.
-                totalCount = db.getEntriesCount()
+                totalCount = db.getEntriesCount(startDate=listStartDate, endDate=listEndDate)
                 page, totalPages, startIndex = self._calculatePagination(totalCount)
-                tracks = db.getEntriesFromNew(count=PAGE_SIZE, startIndex=startIndex)
+                tracks = db.getEntriesFromNew(count=PAGE_SIZE, startIndex=startIndex,
+                                              startDate=listStartDate, endDate=listEndDate)
             tracks = self._embedSongsTextElements(tracks)
             tracks = self._attachGenres(db, tracks, "track")
 
-            intervalLabel = self._getIntervalLabel(interval, customStart, customEnd)
-            startDate, endDate = self._getDateRange(interval, customStart, customEnd, default="day", tz=db.tz)
-            stats = db.getOverallStats(startDate, endDate) 
+            stats = db.getOverallStats(startDate, endDate)
 
             totalDurationText = msToString(stats["totalDurationMs"])
 
@@ -2792,7 +2843,8 @@ class SpotifyDashboardApp:
             timeSeriesGroupBy = "hour" if isSingleDayView else groupBy
 
             timeSeries = self._embedTimeSeriesTextElements(
-                db.getListeningTimeSeries(startDate=startDate, endDate=endDate, groupBy=timeSeriesGroupBy)
+                db.getListeningTimeSeries(startDate=startDate, endDate=endDate, groupBy=timeSeriesGroupBy),
+                groupBy=timeSeriesGroupBy,
             )
             heatmap = self._embedHeatmapTextElements(db.getHourOfDayHeatmap(startDate=startDate, endDate=endDate))
             artistTrend = None if isSingleDayView else db.getArtistTrend(startDate=startDate, endDate=endDate, topN=CHART_ARTIST_TREND_TOP_N, groupBy=groupBy)

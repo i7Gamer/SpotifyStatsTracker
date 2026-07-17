@@ -498,13 +498,19 @@ class Database:
 
     # ---- history / entries ----------------------------------------------------------
 
-    def getEntriesCount(self) -> int:
-        """Return total number of entries in the database."""
-        return self.repo.getPlaysCount(self.user)
+    def getEntriesCount(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> int:
+        """Return total number of entries in the database, optionally scoped
+        to [startDate, endDate) - see getEntriesFromNew's identical param."""
+        startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
+        return self.repo.getPlaysCount(self.user, startTs=startTs, endTs=endTs)
 
-    def getEntriesFromNew(self, count: int | None = None, startIndex: int = 0, fullPagination: bool = True) -> list:
-        """ Return the latest `count` entries from history, sorted from newest to oldest. If count is None, return all entries. """
-        entries = self.repo.getPlaysNewestFirst(self.user, count=count, startIndex=startIndex)
+    def getEntriesFromNew(self, count: int | None = None, startIndex: int = 0, fullPagination: bool = True,
+                           startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> list:
+        """ Return the latest `count` entries from history, sorted from newest to oldest. If count is None, return all entries.
+        startDate/endDate optionally scope this to a half-open [startDate, endDate) range - used by the Dashboard's
+        chart click-through (see app.py's dashboard()), not by its default unscoped view."""
+        startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
+        entries = self.repo.getPlaysNewestFirst(self.user, count=count, startIndex=startIndex, startTs=startTs, endTs=endTs)
         return self._paginateEntries(entries) if fullPagination else entries
 
     def getEntriesFromOld(self, count: int | None = None, startIndex: int = 0, fullPagination: bool = True) -> list:
@@ -512,17 +518,21 @@ class Database:
         entries = self.repo.getPlaysOldestFirst(self.user, count=count, startIndex=startIndex)
         return self._paginateEntries(entries) if fullPagination else entries
 
-    def searchEntries(self, query: str, count: int | None = None, startIndex: int = 0) -> list:
+    def searchEntries(self, query: str, count: int | None = None, startIndex: int = 0,
+                       startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> list:
         """Entries (newest first) whose track/artist/album/playlist matches
         `query`, paginated in SQL (Repository.searchPlays) rather than
-        filtering the whole history in Python."""
-        entries = self.repo.searchPlays(self.user, query, limit=count, offset=startIndex)
+        filtering the whole history in Python. startDate/endDate: see
+        getEntriesFromNew's identical param."""
+        startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
+        entries = self.repo.searchPlays(self.user, query, limit=count, offset=startIndex, startTs=startTs, endTs=endTs)
         return self._paginateEntries(entries)
 
-    def searchEntriesCount(self, query: str) -> int:
+    def searchEntriesCount(self, query: str, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> int:
         """The paging counterpart to searchEntries() - total matching entries,
         for computing total page count without fetching every match."""
-        return self.repo.searchPlaysCount(self.user, query)
+        startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
+        return self.repo.searchPlaysCount(self.user, query, startTs=startTs, endTs=endTs)
 
     def writeProgress(self, status: str, current: int = 0, total: int = 0, message: str = "", error: bool = False):
         self.repo.writeProgress(self.user, status, current, total, message, error)
@@ -1489,6 +1499,7 @@ class Database:
         rows = self.repo.getBucketedArtistPlayCounts(self.user, startTs, endTs)
 
         totalPlaysByArtist = {}
+        idPlaysByArtist = {}   #< {name: {artistId: totalPlays}} - picks a click-through target below
         bucketedCounts = []
         for row in rows:
             date = convertToDatetime(row["bucketStartTs"], tz=self.tz)
@@ -1496,6 +1507,8 @@ class Database:
             name = row["artistName"]
             bucketedCounts.append((key, name, row["plays"]))
             totalPlaysByArtist[name] = totalPlaysByArtist.get(name, 0) + row["plays"]
+            idCounts = idPlaysByArtist.setdefault(name, {})
+            idCounts[row["artistId"]] = idCounts.get(row["artistId"], 0) + row["plays"]
 
         if not totalPlaysByArtist:
             return {"buckets": [], "series": []}
@@ -1508,7 +1521,19 @@ class Database:
             if name in seriesData:
                 seriesData[name][key] += plays
 
-        series = [{"name": name, "data": [seriesData[name][key] for key in bucketKeys]} for name in topNames]
+        # Two different artist ids sharing a display name still merge into
+        # one line (by design - see getBucketedArtistPlayCounts): the id
+        # that contributed the most plays under that name represents the
+        # whole line for click-through, ties broken by id so the pick is
+        # deterministic rather than depending on incidental row order.
+        series = []
+        for name in topNames:
+            representativeId = min(idPlaysByArtist[name].items(), key=lambda kv: (-kv[1], kv[0]))[0]
+            series.append({
+                "name": name,
+                "id": representativeId,
+                "data": [seriesData[name][key] for key in bucketKeys],
+            })
         return {"buckets": bucketKeys, "series": series}
 
     def _stopRequested(self) -> bool:
