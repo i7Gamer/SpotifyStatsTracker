@@ -754,7 +754,17 @@ class SpotifyDashboardApp:
         keeps this safe against stubbed test dbs too). Truncated here rather
         than in the template so every caller (including detail pages, which
         wrap a single item) gets the same cap without threading a constant
-        through every render_template() call."""
+        through every render_template() call.
+
+        These per-item badges bypass the charts/wrapped/compare coverage-
+        unlock gate by design (they show whatever's known regardless of
+        aggregate confidence) - but the admin's instance-wide kill switch
+        still applies: disabled means no genre lookups at all, matching every
+        other genre surface."""
+        if not self.repo.isLastfmGenreBackfillEnabled():
+            for item in items:
+                item["genres"] = []
+            return items
         resolver = self._GENRE_RESOLVERS[kind]
         for item in items:
             item["genres"] = resolver(db, item["id"])[:TRACK_CARD_GENRE_LIMIT] if item.get("id") else []
@@ -1323,6 +1333,13 @@ class SpotifyDashboardApp:
             return {"isAdmin": g.isAdmin}
 
         @self.app.context_processor
+        def _injectRegistrationStatus():
+            # Lets login.html hide its "Create an account" link when the
+            # admin has disabled new registrations - instance-wide, so no
+            # per-user memoization needed (unlike _injectShareStatus above).
+            return {"registration_enabled": self.repo.isRegistrationEnabled()}
+
+        @self.app.context_processor
         def _injectShareStatus():
             # Lets layout.html's nav show a "Compare" link only for users who
             # have at least one usable accepted share, and the topbar badges
@@ -1338,9 +1355,18 @@ class SpotifyDashboardApp:
             # link/badge that 302s to login like every other nav item would.
             if "hasAcceptedShares" not in g:
                 username = session.get("username")
-                g.hasAcceptedShares = self.repo.hasAnyAcceptedShare(username) if username else False
-                g.pendingIncomingSharesCount = self.repo.getPendingIncomingSharesCount(username) if username else 0
-                g.unseenAcceptedShareCount = self.repo.getUnseenAcceptedShareCount(username) if username else 0
+                # The admin's instance-wide kill switch zeroes all three
+                # instead of skipping the queries below it - disabled means
+                # the nav link and both badges hide, not that a real pending/
+                # accepted share stops existing in the DB.
+                if self.repo.isDataSharingEnabled():
+                    g.hasAcceptedShares = self.repo.hasAnyAcceptedShare(username) if username else False
+                    g.pendingIncomingSharesCount = self.repo.getPendingIncomingSharesCount(username) if username else 0
+                    g.unseenAcceptedShareCount = self.repo.getUnseenAcceptedShareCount(username) if username else 0
+                else:
+                    g.hasAcceptedShares = False
+                    g.pendingIncomingSharesCount = 0
+                    g.unseenAcceptedShareCount = 0
             return {
                 "hasAcceptedShares": g.hasAcceptedShares,
                 "pendingIncomingSharesCount": g.pendingIncomingSharesCount,
@@ -1604,6 +1630,8 @@ class SpotifyDashboardApp:
 
         @self.app.route("/register", methods=["GET", "POST"])
         def register():
+            if not self.repo.isRegistrationEnabled():
+                abort(404)
             if request.method == "GET":
                 return render_template("register.html")
 
@@ -1749,6 +1777,8 @@ class SpotifyDashboardApp:
                     except Exception as e:
                         error = f"Failed to save preferences: {str(e)}"
                 elif action == "request_share":
+                    if not self.repo.isDataSharingEnabled():
+                        abort(404)
                     target_username = request.form.get("target_username", "").strip()
                     # Throttled like login/register: declines delete the row,
                     # so nothing else stops a rejected requester from re-
@@ -1773,6 +1803,8 @@ class SpotifyDashboardApp:
                         else:   #< "already_requested"
                             success = f"A share request to {target_username} is already pending."
                 elif action == "save_lastfm":
+                    if not self.repo.isLastfmGenreBackfillEnabled():
+                        abort(404)
                     # Throttled like request_share: every save fires a live
                     # validation request against Last.fm.
                     if _rateLimited("save_lastfm"):
@@ -1852,6 +1884,8 @@ class SpotifyDashboardApp:
                 client_secret=client_secret,
                 has_api=bool(client_id and client_secret),
                 has_lastfm=bool(db.getUserLastfmApiKey()),
+                lastfm_enabled=self.repo.isLastfmGenreBackfillEnabled(),
+                sharing_enabled=self.repo.isDataSharingEnabled(),
                 is_authenticated=bool(refresh_token),
                 redirect_uri=spotify_callback_url,
                 success=success,
@@ -1882,6 +1916,8 @@ class SpotifyDashboardApp:
 
         @self.app.route("/profile/shares/<int:share_id>", methods=["POST"])
         def profileShareAction(share_id):
+            if not self.repo.isDataSharingEnabled():
+                abort(404)
             email, username, db = get_current_user_or_redirect()
             if not email:
                 return redirect(url_for("login"))
@@ -2065,6 +2101,11 @@ class SpotifyDashboardApp:
             email = session.get("email")
             is_logged_in = email is not None and self.is_user_logged_in(email)
 
+            # Instance-wide (not per-user), so it's resolved regardless of
+            # login state - it also gates the public "Last.fm Genre Backfill"
+            # info card further down the page.
+            lastfm_enabled = self.repo.isLastfmGenreBackfillEnabled()
+
             # Get current user's timezone for consistent date display
             current_user_tz = None
             current_username = None
@@ -2077,7 +2118,7 @@ class SpotifyDashboardApp:
                 current_db = self.get_user_db(current_username, email)
                 current_user_tz = current_db.tz if current_db else None
                 is_admin = self.repo.isAdmin(current_username)
-                if current_db is not None:
+                if current_db is not None and lastfm_enabled:
                     # All-time coverage: the progress card tracks the whole
                     # library, unlike the range-scoped gates on charts/wrapped.
                     genre_coverage = resolveGenreCoverage(current_db, None, None)
@@ -2151,6 +2192,9 @@ class SpotifyDashboardApp:
                 genre_coverage=genre_coverage,
                 genre_unlocked=genre_unlocked,
                 genre_worker=genre_worker,
+                lastfm_enabled=lastfm_enabled,
+                spotify_backfill_enabled=self.repo.isSpotifyApiBackfillEnabled(),
+                sharing_enabled=self.repo.isDataSharingEnabled(),
                 inherited_genres_enabled=self.repo.isInheritedGenresEnabled(),
                 section="overview"
             )
@@ -2167,6 +2211,24 @@ class SpotifyDashboardApp:
                 abort(403)
             # Unchecked checkboxes aren't submitted: absence means disable.
             self.repo.setInheritedGenresEnabled(request.form.get("include_inherited") == "1")
+            return redirect(url_for("overviewPage"))
+
+        @self.app.route("/overview/feature_settings", methods=["POST"])
+        def overviewFeatureSettings():
+            """Admin-only: flips the instance-wide feature kill switches
+            (Spotify API backfill, Last.fm genre backfill, data sharing, new
+            user registration) in one submit - see Database/repository.py's
+            app_settings."""
+            email, username, db = get_current_user_or_redirect()
+            if not email:
+                return redirect(url_for("login", next=url_for("overviewPage")))
+            if not self.repo.isAdmin(username):
+                abort(403)
+            # Unchecked checkboxes aren't submitted: absence means disable.
+            self.repo.setSpotifyApiBackfillEnabled(request.form.get("spotify_backfill") == "1")
+            self.repo.setLastfmGenreBackfillEnabled(request.form.get("lastfm_backfill") == "1")
+            self.repo.setDataSharingEnabled(request.form.get("data_sharing") == "1")
+            self.repo.setRegistrationEnabled(request.form.get("registration") == "1")
             return redirect(url_for("overviewPage"))
 
         @self.app.route("/", methods=["GET"])
@@ -2476,16 +2538,25 @@ class SpotifyDashboardApp:
             decadeDistribution = list(db.getReleaseDecadeDistribution(startDate=startDate, endDate=endDate).items())
             completionStats = db.getCompletionStats(startDate=startDate, endDate=endDate)
 
-            genreCoverage = resolveGenreCoverage(db, startDate, endDate)
-            genreUnlocked = genreGatePasses(genreCoverage)
+            # The admin's instance-wide kill switch: checked before spending
+            # any genre queries, and the whole Top Genres section (chart AND
+            # its locked-progress fallback) hides on the template side when
+            # this is False - showing "add a Last.fm key" for a feature the
+            # admin turned off would be misleading.
+            lastfmEnabled = self.repo.isLastfmGenreBackfillEnabled()
+            genreCoverage = emptyGenreCoverage()
+            genreUnlocked = False
             genreDistribution = None
-            if genreUnlocked:
-                distribution = resolveGenreDistribution(db, startDate, endDate,
-                                                        CHART_TOP_GENRES_LIMIT)
-                # Selection stays the same top-N by plays as every other
-                # genre surface (Wrapped/Compare keep descending) - only this
-                # bar chart's own display order is reversed to read ascending.
-                genreDistribution = list(reversed(distribution.items()))
+            if lastfmEnabled:
+                genreCoverage = resolveGenreCoverage(db, startDate, endDate)
+                genreUnlocked = genreGatePasses(genreCoverage)
+                if genreUnlocked:
+                    distribution = resolveGenreDistribution(db, startDate, endDate,
+                                                            CHART_TOP_GENRES_LIMIT)
+                    # Selection stays the same top-N by plays as every other
+                    # genre surface (Wrapped/Compare keep descending) - only this
+                    # bar chart's own display order is reversed to read ascending.
+                    genreDistribution = list(reversed(distribution.items()))
 
             return render_template(
                 "charts.html",
@@ -2506,6 +2577,7 @@ class SpotifyDashboardApp:
                 genreCoverage=genreCoverage,
                 genreUnlocked=genreUnlocked,
                 genreDistribution=genreDistribution,
+                lastfmEnabled=lastfmEnabled,
             )
 
         @self.app.route("/wrapped", methods=["GET"])
@@ -2542,10 +2614,14 @@ class SpotifyDashboardApp:
             # chart/lists partial updates would compute and discard it).
             isAjaxRequest = request.args.get("ajax") == "true"
             ajaxUpdateType = request.args.get("type", "all")
+            # See chartsPage's identical kill-switch comment - checked before
+            # any genre query, and _wrapped_genres.html hides its whole
+            # section (chart AND locked-progress fallback) when this is False.
+            lastfmEnabled = self.repo.isLastfmGenreBackfillEnabled()
             genreCoverage = emptyGenreCoverage()
             genreUnlocked = False
             topGenres = None
-            if not isAjaxRequest or ajaxUpdateType == "all":
+            if lastfmEnabled and (not isAjaxRequest or ajaxUpdateType == "all"):
                 genreCoverage = resolveGenreCoverage(db, yearStart, yearEnd)
                 genreUnlocked = genreGatePasses(genreCoverage)
                 if genreUnlocked:
@@ -2698,7 +2774,8 @@ class SpotifyDashboardApp:
                 if update_type == "all":
                     res["topGenresHtml"] = render_template(
                         "_wrapped_genres.html", topGenres=topGenres,
-                        genreCoverage=genreCoverage, genreUnlocked=genreUnlocked, year=year)
+                        genreCoverage=genreCoverage, genreUnlocked=genreUnlocked, year=year,
+                        lastfmEnabled=lastfmEnabled)
                     topSongText = (
                         f"{topSongs[0]['name']} - {topSongs[0]['artists'][0]['name']}"
                         if topSongs and topSongs[0].get('artists')
@@ -2757,6 +2834,7 @@ class SpotifyDashboardApp:
                 topGenres=topGenres,
                 genreCoverage=genreCoverage,
                 genreUnlocked=genreUnlocked,
+                lastfmEnabled=lastfmEnabled,
                 has_api=has_api,
                 is_authenticated=is_authenticated,
                 success=success,
@@ -2765,6 +2843,8 @@ class SpotifyDashboardApp:
 
         @self.app.route("/compare", methods=["GET"])
         def comparePage():
+            if not self.repo.isDataSharingEnabled():
+                abort(404)
             email, username, db = get_current_user_or_redirect()
             if not email:
                 return redirect(url_for("login", next=request.path))
@@ -2872,15 +2952,22 @@ class SpotifyDashboardApp:
             # Genre comparison (and the genre category folded into taste
             # match below) requires BOTH sides past the unlock gate -
             # comparing a complete genre profile against a half-backfilled
-            # one would misrepresent the half-backfilled user's taste.
-            myGenreCoverage = resolveGenreCoverage(db, startDate, endDate)
-            theirGenreCoverage = resolveGenreCoverage(otherDb, startDate, endDate)
-            genresUnlocked = genreGatePasses(myGenreCoverage) and genreGatePasses(theirGenreCoverage)
+            # one would misrepresent the half-backfilled user's taste. See
+            # chartsPage's identical kill-switch comment for why this is
+            # checked before any genre query.
+            lastfmEnabled = self.repo.isLastfmGenreBackfillEnabled()
+            myGenreCoverage = emptyGenreCoverage()
+            theirGenreCoverage = emptyGenreCoverage()
+            genresUnlocked = False
             myGenrePool = None
             theirGenrePool = None
             myTopGenres = None
             theirTopGenres = None
             sharedGenres = None
+            if lastfmEnabled:
+                myGenreCoverage = resolveGenreCoverage(db, startDate, endDate)
+                theirGenreCoverage = resolveGenreCoverage(otherDb, startDate, endDate)
+                genresUnlocked = genreGatePasses(myGenreCoverage) and genreGatePasses(theirGenreCoverage)
             if genresUnlocked:
                 myGenrePool = resolveGenreDistribution(db, startDate, endDate,
                                                        COMPARE_GENRE_POOL_SIZE)
@@ -2966,7 +3053,8 @@ class SpotifyDashboardApp:
                         "_compare_genres.html", username=username, withUsername=withUsername,
                         myTopGenres=myTopGenres, theirTopGenres=theirTopGenres,
                         sharedGenres=sharedGenres, myGenreCoverage=myGenreCoverage,
-                        theirGenreCoverage=theirGenreCoverage, genresUnlocked=genresUnlocked),
+                        theirGenreCoverage=theirGenreCoverage, genresUnlocked=genresUnlocked,
+                        lastfmEnabled=lastfmEnabled),
                     "sharedArtistsHtml": render_template(
                         "_wrapped_list.html", items=sharedArtists, section="top_artists",
                         username=username, compareWith=withUsername,
@@ -3014,6 +3102,7 @@ class SpotifyDashboardApp:
                 myGenreCoverage=myGenreCoverage,
                 theirGenreCoverage=theirGenreCoverage,
                 genresUnlocked=genresUnlocked,
+                lastfmEnabled=lastfmEnabled,
                 comparisonTrend=comparisonTrend,
                 interval=interval,
                 customStart=customStart,

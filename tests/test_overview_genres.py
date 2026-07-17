@@ -126,6 +126,30 @@ class TestOverviewGenreCard(OverviewGenresTestBase):
         bobRow = body[body.find(">bob<"):]
         self.assertIn("NOT CONFIGURED", bobRow)
 
+    def test_disabled_hides_the_progress_card_and_info_box_without_querying_coverage(self):
+        dash = self._makeApp()
+        dash.repo.setLastfmGenreBackfillEnabled(False)
+        db = self._makeDb(coverage=coverageDict(80, 60, 90),
+                          workerStatus={"configured": True, "running": True})
+
+        resp = self._getOverview(dash, db)
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotIn(b"Genre Backfill Progress", resp.data)
+        self.assertNotIn(b"Last.fm Genre Backfill", resp.data)
+        db.getGenreCoverage.assert_not_called()
+        db.getLastfmWorkerStatus.assert_not_called()
+
+    def test_disabled_hides_the_info_box_for_a_guest_too(self):
+        """The info card sits in the public documentation section, unlike the
+        per-user progress card - it must hide for logged-out visitors too."""
+        dash = self._makeApp()
+        dash.repo.setLastfmGenreBackfillEnabled(False)
+        with patch.object(dash.repo, 'getGlobalDatabaseStats', return_value=self._MOCK_STATS):
+            resp = dash.app.test_client().get("/overview")
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotIn(b"Last.fm Genre Backfill", resp.data)
+
 
 class TestInheritedGenresToggle(OverviewGenresTestBase):
     def test_toggle_form_is_admin_only(self):

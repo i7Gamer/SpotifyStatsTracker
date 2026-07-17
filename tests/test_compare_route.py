@@ -98,6 +98,17 @@ class TestCompareRoute(unittest.TestCase):
 
         self.assertEqual(resp.status_code, 404)
 
+    def test_404_when_data_sharing_is_disabled(self):
+        """The admin's instance-wide kill switch blocks the route outright,
+        even for a user with a real accepted share already in the DB."""
+        self._accept("alice", "bob")
+        self.dash.repo.setDataSharingEnabled(False)
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        self.assertEqual(resp.status_code, 404)
+
     def test_anonymous_request_redirects_to_login(self):
         client = self.dash.app.test_client()   #< no session at all
 

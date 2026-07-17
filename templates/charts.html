@@ -93,6 +93,7 @@
       </div>
     </div>
 
+    {% if lastfmEnabled %}
     <div class="chart-section" style="margin-top: 2rem;">
       <h2>Top Genres</h2>
       {% if genreUnlocked %}
@@ -105,6 +106,7 @@
       {% with coverage = genreCoverage %}{% include "_genre_progress.html" %}{% endwith %}
       {% endif %}
     </div>
+    {% endif %}
   </section>
 
   <script>

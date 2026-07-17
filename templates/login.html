@@ -28,7 +28,9 @@
     </form>
 
     <div class="auth-links">
+      {% if registration_enabled %}
       <a href="{{ url_for('register') }}">Create an account</a>
+      {% endif %}
       <a href="{{ url_for('resetPassword') }}">Forgot your password?</a>
     </div>
 

@@ -89,6 +89,23 @@ class TestSongDetailRoute(_DetailRouteTestBase):
             self.assertIn(f'<span class="track-label genre-label">{genre}</span>'.encode(), resp.data)
         self.assertNotIn(b"genre-label\">four<", resp.data)
 
+    def test_genre_badge_hides_when_the_admin_disables_lastfm_backfill(self):
+        """Per-track badges normally show regardless of the aggregate
+        charts/wrapped/compare unlock threshold - but the admin's instance-
+        wide kill switch still applies, same as every other genre surface."""
+        dash = self._makeApp()
+        dash.repo.setLastfmGenreBackfillEnabled(False)
+        db = MagicMock()
+        db.getSong.return_value = self._song()
+        db.getListeningTimeSeries.return_value = []
+        db.getHourOfDayHeatmap.return_value = [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
+        db.getGenresForTrack.return_value = ["dream pop", "shoegaze"]
+
+        resp = self._getPath(dash, db, "/song/t1")
+
+        self.assertNotIn(b"genre-label", resp.data)
+        db.getGenresForTrack.assert_not_called()
+
     def test_genre_badge_absent_without_genre_data(self):
         dash = self._makeApp()
         db = MagicMock()

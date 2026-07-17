@@ -1,12 +1,15 @@
 {# Genre comparison block, swapped whole into #compareGenres by the ajax
    filter updates. Renders only when BOTH users pass the unlock gate -
    otherwise a compact per-user coverage table explains what's missing.
+   Hidden entirely (no fallback table either) when the admin has disabled
+   Last.fm genre backfill instance-wide - lastfmEnabled.
    Expects: username, withUsername, myTopGenres/theirTopGenres ({genre:
    plays}, most-played first), sharedGenres (list of {genre, myPlays,
    theirPlays, combinedPlays}), myGenreCoverage/theirGenreCoverage,
-   genresUnlocked. #}
+   genresUnlocked, lastfmEnabled. #}
 {% import "_genre_macros.html" as genreMacros %}
 
+{% if lastfmEnabled %}
 {% if genresUnlocked %}
   <div class="compare-columns">
     <div>
@@ -72,4 +75,5 @@
     </tbody>
   </table>
   {{ genreMacros.lastfmAttribution() }}
+{% endif %}
 {% endif %}

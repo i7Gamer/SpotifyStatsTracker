@@ -51,6 +51,83 @@ class ShareRoutesTestCase(unittest.TestCase):
         self.dash = self._makeApp()
 
 
+class TestDataSharingDisabled(ShareRoutesTestCase):
+    """The admin's instance-wide kill switch: request/accept/decline/cancel/
+    revoke all refuse, the nav Compare link and both topbar badges hide, and
+    /compare itself 404s - existing share rows are left untouched in the DB,
+    just unreachable through the blocked routes until re-enabled."""
+
+    def test_request_share_action_refuses(self):
+        self.dash.repo.setDataSharingEnabled(False)
+        self.dash.repo.upsertUser("bob", "bob@example.com")
+        client = self._loginAs("alice", "alice@example.com")
+
+        resp = client.post("/profile", data={"action": "request_share", "target_username": "bob"})
+
+        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(self.dash.repo.getPendingOutgoingShares("alice"), [])
+
+    def test_share_action_route_refuses(self):
+        self.dash.repo.upsertUser("bob", "bob@example.com")
+        shareId = self._pendingShareIdFor("alice", "bob")
+        self.dash.repo.setDataSharingEnabled(False)
+        client = self._loginAs("bob", "bob@example.com")
+
+        resp = client.post(f"/profile/shares/{shareId}", data={"action": "accept"})
+
+        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(self.dash.repo.getAcceptedShareUsernames("alice"), [])
+
+    def test_existing_accepted_share_survives_untouched_in_the_db(self):
+        self.dash.repo.upsertUser("bob", "bob@example.com")
+        shareId = self._pendingShareIdFor("alice", "bob")
+        self.dash.repo.respondToShareRequest(shareId, "bob", accept=True)
+
+        self.dash.repo.setDataSharingEnabled(False)
+
+        self.assertIn("bob", self.dash.repo.getAcceptedShareUsernames("alice"))
+
+    def _pendingShareIdFor(self, requester, recipient):
+        self.dash.repo.upsertUser(requester, f"{requester}@example.com")
+        self.dash.repo.createShareRequest(requester, recipient)
+        return self.dash.repo.getPendingIncomingShares(recipient)[0]["id"]
+
+    def test_compare_page_404s(self):
+        self.dash.repo.upsertUser("bob", "bob@example.com")
+        shareId = self._pendingShareIdFor("alice", "bob")
+        self.dash.repo.respondToShareRequest(shareId, "bob", accept=True)
+        self.dash.repo.setUserCookies("bob", {"sp_dc": "test"})
+        self.dash.repo.setDataSharingEnabled(False)
+        client = self._loginAs("alice", "alice@example.com")
+
+        resp = client.get("/compare")
+
+        self.assertEqual(resp.status_code, 404)
+
+    def test_nav_link_and_badges_hide(self):
+        self.dash.repo.upsertUser("bob", "bob@example.com")
+        shareId = self._pendingShareIdFor("alice", "bob")
+        self.dash.repo.respondToShareRequest(shareId, "bob", accept=True)   #< alice has an accepted share
+        self.dash.repo.setUserCookies("bob", {"sp_dc": "test"})
+        self.dash.repo.setDataSharingEnabled(False)
+        client = self._loginAs("alice", "alice@example.com")
+
+        resp = client.get("/profile")
+
+        self.assertNotIn(b'href="/compare"', resp.data)   #< nav Compare link gone (hasAcceptedShares forced False)
+        self.assertNotIn(b"share request", resp.data)      #< no badge, despite a real accepted share existing
+
+    def test_profile_share_section_hides(self):
+        self.dash.repo.setDataSharingEnabled(False)
+        client = self._loginAs("alice", "alice@example.com")
+
+        resp = client.get("/profile")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotIn(b"Data Sharing", resp.data)
+        self.assertNotIn(b"request_share", resp.data)
+
+
 class TestRequestShareAction(ShareRoutesTestCase):
     def test_requesting_a_share_creates_a_pending_request(self):
         self.dash.repo.upsertUser("bob", "bob@example.com")

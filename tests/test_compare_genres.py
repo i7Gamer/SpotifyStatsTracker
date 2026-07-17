@@ -167,6 +167,30 @@ class CompareGenresTestCase(unittest.TestCase):
         self.dbs["alice"].getGenreDistribution.assert_not_called()
         self.dbs["bob"].getGenreDistribution.assert_not_called()
 
+    def test_disabled_hides_the_block_without_querying_either_side(self):
+        self._unlockBoth()
+        self.dash.repo.setLastfmGenreBackfillEnabled(False)
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotIn(b"Genre comparison unlocks", resp.data)
+        self.assertNotIn(b"You both listen to", resp.data)
+        self.dbs["alice"].getGenreCoverage.assert_not_called()
+        self.dbs["bob"].getGenreCoverage.assert_not_called()
+
+    def test_disabled_ajax_genres_chunk_is_empty(self):
+        self._unlockBoth()
+        self.dash.repo.setLastfmGenreBackfillEnabled(False)
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare?ajax=true")
+
+        payload = json.loads(resp.data)
+        self.assertNotIn("shoegaze", payload["genresHtml"])
+        self.assertNotIn("Genre comparison unlocks", payload["genresHtml"])
+
 
 if __name__ == "__main__":
     unittest.main()

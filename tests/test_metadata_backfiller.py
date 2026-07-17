@@ -206,6 +206,30 @@ class TestMetadataBackfiller(DatabaseTestCase):
             "SELECT backfill_attempted_at FROM albums WHERE id='alb1'").fetchone()[0])
         Database._active_backfills.clear()
 
+    @patch("requests.get")
+    def test_backfiller_loop_skips_fetching_when_disabled(self, mock_get):
+        with patch.object(Database, "startMetadataBackfiller"):
+            db = self._makeDb({}, [])
+        conn = db.repo._conn()
+        with conn:
+            conn.execute("INSERT INTO albums (id, name, url, release_date, total_tracks) VALUES ('alb1', 'Album 1', '', 0.0, 0)")
+
+        db.repo.setSpotifyApiBackfillEnabled(False)
+        db.getUserSpotifyCredentials = MagicMock(return_value={
+            "client_id": "test_id", "client_secret": "test_secret", "refresh_token": "test_refresh"})
+
+        db.backfiller_stop_event = MagicMock()
+        db.backfiller_stop_event.is_set.side_effect = [False, True]
+        db.backfiller_stop_event.wait.return_value = False
+
+        db._metadataBackfillLoop()
+
+        mock_get.assert_not_called()
+        db.getUserSpotifyCredentials.assert_not_called()
+        row = conn.execute("SELECT backfill_attempted_at, release_date FROM albums WHERE id='alb1'").fetchone()
+        self.assertIsNone(row["backfill_attempted_at"])
+        self.assertEqual(row["release_date"], 0.0)
+
     @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value="mock_token")
     @patch("requests.get")
     def test_backfiller_loop_fetches_and_deduplicates(self, mock_get, mock_refresh):

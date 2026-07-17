@@ -176,6 +176,29 @@ class TestWrappedGenreCard(WrappedGenresTestBase):
         self.assertIn(b"post rock", resp.data)
         db.getGenreDistribution.assert_called_once()
 
+    def test_disabled_hides_the_card_without_querying_coverage(self):
+        dash = self._makeApp()
+        dash.repo.setLastfmGenreBackfillEnabled(False)
+        db = self._makeDb(coverage=coverageDict(80, 60, 90), distribution={"rock": 1})
+
+        resp = self._getWrapped(dash, db)
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotIn(b"Top Genres of 2026", resp.data)
+        self.assertNotIn(b"Genre insights unlock", resp.data)
+        db.getGenreCoverage.assert_not_called()
+        db.getGenreDistribution.assert_not_called()
+
+    def test_disabled_ajax_all_payload_has_no_genre_section(self):
+        dash = self._makeApp()
+        dash.repo.setLastfmGenreBackfillEnabled(False)
+        db = self._makeDb(coverage=coverageDict(80, 60, 90), distribution={"rock": 1})
+
+        resp = self._getWrapped(dash, db, query="?ajax=true&type=all")
+
+        payload = json.loads(resp.data)
+        self.assertNotIn("Top Genres", payload["topGenresHtml"])
+
 
 if __name__ == "__main__":
     unittest.main()

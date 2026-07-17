@@ -216,6 +216,19 @@ class WorkerLoopTestCase(LastfmWorkerBase):
         self.assertEqual(db.repo.getArtistGenres("aZ"), ["rock", "indie rock"])
 
     @patch("Database.database.LastfmClient")
+    def test_disabled_kill_switch_idles_the_loop_without_reading_the_key(self, mockClientClass):
+        db = self._makeDbWithPlays()
+        db.repo.updateUserLastfmApiKey("user1", "key123")
+        db.repo.setLastfmGenreBackfillEnabled(False)
+
+        db.lastfm_stop_event = _oneShotStopEvent()
+        db._lastfmGenreBackfillLoop()
+
+        mockClientClass.assert_not_called()
+        self.assertIsNone(db.repo._conn().execute(
+            "SELECT lastfm_attempted_at FROM artists WHERE id='aX'").fetchone()[0])
+
+    @patch("Database.database.LastfmClient")
     def test_invalid_key_idles_the_loop_instead_of_hammering(self, mockClientClass):
         db = self._makeDbWithPlays()
         db.repo.updateUserLastfmApiKey("user1", "key123")

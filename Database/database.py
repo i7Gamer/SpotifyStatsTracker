@@ -1547,7 +1547,9 @@ class Database:
                     self.listener.stop()
                 except Exception as e:
                     logger.error("Failed to stop existing listener for user %s: %s", self.user, parseError(e))
-            newListener = self._withCookiesFile(lambda cf: Listener(cf, email=self.email, get_credentials=self.getUserSpotifyCredentials))
+            newListener = self._withCookiesFile(lambda cf: Listener(
+                cf, email=self.email, get_credentials=self.getUserSpotifyCredentials,
+                get_backfill_enabled=self.repo.isSpotifyApiBackfillEnabled))
             if self._stopRequested():
                 # stop() gave up waiting on this lock while the (slow,
                 # uninterruptible) Listener login above was in flight - tear
@@ -2154,6 +2156,11 @@ class Database:
             while not stop_event.is_set():
                 target_ids = []
                 try:
+                    if not self.repo.isSpotifyApiBackfillEnabled():
+                        if stop_event.wait(300):
+                            break
+                        continue
+
                     # 2. Get Spotify API credentials if configured
                     creds = self.getUserSpotifyCredentials()
 
@@ -2395,6 +2402,14 @@ class Database:
 
             while not stop_event.is_set():
                 try:
+                    # Fresh read each cycle, like the API key below: an admin
+                    # flip is picked up without restarting the thread, and
+                    # idling (not exiting) means re-enabling resumes on its own.
+                    if not self.repo.isLastfmGenreBackfillEnabled():
+                        if stop_event.wait(self.LASTFM_IDLE_WAIT_SECONDS):
+                            break
+                        continue
+
                     # Fresh read each cycle: a rotated key is picked up here, a
                     # removed key ends the thread (the save handler restarts it).
                     apiKey = self.repo.getUserLastfmApiKey(self.user)

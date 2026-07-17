@@ -124,7 +124,45 @@
   </div>
 </section>
 
+<!-- Admin-only instance-wide feature toggles -->
+{% if is_admin %}
+<section class="card" style="margin-bottom: 2.5rem;">
+  <div class="card-header" style="padding: 1.5rem 1.5rem 0.5rem 1.5rem;">
+    <h2 style="margin: 0; font-family: var(--font-headings);">Feature Settings</h2>
+    <p style="color: var(--muted); font-size: 0.9rem; margin-top: 0.25rem;">
+      Instance-wide switches for the whole tracker - disabling a feature hides it everywhere (charts, profile, nav) without deleting any data already collected.
+    </p>
+  </div>
+  <div style="padding: 0 1.5rem 1.5rem 1.5rem;">
+    <form method="post" action="{{ url_for('overviewFeatureSettings') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+      <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; margin-bottom: 0.6rem;">
+        <input type="checkbox" name="spotify_backfill" value="1" {% if spotify_backfill_enabled %}checked{% endif %}>
+        Spotify API backfill (missed-plays recovery and album/track metadata fetching)
+      </label>
+      <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; margin-bottom: 0.6rem;">
+        <input type="checkbox" name="lastfm_backfill" value="1" {% if lastfm_enabled %}checked{% endif %}>
+        Last.fm genre backfill (genre insights on Charts, Wrapped, Compare and track/album/artist pages)
+      </label>
+      <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; margin-bottom: 0.6rem;">
+        <input type="checkbox" name="data_sharing" value="1" {% if sharing_enabled %}checked{% endif %}>
+        Data sharing (Compare page and share requests on Profile)
+      </label>
+      <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; margin-bottom: 1rem;">
+        <input type="checkbox" name="registration" value="1" {% if registration_enabled %}checked{% endif %}>
+        New user registration
+      </label>
+      <div style="display: flex; align-items: center; gap: 0.75rem;">
+        <button type="submit" class="primary-button" style="padding: 4px 16px;">Save</button>
+        <span class="badge badge-secondary" title="Instance-wide admin setting">ADMIN</span>
+      </div>
+    </form>
+  </div>
+</section>
+{% endif %}
+
 <!-- Last.fm genre backfill: the logged-in user's own all-time coverage -->
+{% if lastfm_enabled %}
 <section class="card" style="margin-bottom: 2.5rem;">
   <div class="card-header" style="padding: 1.5rem 1.5rem 0.5rem 1.5rem;">
     <h2 style="margin: 0; font-family: var(--font-headings);">Genre Backfill Progress</h2>
@@ -169,6 +207,7 @@
     {% endif %}
   </div>
 </section>
+{% endif %}
 {% endif %}
 
 <!-- Platform Documentation & Architecture Guide -->
@@ -219,6 +258,7 @@
     </p>
   </article>
 
+  {% if lastfm_enabled %}
   <article class="card">
     <h3 style="margin-top: 0; color: var(--accent);">🎧 Last.fm Genre Backfill</h3>
     <p style="font-size: 0.95rem; line-height: 1.6; color: var(--muted);">
@@ -233,6 +273,7 @@
       Create a free key on the <a href="https://www.last.fm/api/account/create" target="_blank" style="color: var(--accent);">Last.fm API account page</a> (no Last.fm scrobbling account required) and add it in your <strong>Profile</strong> to start backfilling.
     </p>
   </article>
+  {% endif %}
 </section>
 
 {% endblock %}

@@ -5,6 +5,7 @@
    `genreUnlocked` and `year`. Also returned as the ajax "topGenresHtml"
    chunk, swapped into #wrappedGenresCard on year changes. #}
 {% import "_genre_macros.html" as genreMacros %}
+{% if lastfmEnabled %}
 <div class="chart-section">
   <h2>Top Genres of {{ year }}</h2>
   {% if genreUnlocked %}
@@ -18,3 +19,4 @@
     {% with coverage = genreCoverage %}{% include "_genre_progress.html" %}{% endwith %}
   {% endif %}
 </div>
+{% endif %}

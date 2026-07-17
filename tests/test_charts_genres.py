@@ -228,6 +228,24 @@ class ChartsGenresTestCase(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertIn(b"Genre insights unlock", resp.data)
 
+    def test_disabled_hides_the_whole_section_without_querying_coverage(self):
+        """The admin's instance-wide kill switch hides the Top Genres section
+        entirely - neither the chart nor the locked-progress fallback, which
+        would otherwise misleadingly invite adding a Last.fm key for a
+        feature the admin turned off."""
+        dash = self._makeApp()
+        dash.repo.setLastfmGenreBackfillEnabled(False)
+        db = self._makeDb(coverage=coverageDict(80, 60, 90), distribution={"rock": 1})
+
+        resp = self._get(dash, db)
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotIn(b"Top Genres", resp.data)
+        self.assertNotIn(b"Genre insights unlock", resp.data)
+        self.assertNotIn(b'id="genreChart"', resp.data)
+        db.getGenreCoverage.assert_not_called()
+        db.getGenreDistribution.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -180,13 +180,19 @@ def _suppress_signal_in_thread():
 
 
 class Listener:
-    def __init__(self, cookiesFile, refreshInterval=6, email=None, get_credentials=None):
+    def __init__(self, cookiesFile, refreshInterval=6, email=None, get_credentials=None,
+                 get_backfill_enabled=None):
         self.run = False
         self._stop_event = threading.Event()
         self.email = email  #< store expected email for validation
         self._authenticated_user_id = None  #< cache spotify user id for validation
         self.contaminationDetected = False  #< True when the cookies authenticate as a DIFFERENT account than self.email
         self.get_credentials = get_credentials
+        # Optional admin kill switch, re-read each poll (like get_credentials)
+        # so a restart is never needed to see a flip - None (the default for
+        # any caller that doesn't pass it, e.g. existing tests) means always
+        # enabled.
+        self.get_backfill_enabled = get_backfill_enabled
         self._lastWebApiPollTime = None  #< None means "never polled yet" - forces an immediate first poll
         with _suppress_signal_in_thread():
             self.sp = Spotify(cookiesFile=cookiesFile, email=email)
@@ -469,6 +475,8 @@ class Listener:
 
     def _checkWebApiBackfill(self, callback, onWebApiSnapshot=None) -> None:
         if not self.get_credentials:
+            return
+        if self.get_backfill_enabled is not None and not self.get_backfill_enabled():
             return
 
         now = time.monotonic()

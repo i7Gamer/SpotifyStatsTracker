@@ -438,6 +438,47 @@ class ApiBackfillTestCase(unittest.TestCase):
 
         listener._checkWebApiBackfill(MagicMock())  # must not raise
 
+    def test_missing_get_backfill_enabled_defaults_to_allowed(self):
+        """A Listener built without get_backfill_enabled (every caller before
+        this admin kill switch existed, and any test that constructs one
+        directly) must behave exactly as before - always allowed."""
+        listener = Listener.__new__(Listener)
+        listener.get_credentials = MagicMock(return_value={
+            "client_id": "cid", "client_secret": "cs", "refresh_token": "rt"})
+        listener.get_backfill_enabled = None
+        listener._lastWebApiPollTime = 0
+
+        with patch("Database.Listeners.spotifyListener.time.monotonic", return_value=_MONOTONIC_NOW), \
+             patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value=None):
+            listener._checkWebApiBackfill(MagicMock())  # proceeds past the enabled check, fails later on no token
+
+        listener.get_credentials.assert_called_once()
+
+    @patch("Database.Listeners.spotifyListener._fetch_recently_played_from_web_api")
+    @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token")
+    def test_disabled_kill_switch_skips_the_backfill_check_entirely(self, mock_refresh, mock_fetch):
+        get_credentials = MagicMock(return_value={
+            "client_id": "cid", "client_secret": "cs", "refresh_token": "rt"})
+        get_backfill_enabled = MagicMock(return_value=False)
+
+        with patch("Database.Listeners.spotifyListener.Spotify") as mock_spotify_cls:
+            mock_sp = MagicMock()
+            mock_sp.current_user_recently_played.return_value = []
+            mock_spotify_cls.return_value = mock_sp
+            listener = Listener("dummy_cookie", email="alice@example.com",
+                                get_credentials=get_credentials,
+                                get_backfill_enabled=get_backfill_enabled)
+        listener._lastWebApiPollTime = 0
+
+        with patch("Database.Listeners.spotifyListener.time.monotonic", return_value=_MONOTONIC_NOW):
+            listener._checkWebApiBackfill(MagicMock())
+
+        get_backfill_enabled.assert_called_once()
+        mock_refresh.assert_not_called()
+        mock_fetch.assert_not_called()
+        # Not polled: the poll-interval guard never got a chance to record a timestamp.
+        self.assertEqual(listener._lastWebApiPollTime, 0)
+
     def _makeQuietBackfillListener(self):
         """Listener whose _checkWebApiBackfill runs the happy path with an empty
         Web API result - so the only possible INFO logs are the routine

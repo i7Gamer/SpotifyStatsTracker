@@ -37,6 +37,14 @@ INHERITED_GENRES_SETTING_KEY = "genres_include_inherited"
 APP_SETTING_TRUE = "1"
 APP_SETTING_FALSE = "0"
 
+# app_settings keys for the admin's instance-wide feature kill switches (see
+# the overview settings panel) - each defaults to enabled (absent row), same
+# contract as INHERITED_GENRES_SETTING_KEY above.
+SPOTIFY_BACKFILL_SETTING_KEY = "spotify_api_backfill_enabled"
+LASTFM_BACKFILL_SETTING_KEY = "lastfm_genre_backfill_enabled"
+DATA_SHARING_SETTING_KEY = "data_sharing_enabled"
+REGISTRATION_SETTING_KEY = "registration_enabled"
+
 # getBucketedPlayTotals' fixed UTC bucket width. 15 minutes is the smallest
 # granularity any real-world UTC offset uses (e.g. Asia/Kathmandu +5:45), so
 # every play in one bucket maps to the same local day/hour/weekday no matter
@@ -2324,6 +2332,36 @@ class Repository:
     def setInheritedGenresEnabled(self, enabled: bool) -> None:
         self.setAppSetting(INHERITED_GENRES_SETTING_KEY,
                            APP_SETTING_TRUE if enabled else APP_SETTING_FALSE)
+
+    def _isFeatureEnabled(self, key: str) -> bool:
+        return self.getAppSetting(key, APP_SETTING_TRUE) != APP_SETTING_FALSE
+
+    def _setFeatureEnabled(self, key: str, enabled: bool) -> None:
+        self.setAppSetting(key, APP_SETTING_TRUE if enabled else APP_SETTING_FALSE)
+
+    def isSpotifyApiBackfillEnabled(self) -> bool:
+        return self._isFeatureEnabled(SPOTIFY_BACKFILL_SETTING_KEY)
+
+    def setSpotifyApiBackfillEnabled(self, enabled: bool) -> None:
+        self._setFeatureEnabled(SPOTIFY_BACKFILL_SETTING_KEY, enabled)
+
+    def isLastfmGenreBackfillEnabled(self) -> bool:
+        return self._isFeatureEnabled(LASTFM_BACKFILL_SETTING_KEY)
+
+    def setLastfmGenreBackfillEnabled(self, enabled: bool) -> None:
+        self._setFeatureEnabled(LASTFM_BACKFILL_SETTING_KEY, enabled)
+
+    def isDataSharingEnabled(self) -> bool:
+        return self._isFeatureEnabled(DATA_SHARING_SETTING_KEY)
+
+    def setDataSharingEnabled(self, enabled: bool) -> None:
+        self._setFeatureEnabled(DATA_SHARING_SETTING_KEY, enabled)
+
+    def isRegistrationEnabled(self) -> bool:
+        return self._isFeatureEnabled(REGISTRATION_SETTING_KEY)
+
+    def setRegistrationEnabled(self, enabled: bool) -> None:
+        self._setFeatureEnabled(REGISTRATION_SETTING_KEY, enabled)
 
     def getMaxPlayedAtInPeriod(self, username: str, startTs: float, endTs: float) -> float | None:
         row = self._conn().execute(

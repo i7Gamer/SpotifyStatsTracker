@@ -79,6 +79,14 @@ class TestLastfmSectionRendering(ProfileLastfmTestCase):
         self.assertIn(b"remove_lastfm", resp.data)   #< remove button only with a stored key
         self.assertNotIn(b"key123", resp.data)       #< the key itself is never echoed back
 
+    def test_section_hides_when_the_admin_disables_lastfm_backfill(self):
+        self.dash.repo.setLastfmGenreBackfillEnabled(False)
+        client = self._loginAs("alice", "alice@example.com")
+        resp = client.get("/profile")
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotIn(b"Last.fm API Settings", resp.data)
+        self.assertNotIn(b'name="lastfm_api_key"', resp.data)
+
 
 class TestSaveLastfmKey(ProfileLastfmTestCase):
     @patch("Database.lastfm.requests.get")
@@ -165,6 +173,17 @@ class TestSaveLastfmKey(ProfileLastfmTestCase):
         resp = client.post("/profile", data={"action": "save_lastfm", "lastfm_api_key": "goodkey123"})
         self.assertEqual(resp.status_code, 429)
         self.assertIn(b"Too many attempts", resp.data)
+
+    @patch("Database.lastfm.requests.get")
+    def test_disabled_refuses_new_keys(self, mockGet):
+        self.dash.repo.setLastfmGenreBackfillEnabled(False)
+        client = self._loginAs("alice", "alice@example.com")
+
+        resp = client.post("/profile", data={"action": "save_lastfm", "lastfm_api_key": "goodkey123"})
+
+        self.assertEqual(resp.status_code, 404)
+        self.assertIsNone(self.dash.repo.getUserLastfmApiKey("alice"))
+        mockGet.assert_not_called()
 
 
 class TestRemoveLastfmKey(ProfileLastfmTestCase):

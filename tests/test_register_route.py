@@ -49,6 +49,26 @@ class TestRegisterRoute(unittest.TestCase):
         self.assertTrue(check_password_hash(storedHash, VALID_PASSWORD))
         self.assertEqual(dash.repo.getUserCookies(username), {"sp_dc": "abc"})
 
+    def test_disabled_registration_404s_on_get_and_post(self):
+        dash = self._makeApp()
+        dash.repo.setRegistrationEnabled(False)
+
+        getResp = dash.app.test_client().get("/register")
+        postResp, _ = self._postRegister(dash)
+
+        self.assertEqual(getResp.status_code, 404)
+        self.assertEqual(postResp.status_code, 404)
+        self.assertIsNone(dash.repo.getUsernameForEmail("alice@example.com"))
+
+    def test_disabled_registration_hides_the_login_page_link(self):
+        dash = self._makeApp()
+        dash.repo.setRegistrationEnabled(False)
+
+        resp = dash.app.test_client().get("/login")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotIn(b"Create an account", resp.data)
+
     def test_missing_fields_shows_error(self):
         dash = self._makeApp()
         resp, client = self._postRegister(dash, cookies="")
