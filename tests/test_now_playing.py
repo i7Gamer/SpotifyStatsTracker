@@ -131,7 +131,9 @@ class TestGetNowPlaying(DatabaseTestCase):
                 "album_uri": "spotify:album:albumX",
                 "image_xlarge_url": "spotify:image:abc123"}
         state = _playingState("brandnew", metadata=meta)
-        nowPlaying = self._makeDbWithState(state).getNowPlaying()
+        db = self._makeDbWithState(state)
+        with patch.object(db, "saveTrackImg"):  # network tested separately
+            nowPlaying = db.getNowPlaying()
         self.assertEqual(nowPlaying["name"], "Fresh Track")
         self.assertEqual(nowPlaying["artistsText"], "New Artist")
         # imageId comes from album_uri in the connect-state metadata
