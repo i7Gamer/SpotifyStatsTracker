@@ -17,7 +17,7 @@ if isinstance(sys.modules.get("Database.database"), MagicMock):
     del sys.modules["Database.database"]
 
 from conftest import DatabaseTestCase
-from Database.database import Database
+from Database.database import Database, _imageIdFromConnectMeta, _imageUrlFromConnectMeta
 from Database.Listeners.spotifyListener import Listener
 from app import SpotifyDashboardApp
 
@@ -127,15 +127,47 @@ class TestGetNowPlaying(DatabaseTestCase):
     def test_unknown_track_falls_back_to_connect_state_metadata(self):
         """A track being heard for the very first time isn't in the catalog
         yet (metadata is only fetched when the play completes)."""
-        state = _playingState("brandnew", metadata={"title": "Fresh Track", "artist_name": "New Artist"})
+        meta = {"title": "Fresh Track", "artist_name": "New Artist",
+                "album_uri": "spotify:album:albumX",
+                "image_xlarge_url": "spotify:image:abc123"}
+        state = _playingState("brandnew", metadata=meta)
         nowPlaying = self._makeDbWithState(state).getNowPlaying()
         self.assertEqual(nowPlaying["name"], "Fresh Track")
         self.assertEqual(nowPlaying["artistsText"], "New Artist")
+        # imageId comes from album_uri in the connect-state metadata
+        self.assertEqual(nowPlaying["imageId"], "albumX")
+
+    def test_unknown_track_without_album_uri_has_no_imageId(self):
+        state = _playingState("brandnew", metadata={"title": "Fresh Track"})
+        nowPlaying = self._makeDbWithState(state).getNowPlaying()
         self.assertIsNone(nowPlaying["imageId"])
 
     def test_unknown_track_without_any_metadata_reports_nothing(self):
         nowPlaying = self._makeDbWithState(_playingState("brandnew")).getNowPlaying()
         self.assertIsNone(nowPlaying)
+
+    def test_unknown_track_prefetches_cover_image_in_background(self):
+        """When a first-listen track has album_uri and image_xlarge_url in the
+        connect-state metadata, getNowPlaying kicks off a background image
+        download via saveTrackImg so the cover is ready on the next poll."""
+        meta = {"title": "New Song", "artist_name": "Artist",
+                "album_uri": "spotify:album:alb1",
+                "image_xlarge_url": "spotify:image:hash1"}
+        state = _playingState("brandnew", metadata=meta)
+        db = self._makeDbWithState(state)
+        with patch.object(db, "saveTrackImg") as mockSave:
+            db.getNowPlaying()
+        mockSave.assert_called_once_with(
+            "https://i.scdn.co/image/hash1", "alb1")
+
+    def test_unknown_track_does_not_prefetch_when_image_url_missing(self):
+        """No saveTrackImg call when the connect-state has no image URL."""
+        state = _playingState("brandnew", metadata={"title": "New Song",
+                                                    "album_uri": "spotify:album:alb1"})
+        db = self._makeDbWithState(state)
+        with patch.object(db, "saveTrackImg") as mockSave:
+            db.getNowPlaying()
+        mockSave.assert_not_called()
 
     def test_metadata_as_dataclass_object_does_not_crash(self):
         """Regression: spotapi sometimes stores metadata as an already-hydrated
@@ -143,13 +175,62 @@ class TestGetNowPlaying(DatabaseTestCase):
         connect-state fallback branch. The fix must handle both dicts and
         any attribute-bearing object."""
         from types import SimpleNamespace
-        metaNs = SimpleNamespace(title="Dataclass Track", artist_name="NS Artist")
+        metaNs = SimpleNamespace(title="Dataclass Track", artist_name="NS Artist",
+                                 album_uri=None, image_xlarge_url=None, image_url=None)
         state = _playingState("brandnew")
         state["track"]["metadata"] = metaNs
         nowPlaying = self._makeDbWithState(state).getNowPlaying()
         self.assertEqual(nowPlaying["name"], "Dataclass Track")
         self.assertEqual(nowPlaying["artistsText"], "NS Artist")
         self.assertIsNone(nowPlaying["imageId"])
+
+
+class TestConnectMetaHelpers(unittest.TestCase):
+    """Unit tests for the pure helper functions that extract image info
+    from the connect-state metadata dict or dataclass."""
+
+    def test_imageId_from_dict_with_album_uri(self):
+        meta = {"album_uri": "spotify:album:10holBHfbveUQrkDcD5GJf"}
+        self.assertEqual(_imageIdFromConnectMeta(meta), "10holBHfbveUQrkDcD5GJf")
+
+    def test_imageId_from_dict_missing_album_uri(self):
+        self.assertIsNone(_imageIdFromConnectMeta({}))
+        self.assertIsNone(_imageIdFromConnectMeta({"album_uri": None}))
+        self.assertIsNone(_imageIdFromConnectMeta({"album_uri": ""}))
+
+    def test_imageId_from_dataclass_with_album_uri(self):
+        from types import SimpleNamespace
+        meta = SimpleNamespace(album_uri="spotify:album:abc")
+        self.assertEqual(_imageIdFromConnectMeta(meta), "abc")
+
+    def test_imageId_from_dataclass_missing_album_uri(self):
+        from types import SimpleNamespace
+        self.assertIsNone(_imageIdFromConnectMeta(SimpleNamespace(album_uri=None)))
+
+    def test_imageUrl_from_dict_prefers_xlarge(self):
+        meta = {"image_xlarge_url": "spotify:image:xlhash",
+                "image_url": "spotify:image:smhash"}
+        self.assertEqual(_imageUrlFromConnectMeta(meta),
+                         "https://i.scdn.co/image/xlhash")
+
+    def test_imageUrl_from_dict_falls_back_to_image_url(self):
+        meta = {"image_url": "spotify:image:smhash"}
+        self.assertEqual(_imageUrlFromConnectMeta(meta),
+                         "https://i.scdn.co/image/smhash")
+
+    def test_imageUrl_from_dict_missing(self):
+        self.assertIsNone(_imageUrlFromConnectMeta({}))
+        self.assertIsNone(_imageUrlFromConnectMeta({"image_xlarge_url": None}))
+
+    def test_imageUrl_from_dataclass(self):
+        from types import SimpleNamespace
+        meta = SimpleNamespace(image_xlarge_url="spotify:image:xhash", image_url=None)
+        self.assertEqual(_imageUrlFromConnectMeta(meta),
+                         "https://i.scdn.co/image/xhash")
+
+    def test_imageUrl_malformed_uri_returns_none(self):
+        self.assertIsNone(_imageUrlFromConnectMeta({"image_xlarge_url": "notauri"}))
+        self.assertIsNone(_imageUrlFromConnectMeta({"image_xlarge_url": "spotify:image:"}))
 
 
 class TestNowPlayingRoute(unittest.TestCase):

@@ -57,8 +57,45 @@ USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTM
 # Docker volume mount that persists the database also covers it.
 MEDIA_DIR = Path(__file__).resolve().parent / "Data" / "Media"
 
+_SPOTIFY_IMAGE_CDN = "https://i.scdn.co/image/"
+
+
+def _imageIdFromConnectMeta(meta) -> str | None:
+    """Extract the album imageId (album ID string) from a connect-state
+    metadata dict or Metadata dataclass.  Returns None if unavailable.
+
+    The connect-state metadata carries the album URI in the form
+    'spotify:album:<id>'; the album ID is what the rest of the system
+    uses as imageId (matches the on-disk filename <albumId>.jpeg)."""
+    album_uri = (meta.get("album_uri") if isinstance(meta, dict)
+                 else getattr(meta, "album_uri", None))
+    if not album_uri:
+        return None
+    parts = album_uri.rsplit(":", 1)
+    return parts[-1] if len(parts) == 2 and parts[-1] else None
+
+
+def _imageUrlFromConnectMeta(meta) -> str | None:
+    """Build the Spotify CDN URL for the track's cover art from the
+    connect-state metadata dict or Metadata dataclass.  Returns None if
+    unavailable.
+
+    The connect-state carries the image as 'spotify:image:<hash>'; the
+    CDN URL is https://i.scdn.co/image/<hash>."""
+    spotify_uri = (meta.get("image_xlarge_url") or meta.get("image_url")
+                   if isinstance(meta, dict)
+                   else getattr(meta, "image_xlarge_url", None)
+                        or getattr(meta, "image_url", None))
+    if not spotify_uri:
+        return None
+    parts = spotify_uri.rsplit(":", 1)
+    if len(parts) != 2 or not parts[-1]:
+        return None
+    return _SPOTIFY_IMAGE_CDN + parts[-1]
+
 
 class _LastfmInvalidKeyError(Exception):
+
     """The stored Last.fm key is invalid/suspended (error 10/26): raised out
     of a worker batch so the loop idles instead of burning 4 failing requests
     per second. A fixed key is picked up on the next cycle's fresh read."""
@@ -1629,6 +1666,8 @@ class Database:
             if isinstance(stateMeta, dict):
                 name = stateMeta.get("title")
                 artistsText = stateMeta.get("artist_name") or ""
+                imageId = _imageIdFromConnectMeta(stateMeta)
+                imageUrl = _imageUrlFromConnectMeta(stateMeta)
             else:
                 logger.warning(
                     "getNowPlaying: unexpected metadata type %s for track %s "
@@ -1638,7 +1677,13 @@ class Database:
                 )
                 name = getattr(stateMeta, "title", None)
                 artistsText = getattr(stateMeta, "artist_name", None) or ""
-            imageId = None
+                imageId = _imageIdFromConnectMeta(stateMeta)
+                imageUrl = _imageUrlFromConnectMeta(stateMeta)
+            # Kick off a background download so the cover is ready on the next
+            # poll (or shortly after). saveTrackImg is fire-and-forget and
+            # already deduped via tryClaimImageDownload.
+            if imageId and imageUrl:
+                self.saveTrackImg(imageUrl, imageId)
 
         if not name:
             return None   #< nothing presentable to show
