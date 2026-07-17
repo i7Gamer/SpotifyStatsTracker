@@ -5,14 +5,29 @@
 {% macro leaderCell(value, isLeader, side) -%}
 <td class="value{{ ' leader leader-' ~ side if isLeader else '' }}">{{ value }}{% if isLeader %} <span class="leader-marker" aria-hidden="true">▲</span><span class="visually-hidden">(higher)</span>{% endif %}</td>
 {%- endmacro %}
-{# One side of a Top Day/Song/Artist/Album card below the table. `kind` is
-   ''/'song'/'artist'/'album': empty renders no cover (Top Day has none). #}
+{# One side of a Top Song/Artist/Album card below the table. #}
 {% macro topItemSide(side, name, item, kind, valueHtml) -%}
 <div class="compare-top-side">
-  {% if kind %}{{ coverLink(item, username, kind) }}{% endif %}
+  {{ coverLink(item, username, kind) }}
   <div class="compare-top-meta">
     <span class="compare-user-{{ side }} compare-user-label js-{{ 'my' if side == 'mine' else 'with' }}-username">{{ name }}</span>
     <span class="compare-top-name">{{ valueHtml }}</span>
+  </div>
+</div>
+{%- endmacro %}
+{# Both sides' #1 item is the exact same song/artist/album: one bigger row
+   instead of two near-identical stacked ones. `item` is always `my`'s own
+   copy - the viewer has data for it either way, so it always links to their
+   own detail page (same as topItemSide's 'mine' side). #}
+{% macro topItemMerged(myName, theirName, item, kind, valueHtml) -%}
+<div class="compare-top-side compare-top-side--merged">
+  {{ coverLink(item, username, kind) }}
+  <div class="compare-top-meta">
+    <span class="compare-top-both-names">
+      <span class="compare-user-mine compare-user-label js-my-username">{{ myName }}</span>
+      <span class="compare-user-theirs compare-user-label js-with-username">{{ theirName }}</span>
+    </span>
+    <span class="compare-top-name compare-top-name--merged">{{ valueHtml }}</span>
   </div>
 </div>
 {%- endmacro %}
@@ -22,15 +37,22 @@
 <table class="status-table compare-table compare-table-columns">
   <thead>
     <tr>
-      <th>User</th>
-      <th class="value">Plays</th>
-      <th class="value">Time Listened</th>
-      <th class="value">Unique Songs</th>
-      <th class="value">Unique Artists</th>
-      <th class="value">Avg. per Play</th>
-      <th class="value">Skip Rate</th>
-      <th class="value">Explicit</th>
-      <th class="value">Peak Hour</th>
+      <th rowspan="2">User</th>
+      <th class="value" rowspan="2">Plays</th>
+      <th class="value" rowspan="2">Time Listened</th>
+      {# Grouped header: "Unique Songs"/"Unique Artists" were wide enough to
+         squeeze out the room Peak Day below needs - splitting "Unique" onto
+         its own row lets the sub-headers stay short. #}
+      <th class="value" colspan="2">Unique</th>
+      <th class="value" rowspan="2">Avg. per Play</th>
+      <th class="value" rowspan="2">Skip Rate</th>
+      <th class="value" rowspan="2">Explicit</th>
+      <th class="value" rowspan="2">Peak Hour</th>
+      <th class="value" rowspan="2">Peak Day</th>
+    </tr>
+    <tr>
+      <th class="value">Songs</th>
+      <th class="value">Artists</th>
     </tr>
   </thead>
   <tbody>
@@ -44,6 +66,7 @@
       <td class="value">{{ my.skipRateText }}</td>
       <td class="value">{{ my.explicitShareText }}</td>
       <td class="value">{{ my.peakHourText }}</td>
+      <td class="value">{{ my.peakDayText }}</td>
     </tr>
     <tr>
       <td><span class="compare-user-theirs compare-user-label js-with-username">{{ withUsername }}</span></td>
@@ -55,41 +78,61 @@
       <td class="value">{{ their.skipRateText }}</td>
       <td class="value">{{ their.explicitShareText }}</td>
       <td class="value">{{ their.peakHourText }}</td>
+      <td class="value">{{ their.peakDayText }}</td>
     </tr>
   </tbody>
 </table>
-{# Top Day/Song/Artist/Album moved out of the table (as columns they
-   squeezed everything) into one row of cards mirroring the Common Top
-   cards. Summary entries come from the same lists rendered below, so
-   these cards and the lists can never disagree on the #1 entry. Own
-   items always link to detail pages; counterpart items link there too
-   whenever the viewer has their own data for that exact item, and to
-   Spotify only when they don't (see theirCell in _compare_macros.html). #}
+{# Top Song/Artist/Album moved out of the table (as columns they squeezed
+   everything, and Peak Hour/Peak Day above already cover the single-value
+   stats) into one row of cards mirroring the Common Top cards. Summary
+   entries come from the same lists rendered below, so these cards and the
+   lists can never disagree on the #1 entry. Own items always link to
+   detail pages; counterpart items link there too whenever the viewer has
+   their own data for that exact item, and to Spotify only when they don't
+   (see theirCell in _compare_macros.html). When both sides' #1 is the
+   exact same item, the two near-identical rows collapse into one bigger
+   merged row instead (see topItemMerged). #}
 <div class="compare-top-items">
   <article class="track-summary-card">
-    <h3>Top Day</h3>
-    {{ topItemSide('mine', username, none, '', my.peakDayText) }}
-    {{ topItemSide('theirs', withUsername, none, '', their.peakDayText) }}
-  </article>
-  <article class="track-summary-card">
     <h3>Top Song</h3>
-    {{ topItemSide('mine', username, my.topSongs[0] if my.topSongs else none, 'song',
-                   detailCell(my.topSongs[0] if my.topSongs else none, 'songDetailPage', 'track_id')) }}
-    {{ topItemSide('theirs', withUsername, their.topSongs[0] if their.topSongs else none, 'song',
-                   theirCell(their.topSongs[0] if their.topSongs else none, 'songDetailPage', 'track_id')) }}
+    {% set myItem = my.topSongs[0] if my.topSongs else none %}
+    {% set theirItem = their.topSongs[0] if their.topSongs else none %}
+    {% if myItem and theirItem and myItem.id == theirItem.id %}
+      {{ topItemMerged(username, withUsername, myItem, 'song',
+                       detailCell(myItem, 'songDetailPage', 'track_id')) }}
+    {% else %}
+      {{ topItemSide('mine', username, myItem, 'song',
+                     detailCell(myItem, 'songDetailPage', 'track_id')) }}
+      {{ topItemSide('theirs', withUsername, theirItem, 'song',
+                     theirCell(theirItem, 'songDetailPage', 'track_id')) }}
+    {% endif %}
   </article>
   <article class="track-summary-card">
     <h3>Top Artist</h3>
-    {{ topItemSide('mine', username, my.topArtists[0] if my.topArtists else none, 'artist',
-                   detailCell(my.topArtists[0] if my.topArtists else none, 'artistDetailPage', 'artist_id')) }}
-    {{ topItemSide('theirs', withUsername, their.topArtists[0] if their.topArtists else none, 'artist',
-                   theirCell(their.topArtists[0] if their.topArtists else none, 'artistDetailPage', 'artist_id')) }}
+    {% set myItem = my.topArtists[0] if my.topArtists else none %}
+    {% set theirItem = their.topArtists[0] if their.topArtists else none %}
+    {% if myItem and theirItem and myItem.id == theirItem.id %}
+      {{ topItemMerged(username, withUsername, myItem, 'artist',
+                       detailCell(myItem, 'artistDetailPage', 'artist_id')) }}
+    {% else %}
+      {{ topItemSide('mine', username, myItem, 'artist',
+                     detailCell(myItem, 'artistDetailPage', 'artist_id')) }}
+      {{ topItemSide('theirs', withUsername, theirItem, 'artist',
+                     theirCell(theirItem, 'artistDetailPage', 'artist_id')) }}
+    {% endif %}
   </article>
   <article class="track-summary-card">
     <h3>Top Album</h3>
-    {{ topItemSide('mine', username, my.topAlbums[0] if my.topAlbums else none, 'album',
-                   detailCell(my.topAlbums[0] if my.topAlbums else none, 'albumDetailPage', 'album_id')) }}
-    {{ topItemSide('theirs', withUsername, their.topAlbums[0] if their.topAlbums else none, 'album',
-                   theirCell(their.topAlbums[0] if their.topAlbums else none, 'albumDetailPage', 'album_id')) }}
+    {% set myItem = my.topAlbums[0] if my.topAlbums else none %}
+    {% set theirItem = their.topAlbums[0] if their.topAlbums else none %}
+    {% if myItem and theirItem and myItem.id == theirItem.id %}
+      {{ topItemMerged(username, withUsername, myItem, 'album',
+                       detailCell(myItem, 'albumDetailPage', 'album_id')) }}
+    {% else %}
+      {{ topItemSide('mine', username, myItem, 'album',
+                     detailCell(myItem, 'albumDetailPage', 'album_id')) }}
+      {{ topItemSide('theirs', withUsername, theirItem, 'album',
+                     theirCell(theirItem, 'albumDetailPage', 'album_id')) }}
+    {% endif %}
   </article>
 </div>

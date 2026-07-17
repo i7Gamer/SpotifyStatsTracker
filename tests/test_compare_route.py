@@ -465,6 +465,65 @@ class TestCompareRoute(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertIn("—".encode("utf-8"), resp.data)
 
+    def test_peak_day_is_a_stats_table_column_not_a_separate_card(self):
+        """Top Day moved out of its own card (which had no cover art and
+        wasted a full grid track next to Top Song/Artist/Album) into the
+        Stats Comparison table as a "Peak Day" column beside "Peak Hour".
+        "Unique Songs"/"Unique Artists" became a grouped two-row header
+        ("Unique" spanning short "Songs"/"Artists" sub-headers) to make room
+        for it."""
+        self._accept("alice", "bob")
+        grid = _zeroHeatmapGrid()
+        grid[2][14] = {"totalTimeListened": 999, "plays": 5}   #< Wednesday 14:00
+        self.dbs["alice"].getHourOfDayHeatmap.return_value = grid
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        self.assertIn(b'<th class="value" rowspan="2">Peak Day</th>', resp.data)
+        self.assertIn(b'<th class="value" colspan="2">Unique</th>', resp.data)
+        self.assertIn(b'<th class="value">Songs</th>', resp.data)
+        self.assertIn(b'<th class="value">Artists</th>', resp.data)
+        self.assertIn(b"Wednesday", resp.data)
+        self.assertNotIn(b"<h3>Top Day</h3>", resp.data)
+
+    def test_identical_top_song_merges_into_one_bigger_row(self):
+        """Both users' #1 song is the exact same track: the Top Song card
+        must collapse into one merged row (topItemMerged) instead of two
+        near-identical stacked rows repeating the same cover and name."""
+        self._accept("alice", "bob")
+        sameSong = _song("shared1", "SharedTopSong")
+        self.dbs["alice"].getTopSongs.return_value = [sameSong]
+        self.dbs["bob"].getTopSongs.return_value = [dict(sameSong)]
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        topSongCard = resp.data[
+            resp.data.index(b"<h3>Top Song</h3>"):
+            resp.data.index(b"<h3>Top Artist</h3>")]
+        self.assertIn(b"compare-top-side--merged", topSongCard)
+        self.assertEqual(topSongCard.count(b"SharedTopSong"), 1)
+        self.assertIn(b'compare-user-mine compare-user-label js-my-username">alice</span>', topSongCard)
+        self.assertIn(b'compare-user-theirs compare-user-label js-with-username">bob</span>', topSongCard)
+
+    def test_different_top_songs_render_two_separate_rows(self):
+        """The common case: different #1 songs must keep the existing
+        side-by-side layout, not the merged one."""
+        self._accept("alice", "bob")
+        self.dbs["alice"].getTopSongs.return_value = [_song("s1", "AliceSong")]
+        self.dbs["bob"].getTopSongs.return_value = [_song("s2", "BobSong")]
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        topSongCard = resp.data[
+            resp.data.index(b"<h3>Top Song</h3>"):
+            resp.data.index(b"<h3>Top Artist</h3>")]
+        self.assertNotIn(b"compare-top-side--merged", topSongCard)
+        self.assertIn(b"AliceSong", topSongCard)
+        self.assertIn(b"BobSong", topSongCard)
+
     def test_summary_rows_link_own_items_to_detail_pages(self):
         self._accept("alice", "bob")
         self.dbs["alice"].getTopSongs.return_value = [_song("s1", "AliceTopSong")]
@@ -791,11 +850,12 @@ class TestCompareRoute(unittest.TestCase):
 
         self.assertIn(b'compare-user-mine compare-user-label js-my-username">alice</span>', resp.data)
         self.assertIn(b'compare-user-theirs compare-user-label js-with-username">bob</span>', resp.data)
-        #< eight mine-labels: table row header + three column headings + the
-        #  four Top Day/Song/Artist/Album card sides under the stats table
-        self.assertEqual(resp.data.count(b"compare-user-mine"), 8)
+        #< seven mine-labels: table row header + three column headings + the
+        #  three Top Song/Artist/Album card sides under the stats table (Top
+        #  Day moved into the stats table itself as a Peak Day column)
+        self.assertEqual(resp.data.count(b"compare-user-mine"), 7)
         #< theirs additionally colors the hero name (no label dot there)
-        self.assertEqual(resp.data.count(b"compare-user-theirs"), 9)
+        self.assertEqual(resp.data.count(b"compare-user-theirs"), 8)
 
     def test_limit_param_controls_displayed_list_sizes(self):
         """The dropdown slices the displayed lists (and shared lists) deeper

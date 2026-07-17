@@ -1093,10 +1093,21 @@ progress::-moz-progress-bar {
   white-space: nowrap;
 }
 
-/* Per-user Top Day/Song/Artist/Album cards directly under the stats table -
+/* The "Unique" group header spans two sub-columns (Songs/Artists) on the row
+   below - tighten the gap between the two header rows so the group doesn't
+   read as detached from its sub-headers. */
+.compare-table-columns thead tr:first-child th {
+  padding-bottom: 2px;
+}
+
+.compare-table-columns thead tr:last-child th {
+  padding-top: 2px;
+}
+
+/* Per-user Top Song/Artist/Album cards directly under the stats table -
    moved out of the table (as columns they squeezed everything) into one row
    of cards mirroring the Common Top cards. Each card stacks the two users'
-   entries, cover first (Top Day has none). */
+   entries, cover first. */
 .compare-top-items {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
@@ -1126,6 +1137,42 @@ progress::-moz-progress-bar {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Both sides share the exact same #1 item - one bigger row (topItemMerged)
+   instead of two near-identical stacked ones. Cover matches the Common Top
+   similarity cards' size (.compare-similarity-card) so covers read
+   consistently across the page; the title gets the visual weight the
+   duplicated small rows used to split across two lines. */
+.compare-top-side--merged {
+  gap: 14px;
+  margin-top: 14px;
+}
+
+.compare-top-side--merged .compare-cover {
+  width: 64px;
+  height: 64px;
+  border-radius: 10px;
+}
+
+@media (min-width: 901px) {
+  .compare-top-side--merged .compare-cover {
+    width: 112px;
+    height: 112px;
+    border-radius: 12px;
+  }
+}
+
+.compare-top-both-names {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.compare-top-name--merged {
+  font-size: 1.15rem;
+  font-weight: 700;
+  white-space: normal;
 }
 
 /* Cover thumbnails on compare cards (top-item sides, Common Top values). */
