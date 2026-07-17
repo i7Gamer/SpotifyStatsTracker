@@ -1,0 +1,57 @@
+name: Docker Image CI
+
+on:
+  workflow_dispatch: # Enables the manual "Run workflow" button in GitHub UI
+
+jobs:
+  build-test-push:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Log in to Docker Hub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+    - name: Build the Docker image
+      run: docker build --no-cache -t i7gamer/spotify-tracker:latest .
+
+    - name: Test container startup and health
+      run: |
+        echo "Starting container..."
+        docker run -d --name test-tracker i7gamer/spotify-tracker:latest
+        
+        # Wait up to 60 seconds for the healthcheck to pass
+        TIMEOUT=60
+        ELAPSED=0
+        
+        while [ $ELAPSED -le $TIMEOUT ]; do
+          # Query the native Docker health status
+          STATUS=$(docker inspect -f '{{.State.Health.Status}}' test-tracker)
+          
+          if [ "$STATUS" == "healthy" ]; then
+            echo "Container is stable and healthy."
+            exit 0
+          elif [ "$STATUS" == "unhealthy" ]; then
+            echo "Container reported unhealthy status. Aborting push."
+            docker logs test-tracker
+            exit 1
+          fi
+          
+          echo "Waiting for healthcheck (current status: $STATUS)..."
+          sleep 5
+          ELAPSED=$((ELAPSED + 5))
+        done
+        
+        echo "Timeout reached waiting for container health."
+        docker logs test-tracker
+        exit 1
+
+    - name: Push Docker image
+      run: |
+        echo "Pushing image..."
+        docker push i7gamer/spotify-tracker:latest
