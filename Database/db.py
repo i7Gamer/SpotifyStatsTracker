@@ -74,9 +74,10 @@ CREATE INDEX IF NOT EXISTS idx_track_artists_artist ON track_artists(artist_id);
 
 -- Last.fm genre join tables, ordered like track_artists: position preserves
 -- the tag ranking (by count) after whitelist filtering. inherited=1 rows are
--- materialized copies of the entity's PRIMARY artist's genres, written only
--- when the entity's own Last.fm lookup came back empty/not-found - an
--- instance-wide app_settings toggle controls whether they count in stats.
+-- materialized copies of a closer entity's genres, written only when the
+-- entity's own Last.fm lookup came back empty/not-found: tracks inherit
+-- their album's own genres first, then (like albums) the PRIMARY artist's -
+-- an instance-wide app_settings toggle controls whether they count in stats.
 -- Artists have nothing to inherit from, so artist_genres carries no flag.
 CREATE TABLE IF NOT EXISTS artist_genres (
     artist_id   TEXT NOT NULL REFERENCES artists(id),

@@ -320,9 +320,9 @@ class GenreCoverageTestCase(DatabaseTestCase):
     def test_counts_and_percentages_including_inherited(self):
         db = self._db()
         coverage = db.getGenreCoverage(includeInherited=True)
-        self.assertEqual(coverage["song"], {"covered": 3, "total": 4, "percent": 75.0})
-        self.assertEqual(coverage["album"], {"covered": 2, "total": 4, "percent": 50.0})
-        self.assertEqual(coverage["artist"], {"covered": 3, "total": 4, "percent": 75.0})
+        self.assertEqual(coverage["song"], {"covered": 3, "total": 4, "percent": 75.0, "ownPercent": 50.0})
+        self.assertEqual(coverage["album"], {"covered": 2, "total": 4, "percent": 50.0, "ownPercent": 50.0})
+        self.assertEqual(coverage["artist"], {"covered": 3, "total": 4, "percent": 75.0, "ownPercent": 75.0})
         self.assertAlmostEqual(coverage["overall"]["percent"], 66.7, places=1)
 
     def test_excluding_inherited_drops_only_inherited_categories(self):
@@ -331,6 +331,18 @@ class GenreCoverageTestCase(DatabaseTestCase):
         self.assertEqual(coverage["song"]["covered"], 2)     #< t2's inherited row no longer counts
         self.assertEqual(coverage["album"]["covered"], 2)
         self.assertEqual(coverage["artist"]["covered"], 3)   #< artists have no inherited concept
+
+    def test_own_percent_ignores_the_inherited_toggle(self):
+        """ownPercent always counts non-inherited rows only - the coverage
+        panel's "own tags" split must not move with the admin toggle. For
+        artists (no inherited concept) it equals the plain percent."""
+        db = self._db()
+        for includeInherited in (True, False):
+            coverage = db.getGenreCoverage(includeInherited=includeInherited)
+            self.assertEqual(coverage["song"]["ownPercent"], 50.0)     #< only t1's 2 own-tag plays
+            self.assertEqual(coverage["album"]["ownPercent"], 50.0)
+            self.assertEqual(coverage["artist"]["ownPercent"],
+                             coverage["artist"]["percent"])
 
     def test_default_reads_the_app_setting(self):
         db = self._db()
@@ -342,13 +354,14 @@ class GenreCoverageTestCase(DatabaseTestCase):
     def test_date_range_scopes_the_denominator(self):
         db = self._db()
         coverage = db.getGenreCoverage(startDate=_dt(2500), endDate=_dt(4500), includeInherited=True)
-        self.assertEqual(coverage["song"], {"covered": 1, "total": 2, "percent": 50.0})
+        self.assertEqual(coverage["song"], {"covered": 1, "total": 2, "percent": 50.0, "ownPercent": 0.0})
 
     def test_no_plays_yields_zeros_without_dividing(self):
         db = self._makeDb({}, [])
         coverage = db.getGenreCoverage()
         for category in ("song", "album", "artist"):
-            self.assertEqual(coverage[category], {"covered": 0, "total": 0, "percent": 0.0})
+            self.assertEqual(coverage[category],
+                             {"covered": 0, "total": 0, "percent": 0.0, "ownPercent": 0.0})
         self.assertEqual(coverage["overall"]["percent"], 0.0)
 
 

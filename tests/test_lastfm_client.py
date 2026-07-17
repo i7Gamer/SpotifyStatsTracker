@@ -16,6 +16,7 @@ from Database.lastfm import (
     OUTCOME_OK, OUTCOME_NOT_FOUND, OUTCOME_TRANSIENT, OUTCOME_INVALID_KEY,
     LASTFM_API_ROOT, LASTFM_RATE_LIMIT_BACKOFF_SECONDS, GENRE_MAX_TAGS_PER_ENTITY,
     normalizeGenreTag, loadGenreWhitelist, filterTagsToGenres,
+    GENRE_TAG_ALIASES, cleanLookupName,
 )
 
 
@@ -150,6 +151,74 @@ class TagFilteringTestCase(unittest.TestCase):
             "not-a-dict",
         ]
         self.assertEqual(filterTagsToGenres(tags), ["rock", "pop"])
+
+    def test_alias_tags_map_to_their_whitelisted_genre(self):
+        tags = [
+            {"name": "rap", "count": 100},
+            {"name": "Alternative", "count": 90},
+            {"name": "indie", "count": 80},
+            {"name": "rnb", "count": 70},
+        ]
+        self.assertEqual(filterTagsToGenres(tags),
+                         ["hip hop", "alternative rock", "indie rock", "r&b"])
+
+    def test_alias_and_direct_tag_merge_keeping_the_best_count(self):
+        tags = [
+            {"name": "rap", "count": 90},       #< alias carries the better count
+            {"name": "Hip-Hop", "count": 40},
+            {"name": "rock", "count": 50},
+        ]
+        self.assertEqual(filterTagsToGenres(tags), ["hip hop", "rock"])
+
+    def test_alias_sources_are_absent_from_the_whitelist_and_targets_resolve(self):
+        """The alias map is only consulted on a whitelist miss - a source that
+        is also a whitelisted genre would silently never alias; a target
+        outside the whitelist would silently drop the tag."""
+        whitelist = loadGenreWhitelist()
+        for source, target in GENRE_TAG_ALIASES.items():
+            self.assertEqual(source, normalizeGenreTag(source))   #< keys stored pre-normalized
+            self.assertNotIn(source, whitelist)
+            self.assertIn(normalizeGenreTag(target), whitelist)
+
+
+class LookupNameCleaningTestCase(unittest.TestCase):
+    def test_version_suffixes_after_a_dash_are_stripped(self):
+        for name, cleaned in [
+            ("Alors on danse - Radio Edit", "Alors on danse"),
+            ("Just In Time - 1998 Remaster", "Just In Time"),
+            ("Can't Take My Eyes Off You - Original Extended Version", "Can't Take My Eyes Off You"),
+            ("Be Like That - feat. Swae Lee & Khalid", "Be Like That"),
+            ("Breaking Free - High School Mix", "Breaking Free"),
+            ("Song Title - Live - Remastered 2011", "Song Title"),
+        ]:
+            self.assertEqual(cleanLookupName(name), cleaned, name)
+
+    def test_real_dash_subtitles_are_kept(self):
+        self.assertEqual(cleanLookupName("Party - Ich will abgehn"),
+                         "Party - Ich will abgehn")
+
+    def test_decoration_parentheticals_and_brackets_are_stripped(self):
+        for name, cleaned in [
+            ("Ain't Nobody (Loves Me Better) (feat. Jasmine Thompson)",
+             "Ain't Nobody (Loves Me Better)"),
+            ("Blood (with Foy Vance) [Drezo Remix]", "Blood"),
+            ("Save Your Tears (with Ariana Grande) (Remix)", "Save Your Tears"),
+            ("OK Computer (Deluxe Edition)", "OK Computer"),
+        ]:
+            self.assertEqual(cleanLookupName(name), cleaned, name)
+
+    def test_meaningful_parentheticals_are_kept(self):
+        for name in ("You Spin Me Round (Like a Record)",
+                     "(I Can't Get No) Satisfaction",
+                     "Alive"):   #< 'live' inside a word must not trigger
+            self.assertEqual(cleanLookupName(name), name)
+
+    def test_undecorated_names_come_back_identical(self):
+        self.assertEqual(cleanLookupName("Wrecked"), "Wrecked")
+
+    def test_cleaning_never_returns_an_empty_name(self):
+        for name in ("(feat. Someone)", " - Remastered", "Remix"):
+            self.assertEqual(cleanLookupName(name), name)
 
 
 def _response(statusCode=200, payload=None, jsonError=False):

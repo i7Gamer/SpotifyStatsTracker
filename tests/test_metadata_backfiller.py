@@ -69,6 +69,143 @@ class TestMetadataBackfiller(DatabaseTestCase):
         row = conn.execute("SELECT duration_ms FROM tracks WHERE id='tr1'").fetchone()
         self.assertEqual(row["duration_ms"], 215000)
 
+    def test_repository_get_albums_with_artistless_tracks(self):
+        import time
+        from Database.repository import ALBUM_BACKFILL_RETRY_SECONDS
+
+        db = self._makeDb({}, [])
+        conn = db.repo._conn()
+        now = time.time()
+        with conn:
+            conn.execute("INSERT INTO artists (id, name, url) VALUES ('art1', 'Artist 1', '')")
+            # alb1: has a track without artist links -> queued
+            conn.execute("INSERT INTO albums (id, name, url, release_date, total_tracks) VALUES ('alb1', 'Album 1', '', 1700000000.0, 10)")
+            conn.execute("INSERT INTO tracks (id, name, url, album_id) VALUES ('tr1', 'Track 1', '', 'alb1')")
+            # alb2: all tracks have artists -> not queued
+            conn.execute("INSERT INTO albums (id, name, url, release_date, total_tracks) VALUES ('alb2', 'Album 2', '', 1700000000.0, 10)")
+            conn.execute("INSERT INTO tracks (id, name, url, album_id) VALUES ('tr2', 'Track 2', '', 'alb2')")
+            conn.execute("INSERT INTO track_artists (track_id, artist_id, position) VALUES ('tr2', 'art1', 0)")
+            # Fabricated fallback album ids never existed on Spotify -> never queued
+            conn.execute("INSERT INTO albums (id, name, url) VALUES ('album_deadbeef', 'Synthetic', '')")
+            conn.execute("INSERT INTO tracks (id, name, url, album_id) VALUES ('tr3', 'Track 3', '', 'album_deadbeef')")
+            # alb4: artist-less track but recently attempted -> rate-limited out
+            conn.execute("INSERT INTO albums (id, name, url, backfill_attempted_at) VALUES ('alb4', 'Album 4', '', ?)", (now,))
+            conn.execute("INSERT INTO tracks (id, name, url, album_id) VALUES ('tr4', 'Track 4', '', 'alb4')")
+            # alb5: artist-less track, attempted beyond the retry interval -> queued again
+            conn.execute("INSERT INTO albums (id, name, url, backfill_attempted_at) VALUES ('alb5', 'Album 5', '', ?)",
+                         (now - ALBUM_BACKFILL_RETRY_SECONDS - 60,))
+            conn.execute("INSERT INTO tracks (id, name, url, album_id) VALUES ('tr5', 'Track 5', '', 'alb5')")
+
+        queued = db.repo.getAlbumsWithArtistlessTracks(10)
+        self.assertIn("alb1", queued)
+        self.assertIn("alb5", queued)
+        self.assertNotIn("alb2", queued)
+        self.assertNotIn("album_deadbeef", queued)
+        self.assertNotIn("alb4", queued)
+
+    def test_repository_add_missing_track_artists(self):
+        db = self._makeDb({}, [])
+        conn = db.repo._conn()
+        with conn:
+            conn.execute("INSERT INTO albums (id, name, url) VALUES ('alb1', 'Album 1', '')")
+            conn.execute("INSERT INTO tracks (id, name, url, album_id) VALUES ('tr1', 'Track 1', '', 'alb1')")
+            conn.execute("INSERT INTO tracks (id, name, url, album_id) VALUES ('tr2', 'Track 2', '', 'alb1')")
+            conn.execute("INSERT INTO artists (id, name, url) VALUES ('artOld', 'Existing Artist', '')")
+            conn.execute("INSERT INTO track_artists (track_id, artist_id, position) VALUES ('tr2', 'artOld', 0)")
+
+        newArtists = [
+            {"id": "artA", "name": "Artist A", "url": "http://a", "imageId": "artA"},
+            {"id": "artB", "name": "Artist B", "url": "http://b", "imageId": "artB"},
+        ]
+        self.assertTrue(db.repo.addMissingTrackArtists("tr1", newArtists))
+        rows = conn.execute(
+            "SELECT artist_id FROM track_artists WHERE track_id='tr1' ORDER BY position").fetchall()
+        self.assertEqual([r["artist_id"] for r in rows], ["artA", "artB"])
+        self.assertEqual(conn.execute("SELECT name FROM artists WHERE id='artA'").fetchone()["name"],
+                         "Artist A")
+
+        # A track that already has links is never touched.
+        self.assertFalse(db.repo.addMissingTrackArtists("tr2", newArtists))
+        rows = conn.execute(
+            "SELECT artist_id FROM track_artists WHERE track_id='tr2' ORDER BY position").fetchall()
+        self.assertEqual([r["artist_id"] for r in rows], ["artOld"])
+
+        # Unknown tracks and empty artist lists are quiet no-ops.
+        self.assertFalse(db.repo.addMissingTrackArtists("trMissing", newArtists))
+        self.assertFalse(db.repo.addMissingTrackArtists("tr1", []))
+
+        # Existing artist rows keep their data (no blanked-payload regressions).
+        db.repo.addMissingTrackArtists(
+            "tr1", [{"id": "artOld", "name": "Blanked", "url": "", "imageId": "artOld"}])
+        self.assertEqual(conn.execute("SELECT name FROM artists WHERE id='artOld'").fetchone()["name"],
+                         "Existing Artist")
+
+    @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value="mock_token")
+    @patch("requests.get")
+    def test_backfiller_loop_repairs_artistless_tracks(self, mock_get, mock_refresh):
+        """An album with complete metadata but an artist-less track enters the
+        queue through getAlbumsWithArtistlessTracks, and the album payload's
+        per-track artists repair the missing links - without disturbing
+        tracks whose links already exist."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "albums": [{
+                "id": "alb1",
+                "name": "Album 1",
+                "release_date": "2020-05-05",
+                "total_tracks": 2,
+                "tracks": {"items": [
+                    {"id": "tr1", "name": "Track 1", "duration_ms": 1000,
+                     "artists": [
+                         {"id": "artA", "name": "Artist A",
+                          "external_urls": {"spotify": "https://open.spotify.com/artist/artA"}},
+                         {"id": "artB", "name": "Artist B",
+                          "external_urls": {"spotify": "https://open.spotify.com/artist/artB"}},
+                         {"name": "No Id Artist"},   #< skipped: nothing real to link
+                     ]},
+                    {"id": "tr2", "name": "Track 2", "duration_ms": 1000,
+                     "artists": [{"id": "artC", "name": "Artist C"}]},
+                ]},
+            }]
+        }
+        mock_get.return_value = mock_response
+
+        with patch.object(Database, "startMetadataBackfiller"):
+            db = self._makeDb({}, [])
+        conn = db.repo._conn()
+        with conn:
+            # Complete metadata: invisible to getAlbumsMissingMetadata.
+            conn.execute("INSERT INTO albums (id, name, url, release_date, total_tracks) VALUES ('alb1', 'Album 1', '', 1600000000.0, 2)")
+            conn.execute("INSERT INTO tracks (id, name, url, album_id) VALUES ('tr1', 'Track 1', '', 'alb1')")
+            conn.execute("INSERT INTO tracks (id, name, url, album_id) VALUES ('tr2', 'Track 2', '', 'alb1')")
+            conn.execute("INSERT INTO artists (id, name, url) VALUES ('artOld', 'Existing Artist', '')")
+            conn.execute("INSERT INTO track_artists (track_id, artist_id, position) VALUES ('tr2', 'artOld', 0)")
+
+        db.getUserSpotifyCredentials = MagicMock(return_value={
+            "client_id": "test_id", "client_secret": "test_secret", "refresh_token": "test_refresh"})
+
+        Database._active_backfills.clear()
+        db.backfiller_stop_event = MagicMock()
+        db.backfiller_stop_event.is_set.side_effect = [False, True]
+        db.backfiller_stop_event.wait.return_value = False
+
+        db._metadataBackfillLoop()
+
+        rows = conn.execute(
+            "SELECT artist_id FROM track_artists WHERE track_id='tr1' ORDER BY position").fetchall()
+        self.assertEqual([r["artist_id"] for r in rows], ["artA", "artB"])
+        self.assertEqual(conn.execute("SELECT name FROM artists WHERE id='artB'").fetchone()["name"],
+                         "Artist B")
+        # tr2's existing link is untouched despite the payload naming artC.
+        rows = conn.execute(
+            "SELECT artist_id FROM track_artists WHERE track_id='tr2' ORDER BY position").fetchall()
+        self.assertEqual([r["artist_id"] for r in rows], ["artOld"])
+        # The album is stamped, so it leaves the repair queue until the retry window.
+        self.assertIsNotNone(conn.execute(
+            "SELECT backfill_attempted_at FROM albums WHERE id='alb1'").fetchone()[0])
+        Database._active_backfills.clear()
+
     @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value="mock_token")
     @patch("requests.get")
     def test_backfiller_loop_fetches_and_deduplicates(self, mock_get, mock_refresh):

@@ -1959,6 +1959,58 @@ class Repository:
         ).fetchall()
         return [row["id"] for row in rows]
 
+    def getAlbumsWithArtistlessTracks(self, limit: int) -> list[str]:
+        """Albums holding at least one track with NO track_artists rows -
+        tracks saved from degraded payloads (or legacy imports) that carried
+        no artist data. The metadata backfiller piggybacks these onto its
+        album fetches: the album payload's per-track artists repair the
+        links. Shares the backfill_attempted_at rate limit (and the
+        fabricated-id exclusion) with getAlbumsMissingMetadata."""
+        conn = self._conn()
+        retryCutoff = time.time() - ALBUM_BACKFILL_RETRY_SECONDS
+        rows = conn.execute(
+            r"""
+            SELECT DISTINCT al.id FROM albums al
+            JOIN tracks t ON t.album_id = al.id
+            WHERE NOT EXISTS (SELECT 1 FROM track_artists ta WHERE ta.track_id = t.id)
+              AND al.id NOT LIKE 'album\_%' ESCAPE '\'
+              AND (al.backfill_attempted_at IS NULL OR al.backfill_attempted_at < ?)
+            LIMIT ?
+            """,
+            (retryCutoff, limit)
+        ).fetchall()
+        return [row["id"] for row in rows]
+
+    def addMissingTrackArtists(self, trackId: str, artists: list[dict]) -> bool:
+        """Write artist links for a known track that has NONE - the metadata
+        backfiller's repair path. Existing links are never touched (the album
+        payload is a repair source, not an authority over what richer
+        play-time payloads recorded), and existing artist rows keep their
+        data. Returns whether links were written."""
+        if not artists:
+            return False
+        conn = self._conn()
+        with conn:
+            if conn.execute("SELECT 1 FROM track_artists WHERE track_id=? LIMIT 1",
+                            (trackId,)).fetchone() is not None:
+                return False
+            if conn.execute("SELECT 1 FROM tracks WHERE id=?", (trackId,)).fetchone() is None:
+                return False
+            for position, artist in enumerate(artists):
+                conn.execute(
+                    """
+                    INSERT INTO artists (id, name, url, image_id)
+                    VALUES (:id, :name, :url, :imageId)
+                    ON CONFLICT(id) DO NOTHING
+                    """,
+                    artist,
+                )
+                conn.execute(
+                    "INSERT INTO track_artists (track_id, artist_id, position) VALUES (?, ?, ?)",
+                    (trackId, artist["id"], position),
+                )
+        return True
+
     def markAlbumsBackfillAttempted(self, albumIds: list[str]) -> None:
         """Stamp albums as processed by the backfiller so they leave the queue for
         ALBUM_BACKFILL_RETRY_SECONDS - including albums Spotify returned no data
@@ -2086,6 +2138,36 @@ class Repository:
     def markTracksLastfmAttempted(self, trackIds: list[str]) -> None:
         self._markLastfmAttempted("tracks", trackIds)
 
+    def requeueLastfmEntitiesWithoutOwnGenres(self) -> int:
+        """Clears lastfm_attempted_at wherever the entity holds no own
+        (non-inherited) genre rows, re-entering it into the backfill queues
+        immediately - the 1.19.0 -> 1.20.0 migration's lever after lookup
+        improvements. Inherited rows stay in place so stats keep working
+        until the re-run replaces them. Returns how many were requeued."""
+        conn = self._conn()
+        cleared = 0
+        with conn:
+            for table, genreTable, idColumn in (
+                ("tracks", "track_genres", "track_id"),
+                ("albums", "album_genres", "album_id"),
+            ):
+                cleared += conn.execute(
+                    f"""
+                    UPDATE {table} SET lastfm_attempted_at = NULL
+                    WHERE lastfm_attempted_at IS NOT NULL
+                      AND NOT EXISTS (SELECT 1 FROM {genreTable} g
+                                      WHERE g.{idColumn} = {table}.id AND g.inherited = 0)
+                    """
+                ).rowcount
+            cleared += conn.execute(
+                """
+                UPDATE artists SET lastfm_attempted_at = NULL
+                WHERE lastfm_attempted_at IS NOT NULL
+                  AND NOT EXISTS (SELECT 1 FROM artist_genres g WHERE g.artist_id = artists.id)
+                """
+            ).rowcount
+        return cleared
+
     def getArtistLastfmState(self, artistId: str) -> dict:
         """Attempt stamp + current genres for one artist - the inheritance
         decision for a tag-less track/album re-reads this at process time (the
@@ -2157,7 +2239,8 @@ class Repository:
         params.extend([time.time() - GENRE_BACKFILL_RETRY_SECONDS, limit])
         rows = conn.execute(
             f"""
-            SELECT t.id AS id, t.name AS name, ar.id AS artist_id, ar.name AS artist_name,
+            SELECT t.id AS id, t.name AS name, t.album_id AS album_id,
+                   ar.id AS artist_id, ar.name AS artist_name,
                    COUNT(*) AS play_count
             FROM plays p
             JOIN tracks t ON t.id = p.track_id

@@ -23,7 +23,7 @@ try:
         Repository, IMAGE_KIND_TRACK, IMAGE_KIND_ARTIST, IMAGE_STATUS_OK, IMAGE_STATUS_FAILED,
     )
     from Database.utils import parseError, convertToDatetime, dateToString, startOfDay, startOfWeek, startOfMonth, timeToInt
-    from Database.lastfm import LastfmClient, filterTagsToGenres, OUTCOME_OK, OUTCOME_TRANSIENT, OUTCOME_INVALID_KEY
+    from Database.lastfm import LastfmClient, filterTagsToGenres, cleanLookupName, OUTCOME_OK, OUTCOME_TRANSIENT, OUTCOME_INVALID_KEY
 except ModuleNotFoundError:
     from Formatters.spotifyClient import Client
     from Importers.StreamingHistoryImporter import Importer
@@ -31,7 +31,7 @@ except ModuleNotFoundError:
     from Listeners.spotifyListener import Listener
     from repository import Repository, IMAGE_KIND_TRACK, IMAGE_KIND_ARTIST, IMAGE_STATUS_OK, IMAGE_STATUS_FAILED
     from utils import parseError, convertToDatetime, dateToString, startOfDay, startOfWeek, startOfMonth, timeToInt
-    from lastfm import LastfmClient, filterTagsToGenres, OUTCOME_OK, OUTCOME_TRANSIENT, OUTCOME_INVALID_KEY
+    from lastfm import LastfmClient, filterTagsToGenres, cleanLookupName, OUTCOME_OK, OUTCOME_TRANSIENT, OUTCOME_INVALID_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -980,20 +980,26 @@ class Database:
         same denominator (every play has exactly one track, album and primary
         artist - a play whose track lacks a position-0 artist row just never
         counts as artist-covered). "overall" is the mean of the three - the
-        unlock gate for genre features compares against it."""
+        unlock gate for genre features compares against it. Each category
+        also reports "ownPercent": the share covered by own (non-inherited)
+        tags regardless of the toggle, so the coverage panel can show how
+        much of the number rests on inheritance (equal to percent for
+        artists, which have no inherited concept)."""
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
         inherited = self._resolveIncludeInherited(includeInherited)
         conn = self.repo._conn()
         params = [inherited, inherited, self.user]
         rangeClause = self.repo._dateRangeClause(params, startTs, endTs, column="p.played_at")
-        # GROUP BY track first so the three EXISTS probes run once per distinct
+        # GROUP BY track first so the EXISTS probes run once per distinct
         # track, not once per play.
         query = f"""
             SELECT
                 COALESCE(SUM(cnt), 0) AS total,
                 COALESCE(SUM(CASE WHEN track_covered THEN cnt ELSE 0 END), 0) AS song_covered,
                 COALESCE(SUM(CASE WHEN album_covered THEN cnt ELSE 0 END), 0) AS album_covered,
-                COALESCE(SUM(CASE WHEN artist_covered THEN cnt ELSE 0 END), 0) AS artist_covered
+                COALESCE(SUM(CASE WHEN artist_covered THEN cnt ELSE 0 END), 0) AS artist_covered,
+                COALESCE(SUM(CASE WHEN track_own THEN cnt ELSE 0 END), 0) AS song_own,
+                COALESCE(SUM(CASE WHEN album_own THEN cnt ELSE 0 END), 0) AS album_own
             FROM (
                 SELECT COUNT(*) AS cnt,
                     EXISTS(SELECT 1 FROM track_genres g
@@ -1003,7 +1009,12 @@ class Database:
                            WHERE t.id = p.track_id AND (? OR g.inherited = 0)) AS album_covered,
                     EXISTS(SELECT 1 FROM track_artists ta
                            JOIN artist_genres g ON g.artist_id = ta.artist_id
-                           WHERE ta.track_id = p.track_id AND ta.position = 0) AS artist_covered
+                           WHERE ta.track_id = p.track_id AND ta.position = 0) AS artist_covered,
+                    EXISTS(SELECT 1 FROM track_genres g
+                           WHERE g.track_id = p.track_id AND g.inherited = 0) AS track_own,
+                    EXISTS(SELECT 1 FROM tracks t
+                           JOIN album_genres g ON g.album_id = t.album_id
+                           WHERE t.id = p.track_id AND g.inherited = 0) AS album_own
                 FROM plays p
                 WHERE p.username = ?{rangeClause}
                 GROUP BY p.track_id
@@ -1012,11 +1023,16 @@ class Database:
         row = conn.execute(query, params).fetchone()
         total = row["total"]
 
-        def category(covered: int) -> dict:
-            percent = round(covered / total * 100, 1) if total else 0.0
-            return {"covered": covered, "total": total, "percent": percent}
+        def category(covered: int, ownCovered: int) -> dict:
+            def percentOf(value: int) -> float:
+                return round(value / total * 100, 1) if total else 0.0
+            return {"covered": covered, "total": total,
+                    "percent": percentOf(covered), "ownPercent": percentOf(ownCovered)}
 
-        coverage = {name: category(row[f"{name}_covered"]) for name in GENRE_COVERAGE_CATEGORIES}
+        ownByCategory = {"song": row["song_own"], "album": row["album_own"],
+                         "artist": row["artist_covered"]}
+        coverage = {name: category(row[f"{name}_covered"], ownByCategory[name])
+                    for name in GENRE_COVERAGE_CATEGORIES}
         coveredSum = sum(row[f"{name}_covered"] for name in GENRE_COVERAGE_CATEGORIES)
         overallPercent = (round(coveredSum / (len(GENRE_COVERAGE_CATEGORIES) * total) * 100, 1)
                           if total else 0.0)
@@ -2099,6 +2115,25 @@ class Database:
         self.backfiller_thread.join(timeout=3)
         self.backfiller_thread = None
 
+    @staticmethod
+    def _normalizeBackfillArtists(artistsRaw: list) -> list[dict]:
+        """Repo-shaped artist dicts from an album payload's per-track artist
+        list (Web API and SpotipyFree both expose id/name/external_urls).
+        Entries without a real id or name are dropped - fabricating links
+        would be worse than leaving the track for the next repair pass."""
+        artists = []
+        for artist in artistsRaw:
+            if not isinstance(artist, dict):
+                continue
+            artistId = artist.get("id")
+            name = artist.get("name")
+            if not artistId or not name:
+                continue
+            url = (artist.get("external_urls") or {}).get("spotify") or \
+                f"https://open.spotify.com/artist/{artistId}"
+            artists.append({"id": artistId, "name": name, "url": url, "imageId": artistId})
+        return artists
+
     def _metadataBackfillLoop(self, stop_event: threading.Event | None = None) -> None:
         """Periodically queries Spotify for missing album release dates and tracks.
 
@@ -2122,8 +2157,17 @@ class Database:
                     # 2. Get Spotify API credentials if configured
                     creds = self.getUserSpotifyCredentials()
 
-                    # 3. Query up to N missing album IDs
+                    # 3. Query up to N missing album IDs. Albums whose tracks
+                    # lack artist links piggyback on the same fetch: the album
+                    # payload carries per-track artists, repairing tracks that
+                    # were saved from degraded payloads without artist data.
                     missing_ids = self.repo.getAlbumsMissingMetadata(limit=self.BACKFILLER_ALBUM_QUEUE_SIZE)
+                    if len(missing_ids) < self.BACKFILLER_ALBUM_QUEUE_SIZE:
+                        known_ids = set(missing_ids)
+                        missing_ids.extend(
+                            albumId for albumId in self.repo.getAlbumsWithArtistlessTracks(
+                                self.BACKFILLER_ALBUM_QUEUE_SIZE - len(missing_ids))
+                            if albumId not in known_ids)
                     if not missing_ids:
                         if stop_event.wait(300):
                             break
@@ -2235,11 +2279,18 @@ class Database:
                         tracks_data = album_raw.get("tracks", {}).get("items") or []
                         for track_raw in tracks_data:
                             track_id = track_raw.get("id") or track_raw.get("track_id")
+                            if not track_id:
+                                continue
                             track_name = track_raw.get("name")
-                            if track_id and track_name:
+                            if track_name:
                                 duration_ms = track_raw.get("duration_ms") or 0
                                 self.repo.updateTrackName(track_id, track_name,
                                                           duration_ms=duration_ms if duration_ms > 0 else None)
+                            # Repair path: link artists for tracks that have none
+                            # (addMissingTrackArtists never touches existing links).
+                            repair_artists = self._normalizeBackfillArtists(track_raw.get("artists") or [])
+                            if repair_artists:
+                                self.repo.addMissingTrackArtists(track_id, repair_artists)
 
                         updated_count += 1
 
@@ -2416,6 +2467,29 @@ class Database:
         genres = filterTagsToGenres(outcome.tags) if outcome.status == OUTCOME_OK else []
         return True, genres
 
+    def _lastfmLookupOwnGenres(self, lookup, entityName: str) -> tuple[bool, list[str], bool]:
+        """(definitive, genres, aborted) for an own-tags lookup with one
+        cleaned-name retry: a definitive-empty result for a decorated Spotify
+        name ("Song - Radio Edit", "Song (feat. X)") re-asks with the cleaned
+        form, since Last.fm frequently only knows the undecorated title.
+        `lookup(name)` -> FetchOutcome | None (None = rate-limit slot aborted,
+        reported via `aborted`). A non-definitive retry reports not-definitive
+        so the entity stays unmarked and the pair re-runs next cycle."""
+        outcome = lookup(entityName)
+        if outcome is None:
+            return False, [], True
+        definitive, genres = self._lastfmOutcomeGenres(outcome)
+        if not definitive or genres:
+            return definitive, genres, False
+        cleanedName = cleanLookupName(entityName)
+        if cleanedName == entityName:
+            return True, [], False
+        outcome = lookup(cleanedName)
+        if outcome is None:
+            return False, [], True
+        definitive, genres = self._lastfmOutcomeGenres(outcome)
+        return definitive, genres, False
+
     def _processLastfmArtistBatch(self, client: LastfmClient, scopeUsername: str | None) -> bool:
         rows = self.repo.getArtistsMissingGenres(self.LASTFM_QUEUE_BATCH_SIZE, scopeUsername)
         claimed = self._claimLastfmEntities("artist", rows)
@@ -2454,11 +2528,12 @@ class Database:
                     self.repo.markAlbumsLastfmAttempted([row["id"]])
                     processedAny = True
                     continue
-                outcome = client.getAlbumTopTags(primary["artist_name"], row["name"],
-                                                 stop_event=self.lastfm_stop_event)
-                if outcome is None:
+                definitive, genres, aborted = self._lastfmLookupOwnGenres(
+                    lambda name: client.getAlbumTopTags(primary["artist_name"], name,
+                                                        stop_event=self.lastfm_stop_event),
+                    row["name"])
+                if aborted:
                     break
-                definitive, genres = self._lastfmOutcomeGenres(outcome)
                 if not definitive:
                     continue
                 if self._storeLastfmGenresWithInheritance(
@@ -2477,16 +2552,17 @@ class Database:
             for row in claimed:
                 if self.lastfm_stop_event.is_set():
                     break
-                outcome = client.getTrackTopTags(row["artist_name"], row["name"],
-                                                 stop_event=self.lastfm_stop_event)
-                if outcome is None:
+                definitive, genres, aborted = self._lastfmLookupOwnGenres(
+                    lambda name: client.getTrackTopTags(row["artist_name"], name,
+                                                        stop_event=self.lastfm_stop_event),
+                    row["name"])
+                if aborted:
                     break
-                definitive, genres = self._lastfmOutcomeGenres(outcome)
                 if not definitive:
                     continue
                 if self._storeLastfmGenresWithInheritance(
                         client, "track", row["id"], genres,
-                        row["artist_id"], row["artist_name"]):
+                        row["artist_id"], row["artist_name"], albumId=row["album_id"]):
                     processedAny = True
         finally:
             self._releaseLastfmEntities("track", claimed)
@@ -2494,10 +2570,13 @@ class Database:
 
     def _storeLastfmGenresWithInheritance(self, client: LastfmClient, kind: str,
                                           entityId: str, ownGenres: list[str],
-                                          artistId: str, artistName: str) -> bool:
+                                          artistId: str, artistName: str,
+                                          albumId: str | None = None) -> bool:
         """Store a definitive lookup result for a track/album. Own tags win;
-        with none, the primary artist's genres are materialized as inherited
-        rows. An artist without a definitive result yet is resolved INLINE
+        with none, a track first materializes its album's OWN genres as
+        inherited rows (the closer granularity - the album batch runs earlier
+        in the same cycle), then both kinds fall back to the primary artist's
+        genres. An artist without a definitive result yet is resolved INLINE
         with one extra request: it may never enter the artist queue at all
         (an album's derived primary artist needs no played track), and
         leaving the entity unmarked would re-fetch it every cycle forever.
@@ -2511,6 +2590,16 @@ class Database:
             replaceGenres(entityId, ownGenres, inherited=False)
             markAttempted([entityId])
             return True
+        if kind == "track" and albumId is not None:
+            # Only the album's own tags cascade - its inherited rows are
+            # already artist genres, which the fallback below covers from
+            # the (possibly fresher) artist state directly.
+            albumOwnGenres = [g["genre"] for g in self.repo.getAlbumGenres(albumId)
+                              if not g["inherited"]]
+            if albumOwnGenres:
+                replaceGenres(entityId, albumOwnGenres, inherited=True)
+                markAttempted([entityId])
+                return True
         artistState = self.repo.getArtistLastfmState(artistId)   #< fresh: this cycle's artist batch is visible
         if artistState["attempted_at"] is None and not artistState["genres"]:
             # Rarely duplicates another worker's in-flight artist fetch (the

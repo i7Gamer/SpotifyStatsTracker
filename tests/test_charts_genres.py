@@ -52,6 +52,18 @@ class GateHelperTestCase(unittest.TestCase):
             "overall": {"percent": 0.0},
         }), empty)
 
+    def test_sanitize_passes_own_percent_through_only_when_present(self):
+        """ownPercent is optional (older callers/stubs don't produce it) but
+        validated like every other field when it is there."""
+        coverage = coverageDict(75, 50, 75)
+        coverage["song"]["ownPercent"] = 10.0
+        self.assertEqual(sanitizeGenreCoverage(coverage), coverage)
+        self.assertNotIn("ownPercent", sanitizeGenreCoverage(coverageDict(75, 50, 75))["song"])
+
+        malformed = coverageDict(75, 50, 75)
+        malformed["album"]["ownPercent"] = MagicMock()
+        self.assertEqual(sanitizeGenreCoverage(malformed), emptyGenreCoverage())
+
     def test_thresholds_are_the_agreed_values(self):
         self.assertEqual(GENRE_GATE_OVERALL_MIN_PERCENT, 50)
         self.assertEqual(GENRE_GATE_CATEGORY_MIN_PERCENT, 30)

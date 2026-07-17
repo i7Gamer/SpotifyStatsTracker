@@ -93,6 +93,11 @@ DEFAULT_SORT_BY = "totalTimeListened"
 # otherwise reach a ValueError deep in the DB layer and 500 instead of just
 # falling back to the default.
 VALID_SORT_BY = {"totalTimeListened", "plays", "name"}
+# The Compare page's own sortBy whitelist - narrower than VALID_SORT_BY.
+# "name" is deliberately excluded: elsewhere it means "browse alphabetically",
+# but Compare's Top Common lists rank by a COMBINED both-users metric (see
+# _buildSharedItems), and there's no sensible combined-alphabetical ranking.
+COMPARE_SORT_BY = {"totalTimeListened", "plays"}
 TRUTHY_ENV_VALUES = {"1", "true", "yes", "on"}
 # Opt-in to honoring X-Forwarded-* headers from a reverse proxy (see
 # _trustedProxyCount). Without it, every visitor behind a proxy shares the
@@ -214,11 +219,17 @@ def sanitizeGenreCoverage(coverage) -> dict:
     stubbed dbs in tests (and any unexpected failure) then degrade to the
     locked state instead of crashing template rendering."""
     try:
-        sanitized = {
-            categoryName: {field: _requireNumber(coverage[categoryName][field])
-                           for field in ("covered", "total", "percent")}
-            for categoryName in GENRE_COVERAGE_CATEGORIES
-        }
+        sanitized = {}
+        for categoryName in GENRE_COVERAGE_CATEGORIES:
+            categoryData = coverage[categoryName]
+            sanitizedCategory = {field: _requireNumber(categoryData[field])
+                                 for field in ("covered", "total", "percent")}
+            # Optional (older callers/stubs don't produce it), but validated
+            # like every other field when present - the template only renders
+            # the own-tags split when the key survives sanitization.
+            if isinstance(categoryData, dict) and "ownPercent" in categoryData:
+                sanitizedCategory["ownPercent"] = _requireNumber(categoryData["ownPercent"])
+            sanitized[categoryName] = sanitizedCategory
         sanitized["overall"] = {"percent": _requireNumber(coverage["overall"]["percent"])}
         return sanitized
     except (TypeError, KeyError):
@@ -817,12 +828,12 @@ class SpotifyDashboardApp:
         for item in items:
             item["linkExternally"] = item["id"] not in playedIds
 
-    def _buildSharedItems(self, myPool, theirPool, embedFn, limit) -> list[dict]:
-        """Shared entries of one category, ranked by COMBINED plays across
-        both users (symmetric under swapping myPool/theirPool) and sliced to
-        `limit`, with the per-user versus data the Top Common Songs/Artists/
-        Albums cards render.
-        Combined-plays ranking - not either side's own pool order - so the
+    def _buildSharedItems(self, myPool, theirPool, embedFn, limit, sortBy="plays") -> list[dict]:
+        """Shared entries of one category, ranked by COMBINED `sortBy` metric
+        (plays or totalTimeListened) across both users (symmetric under
+        swapping myPool/theirPool) and sliced to `limit`, with the per-user
+        versus data the Top Common Songs/Artists/Albums cards render.
+        Combined ranking - not either side's own pool order - so the
         same mutual-share pair sees the same Top Common list regardless of
         who's viewing. Ranking by the viewer's own order used to silently
         cut different overlapping items depending on whose pool was walked.
@@ -833,7 +844,7 @@ class SpotifyDashboardApp:
         count."""
         theirById = {item["id"]: item for item in theirPool}
         sharedItems = [dict(item) for item in myPool if item["id"] in theirById]
-        sharedItems.sort(key=lambda item: item.get("plays", 0) + theirById[item["id"]].get("plays", 0),
+        sharedItems.sort(key=lambda item: item.get(sortBy, 0) + theirById[item["id"]].get(sortBy, 0),
                           reverse=True)
         shared = embedFn(sharedItems[:limit])
         for item in shared:
@@ -1032,13 +1043,16 @@ class SpotifyDashboardApp:
         except (TypeError, ValueError):
             return 1
 
-    def _getSortByParam(self, default=DEFAULT_SORT_BY):
+    def _getSortByParam(self, default=DEFAULT_SORT_BY, validValues=VALID_SORT_BY):
         """The current request's ?sortBy=..., falling back to `default` for any
         value the DB layer doesn't know how to sort by (see VALID_SORT_BY) -
         without this, an unrecognized value reaches a ValueError/KeyError deep
-        in Repository/Database and 500s instead of just using the default."""
+        in Repository/Database and 500s instead of just using the default.
+        `validValues` narrows the whitelist further for pages that support
+        fewer sortBy values than the DB layer does (see the Compare page's
+        COMPARE_SORT_BY)."""
         sortBy = request.args.get("sortBy", default)
-        return sortBy if sortBy in VALID_SORT_BY else default
+        return sortBy if sortBy in validValues else default
 
     def _calculatePagination(self, totalCount):
         """Calculate safe page bounds given a total count.
@@ -2772,7 +2786,9 @@ class SpotifyDashboardApp:
             # Default stays "plays" (not DEFAULT_SORT_BY) so nobody's view
             # changes unless they touch the control - matches every other
             # value on this page defaulting to the pre-existing behavior.
-            sortBy = self._getSortByParam(default="plays")
+            # validValues=COMPARE_SORT_BY - "name" isn't offered here (see
+            # COMPARE_SORT_BY's docstring).
+            sortBy = self._getSortByParam(default="plays", validValues=COMPARE_SORT_BY)
 
             my = self._gatherCompareStats(db, startDate, endDate, limit=limit, sortBy=sortBy)
             their = self._gatherCompareStats(otherDb, startDate, endDate, limit=limit, sortBy=sortBy)
@@ -2793,14 +2809,14 @@ class SpotifyDashboardApp:
             # it would mix two different users' totals.
             sharedArtists = self._buildSharedItems(
                 my["topArtistsPool"], their["topArtistsPool"],
-                self._embedArtistsTextElements, limit)
+                self._embedArtistsTextElements, limit, sortBy=sortBy)
             sharedSongs = self._buildSharedItems(
                 my["topSongsPool"], their["topSongsPool"],
                 lambda items: self._embedTopSongsTextElements(self._embedSongsTextElements(items)),
-                limit)
+                limit, sortBy=sortBy)
             sharedAlbums = self._buildSharedItems(
                 my["topAlbumsPool"], their["topAlbumsPool"],
-                self._embedAlbumsTextElements, limit)
+                self._embedAlbumsTextElements, limit, sortBy=sortBy)
             # Genre tables are entity-keyed, not user-scoped, so either
             # side's db returns the same result here - db (the viewer's) is
             # just what's already in scope.

@@ -19,6 +19,13 @@
     </span>
   </div>
   {% endfor %}
+  {% if coverage.song.ownPercent is defined and (coverage.song.ownPercent != coverage.song.percent
+        or coverage.album.ownPercent != coverage.album.percent) %}
+  <p style="font-size: 0.8rem; color: var(--muted, #aaa); margin-top: 0.25rem;">
+    Counting only own Last.fm tags (without genres inherited from the album or artist):
+    songs {{ coverage.song.ownPercent }}%, albums {{ coverage.album.ownPercent }}%.
+  </p>
+  {% endif %}
   <p style="font-size: 0.85rem; color: var(--muted, #aaa); margin-top: 0.75rem;">
     Overall: <strong>{{ coverage.overall.percent }}%</strong>
     {% if not coverage.song.total %}

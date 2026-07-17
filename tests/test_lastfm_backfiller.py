@@ -387,5 +387,132 @@ class WorkerBatchTestCase(LastfmWorkerBase):
         self.assertFalse(processed)
 
 
+class CleanedNameRetryTestCase(LastfmWorkerBase):
+    """A definitive-empty lookup for a decorated Spotify name ("Song - Radio
+    Edit", "Song (feat. X)") re-asks Last.fm once with the cleaned form."""
+
+    DECORATED_NAME = "Blood (with Foy Vance) [Drezo Remix]"
+
+    def _makeDbWithDecoratedTrack(self):
+        tracks = {
+            "tD": {"id": "tD", "name": self.DECORATED_NAME,
+                   "artists": [{"id": "aX", "name": "Artist X"}], "album": _album("alP", "Album P")},
+        }
+        entries = [{"id": "tD", "playedAt": 1000, "timePlayed": 5000}]
+        return self._makeDb(tracks, entries, username="user1")
+
+    def test_empty_result_for_a_decorated_track_retries_with_the_cleaned_name(self):
+        db = self._makeDbWithDecoratedTrack()
+        client = MagicMock()
+        client.getTrackTopTags.side_effect = [OK_EMPTY, ROCK_TAGS]
+
+        db._processLastfmTrackBatch(client, "user1")
+
+        self.assertEqual([call.args for call in client.getTrackTopTags.call_args_list],
+                         [("Artist X", self.DECORATED_NAME), ("Artist X", "Blood")])
+        self.assertEqual(db.repo.getTrackGenres("tD"),
+                         [{"genre": "rock", "inherited": False},
+                          {"genre": "indie rock", "inherited": False}])
+
+    def test_undecorated_names_get_no_retry(self):
+        db = self._makeDbWithPlays()
+        db.repo.markArtistsLastfmAttempted(["aX", "aY"])   #< bare artists: no inline lookups
+        client = MagicMock()
+        client.getTrackTopTags.return_value = OK_EMPTY
+
+        db._processLastfmTrackBatch(client, "user1")
+
+        self.assertEqual(client.getTrackTopTags.call_count, 2)   #< one per track, no retries
+
+    def test_transient_retry_leaves_the_track_unmarked(self):
+        db = self._makeDbWithDecoratedTrack()
+        client = MagicMock()
+        client.getTrackTopTags.side_effect = [OK_EMPTY, FetchOutcome(OUTCOME_TRANSIENT, [])]
+
+        db._processLastfmTrackBatch(client, "user1")
+
+        self.assertEqual(db.repo.getTrackGenres("tD"), [])
+        self.assertIsNone(db.repo._conn().execute(
+            "SELECT lastfm_attempted_at FROM tracks WHERE id='tD'").fetchone()[0])
+
+    def test_aborted_retry_slot_ends_the_batch_with_the_track_unmarked(self):
+        db = self._makeDbWithDecoratedTrack()
+        client = MagicMock()
+        client.getTrackTopTags.side_effect = [OK_EMPTY, None]   #< acquire() aborted on the retry
+
+        processed = db._processLastfmTrackBatch(client, "user1")
+
+        self.assertFalse(processed)
+        self.assertIsNone(db.repo._conn().execute(
+            "SELECT lastfm_attempted_at FROM tracks WHERE id='tD'").fetchone()[0])
+
+    def test_empty_retry_still_falls_through_to_inheritance(self):
+        db = self._makeDbWithDecoratedTrack()
+        db.repo.replaceArtistGenres("aX", ["shoegaze"])
+        db.repo.markArtistsLastfmAttempted(["aX"])
+        client = MagicMock()
+        client.getTrackTopTags.side_effect = [OK_EMPTY, OK_EMPTY]
+
+        db._processLastfmTrackBatch(client, "user1")
+
+        self.assertEqual(db.repo.getTrackGenres("tD"),
+                         [{"genre": "shoegaze", "inherited": True}])
+
+    def test_decorated_album_names_retry_too(self):
+        tracks = {
+            "tE": {"id": "tE", "name": "Song E",
+                   "artists": [{"id": "aX", "name": "Artist X"}],
+                   "album": _album("alD", "Album D (Deluxe Edition)")},
+        }
+        entries = [{"id": "tE", "playedAt": 1000, "timePlayed": 5000}]
+        db = self._makeDb(tracks, entries, username="user1")
+        client = MagicMock()
+        client.getAlbumTopTags.side_effect = [OK_EMPTY, ROCK_TAGS]
+
+        db._processLastfmAlbumBatch(client, "user1")
+
+        self.assertEqual([call.args for call in client.getAlbumTopTags.call_args_list],
+                         [("Artist X", "Album D (Deluxe Edition)"), ("Artist X", "Album D")])
+        self.assertEqual([g["genre"] for g in db.repo.getAlbumGenres("alD")],
+                         ["rock", "indie rock"])
+        self.assertFalse(any(g["inherited"] for g in db.repo.getAlbumGenres("alD")))
+
+
+class AlbumFirstInheritanceTestCase(LastfmWorkerBase):
+    """A tag-less track inherits its album's OWN genres before falling back
+    to the primary artist's - album tags are the closer granularity."""
+
+    def test_tagless_track_prefers_album_own_genres_over_artist(self):
+        db = self._makeDbWithPlays()
+        db.repo.replaceAlbumGenres("alP", ["progressive rock"], inherited=False)
+        db.repo.markAlbumsLastfmAttempted(["alP"])
+        db.repo.replaceArtistGenres("aX", ["shoegaze"])
+        db.repo.markArtistsLastfmAttempted(["aX", "aY"])
+        client = MagicMock()
+        client.getTrackTopTags.return_value = OK_EMPTY
+
+        db._processLastfmTrackBatch(client, "user1")
+
+        self.assertEqual(db.repo.getTrackGenres("tA"),
+                         [{"genre": "progressive rock", "inherited": True}])
+        client.getArtistTopTags.assert_not_called()
+
+    def test_album_inherited_genres_do_not_cascade_to_tracks(self):
+        """An album whose own lookup was empty carries artist genres as
+        inherited rows - those must not masquerade as album tags for its
+        tracks (the artist fallback covers that case directly)."""
+        db = self._makeDbWithPlays()
+        db.repo.replaceAlbumGenres("alP", ["stale artist genre"], inherited=True)
+        db.repo.replaceArtistGenres("aX", ["dream pop"])
+        db.repo.markArtistsLastfmAttempted(["aX", "aY"])
+        client = MagicMock()
+        client.getTrackTopTags.return_value = OK_EMPTY
+
+        db._processLastfmTrackBatch(client, "user1")
+
+        self.assertEqual(db.repo.getTrackGenres("tA"),
+                         [{"genre": "dream pop", "inherited": True}])
+
+
 if __name__ == "__main__":
     unittest.main()

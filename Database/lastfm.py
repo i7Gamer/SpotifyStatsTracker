@@ -22,6 +22,7 @@ filterTagsToGenres. Matching happens on a normalized form (lowercase,
 hyphens as spaces), so "Hip-Hop" and "hip hop" merge.
 """
 import logging
+import re
 import threading
 import time
 from collections import namedtuple
@@ -51,6 +52,33 @@ LASTFM_ERROR_RATE_LIMITED = 29
 # Tag filtering: whitelisted genres ranked by tag count, top N kept.
 GENRE_MAX_TAGS_PER_ENTITY = 5
 GENRE_WHITELIST_PATH = Path(__file__).resolve().parent / "lastfm_genres.txt"
+
+# Curated aliases for hugely common Last.fm tags that miss the MusicBrainz
+# whitelist but have one unambiguous genre reading. Keys are pre-normalized
+# (normalizeGenreTag form); the map is only consulted on a whitelist miss, so
+# a source that is also a whitelisted genre would silently never alias - a
+# test enforces sources stay out of the whitelist and targets resolve in it.
+GENRE_TAG_ALIASES = {
+    "rap": "hip hop",
+    "alternative": "alternative rock",
+    "alt rock": "alternative rock",
+    "indie": "indie rock",
+    "rnb": "r&b",
+}
+
+# Spotify title decorations: version/credit qualifiers appended to the
+# canonical name ("Song - Radio Edit", "Song (feat. X) [Y Remix]") that
+# Last.fm's catalog often doesn't know. Word-bounded so "Alive" doesn't
+# trigger on "live"; only segments matching these are stripped - a dash or
+# parenthetical that is part of the actual title ("Party - Ich will abgehn",
+# "(I Can't Get No) Satisfaction") stays.
+_LOOKUP_NAME_DECORATION = re.compile(
+    r"\b(feat\.?|featuring|with|from|remaster(?:ed)?|remix(?:ed)?|version|edit|mix|"
+    r"live|acoustic|deluxe|bonus|mono|stereo|single|sped up|slowed|anniversary|"
+    r"re-?recorded|demo|instrumental|extended|radio|session)\b",
+    re.IGNORECASE)
+_LOOKUP_NAME_GROUP = re.compile(r"\s*\(([^()]*)\)|\s*\[([^\[\]]*)\]")
+LOOKUP_NAME_DASH_SEPARATOR = " - "
 
 # Key validation happens synchronously on a profile-save request thread: it
 # shares the worker rate limiter but must never hang the HTTP request when
@@ -136,11 +164,30 @@ def loadGenreWhitelist() -> dict[str, str]:
     return _whitelistCache
 
 
+def cleanLookupName(name: str) -> str:
+    """`name` with Spotify version/credit decorations removed - the retry
+    form for a lookup whose exact name found nothing on Last.fm. A " - X"
+    suffix goes only when X matches a decoration keyword, and each "(...)"/
+    "[...]" group goes only when its content does. Returns the original name
+    unchanged when nothing qualifies or stripping would leave nothing."""
+    base, separator, suffix = name.partition(LOOKUP_NAME_DASH_SEPARATOR)
+    cleaned = base if separator and _LOOKUP_NAME_DECORATION.search(suffix) else name
+
+    def _dropDecoratedGroup(match: re.Match) -> str:
+        content = match.group(1) if match.group(1) is not None else match.group(2)
+        return "" if _LOOKUP_NAME_DECORATION.search(content) else match.group(0)
+
+    cleaned = _LOOKUP_NAME_GROUP.sub(_dropDecoratedGroup, cleaned)
+    cleaned = " ".join(cleaned.split())
+    return cleaned if cleaned and cleaned != name else name
+
+
 def filterTagsToGenres(tags: list) -> list[str]:
     """The whitelisted genres in a Last.fm tag list, ranked by tag count
     (alphabetical on the constant ties Last.fm's 0-100 normalized counts
     produce), deduped after normalization keeping each genre's best count,
-    capped at GENRE_MAX_TAGS_PER_ENTITY. Malformed entries are skipped."""
+    capped at GENRE_MAX_TAGS_PER_ENTITY. Tags missing the whitelist get one
+    more chance through GENRE_TAG_ALIASES. Malformed entries are skipped."""
     whitelist = loadGenreWhitelist()
     bestCounts: dict[str, int] = {}
     for tag in tags:
@@ -149,7 +196,12 @@ def filterTagsToGenres(tags: list) -> list[str]:
         name = tag.get("name")
         if not isinstance(name, str):
             continue
-        canonical = whitelist.get(normalizeGenreTag(name))
+        normalized = normalizeGenreTag(name)
+        canonical = whitelist.get(normalized)
+        if canonical is None:
+            aliasTarget = GENRE_TAG_ALIASES.get(normalized)
+            if aliasTarget is not None:
+                canonical = whitelist.get(normalizeGenreTag(aliasTarget))
         if canonical is None:
             continue
         try:
