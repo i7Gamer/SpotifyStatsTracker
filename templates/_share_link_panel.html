@@ -15,7 +15,7 @@
   <form method="post" action="{{ url_for('createWrappedShareLink', year=year) }}" class="share-link-create-form" style="display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap;">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
     <label for="shareLinkExpiry">Expires:</label>
-    <select id="shareLinkExpiry" name="expiry">
+    <select id="shareLinkExpiry" name="expiry" class="theme-selector">
       {% for choice in shareLinkExpiryChoices %}
         <option value="{{ choice }}" {% if choice == 'never' %}selected{% endif %}>{{ 'Never' if choice == 'never' else choice.replace('d', ' days') }}</option>
       {% endfor %}
