@@ -19,6 +19,7 @@ def _bareDatabase():
     """A Database with only what _addToDatabaseFromListener touches."""
     db = Database.__new__(Database)
     db.appendTrackData = MagicMock()
+    db.appendSkipData = MagicMock()
     db._health_lock = threading.RLock()
     db.listener_health = "HEALTHY"
     db.listener_error_count = 0
@@ -28,8 +29,8 @@ def _bareDatabase():
 class TestAddToDatabaseFromListener(unittest.TestCase):
     def _items(self):
         return [
-            {"track": {"id": "t1"}, "played_at": 100, "ms_played": 1000, "context": None},
-            {"track": {"id": "t2"}, "played_at": 200, "ms_played": 2000, "context": None},
+            {"track": {"id": "t1"}, "played_at": 100, "ms_played": 60000, "context": None},
+            {"track": {"id": "t2"}, "played_at": 200, "ms_played": 120000, "context": None},
         ]
 
     def test_all_items_are_appended(self):
@@ -48,9 +49,43 @@ class TestAddToDatabaseFromListener(unittest.TestCase):
 
         self.assertEqual(db.appendTrackData.call_count, 2)
         db.appendTrackData.assert_has_calls([
-            call(100, {"id": "t1"}, 1000, context=None, source="listener"),
-            call(200, {"id": "t2"}, 2000, context=None, source="listener"),
+            call(100, {"id": "t1"}, 60000, context=None, source="listener"),
+            call(200, {"id": "t2"}, 120000, context=None, source="listener"),
         ])
+
+    def test_sub_threshold_items_route_to_skip_recorder(self):
+        """Events under SKIP_THRESHOLD_MS (including 0ms, previously dropped)
+        are recorded as skip events, not plays."""
+        from Database.db import SKIP_THRESHOLD_MS
+        db = _bareDatabase()
+        items = [
+            {"track": {"id": "t1"}, "played_at": 100, "ms_played": 0, "context": None},
+            {"track": {"id": "t2"}, "played_at": 200, "ms_played": SKIP_THRESHOLD_MS - 1, "context": None},
+            {"track": {"id": "t3"}, "played_at": 300, "ms_played": SKIP_THRESHOLD_MS, "context": None},
+        ]
+
+        db._addToDatabaseFromListener(items)
+
+        self.assertEqual(db.appendSkipData.call_count, 2)
+        db.appendSkipData.assert_has_calls([
+            call(100, {"id": "t1"}, 0, source="listener"),
+            call(200, {"id": "t2"}, SKIP_THRESHOLD_MS - 1, source="listener"),
+        ])
+        db.appendTrackData.assert_called_once_with(
+            300, {"id": "t3"}, SKIP_THRESHOLD_MS, context=None, source="listener")
+
+    def test_failed_skip_recording_does_not_block_the_rest(self):
+        db = _bareDatabase()
+        db.appendSkipData.side_effect = Exception("db locked")
+        items = [
+            {"track": {"id": "t1"}, "played_at": 100, "ms_played": 400, "context": None},
+            {"track": {"id": "t2"}, "played_at": 200, "ms_played": 60000, "context": None},
+        ]
+
+        db._addToDatabaseFromListener(items)
+
+        db.appendTrackData.assert_called_once_with(
+            200, {"id": "t2"}, 60000, context=None, source="listener")
 
     def test_handles_empty_and_none_input(self):
         db = _bareDatabase()
@@ -125,13 +160,13 @@ class TestAddToDatabaseFromListener(unittest.TestCase):
         import time
         future_time = time.time() + 100000  # More than 1 day in the future
         items = [
-            {"track": {"id": "t1"}, "played_at": str(future_time), "ms_played": 1000, "context": None},
-            {"track": {"id": "t2"}, "played_at": "2026-07-13T10:05:00Z", "ms_played": 2000, "context": None},
+            {"track": {"id": "t1"}, "played_at": str(future_time), "ms_played": 60000, "context": None},
+            {"track": {"id": "t2"}, "played_at": "2026-07-13T10:05:00Z", "ms_played": 120000, "context": None},
         ]
         db._addToDatabaseFromListener(items)
         # Should skip the future one (t1) and successfully append t2
         self.assertEqual(db.appendTrackData.call_count, 1)
-        db.appendTrackData.assert_called_once_with("2026-07-13T10:05:00Z", {"id": "t2"}, 2000, context=None, source="listener")
+        db.appendTrackData.assert_called_once_with("2026-07-13T10:05:00Z", {"id": "t2"}, 120000, context=None, source="listener")
 
 
 if __name__ == "__main__":

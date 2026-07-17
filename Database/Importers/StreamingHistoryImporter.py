@@ -11,12 +11,12 @@ logger = logging.getLogger(__name__)
 
 try:
     from Database.Formatters.spotifyClient import Client
-    from Database.db import SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON
-    from Database.utils import timeToInt, timeToIntUTC, parseError
+    from Database.db import SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON, SKIP_THRESHOLD_MS
+    from Database.utils import timeToInt, timeToIntUTC, parseError, convertToDatetime, getTimezone
 except ModuleNotFoundError:
     from Formatters.spotifyClient import Client
-    from db import SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON
-    from utils import timeToInt, timeToIntUTC, parseError
+    from db import SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON, SKIP_THRESHOLD_MS
+    from utils import timeToInt, timeToIntUTC, parseError, convertToDatetime, getTimezone
 
 
 class Importer:
@@ -24,10 +24,17 @@ class Importer:
     # to avoid rate limits/network blocking without long delays.
     CHUNK_SIZE = 1000
     MAX_PREFETCH_WORKERS = 14
-    # Spotify's exported history includes skips recorded with only a fraction of
-    # a second played - below this threshold it's not a real listen and must not
-    # be imported as one.
-    MIN_TIME_PLAYED_MS = 1000
+    # Entries shorter than this are yielded tagged isSkip=True - the DB writer
+    # routes them into play_skips instead of plays. Only negative durations
+    # are dropped outright.
+    SKIP_THRESHOLD_MS = SKIP_THRESHOLD_MS
+
+    # offline_timestamp is seconds in some export eras and milliseconds in
+    # others - values above this cutoff (~5138 CE as seconds) can only be ms.
+    OFFLINE_TIMESTAMP_MS_CUTOFF = 1e11
+    # Sanity floor for offline_timestamp: before 2006 (Spotify's founding era)
+    # it can't be a real play time - fall back to the ts-derived start.
+    MIN_PLAUSIBLE_PLAY_TIMESTAMP = int(datetime.datetime(2006, 1, 1, tzinfo=datetime.timezone.utc).timestamp())
 
     # Error-text markers for lookup failures that are likely temporary (network,
     # auth/session, rate limiting). Synthesizing a fallback record for these would
@@ -88,15 +95,15 @@ class Importer:
             pass  #< corrupt JSON / non-dict entries - fall through to "None"
         return [], "None"
     
-    def importHistory(self, parsedHistory, known, exportType, progressCallback=None):
+    def importHistory(self, parsedHistory, known, exportType, progressCallback=None, stats=None):
         if len(parsedHistory) == 0:
             return []
         if exportType == "spotifyAcountExport":
-            return self.importAcountHistory(parsedHistory, known=known, progressCallback=progressCallback)
+            return self.importAcountHistory(parsedHistory, known=known, progressCallback=progressCallback, stats=stats)
         if exportType == "spotifyExtendedExport":
-                return self.importExtendedHistory(parsedHistory, known=known, progressCallback=progressCallback)
+                return self.importExtendedHistory(parsedHistory, known=known, progressCallback=progressCallback, stats=stats)
         if exportType == "musicoletPremium":
-            return self.importMusicoletCSVExport(parsedHistory, known=known, progressCallback=progressCallback)
+            return self.importMusicoletCSVExport(parsedHistory, known=known, progressCallback=progressCallback, stats=stats)
         return []
 
     def buildKnownIndex(self, knownTrack):
@@ -118,13 +125,14 @@ class Importer:
         for item in history:
             try:
                 parsed = dataFunction(item)
-                # albumName (6th element) is optional - account exports and older
-                # callers produce 5-tuples with no album information.
+                # albumName (6th) and extras (7th) are optional - account
+                # exports and older callers produce 5/6-tuples.
                 name, artist, startTimestamp, timePlayed, trackUri = parsed[:5]
                 albumName = parsed[5] if len(parsed) > 5 else None
-                if timePlayed < self.MIN_TIME_PLAYED_MS:
+                extras = parsed[6] if len(parsed) > 6 else None
+                if timePlayed < 0:
                     continue
-                parsedItems.append((name, artist, startTimestamp, timePlayed, trackUri, albumName))
+                parsedItems.append((name, artist, startTimestamp, timePlayed, trackUri, albumName, extras))
             except Exception:
                 continue
         return parsedItems
@@ -143,7 +151,8 @@ class Importer:
 
     def _identifyMissingTracks(self, chunk, known):
         missingTracks = {}
-        for name, artist, startTimestamp, timePlayed, trackUri, albumName in chunk:
+        for entry in chunk:
+            name, artist, _, _, trackUri, albumName = entry[:6]
             if self._resolveKnownKey(trackUri, name, artist, known) is not None:
                 continue
 
@@ -308,8 +317,14 @@ class Importer:
 
         return base
 
-    def _processPlay(self, item, known):
-        name, artist, startTimestamp, timePlayed, trackUri, albumName = item
+    @staticmethod
+    def _bumpStat(stats, key):
+        if stats is not None:
+            stats[key] = stats.get(key, 0) + 1
+
+    def _processPlay(self, item, known, stats=None):
+        name, artist, startTimestamp, timePlayed, trackUri, albumName = item[:6]
+        extras = item[6] if len(item) > 6 else None
         try:
             matchedId = self._resolveKnownKey(trackUri, name, artist, known)
 
@@ -357,6 +372,9 @@ class Importer:
                 meta = Client.embedPlayInfo(base.copy(), startTimestamp, timePlayed, capAtDuration=False)
             else:
                 if not name or not artist:
+                    # Podcast/audiobook rows (null track name) and other
+                    # unresolvable entries - counted so the drop isn't silent.
+                    self._bumpStat(stats, "droppedNoTrack")
                     return None
 
                 try:
@@ -369,6 +387,7 @@ class Importer:
                         # likely a temporary failure - skip the play; a re-import
                         # after the outage retries it (existing plays dedup).
                         logger.warning("Transient Spotify lookup failure for %s by %s (URI: %s) - skipping play, re-import to retry: %s", name, artist, trackUri, parseError(e))
+                        self._bumpStat(stats, "droppedTransient")
                         return None
                     # Fallback to synthetic track
                     logger.info("Spotify lookup failed for %s by %s (URI: %s), using synthetic record: %s", name, artist, trackUri, parseError(e))
@@ -382,12 +401,15 @@ class Importer:
                 # ms_played is authoritative, fetched track may be a relinked version.
                 meta = Client.embedPlayInfo(base.copy(), startTimestamp, timePlayed, capAtDuration=False)
 
+            meta["isSkip"] = timePlayed < SKIP_THRESHOLD_MS
+            if extras:
+                meta["importExtras"] = extras
             return meta
         except Exception as e:
             logger.error("Error processing item: %s", parseError(e))
             return None
         
-    def _import(self, dataFunction, history, known=None, progressCallback=None):
+    def _import(self, dataFunction, history, known=None, progressCallback=None, stats=None):
         known = self.buildKnownIndex(known or [])
         self._catalogArtistsByName = self._buildCatalogArtistsByName(known)
 
@@ -395,57 +417,123 @@ class Importer:
         totalItems = len(parsedItems)
         if totalItems == 0:
             return
-            
+
         for chunkStart in range(0, totalItems, self.CHUNK_SIZE):
             chunk = parsedItems[chunkStart : chunkStart + self.CHUNK_SIZE]
-            
+
             missingTracks = self._identifyMissingTracks(chunk, known)
-            
+
             # Fetch missing tracks in this chunk concurrently
             if missingTracks:
                 self._prefetchMissingTracks(
-                    missingTracks, 
-                    chunkStart, 
-                    totalItems, 
-                    known, 
+                    missingTracks,
+                    chunkStart,
+                    totalItems,
+                    known,
                     progressCallback
                 )
-            
+
             # Yield items from the current chunk (fully in-memory now)
             for item in chunk:
-                meta = self._processPlay(item, known)
+                meta = self._processPlay(item, known, stats=stats)
                 if meta:
                     yield meta
 
-    def importAcountHistory(self, history, known=None, progressCallback=None):
-        def dataFunction(item):
-            # endTime is documented by Spotify as UTC with no timezone marker on
-            # the wire - timeToInt would otherwise interpret it as local time.
-            endTimestamp = timeToIntUTC(item["endTime"])
-            timePlayed = item["msPlayed"]
+    def _accountEntryTuple(self, item):
+        # endTime is documented by Spotify as UTC with no timezone marker on
+        # the wire - timeToInt would otherwise interpret it as local time.
+        endTimestamp = timeToIntUTC(item["endTime"])
+        timePlayed = item["msPlayed"]
 
-            startTimestamp = endTimestamp-timePlayed//1000
-            name=item["trackName"]
-            artist=item["artistName"]
-            return name, artist, startTimestamp, timePlayed, None, None  #< account export carries no album name
-        
-        yield from self._import(dataFunction, history, known, progressCallback)
+        startTimestamp = endTimestamp-timePlayed//1000
+        name=item["trackName"]
+        artist=item["artistName"]
+        return name, artist, startTimestamp, timePlayed, None, None  #< account export carries no album name
 
-    def importExtendedHistory(self, history, known=None, progressCallback=None):
-        def dataFunction(item):
-            ts = item["ts"]
-            endTimestamp = timeToInt(ts)
-            timePlayed = item.get("ms_played", 0)
-            startTimestamp = endTimestamp - timePlayed // 1000
+    def importAcountHistory(self, history, known=None, progressCallback=None, stats=None):
+        yield from self._import(self._accountEntryTuple, history, known, progressCallback, stats=stats)
 
-            name = item["master_metadata_track_name"]
-            artist = item["master_metadata_album_artist_name"]
-            albumName = item.get("master_metadata_album_album_name")
-            uri = item.get("spotify_track_uri")
-            trackUri = uri.split(":")[-1] if uri else None
-            return name, artist, startTimestamp, timePlayed, trackUri, albumName
-        
-        yield from self._import(dataFunction, history, known, progressCallback)
+    def _boolToInt(self, value):
+        return None if value is None else int(bool(value))
+
+    def _extractExtras(self, item):
+        """The extended export's behavioral fields, keyed by their plays-table
+        column names (incognito_mode -> incognito, booleans as 0/1). ip_addr
+        is deliberately never extracted. None when the entry carries nothing -
+        e.g. an instance's own re-imported export without these fields."""
+        extras = {
+            "platform": item.get("platform"),
+            "conn_country": item.get("conn_country"),
+            "reason_start": item.get("reason_start"),
+            "reason_end": item.get("reason_end"),
+            "shuffle": self._boolToInt(item.get("shuffle")),
+            "skipped": self._boolToInt(item.get("skipped")),
+            "offline": self._boolToInt(item.get("offline")),
+            "incognito": self._boolToInt(item.get("incognito_mode")),
+        }
+        return extras if any(value is not None for value in extras.values()) else None
+
+    def _extendedEntryTuple(self, item):
+        ts = item["ts"]
+        endTimestamp = timeToInt(ts)
+        timePlayed = item.get("ms_played", 0)
+        startTimestamp = endTimestamp - timePlayed // 1000
+
+        # For offline plays ts is the SYNC time - whole sessions share one
+        # stamp, sometimes days late. offline_timestamp is the true start,
+        # sanity-guarded (plausible era, not after the sync stamp) because
+        # real exports mix seconds and milliseconds and occasional garbage.
+        if item.get("offline") and item.get("offline_timestamp"):
+            try:
+                raw = float(item["offline_timestamp"])
+                normalized = raw / 1000 if raw > self.OFFLINE_TIMESTAMP_MS_CUTOFF else raw
+                if self.MIN_PLAUSIBLE_PLAY_TIMESTAMP <= normalized <= endTimestamp:
+                    startTimestamp = int(normalized)
+            except (TypeError, ValueError):
+                pass  #< unparsable offline_timestamp - keep the ts-derived start
+
+        name = item["master_metadata_track_name"]
+        artist = item["master_metadata_album_artist_name"]
+        albumName = item.get("master_metadata_album_album_name")
+        uri = item.get("spotify_track_uri")
+        trackUri = uri.split(":")[-1] if uri else None
+        return name, artist, startTimestamp, timePlayed, trackUri, albumName, self._extractExtras(item)
+
+    def importExtendedHistory(self, history, known=None, progressCallback=None, stats=None):
+        yield from self._import(self._extendedEntryTuple, history, known, progressCallback, stats=stats)
+
+    def coverage(self, parsedHistory, exportType):
+        """(minStart, maxEnd, coveredYears) across every entry (skip-length
+        included) - the overwrite import deletes covered-year segments within
+        the span before re-importing. Years come from START timestamps so a
+        play straddling New Year doesn't spuriously cover the next year; the
+        offline_timestamp correction applies, widening the span to where
+        offline plays actually happened. None when the export is empty or
+        unrecognized - the caller must abort instead of deleting anything."""
+        entryFunctions = {
+            "spotifyAcountExport": (self._accountEntryTuple, lambda rows: rows),
+            "spotifyExtendedExport": (self._extendedEntryTuple, lambda rows: rows),
+            "musicoletPremium": (self._musicoletEntryTuple, self._expandMusicoletRows),
+        }
+        if exportType not in entryFunctions:
+            return None
+        entryTuple, prepare = entryFunctions[exportType]
+        parsedItems = self._parseHistory(entryTuple, prepare(parsedHistory))
+        if not parsedItems:
+            return None
+
+        minStart = None
+        maxEnd = None
+        coveredYears = set()
+        for name, artist, startTimestamp, timePlayed, *_ in parsedItems:
+            startTs = timeToInt(startTimestamp)
+            endTs = startTs + timePlayed / 1000
+            minStart = startTs if minStart is None else min(minStart, startTs)
+            maxEnd = endTs if maxEnd is None else max(maxEnd, endTs)
+            # App timezone, matching how the dashboard buckets days/years -
+            # convertToDatetime's own default is UTC.
+            coveredYears.add(convertToDatetime(startTs, getTimezone()).year)
+        return minStart, maxEnd, coveredYears
 
     # Musicolet's CSV only carries an aggregate play count per track, not
     # individual play timestamps. Synthetic per-play timestamps are anchored
@@ -456,48 +544,48 @@ class Importer:
     # track only adds the new tail of plays.
     MUSICOLET_SYNTHETIC_TIME_ANCHOR = datetime.datetime(2000, 1, 1)
 
-    def importMusicoletCSVExport(self, rows, known=None, progressCallback=None):
-        def expand(rows):
-            ### Data formatted in: FILE_PATH,TITLE,ARTIST,ALBUM,ALBUM_ARTIST,COMPOSER,GENRE,YEAR,DURATION_MS,PLAY_COUNT
-            NAME = 1
-            ARTISTS = 2
-            ALBUM = 3
-            DURATION_MS = 8
-            PLAYCOUNT = 9
+    def _expandMusicoletRows(self, rows):
+        ### Data formatted in: FILE_PATH,TITLE,ARTIST,ALBUM,ALBUM_ARTIST,COMPOSER,GENRE,YEAR,DURATION_MS,PLAY_COUNT
+        NAME = 1
+        ARTISTS = 2
+        ALBUM = 3
+        DURATION_MS = 8
+        PLAYCOUNT = 9
 
-            formatedData = []
-            reader = csv.reader(rows)
+        formatedData = []
+        reader = csv.reader(rows)
 
-            for song in reader:
-                if not song:
-                    continue
+        for song in reader:
+            if not song:
+                continue
 
-                try:
-                    name = song[NAME]
-                    mainArtist = song[ARTISTS].split("/")[0]
-                    albumName = song[ALBUM]
-                    timePlayed = int(song[DURATION_MS])
-                    playCount = int(song[PLAYCOUNT])
+            try:
+                name = song[NAME]
+                mainArtist = song[ARTISTS].split("/")[0]
+                albumName = song[ALBUM]
+                timePlayed = int(song[DURATION_MS])
+                playCount = int(song[PLAYCOUNT])
 
-                    trackTime = self.MUSICOLET_SYNTHETIC_TIME_ANCHOR
-                    for _ in range(playCount):
-                        startTimestamp = trackTime.strftime("%Y-%m-%d %H:%M:%S")
-                        formatedData.append((
-                            name,
-                            mainArtist,
-                            startTimestamp,
-                            timePlayed,
-                            albumName
-                        ))
-                        trackTime += datetime.timedelta(milliseconds=timePlayed)
+                trackTime = self.MUSICOLET_SYNTHETIC_TIME_ANCHOR
+                for _ in range(playCount):
+                    startTimestamp = trackTime.strftime("%Y-%m-%d %H:%M:%S")
+                    formatedData.append((
+                        name,
+                        mainArtist,
+                        startTimestamp,
+                        timePlayed,
+                        albumName
+                    ))
+                    trackTime += datetime.timedelta(milliseconds=timePlayed)
 
-                except (IndexError, ValueError) as e:
-                    continue
+            except (IndexError, ValueError) as e:
+                continue
 
-            return formatedData
+        return formatedData
 
-        def dataFunction(item):
-            name, mainArtist, startTimestamp, timePlayed, albumName = item
-            return name, mainArtist, startTimestamp, timePlayed, None, albumName
+    def _musicoletEntryTuple(self, item):
+        name, mainArtist, startTimestamp, timePlayed, albumName = item
+        return name, mainArtist, startTimestamp, timePlayed, None, albumName
 
-        yield from self._import(dataFunction, expand(rows), known, progressCallback)
+    def importMusicoletCSVExport(self, rows, known=None, progressCallback=None, stats=None):
+        yield from self._import(self._musicoletEntryTuple, self._expandMusicoletRows(rows), known, progressCallback, stats=stats)

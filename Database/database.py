@@ -21,6 +21,7 @@ try:
     from Database.repository import (
         Repository, IMAGE_KIND_TRACK, IMAGE_KIND_ARTIST, IMAGE_STATUS_OK, IMAGE_STATUS_FAILED,
     )
+    from Database.db import BEHAVIORAL_COLUMNS, SKIP_THRESHOLD_MS
     from Database.utils import parseError, convertToDatetime, dateToString, startOfDay, startOfWeek, startOfMonth, timeToInt
     from Database.lastfm import LastfmClient, filterTagsToGenres, cleanLookupName, OUTCOME_OK, OUTCOME_TRANSIENT, OUTCOME_INVALID_KEY
 except ModuleNotFoundError:
@@ -29,6 +30,7 @@ except ModuleNotFoundError:
     from Importers.AutoImporter import AutoImporter
     from Listeners.spotifyListener import Listener
     from repository import Repository, IMAGE_KIND_TRACK, IMAGE_KIND_ARTIST, IMAGE_STATUS_OK, IMAGE_STATUS_FAILED
+    from db import BEHAVIORAL_COLUMNS, SKIP_THRESHOLD_MS
     from utils import parseError, convertToDatetime, dateToString, startOfDay, startOfWeek, startOfMonth, timeToInt
     from lastfm import LastfmClient, filterTagsToGenres, cleanLookupName, OUTCOME_OK, OUTCOME_TRANSIENT, OUTCOME_INVALID_KEY
 
@@ -344,9 +346,15 @@ class Database:
                 )
                 msPlayed = track_duration
 
-            # Only record tracks played for at least 1 second (filter out skips/scrubs)
-            if msPlayed < 1000:
-                logger.debug("Skipping track %s: played only %dms (< 1s)", track.get("id") if track else "unknown", msPlayed)
+            # Events under the skip threshold are recorded as skip events
+            # (play_skips), not plays - same boundary as the importer.
+            if msPlayed < SKIP_THRESHOLD_MS:
+                if track:
+                    try:
+                        self.appendSkipData(timestamp, track, msPlayed, source=source)
+                    except Exception as e:
+                        logger.error("Error recording skip for track %s from listener: %s", track.get("id"), parseError(e))
+                        had_errors = True
                 continue
             if track:
                 # Per-item isolation: if the callback raised, the listener would
@@ -440,8 +448,12 @@ class Database:
             "playedAt": metadata["playedAt"],
             "timePlayed": metadata["timePlayed"],
             "playedFrom": metadata.get("playedFrom"),
+            # Importer-decided routing/enrichment info (absent on listener metas)
+            "isSkip": metadata.get("isSkip", False),
+            "importExtras": metadata.get("importExtras"),
         }
-        track = {k: v for k, v in metadata.items() if k not in ("playedAt", "timePlayed", "playedFrom")}
+        track = {k: v for k, v in metadata.items()
+                 if k not in ("playedAt", "timePlayed", "playedFrom", "isSkip", "importExtras")}
         return entry, track
 
     @staticmethod
@@ -715,6 +727,20 @@ class Database:
         self.updatePlaylists(entry.get("playedFrom"))
         return was_inserted
 
+    def appendSkipData(self, timestamp, track, timePlayed, source="listener"):
+        """Record a sub-threshold event from the listener/backfill path as a
+        skip: catalog the track (FK + future skip analytics), insert into
+        play_skips, commit. The listener carries no behavioral metadata -
+        extras stay NULL."""
+        formatted = Client.formatTrack(track, timestamp, timePlayed)
+        entry, trackMeta = self._splitEntryAndTrack(formatted)
+        created_reason = f"{source}_skip (user: {self.user})"
+        self.repo.upsertTrack(trackMeta, created_reason=created_reason)
+        was_inserted = self.repo.insertSkip(self.user, entry["id"], entry["playedAt"], entry["timePlayed"],
+                                            created_reason=created_reason)
+        self.repo.commit()
+        return was_inserted
+
     def appendTrackData(self, timestamp, track, timePlayed, context=None, source="listener"):
         formatted_track = Client.formatTrack(track, timestamp, timePlayed, context=context)
         track_id = track.get("id", "unknown")
@@ -806,8 +832,10 @@ class Database:
         insertedPlayKeysBefore = set(runState.insertedPlayKeys)
         try:
             knownTracks = self.repo.getAllTracks()
+            importStats = {}
             for index, meta in enumerate(
-                importer.importHistory(parsedHistory, knownTracks, exportType, progressCallback=progressCallback),
+                importer.importHistory(parsedHistory, knownTracks, exportType, progressCallback=progressCallback,
+                                       stats=importStats),
                 start=1,
             ):
                 entry, track = self._splitEntryAndTrack(meta)
@@ -823,11 +851,27 @@ class Database:
 
             insertedCount = 0
             updatedCount = 0
+            enrichedCount = 0
+            skipsSavedCount = 0
+            correctedYears = set()
+            behavioralSetSql = ", ".join(f"{column} = COALESCE(?, {column})" for column in BEHAVIORAL_COLUMNS)
             for entry in stagedPlays:
                 track_id = entry["id"]
                 played_at = entry["playedAt"]
                 time_played = entry["timePlayed"]
                 played_from = entry.get("playedFrom")
+                extras = entry.get("importExtras") or {}
+                extrasValues = [extras.get(column) for column in BEHAVIORAL_COLUMNS]
+
+                # Skip events bypass the near-time play matching entirely: they
+                # are not plays (must never claim/correct a play row), and their
+                # own dedup is play_skips' UNIQUE constraint.
+                if entry.get("isSkip"):
+                    if self.repo.insertSkip(self.user, track_id, played_at, time_played,
+                                            extras=entry.get("importExtras"),
+                                            created_reason=f"history_import (user: {self.user})"):
+                        skipsSavedCount += 1
+                    continue
 
                 # Check if a play for this track already exists within (duration + 60s) tolerance,
                 # same logic as API backfill to handle potential overlap with backfilled data
@@ -860,13 +904,20 @@ class Database:
                             existing_play["time_played"] != time_played or
                             existing_play["played_at"] != played_at
                         )
+                        # Behavioral columns the import can fill/correct on the
+                        # matched row - a non-null import value wins, a None
+                        # never clobbers a stored one (COALESCE below).
+                        extras_differ = any(
+                            extras.get(column) is not None and extras.get(column) != existing_play.get(column)
+                            for column in BEHAVIORAL_COLUMNS
+                        )
 
                         if data_differs:
                             # Update both fields with imported data (more accurate source)
                             conn = self.repo._conn()
                             conn.execute(
-                                "UPDATE plays SET played_at = ?, time_played = ? WHERE id = ?",
-                                (played_at, time_played, existing_play["id"])
+                                f"UPDATE plays SET played_at = ?, time_played = ?, {behavioralSetSql} WHERE id = ?",
+                                (played_at, time_played, *extrasValues, existing_play["id"])
                             )
                             changes = []
                             if int(existing_play["played_at"]) != int(played_at):
@@ -879,6 +930,22 @@ class Database:
                                 track_id, ", ".join(changes)
                             )
                             updatedCount += 1
+                            # A correction can move a play without changing its
+                            # year's play count or max timestamp - invisible to
+                            # _wrappedCacheNeedsRecalc, so those years' cached
+                            # Wrapped is dropped after commit (see below).
+                            correctedYears.add(convertToDatetime(existing_play["played_at"], tz=self.tz).year)
+                            correctedYears.add(convertToDatetime(played_at, tz=self.tz).year)
+                            continue
+                        elif extras_differ:
+                            # Same play, but this import carries behavioral
+                            # metadata the row lacks - backfill it in place.
+                            conn = self.repo._conn()
+                            conn.execute(
+                                f"UPDATE plays SET {behavioralSetSql} WHERE id = ?",
+                                (*extrasValues, existing_play["id"])
+                            )
+                            enrichedCount += 1
                             continue
                         else:
                             # Data matches - skip, no update needed
@@ -900,7 +967,8 @@ class Database:
 
                 # If no matches, proceed to insert as usual
                 if self.repo.insertPlay(self.user, track_id, played_at, time_played, played_from,
-                                        created_reason=f"history_import (user: {self.user})"):
+                                        created_reason=f"history_import (user: {self.user})",
+                                        extras=entry.get("importExtras")):
                     insertedCount += 1
                 runState.insertedPlayKeys.add((track_id, played_at))
 
@@ -911,10 +979,23 @@ class Database:
                 self.repo.markFileImported(self.user, file_hash)
 
             self.repo.commit()
-            logger.info("Imported %d tracks; %d new plays, %d plays corrected for user %s", len(stagedTracks), insertedCount, updatedCount, self.user)
+
+            # INVARIANT-safe only here: deleteUserWrapped self-commits, so it
+            # must never run while import rows are staged. Corrections can be
+            # invisible to _wrappedCacheNeedsRecalc (play count and max
+            # played_at unchanged) - drop the touched years' cache explicitly.
+            for year in sorted(correctedYears):
+                self.repo.deleteUserWrapped(self.user, year)
+
+            droppedNoTrack = importStats.get("droppedNoTrack", 0)
+            summary = (f"{insertedCount} new, {updatedCount} corrected, {enrichedCount} enriched, "
+                       f"{skipsSavedCount} skips saved")
+            if droppedNoTrack:
+                summary += f", {droppedNoTrack} without track info dropped"
+            logger.info("Imported %d tracks for user %s: %s", len(stagedTracks), self.user, summary)
 
             status = "complete" if isFinalFile else "running"
-            self.writeProgress(status, total, total, f"{progressPrefix}Import complete", error=hasPriorError)
+            self.writeProgress(status, total, total, f"{progressPrefix}Import complete: {summary}", error=hasPriorError)
         except Exception as e:
             self.repo.rollback()
             runState.claimedRowIds = claimedRowIdsBefore

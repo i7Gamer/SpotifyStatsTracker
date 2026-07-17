@@ -7,7 +7,14 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from Database.Importers.StreamingHistoryImporter import Importer
-from Database.db import SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON
+from Database.db import SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON, SKIP_THRESHOLD_MS
+from Database.utils import convertToDatetime, getTimezone
+
+
+def _appTzYear(timestamp):
+    """coverage() buckets years in the app timezone (matching dashboard
+    day/year bucketing), not convertToDatetime's UTC default."""
+    return convertToDatetime(timestamp, getTimezone()).year
 import Database.utils as utilsModule
 
 MUSICOLET_CSV = (
@@ -151,9 +158,11 @@ class TestImportTimePlayedNotCapped(unittest.TestCase):
         importer.sp.track.assert_not_called()
 
 
-class TestZeroDurationFiltering(unittest.TestCase):
-    """Plays under MIN_TIME_PLAYED_MS (skips/errors) must never reach the
-    database - across every export format."""
+class TestSkipThresholdRouting(unittest.TestCase):
+    """Entries shorter than SKIP_THRESHOLD_MS still flow through the same
+    track resolution but come out tagged isSkip=True - the DB writer routes
+    them to play_skips instead of plays. Only negative durations are dropped
+    outright."""
 
     def _importer(self):
         importer = Importer()
@@ -162,61 +171,58 @@ class TestZeroDurationFiltering(unittest.TestCase):
         importer.sp.track.return_value = FAKE_TRACK
         return importer
 
-    def test_parse_history_skips_zero_played_items(self):
+    def _extendedEntry(self, msPlayed, minute=0):
+        return {
+            "ts": f"2023-01-01T00:{minute:02d}:00Z", "ms_played": msPlayed,
+            "master_metadata_track_name": "Song One",
+            "master_metadata_album_artist_name": "Artist One",
+            "spotify_track_uri": "spotify:track:track123",
+        }
+
+    def test_parse_history_keeps_zero_played_items(self):
         importer = self._importer()
         history = [
             ("Song A", "Artist A", 100, 0, None),
             ("Song B", "Artist B", 200, 5000, None),
         ]
         parsed = importer._parseHistory(lambda item: item, history)
-        self.assertEqual([name for name, *_ in parsed], ["Song B"])
+        self.assertEqual([name for name, *_ in parsed], ["Song A", "Song B"])
 
-    def test_parse_history_skips_negative_played_items(self):
+    def test_parse_history_drops_negative_played_items(self):
         importer = self._importer()
         history = [("Song A", "Artist A", 100, -5, None)]
         parsed = importer._parseHistory(lambda item: item, history)
         self.assertEqual(parsed, [])
 
-    def test_parse_history_skips_items_below_minimum_threshold(self):
+    def test_extended_history_tags_sub_threshold_entries_as_skips(self):
         importer = self._importer()
         history = [
-            ("Song A", "Artist A", 100, Importer.MIN_TIME_PLAYED_MS - 1, None),
-            ("Song B", "Artist B", 200, Importer.MIN_TIME_PLAYED_MS, None),
+            self._extendedEntry(0, minute=0),
+            self._extendedEntry(400, minute=1),
+            self._extendedEntry(SKIP_THRESHOLD_MS - 1, minute=2),
+            self._extendedEntry(SKIP_THRESHOLD_MS, minute=3),
         ]
-        parsed = importer._parseHistory(lambda item: item, history)
-        self.assertEqual([name for name, *_ in parsed], ["Song B"])
+        metas = list(importer.importExtendedHistory(history, known=[], progressCallback=None))
+        self.assertEqual(len(metas), 4)
+        self.assertEqual([m["isSkip"] for m in metas], [True, True, True, False])
+        self.assertEqual([m["timePlayed"] for m in metas], [0, 400, SKIP_THRESHOLD_MS - 1, SKIP_THRESHOLD_MS])
+        # Skips still resolve to the real track (the FK into tracks must hold)
+        self.assertEqual(metas[0]["id"], "track123")
 
-    def test_import_extended_history_skips_zero_ms_played(self):
-        importer = self._importer()
-        history = [
-            {
-                "ts": "2023-01-01T00:00:00Z", "ms_played": 0,
-                "master_metadata_track_name": "Song One",
-                "master_metadata_album_artist_name": "Artist One",
-                "spotify_track_uri": "spotify:track:track123",
-            },
-            {
-                "ts": "2023-01-01T00:05:00Z", "ms_played": 5000,
-                "master_metadata_track_name": "Song One",
-                "master_metadata_album_artist_name": "Artist One",
-                "spotify_track_uri": "spotify:track:track123",
-            },
-        ]
-        tracks = list(importer.importExtendedHistory(history, known=[], progressCallback=None))
-        self.assertEqual(len(tracks), 1)
-        self.assertEqual(tracks[0]["timePlayed"], 5000)
-
-    def test_import_account_history_skips_zero_ms_played(self):
+    def test_account_history_tags_sub_threshold_entries_as_skips(self):
         importer = self._importer()
         history = [
             {"endTime": "2023-01-01 00:00:00", "msPlayed": 0, "trackName": "Song One", "artistName": "Artist One"},
             {"endTime": "2023-01-01 00:05:00", "msPlayed": 5000, "trackName": "Song One", "artistName": "Artist One"},
         ]
-        tracks = list(importer.importAcountHistory(history, known=[], progressCallback=None))
-        self.assertEqual(len(tracks), 1)
-        self.assertEqual(tracks[0]["timePlayed"], 5000)
+        metas = list(importer.importAcountHistory(history, known=[], progressCallback=None))
+        self.assertEqual(len(metas), 2)
+        self.assertEqual([m["isSkip"] for m in metas], [True, False])
 
-    def test_import_musicolet_csv_skips_zero_duration_rows(self):
+    def test_musicolet_short_track_rows_become_skips(self):
+        """Musicolet rows use the track duration as play time - a sub-threshold
+        duration therefore lands as a skip event; zero-duration rows collapse
+        into one skip via the (track, played_at) UNIQUE dedup downstream."""
         csvData = (
             "FILE_PATH,TITLE,ARTIST,ALBUM,ALBUM_ARTIST,COMPOSER,GENRE,YEAR,DURATION_MS,PLAY_COUNT\n"
             "/music/zero.mp3,Zero Song,Artist One,Album One,Artist One,,Pop,2020,0,1\n"
@@ -224,9 +230,13 @@ class TestZeroDurationFiltering(unittest.TestCase):
         )
         importer = self._importer()
         rows = csvData.splitlines()[1:]
-        tracks = list(importer.importMusicoletCSVExport(rows, known=[], progressCallback=None))
-        self.assertEqual(len(tracks), 1)
-        self.assertEqual(tracks[0]["timePlayed"], 200000)
+        metas = list(importer.importMusicoletCSVExport(rows, known=[], progressCallback=None))
+        self.assertEqual(len(metas), 2)
+        byTime = sorted(metas, key=lambda m: m["timePlayed"])
+        self.assertTrue(byTime[0]["isSkip"])
+        self.assertEqual(byTime[0]["timePlayed"], 0)
+        self.assertFalse(byTime[1]["isSkip"])
+        self.assertEqual(byTime[1]["timePlayed"], 200000)
 
     def test_process_play_updates_synthetic_track_duration_in_cache(self):
         from Database.db import SYNTHETIC_FALLBACK_REASON
@@ -297,6 +307,213 @@ class TestZeroDurationFiltering(unittest.TestCase):
             self.assertIsNotNone(known["track_real"]["album"])
             self.assertEqual(known["track_real"]["album"]["name"], "Album Real Exported")
             self.assertTrue(known["track_real"]["album"]["id"].startswith("album_"))
+
+
+class TestOfflineTimestampCorrection(unittest.TestCase):
+    """For offline plays, `ts` is the SYNC time (whole sessions share one
+    stamp, sometimes days late) - offline_timestamp holds the true start.
+    It's used only when offline is truthy, normalized from ms when needed,
+    and sanity-guarded (must be >= 2006-01-01 and <= ts)."""
+
+    TS = "2023-01-01T12:00:00Z"
+    END_TS = int(datetime.datetime(2023, 1, 1, 12, 0, 0, tzinfo=datetime.timezone.utc).timestamp())
+    MS_PLAYED = 180000
+    TRUE_START = END_TS - 7200  #< two hours before the sync stamp
+
+    def _run(self, **overrides):
+        entry = {
+            "ts": self.TS, "ms_played": self.MS_PLAYED,
+            "master_metadata_track_name": "Song One",
+            "master_metadata_album_artist_name": "Artist One",
+            "spotify_track_uri": "spotify:track:track123",
+            **overrides,
+        }
+        importer = Importer()
+        importer.sp = MagicMock()
+        importer.sp.track.return_value = FAKE_TRACK
+        metas = list(importer.importExtendedHistory([entry], known=[], progressCallback=None))
+        self.assertEqual(len(metas), 1)
+        return metas[0]
+
+    def test_offline_play_uses_offline_timestamp_in_seconds(self):
+        meta = self._run(offline=True, offline_timestamp=self.TRUE_START)
+        self.assertEqual(meta["playedAt"], self.TRUE_START)
+
+    def test_offline_play_normalizes_millisecond_offline_timestamp(self):
+        meta = self._run(offline=True, offline_timestamp=self.TRUE_START * 1000)
+        self.assertEqual(meta["playedAt"], self.TRUE_START)
+
+    def test_online_play_ignores_offline_timestamp(self):
+        meta = self._run(offline=False, offline_timestamp=self.TRUE_START)
+        self.assertEqual(meta["playedAt"], self.END_TS - self.MS_PLAYED // 1000)
+
+    def test_implausibly_old_offline_timestamp_falls_back_to_ts(self):
+        meta = self._run(offline=True, offline_timestamp=100000)  #< 1970 - before Spotify existed
+        self.assertEqual(meta["playedAt"], self.END_TS - self.MS_PLAYED // 1000)
+
+    def test_offline_timestamp_after_sync_time_falls_back_to_ts(self):
+        meta = self._run(offline=True, offline_timestamp=self.END_TS + 500)
+        self.assertEqual(meta["playedAt"], self.END_TS - self.MS_PLAYED // 1000)
+
+    def test_zero_offline_timestamp_falls_back_to_ts(self):
+        meta = self._run(offline=True, offline_timestamp=0)
+        self.assertEqual(meta["playedAt"], self.END_TS - self.MS_PLAYED // 1000)
+
+
+class TestExtrasExtraction(unittest.TestCase):
+    """The extended export's behavioral fields ride along as
+    meta["importExtras"] (incognito_mode -> incognito, booleans as 0/1);
+    entries and export types without them carry no extras at all."""
+
+    def _importer(self):
+        importer = Importer()
+        importer.sp = MagicMock()
+        importer.sp.track.return_value = FAKE_TRACK
+        importer.sp.search.return_value = {"tracks": {"items": [FAKE_TRACK]}}
+        return importer
+
+    def test_extended_entry_extras_are_extracted(self):
+        entry = {
+            "ts": "2023-01-01T12:00:00Z", "ms_played": 180000,
+            "master_metadata_track_name": "Song One",
+            "master_metadata_album_artist_name": "Artist One",
+            "spotify_track_uri": "spotify:track:track123",
+            "platform": "ios", "conn_country": "CH", "ip_addr": "1.2.3.4",
+            "reason_start": "clickrow", "reason_end": "trackdone",
+            "shuffle": True, "skipped": False, "offline": False, "incognito_mode": True,
+        }
+        meta = list(self._importer().importExtendedHistory([entry], known=[], progressCallback=None))[0]
+        self.assertEqual(meta["importExtras"], {
+            "platform": "ios", "conn_country": "CH",
+            "reason_start": "clickrow", "reason_end": "trackdone",
+            "shuffle": 1, "skipped": 0, "offline": 0, "incognito": 1,
+        })
+        self.assertNotIn("ip_addr", meta["importExtras"])  #< never stored
+
+    def test_entry_without_behavioral_fields_has_no_extras(self):
+        entry = {
+            "ts": "2023-01-01T12:00:00Z", "ms_played": 180000,
+            "master_metadata_track_name": "Song One",
+            "master_metadata_album_artist_name": "Artist One",
+            "spotify_track_uri": "spotify:track:track123",
+        }
+        meta = list(self._importer().importExtendedHistory([entry], known=[], progressCallback=None))[0]
+        self.assertIsNone(meta.get("importExtras"))
+
+    def test_account_export_has_no_extras(self):
+        history = [{"endTime": "2023-01-01 00:05:00", "msPlayed": 5000,
+                    "trackName": "Song One", "artistName": "Artist One"}]
+        meta = list(self._importer().importAcountHistory(history, known=[], progressCallback=None))[0]
+        self.assertIsNone(meta.get("importExtras"))
+
+
+class TestCoverage(unittest.TestCase):
+    """coverage() feeds the overwrite import: the batch span plus the set of
+    calendar years the export actually has entries in - years derived from
+    START timestamps, so a play straddling New Year doesn't spuriously cover
+    the next year."""
+
+    def _importer(self):
+        importer = Importer()
+        importer.sp = MagicMock()
+        return importer
+
+    def _extendedEntry(self, ts, msPlayed=180000, **overrides):
+        return {
+            "ts": ts, "ms_played": msPlayed,
+            "master_metadata_track_name": "Song One",
+            "master_metadata_album_artist_name": "Artist One",
+            "spotify_track_uri": "spotify:track:track123",
+            **overrides,
+        }
+
+    def test_span_and_years_across_gap(self):
+        history = [
+            self._extendedEntry("2018-06-01T12:00:00Z"),
+            self._extendedEntry("2020-06-01T12:00:00Z"),
+        ]
+        result = self._importer().coverage(history, "spotifyExtendedExport")
+        self.assertIsNotNone(result)
+        minStart, maxEnd, years = result
+        start2018 = int(datetime.datetime(2018, 6, 1, 12, 0, 0, tzinfo=datetime.timezone.utc).timestamp()) - 180
+        self.assertEqual(minStart, start2018)
+        self.assertEqual(maxEnd, int(datetime.datetime(2020, 6, 1, 12, 0, 0, tzinfo=datetime.timezone.utc).timestamp()))
+        expectedYears = {_appTzYear(minStart), _appTzYear(maxEnd - 180)}
+        self.assertEqual(years, expectedYears)
+
+    def test_sub_threshold_entries_count_toward_coverage(self):
+        history = [self._extendedEntry("2019-06-01T12:00:00Z", msPlayed=300)]
+        minStart, maxEnd, years = self._importer().coverage(history, "spotifyExtendedExport")
+        self.assertEqual(years, {_appTzYear(minStart)})
+
+    def test_offline_timestamp_widens_the_span(self):
+        trueStart = int(datetime.datetime(2019, 6, 1, 1, 0, 0, tzinfo=datetime.timezone.utc).timestamp())
+        history = [
+            self._extendedEntry("2019-06-03T12:00:00Z", offline=True, offline_timestamp=trueStart),
+        ]
+        minStart, maxEnd, years = self._importer().coverage(history, "spotifyExtendedExport")
+        self.assertEqual(minStart, trueStart)
+
+    def test_straddling_play_only_covers_its_start_year(self):
+        history = [self._extendedEntry("2020-01-01T00:02:00Z", msPlayed=180000)]  #< started 2019-12-31 23:59 UTC
+        minStart, maxEnd, years = self._importer().coverage(history, "spotifyExtendedExport")
+        self.assertEqual(years, {_appTzYear(minStart)})
+
+    def test_musicolet_years_sit_at_the_synthetic_anchor(self):
+        rows = MUSICOLET_CSV.splitlines()[1:]
+        minStart, maxEnd, years = self._importer().coverage(rows, "musicoletPremium")
+        self.assertEqual(years, {2000})
+
+    def test_unrecognized_or_empty_exports_have_no_coverage(self):
+        importer = self._importer()
+        self.assertIsNone(importer.coverage([], "emptyExport"))
+        self.assertIsNone(importer.coverage([], "None"))
+        self.assertIsNone(importer.coverage([], "spotifyExtendedExport"))
+
+
+class TestVideoExportRows(unittest.TestCase):
+    """Streaming_History_Video_*.json rows are music-video streams of real
+    tracks - same shape as audio rows (episode/audiobook fields null) - and
+    must import as normal plays."""
+
+    def test_video_shaped_row_imports_as_play(self):
+        importer = Importer()
+        importer.sp = MagicMock()
+        importer.sp.track.return_value = FAKE_TRACK
+        entry = {
+            "ts": "2026-01-15T14:54:15Z", "platform": "not_applicable",
+            "ms_played": 193320, "conn_country": "CH",
+            "master_metadata_track_name": "Song One",
+            "master_metadata_album_artist_name": "Artist One",
+            "master_metadata_album_album_name": "Album One",
+            "spotify_track_uri": "spotify:track:track123",
+            "episode_name": None, "episode_show_name": None, "spotify_episode_uri": None,
+            "audiobook_title": None, "audiobook_uri": None,
+            "reason_start": "clickrow", "reason_end": "endplay",
+            "shuffle": False, "skipped": False, "offline": False,
+            "offline_timestamp": None, "incognito_mode": False,
+        }
+        metas = list(importer.importExtendedHistory([entry], known=[], progressCallback=None))
+        self.assertEqual(len(metas), 1)
+        self.assertFalse(metas[0]["isSkip"])
+        self.assertEqual(metas[0]["name"], "Song One")
+
+    def test_podcast_row_is_dropped_and_counted(self):
+        """Episode rows carry null track names - they can't become plays, but
+        the drop must be visible in the stats dict instead of silent."""
+        importer = Importer()
+        importer.sp = MagicMock()
+        entry = {
+            "ts": "2023-05-01T10:00:00Z", "ms_played": 1500000,
+            "master_metadata_track_name": None,
+            "master_metadata_album_artist_name": None,
+            "spotify_track_uri": None,
+            "episode_name": "Some Podcast Episode", "episode_show_name": "Some Show",
+        }
+        stats = {}
+        metas = list(importer.importExtendedHistory([entry], known=[], progressCallback=None, stats=stats))
+        self.assertEqual(metas, [])
+        self.assertEqual(stats.get("droppedNoTrack"), 1)
 
 
 class TestResolveKnownKey(unittest.TestCase):
