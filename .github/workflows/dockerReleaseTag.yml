@@ -1,7 +1,12 @@
 name: Docker Image CI
 
 on:
-  workflow_dispatch: # Enables the manual "Run workflow" button in GitHub UI
+  workflow_dispatch:
+    inputs:
+      target_tag:
+        description: 'Exact tag to build (e.g., v1.0.0)'
+        required: true
+        type: string
 
 jobs:
   build-test-push:
@@ -10,19 +15,18 @@ jobs:
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
+      with:
+        # This forces GitHub to check out the code at the old tag you typed in
+        ref: ${{ inputs.target_tag }}
 
-    - name: Verify and Extract Tag
-      id: get_tag
+    - name: Verify Tag Exists
       run: |
-        # Check if the workflow was manually run against a tag from the UI dropdown
-        if [ "${{ github.ref_type }}" != "tag" ]; then
-          echo "Error: Workflow was not run on a tag (current ref is ${{ github.ref_type }}). Aborting."
+        # Ensure the tag actually exists in the checked-out repository
+        if ! git rev-parse -q --verify "refs/tags/${{ inputs.target_tag }}"; then
+          echo "Error: Tag '${{ inputs.target_tag }}' not found in the repository."
           exit 1
         fi
-        
-        TAG="${{ github.ref_name }}"
-        echo "RELEASE_TAG=$TAG" >> $GITHUB_ENV
-        echo "Found release tag: $TAG"
+        echo "Successfully checked out tag: ${{ inputs.target_tag }}"
 
     - name: Log in to Docker Hub
       uses: docker/login-action@v3
@@ -32,12 +36,12 @@ jobs:
 
     - name: Build the Docker image
       run: |
-        docker build --no-cache -t i7gamer/spotify-tracker:${{ env.RELEASE_TAG }} .
+        docker build --no-cache -t i7gamer/spotify-tracker:${{ inputs.target_tag }} .
 
     - name: Test container startup and health
       run: |
         echo "Starting container..."
-        docker run -d --name test-tracker i7gamer/spotify-tracker:${{ env.RELEASE_TAG }}
+        docker run -d --name test-tracker i7gamer/spotify-tracker:${{ inputs.target_tag }}
         
         # Wait up to 60 seconds for the healthcheck to pass
         TIMEOUT=60
@@ -68,4 +72,4 @@ jobs:
     - name: Push Docker image
       run: |
         echo "Pushing image..."
-        docker push i7gamer/spotify-tracker:${{ env.RELEASE_TAG }}
+        docker push i7gamer/spotify-tracker:${{ inputs.target_tag }}
