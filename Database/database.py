@@ -472,17 +472,36 @@ class Database:
             result.append(self._mergeEntryWithTrack(entry, track))
         return result
 
+    @staticmethod
+    def _splitContextUri(contextUri: str) -> tuple[str, str] | None:
+        """('type', 'id') from a playedFrom value like "playlist:xyz"/"album:xyz",
+        or None if malformed. playedFrom is only ever written in that shape (see
+        spotifyClient.formatTrack), so a colon-less value means corrupt data -
+        degrade to "no known context" instead of a ValueError that would 500 the
+        history page."""
+        parts = contextUri.split(":", 1)
+        if len(parts) != 2:
+            logger.warning("Malformed playedFrom context %r - expected 'type:id'", contextUri)
+            return None
+        return parts[0], parts[1]
+
     def playlistName(self, playlistUri: str | None) -> str | None:
         """Return the playlist name for a Spotify playlist URI or id, caching it on first lookup."""
         if not playlistUri:
             return None
-        contextType, playlistId = playlistUri.split(":", 1)
+        parsed = self._splitContextUri(playlistUri)
+        if parsed is None:
+            return None
+        contextType, playlistId = parsed
         return self.repo.getPlaylistName(playlistId, contextType)
 
     def updatePlaylists(self, playlist: str | None) -> None:
         if playlist is None:
             return
-        contextType, playlistId = playlist.split(":", 1)
+        parsed = self._splitContextUri(playlist)
+        if parsed is None:
+            return
+        contextType, playlistId = parsed
         if self.repo.playlistKnown(playlistId, contextType):
             return
         try:

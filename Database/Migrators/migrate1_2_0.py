@@ -34,7 +34,7 @@ class Migrator(BaseMigrator):
             url = f"https://open.spotify.com/oembed?url=spotify:artist:{id}"
             res = requests.get(url).json()
             return res["thumbnail_url"]
-        except:
+        except Exception:
             return "None"
 
     def _saveImg(self, path, metadataPath, url, imgId, ids):
@@ -43,10 +43,10 @@ class Migrator(BaseMigrator):
             response.raise_for_status()
             img = Image.open(BytesIO(response.content))
             ext = img.format.lower() if img.format else "jpeg"
-        except:
+        except Exception:
             img = Image.open(Path(__file__).parent / "placeholderProfile.jpeg")
             ext = "jpeg"
-            print(f"Failed to fetch image for {id}, using placeholder instead")
+            print(f"Failed to fetch image for {imgId}, using placeholder instead")
             
         img.save(path / f"{imgId}.{ext}")
         ids.append(imgId)

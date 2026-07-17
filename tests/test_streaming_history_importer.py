@@ -657,6 +657,87 @@ class TestImportFallbackToSyntheticTrack(unittest.TestCase):
         self.assertFalse(importer._isTransientLookupError(IndexError("list index out of range")))
 
 
+class TestConvertToList(unittest.TestCase):
+    """_convertToList must classify every input without raising: recognized
+    exports get their type, a valid-but-empty JSON list is "emptyExport", and
+    anything else (dict, scalar, corrupt JSON) is ([], "None") - which
+    Database.importHistory treats as a failed import."""
+
+    def _importer(self):
+        importer = Importer()
+        importer.sp = MagicMock()
+        return importer
+
+    def test_account_export_is_detected(self):
+        data = '[{"endTime": "2023-01-01 00:00:00", "msPlayed": 5000, "trackName": "S", "artistName": "A"}]'
+        parsed, exportType = self._importer()._convertToList(data)
+        self.assertEqual(exportType, "spotifyAcountExport")
+        self.assertEqual(len(parsed), 1)
+
+    def test_extended_export_is_detected(self):
+        data = '[{"ts": "2023-01-01T00:00:00Z", "ms_played": 5000}]'
+        parsed, exportType = self._importer()._convertToList(data)
+        self.assertEqual(exportType, "spotifyExtendedExport")
+        self.assertEqual(len(parsed), 1)
+
+    def test_empty_json_list_is_emptyExport(self):
+        self.assertEqual(self._importer()._convertToList("[]"), ([], "emptyExport"))
+
+    def test_json_dict_is_unrecognized(self):
+        self.assertEqual(self._importer()._convertToList('{"msPlayed": 5000}'), ([], "None"))
+
+    def test_json_scalar_is_unrecognized(self):
+        self.assertEqual(self._importer()._convertToList("42"), ([], "None"))
+
+    def test_list_of_non_dicts_is_unrecognized(self):
+        self.assertEqual(self._importer()._convertToList("[1, 2, 3]"), ([], "None"))
+
+    def test_corrupt_json_is_unrecognized(self):
+        self.assertEqual(self._importer()._convertToList('[{"ts": "2023-'), ([], "None"))
+
+
+class TestSearchForSongEmptyResults(unittest.TestCase):
+    """An empty search result must raise a readable error whose text can never
+    match a TRANSIENT_LOOKUP_ERROR_MARKERS entry - it signals "track is gone
+    from Spotify" to _processPlay, which then synthesizes a fallback record.
+    A marker match would instead silently drop the play."""
+
+    def _importerWithEmptySearch(self):
+        importer = Importer()
+        importer.sp = MagicMock()
+        importer.sp.search.return_value = {"tracks": {"items": []}}
+        return importer
+
+    def test_empty_search_raises_value_error(self):
+        importer = self._importerWithEmptySearch()
+        with self.assertRaises(ValueError):
+            importer._searchForSong("Unknown Song", "Unknown Artist")
+
+    def test_error_is_never_transient_even_for_marker_named_tracks(self):
+        """Track/artist names are user data - a track literally named
+        "Connection Timeout" must not make the error look transient. The
+        message therefore must not embed the name/artist."""
+        importer = self._importerWithEmptySearch()
+        try:
+            importer._searchForSong("Connection Timeout", "504 Band")
+        except ValueError as e:
+            self.assertFalse(importer._isTransientLookupError(e))
+        else:
+            self.fail("expected ValueError")
+
+    def test_empty_search_still_produces_synthetic_track(self):
+        importer = self._importerWithEmptySearch()
+        history = [("Gone Song", "Gone Artist", "2023-01-01 00:00:00", 10354, None)]
+
+        def dummyDataFunction(item):
+            return item
+        tracks = list(importer._import(dummyDataFunction, history, known={}, progressCallback=None))
+
+        self.assertEqual(len(tracks), 1)
+        self.assertEqual(tracks[0]["name"], "Gone Song")
+        self.assertEqual(tracks[0]["created_reason"], SYNTHETIC_FALLBACK_REASON)
+
+
 if __name__ == "__main__":
     unittest.main()
 

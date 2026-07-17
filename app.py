@@ -701,8 +701,8 @@ class SpotifyDashboardApp:
                                 self.latestVersion = remoteVersion
                             else:
                                 self.latestVersion = None
-                    except:
-                        pass
+                    except Exception:
+                        pass  #< malformed remote VERSION string - skip this check
             except Exception:
                 pass
 
@@ -2341,9 +2341,14 @@ class SpotifyDashboardApp:
                     
                     return redirect(url_for("profilePage", success="Spotify account successfully authorized and connected!"))
                 else:
-                    return redirect(url_for("profilePage", error=f"Failed to exchange token: {resp.text}"))
+                    # Full response body only server-side - the redirect param ends up
+                    # in browser history/access logs and may echo credential details.
+                    logger.warning("Spotify token exchange failed for %s (HTTP %s): %s",
+                                   username, resp.status_code, resp.text)
+                    return redirect(url_for("profilePage", error="Failed to exchange token with Spotify - check your API credentials and try again."))
             except Exception as e:
-                return redirect(url_for("profilePage", error=f"Exception during token exchange: {str(e)}"))
+                logger.warning("Exception during Spotify token exchange for %s: %s", username, e)
+                return redirect(url_for("profilePage", error="Something went wrong during the token exchange - please try again."))
 
         @self.app.route("/import-progress", methods=["GET"])
         def importProgress():

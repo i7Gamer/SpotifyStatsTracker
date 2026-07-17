@@ -46,9 +46,14 @@ class Importer:
 
     def _searchForSong(self, name, artist):
         query = f"track:{name} artist:{artist}"
-        track = self.sp.search(query, type="track", limit=1)["tracks"]["items"][0]
-        # track = self.sp.track(track["external_urls"]["spotify"])
-        return track
+        items = self.sp.search(query, type="track", limit=1)["tracks"]["items"]
+        if not items:
+            # Static message on purpose: name/artist are user data and a track
+            # literally named "Connection Timeout" would otherwise match
+            # TRANSIENT_LOOKUP_ERROR_MARKERS and drop the play instead of
+            # synthesizing a fallback record. Callers log name/artist themselves.
+            raise ValueError("no search results")
+        return items[0]
 
     def _fetchTrackMeta(self, name, artist, trackUri):
         """ Fetch raw track metadata by URI, falling back to a name/artist search. """
@@ -71,14 +76,16 @@ class Importer:
             return export.splitlines()[1:], "musicoletPremium"
         try:
             export = json.loads(export)
-            if isinstance(export, list) and not export:
+            if not isinstance(export, list):
+                return [], "None"
+            if not export:
                 return [], "emptyExport"
             if "msPlayed" in export[0]:   #< Acount export
                 return export, "spotifyAcountExport"
             if "ts" in export[0]:         #< Extended export
                 return export, "spotifyExtendedExport"
-        except:
-            pass
+        except Exception:
+            pass  #< corrupt JSON / non-dict entries - fall through to "None"
         return [], "None"
     
     def importHistory(self, parsedHistory, known, exportType, progressCallback=None):

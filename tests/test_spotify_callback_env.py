@@ -181,5 +181,55 @@ class TestSpotifyOAuthState(SpotifyEnvTestCase):
             mock_post.assert_called_once()
 
 
+@patch.dict(os.environ, {"SPOTIFY_CALLBACK_URL": "http://localhost:5000/spotify-callback"})
+class TestSpotifyCallbackErrorDetails(SpotifyEnvTestCase):
+    """Token-exchange failures must show the user a generic message - the raw
+    Spotify response body / exception text belongs in the server log, not in a
+    redirect query param (visible in browser history, access logs, referrers)."""
+
+    def _callbackWithState(self, dash, client):
+        with client.session_transaction() as sess:
+            sess[SPOTIFY_OAUTH_STATE_SESSION_KEY] = "expected-state"
+        return "/spotify-callback?code=good-code&state=expected-state"
+
+    def _makeLoggedInClient(self):
+        dash = self._makeApp()
+        client = dash.app.test_client()
+        self._login(dash, client)
+        return dash, client
+
+    def _mockDb(self, mock_get_db):
+        mock_db = MagicMock()
+        mock_db.getUserSpotifyCredentials.return_value = {
+            "client_id": "my_id", "client_secret": "my_secret"}
+        mock_get_db.return_value = mock_db
+        return mock_db
+
+    def test_non_200_exchange_does_not_leak_response_body(self):
+        dash, client = self._makeLoggedInClient()
+        url = self._callbackWithState(dash, client)
+        errorResponse = MagicMock(status_code=400, text="invalid_client: SECRET-DETAIL-XYZ")
+        with patch.object(dash, 'get_user_db') as mock_get_db, \
+                patch("requests.post", return_value=errorResponse):
+            self._mockDb(mock_get_db)
+            resp = client.get(url)
+
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn("error=", resp.headers["Location"])
+        self.assertNotIn("SECRET-DETAIL-XYZ", resp.headers["Location"])
+
+    def test_exchange_exception_does_not_leak_exception_text(self):
+        dash, client = self._makeLoggedInClient()
+        url = self._callbackWithState(dash, client)
+        with patch.object(dash, 'get_user_db') as mock_get_db, \
+                patch("requests.post", side_effect=Exception("SECRET-EXC-DETAIL-XYZ")):
+            self._mockDb(mock_get_db)
+            resp = client.get(url)
+
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn("error=", resp.headers["Location"])
+        self.assertNotIn("SECRET-EXC-DETAIL-XYZ", resp.headers["Location"])
+
+
 if __name__ == "__main__":
     unittest.main()
