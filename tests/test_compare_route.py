@@ -485,10 +485,7 @@ class TestCompareRoute(unittest.TestCase):
     def test_peak_day_is_a_stats_table_column_not_a_separate_card(self):
         """Top Day moved out of its own card (which had no cover art and
         wasted a full grid track next to Top Song/Artist/Album) into the
-        Stats Comparison table as a "Peak Day" column beside "Peak Hour".
-        "Unique Songs"/"Unique Artists" became a grouped two-row header
-        ("Unique" spanning short "Songs"/"Artists" sub-headers) to make room
-        for it."""
+        Stats Comparison table as a "Peak Day" column beside "Peak Hour"."""
         self._accept("alice", "bob")
         grid = _zeroHeatmapGrid()
         grid[2][14] = {"totalTimeListened": 999, "plays": 5}   #< Wednesday 14:00
@@ -497,12 +494,23 @@ class TestCompareRoute(unittest.TestCase):
 
         resp = client.get("/compare")
 
-        self.assertIn(b'<th class="value" rowspan="2">Peak Day</th>', resp.data)
-        self.assertIn(b'<th class="value" colspan="2">Unique</th>', resp.data)
-        self.assertIn(b'<th class="value">Songs</th>', resp.data)
-        self.assertIn(b'<th class="value">Artists</th>', resp.data)
+        self.assertIn(b'<th class="value">Peak Day</th>', resp.data)
         self.assertIn(b"Wednesday", resp.data)
         self.assertNotIn(b"<h3>Top Day</h3>", resp.data)
+
+    def test_songs_and_artists_columns_drop_the_unique_qualifier(self):
+        """"Unique Songs"/"Unique Artists" read as clutter in the transposed
+        header - just "Songs"/"Artists" now, with the "unique/distinct count"
+        detail moved to a hover hint instead of dropped outright."""
+        self._accept("alice", "bob")
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+        body = resp.data.decode()
+
+        self.assertNotIn("Unique", body)
+        self.assertIn('<th class="value" title="Number of distinct songs played">Songs</th>', body)
+        self.assertIn('<th class="value" title="Number of distinct artists played">Artists</th>', body)
 
     def test_identical_top_song_merges_into_one_bigger_row(self):
         """Both users' #1 song is the exact same track: the Top Song card
