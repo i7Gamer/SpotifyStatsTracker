@@ -171,6 +171,8 @@ class Database:
     WRAPPED_YEAR_DELAY_SECONDS = 5             #< breathing room delay in seconds between recalculating years
 
     BACKFILLER_ALBUM_QUEUE_SIZE = 80           #< number of albums queued from DB for backfilling
+    BACKFILLER_IDLE_WAIT_SECONDS = 300         #< wait between metadata-backfill cycles when there's nothing
+                                                #  to do (kill switch off, queue drained) or after a cycle
 
     LASTFM_BACKFILLER_MIN_START_DELAY = 30     #< random startup-offset bounds for the Last.fm genre
     LASTFM_BACKFILLER_MAX_START_DELAY = 90     #  backfiller, in seconds - staggers per-user threads
@@ -2231,7 +2233,7 @@ class Database:
                 target_ids = []
                 try:
                     if not self.repo.isSpotifyApiBackfillEnabled():
-                        if stop_event.wait(300):
+                        if stop_event.wait(self.BACKFILLER_IDLE_WAIT_SECONDS):
                             break
                         continue
 
@@ -2250,7 +2252,7 @@ class Database:
                                 self.BACKFILLER_ALBUM_QUEUE_SIZE - len(missing_ids))
                             if albumId not in known_ids)
                     if not missing_ids:
-                        if stop_event.wait(300):
+                        if stop_event.wait(self.BACKFILLER_IDLE_WAIT_SECONDS):
                             break
                         continue
 
@@ -2265,7 +2267,7 @@ class Database:
 
                     # 5. If nothing eligible remains, wait and try next iteration
                     if not target_ids:
-                        if stop_event.wait(300):
+                        if stop_event.wait(self.BACKFILLER_IDLE_WAIT_SECONDS):
                             break
                         continue
 
@@ -2399,7 +2401,7 @@ class Database:
                     except Exception:
                         pass
 
-                if stop_event.wait(300):
+                if stop_event.wait(self.BACKFILLER_IDLE_WAIT_SECONDS):
                     break
 
         finally:

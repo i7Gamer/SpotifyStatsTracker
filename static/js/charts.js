@@ -145,8 +145,12 @@
     var lastIndex = labels.length - 1;
     var lastStepIndex = Math.floor(lastIndex / step) * step;
 
-    ctx.textAlign = 'center';
     for (var i = 0; i <= lastStepIndex; i += step) {
+      // Every label centers on its tick - except when the final bucket lands
+      // exactly on a step boundary: that tick sits at the plot's right edge,
+      // where centering would push half the text past the canvas edge and
+      // clip it, so right-align just that one to hug the edge instead.
+      ctx.textAlign = (i === lastIndex) ? 'right' : 'center';
       ctx.fillText(labels[i].slice(0, 7), labelForIndex(i), paddingTop + plotHeight + 8);
     }
 
