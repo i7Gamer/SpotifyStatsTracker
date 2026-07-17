@@ -3048,17 +3048,30 @@ class SpotifyDashboardApp:
         def createWrappedShareLink(year):
             """Creates a public, no-login share link for one year of the
             current user's own Wrapped - see sharedWrappedPage() below for
-            the route that serves it."""
+            the route that serves it. ajax=true mirrors wrappedPage()'s own
+            AJAX convention: the modal on wrapped.html posts here in the
+            background and swaps in the returned panel HTML instead of
+            leaving the page."""
+            isAjax = request.args.get("ajax") == "true"
             email, username, db = get_current_user_or_redirect()
             if not email:
+                if isAjax:
+                    return jsonify(error="Please log in again."), 401
                 return redirect(url_for("login", next=url_for("wrappedPage")))
             if not self.repo.isShareLinksEnabled():
                 abort(404)
             if _rateLimited("share_link_create"):
+                if isAjax:
+                    return jsonify(error=RATE_LIMIT_ERROR_MESSAGE), 429
                 return redirect(url_for("wrappedPage", error=RATE_LIMIT_ERROR_MESSAGE, openShareModal=1))
 
             expiresInSeconds = SHARE_LINK_EXPIRY_CHOICES.get(request.form.get("expiry", "never"))
-            self.repo.createShareLink(username, Repository.SHARE_LINK_KIND_WRAPPED, year, expiresInSeconds)
+            token = self.repo.createShareLink(username, Repository.SHARE_LINK_KIND_WRAPPED, year, expiresInSeconds)
+            if isAjax:
+                html = render_template(
+                    "_share_link_panel.html", year=year, currentLink=self.repo.getShareLink(token),
+                    shareLinkExpiryChoices=SHARE_LINK_EXPIRY_CHOICES)
+                return jsonify(html=html)
             return redirect(url_for("wrappedPage", year=year, success="Share link created.", openShareModal=1))
 
         @self.app.route("/shared/<token>", methods=["GET"])
@@ -3155,13 +3168,25 @@ class SpotifyDashboardApp:
         def profileShareLinkAction(link_id):
             """Owner-only revoke for a public Wrapped share link - accept/
             decline don't apply here (unlike profileShareAction's mutual
-            shares), there's only ever one action."""
+            shares), there's only ever one action. ajax=true is the wrapped.html
+            modal's revoke form (see createWrappedShareLink); profile.html's
+            own revoke form never sets it and keeps the classic redirect."""
+            isAjax = request.args.get("ajax") == "true"
             email, username, db = get_current_user_or_redirect()
             if not email:
+                if isAjax:
+                    return jsonify(error="Please log in again."), 401
                 return redirect(url_for("login"))
 
             if self.repo.revokeShareLink(link_id, username):
+                if isAjax:
+                    html = render_template(
+                        "_share_link_panel.html", year=request.form.get("year", type=int), currentLink=None,
+                        shareLinkExpiryChoices=SHARE_LINK_EXPIRY_CHOICES)
+                    return jsonify(html=html)
                 return redirect(url_for("profilePage", success="Share link revoked."))
+            if isAjax:
+                return jsonify(error="Could not revoke that share link."), 403
             return redirect(url_for("profilePage", error="Could not revoke that share link."))
 
         @self.app.route("/compare", methods=["GET"])

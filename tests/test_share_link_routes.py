@@ -11,7 +11,7 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import app as appModule
-from app import SpotifyDashboardApp, RATE_LIMIT_MAX_ATTEMPTS
+from app import SpotifyDashboardApp, RATE_LIMIT_MAX_ATTEMPTS, RATE_LIMIT_ERROR_MESSAGE
 import Database.utils as utilsModule
 
 _SECRET_KEY_PATCH = 'app.SpotifyDashboardApp._get_or_create_secret_key'
@@ -129,6 +129,41 @@ class TestCreateShareLink(ShareLinkRoutesTestCase):
         self.assertEqual(len(self.dash.repo.getShareLinksForUser("alice")), RATE_LIMIT_MAX_ATTEMPTS)
 
 
+class TestCreateShareLinkAjax(ShareLinkRoutesTestCase):
+    """The wrapped.html popup posts here with ?ajax=true so it can swap in
+    the new link without leaving the page - see createWrappedShareLink()."""
+
+    def test_ajax_create_returns_link_panel_html(self):
+        client = self._loginAs("alice", "alice@example.com")
+
+        resp = client.post("/wrapped/share-links/2026?ajax=true", data={"expiry": "never"})
+
+        self.assertEqual(resp.status_code, 200)
+        html = resp.get_json()["html"]
+        self.assertIn("Revoke", html)
+        self.assertNotIn("Create Share Link", html)
+        token = self.dash.repo.getShareLinksForUser("alice")[0]["token"]
+        self.assertIn(f"/shared/{token}", html)
+
+    def test_ajax_rate_limited_returns_json_error(self):
+        client = self._loginAs("alice", "alice@example.com")
+        for _ in range(RATE_LIMIT_MAX_ATTEMPTS):
+            client.post("/wrapped/share-links/2026", data={"expiry": "never"})
+
+        resp = client.post("/wrapped/share-links/2026?ajax=true", data={"expiry": "never"})
+
+        self.assertEqual(resp.status_code, 429)
+        self.assertEqual(resp.get_json()["error"], RATE_LIMIT_ERROR_MESSAGE)
+
+    def test_ajax_anonymous_returns_401(self):
+        client = self.dash.app.test_client()
+
+        resp = client.post("/wrapped/share-links/2026?ajax=true", data={"expiry": "never"})
+
+        self.assertEqual(resp.status_code, 401)
+        self.assertIn("error", resp.get_json())
+
+
 class TestRevokeShareLink(ShareLinkRoutesTestCase):
     def test_owner_can_revoke_and_redirects_with_success(self):
         client = self._loginAs("alice", "alice@example.com")
@@ -160,6 +195,46 @@ class TestRevokeShareLink(ShareLinkRoutesTestCase):
 
         self.assertEqual(resp.status_code, 302)
         self.assertIn("/login", resp.headers["Location"])
+
+
+class TestRevokeShareLinkAjax(ShareLinkRoutesTestCase):
+    """The wrapped.html popup's Revoke form posts here with ?ajax=true and a
+    year field so the response can render that year's create-form panel back
+    - see profileShareLinkAction(). profile.html's own revoke form never sets
+    ajax=true and is covered by TestRevokeShareLink above."""
+
+    def test_ajax_revoke_returns_create_form_panel_html(self):
+        client = self._loginAs("alice", "alice@example.com")
+        token = self.dash.repo.createShareLink("alice", self.dash.repo.SHARE_LINK_KIND_WRAPPED, 2026, None)
+        linkId = self.dash.repo.getShareLink(token)["id"]
+
+        resp = client.post(f"/profile/share-links/{linkId}?ajax=true", data={"year": "2026"})
+
+        self.assertEqual(resp.status_code, 200)
+        html = resp.get_json()["html"]
+        self.assertIn("Create Share Link", html)
+        self.assertNotIn("Revoke", html)
+        self.assertIsNone(self.dash.repo.getShareLink(token))
+
+    def test_ajax_non_owner_revoke_returns_403(self):
+        self.dash.repo.upsertUser("alice", "alice@example.com")
+        token = self.dash.repo.createShareLink("alice", self.dash.repo.SHARE_LINK_KIND_WRAPPED, 2026, None)
+        linkId = self.dash.repo.getShareLink(token)["id"]
+        client = self._loginAs("bob", "bob@example.com")
+
+        resp = client.post(f"/profile/share-links/{linkId}?ajax=true", data={"year": "2026"})
+
+        self.assertEqual(resp.status_code, 403)
+        self.assertIn("error", resp.get_json())
+        self.assertIsNotNone(self.dash.repo.getShareLink(token))
+
+    def test_ajax_anonymous_returns_401(self):
+        client = self.dash.app.test_client()
+
+        resp = client.post("/profile/share-links/1?ajax=true", data={"year": "2026"})
+
+        self.assertEqual(resp.status_code, 401)
+        self.assertIn("error", resp.get_json())
 
 
 class TestShareLinkListOnProfilePage(ShareLinkRoutesTestCase):

@@ -1,0 +1,25 @@
+<h3 id="shareLinkModalTitle" style="margin: 0 0 0.75rem;">Share this Wrapped</h3>
+{% if currentLink %}
+  <p style="color: var(--muted); font-size: 0.9rem; margin: 0 0 0.75rem;">Anyone with this link can view your {{ year }} Wrapped - no login required.</p>
+  <div style="display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap;">
+    <input id="shareLinkUrl" type="text" readonly value="{{ url_for('sharedWrappedPage', token=currentLink.token, _external=True) }}" style="flex: 1; min-width: 220px;" onclick="this.select()">
+    <button type="button" class="primary-button" style="padding: 4px 12px;" onclick="navigator.clipboard.writeText(document.getElementById('shareLinkUrl').value)">Copy</button>
+    <form method="post" action="{{ url_for('profileShareLinkAction', link_id=currentLink.id) }}" class="share-link-revoke-form" style="margin: 0; display: inline-block;">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+      <input type="hidden" name="year" value="{{ year }}"/>
+      <button type="submit" class="primary-button" style="padding: 4px 12px; background: #c92a2a;">Revoke</button>
+    </form>
+  </div>
+{% else %}
+  <p style="color: var(--muted); font-size: 0.9rem; margin: 0 0 0.75rem;">Create a public, no-login link to share your {{ year }} Wrapped.</p>
+  <form method="post" action="{{ url_for('createWrappedShareLink', year=year) }}" class="share-link-create-form" style="display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap;">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+    <label for="shareLinkExpiry">Expires:</label>
+    <select id="shareLinkExpiry" name="expiry">
+      {% for choice in shareLinkExpiryChoices %}
+        <option value="{{ choice }}" {% if choice == 'never' %}selected{% endif %}>{{ 'Never' if choice == 'never' else choice.replace('d', ' days') }}</option>
+      {% endfor %}
+    </select>
+    <button type="submit" class="primary-button">Create Share Link</button>
+  </form>
+{% endif %}
