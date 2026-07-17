@@ -457,32 +457,68 @@ class Repository:
     # ---- Per-user: plays (play history) -----------------------------------------
 
     def insertPlay(self, username: str, trackId: str, playedAt: float, timePlayed: int,
-                   playedFrom: str | None = None, created_reason: str | None = None) -> bool:
+                   playedFrom: str | None = None, created_reason: str | None = None,
+                   extras: dict | None = None) -> bool:
         """Returns True if a new row was inserted, False if this exact
-        (username, trackId, playedAt) play was already recorded (updates time_played if different).
+        (username, trackId, playedAt) play was already recorded (updates
+        time_played if different, and enriches behavioral columns from
+        `extras` - a non-None extras value wins over the stored one, a None
+        value never clobbers).
         If created_reason is provided, it's only set on INSERT (never updated
         on an existing play, matching upsertTrack()'s semantics).
 
         Does NOT commit - see upsertTrack()'s docstring."""
         conn = self._conn()
+        behavioralSelect = ", ".join(BEHAVIORAL_COLUMNS)
         existing = conn.execute(
-            "SELECT id, time_played FROM plays WHERE username=? AND track_id=? AND played_at=?",
+            f"SELECT id, time_played, {behavioralSelect} FROM plays WHERE username=? AND track_id=? AND played_at=?",
             (username, trackId, playedAt)
         ).fetchone()
 
         if existing:
-            if existing["time_played"] != timePlayed:
+            extras = extras or {}
+            behavioralChanged = any(
+                extras.get(column) is not None and extras.get(column) != existing[column]
+                for column in BEHAVIORAL_COLUMNS
+            )
+            if existing["time_played"] != timePlayed or behavioralChanged:
+                behavioralSet = ", ".join(f"{column} = COALESCE(?, {column})" for column in BEHAVIORAL_COLUMNS)
                 conn.execute(
-                    "UPDATE plays SET time_played = ?, played_from = COALESCE(?, played_from) WHERE id = ?",
-                    (timePlayed, playedFrom, existing["id"])
+                    f"UPDATE plays SET time_played = ?, played_from = COALESCE(?, played_from), {behavioralSet} WHERE id = ?",
+                    (timePlayed, playedFrom, *[extras.get(column) for column in BEHAVIORAL_COLUMNS], existing["id"])
                 )
             return False
 
         createdAt = time.time() if created_reason else None
+        extras = extras or {}
+        behavioralInsert = ", ".join(BEHAVIORAL_COLUMNS)
+        behavioralPlaceholders = ", ".join("?" for _ in BEHAVIORAL_COLUMNS)
         cur = conn.execute(
-            "INSERT OR IGNORE INTO plays (username, track_id, played_at, time_played, played_from, created_at, created_reason) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (username, trackId, playedAt, timePlayed, playedFrom, createdAt, created_reason),
+            f"INSERT OR IGNORE INTO plays (username, track_id, played_at, time_played, played_from, created_at, created_reason, {behavioralInsert}) "
+            f"VALUES (?, ?, ?, ?, ?, ?, ?, {behavioralPlaceholders})",
+            (username, trackId, playedAt, timePlayed, playedFrom, createdAt, created_reason,
+             *[extras.get(column) for column in BEHAVIORAL_COLUMNS]),
+        )
+        return cur.rowcount > 0
+
+    def insertSkip(self, username: str, trackId: str, playedAt: float, timePlayed: int,
+                   extras: dict | None = None, created_reason: str | None = None) -> bool:
+        """Record a skip event (a play shorter than SKIP_THRESHOLD_MS) in
+        play_skips. Returns True if a new row was inserted, False on an exact
+        (username, trackId, playedAt) duplicate. No near-time matching - the
+        UNIQUE constraint is the whole dedup story for skips.
+
+        Does NOT commit - see upsertTrack()'s docstring."""
+        conn = self._conn()
+        extras = extras or {}
+        createdAt = time.time() if created_reason else None
+        behavioralInsert = ", ".join(BEHAVIORAL_COLUMNS)
+        behavioralPlaceholders = ", ".join("?" for _ in BEHAVIORAL_COLUMNS)
+        cur = conn.execute(
+            f"INSERT OR IGNORE INTO play_skips (username, track_id, played_at, time_played, created_at, created_reason, {behavioralInsert}) "
+            f"VALUES (?, ?, ?, ?, ?, ?, {behavioralPlaceholders})",
+            (username, trackId, playedAt, timePlayed, createdAt, created_reason,
+             *[extras.get(column) for column in BEHAVIORAL_COLUMNS]),
         )
         return cur.rowcount > 0
 
@@ -515,13 +551,40 @@ class Repository:
     def getPlaysNearTime(self, username: str, trackId: str, playedAt: float, toleranceSeconds: float) -> list[dict]:
         """Return all plays for this exact track already existing for this user
         within toleranceSeconds of playedAt (inclusive both directions).
-        Used during imports to detect duplicates and decide whether to update."""
+        Used during imports to detect duplicates and decide whether to update;
+        carries the behavioral columns so the import can enrich NULLs in place."""
         conn = self._conn()
+        behavioralSelect = ", ".join(BEHAVIORAL_COLUMNS)
         rows = conn.execute(
-            "SELECT id, played_at, time_played FROM plays WHERE username=? AND track_id=? AND played_at BETWEEN ? AND ?",
+            f"SELECT id, played_at, time_played, {behavioralSelect} FROM plays "
+            f"WHERE username=? AND track_id=? AND played_at BETWEEN ? AND ?",
             (username, trackId, playedAt - toleranceSeconds, playedAt + toleranceSeconds),
         ).fetchall()
         return [dict(row) for row in rows]
+
+    def deletePlaysInRange(self, username: str, startTs: float, endTs: float) -> int:
+        """Delete every play of this user whose played_at falls inside the
+        closed [startTs, endTs] window - the overwrite-import wipe. Returns
+        the number of rows removed.
+
+        Does NOT commit - see upsertTrack()'s docstring."""
+        conn = self._conn()
+        cur = conn.execute(
+            "DELETE FROM plays WHERE username=? AND played_at BETWEEN ? AND ?",
+            (username, startTs, endTs),
+        )
+        return cur.rowcount
+
+    def deleteSkipsInRange(self, username: str, startTs: float, endTs: float) -> int:
+        """play_skips counterpart of deletePlaysInRange().
+
+        Does NOT commit - see upsertTrack()'s docstring."""
+        conn = self._conn()
+        cur = conn.execute(
+            "DELETE FROM play_skips WHERE username=? AND played_at BETWEEN ? AND ?",
+            (username, startTs, endTs),
+        )
+        return cur.rowcount
 
     def deleteZeroDurationPlays(self) -> int:
         """Remove plays with zero (or negative) recorded listening time, across
@@ -562,10 +625,25 @@ class Repository:
         params = [username]
         rangeClause = self._dateRangeClause(params, startTs, endTs)
         params += [limit, startIndex]
+        behavioralSelect = ", ".join(BEHAVIORAL_COLUMNS)
         rows = conn.execute(
-            f"SELECT track_id, played_at, time_played, played_from FROM plays "
+            f"SELECT track_id, played_at, time_played, played_from, {behavioralSelect} FROM plays "
             f"WHERE username=?{rangeClause} ORDER BY played_at ASC, id ASC LIMIT ? OFFSET ?",
             params,
+        ).fetchall()
+        return [self._playRowToEntry(r) for r in rows]
+
+    def getSkipsOldestFirst(self, username: str, count: int | None = None, startIndex: int = 0) -> list[dict]:
+        """Skip events oldest-first, shaped like getPlaysOldestFirst entries
+        (play_skips has no played_from - it comes back None). Feeds the JSON
+        export so skips round-trip between instances."""
+        conn = self._conn()
+        limit = -1 if count is None else count
+        behavioralSelect = ", ".join(BEHAVIORAL_COLUMNS)
+        rows = conn.execute(
+            f"SELECT track_id, played_at, time_played, {behavioralSelect} FROM play_skips "
+            f"WHERE username=? ORDER BY played_at ASC, id ASC LIMIT ? OFFSET ?",
+            (username, limit, startIndex),
         ).fetchall()
         return [self._playRowToEntry(r) for r in rows]
 
@@ -654,12 +732,19 @@ class Repository:
 
     @staticmethod
     def _playRowToEntry(row) -> dict:
-        return {
+        columns = row.keys()
+        entry = {
             "id": row["track_id"],
             "playedAt": row["played_at"],
             "timePlayed": row["time_played"],
-            "playedFrom": row["played_from"],
+            "playedFrom": row["played_from"] if "played_from" in columns else None,
         }
+        # Behavioral columns are only attached when the SELECT carried them
+        # (wider play/skip reads) - narrower SELECT sites keep their shape.
+        if "platform" in columns:
+            extras = {column: row[column] for column in BEHAVIORAL_COLUMNS}
+            entry["extras"] = extras if any(v is not None for v in extras.values()) else None
+        return entry
 
     @staticmethod
     def _likePattern(query: str) -> str:

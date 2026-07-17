@@ -609,6 +609,166 @@ def makeSyntheticTrack(trackId="synth1", name="Ghost Song", artist="Ghost Artist
     }
 
 
+EXTRAS_FULL = {
+    "platform": "ios", "conn_country": "CH", "reason_start": "clickrow",
+    "reason_end": "trackdone", "shuffle": 1, "skipped": 0, "offline": 0, "incognito": 0,
+}
+
+
+class TestPlayBehavioralExtras(RepositoryTestCase):
+    def setUp(self):
+        super().setUp()
+        self.repo.upsertUser("alice", "alice@example.com")
+        self.repo.upsertTrack(makeTrack(trackId="t1"))
+
+    def _rawPlayRow(self, playedAt):
+        return self.repo._conn().execute(
+            "SELECT * FROM plays WHERE username='alice' AND played_at=?", (playedAt,)
+        ).fetchone()
+
+    def test_insert_with_extras_writes_behavioral_columns(self):
+        self.assertTrue(self.repo.insertPlay("alice", "t1", 1000.0, 60000, extras=EXTRAS_FULL))
+        row = self._rawPlayRow(1000.0)
+        self.assertEqual(row["platform"], "ios")
+        self.assertEqual(row["conn_country"], "CH")
+        self.assertEqual(row["reason_start"], "clickrow")
+        self.assertEqual(row["reason_end"], "trackdone")
+        self.assertEqual(row["shuffle"], 1)
+        self.assertEqual(row["skipped"], 0)
+        self.assertEqual(row["offline"], 0)
+        self.assertEqual(row["incognito"], 0)
+
+    def test_insert_without_extras_leaves_columns_null(self):
+        self.repo.insertPlay("alice", "t1", 1000.0, 60000)
+        row = self._rawPlayRow(1000.0)
+        self.assertIsNone(row["platform"])
+        self.assertIsNone(row["reason_end"])
+
+    def test_existing_play_is_enriched_with_new_extras(self):
+        self.repo.insertPlay("alice", "t1", 1000.0, 60000)
+        self.assertFalse(self.repo.insertPlay("alice", "t1", 1000.0, 60000, extras=EXTRAS_FULL))
+        row = self._rawPlayRow(1000.0)
+        self.assertEqual(row["platform"], "ios")
+        self.assertEqual(row["reason_end"], "trackdone")
+
+    def test_none_extras_values_never_clobber_stored_values(self):
+        self.repo.insertPlay("alice", "t1", 1000.0, 60000, extras=EXTRAS_FULL)
+        sparse = {"platform": None, "conn_country": "DE"}
+        self.repo.insertPlay("alice", "t1", 1000.0, 60000, extras=sparse)
+        row = self._rawPlayRow(1000.0)
+        self.assertEqual(row["platform"], "ios")     #< None must not clobber
+        self.assertEqual(row["conn_country"], "DE")  #< new value wins
+
+    def test_no_update_issued_when_nothing_changes(self):
+        self.repo.insertPlay("alice", "t1", 1000.0, 60000, extras=EXTRAS_FULL)
+        conn = self.repo._conn()
+        changesBefore = conn.total_changes
+        self.repo.insertPlay("alice", "t1", 1000.0, 60000, extras=dict(EXTRAS_FULL))
+        self.assertEqual(conn.total_changes, changesBefore)
+
+    def test_get_plays_near_time_carries_behavioral_columns(self):
+        self.repo.insertPlay("alice", "t1", 1000.0, 60000, extras=EXTRAS_FULL)
+        matches = self.repo.getPlaysNearTime("alice", "t1", 1000.0, 10)
+        self.assertEqual(len(matches), 1)
+        self.assertEqual(matches[0]["platform"], "ios")
+        self.assertEqual(matches[0]["reason_end"], "trackdone")
+        self.assertEqual(matches[0]["shuffle"], 1)
+
+    def test_get_plays_oldest_first_attaches_extras(self):
+        self.repo.insertPlay("alice", "t1", 1000.0, 60000, extras=EXTRAS_FULL)
+        self.repo.insertPlay("alice", "t1", 2000.0, 60000)
+        entries = self.repo.getPlaysOldestFirst("alice")
+        self.assertEqual(entries[0]["extras"]["platform"], "ios")
+        self.assertIsNone(entries[1]["extras"])
+
+
+class TestPlaySkips(RepositoryTestCase):
+    def setUp(self):
+        super().setUp()
+        self.repo.upsertUser("alice", "alice@example.com")
+        self.repo.upsertTrack(makeTrack(trackId="t1"))
+        self.repo.upsertTrack(makeTrack(trackId="t2"))
+
+    def test_insert_skip_and_exact_duplicate_ignored(self):
+        self.assertTrue(self.repo.insertSkip("alice", "t1", 1000.0, 400))
+        self.assertFalse(self.repo.insertSkip("alice", "t1", 1000.0, 400))
+        count = self.repo._conn().execute("SELECT COUNT(*) FROM play_skips").fetchone()[0]
+        self.assertEqual(count, 1)
+
+    def test_insert_skip_accepts_zero_duration_and_stamps_reason(self):
+        self.assertTrue(self.repo.insertSkip("alice", "t1", 1000.0, 0,
+                                             extras=EXTRAS_FULL,
+                                             created_reason="history_import (user: alice)"))
+        row = self.repo._conn().execute("SELECT * FROM play_skips").fetchone()
+        self.assertEqual(row["time_played"], 0)
+        self.assertEqual(row["created_reason"], "history_import (user: alice)")
+        self.assertIsNotNone(row["created_at"])
+        self.assertEqual(row["reason_end"], "trackdone")
+
+    def test_insert_skip_does_not_commit(self):
+        self.repo.commit()  #< persist the seeded user/tracks first
+        self.repo.insertSkip("alice", "t1", 1000.0, 400)
+        self.repo.rollback()
+        count = self.repo._conn().execute("SELECT COUNT(*) FROM play_skips").fetchone()[0]
+        self.assertEqual(count, 0)
+
+    def test_get_skips_oldest_first(self):
+        self.repo.insertSkip("alice", "t2", 2000.0, 300, extras=EXTRAS_FULL)
+        self.repo.insertSkip("alice", "t1", 1000.0, 400)
+        entries = self.repo.getSkipsOldestFirst("alice")
+        self.assertEqual([e["id"] for e in entries], ["t1", "t2"])
+        self.assertEqual(entries[0]["playedAt"], 1000.0)
+        self.assertEqual(entries[0]["timePlayed"], 400)
+        self.assertIsNone(entries[0]["playedFrom"])
+        self.assertIsNone(entries[0]["extras"])
+        self.assertEqual(entries[1]["extras"]["platform"], "ios")
+
+
+class TestRangeDeletes(RepositoryTestCase):
+    def setUp(self):
+        super().setUp()
+        self.repo.upsertUser("alice", "alice@example.com")
+        self.repo.upsertUser("bob", "bob@example.com")
+        self.repo.upsertTrack(makeTrack(trackId="t1"))
+
+    def test_delete_plays_in_range_scoped_to_user_and_range(self):
+        self.repo.insertPlay("alice", "t1", 1000.0, 60000)
+        self.repo.insertPlay("alice", "t1", 2000.0, 60000)
+        self.repo.insertPlay("alice", "t1", 3000.0, 60000)
+        self.repo.insertPlay("bob", "t1", 2000.0, 60000)
+
+        deleted = self.repo.deletePlaysInRange("alice", 1500.0, 2500.0)
+
+        self.assertEqual(deleted, 1)
+        self.assertEqual(self.repo.getPlaysCount("alice"), 2)
+        self.assertEqual(self.repo.getPlaysCount("bob"), 1)
+
+    def test_delete_plays_in_range_bounds_are_inclusive(self):
+        self.repo.insertPlay("alice", "t1", 1000.0, 60000)
+        self.repo.insertPlay("alice", "t1", 2000.0, 60000)
+        deleted = self.repo.deletePlaysInRange("alice", 1000.0, 2000.0)
+        self.assertEqual(deleted, 2)
+
+    def test_delete_skips_in_range_scoped_to_user_and_range(self):
+        self.repo.insertSkip("alice", "t1", 1000.0, 400)
+        self.repo.insertSkip("alice", "t1", 2000.0, 400)
+        self.repo.insertSkip("bob", "t1", 2000.0, 400)
+
+        deleted = self.repo.deleteSkipsInRange("alice", 1500.0, 2500.0)
+
+        self.assertEqual(deleted, 1)
+        remaining = self.repo._conn().execute("SELECT username, played_at FROM play_skips ORDER BY played_at").fetchall()
+        self.assertEqual([(r["username"], r["played_at"]) for r in remaining],
+                         [("alice", 1000.0), ("bob", 2000.0)])
+
+    def test_range_deletes_do_not_commit(self):
+        self.repo.insertPlay("alice", "t1", 1000.0, 60000)
+        self.repo.commit()
+        self.repo.deletePlaysInRange("alice", 0.0, 5000.0)
+        self.repo.rollback()
+        self.assertEqual(self.repo.getPlaysCount("alice"), 1)
+
+
 class TestSyntheticTrackLifecycle(RepositoryTestCase):
     def _trackCreatedColumns(self, trackId):
         row = self.repo._conn().execute(
