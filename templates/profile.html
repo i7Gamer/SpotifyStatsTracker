@@ -117,7 +117,7 @@
           {% for share in pendingIncoming %}
           <tr>
             <td style="padding: 8px;"><span class="badge badge-warning">{{ share.requester_username }}</span> wants to share data with you</td>
-            <td style="padding: 8px; text-align: right; white-space: nowrap;">
+            <td class="share-actions" style="padding: 8px; text-align: right;">
               <form method="post" action="{{ url_for('profileShareAction', share_id=share.id) }}" style="display: inline-block;">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
                 <input type="hidden" name="action" value="accept">
@@ -144,7 +144,7 @@
           {% for share in pendingOutgoing %}
           <tr>
             <td style="padding: 8px;">Waiting on <span class="badge badge-secondary">{{ share.recipient_username }}</span></td>
-            <td style="padding: 8px; text-align: right;">
+            <td class="share-actions" style="padding: 8px; text-align: right;">
               <form method="post" action="{{ url_for('profileShareAction', share_id=share.id) }}" style="display: inline-block;">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
                 <input type="hidden" name="action" value="cancel">
@@ -166,7 +166,7 @@
           {% for share in acceptedShares %}
           <tr>
             <td style="padding: 8px;"><span class="badge badge-success">{{ share.counterpart }}</span></td>
-            <td style="padding: 8px; text-align: right; white-space: nowrap;">
+            <td class="share-actions" style="padding: 8px; text-align: right;">
               <a href="{{ url_for('comparePage', with=share.counterpart) }}" class="primary-button" style="padding: 4px 12px; text-decoration: none; display: inline-block;">Compare</a>
               <form method="post" action="{{ url_for('profileShareAction', share_id=share.id) }}" style="display: inline-block;">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
@@ -202,7 +202,7 @@
         <input type="password" id="clientSecret" name="client_secret" value="{{ client_secret or '' }}" placeholder="Enter Client Secret" required>
       </div>
 
-      <div style="display: flex; gap: 1rem; margin-top: 1.5rem; margin-bottom: 2rem;">
+      <div class="profile-button-row" style="display: flex; gap: 1rem; margin-top: 1.5rem; margin-bottom: 2rem;">
         <button type="submit" class="primary-button" style="flex: 1;">Save Credentials</button>
         {% if client_id and client_secret %}
           <a href="{{ url_for('profileDisconnect') }}" class="primary-button" style="flex: 1; background: #c92a2a; text-align: center; text-decoration: none; display: flex; align-items: center; justify-content: center;">Disconnect API</a>

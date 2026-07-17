@@ -649,6 +649,12 @@ progress::-moz-progress-bar {
   -webkit-backdrop-filter: blur(16px) saturate(180%);
 }
 
+@media (max-width: 600px) {
+  .login-card {
+    padding: 20px;
+  }
+}
+
 .login-card h1 {
   margin: 0 0 14px;
 }
@@ -1037,6 +1043,33 @@ progress::-moz-progress-bar {
   .share-request-row {
     flex-direction: column;
     align-items: stretch;
+  }
+}
+
+/* Profile share tables' action cells: desktop keeps buttons/links on one
+   nowrap line so the row stays compact; below 600px there isn't room for
+   both the label column and a nowrap action column, so let actions wrap
+   onto their own line(s) instead of overflowing the card. */
+.share-actions {
+  white-space: nowrap;
+}
+
+@media (max-width: 600px) {
+  .share-actions {
+    white-space: normal;
+  }
+
+  .share-actions form,
+  .share-actions a {
+    margin: 4px 0 4px 8px;
+  }
+}
+
+/* Profile's paired action buttons (e.g. Save Credentials / Disconnect API):
+   stack to full width below 600px, matching .share-request-row's treatment. */
+@media (max-width: 600px) {
+  .profile-button-row {
+    flex-direction: column;
   }
 }
 
