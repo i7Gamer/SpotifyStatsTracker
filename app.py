@@ -1228,6 +1228,7 @@ class SpotifyDashboardApp:
                 -item.get(sortBy, 0),
                 -item.get(otherMetric, 0),
                 (item.get("name") or "").lower(),
+                item.get("id", ""),
             ),
         )
 

@@ -51,6 +51,16 @@ class TestResortByMetric(unittest.TestCase):
 
         self.assertEqual([i["id"] for i in result], ["a", "z"])
 
+    def test_full_ties_including_name_fall_back_to_id(self):
+        items = [
+            _item("z-id", "Same", plays=5, totalTimeListened=1000),
+            _item("a-id", "Same", plays=5, totalTimeListened=1000),
+        ]
+
+        result = SpotifyDashboardApp._resortByMetric(items, "plays")
+
+        self.assertEqual([i["id"] for i in result], ["a-id", "z-id"])
+
     def test_name_sort_is_unaffected(self):
         items = [
             _item("z", "Zeta", plays=1),
