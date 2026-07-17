@@ -13,7 +13,7 @@ from pathlib import Path
 import time
 from datetime import timedelta, datetime, timezone
 
-from flask import Flask, render_template, redirect, request, url_for, jsonify, send_from_directory, session, g, abort, Response, stream_with_context
+from flask import Flask, render_template, redirect, request, url_for, jsonify, send_from_directory, session, g, abort, Response, stream_with_context, make_response
 from flask_wtf.csrf import CSRFProtect
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -49,6 +49,14 @@ GENRE_GATE_OVERALL_MIN_PERCENT = 50
 GENRE_GATE_CATEGORY_MIN_PERCENT = 30
 WRAPPED_LIST_SIZE = 10          #< default/fallback for ?limit= - how many items per category the Wrapped page shows
 WRAPPED_LIMIT_OPTIONS = (10, 25, 50, 100)   #< selectable values for Wrapped's items-per-category dropdown
+# Public Wrapped share-link expiry choices: form value -> seconds until
+# expiry, or None for "never". Mirrors ALBUM_BACKFILL_RETRY_SECONDS/
+# GENRE_BACKFILL_RETRY_SECONDS's N * 24 * 3600 convention in repository.py.
+SHARE_LINK_EXPIRY_CHOICES = {
+    "never": None,
+    "7d": 7 * 24 * 3600,
+    "30d": 30 * 24 * 3600,
+}
 COMPARE_TOP_LIST_SIZE = 10                #< items per top-songs/artists/albums list shown on the Compare page
 COMPARE_OVERLAP_POOL_SIZE = 100           #< how deep each side's top songs/artists/albums lists are searched for taste-match overlap
 # Top Common Songs/Artists/Albums search a SEPARATE, deeper pool than
@@ -375,6 +383,13 @@ class SpotifyDashboardApp:
         self._ensureAdminExists()
 
         self.user_databases = {}
+        # Usernames whose Database in user_databases has had its background
+        # listener/auto-importer actually started - see _getReadOnlyUserDb()
+        # and get_user_db()'s activation-guard. A username can be cached in
+        # user_databases without being here yet (a public share-link view
+        # constructed a read-only instance before its owner ever logged in
+        # this process).
+        self._activatedUsers: set = set()
         self._db_lock = threading.RLock()
         self._session_lock = threading.RLock()
         self._login_cache: dict = {}  #< {email: (result: bool, expires_at: float)}
@@ -524,10 +539,14 @@ class SpotifyDashboardApp:
 
     def get_user_db(self, username, email):
         with self._db_lock:
-            if username not in self.user_databases:
+            db = self.user_databases.get(username)
+            needsActivation = db is None or username not in self._activatedUsers
+            if db is None:
                 # Share the app-wide stop event so the listener reconnect
                 # paths can refuse to fire once shutdown has begun.
                 db = Database(user=username, email=email, shutdown_event=self._stop_event)
+
+            if needsActivation:
                 try:
                     db.startAutoImporter()
                     db.resetProgress()
@@ -537,17 +556,44 @@ class SpotifyDashboardApp:
                     # background threads (wrapped worker, metadata
                     # backfiller); startAutoImporter added its watchdog. If a
                     # later step fails (startListener is a live Spotify call)
-                    # the instance never reaches user_databases, so those
-                    # threads would run unreachable forever - and every retry
-                    # would stack another full set per user.
+                    # the instance must not stay reachable half-activated, so
+                    # both caches are rolled back along with stopping it -
+                    # every retry would otherwise stack another full set of
+                    # threads per user, or silently keep serving the dead
+                    # instance to the next caller.
                     try:
                         db.stop()
                     except Exception as stopError:
                         logger.error("Failed to stop partially-started Database for user %s: %s",
                                      username, stopError)
+                    self.user_databases.pop(username, None)
+                    self._activatedUsers.discard(username)
                     raise
                 self.user_databases[username] = db
+                self._activatedUsers.add(username)
             return self.user_databases[username]
+
+    def _getReadOnlyUserDb(self, username):
+        """A Database for `username` suitable for a public, unauthenticated
+        share-link view - never starts the listener/auto-importer (no live
+        Spotify session should ever be triggered by an anonymous GET). If
+        `username` already has an active Database (the common case: the
+        owner has logged in to this process before), that instance is
+        reused as-is. Otherwise a new instance is cached without activating
+        it; get_user_db() activates it in place on the owner's next real
+        login instead of skipping activation forever, since by then the
+        username is already in user_databases. Callers must already know
+        `username` exists (e.g. it came from a share_links row, which a
+        foreign key guarantees points at a real user)."""
+        with self._db_lock:
+            db = self.user_databases.get(username)
+            if db is not None:
+                return db
+
+            email = self.repo.getEmailForUsername(username)
+            db = Database(user=username, email=email, shutdown_event=self._stop_event)
+            self.user_databases[username] = db
+            return db
 
     def _refresh_user_session(self, username, email):
         """Restart this user's listener against the cookies just saved to the
@@ -1246,6 +1292,188 @@ class SpotifyDashboardApp:
         discovered = self._resortByMetric(discovered, sortBy)
         return discovered[:limit]
 
+    def _buildWrappedContext(self, db, year: int, groupBy: str, limit: int, sortBy: str,
+                             includeGenres: bool = True) -> dict:
+        """Everything wrapped.html needs to render one year's Wrapped recap
+        for `db`'s user - the cache-read/recalculate, resort-and-slice, and
+        text/genre embedding pipeline, independent of which route is asking
+        for it. Used by both the authenticated /wrapped route and the public
+        /shared/<token> route (see wrappedPage() and sharedWrappedPage()).
+
+        includeGenres=False skips the live genre-coverage/distribution
+        queries entirely - wrappedPage() uses this for AJAX chart/lists-only
+        partial updates, which discard genre data anyway (see its call
+        site); every other caller wants the full context."""
+        nowLocal = now(tz=db.tz)
+        yearStart = nowLocal.replace(year=year, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+        yearEnd = nowLocal.replace(year=year + 1, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+
+        # Genre data is deliberately computed live - never from the
+        # user_wrapped cache below: coverage keeps growing while the Last.fm
+        # backfill runs, and the admin's inherited-genres toggle changes the
+        # numbers retroactively.
+        lastfmEnabled = self.repo.isLastfmGenreBackfillEnabled()
+        genreCoverage = emptyGenreCoverage()
+        genreUnlocked = False
+        topGenres = None
+        if includeGenres and lastfmEnabled:
+            genreCoverage = resolveGenreCoverage(db, yearStart, yearEnd)
+            genreUnlocked = genreGatePasses(genreCoverage)
+            if genreUnlocked:
+                topGenres = resolveGenreDistribution(db, yearStart, yearEnd,
+                                                     WRAPPED_TOP_GENRES_LIMIT)
+
+        # 1. Fetch precalculated cached wrapped stats from database (unless db is a mock)
+        from unittest.mock import MagicMock
+        is_mock = isinstance(db, MagicMock) or (hasattr(db, "repo") and isinstance(db.repo, MagicMock))
+
+        cached = None
+        if not is_mock:
+            cached = db.repo.getCachedWrapped(db.user, year)
+            if not cached:
+                # Cache miss: recalculate and cache on the fly
+                db.recalculateWrappedForYear(year)
+                cached = db.repo.getCachedWrapped(db.user, year)
+        else:
+            # If db/repo is mock, check if getCachedWrapped was explicitly mocked to return a non-mock dict
+            try:
+                res = db.repo.getCachedWrapped(db.user, year)
+                if res and not isinstance(res, MagicMock):
+                    cached = res
+            except Exception:
+                pass
+
+        if cached is not None:
+            # If still empty defaults needed
+            if not cached:
+                cached = {
+                    "total_plays": 0,
+                    "total_ms": 0,
+                    "longest_streak": 0,
+                    "peak_day": None,
+                    "peak_plays": 0,
+                    "unique_songs": 0,
+                    "unique_artists": 0,
+                    "discovered_songs": 0,
+                    "discovered_artists": 0,
+                    "time_series_day": "[]",
+                    "time_series_week": "[]",
+                    "time_series_month": "[]",
+                    "top_songs": "[]",
+                    "top_artists": "[]",
+                    "top_albums": "[]",
+                    "discovered_songs_list": "[]",
+                    "discovered_artists_list": "[]",
+                    "discovered_albums_list": "[]",
+                }
+
+            # 2. Extract values and parse lists
+            totalPlays = cached["total_plays"]
+            totalMs = cached["total_ms"]
+            longestStreak = cached["longest_streak"]
+            peakListeningTime = (cached["peak_day"], cached["peak_plays"]) if cached["peak_day"] else None
+            uniqueSongsCount = cached["unique_songs"]
+            uniqueArtistsCount = cached["unique_artists"]
+            discoveredSongsCount = cached["discovered_songs"]
+            discoveredArtistsCount = cached["discovered_artists"]
+
+            timeSeriesDay = json.loads(cached["time_series_day"])
+            timeSeriesWeek = json.loads(cached["time_series_week"])
+            timeSeriesMonth = json.loads(cached["time_series_month"])
+
+            topSongs = json.loads(cached["top_songs"])
+            topArtists = json.loads(cached["top_artists"])
+            topAlbums = json.loads(cached["top_albums"])
+
+            discoveredSongs = json.loads(cached["discovered_songs_list"])
+            discoveredArtists = json.loads(cached["discovered_artists_list"])
+            discoveredAlbums = json.loads(cached["discovered_albums_list"])
+
+            # 3. Select timeseries grouping
+            if groupBy == "day":
+                timeSeries = timeSeriesDay
+            elif groupBy == "month":
+                timeSeries = timeSeriesMonth
+            else:
+                timeSeries = timeSeriesWeek
+
+            # 4. Re-sort the cached (up to 100-item) pools by the chosen
+            # metric, then slice to the requested limit. The cache itself
+            # is only ever stored plays-ranked, so membership stays
+            # whatever that plays-ranked capture included - only order/
+            # what survives the limit cut within it follows sortBy.
+            topSongs = self._resortByMetric(topSongs, sortBy)[:limit]
+            topArtists = self._resortByMetric(topArtists, sortBy)[:limit]
+            topAlbums = self._resortByMetric(topAlbums, sortBy)[:limit]
+            discoveredSongs = self._resortByMetric(discoveredSongs, sortBy)[:limit]
+            discoveredArtists = self._resortByMetric(discoveredArtists, sortBy)[:limit]
+            discoveredAlbums = self._resortByMetric(discoveredAlbums, sortBy)[:limit]
+        else:
+            # Dynamic calculations for mocks (unit tests compatibility)
+            topSongs = db.getTopSongs(startDate=yearStart, endDate=yearEnd, by=sortBy, limit=limit)
+            topArtists = db.getTopArtists(startDate=yearStart, endDate=yearEnd, by=sortBy, limit=limit)
+            topAlbums = db.getTopAlbums(startDate=yearStart, endDate=yearEnd, by=sortBy, limit=limit)
+            totalPlays, totalMs = db.getPlayTotals(yearStart, yearEnd)
+
+            discoveredSongs = self._discoveriesInYear(
+                db.getSongsStats(sortBy="plays"), yearStart, yearEnd, limit, sortBy=sortBy
+            )
+            discoveredArtists = self._discoveriesInYear(
+                db.getArtistsStats(), yearStart, yearEnd, limit, sortBy=sortBy
+            )
+            discoveredAlbums = self._discoveriesInYear(
+                db.getAlbumsStats(sortBy="plays"), yearStart, yearEnd, limit, sortBy=sortBy
+            )
+
+            timeSeries = db.getListeningTimeSeries(startDate=yearStart, endDate=yearEnd, groupBy=groupBy)
+
+            longestStreak = db.getLongestStreak(yearStart, yearEnd)
+            peakListeningTime = db.getPeakListeningTime(yearStart, yearEnd)
+            uniqueSongsCount = db.getSongsCount(yearStart, yearEnd)
+            uniqueArtistsCount = db.getArtistsCount(yearStart, yearEnd)
+            discoveredSongsCount = db.getDiscoveredSongsCount(yearStart, yearEnd)
+            discoveredArtistsCount = db.getDiscoveredArtistsCount(yearStart, yearEnd)
+
+        # 5. Embed presentation elements
+        timeSeries = self._embedTimeSeriesTextElements(timeSeries)
+        topSongs = self._embedSongsTextElements(topSongs)
+        topSongs = self._embedTopSongsTextElements(topSongs, sortBy=sortBy, totalPlays=totalPlays, totalMs=totalMs)
+        topArtists = self._embedArtistsTextElements(topArtists, sortBy=sortBy, totalPlays=totalPlays, totalMs=totalMs)
+        topAlbums = self._embedAlbumsTextElements(topAlbums, sortBy=sortBy, totalPlays=totalPlays, totalMs=totalMs)
+        discoveredSongs = self._embedTopSongsTextElements(self._embedSongsTextElements(discoveredSongs))
+        discoveredArtists = self._embedArtistsTextElements(discoveredArtists)
+        discoveredAlbums = self._embedAlbumsTextElements(discoveredAlbums)
+        topSongs = self._attachGenres(db, topSongs, "track")
+        topArtists = self._attachGenres(db, topArtists, "artist")
+        topAlbums = self._attachGenres(db, topAlbums, "album")
+        discoveredSongs = self._attachGenres(db, discoveredSongs, "track")
+        discoveredArtists = self._attachGenres(db, discoveredArtists, "artist")
+        discoveredAlbums = self._attachGenres(db, discoveredAlbums, "album")
+
+        return {
+            "yearStart": yearStart,
+            "yearEnd": yearEnd,
+            "totalPlays": totalPlays,
+            "totalMs": totalMs,
+            "topSongs": topSongs,
+            "topArtists": topArtists,
+            "topAlbums": topAlbums,
+            "discoveredSongs": discoveredSongs,
+            "discoveredArtists": discoveredArtists,
+            "discoveredAlbums": discoveredAlbums,
+            "timeSeries": timeSeries,
+            "longestStreak": longestStreak,
+            "peakListeningTime": peakListeningTime,
+            "uniqueSongsCount": uniqueSongsCount,
+            "uniqueArtistsCount": uniqueArtistsCount,
+            "discoveredSongsCount": discoveredSongsCount,
+            "discoveredArtistsCount": discoveredArtistsCount,
+            "topGenres": topGenres,
+            "genreCoverage": genreCoverage,
+            "genreUnlocked": genreUnlocked,
+            "lastfmEnabled": lastfmEnabled,
+        }
+
     def _iterExportEntries(self, db):
         """Every play (oldest first) with hydrated track metadata, fetched in
         EXPORT_CHUNK_SIZE batches so an export never holds the whole history
@@ -1362,6 +1590,14 @@ class SpotifyDashboardApp:
             # admin has disabled new registrations - instance-wide, so no
             # per-user memoization needed (unlike _injectShareStatus above).
             return {"registration_enabled": self.repo.isRegistrationEnabled()}
+
+        @self.app.context_processor
+        def _injectShareLinksStatus():
+            # Lets wrapped.html hide its "Share this Wrapped" panel and
+            # profile.html hide its share-link list when the admin has
+            # disabled public share links - instance-wide, same shape as
+            # _injectRegistrationStatus above.
+            return {"share_links_enabled": self.repo.isShareLinksEnabled()}
 
         @self.app.context_processor
         def _injectShareStatus():
@@ -1900,6 +2136,13 @@ class SpotifyDashboardApp:
             shareCandidates = [u for u in self.repo.getAllUsernamesExcept(username)
                                if u not in existingCounterparts]
 
+            shareLinks = [
+                {**link,
+                 "createdText": dateToString(link["created_at"], tz=db.tz),
+                 "expiresText": dateToString(link["expires_at"], tz=db.tz) if link["expires_at"] else "Never"}
+                for link in self.repo.getShareLinksForUser(username)
+            ]
+
             return render_template(
                 "profile.html",
                 username=username,
@@ -1922,6 +2165,7 @@ class SpotifyDashboardApp:
                 pendingOutgoing=pendingOutgoing,
                 acceptedShares=acceptedShares,
                 shareCandidates=shareCandidates,
+                shareLinks=shareLinks,
             ), responseStatus
 
         @self.app.route("/profile/disconnect", methods=["GET"])
@@ -2241,8 +2485,8 @@ class SpotifyDashboardApp:
         def overviewFeatureSettings():
             """Admin-only: flips the instance-wide feature kill switches
             (Spotify API backfill, Last.fm genre backfill, data sharing, new
-            user registration) in one submit - see Database/repository.py's
-            app_settings."""
+            user registration, public Wrapped share links) in one submit -
+            see Database/repository.py's app_settings."""
             email, username, db = get_current_user_or_redirect()
             if not email:
                 return redirect(url_for("login", next=url_for("overviewPage")))
@@ -2253,6 +2497,7 @@ class SpotifyDashboardApp:
             self.repo.setLastfmGenreBackfillEnabled(request.form.get("lastfm_backfill") == "1")
             self.repo.setDataSharingEnabled(request.form.get("data_sharing") == "1")
             self.repo.setRegistrationEnabled(request.form.get("registration") == "1")
+            self.repo.setShareLinksEnabled(request.form.get("share_links") == "1")
             return redirect(url_for("overviewPage"))
 
         @self.app.route("/", methods=["GET"])
@@ -2627,157 +2872,30 @@ class SpotifyDashboardApp:
             # changes unless they touch the control.
             sortBy = self._getSortByParam(default="plays")
 
-            yearStart = nowLocal.replace(year=year, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
-            yearEnd = nowLocal.replace(year=year + 1, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
-
             # Genre data is deliberately computed live - never from the
-            # user_wrapped cache below: coverage keeps growing while the
-            # Last.fm backfill runs, and the admin's inherited-genres toggle
-            # changes the numbers retroactively. Only computed for responses
-            # that actually render the card (the full page and ajax type=all -
-            # chart/lists partial updates would compute and discard it).
+            # user_wrapped cache: coverage keeps growing while the Last.fm
+            # backfill runs, and the admin's inherited-genres toggle changes
+            # the numbers retroactively. Only computed for responses that
+            # actually render the card (the full page and ajax type=all -
+            # chart/lists partial updates would compute and discard it). See
+            # chartsPage's identical kill-switch comment; _wrapped_genres.html
+            # hides its whole section (chart AND locked-progress fallback)
+            # when lastfmEnabled is False.
             isAjaxRequest = request.args.get("ajax") == "true"
             ajaxUpdateType = request.args.get("type", "all")
-            # See chartsPage's identical kill-switch comment - checked before
-            # any genre query, and _wrapped_genres.html hides its whole
-            # section (chart AND locked-progress fallback) when this is False.
-            lastfmEnabled = self.repo.isLastfmGenreBackfillEnabled()
-            genreCoverage = emptyGenreCoverage()
-            genreUnlocked = False
-            topGenres = None
-            if lastfmEnabled and (not isAjaxRequest or ajaxUpdateType == "all"):
-                genreCoverage = resolveGenreCoverage(db, yearStart, yearEnd)
-                genreUnlocked = genreGatePasses(genreCoverage)
-                if genreUnlocked:
-                    topGenres = resolveGenreDistribution(db, yearStart, yearEnd,
-                                                         WRAPPED_TOP_GENRES_LIMIT)
+            includeGenres = not isAjaxRequest or ajaxUpdateType == "all"
 
-            # 1. Fetch precalculated cached wrapped stats from database (unless db is a mock)
-            from unittest.mock import MagicMock
-            is_mock = isinstance(db, MagicMock) or (hasattr(db, "repo") and isinstance(db.repo, MagicMock))
-
-            cached = None
-            if not is_mock:
-                cached = db.repo.getCachedWrapped(db.user, year)
-                if not cached:
-                    # Cache miss: recalculate and cache on the fly
-                    db.recalculateWrappedForYear(year)
-                    cached = db.repo.getCachedWrapped(db.user, year)
-            else:
-                # If db/repo is mock, check if getCachedWrapped was explicitly mocked to return a non-mock dict
-                try:
-                    res = db.repo.getCachedWrapped(db.user, year)
-                    if res and not isinstance(res, MagicMock):
-                        cached = res
-                except Exception:
-                    pass
-
-            if cached is not None:
-                # If still empty defaults needed
-                if not cached:
-                    cached = {
-                        "total_plays": 0,
-                        "total_ms": 0,
-                        "longest_streak": 0,
-                        "peak_day": None,
-                        "peak_plays": 0,
-                        "unique_songs": 0,
-                        "unique_artists": 0,
-                        "discovered_songs": 0,
-                        "discovered_artists": 0,
-                        "time_series_day": "[]",
-                        "time_series_week": "[]",
-                        "time_series_month": "[]",
-                        "top_songs": "[]",
-                        "top_artists": "[]",
-                        "top_albums": "[]",
-                        "discovered_songs_list": "[]",
-                        "discovered_artists_list": "[]",
-                        "discovered_albums_list": "[]",
-                    }
-
-                # 2. Extract values and parse lists
-                totalPlays = cached["total_plays"]
-                totalMs = cached["total_ms"]
-                longestStreak = cached["longest_streak"]
-                peakListeningTime = (cached["peak_day"], cached["peak_plays"]) if cached["peak_day"] else None
-                uniqueSongsCount = cached["unique_songs"]
-                uniqueArtistsCount = cached["unique_artists"]
-                discoveredSongsCount = cached["discovered_songs"]
-                discoveredArtistsCount = cached["discovered_artists"]
-
-                timeSeriesDay = json.loads(cached["time_series_day"])
-                timeSeriesWeek = json.loads(cached["time_series_week"])
-                timeSeriesMonth = json.loads(cached["time_series_month"])
-
-                topSongs = json.loads(cached["top_songs"])
-                topArtists = json.loads(cached["top_artists"])
-                topAlbums = json.loads(cached["top_albums"])
-
-                discoveredSongs = json.loads(cached["discovered_songs_list"])
-                discoveredArtists = json.loads(cached["discovered_artists_list"])
-                discoveredAlbums = json.loads(cached["discovered_albums_list"])
-
-                # 3. Select timeseries grouping
-                if groupBy == "day":
-                    timeSeries = timeSeriesDay
-                elif groupBy == "month":
-                    timeSeries = timeSeriesMonth
-                else:
-                    timeSeries = timeSeriesWeek
-
-                # 4. Re-sort the cached (up to 100-item) pools by the chosen
-                # metric, then slice to the requested limit. The cache itself
-                # is only ever stored plays-ranked, so membership stays
-                # whatever that plays-ranked capture included - only order/
-                # what survives the limit cut within it follows sortBy.
-                topSongs = self._resortByMetric(topSongs, sortBy)[:limit]
-                topArtists = self._resortByMetric(topArtists, sortBy)[:limit]
-                topAlbums = self._resortByMetric(topAlbums, sortBy)[:limit]
-                discoveredSongs = self._resortByMetric(discoveredSongs, sortBy)[:limit]
-                discoveredArtists = self._resortByMetric(discoveredArtists, sortBy)[:limit]
-                discoveredAlbums = self._resortByMetric(discoveredAlbums, sortBy)[:limit]
-            else:
-                # Dynamic calculations for mocks (unit tests compatibility)
-                topSongs = db.getTopSongs(startDate=yearStart, endDate=yearEnd, by=sortBy, limit=limit)
-                topArtists = db.getTopArtists(startDate=yearStart, endDate=yearEnd, by=sortBy, limit=limit)
-                topAlbums = db.getTopAlbums(startDate=yearStart, endDate=yearEnd, by=sortBy, limit=limit)
-                totalPlays, totalMs = db.getPlayTotals(yearStart, yearEnd)
-
-                discoveredSongs = self._discoveriesInYear(
-                    db.getSongsStats(sortBy="plays"), yearStart, yearEnd, limit, sortBy=sortBy
-                )
-                discoveredArtists = self._discoveriesInYear(
-                    db.getArtistsStats(), yearStart, yearEnd, limit, sortBy=sortBy
-                )
-                discoveredAlbums = self._discoveriesInYear(
-                    db.getAlbumsStats(sortBy="plays"), yearStart, yearEnd, limit, sortBy=sortBy
-                )
-
-                timeSeries = db.getListeningTimeSeries(startDate=yearStart, endDate=yearEnd, groupBy=groupBy)
-
-                longestStreak = db.getLongestStreak(yearStart, yearEnd)
-                peakListeningTime = db.getPeakListeningTime(yearStart, yearEnd)
-                uniqueSongsCount = db.getSongsCount(yearStart, yearEnd)
-                uniqueArtistsCount = db.getArtistsCount(yearStart, yearEnd)
-                discoveredSongsCount = db.getDiscoveredSongsCount(yearStart, yearEnd)
-                discoveredArtistsCount = db.getDiscoveredArtistsCount(yearStart, yearEnd)
-
-            # 5. Embed presentation elements
-            timeSeries = self._embedTimeSeriesTextElements(timeSeries)
-            topSongs = self._embedSongsTextElements(topSongs)
-            topSongs = self._embedTopSongsTextElements(topSongs, sortBy=sortBy, totalPlays=totalPlays, totalMs=totalMs)
-            topArtists = self._embedArtistsTextElements(topArtists, sortBy=sortBy, totalPlays=totalPlays, totalMs=totalMs)
-            topAlbums = self._embedAlbumsTextElements(topAlbums, sortBy=sortBy, totalPlays=totalPlays, totalMs=totalMs)
-            discoveredSongs = self._embedTopSongsTextElements(self._embedSongsTextElements(discoveredSongs))
-            discoveredArtists = self._embedArtistsTextElements(discoveredArtists)
-            discoveredAlbums = self._embedAlbumsTextElements(discoveredAlbums)
-            topSongs = self._attachGenres(db, topSongs, "track")
-            topArtists = self._attachGenres(db, topArtists, "artist")
-            topAlbums = self._attachGenres(db, topAlbums, "album")
-            discoveredSongs = self._attachGenres(db, discoveredSongs, "track")
-            discoveredArtists = self._attachGenres(db, discoveredArtists, "artist")
-            discoveredAlbums = self._attachGenres(db, discoveredAlbums, "album")
+            ctx = self._buildWrappedContext(db, year, groupBy, limit, sortBy, includeGenres=includeGenres)
+            totalPlays, totalMs = ctx["totalPlays"], ctx["totalMs"]
+            topSongs, topArtists, topAlbums = ctx["topSongs"], ctx["topArtists"], ctx["topAlbums"]
+            discoveredSongs, discoveredArtists, discoveredAlbums = (
+                ctx["discoveredSongs"], ctx["discoveredArtists"], ctx["discoveredAlbums"])
+            timeSeries = ctx["timeSeries"]
+            longestStreak, peakListeningTime = ctx["longestStreak"], ctx["peakListeningTime"]
+            uniqueSongsCount, uniqueArtistsCount = ctx["uniqueSongsCount"], ctx["uniqueArtistsCount"]
+            discoveredSongsCount, discoveredArtistsCount = ctx["discoveredSongsCount"], ctx["discoveredArtistsCount"]
+            topGenres, genreCoverage, genreUnlocked = ctx["topGenres"], ctx["genreCoverage"], ctx["genreUnlocked"]
+            lastfmEnabled = ctx["lastfmEnabled"]
 
             # 6. Check if AJAX request and return JSON response if true
             if isAjaxRequest:
@@ -2863,7 +2981,131 @@ class SpotifyDashboardApp:
                 is_authenticated=is_authenticated,
                 success=success,
                 error=error,
+                publicView=False,
+                shareLinksEnabled=self.repo.isShareLinksEnabled(),
+                shareLinks=self.repo.getShareLinksForUser(username),
+                shareLinkExpiryChoices=SHARE_LINK_EXPIRY_CHOICES,
             )
+
+        @self.app.route("/wrapped/share-links/<int:year>", methods=["POST"])
+        def createWrappedShareLink(year):
+            """Creates a public, no-login share link for one year of the
+            current user's own Wrapped - see sharedWrappedPage() below for
+            the route that serves it."""
+            email, username, db = get_current_user_or_redirect()
+            if not email:
+                return redirect(url_for("login", next=url_for("wrappedPage")))
+            if not self.repo.isShareLinksEnabled():
+                abort(404)
+            if _rateLimited("share_link_create"):
+                return redirect(url_for("wrappedPage", error=RATE_LIMIT_ERROR_MESSAGE))
+
+            expiresInSeconds = SHARE_LINK_EXPIRY_CHOICES.get(request.form.get("expiry", "never"))
+            self.repo.createShareLink(username, Repository.SHARE_LINK_KIND_WRAPPED, year, expiresInSeconds)
+            return redirect(url_for("wrappedPage", year=year, success="Share link created."))
+
+        @self.app.route("/shared/<token>", methods=["GET"])
+        def sharedWrappedPage(token):
+            """Public, unauthenticated view of one user's Wrapped for one
+            year - no session, no nav, no PII. See docs/proposal-admin-and-
+            share-links.md Part B for the design this implements."""
+            if not self.repo.isShareLinksEnabled():
+                abort(404)
+
+            link = self.repo.getShareLink(token)
+            if link is None:
+                # Only misses count against the limit - repeat visits to a
+                # real link must never be throttled (see the plan's rate-
+                # limiting note), only someone guessing random tokens.
+                if _rateLimited("shared_token"):
+                    abort(429)
+                abort(404)
+
+            db = self._getReadOnlyUserDb(link["username"])
+            ctx = self._buildWrappedContext(
+                db, link["year"], groupBy="week", limit=WRAPPED_LIST_SIZE, sortBy="plays", includeGenres=True)
+
+            resp = make_response(render_template(
+                "wrapped.html",
+                username=link["username"],
+                section="wrapped",
+                year=link["year"],
+                availableYears=[link["year"]],
+                groupBy="week",
+                limit=WRAPPED_LIST_SIZE,
+                limitOptions=WRAPPED_LIMIT_OPTIONS,
+                sortBy="plays",
+                totalPlays=ctx["totalPlays"],
+                totalTime=msToString(ctx["totalMs"]),
+                topSongs=ctx["topSongs"],
+                topArtists=ctx["topArtists"],
+                topAlbums=ctx["topAlbums"],
+                discoveredSongs=ctx["discoveredSongs"],
+                discoveredArtists=ctx["discoveredArtists"],
+                discoveredAlbums=ctx["discoveredAlbums"],
+                timeSeries=ctx["timeSeries"],
+                longestStreak=ctx["longestStreak"],
+                peakListeningTime=ctx["peakListeningTime"],
+                uniqueSongsCount=ctx["uniqueSongsCount"],
+                uniqueArtistsCount=ctx["uniqueArtistsCount"],
+                discoveredSongsCount=ctx["discoveredSongsCount"],
+                discoveredArtistsCount=ctx["discoveredArtistsCount"],
+                topGenres=ctx["topGenres"],
+                genreCoverage=ctx["genreCoverage"],
+                genreUnlocked=ctx["genreUnlocked"],
+                lastfmEnabled=ctx["lastfmEnabled"],
+                has_api=False,
+                is_authenticated=False,
+                success=None,
+                error=None,
+                publicView=True,
+                imageBase=f"/shared/{token}/img",
+                shareLinksEnabled=False,
+                shareLinks=[],
+                shareLinkExpiryChoices=SHARE_LINK_EXPIRY_CHOICES,
+            ))
+            resp.headers["X-Robots-Tag"] = "noindex"
+            return resp
+
+        @self.app.route("/shared/<token>/img/tracks/<filename>")
+        def serveSharedTrackImage(token, filename):
+            link = self.repo.getShareLink(token)
+            if link is None or filename != os.path.basename(filename):
+                return "", 404
+            resp = make_response(send_from_directory(Database.imgDir_tracks, filename))
+            resp.headers["X-Robots-Tag"] = "noindex"
+            return resp
+
+        @self.app.route("/shared/<token>/img/artists/<filename>")
+        def serveSharedArtistImage(token, filename):
+            link = self.repo.getShareLink(token)
+            if link is None or filename != os.path.basename(filename):
+                return "", 404
+
+            imageDir = Database.imgDir_artists
+            imagePath = os.path.join(imageDir, filename)
+            if not os.path.exists(imagePath):
+                parts = os.path.splitext(filename)
+                if len(parts) == 2 and parts[0].isalnum():
+                    db = self._getReadOnlyUserDb(link["username"])
+                    db.lazyFetchArtistImage(parts[0], Path(imagePath))
+
+            resp = make_response(send_from_directory(imageDir, filename))
+            resp.headers["X-Robots-Tag"] = "noindex"
+            return resp
+
+        @self.app.route("/profile/share-links/<int:link_id>", methods=["POST"])
+        def profileShareLinkAction(link_id):
+            """Owner-only revoke for a public Wrapped share link - accept/
+            decline don't apply here (unlike profileShareAction's mutual
+            shares), there's only ever one action."""
+            email, username, db = get_current_user_or_redirect()
+            if not email:
+                return redirect(url_for("login"))
+
+            if self.repo.revokeShareLink(link_id, username):
+                return redirect(url_for("profilePage", success="Share link revoked."))
+            return redirect(url_for("profilePage", error="Could not revoke that share link."))
 
         @self.app.route("/compare", methods=["GET"])
         def comparePage():

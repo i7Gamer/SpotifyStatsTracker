@@ -1,4 +1,4 @@
-{% extends "layout.html" %}
+{% extends "layout_public.html" if publicView else "layout.html" %}
 {% block content %}
   <style>
     .wrapped-loading-fade {
@@ -36,6 +36,7 @@
     <p class="success" style="color: #4aff4a; margin-bottom: 1.5rem; text-align: center;">{{ success }}</p>
   {% endif %}
 
+  {% if not publicView %}
   <nav class="wrapped-year-badges" aria-label="Select year">
     {% for y in availableYears %}
       <a class="wrapped-year-badge{{ ' active' if y == year else '' }}" href="{{ url_for('wrappedPage', year=y, groupBy=groupBy, limit=limit, sortBy=sortBy) }}">{{ y }}</a>
@@ -101,6 +102,37 @@
       <button class="primary-button" type="submit">Apply</button>
     </noscript>
   </form>
+
+  {% if share_links_enabled %}
+  <section class="card" style="margin: 0 0 24px; padding: 1rem 1.5rem;">
+    {% set currentLink = shareLinks | selectattr('year', 'equalto', year) | first %}
+    <h3 style="margin: 0 0 0.75rem;">Share this Wrapped</h3>
+    {% if currentLink %}
+      <p style="color: var(--muted); font-size: 0.9rem; margin: 0 0 0.75rem;">Anyone with this link can view your {{ year }} Wrapped - no login required.</p>
+      <div style="display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap;">
+        <input id="shareLinkUrl" type="text" readonly value="{{ url_for('sharedWrappedPage', token=currentLink.token, _external=True) }}" style="flex: 1; min-width: 220px;" onclick="this.select()">
+        <button type="button" class="primary-button" style="padding: 4px 12px;" onclick="navigator.clipboard.writeText(document.getElementById('shareLinkUrl').value)">Copy</button>
+        <form method="post" action="{{ url_for('profileShareLinkAction', link_id=currentLink.id) }}" style="margin: 0; display: inline-block;">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+          <button type="submit" class="primary-button" style="padding: 4px 12px; background: #c92a2a;">Revoke</button>
+        </form>
+      </div>
+    {% else %}
+      <p style="color: var(--muted); font-size: 0.9rem; margin: 0 0 0.75rem;">Create a public, no-login link to share your {{ year }} Wrapped.</p>
+      <form method="post" action="{{ url_for('createWrappedShareLink', year=year) }}" style="display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap;">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+        <label for="shareLinkExpiry">Expires:</label>
+        <select id="shareLinkExpiry" name="expiry">
+          {% for choice in shareLinkExpiryChoices %}
+            <option value="{{ choice }}" {% if choice == 'never' %}selected{% endif %}>{{ 'Never' if choice == 'never' else choice.replace('d', ' days') }}</option>
+          {% endfor %}
+        </select>
+        <button type="submit" class="primary-button">Create Share Link</button>
+      </form>
+    {% endif %}
+  </section>
+  {% endif %}
+  {% endif %}
 
   <section class="track-summary-grid">
     <article class="track-summary-card">
@@ -261,11 +293,6 @@
       timeSeries: {{ timeSeries | tojson }}
     };
 
-    let currentYear = '{{ year }}';
-    let currentGroupBy = '{{ groupBy }}';
-    let currentLimit = '{{ limit }}';
-    let currentSortBy = '{{ sortBy }}';
-
     const filterButtons = document.querySelectorAll('.stats-filter-button');
     const categoryDivs = document.querySelectorAll('[data-category]');
 
@@ -290,6 +317,16 @@
     if (allButton) {
       allButton.click();
     }
+
+    {% if not publicView %}
+    // Everything below this point (the AJAX groupBy/limit/sortBy filter
+    // form, year-badge switching, and the Export Summary Card button) only
+    // exists on the authenticated page - a public share-link view has none
+    // of those controls, so none of this runs there.
+    let currentYear = '{{ year }}';
+    let currentGroupBy = '{{ groupBy }}';
+    let currentLimit = '{{ limit }}';
+    let currentSortBy = '{{ sortBy }}';
 
     function loadWrappedData(year, groupBy, limit, sortBy, updateType = 'all') {
       const targets = [];
@@ -712,6 +749,7 @@
       link.href = dataURL;
       link.click();
     });
+    {% endif %}
   </script>
   <script src="{{ url_for('static', filename='js/charts.js') }}"></script>
 {% endblock %}

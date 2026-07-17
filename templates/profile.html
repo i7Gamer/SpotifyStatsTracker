@@ -182,6 +182,33 @@
     {% endif %}
     {% endif %}
 
+    {% if share_links_enabled and shareLinks %}
+    <div style="margin-bottom: 2rem; padding-bottom: 1.5rem; border-bottom: 1px solid var(--border-color, #2d2d2d);">
+      <h2>Wrapped Share Links</h2>
+      <p style="font-size: 0.9rem; color: #aaa; margin-bottom: 1.5rem;">
+        Public, no-login links to your yearly Wrapped recap - anyone with the link can view it. Create one from the <a href="{{ url_for('wrappedPage') }}">Wrapped</a> page.
+      </p>
+      <table class="status-table share-table" style="width: 100%; border-collapse: collapse;">
+        <tbody>
+          {% for link in shareLinks %}
+          <tr>
+            <td style="padding: 8px;">
+              <span class="badge badge-secondary">{{ link.year }}</span>
+              Created {{ link.createdText }} &middot; Expires: {{ link.expiresText }}
+            </td>
+            <td class="share-actions" style="padding: 8px; text-align: right;">
+              <form method="post" action="{{ url_for('profileShareLinkAction', link_id=link.id) }}" style="display: inline-block;">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+                <button type="submit" class="primary-button" style="padding: 4px 12px; background: #c92a2a;">Revoke</button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+
     {% if feature_enabled %}
     <h2>Spotify Developer API Settings</h2>
     <p style="font-size: 0.9rem; color: #aaa; margin-bottom: 1.5rem;">

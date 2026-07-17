@@ -1,6 +1,7 @@
 from __future__ import annotations
 import datetime
 import json
+import secrets
 import threading
 import time
 from pathlib import Path
@@ -44,6 +45,7 @@ SPOTIFY_BACKFILL_SETTING_KEY = "spotify_api_backfill_enabled"
 LASTFM_BACKFILL_SETTING_KEY = "lastfm_genre_backfill_enabled"
 DATA_SHARING_SETTING_KEY = "data_sharing_enabled"
 REGISTRATION_SETTING_KEY = "registration_enabled"
+SHARE_LINKS_SETTING_KEY = "share_links_enabled"
 
 # getBucketedPlayTotals' fixed UTC bucket width. 15 minutes is the smallest
 # granularity any real-world UTC offset uses (e.g. Asia/Kathmandu +5:45), so
@@ -1766,6 +1768,73 @@ class Repository:
             )
             return cursor.rowcount > 0
 
+    # ---- Per-user: public Wrapped share links -------------------------------
+
+    SHARE_LINK_KIND_WRAPPED = "wrapped"
+
+    def createShareLink(self, username: str, kind: str, year: int, expiresInSeconds: float | None) -> str:
+        """Creates a new link and returns its token. expiresInSeconds=None
+        means "never expires"."""
+        token = secrets.token_urlsafe(32)
+        now = time.time()
+        expiresAt = now + expiresInSeconds if expiresInSeconds is not None else None
+        conn = self._conn()
+        with conn:
+            conn.execute(
+                "INSERT INTO share_links (token, username, kind, year, created_at, expires_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (token, username, kind, year, now, expiresAt),
+            )
+        return token
+
+    def getShareLink(self, token: str) -> dict | None:
+        """None for an unknown, revoked, or expired token - all three look
+        identical to a caller, so the public route can't leak which case it
+        was. An expired row is deleted here, lazily, on lookup rather than by
+        a background sweep - see the share_links table comment in
+        Database/db.py."""
+        conn = self._conn()
+        with conn:
+            conn.execute(
+                "DELETE FROM share_links WHERE token=? AND expires_at IS NOT NULL AND expires_at < ?",
+                (token, time.time()),
+            )
+        row = conn.execute(
+            "SELECT id, token, username, kind, year, created_at, expires_at FROM share_links WHERE token=?",
+            (token,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def getShareLinksForUser(self, username: str) -> list[dict]:
+        """[{id, token, kind, year, created_at, expires_at}], newest year
+        first - for the Profile page's link-management list. Also lazily
+        deletes this user's own expired rows first (same reasoning as
+        getShareLink) - otherwise an expired link would keep showing here as
+        if still active, even though visiting it would already 404."""
+        conn = self._conn()
+        with conn:
+            conn.execute(
+                "DELETE FROM share_links WHERE username=? AND expires_at IS NOT NULL AND expires_at < ?",
+                (username, time.time()),
+            )
+        rows = conn.execute(
+            "SELECT id, token, kind, year, created_at, expires_at FROM share_links "
+            "WHERE username=? ORDER BY year DESC, created_at DESC",
+            (username,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def revokeShareLink(self, linkId: int, username: str) -> bool:
+        """Only the link's owner may revoke it. Returns whether a row was
+        actually deleted, so the caller can tell "gone" from "not yours"."""
+        conn = self._conn()
+        with conn:
+            cursor = conn.execute(
+                "DELETE FROM share_links WHERE id=? AND username=?",
+                (linkId, username),
+            )
+            return cursor.rowcount > 0
+
     def getAllUsernamesExcept(self, username: str) -> list[str]:
         """Plain username list for a "who can I request a share with" picker -
         deliberately narrower than getAllUsersDetails(), which also selects
@@ -2378,6 +2447,12 @@ class Repository:
 
     def setRegistrationEnabled(self, enabled: bool) -> None:
         self._setFeatureEnabled(REGISTRATION_SETTING_KEY, enabled)
+
+    def isShareLinksEnabled(self) -> bool:
+        return self._isFeatureEnabled(SHARE_LINKS_SETTING_KEY)
+
+    def setShareLinksEnabled(self, enabled: bool) -> None:
+        self._setFeatureEnabled(SHARE_LINKS_SETTING_KEY, enabled)
 
     def getMaxPlayedAtInPeriod(self, username: str, startTs: float, endTs: float) -> float | None:
         row = self._conn().execute(

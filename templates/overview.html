@@ -148,9 +148,13 @@
         <input type="checkbox" name="data_sharing" value="1" {% if sharing_enabled %}checked{% endif %}>
         Data sharing (Compare page and share requests on Profile)
       </label>
-      <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; margin-bottom: 1rem;">
+      <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; margin-bottom: 0.6rem;">
         <input type="checkbox" name="registration" value="1" {% if registration_enabled %}checked{% endif %}>
         New user registration
+      </label>
+      <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; margin-bottom: 1rem;">
+        <input type="checkbox" name="share_links" value="1" {% if share_links_enabled %}checked{% endif %}>
+        Public Wrapped share links (no-login links to a user's own yearly recap)
       </label>
       <div style="display: flex; align-items: center; gap: 0.75rem;">
         <button type="submit" class="primary-button" style="padding: 4px 16px;">Save</button>

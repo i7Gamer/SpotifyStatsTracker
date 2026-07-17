@@ -230,6 +230,24 @@ CREATE TABLE IF NOT EXISTS user_shares (
 );
 CREATE INDEX IF NOT EXISTS idx_user_shares_recipient ON user_shares(recipient_username, status);
 CREATE INDEX IF NOT EXISTS idx_user_shares_requester ON user_shares(requester_username, status);
+
+-- Public, tokenized read-only links to a user's own Wrapped recap - no login
+-- required to view. token is stored in plaintext (not hashed): knowing the
+-- token IS the access grant, like a "anyone with the link" URL, so hashing
+-- would only protect against DB-read access, which already exposes
+-- everything else in this database too. expires_at is nullable ('never'
+-- expires); an expired row is lazily deleted on lookup rather than swept by
+-- a background job - see Repository.getShareLink().
+CREATE TABLE IF NOT EXISTS share_links (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    token       TEXT NOT NULL UNIQUE,
+    username    TEXT NOT NULL REFERENCES users(username),
+    kind        TEXT NOT NULL CHECK (kind IN ('wrapped')),
+    year        INTEGER NOT NULL,
+    created_at  REAL NOT NULL,
+    expires_at  REAL
+);
+CREATE INDEX IF NOT EXISTS idx_share_links_username ON share_links(username);
 """
 
 

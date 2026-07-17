@@ -3,6 +3,11 @@
   {% set imgId = track.get('imageId', '') %}
   {% set item_number = item_number if item_number is defined else '' %}
   {% set section = section if section is defined else 'dashboard' %}
+  {# Public Wrapped share links serve images through a token-keyed route
+     instead of the session-authorized /img/<username>/... one, since an
+     anonymous viewer has no session to authorize against - see
+     sharedWrappedPage() in app.py. #}
+  {% set imageBase = imageBase if imageBase is defined else '/img/' + username %}
   {# Detail pages always resolve against the viewing session's own data, so a
      caller rendering ANOTHER user's items (the Compare page's counterpart
      columns) sets suppressDetailLinks. Those cards link to Spotify instead of
@@ -35,9 +40,9 @@
   {% endif %}
   <!-- Image path depends on section -->
   {% if section == 'top_artists' %}
-    <img class="track-cover" loading="lazy" src="/img/{{ username }}/artists/{{ imgId }}.jpeg" alt="Artist image for {{ track.get('name','') }}" onerror="this.onerror=null;this.src=window.PLACEHOLDER_IMG;" />
+    <img class="track-cover" loading="lazy" src="{{ imageBase }}/artists/{{ imgId }}.jpeg" alt="Artist image for {{ track.get('name','') }}" onerror="this.onerror=null;this.src=window.PLACEHOLDER_IMG;" />
   {% else %}
-    <img class="track-cover" loading="lazy" src="/img/{{ username }}/tracks/{{ imgId }}.jpeg" alt="Album cover for {{ track.get('name','') }}" onerror="this.onerror=null;this.src=window.PLACEHOLDER_IMG;" />
+    <img class="track-cover" loading="lazy" src="{{ imageBase }}/tracks/{{ imgId }}.jpeg" alt="Album cover for {{ track.get('name','') }}" onerror="this.onerror=null;this.src=window.PLACEHOLDER_IMG;" />
   {% endif %}
   {% if linkableId or externalUrl %}
     </a>

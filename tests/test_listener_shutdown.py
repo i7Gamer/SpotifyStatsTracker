@@ -285,6 +285,7 @@ class TestAppShutdownTwoPhase(unittest.TestCase):
         dash.backupWorker = MagicMock()
         dash._db_lock = threading.Lock()
         dash.user_databases = {}
+        dash._activatedUsers = set()
         return dash
 
     def test_signals_all_users_before_joining_any(self):
