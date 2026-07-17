@@ -159,6 +159,11 @@ class Database:
                                                 #  since the last connect-state update is a frozen/stale feed,
                                                 #  not a real playback - report nothing instead
 
+    LISTENER_DURATION_CORRUPTION_FACTOR = 10   #< a listener-reported play duration more than this many times
+                                                #  the track's own length is SpotipyFree corruption (e.g.
+                                                #  7062895ms for a 171s track) - the play is recorded with the
+                                                #  track's actual length instead of being dropped
+
     BACKFILLER_MIN_START_DELAY = 30            #< random startup-offset bounds for the metadata backfiller,
     BACKFILLER_MAX_START_DELAY = 90            #  in seconds - staggers per-user threads after a restart
 
@@ -323,17 +328,21 @@ class Database:
                 continue
 
             # Sanity check: validate play duration is reasonable for a track
-            # (SpotipyFree sometimes returns insane values like 7062895ms for a 171s track)
+            # (SpotipyFree sometimes returns insane values like 7062895ms for a
+            # 171s track). The played_at timestamp is still trustworthy, so
+            # record the play with the track's own length - what the Web API
+            # backfill would store - instead of dropping it: the recently-played
+            # feed doesn't always contain the track later, and a skip then loses
+            # the play for good (2026-07-17, timorzipa).
             track_duration = track.get("duration_ms", 0) if track else 0
-            if track_duration > 0 and msPlayed > track_duration * 10:
+            if track_duration > 0 and msPlayed > track_duration * self.LISTENER_DURATION_CORRUPTION_FACTOR:
                 logger.warning(
-                    "Skipping track %s: recorded duration %dms is %dx the track's actual duration (%dms). "
-                    "Likely SpotipyFree data corruption.",
-                    track.get("id") if track else "unknown",
+                    "Track %s: recorded duration %dms is %dx the track's actual duration (%dms). "
+                    "Likely SpotipyFree data corruption - recording with the track's actual duration instead.",
+                    track.get("id"),
                     msPlayed, msPlayed // max(track_duration, 1), track_duration
                 )
-                had_errors = True
-                continue
+                msPlayed = track_duration
 
             # Only record tracks played for at least 1 second (filter out skips/scrubs)
             if msPlayed < 1000:

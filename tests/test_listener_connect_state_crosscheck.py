@@ -89,6 +89,18 @@ class TestGetRecentTrackUrisFromConnectState(unittest.TestCase):
 
         self.assertEqual(listener._getRecentTrackUrisFromConnectState(), ["spotify:track:aaa"])
 
+    def test_non_track_uris_are_filtered_out(self):
+        """prev_tracks also carries queue markers (spotify:delimiter,
+        spotify:meta:*) - they are not tracks and must not be returned."""
+        listener = _bareListener()
+        _withConnectState(listener, [
+            {"uri": "spotify:track:aaa"},
+            {"uri": "spotify:delimiter"},
+            {"uri": "spotify:meta:node_rules_placeholder"},
+        ])
+
+        self.assertEqual(listener._getRecentTrackUrisFromConnectState(), ["spotify:track:aaa"])
+
 
 class TestCheckConnectStateForMissedTracks(unittest.TestCase):
     def _recordedItem(self, trackId):
@@ -132,6 +144,36 @@ class TestCheckConnectStateForMissedTracks(unittest.TestCase):
 
         self.assertEqual(len(cm2.output), 1)  # only the sentinel, not a repeat warning
         self.assertEqual(firstCallWarnings, 1)
+
+    def test_non_track_uris_never_warn(self):
+        """Queue markers (spotify:delimiter, spotify:meta:*) can never match a
+        recorded play - warning about them (as happened before the filter)
+        just repeats forever across reconnects."""
+        listener = _bareListener(recentlyPlayed=[])
+        _withConnectState(listener, [
+            {"uri": "spotify:delimiter"},
+            {"uri": "spotify:meta:node_rules_placeholder"},
+            {"uri": "spotify:track:bbb"},
+        ])
+
+        with self.assertLogs("Database.Listeners.spotifyListener", level="WARNING") as cm:
+            listener._checkConnectStateForMissedTracks()
+
+        self.assertEqual(len(cm.output), 1)
+        self.assertIn("spotify:track:bbb", cm.output[0])
+        self.assertNotIn("delimiter", cm.output[0])
+        self.assertNotIn("spotify:meta", cm.output[0])
+
+    def test_only_non_track_uris_produces_no_warning(self):
+        listener = _bareListener(recentlyPlayed=[])
+        _withConnectState(listener, [
+            {"uri": "spotify:delimiter"},
+            {"uri": "spotify:meta:node_rules_placeholder"},
+        ])
+
+        listener._checkConnectStateForMissedTracks()  # must not raise
+
+        self.assertEqual(len(listener._warnedMissingTrackUris), 0)
 
     def test_no_connect_state_available_does_not_raise(self):
         listener = _bareListener(recentlyPlayed=[])

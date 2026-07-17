@@ -61,6 +61,10 @@ RATE_LIMIT_ERROR_BACKOFF_SECONDS = 60  #< backoff for 429 rate limit errors from
 # history), so this is just a defensive cap, not a tuning knob.
 CONNECT_STATE_MISSED_TRACK_CACHE_SIZE = 50
 
+SPOTIFY_TRACK_URI_PREFIX = "spotify:track:"  #< connect-state prev_tracks mixes real tracks with queue
+                                              #  markers (spotify:delimiter, spotify:meta:*) - only URIs
+                                              #  with this prefix are playable tracks
+
 WEB_API_POLL_INTERVAL_SECONDS = 15 * 60  #< Query Web API recently-played backfill every 15 minutes
 
 USER_VALIDATION_CACHE_SECONDS = 5 * 60  #< Cache user validation results to reduce bot detection triggers
@@ -332,11 +336,19 @@ class Listener:
 
     def _getRecentTrackUrisFromConnectState(self):
         """Previously-played track URIs from the connect state, or None if no
-        state has been captured yet - see getConnectPlayerState()."""
+        state has been captured yet - see getConnectPlayerState(). prev_tracks
+        also carries queue markers that are not tracks (spotify:delimiter,
+        spotify:meta:*); they can never match a recorded play, so they are
+        filtered out here - the missed-track check used to re-warn about them
+        after every reconnect."""
         state = self.getConnectPlayerState()
         if not state:
             return None
-        return [uri for uri in (track.get("uri") for track in state.get("prev_tracks", [])) if uri]
+        return [
+            uri
+            for uri in (track.get("uri") for track in state.get("prev_tracks", []))
+            if uri and uri.startswith(SPOTIFY_TRACK_URI_PREFIX)
+        ]
 
     def _checkConnectStateForMissedTracks(self) -> None:
         """Diagnostic cross-check: warn if Spotify's Connect-state queue
@@ -362,7 +374,7 @@ class Listener:
 
             missingUris = []
             for uri in recentUris:
-                trackId = uri.removeprefix("spotify:track:")
+                trackId = uri.removeprefix(SPOTIFY_TRACK_URI_PREFIX)
                 if trackId in recordedTrackIds or uri in self._warnedMissingTrackUris:
                     continue
                 missingUris.append(uri)

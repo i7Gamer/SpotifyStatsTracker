@@ -58,6 +58,68 @@ class TestAddToDatabaseFromListener(unittest.TestCase):
         db._addToDatabaseFromListener([])
         db.appendTrackData.assert_not_called()
 
+    def test_corrupt_duration_is_clamped_to_track_length_not_skipped(self):
+        """SpotipyFree sometimes reports an absurd play duration (e.g. time
+        since the previous track change measured across a reconnect). The
+        played_at timestamp is still good - the play must be recorded with the
+        track's actual length (what the Web API backfill would store), not
+        dropped: the recently-played feed doesn't always contain the track
+        later, so a skip can lose the play for good (2026-07-17, timorzipa)."""
+        db = _bareDatabase()
+        trackDuration = 150508
+        corruptDuration = trackDuration * (Database.LISTENER_DURATION_CORRUPTION_FACTOR + 5)
+        items = [{
+            "track": {"id": "t1", "duration_ms": trackDuration},
+            "played_at": "2026-07-17T10:35:00Z",
+            "ms_played": corruptDuration,
+            "context": None,
+        }]
+
+        with self.assertLogs("Database.database", level="WARNING") as cm:
+            db._addToDatabaseFromListener(items)
+
+        db.appendTrackData.assert_called_once_with(
+            "2026-07-17T10:35:00Z", {"id": "t1", "duration_ms": trackDuration},
+            trackDuration, context=None, source="listener")
+        self.assertTrue(any("corruption" in message for message in cm.output))
+
+    def test_plausible_long_duration_is_kept_unchanged(self):
+        """Below the corruption factor the reported duration passes through -
+        only clearly-corrupt values get clamped."""
+        db = _bareDatabase()
+        trackDuration = 150508
+        longButPlausible = trackDuration * (Database.LISTENER_DURATION_CORRUPTION_FACTOR - 1)
+        items = [{
+            "track": {"id": "t1", "duration_ms": trackDuration},
+            "played_at": "2026-07-17T10:35:00Z",
+            "ms_played": longButPlausible,
+            "context": None,
+        }]
+
+        db._addToDatabaseFromListener(items)
+
+        db.appendTrackData.assert_called_once_with(
+            "2026-07-17T10:35:00Z", {"id": "t1", "duration_ms": trackDuration},
+            longButPlausible, context=None, source="listener")
+
+    def test_corrupt_duration_does_not_mark_listener_errored(self):
+        """A clamped play is handled, not an error - it must not push the
+        listener toward DEGRADED."""
+        db = _bareDatabase()
+        trackDuration = 150508
+        items = [{
+            "track": {"id": "t1", "duration_ms": trackDuration},
+            "played_at": "2026-07-17T10:35:00Z",
+            "ms_played": trackDuration * (Database.LISTENER_DURATION_CORRUPTION_FACTOR + 1),
+            "context": None,
+        }]
+        db.listener_error_count = 3
+
+        with self.assertLogs("Database.database", level="WARNING"):
+            db._addToDatabaseFromListener(items)
+
+        self.assertEqual(db.listener_error_count, 0)  #< error-free poll resets the count
+
     def test_skips_future_played_at_and_handles_string_timestamps(self):
         db = _bareDatabase()
         import time
