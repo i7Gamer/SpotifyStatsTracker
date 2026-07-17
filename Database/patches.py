@@ -469,6 +469,29 @@ STATE_FAILURE_RECONNECT_THRESHOLD = 5
 
 UPDATE_LOOP_ERROR_SLEEP_SECONDS = 10  #< back off after an unexpected updateLoop error before reconnecting
 
+SESSION_CLOSED_ERROR_MARKER = "session is closed"  #< curl_cffi's "Session is closed, cannot send
+                                                    #  request." - the HTTP session backing this manager
+                                                    #  was closed (listener stop or GC) and can never
+                                                    #  serve another request
+
+
+def _isSessionClosedError(exc: BaseException | None) -> bool:
+    """True when an exception (or anything reachable through its .error detail
+    attribute or __cause__/__context__ chain) reports curl_cffi's closed-session
+    state - a dead transport no amount of retrying can revive. spotapi wraps the
+    curl_cffi error in RequestError("Failed to complete request.", error=...),
+    so str(exc) alone is not enough."""
+    seen: set[int] = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        if SESSION_CLOSED_ERROR_MARKER in str(exc).lower():
+            return True
+        detail = getattr(exc, "error", None)
+        if detail is not None and SESSION_CLOSED_ERROR_MARKER in str(detail).lower():
+            return True
+        exc = exc.__cause__ or exc.__context__
+    return False
+
 
 def patch_last_played() -> bool:
     """Patch SpotipyFree.LastPlayed.LastPlayedManger.updateLoop to handle
@@ -485,6 +508,14 @@ def patch_last_played() -> bool:
         def patched_update_loop(self, callback, refreshInterval=3):
             consecutiveStateFailures = 0
             while self.run:
+                if getattr(self.manager, "_deliberate_close", False):
+                    # Listener.stop()/signalStop() closed this websocket on
+                    # purpose - exit instead of hammering a connection that is
+                    # gone for good (a leftover loop kept spamming reconnect
+                    # errors every few seconds through the 2026-07-17 shutdown).
+                    logger.info("[SpotipyFree] Player-state loop exiting: websocket was closed deliberately")
+                    self.run = False
+                    return
                 try:
                     try:
                         state = self.manager.state
@@ -504,7 +535,14 @@ def patch_last_played() -> bool:
                             try:
                                 self.manager.reconnect()
                             except Exception as reconnect_err:
-                                logger.error("[SpotipyFree] Listener stopped due to websocket disconnection: %s", reconnect_err, exc_info=True)
+                                if _isSessionClosedError(reconnect_err):
+                                    logger.error(
+                                        "[SpotipyFree] Player-state loop exiting: the HTTP session is "
+                                        "closed and cannot be revived: %s", reconnect_err,
+                                    )
+                                    self.run = False
+                                    return
+                                logger.error("[SpotipyFree] Websocket reconnect failed; will keep retrying: %s", reconnect_err, exc_info=True)
                         time.sleep(refreshInterval)
                         continue
 
@@ -535,7 +573,14 @@ def patch_last_played() -> bool:
                     try:
                         self.manager.reconnect()
                     except Exception as reconnect_err:
-                        logger.error("[SpotipyFree] Listener stopped due to websocket disconnection: %s", reconnect_err, exc_info=True)
+                        if _isSessionClosedError(reconnect_err):
+                            logger.error(
+                                "[SpotipyFree] Player-state loop exiting: the HTTP session is "
+                                "closed and cannot be revived: %s", reconnect_err,
+                            )
+                            self.run = False
+                            return
+                        logger.error("[SpotipyFree] Websocket reconnect failed; will keep retrying: %s", reconnect_err, exc_info=True)
 
         LastPlayedManger.updateLoop = patched_update_loop
         return True

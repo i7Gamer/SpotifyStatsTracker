@@ -507,7 +507,9 @@ class SpotifyDashboardApp:
     def get_user_db(self, username, email):
         with self._db_lock:
             if username not in self.user_databases:
-                db = Database(user=username, email=email)
+                # Share the app-wide stop event so the listener reconnect
+                # paths can refuse to fire once shutdown has begun.
+                db = Database(user=username, email=email, shutdown_event=self._stop_event)
                 try:
                     db.startAutoImporter()
                     db.resetProgress()
@@ -3093,11 +3095,22 @@ class SpotifyDashboardApp:
         self._stop_event.set()
         self.backupWorker.stop()
         with self._db_lock:
-            for db in self.user_databases.values():
-                try:
-                    db.stop()
-                except Exception as e:
-                    logger.error("Error stopping database for %s: %s", db.user, e)
+            databases = list(self.user_databases.values())
+        # Two-phase: SIGNAL every user's stop flags first (no joins), THEN
+        # join. While user A's threads were being joined, user B's still-
+        # running listener used to hit its stale-feed check and resurrect
+        # itself mid-shutdown (the 2026-07-17 hang); with every stop flag
+        # already set, the reconnect paths refuse instead.
+        for db in databases:
+            try:
+                db.signalStop()
+            except Exception as e:
+                logger.error("Error signaling stop for %s: %s", db.user, e)
+        for db in databases:
+            try:
+                db.stop()
+            except Exception as e:
+                logger.error("Error stopping database for %s: %s", db.user, e)
 
     def run(self):
         try:

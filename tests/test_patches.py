@@ -568,12 +568,13 @@ class TestPatches(unittest.TestCase):
         import time
         
         manager = MagicMock()
+        manager._deliberate_close = False  #< a bare MagicMock's auto-attribute is truthy = deliberate close
         callback = MagicMock()
-        
+
         state_none_timestamp = MagicMock()
         state_none_timestamp.timestamp = None
         state_none_timestamp.track = None
-        
+
         manager.state = state_none_timestamp
         
         with patch("SpotipyFree.LastPlayed.PlayerStatus"):
@@ -737,6 +738,115 @@ class TestPatches(unittest.TestCase):
             f"{type(stored_meta).__name__}, expected dict")
         self.assertEqual(stored_meta.get("title"), "Test")
         self.assertEqual(stored_meta.get("artist_name"), "Artist")
+
+
+class TestSessionClosedDetection(unittest.TestCase):
+    """_isSessionClosedError must recognize curl_cffi's dead-session state in a
+    raw message, in spotapi's .error detail attribute, and through the
+    __cause__/__context__ chain - and nothing else."""
+
+    def test_detects_direct_message(self):
+        from Database.patches import _isSessionClosedError
+        self.assertTrue(_isSessionClosedError(
+            RuntimeError("Session is closed, cannot send request.")))
+
+    def test_detects_error_detail_attribute(self):
+        """spotapi's RequestError keeps the underlying curl_cffi detail in
+        .error, not in str(e)."""
+        from Database.patches import _isSessionClosedError
+        from spotapi.exceptions import RequestError
+        exc = RequestError("Failed to complete request.",
+                           error="Session is closed, cannot send request.")
+        self.assertTrue(_isSessionClosedError(exc))
+
+    def test_detects_chained_cause(self):
+        from Database.patches import _isSessionClosedError
+        try:
+            try:
+                raise RuntimeError("Session is closed, cannot send request.")
+            except RuntimeError as inner:
+                raise ValueError("outer wrapper") from inner
+        except ValueError as outer:
+            self.assertTrue(_isSessionClosedError(outer))
+
+    def test_ignores_unrelated_errors_and_none(self):
+        from Database.patches import _isSessionClosedError
+        self.assertFalse(_isSessionClosedError(RuntimeError("429: rate limited")))
+        self.assertFalse(_isSessionClosedError(None))
+
+    def test_survives_self_referencing_chain(self):
+        from Database.patches import _isSessionClosedError
+        exc = RuntimeError("nope")
+        exc.__context__ = exc  #< pathological cycle must not hang the check
+        self.assertFalse(_isSessionClosedError(exc))
+
+
+class TestUpdateLoopShutdown(unittest.TestCase):
+    """The patched updateLoop must self-terminate when its transport is gone
+    for good (deliberate close / closed HTTP session) instead of retrying
+    forever - a leftover loop kept spamming reconnect errors every few seconds
+    after Ctrl+C during the 2026-07-17 shutdown hang."""
+
+    def _makeLpm(self, manager):
+        from SpotipyFree.LastPlayed import LastPlayedManger
+        with patch("SpotipyFree.LastPlayed.PlayerStatus"):
+            lpm = LastPlayedManger(MagicMock())
+        lpm.manager = manager
+        lpm.run = True
+        return lpm
+
+    def test_exits_on_deliberate_close_without_polling(self):
+        manager = _ScriptedStateManager([])  #< any state access would IndexError
+        manager._deliberate_close = True
+        lpm = self._makeLpm(manager)
+
+        lpm.updateLoop(MagicMock(), refreshInterval=1)
+
+        self.assertFalse(lpm.run)
+        manager.reconnect.assert_not_called()
+
+    def test_stops_when_reconnect_hits_closed_session(self):
+        """Once the HTTP session is closed, reconnect can never succeed - the
+        loop must stop itself instead of cycling warn/error forever."""
+        from Database.patches import STATE_FAILURE_RECONNECT_THRESHOLD
+        from spotapi.exceptions import RequestError
+
+        manager = _ScriptedStateManager(
+            [ValueError("Could not get player state")] * STATE_FAILURE_RECONNECT_THRESHOLD
+        )
+        manager.reconnect = MagicMock(side_effect=RequestError(
+            "Failed to complete request.",
+            error="Session is closed, cannot send request."))
+        lpm = self._makeLpm(manager)
+
+        with patch("time.sleep"):  #< the loop must terminate on its own
+            lpm.updateLoop(MagicMock(), refreshInterval=1)
+
+        self.assertFalse(lpm.run)
+        manager.reconnect.assert_called_once_with()
+
+    def test_keeps_retrying_on_other_reconnect_errors(self):
+        """A non-closed-session reconnect failure keeps the retry loop alive -
+        transient outages must still recover once Spotify is reachable again."""
+        from Database.patches import STATE_FAILURE_RECONNECT_THRESHOLD
+
+        script = [ValueError("Could not get player state")] * (STATE_FAILURE_RECONNECT_THRESHOLD + 1)
+        manager = _ScriptedStateManager(script)
+        manager.reconnect = MagicMock(side_effect=RuntimeError("Spotify unreachable"))
+        lpm = self._makeLpm(manager)
+
+        sleepCount = [0]
+
+        def mockSleep(_secs):
+            sleepCount[0] += 1
+            if sleepCount[0] >= len(script):
+                lpm.run = False
+
+        with patch("time.sleep", side_effect=mockSleep):
+            lpm.updateLoop(MagicMock(), refreshInterval=1)
+
+        manager.reconnect.assert_called_once_with()
+        self.assertEqual(manager._results, [])  #< loop survived past the failed reconnect
 
 
 if __name__ == "__main__":

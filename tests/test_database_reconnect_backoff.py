@@ -71,5 +71,64 @@ class TestReconnectBackoff(unittest.TestCase):
             self.assertTrue(callable(onStale_callback))
 
 
+class TestReconnectShutdownGate(unittest.TestCase):
+    """A stale-feed reconnect racing shutdown used to resurrect a listener
+    nothing could reach (the 2026-07-17 hang) - onStale must abandon
+    reconnection as soon as stop/shutdown is requested."""
+
+    def _makeTestDb(self):
+        with patch('Database.database.Repository'), \
+             patch('Database.database.AutoImporter'), \
+             patch('Database.database.Path.exists', return_value=False), \
+             patch.dict(os.environ, {}, clear=False):
+            db = Database(user="TestUser", email="test@example.com")
+        return db
+
+    def test_onstale_aborts_immediately_when_shutting_down(self):
+        db = self._makeTestDb()
+        db.shutdown_event.set()
+
+        with patch.object(db, "startListener") as mockStart:
+            db._makeOnStaleCallback()()
+
+        mockStart.assert_not_called()
+
+    def test_onstale_aborts_when_stopping(self):
+        db = self._makeTestDb()
+        db._stopping = True
+
+        with patch.object(db, "startListener") as mockStart:
+            db._makeOnStaleCallback()()
+
+        mockStart.assert_not_called()
+
+    def test_onstale_abandons_when_startListener_reports_stop(self):
+        """startListener returning False means 'stop requested' - no retries."""
+        db = self._makeTestDb()
+
+        with patch.object(db, "startListener", return_value=False) as mockStart:
+            db._makeOnStaleCallback()()
+
+        mockStart.assert_called_once()
+
+    def test_onstale_backoff_waits_on_shutdown_event(self):
+        """The between-attempt backoff must wait on shutdown_event
+        (interruptible) and abandon reconnection when it fires - not sleep out
+        up to RECONNECT_MAX_DELAY and reconnect anyway."""
+        db = self._makeTestDb()
+        db.shutdown_event = MagicMock()
+        db.shutdown_event.is_set.return_value = False
+        db.shutdown_event.wait.return_value = True  #< "shutdown arrived mid-wait"
+
+        with patch.object(db, "startListener",
+                          side_effect=RuntimeError("still down")) as mockStart, \
+             patch("Database.database.time.sleep") as mockSleep:
+            db._makeOnStaleCallback()()
+
+        mockStart.assert_called_once()               # attempt 1 failed...
+        db.shutdown_event.wait.assert_called_once()  # ...the backoff waited on the event...
+        mockSleep.assert_not_called()                # ...never via a blind sleep
+
+
 if __name__ == "__main__":
     unittest.main()

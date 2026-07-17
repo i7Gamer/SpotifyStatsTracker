@@ -259,5 +259,32 @@ class TestAutoImporterWiring(DatabaseTestCase):
         self.assertEqual(db.autoImporter.importCallback.__func__, type(db).importHistoryBatch)
 
 
+class TestWatchdogSignalStop(unittest.TestCase):
+    """signalStop() is the join-free half of stop(), used by shutdown's
+    signal-everything-first phase."""
+
+    def test_signal_stop_sets_flags_without_joining(self):
+        wd = Watchdog()
+        wd.thread = MagicMock()
+        wd.thread.is_alive.return_value = True
+
+        wd.signalStop()
+
+        self.assertFalse(wd.run)
+        self.assertTrue(wd._stop_event.is_set())
+        wd.thread.join.assert_not_called()
+
+    def test_stop_still_joins_with_timeout(self):
+        wd = Watchdog()
+        wd.thread = MagicMock()
+        wd.thread.is_alive.return_value = True
+
+        wd.stop()
+
+        self.assertFalse(wd.run)
+        wd.thread.join.assert_called_once()
+        self.assertIn("timeout", wd.thread.join.call_args.kwargs)
+
+
 if __name__ == "__main__":
     unittest.main()

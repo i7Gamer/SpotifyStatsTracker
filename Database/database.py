@@ -129,6 +129,11 @@ class Database:
     RECONNECT_MAX_RETRIES = 10  #< max reconnection attempts before giving up (~30 min window with backoff)
     RECONNECT_INITIAL_DELAY = 1  #< initial backoff in seconds
     RECONNECT_MAX_DELAY = 300  #< cap backoff at 5 minutes
+    LISTENER_STOP_LOCK_TIMEOUT_SECONDS = 2  #< bound how long stop() waits for an in-flight
+                                             #  startListener (a live Spotify login, ~15s) to release
+                                             #  the listener lock - on timeout stop() proceeds and the
+                                             #  in-flight call sees _stopping afterwards and tears its
+                                             #  own freshly-built listener down
     BACKFILL_INSERT_GUARD_EXTRA_SECONDS = 60  #< margin added on top of a track's own duration for the
                                                #  wide, backfill-only insert-time dedup guard (see
                                                #  appendTrackData) - accounts for Spotify's played_at
@@ -184,7 +189,8 @@ class Database:
     _lastfm_active = set()
     _lastfm_active_lock = threading.Lock()
 
-    def __init__(self, user: str, cookiesFile: str | None = None, email: str | None = None, dbPath=None):
+    def __init__(self, user: str, cookiesFile: str | None = None, email: str | None = None, dbPath=None,
+                 shutdown_event: threading.Event | None = None):
         if not user:
             raise ValueError("Database user must be specified and cannot be empty.")
         self.user = user
@@ -192,6 +198,19 @@ class Database:
         self.email = email
         self.listener = None
         self.baseDir = Path(__file__).resolve().parent
+
+        # Shutdown coordination. shutdown_event is the app-wide "we are
+        # exiting" signal (SpotifyDashboardApp shares its _stop_event here);
+        # _stopping is this instance's own end-of-life flag, set by
+        # signalStop()/stop() and never cleared. Both gate startListener and
+        # the onStale reconnect so a stale-feed check firing during shutdown
+        # can no longer resurrect a listener nothing can reach (the 2026-07-17
+        # hang). _listener_lock serializes startListener against stop() and
+        # against concurrent reconnects (health check vs onStale), whose
+        # interleaved stop/swap used to orphan a running listener.
+        self.shutdown_event = shutdown_event if shutdown_event is not None else threading.Event()
+        self._stopping = False
+        self._listener_lock = threading.Lock()
 
         # Health monitoring: track listener state for graceful degradation
         self._health_lock = threading.RLock()
@@ -1427,6 +1446,11 @@ class Database:
         series = [{"name": name, "data": [seriesData[name][key] for key in bucketKeys]} for name in topNames]
         return {"buckets": bucketKeys, "series": series}
 
+    def _stopRequested(self) -> bool:
+        """True once this instance is being stopped or the whole app is
+        shutting down - reconnect/start paths must refuse from then on."""
+        return self._stopping or self.shutdown_event.is_set()
+
     def _makeOnStaleCallback(self) -> callable:
         """Create an onStale callback that retries with exponential backoff.
         Called when the listener detects a stale feed or auth error and needs
@@ -1446,11 +1470,22 @@ class Database:
                         "Reconnection attempt %d/%d, waiting %ds before retry",
                         attempt, self.RECONNECT_MAX_RETRIES, backoff_delay
                     )
-                    time.sleep(backoff_delay)
+                    # Interruptible: shutdown arriving mid-backoff aborts the
+                    # wait instead of sleeping out up to RECONNECT_MAX_DELAY
+                    # and reconnecting into a shutting-down process.
+                    if self.shutdown_event.wait(backoff_delay):
+                        logger.info("Reconnection abandoned for user %s: shutting down", self.user)
+                        return
+
+                if self._stopRequested():
+                    logger.info("Reconnection abandoned for user %s: stop requested", self.user)
+                    return
 
                 try:
                     logger.info("Attempting to reconnect (attempt %d/%d)", attempt + 1, self.RECONNECT_MAX_RETRIES)
-                    self.startListener(email=self.email)
+                    if self.startListener(email=self.email) is False:
+                        logger.info("Reconnection abandoned for user %s: stop requested", self.user)
+                        return
                     logger.info("Reconnection succeeded on attempt %d", attempt + 1)
                     return
                 except Exception as e:
@@ -1467,45 +1502,70 @@ class Database:
 
         return onStaleWithBackoff
 
-    def startListener(self, cookiesFile=None, email=None):
-        if cookiesFile:
-            self.cookiesFile = cookiesFile
-        if email:
-            if self.email and email != self.email:
-                logger.warning(
-                    "Email mismatch in startListener for user %s: was %s, now %s. "
-                    "This could indicate confused session state.",
-                    self.user, self.email, email
-                )
-            self.email = email
-        if self.listener is not None:
-            logger.info("Stopping existing listener for user %s before re-starting", self.user)
-            try:
-                self.listener.stop()
-            except Exception as e:
-                logger.error("Failed to stop existing listener for user %s: %s", self.user, parseError(e))
-        self.listener = self._withCookiesFile(lambda cf: Listener(cf, email=self.email, get_credentials=self.getUserSpotifyCredentials))
-        if self.listener.contaminationDetected:
-            # The cookies authenticate as a different Spotify account (see
-            # Listener.__init__'s contamination check). The listener itself
-            # refuses to record; reflect that as DEAD so the UI shows the user
-            # something actionable instead of a listener that looks healthy
-            # while recording nothing.
+    def startListener(self, cookiesFile=None, email=None) -> bool:
+        """(Re)build and start this user's listener. Returns False when the
+        start was refused or abandoned because stop/shutdown was requested;
+        True otherwise. The whole body holds _listener_lock: concurrent
+        reconnects (health check vs onStale) are serialized, and stop() can
+        rely on the swap below never interleaving with its own teardown."""
+        if self._stopRequested():
+            logger.info("Not starting listener for user %s: stop requested", self.user)
+            return False
+        with self._listener_lock:
+            if self._stopRequested():
+                logger.info("Not starting listener for user %s: stop requested", self.user)
+                return False
+            if cookiesFile:
+                self.cookiesFile = cookiesFile
+            if email:
+                if self.email and email != self.email:
+                    logger.warning(
+                        "Email mismatch in startListener for user %s: was %s, now %s. "
+                        "This could indicate confused session state.",
+                        self.user, self.email, email
+                    )
+                self.email = email
+            if self.listener is not None:
+                logger.info("Stopping existing listener for user %s before re-starting", self.user)
+                try:
+                    self.listener.stop()
+                except Exception as e:
+                    logger.error("Failed to stop existing listener for user %s: %s", self.user, parseError(e))
+            newListener = self._withCookiesFile(lambda cf: Listener(cf, email=self.email, get_credentials=self.getUserSpotifyCredentials))
+            if self._stopRequested():
+                # stop() gave up waiting on this lock while the (slow,
+                # uninterruptible) Listener login above was in flight - tear
+                # the fresh listener down instead of leaving an orphan running
+                # that nothing can reach (the 2026-07-17 shutdown hang).
+                logger.info("Stop requested while listener for user %s was connecting - discarding it", self.user)
+                try:
+                    newListener.stop()
+                except Exception as e:
+                    logger.error("Failed to stop just-built listener for user %s: %s", self.user, parseError(e))
+                return False
+            self.listener = newListener
+            if self.listener.contaminationDetected:
+                # The cookies authenticate as a different Spotify account (see
+                # Listener.__init__'s contamination check). The listener itself
+                # refuses to record; reflect that as DEAD so the UI shows the user
+                # something actionable instead of a listener that looks healthy
+                # while recording nothing.
+                with self._health_lock:
+                    self.listener_health = "DEAD"
+                    self.listener_last_error = (
+                        "Stored cookies belong to a different Spotify account - "
+                        "re-login with matching cookies to resume tracking"
+                    )
+                return True
             with self._health_lock:
-                self.listener_health = "DEAD"
-                self.listener_last_error = (
-                    "Stored cookies belong to a different Spotify account - "
-                    "re-login with matching cookies to resume tracking"
-                )
-            return
-        with self._health_lock:
-            self.listener_health = "HEALTHY"
-            self.listener_error_count = 0
-        self.listener.startListener_thread(
-            callback=self._addToDatabaseFromListener,
-            onStale=self._makeOnStaleCallback(),
-            onWebApiSnapshot=self._reconcileWithWebApiHistory,
-        )
+                self.listener_health = "HEALTHY"
+                self.listener_error_count = 0
+            self.listener.startListener_thread(
+                callback=self._addToDatabaseFromListener,
+                onStale=self._makeOnStaleCallback(),
+                onWebApiSnapshot=self._reconcileWithWebApiHistory,
+            )
+        return True
 
     def getUserSpotifyCredentials(self) -> dict | None:
         return self.repo.getUserSpotifyCredentials(self.user)
@@ -1740,9 +1800,44 @@ class Database:
                 "seconds_since_last_poll": seconds_since_last_poll,
             }
 
+    def signalStop(self) -> None:
+        """Phase 1 of shutdown: flip every stop flag/event for this user
+        WITHOUT joining or closing anything. shutdown() calls this for every
+        user before any (potentially slow) join runs, closing the window where
+        one user's still-running listener fires a stale-feed reconnect while
+        another user's threads are being joined (the 2026-07-17 hang).
+        Permanent: a signaled instance never starts a listener again."""
+        self._stopping = True
+        listener = self.listener
+        if listener is not None:
+            try:
+                listener.signalStop()
+            except Exception as e:
+                logger.error("Error signaling listener stop for %s: %s", self.user, parseError(e))
+        wd = getattr(self.autoImporter, "wd", None)
+        if wd is not None:
+            wd.signalStop()
+        for eventName in ("backfiller_stop_event", "wrapped_stop_event", "lastfm_stop_event"):
+            event = getattr(self, eventName, None)
+            if event is not None:
+                event.set()
+
     def stop(self):
-        if self.listener is not None:
-            self.listener.stop()
+        # Signal first even when called directly (idempotent when shutdown()
+        # already ran signalStop): every thread starts winding down before the
+        # joins below block.
+        self.signalStop()
+        acquired = self._listener_lock.acquire(timeout=self.LISTENER_STOP_LOCK_TIMEOUT_SECONDS)
+        # On timeout an in-flight startListener holds the lock (a live Spotify
+        # login) - proceed anyway: it re-checks _stopping after connecting and
+        # discards its own listener, and stopping the current listener without
+        # the lock is safe (Listener.stop() is idempotent).
+        try:
+            if self.listener is not None:
+                self.listener.stop()
+        finally:
+            if acquired:
+                self._listener_lock.release()
         self.autoImporter.wd.stop()
         self.stopMetadataBackfiller()
         self.stopWrappedCalculationsWorker()

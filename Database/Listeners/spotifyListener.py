@@ -627,28 +627,41 @@ class Listener:
         )
         self.thread.start()
 
-    def stop(self):
+    def signalStop(self):
+        """Signal-only half of stop(): flip every stop flag (the poll loop,
+        spotapi's LastPlayed thread, the patched keep_alive/updateLoop) without
+        joining threads or closing sockets. Shutdown's phase 1 calls this for
+        every user before any join blocks, so no user's listener is still
+        running unsignaled while another user's threads are being joined."""
         stop_event = getattr(self, "_stop_event", None)
         if stop_event is not None:
             stop_event.set()
         self.run = False
 
-        # Also stop spotapi's own background LastPlayed thread (started via
-        # startRecentlyPlayedListener). Left running, it can hit a rate-limited or
-        # malformed response mid-request while the interpreter is shutting down,
-        # producing spurious errors. Close the websocket connection first so the
-        # keep_alive thread doesn't try to send pings on a closed connection.
         lastPlayedManager = getattr(self.sp, "lastPlayedManager", None)
         if lastPlayedManager is not None:
-            # Close the websocket connection so background threads stop trying to use it
             manager = getattr(lastPlayedManager, "manager", None)
             if manager is not None:
-                # Tell the patched keep_alive (Database.patches) this close is
-                # intentional so it exits instead of trying to reconnect.
+                # Tell the patched keep_alive/updateLoop (Database.patches) the
+                # coming close is intentional so they exit instead of reconnecting.
                 try:
                     manager._deliberate_close = True
                 except AttributeError:
-                    pass  # __slots__-only instance; keep_alive treats missing flag as False
+                    pass  # __slots__-only instance; the patches treat a missing flag as False
+            lastPlayedManager.run = False
+
+    def stop(self):
+        self.signalStop()
+
+        # Also stop spotapi's own background LastPlayed thread (started via
+        # startRecentlyPlayedListener). Left running, it can hit a rate-limited or
+        # malformed response mid-request while the interpreter is shutting down,
+        # producing spurious errors. Close the websocket connection so the
+        # keep_alive thread doesn't try to send pings on a closed connection.
+        lastPlayedManager = getattr(self.sp, "lastPlayedManager", None)
+        if lastPlayedManager is not None:
+            manager = getattr(lastPlayedManager, "manager", None)
+            if manager is not None:
                 ws = getattr(manager, "ws", None)
                 if ws is not None:
                     try:
@@ -656,7 +669,6 @@ class Listener:
                     except Exception:
                         pass  # Connection may already be closed
 
-            lastPlayedManager.run = False
             # Give the keep_alive thread a moment to detect the closed connection
             # and exit gracefully before we join it
             time.sleep(0.1)

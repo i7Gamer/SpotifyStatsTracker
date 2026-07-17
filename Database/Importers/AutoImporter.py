@@ -14,6 +14,8 @@ logger = logging.getLogger(__name__)
 AUTO_IMPORT_MIN_START_DELAY_SECONDS = 5
 AUTO_IMPORT_MAX_START_DELAY_SECONDS = 30
 
+WATCHDOG_STOP_JOIN_TIMEOUT_SECONDS = 2  #< bound how long stop() waits for the poll thread to exit
+
 try:
     from Database.utils import parseError
 except ModuleNotFoundError:
@@ -124,11 +126,16 @@ class Watchdog:
         )
         self.thread.start()
     
-    def stop(self):
+    def signalStop(self):
+        """Signal-only half of stop() - no join, safe for shutdown's
+        signal-everything-first phase."""
         self._stop_event.set()
         self.run = False
+
+    def stop(self):
+        self.signalStop()
         if hasattr(self, "thread") and self.thread.is_alive():
-            self.thread.join(timeout=2)
+            self.thread.join(timeout=WATCHDOG_STOP_JOIN_TIMEOUT_SECONDS)
 
 class AutoImporter:
     def __init__(self, folderPath, importCallback, pollInterval=5, keyword=None):
