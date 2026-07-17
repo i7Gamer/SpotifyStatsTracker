@@ -17,18 +17,34 @@ if isinstance(sys.modules.get("Database.database"), MagicMock):
 
 from conftest import DatabaseTestCase
 from Database.database import Database
-from Database.repository import IMAGE_KIND_TRACK, IMAGE_STATUS_OK, IMAGE_STATUS_FAILED
+from Database.repository import IMAGE_KIND_ARTIST, IMAGE_KIND_TRACK, IMAGE_STATUS_OK, IMAGE_STATUS_FAILED
 
 
 def _bareDatabase():
     """A Database instance with only the state lazyFetchArtistImage needs, skipping
-    the heavy __init__ (autoimporter/listener setup) that isn't relevant here."""
+    the heavy __init__ (autoimporter/listener setup) that isn't relevant here.
+    user/email are set (rather than left unset like other _bareDatabase helpers in
+    this test suite) because the SpotipyFree fallback path materializes a per-user
+    cookies file, which reads them."""
     from Database.repository import Repository
     db = Database.__new__(Database)
     db._imageIdsLock = threading.RLock()
     temp_dir = tempfile.mkdtemp()
     db.repo = Repository(Path(temp_dir) / "test.db")
+    db.user = "testuser"
+    db.email = "testuser@example.com"
     return db
+
+
+def _pngBytes():
+    """A tiny real image, since _downloadImageTask feeds CDN response bytes through
+    PIL - garbage bytes would fail to decode and the download would be marked failed
+    regardless of what the test is trying to exercise."""
+    from io import BytesIO
+    from PIL import Image
+    buffer = BytesIO()
+    Image.new("RGB", (2, 2), 0).save(buffer, format="PNG")
+    return buffer.getvalue()
 
 
 class TestLazyFetchArtistImage(unittest.TestCase):
@@ -54,65 +70,154 @@ class TestLazyFetchArtistImage(unittest.TestCase):
             self.assertFalse(result)
             mock_get.assert_not_called()
 
-    def test_fetches_and_saves_image_on_first_call(self):
+    def test_fetches_via_web_api_when_credentials_configured(self):
         """The actual fetch runs on the shared background executor, not
         inline - lazyFetchArtistImage() returns the submitted Future rather
         than the outcome directly, so the test waits on it explicitly."""
         db = _bareDatabase()
+        db.getUserSpotifyCredentials = MagicMock(return_value={
+            "client_id": "cid", "client_secret": "csecret", "refresh_token": "rtoken"})
         with tempfile.TemporaryDirectory() as tmpdir:
             imagePath = Path(tmpdir) / "artist123.jpeg"
 
-            pageResponse = MagicMock()
-            pageResponse.text = '<meta property="og:image" content="https://example.com/pic.jpg">'
+            apiResponse = MagicMock()
+            apiResponse.status_code = 200
+            apiResponse.json.return_value = {"images": [{"url": "https://i.scdn.co/image/abc"}]}
             imageResponse = MagicMock()
-            imageResponse.content = b"fake-image-bytes"
+            imageResponse.content = _pngBytes()
 
-            with patch("Database.database.requests.get", side_effect=[pageResponse, imageResponse]) as mock_get:
+            with patch("Database.Listeners.spotifyListener._refresh_spotify_access_token",
+                       return_value="mock_token"), \
+                 patch("Database.database.requests.get", side_effect=[apiResponse, imageResponse]) as mock_get, \
+                 patch("SpotipyFree.Spotify") as mock_spotipy_class:
                 future = db.lazyFetchArtistImage("artist123", imagePath)
                 result = future.result(timeout=5)
 
             self.assertTrue(result)
-            self.assertEqual(imagePath.read_bytes(), b"fake-image-bytes")
-            self.assertEqual(mock_get.call_count, 2)
+            self.assertTrue(imagePath.exists())
+            self.assertEqual(mock_get.call_count, 2)   #< GET /v1/artists/{id}, then the CDN image bytes
+            mock_spotipy_class.assert_not_called()   #< official API succeeded, no fallback needed
+            self.assertEqual(db.repo.imageStatus("artist123", IMAGE_KIND_ARTIST), IMAGE_STATUS_OK)
+
+    def test_falls_back_to_spotipy_free_when_no_credentials_configured(self):
+        """Configuring a Spotify API client id/secret is optional - most installs
+        won't have one (db.getUserSpotifyCredentials() is naturally None here,
+        there's no users row for "testuser" in this fresh temp db), so SpotipyFree
+        must still be able to find the image on its own."""
+        db = _bareDatabase()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            imagePath = Path(tmpdir) / "artist123.jpeg"
+
+            mock_sp = MagicMock()
+            mock_sp.artist.return_value = {"images": [{"url": "https://i.scdn.co/image/xyz"}]}
+            imageResponse = MagicMock()
+            imageResponse.content = _pngBytes()
+
+            with patch("SpotipyFree.Spotify", return_value=mock_sp), \
+                 patch("Database.database.requests.get", return_value=imageResponse) as mock_get:
+                future = db.lazyFetchArtistImage("artist123", imagePath)
+                result = future.result(timeout=5)
+
+            self.assertTrue(result)
+            self.assertTrue(imagePath.exists())
+            mock_sp.artist.assert_called_once_with("artist123")
+            mock_get.assert_called_once()   #< just the CDN image bytes; no api.spotify.com call was made
+            self.assertEqual(db.repo.imageStatus("artist123", IMAGE_KIND_ARTIST), IMAGE_STATUS_OK)
+
+    def test_falls_back_to_spotipy_free_when_web_api_request_fails(self):
+        """Credentials configured but the official API call itself fails (expired
+        grant, rate limit, ...) - must not give up, same fallback as no-credentials."""
+        db = _bareDatabase()
+        db.getUserSpotifyCredentials = MagicMock(return_value={
+            "client_id": "cid", "client_secret": "csecret", "refresh_token": "rtoken"})
+        with tempfile.TemporaryDirectory() as tmpdir:
+            imagePath = Path(tmpdir) / "artist123.jpeg"
+
+            apiResponse = MagicMock()
+            apiResponse.status_code = 403
+            imageResponse = MagicMock()
+            imageResponse.content = _pngBytes()
+
+            mock_sp = MagicMock()
+            mock_sp.artist.return_value = {"images": [{"url": "https://i.scdn.co/image/xyz"}]}
+
+            with patch("Database.Listeners.spotifyListener._refresh_spotify_access_token",
+                       return_value="mock_token"), \
+                 patch("Database.database.requests.get", side_effect=[apiResponse, imageResponse]), \
+                 patch("SpotipyFree.Spotify", return_value=mock_sp) as mock_spotipy_class:
+                future = db.lazyFetchArtistImage("artist123", imagePath)
+                result = future.result(timeout=5)
+
+            self.assertTrue(result)
+            mock_spotipy_class.assert_called_once()
+            self.assertEqual(db.repo.imageStatus("artist123", IMAGE_KIND_ARTIST), IMAGE_STATUS_OK)
+
+    def test_does_not_fall_back_when_web_api_confirms_no_image(self):
+        """A definitive 200 with an empty images list means Spotify itself has no
+        picture for this artist - that's real signal, not a transient failure, so
+        it must not spend an extra request (and materialize a cookies file) asking
+        SpotipyFree the same question again."""
+        db = _bareDatabase()
+        db.getUserSpotifyCredentials = MagicMock(return_value={
+            "client_id": "cid", "client_secret": "csecret", "refresh_token": "rtoken"})
+        with tempfile.TemporaryDirectory() as tmpdir:
+            imagePath = Path(tmpdir) / "artist123.jpeg"
+
+            apiResponse = MagicMock()
+            apiResponse.status_code = 200
+            apiResponse.json.return_value = {"images": []}
+
+            with patch("Database.Listeners.spotifyListener._refresh_spotify_access_token",
+                       return_value="mock_token"), \
+                 patch("Database.database.requests.get", return_value=apiResponse) as mock_get, \
+                 patch("SpotipyFree.Spotify") as mock_spotipy_class:
+                future = db.lazyFetchArtistImage("artist123", imagePath)
+                result = future.result(timeout=5)
+
+            self.assertFalse(result)
+            mock_get.assert_called_once()
+            mock_spotipy_class.assert_not_called()
+            self.assertEqual(db.repo.imageStatus("artist123", IMAGE_KIND_ARTIST), IMAGE_STATUS_FAILED)
 
     def test_does_not_retry_after_a_failed_attempt_for_same_artist(self):
-        """Negative caching: once we've tried (and failed to find an og:image) for an
+        """Negative caching: once we've tried (and failed to find any image) for an
         artist id, subsequent lookups for that id must not re-hit Spotify."""
         db = _bareDatabase()
         with tempfile.TemporaryDirectory() as tmpdir:
             imagePath = Path(tmpdir) / "missingArtist.jpeg"
 
-            noImageResponse = MagicMock()
-            noImageResponse.text = "<html>no og:image here</html>"
+            mock_sp = MagicMock()
+            mock_sp.artist.return_value = {"images": []}
 
-            with patch("Database.database.requests.get", return_value=noImageResponse) as mock_get:
+            with patch("SpotipyFree.Spotify", return_value=mock_sp) as mock_spotipy_class:
                 firstFuture = db.lazyFetchArtistImage("missingArtist", imagePath)
                 firstResult = firstFuture.result(timeout=5)
                 secondResult = db.lazyFetchArtistImage("missingArtist", imagePath)
 
             self.assertFalse(firstResult)
             self.assertFalse(secondResult)   #< dedup path returns a plain bool, no new Future/fetch
-            mock_get.assert_called_once()
+            mock_spotipy_class.assert_called_once()
 
     def test_network_exception_is_swallowed_and_returns_false(self):
         db = _bareDatabase()
         with tempfile.TemporaryDirectory() as tmpdir:
             imagePath = Path(tmpdir) / "artist999.jpeg"
-            with patch("Database.database.requests.get", side_effect=Exception("boom")):
+            with patch("SpotipyFree.Spotify", side_effect=Exception("boom")):
                 future = db.lazyFetchArtistImage("artist999", imagePath)
                 result = future.result(timeout=5)
 
             self.assertFalse(result)
+            self.assertEqual(db.repo.imageStatus("artist999", IMAGE_KIND_ARTIST), IMAGE_STATUS_FAILED)
 
     def test_dispatch_does_not_block_the_calling_thread(self):
         """The whole point of routing this through the shared executor: an
         HTTP request thread calling this must get control back immediately
-        instead of blocking on up to two sequential network calls.
+        instead of blocking on the SpotipyFree lookup.
 
         Proven with an event gate rather than a wall-clock threshold (a
         previous `elapsed < 0.1s` assertion flaked on loaded CI runners
         where thread spin-up alone costs hundreds of ms): the mocked
-        network call can't finish until the test opens the gate, so
+        fetch can't finish until the test opens the gate, so
         lazyFetchArtistImage returning at all - with the fetch still
         pending - means the calling thread never ran it inline."""
         db = _bareDatabase()
@@ -121,23 +226,63 @@ class TestLazyFetchArtistImage(unittest.TestCase):
 
             gate = threading.Event()
 
-            def gatedGet(*args, **kwargs):
+            def gatedArtist(*args, **kwargs):
                 #< the timeout turns an inline-fetch regression into a test
                 #  failure (the gate only opens after dispatch returns, so
                 #  running this on the calling thread would otherwise hang)
                 gate.wait(timeout=5)
-                response = MagicMock()
-                response.text = "<html>no og:image here</html>"
-                return response
+                return {"images": []}
 
-            with patch("Database.database.requests.get", side_effect=gatedGet):
+            mock_sp = MagicMock()
+            mock_sp.artist.side_effect = gatedArtist
+
+            with patch("SpotipyFree.Spotify", return_value=mock_sp):
                 future = db.lazyFetchArtistImage("artistSlow", imagePath)
 
                 self.assertFalse(future.done())   #< fetch is parked on the gate, dispatch already returned
                 gate.set()
-                #< no og:image in the response -> False; also ensures the
-                #  background task finishes before tmpdir cleanup
+                #< no image found -> False; also ensures the background task
+                #  finishes before tmpdir cleanup
                 self.assertFalse(future.result(timeout=5))
+
+
+class TestDeleteFailedArtistImages(unittest.TestCase):
+    """Repository.deleteFailedArtistImages() is the one-time remediation
+    migrate1_20_0 runs to un-stick artists caught by the old og:image-scrape
+    bug - see that migrator's docstring."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        from Database.repository import Repository
+        self.repo = Repository(Path(self._tmpdir.name) / "test.db")
+        self.addCleanup(self.repo.connectionManager.close)
+
+    def test_clears_failed_artist_images_only(self):
+        self.repo.markImageStatus("artBroken1", IMAGE_KIND_ARTIST, IMAGE_STATUS_FAILED)
+        self.repo.markImageStatus("artBroken2", IMAGE_KIND_ARTIST, IMAGE_STATUS_FAILED)
+        self.repo.markImageStatus("artOk", IMAGE_KIND_ARTIST, IMAGE_STATUS_OK)
+        self.repo.markImageStatus("trackBroken", IMAGE_KIND_TRACK, IMAGE_STATUS_FAILED)
+
+        cleared = self.repo.deleteFailedArtistImages()
+
+        self.assertEqual(cleared, 2)
+        self.assertIsNone(self.repo.imageStatus("artBroken1", IMAGE_KIND_ARTIST))
+        self.assertIsNone(self.repo.imageStatus("artBroken2", IMAGE_KIND_ARTIST))
+        self.assertEqual(self.repo.imageStatus("artOk", IMAGE_KIND_ARTIST), IMAGE_STATUS_OK)
+        #< a failed track image is a real per-URL 404, not a broken fetch method - untouched
+        self.assertEqual(self.repo.imageStatus("trackBroken", IMAGE_KIND_TRACK), IMAGE_STATUS_FAILED)
+
+    def test_cleared_artist_is_reclaimable(self):
+        self.repo.markImageStatus("artBroken", IMAGE_KIND_ARTIST, IMAGE_STATUS_FAILED)
+
+        self.repo.deleteFailedArtistImages()
+
+        self.assertTrue(self.repo.tryClaimImageDownload("artBroken", IMAGE_KIND_ARTIST))
+
+    def test_no_failed_artist_images_is_a_noop(self):
+        self.repo.markImageStatus("artOk", IMAGE_KIND_ARTIST, IMAGE_STATUS_OK)
+        self.assertEqual(self.repo.deleteFailedArtistImages(), 0)
 
 
 class TestDownloadImageTaskExtension(DatabaseTestCase):

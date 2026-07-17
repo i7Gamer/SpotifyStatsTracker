@@ -2,7 +2,6 @@ from __future__ import annotations
 import datetime
 import logging
 import os
-import re
 import tempfile
 import threading
 import time
@@ -49,7 +48,6 @@ IMAGE_DOWNLOAD_WORKERS = 5   #< bounds total concurrent image downloads for the 
 # counts as a completed listen, anything between is a partial.
 COMPLETION_SKIP_THRESHOLD_MS = 30_000
 COMPLETION_COMPLETE_RATIO = 0.8
-USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
 # Images are shared across every user (album art / artist photos are the same
 # bytes for everyone), so they live in one directory tree instead of under each
@@ -571,29 +569,71 @@ class Database:
     def saveTrackImg(self, url: str, imgId: str):
         self._saveImg(self.imgDir_tracks, url, imgId, kind=IMAGE_KIND_TRACK)
 
+    def _fetchArtistImageUrl(self, artistId: str) -> str | None:
+        """Looks up a real Spotify CDN image URL for an artist, mirroring the
+        dual-path fetch _metadataBackfillLoop already uses for albums: the
+        authenticated Web API first (if this user has API credentials configured),
+        falling back to SpotipyFree otherwise. Returns None if neither source has
+        an image (including a definitive "no images" response from the official
+        API, which is trusted as-is rather than spending another request asking
+        SpotipyFree the same question).
+
+        Previously this scraped open.spotify.com's public artist page for an
+        og:image meta tag - that stopped working once Spotify moved artist pages
+        to a client-rendered SPA shell with no server-rendered metadata, for every
+        artist, not just obscure ones."""
+        creds = self.getUserSpotifyCredentials()
+        if creds and creds.get("client_id") and creds.get("refresh_token"):
+            from Database.Listeners.spotifyListener import _refresh_spotify_access_token
+            access_token = _refresh_spotify_access_token(
+                creds["client_id"], creds["client_secret"], creds["refresh_token"])
+            if access_token:
+                try:
+                    headers = {"Authorization": f"Bearer {access_token}"}
+                    resp = requests.get(f"https://api.spotify.com/v1/artists/{artistId}", headers=headers, timeout=10)
+                    if resp.status_code == 200:
+                        images = resp.json().get("images") or []
+                        return images[0]["url"] if images else None
+                except Exception as e:
+                    logger.warning("Web API artist image fetch failed for %s, falling back to SpotipyFree: %s",
+                                    artistId, parseError(e))
+            else:
+                logger.warning("Failed to refresh access token, falling back to SpotipyFree for artist image %s.", artistId)
+
+        import SpotipyFree
+        cookiesFile = self._materializeCookiesFile()
+        try:
+            sp = SpotipyFree.Spotify(cookiesFile=str(cookiesFile))
+            images = (sp.artist(artistId) or {}).get("images") or []
+            return images[0]["url"] if images else None
+        finally:
+            cookiesFile.unlink(missing_ok=True)
+
     def _lazyFetchArtistImageTask(self, artistId: str, imagePath: Path) -> bool:
         try:
-            headers = {"User-Agent": USER_AGENT}
-            res = requests.get(f"https://open.spotify.com/artist/{artistId}", headers=headers, timeout=5)
-            match = re.search(r'<meta property="og:image" content="([^"]+)"', res.text)
-            if not match:
-                self.repo.markImageStatus(artistId, IMAGE_KIND_ARTIST, IMAGE_STATUS_FAILED)
-                return False
-            imgData = requests.get(match.group(1), headers=headers, timeout=5).content
-            imagePath.parent.mkdir(parents=True, exist_ok=True)
-            imagePath.write_bytes(imgData)
-            self.repo.markImageStatus(artistId, IMAGE_KIND_ARTIST, IMAGE_STATUS_OK)
-            return True
+            imageUrl = self._fetchArtistImageUrl(artistId)
         except Exception as e:
             logger.error("Failed to lazy load artist image for %s: %s", artistId, parseError(e))
+            imageUrl = None
+
+        if not imageUrl:
             self.repo.markImageStatus(artistId, IMAGE_KIND_ARTIST, IMAGE_STATUS_FAILED)
             return False
 
+        # Reuses the same download/normalize-to-JPEG/markImageStatus pipeline
+        # tracks and albums already go through, run synchronously since this task
+        # itself already runs on _imageDownloadExecutor (dispatched non-blocking
+        # by lazyFetchArtistImage below) - submitting again would just queue a
+        # redundant future.
+        self._downloadImageTask(imagePath.parent, imageUrl, artistId, IMAGE_KIND_ARTIST)
+        return imagePath.exists()
+
     def lazyFetchArtistImage(self, artistId: str, imagePath: Path):
-        """Best-effort fetch of an artist's image scraped from their public
-        Spotify page, used as a fallback for artists we never received image
-        metadata for from the API. Deduplicated per artist id via the database's
-        image status table so failed fetches persist across app restarts.
+        """Best-effort fetch of an artist's image via the Spotify Web API /
+        SpotipyFree (see _fetchArtistImageUrl), used as a fallback for artists we
+        never received image metadata for from the API. Deduplicated per artist id
+        via the database's image status table so failed fetches persist across app
+        restarts.
 
         The actual fetch runs on the shared image-download executor (like
         saveTrackImg()/saveArtistImg()) instead of inline, so a request for a

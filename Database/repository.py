@@ -436,6 +436,22 @@ class Repository:
             cur = conn.execute("DELETE FROM images WHERE status=?", (IMAGE_STATUS_PENDING,))
             return cur.rowcount
 
+    def deleteFailedArtistImages(self) -> int:
+        """One-time remediation for migrate1_20_0: every artist image previously
+        marked 'failed' was marked that way by scraping open.spotify.com's public
+        artist page for an og:image meta tag, a method that stopped working for
+        every artist (not just ones that genuinely lack a picture) once Spotify
+        moved artist pages to a client-rendered SPA shell. None of those rows are
+        trustworthy "no image" signals, so they're deleted rather than left
+        'failed' - lazyFetchArtistImage treats 'failed' as permanent, and a missing
+        row means never-attempted, letting the fixed Web-API/SpotipyFree fetch
+        retry them. Returns the number of rows cleared."""
+        conn = self._conn()
+        with conn:
+            cur = conn.execute(
+                "DELETE FROM images WHERE kind=? AND status=?", (IMAGE_KIND_ARTIST, IMAGE_STATUS_FAILED))
+            return cur.rowcount
+
     # ---- Per-user: plays (play history) -----------------------------------------
 
     def insertPlay(self, username: str, trackId: str, playedAt: float, timePlayed: int,
