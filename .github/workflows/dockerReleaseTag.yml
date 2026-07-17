@@ -1,0 +1,93 @@
+name: Docker Image CI
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_tag:
+        description: 'Exact tag to build (e.g., v1.0.0)'
+        required: true
+        type: string
+
+jobs:
+  build-test-push:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ inputs.target_tag }}
+
+    - name: Verify Tag Exists
+      run: |
+        if ! git rev-parse -q --verify "refs/tags/${{ inputs.target_tag }}"; then
+          echo "Error: Tag '${{ inputs.target_tag }}' not found in the repository."
+          exit 1
+        fi
+        echo "Successfully checked out tag: ${{ inputs.target_tag }}"
+
+    - name: Log in to Docker Hub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+    - name: Build the Docker image
+      run: |
+        docker build --no-cache -t i7gamer/spotify-tracker:${{ inputs.target_tag }} .
+
+    - name: Test container startup and health
+      run: |
+        echo "Starting container..."
+        docker run -d --name test-tracker i7gamer/spotify-tracker:${{ inputs.target_tag }}
+        
+        # Check if the image has a healthcheck defined
+        HAS_HEALTHCHECK=$(docker inspect -f '{{if .Config.Healthcheck}}yes{{else}}no{{end}}' test-tracker)
+        
+        if [ "$HAS_HEALTHCHECK" == "yes" ]; then
+          echo "Healthcheck found. Waiting up to 60 seconds for healthy status..."
+          TIMEOUT=60
+          ELAPSED=0
+          
+          while [ $ELAPSED -le $TIMEOUT ]; do
+            STATUS=$(docker inspect -f '{{.State.Health.Status}}' test-tracker)
+            
+            if [ "$STATUS" == "healthy" ]; then
+              echo "Container is stable and healthy."
+              exit 0
+            elif [ "$STATUS" == "unhealthy" ]; then
+              echo "Container reported unhealthy status. Aborting push."
+              docker logs test-tracker
+              exit 1
+            fi
+            
+            echo "Waiting for healthcheck (current status: $STATUS)..."
+            sleep 5
+            ELAPSED=$((ELAPSED + 5))
+          done
+          
+          echo "Timeout reached waiting for container health."
+          docker logs test-tracker
+          exit 1
+        else
+          echo "No healthcheck found in this image. Executing fallback runtime check..."
+          echo "Waiting 15 seconds to ensure container does not crash on startup..."
+          sleep 15
+          
+          # Query the basic Docker container status
+          STATUS=$(docker inspect -f '{{.State.Status}}' test-tracker)
+          
+          if [ "$STATUS" == "running" ]; then
+            echo "Container is still running. Considering it stable."
+            exit 0
+          else
+            echo "Container exited unexpectedly (Status: $STATUS). Aborting push."
+            docker logs test-tracker
+            exit 1
+          fi
+        fi
+
+    - name: Push Docker image
+      run: |
+        echo "Pushing image..."
+        docker push i7gamer/spotify-tracker:${{ inputs.target_tag }}
