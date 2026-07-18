@@ -246,18 +246,23 @@
   const COMPARE_FADE_MS = 200;
 
   // The six individual my/their Top lists are the ONLY regions whose
-  // content reads ?sortBy= (see app.py's COMPARE_SORT_BY comment) - the
+  // content reads ?sortBy= (see app.py's compare route comment) - the
   // stats table, chart, taste match, similarities, genres and Top Common
   // lists render byte-identical under any sortBy, so a sort change fades
-  // and swaps just these and leaves the rest untouched.
-  const SORT_BY_LIST_IDS = [
-    'myTopSongsList', 'theirTopSongsList',
-    'myTopArtistsList', 'theirTopArtistsList',
-    'myTopAlbumsList', 'theirTopAlbumsList',
-  ];
+  // and swaps just these and leaves the rest untouched. One map drives
+  // BOTH the fade targets and the innerHTML swap, so a list can't end up
+  // faded-but-not-swapped (or vice versa).
+  const SORT_BY_LIST_SWAPS = {
+    myTopSongsList: 'myTopSongsHtml',
+    theirTopSongsList: 'theirTopSongsHtml',
+    myTopArtistsList: 'myTopArtistsHtml',
+    theirTopArtistsList: 'theirTopArtistsHtml',
+    myTopAlbumsList: 'myTopAlbumsHtml',
+    theirTopAlbumsList: 'theirTopAlbumsHtml',
+  };
 
   function compareSwapTargets(sortByOnly = false) {
-    const sortByLists = SORT_BY_LIST_IDS.map(id => document.getElementById(id));
+    const sortByLists = Object.keys(SORT_BY_LIST_SWAPS).map(id => document.getElementById(id));
     if (sortByOnly) {
       return sortByLists.filter(Boolean);
     }
@@ -286,12 +291,9 @@
 
     Promise.all([fetched, delay])
       .then(([data]) => {
-        document.getElementById('myTopSongsList').innerHTML = data.myTopSongsHtml;
-        document.getElementById('theirTopSongsList').innerHTML = data.theirTopSongsHtml;
-        document.getElementById('myTopArtistsList').innerHTML = data.myTopArtistsHtml;
-        document.getElementById('theirTopArtistsList').innerHTML = data.theirTopArtistsHtml;
-        document.getElementById('myTopAlbumsList').innerHTML = data.myTopAlbumsHtml;
-        document.getElementById('theirTopAlbumsList').innerHTML = data.theirTopAlbumsHtml;
+        Object.entries(SORT_BY_LIST_SWAPS).forEach(([id, dataKey]) => {
+          document.getElementById(id).innerHTML = data[dataKey];
+        });
 
         if (!sortByOnly) {
           document.getElementById('compareStatsTable').innerHTML = data.statsTableHtml;
