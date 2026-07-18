@@ -1109,18 +1109,23 @@ class TestCompareRoute(unittest.TestCase):
         self.assertIn(b'class="taste-match-value js-taste-match">100%</span>', byTime.data)
 
     def test_shared_list_ties_break_by_combined_time_played(self):
-        """Two shared artists tied on combined plays must not fall back to
-        input-pool order (see app.py's _buildSharedItems) - the one with
-        more combined totalTimeListened ("Time Played") wins, matching the
-        tiebreak Top Artists/Songs/Albums already use in SQL
-        (Repository.getArtistAggregates etc.)."""
+        """Reaching the combined-time tiebreak takes a genuine tie on the
+        two legs before it: Zulu is alice's #1 / bob's #2 while Alpha is
+        bob's #1 / alice's #2, so both score 2*rankWeight(1) (see
+        _mutualRankScore), and combined plays tie at 15 apiece. Zulu's
+        higher combined totalTimeListened ("Time Played") must then win -
+        against the later name leg (Alpha sorts first alphabetically) and
+        against input-pool order (Alpha is listed first in both pools), so
+        only the combined-time leg can produce this order."""
         self._accept("alice", "bob")
-        pool = [
-            _artist("lo", "Bravo", plays=5, totalTimeListened=1000),
-            _artist("hi", "Alpha", plays=5, totalTimeListened=5000),
+        self.dbs["alice"].getTopArtists.return_value = [
+            _artist("aq", "Alpha", plays=5, totalTimeListened=1000),
+            _artist("zt", "Zulu", plays=10, totalTimeListened=5000),
         ]
-        self.dbs["alice"].getTopArtists.return_value = list(pool)
-        self.dbs["bob"].getTopArtists.return_value = list(pool)
+        self.dbs["bob"].getTopArtists.return_value = [
+            _artist("aq", "Alpha", plays=10, totalTimeListened=1000),
+            _artist("zt", "Zulu", plays=5, totalTimeListened=5000),
+        ]
         client = self._loginAs("alice")
 
         resp = client.get("/compare")
@@ -1128,18 +1133,24 @@ class TestCompareRoute(unittest.TestCase):
         section = resp.data[
             resp.data.index(b'data-category="common-top-artists"'):
             resp.data.index(b'data-category="common-top-albums"')]
-        self.assertLess(section.index(b"Alpha"), section.index(b"Bravo"))
+        self.assertLess(section.index(b"Zulu"), section.index(b"Alpha"))
 
     def test_shared_list_full_ties_fall_back_to_name(self):
-        """Shared artists tied on both combined plays and combined
-        totalTimeListened fall back to alphabetical name, not pool order."""
+        """Shared artists tied through mutual-rank score (cross-side #1s,
+        as in the combined-time test), combined plays AND combined time
+        fall back to alphabetical name. Alpha must win via its NAME alone:
+        input-pool order lists Zeta first on both sides, and Zeta's id
+        ("a1") sorts before Alpha's ("z9"), so neither pool order nor the
+        final id leg can produce this order."""
         self._accept("alice", "bob")
-        pool = [
-            _artist("z", "Zeta", plays=5, totalTimeListened=1000),
-            _artist("a", "Alpha", plays=5, totalTimeListened=1000),
+        self.dbs["alice"].getTopArtists.return_value = [
+            _artist("a1", "Zeta", plays=10, totalTimeListened=1000),
+            _artist("z9", "Alpha", plays=5, totalTimeListened=1000),
         ]
-        self.dbs["alice"].getTopArtists.return_value = list(pool)
-        self.dbs["bob"].getTopArtists.return_value = list(pool)
+        self.dbs["bob"].getTopArtists.return_value = [
+            _artist("a1", "Zeta", plays=5, totalTimeListened=1000),
+            _artist("z9", "Alpha", plays=10, totalTimeListened=1000),
+        ]
         client = self._loginAs("alice")
 
         resp = client.get("/compare")

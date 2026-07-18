@@ -83,6 +83,12 @@ TASTE_MATCH_WEIGHTS = {"artists": 0.7, "songs": 0.1, "albums": 0.2, "genres": 0.
 # their entire top 20 favorite artists scored ~34%, since agreement past
 # rank ~30 barely matters to how similar two people's taste feels.
 TASTE_MATCH_IDEAL_DEPTH = 30
+# An exact id match earns DOUBLE the rank discount of its BETTER (shallower)
+# side's rank - the "both sides at rank r" shape the taste-match ideal
+# normalizes against. The single place the factor is applied is
+# _mutualRankScore, which both taste-match (_rankWeightedOverlap) and the
+# Top Common list ranking (_buildSharedItems) score with.
+EXACT_MATCH_CREDIT_FACTOR = 2
 # A song/album that ISN'T an exact match still earns this fraction of its own
 # rank discount when its primary artist appears in the counterpart's top
 # artist pool (see _rankWeightedOverlap) - loving the same ARTIST without
@@ -938,8 +944,8 @@ class SpotifyDashboardApp:
         shared cards. The unique-song counts are only attached where the
         aggregates carry them (artists/albums) - a song card has nothing to
         count."""
-        myRanks = {item["id"]: rank for rank, item in enumerate(self._resortByMetric(myPool, "plays"), start=1)}
-        theirRanks = {item["id"]: rank for rank, item in enumerate(self._resortByMetric(theirPool, "plays"), start=1)}
+        myRanks = self._rankById(self._resortByMetric(myPool, "plays"))
+        theirRanks = self._rankById(self._resortByMetric(theirPool, "plays"))
         theirById = {item["id"]: item for item in theirPool}
         sharedItems = [dict(item) for item in myPool if item["id"] in theirById]
 
@@ -949,9 +955,12 @@ class SpotifyDashboardApp:
             combinedPlays = item.get("plays", 0) + theirItem.get("plays", 0)
             combinedTime = item.get("totalTimeListened", 0) + theirItem.get("totalTimeListened", 0)
             #< descending mutualScore/combinedPlays/combinedTime via negation,
-            #  ascending name/id - mirrors Repository.getSongsPage's plays ->
-            #  totalTimeListened -> name -> id tiebreak chain so ties render
-            #  the same way here as everywhere else "plays" is ranked.
+            #  ascending name/id - the same plays -> totalTimeListened ->
+            #  name -> id tiebreak chain the rank maps above were sorted by
+            #  (_resortByMetric). Deliberately NOT claimed to match the SQL
+            #  pages: Repository's plays-ranked queries currently tiebreak
+            #  name DESCENDING (their {direction} token spans every column),
+            #  so render-parity with those pages doesn't hold on the name leg.
             return (-mutualScore, -combinedPlays, -combinedTime, (item.get("name") or "").lower(), item["id"])
 
         sharedItems.sort(key=sortKey)
@@ -989,13 +998,24 @@ class SpotifyDashboardApp:
         deeper ranks fall off logarithmically."""
         return 1 / math.log2(rank + 1)
 
+    @staticmethod
+    def _rankById(pool: list[dict]) -> dict:
+        """id -> 1-based rank map of an already-ordered pool - the lookups
+        _mutualRankScore consumes. The ORDERING stays the caller's choice:
+        _rankWeightedOverlap must trust the incoming pool's own order (its
+        genre pools are bare {"id": genre} dicts with no metrics to
+        re-derive one from), while _buildSharedItems re-sorts by plays
+        first (see its docstring for why)."""
+        return {item["id"]: rank for rank, item in enumerate(pool, start=1)}
+
     def _mutualRankScore(self, myRank: int, theirRank: int) -> float:
-        """2x the rank discount (see _rankWeight) of the BETTER (shallower)
-        of two ranks for the same exact-match item - the same formula
-        _rankWeightedOverlap uses inline for an exact id match (see its
-        docstring for the mutual-favorite rationale), factored out because
-        _buildSharedItems needs it too."""
-        return 2 * self._rankWeight(min(myRank, theirRank))
+        """THE definition of an exact-match credit:
+        EXACT_MATCH_CREDIT_FACTOR x the rank discount (see _rankWeight) of
+        the BETTER (shallower) of the two ranks for the same item. Scores
+        both taste-match (_rankWeightedOverlap's exact-match credit AND its
+        ideal normalizer - see its docstring for the mutual-favorite
+        rationale) and the Top Common list ranking (_buildSharedItems)."""
+        return EXACT_MATCH_CREDIT_FACTOR * self._rankWeight(min(myRank, theirRank))
 
     @staticmethod
     def _primaryArtistId(item: dict) -> str | None:
@@ -1015,13 +1035,14 @@ class SpotifyDashboardApp:
         ratio above it. None when either side is empty, so the category can
         be excluded rather than scored 0.
 
-        An exact id match contributes 2x the rank discount of its BETTER
+        An exact id match contributes _mutualRankScore:
+        EXACT_MATCH_CREDIT_FACTOR x the rank discount of its BETTER
         (shallower/lower-numbered) side's rank, not the sum of both sides'
-        discounts - matches `ideal`'s own 2x-one-rank shape (the case where
-        both sides tie at the same rank r), and means a mutual favorite
-        ranked #3 by one person and #40 by the other still counts close to
-        a #3/#3 match instead of being dragged down by whichever side
-        ranks it deeper.
+        discounts - matches `ideal`'s own shape (_mutualRankScore(r, r),
+        the case where both sides tie at the same rank r), and means a
+        mutual favorite ranked #3 by one person and #40 by the other still
+        counts close to a #3/#3 match instead of being dragged down by
+        whichever side ranks it deeper.
 
         When myArtistIds/theirArtistIds are given (songs/albums only - the
         artist category has no secondary "artist of an artist" concept), a
@@ -1030,10 +1051,10 @@ class SpotifyDashboardApp:
         appears in the counterpart's top artist pool."""
         if not myPool or not theirPool:
             return None
-        myRanks = {item["id"]: rank for rank, item in enumerate(myPool, start=1)}
-        theirRanks = {item["id"]: rank for rank, item in enumerate(theirPool, start=1)}
+        myRanks = self._rankById(myPool)
+        theirRanks = self._rankById(theirPool)
         exactIds = myRanks.keys() & theirRanks.keys()
-        actual = sum(2 * self._rankWeight(min(myRanks[itemId], theirRanks[itemId])) for itemId in exactIds)
+        actual = sum(self._mutualRankScore(myRanks[itemId], theirRanks[itemId]) for itemId in exactIds)
 
         if myArtistIds is not None and theirArtistIds is not None:
             myById = {item["id"]: item for item in myPool}
@@ -1052,7 +1073,7 @@ class SpotifyDashboardApp:
                     actual += ARTIST_MEDIATED_CREDIT_FACTOR * self._rankWeight(rank)
 
         idealDepth = min(len(myPool), len(theirPool), TASTE_MATCH_IDEAL_DEPTH)
-        ideal = sum(2 * self._rankWeight(rank) for rank in range(1, idealDepth + 1))
+        ideal = sum(self._mutualRankScore(rank, rank) for rank in range(1, idealDepth + 1))
         return min(1.0, actual / ideal)
 
     def _tasteMatchPercent(self, my, their, myGenrePool=None, theirGenrePool=None) -> int | None:
