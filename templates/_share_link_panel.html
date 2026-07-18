@@ -20,6 +20,6 @@
         <option value="{{ choice }}" {% if choice == 'never' %}selected{% endif %}>{{ 'Never' if choice == 'never' else choice.replace('d', ' days') }}</option>
       {% endfor %}
     </select>
-    <button type="submit" class="primary-button">Create Share Link</button>
+    <button type="submit" class="primary-button" style="margin-left: auto;">Create Share Link</button>
   </form>
 {% endif %}
