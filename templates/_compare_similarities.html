@@ -1,5 +1,6 @@
 {% from '_compare_macros.html' import detailCell, coverLink %}
-{# Similarity cells run over the 100-deep pools, so they can surface a
+{# Similarity cells run over the 200-deep sharedXPool (COMPARE_SHARED_POOL_SIZE),
+   not the shallower 100-deep topXPool taste-match uses, so they can surface a
    common favorite neither displayed top ten shows. Items come from the
    viewer's own pool, so covers and names link to their own detail pages.
    The cover sits outside the text column: on desktop it spans the card's

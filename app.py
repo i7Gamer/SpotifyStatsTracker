@@ -108,10 +108,13 @@ DEFAULT_SORT_BY = "totalTimeListened"
 # otherwise reach a ValueError deep in the DB layer and 500 instead of just
 # falling back to the default.
 VALID_SORT_BY = {"totalTimeListened", "plays", "name"}
-# The Compare page's own sortBy whitelist - narrower than VALID_SORT_BY.
-# "name" is deliberately excluded: elsewhere it means "browse alphabetically",
-# but Compare's Top Common lists rank by a COMBINED both-users metric (see
-# _buildSharedItems), and there's no sensible combined-alphabetical ranking.
+# The Compare page's own sortBy whitelist - narrower than VALID_SORT_BY, and
+# narrower in SCOPE too: it only reorders the individual my/their Top Songs/
+# Artists/Albums lists (see _gatherCompareStats). The Top Common lists rank
+# by a fixed mutual-rank-weighted score instead (see _buildSharedItems/
+# _mutualRankScore) and never take sortBy as input, so choosing a metric
+# here can't move them. "name" is deliberately excluded: elsewhere it means
+# "browse alphabetically", which doesn't apply to either list here.
 COMPARE_SORT_BY = {"totalTimeListened", "plays"}
 TRUTHY_ENV_VALUES = {"1", "true", "yes", "on"}
 # Opt-in to honoring X-Forwarded-* headers from a reverse proxy (see
@@ -910,32 +913,46 @@ class SpotifyDashboardApp:
         for item in items:
             item["linkExternally"] = item["id"] not in playedIds
 
-    def _buildSharedItems(self, myPool, theirPool, embedFn, limit, sortBy="plays") -> list[dict]:
-        """Shared entries of one category, ranked by COMBINED `sortBy` metric
-        (plays or totalTimeListened) across both users (symmetric under
-        swapping myPool/theirPool) and sliced to `limit`, with the per-user
-        versus data the Top Common Songs/Artists/Albums cards render.
-        Combined ranking - not either side's own pool order - so the
-        same mutual-share pair sees the same Top Common list regardless of
-        who's viewing. Ranking by the viewer's own order used to silently
-        cut different overlapping items depending on whose pool was walked.
+    def _buildSharedItems(self, myPool, theirPool, embedFn, limit) -> list[dict]:
+        """Shared entries of one category, ranked by a MUTUAL rank-weighted
+        score (see _mutualRankScore) - not either side's raw combined totals,
+        and independent of the page's sortBy control (which only reorders
+        the individual my/their lists, see _gatherCompareStats) - and sliced
+        to `limit`, with the per-user versus data the Top Common Songs/
+        Artists/Albums cards render. Rank-weighted so a mutual favorite
+        ranked #1 by one user and deep by the other still outranks an item
+        both users only rank moderately, even when the moderate item's
+        combined plays are higher - the same philosophy _rankWeightedOverlap
+        already uses for taste-match.
+
+        Rank is derived by re-sorting each pool by plays (see
+        _resortByMetric) rather than trusting the incoming pool's own order -
+        ranking by the viewer's own order used to silently cut different
+        overlapping items depending on whose pool was walked (see
+        test_shared_artists_ranked_by_combined_plays_not_the_viewers_own_order).
+        Combined ranking - not either side's own pool order - so the same
+        mutual-share pair sees the same Top Common list regardless of who's
+        viewing.
         Copied dicts: the pool entries also feed the viewer's own top-list
         column, and the versus block / combined totals must only show on the
         shared cards. The unique-song counts are only attached where the
         aggregates carry them (artists/albums) - a song card has nothing to
         count."""
+        myRanks = {item["id"]: rank for rank, item in enumerate(self._resortByMetric(myPool, "plays"), start=1)}
+        theirRanks = {item["id"]: rank for rank, item in enumerate(self._resortByMetric(theirPool, "plays"), start=1)}
         theirById = {item["id"]: item for item in theirPool}
         sharedItems = [dict(item) for item in myPool if item["id"] in theirById]
 
         def sortKey(item):
             theirItem = theirById[item["id"]]
-            combinedMetric = item.get(sortBy, 0) + theirItem.get(sortBy, 0)
+            mutualScore = self._mutualRankScore(myRanks[item["id"]], theirRanks[item["id"]])
+            combinedPlays = item.get("plays", 0) + theirItem.get("plays", 0)
             combinedTime = item.get("totalTimeListened", 0) + theirItem.get("totalTimeListened", 0)
-            #< descending combinedMetric/combinedTime via negation, ascending
-            #  name/id - mirrors Repository.getSongsPage's plays -> totalTimeListened
-            #  -> name -> id tiebreak chain so ties render the same way here as
-            #  everywhere else "plays" is ranked.
-            return (-combinedMetric, -combinedTime, (item.get("name") or "").lower(), item["id"])
+            #< descending mutualScore/combinedPlays/combinedTime via negation,
+            #  ascending name/id - mirrors Repository.getSongsPage's plays ->
+            #  totalTimeListened -> name -> id tiebreak chain so ties render
+            #  the same way here as everywhere else "plays" is ranked.
+            return (-mutualScore, -combinedPlays, -combinedTime, (item.get("name") or "").lower(), item["id"])
 
         sharedItems.sort(key=sortKey)
         shared = embedFn(sharedItems[:limit])
@@ -971,6 +988,14 @@ class SpotifyDashboardApp:
         """DCG-style discount for a 1-based rank: the #1 spot weighs 1,
         deeper ranks fall off logarithmically."""
         return 1 / math.log2(rank + 1)
+
+    def _mutualRankScore(self, myRank: int, theirRank: int) -> float:
+        """2x the rank discount (see _rankWeight) of the BETTER (shallower)
+        of two ranks for the same exact-match item - the same formula
+        _rankWeightedOverlap uses inline for an exact id match (see its
+        docstring for the mutual-favorite rationale), factored out because
+        _buildSharedItems needs it too."""
+        return 2 * self._rankWeight(min(myRank, theirRank))
 
     @staticmethod
     def _primaryArtistId(item: dict) -> str | None:
@@ -3296,17 +3321,19 @@ class SpotifyDashboardApp:
             # Sliced like every other list on the page. No percent text here -
             # it would mix two different users' totals. Searches the deeper
             # sharedXPool (COMPARE_SHARED_POOL_SIZE), not the shallower
-            # topXPool taste-match uses - see _gatherCompareStats.
+            # topXPool taste-match uses - see _gatherCompareStats. Ranked by
+            # _buildSharedItems's own mutual-rank-weighted score, independent
+            # of sortBy - only the individual my/their lists above read it.
             sharedArtists = self._buildSharedItems(
                 my["sharedArtistsPool"], their["sharedArtistsPool"],
-                self._embedArtistsTextElements, limit, sortBy=sortBy)
+                self._embedArtistsTextElements, limit)
             sharedSongs = self._buildSharedItems(
                 my["sharedSongsPool"], their["sharedSongsPool"],
                 lambda items: self._embedTopSongsTextElements(self._embedSongsTextElements(items)),
-                limit, sortBy=sortBy)
+                limit)
             sharedAlbums = self._buildSharedItems(
                 my["sharedAlbumsPool"], their["sharedAlbumsPool"],
-                self._embedAlbumsTextElements, limit, sortBy=sortBy)
+                self._embedAlbumsTextElements, limit)
             # Genre tables are entity-keyed, not user-scoped, so either
             # side's db returns the same result here - db (the viewer's) is
             # just what's already in scope.
@@ -3317,9 +3344,10 @@ class SpotifyDashboardApp:
             # Similarities run over the deeper sharedXPool, not the displayed
             # top ten (nor the shallower topXPool taste-match uses) - a #200-
             # ranked common favorite is still a common favorite. The
-            # "common top X" is combined-metric-ranked (see _buildSharedItems)
-            # so it's the same regardless of who's viewing, and its detail
-            # link resolves because the viewer played it.
+            # "common top X" is mutual-rank-weighted (see _buildSharedItems/
+            # _mutualRankScore), so it's the same regardless of who's viewing
+            # OR what sortBy they picked, and its detail link resolves
+            # because the viewer played it.
             theirArtistIds = {a["id"] for a in their["sharedArtistsPool"]}
             theirSongIds = {s["id"] for s in their["sharedSongsPool"]}
             theirAlbumIds = {a["id"] for a in their["sharedAlbumsPool"]}

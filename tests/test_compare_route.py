@@ -384,7 +384,9 @@ class TestCompareRoute(unittest.TestCase):
         own pool order and slicing to the first `limit` shared matches - so
         the same mutual-share pair could see a DIFFERENT top-10 shared set
         depending on who was viewing. Fixed by ranking the shared
-        intersection by combined plays (symmetric under swap) instead.
+        intersection by mutual rank-weighted score (see _mutualRankScore),
+        symmetric under swapping myPool/theirPool, with combined plays as
+        the first tiebreak - either way, not either side's own pool order.
 
         11 shared artists: in alice's OWN rank order, 'LowCombined' (her
         plays=2) would beat 'HighCombined' (her plays=1) into the top ten,
@@ -1071,12 +1073,14 @@ class TestCompareRoute(unittest.TestCase):
         #  sliced topXPool and the displayed list
         self.assertEqual(self.dbs["alice"].getTopSongs.call_count, 1)
 
-    def test_sort_by_reorders_the_shared_common_lists(self):
-        """A chosen sortBy must also reorder the Top Common (shared) lists -
-        combined across both users at that metric - not just the individual
-        my/their columns (see app.py's _buildSharedItems sortBy param). The
-        taste-match score stays unaffected: it runs over the fixed
-        plays-ranked overlap pool regardless of sortBy."""
+    def test_sort_by_does_not_reorder_the_shared_common_lists(self):
+        """sortBy only reorders the individual my/their columns (see
+        _gatherCompareStats) - the Top Common (shared) lists rank by a fixed
+        mutual-rank-weighted score (see _buildSharedItems/_mutualRankScore)
+        that never reads sortBy, so picking a different metric here must
+        leave their order untouched. The taste-match score stays unaffected
+        too: it runs over the fixed plays-ranked overlap pool regardless of
+        sortBy."""
         self._accept("alice", "bob")
         pool = [
             _artist(f"sa{i}", f"SharedA{i}", plays=10 - i, totalTimeListened=i * 100000)
@@ -1097,10 +1101,11 @@ class TestCompareRoute(unittest.TestCase):
         playsSection = commonSection(byPlays)
         timeSection = commonSection(byTime)
         #< SharedA0 has the most plays but the least totalTimeListened, and
-        #  vice versa for SharedA4 - so a real reorder flips their relative
-        #  positions between the two responses.
+        #  vice versa for SharedA4 - if sortBy leaked into the shared-list
+        #  ranking, ?sortBy=totalTimeListened would flip their relative
+        #  order; it must not.
         self.assertLess(playsSection.index(b"SharedA0"), playsSection.index(b"SharedA4"))
-        self.assertLess(timeSection.index(b"SharedA4"), timeSection.index(b"SharedA0"))
+        self.assertLess(timeSection.index(b"SharedA0"), timeSection.index(b"SharedA4"))
         self.assertIn(b'class="taste-match-value js-taste-match">100%</span>', byTime.data)
 
     def test_shared_list_ties_break_by_combined_time_played(self):
@@ -1143,6 +1148,57 @@ class TestCompareRoute(unittest.TestCase):
             resp.data.index(b'data-category="common-top-artists"'):
             resp.data.index(b'data-category="common-top-albums"')]
         self.assertLess(section.index(b"Alpha"), section.index(b"Zeta"))
+
+    def test_shared_list_ranks_by_mutual_favorite_not_raw_combined_plays(self):
+        """MutualFavorite: alice's #1 (plays=1000), but bob ranks it last among
+        his 3 (plays=1) - mutual-rank-weighting (see _mutualRankScore) credits
+        it near-max via alice's #1, the same philosophy _rankWeightedOverlap
+        already uses for taste-match. ModerateBoth: #2 on both sides (never
+        anyone's favorite) - its combined plays (1800) beat MutualFavorite's
+        (1001), so the OLD combined-sum ranking would have put it first. The
+        new ranking must put MutualFavorite first instead."""
+        self._accept("alice", "bob")
+        self.dbs["alice"].getTopArtists.return_value = [
+            _artist("mutual", "MutualFavorite", plays=1000),
+            _artist("moderate", "ModerateBoth", plays=900),
+        ]
+        self.dbs["bob"].getTopArtists.return_value = [
+            _artist("bobfav", "BobsOwnFavorite", plays=1000),   #< not shared with alice
+            _artist("moderate", "ModerateBoth", plays=900),
+            _artist("mutual", "MutualFavorite", plays=1),
+        ]
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        section = resp.data[
+            resp.data.index(b'data-category="common-top-artists"'):
+            resp.data.index(b'data-category="common-top-albums"')]
+        self.assertLess(section.index(b"MutualFavorite"), section.index(b"ModerateBoth"))
+
+    def test_shared_list_mutual_score_ties_break_by_combined_plays(self):
+        """Two shared artists can tie on mutual-rank score when each grabs
+        rank #1 on a DIFFERENT side - Alpha is alice's #1 (bob ranks it #2),
+        Beta is bob's #1 (alice ranks it #2), so both score 2*rankWeight(1).
+        Must not fall back to input-pool order (Beta is listed first in both
+        pools) - combined plays (101 vs 52) breaks the tie in Alpha's favor."""
+        self._accept("alice", "bob")
+        self.dbs["alice"].getTopArtists.return_value = [
+            _artist("beta", "Beta", plays=2),
+            _artist("alpha", "Alpha", plays=100),
+        ]
+        self.dbs["bob"].getTopArtists.return_value = [
+            _artist("beta", "Beta", plays=50),
+            _artist("alpha", "Alpha", plays=1),
+        ]
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        section = resp.data[
+            resp.data.index(b'data-category="common-top-artists"'):
+            resp.data.index(b'data-category="common-top-albums"')]
+        self.assertLess(section.index(b"Alpha"), section.index(b"Beta"))
 
     def test_taste_match_is_full_for_identical_pools(self):
         self._accept("alice", "bob")
