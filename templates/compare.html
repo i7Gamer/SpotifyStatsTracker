@@ -68,9 +68,10 @@
      shared-rank-weighted score (see _buildSharedItems/_sharedRankScore) and
      taste-match runs over a fixed plays-ranked pool - neither reads this
      control (which is why updateCompareSortByFilter swaps only the six
-     individual lists). Same options as the standalone Top pages, "Name
-     (A-Z)" included - like any sortBy here it re-queries just those six
-     lists. #}
+     individual lists). Same options as the standalone Top pages, but "Name
+     (A-Z)" here shows the top-`limit`-by-plays alphabetized for scanning
+     (see _gatherCompareStats' displayList), not the paginated alphabetical
+     browse of the whole history. #}
   <div class="filter-group">
     <label for="sortBy">Sort by:</label>
     <select id="sortBy" name="sortBy" onchange="updateCompareSortByFilter()">

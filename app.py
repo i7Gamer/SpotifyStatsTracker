@@ -842,30 +842,45 @@ class SpotifyDashboardApp:
         whatever the shared pool returns, unaffected by anything beyond it.
 
         The DISPLAYED my/their top lists default to the same pool's first
-        `limit` entries (no extra query), but re-query live at `sortBy`
-        when it's not "plays", so both membership and order reflect the
-        chosen metric like Top Songs page's own sortBy does - that one
-        query genuinely can't be derived by slicing, since it's a different
-        sort order entirely."""
+        `limit` entries (no extra query); other sortBys re-shape them per
+        displayList below ("name" alphabetizes that same head, a metric
+        re-queries live)."""
+        def displayList(pool, queryAtSortBy):
+            """The my/their column for one category. "plays" keeps the
+            plays-ranked pool's own head (no extra query). "name" means
+            "your top `limit` BY PLAYS, shown A-Z for scanning" -
+            deliberately NOT the alphabetical head of the whole history the
+            paginated standalone pages show: capped at `limit` with no
+            pagination here, that would surface mostly number/punctuation-
+            prefixed obscurities instead of anything about taste. Any other
+            metric re-queries live so membership AND order reflect it -
+            that genuinely can't be derived by slicing a plays-ranked
+            pool."""
+            if sortBy == "plays":
+                return pool[:limit]
+            if sortBy == "name":
+                return self._resortByMetric(pool[:limit], "name")
+            return queryAtSortBy()
+
         totalPlays, totalMs = db.getPlayTotals(startDate, endDate)
         sharedSongsPool = db.getTopSongs(startDate, endDate, limit=COMPARE_SHARED_POOL_SIZE)
         topSongsPool = sharedSongsPool[:COMPARE_OVERLAP_POOL_SIZE]
-        topSongsDisplay = topSongsPool[:limit] if sortBy == "plays" \
-            else db.getTopSongs(startDate, endDate, limit=limit, by=sortBy)
+        topSongsDisplay = displayList(
+            topSongsPool, lambda: db.getTopSongs(startDate, endDate, limit=limit, by=sortBy))
         topSongs = self._embedTopSongsTextElements(
             self._embedSongsTextElements(topSongsDisplay),
             sortBy=sortBy, totalPlays=totalPlays, totalMs=totalMs)
         sharedAlbumsPool = db.getTopAlbums(startDate, endDate, limit=COMPARE_SHARED_POOL_SIZE)
         topAlbumsPool = sharedAlbumsPool[:COMPARE_OVERLAP_POOL_SIZE]
-        topAlbumsDisplay = topAlbumsPool[:limit] if sortBy == "plays" \
-            else db.getTopAlbums(startDate, endDate, limit=limit, by=sortBy)
+        topAlbumsDisplay = displayList(
+            topAlbumsPool, lambda: db.getTopAlbums(startDate, endDate, limit=limit, by=sortBy))
         topAlbums = self._embedAlbumsTextElements(
             topAlbumsDisplay,
             sortBy=sortBy, totalPlays=totalPlays, totalMs=totalMs)
         sharedArtistsPool = db.getTopArtists(startDate, endDate, limit=COMPARE_SHARED_POOL_SIZE)
         topArtistsPool = sharedArtistsPool[:COMPARE_OVERLAP_POOL_SIZE]
-        topArtistsDisplay = topArtistsPool[:limit] if sortBy == "plays" \
-            else db.getTopArtists(startDate, endDate, limit=limit, by=sortBy)
+        topArtistsDisplay = displayList(
+            topArtistsPool, lambda: db.getTopArtists(startDate, endDate, limit=limit, by=sortBy))
         topArtists = self._embedArtistsTextElements(
             topArtistsDisplay,
             sortBy=sortBy, totalPlays=totalPlays, totalMs=totalMs)

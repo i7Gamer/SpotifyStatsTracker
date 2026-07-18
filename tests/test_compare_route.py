@@ -1058,26 +1058,37 @@ class TestCompareRoute(unittest.TestCase):
 
         self.assertIn(b'<option value="plays" selected>Number of Plays</option>', resp.data)
 
-    def test_sort_by_name_is_offered_and_requeries_the_individual_lists(self):
-        """"Name (A-Z)" is offered like on the standalone Top pages
-        (historically excluded while sortBy also ranked the Top Common
-        lists, where combined-alphabetical made no sense - since sortBy's
-        scope narrowed to the individual my/their lists, that reason is
-        gone). Like any non-"plays" sortBy it re-queries the display lists
-        live at by="name" (see _gatherCompareStats), so membership and
-        order come from the DB's alphabetical ranking, not from re-sorting
-        the plays pool. The Top Common lists stay untouched either way
-        (see test_sort_by_does_not_reorder_the_shared_common_lists)."""
+    def test_sort_by_name_alphabetizes_the_top_plays_lists(self):
+        """"Name (A-Z)" on Compare means "your top `limit` BY PLAYS, shown
+        A-Z for scanning" (see _gatherCompareStats' displayList) - NOT the
+        alphabetical head of the whole history the paginated standalone
+        pages show, which with a hard cap and no pagination would surface
+        mostly obscure number/punctuation-prefixed names. Aardvark is
+        alphabetically first but only #11 by plays, so it must NOT appear;
+        the top ten render alphabetized (their plays order is the exact
+        reverse). No extra display query: the plays pool is re-used."""
         self._accept("alice", "bob")
+        names = ["Juliet", "India", "Hotel", "Golf", "Foxtrot",
+                 "Echo", "Delta", "Charlie", "Bravo", "Alpha"]
+        self.dbs["alice"].getTopArtists.return_value = [
+            _artist(f"a{i}", name, plays=20 - i) for i, name in enumerate(names)
+        ] + [_artist("a10", "Aardvark", plays=1)]   #< #11 by plays
         client = self._loginAs("alice")
 
         resp = client.get("/compare?sortBy=name")
 
         self.assertIn(b'<option value="name" selected>Name (A-Z)</option>', resp.data)
-        #< first call is the plays-ranked shared pool, second the live
-        #  by="name" display query
-        self.assertEqual(self.dbs["alice"].getTopSongs.call_count, 2)
-        self.assertEqual(self.dbs["alice"].getTopSongs.call_args.kwargs.get("by"), "name")
+        section = resp.data[
+            resp.data.index(b'id="myTopArtistsList"'):
+            resp.data.index(b'id="theirTopArtistsList"')]
+        self.assertNotIn(b"Aardvark", section)
+        #< plays order would put Juliet first and Alpha last - alphabetizing
+        #  the top-ten slice reverses it
+        self.assertLess(section.index(b"Alpha"), section.index(b"Bravo"))
+        self.assertLess(section.index(b"Bravo"), section.index(b"Juliet"))
+        #< one plays-ranked pool query serves membership AND order - no
+        #  second by="name" display query
+        self.assertEqual(self.dbs["alice"].getTopArtists.call_count, 1)
 
     def test_sort_by_does_not_reorder_the_shared_common_lists(self):
         """sortBy only reorders the individual my/their columns (see
