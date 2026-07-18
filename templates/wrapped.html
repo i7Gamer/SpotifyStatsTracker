@@ -355,6 +355,23 @@
     let currentLimit = '{{ limit }}';
     let currentSortBy = '{{ sortBy }}';
 
+    // The in-flight filter fetch ({controller, targets}) - a newer filter
+    // change aborts it so a slow older response can't land after (and
+    // clobber) the newer one's swap. Same race, same fix as Compare's
+    // loadCompareData (see templates/compare.html).
+    let activeWrappedLoad = null;
+
+    function setWrappedFade(targets, add) {
+      targets.forEach(t => {
+        if (!t) return;
+        if (t instanceof NodeList) {
+          t.forEach(el => el.classList[add ? 'add' : 'remove']('wrapped-loading-fade'));
+        } else {
+          t.classList[add ? 'add' : 'remove']('wrapped-loading-fade');
+        }
+      });
+    }
+
     function loadWrappedData(year, groupBy, limit, sortBy, updateType = 'all') {
       const targets = [];
       if (updateType === 'all') {
@@ -371,36 +388,37 @@
         document.querySelectorAll('[data-category]').forEach(el => targets.push(el));
       }
 
-      targets.forEach(t => {
-        if (t) {
-          if (t instanceof NodeList) {
-            t.forEach(el => el.classList.add('wrapped-loading-fade'));
-          } else {
-            t.classList.add('wrapped-loading-fade');
-          }
-        }
-      });
+      if (activeWrappedLoad) {
+        activeWrappedLoad.controller.abort();
+        //< the aborted load skips its own finally cleanup - un-fade its
+        //  targets here so a wider ('all') load superseded by a narrower
+        //  ('chart'/'lists') one doesn't leave the extra sections stuck
+        //  mid-fade forever
+        setWrappedFade(activeWrappedLoad.targets, false);
+      }
+      const controller = new AbortController();
+      activeWrappedLoad = { controller, targets };
+
+      setWrappedFade(targets, true);
 
       const hiddenYear = document.querySelector('form.filter-section input[name="year"]');
       if (hiddenYear) hiddenYear.value = year;
 
       const delayPromise = new Promise(resolve => setTimeout(resolve, 200));
-      const fetchPromise = fetch(`/wrapped?year=${year}&groupBy=${groupBy}&limit=${limit}&sortBy=${sortBy}&ajax=true&type=${updateType}`)
+      const fetchPromise = fetch(`/wrapped?year=${year}&groupBy=${groupBy}&limit=${limit}&sortBy=${sortBy}&ajax=true&type=${updateType}`, { signal: controller.signal })
         .then(response => response.json());
 
       Promise.all([fetchPromise, delayPromise])
         .then(([data]) => {
+          //< a response that resolved before its abort can still reach here
+          //  (abort() can't recall a settled promise, and the fade delay
+          //  may be what it was waiting on) - never swap stale data in
+          //  over a newer load's
+          if (!activeWrappedLoad || activeWrappedLoad.controller !== controller) {
+            return;
+          }
           if (data.error) {
             console.error(data.error);
-            targets.forEach(t => {
-              if (t) {
-                if (t instanceof NodeList) {
-                  t.forEach(el => el.classList.remove('wrapped-loading-fade'));
-                } else {
-                  t.classList.remove('wrapped-loading-fade');
-                }
-              }
-            });
             return;
           }
 
@@ -537,29 +555,20 @@
               });
             }
           });
-
-          // 5. Remove transition fades
-          targets.forEach(t => {
-            if (t) {
-              if (t instanceof NodeList) {
-                t.forEach(el => el.classList.remove('wrapped-loading-fade'));
-              } else {
-                t.classList.remove('wrapped-loading-fade');
-              }
-            }
-          });
         })
         .catch(err => {
-          console.error(err);
-          targets.forEach(t => {
-            if (t) {
-              if (t instanceof NodeList) {
-                t.forEach(el => el.classList.remove('wrapped-loading-fade'));
-              } else {
-                t.classList.remove('wrapped-loading-fade');
-              }
-            }
-          });
+          //< an abort is the expected fate of a superseded load, not an error
+          if (err.name !== 'AbortError') {
+            console.error(err);
+          }
+        })
+        .finally(() => {
+          //< only the still-current load cleans up - a superseded one's
+          //  fades were already cleared by its successor when it aborted it
+          if (activeWrappedLoad && activeWrappedLoad.controller === controller) {
+            activeWrappedLoad = null;
+            setWrappedFade(targets, false);
+          }
         });
     }
 
