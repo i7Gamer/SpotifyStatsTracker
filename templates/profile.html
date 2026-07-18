@@ -193,7 +193,7 @@
           {% for link in shareLinks %}
           <tr>
             <td style="padding: 8px;">
-              <span class="badge badge-secondary">{{ link.year }}</span>
+              <span class="badge badge-secondary">{{ link.year if link.year is not none else 'All years' }}</span>
               Created {{ link.createdText }} &middot; Expires: {{ link.expiresText }}
             </td>
             <td class="share-actions" style="padding: 8px; text-align: right;">

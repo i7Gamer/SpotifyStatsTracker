@@ -71,7 +71,7 @@ CREATE TABLE IF NOT EXISTS share_links (
     token       TEXT NOT NULL UNIQUE,      -- secrets.token_urlsafe(32), ~256 bits
     username    TEXT NOT NULL REFERENCES users(username),
     kind        TEXT NOT NULL CHECK (kind IN ('wrapped')),
-    year        INTEGER NOT NULL,          -- pinned at creation; a link is "my 2025", not "my latest"
+    year        INTEGER,                   -- pinned at creation ("my 2025"); NULL = "all years" (1.24.0, see migrate1_23_0.py)
     created_at  REAL NOT NULL,
     expires_at  REAL                       -- NULL = never
 );

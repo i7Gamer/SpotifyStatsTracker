@@ -18,6 +18,11 @@ from test_charts_genres import coverageDict
 _SECRET_KEY_PATCH = 'app.SpotifyDashboardApp._get_or_create_secret_key'
 
 
+def _ts(year, month=6, day=1, hour=12):
+    """Unix timestamp (seconds) for a UTC datetime, matching test_wrapped_route.py."""
+    return datetime.datetime(year, month, day, hour, tzinfo=datetime.timezone.utc).timestamp()
+
+
 class ShareLinkRoutesTestCase(unittest.TestCase):
     """Freezes now()/tz like test_wrapped_route.py, since sharedWrappedPage()
     renders wrapped.html through the same _buildWrappedContext() pipeline."""
@@ -56,6 +61,15 @@ class ShareLinkRoutesTestCase(unittest.TestCase):
         db.getAlbumsStats.return_value = []
         db.getListeningTimeSeries.return_value = []
         db.getUserSpotifyCredentials.return_value = {}
+        # Only reached by an ajax type=all request (_buildWrappedContext's
+        # mock-db branch calls these directly) - every other test here only
+        # ever exercises the full-page render, which doesn't touch them.
+        db.getLongestStreak.return_value = 0
+        db.getPeakListeningTime.return_value = None
+        db.getSongsCount.return_value = 0
+        db.getArtistsCount.return_value = 0
+        db.getDiscoveredSongsCount.return_value = 0
+        db.getDiscoveredArtistsCount.return_value = 0
         return db
 
     def _loginAs(self, username, email, db=None):
@@ -99,6 +113,25 @@ class TestCreateShareLink(ShareLinkRoutesTestCase):
 
         link = self.dash.repo.getShareLinksForUser("alice")[0]
         self.assertIsNotNone(link["expires_at"])
+
+    def test_all_years_checkbox_creates_a_year_none_link(self):
+        client = self._loginAs("alice", "alice@example.com")
+
+        client.post("/wrapped/share-links/2026", data={"expiry": "never", "allYears": "1"})
+
+        links = self.dash.repo.getShareLinksForUser("alice")
+        self.assertEqual(len(links), 1)
+        self.assertIsNone(links[0]["year"])
+
+    def test_allyears_field_absent_still_creates_a_per_year_link(self):
+        """Regression gate for existing per-year callers - the field is
+        simply absent from their POSTs, so allYears must default false."""
+        client = self._loginAs("alice", "alice@example.com")
+
+        client.post("/wrapped/share-links/2026", data={"expiry": "never"})
+
+        links = self.dash.repo.getShareLinksForUser("alice")
+        self.assertEqual(links[0]["year"], 2026)
 
     def test_disabled_feature_returns_404(self):
         self.dash.repo.setShareLinksEnabled(False)
@@ -237,8 +270,37 @@ class TestRevokeShareLinkAjax(ShareLinkRoutesTestCase):
         self.assertEqual(resp.status_code, 401)
         self.assertIn("error", resp.get_json())
 
+    def test_revoking_the_all_years_link_falls_back_to_the_per_year_link(self):
+        """Exercises the fix to profileShareLinkAction's ajax branch - it
+        used to hardcode currentLink=None after any revoke, which was only
+        correct while exactly one link type could exist per user."""
+        client = self._loginAs("alice", "alice@example.com")
+        self.dash.repo.createShareLink("alice", self.dash.repo.SHARE_LINK_KIND_WRAPPED, 2026, None)
+        allYearsToken = self.dash.repo.createShareLink(
+            "alice", self.dash.repo.SHARE_LINK_KIND_WRAPPED, None, None)
+        allYearsId = self.dash.repo.getShareLink(allYearsToken)["id"]
+
+        resp = client.post(f"/profile/share-links/{allYearsId}?ajax=true", data={"year": "2026"})
+
+        self.assertEqual(resp.status_code, 200)
+        html = resp.get_json()["html"]
+        self.assertIn("Revoke", html)   #< falls back to showing the still-live 2026 link
+        self.assertNotIn("Create Share Link", html)
+        self.assertIsNone(self.dash.repo.getShareLink(allYearsToken))
+
 
 class TestShareLinkListOnProfilePage(ShareLinkRoutesTestCase):
+    def test_all_years_link_shows_all_years_badge_not_none(self):
+        self.dash.repo.upsertUser("alice", "alice@example.com")
+        self.dash.repo.createShareLink("alice", self.dash.repo.SHARE_LINK_KIND_WRAPPED, None, expiresInSeconds=None)
+        client = self._loginAs("alice", "alice@example.com")
+
+        resp = client.get("/profile")
+        body = resp.data.decode()
+
+        self.assertIn('<span class="badge badge-secondary">All years</span>', body)
+        self.assertNotIn(">None<", body)
+
     def test_lists_year_created_and_expiry(self):
         self.dash.repo.upsertUser("alice", "alice@example.com")
         self.dash.repo.createShareLink("alice", self.dash.repo.SHARE_LINK_KIND_WRAPPED, 2026, expiresInSeconds=None)
@@ -389,6 +451,18 @@ class TestPublicSharedWrappedPage(PublicSharedWrappedTestCase):
         self.assertIn("alice played 3 different songs by TestArtist", body)
         self.assertNotIn("You played", body)
 
+    def test_js_constants_reflect_public_view_and_owner(self):
+        """The AJAX/year-switch JS branches on these to keep the hero text
+        and fetch target correct after a client-side filter/year change."""
+        token = self._createLink()
+
+        resp = self._getShared(token)
+        body = resp.data.decode()
+
+        self.assertIn("const IS_PUBLIC_VIEW = true;", body)
+        self.assertIn('const SHARE_OWNER_NAME = "alice";', body)
+        self.assertIn(f'const WRAPPED_FETCH_URL = "/shared/{token}";', body)
+
     def test_genre_locked_progress_uses_the_owners_username(self):
         token = self._createLink()
         self.dash.repo.setLastfmGenreBackfillEnabled(True)
@@ -429,18 +503,39 @@ class TestPublicSharedWrappedPage(PublicSharedWrappedTestCase):
 
         self.assertEqual(resp.headers.get("X-Robots-Tag"), "noindex")
 
-    def test_no_authenticated_nav_or_filter_controls(self):
+    def test_no_authenticated_nav_export_or_share_controls(self):
         """The public page must use layout_public.html (no topbar/nav) and
-        must not show the AJAX filter form, year badges, or export button -
-        none of that machinery applies to an anonymous, single-year view."""
+        must never show the Export or Share button/modal - an anonymous
+        visitor can't export the owner's summary card or create share links
+        for someone else's data. Group by/Items per category/Sort by ARE
+        shown (see TestPublicSharedWrappedPageFilters) - only year badges
+        stay conditional on being a multi-year link."""
         token = self._createLink()
 
         resp = self._getShared(token)
         body = resp.data.decode()
 
         self.assertNotIn('id="nav-toggle"', body)
-        self.assertNotIn('id="groupBy"', body)
         self.assertNotIn('id="exportWrappedBtn"', body)
+        self.assertNotIn('id="shareWrappedBtn"', body)
+        self.assertNotIn('id="shareLinkModal"', body)
+
+    def test_filter_controls_shown_on_a_single_year_shared_page(self):
+        token = self._createLink()
+
+        resp = self._getShared(token)
+        body = resp.data.decode()
+
+        self.assertIn('id="groupBy"', body)
+        self.assertIn('id="limit"', body)
+        self.assertIn('id="sortBy"', body)
+
+    def test_year_badges_hidden_on_a_single_year_shared_page(self):
+        token = self._createLink()
+
+        resp = self._getShared(token)
+        body = resp.data.decode()
+
         self.assertNotIn('class="wrapped-year-badges"', body)
 
     def test_no_share_panel_on_the_public_page_itself(self):
@@ -464,6 +559,125 @@ class TestPublicSharedWrappedPage(PublicSharedWrappedTestCase):
         resp = self._getShared("one-more-unknown")
 
         self.assertEqual(resp.status_code, 429)
+
+
+class TestPublicSharedWrappedPageMultiYear(PublicSharedWrappedTestCase):
+    """An "all years" link (year=None) is year-switchable, like the
+    authenticated page - a per-year link stays pinned (see
+    test_year_query_param_is_ignored_for_a_single_year_link below)."""
+
+    def test_defaults_to_the_most_recent_available_year(self):
+        token = self._createLink(year=None)
+        db = self._makeDb()
+        db.getEntriesFromOld.return_value = [{"playedAt": _ts(2023)}]
+
+        resp = self._getShared(token, db=db)
+        body = resp.data.decode()
+
+        self.assertIn("alice&#39;s 2026 Wrapped", body)   #< now() is frozen at 2026-07-11 in setUp
+
+    def test_year_query_param_switches_the_shown_year(self):
+        token = self._createLink(year=None)
+        db = self._makeDb()
+        db.getEntriesFromOld.return_value = [{"playedAt": _ts(2023)}]
+
+        resp = self._getShared(f"{token}?year=2024", db=db)
+        body = resp.data.decode()
+
+        self.assertIn("alice&#39;s 2024 Wrapped", body)
+
+    def test_year_query_param_outside_available_range_falls_back_to_default(self):
+        token = self._createLink(year=None)
+        db = self._makeDb()
+        db.getEntriesFromOld.return_value = [{"playedAt": _ts(2023)}]
+
+        resp = self._getShared(f"{token}?year=1999", db=db)
+        body = resp.data.decode()
+
+        self.assertIn("alice&#39;s 2026 Wrapped", body)
+
+    def test_year_badges_visible_for_a_multi_year_link(self):
+        token = self._createLink(year=None)
+        db = self._makeDb()
+        db.getEntriesFromOld.return_value = [{"playedAt": _ts(2023)}]
+
+        resp = self._getShared(token, db=db)
+        body = resp.data.decode()
+
+        self.assertIn('class="wrapped-year-badges"', body)
+        for year in (2023, 2024, 2025, 2026):
+            self.assertIn(f">{year}<", body)
+
+    def test_year_query_param_is_ignored_for_a_single_year_link(self):
+        """The tamper regression: a per-year link must not let a visitor
+        browse a different year of the same user's data via the URL."""
+        token = self._createLink(year=2025)
+        db = self._makeDb()
+        db.getEntriesFromOld.return_value = [{"playedAt": _ts(2023)}]
+
+        resp = self._getShared(f"{token}?year=2026", db=db)
+        body = resp.data.decode()
+
+        self.assertIn("alice&#39;s 2025 Wrapped", body)
+        self.assertNotIn('class="wrapped-year-badges"', body)
+
+
+class TestSharedWrappedPageAjax(PublicSharedWrappedTestCase):
+    def _getSharedAjax(self, token, query="", db=None):
+        client = self.dash.app.test_client()
+        with patch.object(self.dash, '_getReadOnlyUserDb', return_value=db or self._makeDb()):
+            return client.get(f"/shared/{token}?ajax=true&type=all{query}")
+
+    def test_ajax_lists_request_returns_json(self):
+        token = self._createLink(year=2026)
+
+        resp = self._getSharedAjax(token, query="&groupBy=month&limit=25&sortBy=name")
+
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertIn("topSongsHtml", data)
+        self.assertIn("timeSeries", data)
+
+    def test_invalid_groupby_limit_sortby_fall_back_same_as_wrappedpage(self):
+        token = self._createLink(year=2026)
+
+        resp = self._getSharedAjax(token, query="&groupBy=bogus&limit=999999&sortBy=bogus")
+
+        self.assertEqual(resp.status_code, 200)   #< falls back to defaults rather than erroring
+
+    def test_ajax_response_username_replaces_you_in_swapped_list_html(self):
+        token = self._createLink(year=2026)
+        db = self._makeDb()
+        db.getTopArtists.return_value = [
+            {"id": "a1", "name": "TestArtist", "plays": 5, "totalTimeListened": 5000, "uniqueSongCount": 3}
+        ]
+
+        resp = self._getSharedAjax(token, db=db)
+
+        html = resp.get_json()["topArtistsHtml"]
+        self.assertIn("alice played 3 different songs by TestArtist", html)
+        self.assertNotIn("You played", html)
+
+    def test_ajax_year_switch_on_a_multi_year_link_stays_within_available_years(self):
+        token = self._createLink(year=None)
+        db = self._makeDb()
+        db.getEntriesFromOld.return_value = [{"playedAt": _ts(2023)}]
+
+        resp = self._getSharedAjax(token, query="&year=2024", db=db)
+
+        self.assertEqual(resp.status_code, 200)
+
+    def test_ajax_year_tampering_is_ignored_for_a_single_year_link(self):
+        token = self._createLink(year=2025)
+        db = self._makeDb()
+        db.getTopSongs.return_value = [
+            {"id": "s1", "name": "OnlyIn2025", "plays": 1, "duration": 0, "artists": []}
+        ]
+
+        resp = self._getSharedAjax(token, query="&year=2026", db=db)
+
+        html = resp.get_json()["topSongsHtml"]
+        self.assertIn("OnlyIn2025", html)
 
 
 class TestShareLinkPanelOnWrappedPage(ShareLinkRoutesTestCase):
@@ -502,6 +716,38 @@ class TestShareLinkPanelOnWrappedPage(ShareLinkRoutesTestCase):
 
         self.assertIn("Create Share Link", body)
         self.assertNotIn("Revoke", body)
+
+    def test_all_years_link_is_shown_over_a_same_page_per_year_link(self):
+        """All-years is a strict superset of any one year, so it wins the
+        panel's single-state display when both exist."""
+        self.dash.repo.upsertUser("alice", "alice@example.com")
+        perYearToken = self.dash.repo.createShareLink(
+            "alice", self.dash.repo.SHARE_LINK_KIND_WRAPPED, 2026, None)
+        allYearsToken = self.dash.repo.createShareLink(
+            "alice", self.dash.repo.SHARE_LINK_KIND_WRAPPED, None, None)
+        client = self._loginAs("alice", "alice@example.com")
+
+        resp = client.get("/wrapped?year=2026")
+        body = resp.data.decode()
+
+        self.assertIn(f"/shared/{allYearsToken}", body)
+        self.assertNotIn(f"/shared/{perYearToken}", body)
+        self.assertIn("all of your Wrapped years", body)
+
+    def test_creating_a_redundant_per_year_link_still_shows_the_all_years_link(self):
+        """Exercises why createWrappedShareLink's ajax branch needs the full
+        _resolveCurrentShareLinks re-scan rather than echoing back the row it
+        just inserted."""
+        self.dash.repo.upsertUser("alice", "alice@example.com")
+        allYearsToken = self.dash.repo.createShareLink(
+            "alice", self.dash.repo.SHARE_LINK_KIND_WRAPPED, None, None)
+        client = self._loginAs("alice", "alice@example.com")
+
+        resp = client.post("/wrapped/share-links/2026?ajax=true", data={"expiry": "never"})
+
+        self.assertEqual(resp.status_code, 200)
+        html = resp.get_json()["html"]
+        self.assertIn(f"/shared/{allYearsToken}", html)
 
     def test_panel_hidden_when_feature_disabled(self):
         self.dash.repo.setShareLinksEnabled(False)

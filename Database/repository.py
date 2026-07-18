@@ -1878,9 +1878,10 @@ class Repository:
 
     SHARE_LINK_KIND_WRAPPED = "wrapped"
 
-    def createShareLink(self, username: str, kind: str, year: int, expiresInSeconds: float | None) -> str:
-        """Creates a new link and returns its token. expiresInSeconds=None
-        means "never expires"."""
+    def createShareLink(self, username: str, kind: str, year: int | None, expiresInSeconds: float | None) -> str:
+        """Creates a new link and returns its token. year=None means "all
+        years" (a single link covering every year the owner has data for).
+        expiresInSeconds=None means "never expires"."""
         token = secrets.token_urlsafe(32)
         now = time.time()
         expiresAt = now + expiresInSeconds if expiresInSeconds is not None else None
@@ -1913,8 +1914,9 @@ class Repository:
 
     def getShareLinksForUser(self, username: str) -> list[dict]:
         """[{id, token, kind, year, created_at, expires_at}], newest year
-        first - for the Profile page's link-management list. Also lazily
-        deletes this user's own expired rows first (same reasoning as
+        first (an all-years link's year is None, which SQLite sorts last in
+        DESC order) - for the Profile page's link-management list. Also
+        lazily deletes this user's own expired rows first (same reasoning as
         getShareLink) - otherwise an expired link would keep showing here as
         if still active, even though visiting it would already 404."""
         conn = self._conn()

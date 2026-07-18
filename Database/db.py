@@ -284,13 +284,16 @@ CREATE INDEX IF NOT EXISTS idx_user_shares_requester ON user_shares(requester_us
 -- would only protect against DB-read access, which already exposes
 -- everything else in this database too. expires_at is nullable ('never'
 -- expires); an expired row is lazily deleted on lookup rather than swept by
--- a background job - see Repository.getShareLink().
+-- a background job - see Repository.getShareLink(). year is also nullable:
+-- NULL means "all years" (a single link that covers every year the owner
+-- has data for), not tied to one year at creation like every other row -
+-- see migrate1_23_0.py for the migration that relaxed this column.
 CREATE TABLE IF NOT EXISTS share_links (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     token       TEXT NOT NULL UNIQUE,
     username    TEXT NOT NULL REFERENCES users(username),
     kind        TEXT NOT NULL CHECK (kind IN ('wrapped')),
-    year        INTEGER NOT NULL,
+    year        INTEGER,
     created_at  REAL NOT NULL,
     expires_at  REAL
 );

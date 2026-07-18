@@ -73,14 +73,15 @@
     <p class="success" style="color: #4aff4a; margin-bottom: 1.5rem; text-align: center;">{{ success }}</p>
   {% endif %}
 
-  {% if not publicView %}
+  {% if not publicView or isMultiYearShare %}
   <nav class="wrapped-year-badges" aria-label="Select year">
     {% for y in availableYears %}
-      <a class="wrapped-year-badge{{ ' active' if y == year else '' }}" href="{{ url_for('wrappedPage', year=y, groupBy=groupBy, limit=limit, sortBy=sortBy) }}">{{ y }}</a>
+      <a class="wrapped-year-badge{{ ' active' if y == year else '' }}" href="{{ url_for('sharedWrappedPage', token=token, year=y, groupBy=groupBy, limit=limit, sortBy=sortBy) if publicView else url_for('wrappedPage', year=y, groupBy=groupBy, limit=limit, sortBy=sortBy) }}">{{ y }}</a>
     {% endfor %}
   </nav>
+  {% endif %}
 
-  <form class="filter-section" method="get" action="{{ url_for('wrappedPage', year=year) }}" style="display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; justify-content: space-between;">
+  <form class="filter-section" method="get" action="{{ url_for('sharedWrappedPage', token=token) if publicView else url_for('wrappedPage', year=year) }}" style="display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; justify-content: space-between;">
     <input type="hidden" name="year" value="{{ year }}">
     <div style="display: flex; gap: 1rem; flex-wrap: wrap; align-items: center;">
       <div class="filter-group">
@@ -111,6 +112,7 @@
       </div>
     </div>
 
+    {% if not publicView %}
     <div style="flex-shrink: 0; display: flex; gap: 0.75rem; align-items: center;">
       <button id="exportWrappedBtn" class="primary-button" style="background: var(--accent); color: #111; font-weight: bold; border: none; padding: 10px 20px; border-radius: 20px; cursor: pointer; display: inline-flex; align-items: center; gap: 8px;"
               data-year="{{ year }}"
@@ -142,14 +144,16 @@
       </button>
       {% endif %}
     </div>
+    {% endif %}
 
     <noscript>
       <button class="primary-button" type="submit">Apply</button>
     </noscript>
   </form>
 
-  {% if share_links_enabled %}
+  {% if not publicView and share_links_enabled %}
   {% set currentLink = shareLinks | selectattr('year', 'equalto', year) | first %}
+  {% set currentAllYearsLink = shareLinks | selectattr('year', 'none') | first %}
   <div id="shareLinkModal" class="share-modal-overlay" style="display: {{ 'flex' if request.args.get('openShareModal') else 'none' }};">
     <div class="share-modal-card" role="dialog" aria-modal="true" aria-labelledby="shareLinkModalTitle">
       <button type="button" class="share-modal-close" aria-label="Close" onclick="document.getElementById('shareLinkModal').style.display = 'none';">&times;</button>
@@ -158,7 +162,6 @@
       </div>
     </div>
   </div>
-  {% endif %}
   {% endif %}
 
   <section class="track-summary-grid">
@@ -345,11 +348,13 @@
       allButton.click();
     }
 
-    {% if not publicView %}
-    // Everything below this point (the AJAX groupBy/limit/sortBy filter
-    // form, year-badge switching, and the Export Summary Card button) only
-    // exists on the authenticated page - a public share-link view has none
-    // of those controls, so none of this runs there.
+    // The Export Summary Card button and Share modal only exist in the DOM
+    // when not publicView - their handlers below use ?. so registering them
+    // here unconditionally is a safe no-op on the public page.
+    const WRAPPED_FETCH_URL = "{{ url_for('sharedWrappedPage', token=token) if publicView else url_for('wrappedPage') }}";
+    const IS_PUBLIC_VIEW = {{ publicView | tojson }};
+    const SHARE_OWNER_NAME = {{ username | tojson }};
+
     let currentYear = '{{ year }}';
     let currentGroupBy = '{{ groupBy }}';
     let currentLimit = '{{ limit }}';
@@ -405,7 +410,7 @@
       if (hiddenYear) hiddenYear.value = year;
 
       const delayPromise = new Promise(resolve => setTimeout(resolve, 200));
-      const fetchPromise = fetch(`/wrapped?year=${year}&groupBy=${groupBy}&limit=${limit}&sortBy=${sortBy}&ajax=true&type=${updateType}`, { signal: controller.signal })
+      const fetchPromise = fetch(`${WRAPPED_FETCH_URL}?year=${year}&groupBy=${groupBy}&limit=${limit}&sortBy=${sortBy}&ajax=true&type=${updateType}`, { signal: controller.signal })
         .then(response => response.json());
 
       Promise.all([fetchPromise, delayPromise])
@@ -423,9 +428,9 @@
           }
 
           const heroTitle = document.querySelector('.hero h1');
-          if (heroTitle) heroTitle.textContent = `Your ${year} Wrapped`;
+          if (heroTitle) heroTitle.textContent = IS_PUBLIC_VIEW ? `${SHARE_OWNER_NAME}'s ${year} Wrapped` : `Your ${year} Wrapped`;
           const heroSubtitle = document.querySelector('.hero p');
-          if (heroSubtitle) heroSubtitle.textContent = `A look back at what you listened to in ${year}.`;
+          if (heroSubtitle) heroSubtitle.textContent = `A look back at what ${IS_PUBLIC_VIEW ? SHARE_OWNER_NAME : 'you'} listened to in ${year}.`;
 
           // 1. Update general stats if returned
           if (data.totalPlays !== undefined) {
@@ -838,7 +843,6 @@
         })
         .catch(() => showShareLinkError('Something went wrong. Please try again.'));
     });
-    {% endif %}
   </script>
   <script src="{{ url_for('static', filename='js/charts.js') }}"></script>
 {% endblock %}

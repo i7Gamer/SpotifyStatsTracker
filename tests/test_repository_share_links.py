@@ -71,6 +71,22 @@ class TestCreateAndGetShareLink(RepositoryShareLinksTestCase):
     def test_unknown_token_returns_none(self):
         self.assertIsNone(self.repo.getShareLink("does-not-exist"))
 
+    def test_year_none_creates_an_all_years_link(self):
+        token = self.repo.createShareLink("alice", "wrapped", None, expiresInSeconds=None)
+
+        link = self.repo.getShareLink(token)
+
+        self.assertIsNotNone(link)
+        self.assertIsNone(link["year"])
+
+    def test_all_years_link_and_a_per_year_link_can_coexist(self):
+        self.repo.createShareLink("alice", "wrapped", 2026, expiresInSeconds=None)
+        self.repo.createShareLink("alice", "wrapped", None, expiresInSeconds=None)
+
+        links = self.repo.getShareLinksForUser("alice")
+
+        self.assertEqual(len(links), 2)
+
 
 class TestExpiredShareLinkLazyDeletion(RepositoryShareLinksTestCase):
     def test_expired_token_returns_none(self):
@@ -141,6 +157,15 @@ class TestGetShareLinksForUser(RepositoryShareLinksTestCase):
         years = [link["year"] for link in self.repo.getShareLinksForUser("alice")]
 
         self.assertEqual(years, [2026])
+
+    def test_all_years_link_sorts_after_every_dated_link(self):
+        self.repo.createShareLink("alice", "wrapped", 2023, expiresInSeconds=None)
+        self.repo.createShareLink("alice", "wrapped", None, expiresInSeconds=None)
+        self.repo.createShareLink("alice", "wrapped", 2026, expiresInSeconds=None)
+
+        years = [link["year"] for link in self.repo.getShareLinksForUser("alice")]
+
+        self.assertEqual(years, [2026, 2023, None])
 
     def test_expired_link_listing_does_not_affect_a_different_users_links(self):
         self.repo.createShareLink("alice", "wrapped", 2025, expiresInSeconds=-10)

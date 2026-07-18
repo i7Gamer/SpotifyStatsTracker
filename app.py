@@ -1363,6 +1363,59 @@ class SpotifyDashboardApp:
             return defaultYear
         return year if year in availableYears else defaultYear
 
+    def _computeAvailableYears(self, db) -> list:
+        """Every year `db`'s user has at least one play in, most recent
+        first - shared by wrappedPage() (year badges) and a multi-year
+        ("all years") share link on sharedWrappedPage(), which has no fixed
+        single year to fall back on the way a per-year link does."""
+        nowLocal = now(tz=db.tz)
+        currentYear = nowLocal.year
+        oldestEntries = db.getEntriesFromOld(count=1, fullPagination=False)
+        earliestYear = convertToDatetime(oldestEntries[0]["playedAt"], tz=db.tz).year if oldestEntries else currentYear
+        return list(range(currentYear, earliestYear - 1, -1))
+
+    def _parseWrappedFilterParams(self) -> tuple:
+        """groupBy/limit/sortBy (validated, with the same defaults/fallbacks
+        wrappedPage() has always used) plus ajax-request detection - shared
+        by wrappedPage() and sharedWrappedPage() so the two routes can't
+        silently drift apart on validation or defaults. Returns (groupBy,
+        limit, sortBy, isAjaxRequest, ajaxUpdateType, includeGenres).
+
+        Genre data is deliberately computed live - never from the
+        user_wrapped cache: coverage keeps growing while the Last.fm
+        backfill runs, and the admin's inherited-genres toggle changes the
+        numbers retroactively. Only computed for responses that actually
+        render the card (the full page and ajax type=all - chart/lists
+        partial updates would compute and discard it). See chartsPage's
+        identical kill-switch comment; _wrapped_genres.html hides its whole
+        section (chart AND locked-progress fallback) when lastfmEnabled is
+        False."""
+        groupBy = self._getValidGroupBy(request.args.get("groupBy", "week"), default="week")
+
+        limit = request.args.get("limit", type=int)
+        if limit not in WRAPPED_LIMIT_OPTIONS:
+            limit = WRAPPED_LIST_SIZE
+        # Default stays "plays" (not DEFAULT_SORT_BY) so nobody's Wrapped
+        # changes unless they touch the control.
+        sortBy = self._getSortByParam(default="plays")
+
+        isAjaxRequest = request.args.get("ajax") == "true"
+        ajaxUpdateType = request.args.get("type", "all")
+        includeGenres = not isAjaxRequest or ajaxUpdateType == "all"
+
+        return groupBy, limit, sortBy, isAjaxRequest, ajaxUpdateType, includeGenres
+
+    def _resolveCurrentShareLinks(self, username: str, year: int) -> tuple[dict | None, dict | None]:
+        """(currentLink for this exact year, currentAllYearsLink) - both
+        freshly re-derived from the DB, never assumed from whichever link an
+        action just touched, since the share-link panel can now be showing
+        either type and creating/revoking one doesn't tell you what state
+        the other is in."""
+        links = self.repo.getShareLinksForUser(username)
+        currentLink = next((link for link in links if link["year"] == year), None)
+        currentAllYearsLink = next((link for link in links if link["year"] is None), None)
+        return currentLink, currentAllYearsLink
+
     @staticmethod
     def _resortByMetric(items: list, sortBy: str) -> list:
         """Re-sorts an already-fetched list of song/artist/album dicts by
@@ -1593,6 +1646,70 @@ class SpotifyDashboardApp:
             "genreUnlocked": genreUnlocked,
             "lastfmEnabled": lastfmEnabled,
         }
+
+    def _buildWrappedAjaxResponse(self, ctx: dict, username: str, year: int, updateType: str, publicView: bool):
+        """The JSON payload for a Wrapped ?ajax=true request - shared by the
+        authenticated /wrapped route and the public /shared/<token> route so
+        the two can't drift on what an ajax response contains. publicView is
+        threaded into the _wrapped_list.html/_wrapped_genres.html renders so
+        their "You"/{{ username }} text (see _track_card.html) stays correct
+        after a partial swap on the shared page too."""
+        topSongs, topArtists, topAlbums = ctx["topSongs"], ctx["topArtists"], ctx["topAlbums"]
+        discoveredSongs, discoveredArtists, discoveredAlbums = (
+            ctx["discoveredSongs"], ctx["discoveredArtists"], ctx["discoveredAlbums"])
+
+        res = {}
+
+        if updateType in ("all", "chart"):
+            res["timeSeries"] = ctx["timeSeries"]
+
+        if updateType in ("all", "lists"):
+            res["topSongsHtml"] = render_template(
+                "_wrapped_list.html", items=topSongs, section="top_songs",
+                username=username, year=year, publicView=publicView)
+            res["topArtistsHtml"] = render_template(
+                "_wrapped_list.html", items=topArtists, section="top_artists",
+                username=username, year=year, publicView=publicView)
+            res["topAlbumsHtml"] = render_template(
+                "_wrapped_list.html", items=topAlbums, section="top_albums",
+                username=username, year=year, publicView=publicView)
+            res["discoveredSongsHtml"] = render_template(
+                "_wrapped_list.html", items=discoveredSongs, section="top_songs",
+                username=username, year=year, publicView=publicView)
+            res["discoveredArtistsHtml"] = render_template(
+                "_wrapped_list.html", items=discoveredArtists, section="top_artists",
+                username=username, year=year, publicView=publicView)
+            res["discoveredAlbumsHtml"] = render_template(
+                "_wrapped_list.html", items=discoveredAlbums, section="top_albums",
+                username=username, year=year, publicView=publicView)
+
+        if updateType == "all":
+            res["topGenresHtml"] = render_template(
+                "_wrapped_genres.html", topGenres=ctx["topGenres"],
+                genreCoverage=ctx["genreCoverage"], genreUnlocked=ctx["genreUnlocked"], year=year,
+                lastfmEnabled=ctx["lastfmEnabled"], username=username, publicView=publicView)
+            topSongText = (
+                f"{topSongs[0]['name']} - {topSongs[0]['artists'][0]['name']}"
+                if topSongs and topSongs[0].get('artists')
+                else (topSongs[0]['name'] if topSongs else "N/A")
+            )
+            topArtistText = topArtists[0]['name'] if topArtists else "N/A"
+            topAlbumText = topAlbums[0]['name'] if topAlbums else "N/A"
+            res.update({
+                "totalPlays": ctx["totalPlays"],
+                "totalTime": msToString(ctx["totalMs"]),
+                "longestStreak": ctx["longestStreak"],
+                "peakDay": ctx["peakListeningTime"][0] if ctx["peakListeningTime"] else "N/A",
+                "peakPlays": ctx["peakListeningTime"][1] if ctx["peakListeningTime"] else 0,
+                "uniqueSongsCount": ctx["uniqueSongsCount"],
+                "uniqueArtistsCount": ctx["uniqueArtistsCount"],
+                "discoveredSongsCount": ctx["discoveredSongsCount"],
+                "discoveredArtistsCount": ctx["discoveredArtistsCount"],
+                "topSongText": topSongText,
+                "topArtistText": topArtistText,
+                "topAlbumText": topAlbumText,
+            })
+        return jsonify(res)
 
     def _iterExportEntries(self, db, includeSkips=False):
         """Every play (oldest first) with hydrated track metadata, fetched in
@@ -3030,35 +3147,16 @@ class SpotifyDashboardApp:
 
             nowLocal = now(tz=db.tz)
             currentYear = nowLocal.year
-
-            oldestEntries = db.getEntriesFromOld(count=1, fullPagination=False)
-            earliestYear = convertToDatetime(oldestEntries[0]["playedAt"], tz=db.tz).year if oldestEntries else currentYear
-            availableYears = list(range(currentYear, earliestYear - 1, -1))   #< most recent first, for the year badges
+            availableYears = self._computeAvailableYears(db)   #< most recent first, for the year badges
 
             year = self._getWrappedYearParam(availableYears, currentYear)
-            groupBy = self._getValidGroupBy(request.args.get("groupBy", "week"), default="week")
-
-            limit = request.args.get("limit", type=int)
-            if limit not in WRAPPED_LIMIT_OPTIONS:
-                limit = WRAPPED_LIST_SIZE
-            # Default stays "plays" (not DEFAULT_SORT_BY) so nobody's Wrapped
-            # changes unless they touch the control.
-            sortBy = self._getSortByParam(default="plays")
-
-            # Genre data is deliberately computed live - never from the
-            # user_wrapped cache: coverage keeps growing while the Last.fm
-            # backfill runs, and the admin's inherited-genres toggle changes
-            # the numbers retroactively. Only computed for responses that
-            # actually render the card (the full page and ajax type=all -
-            # chart/lists partial updates would compute and discard it). See
-            # chartsPage's identical kill-switch comment; _wrapped_genres.html
-            # hides its whole section (chart AND locked-progress fallback)
-            # when lastfmEnabled is False.
-            isAjaxRequest = request.args.get("ajax") == "true"
-            ajaxUpdateType = request.args.get("type", "all")
-            includeGenres = not isAjaxRequest or ajaxUpdateType == "all"
+            groupBy, limit, sortBy, isAjaxRequest, ajaxUpdateType, includeGenres = self._parseWrappedFilterParams()
 
             ctx = self._buildWrappedContext(db, year, groupBy, limit, sortBy, includeGenres=includeGenres)
+
+            if isAjaxRequest:
+                return self._buildWrappedAjaxResponse(ctx, username, year, ajaxUpdateType, publicView=False)
+
             totalPlays, totalMs = ctx["totalPlays"], ctx["totalMs"]
             topSongs, topArtists, topAlbums = ctx["topSongs"], ctx["topArtists"], ctx["topAlbums"]
             discoveredSongs, discoveredArtists, discoveredAlbums = (
@@ -3069,50 +3167,6 @@ class SpotifyDashboardApp:
             discoveredSongsCount, discoveredArtistsCount = ctx["discoveredSongsCount"], ctx["discoveredArtistsCount"]
             topGenres, genreCoverage, genreUnlocked = ctx["topGenres"], ctx["genreCoverage"], ctx["genreUnlocked"]
             lastfmEnabled = ctx["lastfmEnabled"]
-
-            # 6. Check if AJAX request and return JSON response if true
-            if isAjaxRequest:
-                update_type = ajaxUpdateType
-                res = {}
-
-                if update_type in ("all", "chart"):
-                    res["timeSeries"] = timeSeries
-
-                if update_type in ("all", "lists"):
-                    res["topSongsHtml"] = render_template("_wrapped_list.html", items=topSongs, section="top_songs", username=username, year=year)
-                    res["topArtistsHtml"] = render_template("_wrapped_list.html", items=topArtists, section="top_artists", username=username, year=year)
-                    res["topAlbumsHtml"] = render_template("_wrapped_list.html", items=topAlbums, section="top_albums", username=username, year=year)
-                    res["discoveredSongsHtml"] = render_template("_wrapped_list.html", items=discoveredSongs, section="top_songs", username=username, year=year)
-                    res["discoveredArtistsHtml"] = render_template("_wrapped_list.html", items=discoveredArtists, section="top_artists", username=username, year=year)
-                    res["discoveredAlbumsHtml"] = render_template("_wrapped_list.html", items=discoveredAlbums, section="top_albums", username=username, year=year)
-
-                if update_type == "all":
-                    res["topGenresHtml"] = render_template(
-                        "_wrapped_genres.html", topGenres=topGenres,
-                        genreCoverage=genreCoverage, genreUnlocked=genreUnlocked, year=year,
-                        lastfmEnabled=lastfmEnabled)
-                    topSongText = (
-                        f"{topSongs[0]['name']} - {topSongs[0]['artists'][0]['name']}"
-                        if topSongs and topSongs[0].get('artists')
-                        else (topSongs[0]['name'] if topSongs else "N/A")
-                    )
-                    topArtistText = topArtists[0]['name'] if topArtists else "N/A"
-                    topAlbumText = topAlbums[0]['name'] if topAlbums else "N/A"
-                    res.update({
-                        "totalPlays": totalPlays,
-                        "totalTime": msToString(totalMs),
-                        "longestStreak": longestStreak,
-                        "peakDay": peakListeningTime[0] if peakListeningTime else "N/A",
-                        "peakPlays": peakListeningTime[1] if peakListeningTime else 0,
-                        "uniqueSongsCount": uniqueSongsCount,
-                        "uniqueArtistsCount": uniqueArtistsCount,
-                        "discoveredSongsCount": discoveredSongsCount,
-                        "discoveredArtistsCount": discoveredArtistsCount,
-                        "topSongText": topSongText,
-                        "topArtistText": topArtistText,
-                        "topAlbumText": topAlbumText
-                    })
-                return jsonify(res)
 
             creds = db.getUserSpotifyCredentials() or {}
             has_api = bool(creds.get("client_id") and creds.get("client_secret"))
@@ -3182,19 +3236,25 @@ class SpotifyDashboardApp:
                 return redirect(url_for("wrappedPage", error=RATE_LIMIT_ERROR_MESSAGE, openShareModal=1))
 
             expiresInSeconds = SHARE_LINK_EXPIRY_CHOICES.get(request.form.get("expiry", "never"))
-            token = self.repo.createShareLink(username, Repository.SHARE_LINK_KIND_WRAPPED, year, expiresInSeconds)
+            allYears = request.form.get("allYears") == "1"
+            linkYear = None if allYears else year
+            self.repo.createShareLink(username, Repository.SHARE_LINK_KIND_WRAPPED, linkYear, expiresInSeconds)
             if isAjax:
+                currentLink, currentAllYearsLink = self._resolveCurrentShareLinks(username, year)
                 html = render_template(
-                    "_share_link_panel.html", year=year, currentLink=self.repo.getShareLink(token),
-                    shareLinkExpiryChoices=SHARE_LINK_EXPIRY_CHOICES)
+                    "_share_link_panel.html", year=year, currentLink=currentLink,
+                    currentAllYearsLink=currentAllYearsLink, shareLinkExpiryChoices=SHARE_LINK_EXPIRY_CHOICES)
                 return jsonify(html=html)
             return redirect(url_for("wrappedPage", year=year, success="Share link created.", openShareModal=1))
 
         @self.app.route("/shared/<token>", methods=["GET"])
         def sharedWrappedPage(token):
-            """Public, unauthenticated view of one user's Wrapped for one
-            year - no session, no nav, no PII. See docs/proposal-admin-and-
-            share-links.md Part B for the design this implements."""
+            """Public, unauthenticated view of one user's Wrapped - one fixed
+            year for a per-year link, or every year the owner has data for
+            (year-switchable, like the authenticated page) for an "all
+            years" link (link["year"] is None). No session, no nav, no PII.
+            See docs/proposal-admin-and-share-links.md Part B for the design
+            this implements."""
             if not self.repo.isShareLinksEnabled():
                 abort(404)
 
@@ -3208,19 +3268,32 @@ class SpotifyDashboardApp:
                 abort(404)
 
             db = self._getReadOnlyUserDb(link["username"])
-            ctx = self._buildWrappedContext(
-                db, link["year"], groupBy="week", limit=WRAPPED_LIST_SIZE, sortBy="plays", includeGenres=True)
+            isMultiYearShare = link["year"] is None
+            # A single-year link's availableYears has exactly one entry, so
+            # any ?year= override that doesn't match it falls back to the
+            # pinned year below - a per-year link can't be tampered into
+            # showing a different year of the same user's data.
+            availableYears = self._computeAvailableYears(db) if isMultiYearShare else [link["year"]]
+            year = self._getWrappedYearParam(availableYears, availableYears[0])
+            groupBy, limit, sortBy, isAjaxRequest, ajaxUpdateType, includeGenres = self._parseWrappedFilterParams()
+
+            ctx = self._buildWrappedContext(db, year, groupBy, limit, sortBy, includeGenres=includeGenres)
+
+            if isAjaxRequest:
+                return self._buildWrappedAjaxResponse(ctx, link["username"], year, ajaxUpdateType, publicView=True)
 
             resp = make_response(render_template(
                 "wrapped.html",
                 username=link["username"],
                 section="wrapped",
-                year=link["year"],
-                availableYears=[link["year"]],
-                groupBy="week",
-                limit=WRAPPED_LIST_SIZE,
+                year=year,
+                availableYears=availableYears,
+                token=token,
+                isMultiYearShare=isMultiYearShare,
+                groupBy=groupBy,
+                limit=limit,
                 limitOptions=WRAPPED_LIMIT_OPTIONS,
-                sortBy="plays",
+                sortBy=sortBy,
                 totalPlays=ctx["totalPlays"],
                 totalTime=msToString(ctx["totalMs"]),
                 topSongs=ctx["topSongs"],
@@ -3296,9 +3369,11 @@ class SpotifyDashboardApp:
 
             if self.repo.revokeShareLink(link_id, username):
                 if isAjax:
+                    year = request.form.get("year", type=int)
+                    currentLink, currentAllYearsLink = self._resolveCurrentShareLinks(username, year)
                     html = render_template(
-                        "_share_link_panel.html", year=request.form.get("year", type=int), currentLink=None,
-                        shareLinkExpiryChoices=SHARE_LINK_EXPIRY_CHOICES)
+                        "_share_link_panel.html", year=year, currentLink=currentLink,
+                        currentAllYearsLink=currentAllYearsLink, shareLinkExpiryChoices=SHARE_LINK_EXPIRY_CHOICES)
                     return jsonify(html=html)
                 return redirect(url_for("profilePage", success="Share link revoked."))
             if isAjax:

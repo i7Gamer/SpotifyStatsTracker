@@ -96,6 +96,16 @@ class _WrappedRouteTestBase(unittest.TestCase):
 
 
 class TestWrappedYearSelection(_WrappedRouteTestBase):
+    def test_js_constants_reflect_authenticated_view(self):
+        dash = self._makeApp()
+        db = self._makeDb(earliestPlayedAt=_ts(2023))
+
+        resp = self._getWrapped(dash, db)
+        body = resp.data.decode()
+
+        self.assertIn("const IS_PUBLIC_VIEW = false;", body)
+        self.assertIn('const WRAPPED_FETCH_URL = "/wrapped";', body)
+
     def test_defaults_to_current_year(self):
         dash = self._makeApp()
         db = self._makeDb(earliestPlayedAt=_ts(2023))
