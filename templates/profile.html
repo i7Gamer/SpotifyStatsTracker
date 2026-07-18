@@ -197,6 +197,7 @@
               Created {{ link.createdText }} &middot; Expires: {{ link.expiresText }}
             </td>
             <td class="share-actions" style="padding: 8px; text-align: right;">
+              <button type="button" class="primary-button" style="padding: 4px 12px;" data-url="{{ url_for('sharedWrappedPage', token=link.token, _external=True) }}" onclick="navigator.clipboard.writeText(this.dataset.url)">Copy Link</button>
               <form method="post" action="{{ url_for('profileShareLinkAction', link_id=link.id) }}" style="display: inline-block;">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
                 <button type="submit" class="primary-button" style="padding: 4px 12px; background: #c92a2a;">Revoke</button>

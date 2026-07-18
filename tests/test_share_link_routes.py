@@ -323,6 +323,29 @@ class TestShareLinkListOnProfilePage(ShareLinkRoutesTestCase):
 
         self.assertIn(f'action="/profile/share-links/{linkId}"'.encode(), resp.data)
 
+    def test_copy_link_button_carries_the_full_share_url(self):
+        self.dash.repo.upsertUser("alice", "alice@example.com")
+        token = self.dash.repo.createShareLink("alice", self.dash.repo.SHARE_LINK_KIND_WRAPPED, 2026, None)
+        client = self._loginAs("alice", "alice@example.com")
+
+        resp = client.get("/profile")
+        body = resp.data.decode()
+
+        self.assertIn("Copy Link", body)
+        self.assertRegex(body, rf'data-url="https?://[^"]*/shared/{token}"')
+
+    def test_each_links_copy_button_carries_its_own_url(self):
+        self.dash.repo.upsertUser("alice", "alice@example.com")
+        tokenA = self.dash.repo.createShareLink("alice", self.dash.repo.SHARE_LINK_KIND_WRAPPED, 2025, None)
+        tokenB = self.dash.repo.createShareLink("alice", self.dash.repo.SHARE_LINK_KIND_WRAPPED, 2026, None)
+        client = self._loginAs("alice", "alice@example.com")
+
+        resp = client.get("/profile")
+        body = resp.data.decode()
+
+        self.assertRegex(body, rf'data-url="https?://[^"]*/shared/{tokenA}"')
+        self.assertRegex(body, rf'data-url="https?://[^"]*/shared/{tokenB}"')
+
     def test_section_hidden_when_user_has_no_links(self):
         client = self._loginAs("alice", "alice@example.com")
 
