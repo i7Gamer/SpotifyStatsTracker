@@ -16,9 +16,10 @@
       <label for="history_file">Spotify history JSON file(s)</label>
       <div class="import-input-wrapper">
         <input id="history_file" name="history_file" type="file" accept=".json, .csv" multiple required />
-        <p id="import-hint" class="import-hint">Drag and drop your files here or click to browse (max {{ maxUploadMb }} MB total).
-          Upload both the <code>Streaming_History_Audio_*.json</code> and <code>Streaming_History_Video_*.json</code> files - music-video streams are real plays too.</p>
+        <p id="import-hint" class="import-hint">Drag and drop your files here or click to browse (max {{ maxUploadMb }} MB total)</p>
       </div>
+      <p class="import-note">Upload both the <code>Streaming_History_Audio_*.json</code> and
+        <code>Streaming_History_Video_*.json</code> files - music-video streams are real plays too.</p>
       <label class="import-overwrite-option">
         <input type="checkbox" name="overwrite_range" />
         Replace existing data in the time covered by these files
