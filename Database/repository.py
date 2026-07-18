@@ -916,7 +916,7 @@ class Repository:
             JOIN artists ar ON ar.id = ta.artist_id
             WHERE p.username = ?{rangeClause}{extraClauses}
             GROUP BY ar.id
-            ORDER BY {sortColumn} {direction}, total_time_listened {direction}, name COLLATE NOCASE {direction}, id ASC
+            ORDER BY {sortColumn} {direction}, total_time_listened DESC, name COLLATE NOCASE ASC, id ASC
             LIMIT ? OFFSET ?
             """,
             params,
@@ -1059,7 +1059,7 @@ class Repository:
             LEFT JOIN albums al ON al.id = t.album_id
             WHERE p.username = ?{rangeClause}{extraClauses}
             GROUP BY t.id
-            ORDER BY {sortColumn} {direction}, total_time_listened {direction}, name COLLATE NOCASE {direction}, track_id ASC
+            ORDER BY {sortColumn} {direction}, total_time_listened DESC, name COLLATE NOCASE ASC, track_id ASC
             LIMIT ? OFFSET ?
             """,
             params,
@@ -1172,7 +1172,7 @@ class Repository:
             JOIN albums al ON al.id = t.album_id
             WHERE p.username = ?{rangeClause}{extraClauses}
             GROUP BY al.id
-            ORDER BY {sortColumn} {direction}, total_time_listened {direction}, name COLLATE NOCASE {direction}, album_id ASC
+            ORDER BY {sortColumn} {direction}, total_time_listened DESC, name COLLATE NOCASE ASC, album_id ASC
             LIMIT ? OFFSET ?
             """,
             params,

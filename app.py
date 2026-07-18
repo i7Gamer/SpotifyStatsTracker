@@ -951,10 +951,9 @@ class SpotifyDashboardApp:
             #< descending sharedScore/combinedPlays/combinedTime via negation,
             #  ascending name/id - the same plays -> totalTimeListened ->
             #  name -> id tiebreak chain the rank maps above were sorted by
-            #  (_resortByMetric). Deliberately NOT claimed to match the SQL
-            #  pages: Repository's plays-ranked queries currently tiebreak
-            #  name DESCENDING (their {direction} token spans every column),
-            #  so render-parity with those pages doesn't hold on the name leg.
+            #  (_resortByMetric), which in turn mirrors Repository's
+            #  plays-ranked ORDER BY, so ties render the same way here as
+            #  everywhere else "plays" is ranked.
             return (-sharedScore, -combinedPlays, -combinedTime, (item.get("name") or "").lower(), item["id"])
 
         sharedItems.sort(key=sortKey)

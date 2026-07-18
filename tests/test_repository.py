@@ -1254,6 +1254,43 @@ class TestStatsAggregates(RepositoryTestCase):
 
         self.assertEqual([a["id"] for a in aggregates], ["a1", "a2", "a3"])  #< apple, Banana, cherry
 
+    def _trackWithNamedArtist(self, trackId, artistId, artistName):
+        track = makeTrack(trackId=trackId, albumId="alb1")
+        track["artists"] = [{"id": artistId, "name": artistName, "url": "u", "imageUrl": "", "imageId": artistId}]
+        return track
+
+    def test_artist_aggregates_plays_ties_break_by_name_a_to_z(self):
+        """Artists tied on plays AND total time listened order A->Z - the
+        name tiebreak column keeps its own ASC direction instead of
+        inheriting the plays ranking's DESC. Zeta gets the SMALLER id so
+        the final id-ASC fallback would order it first if the name leg
+        regressed."""
+        self.repo.upsertTrack(self._trackWithNamedArtist("t1", "a1", "Zeta"))
+        self.repo.upsertTrack(self._trackWithNamedArtist("t2", "a9", "Alpha"))
+        self.repo.insertPlay("alice", "t1", 100.0, 1000)
+        self.repo.insertPlay("alice", "t2", 200.0, 1000)
+        self.repo.commit()
+
+        aggregates = self.repo.getArtistAggregates("alice", sortBy="plays")
+
+        self.assertEqual([a["name"] for a in aggregates], ["Alpha", "Zeta"])
+
+    def test_artist_aggregates_name_sort_ties_break_by_most_time_listened(self):
+        """Two different artists sharing one display name tie on the name
+        sort - the time tiebreak ranks the MORE-listened one first (its own
+        DESC direction, not the name sort's ASC). The louder artist gets
+        the LARGER id so the id-ASC fallback would order it last if the
+        time leg regressed."""
+        self.repo.upsertTrack(self._trackWithNamedArtist("t1", "a1", "Same Name"))
+        self.repo.upsertTrack(self._trackWithNamedArtist("t2", "a9", "Same Name"))
+        self.repo.insertPlay("alice", "t1", 100.0, 1000)
+        self.repo.insertPlay("alice", "t2", 200.0, 5000)
+        self.repo.commit()
+
+        aggregates = self.repo.getArtistAggregates("alice", sortBy="name")
+
+        self.assertEqual([a["id"] for a in aggregates], ["a9", "a1"])
+
     def test_artist_aggregates_rejects_unknown_sortby(self):
         with self.assertRaises(ValueError):
             self.repo.getArtistAggregates("alice", sortBy="not_a_real_column")
@@ -1543,6 +1580,21 @@ class TestSongsPage(RepositoryTestCase):
         songs = self.repo.getSongsPage("alice", sortBy="name")
 
         self.assertEqual([s["name"] for s in songs], ["apple", "Banana", "cherry"])
+
+    def test_plays_ties_break_by_name_a_to_z(self):
+        """Songs tied on plays AND total time order A->Z (name keeps its
+        own ASC direction in the plays ranking). Zeta gets the smaller
+        track id so the id-ASC fallback would flip this if the name leg
+        regressed."""
+        self.repo.upsertTrack(self._track("t1", "alb1", "a1", name="Zeta"))
+        self.repo.upsertTrack(self._track("t9", "alb1", "a1", name="Alpha"))
+        self.repo.insertPlay("alice", "t1", 100.0, 1000)
+        self.repo.insertPlay("alice", "t9", 200.0, 1000)
+        self.repo.commit()
+
+        songs = self.repo.getSongsPage("alice", sortBy="plays")
+
+        self.assertEqual([s["name"] for s in songs], ["Alpha", "Zeta"])
 
     def test_invalid_sort_by_raises_value_error(self):
         self._seedThreeSongs()
@@ -1842,6 +1894,21 @@ class TestAlbumsPage(RepositoryTestCase):
         albums = self.repo.getAlbumsPage("alice", sortBy="name")
 
         self.assertEqual([a["name"] for a in albums], ["apple", "Banana", "cherry"])
+
+    def test_plays_ties_break_by_name_a_to_z(self):
+        """Albums tied on plays AND total time order A->Z (name keeps its
+        own ASC direction in the plays ranking). Zeta gets the smaller
+        album id so the id-ASC fallback would flip this if the name leg
+        regressed."""
+        self.repo.upsertTrack(self._track("t1", "alb1", "Zeta", "a1"))
+        self.repo.upsertTrack(self._track("t2", "alb9", "Alpha", "a1"))
+        self.repo.insertPlay("alice", "t1", 100.0, 1000)
+        self.repo.insertPlay("alice", "t2", 200.0, 1000)
+        self.repo.commit()
+
+        albums = self.repo.getAlbumsPage("alice", sortBy="plays")
+
+        self.assertEqual([a["name"] for a in albums], ["Alpha", "Zeta"])
 
     def test_invalid_sort_by_raises_value_error(self):
         self._seedThreeAlbums()
