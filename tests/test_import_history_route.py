@@ -79,6 +79,29 @@ class TestImportHistoryRoute(unittest.TestCase):
         self.assertEqual(resp.status_code, 302)
         db.importHistoryBatch.assert_not_called()
 
+    def test_overwrite_checkbox_flag_is_passed_to_the_batch(self):
+        dash = self._makeApp()
+        db = self._makeDb()
+
+        self._postImport(dash, db, {
+            'history_file': (io.BytesIO(b'{"msPlayed": 1}'), 'history.json'),
+            'overwrite_range': 'on',
+        })
+
+        time.sleep(0.05)   #< let the daemon import thread run
+        db.importHistoryBatch.assert_called_once()
+        self.assertTrue(db.importHistoryBatch.call_args.kwargs.get("overwriteRange"))
+
+    def test_missing_overwrite_checkbox_defaults_to_false(self):
+        dash = self._makeApp()
+        db = self._makeDb()
+
+        self._postImport(dash, db, {'history_file': (io.BytesIO(b'{"msPlayed": 1}'), 'history.json')})
+
+        time.sleep(0.05)
+        db.importHistoryBatch.assert_called_once()
+        self.assertFalse(db.importHistoryBatch.call_args.kwargs.get("overwriteRange"))
+
     def test_progress_is_marked_running_synchronously_before_the_redirect(self):
         """The route used to rely on time.sleep(1) after starting the
         background thread to give it a chance to write "running" progress

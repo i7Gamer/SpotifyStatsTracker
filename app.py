@@ -1777,8 +1777,11 @@ class SpotifyDashboardApp:
             # writeProgress() call (inside Database.importHistory, gated on
             # parsing the export first) had actually landed by the time it
             # returned.
+            # Captured before the thread starts - no request context inside it.
+            overwriteRange = request.form.get("overwrite_range") is not None
             db.writeProgress("running", 0, 0, "Starting import")
-            thread = threading.Thread(target=db.importHistoryBatch, args=(contents,), daemon=True)
+            thread = threading.Thread(target=db.importHistoryBatch, args=(contents,),
+                                      kwargs={"overwriteRange": overwriteRange}, daemon=True)
             thread.start()
             return redirect(url_for("importPage"))
 

@@ -16,8 +16,17 @@
       <label for="history_file">Spotify history JSON file(s)</label>
       <div class="import-input-wrapper">
         <input id="history_file" name="history_file" type="file" accept=".json, .csv" multiple required />
-        <p id="import-hint" class="import-hint">Drag and drop your files here or click to browse (max {{ maxUploadMb }} MB total)</p>
+        <p id="import-hint" class="import-hint">Drag and drop your files here or click to browse (max {{ maxUploadMb }} MB total).
+          Upload both the <code>Streaming_History_Audio_*.json</code> and <code>Streaming_History_Video_*.json</code> files - music-video streams are real plays too.</p>
       </div>
+      <label class="import-overwrite-option">
+        <input type="checkbox" name="overwrite_range" />
+        Replace existing data in the time covered by these files
+      </label>
+      <p class="import-note">Deletes <strong>all</strong> recorded plays in the years these files cover - including
+        live-tracked and manually added ones - then re-imports them fresh. Use it to fix previously imported data
+        (e.g. wrong offline-play timestamps). Years no uploaded file covers are left untouched, but upload your
+        complete export to be safe. Cannot be undone.</p>
       <button class="primary-button" type="submit">Start Import</button>
     </form>
 

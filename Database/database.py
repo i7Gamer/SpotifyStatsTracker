@@ -22,7 +22,7 @@ try:
         Repository, IMAGE_KIND_TRACK, IMAGE_KIND_ARTIST, IMAGE_STATUS_OK, IMAGE_STATUS_FAILED,
     )
     from Database.db import BEHAVIORAL_COLUMNS, SKIP_THRESHOLD_MS
-    from Database.utils import parseError, convertToDatetime, dateToString, startOfDay, startOfWeek, startOfMonth, timeToInt
+    from Database.utils import parseError, convertToDatetime, dateToString, startOfDay, startOfWeek, startOfMonth, timeToInt, getTimezone
     from Database.lastfm import LastfmClient, filterTagsToGenres, cleanLookupName, OUTCOME_OK, OUTCOME_TRANSIENT, OUTCOME_INVALID_KEY
 except ModuleNotFoundError:
     from Formatters.spotifyClient import Client
@@ -31,7 +31,7 @@ except ModuleNotFoundError:
     from Listeners.spotifyListener import Listener
     from repository import Repository, IMAGE_KIND_TRACK, IMAGE_KIND_ARTIST, IMAGE_STATUS_OK, IMAGE_STATUS_FAILED
     from db import BEHAVIORAL_COLUMNS, SKIP_THRESHOLD_MS
-    from utils import parseError, convertToDatetime, dateToString, startOfDay, startOfWeek, startOfMonth, timeToInt
+    from utils import parseError, convertToDatetime, dateToString, startOfDay, startOfWeek, startOfMonth, timeToInt, getTimezone
     from lastfm import LastfmClient, filterTagsToGenres, cleanLookupName, OUTCOME_OK, OUTCOME_TRANSIENT, OUTCOME_INVALID_KEY
 
 logger = logging.getLogger(__name__)
@@ -1003,7 +1003,7 @@ class Database:
             self.writeProgress("failed", index, total, f"{progressPrefix}Import failed: {parseError(e)}", error=True)
             raise
 
-    def importHistoryBatch(self, fileContents: list[str]) -> list[str]:
+    def importHistoryBatch(self, fileContents: list[str], overwriteRange: bool = False) -> list[str]:
         """Import multiple export files sequentially - cached up front by the
         caller (app.py reads every upload before starting this thread) and then
         processed one after another, mirroring AutoImporter's existing
@@ -1012,19 +1012,42 @@ class Database:
         upload doesn't block the rest. Serialized per user via _importLock (see
         its comment in __init__).
 
+        overwriteRange: first delete every play/skip of this user inside the
+        covered-year segments of the uploaded files' span (missing years are
+        protected - see _deleteCoveredRange), and bypass the already-imported
+        hash gate so unchanged files re-import fresh.
+
         Returns one outcome per input file, in order - "imported", "skipped"
         (already imported before, by hash), or "failed" - so AutoImporter can
         route each file to DONE/ or FAILED/ instead of assuming success."""
         with self._importLock:
-            return self._importHistoryBatchLocked(fileContents)
+            return self._importHistoryBatchLocked(fileContents, overwriteRange=overwriteRange)
 
-    def _importHistoryBatchLocked(self, fileContents: list[str]) -> list[str]:
+    def _importHistoryBatchLocked(self, fileContents: list[str], overwriteRange: bool = False) -> list[str]:
         if not fileContents:
             return []
 
         import hashlib
         total = len(fileContents)
         outcomes: list[str] = []
+
+        if overwriteRange:
+            deleted = self._deleteCoveredRange(fileContents)
+            if deleted is None:
+                # A file didn't parse - abort BEFORE deleting anything, or a
+                # valid file's range would be wiped by a batch that then dies.
+                self.writeProgress("failed", 0, total,
+                                   "Overwrite import aborted: unrecognized or corrupt export file - nothing was deleted",
+                                   error=True)
+                return ["failed"] * total
+            deletedPlays, deletedSkips, skippedYears = deleted
+            message = f"Overwrite: deleted {deletedPlays} plays and {deletedSkips} skip events in the covered range"
+            if skippedYears:
+                yearsText = ", ".join(str(year) for year in skippedYears)
+                message += f" ({yearsText} not covered by uploaded files - left untouched)"
+            logger.info("%s for user %s", message, self.user)
+            self.writeProgress("running", 0, total, message)
+
         # One run state for the whole batch: files commit separately, so a
         # skip/replay pair straddling a file boundary would otherwise collapse
         # (the replay in file N+1 matching the skip committed by file N).
@@ -1036,7 +1059,9 @@ class Database:
                 content_bytes = content.encode("utf-8") if isinstance(content, str) else str(content).encode("utf-8")
                 file_hash = hashlib.sha256(content_bytes).hexdigest()
 
-                if self.repo.isFileImported(self.user, file_hash):
+                # Overwrite mode re-imports unchanged files on purpose - the
+                # whole point is redoing data the hash gate would skip.
+                if not overwriteRange and self.repo.isFileImported(self.user, file_hash):
                     logger.info("File %s/%s already imported (hash: %s). Skipping.", index, total, file_hash)
                     outcomes.append("skipped")
                     status = "complete" if isFinalFile else "running"
@@ -1054,22 +1079,92 @@ class Database:
                 outcomes.append("imported")
             except Exception as e:
                 outcomes.append("failed")
-                logger.error("Import failed for file %s/%s: %s", index, total, parseError(e))
+                if overwriteRange:
+                    logger.error("Import failed for file %s/%s AFTER its overwritten range was deleted - "
+                                 "re-upload this file to restore that range: %s", index, total, parseError(e))
+                else:
+                    logger.error("Import failed for file %s/%s: %s", index, total, parseError(e))
 
         failedCount = outcomes.count("failed")
         skippedCount = outcomes.count("skipped")
         succeededCount = total - failedCount - skippedCount
+        overwriteFailureNote = (" - re-upload failed files to restore their overwritten range"
+                                if overwriteRange and failedCount else "")
         if failedCount == 0:
             if skippedCount == total:
                 self.writeProgress("complete", total, total, "All files were already imported")
             else:
                 self.writeProgress("complete", total, total, f"Imported {succeededCount}/{total} files ({skippedCount} skipped)")
         elif succeededCount == 0 and skippedCount == 0:
-            self.writeProgress("failed", total, total, f"Imported 0/{total} files (all failed)", error=True)
+            self.writeProgress("failed", total, total, f"Imported 0/{total} files (all failed){overwriteFailureNote}", error=True)
         else:
             self.writeProgress("complete", total, total,
-                                f"Imported {succeededCount}/{total} files ({skippedCount} skipped, {failedCount} failed)", error=True)
+                                f"Imported {succeededCount}/{total} files ({skippedCount} skipped, {failedCount} failed){overwriteFailureNote}", error=True)
         return outcomes
+
+    # A play exactly at a year boundary's midnight belongs to the NEXT year -
+    # covered-year delete segments stop this far short of the boundary so it
+    # only goes when its own year is covered.
+    YEAR_SEGMENT_BOUNDARY_EPSILON_SECONDS = 0.001
+
+    def _deleteCoveredRange(self, fileContents: list[str]) -> tuple[int, int, list[int]] | None:
+        """The overwrite pre-pass: parse every file, take the batch span
+        [earliest entry, latest entry] and the union of covered years (a year
+        counts as covered only if some entry STARTS in it - see
+        Importer.coverage), then delete this user's plays and skips in each
+        covered year's segment of the span. Years inside the span no file
+        covers (missing files) are skipped and reported. Commits the deletes
+        itself, then (self-committing, INVARIANT-safe: nothing is staged yet)
+        drops cached Wrapped for the covered years.
+
+        Returns (deletedPlays, deletedSkips, skippedYears), or None when any
+        file is unrecognized - the caller must abort WITHOUT deleting."""
+        importer = self._withCookiesFile(lambda cookiesFile: Importer(cookiesFile=cookiesFile, email=self.email))
+
+        minStart = None
+        maxEnd = None
+        coveredYears: set[int] = set()
+        for content in fileContents:
+            parsedHistory, exportType = importer._convertToList(content)
+            if exportType == "None":
+                return None
+            fileCoverage = importer.coverage(parsedHistory, exportType)
+            if fileCoverage is None:
+                continue  #< a valid-but-empty export covers nothing
+            fileMin, fileMax, fileYears = fileCoverage
+            minStart = fileMin if minStart is None else min(minStart, fileMin)
+            maxEnd = fileMax if maxEnd is None else max(maxEnd, fileMax)
+            coveredYears |= fileYears
+
+        if minStart is None:
+            return 0, 0, []
+
+        # Same timezone as Importer.coverage's year bucketing, so segments
+        # line up exactly with the covered-years set.
+        tz = getTimezone()
+
+        def yearStartTs(year: int) -> float:
+            return datetime.datetime(year, 1, 1, tzinfo=tz).timestamp()
+
+        deletedPlays = 0
+        deletedSkips = 0
+        skippedYears: list[int] = []
+        firstYear = convertToDatetime(minStart, tz).year
+        lastYear = convertToDatetime(maxEnd, tz).year
+        for year in range(firstYear, lastYear + 1):
+            if year not in coveredYears:
+                skippedYears.append(year)
+                continue
+            segmentStart = max(yearStartTs(year), minStart)
+            segmentEnd = min(yearStartTs(year + 1) - self.YEAR_SEGMENT_BOUNDARY_EPSILON_SECONDS, maxEnd)
+            deletedPlays += self.repo.deletePlaysInRange(self.user, segmentStart, segmentEnd)
+            deletedSkips += self.repo.deleteSkipsInRange(self.user, segmentStart, segmentEnd)
+        self.repo.commit()
+
+        for year in sorted(coveredYears):
+            self.repo.deleteUserWrapped(self.user, year)
+
+        return deletedPlays, deletedSkips, skippedYears
 
     # ---- stats -------------------------------------------------------------------------
 
