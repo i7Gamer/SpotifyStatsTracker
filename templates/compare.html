@@ -65,7 +65,7 @@
   {# Reorders only the individual my/their Top Songs/Artists/Albums lists -
      see app.py's _gatherCompareStats. The Top Common (shared) lists and the
      taste-match score are BOTH unaffected: Top Common ranks by a fixed
-     mutual-rank-weighted score (see _buildSharedItems/_mutualRankScore) and
+     shared-rank-weighted score (see _buildSharedItems/_sharedRankScore) and
      taste-match runs over a fixed plays-ranked pool - neither reads this
      control. No "Name" option here (unlike Top Songs/Artists/Albums) - see
      app.py's COMPARE_SORT_BY. #}
@@ -241,7 +241,22 @@
   // instead of a full page reload. ----
   const COMPARE_FADE_MS = 200;
 
-  function compareSwapTargets() {
+  // The six individual my/their Top lists are the ONLY regions whose
+  // content reads ?sortBy= (see app.py's COMPARE_SORT_BY comment) - the
+  // stats table, chart, taste match, similarities, genres and Top Common
+  // lists render byte-identical under any sortBy, so a sort change fades
+  // and swaps just these and leaves the rest untouched.
+  const SORT_BY_LIST_IDS = [
+    'myTopSongsList', 'theirTopSongsList',
+    'myTopArtistsList', 'theirTopArtistsList',
+    'myTopAlbumsList', 'theirTopAlbumsList',
+  ];
+
+  function compareSwapTargets(sortByOnly = false) {
+    const sortByLists = SORT_BY_LIST_IDS.map(id => document.getElementById(id));
+    if (sortByOnly) {
+      return sortByLists.filter(Boolean);
+    }
     return [
       document.getElementById('compareStatsTable'),
       document.querySelector('.chart-canvas-wrap'),
@@ -250,12 +265,13 @@
       document.getElementById('sharedArtistsList'),
       document.getElementById('sharedSongsList'),
       document.getElementById('sharedAlbumsList'),
+      ...sortByLists,
       ...document.querySelectorAll('[data-category] .track-list'),
     ].filter(Boolean);
   }
 
-  function loadCompareData() {
-    const targets = compareSwapTargets();
+  function loadCompareData({ sortByOnly = false } = {}) {
+    const targets = compareSwapTargets(sortByOnly);
     targets.forEach(t => t.classList.add('loading-fade'));
 
     const params = new URLSearchParams(window.location.search);
@@ -266,12 +282,6 @@
 
     Promise.all([fetched, delay])
       .then(([data]) => {
-        document.getElementById('compareStatsTable').innerHTML = data.statsTableHtml;
-        document.getElementById('compareSimilarities').innerHTML = data.similaritiesHtml;
-        document.getElementById('compareGenres').innerHTML = data.genresHtml;
-        document.getElementById('sharedArtistsList').innerHTML = data.sharedArtistsHtml;
-        document.getElementById('sharedSongsList').innerHTML = data.sharedSongsHtml;
-        document.getElementById('sharedAlbumsList').innerHTML = data.sharedAlbumsHtml;
         document.getElementById('myTopSongsList').innerHTML = data.myTopSongsHtml;
         document.getElementById('theirTopSongsList').innerHTML = data.theirTopSongsHtml;
         document.getElementById('myTopArtistsList').innerHTML = data.myTopArtistsHtml;
@@ -279,19 +289,28 @@
         document.getElementById('myTopAlbumsList').innerHTML = data.myTopAlbumsHtml;
         document.getElementById('theirTopAlbumsList').innerHTML = data.theirTopAlbumsHtml;
 
-        document.querySelectorAll('.js-with-username').forEach(el => el.textContent = data.withUsername);
+        if (!sortByOnly) {
+          document.getElementById('compareStatsTable').innerHTML = data.statsTableHtml;
+          document.getElementById('compareSimilarities').innerHTML = data.similaritiesHtml;
+          document.getElementById('compareGenres').innerHTML = data.genresHtml;
+          document.getElementById('sharedArtistsList').innerHTML = data.sharedArtistsHtml;
+          document.getElementById('sharedSongsList').innerHTML = data.sharedSongsHtml;
+          document.getElementById('sharedAlbumsList').innerHTML = data.sharedAlbumsHtml;
 
-        const tasteMatchEl = document.getElementById('tasteMatch');
-        if (tasteMatchEl) {
-          tasteMatchEl.style.display = data.tasteMatch === null ? 'none' : '';
-          if (data.tasteMatch !== null) {
-            tasteMatchEl.querySelector('.js-taste-match').textContent = data.tasteMatch + '%';
+          document.querySelectorAll('.js-with-username').forEach(el => el.textContent = data.withUsername);
+
+          const tasteMatchEl = document.getElementById('tasteMatch');
+          if (tasteMatchEl) {
+            tasteMatchEl.style.display = data.tasteMatch === null ? 'none' : '';
+            if (data.tasteMatch !== null) {
+              tasteMatchEl.querySelector('.js-taste-match').textContent = data.tasteMatch + '%';
+            }
           }
-        }
 
-        window.__chartData.comparisonTrend = data.comparisonTrend;
-        if (window.renderComparisonMirror) {
-          window.renderComparisonMirror();
+          window.__chartData.comparisonTrend = data.comparisonTrend;
+          if (window.renderComparisonMirror) {
+            window.renderComparisonMirror();
+          }
         }
 
         // smooth cover-art fade-ins for the freshly injected cards
@@ -369,7 +388,7 @@
   function updateCompareSortByFilter() {
     const sortBy = document.getElementById('sortBy').value;
     pushCompareUrl(params => params.set('sortBy', sortBy));
-    loadCompareData();
+    loadCompareData({ sortByOnly: true });
   }
 
   document.querySelectorAll('.wrapped-year-badge').forEach(badge => {
