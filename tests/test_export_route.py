@@ -108,6 +108,120 @@ class TestExportRoute(DatabaseTestCase, _AppTestBase):
         self.assertEqual(json.loads(resp.get_data(as_text=True)), [])
 
 
+class TestExportBehavioralFields(DatabaseTestCase, _AppTestBase):
+    """Behavioral columns round-trip under Spotify's own key names; skip
+    events follow the plays as sub-threshold entries (JSON only)."""
+
+    EXTRAS = {
+        "platform": "ios", "conn_country": "CH", "reason_start": "clickrow",
+        "reason_end": "trackdone", "shuffle": 1, "skipped": 0, "offline": 1, "incognito": 0,
+    }
+
+    def _exportItems(self, db):
+        dash = self._makeApp()
+        resp = self._get(dash, db, "/export-history?format=json")
+        return json.loads(resp.get_data(as_text=True))
+
+    def test_behavioral_fields_use_spotify_key_names(self):
+        db = self._makeDb(_TRACKS, [], username="alice")
+        db.repo.insertPlay("alice", "t1", 1700000000, 200000, extras=self.EXTRAS)
+        db.repo.commit()
+
+        item = self._exportItems(db)[0]
+
+        self.assertEqual(item["platform"], "ios")
+        self.assertEqual(item["conn_country"], "CH")
+        self.assertEqual(item["reason_start"], "clickrow")
+        self.assertEqual(item["reason_end"], "trackdone")
+        self.assertIs(item["shuffle"], True)
+        self.assertIs(item["skipped"], False)
+        self.assertIs(item["offline"], True)
+        self.assertIs(item["incognito_mode"], False)
+        self.assertNotIn("incognito", item)   #< only the Spotify key name
+        # Offline plays carry their corrected start so a reimport reconstructs it
+        self.assertEqual(item["offline_timestamp"], 1700000000)
+
+    def test_entries_without_behavioral_fields_omit_the_keys(self):
+        db = self._makeDb(_TRACKS, _ENTRIES, username="alice")
+
+        item = self._exportItems(db)[0]
+
+        for key in ("platform", "conn_country", "reason_start", "reason_end",
+                    "shuffle", "skipped", "offline", "incognito_mode", "offline_timestamp"):
+            self.assertNotIn(key, item)
+
+    def test_online_play_has_no_offline_timestamp(self):
+        db = self._makeDb(_TRACKS, [], username="alice")
+        db.repo.insertPlay("alice", "t1", 1700000000, 200000, extras={"offline": 0, "platform": "ios"})
+        db.repo.commit()
+
+        item = self._exportItems(db)[0]
+
+        self.assertIs(item["offline"], False)
+        self.assertNotIn("offline_timestamp", item)
+
+    def test_skips_are_exported_after_plays(self):
+        db = self._makeDb(_TRACKS, _ENTRIES, username="alice")
+        db.repo.insertSkip("alice", "t2", 1700009000, 400, extras={"reason_end": "fwdbtn"})
+        db.repo.commit()
+
+        items = self._exportItems(db)
+
+        self.assertEqual(len(items), 3)
+        skipItem = items[-1]   #< skips follow every play
+        self.assertEqual(skipItem["ms_played"], 400)
+        self.assertEqual(skipItem["spotify_track_uri"], "spotify:track:t2")
+        self.assertEqual(skipItem["reason_end"], "fwdbtn")
+
+    def test_csv_export_stays_plays_only(self):
+        db = self._makeDb(_TRACKS, _ENTRIES, username="alice")
+        db.repo.insertSkip("alice", "t2", 1700009000, 400)
+        db.repo.commit()
+
+        dash = self._makeApp()
+        resp = self._get(dash, db, "/export-history?format=csv")
+        rows = list(csv.reader(io.StringIO(resp.get_data(as_text=True))))
+
+        self.assertEqual(len(rows), 3)   #< header + the 2 plays, no skip row
+
+
+class TestSkipAndOfflineRoundTrip(DatabaseTestCase, _AppTestBase):
+    def test_offline_play_and_skip_survive_a_reimport(self):
+        sourceDb = self._makeDb(_TRACKS, [], username="alice")
+        sourceDb.repo.insertPlay("alice", "t1", 1700000000, 200000,
+                                 extras={"platform": "ios", "offline": 1, "reason_end": "trackdone"})
+        sourceDb.repo.insertSkip("alice", "t2", 1700005000, 400,
+                                 extras={"reason_end": "fwdbtn", "skipped": 1})
+        sourceDb.repo.commit()
+
+        dash = self._makeApp()
+        exportedJson = self._get(dash, sourceDb, "/export-history?format=json").get_data(as_text=True)
+
+        bareImporter = Importer.__new__(Importer)
+        bareImporter.sp = MagicMock()
+        targetDb = self._makeDb(_TRACKS, [], username="bob")
+        with patch("Database.database.Importer", return_value=bareImporter):
+            targetDb.importHistory(exportedJson)
+
+        playRows = targetDb.repo._conn().execute(
+            "SELECT * FROM plays WHERE username='bob'").fetchall()
+        self.assertEqual(len(playRows), 1)
+        play = dict(playRows[0])
+        self.assertEqual(play["played_at"], 1700000000)   #< corrected offline start survives
+        self.assertEqual(play["platform"], "ios")
+        self.assertEqual(play["offline"], 1)
+        self.assertEqual(play["reason_end"], "trackdone")
+
+        skipRows = targetDb.repo._conn().execute(
+            "SELECT * FROM play_skips WHERE username='bob'").fetchall()
+        self.assertEqual(len(skipRows), 1)
+        skip = dict(skipRows[0])
+        self.assertEqual(skip["track_id"], "t2")
+        self.assertEqual(skip["played_at"], 1700005000)
+        self.assertEqual(skip["time_played"], 400)
+        self.assertEqual(skip["reason_end"], "fwdbtn")
+
+
 class TestExportRoundTrip(DatabaseTestCase, _AppTestBase):
     """The whole point of the JSON format: it re-imports through the existing
     pipeline, reproducing the same plays in a fresh database."""

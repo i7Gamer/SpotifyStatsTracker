@@ -1513,15 +1513,28 @@ class SpotifyDashboardApp:
             "lastfmEnabled": lastfmEnabled,
         }
 
-    def _iterExportEntries(self, db):
+    def _iterExportEntries(self, db, includeSkips=False):
         """Every play (oldest first) with hydrated track metadata, fetched in
         EXPORT_CHUNK_SIZE batches so an export never holds the whole history
         in memory. Plays recorded while the export streams have the newest
         played_at, so they can only appear at the very end - earlier chunks
-        can't shift underneath the OFFSET pagination."""
+        can't shift underneath the OFFSET pagination.
+
+        includeSkips: skip events follow after every play (their sub-threshold
+        ms_played routes them back into play_skips on reimport). JSON only -
+        the CSV stays plays-only for spreadsheet use."""
         startIndex = 0
         while True:
             entries = db.getEntriesFromOld(count=EXPORT_CHUNK_SIZE, startIndex=startIndex)
+            if not entries:
+                break
+            yield from entries
+            startIndex += EXPORT_CHUNK_SIZE
+        if not includeSkips:
+            return
+        startIndex = 0
+        while True:
+            entries = db.getSkipEntriesFromOld(count=EXPORT_CHUNK_SIZE, startIndex=startIndex)
             if not entries:
                 return
             yield from entries
@@ -1531,14 +1544,23 @@ class SpotifyDashboardApp:
     def _isoUtc(timestamp: float) -> str:
         return datetime.fromtimestamp(timestamp, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
+    # Behavioral columns emitted as-is vs. as booleans - under Spotify's own
+    # key names (incognito is stored under the column name but exported as
+    # incognito_mode), so the export re-imports through _extractExtras.
+    EXPORT_TEXT_EXTRAS = ("platform", "conn_country", "reason_start", "reason_end")
+    EXPORT_BOOL_EXTRAS = (("shuffle", "shuffle"), ("skipped", "skipped"),
+                          ("offline", "offline"), ("incognito", "incognito_mode"))
+
     def _exportEntryToDict(self, entry) -> dict:
         """One play in Spotify's own extended-streaming-history shape, so the
         export re-imports through the existing pipeline. `ts` is the play's
         END time - Spotify's convention, which importExtendedHistory converts
-        back to a start time by subtracting ms_played."""
+        back to a start time by subtracting ms_played. Behavioral fields are
+        emitted only when stored; offline plays also carry offline_timestamp
+        (their corrected start), which the importer prefers over ts."""
         artists = entry.get("artists") or []
         album = entry.get("album") or {}
-        return {
+        item = {
             "ts": self._isoUtc(entry["playedAt"] + entry["timePlayed"] // 1000),
             "ms_played": entry["timePlayed"],
             "master_metadata_track_name": entry.get("name"),
@@ -1547,11 +1569,21 @@ class SpotifyDashboardApp:
             "spotify_track_uri": f"spotify:track:{entry['id']}",
             "played_from": entry.get("playedFrom"),   #< extra field; the importer ignores it
         }
+        extras = entry.get("extras") or {}
+        for column in self.EXPORT_TEXT_EXTRAS:
+            if extras.get(column) is not None:
+                item[column] = extras[column]
+        for column, exportKey in self.EXPORT_BOOL_EXTRAS:
+            if extras.get(column) is not None:
+                item[exportKey] = bool(extras[column])
+        if extras.get("offline"):
+            item["offline_timestamp"] = int(entry["playedAt"])
+        return item
 
     def _generateJsonExport(self, db):
         yield "[\n"
         first = True
-        for entry in self._iterExportEntries(db):
+        for entry in self._iterExportEntries(db, includeSkips=True):
             prefix = "" if first else ",\n"
             first = False
             yield prefix + json.dumps(self._exportEntryToDict(entry), ensure_ascii=False)

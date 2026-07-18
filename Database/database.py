@@ -462,6 +462,7 @@ class Database:
         meta["playedAt"] = entry["playedAt"]
         meta["timePlayed"] = entry["timePlayed"]
         meta["playedFrom"] = entry.get("playedFrom")
+        meta["extras"] = entry.get("extras")   #< behavioral columns, when the read carried them
         return meta
 
     def _paginateEntries(self, entries: list) -> list:
@@ -549,6 +550,13 @@ class Database:
     def getEntriesFromOld(self, count: int | None = None, startIndex: int = 0, fullPagination: bool = True) -> list:
         """ Return the oldest `count` entries from history, sorted from oldest to newest. If count is None, return all entries. """
         entries = self.repo.getPlaysOldestFirst(self.user, count=count, startIndex=startIndex)
+        return self._paginateEntries(entries) if fullPagination else entries
+
+    def getSkipEntriesFromOld(self, count: int | None = None, startIndex: int = 0, fullPagination: bool = True) -> list:
+        """Skip events (play_skips) oldest first, hydrated like plays - the
+        JSON export's trailing section, so skips round-trip between
+        instances (they re-import as sub-threshold entries)."""
+        entries = self.repo.getSkipsOldestFirst(self.user, count=count, startIndex=startIndex)
         return self._paginateEntries(entries) if fullPagination else entries
 
     def searchEntries(self, query: str, count: int | None = None, startIndex: int = 0,
