@@ -474,6 +474,15 @@
             genresCard.innerHTML = data.topGenresHtml;
           }
 
+          // The share modal's panel is year-scoped too (create-form action
+          // URL, revoke form's hidden year field, and which link - if any -
+          // counts as "current" all depend on it) - re-render it on every
+          // year switch, same reasoning as the genre card above.
+          const sharePanelBody = document.getElementById('shareLinkPanelBody');
+          if (sharePanelBody && data.sharePanelHtml !== undefined) {
+            sharePanelBody.innerHTML = data.sharePanelHtml;
+          }
+
           // 2. Update export button datasets
           const exportBtn = document.getElementById('exportWrappedBtn');
           if (exportBtn) {

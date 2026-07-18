@@ -1647,13 +1647,17 @@ class SpotifyDashboardApp:
             "lastfmEnabled": lastfmEnabled,
         }
 
-    def _buildWrappedAjaxResponse(self, ctx: dict, username: str, year: int, updateType: str, publicView: bool):
-        """The JSON payload for a Wrapped ?ajax=true request - shared by the
-        authenticated /wrapped route and the public /shared/<token> route so
-        the two can't drift on what an ajax response contains. publicView is
-        threaded into the _wrapped_list.html/_wrapped_genres.html renders so
-        their "You"/{{ username }} text (see _track_card.html) stays correct
-        after a partial swap on the shared page too."""
+    def _buildWrappedAjaxResponse(self, ctx: dict, username: str, year: int, updateType: str, publicView: bool) -> dict:
+        """The JSON-able payload for a Wrapped ?ajax=true request - shared by
+        the authenticated /wrapped route and the public /shared/<token>
+        route so the two can't drift on what an ajax response contains.
+        publicView is threaded into the _wrapped_list.html/
+        _wrapped_genres.html renders so their "You"/{{ username }} text (see
+        _track_card.html) stays correct after a partial swap on the shared
+        page too. Returns a plain dict (not a Response) so wrappedPage() can
+        layer its own owner-only sharePanelHtml key on top before
+        jsonify-ing - sharedWrappedPage() never does, since a public visitor
+        must never receive share-panel data."""
         topSongs, topArtists, topAlbums = ctx["topSongs"], ctx["topArtists"], ctx["topAlbums"]
         discoveredSongs, discoveredArtists, discoveredAlbums = (
             ctx["discoveredSongs"], ctx["discoveredArtists"], ctx["discoveredAlbums"])
@@ -1709,7 +1713,7 @@ class SpotifyDashboardApp:
                 "topArtistText": topArtistText,
                 "topAlbumText": topAlbumText,
             })
-        return jsonify(res)
+        return res
 
     def _iterExportEntries(self, db, includeSkips=False):
         """Every play (oldest first) with hydrated track metadata, fetched in
@@ -3155,7 +3159,18 @@ class SpotifyDashboardApp:
             ctx = self._buildWrappedContext(db, year, groupBy, limit, sortBy, includeGenres=includeGenres)
 
             if isAjaxRequest:
-                return self._buildWrappedAjaxResponse(ctx, username, year, ajaxUpdateType, publicView=False)
+                res = self._buildWrappedAjaxResponse(ctx, username, year, ajaxUpdateType, publicView=False)
+                # The share modal's panel is keyed to whatever year the page
+                # last fully rendered with - without this, switching years
+                # via the AJAX badges leaves it showing the previous year's
+                # create-link form/action-URL/existing-link state even
+                # though the rest of the page has moved on.
+                if ajaxUpdateType == "all" and self.repo.isShareLinksEnabled():
+                    currentLink, currentAllYearsLink = self._resolveCurrentShareLinks(username, year)
+                    res["sharePanelHtml"] = render_template(
+                        "_share_link_panel.html", year=year, currentLink=currentLink,
+                        currentAllYearsLink=currentAllYearsLink, shareLinkExpiryChoices=SHARE_LINK_EXPIRY_CHOICES)
+                return jsonify(res)
 
             totalPlays, totalMs = ctx["totalPlays"], ctx["totalMs"]
             topSongs, topArtists, topAlbums = ctx["topSongs"], ctx["topArtists"], ctx["topAlbums"]
@@ -3280,7 +3295,7 @@ class SpotifyDashboardApp:
             ctx = self._buildWrappedContext(db, year, groupBy, limit, sortBy, includeGenres=includeGenres)
 
             if isAjaxRequest:
-                return self._buildWrappedAjaxResponse(ctx, link["username"], year, ajaxUpdateType, publicView=True)
+                return jsonify(self._buildWrappedAjaxResponse(ctx, link["username"], year, ajaxUpdateType, publicView=True))
 
             resp = make_response(render_template(
                 "wrapped.html",

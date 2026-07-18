@@ -702,6 +702,17 @@ class TestSharedWrappedPageAjax(PublicSharedWrappedTestCase):
         html = resp.get_json()["topSongsHtml"]
         self.assertIn("OnlyIn2025", html)
 
+    def test_ajax_response_never_includes_a_share_panel(self):
+        """Safety regression: an anonymous visitor must never receive
+        share-panel data (create-link forms, existing tokens) for the
+        owner's account, even on the same type=all ajax path that the
+        authenticated page uses to refresh its own panel on year switch."""
+        token = self._createLink(year=2026)
+
+        resp = self._getSharedAjax(token)
+
+        self.assertNotIn("sharePanelHtml", resp.get_json())
+
 
 class TestShareLinkPanelOnWrappedPage(ShareLinkRoutesTestCase):
     """The owner-only 'Share this Wrapped' panel on the authenticated
@@ -805,6 +816,55 @@ class TestShareLinkPanelOnWrappedPage(ShareLinkRoutesTestCase):
         body = resp.data.decode()
 
         self.assertIn('id="shareLinkModal" class="share-modal-overlay" style="display: flex;"', body)
+
+    def test_ajax_year_switch_refreshes_the_share_panel_for_the_new_year(self):
+        """Regression: the share modal's panel used to stay keyed to
+        whichever year the page last fully rendered with, since the
+        AJAX year-switch never touched #shareLinkPanelBody - reported after
+        switching years and finding the modal still offered/showed the
+        previous year's link state."""
+        self.dash.repo.upsertUser("alice", "alice@example.com")
+        token = self.dash.repo.createShareLink("alice", self.dash.repo.SHARE_LINK_KIND_WRAPPED, 2025, None)
+        db = self._makeDb()
+        db.getEntriesFromOld.return_value = [{"playedAt": 0, "timePlayed": 1}]   #< makes 2025 a valid available year
+        client = self._loginAs("alice", "alice@example.com", db=db)
+
+        resp = client.get("/wrapped?year=2025&ajax=true&type=all")
+
+        self.assertEqual(resp.status_code, 200)
+        panelHtml = resp.get_json()["sharePanelHtml"]
+        self.assertIn(f"/shared/{token}", panelHtml)
+        self.assertIn("Revoke", panelHtml)
+
+    def test_ajax_share_panel_reflects_a_year_with_no_link_yet(self):
+        self.dash.repo.upsertUser("alice", "alice@example.com")
+        self.dash.repo.createShareLink("alice", self.dash.repo.SHARE_LINK_KIND_WRAPPED, 2025, None)
+        client = self._loginAs("alice", "alice@example.com")
+
+        resp = client.get("/wrapped?year=2026&ajax=true&type=all")
+
+        panelHtml = resp.get_json()["sharePanelHtml"]
+        self.assertIn("Create Share Link", panelHtml)
+        self.assertNotIn("Revoke", panelHtml)
+
+    def test_ajax_chart_only_update_does_not_touch_the_share_panel(self):
+        """type=chart/lists narrow updates only ever fire when the year
+        hasn't changed (see updateWrappedFilters()'s updateType logic) - the
+        share panel doesn't need refreshing, and skipping it avoids an
+        unnecessary query/render on every groupBy-only tweak."""
+        client = self._loginAs("alice", "alice@example.com")
+
+        resp = client.get("/wrapped?year=2026&ajax=true&type=chart")
+
+        self.assertNotIn("sharePanelHtml", resp.get_json())
+
+    def test_ajax_share_panel_absent_when_feature_disabled(self):
+        self.dash.repo.setShareLinksEnabled(False)
+        client = self._loginAs("alice", "alice@example.com")
+
+        resp = client.get("/wrapped?year=2026&ajax=true&type=all")
+
+        self.assertNotIn("sharePanelHtml", resp.get_json())
 
 
 class TestSharedImageRoutes(ShareLinkRoutesTestCase):
