@@ -415,8 +415,9 @@ class TestCompareRoute(unittest.TestCase):
         self.assertNotIn(b"LowCombined", commonSection)
 
     def test_shared_artist_overlap_is_capped_like_every_other_list(self):
-        """The Top Common lists are built from the 100-deep pools but must render at
-        most COMPARE_TOP_LIST_SIZE cards, matching the adjacent lists."""
+        """The Top Common lists are built from the 200-deep sharedXPool
+        (COMPARE_SHARED_POOL_SIZE) but must render at most
+        COMPARE_TOP_LIST_SIZE cards, matching the adjacent lists."""
         self._accept("alice", "bob")
         sharedPool = [_artist(f"s{i}", f"SharedArtist{i}", plays=12 - i) for i in range(12)]
         self.dbs["alice"].getTopArtists.return_value = sharedPool
