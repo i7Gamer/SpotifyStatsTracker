@@ -285,6 +285,11 @@
 
     const params = new URLSearchParams(window.location.search);
     params.set('ajax', 'true');
+    if (sortByOnly) {
+      //< the server then skips the shared/taste/genre/trend work the six
+      //  lists don't need - see the compare route's scope=sortable branch
+      params.set('scope', 'sortable');
+    }
     const delay = new Promise(resolve => setTimeout(resolve, COMPARE_FADE_MS));
     const fetched = fetch(window.location.pathname + '?' + params.toString())
       .then(response => response.json());

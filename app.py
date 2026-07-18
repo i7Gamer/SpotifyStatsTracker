@@ -3367,6 +3367,37 @@ class SpotifyDashboardApp:
             self._markLinkExternally(their["topArtists"], db.getPlayedArtistIds([a["id"] for a in their["topArtists"]]))
             self._markLinkExternally(their["topAlbums"], db.getPlayedAlbumIds([a["id"] for a in their["topAlbums"]]))
 
+            listArgs = dict(username=username, compareWith=withUsername,
+                            emptyMessage="No plays in this period.")
+
+            def sortableListsJson():
+                """The six individual my/their list chunks - the only part of
+                the ajax payload a sortBy change swaps (see compare.html's
+                SORT_BY_LIST_SWAPS)."""
+                return {
+                    "myTopSongsHtml": render_template(
+                        "_wrapped_list.html", items=my["topSongs"], section="top_songs", **listArgs),
+                    #< each item's own linkExternally decides internal vs. Spotify (see _markLinkExternally)
+                    "theirTopSongsHtml": render_template(
+                        "_wrapped_list.html", items=their["topSongs"], section="top_songs", **listArgs),
+                    "myTopArtistsHtml": render_template(
+                        "_wrapped_list.html", items=my["topArtists"], section="top_artists", **listArgs),
+                    "theirTopArtistsHtml": render_template(
+                        "_wrapped_list.html", items=their["topArtists"], section="top_artists", **listArgs),
+                    "myTopAlbumsHtml": render_template(
+                        "_wrapped_list.html", items=my["topAlbums"], section="top_albums", **listArgs),
+                    "theirTopAlbumsHtml": render_template(
+                        "_wrapped_list.html", items=their["topAlbums"], section="top_albums", **listArgs),
+                }
+
+            # A sortBy change swaps only those six lists, so its fetch
+            # (scope=sortable, see loadCompareData) stops here - the shared
+            # lists, similarities, genres, taste match and trend below are
+            # the expensive half on long ranges and would render identically
+            # anyway. Any other scope value degrades to the full payload.
+            if request.args.get("ajax") == "true" and request.args.get("scope") == "sortable":
+                return jsonify(sortableListsJson())
+
             # Sliced like every other list on the page. No percent text here -
             # it would mix two different users' totals. Searches the deeper
             # sharedXPool (COMPARE_SHARED_POOL_SIZE), not the shallower
@@ -3498,9 +3529,8 @@ class SpotifyDashboardApp:
                 # Same fade-and-swap partial updates as the Wrapped page: the
                 # filter controls fetch these chunks and swap them in place
                 # instead of a full page reload.
-                emptyMessage = "No plays in this period."
-                listArgs = dict(username=username, compareWith=withUsername, emptyMessage=emptyMessage)
                 return jsonify({
+                    **sortableListsJson(),
                     "withUsername": withUsername,
                     "tasteMatch": tasteMatch,
                     "statsTableHtml": render_template(
@@ -3527,19 +3557,6 @@ class SpotifyDashboardApp:
                         "_wrapped_list.html", items=sharedAlbums, section="top_albums",
                         username=username, compareWith=withUsername,
                         emptyMessage="No shared top albums in this period yet."),
-                    "myTopSongsHtml": render_template(
-                        "_wrapped_list.html", items=my["topSongs"], section="top_songs", **listArgs),
-                    #< each item's own linkExternally decides internal vs. Spotify (see _markLinkExternally)
-                    "theirTopSongsHtml": render_template(
-                        "_wrapped_list.html", items=their["topSongs"], section="top_songs", **listArgs),
-                    "myTopArtistsHtml": render_template(
-                        "_wrapped_list.html", items=my["topArtists"], section="top_artists", **listArgs),
-                    "theirTopArtistsHtml": render_template(
-                        "_wrapped_list.html", items=their["topArtists"], section="top_artists", **listArgs),
-                    "myTopAlbumsHtml": render_template(
-                        "_wrapped_list.html", items=my["topAlbums"], section="top_albums", **listArgs),
-                    "theirTopAlbumsHtml": render_template(
-                        "_wrapped_list.html", items=their["topAlbums"], section="top_albums", **listArgs),
                     "comparisonTrend": comparisonTrend,
                 })
 

@@ -752,6 +752,38 @@ class TestCompareRoute(unittest.TestCase):
         self.assertIn("sharedSongsHtml", data)
         self.assertIn("sharedAlbumsHtml", data)
 
+    def test_ajax_sortable_scope_returns_only_the_six_lists_and_skips_the_rest(self):
+        """A sortBy change swaps only the six individual lists (see
+        compare.html's SORT_BY_LIST_SWAPS), so its fetch sends
+        scope=sortable and the server answers with exactly those six
+        chunks, skipping the shared lists, similarities, genres, taste
+        match and trend it won't render - observable via the trend series
+        queries never running."""
+        self._accept("alice", "bob")
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare?ajax=true&scope=sortable")
+
+        self.assertEqual(set(resp.get_json().keys()), {
+            "myTopSongsHtml", "theirTopSongsHtml",
+            "myTopArtistsHtml", "theirTopArtistsHtml",
+            "myTopAlbumsHtml", "theirTopAlbumsHtml",
+        })
+        self.dbs["alice"].getListeningTimeSeries.assert_not_called()
+        self.dbs["bob"].getListeningTimeSeries.assert_not_called()
+
+    def test_ajax_unknown_scope_returns_the_full_payload(self):
+        """An unrecognized scope must degrade to the full payload, not a
+        partial one - only the exact scope the frontend sends narrows it."""
+        self._accept("alice", "bob")
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare?ajax=true&scope=bogus")
+
+        data = resp.get_json()
+        self.assertIn("sharedArtistsHtml", data)
+        self.assertIn("comparisonTrend", data)
+
     def test_similarities_sit_above_the_chart_and_shared_lists_join_categories(self):
         """Common Top Artist/Song/Album cards come directly above the trend
         chart; the shared lists are filterable Top Common Songs/Artists/
