@@ -664,8 +664,10 @@ class TestCompareRoute(unittest.TestCase):
 
         self.assertIn(b"15 plays", resp.data)        #< combined, on the card's top stat line
         self.assertIn(b"1h 30m 0s", resp.data)       #< combined listening time
-        self.assertIn(b"alice: 10 plays", resp.data)
-        self.assertIn(b"bob: 5 plays", resp.data)
+        #< versus lines lead with each side's own plays-rank (#1 here - the
+        #  shared artist is both users' only one)
+        self.assertIn("alice: #1 · 10 plays".encode("utf-8"), resp.data)
+        self.assertIn("bob: #1 · 5 plays".encode("utf-8"), resp.data)
         #< no separate "Together" line in the versus block - the combined
         #  totals already lead the card's top stat line (asserted above)
         self.assertNotIn(b"Together:", resp.data)
@@ -711,12 +713,12 @@ class TestCompareRoute(unittest.TestCase):
 
         resp = client.get("/compare")
 
-        self.assertIn(b"alice: 3 plays", resp.data)   #< shared song, mine (versus block)
+        self.assertIn("alice: #1 · 3 plays".encode("utf-8"), resp.data)   #< shared song, mine (versus block, rank-led)
         self.assertIn(b"11 plays", resp.data)         #< shared song top line: combined plays
         self.assertIn(b"1m 30s", resp.data)           #< ...and combined time
         self.assertIn(b"10 plays", resp.data)         #< shared album combined plays
         self.assertIn(b"6m 0s", resp.data)            #< shared album combined time
-        self.assertIn("alice: 4 plays · 2m 0s · 2 songs".encode("utf-8"), resp.data)   #< versus keeps song counts
+        self.assertIn("alice: #1 · 4 plays · 2m 0s · 2 songs".encode("utf-8"), resp.data)   #< versus keeps song counts
         # the viewer-specific "You played N songs from X" line stays on the
         # album card in alice's own column (1 mention) but is replaced by the
         # versus block's per-user counts on the shared card (not 2)
@@ -1190,6 +1192,35 @@ class TestCompareRoute(unittest.TestCase):
             resp.data.index(b'data-category="common-top-artists"'):
             resp.data.index(b'data-category="common-top-albums"')]
         self.assertLess(section.index(b"MutualFavorite"), section.index(b"ModerateBoth"))
+
+    def test_shared_cards_show_each_sides_rank(self):
+        """The Top Common order is rank-driven (see _sharedRankScore), so
+        the versus block must show WHY an item ranks where it does: each
+        side's own plays-rank. MutualFavorite is alice's #1 but bob's #3
+        (he ranks BobsOwnFavorite and ModerateBoth above it) - exactly the
+        case where the order disagrees with raw combined plays and looks
+        arbitrary without the ranks."""
+        self._accept("alice", "bob")
+        self.dbs["alice"].getTopArtists.return_value = [
+            _artist("mutual", "MutualFavorite", plays=1000),
+            _artist("moderate", "ModerateBoth", plays=900),
+        ]
+        self.dbs["bob"].getTopArtists.return_value = [
+            _artist("bobfav", "BobsOwnFavorite", plays=1000),
+            _artist("moderate", "ModerateBoth", plays=900),
+            _artist("mutual", "MutualFavorite", plays=1),
+        ]
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        section = resp.data[
+            resp.data.index(b'data-category="common-top-artists"'):
+            resp.data.index(b'data-category="common-top-albums"')]
+        self.assertIn("alice: #1 ·".encode(), section)   #< MutualFavorite's my-side rank
+        self.assertIn("bob: #3 ·".encode(), section)     #< MutualFavorite's their-side rank
+        self.assertIn("alice: #2 ·".encode(), section)   #< ModerateBoth, both sides' #2
+        self.assertIn("bob: #2 ·".encode(), section)
 
     def test_shared_list_one_sided_favorite_loses_to_true_mutual_item(self):
         """The sharp edge a min()-based mutual score would have: OneSided is

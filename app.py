@@ -967,6 +967,12 @@ class SpotifyDashboardApp:
             compareData = {
                 "myPlays": myPlays,
                 "theirPlays": theirItem.get("plays", 0),
+                #< each side's own plays-rank - the versus block shows them
+                #  because the list order is rank-driven (_sharedRankScore),
+                #  and without them the order looks arbitrary whenever it
+                #  disagrees with raw combined plays.
+                "myRank": myRanks[item["id"]],
+                "theirRank": theirRanks[item["id"]],
                 "myTimeText": msToString(myMs),
                 "theirTimeText": msToString(theirMs),
                 #< an even split when neither side has recorded time - a

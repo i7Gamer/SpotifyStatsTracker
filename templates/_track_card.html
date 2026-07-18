@@ -145,7 +145,9 @@
           <div class="track-meta">Played at {{ track.get('playedAtText') }}</div>
         {% endif %}
 
-        {# Compare page's Top Common Songs/Artists/Albums cards: both users' stats plus a
+        {# Compare page's Top Common Songs/Artists/Albums cards: both users'
+           stats - led by each side's own plays-rank, the thing the list is
+           actually ordered by (see app.py's _sharedRankScore) - plus a
            split bar proportioned by each side's share of the combined
            listening time. Colors mirror the trend chart's two series. #}
         {% if track.get('compareData') %}
@@ -160,8 +162,8 @@
             {# No combined "Together" line here - the card's top stat line
                already shows the combined plays/time. #}
             <div class="compare-versus-stats">
-              <span class="compare-versus-mine">{{ username }}: {{ cmp.myPlays }} plays · {{ cmp.myTimeText }}{% if 'myUniqueSongs' in cmp %} · {{ cmp.myUniqueSongs }} song{{ 's' if cmp.myUniqueSongs != 1 else '' }}{% endif %}</span>
-              <span class="compare-versus-theirs">{{ compareWith }}: {{ cmp.theirPlays }} plays · {{ cmp.theirTimeText }}{% if 'theirUniqueSongs' in cmp %} · {{ cmp.theirUniqueSongs }} song{{ 's' if cmp.theirUniqueSongs != 1 else '' }}{% endif %}</span>
+              <span class="compare-versus-mine">{{ username }}: #{{ cmp.myRank }} · {{ cmp.myPlays }} plays · {{ cmp.myTimeText }}{% if 'myUniqueSongs' in cmp %} · {{ cmp.myUniqueSongs }} song{{ 's' if cmp.myUniqueSongs != 1 else '' }}{% endif %}</span>
+              <span class="compare-versus-theirs">{{ compareWith }}: #{{ cmp.theirRank }} · {{ cmp.theirPlays }} plays · {{ cmp.theirTimeText }}{% if 'theirUniqueSongs' in cmp %} · {{ cmp.theirUniqueSongs }} song{{ 's' if cmp.theirUniqueSongs != 1 else '' }}{% endif %}</span>
             </div>
           </div>
         {% endif %}
