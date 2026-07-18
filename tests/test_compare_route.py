@@ -1046,6 +1046,7 @@ class TestCompareRoute(unittest.TestCase):
         self.assertIn(b'id="sortBy"', resp.data)
         self.assertIn(b'<option value="totalTimeListened" selected>Time Played</option>', resp.data)
         self.assertIn(b'<option value="plays" >Number of Plays</option>', resp.data)
+        self.assertIn(b'<option value="name" >Name (A-Z)</option>', resp.data)
 
     def test_sort_by_dropdown_defaults_to_plays(self):
         self._accept("alice", "bob")
@@ -1055,23 +1056,26 @@ class TestCompareRoute(unittest.TestCase):
 
         self.assertIn(b'<option value="plays" selected>Number of Plays</option>', resp.data)
 
-    def test_sort_by_name_is_not_offered_and_falls_back_to_plays(self):
-        """Compare's dropdown doesn't offer "Name (A-Z)" (unlike Top Songs/
-        Artists/Albums) - there's no sensible combined-both-users alphabetical
-        ranking for the Top Common lists (see app.py's COMPARE_SORT_BY). An
-        explicit ?sortBy=name must fall back to the "plays" default rather
-        than reaching the DB layer with an unsupported value."""
+    def test_sort_by_name_is_offered_and_requeries_the_individual_lists(self):
+        """"Name (A-Z)" is offered like on the standalone Top pages
+        (historically excluded while sortBy also ranked the Top Common
+        lists, where combined-alphabetical made no sense - since sortBy's
+        scope narrowed to the individual my/their lists, that reason is
+        gone). Like any non-"plays" sortBy it re-queries the display lists
+        live at by="name" (see _gatherCompareStats), so membership and
+        order come from the DB's alphabetical ranking, not from re-sorting
+        the plays pool. The Top Common lists stay untouched either way
+        (see test_sort_by_does_not_reorder_the_shared_common_lists)."""
         self._accept("alice", "bob")
         client = self._loginAs("alice")
 
         resp = client.get("/compare?sortBy=name")
 
-        self.assertNotIn(b"Name (A-Z)", resp.data)
-        self.assertIn(b'<option value="plays" selected>Number of Plays</option>', resp.data)
-        #< no extra display query at the "plays" default - the one
-        #  COMPARE_SHARED_POOL_SIZE-deep query serves both taste-match's
-        #  sliced topXPool and the displayed list
-        self.assertEqual(self.dbs["alice"].getTopSongs.call_count, 1)
+        self.assertIn(b'<option value="name" selected>Name (A-Z)</option>', resp.data)
+        #< first call is the plays-ranked shared pool, second the live
+        #  by="name" display query
+        self.assertEqual(self.dbs["alice"].getTopSongs.call_count, 2)
+        self.assertEqual(self.dbs["alice"].getTopSongs.call_args.kwargs.get("by"), "name")
 
     def test_sort_by_does_not_reorder_the_shared_common_lists(self):
         """sortBy only reorders the individual my/their columns (see

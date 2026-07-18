@@ -67,13 +67,16 @@
      taste-match score are BOTH unaffected: Top Common ranks by a fixed
      shared-rank-weighted score (see _buildSharedItems/_sharedRankScore) and
      taste-match runs over a fixed plays-ranked pool - neither reads this
-     control. No "Name" option here (unlike Top Songs/Artists/Albums) - see
-     app.py's COMPARE_SORT_BY. #}
+     control (which is why updateCompareSortByFilter swaps only the six
+     individual lists). Same options as the standalone Top pages, "Name
+     (A-Z)" included - like any sortBy here it re-queries just those six
+     lists. #}
   <div class="filter-group">
     <label for="sortBy">Sort by:</label>
     <select id="sortBy" name="sortBy" onchange="updateCompareSortByFilter()">
       <option value="totalTimeListened" {% if sortBy == 'totalTimeListened' %}selected{% endif %}>Time Played</option>
       <option value="plays" {% if sortBy == 'plays' %}selected{% endif %}>Number of Plays</option>
+      <option value="name" {% if sortBy == 'name' %}selected{% endif %}>Name (A-Z)</option>
     </select>
   </div>
 </section>

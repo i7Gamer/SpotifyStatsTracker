@@ -115,14 +115,6 @@ DEFAULT_SORT_BY = "totalTimeListened"
 # otherwise reach a ValueError deep in the DB layer and 500 instead of just
 # falling back to the default.
 VALID_SORT_BY = {"totalTimeListened", "plays", "name"}
-# The Compare page's own sortBy whitelist - narrower than VALID_SORT_BY, and
-# narrower in SCOPE too: it only reorders the individual my/their Top Songs/
-# Artists/Albums lists (see _gatherCompareStats). The Top Common lists rank
-# by a fixed shared-rank-weighted score instead (see _buildSharedItems/
-# _sharedRankScore) and never take sortBy as input, so choosing a metric
-# here can't move them. "name" is deliberately excluded: elsewhere it means
-# "browse alphabetically", which doesn't apply to either list here.
-COMPARE_SORT_BY = {"totalTimeListened", "plays"}
 TRUTHY_ENV_VALUES = {"1", "true", "yes", "on"}
 # Opt-in to honoring X-Forwarded-* headers from a reverse proxy (see
 # _trustedProxyCount). Without it, every visitor behind a proxy shares the
@@ -1198,16 +1190,13 @@ class SpotifyDashboardApp:
         except (TypeError, ValueError):
             return 1
 
-    def _getSortByParam(self, default=DEFAULT_SORT_BY, validValues=VALID_SORT_BY):
+    def _getSortByParam(self, default=DEFAULT_SORT_BY):
         """The current request's ?sortBy=..., falling back to `default` for any
         value the DB layer doesn't know how to sort by (see VALID_SORT_BY) -
         without this, an unrecognized value reaches a ValueError/KeyError deep
-        in Repository/Database and 500s instead of just using the default.
-        `validValues` narrows the whitelist further for pages that support
-        fewer sortBy values than the DB layer does (see the Compare page's
-        COMPARE_SORT_BY)."""
+        in Repository/Database and 500s instead of just using the default."""
         sortBy = request.args.get("sortBy", default)
-        return sortBy if sortBy in validValues else default
+        return sortBy if sortBy in VALID_SORT_BY else default
 
     def _calculatePagination(self, totalCount):
         """Calculate safe page bounds given a total count.
@@ -3337,9 +3326,11 @@ class SpotifyDashboardApp:
             # Default stays "plays" (not DEFAULT_SORT_BY) so nobody's view
             # changes unless they touch the control - matches every other
             # value on this page defaulting to the pre-existing behavior.
-            # validValues=COMPARE_SORT_BY - "name" isn't offered here (see
-            # COMPARE_SORT_BY's docstring).
-            sortBy = self._getSortByParam(default="plays", validValues=COMPARE_SORT_BY)
+            # Same whitelist as the standalone Top pages (VALID_SORT_BY),
+            # default "plays". sortBy only reorders the individual my/their
+            # lists (see _gatherCompareStats) - the Top Common lists and
+            # taste-match never read it (see _buildSharedItems).
+            sortBy = self._getSortByParam(default="plays")
 
             my = self._gatherCompareStats(db, startDate, endDate, limit=limit, sortBy=sortBy)
             their = self._gatherCompareStats(otherDb, startDate, endDate, limit=limit, sortBy=sortBy)
