@@ -86,8 +86,9 @@ TASTE_MATCH_IDEAL_DEPTH = 30
 # An exact id match earns DOUBLE the rank discount of its BETTER (shallower)
 # side's rank - the "both sides at rank r" shape the taste-match ideal
 # normalizes against. The single place the factor is applied is
-# _mutualRankScore, which both taste-match (_rankWeightedOverlap) and the
-# Top Common list ranking (_buildSharedItems) score with.
+# _mutualRankScore, taste-match's exact-match credit. (The Top Common
+# lists rank by _sharedRankScore instead - see it for why min()-based
+# credit is wrong for a display list.)
 EXACT_MATCH_CREDIT_FACTOR = 2
 # A song/album that ISN'T an exact match still earns this fraction of its own
 # rank discount when its primary artist appears in the counterpart's top
@@ -117,8 +118,8 @@ VALID_SORT_BY = {"totalTimeListened", "plays", "name"}
 # The Compare page's own sortBy whitelist - narrower than VALID_SORT_BY, and
 # narrower in SCOPE too: it only reorders the individual my/their Top Songs/
 # Artists/Albums lists (see _gatherCompareStats). The Top Common lists rank
-# by a fixed mutual-rank-weighted score instead (see _buildSharedItems/
-# _mutualRankScore) and never take sortBy as input, so choosing a metric
+# by a fixed shared-rank-weighted score instead (see _buildSharedItems/
+# _sharedRankScore) and never take sortBy as input, so choosing a metric
 # here can't move them. "name" is deliberately excluded: elsewhere it means
 # "browse alphabetically", which doesn't apply to either list here.
 COMPARE_SORT_BY = {"totalTimeListened", "plays"}
@@ -920,16 +921,17 @@ class SpotifyDashboardApp:
             item["linkExternally"] = item["id"] not in playedIds
 
     def _buildSharedItems(self, myPool, theirPool, embedFn, limit) -> list[dict]:
-        """Shared entries of one category, ranked by a MUTUAL rank-weighted
-        score (see _mutualRankScore) - not either side's raw combined totals,
-        and independent of the page's sortBy control (which only reorders
-        the individual my/their lists, see _gatherCompareStats) - and sliced
-        to `limit`, with the per-user versus data the Top Common Songs/
-        Artists/Albums cards render. Rank-weighted so a mutual favorite
-        ranked #1 by one user and deep by the other still outranks an item
-        both users only rank moderately, even when the moderate item's
-        combined plays are higher - the same philosophy _rankWeightedOverlap
-        already uses for taste-match.
+        """Shared entries of one category, ranked by the SUM of both users'
+        rank discounts (see _sharedRankScore) - not either side's raw
+        combined totals, and independent of the page's sortBy control
+        (which only reorders the individual my/their lists, see
+        _gatherCompareStats) - and sliced to `limit`, with the per-user
+        versus data the Top Common Songs/Artists/Albums cards render.
+        Rank-weighted so one user's #1 with a decent counterpart rank still
+        outranks an item both users only rank moderately even when the
+        moderate item's combined plays are higher - but summed rather than
+        taste-match's min() shape, so an item the counterpart barely plays
+        can't claim the top "common" spot (see _sharedRankScore).
 
         Rank is derived by re-sorting each pool by plays (see
         _resortByMetric) rather than trusting the incoming pool's own order -
@@ -951,17 +953,17 @@ class SpotifyDashboardApp:
 
         def sortKey(item):
             theirItem = theirById[item["id"]]
-            mutualScore = self._mutualRankScore(myRanks[item["id"]], theirRanks[item["id"]])
+            sharedScore = self._sharedRankScore(myRanks[item["id"]], theirRanks[item["id"]])
             combinedPlays = item.get("plays", 0) + theirItem.get("plays", 0)
             combinedTime = item.get("totalTimeListened", 0) + theirItem.get("totalTimeListened", 0)
-            #< descending mutualScore/combinedPlays/combinedTime via negation,
+            #< descending sharedScore/combinedPlays/combinedTime via negation,
             #  ascending name/id - the same plays -> totalTimeListened ->
             #  name -> id tiebreak chain the rank maps above were sorted by
             #  (_resortByMetric). Deliberately NOT claimed to match the SQL
             #  pages: Repository's plays-ranked queries currently tiebreak
             #  name DESCENDING (their {direction} token spans every column),
             #  so render-parity with those pages doesn't hold on the name leg.
-            return (-mutualScore, -combinedPlays, -combinedTime, (item.get("name") or "").lower(), item["id"])
+            return (-sharedScore, -combinedPlays, -combinedTime, (item.get("name") or "").lower(), item["id"])
 
         sharedItems.sort(key=sortKey)
         shared = embedFn(sharedItems[:limit])
@@ -1001,21 +1003,36 @@ class SpotifyDashboardApp:
     @staticmethod
     def _rankById(pool: list[dict]) -> dict:
         """id -> 1-based rank map of an already-ordered pool - the lookups
-        _mutualRankScore consumes. The ORDERING stays the caller's choice:
-        _rankWeightedOverlap must trust the incoming pool's own order (its
-        genre pools are bare {"id": genre} dicts with no metrics to
-        re-derive one from), while _buildSharedItems re-sorts by plays
-        first (see its docstring for why)."""
+        _mutualRankScore/_sharedRankScore consume. The ORDERING stays the
+        caller's choice: _rankWeightedOverlap must trust the incoming
+        pool's own order (its genre pools are bare {"id": genre} dicts
+        with no metrics to re-derive one from), while _buildSharedItems
+        re-sorts by plays first (see its docstring for why)."""
         return {item["id"]: rank for rank, item in enumerate(pool, start=1)}
 
     def _mutualRankScore(self, myRank: int, theirRank: int) -> float:
-        """THE definition of an exact-match credit:
-        EXACT_MATCH_CREDIT_FACTOR x the rank discount (see _rankWeight) of
-        the BETTER (shallower) of the two ranks for the same item. Scores
-        both taste-match (_rankWeightedOverlap's exact-match credit AND its
-        ideal normalizer - see its docstring for the mutual-favorite
-        rationale) and the Top Common list ranking (_buildSharedItems)."""
+        """Taste-match's exact-match credit: EXACT_MATCH_CREDIT_FACTOR x
+        the rank discount (see _rankWeight) of the BETTER (shallower) of
+        the two ranks for the same item - _rankWeightedOverlap's per-item
+        credit AND its ideal normalizer (_mutualRankScore(r, r)) both use
+        it; see that docstring for the mutual-favorite rationale. The Top
+        Common lists deliberately rank by _sharedRankScore instead."""
         return EXACT_MATCH_CREDIT_FACTOR * self._rankWeight(min(myRank, theirRank))
+
+    def _sharedRankScore(self, myRank: int, theirRank: int) -> float:
+        """Ranking score for a Top Common list entry: the SUM of both
+        sides' rank discounts (see _rankWeight), so both users' engagement
+        counts. Deliberately NOT _mutualRankScore's min() shape: min()
+        ignores the weaker side entirely, so a one-sided favorite (my #1,
+        their #200) would score like a true #1/#1 mutual favorite and
+        outrank a genuine #2/#2 - fine for taste-match's aggregate (its
+        ideal normalizer is built on the same-rank shape), wrong for a
+        list literally titled "common" (see
+        test_shared_list_one_sided_favorite_loses_to_true_mutual_item).
+        The sum still lets one side's #1 carry a moderate counterpart
+        rank past two lukewarm mid-ranks (see
+        test_shared_list_ranks_by_mutual_favorite_not_raw_combined_plays)."""
+        return self._rankWeight(myRank) + self._rankWeight(theirRank)
 
     @staticmethod
     def _primaryArtistId(item: dict) -> str | None:
@@ -3343,7 +3360,7 @@ class SpotifyDashboardApp:
             # it would mix two different users' totals. Searches the deeper
             # sharedXPool (COMPARE_SHARED_POOL_SIZE), not the shallower
             # topXPool taste-match uses - see _gatherCompareStats. Ranked by
-            # _buildSharedItems's own mutual-rank-weighted score, independent
+            # _buildSharedItems's own shared-rank-weighted score, independent
             # of sortBy - only the individual my/their lists above read it.
             sharedArtists = self._buildSharedItems(
                 my["sharedArtistsPool"], their["sharedArtistsPool"],
@@ -3365,8 +3382,8 @@ class SpotifyDashboardApp:
             # Similarities run over the deeper sharedXPool, not the displayed
             # top ten (nor the shallower topXPool taste-match uses) - a #200-
             # ranked common favorite is still a common favorite. The
-            # "common top X" is mutual-rank-weighted (see _buildSharedItems/
-            # _mutualRankScore), so it's the same regardless of who's viewing
+            # "common top X" is shared-rank-weighted (see _buildSharedItems/
+            # _sharedRankScore), so it's the same regardless of who's viewing
             # OR what sortBy they picked, and its detail link resolves
             # because the viewer played it.
             theirArtistIds = {a["id"] for a in their["sharedArtistsPool"]}

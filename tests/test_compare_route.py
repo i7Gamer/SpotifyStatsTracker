@@ -384,7 +384,7 @@ class TestCompareRoute(unittest.TestCase):
         own pool order and slicing to the first `limit` shared matches - so
         the same mutual-share pair could see a DIFFERENT top-10 shared set
         depending on who was viewing. Fixed by ranking the shared
-        intersection by mutual rank-weighted score (see _mutualRankScore),
+        intersection by shared rank-weighted score (see _sharedRankScore),
         symmetric under swapping myPool/theirPool, with combined plays as
         the first tiebreak - either way, not either side's own pool order.
 
@@ -1076,7 +1076,7 @@ class TestCompareRoute(unittest.TestCase):
     def test_sort_by_does_not_reorder_the_shared_common_lists(self):
         """sortBy only reorders the individual my/their columns (see
         _gatherCompareStats) - the Top Common (shared) lists rank by a fixed
-        mutual-rank-weighted score (see _buildSharedItems/_mutualRankScore)
+        shared-rank-weighted score (see _buildSharedItems/_sharedRankScore)
         that never reads sortBy, so picking a different metric here must
         leave their order untouched. The taste-match score stays unaffected
         too: it runs over the fixed plays-ranked overlap pool regardless of
@@ -1111,8 +1111,8 @@ class TestCompareRoute(unittest.TestCase):
     def test_shared_list_ties_break_by_combined_time_played(self):
         """Reaching the combined-time tiebreak takes a genuine tie on the
         two legs before it: Zulu is alice's #1 / bob's #2 while Alpha is
-        bob's #1 / alice's #2, so both score 2*rankWeight(1) (see
-        _mutualRankScore), and combined plays tie at 15 apiece. Zulu's
+        bob's #1 / alice's #2, so both score rankWeight(1) + rankWeight(2)
+        (see _sharedRankScore), and combined plays tie at 15 apiece. Zulu's
         higher combined totalTimeListened ("Time Played") must then win -
         against the later name leg (Alpha sorts first alphabetically) and
         against input-pool order (Alpha is listed first in both pools), so
@@ -1136,7 +1136,7 @@ class TestCompareRoute(unittest.TestCase):
         self.assertLess(section.index(b"Zulu"), section.index(b"Alpha"))
 
     def test_shared_list_full_ties_fall_back_to_name(self):
-        """Shared artists tied through mutual-rank score (cross-side #1s,
+        """Shared artists tied through shared-rank score (cross-side #1s,
         as in the combined-time test), combined plays AND combined time
         fall back to alphabetical name. Alpha must win via its NAME alone:
         input-pool order lists Zeta first on both sides, and Zeta's id
@@ -1162,12 +1162,12 @@ class TestCompareRoute(unittest.TestCase):
 
     def test_shared_list_ranks_by_mutual_favorite_not_raw_combined_plays(self):
         """MutualFavorite: alice's #1 (plays=1000), but bob ranks it last among
-        his 3 (plays=1) - mutual-rank-weighting (see _mutualRankScore) credits
-        it near-max via alice's #1, the same philosophy _rankWeightedOverlap
-        already uses for taste-match. ModerateBoth: #2 on both sides (never
-        anyone's favorite) - its combined plays (1800) beat MutualFavorite's
-        (1001), so the OLD combined-sum ranking would have put it first. The
-        new ranking must put MutualFavorite first instead."""
+        his 3 (plays=1) - rank-discount summing (see _sharedRankScore) credits
+        it rankWeight(1)+rankWeight(3) = 1.5 via alice's #1. ModerateBoth: #2
+        on both sides (never anyone's favorite) - 2*rankWeight(2) = ~1.26,
+        even though its combined plays (1800) beat MutualFavorite's (1001),
+        so the OLD combined-sum ranking would have put it first. The
+        rank-weighted ranking must put MutualFavorite first instead."""
         self._accept("alice", "bob")
         self.dbs["alice"].getTopArtists.return_value = [
             _artist("mutual", "MutualFavorite", plays=1000),
@@ -1187,12 +1187,42 @@ class TestCompareRoute(unittest.TestCase):
             resp.data.index(b'data-category="common-top-albums"')]
         self.assertLess(section.index(b"MutualFavorite"), section.index(b"ModerateBoth"))
 
-    def test_shared_list_mutual_score_ties_break_by_combined_plays(self):
-        """Two shared artists can tie on mutual-rank score when each grabs
-        rank #1 on a DIFFERENT side - Alpha is alice's #1 (bob ranks it #2),
-        Beta is bob's #1 (alice ranks it #2), so both score 2*rankWeight(1).
-        Must not fall back to input-pool order (Beta is listed first in both
-        pools) - combined plays (101 vs 52) breaks the tie in Alpha's favor."""
+    def test_shared_list_one_sided_favorite_loses_to_true_mutual_item(self):
+        """The sharp edge a min()-based mutual score would have: OneSided is
+        alice's #1 but bob's #19 (plays=1, barely in his pool) - under
+        min() it would score like a true #1/#1 and outrank everything.
+        _sharedRankScore SUMS both sides' discounts instead, so OneSided
+        earns rankWeight(1)+rankWeight(19) = ~1.23, and TrueMutual - #2 on
+        BOTH sides, 2*rankWeight(2) = ~1.26 - must rank above it: an item
+        one user barely plays is not the pair's top "common" favorite."""
+        self._accept("alice", "bob")
+        self.dbs["alice"].getTopArtists.return_value = [
+            _artist("onesided", "OneSided", plays=1000),
+            _artist("truemutual", "TrueMutual", plays=900),
+        ]
+        bobFillers = [_artist(f"bf{i}", f"BobFiller{i}", plays=800 - i * 10) for i in range(16)]
+        self.dbs["bob"].getTopArtists.return_value = [
+            _artist("bobfav", "BobsOwnFavorite", plays=1000),   #< not shared with alice
+            _artist("truemutual", "TrueMutual", plays=900),
+            *bobFillers,                                        #< bob ranks 3-18, not shared
+            _artist("onesided", "OneSided", plays=1),           #< bob rank 19
+        ]
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        section = resp.data[
+            resp.data.index(b'data-category="common-top-artists"'):
+            resp.data.index(b'data-category="common-top-albums"')]
+        self.assertLess(section.index(b"TrueMutual"), section.index(b"OneSided"))
+
+    def test_shared_list_shared_score_ties_break_by_combined_plays(self):
+        """Two shared artists tie on shared-rank score when each grabs rank
+        #1 on a DIFFERENT side - Alpha is alice's #1 (bob ranks it #2),
+        Beta is bob's #1 (alice ranks it #2), so both score rankWeight(1) +
+        rankWeight(2) (see _sharedRankScore). Must not fall back to
+        input-pool order (Beta is listed first in both pools) - combined
+        plays (101 vs 52) breaks the tie in Alpha's favor."""
         self._accept("alice", "bob")
         self.dbs["alice"].getTopArtists.return_value = [
             _artist("beta", "Beta", plays=2),
