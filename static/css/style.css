@@ -1564,6 +1564,27 @@ progress::-moz-progress-bar {
   box-shadow: 0 0 0 2px var(--accent-glow);
 }
 
+/* Mirrors .filter-search input[type="search"] (the #dashboardSearch look),
+   just smaller - for the share-link URL textbox in the share modal. */
+.share-modal-card input[type="text"] {
+  flex: 1;
+  min-width: 220px;
+  padding: 6px 10px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 0.85rem;
+}
+
+.share-modal-card input[type="text"]:focus {
+  outline: none;
+  background: rgba(255, 255, 255, 0.08);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-glow);
+}
+
 .filter-group label {
   font-weight: 600;
   font-size: 0.95rem;

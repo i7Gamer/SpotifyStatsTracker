@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 import app as appModule
 from app import SpotifyDashboardApp, RATE_LIMIT_MAX_ATTEMPTS, RATE_LIMIT_ERROR_MESSAGE
 import Database.utils as utilsModule
+from test_charts_genres import coverageDict
 
 _SECRET_KEY_PATCH = 'app.SpotifyDashboardApp._get_or_create_secret_key'
 
@@ -345,6 +346,60 @@ class TestPublicSharedWrappedPage(PublicSharedWrappedTestCase):
         resp = self._getShared(token)
 
         self.assertNotIn(b"alice@example.com", resp.data)
+
+    def test_hero_title_uses_the_owners_username_not_your(self):
+        token = self._createLink()
+
+        resp = self._getShared(token)
+        body = resp.data.decode()
+
+        self.assertIn("<h1>alice&#39;s 2026 Wrapped</h1>", body)
+        self.assertNotIn("Your 2026 Wrapped", body)
+
+    def test_hero_subtitle_uses_the_owners_username(self):
+        token = self._createLink()
+
+        resp = self._getShared(token)
+        body = resp.data.decode()
+
+        self.assertIn("A look back at what alice listened to in 2026.", body)
+        self.assertNotIn("what you listened to", body)
+
+    def test_discovered_item_subtitles_use_the_owners_username(self):
+        token = self._createLink()
+
+        resp = self._getShared(token)
+        body = resp.data.decode()
+
+        self.assertIn("Songs alice first listened to in 2026.", body)
+        self.assertIn("Artists alice first listened to in 2026.", body)
+        self.assertIn("Albums alice first listened to in 2026.", body)
+        self.assertNotIn("you first listened to", body)
+
+    def test_track_card_you_played_line_uses_the_owners_username(self):
+        token = self._createLink()
+        db = self._makeDb()
+        db.getTopArtists.return_value = [
+            {"id": "a1", "name": "TestArtist", "plays": 5, "totalTimeListened": 5000, "uniqueSongCount": 3}
+        ]
+
+        resp = self._getShared(token, db=db)
+        body = resp.data.decode()
+
+        self.assertIn("alice played 3 different songs by TestArtist", body)
+        self.assertNotIn("You played", body)
+
+    def test_genre_locked_progress_uses_the_owners_username(self):
+        token = self._createLink()
+        self.dash.repo.setLastfmGenreBackfillEnabled(True)
+        db = self._makeDb()
+        db.getGenreCoverage.return_value = coverageDict(10, 10, 10)
+
+        resp = self._getShared(token, db=db)
+        body = resp.data.decode()
+
+        self.assertIn("alice&#39;s listening history", body)
+        self.assertNotIn("your listening history", body)
 
     def test_track_card_images_use_the_token_keyed_image_route(self):
         """_track_card.html's imageBase override must actually take effect on

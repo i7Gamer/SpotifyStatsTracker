@@ -61,8 +61,8 @@
   </style>
   <section class="hero">
     <div class="hero-content">
-      <h1>Your {{ year }} Wrapped</h1>
-      <p>A look back at what you listened to in {{ year }}.</p>
+      <h1>{{ (username + "'s") if publicView else "Your" }} {{ year }} Wrapped</h1>
+      <p>A look back at what {{ username if publicView else "you" }} listened to in {{ year }}.</p>
     </div>
   </section>
 
@@ -275,7 +275,7 @@
 
   <div data-category="discoveries-songs" {% if not discoveredSongs %}style="display: none;"{% endif %}>
     <h2>Discovered Songs</h2>
-    <p class="chart-subtitle">Songs you first listened to in {{ year }}.</p>
+    <p class="chart-subtitle">Songs {{ username if publicView else "you" }} first listened to in {{ year }}.</p>
     <section class="track-list">
       {% if discoveredSongs %}
         {% for track in discoveredSongs %}
@@ -289,7 +289,7 @@
 
   <div data-category="discoveries-artists" {% if not discoveredArtists %}style="display: none;"{% endif %}>
     <h2>Discovered Artists</h2>
-    <p class="chart-subtitle">Artists you first listened to in {{ year }}.</p>
+    <p class="chart-subtitle">Artists {{ username if publicView else "you" }} first listened to in {{ year }}.</p>
     <section class="track-list">
       {% if discoveredArtists %}
         {% for track in discoveredArtists %}
@@ -303,7 +303,7 @@
 
   <div data-category="discoveries-albums" {% if not discoveredAlbums %}style="display: none;"{% endif %}>
     <h2>Discovered Albums</h2>
-    <p class="chart-subtitle">Albums you first listened to in {{ year }}.</p>
+    <p class="chart-subtitle">Albums {{ username if publicView else "you" }} first listened to in {{ year }}.</p>
     <section class="track-list">
       {% if discoveredAlbums %}
         {% for track in discoveredAlbums %}

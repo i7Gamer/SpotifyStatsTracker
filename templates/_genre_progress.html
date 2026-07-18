@@ -4,7 +4,7 @@
    The gate thresholds come from the jinja globals registered in app.py. #}
 <div class="genre-progress">
   <p style="font-size: 0.9rem; color: var(--muted, #aaa); margin-bottom: 1rem;">
-    Genre insights unlock once enough of your listening history has genre data from Last.fm:
+    Genre insights unlock once enough of {{ (username + "'s") if publicView else "your" }} listening history has genre data from Last.fm:
     more than {{ genreGateOverallMinPercent }}% overall and at least {{ genreGateCategoryMinPercent }}%
     each for songs, albums and artists.
   </p>
@@ -29,7 +29,7 @@
   <p style="font-size: 0.85rem; color: var(--muted, #aaa); margin-top: 0.75rem;">
     Overall: <strong>{{ coverage.overall.percent }}%</strong>
     {% if not coverage.song.total %}
-      &mdash; add a Last.fm API key on your <a href="{{ url_for('profilePage') }}" style="color: var(--accent);">profile</a> to start backfilling genre data.
+      &mdash; add a Last.fm API key on {{ (username + "'s") if publicView else "your" }} <a href="{{ url_for('profilePage') }}" style="color: var(--accent);">profile</a> to start backfilling genre data.
     {% endif %}
   </p>
   {% import "_genre_macros.html" as genreMacros %}

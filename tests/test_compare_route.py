@@ -730,6 +730,21 @@ class TestCompareRoute(unittest.TestCase):
         #< one split bar per shared card: song + album (no shared artists here)
         self.assertEqual(resp.data.count(b'class="compare-split-bar"'), 2)
 
+    def test_track_card_you_played_line_is_never_replaced_by_a_username(self):
+        """Regression for _track_card.html's publicView conditional (added
+        for the Wrapped share-link feature) - compare.html never sets
+        publicView, so this must keep reading "You played", never fall back
+        to showing a username."""
+        self._accept("alice", "bob")
+        self.dbs["alice"].getTopAlbums.return_value = [
+            _album("solo-alb", "SoloAlbum", plays=4, totalTimeListened=120_000, uniqueSongCount=2)]
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        self.assertIn(b"You played 2 songs from SoloAlbum", resp.data)
+        self.assertNotIn(b"alice played", resp.data)
+
     def test_shared_song_and_album_lists_are_capped(self):
         self._accept("alice", "bob")
         sharedSongs = [_song(f"s{i}", f"CapSong{i}", plays=12 - i) for i in range(12)]
