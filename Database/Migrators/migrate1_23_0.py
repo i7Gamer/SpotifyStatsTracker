@@ -46,7 +46,14 @@ class Migrator(BaseMigrator):
                     conn.execute("DROP TABLE share_links")
                     conn.execute("ALTER TABLE share_links_new RENAME TO share_links")
                     conn.execute("CREATE INDEX idx_share_links_username ON share_links(username)")
-                    fkViolations = conn.execute("PRAGMA foreign_key_check").fetchall()
+                    # Scoped to share_links specifically - a bare PRAGMA
+                    # foreign_key_check (no table arg) checks every table in
+                    # the database, so on a real, long-lived DB it can (and
+                    # did) surface pre-existing violations in unrelated
+                    # tables that have nothing to do with this rebuild and
+                    # would otherwise wrongly abort an unrelated, correct
+                    # migration.
+                    fkViolations = conn.execute("PRAGMA foreign_key_check(share_links)").fetchall()
                     if fkViolations:
                         raise RuntimeError(f"share_links rebuild left foreign key violations: {fkViolations}")
                     conn.commit()

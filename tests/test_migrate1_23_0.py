@@ -108,6 +108,29 @@ class TestMigrate1_23_0(unittest.TestCase):
 
         self.assertFalse(self._yearIsNotNull())
 
+    def test_pre_existing_fk_violation_in_an_unrelated_table_does_not_block_the_migration(self):
+        """Regression: PRAGMA foreign_key_check with no table argument
+        checks every table in the database, not just share_links. On a
+        real, long-lived DB that can surface pre-existing violations in
+        completely unrelated tables (seen in production: ~200 hits) and
+        wrongly abort this migration, which never touches those tables at
+        all. The check must be scoped to PRAGMA foreign_key_check(share_links)."""
+        self._createLegacyTable()
+        conn = self._rawConn()
+        with conn:
+            conn.execute("INSERT INTO users (username, created_at) VALUES ('alice', 0)")
+            # A plays row whose track_id has no matching tracks row - a
+            # dangling FK entirely unrelated to share_links.
+            conn.execute(
+                "INSERT INTO plays (username, track_id, played_at, time_played) "
+                "VALUES ('alice', 'does-not-exist', 0, 1000)"
+            )
+        conn.close()
+
+        self._migrate()   #< must not raise despite the pre-existing plays violation
+
+        self.assertFalse(self._yearIsNotNull())
+
     def test_existing_row_survives_the_rebuild_unchanged(self):
         self._createLegacyTable()
         conn = self._rawConn()
