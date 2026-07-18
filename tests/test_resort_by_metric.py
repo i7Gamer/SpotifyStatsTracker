@@ -2,7 +2,8 @@
 song/artist/album dicts by a chosen metric (see app.py) without re-querying
 the DB. Used by the Wrapped page's cached-pool path. Ties must resolve the
 same deterministic way Repository.getSongsPage/getAlbumsPage/
-getArtistAggregates already do in SQL: metric -> the other metric -> name.
+getArtistAggregates already do in SQL: metric -> the other metric -> name ->
+id, and for a name sort: name -> time listened (desc) -> id.
 """
 import sys
 import os
@@ -70,6 +71,34 @@ class TestResortByMetric(unittest.TestCase):
         result = SpotifyDashboardApp._resortByMetric(items, "name")
 
         self.assertEqual([i["id"] for i in result], ["a", "z"])
+
+    def test_name_sort_ties_break_by_most_time_listened(self):
+        """Identical names order by time listened DESC - the same chain
+        Repository's by="name" ORDER BY uses, so a resorted pool and a live
+        name query agree on tie order. The louder item is listed second AND
+        has the larger id, so neither input order nor the id fallback can
+        produce this order."""
+        items = [
+            _item("a-id", "Same", plays=1, totalTimeListened=1000),
+            _item("z-id", "Same", plays=1, totalTimeListened=5000),
+        ]
+
+        result = SpotifyDashboardApp._resortByMetric(items, "name")
+
+        self.assertEqual([i["id"] for i in result], ["z-id", "a-id"])
+
+    def test_name_sort_full_ties_fall_back_to_id(self):
+        """Name AND time ties must not lean on the input pool's incidental
+        order - id is the final deterministic leg, like every other chain
+        here."""
+        items = [
+            _item("z-id", "Same", plays=1, totalTimeListened=1000),
+            _item("a-id", "Same", plays=1, totalTimeListened=1000),
+        ]
+
+        result = SpotifyDashboardApp._resortByMetric(items, "name")
+
+        self.assertEqual([i["id"] for i in result], ["a-id", "z-id"])
 
 
 if __name__ == "__main__":

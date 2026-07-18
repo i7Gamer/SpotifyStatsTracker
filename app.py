@@ -1373,11 +1373,20 @@ class SpotifyDashboardApp:
         chosen metric instead (Wrapped's cached pools, which are only ever
         stored plays-ranked).
 
-        Ties on `sortBy` fall back to the other metric, then name - mirrors
-        Repository.getSongsPage's plays -> totalTimeListened -> name tiebreak
-        chain instead of leaning on the input pool's incidental order."""
+        Ties on `sortBy` fall back to the other metric, then name, then id -
+        and for "name", to time listened (desc) then id - mirroring
+        Repository.getSongsPage's ORDER BY chains instead of leaning on the
+        input pool's incidental order, so a resorted pool and a live query
+        at the same sortBy agree on tie order."""
         if sortBy == "name":
-            return sorted(items, key=lambda item: item.get("name", "").lower())
+            return sorted(
+                items,
+                key=lambda item: (
+                    (item.get("name") or "").lower(),
+                    -item.get("totalTimeListened", 0),
+                    item.get("id", ""),
+                ),
+            )
         otherMetric = "plays" if sortBy == "totalTimeListened" else "totalTimeListened"
         return sorted(
             items,
