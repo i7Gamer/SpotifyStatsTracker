@@ -228,7 +228,7 @@
         <input type="password" id="clientSecret" name="client_secret" value="{{ client_secret or '' }}" placeholder="Enter Client Secret" required>
       </div>
 
-      <div class="profile-button-row" style="display: flex; gap: 1rem; margin-top: 1.5rem;">
+      <div class="profile-button-row" style="display: flex; gap: 1rem;">
         <button type="submit" class="primary-button" style="flex: 1;">Save Credentials</button>
         {% if client_id and client_secret %}
           <a href="{{ url_for('profileDisconnect') }}" class="primary-button" style="flex: 1; background: #c92a2a; text-align: center; text-decoration: none; display: flex; align-items: center; justify-content: center;">Disconnect API</a>
@@ -274,7 +274,7 @@
                placeholder="{% if has_lastfm %}A key is saved - enter a new one to replace it{% else %}Enter your Last.fm API key{% endif %}" required>
       </div>
 
-      <div style="display: flex; gap: 1rem; margin-top: 1.5rem; margin-bottom: 1rem;">
+      <div style="display: flex; gap: 1rem; margin-bottom: 1rem;">
         <button type="submit" class="primary-button" style="flex: 1;">Save API Key</button>
       </div>
     </form>
