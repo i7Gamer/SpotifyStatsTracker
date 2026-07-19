@@ -238,7 +238,7 @@
       </div>
     </form>
 
-    <div class="api-status" style="margin-top: 2rem; padding: 1.5rem; background: rgba(255, 255, 255, 0.03); border-radius: 8px; border: 1px solid var(--border-color, #2d2d2d);">
+    <div class="api-status" style="margin-top: 1rem; padding: 1rem; background: rgba(255, 255, 255, 0.03); border-radius: 8px; border: 1px solid var(--border-color, #2d2d2d);">
       <h3>Connection Status</h3>
       {% if has_api %}
         <p><strong>Spotify API Configuration:</strong> Saved</p>
@@ -259,7 +259,7 @@
     {% endif %}
 
     {% if lastfm_enabled %}
-    <h2 style="margin-top: 2rem;">Last.fm API Settings</h2>
+    <h2 style="margin-top: 2rem; padding-top: 1.5rem; border-top: 1px solid var(--border-color, #2d2d2d);">Last.fm API Settings</h2>
     <p style="font-size: 0.9rem; color: #aaa; margin-bottom: 1.5rem;">
       Adding a Last.fm API key lets a background worker fill in genre data for the music you listen to -
       once enough of your library is covered, genre insights unlock on the Charts, Wrapped and Compare pages.<br>
@@ -289,7 +289,7 @@
     </form>
     {% endif %}
 
-    <div class="api-status" style="margin-top: 1rem; padding: 1.5rem; background: rgba(255, 255, 255, 0.03); border-radius: 8px; border: 1px solid var(--border-color, #2d2d2d);">
+    <div class="api-status" style="margin-top: 1rem; padding: 1rem; background: rgba(255, 255, 255, 0.03); border-radius: 8px; border: 1px solid var(--border-color, #2d2d2d);">
       <h3>Genre Backfill Status</h3>
       {% if has_lastfm %}
         <p><strong>Last.fm API Key:</strong> <span style="color: #4aff4a; font-weight: bold;">Saved</span></p>
