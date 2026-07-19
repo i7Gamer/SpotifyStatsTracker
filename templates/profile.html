@@ -6,7 +6,7 @@
     <h1>User Profile</h1>
     <p>Manage your account settings{% if feature_enabled %} and configure the Spotify Developer API for real-time play backfilling{% endif %}.</p>
 
-    <div class="profile-details" style="margin-bottom: 2rem; padding-bottom: 1.5rem; border-bottom: 1px solid var(--border-color, #2d2d2d);">
+    <div class="profile-details" style="margin-bottom: 2rem; border-bottom: 1px solid var(--border-color, #2d2d2d);">
       <p><strong>Username:</strong> {{ username }}{% if isAdmin %} <span class="badge badge-success" title="This account administers the instance">ADMIN</span>{% endif %}</p>
       <p><strong>Email:</strong> {{ email }}</p>
     </div>
