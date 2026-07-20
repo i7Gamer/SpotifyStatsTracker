@@ -118,6 +118,66 @@ class TestSongDetailRoute(_DetailRouteTestBase):
 
         self.assertNotIn(b"genre-label", resp.data)
 
+    def test_genre_badges_render_in_their_own_container_after_track_attributes(self):
+        """Genre badges live outside .track-attributes, after it in the DOM,
+        so desktop CSS can pull them into the card's top-right corner
+        independently of the other labels - see .genre-badges-container in
+        style.css."""
+        dash = self._makeApp()
+        db = MagicMock()
+        db.getSong.return_value = self._song()
+        db.getListeningTimeSeries.return_value = []
+        db.getHourOfDayHeatmap.return_value = [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
+        db.getGenresForTrack.return_value = ["dream pop", "shoegaze"]
+
+        resp = self._getPath(dash, db, "/song/t1")
+        body = resp.data.decode()
+
+        attributesCloseIdx = body.index('</div>', body.index('class="track-attributes"'))
+        genreContainerIdx = body.index('class="genre-badges-container"')
+        self.assertLess(attributesCloseIdx, genreContainerIdx)
+
+    def test_spotify_link_renders_last_after_genre_badges(self):
+        dash = self._makeApp()
+        db = MagicMock()
+        db.getSong.return_value = self._song()
+        db.getListeningTimeSeries.return_value = []
+        db.getHourOfDayHeatmap.return_value = [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
+        db.getGenresForTrack.return_value = ["dream pop"]
+
+        resp = self._getPath(dash, db, "/song/t1")
+        body = resp.data.decode()
+
+        self.assertIn('class="track-label track-spotify-link"', body)
+        genreContainerIdx = body.index('class="genre-badges-container"')
+        spotifyLinkIdx = body.index('class="track-label track-spotify-link"')
+        self.assertLess(genreContainerIdx, spotifyLinkIdx)
+
+    def test_track_card_gets_has_genres_class_only_when_genres_exist(self):
+        dash = self._makeApp()
+        db = MagicMock()
+        db.getSong.return_value = self._song()
+        db.getListeningTimeSeries.return_value = []
+        db.getHourOfDayHeatmap.return_value = [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
+        db.getGenresForTrack.return_value = ["dream pop"]
+
+        resp = self._getPath(dash, db, "/song/t1")
+
+        self.assertIn(b'class="track-card has-genres"', resp.data)
+
+    def test_track_card_omits_has_genres_class_without_genre_data(self):
+        dash = self._makeApp()
+        db = MagicMock()
+        db.getSong.return_value = self._song()
+        db.getListeningTimeSeries.return_value = []
+        db.getHourOfDayHeatmap.return_value = [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
+        db.getGenresForTrack.return_value = []
+
+        resp = self._getPath(dash, db, "/song/t1")
+
+        self.assertIn(b'class="track-card"', resp.data)
+        self.assertNotIn(b'has-genres', resp.data)
+
     def test_unknown_song_redirects_to_top_songs(self):
         dash = self._makeApp()
         db = MagicMock()
