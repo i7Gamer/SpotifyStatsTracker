@@ -21,6 +21,7 @@ the MusicBrainz genre list - Last.fm tags are free-form ("seen live",
 filterTagsToGenres. Matching happens on a normalized form (lowercase,
 hyphens as spaces), so "Hip-Hop" and "hip hop" merge.
 """
+import html
 import logging
 import re
 import threading
@@ -92,6 +93,12 @@ OUTCOME_TRANSIENT = "transient"
 OUTCOME_INVALID_KEY = "invalid_key"
 
 FetchOutcome = namedtuple("FetchOutcome", ["status", "tags"])
+
+# artist.getinfo's result for the artist-bio feature - same outcome status
+# taxonomy as FetchOutcome, but carrying one cleaned bio string (or None)
+# instead of a tag list, so it gets its own named tuple rather than
+# overloading FetchOutcome.tags with a different kind of value.
+ArtistInfoOutcome = namedtuple("ArtistInfoOutcome", ["status", "bio"])
 
 
 class LastfmRateLimiter:
@@ -251,6 +258,47 @@ def _extractAlbumInfoTags(payload) -> list:
     return []
 
 
+# Artist-bio cleaning: Last.fm bios carry embedded HTML (a trailing "Read
+# more on Last.fm" link) - that HTML is never rendered as-is (no sanitizer
+# dependency added just for this; the tags are simply stripped, converting
+# the bio to safe plain text), and the now-dead link *text* is dropped too
+# rather than left as an orphaned, unclickable "Read more on Last.fm" phrase.
+# The trailing Creative Commons attribution sentence is left in place - it's
+# already exactly the license notice CC-BY-SA requires, so stripping it would
+# just mean re-adding an equivalent notice by hand.
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+_BIO_READ_MORE_TEXT = "Read more on Last.fm"
+
+# Some artist names (e.g. containing a literal "+") resolve on Last.fm's side
+# to a distinct "incorrect tag" merge/redirect entity instead of the real
+# artist - confirmed via the live API (see the genre backfill investigation).
+# That entity's own "bio" is Last.fm's boilerplate explanation of the
+# mismatch, not a biography - showing it on an artist page would be
+# confusing, not informative, so it's treated the same as "no bio available".
+_INCORRECT_TAG_BIO_MARKER = "is an incorrect tag for"
+
+
+def _extractArtistBio(payload) -> str | None:
+    """Cleaned plain-text artist.getinfo bio summary, or None if there's
+    nothing usable (missing/empty, or Last.fm's own "incorrect tag" merge-
+    redirect boilerplate - see _INCORRECT_TAG_BIO_MARKER)."""
+    artist = payload.get("artist") if isinstance(payload, dict) else None
+    if not isinstance(artist, dict):
+        return None
+    bio = artist.get("bio")
+    if not isinstance(bio, dict):
+        return None
+    summary = bio.get("summary")
+    if not isinstance(summary, str):
+        return None
+    text = html.unescape(_HTML_TAG_RE.sub("", summary))
+    text = text.replace(_BIO_READ_MORE_TEXT, "")
+    text = " ".join(text.split())
+    if not text or _INCORRECT_TAG_BIO_MARKER in text:
+        return None
+    return text
+
+
 class LastfmClient:
     def __init__(self, apiKey: str, rateLimiter: LastfmRateLimiter | None = None):
         self.apiKey = apiKey
@@ -326,18 +374,53 @@ class LastfmClient:
         return self._classifyResponse(method, response, extractFn)
 
     def _classifyResponse(self, method: str, response, extractFn=_extractTags) -> FetchOutcome:
+        status, payload = self._classifyResponseStatus(method, response)
+        if status is not None:
+            return FetchOutcome(status, [])
+        return FetchOutcome(OUTCOME_OK, extractFn(payload))
+
+    def getArtistInfo(self, artistName: str,
+                      stop_event: threading.Event | None = None,
+                      timeout: float | None = None) -> ArtistInfoOutcome | None:
+        """One artist.getinfo lookup for the artist-bio feature - a separate,
+        much rarer call than the genre workers' gettoptags traffic (fetched
+        once per artist, ever, via lazyFetchArtistBio, not on the 30-day
+        genre retry cycle), but sharing the same process-wide rate limiter
+        since it's still real load against the same per-IP ceiling."""
+        if not self.rateLimiter.acquire(stop_event=stop_event, timeout=timeout):
+            return None
+        query = {"method": "artist.getinfo", "api_key": self.apiKey, "format": "json",
+                 "autocorrect": "1", "artist": artistName}
+        try:
+            response = requests.get(LASTFM_API_ROOT, params=query,
+                                    timeout=LASTFM_HTTP_TIMEOUT_SECONDS)
+        except requests.RequestException as e:
+            logger.warning("[Lastfm] artist.getinfo request failed: %s", e)
+            return ArtistInfoOutcome(OUTCOME_TRANSIENT, None)
+        status, payload = self._classifyResponseStatus("artist.getinfo", response)
+        if status is not None:
+            return ArtistInfoOutcome(status, None)
+        return ArtistInfoOutcome(OUTCOME_OK, _extractArtistBio(payload))
+
+    def _classifyResponseStatus(self, method: str, response) -> tuple:
+        """(status, payload). status is None only on a genuine success (200,
+        parseable, no error field) - payload is then the parsed JSON body,
+        ready for the caller's own extraction. Any other status is the
+        caller's final outcome and payload is None. Shared by every *.gettoptags
+        / *.getinfo call regardless of what shape of data it ultimately wants
+        out of a successful payload."""
         if response.status_code == 429:
             self.rateLimiter.applyBackoff(LASTFM_RATE_LIMIT_BACKOFF_SECONDS)
             logger.warning("[Lastfm] HTTP 429 on %s - backing off %ds", method,
                            LASTFM_RATE_LIMIT_BACKOFF_SECONDS)
-            return FetchOutcome(OUTCOME_TRANSIENT, [])
+            return OUTCOME_TRANSIENT, None
 
         try:
             payload = response.json()
         except ValueError:
             logger.warning("[Lastfm] Unparseable response on %s (status %d)",
                            method, response.status_code)
-            return FetchOutcome(OUTCOME_TRANSIENT, [])
+            return OUTCOME_TRANSIENT, None
 
         # Last.fm reports errors in the body (sometimes with HTTP 200) - the
         # error code, not the HTTP status, is authoritative.
@@ -347,16 +430,16 @@ class LastfmClient:
                 self.rateLimiter.applyBackoff(LASTFM_RATE_LIMIT_BACKOFF_SECONDS)
                 logger.warning("[Lastfm] Rate limited (error 29) on %s - backing off %ds",
                                method, LASTFM_RATE_LIMIT_BACKOFF_SECONDS)
-                return FetchOutcome(OUTCOME_TRANSIENT, [])
+                return OUTCOME_TRANSIENT, None
             if code in (LASTFM_ERROR_INVALID_API_KEY, LASTFM_ERROR_KEY_SUSPENDED):
-                return FetchOutcome(OUTCOME_INVALID_KEY, [])
+                return OUTCOME_INVALID_KEY, None
             if code == LASTFM_ERROR_NOT_FOUND:
-                return FetchOutcome(OUTCOME_NOT_FOUND, [])
+                return OUTCOME_NOT_FOUND, None
             logger.warning("[Lastfm] Error %s on %s: %s", code, method,
                            payload.get("message", ""))
-            return FetchOutcome(OUTCOME_TRANSIENT, [])
+            return OUTCOME_TRANSIENT, None
 
         if response.status_code != 200:
-            return FetchOutcome(OUTCOME_TRANSIENT, [])
+            return OUTCOME_TRANSIENT, None
 
-        return FetchOutcome(OUTCOME_OK, extractFn(payload))
+        return None, payload

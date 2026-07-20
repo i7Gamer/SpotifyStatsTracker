@@ -19,6 +19,14 @@
     </div>
   </div>
 
+  {% if artist_bio_enabled and artist.get('bio') %}
+  <section class="card">
+    <h2>Biography</h2>
+    <p>{{ artist.get('bio') }}</p>
+    <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.75rem;">Biography via Last.fm</p>
+  </section>
+  {% endif %}
+
   <section id="track-list" class="track-list">
     {% set track = artist %}
     {% set section = 'top_artists' %}

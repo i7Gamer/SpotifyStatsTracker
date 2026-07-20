@@ -69,6 +69,14 @@ class AppSettingsTestCase(DatabaseTestCase):
         db.repo.setInheritedGenresEnabled(True)
         self.assertTrue(db.repo.isInheritedGenresEnabled())
 
+    def test_artist_bio_enabled_defaults_on_and_flips(self):
+        db = self._makeDb({}, [])
+        self.assertTrue(db.repo.isArtistBioEnabled())
+        db.repo.setArtistBioEnabled(False)
+        self.assertFalse(db.repo.isArtistBioEnabled())
+        db.repo.setArtistBioEnabled(True)
+        self.assertTrue(db.repo.isArtistBioEnabled())
+
 
 class GenreWriteTestCase(DatabaseTestCase):
     def _db(self):
@@ -138,6 +146,35 @@ class GenreWriteTestCase(DatabaseTestCase):
         state = db.repo.getArtistLastfmState("a1")
         self.assertIsNotNone(state["attempted_at"])
         self.assertEqual(state["genres"], ["rock"])
+
+    def test_artist_bio_state_reflects_attempt_and_bio(self):
+        db = self._db()
+        state = db.repo.getArtistBioState("a1")
+        self.assertIsNone(state["attempted_at"])
+        self.assertIsNone(state["bio"])
+
+        before = time.time()
+        db.repo.setArtistBio("a1", "A band from somewhere.")
+        state = db.repo.getArtistBioState("a1")
+        self.assertEqual(state["bio"], "A band from somewhere.")
+        self.assertIsNotNone(state["attempted_at"])
+        self.assertGreaterEqual(state["attempted_at"], before)
+
+    def test_artist_bio_state_stamps_attempted_even_with_no_bio(self):
+        """A definitive "nothing usable" result still stamps attempted_at -
+        same permanent-once-tried contract as artist images - so the lazy
+        fetch never retries it."""
+        db = self._db()
+        db.repo.setArtistBio("a1", None)
+        state = db.repo.getArtistBioState("a1")
+        self.assertIsNone(state["bio"])
+        self.assertIsNotNone(state["attempted_at"])
+
+    def test_artist_bio_state_for_unknown_artist_reads_as_untried(self):
+        db = self._db()
+        state = db.repo.getArtistBioState("nonexistent")
+        self.assertIsNone(state["bio"])
+        self.assertIsNone(state["attempted_at"])
 
 
 class GenreQueueTestCase(DatabaseTestCase):

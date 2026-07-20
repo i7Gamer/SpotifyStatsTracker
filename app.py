@@ -1873,6 +1873,14 @@ class SpotifyDashboardApp:
             return {"share_links_enabled": self.repo.isShareLinksEnabled()}
 
         @self.app.context_processor
+        def _injectArtistBioStatus():
+            # Lets artist_detail.html hide its Biography section (even for
+            # an artist whose bio was already fetched and stored) and
+            # overview.html's admin panel show the toggle's current state -
+            # instance-wide, same shape as _injectRegistrationStatus above.
+            return {"artist_bio_enabled": self.repo.isArtistBioEnabled()}
+
+        @self.app.context_processor
         def _injectShareStatus():
             # Lets layout.html's nav show a "Compare" link only for users who
             # have at least one usable accepted share, and the topbar badges
@@ -2766,8 +2774,8 @@ class SpotifyDashboardApp:
         def overviewFeatureSettings():
             """Admin-only: flips the instance-wide feature kill switches
             (Spotify API backfill, Last.fm genre backfill, data sharing, new
-            user registration, public Wrapped share links) in one submit -
-            see Database/repository.py's app_settings."""
+            user registration, public Wrapped share links, artist bios) in
+            one submit - see Database/repository.py's app_settings."""
             email, username, db = get_current_user_or_redirect()
             if not email:
                 return redirect(url_for("login", next=url_for("overviewPage")))
@@ -2779,6 +2787,7 @@ class SpotifyDashboardApp:
             self.repo.setDataSharingEnabled(request.form.get("data_sharing") == "1")
             self.repo.setRegistrationEnabled(request.form.get("registration") == "1")
             self.repo.setShareLinksEnabled(request.form.get("share_links") == "1")
+            self.repo.setArtistBioEnabled(request.form.get("artist_bio") == "1")
             return redirect(url_for("overviewPage"))
 
         @self.app.route("/", methods=["GET"])
@@ -3745,6 +3754,14 @@ class SpotifyDashboardApp:
             songs = self._attachGenres(db, songs, "track")
             artist = self._embedArtistTextElement(artist)
             artist = self._attachGenres(db, [artist], "artist")[0]
+
+            # lazyFetchArtistBio no-ops (and skips fetching) when the admin's
+            # instance-wide toggle is off, same contract as the Last.fm genre
+            # backfill kill switch - but the displayed bio is suppressed here
+            # too, so disabling the feature also hides an artist's
+            # already-fetched bio, not just new ones.
+            db.lazyFetchArtistBio(artist_id, artist.get("name", ""))
+            artist["bio"] = db.getArtistBio(artist_id) if self.repo.isArtistBioEnabled() else None
 
             timeSeries = self._embedTimeSeriesTextElements(
                 db.getListeningTimeSeries(artistId=artist_id, groupBy=groupBy)
