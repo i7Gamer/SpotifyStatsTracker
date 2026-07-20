@@ -156,9 +156,13 @@
         <input type="checkbox" name="share_links" value="1" {% if share_links_enabled %}checked{% endif %}>
         Public Wrapped share links (no-login links to a user's own yearly recap)
       </label>
-      <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; margin-bottom: 1rem;">
+      <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; margin-bottom: 0.6rem;">
         <input type="checkbox" name="artist_bio" value="1" {% if artist_bio_enabled %}checked{% endif %}>
         Artist biographies (Last.fm biography on artist pages)
+      </label>
+      <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; margin-bottom: 1rem;">
+        <input type="checkbox" name="album_bio" value="1" {% if album_bio_enabled %}checked{% endif %}>
+        Album biographies (Last.fm biography on album pages)
       </label>
       <div style="display: flex; align-items: center; gap: 0.75rem;">
         <button type="submit" class="primary-button" style="padding: 4px 16px;">Save</button>
@@ -212,6 +216,26 @@
       <button type="submit" class="primary-button" style="padding: 4px 16px;">Save</button>
       <span class="badge badge-secondary" title="Instance-wide admin setting">ADMIN</span>
     </form>
+    {% endif %}
+  </div>
+</section>
+{% endif %}
+
+<!-- Biography backfill: the logged-in user's own coverage, artist + album -->
+{% if artist_bio_enabled or album_bio_enabled %}
+<section class="card" style="margin-bottom: 2.5rem;">
+  <div class="card-header" style="padding: 1.5rem 1.5rem 0.5rem 1.5rem;">
+    <h2 style="margin: 0; font-family: var(--font-headings);">Biography Backfill Progress</h2>
+    <p style="color: var(--muted); font-size: 0.9rem; margin-top: 0.25rem;">
+      How many of your played artists and albums already have a biography from Last.fm.
+    </p>
+  </div>
+  <div style="padding: 0 1.5rem 1.5rem 1.5rem;">
+    {% include "_biography_progress.html" %}
+    {% if (artist_bio_enabled and not biography_rows[0].worker.configured) or (album_bio_enabled and not biography_rows[1].worker.configured) %}
+      <p style="font-size: 0.85rem; color: var(--muted); margin-top: 0.75rem;">
+        Add a Last.fm API key on your <a href="{{ url_for('profilePage') }}" style="color: var(--accent);">profile</a> to start backfilling.
+      </p>
     {% endif %}
   </div>
 </section>

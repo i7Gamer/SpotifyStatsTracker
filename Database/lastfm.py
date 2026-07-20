@@ -100,6 +100,12 @@ FetchOutcome = namedtuple("FetchOutcome", ["status", "tags"])
 # overloading FetchOutcome.tags with a different kind of value.
 ArtistInfoOutcome = namedtuple("ArtistInfoOutcome", ["status", "bio"])
 
+# album.getinfo's result for the album-bio feature - same shape as
+# ArtistInfoOutcome, one per entity kind rather than a shared tuple, since
+# the two are extracted from differently-shaped payloads (artist.bio vs
+# album.wiki).
+AlbumInfoOutcome = namedtuple("AlbumInfoOutcome", ["status", "bio"])
+
 
 class LastfmRateLimiter:
     """Thread-safe slot spacer on the monotonic clock: acquire() blocks until
@@ -355,6 +361,42 @@ def _extractArtistBio(payload) -> str | None:
     return text
 
 
+def _extractAlbumBio(payload) -> str | None:
+    """Cleaned, length-capped plain-text album.getinfo biography, or None if
+    there's nothing usable. Same cleaning pipeline as _extractArtistBio
+    (HTML stripping, trailing boilerplate/attribution handling, sentence-
+    boundary truncation, the "incorrect tag" merge-redirect guard - album
+    wiki text carries the same Last.fm boilerplate patterns as artist bios),
+    just reading album.getinfo's `wiki` field instead of artist.getinfo's
+    `bio` field."""
+    album = payload.get("album") if isinstance(payload, dict) else None
+    if not isinstance(album, dict):
+        return None
+    wiki = album.get("wiki")
+    if not isinstance(wiki, dict):
+        return None
+    text = wiki.get("content")
+    if not isinstance(text, str) or not text.strip():
+        text = wiki.get("summary")
+    if not isinstance(text, str):
+        return None
+
+    text = html.unescape(_HTML_TAG_RE.sub("", text))
+    match = _BIO_TRAILING_BOILERPLATE_RE.search(text)
+    hasAttribution = False
+    if match is not None:
+        hasAttribution = match.group("cc") is not None
+        text = text[:match.start()]
+    text = " ".join(text.split())
+    if not text or _INCORRECT_TAG_BIO_MARKER in text:
+        return None
+
+    text = _truncateBioToSentence(text, BIO_MAX_LENGTH)
+    if hasAttribution:
+        text = f"{text} {_BIO_ATTRIBUTION_TEXT}"
+    return text
+
+
 class LastfmClient:
     def __init__(self, apiKey: str, rateLimiter: LastfmRateLimiter | None = None):
         self.apiKey = apiKey
@@ -458,6 +500,30 @@ class LastfmClient:
         if status is not None:
             return ArtistInfoOutcome(status, None)
         return ArtistInfoOutcome(OUTCOME_OK, _extractArtistBio(payload))
+
+    def getAlbumInfo(self, artistName: str, albumName: str,
+                     stop_event: threading.Event | None = None,
+                     timeout: float | None = None) -> AlbumInfoOutcome | None:
+        """One album.getinfo lookup for the album-bio feature - mirrors
+        getArtistInfo, sharing the same process-wide rate limiter. A
+        dedicated call (not piggybacked on getAlbumTopTags's own
+        album.getinfo fallback, which only fires when album.gettoptags comes
+        back empty - the minority case) so bio coverage isn't starved for
+        the majority of albums where gettoptags already succeeds."""
+        if not self.rateLimiter.acquire(stop_event=stop_event, timeout=timeout):
+            return None
+        query = {"method": "album.getinfo", "api_key": self.apiKey, "format": "json",
+                 "autocorrect": "1", "artist": artistName, "album": albumName}
+        try:
+            response = requests.get(LASTFM_API_ROOT, params=query,
+                                    timeout=LASTFM_HTTP_TIMEOUT_SECONDS)
+        except requests.RequestException as e:
+            logger.warning("[Lastfm] album.getinfo request failed: %s", e)
+            return AlbumInfoOutcome(OUTCOME_TRANSIENT, None)
+        status, payload = self._classifyResponseStatus("album.getinfo", response)
+        if status is not None:
+            return AlbumInfoOutcome(status, None)
+        return AlbumInfoOutcome(OUTCOME_OK, _extractAlbumBio(payload))
 
     def _classifyResponseStatus(self, method: str, response) -> tuple:
         """(status, payload). status is None only on a genuine success (200,

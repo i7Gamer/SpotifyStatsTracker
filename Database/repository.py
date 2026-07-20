@@ -53,6 +53,7 @@ DATA_SHARING_SETTING_KEY = "data_sharing_enabled"
 REGISTRATION_SETTING_KEY = "registration_enabled"
 SHARE_LINKS_SETTING_KEY = "share_links_enabled"
 ARTIST_BIO_SETTING_KEY = "artist_bio_enabled"
+ALBUM_BIO_SETTING_KEY = "album_bio_enabled"
 
 # getBucketedPlayTotals' fixed UTC bucket width. 15 minutes is the smallest
 # granularity any real-world UTC offset uses (e.g. Asia/Kathmandu +5:45), so
@@ -2096,6 +2097,18 @@ class Repository:
             if "bio_attempted_at" not in columns:
                 conn.execute("ALTER TABLE artists ADD COLUMN bio_attempted_at REAL")
 
+    def addAlbumBioColumnsIfMissing(self) -> None:
+        """Add albums.bio and albums.bio_attempted_at (migrate1_28_0) if
+        missing, mirroring addArtistBioColumnsIfMissing for the album-bio
+        feature. Guarded so re-running the migration doesn't fail."""
+        conn = self._conn()
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(albums)").fetchall()}
+        with conn:
+            if "bio" not in columns:
+                conn.execute("ALTER TABLE albums ADD COLUMN bio TEXT")
+            if "bio_attempted_at" not in columns:
+                conn.execute("ALTER TABLE albums ADD COLUMN bio_attempted_at REAL")
+
     def addRequesterSeenAcceptedColumnIfMissing(self) -> None:
         """Add user_shares.requester_seen_accepted (the "your share request
         was accepted" topbar notification's dismissal flag) if missing.
@@ -2511,6 +2524,31 @@ class Repository:
                 (bio, time.time(), artistId),
             )
 
+    def getAlbumBioState(self, albumId: str) -> dict:
+        """{"bio", "attempted_at"} for one album - lazyFetchAlbumBio's claim
+        check. Same permanent-once-tried contract as getArtistBioState: the
+        on-demand lazy fetch never retries an album once attempted; the
+        background album biography backfiller (getAlbumsMissingBiographies)
+        is the one that revisits a definitive-empty result later, on its own
+        30-day cycle."""
+        row = self._conn().execute(
+            "SELECT bio, bio_attempted_at FROM albums WHERE id=?", (albumId,)
+        ).fetchone()
+        if row is None:
+            return {"bio": None, "attempted_at": None}
+        return {"bio": row["bio"], "attempted_at": row["bio_attempted_at"]}
+
+    def setAlbumBio(self, albumId: str, bio: str | None) -> None:
+        """Stores the fetch result (bio text, or None when Last.fm has
+        nothing usable) and stamps bio_attempted_at in one call, mirroring
+        setArtistBio."""
+        conn = self._conn()
+        with conn:
+            conn.execute(
+                "UPDATE albums SET bio = ?, bio_attempted_at = ? WHERE id = ?",
+                (bio, time.time(), albumId),
+            )
+
     def requeueCorruptedBiographies(self) -> int:
         """Clears bio and bio_attempted_at for artists whose stored bio
         doesn't end in terminal punctuation - the mid-sentence cutoff left
@@ -2556,6 +2594,33 @@ class Repository:
                    OR (ar.bio_attempted_at < ? AND ar.bio IS NULL))
             GROUP BY ar.id
             ORDER BY play_count DESC, ar.id ASC
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def getAlbumsMissingBiographies(self, limit: int, username: str | None = None) -> list[dict]:
+        """Played albums still needing a Last.fm album.getinfo lookup,
+        most-played first - the background album biography backfiller's
+        queue (Database._lastfmAlbumBiographyBackfillLoop). Same
+        play-count-ordered, own-vs-global scoping as
+        getArtistsMissingBiographies, keyed off albums.bio directly (there's
+        no join table for it, same as artist bios)."""
+        conn = self._conn()
+        params: list = []
+        userClause = self._queueUserClause(params, username)
+        params.extend([time.time() - BIOGRAPHY_BACKFILL_RETRY_SECONDS, limit])
+        rows = conn.execute(
+            f"""
+            SELECT al.id AS id, al.name AS name, COUNT(*) AS play_count
+            FROM plays p
+            JOIN tracks t ON t.id = p.track_id
+            JOIN albums al ON al.id = t.album_id
+            WHERE {userClause}(al.bio_attempted_at IS NULL
+                   OR (al.bio_attempted_at < ? AND al.bio IS NULL))
+            GROUP BY al.id
+            ORDER BY play_count DESC, al.id ASC
             LIMIT ?
             """,
             params,
@@ -2681,6 +2746,42 @@ class Repository:
                                               "artist_name": row["artist_name"]}
         return primaries
 
+    def getBiographyCoverage(self, username: str) -> dict:
+        """Entity-count coverage for the Overview "Biography Backfill
+        Progress" widget: {"artist": {"covered", "total"}, "album": {...}} -
+        how many of this user's played primary artists / played albums
+        already have a stored Last.fm biography, out of how many total. A
+        simple boolean-per-entity count (not the genre backfill's
+        play-weighted percentage - see getGenreCoverage) since a bio is
+        present-or-absent per entity, not a per-play attribute."""
+        conn = self._conn()
+        artistRow = conn.execute(
+            """
+            SELECT COUNT(DISTINCT ar.id) AS total,
+                   COUNT(DISTINCT CASE WHEN ar.bio IS NOT NULL THEN ar.id END) AS covered
+            FROM plays p
+            JOIN track_artists ta ON ta.track_id = p.track_id AND ta.position = 0
+            JOIN artists ar ON ar.id = ta.artist_id
+            WHERE p.username = ?
+            """,
+            (username,),
+        ).fetchone()
+        albumRow = conn.execute(
+            """
+            SELECT COUNT(DISTINCT al.id) AS total,
+                   COUNT(DISTINCT CASE WHEN al.bio IS NOT NULL THEN al.id END) AS covered
+            FROM plays p
+            JOIN tracks t ON t.id = p.track_id
+            JOIN albums al ON al.id = t.album_id
+            WHERE p.username = ?
+            """,
+            (username,),
+        ).fetchone()
+        return {
+            "artist": {"covered": artistRow["covered"], "total": artistRow["total"]},
+            "album": {"covered": albumRow["covered"], "total": albumRow["total"]},
+        }
+
     # ---- Instance-wide app settings -------------------------------------------
 
     def getAppSetting(self, key: str, default: str | None = None) -> str | None:
@@ -2748,6 +2849,12 @@ class Repository:
 
     def setArtistBioEnabled(self, enabled: bool) -> None:
         self._setFeatureEnabled(ARTIST_BIO_SETTING_KEY, enabled)
+
+    def isAlbumBioEnabled(self) -> bool:
+        return self._isFeatureEnabled(ALBUM_BIO_SETTING_KEY)
+
+    def setAlbumBioEnabled(self, enabled: bool) -> None:
+        self._setFeatureEnabled(ALBUM_BIO_SETTING_KEY, enabled)
 
     def getMaxPlayedAtInPeriod(self, username: str, startTs: float, endTs: float) -> float | None:
         row = self._conn().execute(

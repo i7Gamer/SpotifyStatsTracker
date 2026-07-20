@@ -79,6 +79,14 @@ class AppSettingsTestCase(DatabaseTestCase):
         db.repo.setArtistBioEnabled(True)
         self.assertTrue(db.repo.isArtistBioEnabled())
 
+    def test_album_bio_enabled_defaults_on_and_flips(self):
+        db = self._makeDb({}, [])
+        self.assertTrue(db.repo.isAlbumBioEnabled())
+        db.repo.setAlbumBioEnabled(False)
+        self.assertFalse(db.repo.isAlbumBioEnabled())
+        db.repo.setAlbumBioEnabled(True)
+        self.assertTrue(db.repo.isAlbumBioEnabled())
+
 
 class GenreWriteTestCase(DatabaseTestCase):
     def _db(self):
@@ -464,6 +472,189 @@ class BiographyQueueTestCase(DatabaseTestCase):
             conn.execute("UPDATE artists SET bio_attempted_at=? WHERE id='aX'", (staleStamp,))
         rows = db.repo.getArtistsMissingBiographies(10, username="user1")
         self.assertNotIn("aX", [r["id"] for r in rows])
+
+
+class AlbumBioStateTestCase(DatabaseTestCase):
+    """getAlbumBioState/setAlbumBio: mirrors the artist-bio state round trip
+    (getArtistBioState/setArtistBio) for albums."""
+
+    def test_unset_album_reads_as_unattempted(self):
+        db = self._makeDb({}, [])
+        state = db.repo.getAlbumBioState("unknown")
+        self.assertIsNone(state["bio"])
+        self.assertIsNone(state["attempted_at"])
+
+    def test_bio_and_attempted_at_round_trip(self):
+        db = self._makeDb({}, [])
+        conn = db.repo._conn()
+        with conn:
+            conn.execute("INSERT INTO albums (id, name, url) VALUES ('al1', 'Album', '')")
+
+        db.repo.setAlbumBio("al1", "A great album.")
+
+        state = db.repo.getAlbumBioState("al1")
+        self.assertEqual(state["bio"], "A great album.")
+        self.assertIsNotNone(state["attempted_at"])
+
+    def test_definitive_no_bio_still_stamps_attempted(self):
+        db = self._makeDb({}, [])
+        conn = db.repo._conn()
+        with conn:
+            conn.execute("INSERT INTO albums (id, name, url) VALUES ('al1', 'Album', '')")
+
+        db.repo.setAlbumBio("al1", None)
+
+        state = db.repo.getAlbumBioState("al1")
+        self.assertIsNone(state["bio"])
+        self.assertIsNotNone(state["attempted_at"])
+
+
+class AlbumBiographyQueueTestCase(DatabaseTestCase):
+    """getAlbumsMissingBiographies: same play-count-ordered, own-vs-global-
+    scope shape as BiographyQueueTestCase's artist queue, keyed off
+    albums.bio."""
+
+    def _db(self):
+        tracks = {
+            "tA": {"id": "tA", "name": "Song A",
+                   "artists": [{"id": "aX", "name": "Artist X"}],
+                   "album": self._album("alP", "Album P")},
+            "tB": {"id": "tB", "name": "Song B",
+                   "artists": [{"id": "aY", "name": "Artist Y"}],
+                   "album": self._album("alQ", "Album Q")},
+        }
+        entries = [
+            {"id": "tA", "playedAt": 1000, "timePlayed": 5000},
+            {"id": "tA", "playedAt": 2000, "timePlayed": 5000},
+            {"id": "tA", "playedAt": 3000, "timePlayed": 5000},
+            {"id": "tB", "playedAt": 4000, "timePlayed": 5000},
+        ]
+        db = self._makeDb(tracks, entries, username="user1")
+        # A second user in the same shared DB, playing their own album.
+        db.repo.upsertUser("user2", "user2@example.com")
+        from conftest import normalizeTrackForTest
+        db.repo.upsertTrack(normalizeTrackForTest(
+            {"id": "tC", "name": "Song C",
+             "artists": [{"id": "aZ", "name": "Artist Z"}],
+             "album": self._album("alR", "Album R")}))
+        db.repo.insertPlay("user2", "tC", 5000, 5000, None)
+        db.repo.commit()
+        return db
+
+    @staticmethod
+    def _album(albumId, name):
+        return {"id": albumId, "name": name, "url": "http://example.com/album",
+                "imageId": albumId, "imageUrl": "", "totalTracks": 1, "releaseDate": 0}
+
+    def test_album_queue_is_play_count_ordered_within_own_scope(self):
+        db = self._db()
+        rows = db.repo.getAlbumsMissingBiographies(10, username="user1")
+        self.assertEqual([r["id"] for r in rows], ["alP", "alQ"])
+        self.assertEqual(rows[0]["play_count"], 3)
+        self.assertEqual(rows[0]["name"], "Album P")
+
+    def test_global_scope_spans_all_users(self):
+        db = self._db()
+        rows = db.repo.getAlbumsMissingBiographies(10)
+        self.assertEqual([r["id"] for r in rows], ["alP", "alQ", "alR"])
+
+    def test_limit_is_respected(self):
+        db = self._db()
+        rows = db.repo.getAlbumsMissingBiographies(1, username="user1")
+        self.assertEqual([r["id"] for r in rows], ["alP"])
+
+    def test_recently_attempted_entities_leave_the_queue(self):
+        db = self._db()
+        db.repo.setAlbumBio("alP", "A bio.")
+        rows = db.repo.getAlbumsMissingBiographies(10, username="user1")
+        self.assertEqual([r["id"] for r in rows], ["alQ"])
+
+    def test_empty_bios_requeue_after_the_retry_ttl(self):
+        db = self._db()
+        db.repo.setAlbumBio("alP", None)
+        conn = db.repo._conn()
+        staleStamp = time.time() - BIOGRAPHY_BACKFILL_RETRY_SECONDS - 1
+        with conn:
+            conn.execute("UPDATE albums SET bio_attempted_at=? WHERE id='alP'", (staleStamp,))
+        rows = db.repo.getAlbumsMissingBiographies(10, username="user1")
+        self.assertIn("alP", [r["id"] for r in rows])
+
+    def test_albums_with_a_real_bio_never_requeue(self):
+        db = self._db()
+        db.repo.setAlbumBio("alP", "A real bio.")
+        conn = db.repo._conn()
+        staleStamp = time.time() - BIOGRAPHY_BACKFILL_RETRY_SECONDS - 1
+        with conn:
+            conn.execute("UPDATE albums SET bio_attempted_at=? WHERE id='alP'", (staleStamp,))
+        rows = db.repo.getAlbumsMissingBiographies(10, username="user1")
+        self.assertNotIn("alP", [r["id"] for r in rows])
+
+
+class BiographyCoverageTestCase(DatabaseTestCase):
+    """getBiographyCoverage: entity-count (not play-weighted) coverage for
+    the Overview "Biography Backfill Progress" widget."""
+
+    def _db(self):
+        tracks = {
+            "tA": {"id": "tA", "name": "Song A",
+                   "artists": [{"id": "aX", "name": "Artist X"}],
+                   "album": self._album("alP", "Album P")},
+            "tB": {"id": "tB", "name": "Song B",
+                   "artists": [{"id": "aY", "name": "Artist Y"}],
+                   "album": self._album("alQ", "Album Q")},
+        }
+        entries = [
+            {"id": "tA", "playedAt": 1000, "timePlayed": 5000},
+            {"id": "tB", "playedAt": 2000, "timePlayed": 5000},
+        ]
+        return self._makeDb(tracks, entries, username="user1")
+
+    @staticmethod
+    def _album(albumId, name):
+        return {"id": albumId, "name": name, "url": "http://example.com/album",
+                "imageId": albumId, "imageUrl": "", "totalTracks": 1, "releaseDate": 0}
+
+    def test_nothing_backfilled_yet(self):
+        db = self._db()
+        coverage = db.repo.getBiographyCoverage("user1")
+        self.assertEqual(coverage["artist"], {"covered": 0, "total": 2})
+        self.assertEqual(coverage["album"], {"covered": 0, "total": 2})
+
+    def test_covered_counts_rise_as_bios_are_stored(self):
+        db = self._db()
+        db.repo.setArtistBio("aX", "Bio X")
+        db.repo.setAlbumBio("alP", "Album bio P")
+
+        coverage = db.repo.getBiographyCoverage("user1")
+
+        self.assertEqual(coverage["artist"], {"covered": 1, "total": 2})
+        self.assertEqual(coverage["album"], {"covered": 1, "total": 2})
+
+    def test_a_definitive_no_bio_does_not_count_as_covered(self):
+        db = self._db()
+        db.repo.setArtistBio("aX", None)
+        db.repo.setAlbumBio("alP", None)
+
+        coverage = db.repo.getBiographyCoverage("user1")
+
+        self.assertEqual(coverage["artist"]["covered"], 0)
+        self.assertEqual(coverage["album"]["covered"], 0)
+
+    def test_scoped_to_the_requested_user(self):
+        db = self._db()
+        db.repo.upsertUser("user2", "user2@example.com")
+        from conftest import normalizeTrackForTest
+        db.repo.upsertTrack(normalizeTrackForTest(
+            {"id": "tC", "name": "Song C",
+             "artists": [{"id": "aZ", "name": "Artist Z"}],
+             "album": self._album("alR", "Album R")}))
+        db.repo.insertPlay("user2", "tC", 5000, 5000, None)
+        db.repo.commit()
+
+        coverage = db.repo.getBiographyCoverage("user1")
+
+        self.assertEqual(coverage["artist"]["total"], 2)   #< user2's aZ excluded
+        self.assertEqual(coverage["album"]["total"], 2)
 
 
 class GenreCoverageTestCase(DatabaseTestCase):

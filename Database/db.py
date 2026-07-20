@@ -61,7 +61,9 @@ CREATE TABLE IF NOT EXISTS albums (
     image_id        TEXT,
     image_url       TEXT,
     lastfm_attempted_at REAL,
-    backfill_attempted_at REAL
+    backfill_attempted_at REAL,
+    bio             TEXT,
+    bio_attempted_at REAL
 );
 
 CREATE TABLE IF NOT EXISTS tracks (

@@ -417,6 +417,84 @@ class TestAlbumDetailRoute(_DetailRouteTestBase):
         self.assertIn(b'<span class="track-label genre-label">indie rock</span>', resp.data)
         db.getGenresForAlbum.assert_called_once_with("alb1")
 
+    def _albumWithArtist(self):
+        album = self._album()
+        album["artists"] = [{"id": "a1", "name": "Artist A", "url": "u", "imageUrl": "", "imageId": "a1"}]
+        return album
+
+    def test_biography_renders_when_present(self):
+        dash = self._makeApp()
+        db = MagicMock()
+        db.getAlbum.return_value = self._albumWithArtist()
+        db.getSongsStats.return_value = []
+        db.getListeningTimeSeries.return_value = []
+        db.getAlbumBio.return_value = "A landmark album from somewhere."
+
+        resp = self._getPath(dash, db, "/album/alb1")
+
+        self.assertIn(b"Biography", resp.data)
+        self.assertIn(b"A landmark album from somewhere.", resp.data)
+        self.assertIn(b"Biography via Last.fm", resp.data)
+        db.lazyFetchAlbumBio.assert_called_once_with("alb1", "Album One", "Artist A")
+        db.getAlbumBio.assert_called_once_with("alb1")
+
+    def test_biography_section_absent_without_a_bio(self):
+        dash = self._makeApp()
+        db = MagicMock()
+        db.getAlbum.return_value = self._albumWithArtist()
+        db.getSongsStats.return_value = []
+        db.getListeningTimeSeries.return_value = []
+        db.getAlbumBio.return_value = None
+
+        resp = self._getPath(dash, db, "/album/alb1")
+
+        self.assertNotIn(b"Biography", resp.data)
+
+    def test_biography_hides_when_the_admin_disables_the_feature(self):
+        """Same contract as the artist bio's kill switch: disabled hides the
+        section even for an album whose bio was already fetched and stored -
+        db.getAlbumBio isn't even consulted for display."""
+        dash = self._makeApp()
+        dash.repo.setAlbumBioEnabled(False)
+        db = MagicMock()
+        db.getAlbum.return_value = self._albumWithArtist()
+        db.getSongsStats.return_value = []
+        db.getListeningTimeSeries.return_value = []
+        db.getAlbumBio.return_value = "A landmark album from somewhere."
+
+        resp = self._getPath(dash, db, "/album/alb1")
+
+        self.assertNotIn(b"Biography", resp.data)
+        db.getAlbumBio.assert_not_called()
+
+    def test_biography_text_is_html_escaped(self):
+        dash = self._makeApp()
+        db = MagicMock()
+        db.getAlbum.return_value = self._albumWithArtist()
+        db.getSongsStats.return_value = []
+        db.getListeningTimeSeries.return_value = []
+        db.getAlbumBio.return_value = "<script>alert('xss')</script>"
+
+        resp = self._getPath(dash, db, "/album/alb1")
+
+        self.assertNotIn(b"<script>alert", resp.data)
+        self.assertIn(b"&lt;script&gt;alert(&#39;xss&#39;)&lt;/script&gt;", resp.data)
+
+    def test_no_lazy_fetch_without_a_resolvable_primary_artist(self):
+        """_album() (no artists) can't be looked up via album.getinfo, which
+        needs an artist name - the route must skip the fetch, not crash."""
+        dash = self._makeApp()
+        db = MagicMock()
+        db.getAlbum.return_value = self._album()
+        db.getSongsStats.return_value = []
+        db.getListeningTimeSeries.return_value = []
+        db.getAlbumBio.return_value = None
+
+        resp = self._getPath(dash, db, "/album/alb1")
+
+        self.assertEqual(resp.status_code, 200)
+        db.lazyFetchAlbumBio.assert_not_called()
+
     def test_unknown_album_redirects_to_top_albums(self):
         dash = self._makeApp()
         db = MagicMock()

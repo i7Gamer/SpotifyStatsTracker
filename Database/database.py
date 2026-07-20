@@ -49,6 +49,9 @@ ARTIST_BIO_FETCH_WORKERS = 2   #< bounds concurrent artist-bio fetches for the w
                                 #  small artist.getinfo call (no image-style download/resize work), so a
                                 #  much smaller pool than IMAGE_DOWNLOAD_WORKERS is enough
 
+ALBUM_BIO_FETCH_WORKERS = 2    #< separate pool from ARTIST_BIO_FETCH_WORKERS so album lazy-fetches never
+                                #  queue behind artist lazy-fetches (or vice versa)
+
 # getCompletionStats' play classification thresholds: under 30s counts as a
 # skip (Spotify's own royalty threshold), at/over 80% of the track's duration
 # counts as a completed listen, anything between is a partial. This bucket is
@@ -202,6 +205,14 @@ class Database:
                                                 #  call per entity, sharing the same rate limiter as genres
     LASTFM_BIOGRAPHY_IDLE_WAIT_SECONDS = 300   #< wait between cycles once the queue is drained (or after errors)
 
+    # The album biography backfiller runs as its own thread alongside the
+    # artist one (not sequentially after it) - same independent-thread shape
+    # as the genre-vs-biography split above.
+    LASTFM_ALBUM_BIOGRAPHY_BACKFILLER_MIN_START_DELAY = 120
+    LASTFM_ALBUM_BIOGRAPHY_BACKFILLER_MAX_START_DELAY = 180
+    LASTFM_ALBUM_BIOGRAPHY_QUEUE_BATCH_SIZE = 20     #< one album.getinfo call per entity, same rate limiter
+    LASTFM_ALBUM_BIOGRAPHY_IDLE_WAIT_SECONDS = 300   #< wait between cycles once the queue is drained (or after errors)
+
     # Shared across every Database instance (every user) in this process. Image
     # download de-duplication is enforced by the `images` table (atomic across
     # threads *and* users), so a single bounded pool for the whole process is
@@ -214,6 +225,9 @@ class Database:
     # lazy fetch: a much smaller pool since each task is one lightweight
     # artist.getinfo call, not a download+resize.
     _artistBioFetchExecutor = concurrent.futures.ThreadPoolExecutor(max_workers=ARTIST_BIO_FETCH_WORKERS)
+    # Same idea, for the album-bio feature's lazy fetch - its own pool (see
+    # ALBUM_BIO_FETCH_WORKERS) rather than sharing _artistBioFetchExecutor.
+    _albumBioFetchExecutor = concurrent.futures.ThreadPoolExecutor(max_workers=ALBUM_BIO_FETCH_WORKERS)
     _active_backfills = set()
     _backfill_lock = threading.Lock()
     # Same idea for the Last.fm genre backfillers: catalog entities are shared,
@@ -303,6 +317,10 @@ class Database:
         self.lastfm_biography_thread = None
         self.lastfm_biography_stop_event = threading.Event()
         self.startLastfmBiographyBackfiller()
+
+        self.lastfm_album_biography_thread = None
+        self.lastfm_album_biography_stop_event = threading.Event()
+        self.startLastfmAlbumBiographyBackfiller()
 
     def refreshSettings(self) -> None:
         from zoneinfo import ZoneInfo
@@ -798,6 +816,53 @@ class Database:
 
         if self._claimLastfmEntities("bio", [{"id": artistId}]):
             return self._artistBioFetchExecutor.submit(self._lazyFetchArtistBioTask, artistId, artistName)
+        return False
+
+    def _lazyFetchAlbumBioTask(self, albumId: str, albumName: str, artistName: str) -> bool:
+        """Returns whether a usable bio was actually stored - mirrors
+        _lazyFetchArtistBioTask, but album.getinfo also needs the album's
+        primary artist name."""
+        try:
+            apiKey = self.repo.getUserLastfmApiKey(self.user)
+            if not apiKey:
+                return False   #< key removed between the claim and this task running; leave unattempted
+            outcome = LastfmClient(apiKey).getAlbumInfo(artistName, albumName)
+            if outcome is None or outcome.status not in (OUTCOME_OK, OUTCOME_NOT_FOUND):
+                return False   #< transient/invalid-key: stays unattempted, a later page view retries
+            bio = outcome.bio if outcome.status == OUTCOME_OK else None
+            self.repo.setAlbumBio(albumId, bio)
+            return bio is not None
+        except Exception as e:
+            logger.error("Failed to lazy fetch album bio for %s: %s", albumId, parseError(e))
+            return False
+        finally:
+            self._releaseLastfmEntities("album_bio", [{"id": albumId}])
+
+    def lazyFetchAlbumBio(self, albumId: str, albumName: str, artistName: str):
+        """Best-effort, on-demand fetch of an album's biography via Last.fm's
+        album.getinfo, mirroring lazyFetchArtistBio - same permanent-once-
+        tried contract, same isAlbumBioEnabled() gate on fetching itself
+        (not just display), dispatched on its own small executor
+        (_albumBioFetchExecutor) so an album page render never blocks on
+        Last.fm's response time. `artistName` is the album's primary
+        artist - album.getinfo needs artist+album, unlike artist.getinfo.
+        Returns True if already attempted, False if there's nothing to fetch
+        (missing id/name/artist, the feature is disabled, no stored Last.fm
+        key, or another thread already claimed this album), or the
+        submitted Future on a freshly kicked-off fetch."""
+        if not albumId or not albumName or not artistName:
+            return False
+        if not self.repo.isAlbumBioEnabled():
+            return False
+
+        state = self.repo.getAlbumBioState(albumId)
+        if state["attempted_at"] is not None:
+            return True
+        if not self.repo.getUserLastfmApiKey(self.user):
+            return False
+
+        if self._claimLastfmEntities("album_bio", [{"id": albumId}]):
+            return self._albumBioFetchExecutor.submit(self._lazyFetchAlbumBioTask, albumId, albumName, artistName)
         return False
 
     def saveImagesFromTrack(self, track: dict):
@@ -1673,6 +1738,12 @@ class Database:
         results = self.getAlbumsStats(sortBy="plays", limit=1, albumId=albumId)
         return results[0] if results else None
 
+    def getAlbumBio(self, albumId: str) -> str | None:
+        """This album's stored biography (see lazyFetchAlbumBio), or None if
+        it's never been fetched or Last.fm has nothing usable - mirrors
+        getArtistBio."""
+        return self.repo.getAlbumBioState(albumId)["bio"]
+
     def getPlayedAlbumIds(self, albumIds: list[str]) -> set[str]:
         """The subset of `albumIds` this user has at least one play from - see
         Repository.getPlayedAlbumIds."""
@@ -2061,6 +2132,23 @@ class Database:
             "running": self.lastfm_thread is not None and self.lastfm_thread.is_alive(),
         }
 
+    def getLastfmBiographyWorkerStatus(self) -> dict:
+        """Same shape as getLastfmWorkerStatus, for the artist biography
+        backfiller - used by the Overview "Biography Backfill Progress"
+        widget's Artist row."""
+        return {
+            "configured": bool(self.repo.getUserLastfmApiKey(self.user)),
+            "running": self.lastfm_biography_thread is not None and self.lastfm_biography_thread.is_alive(),
+        }
+
+    def getLastfmAlbumBiographyWorkerStatus(self) -> dict:
+        """Same shape as getLastfmWorkerStatus, for the album biography
+        backfiller - used by the Overview widget's Album row."""
+        return {
+            "configured": bool(self.repo.getUserLastfmApiKey(self.user)),
+            "running": self.lastfm_album_biography_thread is not None and self.lastfm_album_biography_thread.is_alive(),
+        }
+
     def _reconcileWithWebApiHistory(self, apiItems: list[dict]) -> None:
         """Remove PROVABLE duplicate local plays: Web API backfill copies of a
         play another source already recorded. Both the live listener and the
@@ -2320,6 +2408,7 @@ class Database:
         self.stopWrappedCalculationsWorker()
         self.stopLastfmGenreBackfiller()
         self.stopLastfmBiographyBackfiller()
+        self.stopLastfmAlbumBiographyBackfiller()
 
     def startWrappedCalculationsWorker(self) -> None:
         """Start the background thread to precalculate wrapped data."""
@@ -3040,6 +3129,149 @@ class Database:
                 processedAny = True
         finally:
             self._releaseLastfmEntities("bio", claimed)
+        return processedAny
+
+    def startLastfmAlbumBiographyBackfiller(self) -> None:
+        """Start the background thread that backfills album biographies from
+        Last.fm. Runs independently of the artist biography backfiller (its
+        own thread, stop event and idle cycle - see the
+        LASTFM_ALBUM_BIOGRAPHY_* constants), not sequentially after it.
+        No-op without a stored API key - keyless users get no idle thread,
+        and the profile page's key save calls this again once a key
+        exists."""
+        if not hasattr(self, "lastfm_album_biography_thread") or not hasattr(self, "lastfm_album_biography_stop_event"):
+            return
+        if self.lastfm_album_biography_thread is not None and self.lastfm_album_biography_thread.is_alive():
+            return
+        import sqlite3
+        try:
+            hasApiKey = bool(self.repo.getUserLastfmApiKey(self.user))
+        except sqlite3.OperationalError as e:
+            # Same pre-migration guard as startLastfmBiographyBackfiller: a
+            # Database constructed against a pre-1.19 file outside the app's
+            # migration path has no users.lastfm_api_key column yet.
+            logger.warning("[LastfmAlbumBioWorker-%s] Not starting - schema not migrated yet: %s",
+                           self.user, e)
+            return
+        if not hasApiKey:
+            return
+        # A FRESH event per run (see startLastfmGenreBackfiller's note on why
+        # a lingering thread's event must never be revived).
+        stop_event = threading.Event()
+        self.lastfm_album_biography_stop_event = stop_event
+        self.lastfm_album_biography_thread = threading.Thread(
+            target=self._lastfmAlbumBiographyBackfillLoop,
+            args=(stop_event,),
+            name=f"lastfm-album-bios-{self.user}",
+            daemon=True
+        )
+        self.lastfm_album_biography_thread.start()
+
+    def stopLastfmAlbumBiographyBackfiller(self) -> None:
+        """Signal and wait for the background album biography backfiller to stop."""
+        if not hasattr(self, "lastfm_album_biography_thread") or not hasattr(self, "lastfm_album_biography_stop_event"):
+            return
+        if self.lastfm_album_biography_thread is None:
+            return
+        self.lastfm_album_biography_stop_event.set()
+        self.lastfm_album_biography_thread.join(timeout=3)
+        self.lastfm_album_biography_thread = None
+
+    def _lastfmAlbumBiographyBackfillLoop(self, stop_event: threading.Event | None = None) -> None:
+        """Fetches Last.fm biographies for this user's played albums (most-
+        played first), then - once the own queue is drained - for everyone
+        else's, same own-then-global shape as _lastfmBiographyBackfillLoop.
+        Unlike lazyFetchAlbumBio's on-demand one-shot fetch, an album whose
+        lookup came back with no bio is revisited after
+        BIOGRAPHY_BACKFILL_RETRY_SECONDS (see getAlbumsMissingBiographies).
+
+        `stop_event` is THIS run's private event (see the fresh-event note in
+        startLastfmGenreBackfiller); the loop's own lifecycle checks use it
+        exclusively so a later restart can never revive this thread."""
+        import random
+        if stop_event is None:
+            stop_event = self.lastfm_album_biography_stop_event
+        try:
+            startup_delay = random.randint(self.LASTFM_ALBUM_BIOGRAPHY_BACKFILLER_MIN_START_DELAY,
+                                           self.LASTFM_ALBUM_BIOGRAPHY_BACKFILLER_MAX_START_DELAY)
+            logger.info("[LastfmAlbumBioWorker-%s] Starting with initial delay of %d seconds", self.user, startup_delay)
+            if stop_event.wait(startup_delay):
+                logger.info("[LastfmAlbumBioWorker-%s] Stopped during startup delay", self.user)
+                return
+
+            while not stop_event.is_set():
+                try:
+                    # Fresh read each cycle, like the API key below: an admin
+                    # flip is picked up without restarting the thread, and
+                    # idling (not exiting) means re-enabling resumes on its own.
+                    if not self.repo.isAlbumBioEnabled():
+                        if stop_event.wait(self.LASTFM_ALBUM_BIOGRAPHY_IDLE_WAIT_SECONDS):
+                            break
+                        continue
+
+                    # Fresh read each cycle: a rotated key is picked up here, a
+                    # removed key ends the thread (the save handler restarts it).
+                    apiKey = self.repo.getUserLastfmApiKey(self.user)
+                    if not apiKey:
+                        logger.info("[LastfmAlbumBioWorker-%s] No API key stored anymore - exiting", self.user)
+                        return
+                    client = LastfmClient(apiKey)
+
+                    processedAny = self._processLastfmAlbumBiographyBatch(client, self.user)
+                    if not processedAny and not stop_event.is_set():
+                        processedAny = self._processLastfmAlbumBiographyBatch(client, None)   #< global queue
+                    if not processedAny:
+                        if stop_event.wait(self.LASTFM_ALBUM_BIOGRAPHY_IDLE_WAIT_SECONDS):
+                            break
+                except _LastfmInvalidKeyError:
+                    logger.warning("[LastfmAlbumBioWorker-%s] Last.fm rejected the API key (invalid/suspended) - "
+                                   "idling; fix the key on the profile page", self.user)
+                    if stop_event.wait(self.LASTFM_ALBUM_BIOGRAPHY_IDLE_WAIT_SECONDS):
+                        break
+                except Exception as e:
+                    logger.error("[LastfmAlbumBioWorker-%s] Error in album biography backfill loop: %s",
+                                self.user, parseError(e))
+                    if stop_event.wait(self.LASTFM_ALBUM_BIOGRAPHY_IDLE_WAIT_SECONDS):
+                        break
+        finally:
+            logger.info("[LastfmAlbumBioWorker-%s] Exited gracefully", self.user)
+
+    def _processLastfmAlbumBiographyBatch(self, client: LastfmClient, scopeUsername: str | None) -> bool:
+        """One batch of album.getinfo lookups. Claims/releases under the
+        "album_bio" kind - distinct from "bio" (artist bios) and "album"
+        (genre lookups), so none of the three ever collide over the same
+        row. Albums with no resolvable primary artist (album.getinfo needs
+        one, like the genre album batch's own lookup) are marked attempted
+        with no bio rather than skipped forever. Returns whether anything
+        got a definitive result - False means the scope's queue is drained
+        (or everything failed transiently) and the caller should fall
+        through to the global queue / idle."""
+        rows = self.repo.getAlbumsMissingBiographies(self.LASTFM_ALBUM_BIOGRAPHY_QUEUE_BATCH_SIZE, scopeUsername)
+        claimed = self._claimLastfmEntities("album_bio", rows)
+        processedAny = False
+        try:
+            primaries = self.repo.getAlbumPrimaryArtists([row["id"] for row in claimed])
+            for row in claimed:
+                if self.lastfm_album_biography_stop_event.is_set():
+                    break
+                primary = primaries.get(row["id"])
+                if primary is None:
+                    self.repo.setAlbumBio(row["id"], None)
+                    processedAny = True
+                    continue
+                outcome = client.getAlbumInfo(primary["artist_name"], row["name"],
+                                              stop_event=self.lastfm_album_biography_stop_event)
+                if outcome is None:   #< rate-limit slot aborted: we're stopping
+                    break
+                if outcome.status == OUTCOME_INVALID_KEY:
+                    raise _LastfmInvalidKeyError()
+                if outcome.status == OUTCOME_TRANSIENT:
+                    continue   #< stays unattempted, retried next cycle
+                bio = outcome.bio if outcome.status == OUTCOME_OK else None
+                self.repo.setAlbumBio(row["id"], bio)
+                processedAny = True
+        finally:
+            self._releaseLastfmEntities("album_bio", claimed)
         return processedAny
 
     def _claimLastfmEntities(self, kind: str, rows: list[dict]) -> list[dict]:

@@ -27,6 +27,14 @@
     {% include '_track_card.html' %}
   </section>
 
+  {% if album_bio_enabled and album.get('bio') %}
+  <section class="card biography-card">
+    <h2>Biography</h2>
+    <p>{{ album.get('bio') }}</p>
+    <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.75rem;">Biography via Last.fm</p>
+  </section>
+  {% endif %}
+
   {% if firstSongName or album.get('uniqueSongCount') %}
   <section class="track-summary-grid">
     {% if firstSongName %}

@@ -292,6 +292,45 @@ def genreGatePasses(coverage: dict) -> bool:
                for categoryName in GENRE_COVERAGE_CATEGORIES)
 
 
+BIOGRAPHY_COVERAGE_CATEGORIES = ("artist", "album")
+
+
+def emptyBiographyCoverage() -> dict:
+    """The all-zeros shape for the Overview "Biography Backfill Progress"
+    widget - what guests and sanitize failures resolve to, mirroring
+    emptyGenreCoverage. Unlike genre coverage this is a plain entity-count
+    percentage (has a bio or not), not play-weighted."""
+    return {categoryName: {"covered": 0, "total": 0, "percent": 0.0}
+            for categoryName in BIOGRAPHY_COVERAGE_CATEGORIES}
+
+
+def sanitizeBiographyCoverage(coverage) -> dict:
+    """`coverage` if it is shaped like Repository.getBiographyCoverage's
+    result, else all zeros - same defensive chokepoint as
+    sanitizeGenreCoverage, so a stubbed db or unexpected failure degrades
+    instead of crashing template rendering."""
+    try:
+        sanitized = {}
+        for categoryName in BIOGRAPHY_COVERAGE_CATEGORIES:
+            covered = _requireNumber(coverage[categoryName]["covered"])
+            total = _requireNumber(coverage[categoryName]["total"])
+            percent = round(covered / total * 100, 1) if total else 0.0
+            sanitized[categoryName] = {"covered": covered, "total": total, "percent": percent}
+        return sanitized
+    except (TypeError, KeyError):
+        return emptyBiographyCoverage()
+
+
+def resolveBiographyCoverage(db, username: str) -> dict:
+    """Sanitized biography coverage for a user; zeros when the lookup fails
+    for any reason (never let this break the Overview page)."""
+    try:
+        return sanitizeBiographyCoverage(db.repo.getBiographyCoverage(username))
+    except Exception as e:
+        logger.warning("Biography coverage lookup failed: %s", e)
+        return emptyBiographyCoverage()
+
+
 def _resolveGenresFor(db, entityId, dbMethodName: str) -> list[str]:
     """Shared degradation contract for the per-item genre lookups below: a
     lookup failure, or a stubbed test db whose genre method was never
@@ -1912,6 +1951,12 @@ class SpotifyDashboardApp:
             return {"artist_bio_enabled": self.repo.isArtistBioEnabled()}
 
         @self.app.context_processor
+        def _injectAlbumBioStatus():
+            # Mirrors _injectArtistBioStatus, for album_detail.html's
+            # Biography section and the album_bio toggle's current state.
+            return {"album_bio_enabled": self.repo.isAlbumBioEnabled()}
+
+        @self.app.context_processor
         def _injectShareStatus():
             # Lets layout.html's nav show a "Compare" link only for users who
             # have at least one usable accepted share, and the topbar badges
@@ -2396,6 +2441,7 @@ class SpotifyDashboardApp:
                                     db.updateUserLastfmApiKey(lastfm_api_key)
                                     db.startLastfmGenreBackfiller()
                                     db.startLastfmBiographyBackfiller()
+                                    db.startLastfmAlbumBiographyBackfiller()
                                     success = "Last.fm API key saved! Genre data is now backfilling in the background."
                                 except Exception as e:
                                     error = f"Failed to save the Last.fm API key: {str(e)}"
@@ -2410,6 +2456,7 @@ class SpotifyDashboardApp:
                         db.updateUserLastfmApiKey(None)
                         db.stopLastfmGenreBackfiller()
                         db.stopLastfmBiographyBackfiller()
+                        db.stopLastfmAlbumBiographyBackfiller()
                         success = "Last.fm API key removed."
                     except Exception as e:
                         error = f"Failed to remove the Last.fm API key: {str(e)}"
@@ -2695,6 +2742,8 @@ class SpotifyDashboardApp:
             # login state - it also gates the public "Last.fm Genre Backfill"
             # info card further down the page.
             lastfm_enabled = self.repo.isLastfmGenreBackfillEnabled()
+            artist_bio_enabled = self.repo.isArtistBioEnabled()
+            album_bio_enabled = self.repo.isAlbumBioEnabled()
 
             # Get current user's timezone for consistent date display
             current_user_tz = None
@@ -2703,6 +2752,9 @@ class SpotifyDashboardApp:
             genre_coverage = emptyGenreCoverage()
             genre_unlocked = False
             genre_worker = {"configured": False, "running": False}
+            biography_coverage = emptyBiographyCoverage()
+            biography_worker = {"artist": {"configured": False, "running": False},
+                                "album": {"configured": False, "running": False}}
             if is_logged_in:
                 current_username = self.get_username_for_email(email) or self.get_or_create_user(email)
                 current_db = self.get_user_db(current_username, email)
@@ -2720,6 +2772,22 @@ class SpotifyDashboardApp:
                                             "running": bool(workerStatus.get("running"))}
                     except Exception as e:
                         logger.warning("Last.fm worker status lookup failed: %s", e)
+                if current_db is not None and (artist_bio_enabled or album_bio_enabled):
+                    biography_coverage = resolveBiographyCoverage(current_db, current_username)
+                    try:
+                        artistWorkerStatus = current_db.getLastfmBiographyWorkerStatus()
+                        if isinstance(artistWorkerStatus, dict):
+                            biography_worker["artist"] = {"configured": bool(artistWorkerStatus.get("configured")),
+                                                          "running": bool(artistWorkerStatus.get("running"))}
+                    except Exception as e:
+                        logger.warning("Last.fm artist biography worker status lookup failed: %s", e)
+                    try:
+                        albumWorkerStatus = current_db.getLastfmAlbumBiographyWorkerStatus()
+                        if isinstance(albumWorkerStatus, dict):
+                            biography_worker["album"] = {"configured": bool(albumWorkerStatus.get("configured")),
+                                                         "running": bool(albumWorkerStatus.get("running"))}
+                    except Exception as e:
+                        logger.warning("Last.fm album biography worker status lookup failed: %s", e)
 
             users_list = []
             if is_logged_in:
@@ -2771,6 +2839,18 @@ class SpotifyDashboardApp:
                         "created_at": created_date_str
                     })
 
+            # One row per entity kind for the combined "Biography Backfill
+            # Progress" card (templates/_biography_progress.html) - built
+            # here rather than assembled in Jinja so the template stays a
+            # dumb iteration over a pre-shaped list, same spirit as how
+            # users_list is built above.
+            biography_rows = [
+                {"label": "Artist", "enabled": artist_bio_enabled, "worker": biography_worker["artist"],
+                 **biography_coverage["artist"]},
+                {"label": "Album", "enabled": album_bio_enabled, "worker": biography_worker["album"],
+                 **biography_coverage["album"]},
+            ]
+
             return render_template(
                 "overview.html",
                 global_stats=global_stats,
@@ -2783,6 +2863,7 @@ class SpotifyDashboardApp:
                 genre_unlocked=genre_unlocked,
                 genre_worker=genre_worker,
                 lastfm_enabled=lastfm_enabled,
+                biography_rows=biography_rows,
                 spotify_backfill_enabled=self.repo.isSpotifyApiBackfillEnabled(),
                 sharing_enabled=self.repo.isDataSharingEnabled(),
                 inherited_genres_enabled=self.repo.isInheritedGenresEnabled(),
@@ -2807,8 +2888,9 @@ class SpotifyDashboardApp:
         def overviewFeatureSettings():
             """Admin-only: flips the instance-wide feature kill switches
             (Spotify API backfill, Last.fm genre backfill, data sharing, new
-            user registration, public Wrapped share links, artist bios) in
-            one submit - see Database/repository.py's app_settings."""
+            user registration, public Wrapped share links, artist bios,
+            album bios) in one submit - see Database/repository.py's
+            app_settings."""
             email, username, db = get_current_user_or_redirect()
             if not email:
                 return redirect(url_for("login", next=url_for("overviewPage")))
@@ -2821,6 +2903,7 @@ class SpotifyDashboardApp:
             self.repo.setRegistrationEnabled(request.form.get("registration") == "1")
             self.repo.setShareLinksEnabled(request.form.get("share_links") == "1")
             self.repo.setArtistBioEnabled(request.form.get("artist_bio") == "1")
+            self.repo.setAlbumBioEnabled(request.form.get("album_bio") == "1")
             return redirect(url_for("overviewPage"))
 
         @self.app.route("/", methods=["GET"])
@@ -3857,6 +3940,18 @@ class SpotifyDashboardApp:
             songs = self._attachGenres(db, songs, "track")
             album = self._embedAlbumTextElements(album)
             album = self._attachGenres(db, [album], "album")[0]
+
+            # Mirrors artistDetailPage's bio wiring: lazyFetchAlbumBio no-ops
+            # (and skips fetching) when the admin's instance-wide toggle is
+            # off, and the displayed bio is suppressed here too, so disabling
+            # the feature also hides an album's already-fetched bio. The
+            # primary artist (album.getinfo needs one) comes from the
+            # already-loaded artists list.
+            primaryArtists = album.get("artists") or []
+            primaryArtistName = primaryArtists[0].get("name", "") if primaryArtists else ""
+            if primaryArtistName:
+                db.lazyFetchAlbumBio(album_id, album.get("name", ""), primaryArtistName)
+            album["bio"] = db.getAlbumBio(album_id) if self.repo.isAlbumBioEnabled() else None
 
             timeSeries = self._embedTimeSeriesTextElements(
                 db.getListeningTimeSeries(albumId=album_id, groupBy=groupBy)

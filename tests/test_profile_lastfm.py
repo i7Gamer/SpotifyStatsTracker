@@ -104,6 +104,7 @@ class TestSaveLastfmKey(ProfileLastfmTestCase):
         self.assertTrue(raw.startswith("enc:v1:"))
         self.db.startLastfmGenreBackfiller.assert_called_once()
         self.db.startLastfmBiographyBackfiller.assert_called_once()
+        self.db.startLastfmAlbumBiographyBackfiller.assert_called_once()
 
     @patch("Database.lastfm.requests.get")
     def test_rejected_key_is_not_stored(self, mockGet):
@@ -117,6 +118,7 @@ class TestSaveLastfmKey(ProfileLastfmTestCase):
         self.assertIsNone(self.dash.repo.getUserLastfmApiKey("alice"))
         self.db.startLastfmGenreBackfiller.assert_not_called()
         self.db.startLastfmBiographyBackfiller.assert_not_called()
+        self.db.startLastfmAlbumBiographyBackfiller.assert_not_called()
 
     @patch("Database.lastfm.requests.get")
     def test_unreachable_lastfm_is_not_stored(self, mockGet):
@@ -200,6 +202,7 @@ class TestRemoveLastfmKey(ProfileLastfmTestCase):
         self.assertIsNone(self.dash.repo.getUserLastfmApiKey("alice"))
         self.db.stopLastfmGenreBackfiller.assert_called_once()
         self.db.stopLastfmBiographyBackfiller.assert_called_once()
+        self.db.stopLastfmAlbumBiographyBackfiller.assert_called_once()
 
     def test_remove_failure_reports_an_error(self):
         client = self._loginAs("alice", "alice@example.com")
