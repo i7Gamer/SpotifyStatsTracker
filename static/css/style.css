@@ -986,10 +986,8 @@ progress::-moz-progress-bar {
 
 /* Desktop: pull genre badges out of .track-attributes' flow and overflow
    them above the card's top-right corner, overlapping the header instead of
-   reserving space for them. pointer-events: none keeps the overlay from
-   blocking clicks on .track-attributes (e.g. the Open in Spotify link)
-   underneath it. .has-genres is only added by the template when a track
-   actually has genres, so cards without any are unaffected. */
+   reserving space for them. .has-genres is only added by the template when
+   a track actually has genres, so cards without any are unaffected. */
 @media (min-width: 901px) {
   .track-attributes {
     margin-top: 0;
@@ -1003,7 +1001,6 @@ progress::-moz-progress-bar {
     position: absolute;
     top: 14px;
     right: 20px;
-    pointer-events: none;
     z-index: 2;
   }
 }
