@@ -2442,7 +2442,7 @@ class SpotifyDashboardApp:
                                     db.startLastfmGenreBackfiller()
                                     db.startLastfmBiographyBackfiller()
                                     db.startLastfmAlbumBiographyBackfiller()
-                                    success = "Last.fm API key saved! Genre data is now backfilling in the background."
+                                    success = "Last.fm API key saved! Genre and biography data are now backfilling in the background."
                                 except Exception as e:
                                     error = f"Failed to save the Last.fm API key: {str(e)}"
                             elif validation["error"] == "invalid_key":
@@ -2516,6 +2516,8 @@ class SpotifyDashboardApp:
                 has_api=bool(client_id and client_secret),
                 has_lastfm=bool(db.getUserLastfmApiKey()),
                 lastfm_enabled=self.repo.isLastfmGenreBackfillEnabled(),
+                artist_bio_enabled=self.repo.isArtistBioEnabled(),
+                album_bio_enabled=self.repo.isAlbumBioEnabled(),
                 sharing_enabled=self.repo.isDataSharingEnabled(),
                 is_authenticated=bool(refresh_token),
                 redirect_uri=spotify_callback_url,
@@ -2815,8 +2817,9 @@ class SpotifyDashboardApp:
                     has_api = bool(u["spotify_client_id"] and u["spotify_refresh_token"])
                     api_status = "Configured" if has_api else "Not Configured"
 
-                    # Total plays for this user
+                    # Total plays and true skips (play_skips rows) for this user
                     plays_count = self.repo.getPlaysCount(u_username)
+                    skips_count = self.repo.getSkipCount(u_username)
 
                     # Format created_at date using current user's timezone
                     created_at_val = u.get("created_at")
@@ -2836,6 +2839,7 @@ class SpotifyDashboardApp:
                         #  is encrypted and never needs decrypting here
                         "genre_status": "Configured" if u.get("lastfm_api_key") else "Not Configured",
                         "plays_count": plays_count,
+                        "skips_count": skips_count,
                         "created_at": created_date_str
                     })
 

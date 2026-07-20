@@ -98,6 +98,31 @@ class TestOverviewRoute(unittest.TestCase):
         self.assertIn(b"CONFIGURED", resp.data)
         self.assertIn(b"123", resp.data)
 
+    def test_overview_admin_sees_total_skips_column(self):
+        dash = self._makeApp()
+        with patch.object(dash.repo, 'getSkipCount', return_value=42):
+            resp = self._getOverviewAs(dash, isAdmin=True)
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn(b"Total Skips", resp.data)
+        self.assertIn(b"42", resp.data)
+
+    def test_overview_last_user_row_has_no_bottom_border(self):
+        """Every row but the last gets a separator border; the last row's
+        border would otherwise double up against the table's own bottom
+        edge."""
+        dash = self._makeApp()
+
+        resp = self._getOverviewAs(dash, isAdmin=True)
+
+        body = resp.data.decode()
+        aliceRowStart = body.find("<tr", body.find(">alice<") - 200)
+        bobRowStart = body.find("<tr", body.find(">bob<") - 200)
+        aliceRow = body[aliceRowStart:body.find(">alice<")]
+        bobRow = body[bobRowStart:body.find(">bob<")]
+        self.assertIn("border-bottom", aliceRow)
+        self.assertNotIn("border-bottom", bobRow)
+
     def test_overview_non_admin_sees_only_their_own_row(self):
         """The per-user table (usernames, sync state, play counts of OTHER
         accounts) is admin-only - a regular user still sees their own sync

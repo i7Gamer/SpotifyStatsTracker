@@ -80,12 +80,13 @@
           <th style="padding: 12px 8px;">API Backfill{% if not spotify_backfill_enabled %} <span style="text-transform: none; font-weight: normal;">(disabled)</span>{% endif %}</th>
           <th style="padding: 12px 8px;">Genre Data{% if not lastfm_enabled %} <span style="text-transform: none; font-weight: normal;">(disabled)</span>{% endif %}</th>
           <th style="padding: 12px 8px; text-align: right;">Total Plays</th>
+          <th style="padding: 12px 8px; text-align: right;">Total Skips</th>
           <th style="padding: 12px 8px; text-align: right;">Registered</th>
         </tr>
       </thead>
       <tbody>
         {% for u in users_list %}
-        <tr style="border-bottom: 1px solid var(--glass-border); font-size: 0.95rem;">
+        <tr style="font-size: 0.95rem;{% if not loop.last %} border-bottom: 1px solid var(--glass-border);{% endif %}">
           <td style="padding: 16px 8px; font-weight: 600; color: var(--accent);">{{ u.username }}</td>
           <td style="padding: 16px 8px;">
             {% set status = u.sync_status | lower %}
@@ -116,6 +117,7 @@
             {% endif %}
           </td>
           <td style="padding: 16px 8px; text-align: right; font-weight: 500;">{{ "{:,}".format(u.plays_count) }}</td>
+          <td style="padding: 16px 8px; text-align: right; font-weight: 500;">{{ "{:,}".format(u.skips_count) }}</td>
           <td style="padding: 16px 8px; text-align: right; color: var(--muted); font-size: 0.85rem;">{{ u.created_at }}</td>
         </tr>
         {% endfor %}
@@ -231,7 +233,7 @@
     </p>
   </div>
   <div style="padding: 0 1.5rem 1.5rem 1.5rem;">
-    {% include "_biography_progress.html" %}
+    {% with rows = biography_rows %}{% include "_biography_progress.html" %}{% endwith %}
     {% if (artist_bio_enabled and not biography_rows[0].worker.configured) or (album_bio_enabled and not biography_rows[1].worker.configured) %}
       <p style="font-size: 0.85rem; color: var(--muted); margin-top: 0.75rem;">
         Add a Last.fm API key on your <a href="{{ url_for('profilePage') }}" style="color: var(--accent);">profile</a> to start backfilling.
@@ -292,17 +294,17 @@
 
   {% if lastfm_enabled %}
   <article class="card">
-    <h3 style="margin-top: 0; color: var(--accent);">🎧 Last.fm Genre Backfill</h3>
+    <h3 style="margin-top: 0; color: var(--accent);">🎧 Last.fm {% if artist_bio_enabled or album_bio_enabled %}Genre &amp; Biography{% else %}Genre{% endif %} Backfill</h3>
     <p style="font-size: 0.95rem; line-height: 1.6; color: var(--muted);">
-      A background worker matches your listening history against Last.fm's tag database to fill in genre data, which powers genre insights on Charts, Wrapped and Compare:
+      A background worker matches your listening history against Last.fm's tag database to fill in genre data, which powers genre insights on Charts, Wrapped and Compare{% if artist_bio_enabled or album_bio_enabled %}, and fetches artist/album biographies shown on their respective pages{% endif %}:
     </p>
     <ul style="font-size: 0.9rem; line-height: 1.6; color: var(--muted); padding-left: 1.2rem; list-style-type: square;">
       <li style="margin-bottom: 0.6rem;"><strong>Most-Played First:</strong> Looks up artists, then albums, then songs, prioritizing your most-played entities.</li>
       <li style="margin-bottom: 0.6rem;"><strong>Genre Inheritance:</strong> A song or album without its own Last.fm tags falls back to its primary artist's genres, so coverage climbs even where Last.fm's own data is thin.</li>
-      <li style="margin-bottom: 0.6rem;"><strong>Shared Catalog:</strong> Since songs, albums and artists are shared across all accounts, any one user's key advances the backfill for everyone.</li>
+      <li style="margin-bottom: 0.6rem;"><strong>Shared Catalog:</strong> Since songs, albums{% if artist_bio_enabled or album_bio_enabled %}, biographies{% endif %} and artists are shared across all accounts, any one user's key advances the backfill for everyone.</li>
     </ul>
     <p style="font-size: 0.9rem; line-height: 1.6; color: var(--muted); margin-top: 1rem;">
-      Create a free key on the <a href="https://www.last.fm/api/account/create" target="_blank" style="color: var(--accent);">Last.fm API account page</a> (no Last.fm scrobbling account required) and add it in your <strong>Profile</strong> to start backfilling.
+      Create a free key on the <a href="https://www.last.fm/api/account/create" target="_blank" style="color: var(--accent);">Last.fm API account page</a> (no Last.fm scrobbling account required) and add it in your <strong>Profile</strong> to start backfilling{% if artist_bio_enabled or album_bio_enabled %} genres and biographies{% endif %}.
     </p>
   </article>
   {% endif %}
