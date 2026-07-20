@@ -1,7 +1,10 @@
 """Overwrite imports: delete the user's plays/skips in the covered-year
 segments of the uploaded files' span (missing years protected), bypass the
-already-imported hash gate, clear cached Wrapped for covered years - all
-BEFORE any file is imported, in a committed transaction of its own."""
+already-imported hash gate, clear cached Wrapped for covered years - all in
+ONE transaction shared with every file's import, committed once at the very
+end. A failure anywhere (an unrecognized file, the delete pass itself, or any
+single file's import) rolls back everything and aborts the batch, so the
+overwrite either fully lands or leaves the original data untouched."""
 import datetime
 import hashlib
 import sys
@@ -194,6 +197,55 @@ class TestOverwriteGating(_OverwriteTestBase):
         self.assertEqual(outcomes, ["failed", "failed"])
         self.assertEqual(self._playedAts(db), [_ts(2019)])   #< nothing deleted
         importer.importHistory.assert_not_called()
+        self.assertEqual(db.readProgress()["status"], "failed")
+
+    def test_file_failure_rolls_back_delete_and_earlier_files_in_the_batch(self):
+        """Atomicity: file 1 succeeds (staged, uncommitted) and file 2 raises
+        mid-import - the whole transaction must roll back, so both the delete
+        and file 1's staged insert vanish along with file 2's failure."""
+        db = self._makeDb({}, [
+            {"id": "old18", "playedAt": _ts(2018), "timePlayed": 60000},
+            {"id": "old19", "playedAt": _ts(2019), "timePlayed": 60000},
+        ])
+
+        def failingGen():
+            raise RuntimeError("simulated import failure")
+            yield  # pragma: no cover - makes this a generator, never reached
+
+        fileSpecs = {
+            "file 2018": ((_ts(2018, 2), _ts(2018, 11), {2018}),
+                          lambda: iter([_meta("new18", _ts(2018, 3))])),
+            "file 2019": ((_ts(2019, 1, 5), _ts(2019, 12, 20), {2019}),
+                          failingGen),
+        }
+        outcomes = self._runBatch(db, fileSpecs)
+
+        self.assertEqual(outcomes, ["failed", "failed"])
+        playedAts = self._playedAts(db)
+        self.assertIn(_ts(2018), playedAts)          #< delete rolled back
+        self.assertIn(_ts(2019), playedAts)
+        self.assertNotIn(_ts(2018, 3), playedAts)    #< file 1's staged insert rolled back too
+        self.assertEqual(db.readProgress()["status"], "failed")
+
+    def test_delete_phase_failure_rolls_back_and_aborts(self):
+        """A failure inside _deleteCoveredRange itself (not just a file's
+        import) must also roll back cleanly - the delete is no longer
+        committed on its own, so nothing survives a mid-delete exception."""
+        db = self._makeDb({}, [
+            {"id": "old18", "playedAt": _ts(2018), "timePlayed": 60000},
+            {"id": "old19", "playedAt": _ts(2019), "timePlayed": 60000},
+        ])
+        fileSpecs = {
+            "file 2018": ((_ts(2018, 2), _ts(2018, 11), {2018}), lambda: iter([])),
+            "file 2019": ((_ts(2019, 1, 5), _ts(2019, 12, 20), {2019}), lambda: iter([])),
+        }
+        with patch.object(db.repo, "deleteSkipsInRange", side_effect=RuntimeError("boom")):
+            outcomes = self._runBatch(db, fileSpecs)
+
+        self.assertEqual(outcomes, ["failed", "failed"])
+        playedAts = self._playedAts(db)
+        self.assertIn(_ts(2018), playedAts)
+        self.assertIn(_ts(2019), playedAts)
         self.assertEqual(db.readProgress()["status"], "failed")
 
     def test_overwrite_clears_wrapped_for_covered_years_only(self):

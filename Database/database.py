@@ -123,6 +123,12 @@ class _ImportRunState:
     def __init__(self):
         self.claimedRowIds: set[int] = set()      #< existing rows updated or confirmed identical by this run
         self.insertedPlayKeys: set[tuple] = set() #< (track_id, played_at) of rows inserted by this run
+        self.correctedYears: set[int] = set()     #< years to drop from Wrapped cache once a deferred-commit
+                                                   #  batch (atomic overwrite) actually commits - see
+                                                   #  _importHistoryLocked's deferCommit
+        self.pendingImageTracks: dict[str, dict] = {}  #< tracks awaiting saveImagesFromTrack() once a
+                                                   #  deferred-commit batch actually commits (same reason
+                                                   #  as correctedYears - image-claiming self-commits too)
 
     def isOwnWrite(self, trackId: str, play: dict) -> bool:
         return play["id"] in self.claimedRowIds or (trackId, play["played_at"]) in self.insertedPlayKeys
@@ -868,18 +874,34 @@ class Database:
         return was_inserted
 
     def importHistory(self, exportedHistory, progressPrefix: str = "", isFinalFile: bool = True, hasPriorError: bool = False, track_file_hash: bool = False,
-                      runState: _ImportRunState | None = None):
+                      runState: _ImportRunState | None = None, deferCommit: bool = False):
         """Import one export file. Serialized per user via _importLock (see
         its comment in __init__); the actual work is in _importHistoryLocked."""
         with self._importLock:
             return self._importHistoryLocked(exportedHistory, progressPrefix, isFinalFile, hasPriorError,
-                                             track_file_hash, runState)
+                                             track_file_hash, runState, deferCommit)
 
     def _importHistoryLocked(self, exportedHistory, progressPrefix: str = "", isFinalFile: bool = True, hasPriorError: bool = False, track_file_hash: bool = False,
-                             runState: _ImportRunState | None = None):
+                             runState: _ImportRunState | None = None, deferCommit: bool = False):
         importer = self._withCookiesFile(lambda cookiesFile: Importer(cookiesFile=cookiesFile, email=self.email))
         if runState is None:
             runState = _ImportRunState()
+
+        # INVARIANT: repo methods that self-commit ("with conn:" - writeProgress,
+        # image-status writes, playlist upserts) run on this same thread-local
+        # connection, and "with conn:" commits WHATEVER is pending on it. In
+        # single-file mode that's only safe while no import rows are staged in
+        # the transaction: during the staging loop below (which writes nothing
+        # to the tracks/plays tables) or after the final commit()/rollback().
+        # In deferCommit mode (an atomic overwrite batch) that window doesn't
+        # exist - a PRIOR file in the same batch may already have staged
+        # uncommitted writes - so every progress write below is routed through
+        # reportProgress, which no-ops instead of self-committing, for the
+        # whole duration of deferCommit mode.
+        def reportProgress(status, current, totalSteps, message, error=False):
+            if deferCommit:
+                return
+            self.writeProgress(status, current, totalSteps, message, error=error)
 
         parsedHistory, exportType = importer._convertToList(exportedHistory)
         if exportType == "None":
@@ -887,32 +909,23 @@ class Database:
             # wrong file entirely) must fail loudly: returning silently here
             # used to make AutoImporter move never-imported files to DONE/ as
             # successes and the web UI report the import as complete.
-            self.writeProgress("failed", 0, 0,
-                               f"{progressPrefix}Import failed: unrecognized or corrupt export file", error=True)
+            reportProgress("failed", 0, 0,
+                           f"{progressPrefix}Import failed: unrecognized or corrupt export file", error=True)
             raise ValueError("Unrecognized or corrupt export file - expected a Spotify JSON export or Musicolet CSV backup")
         if not parsedHistory:
             return
 
         total = len(parsedHistory)
-        self.writeProgress("running", 0, total, f"{progressPrefix}Starting import", error=hasPriorError)
+        reportProgress("running", 0, total, f"{progressPrefix}Starting import", error=hasPriorError)
 
         def progressCallback(status, current, totalSteps, message):
-            self.writeProgress(status, current, totalSteps, f"{progressPrefix}{message}", error=hasPriorError)
+            reportProgress(status, current, totalSteps, f"{progressPrefix}{message}", error=hasPriorError)
 
         # Imported tracks/plays are staged locally and only written to the database
         # once the whole import has succeeded. SQLite only allows one writer
         # transaction at a time, so committing incrementally here would either
         # block progress-polling reads for the whole import, or (worse) let a
         # failure partway through leave a half-imported batch committed.
-        #
-        # INVARIANT: repo methods that self-commit ("with conn:" - writeProgress,
-        # image-status writes, playlist upserts) run on this same thread-local
-        # connection, and "with conn:" commits WHATEVER is pending on it. They
-        # are therefore only safe while no import rows are staged in the
-        # transaction: during the staging loop below (which writes nothing to
-        # the tracks/plays tables) or after the final commit()/rollback().
-        # Never call one between the first upsertTrack and the commit, or it
-        # silently commits a partial import.
         stagedTracks: dict[str, dict] = {}
         stagedPlays: list[dict] = []
         index = 0
@@ -930,10 +943,17 @@ class Database:
                 entry, track = self._splitEntryAndTrack(meta)
                 stagedTracks[track["id"]] = track
                 stagedPlays.append(entry)
-                self.saveImagesFromTrack(track)
+                if deferCommit:
+                    # saveImagesFromTrack -> tryClaimImageDownload also
+                    # self-commits (same INVARIANT as reportProgress above) -
+                    # claim images for the whole batch only after the final
+                    # commit succeeds, see _importHistoryBatchOverwriteLocked.
+                    runState.pendingImageTracks[track["id"]] = track
+                else:
+                    self.saveImagesFromTrack(track)
 
                 if index % self.PROGRESS_UPDATE_INTERVAL == 0 or index == total:
-                    self.writeProgress("running", index, total, f"{progressPrefix}Imported {index} of {total}")
+                    reportProgress("running", index, total, f"{progressPrefix}Imported {index} of {total}")
 
             for track in stagedTracks.values():
                 self.repo.upsertTrack(track, created_reason=f"history_import (user: {self.user})")
@@ -1067,14 +1087,22 @@ class Database:
                 file_hash = hashlib.sha256(content_bytes).hexdigest()
                 self.repo.markFileImported(self.user, file_hash)
 
-            self.repo.commit()
+            if deferCommit:
+                # Atomic overwrite batch: the caller commits once for the
+                # whole batch. deleteUserWrapped self-commits (INVARIANT
+                # above), so invalidating now would flush this transaction's
+                # still-uncommitted writes early - the caller invalidates
+                # these years itself after its own commit succeeds.
+                runState.correctedYears |= correctedYears
+            else:
+                self.repo.commit()
 
-            # INVARIANT-safe only here: deleteUserWrapped self-commits, so it
-            # must never run while import rows are staged. Corrections can be
-            # invisible to _wrappedCacheNeedsRecalc (play count and max
-            # played_at unchanged) - drop the touched years' cache explicitly.
-            for year in sorted(correctedYears):
-                self.repo.deleteUserWrapped(self.user, year)
+                # INVARIANT-safe only here: deleteUserWrapped self-commits, so it
+                # must never run while import rows are staged. Corrections can be
+                # invisible to _wrappedCacheNeedsRecalc (play count and max
+                # played_at unchanged) - drop the touched years' cache explicitly.
+                for year in sorted(correctedYears):
+                    self.repo.deleteUserWrapped(self.user, year)
 
             droppedNoTrack = importStats.get("droppedNoTrack", 0)
             summary = (f"{insertedCount} new, {updatedCount} corrected, {enrichedCount} enriched, "
@@ -1084,7 +1112,7 @@ class Database:
             logger.info("Imported %d tracks for user %s: %s", len(stagedTracks), self.user, summary)
 
             status = "complete" if isFinalFile else "running"
-            self.writeProgress(status, total, total, f"{progressPrefix}Import complete: {summary}", error=hasPriorError)
+            reportProgress(status, total, total, f"{progressPrefix}Import complete: {summary}", error=hasPriorError)
         except Exception as e:
             self.repo.rollback()
             runState.claimedRowIds = claimedRowIdsBefore
@@ -1096,46 +1124,35 @@ class Database:
         """Import multiple export files sequentially - cached up front by the
         caller (app.py reads every upload before starting this thread) and then
         processed one after another, mirroring AutoImporter's existing
-        one-file-at-a-time folder-watching behavior. A failure in one file is
-        logged and skipped rather than aborting the whole batch, so a single bad
-        upload doesn't block the rest. Serialized per user via _importLock (see
-        its comment in __init__).
+        one-file-at-a-time folder-watching behavior. Serialized per user via
+        _importLock (see its comment in __init__).
 
-        overwriteRange: first delete every play/skip of this user inside the
-        covered-year segments of the uploaded files' span (missing years are
-        protected - see _deleteCoveredRange), and bypass the already-imported
-        hash gate so unchanged files re-import fresh.
+        overwriteRange=False: a failure in one file is logged and skipped
+        rather than aborting the whole batch, so a single bad upload doesn't
+        block the rest. Returns one outcome per input file, in order -
+        "imported", "skipped" (already imported before, by hash), or "failed"
+        - so AutoImporter can route each file to DONE/ or FAILED/ instead of
+        assuming success.
 
-        Returns one outcome per input file, in order - "imported", "skipped"
-        (already imported before, by hash), or "failed" - so AutoImporter can
-        route each file to DONE/ or FAILED/ instead of assuming success."""
+        overwriteRange=True: the covered-range delete (see _deleteCoveredRange)
+        and every file's import share ONE transaction - see
+        _importHistoryBatchOverwriteLocked. A failure anywhere aborts the
+        whole batch and rolls back everything, so either every file's data
+        lands or none of it does; the returned outcomes are all "imported" or
+        all "failed" accordingly. Also bypasses the already-imported hash gate
+        so unchanged files re-import fresh."""
         with self._importLock:
-            return self._importHistoryBatchLocked(fileContents, overwriteRange=overwriteRange)
+            if overwriteRange:
+                return self._importHistoryBatchOverwriteLocked(fileContents)
+            return self._importHistoryBatchLocked(fileContents)
 
-    def _importHistoryBatchLocked(self, fileContents: list[str], overwriteRange: bool = False) -> list[str]:
+    def _importHistoryBatchLocked(self, fileContents: list[str]) -> list[str]:
         if not fileContents:
             return []
 
         import hashlib
         total = len(fileContents)
         outcomes: list[str] = []
-
-        if overwriteRange:
-            deleted = self._deleteCoveredRange(fileContents)
-            if deleted is None:
-                # A file didn't parse - abort BEFORE deleting anything, or a
-                # valid file's range would be wiped by a batch that then dies.
-                self.writeProgress("failed", 0, total,
-                                   "Overwrite import aborted: unrecognized or corrupt export file - nothing was deleted",
-                                   error=True)
-                return ["failed"] * total
-            deletedPlays, deletedSkips, skippedYears = deleted
-            message = f"Overwrite: deleted {deletedPlays} plays and {deletedSkips} skip events in the covered range"
-            if skippedYears:
-                yearsText = ", ".join(str(year) for year in skippedYears)
-                message += f" ({yearsText} not covered by uploaded files - left untouched)"
-            logger.info("%s for user %s", message, self.user)
-            self.writeProgress("running", 0, total, message)
 
         # One run state for the whole batch: files commit separately, so a
         # skip/replay pair straddling a file boundary would otherwise collapse
@@ -1148,9 +1165,7 @@ class Database:
                 content_bytes = content.encode("utf-8") if isinstance(content, str) else str(content).encode("utf-8")
                 file_hash = hashlib.sha256(content_bytes).hexdigest()
 
-                # Overwrite mode re-imports unchanged files on purpose - the
-                # whole point is redoing data the hash gate would skip.
-                if not overwriteRange and self.repo.isFileImported(self.user, file_hash):
+                if self.repo.isFileImported(self.user, file_hash):
                     logger.info("File %s/%s already imported (hash: %s). Skipping.", index, total, file_hash)
                     outcomes.append("skipped")
                     status = "complete" if isFinalFile else "running"
@@ -1168,46 +1183,116 @@ class Database:
                 outcomes.append("imported")
             except Exception as e:
                 outcomes.append("failed")
-                if overwriteRange:
-                    logger.error("Import failed for file %s/%s AFTER its overwritten range was deleted - "
-                                 "re-upload this file to restore that range: %s", index, total, parseError(e))
-                else:
-                    logger.error("Import failed for file %s/%s: %s", index, total, parseError(e))
+                logger.error("Import failed for file %s/%s: %s", index, total, parseError(e))
 
         failedCount = outcomes.count("failed")
         skippedCount = outcomes.count("skipped")
         succeededCount = total - failedCount - skippedCount
-        overwriteFailureNote = (" - re-upload failed files to restore their overwritten range"
-                                if overwriteRange and failedCount else "")
         if failedCount == 0:
             if skippedCount == total:
                 self.writeProgress("complete", total, total, "All files were already imported")
             else:
                 self.writeProgress("complete", total, total, f"Imported {succeededCount}/{total} files ({skippedCount} skipped)")
         elif succeededCount == 0 and skippedCount == 0:
-            self.writeProgress("failed", total, total, f"Imported 0/{total} files (all failed){overwriteFailureNote}", error=True)
+            self.writeProgress("failed", total, total, f"Imported 0/{total} files (all failed)", error=True)
         else:
             self.writeProgress("complete", total, total,
-                                f"Imported {succeededCount}/{total} files ({skippedCount} skipped, {failedCount} failed){overwriteFailureNote}", error=True)
+                                f"Imported {succeededCount}/{total} files ({skippedCount} skipped, {failedCount} failed)", error=True)
         return outcomes
+
+    def _importHistoryBatchOverwriteLocked(self, fileContents: list[str]) -> list[str]:
+        """Atomic overwrite: _deleteCoveredRange's delete and every file's
+        import run in ONE transaction (each file's own commit deferred - see
+        _importHistoryLocked's deferCommit), committed once at the very end.
+        Any failure - an unrecognized file (caught before anything is
+        staged), an error inside the delete pass itself, or any single file's
+        import raising - rolls back everything staged so far and aborts the
+        rest of the batch, leaving the database exactly as it was before the
+        upload. Only a batch where every file succeeds is committed."""
+        if not fileContents:
+            return []
+
+        total = len(fileContents)
+
+        try:
+            # Last safe point to report progress: nothing has been staged on
+            # this connection yet. From here until the final commit() below,
+            # writeProgress must not run - it self-commits (INVARIANT in
+            # _importHistoryLocked) and would flush the delete and any
+            # already-processed files' staged writes early.
+            self.writeProgress("running", 0, total, f"Overwrite: deleting covered range for {total} file(s)")
+
+            deleted = self._deleteCoveredRange(fileContents)
+            if deleted is None:
+                # A file didn't parse - _deleteCoveredRange never wrote
+                # anything, so there is nothing to roll back.
+                self.writeProgress("failed", 0, total,
+                                   "Overwrite import aborted: unrecognized or corrupt export file - nothing was deleted",
+                                   error=True)
+                return ["failed"] * total
+            deletedPlays, deletedSkips, skippedYears, coveredYears = deleted
+            message = f"Overwrite: staged deletion of {deletedPlays} plays and {deletedSkips} skip events in the covered range"
+            if skippedYears:
+                yearsText = ", ".join(str(year) for year in skippedYears)
+                message += f" ({yearsText} not covered by uploaded files - left untouched)"
+            logger.info("%s for user %s", message, self.user)
+
+            runState = _ImportRunState()
+            for index, content in enumerate(fileContents, start=1):
+                isFinalFile = (index == total)
+                self.importHistory(
+                    content,
+                    progressPrefix=f"File {index}/{total}: ",
+                    isFinalFile=isFinalFile,
+                    track_file_hash=True,
+                    runState=runState,
+                    deferCommit=True,
+                )
+
+            self.repo.commit()
+            for year in sorted(coveredYears | runState.correctedYears):
+                self.repo.deleteUserWrapped(self.user, year)
+            for track in runState.pendingImageTracks.values():
+                self.saveImagesFromTrack(track)
+        except Exception as e:
+            # _importHistoryLocked's except already rolled back the whole
+            # transaction (the delete plus every prior file staged in this
+            # batch) when the failure came from a file import; call it again
+            # defensively (a no-op if there's nothing pending) in case the
+            # failure came from _deleteCoveredRange itself.
+            self.repo.rollback()
+            logger.error("Overwrite import aborted after a failure - no changes were applied, "
+                        "original data is intact: %s", parseError(e))
+            self.writeProgress("failed", 0, total,
+                               f"Overwrite import aborted: no changes were applied, original data is intact - {parseError(e)}",
+                               error=True)
+            return ["failed"] * total
+
+        self.writeProgress("complete", total, total, f"Overwrite import complete: {total}/{total} files imported")
+        return ["imported"] * total
 
     # A play exactly at a year boundary's midnight belongs to the NEXT year -
     # covered-year delete segments stop this far short of the boundary so it
     # only goes when its own year is covered.
     YEAR_SEGMENT_BOUNDARY_EPSILON_SECONDS = 0.001
 
-    def _deleteCoveredRange(self, fileContents: list[str]) -> tuple[int, int, list[int]] | None:
+    def _deleteCoveredRange(self, fileContents: list[str]) -> tuple[int, int, list[int], set[int]] | None:
         """The overwrite pre-pass: parse every file, take the batch span
         [earliest entry, latest entry] and the union of covered years (a year
         counts as covered only if some entry STARTS in it - see
         Importer.coverage), then delete this user's plays and skips in each
         covered year's segment of the span. Years inside the span no file
-        covers (missing files) are skipped and reported. Commits the deletes
-        itself, then (self-committing, INVARIANT-safe: nothing is staged yet)
-        drops cached Wrapped for the covered years.
+        covers (missing files) are skipped and reported.
 
-        Returns (deletedPlays, deletedSkips, skippedYears), or None when any
-        file is unrecognized - the caller must abort WITHOUT deleting."""
+        Does NOT commit and does NOT touch the Wrapped cache - the caller
+        (the atomic overwrite batch) shares one transaction across this
+        delete and every file's import, and only commits once the whole
+        batch succeeds; deleteUserWrapped self-commits (INVARIANT, see
+        _importHistoryLocked) so it must run after that commit, not here.
+
+        Returns (deletedPlays, deletedSkips, skippedYears, coveredYears), or
+        None when any file is unrecognized - the caller must abort WITHOUT
+        deleting."""
         importer = self._withCookiesFile(lambda cookiesFile: Importer(cookiesFile=cookiesFile, email=self.email))
 
         minStart = None
@@ -1248,12 +1333,8 @@ class Database:
             segmentEnd = min(yearStartTs(year + 1) - self.YEAR_SEGMENT_BOUNDARY_EPSILON_SECONDS, maxEnd)
             deletedPlays += self.repo.deletePlaysInRange(self.user, segmentStart, segmentEnd)
             deletedSkips += self.repo.deleteSkipsInRange(self.user, segmentStart, segmentEnd)
-        self.repo.commit()
 
-        for year in sorted(coveredYears):
-            self.repo.deleteUserWrapped(self.user, year)
-
-        return deletedPlays, deletedSkips, skippedYears
+        return deletedPlays, deletedSkips, skippedYears, coveredYears
 
     # ---- stats -------------------------------------------------------------------------
 
