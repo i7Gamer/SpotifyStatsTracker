@@ -91,6 +91,16 @@ class TestGetAllUsersDetailsFilter(RepositoryAdminTestCase):
 
         self.assertEqual({r["username"] for r in rows}, {"alice", "bob"})
 
+    def test_includes_is_admin_as_bool(self):
+        self.repo.upsertUser("alice", "alice@example.com")
+        self.repo.upsertUser("bob", "bob@example.com")
+        self.repo.setUserAdmin("alice", True)
+
+        rows = {r["username"]: r["is_admin"] for r in self.repo.getAllUsersDetails()}
+
+        self.assertIs(rows["alice"], True)
+        self.assertIs(rows["bob"], False)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -43,6 +43,7 @@ class TestOverviewRoute(unittest.TestCase):
             "cookies_json": '{"sp_dc": "123"}',
             "spotify_client_id": "client_id",
             "spotify_refresh_token": "refresh_token",
+            "lastfm_api_key": None,
             "created_at": 1718000000.0
         },
         {
@@ -51,6 +52,7 @@ class TestOverviewRoute(unittest.TestCase):
             "cookies_json": '{"sp_dc": "456"}',
             "spotify_client_id": None,
             "spotify_refresh_token": None,
+            "lastfm_api_key": None,
             "created_at": 1718000001.0
         },
     ]
@@ -62,7 +64,7 @@ class TestOverviewRoute(unittest.TestCase):
             return [u for u in self._MOCK_USERS if username is None or u["username"] == username]
         return fake
 
-    def _getOverviewAs(self, dash, isAdmin):
+    def _getOverviewAs(self, dash):
         mock_stats = {"tracks": 10, "artists": 5, "albums": 3, "plays": 100, "total_time_ms": 36000000, "db_size_bytes": 1048576}
         mock_db = MagicMock()
         mock_db.getListenerHealth.return_value = {
@@ -74,8 +76,6 @@ class TestOverviewRoute(unittest.TestCase):
 
         with patch.object(dash.repo, 'getGlobalDatabaseStats', return_value=mock_stats), \
              patch.object(dash.repo, 'getAllUsersDetails', side_effect=self._usersDetailsSideEffect()), \
-             patch.object(dash.repo, 'isAdmin', return_value=isAdmin), \
-             patch.object(dash.repo, 'getPlaysCount', return_value=123), \
              patch.object(dash, 'is_user_logged_in', return_value=True), \
              patch.object(dash, 'get_user_db', return_value=mock_db):
 
@@ -85,112 +85,83 @@ class TestOverviewRoute(unittest.TestCase):
 
             return client.get("/overview")
 
-    def test_overview_admin_sees_every_user(self):
+    def test_overview_shows_only_the_logged_in_users_own_status(self):
+        """The full multi-user table (with per-account admin controls) lives
+        on /admin now - /overview shows only a "your state" summary, no
+        usernames at all, and never bob's (the other account's) data."""
         dash = self._makeApp()
 
-        resp = self._getOverviewAs(dash, isAdmin=True)
-
-        self.assertEqual(resp.status_code, 200)
-        self.assertIn(b"Registered Users & Sync Status", resp.data)
-        self.assertIn(b"alice", resp.data)
-        self.assertIn(b"bob", resp.data)
-        self.assertIn(b"HEALTHY", resp.data)
-        self.assertIn(b"CONFIGURED", resp.data)
-        self.assertIn(b"123", resp.data)
-
-    def test_overview_admin_sees_total_skips_column(self):
-        dash = self._makeApp()
-        with patch.object(dash.repo, 'getSkipCount', return_value=42):
-            resp = self._getOverviewAs(dash, isAdmin=True)
-
-        self.assertEqual(resp.status_code, 200)
-        self.assertIn(b"Total Skips", resp.data)
-        self.assertIn(b"42", resp.data)
-
-    def test_overview_last_user_row_has_no_bottom_border(self):
-        """Every row but the last gets a separator border; the last row's
-        border would otherwise double up against the table's own bottom
-        edge."""
-        dash = self._makeApp()
-
-        resp = self._getOverviewAs(dash, isAdmin=True)
-
-        body = resp.data.decode()
-        aliceRowStart = body.find("<tr", body.find(">alice<") - 200)
-        bobRowStart = body.find("<tr", body.find(">bob<") - 200)
-        aliceRow = body[aliceRowStart:body.find(">alice<")]
-        bobRow = body[bobRowStart:body.find(">bob<")]
-        self.assertIn("border-bottom", aliceRow)
-        self.assertNotIn("border-bottom", bobRow)
-
-    def test_overview_non_admin_sees_only_their_own_row(self):
-        """The per-user table (usernames, sync state, play counts of OTHER
-        accounts) is admin-only - a regular user still sees their own sync
-        status, but nobody else's."""
-        dash = self._makeApp()
-
-        resp = self._getOverviewAs(dash, isAdmin=False)
+        resp = self._getOverviewAs(dash)
 
         self.assertEqual(resp.status_code, 200)
         self.assertIn(b"Your Sync Status", resp.data)
-        self.assertIn(b"alice", resp.data)
         self.assertNotIn(b"bob", resp.data)
+        self.assertNotIn(b"Registered Users & Sync Status", resp.data)
+        self.assertIn(b"HEALTHY", resp.data)
+        self.assertIn(b"CONFIGURED", resp.data)
 
-    def test_overview_does_not_start_listener_for_cookie_less_users(self):
+    def test_overview_relabels_the_status_badges(self):
+        """The own-status widget uses "Spotify API Backfill"/"Last.fm API
+        Backfill" (renamed from the old table's "API Backfill"/"Genre
+        Data"), matching the labels used on /admin's users table."""
+        dash = self._makeApp()
+
+        resp = self._getOverviewAs(dash)
+        body = resp.data.decode()
+
+        self.assertIn("Spotify API Backfill", body)
+        self.assertIn("Last.fm API Backfill", body)
+
+    def test_overview_status_qualifier_shows_regardless_of_admin_status(self):
+        """A "(disabled)" qualifier on a badge label warns that the toggle
+        is off instance-wide - it must show for every logged-in user, not
+        just an admin (the widget itself is no longer admin-gated)."""
+        dash = self._makeApp()
+        dash.repo.setSpotifyApiBackfillEnabled(False)
+
+        resp = self._getOverviewAs(dash)
+        body = resp.data.decode()
+
+        self.assertIn("Spotify API Backfill", body)
+        self.assertIn("(disabled)", body)
+
+    def test_overview_does_not_start_listener_for_a_cookie_less_viewer(self):
         """get_user_db() constructs a live Database (starts the listener,
-        auto-importer, and metadata/wrapped background threads) - it must
-        never be called just to render a row for a user who has never
-        logged in (cookies_json is None), only to report their status as
-        "Not Configured"."""
+        auto-importer, and metadata/wrapped background threads). A logged-in
+        user with no cookies configured must still see their own status as
+        "Not Configured" without that lookup being used for the sync-status
+        badge."""
         dash = self._makeApp()
 
         mock_stats = {"tracks": 0, "artists": 0, "albums": 0, "plays": 0, "total_time_ms": 0, "db_size_bytes": 0}
         mock_users = [
-            {
-                "username": "alice",
-                "email": "alice@example.com",
-                "cookies_json": '{"sp_dc": "123"}',
-                "spotify_client_id": None,
-                "spotify_refresh_token": None,
-                "created_at": None,
-            },
             {
                 "username": "orphan",
                 "email": "orphan@example.com",
                 "cookies_json": None,
                 "spotify_client_id": None,
                 "spotify_refresh_token": None,
+                "lastfm_api_key": None,
                 "created_at": None,
             },
         ]
-
         mock_db = MagicMock()
-        mock_db.getListenerHealth.return_value = {
-            "status": "HEALTHY",
-            "error_count": 0,
-            "last_error": None,
-            "seconds_since_last_poll": 1,
-        }
 
         with patch.object(dash.repo, 'getGlobalDatabaseStats', return_value=mock_stats), \
              patch.object(dash.repo, 'getAllUsersDetails', return_value=mock_users), \
-             patch.object(dash.repo, 'isAdmin', return_value=True), \
-             patch.object(dash.repo, 'getPlaysCount', return_value=0), \
              patch.object(dash, 'is_user_logged_in', return_value=True), \
-             patch.object(dash, 'get_user_db', return_value=mock_db) as mock_get_user_db:
+             patch.object(dash, 'get_username_for_email', return_value='orphan'), \
+             patch.object(dash, 'get_user_db', return_value=mock_db):
 
             client = dash.app.test_client()
             with client.session_transaction() as sess:
-                sess['email'] = 'alice@example.com'
+                sess['email'] = 'orphan@example.com'
 
             resp = client.get("/overview")
 
             self.assertEqual(resp.status_code, 200)
-            self.assertIn(b"orphan", resp.data)   #< the user's row itself still renders
-
-            calledUsernames = [call.args[0] for call in mock_get_user_db.call_args_list]
-            self.assertNotIn("orphan", calledUsernames)
-            self.assertIn("alice", calledUsernames)   #< the logged-in viewer's own db lookup is still expected
+            self.assertIn(b"NOT CONFIGURED", resp.data)
+            mock_db.getListenerHealth.assert_not_called()
 
 
 class TestOverviewDatabaseStats(unittest.TestCase):

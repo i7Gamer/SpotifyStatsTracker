@@ -1,0 +1,235 @@
+{% extends "layout.html" %}
+{% block content %}
+
+<section class="hero">
+  <div class="hero-content">
+    <h1>Admin</h1>
+    <p>Instance-wide settings, user management and backfill insights for this Spotify Stats Tracker install.</p>
+  </div>
+</section>
+
+{% if error %}
+<section class="card" style="margin-bottom: 1.5rem; border: 1px solid var(--danger, #e05252); padding: 1rem 1.5rem;">
+  <p style="margin: 0; color: var(--danger, #e05252);">{{ error }}</p>
+</section>
+{% endif %}
+
+<!-- Registered Users & Sync Status: every account, with per-account admin controls -->
+<section class="card" style="margin-bottom: 2.5rem; overflow-x: auto;">
+  <div class="card-header" style="padding: 1.5rem 1.5rem 0.5rem 1.5rem;">
+    <h2 style="margin: 0; font-family: var(--font-headings);">Registered Users & Sync Status</h2>
+    <p style="color: var(--muted); font-size: 0.9rem; margin-top: 0.25rem;">Monitor real-time sync status and background thread states for all active user profiles, and manage who administers this instance.</p>
+  </div>
+  <div style="padding: 0 1.5rem 1.5rem 1.5rem;">
+    <table class="status-table" style="width: 100%; border-collapse: collapse; text-align: left; min-width: 760px;">
+      <thead>
+        <tr style="border-bottom: 2px solid var(--glass-border); color: var(--muted); font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.05em;">
+          <th style="padding: 12px 8px;">Username</th>
+          <th style="padding: 12px 8px;">Sync Status</th>
+          <th style="padding: 12px 8px;">Spotify API Backfill{% if not spotify_backfill_enabled %} <span style="text-transform: none; font-weight: normal;">(disabled)</span>{% endif %}</th>
+          <th style="padding: 12px 8px;">Last.fm API Backfill{% if not lastfm_backfill_enabled %} <span style="text-transform: none; font-weight: normal;">(disabled)</span>{% endif %}</th>
+          <th style="padding: 12px 8px; text-align: right;">Total Plays</th>
+          <th style="padding: 12px 8px; text-align: right;">Total Skips</th>
+          <th style="padding: 12px 8px; text-align: right;">Registered</th>
+          <th style="padding: 12px 8px;">Admin</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for u in users_list %}
+        <tr style="font-size: 0.95rem;{% if not loop.last %} border-bottom: 1px solid var(--glass-border);{% endif %}">
+          <td style="padding: 16px 8px; font-weight: 600; color: var(--accent);">{{ u.username }}</td>
+          <td style="padding: 16px 8px;">
+            {% set status = u.sync_status | lower %}
+            {% if status == 'healthy' %}
+              <span class="badge badge-success">HEALTHY</span>
+            {% elif status == 'initializing' %}
+              <span class="badge badge-warning">INITIALIZING</span>
+            {% elif status == 'degraded' %}
+              <span class="badge badge-orange">DEGRADED</span>
+            {% elif status == 'dead' %}
+              <span class="badge badge-danger">DEAD</span>
+            {% else %}
+              <span class="badge badge-secondary">NOT CONFIGURED</span>
+            {% endif %}
+          </td>
+          <td style="padding: 16px 8px;">
+            {% if u.spotify_api_status == 'Configured' %}
+              <span class="badge badge-success">CONFIGURED</span>
+            {% else %}
+              <span class="badge badge-secondary">NOT CONFIGURED</span>
+            {% endif %}
+          </td>
+          <td style="padding: 16px 8px;">
+            {% if u.lastfm_api_status == 'Configured' %}
+              <span class="badge badge-success">CONFIGURED</span>
+            {% else %}
+              <span class="badge badge-secondary">NOT CONFIGURED</span>
+            {% endif %}
+          </td>
+          <td style="padding: 16px 8px; text-align: right; font-weight: 500;">{{ "{:,}".format(u.plays_count) }}</td>
+          <td style="padding: 16px 8px; text-align: right; font-weight: 500;">{{ "{:,}".format(u.skips_count) }}</td>
+          <td style="padding: 16px 8px; text-align: right; color: var(--muted); font-size: 0.85rem;">{{ u.created_at }}</td>
+          <td style="padding: 16px 8px;">
+            <div style="display: flex; align-items: center; gap: 0.5rem;">
+              {% if u.is_admin %}
+                <span class="badge badge-success">ADMIN</span>
+              {% endif %}
+              <form method="post" action="{{ url_for('adminSetUserAdmin', username=u.username) }}" style="margin: 0;">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+                <input type="hidden" name="make_admin" value="{{ '0' if u.is_admin else '1' }}"/>
+                <button type="submit" class="primary-button" style="padding: 2px 10px; font-size: 0.8rem;{% if u.is_admin %} background: #555;{% endif %}"
+                        {% if u.is_admin and admin_count <= 1 %}disabled title="Cannot remove the instance's last admin"{% endif %}>
+                  {{ 'Demote' if u.is_admin else 'Promote' }}
+                </button>
+              </form>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- Instance Insights: read-only, catalog/instance-wide numbers no single user sees -->
+<section class="grid" style="grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.5rem; margin-bottom: 2.5rem;">
+  <article class="card" style="padding: 1.5rem;">
+    <h3 style="margin-top: 0; font-family: var(--font-headings);">Catalog Backfill Coverage</h3>
+    <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem; margin-bottom: 1rem;">
+      Share of the whole shared catalog with Last.fm data, regardless of who played what.
+    </p>
+    {% for label, category in [("Songs (genre)", catalog_genre_coverage.song), ("Albums (genre)", catalog_genre_coverage.album), ("Artists (genre)", catalog_genre_coverage.artist)] %}
+    <div style="display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.6rem;">
+      <span style="flex: 0 0 7rem; font-size: 0.85rem; color: var(--muted);">{{ label }}</span>
+      <div style="position: relative; flex: 1; background: rgba(255, 255, 255, 0.08); border-radius: 4px; height: 10px; overflow: hidden;">
+        <div style="width: {{ [category.percent, 100] | min }}%; background: var(--accent); height: 100%; border-radius: 4px;"></div>
+      </div>
+      <span style="flex: 0 0 9rem; font-size: 0.8rem; color: var(--muted); text-align: right;">
+        {{ category.percent }}% ({{ "{:,}".format(category.covered) }} / {{ "{:,}".format(category.total) }})
+      </span>
+    </div>
+    {% endfor %}
+    <p style="font-size: 0.85rem; color: var(--muted); margin: 0.75rem 0 1rem 0;">Overall: <strong>{{ catalog_genre_coverage.overall.percent }}%</strong></p>
+    {% for label, category in [("Artist bios", catalog_biography_coverage.artist), ("Album bios", catalog_biography_coverage.album)] %}
+    <div style="display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.6rem;">
+      <span style="flex: 0 0 7rem; font-size: 0.85rem; color: var(--muted);">{{ label }}</span>
+      <div style="position: relative; flex: 1; background: rgba(255, 255, 255, 0.08); border-radius: 4px; height: 10px; overflow: hidden;">
+        {% set percent = (category.covered / category.total * 100) if category.total else 0 %}
+        <div style="width: {{ [percent, 100] | min }}%; background: var(--accent); height: 100%; border-radius: 4px;"></div>
+      </div>
+      <span style="flex: 0 0 9rem; font-size: 0.8rem; color: var(--muted); text-align: right;">
+        {{ "%.1f"|format(percent) }}% ({{ "{:,}".format(category.covered) }} / {{ "{:,}".format(category.total) }})
+      </span>
+    </div>
+    {% endfor %}
+  </article>
+
+  <article class="card" style="padding: 1.5rem;">
+    <h3 style="margin-top: 0; font-family: var(--font-headings);">Worker Health</h3>
+    <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem; margin-bottom: 1rem;">
+      Background worker/thread state across every account.
+    </p>
+    <p style="font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">Listener Sync</p>
+    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1.25rem;">
+      {% for status, count in listener_summary.items() %}
+        <span class="badge badge-secondary">{{ status }}: {{ count }}</span>
+      {% endfor %}
+    </div>
+    <p style="font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">Last.fm Genre Workers</p>
+    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+      <span class="badge badge-success">RUNNING: {{ lastfm_worker_summary.running }}</span>
+      <span class="badge badge-warning">IDLE: {{ lastfm_worker_summary.idle }}</span>
+      <span class="badge badge-secondary">NO API KEY: {{ lastfm_worker_summary.no_key }}</span>
+    </div>
+  </article>
+
+  <article class="card" style="padding: 1.5rem;">
+    <h3 style="margin-top: 0; font-family: var(--font-headings);">Activity</h3>
+    <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem; margin-bottom: 1rem;">
+      Instance-wide signups and data-sharing activity.
+    </p>
+    <ul style="list-style: none; padding: 0; margin: 0; font-size: 0.9rem; color: var(--muted); line-height: 1.9;">
+      <li>New users (7d): <strong style="color: var(--fg, #fff);">{{ registration_counts.last_7_days }}</strong></li>
+      <li>New users (30d): <strong style="color: var(--fg, #fff);">{{ registration_counts.last_30_days }}</strong></li>
+      <li>Pending share requests: <strong style="color: var(--fg, #fff);">{{ instance_share_counts.pending }}</strong></li>
+      <li>Accepted shares: <strong style="color: var(--fg, #fff);">{{ instance_share_counts.accepted }}</strong></li>
+      <li>Active public Wrapped links: <strong style="color: var(--fg, #fff);">{{ active_share_links_count }}</strong></li>
+    </ul>
+  </article>
+</section>
+
+<!-- Settings, grouped by what they govern rather than one flat checkbox list -->
+<section class="grid" style="grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.5rem;">
+  <article class="card" style="padding: 0;">
+    <div class="card-header" style="padding: 1.5rem 1.5rem 0.5rem 1.5rem;">
+      <h2 style="margin: 0; font-family: var(--font-headings); font-size: 1.15rem;">User Settings</h2>
+      <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem;">Account creation and cross-account features.</p>
+    </div>
+    <div style="padding: 0 1.5rem 1.5rem 1.5rem;">
+      <form method="post" action="{{ url_for('adminUserSettings') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+        <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; margin-bottom: 0.6rem;">
+          <input type="checkbox" name="data_sharing" value="1" {% if sharing_enabled %}checked{% endif %}>
+          Data sharing (Compare page and share requests on Profile)
+        </label>
+        <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; margin-bottom: 0.6rem;">
+          <input type="checkbox" name="registration" value="1" {% if registration_enabled %}checked{% endif %}>
+          New user registration
+        </label>
+        <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; margin-bottom: 1rem;">
+          <input type="checkbox" name="share_links" value="1" {% if share_links_enabled %}checked{% endif %}>
+          Public Wrapped share links (no-login links to a user's own yearly recap)
+        </label>
+        <button type="submit" class="primary-button" style="padding: 4px 16px;">Save</button>
+      </form>
+    </div>
+  </article>
+
+  <article class="card" style="padding: 0;">
+    <div class="card-header" style="padding: 1.5rem 1.5rem 0.5rem 1.5rem;">
+      <h2 style="margin: 0; font-family: var(--font-headings); font-size: 1.15rem;">Last.fm Backfilling Settings</h2>
+      <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem;">Genre and biography data sourced from Last.fm.</p>
+    </div>
+    <div style="padding: 0 1.5rem 1.5rem 1.5rem;">
+      <form method="post" action="{{ url_for('adminLastfmSettings') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+        <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; margin-bottom: 0.6rem;">
+          <input type="checkbox" name="lastfm_backfill" value="1" {% if lastfm_backfill_enabled %}checked{% endif %}>
+          Genre backfill (genre insights on Charts, Wrapped, Compare and track/album/artist pages)
+        </label>
+        <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; margin-bottom: 0.6rem;">
+          <input type="checkbox" name="artist_bio" value="1" {% if artist_bio_enabled %}checked{% endif %}>
+          Artist biographies (Last.fm biography on artist pages)
+        </label>
+        <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; margin-bottom: 0.6rem;">
+          <input type="checkbox" name="album_bio" value="1" {% if album_bio_enabled %}checked{% endif %}>
+          Album biographies (Last.fm biography on album pages)
+        </label>
+        <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; margin-bottom: 1rem;">
+          <input type="checkbox" name="include_inherited" value="1" {% if inherited_genres_enabled %}checked{% endif %}>
+          Count inherited genres (songs/albums without own Last.fm tags use their artist's genres)
+        </label>
+        <button type="submit" class="primary-button" style="padding: 4px 16px;">Save</button>
+      </form>
+    </div>
+  </article>
+
+  <article class="card" style="padding: 0;">
+    <div class="card-header" style="padding: 1.5rem 1.5rem 0.5rem 1.5rem;">
+      <h2 style="margin: 0; font-family: var(--font-headings); font-size: 1.15rem;">Spotify API Backfilling</h2>
+      <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem;">Recovery and metadata fetching via the Spotify Developer API.</p>
+    </div>
+    <div style="padding: 0 1.5rem 1.5rem 1.5rem;">
+      <form method="post" action="{{ url_for('adminSpotifySettings') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+        <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; margin-bottom: 1rem;">
+          <input type="checkbox" name="spotify_backfill" value="1" {% if spotify_backfill_enabled %}checked{% endif %}>
+          Spotify API backfill (missed-plays recovery and album/track metadata fetching)
+        </label>
+        <button type="submit" class="primary-button" style="padding: 4px 16px;">Save</button>
+      </form>
+    </div>
+  </article>
+</section>
+
+{% endblock %}

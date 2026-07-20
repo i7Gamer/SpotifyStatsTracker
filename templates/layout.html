@@ -71,6 +71,9 @@
         {% endif %}
         <a class="{{ 'active' if section == 'import' }}" {% if section == 'import' %}aria-current="page"{% endif %} href="{{ url_for('importPage') }}">Import</a>
         <a class="{{ 'active' if section == 'profile' }}" {% if section == 'profile' %}aria-current="page"{% endif %} href="{{ url_for('profilePage') }}">Profile</a>
+        {% if isAdmin %}
+        <a class="{{ 'active' if section == 'admin' }}" {% if section == 'admin' %}aria-current="page"{% endif %} href="{{ url_for('adminPage') }}">Admin</a>
+        {% endif %}
       </nav>
     </header>
 

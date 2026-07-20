@@ -2225,13 +2225,13 @@ class Repository:
         user's own row - what a non-admin viewer is allowed to see (the full
         listing is admin-only, see app.py's overviewPage)."""
         conn = self._conn()
-        query = "SELECT username, email, cookies_json, spotify_client_id, spotify_refresh_token, lastfm_api_key, created_at FROM users"
+        query = "SELECT username, email, cookies_json, spotify_client_id, spotify_refresh_token, lastfm_api_key, created_at, is_admin FROM users"
         params: tuple = ()
         if username is not None:
             query += " WHERE username=?"
             params = (username,)
         rows = conn.execute(query, params).fetchall()
-        return [dict(r) for r in rows]
+        return [{**dict(r), "is_admin": bool(r["is_admin"])} for r in rows]
 
     def getAlbumsMissingMetadata(self, limit: int) -> list[str]:
         """Albums with incomplete metadata (missing release date or track count),
@@ -2855,6 +2855,104 @@ class Repository:
 
     def setAlbumBioEnabled(self, enabled: bool) -> None:
         self._setFeatureEnabled(ALBUM_BIO_SETTING_KEY, enabled)
+
+    # ---- Instance-wide admin insights -----------------------------------------
+    # Catalog/instance-scoped numbers for the /admin page - unlike the per-user
+    # stats above (getGenreCoverage, getBiographyCoverage), these aren't
+    # filtered by any one user's plays, so they reflect backfill progress and
+    # activity across the whole shared instance.
+
+    def getCatalogGenreCoverage(self, includeInherited: bool | None = None) -> dict:
+        """Catalog-wide analogue of Database.getGenreCoverage: the share of
+        all tracks/albums/artists (not plays) that carry at least one
+        Last.fm genre row. Mirrors GENRE_COVERAGE_CATEGORIES = ("song",
+        "album", "artist") from Database/database.py - not imported here to
+        avoid a circular import (database.py imports this module)."""
+        if includeInherited is None:
+            includeInherited = self.isInheritedGenresEnabled()
+        inherited = 1 if includeInherited else 0
+        conn = self._conn()
+
+        def category(table: str, genreTable: str, idColumn: str, hasInherited: bool) -> dict:
+            total = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            if hasInherited:
+                covered = conn.execute(
+                    f"""
+                    SELECT COUNT(DISTINCT e.id) FROM {table} e
+                    JOIN {genreTable} g ON g.{idColumn} = e.id
+                    WHERE (? OR g.inherited = 0)
+                    """,
+                    (inherited,),
+                ).fetchone()[0]
+            else:
+                covered = conn.execute(
+                    f"SELECT COUNT(DISTINCT e.id) FROM {table} e JOIN {genreTable} g ON g.{idColumn} = e.id"
+                ).fetchone()[0]
+            percent = round(covered / total * 100, 1) if total else 0.0
+            return {"covered": covered, "total": total, "percent": percent}
+
+        coverage = {
+            "song": category("tracks", "track_genres", "track_id", True),
+            "album": category("albums", "album_genres", "album_id", True),
+            "artist": category("artists", "artist_genres", "artist_id", False),
+        }
+        percents = [coverage["song"]["percent"], coverage["album"]["percent"], coverage["artist"]["percent"]]
+        coverage["overall"] = {"percent": round(sum(percents) / len(percents), 1)}
+        return coverage
+
+    def getCatalogBiographyCoverage(self) -> dict:
+        """Catalog-wide analogue of getBiographyCoverage: how many artists/
+        albums in the whole shared catalog have a stored Last.fm biography,
+        regardless of whether anyone has played them recently."""
+        conn = self._conn()
+        artistRow = conn.execute(
+            "SELECT COUNT(*) AS total, COUNT(CASE WHEN bio IS NOT NULL THEN 1 END) AS covered FROM artists"
+        ).fetchone()
+        albumRow = conn.execute(
+            "SELECT COUNT(*) AS total, COUNT(CASE WHEN bio IS NOT NULL THEN 1 END) AS covered FROM albums"
+        ).fetchone()
+        return {
+            "artist": {"covered": artistRow["covered"], "total": artistRow["total"]},
+            "album": {"covered": albumRow["covered"], "total": albumRow["total"]},
+        }
+
+    def getRecentRegistrationCounts(self) -> dict:
+        """How many accounts were created in the last 7/30 days - an admin
+        activity signal with no per-user equivalent."""
+        now = time.time()
+        conn = self._conn()
+        last7 = conn.execute(
+            "SELECT COUNT(*) FROM users WHERE created_at >= ?", (now - 7 * 24 * 3600,)
+        ).fetchone()[0]
+        last30 = conn.execute(
+            "SELECT COUNT(*) FROM users WHERE created_at >= ?", (now - 30 * 24 * 3600,)
+        ).fetchone()[0]
+        return {"last_7_days": last7, "last_30_days": last30}
+
+    def getInstanceShareCounts(self) -> dict:
+        """{"pending", "accepted"} counts across every user_shares row in the
+        instance - the admin-page equivalent of getPendingIncomingSharesCount/
+        hasAnyAcceptedShare, which are both scoped to a single username."""
+        conn = self._conn()
+        rows = conn.execute("SELECT status, COUNT(*) AS c FROM user_shares GROUP BY status").fetchall()
+        counts = {"pending": 0, "accepted": 0}
+        for row in rows:
+            if row["status"] in counts:
+                counts[row["status"]] = row["c"]
+        return counts
+
+    def getActiveShareLinksCount(self) -> int:
+        """How many public Wrapped share links are currently live (not
+        expired) across every user. Lazily deletes expired rows first, same
+        pattern as getShareLink/getShareLinksForUser."""
+        conn = self._conn()
+        now = time.time()
+        with conn:
+            conn.execute("DELETE FROM share_links WHERE expires_at IS NOT NULL AND expires_at < ?", (now,))
+        row = conn.execute(
+            "SELECT COUNT(*) FROM share_links WHERE expires_at IS NULL OR expires_at >= ?", (now,)
+        ).fetchone()
+        return row[0]
 
     def getMaxPlayedAtInPeriod(self, username: str, startTs: float, endTs: float) -> float | None:
         row = self._conn().execute(

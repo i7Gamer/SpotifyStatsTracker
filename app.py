@@ -2717,7 +2717,8 @@ class SpotifyDashboardApp:
             # Intentionally unauthenticated: aggregate counts/DB size carry no
             # per-user listening data, so they're shown to any visitor as a
             # public "is this instance alive" summary - only the per-user
-            # table below (usernames, emails, sync status) is gated on login.
+            # status widget below is gated on login. The full multi-user
+            # table and every admin-only setting live on /admin now.
             global_stats = self.repo.getGlobalDatabaseStats()
             
             total_time_ms = global_stats.get("total_time_ms", 0)
@@ -2750,7 +2751,6 @@ class SpotifyDashboardApp:
             # Get current user's timezone for consistent date display
             current_user_tz = None
             current_username = None
-            is_admin = False
             genre_coverage = emptyGenreCoverage()
             genre_unlocked = False
             genre_worker = {"configured": False, "running": False}
@@ -2761,7 +2761,6 @@ class SpotifyDashboardApp:
                 current_username = self.get_username_for_email(email) or self.get_or_create_user(email)
                 current_db = self.get_user_db(current_username, email)
                 current_user_tz = current_db.tz if current_db else None
-                is_admin = self.repo.isAdmin(current_username)
                 if current_db is not None and lastfm_enabled:
                     # All-time coverage: the progress card tracks the whole
                     # library, unlike the range-scoped gates on charts/wrapped.
@@ -2791,57 +2790,27 @@ class SpotifyDashboardApp:
                     except Exception as e:
                         logger.warning("Last.fm album biography worker status lookup failed: %s", e)
 
-            users_list = []
+            # The logged-in user's own sync/backfill state, as a simple
+            # three-badge summary - not a table (the full multi-user table
+            # with per-account admin controls lives on /admin now).
+            your_status = None
             if is_logged_in:
-                # The full listing (every account's username, sync state, play
-                # count) is admin-only; a regular user gets just their own row,
-                # so they can still check their own sync status here.
-                if is_admin:
-                    all_users = self.repo.getAllUsersDetails()
-                else:
-                    all_users = self.repo.getAllUsersDetails(username=current_username)
-                for u in all_users:
-                    u_username = u["username"]
-                    u_email = u["email"]
-
-                    # Get Listener sync status
-                    if u["cookies_json"]:
-                        # Ensure we have a Database instance initialized to get live sync health
-                        u_db = self.get_user_db(u_username, u_email)
-                        health = u_db.getListenerHealth()
+                own = self.repo.getAllUsersDetails(username=current_username)
+                if own:
+                    u = own[0]
+                    if u["cookies_json"] and current_db is not None:
+                        health = current_db.getListenerHealth()
                         sync_status = health.get("status", "UNKNOWN")
                     else:
                         sync_status = "Not Configured"
-
-                    # Check API backfill configuration status
                     has_api = bool(u["spotify_client_id"] and u["spotify_refresh_token"])
-                    api_status = "Configured" if has_api else "Not Configured"
-
-                    # Total plays and true skips (play_skips rows) for this user
-                    plays_count = self.repo.getPlaysCount(u_username)
-                    skips_count = self.repo.getSkipCount(u_username)
-
-                    # Format created_at date using current user's timezone
-                    created_at_val = u.get("created_at")
-                    created_date_str = ""
-                    if created_at_val:
-                        try:
-                            created_date_str = convertToDatetime(created_at_val, tz=current_user_tz).strftime("%Y-%m-%d %H:%M:%S")
-                        except Exception:
-                            pass
-                    
-                    users_list.append({
-                        "username": u_username,
-                        "email": u_email,
+                    your_status = {
                         "sync_status": sync_status,
-                        "api_status": api_status,
+                        "spotify_api_status": "Configured" if has_api else "Not Configured",
                         #< .get(): raw row presence check only - the stored key
                         #  is encrypted and never needs decrypting here
-                        "genre_status": "Configured" if u.get("lastfm_api_key") else "Not Configured",
-                        "plays_count": plays_count,
-                        "skips_count": skips_count,
-                        "created_at": created_date_str
-                    })
+                        "lastfm_api_status": "Configured" if u.get("lastfm_api_key") else "Not Configured",
+                    }
 
             # One row per entity kind for the combined "Biography Backfill
             # Progress" card (templates/_biography_progress.html) - built
@@ -2861,54 +2830,182 @@ class SpotifyDashboardApp:
                 global_time_text=global_time_text,
                 global_size_text=global_size_text,
                 is_logged_in=is_logged_in,
-                is_admin=is_admin,
-                users_list=users_list,
+                your_status=your_status,
+                spotify_backfill_enabled=self.repo.isSpotifyApiBackfillEnabled(),
                 genre_coverage=genre_coverage,
                 genre_unlocked=genre_unlocked,
                 genre_worker=genre_worker,
                 lastfm_enabled=lastfm_enabled,
                 biography_rows=biography_rows,
-                spotify_backfill_enabled=self.repo.isSpotifyApiBackfillEnabled(),
-                sharing_enabled=self.repo.isDataSharingEnabled(),
-                inherited_genres_enabled=self.repo.isInheritedGenresEnabled(),
                 section="overview"
             )
 
-        @self.app.route("/overview/genre_settings", methods=["POST"])
-        def overviewGenreSettings():
-            """Admin-only: flips the instance-wide inherited-genres toggle
-            (whether artist-derived genre rows count in genre stats and
-            coverage - see Database/repository.py's app_settings)."""
+        @self.app.route("/admin", methods=["GET"])
+        def adminPage():
+            """Every admin-only setting/view for the instance: the full
+            users table (with per-account admin promote/demote), the 8
+            feature/backfill toggles regrouped into 3 logical categories, and
+            read-only instance-wide insights. Fully gated (unlike
+            overviewPage, which stays visible to everyone) since there's
+            nothing here for a non-admin to see."""
             email, username, db = get_current_user_or_redirect()
             if not email:
-                return redirect(url_for("login", next=url_for("overviewPage")))
+                return redirect(url_for("login", next=url_for("adminPage")))
             if not self.repo.isAdmin(username):
                 abort(403)
-            # Unchecked checkboxes aren't submitted: absence means disable.
-            self.repo.setInheritedGenresEnabled(request.form.get("include_inherited") == "1")
-            return redirect(url_for("overviewPage"))
 
-        @self.app.route("/overview/feature_settings", methods=["POST"])
-        def overviewFeatureSettings():
-            """Admin-only: flips the instance-wide feature kill switches
-            (Spotify API backfill, Last.fm genre backfill, data sharing, new
-            user registration, public Wrapped share links, artist bios,
-            album bios) in one submit - see Database/repository.py's
-            app_settings."""
+            users_list = []
+            for u in self.repo.getAllUsersDetails():
+                u_username = u["username"]
+                u_email = u["email"]
+                has_lastfm_key = bool(u.get("lastfm_api_key"))
+
+                # get_user_db() constructs a live Database (starts the
+                # listener, auto-importer and background worker threads) -
+                # only worth paying for when this account has a credential
+                # (cookies or a Last.fm key) that actually needs a live
+                # status lookup. A user who's never configured anything just
+                # reports as "Not Configured" without spinning anything up.
+                u_db = self.get_user_db(u_username, u_email) if (u["cookies_json"] or has_lastfm_key) else None
+
+                if u["cookies_json"]:
+                    health = u_db.getListenerHealth()
+                    sync_status = health.get("status", "UNKNOWN")
+                else:
+                    sync_status = "Not Configured"
+
+                has_api = bool(u["spotify_client_id"] and u["spotify_refresh_token"])
+
+                # Per-user Last.fm genre worker status, for the Worker Health
+                # insight below - same lookup overviewPage does for just the
+                # logged-in user, done here for every account.
+                genre_worker = {"configured": has_lastfm_key, "running": False}
+                if u_db is not None and has_lastfm_key:
+                    try:
+                        workerStatus = u_db.getLastfmWorkerStatus()
+                        if isinstance(workerStatus, dict):
+                            genre_worker = {"configured": bool(workerStatus.get("configured")),
+                                            "running": bool(workerStatus.get("running"))}
+                    except Exception as e:
+                        logger.warning("Last.fm worker status lookup failed for %s: %s", u_username, e)
+
+                created_at_val = u.get("created_at")
+                created_date_str = ""
+                if created_at_val:
+                    try:
+                        created_date_str = convertToDatetime(created_at_val, tz=db.tz).strftime("%Y-%m-%d %H:%M:%S")
+                    except Exception:
+                        pass
+
+                users_list.append({
+                    "username": u_username,
+                    "email": u_email,
+                    "is_admin": u["is_admin"],
+                    "sync_status": sync_status,
+                    "spotify_api_status": "Configured" if has_api else "Not Configured",
+                    #< .get(): raw row presence check only - the stored key
+                    #  is encrypted and never needs decrypting here
+                    "lastfm_api_status": "Configured" if u.get("lastfm_api_key") else "Not Configured",
+                    "genre_worker": genre_worker,
+                    "plays_count": self.repo.getPlaysCount(u_username),
+                    "skips_count": self.repo.getSkipCount(u_username),
+                    "created_at": created_date_str,
+                })
+
+            listener_summary: dict[str, int] = {}
+            for u in users_list:
+                listener_summary[u["sync_status"]] = listener_summary.get(u["sync_status"], 0) + 1
+
+            lastfm_worker_summary = {"running": 0, "idle": 0, "no_key": 0}
+            for u in users_list:
+                gw = u["genre_worker"]
+                if not gw["configured"]:
+                    lastfm_worker_summary["no_key"] += 1
+                elif gw["running"]:
+                    lastfm_worker_summary["running"] += 1
+                else:
+                    lastfm_worker_summary["idle"] += 1
+
+            return render_template(
+                "admin.html",
+                users_list=users_list,
+                admin_count=len(self.repo.getAdminUsernames()),
+                spotify_backfill_enabled=self.repo.isSpotifyApiBackfillEnabled(),
+                lastfm_backfill_enabled=self.repo.isLastfmGenreBackfillEnabled(),
+                sharing_enabled=self.repo.isDataSharingEnabled(),
+                inherited_genres_enabled=self.repo.isInheritedGenresEnabled(),
+                listener_summary=listener_summary,
+                lastfm_worker_summary=lastfm_worker_summary,
+                catalog_genre_coverage=self.repo.getCatalogGenreCoverage(),
+                catalog_biography_coverage=self.repo.getCatalogBiographyCoverage(),
+                registration_counts=self.repo.getRecentRegistrationCounts(),
+                instance_share_counts=self.repo.getInstanceShareCounts(),
+                active_share_links_count=self.repo.getActiveShareLinksCount(),
+                error=request.args.get("error"),
+                section="admin",
+            )
+
+        @self.app.route("/admin/user_settings", methods=["POST"])
+        def adminUserSettings():
+            """Admin-only: instance-wide toggles for data sharing (Compare +
+            share requests), new user registration, and public Wrapped share
+            links - see Database/repository.py's app_settings."""
             email, username, db = get_current_user_or_redirect()
             if not email:
-                return redirect(url_for("login", next=url_for("overviewPage")))
+                return redirect(url_for("login", next=url_for("adminPage")))
             if not self.repo.isAdmin(username):
                 abort(403)
             # Unchecked checkboxes aren't submitted: absence means disable.
-            self.repo.setSpotifyApiBackfillEnabled(request.form.get("spotify_backfill") == "1")
-            self.repo.setLastfmGenreBackfillEnabled(request.form.get("lastfm_backfill") == "1")
             self.repo.setDataSharingEnabled(request.form.get("data_sharing") == "1")
             self.repo.setRegistrationEnabled(request.form.get("registration") == "1")
             self.repo.setShareLinksEnabled(request.form.get("share_links") == "1")
+            return redirect(url_for("adminPage"))
+
+        @self.app.route("/admin/lastfm_settings", methods=["POST"])
+        def adminLastfmSettings():
+            """Admin-only: Last.fm genre backfill, artist/album biography
+            backfill, and whether inherited (artist-derived) genre rows count
+            in genre stats and coverage - see Database/repository.py's
+            app_settings."""
+            email, username, db = get_current_user_or_redirect()
+            if not email:
+                return redirect(url_for("login", next=url_for("adminPage")))
+            if not self.repo.isAdmin(username):
+                abort(403)
+            self.repo.setLastfmGenreBackfillEnabled(request.form.get("lastfm_backfill") == "1")
             self.repo.setArtistBioEnabled(request.form.get("artist_bio") == "1")
             self.repo.setAlbumBioEnabled(request.form.get("album_bio") == "1")
-            return redirect(url_for("overviewPage"))
+            self.repo.setInheritedGenresEnabled(request.form.get("include_inherited") == "1")
+            return redirect(url_for("adminPage"))
+
+        @self.app.route("/admin/spotify_settings", methods=["POST"])
+        def adminSpotifySettings():
+            """Admin-only: the Spotify Developer API backfill kill switch
+            (missed-plays recovery and album/track metadata fetching)."""
+            email, username, db = get_current_user_or_redirect()
+            if not email:
+                return redirect(url_for("login", next=url_for("adminPage")))
+            if not self.repo.isAdmin(username):
+                abort(403)
+            self.repo.setSpotifyApiBackfillEnabled(request.form.get("spotify_backfill") == "1")
+            return redirect(url_for("adminPage"))
+
+        @self.app.route("/admin/users/<username>/admin", methods=["POST"])
+        def adminSetUserAdmin(username):
+            """Admin-only: promote/demote a user's admin status. Refuses to
+            demote the instance's last remaining admin - Repository.setUserAdmin
+            otherwise happily allows zero admins, which would strand the
+            instance with nobody able to reach any admin-gated surface."""
+            email, actingUsername, db = get_current_user_or_redirect()
+            if not email:
+                return redirect(url_for("login", next=url_for("adminPage")))
+            if not self.repo.isAdmin(actingUsername):
+                abort(403)
+            makeAdmin = request.form.get("make_admin") == "1"
+            if not makeAdmin and len(self.repo.getAdminUsernames()) <= 1:
+                return redirect(url_for("adminPage", error="Cannot remove the instance's last admin."))
+            self.repo.setUserAdmin(username, makeAdmin)
+            return redirect(url_for("adminPage"))
 
         @self.app.route("/", methods=["GET"])
         def dashboard():

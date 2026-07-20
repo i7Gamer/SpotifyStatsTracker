@@ -1,5 +1,6 @@
-"""The genre-backfill progress card + per-user Genre Data column on /overview,
-and the admin-only inherited-genres toggle."""
+"""The genre-backfill progress card on /overview (the logged-in user's own
+coverage). The admin-only inherited-genres toggle and the multi-user table
+now live on /admin - see tests/test_admin_route.py."""
 import unittest
 from unittest.mock import patch, MagicMock
 import sys
@@ -115,17 +116,6 @@ class TestOverviewGenreCard(OverviewGenresTestBase):
         self.assertIn(b"WORKER RUNNING", resp.data)
         self.assertIn(b"UNLOCKED", resp.data)
 
-    def test_users_table_gets_a_genre_data_column(self):
-        dash = self._makeApp()
-        resp = self._getOverview(dash, self._makeDb(), isAdmin=True)
-        body = resp.data.decode()
-        self.assertIn("Genre Data", body)
-        # alice has a stored key, bob doesn't.
-        aliceRow = body[body.find(">alice<"):body.find(">bob<")]
-        self.assertIn("CONFIGURED", aliceRow)
-        bobRow = body[body.find(">bob<"):]
-        self.assertIn("NOT CONFIGURED", bobRow)
-
     def test_disabled_hides_the_progress_card_and_info_box_without_querying_coverage(self):
         dash = self._makeApp()
         dash.repo.setLastfmGenreBackfillEnabled(False)
@@ -149,53 +139,6 @@ class TestOverviewGenreCard(OverviewGenresTestBase):
             resp = dash.app.test_client().get("/overview")
         self.assertEqual(resp.status_code, 200)
         self.assertNotIn(b"Last.fm Genre Backfill", resp.data)
-
-
-class TestInheritedGenresToggle(OverviewGenresTestBase):
-    def test_toggle_form_is_admin_only(self):
-        dash = self._makeApp()
-        respAdmin = self._getOverview(dash, self._makeDb(), isAdmin=True)
-        self.assertIn(b"genre_settings", respAdmin.data)
-        respUser = self._getOverview(dash, self._makeDb(), isAdmin=False)
-        self.assertNotIn(b"genre_settings", respUser.data)
-
-    def _post(self, dash, isAdmin, data, loggedIn=True):
-        with patch.object(dash.repo, 'isAdmin', return_value=isAdmin), \
-             patch.object(dash, 'is_user_logged_in', return_value=loggedIn), \
-             patch.object(dash, 'get_username_for_email', return_value='alice'), \
-             patch.object(dash, 'get_user_db', return_value=self._makeDb()):
-            client = dash.app.test_client()
-            if loggedIn:
-                with client.session_transaction() as sess:
-                    sess['email'] = 'alice@example.com'
-                    sess['username'] = 'alice'
-            return client.post("/overview/genre_settings", data=data)
-
-    def test_admin_can_flip_the_setting(self):
-        dash = self._makeApp()
-        self.assertTrue(dash.repo.isInheritedGenresEnabled())
-
-        resp = self._post(dash, isAdmin=True, data={})   #< unchecked checkbox = disable
-
-        self.assertEqual(resp.status_code, 302)
-        self.assertIn("/overview", resp.headers["Location"])
-        self.assertFalse(dash.repo.isInheritedGenresEnabled())
-
-        resp = self._post(dash, isAdmin=True, data={"include_inherited": "1"})
-        self.assertEqual(resp.status_code, 302)
-        self.assertTrue(dash.repo.isInheritedGenresEnabled())
-
-    def test_non_admin_post_is_forbidden(self):
-        dash = self._makeApp()
-        resp = self._post(dash, isAdmin=False, data={"include_inherited": "1"})
-        self.assertEqual(resp.status_code, 403)
-        self.assertTrue(dash.repo.isInheritedGenresEnabled())   #< unchanged
-
-    def test_anonymous_post_redirects_to_login(self):
-        dash = self._makeApp()
-        resp = self._post(dash, isAdmin=False, data={}, loggedIn=False)
-        self.assertEqual(resp.status_code, 302)
-        self.assertIn("/login", resp.headers["Location"])
 
 
 if __name__ == "__main__":
