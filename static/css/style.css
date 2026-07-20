@@ -495,6 +495,11 @@ button {
   margin-bottom: 18px;
 }
 
+.biography-card {
+  min-height: auto;
+  margin-bottom: 24px;
+}
+
 /* Section headings that sit directly on the page background rather than
    inside a .card (e.g. "Top Songs" on Wrapped/artist/album detail pages) -
    the child combinator keeps this from also matching .card h2 above. */
