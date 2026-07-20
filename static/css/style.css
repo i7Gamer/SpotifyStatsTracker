@@ -983,6 +983,10 @@ progress::-moz-progress-bar {
    .has-genres is only added by the template when a track actually has
    genres, so cards without any don't lose that space for nothing. */
 @media (min-width: 901px) {
+  .track-attributes {
+    margin-top: 0;
+  }
+
   .track-card.has-genres .track-details-top {
     padding-right: 170px;
   }
