@@ -125,6 +125,8 @@
         {% set section = 'dashboard' %}
         {% include '_track_card.html' %}
       {% endfor %}
+    {% elif not request.args.get('q', '') and interval != 'custom' and totalCount == 0 and not is_authenticated %}
+      <p class="loading">You haven't connected Spotify yet. <a href="{{ url_for('profilePage') }}">Connect Spotify</a>, or <a href="{{ url_for('importPage') }}">import your listening history</a>, to get started.</p>
     {% else %}
       <p class="loading">No history tracks found. Go listen to some music or import your history from the import section.</p>
     {% endif %}

@@ -476,5 +476,87 @@ class TestPaginationExtras(_ListRouteTestBase):
         self.assertIn(b'max="3"', resp.data)
 
 
+class TestDashboardConnectionEmptyState(_ListRouteTestBase):
+    """A brand-new user with zero history and Spotify not authorized sees a
+    banner pointing at Profile/Import instead of the generic 'go listen to
+    some music' message, which doesn't help someone who hasn't set up
+    tracking at all yet. Last.fm is genre-enrichment only - it never
+    produces listening history by itself - so it must not count as
+    'connected' for this banner."""
+
+    def _makeDb(self, entryCount, hasApi=False, isAuthenticated=False):
+        db = super()._makeDb(entryCount)
+        credentials = None
+        if hasApi:
+            credentials = {
+                "client_id": "id", "client_secret": "secret",
+                "refresh_token": "token" if isAuthenticated else None,
+            }
+        db.getUserSpotifyCredentials.return_value = credentials
+        return db
+
+    def test_shows_connect_banner_when_nothing_connected_and_no_data(self):
+        dash = self._makeApp()
+        db = self._makeDb(entryCount=0)
+
+        resp = self._getDashboard(dash, db)
+
+        self.assertIn(b"haven't connected Spotify yet", resp.data)
+        self.assertNotIn(b"No history tracks found", resp.data)
+
+    def test_shows_generic_empty_message_when_spotify_connected_but_no_data(self):
+        dash = self._makeApp()
+        db = self._makeDb(entryCount=0, hasApi=True, isAuthenticated=True)
+
+        resp = self._getDashboard(dash, db)
+
+        self.assertIn(b"No history tracks found", resp.data)
+        self.assertNotIn(b"haven't connected Spotify yet", resp.data)
+
+    def test_shows_connect_banner_when_only_lastfm_connected(self):
+        """Last.fm alone can't produce any plays, so being connected there
+        must not suppress the Spotify-connect banner."""
+        dash = self._makeApp()
+        db = self._makeDb(entryCount=0)
+        db.getUserLastfmApiKey.return_value = "key"
+
+        resp = self._getDashboard(dash, db)
+
+        self.assertIn(b"haven't connected Spotify yet", resp.data)
+        self.assertNotIn(b"No history tracks found", resp.data)
+
+    def test_connect_banner_absent_once_history_exists(self):
+        dash = self._makeApp()
+        db = self._makeDb(entryCount=120)
+
+        resp = self._getDashboard(dash, db)
+
+        self.assertNotIn(b"haven't connected Spotify yet", resp.data)
+
+    def test_connect_banner_does_not_hijack_a_no_match_search(self):
+        """Searching for text with zero hits is a normal empty search result,
+        not a 'you have no history at all' state - even for a disconnected
+        account that does have some imported history."""
+        dash = self._makeApp()
+        db = self._makeDb(entryCount=0)
+        db.searchEntriesCount.return_value = 0
+
+        resp = self._getDashboard(dash, db, query="?q=nonexistent")
+
+        self.assertIn(b"No history tracks found", resp.data)
+        self.assertNotIn(b"haven't connected Spotify yet", resp.data)
+
+    def test_connect_banner_does_not_hijack_an_empty_custom_range(self):
+        """A custom date range with no plays just means nothing happened in
+        that window, not that the account is disconnected."""
+        dash = self._makeApp()
+        db = self._makeDb(entryCount=0)
+
+        resp = self._getDashboard(dash, db, query="?interval=custom&startDate=2020-01-01&endDate=2020-01-02")
+
+        self.assertIn(b"No history tracks found", resp.data)
+        self.assertNotIn(b"haven't connected Spotify yet", resp.data)
+
+
 if __name__ == "__main__":
     unittest.main()
