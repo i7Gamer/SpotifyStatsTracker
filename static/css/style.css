@@ -932,10 +932,6 @@ progress::-moz-progress-bar {
   display: contents;
 }
 
-.track-spotify-link {
-  margin-left: auto;
-}
-
 /* "+N more" / "Show less" toggle on long artist lists (_artist_links.html) */
 .artist-toggle {
   background: none;
@@ -993,9 +989,8 @@ progress::-moz-progress-bar {
     gap: 8px;
     justify-content: flex-end;
     position: absolute;
-    top: -14px;
+    top: 14px;
     right: 20px;
-    max-width: 200px;
     pointer-events: none;
     z-index: 2;
   }
