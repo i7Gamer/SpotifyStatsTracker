@@ -215,13 +215,35 @@ def filterTagsToGenres(tags: list) -> list[str]:
 
 
 def _extractTags(payload) -> list:
-    """toptags.tag from a Last.fm payload. A single tag arrives as a bare dict
-    instead of a 1-element list - normalize both shapes; anything else reads
-    as "no tags"."""
+    """toptags.tag from a Last.fm *.gettoptags payload. A single tag arrives
+    as a bare dict instead of a 1-element list - normalize both shapes;
+    anything else reads as "no tags"."""
     toptags = payload.get("toptags") if isinstance(payload, dict) else None
     if not isinstance(toptags, dict):
         return []
     tags = toptags.get("tag")
+    if isinstance(tags, dict):
+        return [tags]
+    if isinstance(tags, list):
+        return tags
+    return []
+
+
+def _extractAlbumInfoTags(payload) -> list:
+    """album.tags.tag from an album.getinfo payload - the fallback source for
+    albums where album.gettoptags comes back empty even though Last.fm has
+    real tag data (confirmed reproducible against the live API: not a
+    caching/autocorrect artifact, a persistent gap between the two endpoints'
+    backing data for some albums). Same bare-dict-vs-list normalization as
+    _extractTags; `tags` can also arrive as an empty string when the album
+    has no info-page tags either, which isn't a dict and reads as "no tags"."""
+    album = payload.get("album") if isinstance(payload, dict) else None
+    if not isinstance(album, dict):
+        return []
+    tagsContainer = album.get("tags")
+    if not isinstance(tagsContainer, dict):
+        return []
+    tags = tagsContainer.get("tag")
     if isinstance(tags, dict):
         return [tags]
     if isinstance(tags, list):
@@ -240,8 +262,26 @@ class LastfmClient:
 
     def getAlbumTopTags(self, artistName: str, albumName: str,
                         stop_event: threading.Event | None = None) -> FetchOutcome | None:
-        return self._fetchTopTags("album.gettoptags",
-                                  {"artist": artistName, "album": albumName}, stop_event)
+        outcome = self._fetchTopTags("album.gettoptags",
+                                     {"artist": artistName, "album": albumName}, stop_event)
+        if outcome is None or outcome.status != OUTCOME_OK or outcome.tags:
+            return outcome
+        # album.gettoptags is confirmed unreliable for some albums: Last.fm's
+        # album.getinfo carries tag data (in its embedded `tags` field) that
+        # gettoptags misses for the identical (artist, album) pair, a
+        # persistent server-side inconsistency verified directly against the
+        # live API (not a caching or autocorrect artifact). Only tried on a
+        # definitive-empty gettoptags result - never replaces a real result,
+        # and costs nothing extra on the (large) majority of albums where
+        # gettoptags already succeeds.
+        fallback = self._fetchTopTags("album.getinfo",
+                                      {"artist": artistName, "album": albumName}, stop_event,
+                                      extractFn=_extractAlbumInfoTags)
+        if fallback is not None and fallback.status == OUTCOME_OK and fallback.tags:
+            logger.info("[Lastfm] album.getinfo fallback recovered %d tag(s) for %r / %r "
+                       "after an empty album.gettoptags result", len(fallback.tags),
+                       artistName, albumName)
+        return fallback
 
     def getTrackTopTags(self, artistName: str, trackName: str,
                         stop_event: threading.Event | None = None) -> FetchOutcome | None:
@@ -266,9 +306,13 @@ class LastfmClient:
 
     def _fetchTopTags(self, method: str, params: dict,
                       stop_event: threading.Event | None,
-                      timeout: float | None = None) -> FetchOutcome | None:
+                      timeout: float | None = None,
+                      extractFn=_extractTags) -> FetchOutcome | None:
         """None only when the rate-limit slot was never granted (stopping
-        worker / validation timeout) - no request went out."""
+        worker / validation timeout) - no request went out. `extractFn` pulls
+        the tag list out of a successful payload - defaults to the
+        *.gettoptags shape; pass `_extractAlbumInfoTags` for *.getinfo calls,
+        whose tag data lives one level deeper under the entity key."""
         if not self.rateLimiter.acquire(stop_event=stop_event, timeout=timeout):
             return None
         query = {"method": method, "api_key": self.apiKey, "format": "json",
@@ -279,9 +323,9 @@ class LastfmClient:
         except requests.RequestException as e:
             logger.warning("[Lastfm] %s request failed: %s", method, e)
             return FetchOutcome(OUTCOME_TRANSIENT, [])
-        return self._classifyResponse(method, response)
+        return self._classifyResponse(method, response, extractFn)
 
-    def _classifyResponse(self, method: str, response) -> FetchOutcome:
+    def _classifyResponse(self, method: str, response, extractFn=_extractTags) -> FetchOutcome:
         if response.status_code == 429:
             self.rateLimiter.applyBackoff(LASTFM_RATE_LIMIT_BACKOFF_SECONDS)
             logger.warning("[Lastfm] HTTP 429 on %s - backing off %ds", method,
@@ -315,4 +359,4 @@ class LastfmClient:
         if response.status_code != 200:
             return FetchOutcome(OUTCOME_TRANSIENT, [])
 
-        return FetchOutcome(OUTCOME_OK, _extractTags(payload))
+        return FetchOutcome(OUTCOME_OK, extractFn(payload))

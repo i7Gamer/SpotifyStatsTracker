@@ -339,6 +339,106 @@ class ClientTestCase(unittest.TestCase):
         mockGet.assert_not_called()
 
 
+class AlbumGetInfoFallbackTestCase(unittest.TestCase):
+    """album.gettoptags is confirmed unreliable for some albums - getAlbumTopTags
+    falls back to album.getinfo's embedded tags on a definitive-empty result."""
+
+    def _client(self, acquireResult=True):
+        limiter = MagicMock()
+        limiter.acquire.return_value = acquireResult
+        return LastfmClient("test-key", rateLimiter=limiter), limiter
+
+    @patch("Database.lastfm.requests.get")
+    def test_fallback_triggers_on_empty_gettoptags_and_uses_getinfo_tags(self, mockGet):
+        client, _ = self._client()
+        mockGet.side_effect = [
+            _response(payload={"toptags": {"tag": []}}),
+            _response(payload={"album": {"tags": {"tag": [
+                {"name": "rock"}, {"name": "indie rock"}]}}}),
+        ]
+        outcome = client.getAlbumTopTags("Imagine Dragons", "Wrecked")
+        self.assertEqual(outcome.status, OUTCOME_OK)
+        self.assertEqual([t["name"] for t in outcome.tags], ["rock", "indie rock"])
+        self.assertEqual(mockGet.call_count, 2)
+        secondParams = mockGet.call_args_list[1].kwargs["params"]
+        self.assertEqual(secondParams["method"], "album.getinfo")
+        self.assertEqual(secondParams["artist"], "Imagine Dragons")
+        self.assertEqual(secondParams["album"], "Wrecked")
+
+    @patch("Database.lastfm.requests.get")
+    def test_fallback_not_triggered_when_gettoptags_succeeds(self, mockGet):
+        client, _ = self._client()
+        mockGet.return_value = _response(payload={"toptags": {"tag": [{"name": "rock", "count": 10}]}})
+        outcome = client.getAlbumTopTags("Metallica", "Master of Puppets")
+        self.assertEqual(outcome.status, OUTCOME_OK)
+        self.assertEqual(len(outcome.tags), 1)
+        mockGet.assert_called_once()   #< getinfo never called - gettoptags already succeeded
+
+    @patch("Database.lastfm.requests.get")
+    def test_both_endpoints_empty_stays_a_definitive_empty_result(self, mockGet):
+        client, _ = self._client()
+        mockGet.side_effect = [
+            _response(payload={"toptags": {"tag": []}}),
+            _response(payload={"album": {"tags": {"tag": []}}}),
+        ]
+        outcome = client.getAlbumTopTags("Pikayzo", "Some Album")
+        self.assertEqual(outcome.status, OUTCOME_OK)
+        self.assertEqual(outcome.tags, [])
+        self.assertEqual(mockGet.call_count, 2)
+
+    @patch("Database.lastfm.requests.get")
+    def test_getinfo_bare_tag_dict_is_normalized_to_a_list(self, mockGet):
+        client, _ = self._client()
+        mockGet.side_effect = [
+            _response(payload={"toptags": {"tag": []}}),
+            _response(payload={"album": {"tags": {"tag": {"name": "soundtrack"}}}}),
+        ]
+        outcome = client.getAlbumTopTags("Joe Hisaishi", "Spirited Away Soundtrack")
+        self.assertEqual(outcome.tags, [{"name": "soundtrack"}])
+
+    @patch("Database.lastfm.requests.get")
+    def test_getinfo_string_tags_field_reads_as_no_tags(self, mockGet):
+        """Last.fm sometimes returns `"tags": ""` instead of a dict when an
+        album has no info-page tags either - observed for "Encanto"."""
+        client, _ = self._client()
+        mockGet.side_effect = [
+            _response(payload={"toptags": {"tag": []}}),
+            _response(payload={"album": {"tags": ""}}),
+        ]
+        outcome = client.getAlbumTopTags("Stephanie Beatriz", "Encanto")
+        self.assertEqual(outcome.status, OUTCOME_OK)
+        self.assertEqual(outcome.tags, [])
+
+    @patch("Database.lastfm.requests.get")
+    def test_fallback_abort_propagates_none_not_the_stale_empty_result(self, mockGet):
+        client, limiter = self._client()
+        limiter.acquire.side_effect = [True, False]   #< gettoptags succeeds, getinfo's slot never granted
+        mockGet.return_value = _response(payload={"toptags": {"tag": []}})
+        outcome = client.getAlbumTopTags("Imagine Dragons", "Wrecked", stop_event=threading.Event())
+        self.assertIsNone(outcome)
+        mockGet.assert_called_once()   #< only the first (gettoptags) request went out
+
+    @patch("Database.lastfm.requests.get")
+    def test_fallback_transient_error_is_not_definitive(self, mockGet):
+        client, _ = self._client()
+        mockGet.side_effect = [
+            _response(payload={"toptags": {"tag": []}}),
+            _response(statusCode=500, jsonError=True),
+        ]
+        outcome = client.getAlbumTopTags("Imagine Dragons", "Wrecked")
+        self.assertEqual(outcome.status, OUTCOME_TRANSIENT)
+
+    @patch("Database.lastfm.requests.get")
+    def test_fallback_not_found_is_still_definitive(self, mockGet):
+        client, _ = self._client()
+        mockGet.side_effect = [
+            _response(payload={"toptags": {"tag": []}}),
+            _response(statusCode=400, payload={"error": 6, "message": "not found"}),
+        ]
+        outcome = client.getAlbumTopTags("Imagine Dragons", "Wrecked")
+        self.assertEqual(outcome.status, OUTCOME_NOT_FOUND)
+
+
 class ValidateApiKeyTestCase(unittest.TestCase):
     def _client(self, acquireResult=True):
         limiter = MagicMock()
