@@ -108,11 +108,6 @@
               {% if track.get('sortPercentText') %} · {{ track.get('sortPercentText') }}{% endif %}
           </div>
           {% endif %}
-        {% else %}
-          <!-- Dashboard stats: time played -->
-          {% if track.get('timePlayedText') %}
-          <div class="track-meta small">Time Played: {{ track.get('timePlayedText') }}</div>
-          {% endif %}
         {% endif %}
         
         {% if section == 'top_albums' %}
