@@ -923,19 +923,17 @@ progress::-moz-progress-bar {
   font-size: 0.92rem;
 }
 
-/* Genre badges: separated from .track-attributes so they can be visually
-   pulled into the card's top-right corner on desktop (see the has-genres
-   media query below) while staying last in the mobile/tablet flow. */
+/* Genre badges: display:contents makes this wrapper invisible to layout on
+   mobile/tablet, so its .track-label spans become ordinary flex items of
+   .track-attributes - same row, same size, just a different color. Desktop
+   overrides this to pull the whole group out as an absolutely positioned
+   overlay (see the has-genres media query below). */
 .genre-badges-container {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 10px;
+  display: contents;
 }
 
 .track-spotify-link {
-  display: inline-flex;
-  margin-top: 10px;
+  margin-left: auto;
 }
 
 /* "+N more" / "Show less" toggle on long artist lists (_artist_links.html) */
@@ -978,26 +976,28 @@ progress::-moz-progress-bar {
   border: 1px solid var(--accent);
 }
 
-/* Desktop: pull genre badges out of the flow into the card's top-right
-   corner, reserving space in the title column so they never overlap it.
-   .has-genres is only added by the template when a track actually has
-   genres, so cards without any don't lose that space for nothing. */
+/* Desktop: pull genre badges out of .track-attributes' flow and overflow
+   them above the card's top-right corner, overlapping the header instead of
+   reserving space for them. pointer-events: none keeps the overlay from
+   blocking clicks on .track-attributes (e.g. the Open in Spotify link)
+   underneath it. .has-genres is only added by the template when a track
+   actually has genres, so cards without any are unaffected. */
 @media (min-width: 901px) {
   .track-attributes {
     margin-top: 0;
   }
 
-  .track-card.has-genres .track-details-top {
-    padding-right: 170px;
-  }
-
   .track-card.has-genres .genre-badges-container {
-    position: absolute;
-    top: 20px;
-    right: 20px;
-    max-width: 160px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
     justify-content: flex-end;
-    margin-top: 0;
+    position: absolute;
+    top: -14px;
+    right: 20px;
+    max-width: 200px;
+    pointer-events: none;
+    z-index: 2;
   }
 }
 

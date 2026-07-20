@@ -201,17 +201,17 @@
           {% if track.get('releaseDateText') %}<span class="track-label">Released: {{ track.get('releaseDateText') }}</span>{% endif %}
           {% if track.get('totalTracks') %}<span class="track-label">{{ track.get('totalTracks') }} tracks</span>{% endif %}
         {% endif %}
+        {% if track.get('genres') %}
+        <div class="genre-badges-container">
+          {% for genre in track.get('genres', []) %}
+            <span class="track-label genre-label">{{ genre }}</span>
+          {% endfor %}
+        </div>
+        {% endif %}
+        {% if track.get('url') %}
+          <a class="track-label track-spotify-link" href="{{ track.get('url') }}" target="_blank" rel="noreferrer noopener">Open in Spotify ↗</a>
+        {% endif %}
       </div>
-      {% if track.get('genres') %}
-      <div class="genre-badges-container">
-        {% for genre in track.get('genres', []) %}
-          <span class="track-label genre-label">{{ genre }}</span>
-        {% endfor %}
-      </div>
-      {% endif %}
-      {% if track.get('url') %}
-        <a class="track-label track-spotify-link" href="{{ track.get('url') }}" target="_blank" rel="noreferrer noopener">Open in Spotify ↗</a>
-      {% endif %}
     </div>
   </div>
 </article>

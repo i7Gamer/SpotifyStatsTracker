@@ -118,11 +118,13 @@ class TestSongDetailRoute(_DetailRouteTestBase):
 
         self.assertNotIn(b"genre-label", resp.data)
 
-    def test_genre_badges_render_in_their_own_container_after_track_attributes(self):
-        """Genre badges live outside .track-attributes, after it in the DOM,
-        so desktop CSS can pull them into the card's top-right corner
-        independently of the other labels - see .genre-badges-container in
-        style.css."""
+    def test_genre_badges_render_inside_track_attributes_after_other_labels(self):
+        """Genre badges are nested inside .track-attributes, after the other
+        label spans, so that .genre-badges-container's display:contents lets
+        them join .track-attributes' own flex row on mobile/tablet - same
+        row, same size, just a different color. Desktop promotes the
+        container to an absolutely positioned overlay instead - see the
+        has-genres media query in style.css."""
         dash = self._makeApp()
         db = MagicMock()
         db.getSong.return_value = self._song()
@@ -133,9 +135,13 @@ class TestSongDetailRoute(_DetailRouteTestBase):
         resp = self._getPath(dash, db, "/song/t1")
         body = resp.data.decode()
 
-        attributesCloseIdx = body.index('</div>', body.index('class="track-attributes"'))
+        attributesOpenIdx = body.index('class="track-attributes"')
+        durationLabelIdx = body.index('Duration:')
         genreContainerIdx = body.index('class="genre-badges-container"')
-        self.assertLess(attributesCloseIdx, genreContainerIdx)
+        attributesCloseIdx = body.index('</div>', genreContainerIdx)
+        self.assertLess(attributesOpenIdx, durationLabelIdx)
+        self.assertLess(durationLabelIdx, genreContainerIdx)
+        self.assertLess(genreContainerIdx, attributesCloseIdx)
 
     def test_spotify_link_renders_last_after_genre_badges(self):
         dash = self._makeApp()
