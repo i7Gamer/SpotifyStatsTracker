@@ -35,6 +35,8 @@
       position: relative;
       width: 100%;
       max-width: 480px;
+      max-height: 90vh;
+      overflow-y: auto;
       padding: 1.5rem;
       background: var(--surface);
       border: 1px solid var(--border);
@@ -152,8 +154,6 @@
   </form>
 
   {% if not publicView and share_links_enabled %}
-  {% set currentLink = shareLinks | selectattr('year', 'equalto', year) | first %}
-  {% set currentAllYearsLink = shareLinks | selectattr('year', 'none') | first %}
   <div id="shareLinkModal" class="share-modal-overlay" style="display: {{ 'flex' if request.args.get('openShareModal') else 'none' }};">
     <div class="share-modal-card" role="dialog" aria-modal="true" aria-labelledby="shareLinkModalTitle">
       <button type="button" class="share-modal-close" aria-label="Close" onclick="document.getElementById('shareLinkModal').style.display = 'none';">&times;</button>

@@ -1933,6 +1933,24 @@ class Repository:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    def countActiveShareLinksForBucket(self, username: str, kind: str, year: int | None) -> int:
+        """How many still-active (non-expired) links exist for one user's
+        (kind, year) "bucket" - year=None is the all-years bucket. Used by
+        createWrappedShareLink to enforce a per-bucket cap before inserting a
+        new row (see SHARE_LINK_MAX_PER_BUCKET in app.py). Uses SQLite's
+        NULL-safe `IS` rather than `=` so a single query handles both the
+        all-years bucket (year IS NULL) and a specific year without a
+        CASE/OR. Doesn't lazily delete expired rows first like getShareLink/
+        getShareLinksForUser do - an expired row already fails the
+        expires_at filter below so it can't inflate the count."""
+        conn = self._conn()
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM share_links WHERE username=? AND kind=? AND year IS ? "
+            "AND (expires_at IS NULL OR expires_at >= ?)",
+            (username, kind, year, time.time()),
+        ).fetchone()
+        return row["n"]
+
     def revokeShareLink(self, linkId: int, username: str) -> bool:
         """Only the link's owner may revoke it. Returns whether a row was
         actually deleted, so the caller can tell "gone" from "not yours"."""

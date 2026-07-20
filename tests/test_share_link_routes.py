@@ -151,9 +151,12 @@ class TestCreateShareLink(ShareLinkRoutesTestCase):
         self.assertIn("/login", resp.headers["Location"])
 
     def test_rate_limited_after_max_attempts(self):
+        """Spread across distinct years so the per-bucket cap (5) never
+        blocks a create before the rate limiter (per source IP, independent
+        of bucket) has a chance to trip at RATE_LIMIT_MAX_ATTEMPTS."""
         client = self._loginAs("alice", "alice@example.com")
-        for _ in range(RATE_LIMIT_MAX_ATTEMPTS):
-            client.post("/wrapped/share-links/2026", data={"expiry": "never"})
+        for i in range(RATE_LIMIT_MAX_ATTEMPTS):
+            client.post(f"/wrapped/share-links/{2000 + i}", data={"expiry": "never"})
 
         resp = client.post("/wrapped/share-links/2026", data={"expiry": "never"})
 
@@ -161,6 +164,44 @@ class TestCreateShareLink(ShareLinkRoutesTestCase):
         self.assertIn("error=", resp.headers["Location"])
         self.assertIn("openShareModal=1", resp.headers["Location"])
         self.assertEqual(len(self.dash.repo.getShareLinksForUser("alice")), RATE_LIMIT_MAX_ATTEMPTS)
+
+    def test_creating_a_second_link_for_the_same_year_succeeds(self):
+        client = self._loginAs("alice", "alice@example.com")
+
+        client.post("/wrapped/share-links/2026", data={"expiry": "never"})
+        resp = client.post("/wrapped/share-links/2026", data={"expiry": "7d"})
+
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn("success=", resp.headers["Location"])
+        links = self.dash.repo.getShareLinksForUser("alice")
+        self.assertEqual(len(links), 2)
+        self.assertNotEqual(links[0]["token"], links[1]["token"])
+
+    def test_sixth_link_for_the_same_year_is_rejected(self):
+        client = self._loginAs("alice", "alice@example.com")
+        for _ in range(5):
+            client.post("/wrapped/share-links/2026", data={"expiry": "never"})
+
+        resp = client.post("/wrapped/share-links/2026", data={"expiry": "never"})
+
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn("error=", resp.headers["Location"])
+        self.assertIn("openShareModal=1", resp.headers["Location"])
+        self.assertEqual(len(self.dash.repo.getShareLinksForUser("alice")), 5)
+
+    def test_cap_is_per_bucket_not_global(self):
+        """5 links for one year plus 1 all-years link is 6 links total for
+        the same user - the cap must be scoped per-bucket, not a global
+        per-user total."""
+        client = self._loginAs("alice", "alice@example.com")
+        for _ in range(5):
+            client.post("/wrapped/share-links/2026", data={"expiry": "never"})
+
+        resp = client.post("/wrapped/share-links/2026", data={"expiry": "never", "allYears": "1"})
+
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn("success=", resp.headers["Location"])
+        self.assertEqual(len(self.dash.repo.getShareLinksForUser("alice")), 6)
 
 
 class TestCreateShareLinkAjax(ShareLinkRoutesTestCase):
@@ -175,7 +216,7 @@ class TestCreateShareLinkAjax(ShareLinkRoutesTestCase):
         self.assertEqual(resp.status_code, 200)
         html = resp.get_json()["html"]
         self.assertIn("Revoke", html)
-        self.assertNotIn("Create Share Link", html)
+        self.assertIn("Create Share Link", html)   #< always shown now, so a second link can be added
         token = self.dash.repo.getShareLinksForUser("alice")[0]["token"]
         self.assertIn(f"/shared/{token}", html)
 
@@ -196,6 +237,17 @@ class TestCreateShareLinkAjax(ShareLinkRoutesTestCase):
 
         self.assertEqual(resp.status_code, 401)
         self.assertIn("error", resp.get_json())
+
+    def test_ajax_sixth_link_for_the_same_year_returns_400_with_error(self):
+        client = self._loginAs("alice", "alice@example.com")
+        for _ in range(5):
+            client.post("/wrapped/share-links/2026?ajax=true", data={"expiry": "never"})
+
+        resp = client.post("/wrapped/share-links/2026?ajax=true", data={"expiry": "never"})
+
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("2026", resp.get_json()["error"])
+        self.assertEqual(len(self.dash.repo.getShareLinksForUser("alice")), 5)
 
 
 class TestRevokeShareLink(ShareLinkRoutesTestCase):
@@ -285,8 +337,26 @@ class TestRevokeShareLinkAjax(ShareLinkRoutesTestCase):
         self.assertEqual(resp.status_code, 200)
         html = resp.get_json()["html"]
         self.assertIn("Revoke", html)   #< falls back to showing the still-live 2026 link
-        self.assertNotIn("Create Share Link", html)
         self.assertIsNone(self.dash.repo.getShareLink(allYearsToken))
+
+    def test_revoking_one_of_several_links_for_the_same_year_removes_only_that_one(self):
+        client = self._loginAs("alice", "alice@example.com")
+        tokenA = self.dash.repo.createShareLink("alice", self.dash.repo.SHARE_LINK_KIND_WRAPPED, 2026, None)
+        tokenB = self.dash.repo.createShareLink("alice", self.dash.repo.SHARE_LINK_KIND_WRAPPED, 2026, None)
+        tokenC = self.dash.repo.createShareLink("alice", self.dash.repo.SHARE_LINK_KIND_WRAPPED, 2026, None)
+        middleId = self.dash.repo.getShareLink(tokenB)["id"]
+
+        resp = client.post(f"/profile/share-links/{middleId}?ajax=true", data={"year": "2026"})
+
+        self.assertEqual(resp.status_code, 200)
+        html = resp.get_json()["html"]
+        self.assertIn(f"/shared/{tokenA}", html)
+        self.assertIn(f"/shared/{tokenC}", html)
+        self.assertNotIn(f"/shared/{tokenB}", html)
+        self.assertIn("Create Share Link", html)   #< 2 links remain, still under the cap
+        self.assertIsNone(self.dash.repo.getShareLink(tokenB))
+        self.assertIsNotNone(self.dash.repo.getShareLink(tokenA))
+        self.assertIsNotNone(self.dash.repo.getShareLink(tokenC))
 
 
 class TestShareLinkListOnProfilePage(ShareLinkRoutesTestCase):
@@ -371,6 +441,19 @@ class TestShareLinkListOnProfilePage(ShareLinkRoutesTestCase):
         resp = client.get("/profile")
 
         self.assertNotIn(b"Wrapped Share Links", resp.data)
+
+    def test_multiple_links_for_the_same_year_all_appear_in_the_table(self):
+        self.dash.repo.upsertUser("alice", "alice@example.com")
+        tokenA = self.dash.repo.createShareLink("alice", self.dash.repo.SHARE_LINK_KIND_WRAPPED, 2026, None)
+        tokenB = self.dash.repo.createShareLink(
+            "alice", self.dash.repo.SHARE_LINK_KIND_WRAPPED, 2026, 7 * 24 * 3600)
+        client = self._loginAs("alice", "alice@example.com")
+
+        resp = client.get("/profile")
+        body = resp.data.decode()
+
+        self.assertRegex(body, rf'data-url="https?://[^"]*/shared/{tokenA}"')
+        self.assertRegex(body, rf'data-url="https?://[^"]*/shared/{tokenB}"')
 
 
 class PublicSharedWrappedTestCase(ShareLinkRoutesTestCase):
@@ -738,7 +821,7 @@ class TestShareLinkPanelOnWrappedPage(ShareLinkRoutesTestCase):
 
         self.assertIn(f"/shared/{token}", body)
         self.assertIn("Revoke", body)
-        self.assertNotIn("Create Share Link", body)
+        self.assertIn("Create Share Link", body)   #< always shown now, so a second link can be added
 
     def test_a_different_years_link_does_not_show_as_the_current_one(self):
         self.dash.repo.upsertUser("alice", "alice@example.com")
@@ -751,9 +834,10 @@ class TestShareLinkPanelOnWrappedPage(ShareLinkRoutesTestCase):
         self.assertIn("Create Share Link", body)
         self.assertNotIn("Revoke", body)
 
-    def test_all_years_link_is_shown_over_a_same_page_per_year_link(self):
-        """All-years is a strict superset of any one year, so it wins the
-        panel's single-state display when both exist."""
+    def test_all_years_link_and_a_per_year_link_both_show_together(self):
+        """An all-years link no longer hides a same-year link in the panel -
+        both are still-active, independently useful grants, so both are
+        listed."""
         self.dash.repo.upsertUser("alice", "alice@example.com")
         perYearToken = self.dash.repo.createShareLink(
             "alice", self.dash.repo.SHARE_LINK_KIND_WRAPPED, 2026, None)
@@ -765,12 +849,11 @@ class TestShareLinkPanelOnWrappedPage(ShareLinkRoutesTestCase):
         body = resp.data.decode()
 
         self.assertIn(f"/shared/{allYearsToken}", body)
-        self.assertNotIn(f"/shared/{perYearToken}", body)
-        self.assertIn("all of your Wrapped years", body)
+        self.assertIn(f"/shared/{perYearToken}", body)
 
     def test_creating_a_redundant_per_year_link_still_shows_the_all_years_link(self):
         """Exercises why createWrappedShareLink's ajax branch needs the full
-        _resolveCurrentShareLinks re-scan rather than echoing back the row it
+        _resolveShareLinksForYear re-scan rather than echoing back the row it
         just inserted."""
         self.dash.repo.upsertUser("alice", "alice@example.com")
         allYearsToken = self.dash.repo.createShareLink(
@@ -865,6 +948,47 @@ class TestShareLinkPanelOnWrappedPage(ShareLinkRoutesTestCase):
         resp = client.get("/wrapped?year=2026&ajax=true&type=all")
 
         self.assertNotIn("sharePanelHtml", resp.get_json())
+
+    def test_panel_lists_multiple_links_for_the_same_year(self):
+        self.dash.repo.upsertUser("alice", "alice@example.com")
+        tokenA = self.dash.repo.createShareLink("alice", self.dash.repo.SHARE_LINK_KIND_WRAPPED, 2026, None)
+        tokenB = self.dash.repo.createShareLink(
+            "alice", self.dash.repo.SHARE_LINK_KIND_WRAPPED, 2026, 7 * 24 * 3600)
+        client = self._loginAs("alice", "alice@example.com")
+
+        resp = client.get("/wrapped?year=2026")
+        body = resp.data.decode()
+
+        self.assertIn(f"/shared/{tokenA}", body)
+        self.assertIn(f"/shared/{tokenB}", body)
+        self.assertEqual(body.count('class="share-link-revoke-form"'), 2)
+        self.assertIn("Never expires", body)
+        self.assertIn("Expires in 7 days", body)
+
+    def test_create_form_still_shown_with_warning_when_only_one_bucket_at_cap(self):
+        self.dash.repo.upsertUser("alice", "alice@example.com")
+        for _ in range(5):
+            self.dash.repo.createShareLink("alice", self.dash.repo.SHARE_LINK_KIND_WRAPPED, 2026, None)
+        client = self._loginAs("alice", "alice@example.com")
+
+        resp = client.get("/wrapped?year=2026")
+        body = resp.data.decode()
+
+        self.assertIn("Create Share Link", body)
+        self.assertIn("already have 5 active links for 2026", body)
+
+    def test_create_form_hidden_when_both_buckets_at_cap(self):
+        self.dash.repo.upsertUser("alice", "alice@example.com")
+        for _ in range(5):
+            self.dash.repo.createShareLink("alice", self.dash.repo.SHARE_LINK_KIND_WRAPPED, 2026, None)
+            self.dash.repo.createShareLink("alice", self.dash.repo.SHARE_LINK_KIND_WRAPPED, None, None)
+        client = self._loginAs("alice", "alice@example.com")
+
+        resp = client.get("/wrapped?year=2026")
+        body = resp.data.decode()
+
+        self.assertNotIn("Create Share Link", body)
+        self.assertIn("reached the limit of 5 links for 2026 and 5 for all years", body)
 
 
 class TestSharedImageRoutes(ShareLinkRoutesTestCase):

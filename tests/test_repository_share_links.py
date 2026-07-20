@@ -175,6 +175,52 @@ class TestGetShareLinksForUser(RepositoryShareLinksTestCase):
 
         self.assertEqual(len(self.repo.getShareLinksForUser("bob")), 1)
 
+    def test_multiple_links_in_the_same_year_all_appear(self):
+        tokenA = self.repo.createShareLink("alice", "wrapped", 2026, expiresInSeconds=None)
+        tokenB = self.repo.createShareLink("alice", "wrapped", 2026, expiresInSeconds=7 * 24 * 3600)
+        tokenC = self.repo.createShareLink("alice", "wrapped", 2026, expiresInSeconds=30 * 24 * 3600)
+
+        links = self.repo.getShareLinksForUser("alice")
+
+        self.assertEqual(len(links), 3)
+        self.assertEqual({link["token"] for link in links}, {tokenA, tokenB, tokenC})
+
+
+class TestCountActiveShareLinksForBucket(RepositoryShareLinksTestCase):
+    def test_zero_when_bucket_is_empty(self):
+        self.assertEqual(self.repo.countActiveShareLinksForBucket("alice", "wrapped", 2026), 0)
+
+    def test_counts_only_the_matching_year_bucket(self):
+        self.repo.createShareLink("alice", "wrapped", 2025, expiresInSeconds=None)
+        self.repo.createShareLink("alice", "wrapped", 2026, expiresInSeconds=None)
+
+        self.assertEqual(self.repo.countActiveShareLinksForBucket("alice", "wrapped", 2026), 1)
+
+    def test_counts_the_all_years_bucket_when_year_is_none(self):
+        self.repo.createShareLink("alice", "wrapped", 2026, expiresInSeconds=None)
+        self.repo.createShareLink("alice", "wrapped", None, expiresInSeconds=None)
+
+        self.assertEqual(self.repo.countActiveShareLinksForBucket("alice", "wrapped", None), 1)
+
+    def test_does_not_count_a_different_users_links(self):
+        self.repo.createShareLink("bob", "wrapped", 2026, expiresInSeconds=None)
+
+        self.assertEqual(self.repo.countActiveShareLinksForBucket("alice", "wrapped", 2026), 0)
+
+    def test_expired_links_do_not_count(self):
+        self.repo.createShareLink("alice", "wrapped", 2026, expiresInSeconds=-10)
+
+        self.assertEqual(self.repo.countActiveShareLinksForBucket("alice", "wrapped", 2026), 0)
+
+    def test_counts_up_to_the_cap_and_beyond(self):
+        """The repository itself enforces no cap - creating a 6th link in
+        the same bucket still succeeds and is counted, confirming the cap is
+        purely an app.py-level gate (see SHARE_LINK_MAX_PER_BUCKET)."""
+        for _ in range(6):
+            self.repo.createShareLink("alice", "wrapped", 2026, expiresInSeconds=None)
+
+        self.assertEqual(self.repo.countActiveShareLinksForBucket("alice", "wrapped", 2026), 6)
+
 
 class TestRevokeShareLink(RepositoryShareLinksTestCase):
     def test_owner_can_revoke(self):

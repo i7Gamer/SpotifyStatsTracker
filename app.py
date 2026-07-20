@@ -57,6 +57,12 @@ SHARE_LINK_EXPIRY_CHOICES = {
     "7d": 7 * 24 * 3600,
     "30d": 30 * 24 * 3600,
 }
+# Cap on concurrent (non-expired) share links per "bucket" - a bucket is
+# either one specific year or the all-years link type. Prevents runaway
+# link accumulation (each one is a standing, unauthenticated access grant)
+# while still letting someone hand out a few links to different people
+# without having to revoke-then-recreate each time.
+SHARE_LINK_MAX_PER_BUCKET = 5
 COMPARE_TOP_LIST_SIZE = 10                #< items per top-songs/artists/albums list shown on the Compare page
 COMPARE_OVERLAP_POOL_SIZE = 100           #< how deep each side's top songs/artists/albums lists are searched for taste-match overlap
 # Top Common Songs/Artists/Albums search a SEPARATE, deeper pool than
@@ -1405,16 +1411,41 @@ class SpotifyDashboardApp:
 
         return groupBy, limit, sortBy, isAjaxRequest, ajaxUpdateType, includeGenres
 
-    def _resolveCurrentShareLinks(self, username: str, year: int) -> tuple[dict | None, dict | None]:
-        """(currentLink for this exact year, currentAllYearsLink) - both
-        freshly re-derived from the DB, never assumed from whichever link an
-        action just touched, since the share-link panel can now be showing
-        either type and creating/revoking one doesn't tell you what state
-        the other is in."""
+    @staticmethod
+    def _shareLinkExpiryLabel(expiresAt: float | None, nowTs: float) -> str:
+        """'Never expires' / 'Expires today' / 'Expires in N days' - a
+        relative countdown recomputed from expires_at (not the originally-
+        chosen duration, which isn't stored) so the label can't drift stale.
+        Used only by the wrapped.html share panel - Profile's own link list
+        keeps its own separate absolute-date convention (createdText/
+        expiresText) instead, since that page is more of a record-keeping
+        view where an absolute date fits better."""
+        if expiresAt is None:
+            return "Never expires"
+        remainingDays = math.ceil((expiresAt - nowTs) / 86400)
+        if remainingDays <= 0:
+            return "Expires today"
+        return f"Expires in {remainingDays} day" + ("" if remainingDays == 1 else "s")
+
+    def _resolveShareLinksForYear(self, username: str, year: int) -> tuple[list[dict], list[dict]]:
+        """(yearLinks, allYearsLinks) - every still-active link scoped to
+        this exact year, and every still-active all-years link, both freshly
+        re-derived from the DB, never assumed from whichever link an action
+        just touched, since the share-link panel can now be showing several
+        of either type and creating/revoking one doesn't tell you what state
+        the rest are in. Each link dict is annotated with an "expiryLabel"
+        (see _shareLinkExpiryLabel) ready for the template to render."""
+        nowTs = time.time()
         links = self.repo.getShareLinksForUser(username)
-        currentLink = next((link for link in links if link["year"] == year), None)
-        currentAllYearsLink = next((link for link in links if link["year"] is None), None)
-        return currentLink, currentAllYearsLink
+        yearLinks = [
+            {**link, "expiryLabel": self._shareLinkExpiryLabel(link["expires_at"], nowTs)}
+            for link in links if link["year"] == year
+        ]
+        allYearsLinks = [
+            {**link, "expiryLabel": self._shareLinkExpiryLabel(link["expires_at"], nowTs)}
+            for link in links if link["year"] is None
+        ]
+        return yearLinks, allYearsLinks
 
     @staticmethod
     def _resortByMetric(items: list, sortBy: str) -> list:
@@ -3175,10 +3206,11 @@ class SpotifyDashboardApp:
                 # create-link form/action-URL/existing-link state even
                 # though the rest of the page has moved on.
                 if ajaxUpdateType == "all" and self.repo.isShareLinksEnabled():
-                    currentLink, currentAllYearsLink = self._resolveCurrentShareLinks(username, year)
+                    yearLinks, allYearsLinks = self._resolveShareLinksForYear(username, year)
                     res["sharePanelHtml"] = render_template(
-                        "_share_link_panel.html", year=year, currentLink=currentLink,
-                        currentAllYearsLink=currentAllYearsLink, shareLinkExpiryChoices=SHARE_LINK_EXPIRY_CHOICES)
+                        "_share_link_panel.html", year=year, yearLinks=yearLinks,
+                        allYearsLinks=allYearsLinks, shareLinkExpiryChoices=SHARE_LINK_EXPIRY_CHOICES,
+                        shareLinkMaxPerBucket=SHARE_LINK_MAX_PER_BUCKET)
                 return jsonify(res)
 
             totalPlays, totalMs = ctx["totalPlays"], ctx["totalMs"]
@@ -3198,6 +3230,10 @@ class SpotifyDashboardApp:
 
             success = request.args.get("success")
             error = request.args.get("error")
+
+            shareLinksEnabled = self.repo.isShareLinksEnabled()
+            yearLinks, allYearsLinks = (
+                self._resolveShareLinksForYear(username, year) if shareLinksEnabled else ([], []))
 
             return render_template(
                 "wrapped.html",
@@ -3233,9 +3269,11 @@ class SpotifyDashboardApp:
                 success=success,
                 error=error,
                 publicView=False,
-                shareLinksEnabled=self.repo.isShareLinksEnabled(),
-                shareLinks=self.repo.getShareLinksForUser(username),
+                shareLinksEnabled=shareLinksEnabled,
+                yearLinks=yearLinks,
+                allYearsLinks=allYearsLinks,
                 shareLinkExpiryChoices=SHARE_LINK_EXPIRY_CHOICES,
+                shareLinkMaxPerBucket=SHARE_LINK_MAX_PER_BUCKET,
             )
 
         @self.app.route("/wrapped/share-links/<int:year>", methods=["POST"])
@@ -3262,12 +3300,25 @@ class SpotifyDashboardApp:
             expiresInSeconds = SHARE_LINK_EXPIRY_CHOICES.get(request.form.get("expiry", "never"))
             allYears = request.form.get("allYears") == "1"
             linkYear = None if allYears else year
+
+            bucketCount = self.repo.countActiveShareLinksForBucket(
+                username, Repository.SHARE_LINK_KIND_WRAPPED, linkYear)
+            if bucketCount >= SHARE_LINK_MAX_PER_BUCKET:
+                bucketLabel = "all-years" if linkYear is None else str(linkYear)
+                errorMessage = (
+                    f"You've reached the limit of {SHARE_LINK_MAX_PER_BUCKET} {bucketLabel} share links. "
+                    "Revoke one to create another.")
+                if isAjax:
+                    return jsonify(error=errorMessage), 400
+                return redirect(url_for("wrappedPage", year=year, error=errorMessage, openShareModal=1))
+
             self.repo.createShareLink(username, Repository.SHARE_LINK_KIND_WRAPPED, linkYear, expiresInSeconds)
             if isAjax:
-                currentLink, currentAllYearsLink = self._resolveCurrentShareLinks(username, year)
+                yearLinks, allYearsLinks = self._resolveShareLinksForYear(username, year)
                 html = render_template(
-                    "_share_link_panel.html", year=year, currentLink=currentLink,
-                    currentAllYearsLink=currentAllYearsLink, shareLinkExpiryChoices=SHARE_LINK_EXPIRY_CHOICES)
+                    "_share_link_panel.html", year=year, yearLinks=yearLinks,
+                    allYearsLinks=allYearsLinks, shareLinkExpiryChoices=SHARE_LINK_EXPIRY_CHOICES,
+                    shareLinkMaxPerBucket=SHARE_LINK_MAX_PER_BUCKET)
                 return jsonify(html=html)
             return redirect(url_for("wrappedPage", year=year, success="Share link created.", openShareModal=1))
 
@@ -3344,8 +3395,10 @@ class SpotifyDashboardApp:
                 publicView=True,
                 imageBase=f"/shared/{token}/img",
                 shareLinksEnabled=False,
-                shareLinks=[],
+                yearLinks=[],
+                allYearsLinks=[],
                 shareLinkExpiryChoices=SHARE_LINK_EXPIRY_CHOICES,
+                shareLinkMaxPerBucket=SHARE_LINK_MAX_PER_BUCKET,
             ))
             resp.headers["X-Robots-Tag"] = "noindex"
             return resp
@@ -3394,10 +3447,11 @@ class SpotifyDashboardApp:
             if self.repo.revokeShareLink(link_id, username):
                 if isAjax:
                     year = request.form.get("year", type=int)
-                    currentLink, currentAllYearsLink = self._resolveCurrentShareLinks(username, year)
+                    yearLinks, allYearsLinks = self._resolveShareLinksForYear(username, year)
                     html = render_template(
-                        "_share_link_panel.html", year=year, currentLink=currentLink,
-                        currentAllYearsLink=currentAllYearsLink, shareLinkExpiryChoices=SHARE_LINK_EXPIRY_CHOICES)
+                        "_share_link_panel.html", year=year, yearLinks=yearLinks,
+                        allYearsLinks=allYearsLinks, shareLinkExpiryChoices=SHARE_LINK_EXPIRY_CHOICES,
+                        shareLinkMaxPerBucket=SHARE_LINK_MAX_PER_BUCKET)
                     return jsonify(html=html)
                 return redirect(url_for("profilePage", success="Share link revoked."))
             if isAjax:
