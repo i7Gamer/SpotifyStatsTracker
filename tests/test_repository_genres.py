@@ -9,7 +9,9 @@ import time
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from conftest import DatabaseTestCase
-from Database.repository import GENRE_BACKFILL_RETRY_SECONDS, INHERITED_GENRES_SETTING_KEY
+from Database.repository import (
+    GENRE_BACKFILL_RETRY_SECONDS, INHERITED_GENRES_SETTING_KEY, BIOGRAPHY_BACKFILL_RETRY_SECONDS,
+)
 
 
 def _dt(ts: float) -> datetime.datetime:
@@ -327,6 +329,94 @@ class GenreQueueTestCase(DatabaseTestCase):
         db = self._db()
         self.assertEqual(db.repo.getAlbumPrimaryArtists([]), {})
         self.assertEqual(db.repo.getAlbumPrimaryArtists(["missing"]), {})
+
+
+class BiographyQueueTestCase(DatabaseTestCase):
+    """getArtistsMissingBiographies: the background biography backfiller's
+    queue. Same play-count-ordered, own-vs-global-scope shape as
+    getArtistsMissingGenres, but the retry condition keys off bio (not a
+    join table) - a stale attempt only requeues while bio is still NULL, an
+    artist with real bio text never does."""
+
+    def _db(self):
+        tracks = {
+            "tA": {"id": "tA", "name": "Song A",
+                   "artists": [{"id": "aX", "name": "Artist X"}, {"id": "aF", "name": "Feature"}],
+                   "album": self._album("alP", "Album P")},
+            "tB": {"id": "tB", "name": "Song B",
+                   "artists": [{"id": "aY", "name": "Artist Y"}],
+                   "album": self._album("alQ", "Album Q")},
+        }
+        entries = [
+            {"id": "tA", "playedAt": 1000, "timePlayed": 5000},
+            {"id": "tA", "playedAt": 2000, "timePlayed": 5000},
+            {"id": "tA", "playedAt": 3000, "timePlayed": 5000},
+            {"id": "tB", "playedAt": 4000, "timePlayed": 5000},
+        ]
+        db = self._makeDb(tracks, entries, username="user1")
+        # A second user in the same shared DB, playing their own track.
+        db.repo.upsertUser("user2", "user2@example.com")
+        from conftest import normalizeTrackForTest
+        db.repo.upsertTrack(normalizeTrackForTest(
+            {"id": "tC", "name": "Song C",
+             "artists": [{"id": "aZ", "name": "Artist Z"}],
+             "album": self._album("alR", "Album R")}))
+        db.repo.insertPlay("user2", "tC", 5000, 5000, None)
+        db.repo.commit()
+        return db
+
+    @staticmethod
+    def _album(albumId, name):
+        return {"id": albumId, "name": name, "url": "http://example.com/album",
+                "imageId": albumId, "imageUrl": "", "totalTracks": 1, "releaseDate": 0}
+
+    def test_artist_queue_is_play_count_ordered_within_own_scope(self):
+        db = self._db()
+        rows = db.repo.getArtistsMissingBiographies(10, username="user1")
+        self.assertEqual([r["id"] for r in rows], ["aX", "aY"])
+        self.assertEqual(rows[0]["play_count"], 3)
+        self.assertEqual(rows[0]["name"], "Artist X")
+
+    def test_featured_artists_are_not_queued(self):
+        db = self._db()
+        rows = db.repo.getArtistsMissingBiographies(10, username="user1")
+        self.assertNotIn("aF", [r["id"] for r in rows])   #< only position-0 artists
+
+    def test_global_scope_spans_all_users(self):
+        db = self._db()
+        rows = db.repo.getArtistsMissingBiographies(10)
+        self.assertEqual([r["id"] for r in rows], ["aX", "aY", "aZ"])   #< 3 plays, then ties by id
+
+    def test_limit_is_respected(self):
+        db = self._db()
+        rows = db.repo.getArtistsMissingBiographies(1, username="user1")
+        self.assertEqual([r["id"] for r in rows], ["aX"])
+
+    def test_recently_attempted_entities_leave_the_queue(self):
+        db = self._db()
+        db.repo.setArtistBio("aX", "A bio.")
+        rows = db.repo.getArtistsMissingBiographies(10, username="user1")
+        self.assertEqual([r["id"] for r in rows], ["aY"])
+
+    def test_empty_bios_requeue_after_the_retry_ttl(self):
+        db = self._db()
+        db.repo.setArtistBio("aX", None)
+        conn = db.repo._conn()
+        staleStamp = time.time() - BIOGRAPHY_BACKFILL_RETRY_SECONDS - 1
+        with conn:
+            conn.execute("UPDATE artists SET bio_attempted_at=? WHERE id='aX'", (staleStamp,))
+        rows = db.repo.getArtistsMissingBiographies(10, username="user1")
+        self.assertIn("aX", [r["id"] for r in rows])
+
+    def test_artists_with_a_real_bio_never_requeue(self):
+        db = self._db()
+        db.repo.setArtistBio("aX", "A real bio.")
+        conn = db.repo._conn()
+        staleStamp = time.time() - BIOGRAPHY_BACKFILL_RETRY_SECONDS - 1
+        with conn:
+            conn.execute("UPDATE artists SET bio_attempted_at=? WHERE id='aX'", (staleStamp,))
+        rows = db.repo.getArtistsMissingBiographies(10, username="user1")
+        self.assertNotIn("aX", [r["id"] for r in rows])
 
 
 class GenreCoverageTestCase(DatabaseTestCase):

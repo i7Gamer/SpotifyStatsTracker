@@ -185,6 +185,15 @@ class Database:
     LASTFM_QUEUE_BATCH_SIZE = 30               #< entities claimed per kind (artists/albums/tracks) per cycle
     LASTFM_IDLE_WAIT_SECONDS = 300             #< wait between cycles once both queues are drained (or after errors)
 
+    # The biography backfiller runs as its own thread alongside the genre one
+    # (not sequentially after it) - a later startup window just gives genres a
+    # head start on the shared rate limiter, not a hard ordering guarantee.
+    LASTFM_BIOGRAPHY_BACKFILLER_MIN_START_DELAY = 120
+    LASTFM_BIOGRAPHY_BACKFILLER_MAX_START_DELAY = 180
+    LASTFM_BIOGRAPHY_QUEUE_BATCH_SIZE = 20     #< smaller than LASTFM_QUEUE_BATCH_SIZE: one artist.getinfo
+                                                #  call per entity, sharing the same rate limiter as genres
+    LASTFM_BIOGRAPHY_IDLE_WAIT_SECONDS = 300   #< wait between cycles once the queue is drained (or after errors)
+
     # Shared across every Database instance (every user) in this process. Image
     # download de-duplication is enforced by the `images` table (atomic across
     # threads *and* users), so a single bounded pool for the whole process is
@@ -282,6 +291,10 @@ class Database:
         # No-op for users without a stored Last.fm key (no idle thread); the
         # profile page's key save re-invokes it once a key lands.
         self.startLastfmGenreBackfiller()
+
+        self.lastfm_biography_thread = None
+        self.lastfm_biography_stop_event = threading.Event()
+        self.startLastfmBiographyBackfiller()
 
     def refreshSettings(self) -> None:
         from zoneinfo import ZoneInfo
@@ -740,12 +753,16 @@ class Database:
             self._releaseLastfmEntities("bio", [{"id": artistId}])
 
     def lazyFetchArtistBio(self, artistId: str, artistName: str):
-        """Best-effort, one-shot fetch of an artist's biography via Last.fm's
+        """Best-effort, on-demand fetch of an artist's biography via Last.fm's
         artist.getinfo (see Database.lastfm.getArtistInfo for the HTML-
-        stripping and "+"-name incorrect-tag-entity guard). Permanent-once-
-        tried like artist images: a bio (or the confirmed absence of one)
-        essentially never changes, so bio_attempted_at is a plain done/not-
-        done flag rather than a 30-day retry queue like the genre tables.
+        stripping and "+"-name incorrect-tag-entity guard), triggered by a
+        page visit rather than the background biography backfiller's queue.
+        Permanent-once-tried like artist images: THIS call never retries an
+        artist it's already attempted, even if the result was "no bio" - the
+        background backfiller (_lastfmBiographyBackfillLoop) is the one that
+        revisits a definitive-empty result later, on its own 30-day cycle
+        (see getArtistsMissingBiographies), so a page view alone can't spin
+        Last.fm on every visit to an artist with no bio.
 
         The admin's instance-wide toggle (isArtistBioEnabled) gates fetching
         itself, not just display - disabled means no lookups at all, same
@@ -2186,7 +2203,8 @@ class Database:
         wd = getattr(self.autoImporter, "wd", None)
         if wd is not None:
             wd.signalStop()
-        for eventName in ("backfiller_stop_event", "wrapped_stop_event", "lastfm_stop_event"):
+        for eventName in ("backfiller_stop_event", "wrapped_stop_event", "lastfm_stop_event",
+                         "lastfm_biography_stop_event"):
             event = getattr(self, eventName, None)
             if event is not None:
                 event.set()
@@ -2211,6 +2229,7 @@ class Database:
         self.stopMetadataBackfiller()
         self.stopWrappedCalculationsWorker()
         self.stopLastfmGenreBackfiller()
+        self.stopLastfmBiographyBackfiller()
 
     def startWrappedCalculationsWorker(self) -> None:
         """Start the background thread to precalculate wrapped data."""
@@ -2801,6 +2820,137 @@ class Database:
         if self.lastfm_stop_event.is_set():
             return processedAny
         return self._processLastfmTrackBatch(client, scopeUsername) or processedAny
+
+    def startLastfmBiographyBackfiller(self) -> None:
+        """Start the background thread that backfills artist biographies from
+        Last.fm. Runs independently of the genre backfiller (its own thread,
+        stop event and idle cycle - see the LASTFM_BIOGRAPHY_* constants),
+        not sequentially after it. No-op without a stored API key - keyless
+        users get no idle thread, and the profile page's key save calls this
+        again once a key exists."""
+        if not hasattr(self, "lastfm_biography_thread") or not hasattr(self, "lastfm_biography_stop_event"):
+            return
+        if self.lastfm_biography_thread is not None and self.lastfm_biography_thread.is_alive():
+            return
+        import sqlite3
+        try:
+            hasApiKey = bool(self.repo.getUserLastfmApiKey(self.user))
+        except sqlite3.OperationalError as e:
+            # Same pre-migration guard as startLastfmGenreBackfiller: a
+            # Database constructed against a pre-1.19 file outside the app's
+            # migration path has no users.lastfm_api_key column yet.
+            logger.warning("[LastfmBioWorker-%s] Not starting - schema not migrated yet: %s",
+                           self.user, e)
+            return
+        if not hasApiKey:
+            return
+        # A FRESH event per run (see startLastfmGenreBackfiller's note on why
+        # a lingering thread's event must never be revived).
+        stop_event = threading.Event()
+        self.lastfm_biography_stop_event = stop_event
+        self.lastfm_biography_thread = threading.Thread(
+            target=self._lastfmBiographyBackfillLoop,
+            args=(stop_event,),
+            name=f"lastfm-bios-{self.user}",
+            daemon=True
+        )
+        self.lastfm_biography_thread.start()
+
+    def stopLastfmBiographyBackfiller(self) -> None:
+        """Signal and wait for the background biography backfiller to stop."""
+        if not hasattr(self, "lastfm_biography_thread") or not hasattr(self, "lastfm_biography_stop_event"):
+            return
+        if self.lastfm_biography_thread is None:
+            return
+        self.lastfm_biography_stop_event.set()
+        self.lastfm_biography_thread.join(timeout=3)
+        self.lastfm_biography_thread = None
+
+    def _lastfmBiographyBackfillLoop(self, stop_event: threading.Event | None = None) -> None:
+        """Fetches Last.fm biographies for this user's played artists (most-
+        played first), then - once the own queue is drained - for everyone
+        else's, same own-then-global shape as _lastfmGenreBackfillLoop.
+        Unlike lazyFetchArtistBio's on-demand one-shot fetch, an artist whose
+        lookup came back with no bio is revisited after
+        BIOGRAPHY_BACKFILL_RETRY_SECONDS (see getArtistsMissingBiographies).
+
+        `stop_event` is THIS run's private event (see the fresh-event note in
+        startLastfmGenreBackfiller); the loop's own lifecycle checks use it
+        exclusively so a later restart can never revive this thread."""
+        import random
+        if stop_event is None:
+            stop_event = self.lastfm_biography_stop_event
+        try:
+            startup_delay = random.randint(self.LASTFM_BIOGRAPHY_BACKFILLER_MIN_START_DELAY,
+                                           self.LASTFM_BIOGRAPHY_BACKFILLER_MAX_START_DELAY)
+            logger.info("[LastfmBioWorker-%s] Starting with initial delay of %d seconds", self.user, startup_delay)
+            if stop_event.wait(startup_delay):
+                logger.info("[LastfmBioWorker-%s] Stopped during startup delay", self.user)
+                return
+
+            while not stop_event.is_set():
+                try:
+                    # Fresh read each cycle, like the API key below: an admin
+                    # flip is picked up without restarting the thread, and
+                    # idling (not exiting) means re-enabling resumes on its own.
+                    if not self.repo.isArtistBioEnabled():
+                        if stop_event.wait(self.LASTFM_BIOGRAPHY_IDLE_WAIT_SECONDS):
+                            break
+                        continue
+
+                    # Fresh read each cycle: a rotated key is picked up here, a
+                    # removed key ends the thread (the save handler restarts it).
+                    apiKey = self.repo.getUserLastfmApiKey(self.user)
+                    if not apiKey:
+                        logger.info("[LastfmBioWorker-%s] No API key stored anymore - exiting", self.user)
+                        return
+                    client = LastfmClient(apiKey)
+
+                    processedAny = self._processLastfmBiographyBatch(client, self.user)
+                    if not processedAny and not stop_event.is_set():
+                        processedAny = self._processLastfmBiographyBatch(client, None)   #< global queue
+                    if not processedAny:
+                        if stop_event.wait(self.LASTFM_BIOGRAPHY_IDLE_WAIT_SECONDS):
+                            break
+                except _LastfmInvalidKeyError:
+                    logger.warning("[LastfmBioWorker-%s] Last.fm rejected the API key (invalid/suspended) - "
+                                   "idling; fix the key on the profile page", self.user)
+                    if stop_event.wait(self.LASTFM_BIOGRAPHY_IDLE_WAIT_SECONDS):
+                        break
+                except Exception as e:
+                    logger.error("[LastfmBioWorker-%s] Error in biography backfill loop: %s", self.user, parseError(e))
+                    if stop_event.wait(self.LASTFM_BIOGRAPHY_IDLE_WAIT_SECONDS):
+                        break
+        finally:
+            logger.info("[LastfmBioWorker-%s] Exited gracefully", self.user)
+
+    def _processLastfmBiographyBatch(self, client: LastfmClient, scopeUsername: str | None) -> bool:
+        """One batch of artist.getinfo lookups. Claims/releases under the
+        same "bio" kind as lazyFetchArtistBio's on-demand fetch, so the two
+        paths can never double-fetch the same artist concurrently. Returns
+        whether anything got a definitive result - False means the scope's
+        queue is drained (or everything failed transiently) and the caller
+        should fall through to the global queue / idle."""
+        rows = self.repo.getArtistsMissingBiographies(self.LASTFM_BIOGRAPHY_QUEUE_BATCH_SIZE, scopeUsername)
+        claimed = self._claimLastfmEntities("bio", rows)
+        processedAny = False
+        try:
+            for row in claimed:
+                if self.lastfm_biography_stop_event.is_set():
+                    break
+                outcome = client.getArtistInfo(row["name"], stop_event=self.lastfm_biography_stop_event)
+                if outcome is None:   #< rate-limit slot aborted: we're stopping
+                    break
+                if outcome.status == OUTCOME_INVALID_KEY:
+                    raise _LastfmInvalidKeyError()
+                if outcome.status == OUTCOME_TRANSIENT:
+                    continue   #< stays unattempted, retried next cycle
+                bio = outcome.bio if outcome.status == OUTCOME_OK else None
+                self.repo.setArtistBio(row["id"], bio)
+                processedAny = True
+        finally:
+            self._releaseLastfmEntities("bio", claimed)
+        return processedAny
 
     def _claimLastfmEntities(self, kind: str, rows: list[dict]) -> list[dict]:
         """Process-wide in-flight dedup across users' workers (the catalog is

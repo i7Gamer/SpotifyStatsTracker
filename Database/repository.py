@@ -32,6 +32,12 @@ ALBUM_BACKFILL_RETRY_SECONDS = 7 * 24 * 3600
 # one-time fetch is the whole point of marking them attempted.
 GENRE_BACKFILL_RETRY_SECONDS = 30 * 24 * 3600
 
+# How long the background biography backfiller waits before re-attempting an
+# artist whose fetch came back with no usable bio. An artist with real bio
+# text never re-enters the queue (see getArtistsMissingBiographies) - only a
+# definitive-empty result is retried, in case Last.fm gains a bio later.
+BIOGRAPHY_BACKFILL_RETRY_SECONDS = 30 * 24 * 3600
+
 # app_settings key for the admin's instance-wide toggle: do inherited (artist-
 # derived) genre rows count in genre stats and coverage? Absent row = enabled.
 INHERITED_GENRES_SETTING_KEY = "genres_include_inherited"
@@ -2470,10 +2476,11 @@ class Repository:
 
     def getArtistBioState(self, artistId: str) -> dict:
         """{"bio", "attempted_at"} for one artist - lazyFetchArtistBio's
-        claim check. Unlike the genre queue, a bio fetch is never retried
-        once attempted (Last.fm bios essentially never change and a missing
-        one won't materialize later), same permanent-once-tried philosophy
-        as artist images (IMAGE_STATUS_FAILED)."""
+        claim check. The on-demand lazy fetch never retries an artist once
+        attempted, same permanent-once-tried philosophy as artist images
+        (IMAGE_STATUS_FAILED); the background biography backfiller
+        (getArtistsMissingBiographies) is the one that revisits a
+        definitive-empty result later, on its own 30-day cycle."""
         row = self._conn().execute(
             "SELECT bio, bio_attempted_at FROM artists WHERE id=?", (artistId,)
         ).fetchone()
@@ -2492,6 +2499,34 @@ class Repository:
                 "UPDATE artists SET bio = ?, bio_attempted_at = ? WHERE id = ?",
                 (bio, time.time(), artistId),
             )
+
+    def getArtistsMissingBiographies(self, limit: int, username: str | None = None) -> list[dict]:
+        """Played PRIMARY (position-0) artists still needing a Last.fm
+        artist.getinfo lookup, most-played first - the background biography
+        backfiller's queue (Database._lastfmBiographyBackfillLoop). Same
+        own-vs-global scoping as getArtistsMissingGenres, but the retry
+        condition keys off bio directly (there's no join table for it): an
+        artist with real bio text never requeues, one whose lookup came back
+        empty does after BIOGRAPHY_BACKFILL_RETRY_SECONDS."""
+        conn = self._conn()
+        params: list = []
+        userClause = self._queueUserClause(params, username)
+        params.extend([time.time() - BIOGRAPHY_BACKFILL_RETRY_SECONDS, limit])
+        rows = conn.execute(
+            f"""
+            SELECT ar.id AS id, ar.name AS name, COUNT(*) AS play_count
+            FROM plays p
+            JOIN track_artists ta ON ta.track_id = p.track_id AND ta.position = 0
+            JOIN artists ar ON ar.id = ta.artist_id
+            WHERE {userClause}(ar.bio_attempted_at IS NULL
+                   OR (ar.bio_attempted_at < ? AND ar.bio IS NULL))
+            GROUP BY ar.id
+            ORDER BY play_count DESC, ar.id ASC
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
+        return [dict(r) for r in rows]
 
     def getArtistsMissingGenres(self, limit: int, username: str | None = None) -> list[dict]:
         """Played PRIMARY (position-0) artists still needing a Last.fm lookup,

@@ -382,11 +382,12 @@ class LastfmClient:
     def getArtistInfo(self, artistName: str,
                       stop_event: threading.Event | None = None,
                       timeout: float | None = None) -> ArtistInfoOutcome | None:
-        """One artist.getinfo lookup for the artist-bio feature - a separate,
-        much rarer call than the genre workers' gettoptags traffic (fetched
-        once per artist, ever, via lazyFetchArtistBio, not on the 30-day
-        genre retry cycle), but sharing the same process-wide rate limiter
-        since it's still real load against the same per-IP ceiling."""
+        """One artist.getinfo lookup for the artist-bio feature - used both by
+        lazyFetchArtistBio's on-demand one-shot fetch and by the background
+        biography backfiller's own 30-day retry cycle (a separate schedule
+        from the genre workers' gettoptags traffic), sharing the same
+        process-wide rate limiter since it's still real load against the
+        same per-IP ceiling."""
         if not self.rateLimiter.acquire(stop_event=stop_event, timeout=timeout):
             return None
         query = {"method": "artist.getinfo", "api_key": self.apiKey, "format": "json",

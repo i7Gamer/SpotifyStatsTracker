@@ -2395,6 +2395,7 @@ class SpotifyDashboardApp:
                                 try:
                                     db.updateUserLastfmApiKey(lastfm_api_key)
                                     db.startLastfmGenreBackfiller()
+                                    db.startLastfmBiographyBackfiller()
                                     success = "Last.fm API key saved! Genre data is now backfilling in the background."
                                 except Exception as e:
                                     error = f"Failed to save the Last.fm API key: {str(e)}"
@@ -2408,6 +2409,7 @@ class SpotifyDashboardApp:
                     try:
                         db.updateUserLastfmApiKey(None)
                         db.stopLastfmGenreBackfiller()
+                        db.stopLastfmBiographyBackfiller()
                         success = "Last.fm API key removed."
                     except Exception as e:
                         error = f"Failed to remove the Last.fm API key: {str(e)}"
