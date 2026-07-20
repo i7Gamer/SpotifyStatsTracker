@@ -2098,7 +2098,7 @@ class Repository:
                 conn.execute("ALTER TABLE artists ADD COLUMN bio_attempted_at REAL")
 
     def addAlbumBioColumnsIfMissing(self) -> None:
-        """Add albums.bio and albums.bio_attempted_at (migrate1_28_0) if
+        """Add albums.bio and albums.bio_attempted_at (migrate1_27_0) if
         missing, mirroring addArtistBioColumnsIfMissing for the album-bio
         feature. Guarded so re-running the migration doesn't fail."""
         conn = self._conn()

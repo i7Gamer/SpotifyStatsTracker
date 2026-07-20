@@ -9,12 +9,12 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import Database.Migrators.base as baseModule
-import Database.Migrators.migrate1_28_0 as migrateModule
+import Database.Migrators.migrate1_27_0 as migrateModule
 from Database.Migrators import dbversion
 from Database.repository import Repository
 
 
-class TestMigrate1_28_0(unittest.TestCase):
+class TestMigrate1_27_0(unittest.TestCase):
     """1.27.0 -> 1.28.0 adds albums.bio and albums.bio_attempted_at for the
     album-bio feature (lazily fetched from Last.fm's album.getinfo wiki
     field), mirroring migrate1_25_0's artists.bio columns."""
