@@ -654,6 +654,17 @@ class Repository:
         ).fetchall()
         return [self._playRowToEntry(r) for r in rows]
 
+    def getSkipCount(self, username: str, startTs: float | None = None, endTs: float | None = None) -> int:
+        """Number of true skip events (play_skips rows) in range - every row
+        is already known to be under SKIP_THRESHOLD_MS at insert time, so
+        unlike getCompletionStats' plays-table query this needs no duration
+        check, just a count."""
+        conn = self._conn()
+        params = [username]
+        rangeClause = self._dateRangeClause(params, startTs, endTs)
+        row = conn.execute(f"SELECT COUNT(*) AS c FROM play_skips WHERE username=?{rangeClause}", params).fetchone()
+        return row["c"]
+
     def getPlaysWithSourceInRange(self, username: str, startTs: float, endTs: float) -> list[dict]:
         """Plays in the closed [startTs, endTs] window including their
         created_reason. The Web API reconciliation needs the source to

@@ -408,6 +408,47 @@ class TestNewChartsStats(DatabaseTestCase):
         db = self._makeDb({}, [])
         self.assertEqual(db.getCompletionStats(), {"skips": 0, "completes": 0, "partials": 0})
 
+    def test_completion_stats_includes_true_skips_in_range(self):
+        """play_skips events (<5s, never inserted into `plays`) must add to
+        the "skips" bucket the Charts/Compare Skip Rate is built from."""
+        tracks = {"t1": {"id": "t1", "name": "Song", "artists": [], "duration": 100000}}
+        entries = [{"id": "t1", "playedAt": 100, "timePlayed": 85000}]  #< 1 complete
+        db = self._makeDb(tracks, entries)
+        db.repo.insertSkip("testuser", "t1", 200, 400)
+        db.repo.insertSkip("testuser", "t1", 300, 400)
+
+        stats = db.getCompletionStats()
+
+        self.assertEqual(stats, {"skips": 2, "completes": 1, "partials": 0})
+
+    def test_completion_stats_true_skips_respect_date_range_and_user(self):
+        tracks = {"t1": {"id": "t1", "name": "Song", "artists": [], "duration": 100000}}
+        entries = [{"id": "t1", "playedAt": 1000, "timePlayed": 85000}]
+        db = self._makeDb(tracks, entries)
+        db.repo.upsertUser("otheruser", "other@example.com")
+        db.repo.insertSkip("testuser", "t1", 500, 400)     #< before the range below
+        db.repo.insertSkip("otheruser", "t1", 1500, 400)   #< in range, wrong user
+
+        startDate = datetime.datetime.fromtimestamp(900, tz=datetime.timezone.utc)
+        stats = db.getCompletionStats(startDate=startDate)
+
+        self.assertEqual(stats, {"skips": 0, "completes": 1, "partials": 0})
+
+    def test_completion_stats_unchanged_when_play_skips_table_empty(self):
+        """Listener-only accounts never write to play_skips (see
+        appendTrackData) - their existing skip/complete/partial split must be
+        untouched by folding in play_skips."""
+        tracks = {"t1": {"id": "t1", "name": "Song", "artists": [], "duration": 100000}}
+        entries = [
+            {"id": "t1", "playedAt": 100, "timePlayed": 15000},
+            {"id": "t1", "playedAt": 200, "timePlayed": 85000},
+        ]
+        db = self._makeDb(tracks, entries)
+
+        stats = db.getCompletionStats()
+
+        self.assertEqual(stats, {"skips": 1, "completes": 1, "partials": 0})
+
     def test_explicit_ratio_empty_database_returns_zeros(self):
         db = self._makeDb({}, [])
         self.assertEqual(db.getExplicitRatio(), {"explicit": 0, "clean": 0})

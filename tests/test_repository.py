@@ -723,6 +723,20 @@ class TestPlaySkips(RepositoryTestCase):
         self.assertIsNone(entries[0]["extras"])
         self.assertEqual(entries[1]["extras"]["platform"], "ios")
 
+    def test_get_skip_count_scoped_to_user_and_range(self):
+        self.repo.upsertUser("bob", "bob@example.com")
+        self.repo.insertSkip("alice", "t1", 1000.0, 400)
+        self.repo.insertSkip("alice", "t1", 2000.0, 400)
+        self.repo.insertSkip("bob", "t1", 1500.0, 400)
+
+        self.assertEqual(self.repo.getSkipCount("alice"), 2)
+        self.assertEqual(self.repo.getSkipCount("alice", startTs=1500.0), 1)
+        self.assertEqual(self.repo.getSkipCount("alice", endTs=1500.0), 1)
+        self.assertEqual(self.repo.getSkipCount("bob"), 1)
+
+    def test_get_skip_count_empty_table_returns_zero(self):
+        self.assertEqual(self.repo.getSkipCount("alice"), 0)
+
 
 class TestRangeDeletes(RepositoryTestCase):
     def setUp(self):

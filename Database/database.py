@@ -51,7 +51,9 @@ ARTIST_BIO_FETCH_WORKERS = 2   #< bounds concurrent artist-bio fetches for the w
 
 # getCompletionStats' play classification thresholds: under 30s counts as a
 # skip (Spotify's own royalty threshold), at/over 80% of the track's duration
-# counts as a completed listen, anything between is a partial.
+# counts as a completed listen, anything between is a partial. This bucket is
+# combined with the true (<5s, SKIP_THRESHOLD_MS) events in play_skips, which
+# never reach the plays table at all - see getCompletionStats.
 COMPLETION_SKIP_THRESHOLD_MS = 30_000
 COMPLETION_COMPLETE_RATIO = 0.8
 
@@ -1515,6 +1517,12 @@ class Database:
         return self.repo.getArtistGenres(artistId)
 
     def getCompletionStats(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> dict:
+        """Skip/complete/partial breakdown for the Charts pie chart and the
+        Compare page's Skip Rate. "skips" combines two distinct sources: rows
+        in `plays` under the 30s threshold (a real listen that was abandoned
+        early), and true play_skips events (<5s, never inserted into `plays`
+        at all - see SKIP_THRESHOLD_MS) for the same range. Without the
+        latter, imported sub-5s skips would be invisible to this stat."""
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
         conn = self.repo._conn()
         # Fully classified in SQL - one aggregate row instead of a row per
@@ -1542,7 +1550,8 @@ class Database:
             WHERE p.username = ?{rangeClause}
         """
         row = conn.execute(query, params).fetchone()
-        return {"skips": row["skips"], "completes": row["completes"], "partials": row["partials"]}
+        trueSkips = self.repo.getSkipCount(self.user, startTs, endTs)
+        return {"skips": row["skips"] + trueSkips, "completes": row["completes"], "partials": row["partials"]}
 
     def getSongsStats(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None,
                        sortBy: str = "plays", limit: int | None = None, offset: int = 0,
