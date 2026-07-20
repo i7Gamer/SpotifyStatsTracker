@@ -171,6 +171,7 @@ class TestArtistDetailRoute(_DetailRouteTestBase):
         dash = self._makeApp()
         db = MagicMock()
         db.getArtist.return_value = self._artist()
+        db.getArtistBio.return_value = None
         db.getSongsStats.return_value = []
         db.getListeningTimeSeries.return_value = []
 
@@ -186,6 +187,7 @@ class TestArtistDetailRoute(_DetailRouteTestBase):
         dash = self._makeApp()
         db = MagicMock()
         db.getArtist.return_value = self._artist()
+        db.getArtistBio.return_value = None
         db.getSongsStats.return_value = []
         db.getListeningTimeSeries.return_value = []
         db.getGenresForArtist.return_value = ["indie rock"]
@@ -194,6 +196,70 @@ class TestArtistDetailRoute(_DetailRouteTestBase):
 
         self.assertIn(b'<span class="track-label genre-label">indie rock</span>', resp.data)
         db.getGenresForArtist.assert_called_once_with("a1")
+
+    def test_biography_renders_when_present(self):
+        dash = self._makeApp()
+        db = MagicMock()
+        db.getArtist.return_value = self._artist()
+        db.getSongsStats.return_value = []
+        db.getListeningTimeSeries.return_value = []
+        db.getArtistBio.return_value = "A great band from somewhere."
+
+        resp = self._getPath(dash, db, "/artist/a1")
+
+        self.assertIn(b"Biography", resp.data)
+        self.assertIn(b"A great band from somewhere.", resp.data)
+        self.assertIn(b"Biography via Last.fm", resp.data)
+        db.lazyFetchArtistBio.assert_called_once_with("a1", "Artist A")
+        db.getArtistBio.assert_called_once_with("a1")
+
+    def test_biography_section_absent_without_a_bio(self):
+        dash = self._makeApp()
+        db = MagicMock()
+        db.getArtist.return_value = self._artist()
+        db.getSongsStats.return_value = []
+        db.getListeningTimeSeries.return_value = []
+        db.getArtistBio.return_value = None
+
+        resp = self._getPath(dash, db, "/artist/a1")
+
+        self.assertNotIn(b"Biography", resp.data)
+
+    def test_biography_hides_when_the_admin_disables_the_feature(self):
+        """Same contract as the genre badge's kill switch: disabled hides
+        the section even for an artist whose bio was already fetched and
+        stored - db.getArtistBio isn't even consulted for display."""
+        dash = self._makeApp()
+        dash.repo.setArtistBioEnabled(False)
+        db = MagicMock()
+        db.getArtist.return_value = self._artist()
+        db.getSongsStats.return_value = []
+        db.getListeningTimeSeries.return_value = []
+        db.getArtistBio.return_value = "A great band from somewhere."
+
+        resp = self._getPath(dash, db, "/artist/a1")
+
+        self.assertNotIn(b"Biography", resp.data)
+        db.getArtistBio.assert_not_called()
+
+    def test_biography_text_is_html_escaped(self):
+        """Last.fm bio text must never be rendered as raw HTML (defense in
+        depth alongside the tag-stripping already done in
+        Database.lastfm._extractArtistBio)."""
+        dash = self._makeApp()
+        db = MagicMock()
+        db.getArtist.return_value = self._artist()
+        db.getSongsStats.return_value = []
+        db.getListeningTimeSeries.return_value = []
+        db.getArtistBio.return_value = "<script>alert('xss')</script>"
+
+        resp = self._getPath(dash, db, "/artist/a1")
+
+        #< the raw payload must never appear unescaped (the page legitimately
+        #  contains other <script> tags from layout.html/charts.js, so check
+        #  the specific string instead of a bare "<script>" substring)
+        self.assertNotIn(b"<script>alert", resp.data)
+        self.assertIn(b"&lt;script&gt;alert(&#39;xss&#39;)&lt;/script&gt;", resp.data)
 
     def test_unknown_artist_redirects_to_top_artists(self):
         dash = self._makeApp()
@@ -209,6 +275,7 @@ class TestArtistDetailRoute(_DetailRouteTestBase):
         dash = self._makeApp()
         db = MagicMock()
         db.getArtist.return_value = self._artist()
+        db.getArtistBio.return_value = None
         db.getSongsStats.return_value = []
         db.getListeningTimeSeries.return_value = []
 
@@ -221,6 +288,7 @@ class TestArtistDetailRoute(_DetailRouteTestBase):
         dash = self._makeApp()
         db = MagicMock()
         db.getArtist.return_value = self._artist()
+        db.getArtistBio.return_value = None
         db.getSongsStats.return_value = [
             self._song("t1", "Later Song", firstListenedAt=200),
             self._song("t2", "Earliest Song", firstListenedAt=100),
@@ -236,6 +304,7 @@ class TestArtistDetailRoute(_DetailRouteTestBase):
         dash = self._makeApp()
         db = MagicMock()
         db.getArtist.return_value = self._artist()
+        db.getArtistBio.return_value = None
         db.getSongsStats.return_value = []
         db.getListeningTimeSeries.return_value = []
 

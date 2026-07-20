@@ -23,7 +23,7 @@ try:
     )
     from Database.db import BEHAVIORAL_COLUMNS, SKIP_THRESHOLD_MS
     from Database.utils import parseError, convertToDatetime, dateToString, startOfDay, startOfWeek, startOfMonth, timeToInt, getTimezone
-    from Database.lastfm import LastfmClient, filterTagsToGenres, cleanLookupName, OUTCOME_OK, OUTCOME_TRANSIENT, OUTCOME_INVALID_KEY
+    from Database.lastfm import LastfmClient, filterTagsToGenres, cleanLookupName, OUTCOME_OK, OUTCOME_NOT_FOUND, OUTCOME_TRANSIENT, OUTCOME_INVALID_KEY
 except ModuleNotFoundError:
     from Formatters.spotifyClient import Client
     from Importers.StreamingHistoryImporter import Importer
@@ -32,7 +32,7 @@ except ModuleNotFoundError:
     from repository import Repository, IMAGE_KIND_TRACK, IMAGE_KIND_ARTIST, IMAGE_STATUS_OK, IMAGE_STATUS_FAILED
     from db import BEHAVIORAL_COLUMNS, SKIP_THRESHOLD_MS
     from utils import parseError, convertToDatetime, dateToString, startOfDay, startOfWeek, startOfMonth, timeToInt, getTimezone
-    from lastfm import LastfmClient, filterTagsToGenres, cleanLookupName, OUTCOME_OK, OUTCOME_TRANSIENT, OUTCOME_INVALID_KEY
+    from lastfm import LastfmClient, filterTagsToGenres, cleanLookupName, OUTCOME_OK, OUTCOME_NOT_FOUND, OUTCOME_TRANSIENT, OUTCOME_INVALID_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +44,10 @@ TRUTHY_DEBUG_VALUES = {"1", "true"}
 GENRE_COVERAGE_CATEGORIES = ("song", "album", "artist")
 
 IMAGE_DOWNLOAD_WORKERS = 5   #< bounds total concurrent image downloads for the whole process, not per user
+
+ARTIST_BIO_FETCH_WORKERS = 2   #< bounds concurrent artist-bio fetches for the whole process; each is one
+                                #  small artist.getinfo call (no image-style download/resize work), so a
+                                #  much smaller pool than IMAGE_DOWNLOAD_WORKERS is enough
 
 # getCompletionStats' play classification thresholds: under 30s counts as a
 # skip (Spotify's own royalty threshold), at/over 80% of the track's duration
@@ -189,6 +193,10 @@ class Database:
     imgDir_tracks = MEDIA_DIR / "tracks"
     imgDir_artists = MEDIA_DIR / "artists"
     _imageDownloadExecutor = concurrent.futures.ThreadPoolExecutor(max_workers=IMAGE_DOWNLOAD_WORKERS)
+    # Same shape as _imageDownloadExecutor, but for the artist-bio feature's
+    # lazy fetch: a much smaller pool since each task is one lightweight
+    # artist.getinfo call, not a download+resize.
+    _artistBioFetchExecutor = concurrent.futures.ThreadPoolExecutor(max_workers=ARTIST_BIO_FETCH_WORKERS)
     _active_backfills = set()
     _backfill_lock = threading.Lock()
     # Same idea for the Last.fm genre backfillers: catalog entities are shared,
@@ -709,6 +717,62 @@ class Database:
 
         if self.repo.tryClaimImageDownload(artistId, IMAGE_KIND_ARTIST):
             return self._imageDownloadExecutor.submit(self._lazyFetchArtistImageTask, artistId, imagePath)
+        return False
+
+    def _lazyFetchArtistBioTask(self, artistId: str, artistName: str) -> bool:
+        """Returns whether a usable bio was actually stored - False for a
+        definitive "nothing available" result, transient/invalid-key
+        (unattempted, left for a later retry), or an unexpected error."""
+        try:
+            apiKey = self.repo.getUserLastfmApiKey(self.user)
+            if not apiKey:
+                return False   #< key removed between the claim and this task running; leave unattempted
+            outcome = LastfmClient(apiKey).getArtistInfo(artistName)
+            if outcome is None or outcome.status not in (OUTCOME_OK, OUTCOME_NOT_FOUND):
+                return False   #< transient/invalid-key: stays unattempted, a later page view retries
+            bio = outcome.bio if outcome.status == OUTCOME_OK else None
+            self.repo.setArtistBio(artistId, bio)
+            return bio is not None
+        except Exception as e:
+            logger.error("Failed to lazy fetch artist bio for %s: %s", artistId, parseError(e))
+            return False
+        finally:
+            self._releaseLastfmEntities("bio", [{"id": artistId}])
+
+    def lazyFetchArtistBio(self, artistId: str, artistName: str):
+        """Best-effort, one-shot fetch of an artist's biography via Last.fm's
+        artist.getinfo (see Database.lastfm.getArtistInfo for the HTML-
+        stripping and "+"-name incorrect-tag-entity guard). Permanent-once-
+        tried like artist images: a bio (or the confirmed absence of one)
+        essentially never changes, so bio_attempted_at is a plain done/not-
+        done flag rather than a 30-day retry queue like the genre tables.
+
+        The admin's instance-wide toggle (isArtistBioEnabled) gates fetching
+        itself, not just display - disabled means no lookups at all, same
+        contract as the Last.fm genre backfill's kill switch.
+
+        Runs on a small dedicated executor (like lazyFetchArtistImage) so an
+        artist page render never blocks on Last.fm's response time; the
+        route doesn't wait on it and just renders whatever's already stored
+        (None on a first-ever visit - a later visit shows it once fetched).
+        Returns True if already attempted (bio may still be None -
+        definitively no bio available), False if there's nothing to fetch
+        (no artistId/name, the feature is disabled, no stored Last.fm key for
+        this user, or another thread already claimed this artist), or the
+        submitted Future on a freshly kicked-off fetch."""
+        if not artistId or not artistName:
+            return False
+        if not self.repo.isArtistBioEnabled():
+            return False
+
+        state = self.repo.getArtistBioState(artistId)
+        if state["attempted_at"] is not None:
+            return True
+        if not self.repo.getUserLastfmApiKey(self.user):
+            return False
+
+        if self._claimLastfmEntities("bio", [{"id": artistId}]):
+            return self._artistBioFetchExecutor.submit(self._lazyFetchArtistBioTask, artistId, artistName)
         return False
 
     def saveImagesFromTrack(self, track: dict):
@@ -1539,6 +1603,14 @@ class Database:
         """A single artist's aggregate stats - the artist-detail page's lookup."""
         results = self.getArtistsStats(startDate, endDate, artistId=artistId, limit=1)
         return results[0] if results else None
+
+    def getArtistBio(self, artistId: str) -> str | None:
+        """This artist's stored biography (see lazyFetchArtistBio), or None
+        if it's never been fetched or Last.fm has nothing usable. Kept
+        separate from getArtist()/getArtistsStats() rather than added to
+        that aggregate query - bio text has no place on list pages (Top
+        Artists), only the detail page needs it."""
+        return self.repo.getArtistBioState(artistId)["bio"]
 
     def getPlayedArtistIds(self, artistIds: list[str]) -> set[str]:
         """The subset of `artistIds` this user has at least one play of a

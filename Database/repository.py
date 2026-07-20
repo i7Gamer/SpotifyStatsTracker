@@ -46,6 +46,7 @@ LASTFM_BACKFILL_SETTING_KEY = "lastfm_genre_backfill_enabled"
 DATA_SHARING_SETTING_KEY = "data_sharing_enabled"
 REGISTRATION_SETTING_KEY = "registration_enabled"
 SHARE_LINKS_SETTING_KEY = "share_links_enabled"
+ARTIST_BIO_SETTING_KEY = "artist_bio_enabled"
 
 # getBucketedPlayTotals' fixed UTC bucket width. 15 minutes is the smallest
 # granularity any real-world UTC offset uses (e.g. Asia/Kathmandu +5:45), so
@@ -2049,6 +2050,17 @@ class Repository:
                 if "lastfm_attempted_at" not in columns:
                     conn.execute(f"ALTER TABLE {table} ADD COLUMN lastfm_attempted_at REAL")
 
+    def addArtistBioColumnsIfMissing(self) -> None:
+        """Add artists.bio and artists.bio_attempted_at (migrate1_25_0) if
+        missing. Guarded so re-running the migration doesn't fail."""
+        conn = self._conn()
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(artists)").fetchall()}
+        with conn:
+            if "bio" not in columns:
+                conn.execute("ALTER TABLE artists ADD COLUMN bio TEXT")
+            if "bio_attempted_at" not in columns:
+                conn.execute("ALTER TABLE artists ADD COLUMN bio_attempted_at REAL")
+
     def addRequesterSeenAcceptedColumnIfMissing(self) -> None:
         """Add user_shares.requester_seen_accepted (the "your share request
         was accepted" topbar notification's dismissal flag) if missing.
@@ -2417,6 +2429,31 @@ class Repository:
             "genres": self.getArtistGenres(artistId),
         }
 
+    def getArtistBioState(self, artistId: str) -> dict:
+        """{"bio", "attempted_at"} for one artist - lazyFetchArtistBio's
+        claim check. Unlike the genre queue, a bio fetch is never retried
+        once attempted (Last.fm bios essentially never change and a missing
+        one won't materialize later), same permanent-once-tried philosophy
+        as artist images (IMAGE_STATUS_FAILED)."""
+        row = self._conn().execute(
+            "SELECT bio, bio_attempted_at FROM artists WHERE id=?", (artistId,)
+        ).fetchone()
+        if row is None:
+            return {"bio": None, "attempted_at": None}
+        return {"bio": row["bio"], "attempted_at": row["bio_attempted_at"]}
+
+    def setArtistBio(self, artistId: str, bio: str | None) -> None:
+        """Stores the fetch result (bio text, or None when Last.fm has
+        nothing usable) and stamps bio_attempted_at in one call - there's no
+        separate "mark attempted" step like the genre tables, since a bio
+        fetch has no list of rows to replace."""
+        conn = self._conn()
+        with conn:
+            conn.execute(
+                "UPDATE artists SET bio = ?, bio_attempted_at = ? WHERE id = ?",
+                (bio, time.time(), artistId),
+            )
+
     def getArtistsMissingGenres(self, limit: int, username: str | None = None) -> list[dict]:
         """Played PRIMARY (position-0) artists still needing a Last.fm lookup,
         most-played first. `username` scopes the queue (and the play counts) to
@@ -2597,6 +2634,12 @@ class Repository:
 
     def setShareLinksEnabled(self, enabled: bool) -> None:
         self._setFeatureEnabled(SHARE_LINKS_SETTING_KEY, enabled)
+
+    def isArtistBioEnabled(self) -> bool:
+        return self._isFeatureEnabled(ARTIST_BIO_SETTING_KEY)
+
+    def setArtistBioEnabled(self, enabled: bool) -> None:
+        self._setFeatureEnabled(ARTIST_BIO_SETTING_KEY, enabled)
 
     def getMaxPlayedAtInPeriod(self, username: str, startTs: float, endTs: float) -> float | None:
         row = self._conn().execute(

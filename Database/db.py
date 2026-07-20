@@ -47,7 +47,9 @@ CREATE TABLE IF NOT EXISTS artists (
     name        TEXT NOT NULL,
     url         TEXT NOT NULL,
     lastfm_attempted_at REAL,
-    image_id    TEXT
+    image_id    TEXT,
+    bio         TEXT,
+    bio_attempted_at REAL
 );
 
 CREATE TABLE IF NOT EXISTS albums (

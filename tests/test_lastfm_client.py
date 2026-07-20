@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 import Database.lastfm as lastfm
 from Database.lastfm import (
-    LastfmClient, LastfmRateLimiter, FetchOutcome,
+    LastfmClient, LastfmRateLimiter, FetchOutcome, ArtistInfoOutcome,
     OUTCOME_OK, OUTCOME_NOT_FOUND, OUTCOME_TRANSIENT, OUTCOME_INVALID_KEY,
     LASTFM_API_ROOT, LASTFM_RATE_LIMIT_BACKOFF_SECONDS, GENRE_MAX_TAGS_PER_ENTITY,
     normalizeGenreTag, loadGenreWhitelist, filterTagsToGenres,
@@ -437,6 +437,122 @@ class AlbumGetInfoFallbackTestCase(unittest.TestCase):
         ]
         outcome = client.getAlbumTopTags("Imagine Dragons", "Wrecked")
         self.assertEqual(outcome.status, OUTCOME_NOT_FOUND)
+
+
+class ArtistInfoBioTestCase(unittest.TestCase):
+    """getArtistInfo (artist.getinfo) for the artist-bio feature: HTML
+    stripping, dead "Read more" link text removal, and the "+"-name
+    incorrect-tag merge-redirect guard."""
+
+    def _client(self, acquireResult=True):
+        limiter = MagicMock()
+        limiter.acquire.return_value = acquireResult
+        return LastfmClient("test-key", rateLimiter=limiter), limiter
+
+    @staticmethod
+    def _infoResponse(bioSummary):
+        return _response(payload={"artist": {"name": "Some Artist",
+                                              "bio": {"summary": bioSummary}}})
+
+    @patch("Database.lastfm.requests.get")
+    def test_request_carries_key_format_autocorrect_and_artist(self, mockGet):
+        client, _ = self._client()
+        mockGet.return_value = self._infoResponse("A short bio.")
+        client.getArtistInfo("Radiohead")
+        params = mockGet.call_args.kwargs["params"]
+        self.assertEqual(params["method"], "artist.getinfo")
+        self.assertEqual(params["artist"], "Radiohead")
+        self.assertEqual(params["api_key"], "test-key")
+        self.assertEqual(params["autocorrect"], "1")
+
+    @patch("Database.lastfm.requests.get")
+    def test_plain_bio_is_returned_as_is(self, mockGet):
+        client, _ = self._client()
+        mockGet.return_value = self._infoResponse("A rock band from Oxford.")
+        outcome = client.getArtistInfo("Radiohead")
+        self.assertEqual(outcome.status, OUTCOME_OK)
+        self.assertEqual(outcome.bio, "A rock band from Oxford.")
+
+    @patch("Database.lastfm.requests.get")
+    def test_embedded_html_is_stripped_to_plain_text(self, mockGet):
+        client, _ = self._client()
+        mockGet.return_value = self._infoResponse(
+            'A rock band. <a href="https://last.fm/x">Read more on Last.fm</a>. '
+            "User-contributed text is available under the Creative Commons "
+            "By-SA License; additional terms may apply.")
+        outcome = client.getArtistInfo("Radiohead")
+        self.assertNotIn("<a", outcome.bio)
+        self.assertNotIn("</a>", outcome.bio)
+        # The dead "Read more" link text is dropped - it points nowhere once
+        # the anchor tag itself is stripped.
+        self.assertNotIn("Read more on Last.fm", outcome.bio)
+        # The CC attribution sentence is kept - it's the license notice itself.
+        self.assertIn("Creative Commons By-SA License", outcome.bio)
+        self.assertIn("A rock band.", outcome.bio)
+
+    @patch("Database.lastfm.requests.get")
+    def test_html_entities_are_unescaped(self, mockGet):
+        client, _ = self._client()
+        mockGet.return_value = self._infoResponse("Florence &amp; the Machine&#39;s sound.")
+        outcome = client.getArtistInfo("Florence + The Machine")
+        self.assertEqual(outcome.bio, "Florence & the Machine's sound.")
+
+    @patch("Database.lastfm.requests.get")
+    def test_incorrect_tag_merge_redirect_bio_is_discarded(self, mockGet):
+        """Some "+"-containing artist names resolve to Last.fm's own
+        "incorrect tag" merge-redirect entity - its "bio" is a boilerplate
+        explanation of the mismatch, not a real biography."""
+        client, _ = self._client()
+        mockGet.return_value = self._infoResponse(
+            "This is an incorrect tag for the band Florence + The Machine. "
+            "Songs scrobbled to this incorrect tag will automatically redirect.")
+        outcome = client.getArtistInfo("Florence + The Machine")
+        self.assertEqual(outcome.status, OUTCOME_OK)
+        self.assertIsNone(outcome.bio)
+
+    @patch("Database.lastfm.requests.get")
+    def test_missing_or_empty_bio_reads_as_none(self, mockGet):
+        client, _ = self._client()
+        for payload in ({"artist": {"name": "x"}}, {"artist": {"name": "x", "bio": {}}},
+                        {"artist": {"name": "x", "bio": {"summary": ""}}}, {}):
+            mockGet.return_value = _response(payload=payload)
+            outcome = client.getArtistInfo("x")
+            self.assertEqual(outcome.status, OUTCOME_OK)
+            self.assertIsNone(outcome.bio)
+
+    @patch("Database.lastfm.requests.get")
+    def test_error_6_is_not_found(self, mockGet):
+        client, _ = self._client()
+        mockGet.return_value = _response(statusCode=400, payload={"error": 6, "message": "not found"})
+        self.assertEqual(client.getArtistInfo("zzzz"), ArtistInfoOutcome(OUTCOME_NOT_FOUND, None))
+
+    @patch("Database.lastfm.requests.get")
+    def test_invalid_key_and_transient_errors_propagate(self, mockGet):
+        client, limiter = self._client()
+        mockGet.return_value = _response(statusCode=403, payload={"error": 10})
+        self.assertEqual(client.getArtistInfo("x").status, OUTCOME_INVALID_KEY)
+
+        mockGet.return_value = _response(statusCode=500, jsonError=True)
+        self.assertEqual(client.getArtistInfo("x").status, OUTCOME_TRANSIENT)
+
+        limiter.applyBackoff.reset_mock()
+        mockGet.return_value = _response(payload={"error": 29})
+        self.assertEqual(client.getArtistInfo("x").status, OUTCOME_TRANSIENT)
+        limiter.applyBackoff.assert_called_once_with(LASTFM_RATE_LIMIT_BACKOFF_SECONDS)
+
+    @patch("Database.lastfm.requests.get")
+    def test_aborted_rate_limit_acquire_makes_no_request(self, mockGet):
+        client, limiter = self._client()
+        limiter.acquire.return_value = False
+        self.assertIsNone(client.getArtistInfo("x", stop_event=threading.Event()))
+        mockGet.assert_not_called()
+
+    @patch("Database.lastfm.requests.get")
+    def test_network_failure_is_transient(self, mockGet):
+        client, _ = self._client()
+        import requests as requestsModule
+        mockGet.side_effect = requestsModule.exceptions.ConnectionError("boom")
+        self.assertEqual(client.getArtistInfo("x"), ArtistInfoOutcome(OUTCOME_TRANSIENT, None))
 
 
 class ValidateApiKeyTestCase(unittest.TestCase):
