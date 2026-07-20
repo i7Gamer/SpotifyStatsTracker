@@ -902,7 +902,19 @@ progress::-moz-progress-bar {
 .track-details-top {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 14px;
+}
+
+.track-header {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+@media (max-width: 600px) {
+  .track-details-top {
+    gap: 0;
+  }
 }
 
 .track-details a {
