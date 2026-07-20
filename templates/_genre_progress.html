@@ -11,8 +11,11 @@
   {% for label, category in [("Songs", coverage.song), ("Albums", coverage.album), ("Artists", coverage.artist)] %}
   <div style="display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.6rem;">
     <span style="flex: 0 0 4.5rem; font-size: 0.85rem; color: var(--muted, #aaa);">{{ label }}</span>
-    <div style="flex: 1; background: rgba(255, 255, 255, 0.08); border-radius: 4px; height: 10px; overflow: hidden;">
+    <div style="position: relative; flex: 1; background: rgba(255, 255, 255, 0.08); border-radius: 4px; height: 10px; overflow: hidden;">
       <div style="width: {{ [category.percent, 100] | min }}%; background: var(--accent); height: 100%; border-radius: 4px;"></div>
+      {% if category.ownPercent is defined and category.ownPercent < category.percent %}
+      <div title="Real (non-inherited) coverage: {{ category.ownPercent }}%" style="position: absolute; top: 0; left: 0; width: {{ [category.ownPercent, 100] | min }}%; background: var(--compare-theirs); height: 100%; border-radius: 4px;"></div>
+      {% endif %}
     </div>
     <span style="flex: 0 0 11rem; font-size: 0.8rem; color: var(--muted, #aaa); text-align: right;">
       {{ category.percent }}% ({{ "{:,}".format(category.covered) }} / {{ "{:,}".format(category.total) }} plays)
