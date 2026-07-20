@@ -511,6 +511,88 @@ class ArtistInfoBioTestCase(unittest.TestCase):
         self.assertIsNone(outcome.bio)
 
     @patch("Database.lastfm.requests.get")
+    def test_prefers_content_over_summary_when_both_present(self, mockGet):
+        """bio.content is the full, untruncated biography - bio.summary is
+        Last.fm's own ~300-char excerpt that cuts off mid-sentence with no
+        regard for sentence boundaries (confirmed against the live API)."""
+        client, _ = self._client()
+        mockGet.return_value = _response(payload={"artist": {"name": "x", "bio": {
+            "summary": "A truncated excerpt that stops",
+            "content": "The full biography text, complete and unabridged.",
+        }}})
+        outcome = client.getArtistInfo("x")
+        self.assertEqual(outcome.bio, "The full biography text, complete and unabridged.")
+
+    @patch("Database.lastfm.requests.get")
+    def test_falls_back_to_summary_when_content_is_missing_or_blank(self, mockGet):
+        client, _ = self._client()
+        for bioObj in ({"summary": "A short bio."},
+                       {"summary": "A short bio.", "content": ""},
+                       {"summary": "A short bio.", "content": "   "}):
+            with self.subTest(bioObj=bioObj):
+                mockGet.return_value = _response(payload={"artist": {"name": "x", "bio": bioObj}})
+                outcome = client.getArtistInfo("x")
+                self.assertEqual(outcome.bio, "A short bio.")
+
+    @patch("Database.lastfm.requests.get")
+    def test_content_under_max_length_is_returned_in_full(self, mockGet):
+        client, _ = self._client()
+        text = "A short but complete biography of the artist."
+        mockGet.return_value = _response(payload={"artist": {"name": "x", "bio": {"content": text}}})
+        outcome = client.getArtistInfo("x")
+        self.assertEqual(outcome.bio, text)
+
+    @patch("Database.lastfm.requests.get")
+    def test_long_bio_truncates_to_the_last_sentence_boundary_within_max_length(self, mockGet):
+        client, _ = self._client()
+        sentences = [f"This is sentence number {i} in a long biography." for i in range(1, 30)]
+        fullText = " ".join(sentences)
+        self.assertGreater(len(fullText), lastfm.BIO_MAX_LENGTH)   #< sanity check on the fixture itself
+        mockGet.return_value = _response(payload={"artist": {"name": "x", "bio": {"content": fullText}}})
+
+        outcome = client.getArtistInfo("x")
+
+        self.assertLessEqual(len(outcome.bio), lastfm.BIO_MAX_LENGTH)
+        self.assertTrue(outcome.bio.endswith("."))
+        self.assertTrue(fullText.startswith(outcome.bio))   #< a clean prefix - no mid-sentence cut
+
+    @patch("Database.lastfm.requests.get")
+    def test_content_boilerplate_is_stripped_without_a_double_period_artifact(self, mockGet):
+        content = ('The artist released several acclaimed albums over a long career. '
+                  '<a href="https://www.last.fm/music/Some+Artist">Read more on Last.fm</a>. '
+                  'User-contributed text is available under the Creative Commons By-SA License; '
+                  'additional terms may apply.')
+        client, _ = self._client()
+        mockGet.return_value = _response(payload={"artist": {"name": "x", "bio": {"content": content}}})
+
+        outcome = client.getArtistInfo("x")
+
+        self.assertNotIn(" . ", outcome.bio)   #< stripping the link must not leave "sentence. ."
+        self.assertNotIn("Read more on Last.fm", outcome.bio)
+        self.assertIn("Creative Commons By-SA License", outcome.bio)
+        self.assertTrue(outcome.bio.startswith(
+            "The artist released several acclaimed albums over a long career."))
+
+    @patch("Database.lastfm.requests.get")
+    def test_attribution_is_appended_after_truncation_not_counted_toward_the_budget(self, mockGet):
+        client, _ = self._client()
+        sentences = [f"This is sentence number {i} in a long biography." for i in range(1, 30)]
+        prose = " ".join(sentences)
+        content = (prose + ' <a href="https://last.fm/x">Read more on Last.fm</a>. '
+                  'User-contributed text is available under the Creative Commons By-SA License; '
+                  'additional terms may apply.')
+        mockGet.return_value = _response(payload={"artist": {"name": "x", "bio": {"content": content}}})
+
+        outcome = client.getArtistInfo("x")
+
+        self.assertTrue(outcome.bio.endswith(
+            "User-contributed text is available under the Creative Commons By-SA License; "
+            "additional terms may apply."))
+        prosePart = outcome.bio.rsplit("User-contributed", 1)[0].strip()
+        self.assertLessEqual(len(prosePart), lastfm.BIO_MAX_LENGTH)
+        self.assertTrue(prosePart.endswith("."))
+
+    @patch("Database.lastfm.requests.get")
     def test_missing_or_empty_bio_reads_as_none(self, mockGet):
         client, _ = self._client()
         for payload in ({"artist": {"name": "x"}}, {"artist": {"name": "x", "bio": {}}},

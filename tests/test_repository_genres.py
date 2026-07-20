@@ -178,6 +178,53 @@ class GenreWriteTestCase(DatabaseTestCase):
         self.assertIsNone(state["bio"])
         self.assertIsNone(state["attempted_at"])
 
+    def test_requeue_corrupted_biographies_clears_bios_missing_terminal_punctuation(self):
+        """The 1.26.0 -> 1.27.0 migration's lever: bios fetched before the
+        bio.content + sentence-boundary-truncation fix landed are stuck
+        mid-sentence forever (bio IS NOT NULL, so they'd never re-enter
+        getArtistsMissingBiographies on their own) - this clears them back
+        to untried so the corrected extraction re-runs immediately."""
+        db = self._db()
+        db.repo.setArtistBio("a1", "This bio was cut off mid-sen")   #< no terminal punctuation
+
+        cleared = db.repo.requeueCorruptedBiographies()
+
+        self.assertEqual(cleared, 1)
+        state = db.repo.getArtistBioState("a1")
+        self.assertIsNone(state["bio"])
+        self.assertIsNone(state["attempted_at"])
+
+    def test_requeue_corrupted_biographies_leaves_well_formed_bios_alone(self):
+        db = self._db()
+        db.repo.setArtistBio("a1", "This bio ends properly.")
+
+        cleared = db.repo.requeueCorruptedBiographies()
+
+        self.assertEqual(cleared, 0)
+        self.assertEqual(db.repo.getArtistBioState("a1")["bio"], "This bio ends properly.")
+
+    def test_requeue_corrupted_biographies_accepts_exclamation_and_question_marks(self):
+        db = self._db()
+        db.repo.setArtistBio("a1", "What a band!")
+
+        cleared = db.repo.requeueCorruptedBiographies()
+
+        self.assertEqual(cleared, 0)
+
+    def test_requeue_corrupted_biographies_ignores_artists_with_no_bio(self):
+        """A NULL bio (never attempted, or a definitive "no bio available")
+        isn't corrupted text - it must not be swept up and reset."""
+        db = self._db()
+        before = time.time()
+        db.repo.setArtistBio("a1", None)
+
+        cleared = db.repo.requeueCorruptedBiographies()
+
+        self.assertEqual(cleared, 0)
+        state = db.repo.getArtistBioState("a1")
+        self.assertIsNone(state["bio"])
+        self.assertGreaterEqual(state["attempted_at"], before)   #< untouched, not re-cleared
+
 
 class GenreQueueTestCase(DatabaseTestCase):
     """Queue semantics: play-count priority, own vs global scope, and the

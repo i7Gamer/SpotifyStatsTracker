@@ -2500,6 +2500,29 @@ class Repository:
                 (bio, time.time(), artistId),
             )
 
+    def requeueCorruptedBiographies(self) -> int:
+        """Clears bio and bio_attempted_at for artists whose stored bio
+        doesn't end in terminal punctuation - the mid-sentence cutoff left
+        behind by fetches made before the bio.content + sentence-boundary
+        truncation fix (bio.summary was Last.fm's own truncated excerpt, cut
+        at a fixed character budget with no regard for sentence boundaries).
+        Clearing bio_attempted_at (not just bio) re-enters them at the front
+        of getArtistsMissingBiographies immediately instead of after the
+        30-day retry window - the same lever requeueLastfmEntitiesWithoutOwnGenres
+        uses for the genre backlog. A NULL bio (never attempted, or a
+        definitive no-bio result) is left alone - it isn't corrupted text.
+        Returns how many artists were requeued."""
+        conn = self._conn()
+        with conn:
+            cleared = conn.execute(
+                """
+                UPDATE artists SET bio = NULL, bio_attempted_at = NULL
+                WHERE bio IS NOT NULL
+                  AND bio NOT LIKE '%.' AND bio NOT LIKE '%!' AND bio NOT LIKE '%?'
+                """
+            ).rowcount
+        return cleared
+
     def getArtistsMissingBiographies(self, limit: int, username: str | None = None) -> list[dict]:
         """Played PRIMARY (position-0) artists still needing a Last.fm
         artist.getinfo lookup, most-played first - the background biography

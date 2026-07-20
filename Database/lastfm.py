@@ -263,11 +263,36 @@ def _extractAlbumInfoTags(payload) -> list:
 # dependency added just for this; the tags are simply stripped, converting
 # the bio to safe plain text), and the now-dead link *text* is dropped too
 # rather than left as an orphaned, unclickable "Read more on Last.fm" phrase.
-# The trailing Creative Commons attribution sentence is left in place - it's
-# already exactly the license notice CC-BY-SA requires, so stripping it would
-# just mean re-adding an equivalent notice by hand.
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
-_BIO_READ_MORE_TEXT = "Read more on Last.fm"
+
+# artist.getinfo's bio.summary is Last.fm's OWN excerpt of bio.content,
+# truncated at a fixed character budget with no regard for sentence
+# boundaries - confirmed against the live API: it routinely cuts off
+# mid-sentence ("...As she grew interested in pursuing a music career").
+# bio.content is the full, untruncated biography, so it's always preferred;
+# summary is only a fallback for the rare response missing content. Since
+# content can run several thousand characters, it's truncated ourselves
+# (see _truncateBioToSentence) to a length that snaps back to a real
+# sentence end instead of Last.fm's mid-word cut.
+BIO_MAX_LENGTH = 600
+
+# Both bio.summary and bio.content end with this same suffix - a "Read more"
+# link, and (content only) a Creative Commons attribution sentence Last.fm
+# requires for reproducing wiki text. Both are HTML-stripped by the time this
+# runs, so the anchor text reads as plain "Read more on Last.fm". Removing
+# them as one unit (rather than a plain substring replace of just the link
+# text) avoids leaving a stray "sentence. ." where the link used to sit
+# between two periods. The attribution is captured separately so it can be
+# re-appended after truncation - it must never itself be cut off, and its
+# canonical wording (_BIO_ATTRIBUTION_TEXT) is used instead of whatever
+# whitespace/punctuation variant was actually captured.
+_BIO_TRAILING_BOILERPLATE_RE = re.compile(
+    r"\s*Read more on Last\.fm\.?\s*"
+    r"(?P<cc>User-contributed text is available under the Creative Commons By-SA License;?"
+    r"\s*additional terms may apply\.?)?\s*$",
+    re.IGNORECASE)
+_BIO_ATTRIBUTION_TEXT = ("User-contributed text is available under the Creative Commons "
+                         "By-SA License; additional terms may apply.")
 
 # Some artist names (e.g. containing a literal "+") resolve on Last.fm's side
 # to a distinct "incorrect tag" merge/redirect entity instead of the real
@@ -278,24 +303,55 @@ _BIO_READ_MORE_TEXT = "Read more on Last.fm"
 _INCORRECT_TAG_BIO_MARKER = "is an incorrect tag for"
 
 
+def _truncateBioToSentence(text: str, maxLength: int) -> str:
+    """Cuts `text` back to at most `maxLength` characters, snapping to the
+    last sentence-ending punctuation so a displayed bio never stops mid-
+    sentence the way Last.fm's own bio.summary truncation does. Falls back
+    to the last word boundary only if no sentence end exists within the
+    budget (one unusually long first sentence) - never cuts mid-word, and
+    never fabricates an ellipsis."""
+    if len(text) <= maxLength:
+        return text
+    window = text[:maxLength]
+    boundary = max(window.rfind(". "), window.rfind("! "), window.rfind("? "))
+    if boundary != -1:
+        return window[:boundary + 1]
+    cutoff = window.rfind(" ")
+    return window[:cutoff] if cutoff > 0 else window
+
+
 def _extractArtistBio(payload) -> str | None:
-    """Cleaned plain-text artist.getinfo bio summary, or None if there's
-    nothing usable (missing/empty, or Last.fm's own "incorrect tag" merge-
-    redirect boilerplate - see _INCORRECT_TAG_BIO_MARKER)."""
+    """Cleaned, length-capped plain-text artist.getinfo biography, or None if
+    there's nothing usable (missing/empty, or Last.fm's own "incorrect tag"
+    merge-redirect boilerplate - see _INCORRECT_TAG_BIO_MARKER). Prefers the
+    full bio.content over the pre-truncated bio.summary (see BIO_MAX_LENGTH's
+    comment) and re-appends the Creative Commons attribution sentence after
+    truncation when the source carried one, so it's always complete."""
     artist = payload.get("artist") if isinstance(payload, dict) else None
     if not isinstance(artist, dict):
         return None
     bio = artist.get("bio")
     if not isinstance(bio, dict):
         return None
-    summary = bio.get("summary")
-    if not isinstance(summary, str):
+    text = bio.get("content")
+    if not isinstance(text, str) or not text.strip():
+        text = bio.get("summary")
+    if not isinstance(text, str):
         return None
-    text = html.unescape(_HTML_TAG_RE.sub("", summary))
-    text = text.replace(_BIO_READ_MORE_TEXT, "")
+
+    text = html.unescape(_HTML_TAG_RE.sub("", text))
+    match = _BIO_TRAILING_BOILERPLATE_RE.search(text)
+    hasAttribution = False
+    if match is not None:
+        hasAttribution = match.group("cc") is not None
+        text = text[:match.start()]
     text = " ".join(text.split())
     if not text or _INCORRECT_TAG_BIO_MARKER in text:
         return None
+
+    text = _truncateBioToSentence(text, BIO_MAX_LENGTH)
+    if hasAttribution:
+        text = f"{text} {_BIO_ATTRIBUTION_TEXT}"
     return text
 
 
