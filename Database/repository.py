@@ -2129,6 +2129,19 @@ class Repository:
             (username, file_hash)
         )
 
+    def _calculateFolderSize(self, folder_path: Path) -> int:
+        """Calculate total size of all files in a folder and its subdirectories."""
+        total_size = 0
+        if not folder_path.exists():
+            return 0
+        try:
+            for file in folder_path.rglob("*"):
+                if file.is_file():
+                    total_size += file.stat().st_size
+        except Exception:
+            pass
+        return total_size
+
     def getGlobalDatabaseStats(self) -> dict:
         conn = self._conn()
         tracks_count = conn.execute("SELECT COUNT(*) FROM tracks").fetchone()[0]
@@ -2136,11 +2149,19 @@ class Repository:
         albums_count = conn.execute("SELECT COUNT(*) FROM albums").fetchone()[0]
         plays_count = conn.execute("SELECT COUNT(*) FROM plays").fetchone()[0]
         total_time_ms = conn.execute("SELECT SUM(time_played) FROM plays").fetchone()[0] or 0
-        
+
         try:
             db_size = self.connectionManager.dbPath.stat().st_size
         except Exception:
             db_size = 0
+
+        try:
+            from Database.database import MEDIA_DIR
+            media_size = self._calculateFolderSize(MEDIA_DIR)
+        except Exception:
+            media_size = 0
+
+        total_storage_bytes = db_size + media_size
 
         return {
             "tracks": tracks_count,
@@ -2148,7 +2169,7 @@ class Repository:
             "albums": albums_count,
             "plays": plays_count,
             "total_time_ms": total_time_ms,
-            "db_size_bytes": db_size,
+            "db_size_bytes": total_storage_bytes,
         }
 
     def getAllUsersDetails(self, username: str | None = None) -> list[dict]:

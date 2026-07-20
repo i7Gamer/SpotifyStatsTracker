@@ -202,6 +202,28 @@ class TestOverviewDatabaseStats(unittest.TestCase):
         self.assertEqual(stats["total_time_ms"], 2000)
         self.assertGreater(stats["db_size_bytes"], 0)
 
+    def test_repository_get_global_stats_includes_media_folder(self):
+        """Verify that db_size_bytes includes both database and media folder sizes."""
+        stats_before = self.repo.getGlobalDatabaseStats()
+        db_size_before = stats_before["db_size_bytes"]
+
+        # Create a test file in the media directory
+        media_dir = Path(__file__).resolve().parent.parent / "Database" / "Data" / "Media"
+        media_dir.mkdir(parents=True, exist_ok=True)
+        test_file = media_dir / "test_image.jpeg"
+        test_content = b"test" * 256  # Create a file with ~1KB of data
+        test_file.write_bytes(test_content)
+
+        try:
+            stats_after = self.repo.getGlobalDatabaseStats()
+            db_size_after = stats_after["db_size_bytes"]
+            # The size should have increased by at least the size of our test file
+            self.assertGreaterEqual(db_size_after - db_size_before, len(test_content))
+        finally:
+            # Cleanup
+            if test_file.exists():
+                test_file.unlink()
+
     def test_repository_get_all_users_details(self):
         users = self.repo.getAllUsersDetails()
         self.assertEqual(len(users), 0)
