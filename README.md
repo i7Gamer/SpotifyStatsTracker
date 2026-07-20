@@ -68,9 +68,9 @@ services:
     restart: always
 ```
 
-### Then you can run `docker compose up -d` and the app should start on `http://127.0.0.1:5000` or `http://yourIp:5000`
+Then you can run `docker compose up -d` and the app should start on `http://127.0.0.1:5000` or `http://yourIp:5000`
 
-### To update the container if an update is available, run `docker compose pull`
+To update the container if an update is available, run `docker compose pull`
 
 ### Upgrading from an older version
 
