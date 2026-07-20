@@ -2382,6 +2382,29 @@ class Repository:
             ).rowcount
         return cleared
 
+    def requeueAlbumsLastfmWithoutOwnGenres(self) -> int:
+        """Clears lastfm_attempted_at for albums holding no own (non-inherited)
+        genre rows, re-entering them into the backfill queue immediately - the
+        1.24.0 -> 1.25.0 migration's lever after the album.getinfo fallback fix
+        (album.gettoptags was confirmed to miss real tag data for ~46% of
+        tag-less albums that getinfo has). Scoped to albums only, unlike
+        requeueLastfmEntitiesWithoutOwnGenres: that fix doesn't touch artist or
+        track lookups, so requeuing those too would just re-run unchanged
+        results against the shared rate limiter for no benefit. Existing
+        inherited rows stay in place so genre stats keep working until the
+        re-run replaces them. Returns how many albums were requeued."""
+        conn = self._conn()
+        with conn:
+            cleared = conn.execute(
+                """
+                UPDATE albums SET lastfm_attempted_at = NULL
+                WHERE lastfm_attempted_at IS NOT NULL
+                  AND NOT EXISTS (SELECT 1 FROM album_genres g
+                                  WHERE g.album_id = albums.id AND g.inherited = 0)
+                """
+            ).rowcount
+        return cleared
+
     def getArtistLastfmState(self, artistId: str) -> dict:
         """Attempt stamp + current genres for one artist - the inheritance
         decision for a tag-less track/album re-reads this at process time (the
