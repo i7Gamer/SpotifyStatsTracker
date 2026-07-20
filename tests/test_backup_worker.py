@@ -55,6 +55,28 @@ class TestRunBackup(BackupWorkerTestCase):
         rows = conn.execute("SELECT note FROM plays").fetchall()
         self.assertEqual(rows, [("keep me safe",)])
 
+    def test_backup_captures_committed_but_uncheckpointed_wal_data(self):
+        """Guards the exact risk runBackup() exists to avoid: a raw copy of
+        just spotify_stats.db would miss rows sitting in the -wal file that
+        haven't been checkpointed into the main file yet. sqlite3.Connection.backup()
+        is WAL-aware and must capture them regardless of checkpoint state."""
+        conn = sqlite3.connect(self.dbPath)
+        self.addCleanup(conn.close)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("INSERT INTO plays (note) VALUES ('still in the wal')")
+        conn.commit()
+        # Sanity check the scenario is real: the write actually landed in the
+        # WAL file rather than being auto-checkpointed into the main file.
+        self.assertTrue((self.root / "spotify_stats.db-wal").exists())
+
+        worker = self._makeWorker()
+        backupPath = worker.runBackup()
+
+        snapshot = sqlite3.connect(backupPath)
+        self.addCleanup(snapshot.close)
+        notes = {row[0] for row in snapshot.execute("SELECT note FROM plays")}
+        self.assertEqual(notes, {"keep me safe", "still in the wal"})
+
     def test_no_partial_files_left_behind(self):
         worker = self._makeWorker()
 
