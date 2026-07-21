@@ -1,4 +1,6 @@
 import datetime
+import json
+import re
 import unittest
 from unittest.mock import patch, MagicMock
 import sys
@@ -18,6 +20,14 @@ import Database.utils as utilsModule
 def _ts(year, month=6, day=1, hour=12):
     """Unix timestamp (seconds) for a UTC datetime, matching test_chart_stats.py."""
     return datetime.datetime(year, month, day, hour, tzinfo=datetime.timezone.utc).timestamp()
+
+
+def _wrappedBootstrap(body):
+    """The parsed JSON from wrapped.html's <script id="wrapped-bootstrap"> data
+    island - the server-rendered config/timeSeries that static/js/wrapped.js reads."""
+    m = re.search(r'<script type="application/json" id="wrapped-bootstrap">(.*?)</script>', body, re.S)
+    assert m, "wrapped-bootstrap data island not found in rendered page"
+    return json.loads(m.group(1))
 
 
 def _song(trackId, name, plays, firstListenedAt):
@@ -93,10 +103,10 @@ class TestWrappedYearSelection(_WrappedRouteTestBase):
         db = self._makeDb(earliestPlayedAt=_ts(2023))
 
         resp = self._getWrapped(dash, db)
-        body = resp.data.decode()
+        bootstrap = _wrappedBootstrap(resp.data.decode())
 
-        self.assertIn("const IS_PUBLIC_VIEW = false;", body)
-        self.assertIn('const WRAPPED_FETCH_URL = "/wrapped";', body)
+        self.assertFalse(bootstrap["isPublicView"])
+        self.assertEqual(bootstrap["fetchUrl"], "/wrapped")
 
     def test_defaults_to_current_year(self):
         dash = self._makeApp()

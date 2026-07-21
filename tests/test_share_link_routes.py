@@ -15,6 +15,7 @@ from app import SpotifyDashboardApp, RATE_LIMIT_MAX_ATTEMPTS, RATE_LIMIT_ERROR_M
 from _app_factory import AppTestCase
 import Database.utils as utilsModule
 from test_charts_genres import coverageDict
+from test_wrapped_route import _wrappedBootstrap
 
 _SECRET_KEY_PATCH = 'app.SpotifyDashboardApp._get_or_create_secret_key'
 
@@ -555,11 +556,11 @@ class TestPublicSharedWrappedPage(PublicSharedWrappedTestCase):
         token = self._createLink()
 
         resp = self._getShared(token)
-        body = resp.data.decode()
+        bootstrap = _wrappedBootstrap(resp.data.decode())
 
-        self.assertIn("const IS_PUBLIC_VIEW = true;", body)
-        self.assertIn('const SHARE_OWNER_NAME = "alice";', body)
-        self.assertIn(f'const WRAPPED_FETCH_URL = "/shared/{token}";', body)
+        self.assertTrue(bootstrap["isPublicView"])
+        self.assertEqual(bootstrap["shareOwnerName"], "alice")
+        self.assertEqual(bootstrap["fetchUrl"], f"/shared/{token}")
 
     def test_genre_locked_progress_uses_the_owners_username(self):
         token = self._createLink()
