@@ -279,7 +279,17 @@ class Listener:
         try:
             self.sp.current_user()
             return True
-        except:
+        except Exception as e:
+            error_str = str(e).lower()
+            # Spotify sometimes answers current_user() with a non-JSON
+            # fallback/bot-check page (e.g. an "Oh nein!" HTML error page)
+            # instead of the profile - transient, not proof the cookies are
+            # actually invalid. Treat it like _validateCurrentUser/_checkOnce
+            # already do: trust the cookie check above and stay logged in,
+            # rather than bouncing the user to the login flow.
+            if "json" in error_str or _is_rate_limit_error(e):
+                logger.warning("Transient error checking login status (rate limit or malformed response): %s", parseError(e))
+                return True
             return False
 
     def _validateCurrentUser(self) -> bool:

@@ -93,6 +93,31 @@ class TestContaminationBlocksRecording(unittest.TestCase):
         self.assertFalse(listener.run)
 
 
+class TestIsLoggedInTransientErrors(unittest.TestCase):
+    """Spotify sometimes answers current_user() with a non-JSON fallback/
+    bot-check page (e.g. an "Oh nein!" HTML error page) instead of the
+    profile. isLoggedIn() must treat that like _validateCurrentUser/
+    _checkOnce already do - as transient - rather than bouncing a validly
+    logged-in user back through the login flow."""
+
+    def test_transient_json_error_still_reports_logged_in(self):
+        listener, sp = _makeListener("expected@example.com")
+        sp.current_user.side_effect = RuntimeError(
+            "Invalid JSON (Status: 200, Type: str, Response: <!DOCTYPE html>...)"
+        )
+        self.assertTrue(listener.isLoggedIn())
+
+    def test_rate_limit_error_still_reports_logged_in(self):
+        listener, sp = _makeListener("expected@example.com")
+        sp.current_user.side_effect = RuntimeError("429 Too Many Requests")
+        self.assertTrue(listener.isLoggedIn())
+
+    def test_non_transient_error_reports_not_logged_in(self):
+        listener, sp = _makeListener("expected@example.com")
+        sp.current_user.side_effect = RuntimeError("401 Unauthorized")
+        self.assertFalse(listener.isLoggedIn())
+
+
 class TestContaminatedListenerHealth(DatabaseTestCase):
     def _startWithListener(self, listener):
         db = self._makeDb({}, [])
