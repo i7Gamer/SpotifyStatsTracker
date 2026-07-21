@@ -1,6 +1,8 @@
 .git
 .gitignore
+.github/
 .history
+**/__pycache__/
 __pycache__
 *.pyc
 *.pyo
@@ -29,3 +31,6 @@ Database/__pycache__
 secrets/
 tmp/
 .tmp
+tests/
+docker-compose.yml
+dev.py
