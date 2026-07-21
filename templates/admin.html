@@ -99,27 +99,35 @@
       Share of the whole shared catalog with Last.fm data, regardless of who played what.
     </p>
     {% for label, category in [("Songs (genre)", catalog_genre_coverage.song), ("Albums (genre)", catalog_genre_coverage.album), ("Artists (genre)", catalog_genre_coverage.artist)] %}
-    <div style="display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.6rem;">
-      <span style="flex: 0 0 7rem; font-size: 0.85rem; color: var(--muted);">{{ label }}</span>
-      <div style="position: relative; flex: 1; background: rgba(255, 255, 255, 0.08); border-radius: 4px; height: 10px; overflow: hidden;">
+    <div style="margin-bottom: 0.85rem;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.3rem;">
+        <span style="font-size: 0.85rem; font-weight: 500; color: var(--fg);">{{ label }}</span>
+        <span style="font-size: 0.85rem; font-weight: 600; color: var(--accent);">{{ category.percent }}%</span>
+      </div>
+      <div style="position: relative; width: 100%; background: rgba(255, 255, 255, 0.08); border-radius: 4px; height: 8px; overflow: hidden; margin-bottom: 0.3rem;">
         <div style="width: {{ [category.percent, 100] | min }}%; background: var(--accent); height: 100%; border-radius: 4px;"></div>
       </div>
-      <span style="flex: 0 0 9rem; font-size: 0.8rem; color: var(--muted); text-align: right;">
-        {{ category.percent }}% ({{ "{:,}".format(category.covered) }} / {{ "{:,}".format(category.total) }})
-      </span>
+      <div style="display: flex; justify-content: space-between; font-size: 0.8rem; color: var(--muted);">
+        <span>Covered: {{ "{:,}".format(category.covered) }} / {{ "{:,}".format(category.total) }}</span>
+        <span>{{ category.percent }}%</span>
+      </div>
     </div>
     {% endfor %}
-    <p style="font-size: 0.85rem; color: var(--muted); margin: 0.75rem 0 1rem 0;">Overall: <strong>{{ catalog_genre_coverage.overall.percent }}%</strong></p>
+    <p style="font-size: 0.85rem; color: var(--muted); margin: 0.5rem 0 1.25rem 0;">Overall Genre Coverage: <strong>{{ catalog_genre_coverage.overall.percent }}%</strong></p>
     {% for label, category in [("Artist bios", catalog_biography_coverage.artist), ("Album bios", catalog_biography_coverage.album)] %}
-    <div style="display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.6rem;">
-      <span style="flex: 0 0 7rem; font-size: 0.85rem; color: var(--muted);">{{ label }}</span>
-      <div style="position: relative; flex: 1; background: rgba(255, 255, 255, 0.08); border-radius: 4px; height: 10px; overflow: hidden;">
-        {% set percent = (category.covered / category.total * 100) if category.total else 0 %}
+    {% set percent = (category.covered / category.total * 100) if category.total else 0 %}
+    <div style="margin-bottom: 0.85rem;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.3rem;">
+        <span style="font-size: 0.85rem; font-weight: 500; color: var(--fg);">{{ label }}</span>
+        <span style="font-size: 0.85rem; font-weight: 600; color: var(--accent);">{{ "%.1f"|format(percent) }}%</span>
+      </div>
+      <div style="position: relative; width: 100%; background: rgba(255, 255, 255, 0.08); border-radius: 4px; height: 8px; overflow: hidden; margin-bottom: 0.3rem;">
         <div style="width: {{ [percent, 100] | min }}%; background: var(--accent); height: 100%; border-radius: 4px;"></div>
       </div>
-      <span style="flex: 0 0 9rem; font-size: 0.8rem; color: var(--muted); text-align: right;">
-        {{ "%.1f"|format(percent) }}% ({{ "{:,}".format(category.covered) }} / {{ "{:,}".format(category.total) }})
-      </span>
+      <div style="display: flex; justify-content: space-between; font-size: 0.8rem; color: var(--muted);">
+        <span>Covered: {{ "{:,}".format(category.covered) }} / {{ "{:,}".format(category.total) }}</span>
+        <span>{{ "%.1f"|format(percent) }}%</span>
+      </div>
     </div>
     {% endfor %}
   </article>

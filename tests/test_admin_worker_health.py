@@ -151,6 +151,68 @@ class TestAdminWorkerHealthRoute(unittest.TestCase):
             self.assertIn("Wrapped Calculation Workers", body)
             self.assertIn("Database Backup Service", body)
 
+    @patch('app.SpotifyDashboardApp._get_or_create_secret_key', return_value='test-secret-key')
+    @patch('app.SpotifyDashboardApp.startVersionCheck_thread')
+    @patch('app.SpotifyDashboardApp.checkLogin_thread')
+    @patch('app.migrateIfNeeded')
+    @patch('app.Path.exists')
+    def test_catalog_backfill_coverage_layout_details_below_bar(self, mock_exists, mock_migrate, mock_check, mock_version, mock_secret):
+        mock_exists.return_value = False
+        dash = SpotifyDashboardApp()
+
+        users = [
+            {
+                "username": "alice", "email": "alice@example.com",
+                "cookies_json": None, "spotify_client_id": None, "spotify_refresh_token": None,
+                "lastfm_api_key": None, "created_at": 1718000000.0, "is_admin": True,
+            }
+        ]
+
+        insights = {
+            "getCatalogGenreCoverage": {
+                "song": {"covered": 10, "total": 20, "percent": 50.0},
+                "album": {"covered": 15, "total": 30, "percent": 50.0},
+                "artist": {"covered": 20, "total": 40, "percent": 50.0},
+                "overall": {"percent": 50.0},
+            },
+            "getCatalogBiographyCoverage": {
+                "artist": {"covered": 5, "total": 10}, "album": {"covered": 8, "total": 16},
+            },
+            "getRecentRegistrationCounts": {"last_7_days": 0, "last_30_days": 0},
+            "getInstanceShareCounts": {"pending": 0, "accepted": 0},
+            "getActiveShareLinksCount": 0,
+        }
+
+        patches = [
+            patch.object(dash.repo, 'getGlobalDatabaseStats', return_value={}),
+            patch.object(dash.repo, 'getAllUsersDetails', return_value=users),
+            patch.object(dash.repo, 'isAdmin', return_value=True),
+            patch.object(dash.repo, 'getPlaysCount', return_value=10),
+            patch.object(dash.repo, 'getSkipCount', return_value=2),
+            patch.object(dash.repo, 'getAdminUsernames', return_value=['alice']),
+            patch.object(dash, 'is_user_logged_in', return_value=True),
+            patch.object(dash, 'get_username_for_email', return_value='alice'),
+            patch.object(dash, 'get_user_db', return_value=None),
+        ]
+        for name, value in insights.items():
+            patches.append(patch.object(dash.repo, name, return_value=value))
+
+        with contextlib.ExitStack() as stack:
+            for p in patches:
+                stack.enter_context(p)
+            client = dash.app.test_client()
+            with client.session_transaction() as sess:
+                sess['email'] = 'alice@example.com'
+            resp = client.get("/admin")
+            body = resp.data.decode()
+
+            self.assertEqual(resp.status_code, 200)
+            self.assertIn("Covered: 10 / 20", body)
+            self.assertIn("Covered: 15 / 30", body)
+            self.assertIn("Covered: 20 / 40", body)
+            self.assertIn("Covered: 5 / 10", body)
+            self.assertIn("Covered: 8 / 16", body)
+
 
 if __name__ == "__main__":
     unittest.main()
