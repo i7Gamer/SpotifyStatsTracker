@@ -101,6 +101,18 @@ class TestGetAllUsersDetailsFilter(RepositoryAdminTestCase):
         self.assertIs(rows["alice"], True)
         self.assertIs(rows["bob"], False)
 
+    def test_includes_spotify_needs_reauth(self):
+        """/admin's users table can only show a needs-reauth badge if this
+        row carries the flag - it was missing from the SELECT entirely."""
+        self.repo.upsertUser("alice", "alice@example.com")
+        self.repo.setSpotifyNeedsReauth("alice", True)
+        self.repo.upsertUser("bob", "bob@example.com")
+
+        rows = {r["username"]: r["spotify_needs_reauth"] for r in self.repo.getAllUsersDetails()}
+
+        self.assertTrue(rows["alice"])
+        self.assertFalse(rows["bob"])
+
 
 if __name__ == "__main__":
     unittest.main()

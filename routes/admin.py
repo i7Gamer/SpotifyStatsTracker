@@ -52,6 +52,7 @@ def register(app, dashboard):
                 sync_status = "Not Configured"
 
             has_api = bool(u["spotify_client_id"] and u["spotify_refresh_token"])
+            needs_reauth = bool(u.get("spotify_needs_reauth"))
 
             # Per-user background worker statuses for the Worker Health panel
             spotify_api_worker = {"configured": has_api, "running": False}
@@ -123,7 +124,7 @@ def register(app, dashboard):
                 "email": u_email,
                 "is_admin": u["is_admin"],
                 "sync_status": sync_status,
-                "spotify_api_status": "Configured" if has_api else "Not Configured",
+                "spotify_api_status": "Needs Re-Auth" if (has_api and needs_reauth) else ("Configured" if has_api else "Not Configured"),
                 #< .get(): raw row presence check only - the stored key
                 #  is encrypted and never needs decrypting here
                 "lastfm_api_status": "Configured" if u.get("lastfm_api_key") else "Not Configured",

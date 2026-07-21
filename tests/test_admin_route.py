@@ -149,6 +149,27 @@ class TestAdminUsersTable(AdminRouteTestBase):
         self.assertIn(b"Total Skips", resp.data)
         self.assertIn(b"7", resp.data)
 
+    def test_shows_needs_reauth_badge_instead_of_configured(self):
+        """A user whose stored refresh token was confirmed to lack the
+        recently-played scope (users.spotify_needs_reauth) must show as
+        distinctly needing re-authorization, not as a healthy 'Configured' -
+        otherwise nothing on /admin distinguishes them from an account that's
+        actually fine."""
+        dash = self._makeApp()
+        users = [dict(self._MOCK_USERS[0], spotify_needs_reauth=True, lastfm_api_key=None)]
+        resp = self._getAdmin(dash, isAdmin=True, users=users)
+        body = resp.data.decode()
+        self.assertIn("NEEDS RE-AUTH", body)
+        self.assertNotIn(">CONFIGURED<", body)   #< only the Last.fm column would say it, and it's unconfigured here
+
+    def test_configured_user_without_reauth_flag_still_shows_configured(self):
+        dash = self._makeApp()
+        users = [dict(self._MOCK_USERS[0], spotify_needs_reauth=False, lastfm_api_key=None)]
+        resp = self._getAdmin(dash, isAdmin=True, users=users)
+        body = resp.data.decode()
+        self.assertIn(">CONFIGURED<", body)
+        self.assertNotIn("NEEDS RE-AUTH", body)
+
     def test_headers_are_relabeled(self):
         dash = self._makeApp()
         resp = self._getAdmin(dash, isAdmin=True)

@@ -318,7 +318,8 @@ class UserQueries:
         user's own row - what a non-admin viewer is allowed to see (the full
         listing is admin-only, see app.py's overviewPage)."""
         conn = self._conn()
-        query = "SELECT username, email, cookies_json, spotify_client_id, spotify_refresh_token, lastfm_api_key, created_at, is_admin FROM users"
+        query = ("SELECT username, email, cookies_json, spotify_client_id, spotify_refresh_token, "
+                  "spotify_needs_reauth, lastfm_api_key, created_at, is_admin FROM users")
         params: tuple = ()
         if username is not None:
             query += " WHERE username=?"

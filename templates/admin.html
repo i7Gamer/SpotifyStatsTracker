@@ -55,7 +55,9 @@
             {% endif %}
           </td>
           <td style="padding: 16px 8px;">
-            {% if u.spotify_api_status == 'Configured' %}
+            {% if u.spotify_api_status == 'Needs Re-Auth' %}
+              <span class="badge badge-orange" title="Spotify rejected the last backfill request as missing the recently-played permission - re-authorization required.">NEEDS RE-AUTH</span>
+            {% elif u.spotify_api_status == 'Configured' %}
               <span class="badge badge-success">CONFIGURED</span>
             {% else %}
               <span class="badge badge-secondary">NOT CONFIGURED</span>
