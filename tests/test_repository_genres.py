@@ -274,30 +274,55 @@ class GenreQueueTestCase(DatabaseTestCase):
     def test_artist_queue_is_play_count_ordered_within_own_scope(self):
         db = self._db()
         rows = db.repo.getArtistsMissingGenres(10, username="user1")
-        self.assertEqual([r["id"] for r in rows], ["aX", "aY"])
-        self.assertEqual(rows[0]["play_count"], 3)
-        self.assertEqual(rows[0]["name"], "Artist X")
+        # aX (position 0) and aF (position 1) are both credited on all 3 plays
+        # of tA, so they tie on play_count and sort by id; aY trails on 1 play.
+        self.assertEqual([r["id"] for r in rows], ["aF", "aX", "aY"])
+        byId = {r["id"]: r for r in rows}
+        self.assertEqual(byId["aX"]["play_count"], 3)
+        self.assertEqual(byId["aX"]["name"], "Artist X")
 
-    def test_featured_artists_are_not_queued(self):
+    def test_artists_within_the_position_cutoff_are_queued(self):
+        """aF is credited at position 1 on tA - within
+        GENRE_BACKFILL_MAX_ARTIST_POSITION, so it's queued alongside the
+        primary artist, not just position-0 artists."""
         db = self._db()
         rows = db.repo.getArtistsMissingGenres(10, username="user1")
-        self.assertNotIn("aF", [r["id"] for r in rows])   #< only position-0 artists
+        byId = {r["id"]: r for r in rows}
+        self.assertIn("aF", byId)
+        self.assertEqual(byId["aF"]["play_count"], 3)   #< credited on all 3 plays of tA
+
+    def test_artists_beyond_the_position_cutoff_are_not_queued(self):
+        db = self._db()
+        from conftest import normalizeTrackForTest
+        db.repo.upsertTrack(normalizeTrackForTest(
+            {"id": "tD", "name": "Song D",
+             "artists": [{"id": f"aP{i}", "name": f"Artist P{i}"} for i in range(6)],
+             "album": self._album("alS", "Album S")}))
+        db.repo.insertPlay("user1", "tD", 6000, 5000, None)
+        db.repo.commit()
+
+        rows = db.repo.getArtistsMissingGenres(20, username="user1")
+        ids = [r["id"] for r in rows]
+        for i in range(5):   #< positions 0-4, within the cutoff
+            self.assertIn(f"aP{i}", ids)
+        self.assertNotIn("aP5", ids)   #< position 5, beyond the cutoff
 
     def test_global_scope_spans_all_users(self):
         db = self._db()
         rows = db.repo.getArtistsMissingGenres(10)
-        self.assertEqual([r["id"] for r in rows], ["aX", "aY", "aZ"])   #< 3 plays, then ties by id
+        # aF ties aX at 3 plays (id-sorted first); aY ties aZ at 1 play.
+        self.assertEqual([r["id"] for r in rows], ["aF", "aX", "aY", "aZ"])
 
     def test_limit_is_respected(self):
         db = self._db()
         rows = db.repo.getArtistsMissingGenres(1, username="user1")
-        self.assertEqual([r["id"] for r in rows], ["aX"])
+        self.assertEqual([r["id"] for r in rows], ["aF"])
 
     def test_recently_attempted_entities_leave_the_queue(self):
         db = self._db()
         db.repo.markArtistsLastfmAttempted(["aX"])
         rows = db.repo.getArtistsMissingGenres(10, username="user1")
-        self.assertEqual([r["id"] for r in rows], ["aY"])
+        self.assertEqual([r["id"] for r in rows], ["aF", "aY"])
 
     def test_empty_entities_requeue_after_the_retry_ttl(self):
         db = self._db()

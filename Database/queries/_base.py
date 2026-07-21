@@ -39,6 +39,14 @@ ALBUM_BACKFILL_RETRY_SECONDS = 7 * 24 * 3600
 # one-time fetch is the whole point of marking them attempted.
 GENRE_BACKFILL_RETRY_SECONDS = 30 * 24 * 3600
 
+# How many leading track_artists.position slots the genre backfiller queues
+# for an artist lookup - 0 is the primary credit; widened past 0 so
+# feature/collab-only artists (never anyone's primary) aren't permanently
+# excluded from the backfill. Bounded rather than unlimited: position <= 4
+# covers 99%+ of all real credit rows in practice, so it captures nearly
+# every feature-only artist without unboundedly widening the queue.
+GENRE_BACKFILL_MAX_ARTIST_POSITION = 4
+
 # How long the background biography backfiller waits before re-attempting an
 # artist whose fetch came back with no usable bio. An artist with real bio
 # text never re-enters the queue (see getArtistsMissingBiographies) - only a

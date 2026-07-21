@@ -150,10 +150,15 @@ class GenreQueries:
         }
 
     def getArtistsMissingGenres(self, limit: int, username: str | None = None) -> list[dict]:
-        """Played PRIMARY (position-0) artists still needing a Last.fm lookup,
-        most-played first. `username` scopes the queue (and the play counts) to
-        one user's history; None is the global queue a worker falls back to
-        once its owner's entities are done."""
+        """Played artists credited within the first
+        GENRE_BACKFILL_MAX_ARTIST_POSITION+1 track_artists positions (not just
+        the position-0 primary - feature/collab-only artists get queued too)
+        still needing a Last.fm lookup, most-played first. `username` scopes
+        the queue (and the play counts) to one user's history; None is the
+        global queue a worker falls back to once its owner's entities are
+        done. Because a track can now match more than one credited artist,
+        play_count reflects "plays on tracks where this artist is credited
+        within the cutoff", not "plays where this artist is primary"."""
         conn = self._conn()
         params: list = []
         userClause = self._queueUserClause(params, username)
@@ -162,7 +167,8 @@ class GenreQueries:
             f"""
             SELECT ar.id AS id, ar.name AS name, COUNT(*) AS play_count
             FROM plays p
-            JOIN track_artists ta ON ta.track_id = p.track_id AND ta.position = 0
+            JOIN track_artists ta ON ta.track_id = p.track_id
+                AND ta.position <= {GENRE_BACKFILL_MAX_ARTIST_POSITION}
             JOIN artists ar ON ar.id = ta.artist_id
             WHERE {userClause}(ar.lastfm_attempted_at IS NULL
                    OR (ar.lastfm_attempted_at < ?
