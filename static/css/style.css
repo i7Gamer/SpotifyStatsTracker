@@ -15,10 +15,9 @@
   --glow-color-1: rgba(251, 113, 123, 0.15);
   --glow-color-2: rgba(29, 185, 84, 0.1);
   --glow-color-3: rgba(25, 25, 25, 0.3);
-  /* Compare page identity colors: "you" is always the theme accent, "them"
-     is always this green (CHART_PALETTE[1] in charts.js reads it back so
-     the canvas series match the CSS exactly). */
-  --compare-theirs: #5DD97C;
+  /* Compare page identity colors: "you" is always the primary theme accent (var(--accent)), "them"
+     is always the secondary theme accent color (var(--accent-secondary)). */
+  --compare-theirs: var(--accent-secondary);
 }
 
 * {
