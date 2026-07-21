@@ -30,8 +30,8 @@ class TestServeArtistImageRoute(unittest.TestCase):
         mock_exists.return_value = False
         return SpotifyDashboardApp()
 
-    @patch('app.send_from_directory')
-    @patch('app.os.path.exists')
+    @patch('routes.media.send_from_directory')
+    @patch('routes.media.os.path.exists')
     def test_delegates_lazy_fetch_to_the_cached_user_database(self, mock_path_exists, mock_send):
         """The route must not reimplement the scrape itself; it should delegate to the
         already-instantiated Database for that user so the fetch is deduplicated
@@ -58,8 +58,8 @@ class TestServeArtistImageRoute(unittest.TestCase):
         # is under the shared Media/artists dir, with no username segment.
         self.assertTrue(str(calledPath).endswith(os.path.join("Media", "artists", "artist123.jpeg")))
 
-    @patch('app.send_from_directory')
-    @patch('app.os.path.exists')
+    @patch('routes.media.send_from_directory')
+    @patch('routes.media.os.path.exists')
     def test_skips_lazy_fetch_when_file_already_present(self, mock_path_exists, mock_send):
         mock_path_exists.return_value = True
         mock_send.return_value = "OK"
@@ -78,8 +78,8 @@ class TestServeArtistImageRoute(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         fakeDb.lazyFetchArtistImage.assert_not_called()
 
-    @patch('app.send_from_directory')
-    @patch('app.os.path.exists')
+    @patch('routes.media.send_from_directory')
+    @patch('routes.media.os.path.exists')
     def test_serves_existing_file_without_error_when_no_database_cached_yet(self, mock_path_exists, mock_send):
         """If no Database has been instantiated for this username (e.g. server just
         restarted), the route must not crash - it just skips the lazy fetch."""
@@ -97,8 +97,8 @@ class TestServeArtistImageRoute(unittest.TestCase):
 
         self.assertEqual(resp.status_code, 200)
 
-    @patch('app.send_from_directory')
-    @patch('app.os.path.exists')
+    @patch('routes.media.send_from_directory')
+    @patch('routes.media.os.path.exists')
     def test_denies_lazy_fetch_for_mismatched_session_user(self, mock_path_exists, mock_send):
         """Authorization must be checked before any lazy-fetch delegation happens."""
         mock_path_exists.return_value = False

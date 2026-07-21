@@ -188,7 +188,7 @@ class TestImageRouteAuthorization(unittest.TestCase):
             resp = client.get('/img/alice/tracks/1.jpeg')
         self.assertEqual(resp.status_code, 404)
 
-    @patch('app.send_from_directory')
+    @patch('routes.media.send_from_directory')
     def test_serve_track_image_allows_matching_user(self, mock_send):
         mock_send.return_value = "OK"
         dash = self._makeApp()
