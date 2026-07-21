@@ -2161,10 +2161,10 @@ class Database:
 
     def getAutoImporterWorkerStatus(self) -> dict:
         """Same shape as getLastfmWorkerStatus, for the user's autoImport drop-folder watchdog."""
-        wd = getattr(self, "autoImporter", None)
+        auto_imp = getattr(self, "autoImporter", None)
+        wd = getattr(auto_imp, "wd", None) if auto_imp is not None else None
         thread = getattr(wd, "thread", None) if wd is not None else None
-        watchdog = getattr(wd, "wd", None) if wd is not None else None
-        running = thread is not None and thread.is_alive() and getattr(watchdog, "run", False)
+        running = thread is not None and thread.is_alive() and getattr(wd, "run", False)
         return {
             "configured": True,
             "running": running,

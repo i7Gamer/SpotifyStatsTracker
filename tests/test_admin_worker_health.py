@@ -52,9 +52,10 @@ class TestDatabaseWorkerStatusAccessors(unittest.TestCase):
         mock_thread = MagicMock()
         mock_thread.is_alive.return_value = True
         mock_wd = MagicMock()
+        mock_wd.thread = mock_thread
         mock_wd.run = True
 
-        self.db.autoImporter.thread = mock_thread
+        self.db.autoImporter = MagicMock()
         self.db.autoImporter.wd = mock_wd
 
         status = self.db.getAutoImporterWorkerStatus()
