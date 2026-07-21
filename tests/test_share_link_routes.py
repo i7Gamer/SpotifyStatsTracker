@@ -996,7 +996,7 @@ class TestSharedImageRoutes(ShareLinkRoutesTestCase):
         self.dash.repo.upsertUser("alice", "alice@example.com")
         return self.dash.repo.createShareLink("alice", self.dash.repo.SHARE_LINK_KIND_WRAPPED, 2026, None)
 
-    @patch('app.send_from_directory')
+    @patch('routes.wrapped.send_from_directory')
     def test_valid_token_serves_track_image(self, mock_send):
         mock_send.return_value = "OK"
         token = self._createLink()
@@ -1023,8 +1023,8 @@ class TestSharedImageRoutes(ShareLinkRoutesTestCase):
 
         self.assertEqual(resp.status_code, 404)
 
-    @patch('app.send_from_directory')
-    @patch('app.os.path.exists', return_value=False)
+    @patch('routes.wrapped.send_from_directory')
+    @patch('routes.wrapped.os.path.exists', return_value=False)
     def test_valid_token_lazily_fetches_missing_artist_image(self, mock_exists, mock_send):
         mock_send.return_value = "OK"
         token = self._createLink()
