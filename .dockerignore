@@ -34,3 +34,4 @@ tmp/
 tests/
 docker-compose.yml
 dev.py
+*.ps1
