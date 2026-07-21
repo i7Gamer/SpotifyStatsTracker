@@ -1,4 +1,4 @@
-name: Docker Image CI
+name: Docker push latest
 
 on:
   workflow_dispatch: # Enables the manual "Run workflow" button in GitHub UI
