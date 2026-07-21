@@ -1,5 +1,3 @@
-import csv
-import io
 import logging
 import math
 import os
@@ -37,6 +35,7 @@ from services.genre_gate import (
     sanitizeBiographyCoverage, resolveBiographyCoverage,
     resolveGenresForTrack, resolveGenresForAlbum, resolveGenresForArtist,
 )
+from services.export import generateJsonExport, generateCsvExport
 import SpotipyFree
 from SpotipyFree import saveSession, parseCookieString
 
@@ -151,9 +150,8 @@ SPOTIFY_OAUTH_STATE_NUM_BYTES = 32   #< entropy fed to secrets.token_urlsafe
 RATE_LIMIT_MAX_ATTEMPTS = 10     #< max POSTs allowed per window, per source IP, per route
 RATE_LIMIT_WINDOW_SECONDS = 300  #< 5 minutes
 RATE_LIMIT_ERROR_MESSAGE = "Too many attempts. Please wait a few minutes and try again."
-EXPORT_CHUNK_SIZE = 5000         #< plays hydrated per round-trip while streaming an export
+# EXPORT_CHUNK_SIZE / EXPORT_CSV_COLUMNS now live in services/export.py.
 EXPORT_FORMATS = ("json", "csv")
-EXPORT_CSV_COLUMNS = ("played_at_utc", "track_name", "artists", "album", "ms_played", "spotify_track_uri", "played_from")
 # Random startup-offset bounds for this module's periodic workers, so a
 # restart doesn't fire every worker at the same instant (the metadata
 # backfiller and wrapped worker in Database/database.py already stagger
@@ -1652,104 +1650,6 @@ class SpotifyDashboardApp:
             })
         return res
 
-    def _iterExportEntries(self, db, includeSkips=False):
-        """Every play (oldest first) with hydrated track metadata, fetched in
-        EXPORT_CHUNK_SIZE batches so an export never holds the whole history
-        in memory. Plays recorded while the export streams have the newest
-        played_at, so they can only appear at the very end - earlier chunks
-        can't shift underneath the OFFSET pagination.
-
-        includeSkips: skip events follow after every play (their sub-threshold
-        ms_played routes them back into play_skips on reimport). JSON only -
-        the CSV stays plays-only for spreadsheet use."""
-        startIndex = 0
-        while True:
-            entries = db.getEntriesFromOld(count=EXPORT_CHUNK_SIZE, startIndex=startIndex)
-            if not entries:
-                break
-            yield from entries
-            startIndex += EXPORT_CHUNK_SIZE
-        if not includeSkips:
-            return
-        startIndex = 0
-        while True:
-            entries = db.getSkipEntriesFromOld(count=EXPORT_CHUNK_SIZE, startIndex=startIndex)
-            if not entries:
-                return
-            yield from entries
-            startIndex += EXPORT_CHUNK_SIZE
-
-    @staticmethod
-    def _isoUtc(timestamp: float) -> str:
-        return datetime.fromtimestamp(timestamp, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-    # Behavioral columns emitted as-is vs. as booleans - under Spotify's own
-    # key names (incognito is stored under the column name but exported as
-    # incognito_mode), so the export re-imports through _extractExtras.
-    EXPORT_TEXT_EXTRAS = ("platform", "conn_country", "reason_start", "reason_end")
-    EXPORT_BOOL_EXTRAS = (("shuffle", "shuffle"), ("skipped", "skipped"),
-                          ("offline", "offline"), ("incognito", "incognito_mode"))
-
-    def _exportEntryToDict(self, entry) -> dict:
-        """One play in Spotify's own extended-streaming-history shape, so the
-        export re-imports through the existing pipeline. `ts` is the play's
-        END time - Spotify's convention, which importExtendedHistory converts
-        back to a start time by subtracting ms_played. Behavioral fields are
-        emitted only when stored; offline plays also carry offline_timestamp
-        (their corrected start), which the importer prefers over ts."""
-        artists = entry.get("artists") or []
-        album = entry.get("album") or {}
-        item = {
-            "ts": self._isoUtc(entry["playedAt"] + entry["timePlayed"] // 1000),
-            "ms_played": entry["timePlayed"],
-            "master_metadata_track_name": entry.get("name"),
-            "master_metadata_album_artist_name": artists[0].get("name") if artists else None,
-            "master_metadata_album_album_name": album.get("name") if album else None,
-            "spotify_track_uri": f"spotify:track:{entry['id']}",
-            "played_from": entry.get("playedFrom"),   #< extra field; the importer ignores it
-        }
-        extras = entry.get("extras") or {}
-        for column in self.EXPORT_TEXT_EXTRAS:
-            if extras.get(column) is not None:
-                item[column] = extras[column]
-        for column, exportKey in self.EXPORT_BOOL_EXTRAS:
-            if extras.get(column) is not None:
-                item[exportKey] = bool(extras[column])
-        if extras.get("offline"):
-            item["offline_timestamp"] = int(entry["playedAt"])
-        return item
-
-    def _generateJsonExport(self, db):
-        yield "[\n"
-        first = True
-        for entry in self._iterExportEntries(db, includeSkips=True):
-            prefix = "" if first else ",\n"
-            first = False
-            yield prefix + json.dumps(self._exportEntryToDict(entry), ensure_ascii=False)
-        yield "\n]\n"
-
-    def _generateCsvExport(self, db):
-        buffer = io.StringIO()
-        writer = csv.writer(buffer, lineterminator="\n")
-        writer.writerow(EXPORT_CSV_COLUMNS)
-        for entry in self._iterExportEntries(db):
-            artists = entry.get("artists") or []
-            album = entry.get("album") or {}
-            writer.writerow([
-                self._isoUtc(entry["playedAt"]),   #< the START time - more intuitive for spreadsheet use
-                entry.get("name") or "",
-                ", ".join(a.get("name", "") for a in artists),
-                album.get("name") or "" if album else "",
-                entry["timePlayed"],
-                f"spotify:track:{entry['id']}",
-                entry.get("playedFrom") or "",
-            ])
-            if buffer.tell() >= 64 * 1024:   #< flush in ~64KB chunks instead of per row or all at once
-                yield buffer.getvalue()
-                buffer.seek(0)
-                buffer.truncate(0)
-        yield buffer.getvalue()
-
     def registerRoutes(self):
         @self.app.after_request
         def _setSecurityHeaders(response):
@@ -2003,9 +1903,9 @@ class SpotifyDashboardApp:
             dateText = now(tz=db.tz).strftime("%Y-%m-%d")
             filename = f"spotify_stats_export_{username}_{dateText}.{exportFormat}"
             if exportFormat == "csv":
-                generator, mimetype = self._generateCsvExport(db), "text/csv; charset=utf-8"
+                generator, mimetype = generateCsvExport(db), "text/csv; charset=utf-8"
             else:
-                generator, mimetype = self._generateJsonExport(db), "application/json"
+                generator, mimetype = generateJsonExport(db), "application/json"
 
             response = Response(stream_with_context(generator), mimetype=mimetype)
             response.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
