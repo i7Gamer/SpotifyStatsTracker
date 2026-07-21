@@ -63,41 +63,43 @@
      multi-user table with admin controls lives on /admin now). -->
 {% if is_logged_in and your_status %}
 <section class="card" style="margin-bottom: 2.5rem; min-height: auto;">
-  <div class="card-header" style="padding: 1.5rem 1.5rem 0.5rem 1.5rem;">
-    <h2 style="margin: 0; font-family: var(--font-headings);">Your Sync Status</h2>
-    <p style="color: var(--muted); font-size: 0.9rem; margin-top: 0.25rem;">Real-time sync status for your profile.</p>
-  </div>
-  <div style="padding: 0 1.5rem 1.5rem 1.5rem; display: flex; gap: 1.5rem; flex-wrap: wrap;">
-    <div>
-      <div style="color: var(--muted); font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.4rem;">Sync Status</div>
-      {% set status = your_status.sync_status | lower %}
-      {% if status == 'healthy' %}
-        <span class="badge badge-success">HEALTHY</span>
-      {% elif status == 'initializing' %}
-        <span class="badge badge-warning">INITIALIZING</span>
-      {% elif status == 'degraded' %}
-        <span class="badge badge-orange">DEGRADED</span>
-      {% elif status == 'dead' %}
-        <span class="badge badge-danger">DEAD</span>
-      {% else %}
-        <span class="badge badge-secondary">NOT CONFIGURED</span>
-      {% endif %}
+  <div class="sync-status-card-body">
+    <div class="sync-status-header-text">
+      <h2 style="margin: 0; font-family: var(--font-headings);">Your Sync Status</h2>
+      <p style="color: var(--muted); font-size: 0.9rem; margin: 0.25rem 0 0 0;">Real-time sync status for your profile.</p>
     </div>
-    <div>
-      <div style="color: var(--muted); font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.4rem;">Spotify API Backfill{% if not spotify_backfill_enabled %} <span style="text-transform: none; font-weight: normal;">(disabled)</span>{% endif %}</div>
-      {% if your_status.spotify_api_status == 'Configured' %}
-        <span class="badge badge-success">CONFIGURED</span>
-      {% else %}
-        <span class="badge badge-secondary">NOT CONFIGURED</span>
-      {% endif %}
-    </div>
-    <div>
-      <div style="color: var(--muted); font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.4rem;">Last.fm API Backfill{% if not lastfm_enabled %} <span style="text-transform: none; font-weight: normal;">(disabled)</span>{% endif %}</div>
-      {% if your_status.lastfm_api_status == 'Configured' %}
-        <span class="badge badge-success">CONFIGURED</span>
-      {% else %}
-        <span class="badge badge-secondary">NOT CONFIGURED</span>
-      {% endif %}
+    <div class="sync-status-row">
+      <div class="sync-status-item">
+        <span class="sync-status-label">Sync Status</span>
+        {% set status = your_status.sync_status | lower %}
+        {% if status == 'healthy' %}
+          <span class="badge badge-success">HEALTHY</span>
+        {% elif status == 'initializing' %}
+          <span class="badge badge-warning">INITIALIZING</span>
+        {% elif status == 'degraded' %}
+          <span class="badge badge-orange">DEGRADED</span>
+        {% elif status == 'dead' %}
+          <span class="badge badge-danger">DEAD</span>
+        {% else %}
+          <span class="badge badge-secondary">NOT CONFIGURED</span>
+        {% endif %}
+      </div>
+      <div class="sync-status-item">
+        <span class="sync-status-label">Spotify API Backfill{% if not spotify_backfill_enabled %} <span style="text-transform: none; font-weight: normal;">(disabled)</span>{% endif %}</span>
+        {% if your_status.spotify_api_status == 'Configured' %}
+          <span class="badge badge-success">CONFIGURED</span>
+        {% else %}
+          <span class="badge badge-secondary">NOT CONFIGURED</span>
+        {% endif %}
+      </div>
+      <div class="sync-status-item">
+        <span class="sync-status-label">Last.fm API Backfill{% if not lastfm_enabled %} <span style="text-transform: none; font-weight: normal;">(disabled)</span>{% endif %}</span>
+        {% if your_status.lastfm_api_status == 'Configured' %}
+          <span class="badge badge-success">CONFIGURED</span>
+        {% else %}
+          <span class="badge badge-secondary">NOT CONFIGURED</span>
+        {% endif %}
+      </div>
     </div>
   </div>
 </section>

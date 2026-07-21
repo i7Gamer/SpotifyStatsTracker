@@ -125,6 +125,18 @@ class TestOverviewRoute(unittest.TestCase):
         self.assertIn("Spotify API Backfill", body)
         self.assertIn("(disabled)", body)
 
+    def test_overview_user_sync_status_one_line_layout(self):
+        """User sync status section should place title and status items on the same line using sync-status-card-body on desktop."""
+        dash = self._makeApp()
+
+        resp = self._getOverviewAs(dash)
+        body = resp.data.decode()
+
+        self.assertIn('class="sync-status-card-body"', body)
+        self.assertIn('class="sync-status-row"', body)
+        self.assertIn('class="sync-status-item"', body)
+
+
     def test_overview_does_not_start_listener_for_a_cookie_less_viewer(self):
         """get_user_db() constructs a live Database (starts the listener,
         auto-importer, and metadata/wrapped background threads). A logged-in

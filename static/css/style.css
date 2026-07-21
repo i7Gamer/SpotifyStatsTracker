@@ -2540,6 +2540,43 @@ html.theme-red {
   border: 1px solid rgba(120, 120, 120, 0.3);
 }
 
+/* User Sync Status (Overview Page) */
+.sync-status-card-body {
+  padding: 1.25rem 1.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 1.25rem 2rem;
+}
+
+.sync-status-header-text {
+  flex: 0 1 auto;
+}
+
+.sync-status-row {
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.25rem 2rem;
+  align-items: center;
+}
+
+.sync-status-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  white-space: nowrap;
+}
+
+.sync-status-label {
+  color: var(--muted);
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 500;
+}
+
 /* Info Section Lists */
 .info-section ol li::marker {
   color: var(--accent);
