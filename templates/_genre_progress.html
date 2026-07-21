@@ -14,7 +14,7 @@
     <div style="position: relative; flex: 1; background: rgba(255, 255, 255, 0.08); border-radius: 4px; height: 10px; overflow: hidden;">
       <div style="width: {{ [category.percent, 100] | min }}%; background: var(--accent); height: 100%; border-radius: 4px;"></div>
       {% if category.ownPercent is defined and category.ownPercent < category.percent %}
-      <div title="Real (non-inherited) coverage: {{ category.ownPercent }}%" style="position: absolute; top: 0; left: 0; width: {{ [category.ownPercent, 100] | min }}%; background: var(--compare-theirs); height: 100%; border-radius: 4px;"></div>
+      <div title="Real (non-inherited) coverage: {{ category.ownPercent }}%" style="position: absolute; top: 0; left: 0; width: {{ [category.ownPercent, 100] | min }}%; background: var(--accent-secondary); height: 100%; border-radius: 4px;"></div>
       {% endif %}
     </div>
     <span style="flex: 0 0 11rem; font-size: 0.8rem; color: var(--muted, #aaa); text-align: right;">
@@ -26,7 +26,7 @@
         or coverage.album.ownPercent != coverage.album.percent) %}
   <p style="font-size: 0.8rem; color: var(--muted, #aaa); margin-top: 0.25rem;">
     Counting only own Last.fm tags (without genres inherited from the album or artist):
-    songs {{ coverage.song.ownPercent }}%, albums {{ coverage.album.ownPercent }}%.
+    songs <strong style="color: var(--accent-secondary);">{{ coverage.song.ownPercent }}%</strong>, albums <strong style="color: var(--accent-secondary);">{{ coverage.album.ownPercent }}%</strong>.
   </p>
   {% endif %}
   <p style="font-size: 0.85rem; color: var(--muted, #aaa); margin-top: 0.75rem;">
