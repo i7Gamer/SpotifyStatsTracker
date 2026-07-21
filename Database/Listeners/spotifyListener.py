@@ -73,6 +73,16 @@ WEB_API_POLL_INTERVAL_SECONDS = 15 * 60  #< Query Web API recently-played backfi
 # failure (None) that's worth silently retrying on the next poll.
 _SCOPE_ERROR = object()
 
+# Spotify's recently-played endpoint has been observed to answer a handful of
+# polls with 403 "Insufficient client scope" even though the stored refresh
+# token does carry the scope (confirmed live: the very next poll, using the
+# same unchanged token, succeeds) - a Spotify-side flake, not a real
+# revocation. Only flip the account's needs_reauth flag (and prompt the user
+# to re-authorize) once this many consecutive polls all report the scope
+# error, so one blip doesn't send someone through an unnecessary - and
+# confusingly instant, since nothing was actually wrong - re-auth flow.
+SCOPE_ERROR_CONFIRM_THRESHOLD = 3
+
 USER_VALIDATION_CACHE_SECONDS = 5 * 60  #< Cache user validation results to reduce bot detection triggers
 
 TRUTHY_DEBUG_VALUES = {"1", "true"}  #< FLASK_DEBUG values that enable verbose diagnostics (mirrors Database.database)
@@ -222,6 +232,7 @@ class Listener:
         # knowing anything about the database. None (tests, callers that
         # don't care) means the status is simply not persisted anywhere.
         self.on_scope_status_change = on_scope_status_change
+        self._consecutiveScopeErrors = 0  #< see SCOPE_ERROR_CONFIRM_THRESHOLD
         self._lastWebApiPollTime = None  #< None means "never polled yet" - forces an immediate first poll
         with _suppress_signal_in_thread():
             self.sp = Spotify(cookiesFile=cookiesFile, email=email)
@@ -584,6 +595,14 @@ class Listener:
             items = _fetch_recently_played_from_web_api(access_token, email=self.email)
 
             if items is _SCOPE_ERROR:
+                self._consecutiveScopeErrors += 1
+                if self._consecutiveScopeErrors < SCOPE_ERROR_CONFIRM_THRESHOLD:
+                    logger.warning(
+                        "Spotify Web API reported insufficient scope for user %s (%d/%d consecutive) - "
+                        "treating as a transient Spotify-side flake for now.",
+                        self.email, self._consecutiveScopeErrors, SCOPE_ERROR_CONFIRM_THRESHOLD,
+                    )
+                    return
                 if self.on_scope_status_change:
                     try:
                         self.on_scope_status_change(True)
@@ -594,11 +613,13 @@ class Listener:
             # A definitive (non-None, non-scope-error) response - even an empty
             # list - proves the current token DOES carry the required scope,
             # so any previously-recorded reauth-needed status is stale.
-            if items is not None and self.on_scope_status_change:
-                try:
-                    self.on_scope_status_change(False)
-                except Exception as e:
-                    logger.error("Failed to clear Spotify reauth-needed status for user %s: %s", self.email, parseError(e))
+            if items is not None:
+                self._consecutiveScopeErrors = 0
+                if self.on_scope_status_change:
+                    try:
+                        self.on_scope_status_change(False)
+                    except Exception as e:
+                        logger.error("Failed to clear Spotify reauth-needed status for user %s: %s", self.email, parseError(e))
 
             if _flaskDebugEnabled():
                 logger.info("Web API returned %d items for backfill check (user %s)", len(items) if items else 0, self.email)

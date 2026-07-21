@@ -11,6 +11,7 @@ from Database.repository import Repository
 from Database.Listeners.spotifyListener import (
     Listener,
     WEB_API_POLL_INTERVAL_SECONDS,
+    SCOPE_ERROR_CONFIRM_THRESHOLD,
     _refresh_spotify_access_token,
     _fetch_recently_played_from_web_api,
     _get_current_user_from_web_api,
@@ -583,7 +584,10 @@ class ApiBackfillTestCase(unittest.TestCase):
 
     @patch("Database.Listeners.spotifyListener._fetch_recently_played_from_web_api", return_value=_SCOPE_ERROR)
     @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value="token123")
-    def test_check_web_api_backfill_reports_scope_error_and_stops(self, mock_refresh, mock_fetch):
+    def test_check_web_api_backfill_single_scope_error_does_not_report(self, mock_refresh, mock_fetch):
+        """Spotify's recently-played endpoint has been observed to answer a
+        one-off poll with a scope error even for a correctly-scoped token -
+        one blip must not yet trigger the reauth-needed flag/prompt."""
         on_scope_status_change = MagicMock()
         listener = self._makeListenerWithScopeCallback(on_scope_status_change)
         callback = MagicMock()
@@ -591,8 +595,46 @@ class ApiBackfillTestCase(unittest.TestCase):
         with patch("Database.Listeners.spotifyListener.time.monotonic", return_value=_MONOTONIC_NOW):
             listener._checkWebApiBackfill(callback)
 
-        on_scope_status_change.assert_called_once_with(True)
+        on_scope_status_change.assert_not_called()
         callback.assert_not_called()   #< never reaches item processing
+
+    @patch("Database.Listeners.spotifyListener._fetch_recently_played_from_web_api", return_value=_SCOPE_ERROR)
+    @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value="token123")
+    def test_check_web_api_backfill_reports_scope_error_after_threshold(self, mock_refresh, mock_fetch):
+        """Only once the scope error repeats SCOPE_ERROR_CONFIRM_THRESHOLD
+        times in a row (no successful poll in between) is it treated as
+        definitive and reported."""
+        on_scope_status_change = MagicMock()
+        listener = self._makeListenerWithScopeCallback(on_scope_status_change)
+
+        with patch("Database.Listeners.spotifyListener.time.monotonic", return_value=_MONOTONIC_NOW):
+            for _ in range(SCOPE_ERROR_CONFIRM_THRESHOLD):
+                listener._lastWebApiPollTime = 0   #< bypass the poll-interval guard each iteration
+                on_scope_status_change.assert_not_called()
+                listener._checkWebApiBackfill(MagicMock())
+
+        on_scope_status_change.assert_called_once_with(True)
+
+    @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value="token123")
+    def test_check_web_api_backfill_success_resets_scope_error_streak(self, mock_refresh):
+        """A single successful poll between two scope errors resets the
+        consecutive-error count, so the flag never gets set from unrelated
+        blips spread across an otherwise-healthy token."""
+        on_scope_status_change = MagicMock()
+        listener = self._makeListenerWithScopeCallback(on_scope_status_change)
+
+        with patch("Database.Listeners.spotifyListener.time.monotonic", return_value=_MONOTONIC_NOW):
+            for _ in range(SCOPE_ERROR_CONFIRM_THRESHOLD - 1):
+                listener._lastWebApiPollTime = 0
+                with patch("Database.Listeners.spotifyListener._fetch_recently_played_from_web_api", return_value=_SCOPE_ERROR):
+                    listener._checkWebApiBackfill(MagicMock())
+
+            listener._lastWebApiPollTime = 0
+            with patch("Database.Listeners.spotifyListener._fetch_recently_played_from_web_api", return_value=[]):
+                listener._checkWebApiBackfill(MagicMock())
+
+            self.assertEqual(listener._consecutiveScopeErrors, 0)
+            on_scope_status_change.assert_called_once_with(False)
 
     @patch("Database.Listeners.spotifyListener._fetch_recently_played_from_web_api", return_value=[])
     @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value="token123")
