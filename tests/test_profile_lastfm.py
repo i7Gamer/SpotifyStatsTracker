@@ -141,7 +141,7 @@ class TestSaveLastfmKey(ProfileLastfmTestCase):
         self.assertIn(b"required", resp.data)
 
     def test_busy_rate_limit_budget_reports_without_storing(self):
-        with patch("app.LastfmClient") as mockClientClass:
+        with patch("routes.auth.LastfmClient") as mockClientClass:
             mockClientClass.return_value.validateApiKey.return_value = {"ok": False, "error": "busy"}
             client = self._loginAs("alice", "alice@example.com")
 
