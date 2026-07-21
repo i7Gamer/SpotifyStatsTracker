@@ -217,6 +217,13 @@ class TestOverviewDatabaseStats(unittest.TestCase):
         test_file.write_bytes(test_content)
 
         try:
+            # _calculateFolderSize() caches per path for
+            # MEDIA_FOLDER_SIZE_CACHE_TTL_SECONDS (see
+            # tests/test_folder_size_cache.py) - clear it so this second call
+            # actually rescans the folder instead of reusing the pre-file size.
+            import Database.queries.settings as settingsModule
+            settingsModule._folderSizeCache.clear()
+
             stats_after = self.repo.getGlobalDatabaseStats()
             db_size_after = stats_after["db_size_bytes"]
             # The size should have increased by at least the size of our test file

@@ -9,6 +9,7 @@ can `from config import ...` (including in default arguments) without a cycle.
 
 PAGE_SIZE = 50                  #< list items shown per page
 LOGIN_CACHE_TTL_SECONDS = 180  #< seconds to cache isListenerLoggedIn result per user
+MEDIA_FOLDER_SIZE_CACHE_TTL_SECONDS = 300  #< seconds to cache the shared media cache folder's on-disk size (getGlobalDatabaseStats) - recomputing it walks/subprocess-scans the whole directory
 CHART_ARTIST_TREND_TOP_N = 5   #< how many top artists are plotted on the trend line chart
 CHART_TOP_GENRES_LIMIT = 10    #< bars on the Charts page's Top Genres chart
 WRAPPED_TOP_GENRES_LIMIT = 5   #< genres listed on the Wrapped genre card

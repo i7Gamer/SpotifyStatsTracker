@@ -1,12 +1,39 @@
 from __future__ import annotations
 
 from Database.queries._base import *  # noqa: F401,F403 - shared constants/db helpers
+from config import MEDIA_FOLDER_SIZE_CACHE_TTL_SECONDS
+
+# The media cache directory is shared across every user (Database/db.py's
+# `images` table dedups downloads instance-wide), so its on-disk size is
+# cached at module level - keyed by path, not per-Repository-instance, since
+# every Repository points at the same MEDIA_DIR. Recomputing it walks/
+# subprocess-scans the whole directory (thousands of files on a real
+# instance, ~1s measured), too expensive to pay on every
+# getGlobalDatabaseStats() call from the public, unauthenticated /overview
+# page.
+_folderSizeCacheLock = threading.Lock()
+_folderSizeCache: dict[Path, tuple[int, float]] = {}   #< folder_path -> (size_bytes, expiry monotonic ts)
 
 
 class SettingQueries:
     """SettingQueries: settings data-access methods, mixed into Repository."""
 
     def _calculateFolderSize(self, folder_path: Path) -> int:
+        """Cached (see MEDIA_FOLDER_SIZE_CACHE_TTL_SECONDS above) wrapper
+        around _calculateFolderSizeUncached()."""
+        now_ts = time.monotonic()
+        with _folderSizeCacheLock:
+            cached = _folderSizeCache.get(folder_path)
+            if cached is not None and cached[1] > now_ts:
+                return cached[0]
+
+        size = self._calculateFolderSizeUncached(folder_path)
+
+        with _folderSizeCacheLock:
+            _folderSizeCache[folder_path] = (size, now_ts + MEDIA_FOLDER_SIZE_CACHE_TTL_SECONDS)
+        return size
+
+    def _calculateFolderSizeUncached(self, folder_path: Path) -> int:
         """Get folder size using OS-level commands (fast on both Windows and Docker)."""
         if not folder_path.exists():
             return 0
