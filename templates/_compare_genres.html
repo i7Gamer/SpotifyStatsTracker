@@ -23,7 +23,7 @@
     <div>
       <h3 style="margin: 0;"><span class="compare-user-theirs compare-user-label js-with-username">{{ withUsername }}</span>'s Top Genres</h3>
       {% if theirTopGenres %}
-        {{ genreMacros.genreBarList(theirTopGenres, nameWidth='9rem', barHeight='10px', gap='0.5rem') }}
+        {{ genreMacros.genreBarList(theirTopGenres, nameWidth='9rem', barHeight='10px', gap='0.5rem', color='var(--compare-theirs)') }}
       {% else %}
         <p class="loading">No genre data in this period.</p>
       {% endif %}
