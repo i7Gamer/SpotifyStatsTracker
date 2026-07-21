@@ -13,12 +13,13 @@ A web application that allows users to track and analyze their Spotify listening
 - **Top Lists**: View your top songs, artists, and albums with detailed statistics
 - **Listening History**: See your listening history and track Spotify activity in real time
 - **Charts & Analytics**: Visualize your listening patterns and statistics with interactive charts, including a Top Genres breakdown once enough genre data has been backfilled (see Genre Insights below)
-- **Yearly Wrapped**: Get a personalized recap of your yearly listening with category filters (Top Songs, Artists, Albums, Discovered Songs, Artists, Albums) plus your top genres of the year
+- **Yearly Wrapped & Share Links**: Get a personalized recap of your yearly listening with category filters (Top Songs, Artists, Albums, Discovered Songs, Artists, Albums) plus top genres, and generate shareable links with custom expiration
 - **Data Sharing & Comparison**: Request to share your listening stats with another user - once they accept, compare top songs/artists/albums, a taste-match score, and shared genres side by side on the Compare page
-- **Genre Insights**: Add a free Last.fm API key on your Profile page to backfill genre tags for your library in the background; once enough of your history is covered, genre breakdowns unlock on Charts, Wrapped and Compare (see [Genre Data](#genre-data-optional) below)
-- **Detail Pages**: Drill down into individual songs, artists, and albums to see play history and detailed stats
+- **Genre Insights & Biographies**: Add a free Last.fm API key on your Profile page to backfill genre tags and rich artist/album biographies in the background (see [Genre Data](#genre-data-optional) below)
+- **Detail Pages & Manual Refresh**: Drill down into individual songs, artists, and albums to see play history, detailed stats, and biographies, with a "Refresh Last.fm Data" button to update metadata on demand
+- **Admin Console**: Instance admins can monitor real-time worker health (auto-importer, Last.fm backfiller, backup worker, metadata backfiller), manage user sync states, inspect catalog backfill coverage, and configure instance-wide settings at `/admin`
 - **Multi-File Import**: Import multiple Spotify data export files at once with progress tracking
-- **Overview Page**: See total data saved in the database and, once logged in, your (or - for the instance admin - every user's) sync status, API backfill configuration, and genre-backfill progress
+- **Overview Page**: See total database statistics, your listening breakdown, API backfill configuration, and genre-backfill progress
 - **Auto-Import**: Automatically import files from the 'auto-import' folder with optional keyword filtering
 - **Cross-Linking**: Click on artist names to explore artist pages from any song, and album links to see album details
 
@@ -58,7 +59,7 @@ services:
       - FLASK_SECRET_KEY=changeme-generate-your-own-random-value  #< fixed value = sessions survive a restart; unset = a new one is generated each restart, logging everyone out. Also used to encrypt stored Spotify sessions unless DATA_ENCRYPTION_KEY is set - changing it means everyone must log in again.
       # - DATA_ENCRYPTION_KEY=changeme-another-random-value  #< Optional dedicated key for encrypting stored Spotify sessions/API secrets at rest (falls back to FLASK_SECRET_KEY). Keep it safe alongside your backups: without the key that encrypted them, stored sessions can't be read and every user must re-login with fresh cookies.
       # - TRUST_PROXY_HEADERS=1       #< Set when running behind a reverse proxy (nginx/traefik/caddy) so rate limiting sees real client IPs instead of the proxy's; use the number of proxy hops (usually 1). Only set this if a proxy is actually in front - otherwise clients could forge their IP.
-      # - ADMIN_EMAIL=you@example.com #< Makes this account the instance's only admin (admins see every user's sync status on the Overview page; regular users see just their own). Without it, the earliest-registered user is promoted automatically.
+      # - ADMIN_EMAIL=you@example.com #< Makes this account the instance's only admin (grants access to the Admin Console at /admin to view all user sync states, worker health, and system settings). Without it, the earliest-registered user is promoted automatically.
       # - SPOTIFY_CALLBACK_URL=http://localhost:5000/spotify-callback  #< Uncomment and set to your public callback URL to enable Spotify Web API backfilling
       # - IMPORT_KEYWORD=Weekly       #< Uncomment to apply a filter to what files get auto-imported (only files containing this will be imported)
       # - FLASK_DEBUG=1               #< To get more detailed logs from Flask (provide this when opening an issue)
@@ -139,7 +140,7 @@ Each user can add their own [Last.fm](https://www.last.fm) API key to have a bac
 3. A background worker starts fetching genre tags for your most-played artists, albums, and songs first, respecting Last.fm's request-rate limits. Once your own library is covered, it keeps helping backfill genres for everyone else's, since the artist/album/song catalog is shared across all users.
 4. Track progress on the Overview page. Once enough of your history has genre data, genre breakdowns unlock on the Charts, Wrapped, and Compare pages.
 
-Songs or albums Last.fm has no tags for inherit their artist's genres; the instance admin can toggle whether those inherited genres count towards backfill progress and genre stats from the Overview page.
+Songs or albums Last.fm has no tags for inherit their artist's genres; the instance admin can toggle whether those inherited genres count towards backfill progress and genre stats from the Admin Console (`/admin`).
 
 ## License
 
