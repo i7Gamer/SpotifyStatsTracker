@@ -129,6 +129,33 @@ class TestOverviewRoute(AppTestCase):
         self.assertIn('class="sync-status-item"', body)
 
 
+    def test_overview_shows_needs_reauth_badge_instead_of_configured(self):
+        """The 'your status' widget must show the same needs-reauth signal
+        the /admin table shows for other users - it reads the identical
+        getAllUsersDetails() row, and was blind to spotify_needs_reauth."""
+        dash = self._makeApp()
+        mock_stats = {"tracks": 10, "artists": 5, "albums": 3, "plays": 100, "total_time_ms": 36000000, "db_size_bytes": 1048576}
+        mock_users = [dict(self._MOCK_USERS[0], spotify_needs_reauth=True)]
+        mock_db = MagicMock()
+        mock_db.getListenerHealth.return_value = {"status": "HEALTHY", "error_count": 0,
+                                                    "last_error": None, "seconds_since_last_poll": 5}
+
+        with patch.object(dash.repo, 'getGlobalDatabaseStats', return_value=mock_stats), \
+             patch.object(dash.repo, 'getAllUsersDetails', return_value=mock_users), \
+             patch.object(dash, 'is_user_logged_in', return_value=True), \
+             patch.object(dash, 'get_username_for_email', return_value='alice'), \
+             patch.object(dash, 'get_user_db', return_value=mock_db):
+
+            client = dash.app.test_client()
+            with client.session_transaction() as sess:
+                sess['email'] = 'alice@example.com'
+
+            resp = client.get("/overview")
+            body = resp.data.decode()
+
+        self.assertIn("NEEDS RE-AUTH", body)
+        self.assertNotIn(">CONFIGURED<", body)
+
     def test_overview_does_not_start_listener_for_a_cookie_less_viewer(self):
         """get_user_db() constructs a live Database (starts the listener,
         auto-importer, and metadata/wrapped background threads). A logged-in

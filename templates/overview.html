@@ -86,7 +86,9 @@
       </div>
       <div class="sync-status-item">
         <span class="sync-status-label">Spotify API Backfill{% if not spotify_backfill_enabled %} <span style="text-transform: none; font-weight: normal;">(disabled)</span>{% endif %}</span>
-        {% if your_status.spotify_api_status == 'Configured' %}
+        {% if your_status.spotify_api_status == 'Needs Re-Auth' %}
+          <span class="badge badge-orange" title="Spotify rejected the last backfill request as missing the recently-played permission - re-authorize from your Profile page.">NEEDS RE-AUTH</span>
+        {% elif your_status.spotify_api_status == 'Configured' %}
           <span class="badge badge-success">CONFIGURED</span>
         {% else %}
           <span class="badge badge-secondary">NOT CONFIGURED</span>

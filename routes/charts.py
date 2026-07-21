@@ -118,9 +118,10 @@ def register(app, dashboard):
                 else:
                     sync_status = "Not Configured"
                 has_api = bool(u["spotify_client_id"] and u["spotify_refresh_token"])
+                needs_reauth = bool(u.get("spotify_needs_reauth"))
                 your_status = {
                     "sync_status": sync_status,
-                    "spotify_api_status": "Configured" if has_api else "Not Configured",
+                    "spotify_api_status": "Needs Re-Auth" if (has_api and needs_reauth) else ("Configured" if has_api else "Not Configured"),
                     #< .get(): raw row presence check only - the stored key
                     #  is encrypted and never needs decrypting here
                     "lastfm_api_status": "Configured" if u.get("lastfm_api_key") else "Not Configured",
