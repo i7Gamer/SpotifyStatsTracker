@@ -34,7 +34,6 @@ from services.genre_gate import (
     sanitizeBiographyCoverage, resolveBiographyCoverage,
     resolveGenresForTrack, resolveGenresForAlbum, resolveGenresForArtist,
 )
-from services.export import generateJsonExport, generateCsvExport
 # Taste-match scoring lives in services/taste_match.py; the compare route calls
 # _tasteMatchPercent/_markLinkExternally and _buildSharedItems calls
 # _rankById/_sharedRankScore.
@@ -46,6 +45,7 @@ from routes.admin import register as registerAdminRoutes
 from routes.compare import register as registerCompareRoutes
 from routes.wrapped import register as registerWrappedRoutes
 from routes.auth import register as registerAuthRoutes
+from routes.system import register as registerSystemRoutes
 import SpotipyFree
 from SpotipyFree import saveSession, parseCookieString
 
@@ -1618,145 +1618,15 @@ class SpotifyDashboardApp:
                 "unseenAcceptedShareCount": g.unseenAcceptedShareCount,
             }
 
-        def _is_version_newer(remote: str, local: str) -> bool:
-            try:
-                return versionTuple(remote) > versionTuple(local)
-            except Exception:
-                return False
-
-        @self.app.route("/health", methods=["GET"])
-        def health():
-            """Cheap, unauthenticated liveness/readiness check for container
-            orchestration and uptime monitoring - does a trivial query rather
-            than just returning 200 unconditionally, so it can tell "process
-            alive" apart from "process alive but the database is unreachable"
-            (the single point of failure for this app)."""
-            try:
-                self.repo.connection().execute("SELECT 1").fetchone()
-                return jsonify({"status": "ok"}), 200
-            except Exception as e:
-                logger.error("Health check failed: %s", e)
-                return jsonify({"status": "error", "detail": str(e)}), 503
+        registerSystemRoutes(self.app, self)
 
         registerMediaRoutes(self.app, self)
-
-        @self.app.route("/import-history", methods=["POST"])
-        def importHistory():
-            email, username, db = self.get_current_user_or_redirect()
-            if not email:
-                return redirect(url_for("login"))
-
-            if db.readProgress().get("status") == "running":
-                return redirect(url_for("importPage"))
-
-            uploads = [f for f in request.files.getlist("history_file") if f and f.filename]
-            if not uploads:
-                return redirect(url_for("importPage"))
-
-            contents = []
-            for upload in uploads:
-                try:
-                    contents.append(upload.read().decode("utf-8"))
-                except UnicodeDecodeError:
-                    # Mirrors AutoImporter._handleImport's per-file resilience
-                    # (see its try/except around open(..., encoding="utf-8"))
-                    # - one unreadable file must not 500 the whole request and
-                    # drop every other file in the same upload.
-                    logger.warning("Skipping upload %r for user %s: not valid UTF-8 text", upload.filename, username)
-            if not contents:
-                return redirect(url_for("importPage"))
-
-            # Marked "running" here, synchronously, rather than via a
-            # post-thread-start time.sleep(1) "give it a moment" delay - that
-            # blocked a Waitress worker thread on every submission and still
-            # couldn't fully guarantee the background thread's own first
-            # writeProgress() call (inside Database.importHistory, gated on
-            # parsing the export first) had actually landed by the time it
-            # returned.
-            # Captured before the thread starts - no request context inside it.
-            overwriteRange = request.form.get("overwrite_range") is not None
-            db.writeProgress("running", 0, 0, "Starting import")
-            thread = threading.Thread(target=db.importHistoryBatch, args=(contents,),
-                                      kwargs={"overwriteRange": overwriteRange}, daemon=True)
-            thread.start()
-            return redirect(url_for("importPage"))
-
-        @self.app.route("/import", methods=["GET"])
-        def importPage():
-            email, username, db = self.get_current_user_or_redirect()
-            if not email:
-                return redirect(url_for("login"))
-            return render_template(
-                "import.html",
-                importProgress=db.readProgress(),
-                maxUploadMb=MAX_UPLOAD_MB,
-                uploadTooLarge=request.args.get("error") == "upload_too_large",
-                section="import",
-            )
 
         @self.app.errorhandler(413)
         def _uploadTooLarge(error):
             return redirect(url_for("importPage", error="upload_too_large"))
 
-        @self.app.route("/export-history", methods=["GET"])
-        def exportHistory():
-            """Stream the current user's full play history as a download.
-            JSON is shaped like Spotify's own extended export (re-importable
-            through /import-history); CSV is for spreadsheets."""
-            email, username, db = self.get_current_user_or_redirect()
-            if not email:
-                return redirect(url_for("login", next=request.path))
-
-            exportFormat = request.args.get("format", "json")
-            if exportFormat not in EXPORT_FORMATS:
-                exportFormat = "json"
-
-            dateText = now(tz=db.tz).strftime("%Y-%m-%d")
-            filename = f"spotify_stats_export_{username}_{dateText}.{exportFormat}"
-            if exportFormat == "csv":
-                generator, mimetype = generateCsvExport(db), "text/csv; charset=utf-8"
-            else:
-                generator, mimetype = generateJsonExport(db), "application/json"
-
-            response = Response(stream_with_context(generator), mimetype=mimetype)
-            response.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
-            return response
-
         registerAuthRoutes(self.app, self)
-
-        @self.app.route("/import-progress", methods=["GET"])
-        def importProgress():
-            email, username, db = self.get_current_user_or_redirect()
-            if not email:
-                return jsonify({"error": "unauthorized"}), 401
-            return jsonify(db.readProgress())
-
-        @self.app.route("/version_status", methods=["GET"])
-        def version_status():
-            # Return the current and latest versions (latest is null if not newer)
-            with self._version_lock:
-                latest = self.latestVersion
-            if latest and _is_version_newer(latest, self.currentVersion):
-                return jsonify({"current": self.currentVersion, "latest": latest})
-            else:
-                return jsonify({"current": self.currentVersion, "latest": None})
-
-        @self.app.route("/api/listener-status", methods=["GET"])
-        def listenerStatus():
-            email, username, db = self.get_current_user_or_redirect()
-            if not email:
-                return jsonify({"error": "Not logged in"}), 401
-            health = db.getListenerHealth()
-            return jsonify(health)
-
-        @self.app.route("/api/now-playing", methods=["GET"])
-        def nowPlayingStatus():
-            """What the user is playing right now, from the listener's cached
-            connect state (no Spotify calls) - polled by the dashboard."""
-            email, username, db = self.get_current_user_or_redirect()
-            if not email:
-                return jsonify({"error": "Not logged in"}), 401
-            return jsonify({"nowPlaying": db.getNowPlaying()})
 
         @self.app.route("/overview", methods=["GET"])
         def overviewPage():
