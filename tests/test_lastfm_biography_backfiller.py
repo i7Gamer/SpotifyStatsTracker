@@ -226,6 +226,32 @@ class WorkerLoopTestCase(BiographyWorkerBase):
 
         self.assertIsNone(db.repo.getArtistBioState("aX")["attempted_at"])
 
+    @patch("Database.database.LastfmClient")
+    def test_loop_failure_then_success_updates_telemetry(self, mockClientClass):
+        db = self._makeDbWithPlays()
+        db.repo.updateUserLastfmApiKey("user1", "key123")
+
+        failingClient = MagicMock()
+        failingClient.getArtistInfo.side_effect = RuntimeError("Last.fm unreachable")
+        mockClientClass.return_value = failingClient
+
+        db.lastfm_biography_stop_event = _oneShotStopEvent()
+        db._lastfmBiographyBackfillLoop()
+
+        telemetry = db._getWorkerTelemetry("lastfm_artist_bio")
+        self.assertEqual(telemetry["consecutive_failures"], 1)
+        self.assertIn("Last.fm unreachable", telemetry["last_error"])
+
+        succeedingClient = MagicMock()
+        succeedingClient.getArtistInfo.return_value = ArtistInfoOutcome(OUTCOME_OK, "A great band.")
+        mockClientClass.return_value = succeedingClient
+
+        db.lastfm_biography_stop_event = _oneShotStopEvent()
+        db._lastfmBiographyBackfillLoop()
+
+        telemetry = db._getWorkerTelemetry("lastfm_artist_bio")
+        self.assertEqual(telemetry["consecutive_failures"], 0)
+
 
 class WorkerBatchTestCase(BiographyWorkerBase):
     """_processLastfmBiographyBatch details, driven directly with a real

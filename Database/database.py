@@ -218,6 +218,10 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
     LASTFM_ALBUM_BIOGRAPHY_QUEUE_BATCH_SIZE = 20     #< one album.getinfo call per entity, same rate limiter
     LASTFM_ALBUM_BIOGRAPHY_IDLE_WAIT_SECONDS = 300   #< wait between cycles once the queue is drained (or after errors)
 
+    WORKER_HEALTH_FAILING_THRESHOLD = 3        #< consecutive failed cycles before a periodic worker counts
+                                                #  as FAILING on /admin - matches the "3 consecutive" precedent
+                                                #  already used for the Spotify re-auth flake filter
+
     # Shared across every Database instance (every user) in this process. Image
     # download de-duplication is enforced by the `images` table (atomic across
     # threads *and* users), so a single bounded pool for the whole process is
@@ -299,6 +303,8 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
                                          importCallback=self.importHistoryBatch,
                                          pollInterval=5,
                                          keyword=filterKeyword)
+
+        self._initWorkerTelemetry()
 
         self.backfiller_thread = None
         self.backfiller_stop_event = threading.Event()

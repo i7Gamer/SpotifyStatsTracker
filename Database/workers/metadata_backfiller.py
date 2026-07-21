@@ -17,6 +17,7 @@ class MetadataBackfillMixin:
         return {
             "configured": has_creds,
             "running": running,
+            **self._getWorkerTelemetry("spotify_api"),
         }
 
     def startMetadataBackfiller(self) -> None:
@@ -248,6 +249,7 @@ class MetadataBackfillMixin:
                             _dbmod.Database._active_backfills.discard(album_id)
 
                 except Exception as e:
+                    self._recordWorkerCycle("spotify_api", success=False, error=_dbmod.parseError(e))
                     _dbmod.logger.error("[Backfiller-%s] Error in metadata backfiller loop: %s", self.user, e)
                     # Cleanup registry if error occurred mid-process
                     try:
@@ -256,6 +258,8 @@ class MetadataBackfillMixin:
                                 _dbmod.Database._active_backfills.discard(album_id)
                     except Exception:
                         pass
+                else:
+                    self._recordWorkerCycle("spotify_api", success=True)
 
                 if stop_event.wait(self.BACKFILLER_IDLE_WAIT_SECONDS):
                     break

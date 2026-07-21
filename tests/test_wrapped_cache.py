@@ -214,6 +214,37 @@ class TestWrappedBackgroundWorker(DatabaseTestCase):
         recalculatedYears = [call.args[0] for call in spy.call_args_list]
         self.assertNotIn(priorYear, recalculatedYears)
 
+    def test_loop_failure_then_success_updates_telemetry(self):
+        """_wrappedCalculationsLoop wraps _checkAndRecalculateWrapped in
+        try/except/else (Database/workers/wrapped_worker.py) - a cycle that
+        raises is recorded as a failure, a later clean cycle resets it."""
+        db = self._makeDb({}, [])
+
+        def _oneShotStopEvent():
+            event = MagicMock()
+            event.is_set.return_value = False
+            calls = {"count": 0}
+
+            def wait(timeout=None):
+                calls["count"] += 1
+                return calls["count"] > 1
+
+            event.wait.side_effect = wait
+            return event
+
+        with patch.object(db, "_checkAndRecalculateWrapped", side_effect=RuntimeError("boom")):
+            db._wrappedCalculationsLoop(_oneShotStopEvent())
+
+        telemetry = db._getWorkerTelemetry("wrapped")
+        self.assertEqual(telemetry["consecutive_failures"], 1)
+        self.assertIn("boom", telemetry["last_error"])
+
+        with patch.object(db, "_checkAndRecalculateWrapped", return_value=None):
+            db._wrappedCalculationsLoop(_oneShotStopEvent())
+
+        telemetry = db._getWorkerTelemetry("wrapped")
+        self.assertEqual(telemetry["consecutive_failures"], 0)
+
 
 class TestWrappedRecalcLocking(DatabaseTestCase):
     """The periodic wrapped worker (_checkAndRecalculateWrapped) and the

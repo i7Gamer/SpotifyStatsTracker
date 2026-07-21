@@ -13,6 +13,7 @@ class LastfmBackfillMixin:
         return {
             "configured": bool(self.repo.getUserLastfmApiKey(self.user)),
             "running": self.lastfm_thread is not None and self.lastfm_thread.is_alive(),
+            **self._getWorkerTelemetry("lastfm_genre"),
         }
 
     def getLastfmBiographyWorkerStatus(self) -> dict:
@@ -22,6 +23,7 @@ class LastfmBackfillMixin:
         return {
             "configured": bool(self.repo.getUserLastfmApiKey(self.user)),
             "running": self.lastfm_biography_thread is not None and self.lastfm_biography_thread.is_alive(),
+            **self._getWorkerTelemetry("lastfm_artist_bio"),
         }
 
     def getLastfmAlbumBiographyWorkerStatus(self) -> dict:
@@ -30,6 +32,7 @@ class LastfmBackfillMixin:
         return {
             "configured": bool(self.repo.getUserLastfmApiKey(self.user)),
             "running": self.lastfm_album_biography_thread is not None and self.lastfm_album_biography_thread.is_alive(),
+            **self._getWorkerTelemetry("lastfm_album_bio"),
         }
 
     def startLastfmGenreBackfiller(self) -> None:
@@ -126,14 +129,18 @@ class LastfmBackfillMixin:
                         if stop_event.wait(self.LASTFM_IDLE_WAIT_SECONDS):
                             break
                 except _dbmod._LastfmInvalidKeyError:
+                    self._recordWorkerCycle("lastfm_genre", success=False, error="Invalid Last.fm API key")
                     _dbmod.logger.warning("[LastfmWorker-%s] Last.fm rejected the API key (invalid/suspended) - "
                                    "idling; fix the key on the profile page", self.user)
                     if stop_event.wait(self.LASTFM_IDLE_WAIT_SECONDS):
                         break
                 except Exception as e:
+                    self._recordWorkerCycle("lastfm_genre", success=False, error=_dbmod.parseError(e))
                     _dbmod.logger.error("[LastfmWorker-%s] Error in genre backfill loop: %s", self.user, _dbmod.parseError(e))
                     if stop_event.wait(self.LASTFM_IDLE_WAIT_SECONDS):
                         break
+                else:
+                    self._recordWorkerCycle("lastfm_genre", success=True)
         finally:
             _dbmod.logger.info("[LastfmWorker-%s] Exited gracefully", self.user)
 
@@ -244,14 +251,18 @@ class LastfmBackfillMixin:
                         if stop_event.wait(self.LASTFM_BIOGRAPHY_IDLE_WAIT_SECONDS):
                             break
                 except _dbmod._LastfmInvalidKeyError:
+                    self._recordWorkerCycle("lastfm_artist_bio", success=False, error="Invalid Last.fm API key")
                     _dbmod.logger.warning("[LastfmBioWorker-%s] Last.fm rejected the API key (invalid/suspended) - "
                                    "idling; fix the key on the profile page", self.user)
                     if stop_event.wait(self.LASTFM_BIOGRAPHY_IDLE_WAIT_SECONDS):
                         break
                 except Exception as e:
+                    self._recordWorkerCycle("lastfm_artist_bio", success=False, error=_dbmod.parseError(e))
                     _dbmod.logger.error("[LastfmBioWorker-%s] Error in biography backfill loop: %s", self.user, _dbmod.parseError(e))
                     if stop_event.wait(self.LASTFM_BIOGRAPHY_IDLE_WAIT_SECONDS):
                         break
+                else:
+                    self._recordWorkerCycle("lastfm_artist_bio", success=True)
         finally:
             _dbmod.logger.info("[LastfmBioWorker-%s] Exited gracefully", self.user)
 
@@ -376,15 +387,19 @@ class LastfmBackfillMixin:
                         if stop_event.wait(self.LASTFM_ALBUM_BIOGRAPHY_IDLE_WAIT_SECONDS):
                             break
                 except _dbmod._LastfmInvalidKeyError:
+                    self._recordWorkerCycle("lastfm_album_bio", success=False, error="Invalid Last.fm API key")
                     _dbmod.logger.warning("[LastfmAlbumBioWorker-%s] Last.fm rejected the API key (invalid/suspended) - "
                                    "idling; fix the key on the profile page", self.user)
                     if stop_event.wait(self.LASTFM_ALBUM_BIOGRAPHY_IDLE_WAIT_SECONDS):
                         break
                 except Exception as e:
+                    self._recordWorkerCycle("lastfm_album_bio", success=False, error=_dbmod.parseError(e))
                     _dbmod.logger.error("[LastfmAlbumBioWorker-%s] Error in album biography backfill loop: %s",
                                 self.user, _dbmod.parseError(e))
                     if stop_event.wait(self.LASTFM_ALBUM_BIOGRAPHY_IDLE_WAIT_SECONDS):
                         break
+                else:
+                    self._recordWorkerCycle("lastfm_album_bio", success=True)
         finally:
             _dbmod.logger.info("[LastfmAlbumBioWorker-%s] Exited gracefully", self.user)
 

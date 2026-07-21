@@ -15,6 +15,7 @@ class WrappedWorkerMixin:
         return {
             "configured": True,
             "running": running,
+            **self._getWorkerTelemetry("wrapped"),
         }
 
     def startWrappedCalculationsWorker(self) -> None:
@@ -65,7 +66,10 @@ class WrappedWorkerMixin:
                 try:
                     self._checkAndRecalculateWrapped(stop_event)
                 except Exception as e:
+                    self._recordWorkerCycle("wrapped", success=False, error=_dbmod.parseError(e))
                     _dbmod.logger.error("[WrappedWorker-%s] Error checking wrapped: %s", self.user, _dbmod.parseError(e))
+                else:
+                    self._recordWorkerCycle("wrapped", success=True)
 
                 # Check loop interval
                 if stop_event.wait(self.WRAPPED_WORKER_LOOP_INTERVAL):

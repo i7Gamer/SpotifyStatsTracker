@@ -138,14 +138,18 @@ class WorkerLifecycleTestCase(LastfmWorkerBase):
         self.assertTrue(withKey.lastfm_thread.is_alive())
 
     def test_worker_status_reflects_key_and_thread(self):
+        def withoutTelemetry(status):
+            return {k: v for k, v in status.items()
+                    if k not in ("consecutive_failures", "failure_rate", "last_error")}
+
         db = self._makeDbWithPlays()
-        self.assertEqual(db.getLastfmWorkerStatus(), {"configured": False, "running": False})
+        self.assertEqual(withoutTelemetry(db.getLastfmWorkerStatus()), {"configured": False, "running": False})
         db.repo.updateUserLastfmApiKey("user1", "key123")
-        self.assertEqual(db.getLastfmWorkerStatus(), {"configured": True, "running": False})
+        self.assertEqual(withoutTelemetry(db.getLastfmWorkerStatus()), {"configured": True, "running": False})
         db.startLastfmGenreBackfiller()
-        self.assertEqual(db.getLastfmWorkerStatus(), {"configured": True, "running": True})
+        self.assertEqual(withoutTelemetry(db.getLastfmWorkerStatus()), {"configured": True, "running": True})
         db.stopLastfmGenreBackfiller()
-        self.assertEqual(db.getLastfmWorkerStatus(), {"configured": True, "running": False})
+        self.assertEqual(withoutTelemetry(db.getLastfmWorkerStatus()), {"configured": True, "running": False})
 
 
 class WorkerLoopTestCase(LastfmWorkerBase):
@@ -186,6 +190,37 @@ class WorkerLoopTestCase(LastfmWorkerBase):
         # Priority order: most-played artist looked up first.
         firstArtistCall = client.getArtistTopTags.call_args_list[0]
         self.assertEqual(firstArtistCall.args[0], "Artist X")
+
+    @patch("Database.database.LastfmClient")
+    def test_loop_failure_then_success_updates_telemetry(self, mockClientClass):
+        """A cycle that raises records a failure via _recordWorkerCycle; a
+        later clean cycle resets consecutive_failures back to 0 (the else
+        clause of the loop's try/except - see Database/workers/telemetry.py)."""
+        db = self._makeDbWithPlays()
+        db.repo.updateUserLastfmApiKey("user1", "key123")
+
+        failingClient = MagicMock()
+        failingClient.getArtistTopTags.side_effect = RuntimeError("Last.fm unreachable")
+        mockClientClass.return_value = failingClient
+
+        db.lastfm_stop_event = _oneShotStopEvent()
+        db._lastfmGenreBackfillLoop()
+
+        telemetry = db._getWorkerTelemetry("lastfm_genre")
+        self.assertEqual(telemetry["consecutive_failures"], 1)
+        self.assertIn("Last.fm unreachable", telemetry["last_error"])
+
+        succeedingClient = MagicMock()
+        succeedingClient.getArtistTopTags.return_value = ROCK_TAGS
+        succeedingClient.getAlbumTopTags.return_value = ROCK_TAGS
+        succeedingClient.getTrackTopTags.return_value = ROCK_TAGS
+        mockClientClass.return_value = succeedingClient
+
+        db.lastfm_stop_event = _oneShotStopEvent()
+        db._lastfmGenreBackfillLoop()
+
+        telemetry = db._getWorkerTelemetry("lastfm_genre")
+        self.assertEqual(telemetry["consecutive_failures"], 0)
 
     @patch("Database.database.LastfmClient")
     def test_own_queue_is_drained_before_the_global_queue(self, mockClientClass):

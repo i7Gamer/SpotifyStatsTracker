@@ -23,6 +23,7 @@ class TestDatabaseWorkerStatusAccessors(unittest.TestCase):
         self.db.repo = self.mock_repo
         self.db.user = "alice"
         self.db.autoImporter = MagicMock()
+        self.db._initWorkerTelemetry()
 
 
     def tearDown(self):
@@ -35,6 +36,9 @@ class TestDatabaseWorkerStatusAccessors(unittest.TestCase):
         status = self.db.getSpotifyApiWorkerStatus()
         self.assertFalse(status["configured"])
         self.assertFalse(status["running"])
+        self.assertEqual(status["consecutive_failures"], 0)
+        self.assertEqual(status["failure_rate"], 0.0)
+        self.assertIsNone(status["last_error"])
 
     def test_get_spotify_api_worker_status_running(self):
         self.mock_repo.getUserSpotifyCredentials.return_value = {
@@ -70,6 +74,49 @@ class TestDatabaseWorkerStatusAccessors(unittest.TestCase):
         status = self.db.getWrappedWorkerStatus()
         self.assertTrue(status["configured"])
         self.assertTrue(status["running"])
+        self.assertEqual(status["consecutive_failures"], 0)
+        self.assertEqual(status["failure_rate"], 0.0)
+        self.assertIsNone(status["last_error"])
+
+    def test_get_lastfm_worker_status_includes_telemetry_defaults(self):
+        self.mock_repo.getUserLastfmApiKey.return_value = "key"
+        self.db.lastfm_thread = None
+
+        status = self.db.getLastfmWorkerStatus()
+        self.assertEqual(status["consecutive_failures"], 0)
+        self.assertEqual(status["failure_rate"], 0.0)
+        self.assertIsNone(status["last_error"])
+
+    def test_get_lastfm_biography_worker_status_includes_telemetry_defaults(self):
+        self.mock_repo.getUserLastfmApiKey.return_value = "key"
+        self.db.lastfm_biography_thread = None
+
+        status = self.db.getLastfmBiographyWorkerStatus()
+        self.assertEqual(status["consecutive_failures"], 0)
+        self.assertEqual(status["failure_rate"], 0.0)
+        self.assertIsNone(status["last_error"])
+
+    def test_get_lastfm_album_biography_worker_status_includes_telemetry_defaults(self):
+        self.mock_repo.getUserLastfmApiKey.return_value = "key"
+        self.db.lastfm_album_biography_thread = None
+
+        status = self.db.getLastfmAlbumBiographyWorkerStatus()
+        self.assertEqual(status["consecutive_failures"], 0)
+        self.assertEqual(status["failure_rate"], 0.0)
+        self.assertIsNone(status["last_error"])
+
+    def test_worker_status_reflects_recorded_failures(self):
+        self.mock_repo.getUserSpotifyCredentials.return_value = {
+            "client_id": "id", "client_secret": "sec", "refresh_token": "token"
+        }
+        self.db.backfiller_thread = None
+        self.db._recordWorkerCycle("spotify_api", success=False, error="Spotify API returned 500")
+        self.db._recordWorkerCycle("spotify_api", success=False, error="Spotify API returned 500")
+
+        status = self.db.getSpotifyApiWorkerStatus()
+        self.assertEqual(status["consecutive_failures"], 2)
+        self.assertEqual(status["failure_rate"], 1.0)
+        self.assertEqual(status["last_error"], "Spotify API returned 500")
 
 
 class TestAdminWorkerHealthRoute(unittest.TestCase):
@@ -156,6 +203,103 @@ class TestAdminWorkerHealthRoute(unittest.TestCase):
             self.assertIn("Wrapped Calculation Workers", body)
             self.assertIn("Database Backup Service", body)
             self.assertIn('<span class="badge badge-success">HEALTHY: 1</span>', body)
+
+    @patch('app.SpotifyDashboardApp._get_or_create_secret_key', return_value='test-secret-key')
+    @patch('app.SpotifyDashboardApp.startVersionCheck_thread')
+    @patch('app.SpotifyDashboardApp.checkLogin_thread')
+    @patch('app.migrateIfNeeded')
+    @patch('app.Path.exists')
+    def test_admin_route_shows_failing_badge_past_threshold(self, mock_exists, mock_migrate, mock_check, mock_version, mock_secret):
+        """A worker whose consecutive_failures has reached
+        Database.WORKER_HEALTH_FAILING_THRESHOLD surfaces a FAILING badge on
+        its summary block; workers below the threshold don't."""
+        mock_exists.return_value = False
+        dash = SpotifyDashboardApp()
+
+        users = [
+            {
+                "username": "alice", "email": "alice@example.com",
+                "cookies_json": '{"sp_dc": "123"}',
+                "spotify_client_id": "client_id", "spotify_refresh_token": "refresh_token",
+                "lastfm_api_key": "enc:v1:something",
+                "created_at": 1718000000.0, "is_admin": True,
+            }
+        ]
+
+        mock_db = MagicMock()
+        mock_db.getListenerHealth.return_value = {"status": "HEALTHY"}
+        mock_db.getSpotifyApiWorkerStatus.return_value = {
+            "configured": True, "running": True,
+            "consecutive_failures": Database.WORKER_HEALTH_FAILING_THRESHOLD,
+            "failure_rate": 1.0, "last_error": "Spotify API unreachable",
+        }
+        mock_db.getLastfmWorkerStatus.return_value = {
+            "configured": True, "running": True,
+            "consecutive_failures": 1, "failure_rate": 0.1, "last_error": None,
+        }
+        mock_db.getLastfmAlbumBiographyWorkerStatus.return_value = {
+            "configured": True, "running": False,
+            "consecutive_failures": 0, "failure_rate": 0.0, "last_error": None,
+        }
+        mock_db.getLastfmBiographyWorkerStatus.return_value = {
+            "configured": True, "running": False,
+            "consecutive_failures": 0, "failure_rate": 0.0, "last_error": None,
+        }
+        mock_db.getAutoImporterWorkerStatus.return_value = {"configured": True, "running": True}
+        mock_db.getWrappedWorkerStatus.return_value = {
+            "configured": True, "running": False,
+            "consecutive_failures": 0, "failure_rate": 0.0, "last_error": None,
+        }
+
+        mock_backup = MagicMock()
+        mock_backup.is_alive.return_value = True
+        dash.backupWorker = mock_backup
+        dash.user_databases = {"alice": mock_db}
+
+        insights = {
+            "getCatalogGenreCoverage": {
+                "song": {"covered": 0, "total": 0, "percent": 0.0},
+                "album": {"covered": 0, "total": 0, "percent": 0.0},
+                "artist": {"covered": 0, "total": 0, "percent": 0.0},
+                "overall": {"percent": 0.0},
+            },
+            "getCatalogBiographyCoverage": {
+                "artist": {"covered": 0, "total": 0}, "album": {"covered": 0, "total": 0},
+            },
+            "getRecentRegistrationCounts": {"last_7_days": 0, "last_30_days": 0},
+            "getInstanceShareCounts": {"pending": 0, "accepted": 0},
+            "getActiveShareLinksCount": 0,
+        }
+
+        patches = [
+            patch.object(dash.repo, 'getGlobalDatabaseStats', return_value={}),
+            patch.object(dash.repo, 'getAllUsersDetails', return_value=users),
+            patch.object(dash.repo, 'isAdmin', return_value=True),
+            patch.object(dash.repo, 'getPlaysCount', return_value=10),
+            patch.object(dash.repo, 'getSkipCount', return_value=2),
+            patch.object(dash.repo, 'getAdminUsernames', return_value=['alice']),
+            patch.object(dash, 'is_user_logged_in', return_value=True),
+            patch.object(dash, 'get_username_for_email', return_value='alice'),
+            patch.object(dash, 'get_user_db', return_value=mock_db),
+        ]
+        for name, value in insights.items():
+            patches.append(patch.object(dash.repo, name, return_value=value))
+
+        with contextlib.ExitStack() as stack:
+            for p in patches:
+                stack.enter_context(p)
+            client = dash.app.test_client()
+            with client.session_transaction() as sess:
+                sess['email'] = 'alice@example.com'
+            resp = client.get("/admin")
+            body = resp.data.decode()
+
+            self.assertEqual(resp.status_code, 200)
+            self.assertIn('<span class="badge badge-danger">FAILING: 1</span>', body)
+            # Below-threshold and zero-failure workers don't render a FAILING badge.
+            wrappedBlockStart = body.index("Wrapped Calculation Workers")
+            wrappedBlockEnd = body.index("Database Backup Service")
+            self.assertNotIn("FAILING", body[wrappedBlockStart:wrappedBlockEnd])
 
     @patch('app.SpotifyDashboardApp._get_or_create_secret_key', return_value='test-secret-key')
     @patch('app.SpotifyDashboardApp.startVersionCheck_thread')

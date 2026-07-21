@@ -8,6 +8,7 @@ import logging
 
 from flask import render_template, redirect, request, url_for, abort
 
+from Database.database import Database
 from Database.utils import convertToDatetime
 
 logger = logging.getLogger(__name__)
@@ -54,20 +55,28 @@ def register(app, dashboard):
             has_api = bool(u["spotify_client_id"] and u["spotify_refresh_token"])
             needs_reauth = bool(u.get("spotify_needs_reauth"))
 
-            # Per-user background worker statuses for the Worker Health panel
-            spotify_api_worker = {"configured": has_api, "running": False}
-            genre_worker = {"configured": has_lastfm_key, "running": False}
-            album_bio_worker = {"configured": has_lastfm_key, "running": False}
-            artist_bio_worker = {"configured": has_lastfm_key, "running": False}
+            # Per-user background worker statuses for the Worker Health panel.
+            # consecutive_failures/failure_rate/last_error are only populated
+            # for the 5 periodic workers with cycle telemetry (see
+            # Database/workers/telemetry.py) - auto_importer's watchdog loop
+            # lives outside Database/workers/ and has no equivalent counters.
+            _telemetryDefaults = {"consecutive_failures": 0, "failure_rate": 0.0, "last_error": None}
+            spotify_api_worker = {"configured": has_api, "running": False, **_telemetryDefaults}
+            genre_worker = {"configured": has_lastfm_key, "running": False, **_telemetryDefaults}
+            album_bio_worker = {"configured": has_lastfm_key, "running": False, **_telemetryDefaults}
+            artist_bio_worker = {"configured": has_lastfm_key, "running": False, **_telemetryDefaults}
             auto_importer_worker = {"configured": True, "running": False}
-            wrapped_worker = {"configured": True, "running": False}
+            wrapped_worker = {"configured": True, "running": False, **_telemetryDefaults}
 
             if u_db is not None:
                 try:
                     if hasattr(u_db, "getSpotifyApiWorkerStatus"):
                         st = u_db.getSpotifyApiWorkerStatus()
                         if isinstance(st, dict):
-                            spotify_api_worker = {"configured": bool(st.get("configured")), "running": bool(st.get("running"))}
+                            spotify_api_worker = {"configured": bool(st.get("configured")), "running": bool(st.get("running")),
+                                                   "consecutive_failures": st.get("consecutive_failures", 0),
+                                                   "failure_rate": st.get("failure_rate", 0.0),
+                                                   "last_error": st.get("last_error")}
                 except Exception as e:
                     logger.warning("Spotify API worker status lookup failed for %s: %s", u_username, e)
 
@@ -75,7 +84,10 @@ def register(app, dashboard):
                     try:
                         workerStatus = u_db.getLastfmWorkerStatus()
                         if isinstance(workerStatus, dict):
-                            genre_worker = {"configured": bool(workerStatus.get("configured")), "running": bool(workerStatus.get("running"))}
+                            genre_worker = {"configured": bool(workerStatus.get("configured")), "running": bool(workerStatus.get("running")),
+                                             "consecutive_failures": workerStatus.get("consecutive_failures", 0),
+                                             "failure_rate": workerStatus.get("failure_rate", 0.0),
+                                             "last_error": workerStatus.get("last_error")}
                     except Exception as e:
                         logger.warning("Last.fm worker status lookup failed for %s: %s", u_username, e)
 
@@ -83,7 +95,10 @@ def register(app, dashboard):
                         if hasattr(u_db, "getLastfmAlbumBiographyWorkerStatus"):
                             st = u_db.getLastfmAlbumBiographyWorkerStatus()
                             if isinstance(st, dict):
-                                album_bio_worker = {"configured": bool(st.get("configured")), "running": bool(st.get("running"))}
+                                album_bio_worker = {"configured": bool(st.get("configured")), "running": bool(st.get("running")),
+                                                     "consecutive_failures": st.get("consecutive_failures", 0),
+                                                     "failure_rate": st.get("failure_rate", 0.0),
+                                                     "last_error": st.get("last_error")}
                     except Exception as e:
                         logger.warning("Last.fm album bio worker status lookup failed for %s: %s", u_username, e)
 
@@ -91,7 +106,10 @@ def register(app, dashboard):
                         if hasattr(u_db, "getLastfmBiographyWorkerStatus"):
                             st = u_db.getLastfmBiographyWorkerStatus()
                             if isinstance(st, dict):
-                                artist_bio_worker = {"configured": bool(st.get("configured")), "running": bool(st.get("running"))}
+                                artist_bio_worker = {"configured": bool(st.get("configured")), "running": bool(st.get("running")),
+                                                      "consecutive_failures": st.get("consecutive_failures", 0),
+                                                      "failure_rate": st.get("failure_rate", 0.0),
+                                                      "last_error": st.get("last_error")}
                     except Exception as e:
                         logger.warning("Last.fm artist bio worker status lookup failed for %s: %s", u_username, e)
 
@@ -107,7 +125,10 @@ def register(app, dashboard):
                     if hasattr(u_db, "getWrappedWorkerStatus"):
                         st = u_db.getWrappedWorkerStatus()
                         if isinstance(st, dict):
-                            wrapped_worker = {"configured": bool(st.get("configured")), "running": bool(st.get("running"))}
+                            wrapped_worker = {"configured": bool(st.get("configured")), "running": bool(st.get("running")),
+                                               "consecutive_failures": st.get("consecutive_failures", 0),
+                                               "failure_rate": st.get("failure_rate", 0.0),
+                                               "last_error": st.get("last_error")}
                 except Exception as e:
                     logger.warning("Wrapped worker status lookup failed for %s: %s", u_username, e)
 
@@ -143,12 +164,15 @@ def register(app, dashboard):
         for u in users_list:
             listener_summary[u["sync_status"]] = listener_summary.get(u["sync_status"], 0) + 1
 
-        spotify_api_worker_summary = {"running": 0, "idle": 0, "no_key": 0}
-        lastfm_worker_summary = {"running": 0, "idle": 0, "no_key": 0}
-        lastfm_album_bio_worker_summary = {"running": 0, "idle": 0, "no_key": 0}
-        lastfm_artist_bio_worker_summary = {"running": 0, "idle": 0, "no_key": 0}
+        spotify_api_worker_summary = {"running": 0, "idle": 0, "no_key": 0, "failing": 0}
+        lastfm_worker_summary = {"running": 0, "idle": 0, "no_key": 0, "failing": 0}
+        lastfm_album_bio_worker_summary = {"running": 0, "idle": 0, "no_key": 0, "failing": 0}
+        lastfm_artist_bio_worker_summary = {"running": 0, "idle": 0, "no_key": 0, "failing": 0}
         auto_importer_worker_summary = {"running": 0, "idle": 0}
-        wrapped_worker_summary = {"running": 0, "idle": 0}
+        wrapped_worker_summary = {"running": 0, "idle": 0, "failing": 0}
+
+        def _isFailing(w: dict) -> bool:
+            return w["configured"] and w["consecutive_failures"] >= Database.WORKER_HEALTH_FAILING_THRESHOLD
 
         for u in users_list:
             # Spotify API Backfill
@@ -159,6 +183,8 @@ def register(app, dashboard):
                 spotify_api_worker_summary["running"] += 1
             else:
                 spotify_api_worker_summary["idle"] += 1
+            if _isFailing(w):
+                spotify_api_worker_summary["failing"] += 1
 
             # Last.fm Genre
             w = u["genre_worker"]
@@ -168,6 +194,8 @@ def register(app, dashboard):
                 lastfm_worker_summary["running"] += 1
             else:
                 lastfm_worker_summary["idle"] += 1
+            if _isFailing(w):
+                lastfm_worker_summary["failing"] += 1
 
             # Last.fm Album Bio
             w = u["album_bio_worker"]
@@ -177,6 +205,8 @@ def register(app, dashboard):
                 lastfm_album_bio_worker_summary["running"] += 1
             else:
                 lastfm_album_bio_worker_summary["idle"] += 1
+            if _isFailing(w):
+                lastfm_album_bio_worker_summary["failing"] += 1
 
             # Last.fm Artist Bio
             w = u["artist_bio_worker"]
@@ -186,6 +216,8 @@ def register(app, dashboard):
                 lastfm_artist_bio_worker_summary["running"] += 1
             else:
                 lastfm_artist_bio_worker_summary["idle"] += 1
+            if _isFailing(w):
+                lastfm_artist_bio_worker_summary["failing"] += 1
 
             # AutoImporter
             w = u["auto_importer_worker"]
@@ -200,6 +232,8 @@ def register(app, dashboard):
                 wrapped_worker_summary["running"] += 1
             else:
                 wrapped_worker_summary["idle"] += 1
+            if _isFailing(w):
+                wrapped_worker_summary["failing"] += 1
 
         backup_worker_running = False
         if hasattr(dashboard, "backupWorker") and dashboard.backupWorker is not None:

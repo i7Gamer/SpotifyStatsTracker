@@ -336,8 +336,33 @@ class TestMetadataBackfiller(DatabaseTestCase):
         self.assertIn("alb2", Database._active_backfills)
         self.assertNotIn("alb1", Database._active_backfills)
 
+        # A clean cycle records success telemetry (see Database/workers/telemetry.py).
+        telemetry = db._getWorkerTelemetry("spotify_api")
+        self.assertEqual(telemetry["consecutive_failures"], 0)
+
         # Clean up
         Database._active_backfills.clear()
+
+    def test_backfiller_loop_records_failure_telemetry(self):
+        """A cycle that raises before completing (here: the missing-metadata
+        query itself fails) is recorded as a failure - the loop's
+        try/except/else in Database/workers/metadata_backfiller.py."""
+        with patch.object(Database, "startMetadataBackfiller"):
+            db = self._makeDb({}, [])
+
+        db.getUserSpotifyCredentials = MagicMock(return_value={
+            "client_id": "test_id", "client_secret": "test_secret", "refresh_token": "test_refresh"})
+        db.repo.getAlbumsMissingMetadata = MagicMock(side_effect=RuntimeError("db unavailable"))
+
+        db.backfiller_stop_event = MagicMock()
+        db.backfiller_stop_event.is_set.side_effect = [False, True]
+        db.backfiller_stop_event.wait.return_value = False
+
+        db._metadataBackfillLoop()
+
+        telemetry = db._getWorkerTelemetry("spotify_api")
+        self.assertEqual(telemetry["consecutive_failures"], 1)
+        self.assertIn("db unavailable", telemetry["last_error"])
 
     @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value=None)
     @patch("SpotipyFree.Spotify")

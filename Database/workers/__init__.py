@@ -8,8 +8,10 @@ from Database.workers.listener import ListenerMixin
 from Database.workers.wrapped_worker import WrappedWorkerMixin
 from Database.workers.metadata_backfiller import MetadataBackfillMixin
 from Database.workers.lastfm_backfillers import LastfmBackfillMixin
+from Database.workers.telemetry import WorkerTelemetryMixin
 
 
 class WorkerLifecycleMixin(ListenerMixin, WrappedWorkerMixin,
-                           MetadataBackfillMixin, LastfmBackfillMixin):
+                           MetadataBackfillMixin, LastfmBackfillMixin,
+                           WorkerTelemetryMixin):
     """Composition of the background-worker sub-mixins, mixed into Database."""
