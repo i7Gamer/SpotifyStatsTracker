@@ -8,17 +8,18 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-import Database.repository as repositoryModule
+import Database.queries.shares as sharesModule
 from Database.repository import Repository
 
 
 def _frozenAt(timestamp):
-    """Patches the `time` module reference inside Database.repository (not
-    the global stdlib module) so time.time() returns a fixed value - mirrors
-    the patch.object(lastfm, "time", ...) convention in test_lastfm_client.py."""
+    """Patches the `time` module reference inside Database.queries.shares (where
+    the share-link methods now live, not the global stdlib module) so time.time()
+    returns a fixed value - mirrors the patch.object(lastfm, "time", ...)
+    convention in test_lastfm_client.py."""
     fakeTime = MagicMock()
     fakeTime.time.return_value = timestamp
-    return patch.object(repositoryModule, "time", fakeTime)
+    return patch.object(sharesModule, "time", fakeTime)
 
 
 class RepositoryShareLinksTestCase(unittest.TestCase):
