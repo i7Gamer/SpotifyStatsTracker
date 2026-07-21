@@ -1116,6 +1116,9 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
     def updateUserSpotifyCredentials(self, clientId: str | None, clientSecret: str | None, refreshToken: str | None) -> None:
         self.repo.updateUserSpotifyCredentials(self.user, clientId, clientSecret, refreshToken)
 
+    def setSpotifyNeedsReauth(self, needsReauth: bool) -> None:
+        self.repo.setSpotifyNeedsReauth(self.user, needsReauth)
+
     def getUserLastfmApiKey(self) -> str | None:
         return self.repo.getUserLastfmApiKey(self.user)
 

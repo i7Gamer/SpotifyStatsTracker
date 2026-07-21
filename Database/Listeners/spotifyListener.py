@@ -67,6 +67,12 @@ SPOTIFY_TRACK_URI_PREFIX = "spotify:track:"  #< connect-state prev_tracks mixes 
 
 WEB_API_POLL_INTERVAL_SECONDS = 15 * 60  #< Query Web API recently-played backfill every 15 minutes
 
+# Sentinel returned by _fetch_recently_played_from_web_api to distinguish a
+# scope-related rejection (the stored refresh token was never granted
+# user-read-recently-played - re-authorization required) from a transient
+# failure (None) that's worth silently retrying on the next poll.
+_SCOPE_ERROR = object()
+
 USER_VALIDATION_CACHE_SECONDS = 5 * 60  #< Cache user validation results to reduce bot detection triggers
 
 TRUTHY_DEBUG_VALUES = {"1", "true"}  #< FLASK_DEBUG values that enable verbose diagnostics (mirrors Database.database)
@@ -124,7 +130,11 @@ def _refresh_spotify_access_token(client_id: str, client_secret: str, refresh_to
     return None
 
 
-def _fetch_recently_played_from_web_api(access_token: str) -> list[dict]:
+def _fetch_recently_played_from_web_api(access_token: str):
+    """Returns the list of recently-played items on success (possibly empty),
+    the _SCOPE_ERROR sentinel when Spotify rejected the request because the
+    refresh token lacks the user-read-recently-played scope, or None for any
+    other failure (network error, rate limit, etc)."""
     import requests
     url = "https://api.spotify.com/v1/me/player/recently-played?limit=50"
     headers = {
@@ -134,11 +144,15 @@ def _fetch_recently_played_from_web_api(access_token: str) -> list[dict]:
         resp = requests.get(url, headers=headers, timeout=10)
         if resp.status_code == 200:
             return resp.json().get("items", [])
-        else:
-            logger.error("Failed to fetch recently played tracks from Web API: %s %s", resp.status_code, resp.text)
+        if resp.status_code == 403 and "insufficient" in resp.text.lower():
+            logger.error(
+                "Spotify Web API rejected recently-played request: refresh token lacks "
+                "user-read-recently-played scope - re-authorization required: %s", resp.text)
+            return _SCOPE_ERROR
+        logger.error("Failed to fetch recently played tracks from Web API: %s %s", resp.status_code, resp.text)
     except Exception as e:
         logger.error("Error fetching recently played tracks from Web API: %s", str(e))
-    return []
+    return None
 
 
 def _get_current_user_from_web_api(access_token: str) -> dict | None:
@@ -185,7 +199,7 @@ def _suppress_signal_in_thread():
 
 class Listener:
     def __init__(self, cookiesFile, refreshInterval=6, email=None, get_credentials=None,
-                 get_backfill_enabled=None):
+                 get_backfill_enabled=None, on_scope_status_change=None):
         self.run = False
         self._stop_event = threading.Event()
         self.email = email  #< store expected email for validation
@@ -197,6 +211,13 @@ class Listener:
         # any caller that doesn't pass it, e.g. existing tests) means always
         # enabled.
         self.get_backfill_enabled = get_backfill_enabled
+        # Optional callback(needs_reauth: bool), invoked after every Web API
+        # backfill poll that got a definitive answer (success or scope
+        # rejection) - lets the caller persist "this account needs to
+        # re-authorize with Spotify" for display, without the listener itself
+        # knowing anything about the database. None (tests, callers that
+        # don't care) means the status is simply not persisted anywhere.
+        self.on_scope_status_change = on_scope_status_change
         self._lastWebApiPollTime = None  #< None means "never polled yet" - forces an immediate first poll
         with _suppress_signal_in_thread():
             self.sp = Spotify(cookiesFile=cookiesFile, email=email)
@@ -546,6 +567,24 @@ class Listener:
                 return
 
             items = _fetch_recently_played_from_web_api(access_token)
+
+            if items is _SCOPE_ERROR:
+                if self.on_scope_status_change:
+                    try:
+                        self.on_scope_status_change(True)
+                    except Exception as e:
+                        logger.error("Failed to record Spotify reauth-needed status: %s", parseError(e))
+                return
+
+            # A definitive (non-None, non-scope-error) response - even an empty
+            # list - proves the current token DOES carry the required scope,
+            # so any previously-recorded reauth-needed status is stale.
+            if items is not None and self.on_scope_status_change:
+                try:
+                    self.on_scope_status_change(False)
+                except Exception as e:
+                    logger.error("Failed to clear Spotify reauth-needed status: %s", parseError(e))
+
             if _flaskDebugEnabled():
                 logger.info("Web API returned %d items for backfill check", len(items) if items else 0)
             if not items:

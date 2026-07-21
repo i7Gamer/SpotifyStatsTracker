@@ -80,6 +80,7 @@ class TestSpotifyCredentialsEncryption(RepositorySecretsTestCase):
             "client_id": "public-client-id",
             "client_secret": "very-secret",
             "refresh_token": "refresh-secret",
+            "needs_reauth": False,
         })
 
     def test_clearing_credentials_stores_none(self):
@@ -87,7 +88,7 @@ class TestSpotifyCredentialsEncryption(RepositorySecretsTestCase):
         self.repo.updateUserSpotifyCredentials("alice", None, None, None)
 
         creds = self.repo.getUserSpotifyCredentials("alice")
-        self.assertEqual(creds, {"client_id": None, "client_secret": None, "refresh_token": None})
+        self.assertEqual(creds, {"client_id": None, "client_secret": None, "refresh_token": None, "needs_reauth": False})
 
     def test_legacy_plaintext_credentials_stay_readable(self):
         conn = self.repo.connection()
@@ -99,6 +100,25 @@ class TestSpotifyCredentialsEncryption(RepositorySecretsTestCase):
         creds = self.repo.getUserSpotifyCredentials("alice")
         self.assertEqual(creds["client_secret"], "old-secret")
         self.assertEqual(creds["refresh_token"], "old-token")
+
+
+class TestSpotifyNeedsReauth(RepositorySecretsTestCase):
+    def test_defaults_to_false_for_a_fresh_user(self):
+        self.assertFalse(self.repo.getUserSpotifyCredentials("alice")["needs_reauth"])
+
+    def test_set_true_then_false_round_trips(self):
+        self.repo.setSpotifyNeedsReauth("alice", True)
+        self.assertTrue(self.repo.getUserSpotifyCredentials("alice")["needs_reauth"])
+
+        self.repo.setSpotifyNeedsReauth("alice", False)
+        self.assertFalse(self.repo.getUserSpotifyCredentials("alice")["needs_reauth"])
+
+    def test_only_affects_the_named_user(self):
+        self.repo.upsertUser("bob", "bob@example.com")
+        self.repo.setSpotifyNeedsReauth("alice", True)
+
+        self.assertTrue(self.repo.getUserSpotifyCredentials("alice")["needs_reauth"])
+        self.assertFalse(self.repo.getUserSpotifyCredentials("bob")["needs_reauth"])
 
 
 class TestEncryptStoredSecretsIfPlaintext(RepositorySecretsTestCase):

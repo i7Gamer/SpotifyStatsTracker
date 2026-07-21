@@ -166,6 +166,10 @@ class TestSpotifyOAuthState(SpotifyEnvTestCase):
 
             mock_db.updateUserSpotifyCredentials.assert_called_once_with(
                 "my_id", "my_secret", "new-refresh-token")
+            # A fresh authorization always grants the scope /spotify-authorize
+            # requested - any stale "needs reauth" flag must be cleared
+            # immediately rather than waiting for the next backfill poll.
+            mock_db.setSpotifyNeedsReauth.assert_called_once_with(False)
             self.assertIn("success=", resp.headers["Location"])
 
             # Replay: the stored state was consumed by the first exchange, so
@@ -223,6 +227,44 @@ class TestSpotifyCallbackErrorDetails(SpotifyEnvTestCase):
         self.assertEqual(resp.status_code, 302)
         self.assertIn("error=", resp.headers["Location"])
         self.assertNotIn("SECRET-EXC-DETAIL-XYZ", resp.headers["Location"])
+
+
+@patch.dict(os.environ, {"SPOTIFY_CALLBACK_URL": "http://localhost:5000/spotify-callback"})
+class TestProfilePageReauthStatus(SpotifyEnvTestCase):
+    """Profile's Connection Status card must distinguish "never authorized"
+    from "authorized, but the token is missing a required scope" - the
+    latter needs a re-authorize prompt too, not just a silently-stuck
+    background tracker (see Web API backfill's on_scope_status_change)."""
+
+    def _getProfile(self, credsExtra):
+        dash = self._makeApp()
+        client = dash.app.test_client()
+        self._login(dash, client)
+        with patch.object(dash, 'get_user_db') as mock_get_db:
+            mock_db = MagicMock()
+            mock_db.getUserSpotifyCredentials.return_value = {
+                "client_id": "my_id", "client_secret": "my_secret",
+                "refresh_token": "rt", **credsExtra,
+            }
+            mock_get_db.return_value = mock_db
+            return client.get("/profile")
+
+    def test_shows_reauth_prompt_when_flagged(self):
+        resp = self._getProfile({"needs_reauth": True})
+        self.assertIn(b"Authorization Expired - Missing Permission", resp.data)
+        self.assertIn(b"Re-authorize with Spotify", resp.data)
+
+    def test_shows_connected_when_not_flagged(self):
+        resp = self._getProfile({"needs_reauth": False})
+        self.assertIn(b"Connected & Authorized", resp.data)
+        self.assertNotIn(b"Authorization Expired", resp.data)
+
+    def test_missing_needs_reauth_key_defaults_to_connected(self):
+        """A credentials dict without the key at all (e.g. a mock that
+        predates this field) must not be mistaken for "needs reauth"."""
+        resp = self._getProfile({})
+        self.assertIn(b"Connected & Authorized", resp.data)
+        self.assertNotIn(b"Authorization Expired", resp.data)
 
 
 if __name__ == "__main__":

@@ -240,7 +240,13 @@
       <h3>Connection Status</h3>
       {% if has_api %}
         <p><strong>Spotify API Configuration:</strong> Saved</p>
-        {% if is_authenticated %}
+        {% if is_authenticated and spotify_needs_reauth %}
+          <p><strong>OAuth Authorization:</strong> <span style="color: #ff6b4a; font-weight: bold;">Authorization Expired - Missing Permission</span></p>
+          <p style="font-size: 0.85rem; color: #888; margin-top: 0.5rem;">Spotify rejected the last backfill request because this authorization doesn't grant the recently-played permission. Re-authorize to fix it.</p>
+          <div style="margin-top: 1rem;">
+            <a href="{{ url_for('spotifyAuthorize') }}" class="primary-button" style="text-decoration: none; display: inline-block; padding: 0.5rem 1.5rem; background: #1db954; color: white;">Re-authorize with Spotify</a>
+          </div>
+        {% elif is_authenticated %}
           <p><strong>OAuth Authorization:</strong> <span style="color: #4aff4a; font-weight: bold;">Connected & Authorized</span></p>
           <p style="font-size: 0.85rem; color: #888; margin-top: 0.5rem;">The background tracker is actively querying the Web API every 5 minutes to backfill missed tracks.</p>
         {% else: %}

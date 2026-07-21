@@ -13,6 +13,7 @@ from Database.Listeners.spotifyListener import (
     WEB_API_POLL_INTERVAL_SECONDS,
     _refresh_spotify_access_token,
     _fetch_recently_played_from_web_api,
+    _SCOPE_ERROR,
 )
 
 # Comfortably past WEB_API_POLL_INTERVAL_SECONDS so _checkWebApiBackfill's
@@ -133,6 +134,44 @@ class ApiBackfillTestCase(unittest.TestCase):
         items = _fetch_recently_played_from_web_api("token123")
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0]["track"]["id"], "track1")
+
+    @patch("requests.get")
+    def test_fetch_recently_played_returns_scope_error_sentinel_on_insufficient_scope(self, mock_get):
+        mock_response = MagicMock()
+        mock_response.status_code = 403
+        mock_response.text = '{"error": {"status": 403, "message": "Insufficient client scope"}}'
+        mock_get.return_value = mock_response
+
+        result = _fetch_recently_played_from_web_api("token123")
+        self.assertIs(result, _SCOPE_ERROR)
+
+    @patch("requests.get")
+    def test_fetch_recently_played_returns_none_for_other_403(self, mock_get):
+        """A 403 that isn't the scope rejection (e.g. a revoked/expired
+        token) must NOT be mistaken for the scope-error sentinel - it's a
+        different failure mode entirely."""
+        mock_response = MagicMock()
+        mock_response.status_code = 403
+        mock_response.text = '{"error": {"status": 403, "message": "User not registered in the Developer Dashboard"}}'
+        mock_get.return_value = mock_response
+
+        result = _fetch_recently_played_from_web_api("token123")
+        self.assertIsNone(result)
+
+    @patch("requests.get")
+    def test_fetch_recently_played_returns_none_on_other_failure(self, mock_get):
+        mock_response = MagicMock()
+        mock_response.status_code = 500
+        mock_response.text = "Internal Server Error"
+        mock_get.return_value = mock_response
+
+        result = _fetch_recently_played_from_web_api("token123")
+        self.assertIsNone(result)
+
+    @patch("requests.get", side_effect=Exception("network down"))
+    def test_fetch_recently_played_returns_none_on_network_exception(self, mock_get):
+        result = _fetch_recently_played_from_web_api("token123")
+        self.assertIsNone(result)
 
     @patch("Database.Listeners.spotifyListener._fetch_recently_played_from_web_api")
     @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token")
@@ -478,6 +517,71 @@ class ApiBackfillTestCase(unittest.TestCase):
         mock_fetch.assert_not_called()
         # Not polled: the poll-interval guard never got a chance to record a timestamp.
         self.assertEqual(listener._lastWebApiPollTime, 0)
+
+    def _makeListenerWithScopeCallback(self, on_scope_status_change):
+        get_credentials = MagicMock(return_value={
+            "client_id": "cid", "client_secret": "cs", "refresh_token": "rt",
+        })
+        with patch("Database.Listeners.spotifyListener.Spotify") as mock_spotify_cls:
+            mock_sp = MagicMock()
+            mock_sp.current_user_recently_played.return_value = []
+            mock_spotify_cls.return_value = mock_sp
+            listener = Listener("dummy_cookie", email="alice@example.com",
+                                 get_credentials=get_credentials,
+                                 on_scope_status_change=on_scope_status_change)
+        listener._lastWebApiPollTime = 0
+        return listener
+
+    @patch("Database.Listeners.spotifyListener._fetch_recently_played_from_web_api", return_value=_SCOPE_ERROR)
+    @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value="token123")
+    def test_check_web_api_backfill_reports_scope_error_and_stops(self, mock_refresh, mock_fetch):
+        on_scope_status_change = MagicMock()
+        listener = self._makeListenerWithScopeCallback(on_scope_status_change)
+        callback = MagicMock()
+
+        with patch("Database.Listeners.spotifyListener.time.monotonic", return_value=_MONOTONIC_NOW):
+            listener._checkWebApiBackfill(callback)
+
+        on_scope_status_change.assert_called_once_with(True)
+        callback.assert_not_called()   #< never reaches item processing
+
+    @patch("Database.Listeners.spotifyListener._fetch_recently_played_from_web_api", return_value=[])
+    @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value="token123")
+    def test_check_web_api_backfill_clears_scope_error_on_success(self, mock_refresh, mock_fetch):
+        """Any definitive response - even an empty item list - proves the
+        token currently carries the required scope, so a previously-recorded
+        reauth-needed flag must be cleared."""
+        on_scope_status_change = MagicMock()
+        listener = self._makeListenerWithScopeCallback(on_scope_status_change)
+
+        with patch("Database.Listeners.spotifyListener.time.monotonic", return_value=_MONOTONIC_NOW):
+            listener._checkWebApiBackfill(MagicMock())
+
+        on_scope_status_change.assert_called_once_with(False)
+
+    @patch("Database.Listeners.spotifyListener._fetch_recently_played_from_web_api", return_value=None)
+    @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value="token123")
+    def test_check_web_api_backfill_leaves_scope_status_alone_on_transient_failure(self, mock_refresh, mock_fetch):
+        """A transient failure (network error, rate limit, ...) is not proof
+        of anything about the token's scope, so the flag must be left
+        exactly as it was - neither set nor cleared."""
+        on_scope_status_change = MagicMock()
+        listener = self._makeListenerWithScopeCallback(on_scope_status_change)
+
+        with patch("Database.Listeners.spotifyListener.time.monotonic", return_value=_MONOTONIC_NOW):
+            listener._checkWebApiBackfill(MagicMock())
+
+        on_scope_status_change.assert_not_called()
+
+    @patch("Database.Listeners.spotifyListener._fetch_recently_played_from_web_api", return_value=_SCOPE_ERROR)
+    @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value="token123")
+    def test_check_web_api_backfill_without_scope_callback_does_not_raise(self, mock_refresh, mock_fetch):
+        """on_scope_status_change is optional - existing callers/tests that
+        don't pass it must be unaffected by a scope error."""
+        listener = self._makeListenerWithScopeCallback(None)
+
+        with patch("Database.Listeners.spotifyListener.time.monotonic", return_value=_MONOTONIC_NOW):
+            listener._checkWebApiBackfill(MagicMock())   # must not raise
 
     def _makeQuietBackfillListener(self):
         """Listener whose _checkWebApiBackfill runs the happy path with an empty

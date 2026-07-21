@@ -146,3 +146,16 @@ class SchemaQueries:
         if "requester_seen_accepted" not in columns:
             with conn:
                 conn.execute("ALTER TABLE user_shares ADD COLUMN requester_seen_accepted INTEGER NOT NULL DEFAULT 0")
+
+    def addSpotifyNeedsReauthColumnIfMissing(self) -> None:
+        """Add users.spotify_needs_reauth (migrate1_30_0) if missing - flags
+        an account whose stored refresh token was rejected by the Web API
+        recently-played backfill for lacking the user-read-recently-played
+        scope, so Profile can surface "re-authorize with Spotify" instead of
+        the listener silently failing every poll. Guarded so re-running the
+        migration doesn't fail."""
+        conn = self._conn()
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
+        if "spotify_needs_reauth" not in columns:
+            with conn:
+                conn.execute("ALTER TABLE users ADD COLUMN spotify_needs_reauth INTEGER NOT NULL DEFAULT 0")

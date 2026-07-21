@@ -356,6 +356,7 @@ def register(app, dashboard):
         client_id = creds.get("client_id")
         client_secret = creds.get("client_secret")
         refresh_token = creds.get("refresh_token")
+        spotify_needs_reauth = creds.get("needs_reauth", False)
 
         settings = db.repo.getUserSettings(username)
         default_window = settings.get("default_dashboard_window", "day")
@@ -398,6 +399,7 @@ def register(app, dashboard):
             album_bio_enabled=dashboard.repo.isAlbumBioEnabled(),
             sharing_enabled=dashboard.repo.isDataSharingEnabled(),
             is_authenticated=bool(refresh_token),
+            spotify_needs_reauth=spotify_needs_reauth,
             redirect_uri=spotify_callback_url,
             success=success,
             error=error,
@@ -540,6 +542,11 @@ def register(app, dashboard):
                 resp_data = resp.json()
                 refresh_token = resp_data.get("refresh_token")
                 db.updateUserSpotifyCredentials(client_id, client_secret, refresh_token)
+                # A fresh authorization always grants the scope /spotify-authorize
+                # requested - clear any stale "needs reauth" flag immediately
+                # rather than waiting up to WEB_API_POLL_INTERVAL_SECONDS for
+                # the next backfill poll to prove it.
+                db.setSpotifyNeedsReauth(False)
 
                 # Restart listener thread to pick up the credentials immediately
                 db.startListener()

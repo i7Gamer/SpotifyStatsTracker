@@ -92,7 +92,8 @@ class UserQueries:
     def getUserSpotifyCredentials(self, username: str) -> dict | None:
         conn = self._conn()
         row = conn.execute(
-            "SELECT spotify_client_id, spotify_client_secret, spotify_refresh_token FROM users WHERE username=?",
+            "SELECT spotify_client_id, spotify_client_secret, spotify_refresh_token, "
+            "spotify_needs_reauth FROM users WHERE username=?",
             (username,)
         ).fetchone()
         if not row:
@@ -101,7 +102,22 @@ class UserQueries:
             "client_id": row["spotify_client_id"],
             "client_secret": decryptSecret(row["spotify_client_secret"]),
             "refresh_token": decryptSecret(row["spotify_refresh_token"]),
+            "needs_reauth": bool(row["spotify_needs_reauth"]),
         }
+
+    def setSpotifyNeedsReauth(self, username: str, needsReauth: bool) -> None:
+        """Flips the "this account's Spotify authorization is missing a
+        required scope" flag - set when the Web API backfill gets a 403
+        Insufficient client scope response, cleared the next time it gets a
+        definitive success. Guarded on the current value so a routine poll
+        that already matches doesn't write every time (see
+        Listener.on_scope_status_change, called after every poll)."""
+        conn = self._conn()
+        with conn:
+            conn.execute(
+                "UPDATE users SET spotify_needs_reauth = ? WHERE username = ? AND spotify_needs_reauth != ?",
+                (int(needsReauth), username, int(needsReauth)),
+            )
 
     def updateUserSpotifyCredentials(self, username: str, clientId: str | None,
                                      clientSecret: str | None, refreshToken: str | None) -> None:

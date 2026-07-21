@@ -166,7 +166,8 @@ CREATE TABLE IF NOT EXISTS users (
     lastfm_api_key        TEXT,
     default_dashboard_window TEXT DEFAULT 'day',
     is_admin              INTEGER NOT NULL DEFAULT 0,
-    timezone              TEXT
+    timezone              TEXT,
+    spotify_needs_reauth  INTEGER NOT NULL DEFAULT 0
 );
 
 -- Per-user play history. This is the only high-cardinality, per-user table -
