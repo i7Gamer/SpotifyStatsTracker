@@ -33,17 +33,21 @@ def register(app, dashboard):
             u_email = u["email"]
             has_lastfm_key = bool(u.get("lastfm_api_key"))
 
-            # get_user_db() constructs a live Database (starts the
-            # listener, auto-importer and background worker threads) -
-            # only worth paying for when this account has a credential
-            # (cookies or a Last.fm key) that actually needs a live
-            # status lookup. A user who's never configured anything just
-            # reports as "Not Configured" without spinning anything up.
-            u_db = dashboard.get_user_db(u_username, u_email) if (u["cookies_json"] or has_lastfm_key) else None
+            # dashboard.user_databases only holds a Database for a user with
+            # an already-active session (started by their own login/usage) -
+            # deliberately NOT dashboard.get_user_db(), which would construct
+            # one on demand and start its listener/auto-importer/worker
+            # threads (a live Spotify poll included) just to report status.
+            # A user who isn't currently active is reported as "Inactive"
+            # rather than paying that cost to find out.
+            u_db = dashboard.user_databases.get(u_username)
 
             if u["cookies_json"]:
-                health = u_db.getListenerHealth()
-                sync_status = health.get("status", "UNKNOWN")
+                if u_db is not None:
+                    health = u_db.getListenerHealth()
+                    sync_status = health.get("status", "UNKNOWN")
+                else:
+                    sync_status = "Inactive"
             else:
                 sync_status = "Not Configured"
 

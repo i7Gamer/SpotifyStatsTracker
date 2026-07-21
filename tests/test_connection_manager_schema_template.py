@@ -24,6 +24,24 @@ def _schemaDump(conn: sqlite3.Connection) -> list[tuple]:
     return [tuple(row) for row in rows]
 
 
+class _ExecutescriptCountingConnection(sqlite3.Connection):
+    """sqlite3.Connection is a C type - its methods can't be patched with
+    unittest.mock.patch.object, so counting executescript() calls needs a
+    real subclass installed via sqlite3.connect(factory=...) instead."""
+    call_count = 0
+
+    def executescript(self, *args, **kwargs):
+        type(self).call_count += 1
+        return super().executescript(*args, **kwargs)
+
+
+_realSqliteConnect = sqlite3.connect   #< captured before any test patches sqlite3.connect
+
+
+def _connectCountingExecutescript(dbPath, **kwargs):
+    return _realSqliteConnect(dbPath, factory=_ExecutescriptCountingConnection, **kwargs)
+
+
 class TestSchemaTemplateMatchesDirectExecutescript(unittest.TestCase):
     def test_backup_copied_schema_matches_executescript(self):
         """A brand-new file's schema (via the backup() fast path) must be
@@ -91,6 +109,97 @@ class TestExistingFileIsNeverOverwritten(unittest.TestCase):
             finally:
                 first.close()
                 second.close()
+
+
+class TestExistingSchemaDdlRunsOnceProcessWide(unittest.TestCase):
+    """A second (or third, or Nth) ConnectionManager opened against a path
+    this process has already stamped with the current SCHEMA must not
+    re-run executescript(SCHEMA) - even though every statement in it is a
+    no-op once its table/index exists, SQLite still takes a write lock to
+    check, which can collide with a concurrent writer and raise "database
+    is locked" (see Database/db.py's ConnectionManager._newConnection)."""
+
+    def setUp(self):
+        _ExecutescriptCountingConnection.call_count = 0
+
+    def test_reopening_an_already_stamped_path_skips_the_ddl_rerun(self):
+        with tempfile.TemporaryDirectory() as tmpDir:
+            dbPath = Path(tmpDir) / "reused.db"
+
+            first = ConnectionManager(dbPath)
+            first.connection()   #< brand-new file: stamps the path via backup()
+            first.close()
+
+            with patch.object(dbModule.sqlite3, "connect", side_effect=_connectCountingExecutescript):
+                second = ConnectionManager(dbPath)
+                try:
+                    second.connection()
+                finally:
+                    second.close()
+
+            self.assertEqual(_ExecutescriptCountingConnection.call_count, 0)
+
+    def test_a_third_connection_manager_also_skips_the_rerun(self):
+        """Not just the second opener - every later one in this process."""
+        with tempfile.TemporaryDirectory() as tmpDir:
+            dbPath = Path(tmpDir) / "reused2.db"
+
+            first = ConnectionManager(dbPath)
+            first.connection()
+            first.close()
+
+            second = ConnectionManager(dbPath)
+            second.connection()
+            second.close()
+
+            with patch.object(dbModule.sqlite3, "connect", side_effect=_connectCountingExecutescript):
+                third = ConnectionManager(dbPath)
+                try:
+                    third.connection()
+                finally:
+                    third.close()
+
+            self.assertEqual(_ExecutescriptCountingConnection.call_count, 0)
+
+    def test_a_schema_change_for_the_same_path_still_forces_a_rerun(self):
+        """The skip must never suppress a real lazy-migration catch-up: if
+        SCHEMA gains a table after a path was stamped (e.g. a future
+        migrator that only adds CREATE TABLE IF NOT EXISTS, relying on it
+        appearing on the next connection), reopening that same path with
+        the new SCHEMA value must still create it."""
+        with tempfile.TemporaryDirectory() as tmpDir:
+            dbPath = Path(tmpDir) / "legacyThenCurrent.db"
+            removedBlock = (
+                "CREATE TABLE IF NOT EXISTS app_settings (\n"
+                "    key     TEXT PRIMARY KEY,\n"
+                "    value   TEXT NOT NULL\n"
+                ");"
+            )
+            self.assertIn(removedBlock, SCHEMA)   #< sanity: the block we strip really exists
+            legacySchema = SCHEMA.replace(removedBlock, "")
+
+            with patch.object(dbModule, "SCHEMA", legacySchema):
+                legacyManager = ConnectionManager(dbPath)
+                legacyManager.connection()
+                legacyManager.close()
+
+            def tableNames():
+                conn = sqlite3.connect(dbPath)
+                try:
+                    return {row[0] for row in conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+                finally:
+                    conn.close()
+
+            self.assertNotIn("app_settings", tableNames())
+
+            currentManager = ConnectionManager(dbPath)
+            try:
+                currentManager.connection()
+            finally:
+                currentManager.close()
+
+            self.assertIn("app_settings", tableNames())
 
 
 class TestSchemaTemplateRespectsAPatchedSchema(unittest.TestCase):

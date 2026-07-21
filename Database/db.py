@@ -310,6 +310,22 @@ _schemaTemplateLock = threading.Lock()
 _schemaTemplateConn: sqlite3.Connection | None = None
 _schemaTemplateSchema: str | None = None   #< SCHEMA the cached template was built from
 
+# Tracks, per resolved db file path, which SCHEMA string value has already
+# been stamped onto it during this process's lifetime. executescript(SCHEMA)
+# is a ~260-line DDL script; even though every CREATE TABLE/INDEX IF NOT
+# EXISTS statement in it is a no-op once its target already exists, SQLite
+# still takes a write lock to check that - which can collide with a
+# concurrent writer thread and raise "database is locked". Re-running it
+# once per (process, path) rather than once per thread/ConnectionManager
+# instance still preserves the lazy-migration behavior some migrators rely
+# on (a table appearing on the next connection without an explicit ALTER -
+# see migrate1_12_0/migrate1_14_0) since a fresh process still stamps
+# anything new, while skipping the redundant, lock-risking re-runs that
+# would otherwise happen for every other thread/Repository touching the
+# same file within that process.
+_stampedSchemaLock = threading.Lock()
+_stampedSchemaByPath: dict[Path, str] = {}
+
 
 def _getSchemaTemplate() -> sqlite3.Connection:
     """A schema-initialized :memory: connection, cached and reused via
@@ -365,6 +381,7 @@ class ConnectionManager:
         # below. Querying the connection's actual contents is unaffected by
         # that and is exact rather than a proxy.
         isEmpty = conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()[0] == 0
+        resolvedPath = self.dbPath.resolve()
         if isEmpty:
             # .backup() copies the template's pages wholesale - much cheaper
             # than re-parsing+executing the DDL, but it OVERWRITES the
@@ -376,8 +393,15 @@ class ConnectionManager:
             # again - not a new failure mode versus the previous
             # executescript-for-everyone behavior.
             _getSchemaTemplate().backup(conn)
+            with _stampedSchemaLock:
+                _stampedSchemaByPath[resolvedPath] = SCHEMA
         else:
-            conn.executescript(SCHEMA)   #< idempotent (IF NOT EXISTS), safe to run per connection
+            with _stampedSchemaLock:
+                alreadyStamped = _stampedSchemaByPath.get(resolvedPath) == SCHEMA
+            if not alreadyStamped:
+                conn.executescript(SCHEMA)   #< idempotent (IF NOT EXISTS); see _stampedSchemaByPath above for why this only runs once per (process, path)
+                with _stampedSchemaLock:
+                    _stampedSchemaByPath[resolvedPath] = SCHEMA
         conn.commit()
         return conn
 

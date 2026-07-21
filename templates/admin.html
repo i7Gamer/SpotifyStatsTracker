@@ -48,6 +48,8 @@
               <span class="badge badge-orange">DEGRADED</span>
             {% elif status == 'dead' %}
               <span class="badge badge-danger">DEAD</span>
+            {% elif status == 'inactive' %}
+              <span class="badge badge-secondary">INACTIVE</span>
             {% else %}
               <span class="badge badge-secondary">NOT CONFIGURED</span>
             {% endif %}

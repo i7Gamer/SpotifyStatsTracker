@@ -61,15 +61,29 @@ class AdminRouteTestBase(AppTestCase):
         insights = dict(_INSIGHTS_PATCHES)
         if extraInsights:
             insights.update(extraInsights)
+        effectiveUsers = self._MOCK_USERS if users is None else users
+        # adminPage()'s per-user row now reads dashboard.user_databases (an
+        # already-active session) instead of calling get_user_db() - populate
+        # it here to simulate every configured user already having a live
+        # session, matching this fixture's previous (pre-fix) behavior where
+        # get_user_db() was called unconditionally for them.
+        dash.user_databases = {
+            u["username"]: userDb or self._makeDb()
+            for u in effectiveUsers
+            if u.get("cookies_json") or u.get("lastfm_api_key")
+        }
         patches = [
             patch.object(dash.repo, 'getGlobalDatabaseStats', return_value=self._MOCK_STATS),
-            patch.object(dash.repo, 'getAllUsersDetails', return_value=self._MOCK_USERS if users is None else users),
+            patch.object(dash.repo, 'getAllUsersDetails', return_value=effectiveUsers),
             patch.object(dash.repo, 'isAdmin', return_value=isAdmin),
             patch.object(dash.repo, 'getPlaysCount', return_value=123),
             patch.object(dash.repo, 'getSkipCount', return_value=7),
             patch.object(dash.repo, 'getAdminUsernames', return_value=['alice']),
             patch.object(dash, 'is_user_logged_in', return_value=loggedIn),
             patch.object(dash, 'get_username_for_email', return_value='alice'),
+            # Still needed: get_current_user_or_redirect() calls this once for
+            # the acting admin's own session (e.g. to resolve db.tz) - unrelated
+            # to the per-row lookup above.
             patch.object(dash, 'get_user_db', return_value=userDb or self._makeDb()),
         ]
         for name, value in insights.items():
@@ -161,38 +175,81 @@ class TestAdminUsersTable(AdminRouteTestBase):
         self.assertIn("border-bottom", aliceRow)
         self.assertNotIn("border-bottom", bobRow)
 
-    def test_does_not_start_listener_for_credential_less_users(self):
+    def test_never_activates_a_database_for_other_users_rows(self):
         """get_user_db() constructs a live Database (starts the listener,
-        auto-importer, and background worker threads) - it must never be
-        called just to render a row for a user with neither cookies nor a
-        Last.fm key configured."""
+        auto-importer, and background worker threads, including a live
+        Spotify poll). Rendering the users table must never call it for any
+        row - not bob's, not orphan's, not even alice's own row as a table
+        entry - since doing so would silently activate a live session for
+        every configured user on every /admin view. The single legitimate
+        call is get_current_user_or_redirect()'s own resolution of the
+        acting admin's session, which happens exactly once regardless of
+        how many rows the table has."""
         dash = self._makeApp()
         users = [
             {"username": "alice", "email": "alice@example.com",
              "cookies_json": '{"sp_dc": "123"}',
              "spotify_client_id": None, "spotify_refresh_token": None,
              "lastfm_api_key": None, "created_at": None, "is_admin": True},
+            {"username": "bob", "email": "bob@example.com",
+             "cookies_json": '{"sp_dc": "456"}',
+             "spotify_client_id": None, "spotify_refresh_token": None,
+             "lastfm_api_key": None, "created_at": None, "is_admin": False},
             {"username": "orphan", "email": "orphan@example.com",
              "cookies_json": None,
              "spotify_client_id": None, "spotify_refresh_token": None,
              "lastfm_api_key": None, "created_at": None, "is_admin": False},
         ]
-        patches = [p for p in self._patches(dash, isAdmin=True, users=users) if p.attribute != 'get_user_db']
+        patches = self._patches(dash, isAdmin=True, users=users)
 
         with contextlib.ExitStack() as stack:
             for p in patches:
                 stack.enter_context(p)
-            stack.enter_context(patch.object(dash, 'get_user_db', return_value=self._makeDb()))
             client = dash.app.test_client()
             with client.session_transaction() as sess:
                 sess['email'] = 'alice@example.com'
             resp = client.get("/admin")
+            callCount = dash.get_user_db.call_count
             calledUsernames = [call.args[0] for call in dash.get_user_db.call_args_list]
 
         self.assertEqual(resp.status_code, 200)
+        self.assertIn(b"bob", resp.data)
         self.assertIn(b"orphan", resp.data)
-        self.assertNotIn("orphan", calledUsernames)
-        self.assertIn("alice", calledUsernames)
+        self.assertEqual(callCount, 1)
+        self.assertEqual(calledUsernames, ["alice"])
+
+    def test_configured_but_inactive_user_shows_inactive_not_healthy(self):
+        """A user with cookies configured but no entry in
+        dashboard.user_databases (no live session currently running in this
+        process) must be reported as Inactive - distinct from both a real
+        HEALTHY session and a genuinely unconfigured account."""
+        dash = self._makeApp()
+        users = [
+            {"username": "alice", "email": "alice@example.com",
+             "cookies_json": '{"sp_dc": "123"}',
+             "spotify_client_id": None, "spotify_refresh_token": None,
+             "lastfm_api_key": None, "created_at": None, "is_admin": True},
+            {"username": "bob", "email": "bob@example.com",
+             "cookies_json": '{"sp_dc": "456"}',
+             "spotify_client_id": None, "spotify_refresh_token": None,
+             "lastfm_api_key": None, "created_at": None, "is_admin": False},
+        ]
+        patches = self._patches(dash, isAdmin=True, users=users)
+        # bob has credentials configured but no active session this process.
+        dash.user_databases = {}
+
+        with contextlib.ExitStack() as stack:
+            for p in patches:
+                stack.enter_context(p)
+            client = dash.app.test_client()
+            with client.session_transaction() as sess:
+                sess['email'] = 'alice@example.com'
+            resp = client.get("/admin")
+            body = resp.data.decode()
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("INACTIVE", body)
+        self.assertNotIn(b"HEALTHY", resp.data)
 
 
 class TestAdminUserSettings(AdminRouteTestBase):

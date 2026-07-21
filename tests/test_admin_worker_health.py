@@ -105,6 +105,11 @@ class TestAdminWorkerHealthRoute(unittest.TestCase):
         mock_backup.is_alive.return_value = True
         dash.backupWorker = mock_backup
 
+        # adminPage()'s per-user row reads dashboard.user_databases (an
+        # already-active session), not get_user_db() - populate it so
+        # mock_db's worker statuses actually get exercised by the row.
+        dash.user_databases = {"alice": mock_db}
+
         insights = {
             "getCatalogGenreCoverage": {
                 "song": {"covered": 0, "total": 0, "percent": 0.0},
