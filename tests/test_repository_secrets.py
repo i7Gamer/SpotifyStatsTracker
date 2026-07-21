@@ -120,6 +120,17 @@ class TestSpotifyNeedsReauth(RepositorySecretsTestCase):
         self.assertTrue(self.repo.getUserSpotifyCredentials("alice")["needs_reauth"])
         self.assertFalse(self.repo.getUserSpotifyCredentials("bob")["needs_reauth"])
 
+    def test_standalone_getter_matches_the_credentials_dict_field(self):
+        """getSpotifyNeedsReauth (the cheap, no-decryption read used by the
+        topbar badge) must agree with getUserSpotifyCredentials's field."""
+        self.assertFalse(self.repo.getSpotifyNeedsReauth("alice"))
+
+        self.repo.setSpotifyNeedsReauth("alice", True)
+        self.assertTrue(self.repo.getSpotifyNeedsReauth("alice"))
+
+    def test_standalone_getter_defaults_to_false_for_unknown_user(self):
+        self.assertFalse(self.repo.getSpotifyNeedsReauth("nobody"))
+
 
 class TestEncryptStoredSecretsIfPlaintext(RepositorySecretsTestCase):
     def test_plaintext_rows_are_encrypted_in_place(self):

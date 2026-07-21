@@ -1839,6 +1839,26 @@ progress::-moz-progress-bar {
   opacity: 0.85;
 }
 
+.spotify-reauth-badge {
+  display: inline-flex;
+  justify-content: flex-start;
+  align-items: center;
+  gap: 8px;
+  margin-left: 12px;
+  margin-right: auto;
+  padding: 3px 6px;
+  background: #ff6b4a;
+  color: #1a0a05;
+  border-radius: 8px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.spotify-reauth-badge:hover {
+  opacity: 0.85;
+}
+
 .chart-card {
   margin-bottom: 24px;
 }

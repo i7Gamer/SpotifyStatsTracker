@@ -47,6 +47,11 @@
         {{ unseenAcceptedShareCount }} share request{{ 's' if unseenAcceptedShareCount != 1 else '' }} accepted!
       </a>
       {% endif %}
+      {% if spotifyNeedsReauthBadge %}
+      <a href="{{ url_for('profilePage') }}" class="spotify-reauth-badge" title="Spotify backfill is stuck - re-authorization needed">
+        Spotify re-authorization needed
+      </a>
+      {% endif %}
       <button id="nav-toggle" class="nav-toggle" aria-label="Toggle navigation menu">
         <span></span>
         <span></span>

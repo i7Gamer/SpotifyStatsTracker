@@ -635,6 +635,26 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
                 "unseenAcceptedShareCount": g.unseenAcceptedShareCount,
             }
 
+        @self.app.context_processor
+        def _injectSpotifyReauthStatus():
+            # Topbar badge for "Web API backfill is stuck because the stored
+            # Spotify authorization is missing a scope" (see
+            # Listener.on_scope_status_change) - otherwise the only place
+            # this ever surfaces is the Connection Status card on /profile,
+            # which nothing prompts a user to go check. Gated on
+            # SPOTIFY_CALLBACK_URL like every other Spotify Developer API
+            # route/link: with it unset, /spotify-authorize 404s, so a badge
+            # pointing there would be a dead end. Memoized on g for the same
+            # reason as _injectShareStatus above.
+            if "spotifyNeedsReauthBadge" not in g:
+                username = session.get("username")
+                g.spotifyNeedsReauthBadge = (
+                    bool(os.environ.get("SPOTIFY_CALLBACK_URL"))
+                    and bool(username)
+                    and self.repo.getSpotifyNeedsReauth(username)
+                )
+            return {"spotifyNeedsReauthBadge": g.spotifyNeedsReauthBadge}
+
         registerSystemRoutes(self.app, self)
 
         registerMediaRoutes(self.app, self)

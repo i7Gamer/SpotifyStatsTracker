@@ -105,6 +105,17 @@ class UserQueries:
             "needs_reauth": bool(row["spotify_needs_reauth"]),
         }
 
+    def getSpotifyNeedsReauth(self, username: str) -> bool:
+        """Cheap standalone read of the reauth flag (no secret decryption) -
+        for the topbar badge context processor, which runs on every page
+        render and has no other reason to touch the encrypted credential
+        columns."""
+        conn = self._conn()
+        row = conn.execute(
+            "SELECT spotify_needs_reauth FROM users WHERE username=?", (username,)
+        ).fetchone()
+        return bool(row["spotify_needs_reauth"]) if row else False
+
     def setSpotifyNeedsReauth(self, username: str, needsReauth: bool) -> None:
         """Flips the "this account's Spotify authorization is missing a
         required scope" flag - set when the Web API backfill gets a 403
