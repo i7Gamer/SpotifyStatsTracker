@@ -214,7 +214,7 @@ class TestAdminWorkerHealthRoute(unittest.TestCase):
             self.assertIn("Covered: 8 / 16", body)
             self.assertIn("Un-inherited: 25.0%", body)
             self.assertIn("Un-inherited: 30.0%", body)
-            self.assertIn("Un-inherited: 50.0%", body)
+            self.assertNotIn("Un-inherited: 50.0%", body)
 
 
 if __name__ == "__main__":

@@ -98,7 +98,7 @@
     <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem; margin-bottom: 1rem;">
       Share of the whole shared catalog with Last.fm data, regardless of who played what.
     </p>
-    {% for label, category in [("Songs (genre)", catalog_genre_coverage.song), ("Albums (genre)", catalog_genre_coverage.album), ("Artists (genre)", catalog_genre_coverage.artist)] %}
+    {% for label, category, has_inherited in [("Songs (genre)", catalog_genre_coverage.song, true), ("Albums (genre)", catalog_genre_coverage.album, true), ("Artists (genre)", catalog_genre_coverage.artist, false)] %}
     {% set own_pct = category.own_percent if category.own_percent is defined else (category.ownPercent if category.ownPercent is defined else category.percent) %}
     <div style="margin-bottom: 0.85rem;">
       <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.3rem;">
@@ -107,11 +107,15 @@
       </div>
       <div style="position: relative; width: 100%; background: rgba(255, 255, 255, 0.08); border-radius: 4px; height: 8px; overflow: hidden; margin-bottom: 0.3rem;">
         <div style="position: absolute; top: 0; left: 0; height: 100%; width: {{ [category.percent, 100] | min }}%; background: var(--accent); border-radius: 4px;"></div>
-        <div style="position: absolute; top: 0; left: 0; height: 100%; width: {{ [own_pct, 100] | min }}%; background: #a78bfa; border-radius: 4px;"></div>
+        {% if has_inherited %}
+        <div style="position: absolute; top: 0; left: 0; height: 100%; width: {{ [own_pct, 100] | min }}%; background: var(--accent-secondary); border-radius: 4px;"></div>
+        {% endif %}
       </div>
       <div style="display: flex; justify-content: space-between; font-size: 0.8rem;">
         <span style="color: var(--muted);">Covered: {{ "{:,}".format(category.covered) }} / {{ "{:,}".format(category.total) }}</span>
-        <span style="color: #a78bfa; font-weight: 600;">Un-inherited: {{ own_pct }}%</span>
+        {% if has_inherited %}
+        <span style="color: var(--accent-secondary); font-weight: 600;">Un-inherited: {{ own_pct }}%</span>
+        {% endif %}
       </div>
     </div>
     {% endfor %}

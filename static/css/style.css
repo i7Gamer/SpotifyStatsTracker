@@ -2133,9 +2133,18 @@ progress::-moz-progress-bar {
 }
 
 /* --- THEME CUSTOMIZATION SYSTEM --- */
+html.theme-rose {
+  --accent: #FB717B;
+  --accent-secondary: #A78BFA;
+  --accent-glow: rgba(251, 113, 123, 0.25);
+  --glow-color-1: rgba(251, 113, 123, 0.15);
+  --glow-color-2: rgba(29, 185, 84, 0.1);
+  --glow-color-3: rgba(25, 25, 25, 0.3);
+}
+
 html.theme-green {
   --accent: #1DB954;
-  --accent-secondary: #60a5fa;
+  --accent-secondary: #60A5FA;
   --accent-glow: rgba(29, 185, 84, 0.25);
   --glow-color-1: rgba(29, 185, 84, 0.15);
   --glow-color-2: rgba(25, 20, 20, 0.3);
@@ -2144,7 +2153,7 @@ html.theme-green {
 
 html.theme-purple {
   --accent: #BB86FC;
-  --accent-secondary: #38bdf8;
+  --accent-secondary: #00E5FF;
   --accent-glow: rgba(187, 134, 252, 0.25);
   --glow-color-1: rgba(187, 134, 252, 0.15);
   --glow-color-2: rgba(3, 218, 198, 0.1);
@@ -2153,7 +2162,7 @@ html.theme-purple {
 
 html.theme-red {
   --accent: #E50914;
-  --accent-secondary: #fb923c;
+  --accent-secondary: #FB923C;
   --accent-glow: rgba(229, 9, 20, 0.25);
   --glow-color-1: rgba(229, 9, 20, 0.15);
   --glow-color-2: rgba(229, 9, 20, 0.08);
