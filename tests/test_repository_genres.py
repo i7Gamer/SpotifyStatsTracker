@@ -508,6 +508,33 @@ class AlbumBioStateTestCase(DatabaseTestCase):
         self.assertIsNone(state["bio"])
         self.assertIsNotNone(state["attempted_at"])
 
+    def test_requeue_decorated_albums_without_bios_clears_only_the_stuck_decorated_ones(self):
+        """The 1.28.0 -> 1.29.0 migration's lever: albums attempted before the
+        album-bio lookup gained cleanLookupName's decoration-stripping retry
+        are stuck (bio IS NULL, bio_attempted_at IS NOT NULL) - only the
+        decorated ones are cleared back to untried so the fixed lookup retries
+        with the undecorated title. Undecorated no-bio albums, decorated
+        albums that DID get a bio, and never-attempted albums are left alone."""
+        db = self._makeDb({}, [])
+        conn = db.repo._conn()
+        with conn:
+            conn.execute("INSERT INTO albums (id, name, url) VALUES ('alDeluxe', 'Album D (Deluxe Edition)', '')")
+            conn.execute("INSERT INTO albums (id, name, url) VALUES ('alPlain', 'Album P', '')")
+            conn.execute("INSERT INTO albums (id, name, url) VALUES ('alDeluxeWithBio', 'Album W (Deluxe Edition)', '')")
+            conn.execute("INSERT INTO albums (id, name, url) VALUES ('alNeverTried', 'Album N (Deluxe Edition)', '')")
+        db.repo.setAlbumBio("alDeluxe", None)                 #< decorated, attempted, no bio -> requeue
+        db.repo.setAlbumBio("alPlain", None)                  #< undecorated, attempted, no bio -> leave
+        db.repo.setAlbumBio("alDeluxeWithBio", "Has a bio.")  #< decorated but has a bio -> leave
+
+        cleared = db.repo.requeueDecoratedAlbumsWithoutBios()
+
+        self.assertEqual(cleared, 1)
+        self.assertIsNone(db.repo.getAlbumBioState("alDeluxe")["attempted_at"])
+        self.assertIsNotNone(db.repo.getAlbumBioState("alPlain")["attempted_at"])
+        self.assertEqual(db.repo.getAlbumBioState("alDeluxeWithBio")["bio"], "Has a bio.")
+        self.assertIsNotNone(db.repo.getAlbumBioState("alDeluxeWithBio")["attempted_at"])
+        self.assertIsNone(db.repo.getAlbumBioState("alNeverTried")["attempted_at"])
+
 
 class AlbumBiographyQueueTestCase(DatabaseTestCase):
     """getAlbumsMissingBiographies: same play-count-ordered, own-vs-global-

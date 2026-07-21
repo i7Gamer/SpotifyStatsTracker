@@ -2,6 +2,11 @@ from __future__ import annotations
 
 from Database.queries._base import *  # noqa: F401,F403 - shared constants/db helpers
 
+try:
+    from Database.lastfm import cleanLookupName
+except ModuleNotFoundError:
+    from lastfm import cleanLookupName
+
 
 class BioQueries:
     """BioQueries: bios data-access methods, mixed into Repository."""
@@ -79,6 +84,35 @@ class BioQueries:
                 """
             ).rowcount
         return cleared
+
+    def requeueDecoratedAlbumsWithoutBios(self) -> int:
+        """Clears bio_attempted_at for albums that were attempted, came back
+        with no bio, AND carry a Spotify decoration in their name ("(Deluxe
+        Edition)", "- Remastered", ...) - these were tried before the album-bio
+        lookup gained cleanLookupName's decoration-stripping retry, so their
+        verbatim-name album.getinfo found nothing on Last.fm that the cleaned
+        title might still hold. Clearing bio_attempted_at re-enters only those
+        at the front of getAlbumsMissingBiographies immediately (instead of
+        after the 30-day retry window), where the fixed lookup now retries the
+        undecorated title - the album-bio analogue of requeueCorruptedBiographies.
+        Undecorated no-bio albums are left alone (the fallback changes nothing
+        for them), as is a NULL bio_attempted_at (never attempted). The
+        decoration test is cleanLookupName, a Python regex, so candidates are
+        filtered in Python rather than SQL. Returns how many albums were requeued."""
+        conn = self._conn()
+        rows = conn.execute(
+            "SELECT id, name FROM albums WHERE bio IS NULL AND bio_attempted_at IS NOT NULL"
+        ).fetchall()
+        decoratedIds = [row["id"] for row in rows
+                        if row["name"] and cleanLookupName(row["name"]) != row["name"]]
+        if not decoratedIds:
+            return 0
+        with conn:
+            conn.executemany(
+                "UPDATE albums SET bio_attempted_at = NULL WHERE id = ?",
+                [(albumId,) for albumId in decoratedIds],
+            )
+        return len(decoratedIds)
 
     def getArtistsMissingBiographies(self, limit: int, username: str | None = None) -> list[dict]:
         """Played PRIMARY (position-0) artists still needing a Last.fm

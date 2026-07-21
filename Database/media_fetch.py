@@ -201,7 +201,9 @@ class MediaFetchMixin:
             apiKey = self.repo.getUserLastfmApiKey(self.user)
             if not apiKey:
                 return False   #< key removed between the claim and this task running; leave unattempted
-            outcome = _dbmod.LastfmClient(apiKey).getAlbumInfo(artistName, albumName)
+            client = _dbmod.LastfmClient(apiKey)
+            outcome = self._lastfmLookupBioOutcome(
+                lambda name: client.getAlbumInfo(artistName, name), albumName)
             if outcome is None or outcome.status not in (_dbmod.OUTCOME_OK, _dbmod.OUTCOME_NOT_FOUND):
                 return False   #< transient/invalid-key: stays unattempted, a later page view retries
             bio = outcome.bio if outcome.status == _dbmod.OUTCOME_OK else None

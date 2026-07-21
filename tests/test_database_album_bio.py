@@ -85,6 +85,32 @@ class LazyFetchAlbumBioTestCase(unittest.TestCase):
         self.assertEqual(state["bio"], "A landmark album.")
         self.assertIsNotNone(state["attempted_at"])
 
+    def test_decorated_album_retries_with_cleaned_name_when_verbatim_has_no_bio(self):
+        """The lazy fetch must reuse the worker's "(Deluxe Edition)" fallback:
+        a decorated album whose verbatim name has no bio on Last.fm re-asks
+        with the cleaned name (via _lastfmLookupBioOutcome)."""
+        db = self._db()
+        self._seedAlbum(db, "alD", "Album D (Deluxe Edition)")
+
+        def bioSideEffect(artist, album):
+            if album == "Album D":
+                return AlbumInfoOutcome(OUTCOME_OK, "The deluxe-stripped bio.")
+            return AlbumInfoOutcome(OUTCOME_NOT_FOUND, None)
+
+        mockClient = MagicMock()
+        mockClient.getAlbumInfo.side_effect = bioSideEffect
+        with patch("Database.database.LastfmClient", return_value=mockClient):
+            future = db.lazyFetchAlbumBio("alD", "Album D (Deluxe Edition)", "Artist X")
+            result = future.result(timeout=5)
+
+        self.assertTrue(result)
+        self.assertEqual(mockClient.getAlbumInfo.call_count, 2)
+        mockClient.getAlbumInfo.assert_any_call("Artist X", "Album D (Deluxe Edition)")
+        mockClient.getAlbumInfo.assert_any_call("Artist X", "Album D")
+        state = db.repo.getAlbumBioState("alD")
+        self.assertEqual(state["bio"], "The deluxe-stripped bio.")
+        self.assertIsNotNone(state["attempted_at"])
+
     def test_definitive_no_bio_still_stamps_attempted(self):
         db = self._db()
         for outcome in (AlbumInfoOutcome(OUTCOME_OK, None), AlbumInfoOutcome(OUTCOME_NOT_FOUND, None)):
