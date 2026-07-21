@@ -294,6 +294,51 @@ class WorkerBatchTestCase(AlbumBiographyWorkerBase):
         self.assertIsNone(state["bio"])
         self.assertIsNotNone(state["attempted_at"])
 
+    def test_decorated_album_name_retries_with_cleaned_name_if_verbatim_returns_no_bio(self):
+        tracks = {"tDecorated": {"id": "tDecorated", "name": "Song",
+                                 "artists": [{"id": "a1", "name": "Queen"}],
+                                 "album": self._album("alDecorated", "The Game (2011 Remaster)")}}
+        entries = [{"id": "tDecorated", "playedAt": 1000, "timePlayed": 5000}]
+        db = self._makeDb(tracks, entries)
+
+        def side_effect(artist, album, stop_event=None):
+            if album == "The Game (2011 Remaster)":
+                return AlbumInfoOutcome(OUTCOME_NOT_FOUND, None)
+            elif album == "The Game":
+                return AlbumInfoOutcome(OUTCOME_OK, "Bio for The Game")
+            return AlbumInfoOutcome(OUTCOME_NOT_FOUND, None)
+
+        client = MagicMock()
+        client.getAlbumInfo.side_effect = side_effect
+
+        processed = db._processLastfmAlbumBiographyBatch(client, "testuser")
+
+        self.assertTrue(processed)
+        self.assertEqual(client.getAlbumInfo.call_count, 2)
+        client.getAlbumInfo.assert_any_call("Queen", "The Game (2011 Remaster)", stop_event=unittest.mock.ANY)
+        client.getAlbumInfo.assert_any_call("Queen", "The Game", stop_event=unittest.mock.ANY)
+        state = db.repo.getAlbumBioState("alDecorated")
+        self.assertEqual(state["bio"], "Bio for The Game")
+        self.assertIsNotNone(state["attempted_at"])
+
+    def test_decorated_album_name_does_not_retry_if_verbatim_succeeds(self):
+        tracks = {"tDecorated": {"id": "tDecorated", "name": "Song",
+                                 "artists": [{"id": "a1", "name": "Queen"}],
+                                 "album": self._album("alDecorated", "The Game (2011 Remaster)")}}
+        entries = [{"id": "tDecorated", "playedAt": 1000, "timePlayed": 5000}]
+        db = self._makeDb(tracks, entries)
+
+        client = MagicMock()
+        client.getAlbumInfo.return_value = AlbumInfoOutcome(OUTCOME_OK, "Bio for verbatim title")
+
+        processed = db._processLastfmAlbumBiographyBatch(client, "testuser")
+
+        self.assertTrue(processed)
+        client.getAlbumInfo.assert_called_once_with("Queen", "The Game (2011 Remaster)", stop_event=unittest.mock.ANY)
+        state = db.repo.getAlbumBioState("alDecorated")
+        self.assertEqual(state["bio"], "Bio for verbatim title")
+
 
 if __name__ == "__main__":
     unittest.main()
+

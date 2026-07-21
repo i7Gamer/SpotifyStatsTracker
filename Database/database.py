@@ -3267,9 +3267,24 @@ class Database:
                     raise _LastfmInvalidKeyError()
                 if outcome.status == OUTCOME_TRANSIENT:
                     continue   #< stays unattempted, retried next cycle
+
                 bio = outcome.bio if outcome.status == OUTCOME_OK else None
+                if bio is None:
+                    cleanedName = cleanLookupName(row["name"])
+                    if cleanedName != row["name"]:
+                        retryOutcome = client.getAlbumInfo(primary["artist_name"], cleanedName,
+                                                             stop_event=self.lastfm_album_biography_stop_event)
+                        if retryOutcome is None:
+                            break
+                        if retryOutcome.status == OUTCOME_INVALID_KEY:
+                            raise _LastfmInvalidKeyError()
+                        if retryOutcome.status == OUTCOME_TRANSIENT:
+                            continue
+                        bio = retryOutcome.bio if retryOutcome.status == OUTCOME_OK else None
+
                 self.repo.setAlbumBio(row["id"], bio)
                 processedAny = True
+
         finally:
             self._releaseLastfmEntities("album_bio", claimed)
         return processedAny
