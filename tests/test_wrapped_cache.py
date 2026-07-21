@@ -103,9 +103,16 @@ class TestWrappedBackgroundWorker(DatabaseTestCase):
         db.repo.deleteUserWrapped(db.user, 2026)
 
         # Run checkAndRecalculate (bypass the real WRAPPED_YEAR_DELAY_SECONDS
-        # breathing-room wait between recalculated years - see the same patch
-        # in test_boundary_play_does_not_cause_perpetual_recalculation below)
-        with patch.object(db.wrapped_stop_event, "wait", return_value=False):
+        # breathing-room wait between recalculated years). Patches the
+        # constant, not wrapped_stop_event.wait itself - the shared event's
+        # own real Database.__init__-started background worker thread also
+        # calls .wait() on it (for its own startup delay), and swapping the
+        # method out from under that thread too raced it into running for
+        # real concurrently with this test (surfaced as flaky Windows
+        # tempdir-cleanup PermissionErrors under -n auto's extra scheduling
+        # jitter). Patching the constant only shortens the specific
+        # WRAPPED_YEAR_DELAY_SECONDS wait using the real Event.wait(0).
+        with patch.object(db, "WRAPPED_YEAR_DELAY_SECONDS", 0):
             db._checkAndRecalculateWrapped()
 
         # Check if cache is now populated
@@ -128,7 +135,7 @@ class TestWrappedBackgroundWorker(DatabaseTestCase):
         db.repo.deleteUserWrapped(db.user, 2026)
 
         with self.assertLogs("Database.database", level="INFO") as cm, \
-             patch.object(db.wrapped_stop_event, "wait", return_value=False):
+             patch.object(db, "WRAPPED_YEAR_DELAY_SECONDS", 0):
             db._checkAndRecalculateWrapped()
 
         recalcLines = [line for line in cm.output if "Recalculating wrapped" in line]
@@ -148,7 +155,7 @@ class TestWrappedBackgroundWorker(DatabaseTestCase):
         })
         db.repo.insertPlay(db.user, "t1", 1775000000, 30000, "listener") # late play
 
-        with patch.object(db.wrapped_stop_event, "wait", return_value=False):
+        with patch.object(db, "WRAPPED_YEAR_DELAY_SECONDS", 0):
             # Check and populate cache
             db._checkAndRecalculateWrapped()
             cached1 = db.repo.getCachedWrapped(db.user, 2026)
@@ -193,8 +200,9 @@ class TestWrappedBackgroundWorker(DatabaseTestCase):
         db.repo.insertPlay(db.user, "t1", priorYearEnd.timestamp(), 30000, "listener")
 
         # Recalculating multiple years each sleeps WRAPPED_YEAR_DELAY_SECONDS
-        # for real (no test currently mocks this) - skip that stall here.
-        with patch.object(db.wrapped_stop_event, "wait", return_value=False):
+        # for real - skip that stall here (patch the constant, not
+        # wrapped_stop_event.wait - see test_worker_triggers_recalculation).
+        with patch.object(db, "WRAPPED_YEAR_DELAY_SECONDS", 0):
             db._checkAndRecalculateWrapped()
             firstRunTotal = db.repo.getCachedWrappedTotalPlays(db.user, priorYear)
             self.assertEqual(firstRunTotal, 1)   #< only the play strictly inside priorYear
@@ -281,7 +289,7 @@ class TestWrappedRecalcLocking(DatabaseTestCase):
         db = self._makeDb({}, [])
         self._seedOnePlayIn2026(db)
 
-        with patch.object(db.wrapped_stop_event, "wait", return_value=False):
+        with patch.object(db, "WRAPPED_YEAR_DELAY_SECONDS", 0):
             db._checkAndRecalculateWrapped()   #< populates a fresh cache
         with patch.object(db, "_calculateAndSaveWrapped") as spy:
             db.recalculateWrappedForYear(2026)
