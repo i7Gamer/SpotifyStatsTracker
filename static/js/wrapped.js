@@ -438,6 +438,7 @@ document.getElementById('exportWrappedBtn')?.addEventListener('click', function(
     ctx.font = '14px sans-serif';
     ctx.textAlign = 'center';
     ctx.fillText(label, x, y + 25);
+  };
 
   drawStat('Total Plays', btn.dataset.plays, 180, 220);
   drawStat('Total Time', btn.dataset.time, 420, 220);
@@ -467,6 +468,7 @@ document.getElementById('exportWrappedBtn')?.addEventListener('click', function(
     ctx.font = '16px sans-serif';
     ctx.fillStyle = '#e0e0e0';
     ctx.fillText(truncate(value, 32), 65, y + 25);
+  };
 
   drawHighlight('Top Song', btn.dataset.topsong, 505);
   drawHighlight('Top Artist', btn.dataset.topartist, 560);
