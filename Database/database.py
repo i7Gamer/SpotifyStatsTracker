@@ -3475,6 +3475,102 @@ class Database:
         markAttempted([entityId])   #< definitively tag-less everywhere
         return True
 
+    def refreshLastfmEntity(self, kind: str, entityId: str) -> dict:
+        """Force a fresh Last.fm lookup for exactly one artist/album/track,
+        bypassing every "already attempted" gate (GENRE_BACKFILL_RETRY_SECONDS,
+        the bio permanent-once-tried contract) - the admin-triggered "Refresh
+        Last.fm Data" button's synchronous action, not a batch. Uses the
+        calling admin's own stored Last.fm key, like lazyFetchArtistBio.
+
+        Returns {"status": ..., "name": <entity name, when known>}. status is
+        one of: "no_api_key", "not_found", "no_artist" (album with no
+        derivable primary artist), "invalid_key", "transient" (no definitive
+        genre result this attempt - try again), "ok".
+
+        Reuses _storeLastfmGenresWithInheritance for albums/tracks, so a
+        refresh behaves exactly like a first-time backfill including its
+        inheritance fallback - see that method's docstring for the one known
+        edge case where stale OWN genres aren't cleared (the entity, its
+        album and its artist all now come back empty after previously having
+        own tags)."""
+        apiKey = self.repo.getUserLastfmApiKey(self.user)
+        if not apiKey:
+            return {"status": "no_api_key"}
+        client = LastfmClient(apiKey)
+
+        try:
+            if kind == "artist":
+                return self._refreshArtistLastfmData(client, entityId)
+            if kind == "album":
+                return self._refreshAlbumLastfmData(client, entityId)
+            if kind == "track":
+                return self._refreshTrackLastfmData(client, entityId)
+            raise ValueError(f"Unknown Last.fm refresh kind: {kind!r}")
+        except _LastfmInvalidKeyError:
+            return {"status": "invalid_key"}
+
+    def _refreshArtistLastfmData(self, client: LastfmClient, artistId: str) -> dict:
+        row = self.repo.getArtistLastfmLookupRow(artistId)
+        if row is None:
+            return {"status": "not_found"}
+
+        outcome = client.getArtistTopTags(row["name"], stop_event=self.lastfm_stop_event)
+        if outcome is None:
+            return {"status": "transient"}
+        definitive, genres = self._lastfmOutcomeGenres(outcome)
+        if not definitive:
+            return {"status": "transient"}
+        self.repo.replaceArtistGenres(artistId, genres)
+        self.repo.markArtistsLastfmAttempted([artistId])
+
+        bioOutcome = client.getArtistInfo(row["name"])
+        if bioOutcome is not None and bioOutcome.status in (OUTCOME_OK, OUTCOME_NOT_FOUND):
+            self.repo.setArtistBio(artistId, bioOutcome.bio if bioOutcome.status == OUTCOME_OK else None)
+
+        return {"status": "ok", "name": row["name"]}
+
+    def _refreshAlbumLastfmData(self, client: LastfmClient, albumId: str) -> dict:
+        row = self.repo.getAlbumLastfmLookupRow(albumId)
+        if row is None:
+            return {"status": "not_found"}
+        primary = self.repo.getAlbumPrimaryArtists([albumId]).get(albumId)
+        if primary is None:
+            return {"status": "no_artist"}
+
+        definitive, genres, aborted = self._lastfmLookupOwnGenres(
+            lambda name: client.getAlbumTopTags(primary["artist_name"], name,
+                                                stop_event=self.lastfm_stop_event),
+            row["name"])
+        if aborted or not definitive:
+            return {"status": "transient"}
+        if not self._storeLastfmGenresWithInheritance(
+                client, "album", albumId, genres, primary["artist_id"], primary["artist_name"]):
+            return {"status": "transient"}
+
+        bioOutcome = client.getAlbumInfo(primary["artist_name"], row["name"])
+        if bioOutcome is not None and bioOutcome.status in (OUTCOME_OK, OUTCOME_NOT_FOUND):
+            self.repo.setAlbumBio(albumId, bioOutcome.bio if bioOutcome.status == OUTCOME_OK else None)
+
+        return {"status": "ok", "name": row["name"]}
+
+    def _refreshTrackLastfmData(self, client: LastfmClient, trackId: str) -> dict:
+        row = self.repo.getTrackLastfmLookupRow(trackId)
+        if row is None:
+            return {"status": "not_found"}
+
+        definitive, genres, aborted = self._lastfmLookupOwnGenres(
+            lambda name: client.getTrackTopTags(row["artist_name"], name,
+                                                stop_event=self.lastfm_stop_event),
+            row["name"])
+        if aborted or not definitive:
+            return {"status": "transient"}
+        if not self._storeLastfmGenresWithInheritance(
+                client, "track", trackId, genres, row["artist_id"], row["artist_name"],
+                albumId=row["album_id"]):
+            return {"status": "transient"}
+
+        return {"status": "ok", "name": row["name"]}
+
 
 if __name__ == "__main__":
 

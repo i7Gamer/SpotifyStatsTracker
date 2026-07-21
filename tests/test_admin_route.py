@@ -284,6 +284,70 @@ class TestAdminLastfmSettings(AdminRouteTestBase):
         self.assertTrue(dash.repo.isSpotifyApiBackfillEnabled())
 
 
+class TestAdminRefreshLastfmEntity(AdminRouteTestBase):
+    """/admin/lastfm/refresh/<kind>/<entity_id> - the detail pages' "Refresh
+    Last.fm Data" button. Database.refreshLastfmEntity itself is covered by
+    tests/test_lastfm_refresh_entity.py; this only exercises the route's
+    admin gating and its status -> redirect/message mapping."""
+
+    def _postRefresh(self, dash, kind, entity_id, isAdmin=True, loggedIn=True, db=None, data=None):
+        with patch.object(dash.repo, 'isAdmin', return_value=isAdmin), \
+             patch.object(dash, 'is_user_logged_in', return_value=loggedIn), \
+             patch.object(dash, 'get_username_for_email', return_value='alice'), \
+             patch.object(dash, 'get_user_db', return_value=db or self._makeDb()):
+            client = dash.app.test_client()
+            if loggedIn:
+                with client.session_transaction() as sess:
+                    sess['email'] = 'alice@example.com'
+                    sess['username'] = 'alice'
+            return client.post(f"/admin/lastfm/refresh/{kind}/{entity_id}", data=data or {})
+
+    def test_non_admin_post_is_forbidden(self):
+        dash = self._makeApp()
+        resp = self._postRefresh(dash, "artist", "aX", isAdmin=False)
+        self.assertEqual(resp.status_code, 403)
+
+    def test_anonymous_post_redirects_to_login(self):
+        dash = self._makeApp()
+        resp = self._postRefresh(dash, "artist", "aX", loggedIn=False)
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn("/login", resp.headers["Location"])
+
+    def test_unknown_kind_is_404(self):
+        dash = self._makeApp()
+        resp = self._postRefresh(dash, "playlist", "aX")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_artist_success_redirects_with_success_message_and_group_by(self):
+        dash = self._makeApp()
+        db = self._makeDb()
+        db.refreshLastfmEntity.return_value = {"status": "ok", "name": "Artist X"}
+        resp = self._postRefresh(dash, "artist", "aX", db=db, data={"groupBy": "month"})
+        self.assertEqual(resp.status_code, 302)
+        location = resp.headers["Location"]
+        self.assertIn("/artist/aX", location)
+        self.assertIn("success=", location)
+        self.assertIn("groupBy=month", location)
+        db.refreshLastfmEntity.assert_called_once_with("artist", "aX")
+
+    def test_album_error_status_redirects_with_error_message(self):
+        dash = self._makeApp()
+        db = self._makeDb()
+        db.refreshLastfmEntity.return_value = {"status": "no_artist"}
+        resp = self._postRefresh(dash, "album", "alP", db=db)
+        self.assertEqual(resp.status_code, 302)
+        location = resp.headers["Location"]
+        self.assertIn("/album/alP", location)
+        self.assertIn("error=", location)
+
+    def test_track_kind_redirects_to_the_song_page(self):
+        dash = self._makeApp()
+        db = self._makeDb()
+        db.refreshLastfmEntity.return_value = {"status": "ok", "name": "Song A"}
+        resp = self._postRefresh(dash, "track", "tA", db=db)
+        self.assertIn("/song/tA", resp.headers["Location"])
+
+
 class TestAdminSpotifySettings(AdminRouteTestBase):
     def test_non_admin_post_is_forbidden(self):
         dash = self._makeApp()

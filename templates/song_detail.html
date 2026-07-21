@@ -8,15 +8,27 @@
     </div>
   </section>
 
+  {% if error %}<p class="error" style="color: #ff4a4a; margin-bottom: 1rem;">{{ error }}</p>{% endif %}
+  {% if success %}<p class="success" style="color: #4aff4a; margin-bottom: 1rem;">{{ success }}</p>{% endif %}
+
   <div class="detail-toolbar">
     <a id="back-button" class="button" href="{{ url_for('topSongsPage') }}">&larr; Back to Top Songs</a>
-    <div class="filter-group">
-      <label for="groupBy">Group by:</label>
-      <select id="groupBy" name="groupBy" onchange="updateDetailGroupByFilter()">
-        <option value="day" {% if groupBy == 'day' %}selected{% endif %}>Day</option>
-        <option value="week" {% if groupBy == 'week' %}selected{% endif %}>Week</option>
-        <option value="month" {% if groupBy == 'month' %}selected{% endif %}>Month</option>
-      </select>
+    <div style="display: flex; align-items: center; gap: 12px;">
+      {% if isAdmin %}
+      <form method="post" action="{{ url_for('adminRefreshLastfmEntity', kind='track', entity_id=song.get('id')) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+        <input type="hidden" name="groupBy" value="{{ groupBy }}"/>
+        <button type="submit" class="button">Refresh Last.fm Data</button>
+      </form>
+      {% endif %}
+      <div class="filter-group">
+        <label for="groupBy">Group by:</label>
+        <select id="groupBy" name="groupBy" onchange="updateDetailGroupByFilter()">
+          <option value="day" {% if groupBy == 'day' %}selected{% endif %}>Day</option>
+          <option value="week" {% if groupBy == 'week' %}selected{% endif %}>Week</option>
+          <option value="month" {% if groupBy == 'month' %}selected{% endif %}>Month</option>
+        </select>
+      </div>
     </div>
   </div>
 

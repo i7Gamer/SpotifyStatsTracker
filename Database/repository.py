@@ -2746,6 +2746,42 @@ class Repository:
                                               "artist_name": row["artist_name"]}
         return primaries
 
+    def getArtistLastfmLookupRow(self, artistId: str) -> dict | None:
+        """{"id", "name"} for one artist, ignoring attempt state entirely -
+        unlike getArtistsMissingGenres, this backs the admin "refresh Last.fm
+        data" action, which must work even on an already-attempted artist."""
+        row = self._conn().execute(
+            "SELECT id, name FROM artists WHERE id = ?", (artistId,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def getAlbumLastfmLookupRow(self, albumId: str) -> dict | None:
+        """{"id", "name"} for one album - mirrors getArtistLastfmLookupRow."""
+        row = self._conn().execute(
+            "SELECT id, name FROM albums WHERE id = ?", (albumId,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def getTrackLastfmLookupRow(self, trackId: str) -> dict | None:
+        """{"id", "name", "album_id", "artist_id", "artist_name"} for one
+        track via its position-0 artist - same row shape as
+        getTracksMissingGenres, but for exactly one id and ignoring attempt
+        state (see getArtistLastfmLookupRow). None if the track has no
+        position-0 artist, the same structural exclusion
+        getTracksMissingGenres applies."""
+        row = self._conn().execute(
+            """
+            SELECT t.id AS id, t.name AS name, t.album_id AS album_id,
+                   ar.id AS artist_id, ar.name AS artist_name
+            FROM tracks t
+            JOIN track_artists ta ON ta.track_id = t.id AND ta.position = 0
+            JOIN artists ar ON ar.id = ta.artist_id
+            WHERE t.id = ?
+            """,
+            (trackId,),
+        ).fetchone()
+        return dict(row) if row else None
+
     def getBiographyCoverage(self, username: str) -> dict:
         """Entity-count coverage for the Overview "Biography Backfill
         Progress" widget: {"artist": {"covered", "total"}, "album": {...}} -

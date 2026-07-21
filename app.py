@@ -2978,6 +2978,42 @@ class SpotifyDashboardApp:
             self.repo.setInheritedGenresEnabled(request.form.get("include_inherited") == "1")
             return redirect(url_for("adminPage"))
 
+        @self.app.route("/admin/lastfm/refresh/<kind>/<entity_id>", methods=["POST"])
+        def adminRefreshLastfmEntity(kind, entity_id):
+            """Admin-only: force a fresh Last.fm lookup for one artist/album/
+            track (the detail pages' "Refresh Last.fm Data" button) - see
+            Database.refreshLastfmEntity for what "fresh" bypasses."""
+            routeByKind = {"artist": "artistDetailPage", "album": "albumDetailPage",
+                          "track": "songDetailPage"}
+            idKwargByKind = {"artist": "artist_id", "album": "album_id", "track": "track_id"}
+            if kind not in routeByKind:
+                abort(404)
+            detailRoute = routeByKind[kind]
+            idKwarg = idKwargByKind[kind]
+
+            email, username, db = get_current_user_or_redirect()
+            if not email:
+                return redirect(url_for("login", next=url_for(detailRoute, **{idKwarg: entity_id})))
+            if not self.repo.isAdmin(username):
+                abort(403)
+
+            result = db.refreshLastfmEntity(kind, entity_id)
+            STATUS_MESSAGES = {
+                "no_api_key": ("error", "Add a Last.fm API key on your profile to refresh Last.fm data."),
+                "invalid_key": ("error", "Your stored Last.fm API key was rejected by Last.fm."),
+                "not_found": ("error", "Couldn't find this item to refresh."),
+                "no_artist": ("error", "Couldn't determine this album's artist."),
+                "transient": ("error", "Last.fm didn't respond - try again in a moment."),
+                "ok": ("success", f"Refreshed Last.fm data for “{result.get('name', '')}”."),
+            }
+            messageKind, message = STATUS_MESSAGES[result["status"]]
+
+            redirectArgs = {idKwarg: entity_id, messageKind: message}
+            groupBy = request.form.get("groupBy")
+            if groupBy:
+                redirectArgs["groupBy"] = groupBy
+            return redirect(url_for(detailRoute, **redirectArgs))
+
         @self.app.route("/admin/spotify_settings", methods=["POST"])
         def adminSpotifySettings():
             """Admin-only: the Spotify Developer API backfill kill switch
@@ -3969,6 +4005,8 @@ class SpotifyDashboardApp:
                 timeSeries=timeSeries,
                 heatmap=heatmap,
                 section="top_songs",
+                success=request.args.get("success"),
+                error=request.args.get("error"),
             )
 
         @self.app.route("/artist/<artist_id>", methods=["GET"])
@@ -4016,6 +4054,8 @@ class SpotifyDashboardApp:
                 groupBy=groupBy,
                 timeSeries=timeSeries,
                 section="top_artists",
+                success=request.args.get("success"),
+                error=request.args.get("error"),
             )
 
         @self.app.route("/album/<album_id>", methods=["GET"])
@@ -4067,6 +4107,8 @@ class SpotifyDashboardApp:
                 username=username,
                 timeSeries=timeSeries,
                 section="top_albums",
+                success=request.args.get("success"),
+                error=request.args.get("error"),
             )
 
     def shutdown(self):
