@@ -106,7 +106,8 @@ def _is_rate_limit_error(exc: Exception) -> bool:
             "json" in exc_str)  # Invalid JSON usually indicates Spotify API issue
 
 
-def _refresh_spotify_access_token(client_id: str, client_secret: str, refresh_token: str) -> str | None:
+def _refresh_spotify_access_token(client_id: str, client_secret: str, refresh_token: str,
+                                   email: str | None = None) -> str | None:
     import base64
     import requests
     url = "https://accounts.spotify.com/api/token"
@@ -124,17 +125,18 @@ def _refresh_spotify_access_token(client_id: str, client_secret: str, refresh_to
         if resp.status_code == 200:
             return resp.json().get("access_token")
         else:
-            logger.error("Failed to refresh Spotify access token: %s %s", resp.status_code, resp.text)
+            logger.error("Failed to refresh Spotify access token for user %s: %s %s", email, resp.status_code, resp.text)
     except Exception as e:
-        logger.error("Error refreshing Spotify access token: %s", str(e))
+        logger.error("Error refreshing Spotify access token for user %s: %s", email, str(e))
     return None
 
 
-def _fetch_recently_played_from_web_api(access_token: str):
+def _fetch_recently_played_from_web_api(access_token: str, email: str | None = None):
     """Returns the list of recently-played items on success (possibly empty),
     the _SCOPE_ERROR sentinel when Spotify rejected the request because the
     refresh token lacks the user-read-recently-played scope, or None for any
-    other failure (network error, rate limit, etc)."""
+    other failure (network error, rate limit, etc). `email` is only used to
+    identify which account's worker a logged failure belongs to."""
     import requests
     url = "https://api.spotify.com/v1/me/player/recently-played?limit=50"
     headers = {
@@ -146,17 +148,19 @@ def _fetch_recently_played_from_web_api(access_token: str):
             return resp.json().get("items", [])
         if resp.status_code == 403 and "insufficient" in resp.text.lower():
             logger.error(
-                "Spotify Web API rejected recently-played request: refresh token lacks "
-                "user-read-recently-played scope - re-authorization required: %s", resp.text)
+                "Spotify Web API rejected recently-played request for user %s: refresh token lacks "
+                "user-read-recently-played scope - re-authorization required: %s", email, resp.text)
             return _SCOPE_ERROR
-        logger.error("Failed to fetch recently played tracks from Web API: %s %s", resp.status_code, resp.text)
+        logger.error("Failed to fetch recently played tracks from Web API for user %s: %s %s", email, resp.status_code, resp.text)
     except Exception as e:
-        logger.error("Error fetching recently played tracks from Web API: %s", str(e))
+        logger.error("Error fetching recently played tracks from Web API for user %s: %s", email, str(e))
     return None
 
 
-def _get_current_user_from_web_api(access_token: str) -> dict | None:
-    """Fetch current user info from Web API to validate the access token belongs to the expected user."""
+def _get_current_user_from_web_api(access_token: str, email: str | None = None) -> dict | None:
+    """Fetch current user info from Web API to validate the access token belongs to the expected user.
+    `email` (the LISTENER's expected email, not the API's response) is only used to identify which
+    account's worker a logged failure belongs to."""
     import requests
     url = "https://api.spotify.com/v1/me"
     headers = {
@@ -167,9 +171,9 @@ def _get_current_user_from_web_api(access_token: str) -> dict | None:
         if resp.status_code == 200:
             return resp.json()
         else:
-            logger.error("Failed to fetch current user from Web API: %s %s", resp.status_code, resp.text)
+            logger.error("Failed to fetch current user from Web API for user %s: %s %s", email, resp.status_code, resp.text)
     except Exception as e:
-        logger.error("Error fetching current user from Web API: %s", str(e))
+        logger.error("Error fetching current user from Web API for user %s: %s", email, str(e))
     return None
 
 
@@ -526,17 +530,18 @@ class Listener:
                 return
 
             if _flaskDebugEnabled():
-                logger.info("Running Spotify Web API recently-played backfill check...")
-            access_token = _refresh_spotify_access_token(creds["client_id"], creds["client_secret"], creds["refresh_token"])
+                logger.info("Running Spotify Web API recently-played backfill check... (user %s)", self.email)
+            access_token = _refresh_spotify_access_token(
+                creds["client_id"], creds["client_secret"], creds["refresh_token"], email=self.email)
             if not access_token:
-                logger.warning("Could not obtain access token for Web API backfill.")
+                logger.warning("Could not obtain access token for Web API backfill for user %s.", self.email)
                 return
 
             # Validate that the access token belongs to the authenticated user,
             # not a different Spotify account (prevents cross-user contamination)
-            web_api_user = _get_current_user_from_web_api(access_token)
+            web_api_user = _get_current_user_from_web_api(access_token, email=self.email)
             if not web_api_user:
-                logger.warning("Could not validate Web API user, skipping backfill.")
+                logger.warning("Could not validate Web API user, skipping backfill for user %s.", self.email)
                 return
 
             web_api_user_id = web_api_user.get("id")
@@ -566,14 +571,14 @@ class Listener:
                 )
                 return
 
-            items = _fetch_recently_played_from_web_api(access_token)
+            items = _fetch_recently_played_from_web_api(access_token, email=self.email)
 
             if items is _SCOPE_ERROR:
                 if self.on_scope_status_change:
                     try:
                         self.on_scope_status_change(True)
                     except Exception as e:
-                        logger.error("Failed to record Spotify reauth-needed status: %s", parseError(e))
+                        logger.error("Failed to record Spotify reauth-needed status for user %s: %s", self.email, parseError(e))
                 return
 
             # A definitive (non-None, non-scope-error) response - even an empty
@@ -583,10 +588,10 @@ class Listener:
                 try:
                     self.on_scope_status_change(False)
                 except Exception as e:
-                    logger.error("Failed to clear Spotify reauth-needed status: %s", parseError(e))
+                    logger.error("Failed to clear Spotify reauth-needed status for user %s: %s", self.email, parseError(e))
 
             if _flaskDebugEnabled():
-                logger.info("Web API returned %d items for backfill check", len(items) if items else 0)
+                logger.info("Web API returned %d items for backfill check (user %s)", len(items) if items else 0, self.email)
             if not items:
                 return
 
@@ -645,7 +650,7 @@ class Listener:
                     })
 
             if missed_items:
-                logger.info("Backfilling %d plays from Web API recently-played history", len(missed_items))
+                logger.info("Backfilling %d plays from Web API recently-played history for user %s", len(missed_items), self.email)
                 # Mark these as backfilled so the database can record the source
                 for missed_item in missed_items:
                     missed_item["_source"] = "web_api_backfill"
@@ -674,7 +679,7 @@ class Listener:
                 onWebApiSnapshot(items)
 
         except Exception as e:
-            logger.error("Error during Web API backfill: %s", parseError(e))
+            logger.error("Error during Web API backfill for user %s: %s", self.email, parseError(e))
 
     def startListener_thread(self, callback, onStale=None, onWebApiSnapshot=None):
         self._stop_event.clear()

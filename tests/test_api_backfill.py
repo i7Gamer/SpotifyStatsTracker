@@ -13,6 +13,7 @@ from Database.Listeners.spotifyListener import (
     WEB_API_POLL_INTERVAL_SECONDS,
     _refresh_spotify_access_token,
     _fetch_recently_played_from_web_api,
+    _get_current_user_from_web_api,
     _SCOPE_ERROR,
 )
 
@@ -172,6 +173,53 @@ class ApiBackfillTestCase(unittest.TestCase):
     def test_fetch_recently_played_returns_none_on_network_exception(self, mock_get):
         result = _fetch_recently_played_from_web_api("token123")
         self.assertIsNone(result)
+
+    @patch("requests.get")
+    def test_get_current_user_failure_logs_the_account_it_belongs_to(self, mock_get):
+        """Regression test: an admin scanning logs for a 502/other failure
+        from /v1/me must be able to tell WHICH account's worker it came
+        from - previously this log line carried no user identifier at all."""
+        mock_response = MagicMock()
+        mock_response.status_code = 502
+        mock_response.text = '{"error": {"status": 502, "message": "An unexpected error occurred."}}'
+        mock_get.return_value = mock_response
+
+        with self.assertLogs("Database.Listeners.spotifyListener", level="ERROR") as cm:
+            result = _get_current_user_from_web_api("token123", email="alice@example.com")
+
+        self.assertIsNone(result)
+        self.assertTrue(any("alice@example.com" in m for m in cm.output))
+
+    @patch("requests.get", side_effect=Exception("network down"))
+    def test_get_current_user_exception_logs_the_account_it_belongs_to(self, mock_get):
+        with self.assertLogs("Database.Listeners.spotifyListener", level="ERROR") as cm:
+            _get_current_user_from_web_api("token123", email="alice@example.com")
+
+        self.assertTrue(any("alice@example.com" in m for m in cm.output))
+
+    @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value="token123")
+    def test_check_web_api_backfill_validation_warning_identifies_the_account(self, mock_refresh):
+        """Regression test for the reported log line: 'Could not validate Web
+        API user, skipping backfill.' gave no way to tell which of several
+        concurrently-running per-user workers it came from."""
+        self.mock_get_current_user.return_value = None   #< simulates the /v1/me failure
+
+        get_credentials = MagicMock(return_value={
+            "client_id": "cid", "client_secret": "cs", "refresh_token": "rt",
+        })
+        with patch("Database.Listeners.spotifyListener.Spotify") as mock_spotify_cls:
+            mock_sp = MagicMock()
+            mock_sp.current_user_recently_played.return_value = []
+            mock_spotify_cls.return_value = mock_sp
+            listener = Listener("dummy_cookie", email="alice@example.com", get_credentials=get_credentials)
+        listener._lastWebApiPollTime = 0
+
+        with patch("Database.Listeners.spotifyListener.time.monotonic", return_value=_MONOTONIC_NOW), \
+             self.assertLogs("Database.Listeners.spotifyListener", level="WARNING") as cm:
+            listener._checkWebApiBackfill(MagicMock())
+
+        self.assertTrue(any(
+            "Could not validate Web API user" in m and "alice@example.com" in m for m in cm.output))
 
     @patch("Database.Listeners.spotifyListener._fetch_recently_played_from_web_api")
     @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token")
@@ -485,6 +533,7 @@ class ApiBackfillTestCase(unittest.TestCase):
         listener.get_credentials = MagicMock(return_value={
             "client_id": "cid", "client_secret": "cs", "refresh_token": "rt"})
         listener.get_backfill_enabled = None
+        listener.email = "alice@example.com"
         listener._lastWebApiPollTime = 0
 
         with patch("Database.Listeners.spotifyListener.time.monotonic", return_value=_MONOTONIC_NOW), \
