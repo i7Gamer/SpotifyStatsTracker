@@ -81,6 +81,28 @@ _LOOKUP_NAME_DECORATION = re.compile(
 _LOOKUP_NAME_GROUP = re.compile(r"\s*\(([^()]*)\)|\s*\[([^\[\]]*)\]")
 LOOKUP_NAME_DASH_SEPARATOR = " - "
 
+# Stylized-artist-name fallback: Last.fm's community tagging resolves real
+# diacritics fine on the first try (Måneskin, Emilíana Torrini already carry
+# genres under their stored spelling), but some artists use lookalike
+# Latin-Extended letters or decorative marks purely as visual styling that
+# the *real* Last.fm entry doesn't carry - confirmed live against the API,
+# not a guess: "HUGØ" has no tags, "HUGO" does; "Jinka †" has no tags,
+# "Jinka" does. Only tried as a last-resort retry after the exact stored
+# name comes back empty, so it never masks a genuine first-try match.
+_STYLIZED_LETTER_MAP = str.maketrans({
+    "Ø": "O", "ø": "o", "Æ": "AE", "æ": "ae", "Å": "A", "å": "a",
+    "ß": "ss", "Đ": "D", "đ": "d", "Ł": "L", "ł": "l",
+    "Œ": "OE", "œ": "oe", "Þ": "Th", "þ": "th",
+})
+# Decorative dingbats/marks (daggers, stars, braille-blank padding) seen
+# appended to stylized artist names - visual flourish, not letters.
+_DECORATIVE_CODEPOINT_RANGES = (
+    (0x2020, 0x2021),   #< † ‡
+    (0x2022, 0x2022),   #< •
+    (0x2600, 0x27BF),   #< misc symbols & dingbats (★ ☆ ✦ ♪ ...)
+    (0x2800, 0x28FF),   #< braille patterns (used as invisible padding)
+)
+
 # Key validation happens synchronously on a profile-save request thread: it
 # shares the worker rate limiter but must never hang the HTTP request when
 # workers have the budget saturated - give up after a short wait instead.
@@ -193,6 +215,24 @@ def cleanLookupName(name: str) -> str:
     cleaned = _LOOKUP_NAME_GROUP.sub(_dropDecoratedGroup, cleaned)
     cleaned = " ".join(cleaned.split())
     return cleaned if cleaned and cleaned != name else name
+
+
+def _isDecorativeChar(char: str) -> bool:
+    codepoint = ord(char)
+    return any(low <= codepoint <= high for low, high in _DECORATIVE_CODEPOINT_RANGES)
+
+
+def foldStylizedArtistName(name: str) -> str:
+    """`name` with stylized Latin-Extended letters swapped for their plain
+    ASCII form and decorative marks stripped - the retry form for an artist
+    lookup whose exact name found nothing on Last.fm (see
+    _STYLIZED_LETTER_MAP). Also collapses stray whitespace, since a trailing
+    space alone can be the whole reason a name never matched. Returns the
+    original name unchanged when nothing qualifies."""
+    folded = name.translate(_STYLIZED_LETTER_MAP)
+    folded = "".join(char for char in folded if not _isDecorativeChar(char))
+    folded = " ".join(folded.split())
+    return folded if folded and folded != name else name
 
 
 def filterTagsToGenres(tags: list) -> list[str]:
@@ -404,7 +444,22 @@ class LastfmClient:
 
     def getArtistTopTags(self, artistName: str,
                          stop_event: threading.Event | None = None) -> FetchOutcome | None:
-        return self._fetchTopTags("artist.gettoptags", {"artist": artistName}, stop_event)
+        outcome = self._fetchTopTags("artist.gettoptags", {"artist": artistName}, stop_event)
+        if outcome is None or outcome.status != OUTCOME_OK or outcome.tags:
+            return outcome
+        # A definitive-empty result under the exact stored name - retry once
+        # with decorative/stylized characters folded to plain ASCII (see
+        # foldStylizedArtistName). Never replaces a real result and costs
+        # nothing extra on the majority of artists whose name doesn't fold
+        # to anything different.
+        folded = foldStylizedArtistName(artistName)
+        if folded == artistName:
+            return outcome
+        fallback = self._fetchTopTags("artist.gettoptags", {"artist": folded}, stop_event)
+        if fallback is not None and fallback.status == OUTCOME_OK and fallback.tags:
+            logger.info("[Lastfm] stylized-name fold recovered %d tag(s) for %r (tried as %r)",
+                       len(fallback.tags), artistName, folded)
+        return fallback
 
     def getAlbumTopTags(self, artistName: str, albumName: str,
                         stop_event: threading.Event | None = None) -> FetchOutcome | None:

@@ -16,7 +16,7 @@ from Database.lastfm import (
     OUTCOME_OK, OUTCOME_NOT_FOUND, OUTCOME_TRANSIENT, OUTCOME_INVALID_KEY,
     LASTFM_API_ROOT, LASTFM_RATE_LIMIT_BACKOFF_SECONDS, GENRE_MAX_TAGS_PER_ENTITY,
     normalizeGenreTag, loadGenreWhitelist, filterTagsToGenres,
-    GENRE_TAG_ALIASES, cleanLookupName,
+    GENRE_TAG_ALIASES, cleanLookupName, foldStylizedArtistName,
 )
 
 
@@ -221,6 +221,39 @@ class LookupNameCleaningTestCase(unittest.TestCase):
             self.assertEqual(cleanLookupName(name), name)
 
 
+class StylizedArtistNameFoldingTestCase(unittest.TestCase):
+    def test_stylized_letters_fold_to_plain_ascii(self):
+        for name, folded in [
+            ("HUGØ", "HUGO"),
+            ("LUNDØN", "LUNDON"),
+            ("NIGHTMÆR", "NIGHTMAER"),
+            ("Schættes", "Schaettes"),
+            ("Đogani", "Dogani"),
+        ]:
+            self.assertEqual(foldStylizedArtistName(name), folded, name)
+
+    def test_decorative_marks_are_stripped(self):
+        for name, folded in [
+            ("Jinka †", "Jinka"),
+            ("Lavatera★", "Lavatera"),
+            ("MAIA⠀", "MAIA"),
+        ]:
+            self.assertEqual(foldStylizedArtistName(name), folded, name)
+
+    def test_stray_whitespace_alone_is_folded(self):
+        self.assertEqual(foldStylizedArtistName("Travis Van Hoff "), "Travis Van Hoff")
+
+    def test_real_diacritics_are_left_untouched(self):
+        """Last.fm resolves genuine accents fine on the first try (these are
+        already-tagged artists in the catalog) - folding must not touch them,
+        only the lookalike-letter/decorative-mark cases above."""
+        for name in ("Emilíana Torrini", "Alfred García", "Die Ärzte", "René LaVice"):
+            self.assertEqual(foldStylizedArtistName(name), name)
+
+    def test_undecorated_names_come_back_identical(self):
+        self.assertEqual(foldStylizedArtistName("Radiohead"), "Radiohead")
+
+
 def _response(statusCode=200, payload=None, jsonError=False):
     response = MagicMock()
     response.status_code = statusCode
@@ -337,6 +370,91 @@ class ClientTestCase(unittest.TestCase):
         limiter.acquire.return_value = False
         self.assertIsNone(client.getArtistTopTags("x", stop_event=threading.Event()))
         mockGet.assert_not_called()
+
+
+class ArtistNameFoldFallbackTestCase(unittest.TestCase):
+    """A definitive-empty artist.gettoptags result retries once with
+    foldStylizedArtistName's stylized-letter/decorative-mark folding applied
+    - confirmed live against the API to recover real tag data for some
+    artists ("HUGO" where the stored "HUGO" has none)."""
+
+    def _client(self, acquireResult=True):
+        limiter = MagicMock()
+        limiter.acquire.return_value = acquireResult
+        return LastfmClient("test-key", rateLimiter=limiter), limiter
+
+    @patch("Database.lastfm.requests.get")
+    def test_fallback_triggers_on_empty_result_and_uses_the_folded_name(self, mockGet):
+        client, _ = self._client()
+        mockGet.side_effect = [
+            _response(payload={"toptags": {"tag": []}}),
+            _response(payload={"toptags": {"tag": [{"name": "rock", "count": 10}]}}),
+        ]
+        outcome = client.getArtistTopTags("HUGØ")
+        self.assertEqual(outcome.status, OUTCOME_OK)
+        self.assertEqual([t["name"] for t in outcome.tags], ["rock"])
+        self.assertEqual(mockGet.call_count, 2)
+        secondParams = mockGet.call_args_list[1].kwargs["params"]
+        self.assertEqual(secondParams["method"], "artist.gettoptags")
+        self.assertEqual(secondParams["artist"], "HUGO")
+
+    @patch("Database.lastfm.requests.get")
+    def test_fallback_not_triggered_when_gettoptags_succeeds(self, mockGet):
+        client, _ = self._client()
+        mockGet.return_value = _response(payload={"toptags": {"tag": [{"name": "rock", "count": 10}]}})
+        outcome = client.getArtistTopTags("Radiohead")
+        self.assertEqual(outcome.status, OUTCOME_OK)
+        mockGet.assert_called_once()   #< name doesn't fold, no second request
+
+    @patch("Database.lastfm.requests.get")
+    def test_fallback_not_triggered_when_the_name_does_not_fold(self, mockGet):
+        client, _ = self._client()
+        mockGet.return_value = _response(payload={"toptags": {"tag": []}})
+        outcome = client.getArtistTopTags("Pikayzo")
+        self.assertEqual(outcome.status, OUTCOME_OK)
+        self.assertEqual(outcome.tags, [])
+        mockGet.assert_called_once()   #< "Pikayzo" == foldStylizedArtistName("Pikayzo")
+
+    @patch("Database.lastfm.requests.get")
+    def test_both_attempts_empty_stays_a_definitive_empty_result(self, mockGet):
+        client, _ = self._client()
+        mockGet.side_effect = [
+            _response(payload={"toptags": {"tag": []}}),
+            _response(payload={"toptags": {"tag": []}}),
+        ]
+        outcome = client.getArtistTopTags("LUNDØN")
+        self.assertEqual(outcome.status, OUTCOME_OK)
+        self.assertEqual(outcome.tags, [])
+        self.assertEqual(mockGet.call_count, 2)
+
+    @patch("Database.lastfm.requests.get")
+    def test_fallback_abort_propagates_none_not_the_stale_empty_result(self, mockGet):
+        client, limiter = self._client()
+        limiter.acquire.side_effect = [True, False]   #< first lookup succeeds, folded retry's slot never granted
+        mockGet.return_value = _response(payload={"toptags": {"tag": []}})
+        outcome = client.getArtistTopTags("HUGØ", stop_event=threading.Event())
+        self.assertIsNone(outcome)
+        mockGet.assert_called_once()   #< only the first (verbatim) request went out
+
+    @patch("Database.lastfm.requests.get")
+    def test_fallback_transient_error_is_not_definitive(self, mockGet):
+        client, _ = self._client()
+        mockGet.side_effect = [
+            _response(payload={"toptags": {"tag": []}}),
+            _response(statusCode=500, jsonError=True),
+        ]
+        outcome = client.getArtistTopTags("HUGØ")
+        self.assertEqual(outcome.status, OUTCOME_TRANSIENT)
+
+    @patch("Database.lastfm.requests.get")
+    def test_fallback_not_found_is_still_definitive(self, mockGet):
+        client, _ = self._client()
+        mockGet.side_effect = [
+            _response(payload={"toptags": {"tag": []}}),
+            _response(statusCode=400, payload={"error": 6, "message": "not found"}),
+        ]
+        outcome = client.getArtistTopTags("HUGØ")
+        self.assertEqual(outcome.status, OUTCOME_NOT_FOUND)
 
 
 class AlbumGetInfoFallbackTestCase(unittest.TestCase):

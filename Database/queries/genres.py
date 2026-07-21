@@ -2,6 +2,11 @@ from __future__ import annotations
 
 from Database.queries._base import *  # noqa: F401,F403 - shared constants/db helpers
 
+try:
+    from Database.lastfm import foldStylizedArtistName
+except ModuleNotFoundError:
+    from lastfm import foldStylizedArtistName
+
 
 class GenreQueries:
     """GenreQueries: genres data-access methods, mixed into Repository."""
@@ -136,6 +141,34 @@ class GenreQueries:
                 """
             ).rowcount
         return cleared
+
+    def requeueArtistsWithFoldableNamesWithoutGenres(self) -> int:
+        """Requeues artists whose Last.fm lookup was attempted before
+        getArtistTopTags gained foldStylizedArtistName's stylized-letter/
+        decorative-mark retry ("HUGO" recovers real tags where the stored
+        "HUGØ" doesn't; confirmed live against the API, not a guess). Only
+        artists whose name actually changes under folding are cleared - the
+        fold test is a Python function, so candidates are filtered in Python
+        rather than SQL, same as requeueDecoratedAlbumsWithoutBios. Returns
+        how many artists were requeued."""
+        conn = self._conn()
+        rows = conn.execute(
+            """
+            SELECT id, name FROM artists
+            WHERE lastfm_attempted_at IS NOT NULL
+              AND id NOT IN (SELECT DISTINCT artist_id FROM artist_genres)
+            """
+        ).fetchall()
+        foldableIds = [row["id"] for row in rows
+                       if row["name"] and foldStylizedArtistName(row["name"]) != row["name"]]
+        if not foldableIds:
+            return 0
+        with conn:
+            conn.executemany(
+                "UPDATE artists SET lastfm_attempted_at = NULL WHERE id = ?",
+                [(artistId,) for artistId in foldableIds],
+            )
+        return len(foldableIds)
 
     def getArtistLastfmState(self, artistId: str) -> dict:
         """Attempt stamp + current genres for one artist - the inheritance
