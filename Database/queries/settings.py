@@ -7,10 +7,45 @@ class SettingQueries:
     """SettingQueries: settings data-access methods, mixed into Repository."""
 
     def _calculateFolderSize(self, folder_path: Path) -> int:
-        """Calculate total size of all files in a folder and its subdirectories."""
-        total_size = 0
+        """Get folder size using OS-level commands (fast on both Windows and Docker)."""
         if not folder_path.exists():
             return 0
+
+        try:
+            import subprocess
+            import platform
+
+            # Try 'du' first - works on both local Unix and Docker containers
+            if platform.system() != "Windows":
+                result = subprocess.run(
+                    ["du", "-sb", str(folder_path)],
+                    capture_output=True,
+                    text=True,
+                    timeout=30
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    return int(result.stdout.split()[0])
+
+            # Windows fallback (PowerShell)
+            if platform.system() == "Windows":
+                result = subprocess.run(
+                    [
+                        "powershell",
+                        "-NoProfile",
+                        "-Command",
+                        f"(Get-ChildItem -Path '{folder_path}' -Recurse -File | Measure-Object -Sum -Property Length).Sum"
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=30
+                )
+                if result.stdout.strip():
+                    return int(result.stdout.strip())
+        except Exception:
+            pass
+
+        # Fallback to Python recursive method (slow but always works)
+        total_size = 0
         try:
             for file in folder_path.rglob("*"):
                 if file.is_file():
