@@ -9,6 +9,7 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from app import SpotifyDashboardApp, COMPARE_GENRE_POOL_SIZE
+from _app_factory import AppTestCase
 from test_charts_genres import coverageDict
 
 _SECRET_KEY_PATCH = 'app.SpotifyDashboardApp._get_or_create_secret_key'
@@ -18,16 +19,7 @@ def _zeroHeatmapGrid():
     return [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
 
 
-class CompareGenresTestCase(unittest.TestCase):
-    @patch(_SECRET_KEY_PATCH, return_value='test-secret-key')
-    @patch('app.SpotifyDashboardApp.startVersionCheck_thread')
-    @patch('app.SpotifyDashboardApp.checkLogin_thread')
-    @patch('app.migrateIfNeeded')
-    @patch('app.Path.exists')
-    def _makeApp(self, mock_exists, mock_migrate, mock_check, mock_version, mock_secret):
-        mock_exists.return_value = False
-        return SpotifyDashboardApp()
-
+class CompareGenresTestCase(AppTestCase):
     def _makeStubDb(self, coverage=None, distribution=None):
         db = MagicMock()
         db.tz = None

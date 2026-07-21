@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 import app as appModule
 from app import SpotifyDashboardApp, _trustedProxyCount
+from _app_factory import AppTestCase
 
 _SECRET_KEY_PATCH = 'app.SpotifyDashboardApp._get_or_create_secret_key'
 
@@ -54,16 +55,7 @@ class TestTrustedProxyCountParsing(unittest.TestCase):
         self.assertEqual(self._withEnv("banana"), 0)
 
 
-class _AppTestBase(unittest.TestCase):
-    @patch(_SECRET_KEY_PATCH, return_value='test-secret-key')
-    @patch('app.SpotifyDashboardApp.startVersionCheck_thread')
-    @patch('app.SpotifyDashboardApp.checkLogin_thread')
-    @patch('app.migrateIfNeeded')
-    @patch('app.Path.exists')
-    def _makeApp(self, mock_exists, mock_migrate, mock_check, mock_version, mock_secret):
-        mock_exists.return_value = False
-        return SpotifyDashboardApp()
-
+class _AppTestBase(AppTestCase):
     def _postLogin(self, client, ip, forwardedFor=None):
         headers = {"X-Forwarded-For": forwardedFor} if forwardedFor else {}
         return client.post(

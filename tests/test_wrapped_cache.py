@@ -8,6 +8,7 @@ from conftest import DatabaseTestCase
 
 import app as appModule
 from app import SpotifyDashboardApp
+from _app_factory import AppTestCase
 import Database.utils as utilsModule
 from Database.Migrators.migrate1_12_0 import Migrator as Migrator_1_12_0
 
@@ -281,7 +282,7 @@ class TestWrappedRecalcLocking(DatabaseTestCase):
         spy.assert_not_called()
 
 
-class TestWrappedRouteAjax(unittest.TestCase):
+class TestWrappedRouteAjax(AppTestCase):
     def setUp(self):
         self.tzPatcher = patch.object(utilsModule, "tz", datetime.timezone.utc)
         self.tzPatcher.start()
@@ -291,15 +292,6 @@ class TestWrappedRouteAjax(unittest.TestCase):
                                        return_value=datetime.datetime(2026, 7, 11, tzinfo=datetime.timezone.utc))
         self.nowPatcher.start()
         self.addCleanup(self.nowPatcher.stop)
-
-    @patch('app.SpotifyDashboardApp._get_or_create_secret_key', return_value='test-secret-key')
-    @patch('app.SpotifyDashboardApp.startVersionCheck_thread')
-    @patch('app.SpotifyDashboardApp.checkLogin_thread')
-    @patch('app.migrateIfNeeded')
-    @patch('app.Path.exists')
-    def _makeApp(self, mock_exists, mock_migrate, mock_check, mock_version, mock_secret):
-        mock_exists.return_value = False
-        return SpotifyDashboardApp()
 
     def test_ajax_returns_json_fragments(self):
         dash = self._makeApp()

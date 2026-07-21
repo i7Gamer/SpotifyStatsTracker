@@ -6,24 +6,16 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from app import SpotifyDashboardApp
+from _app_factory import AppTestCase
 
 
-class TestEmbedSongTextElementsMissingAlbum(unittest.TestCase):
+class TestEmbedSongTextElementsMissingAlbum(AppTestCase):
     """_embedSongTextElements() must not assume song['album'] is always a dict -
     Repository._songRowToDict() can legitimately return album=None when the
     LEFT JOIN to albums finds no matching row (see
     tests/test_repository.py::test_missing_album_row_falls_back_like_get_track).
     A song in that state must still render instead of crashing every page that
     lists it (dashboard, top songs, song/artist/album detail, wrapped, ...)."""
-
-    @patch('app.SpotifyDashboardApp._get_or_create_secret_key', return_value='test-secret-key')
-    @patch('app.SpotifyDashboardApp.startVersionCheck_thread')
-    @patch('app.SpotifyDashboardApp.checkLogin_thread')
-    @patch('app.migrateIfNeeded')
-    @patch('app.Path.exists')
-    def _makeApp(self, mock_exists, mock_migrate, mock_check, mock_version, mock_secret):
-        mock_exists.return_value = False
-        return SpotifyDashboardApp()
 
     def _song(self, album):
         return {
@@ -71,20 +63,11 @@ class TestEmbedSongTextElementsMissingAlbum(unittest.TestCase):
         self.assertNotEqual(result["releaseDateText"], "")
 
 
-class TestEmbedAlbumTextElementsReleaseDate(unittest.TestCase):
+class TestEmbedAlbumTextElementsReleaseDate(AppTestCase):
     """_embedAlbumTextElements() backs the Top Albums, Wrapped, and
     album-detail pages - same unknown-release-date sentinel (releaseDate=0,
     the value Repository.upsertTrack/_createSyntheticTrack use for an album
     with no known release date) as _embedSongTextElements()."""
-
-    @patch('app.SpotifyDashboardApp._get_or_create_secret_key', return_value='test-secret-key')
-    @patch('app.SpotifyDashboardApp.startVersionCheck_thread')
-    @patch('app.SpotifyDashboardApp.checkLogin_thread')
-    @patch('app.migrateIfNeeded')
-    @patch('app.Path.exists')
-    def _makeApp(self, mock_exists, mock_migrate, mock_check, mock_version, mock_secret):
-        mock_exists.return_value = False
-        return SpotifyDashboardApp()
 
     def _album(self, **overrides):
         album = {"id": "alb1", "name": "Album One", "artists": []}

@@ -12,23 +12,16 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 # poison the patch("Database.database...") targets of test files that run after
 # this one - which used to silently send tests to the real network.
 from app import SpotifyDashboardApp
+from _app_factory import AppTestCase
 
 
-class TestServeArtistImageRoute(unittest.TestCase):
+class TestServeArtistImageRoute(AppTestCase):
     def setUp(self):
         # Keep tests from regenerating the real secrets/flask_secret_key.txt
         # (the mocked Path.exists in _makeApp would otherwise force a rewrite).
         patcher = patch('app.SpotifyDashboardApp._get_or_create_secret_key', return_value='test-secret-key')
         patcher.start()
         self.addCleanup(patcher.stop)
-
-    @patch('app.SpotifyDashboardApp.startVersionCheck_thread')
-    @patch('app.SpotifyDashboardApp.checkLogin_thread')
-    @patch('app.migrateIfNeeded')
-    @patch('app.Path.exists')
-    def _makeApp(self, mock_exists, mock_migrate, mock_check, mock_version):
-        mock_exists.return_value = False
-        return SpotifyDashboardApp()
 
     @patch('routes.media.send_from_directory')
     @patch('routes.media.os.path.exists')

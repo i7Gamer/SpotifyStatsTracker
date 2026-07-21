@@ -20,6 +20,7 @@ if isinstance(sys.modules.get("Database.database"), MagicMock):
 
 from conftest import DatabaseTestCase, makeDatabaseWithData
 from app import SpotifyDashboardApp
+from _app_factory import AppTestCase
 from Database.Importers.StreamingHistoryImporter import Importer
 from Database.utils import timeToInt
 
@@ -35,16 +36,7 @@ _ENTRIES = [
 ]
 
 
-class _AppTestBase(unittest.TestCase):
-    @patch(_SECRET_KEY_PATCH, return_value='test-secret-key')
-    @patch('app.SpotifyDashboardApp.startVersionCheck_thread')
-    @patch('app.SpotifyDashboardApp.checkLogin_thread')
-    @patch('app.migrateIfNeeded')
-    @patch('app.Path.exists')
-    def _makeApp(self, mock_exists, mock_migrate, mock_check, mock_version, mock_secret):
-        mock_exists.return_value = False
-        return SpotifyDashboardApp()
-
+class _AppTestBase(AppTestCase):
     def _get(self, dash, db, path):
         with patch.object(dash, 'is_user_logged_in', return_value=True), \
              patch.object(dash, 'get_username_for_email', return_value='alice'), \

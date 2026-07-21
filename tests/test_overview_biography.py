@@ -11,18 +11,10 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from app import SpotifyDashboardApp
+from _app_factory import AppTestCase
 
 
-class OverviewBiographyTestBase(unittest.TestCase):
-    @patch('app.SpotifyDashboardApp._get_or_create_secret_key', return_value='test-secret-key')
-    @patch('app.SpotifyDashboardApp.startVersionCheck_thread')
-    @patch('app.SpotifyDashboardApp.checkLogin_thread')
-    @patch('app.migrateIfNeeded')
-    @patch('app.Path.exists')
-    def _makeApp(self, mock_exists, mock_migrate, mock_check, mock_version, mock_secret):
-        mock_exists.return_value = False
-        return SpotifyDashboardApp()
-
+class OverviewBiographyTestBase(AppTestCase):
     _MOCK_STATS = {"tracks": 10, "artists": 5, "albums": 3, "plays": 100,
                    "total_time_ms": 36000000, "db_size_bytes": 1048576}
 

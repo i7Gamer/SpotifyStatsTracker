@@ -9,18 +9,10 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 # sys.modules - see test_artist_image_route.py for why that pattern poisons
 # later test files.
 from app import SpotifyDashboardApp
+from _app_factory import AppTestCase
 
 
-class TestChartsRoute(unittest.TestCase):
-    @patch('app.SpotifyDashboardApp._get_or_create_secret_key', return_value='test-secret-key')
-    @patch('app.SpotifyDashboardApp.startVersionCheck_thread')
-    @patch('app.SpotifyDashboardApp.checkLogin_thread')
-    @patch('app.migrateIfNeeded')
-    @patch('app.Path.exists')
-    def _makeApp(self, mock_exists, mock_migrate, mock_check, mock_version, mock_secret):
-        mock_exists.return_value = False
-        return SpotifyDashboardApp()
-
+class TestChartsRoute(AppTestCase):
     def _makeDb(self):
         db = MagicMock()
         db.getListeningTimeSeries.return_value = [

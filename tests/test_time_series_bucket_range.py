@@ -13,16 +13,10 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from app import SpotifyDashboardApp
+from _app_factory import makeApp as _makeApp
 
 _SECRET_KEY_PATCH = 'app.SpotifyDashboardApp._get_or_create_secret_key'
 
-
-def _makeApp():
-    with patch(_SECRET_KEY_PATCH, return_value='test-secret-key'), \
-         patch('app.SpotifyDashboardApp.startVersionCheck_thread'), \
-         patch('app.SpotifyDashboardApp.checkLogin_thread'), \
-         patch('app.migrateIfNeeded'):
-        return SpotifyDashboardApp()
 
 
 class TestTimeSeriesBucketRange(unittest.TestCase):

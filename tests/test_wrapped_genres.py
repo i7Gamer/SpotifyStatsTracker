@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 import app as appModule
 from app import SpotifyDashboardApp, WRAPPED_TOP_GENRES_LIMIT
+from _app_factory import AppTestCase
 import Database.utils as utilsModule
 from test_charts_genres import coverageDict
 
@@ -34,7 +35,7 @@ def _cachedWrappedRow():
     }
 
 
-class WrappedGenresTestBase(unittest.TestCase):
+class WrappedGenresTestBase(AppTestCase):
     def setUp(self):
         tzPatcher = patch.object(utilsModule, "tz", datetime.timezone.utc)
         tzPatcher.start()
@@ -44,15 +45,6 @@ class WrappedGenresTestBase(unittest.TestCase):
                                   return_value=datetime.datetime(2026, 7, 11, tzinfo=datetime.timezone.utc))
         nowPatcher.start()
         self.addCleanup(nowPatcher.stop)
-
-    @patch('app.SpotifyDashboardApp._get_or_create_secret_key', return_value='test-secret-key')
-    @patch('app.SpotifyDashboardApp.startVersionCheck_thread')
-    @patch('app.SpotifyDashboardApp.checkLogin_thread')
-    @patch('app.migrateIfNeeded')
-    @patch('app.Path.exists')
-    def _makeApp(self, mock_exists, mock_migrate, mock_check, mock_version, mock_secret):
-        mock_exists.return_value = False
-        return SpotifyDashboardApp()
 
     def _makeDb(self, earliestPlayedAt=None, coverage=None, distribution=None):
         db = MagicMock()

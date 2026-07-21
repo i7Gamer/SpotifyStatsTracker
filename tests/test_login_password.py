@@ -12,20 +12,12 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from werkzeug.security import generate_password_hash
 
 from app import SpotifyDashboardApp
+from _app_factory import AppTestCase
 
 _SECRET_KEY_PATCH = 'app.SpotifyDashboardApp._get_or_create_secret_key'
 
 
-class TestLoginPassword(unittest.TestCase):
-    @patch(_SECRET_KEY_PATCH, return_value='test-secret-key')
-    @patch('app.SpotifyDashboardApp.startVersionCheck_thread')
-    @patch('app.SpotifyDashboardApp.checkLogin_thread')
-    @patch('app.migrateIfNeeded')
-    @patch('app.Path.exists')
-    def _makeApp(self, mock_exists, mock_migrate, mock_check, mock_version, mock_secret):
-        mock_exists.return_value = False
-        return SpotifyDashboardApp()
-
+class TestLoginPassword(AppTestCase):
     def _registerAccount(self, dash, email="alice@example.com", username="alice",
                           password="Correct-Horse1", cookies=True):
         dash.repo.upsertUser(username, email)

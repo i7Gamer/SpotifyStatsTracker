@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 # with a per-test mock db (via get_user_db).
 import app as appModule
 from app import SpotifyDashboardApp
+from _app_factory import AppTestCase
 import Database.utils as utilsModule
 
 
@@ -47,7 +48,7 @@ def _album(albumId, name, plays, firstListenedAt):
     }
 
 
-class _WrappedRouteTestBase(unittest.TestCase):
+class _WrappedRouteTestBase(AppTestCase):
     """All tests fix the app's timezone to UTC (matching test_chart_stats.py) and
     freeze `now()` to 2026-07-11, so year math is deterministic."""
 
@@ -60,15 +61,6 @@ class _WrappedRouteTestBase(unittest.TestCase):
                                    return_value=datetime.datetime(2026, 7, 11, tzinfo=datetime.timezone.utc))
         nowPatcher.start()
         self.addCleanup(nowPatcher.stop)
-
-    @patch('app.SpotifyDashboardApp._get_or_create_secret_key', return_value='test-secret-key')
-    @patch('app.SpotifyDashboardApp.startVersionCheck_thread')
-    @patch('app.SpotifyDashboardApp.checkLogin_thread')
-    @patch('app.migrateIfNeeded')
-    @patch('app.Path.exists')
-    def _makeApp(self, mock_exists, mock_migrate, mock_check, mock_version, mock_secret):
-        mock_exists.return_value = False
-        return SpotifyDashboardApp()
 
     def _makeDb(self, earliestPlayedAt=None):
         db = MagicMock()

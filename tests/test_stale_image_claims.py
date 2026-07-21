@@ -27,6 +27,7 @@ from Database.repository import (
     IMAGE_STATUS_OK, IMAGE_STATUS_FAILED, IMAGE_STATUS_PENDING,
 )
 from app import SpotifyDashboardApp
+from _app_factory import AppTestCase
 
 _SECRET_KEY_PATCH = 'app.SpotifyDashboardApp._get_or_create_secret_key'
 
@@ -64,16 +65,7 @@ class TestDeleteStalePendingImages(unittest.TestCase):
         self.assertEqual(self.repo.deleteStalePendingImages(), 0)
 
 
-class TestAppClearsStaleClaimsAtStartup(unittest.TestCase):
-    @patch(_SECRET_KEY_PATCH, return_value='test-secret-key')
-    @patch('app.SpotifyDashboardApp.startVersionCheck_thread')
-    @patch('app.SpotifyDashboardApp.checkLogin_thread')
-    @patch('app.migrateIfNeeded')
-    @patch('app.Path.exists')
-    def _makeApp(self, mock_exists, mock_migrate, mock_check, mock_version, mock_secret):
-        mock_exists.return_value = False
-        return SpotifyDashboardApp()
-
+class TestAppClearsStaleClaimsAtStartup(AppTestCase):
     def test_startup_clears_pending_claims_left_by_a_previous_run(self):
         # Seed a stale claim into the (per-test isolated) default database the
         # app is about to open - as if the previous process died mid-download.

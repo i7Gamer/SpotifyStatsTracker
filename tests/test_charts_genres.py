@@ -12,6 +12,7 @@ from app import (
     GENRE_GATE_OVERALL_MIN_PERCENT, GENRE_GATE_CATEGORY_MIN_PERCENT, CHART_TOP_GENRES_LIMIT,
     resolveGenresForTrack, resolveGenresForAlbum, resolveGenresForArtist,
 )
+from _app_factory import AppTestCase
 
 
 def coverageDict(song, album, artist, total=1000):
@@ -107,16 +108,7 @@ class ResolveGenresForEntityTestCase(unittest.TestCase):
                 self.assertEqual(resolver(db, "id1"), [])
 
 
-class ChartsGenresTestCase(unittest.TestCase):
-    @patch('app.SpotifyDashboardApp._get_or_create_secret_key', return_value='test-secret-key')
-    @patch('app.SpotifyDashboardApp.startVersionCheck_thread')
-    @patch('app.SpotifyDashboardApp.checkLogin_thread')
-    @patch('app.migrateIfNeeded')
-    @patch('app.Path.exists')
-    def _makeApp(self, mock_exists, mock_migrate, mock_check, mock_version, mock_secret):
-        mock_exists.return_value = False
-        return SpotifyDashboardApp()
-
+class ChartsGenresTestCase(AppTestCase):
     def _makeDb(self, coverage=None, distribution=None):
         db = MagicMock()
         db.getListeningTimeSeries.return_value = []

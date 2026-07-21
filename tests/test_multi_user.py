@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 # targets of test files that run after this one, which used to silently send
 # tests to the real network.
 from app import SpotifyDashboardApp
+from _app_factory import AppTestCase
 
 # Patch target for the Flask secret key so instantiating the app in tests never
 # regenerates the real secrets/flask_secret_key.txt (mocked Path.exists would
@@ -161,16 +162,7 @@ class TestMultiUser(unittest.TestCase):
         db2.stop.assert_called_once()
 
 
-class TestImageRouteAuthorization(unittest.TestCase):
-    @patch(_SECRET_KEY_PATCH, return_value='test-secret-key')
-    @patch('app.SpotifyDashboardApp.startVersionCheck_thread')
-    @patch('app.SpotifyDashboardApp.checkLogin_thread')
-    @patch('app.migrateIfNeeded')
-    @patch('app.Path.exists')
-    def _makeApp(self, mock_exists, mock_migrate, mock_check, mock_version, mock_secret):
-        mock_exists.return_value = False
-        return SpotifyDashboardApp()
-
+class TestImageRouteAuthorization(AppTestCase):
     def test_serve_track_image_denies_mismatched_user(self):
         dash = self._makeApp()
         client = dash.app.test_client()
@@ -296,7 +288,7 @@ class TestSessionLockScope(unittest.TestCase):
             self.assertEqual(dash.repo.getUsernameForEmail(email), username)
 
 
-class TestLoginCookieVerification(unittest.TestCase):
+class TestLoginCookieVerification(AppTestCase):
     """Login must verify that the submitted cookies actually belong to the claimed
     email before persisting them. Without this, anyone can claim any email with
     arbitrary cookies and be handed that user's database (and clobber the real
@@ -304,15 +296,6 @@ class TestLoginCookieVerification(unittest.TestCase):
 
     # Keep tests from regenerating the real secrets/flask_secret_key.txt
     # (the mocked Path.exists below would otherwise force a rewrite).
-    @patch('app.SpotifyDashboardApp._get_or_create_secret_key', return_value='test-secret-key')
-    @patch('app.SpotifyDashboardApp.startVersionCheck_thread')
-    @patch('app.SpotifyDashboardApp.checkLogin_thread')
-    @patch('app.migrateIfNeeded')
-    @patch('app.Path.exists')
-    def _makeApp(self, mock_exists, mock_migrate, mock_check, mock_version, mock_secret):
-        mock_exists.return_value = False
-        return SpotifyDashboardApp()
-
     def _postLogin(self, dash, email="alice@example.com", cookies="sp_dc=abc"):
         client = dash.app.test_client()
         resp = client.post("/login", data={"step": "2", "email": email, "cookies": cookies})

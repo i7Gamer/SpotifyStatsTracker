@@ -20,6 +20,7 @@ from conftest import DatabaseTestCase
 from Database.database import Database, _imageIdFromConnectMeta, _imageUrlFromConnectMeta
 from Database.Listeners.spotifyListener import Listener
 from app import SpotifyDashboardApp
+from _app_factory import AppTestCase
 
 _SECRET_KEY_PATCH = 'app.SpotifyDashboardApp._get_or_create_secret_key'
 
@@ -235,16 +236,7 @@ class TestConnectMetaHelpers(unittest.TestCase):
         self.assertIsNone(_imageUrlFromConnectMeta({"image_xlarge_url": "spotify:image:"}))
 
 
-class TestNowPlayingRoute(unittest.TestCase):
-    @patch(_SECRET_KEY_PATCH, return_value='test-secret-key')
-    @patch('app.SpotifyDashboardApp.startVersionCheck_thread')
-    @patch('app.SpotifyDashboardApp.checkLogin_thread')
-    @patch('app.migrateIfNeeded')
-    @patch('app.Path.exists')
-    def _makeApp(self, mock_exists, mock_migrate, mock_check, mock_version, mock_secret):
-        mock_exists.return_value = False
-        return SpotifyDashboardApp()
-
+class TestNowPlayingRoute(AppTestCase):
     def _get(self, dash, db):
         with patch.object(dash, 'is_user_logged_in', return_value=True), \
              patch.object(dash, 'get_username_for_email', return_value='alice'), \

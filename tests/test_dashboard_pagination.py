@@ -12,19 +12,11 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 # patch("Database.database...") targets of test files that run after this one.
 import app as appModule
 from app import SpotifyDashboardApp
+from _app_factory import AppTestCase
 
 
-class _ListRouteTestBase(unittest.TestCase):
+class _ListRouteTestBase(AppTestCase):
     """Shared fixtures for exercising the list routes with a mocked per-user db."""
-
-    @patch('app.SpotifyDashboardApp._get_or_create_secret_key', return_value='test-secret-key')
-    @patch('app.SpotifyDashboardApp.startVersionCheck_thread')
-    @patch('app.SpotifyDashboardApp.checkLogin_thread')
-    @patch('app.migrateIfNeeded')
-    @patch('app.Path.exists')
-    def _makeApp(self, mock_exists, mock_migrate, mock_check, mock_version, mock_secret):
-        mock_exists.return_value = False
-        return SpotifyDashboardApp()
 
     def _makeDb(self, entryCount):
         db = MagicMock()

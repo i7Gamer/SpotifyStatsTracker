@@ -15,12 +15,13 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 import app as appModule
 from app import SpotifyDashboardApp
+from _app_factory import AppTestCase
 from Database.repository import Repository
 
 _SECRET_KEY_PATCH = 'app.SpotifyDashboardApp._get_or_create_secret_key'
 
 
-class TestAdminBootstrap(unittest.TestCase):
+class TestAdminBootstrap(AppTestCase):
     def _seedUsers(self):
         """Users written to the (per-test isolated) default database the app
         is about to open."""
@@ -28,15 +29,6 @@ class TestAdminBootstrap(unittest.TestCase):
         repo.upsertUser("newer", "newer@example.com", createdAt=200.0)
         repo.upsertUser("older", "older@example.com", createdAt=100.0)
         repo.connectionManager.close()
-
-    @patch(_SECRET_KEY_PATCH, return_value='test-secret-key')
-    @patch('app.SpotifyDashboardApp.startVersionCheck_thread')
-    @patch('app.SpotifyDashboardApp.checkLogin_thread')
-    @patch('app.migrateIfNeeded')
-    @patch('app.Path.exists')
-    def _makeApp(self, mock_exists, mock_migrate, mock_check, mock_version, mock_secret):
-        mock_exists.return_value = False
-        return SpotifyDashboardApp()
 
     def test_earliest_user_is_promoted_when_no_admin_exists(self):
         self._seedUsers()

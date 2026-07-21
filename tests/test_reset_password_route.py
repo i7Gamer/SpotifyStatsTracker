@@ -12,22 +12,14 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from werkzeug.security import generate_password_hash, check_password_hash
 
 from app import SpotifyDashboardApp
+from _app_factory import AppTestCase
 
 _SECRET_KEY_PATCH = 'app.SpotifyDashboardApp._get_or_create_secret_key'
 
 NEW_PASSWORD = "New-Correct-Horse1"
 
 
-class TestResetPasswordRoute(unittest.TestCase):
-    @patch(_SECRET_KEY_PATCH, return_value='test-secret-key')
-    @patch('app.SpotifyDashboardApp.startVersionCheck_thread')
-    @patch('app.SpotifyDashboardApp.checkLogin_thread')
-    @patch('app.migrateIfNeeded')
-    @patch('app.Path.exists')
-    def _makeApp(self, mock_exists, mock_migrate, mock_check, mock_version, mock_secret):
-        mock_exists.return_value = False
-        return SpotifyDashboardApp()
-
+class TestResetPasswordRoute(AppTestCase):
     def _postReset(self, dash, email="alice@example.com", password=NEW_PASSWORD,
                    confirm=NEW_PASSWORD, cookies="sp_dc=fresh"):
         client = dash.app.test_client()

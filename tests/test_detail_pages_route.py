@@ -9,18 +9,10 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 # deliberately does NOT swap Database modules for MagicMocks in sys.modules -
 # it only exercises the routes with a per-test mock db (via get_user_db).
 from app import SpotifyDashboardApp
+from _app_factory import AppTestCase
 
 
-class _DetailRouteTestBase(unittest.TestCase):
-    @patch('app.SpotifyDashboardApp._get_or_create_secret_key', return_value='test-secret-key')
-    @patch('app.SpotifyDashboardApp.startVersionCheck_thread')
-    @patch('app.SpotifyDashboardApp.checkLogin_thread')
-    @patch('app.migrateIfNeeded')
-    @patch('app.Path.exists')
-    def _makeApp(self, mock_exists, mock_migrate, mock_check, mock_version, mock_secret):
-        mock_exists.return_value = False
-        return SpotifyDashboardApp()
-
+class _DetailRouteTestBase(AppTestCase):
     def _getPath(self, dash, db, path):
         client = dash.app.test_client()
         with patch.object(dash, 'is_user_logged_in', return_value=True), \

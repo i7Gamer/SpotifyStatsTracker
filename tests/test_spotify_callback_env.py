@@ -9,22 +9,16 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from app import SpotifyDashboardApp, SPOTIFY_OAUTH_STATE_SESSION_KEY
+from _app_factory import makeApp
 
 
 class SpotifyEnvTestCase(unittest.TestCase):
     """Shared app/login scaffolding for the Spotify Developer API route tests."""
 
-    @patch('app.SpotifyDashboardApp._get_or_create_secret_key', return_value='test-secret-key')
-    @patch('app.SpotifyDashboardApp.startVersionCheck_thread')
-    @patch('app.SpotifyDashboardApp.checkLogin_thread')
-    @patch('app.migrateIfNeeded')
-    @patch('app.Path.exists')
-    def _makeApp(self, mock_exists, mock_migrate, mock_check, mock_version, mock_secret):
-        mock_exists.return_value = False
-        app_inst = SpotifyDashboardApp()
+    def _makeApp(self):
+        app_inst = makeApp()
         app_inst.app.config["WTF_CSRF_ENABLED"] = False
         return app_inst
-
     def _login(self, dash, client):
         with client.session_transaction() as sess:
             sess["email"] = "alice@example.com"

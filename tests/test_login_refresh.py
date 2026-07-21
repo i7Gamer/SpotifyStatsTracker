@@ -14,16 +14,10 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from app import SpotifyDashboardApp
+from _app_factory import AppTestCase, makeApp as _makeApp
 
 _SECRET_KEY_PATCH = 'app.SpotifyDashboardApp._get_or_create_secret_key'
 
-
-def _makeApp():
-    with patch(_SECRET_KEY_PATCH, return_value='test-secret-key'), \
-         patch('app.SpotifyDashboardApp.startVersionCheck_thread'), \
-         patch('app.SpotifyDashboardApp.checkLogin_thread'), \
-         patch('app.migrateIfNeeded'):
-        return SpotifyDashboardApp()
 
 
 class TestRefreshUserSession(unittest.TestCase):
@@ -69,18 +63,10 @@ class TestRefreshUserSession(unittest.TestCase):
         self.assertNotIn("ghost", dash.user_databases)
 
 
-class TestLoginRestartsExistingSession(unittest.TestCase):
+class TestLoginRestartsExistingSession(AppTestCase):
     """Integration through the actual /login route: a re-login for a username
     that already has a live Database must refresh it instead of silently doing
     nothing (which is what get_user_db() alone would do)."""
-
-    def _makeApp(self):
-        with patch(_SECRET_KEY_PATCH, return_value='test-secret-key'), \
-             patch('app.SpotifyDashboardApp.startVersionCheck_thread'), \
-             patch('app.SpotifyDashboardApp.checkLogin_thread'), \
-             patch('app.migrateIfNeeded'), \
-             patch('app.Path.exists', return_value=False):
-            return SpotifyDashboardApp()
 
     def test_relogin_of_existing_user_calls_refresh_not_get_user_db(self):
         dash = self._makeApp()

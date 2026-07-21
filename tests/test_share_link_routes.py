@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 import app as appModule
 from app import SpotifyDashboardApp, RATE_LIMIT_MAX_ATTEMPTS, RATE_LIMIT_ERROR_MESSAGE
+from _app_factory import AppTestCase
 import Database.utils as utilsModule
 from test_charts_genres import coverageDict
 
@@ -23,7 +24,7 @@ def _ts(year, month=6, day=1, hour=12):
     return datetime.datetime(year, month, day, hour, tzinfo=datetime.timezone.utc).timestamp()
 
 
-class ShareLinkRoutesTestCase(unittest.TestCase):
+class ShareLinkRoutesTestCase(AppTestCase):
     """Freezes now()/tz like test_wrapped_route.py, since sharedWrappedPage()
     renders wrapped.html through the same _buildWrappedContext() pipeline."""
 
@@ -38,15 +39,6 @@ class ShareLinkRoutesTestCase(unittest.TestCase):
         self.addCleanup(nowPatcher.stop)
 
         self.dash = self._makeApp()
-
-    @patch(_SECRET_KEY_PATCH, return_value='test-secret-key')
-    @patch('app.SpotifyDashboardApp.startVersionCheck_thread')
-    @patch('app.SpotifyDashboardApp.checkLogin_thread')
-    @patch('app.migrateIfNeeded')
-    @patch('app.Path.exists')
-    def _makeApp(self, mock_exists, mock_migrate, mock_check, mock_version, mock_secret):
-        mock_exists.return_value = False
-        return SpotifyDashboardApp()
 
     def _makeDb(self):
         db = MagicMock()

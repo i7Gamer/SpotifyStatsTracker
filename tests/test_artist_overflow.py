@@ -16,6 +16,7 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from app import SpotifyDashboardApp, MAX_INLINE_ARTISTS, MIN_HIDDEN_ARTISTS
+from _app_factory import AppTestCase
 
 _SECRET_KEY_PATCH = 'app.SpotifyDashboardApp._get_or_create_secret_key'
 
@@ -31,16 +32,7 @@ def _artists(count):
              "imageUrl": "", "imageId": f"a{i}"} for i in range(1, count + 1)]
 
 
-class _ArtistOverflowTestBase(unittest.TestCase):
-    @patch(_SECRET_KEY_PATCH, return_value='test-secret-key')
-    @patch('app.SpotifyDashboardApp.startVersionCheck_thread')
-    @patch('app.SpotifyDashboardApp.checkLogin_thread')
-    @patch('app.migrateIfNeeded')
-    @patch('app.Path.exists')
-    def _makeApp(self, mock_exists, mock_migrate, mock_check, mock_version, mock_secret):
-        mock_exists.return_value = False
-        return SpotifyDashboardApp()
-
+class _ArtistOverflowTestBase(AppTestCase):
     def _getPath(self, dash, db, path):
         client = dash.app.test_client()
         with patch.object(dash, 'is_user_logged_in', return_value=True), \
@@ -162,20 +154,11 @@ class TestAlbumPagesArtistOverflow(_ArtistOverflowTestBase):
                 self.assertIn(name, overflow)
 
 
-class TestCompareArtistOverflow(unittest.TestCase):
+class TestCompareArtistOverflow(AppTestCase):
     """The Compare page renders the same track three ways: the viewer's own
     column (detail links), the counterpart's column (suppressDetailLinks -
     Spotify links only), and the shared Top Common card (detail links).
     Hidden overflow artists must follow the same link rules as visible ones."""
-
-    @patch(_SECRET_KEY_PATCH, return_value='test-secret-key')
-    @patch('app.SpotifyDashboardApp.startVersionCheck_thread')
-    @patch('app.SpotifyDashboardApp.checkLogin_thread')
-    @patch('app.migrateIfNeeded')
-    @patch('app.Path.exists')
-    def _makeApp(self, mock_exists, mock_migrate, mock_check, mock_version, mock_secret):
-        mock_exists.return_value = False
-        return SpotifyDashboardApp()
 
     def _song(self):
         return {"id": "t1", "name": "Crowded Song", "artists": _artists(COLLAPSING_COUNT),

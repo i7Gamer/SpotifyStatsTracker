@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 import app as appModule
 from app import SpotifyDashboardApp
+from _app_factory import makeApp as _makeApp
 
 _SECRET_KEY_PATCH = 'app.SpotifyDashboardApp._get_or_create_secret_key'
 
@@ -26,13 +27,6 @@ def _healthyListenerMock():
     listener.contaminationDetected = False
     return listener
 
-
-def _makeApp():
-    with patch(_SECRET_KEY_PATCH, return_value='test-secret-key'), \
-         patch('app.SpotifyDashboardApp.startVersionCheck_thread'), \
-         patch('app.SpotifyDashboardApp.checkLogin_thread'), \
-         patch('app.migrateIfNeeded'):
-        return SpotifyDashboardApp()
 
 
 class TestStartupReloginFromDatabaseCookies(unittest.TestCase):

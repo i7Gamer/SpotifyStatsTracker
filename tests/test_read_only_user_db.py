@@ -10,22 +10,16 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from app import SpotifyDashboardApp
+from _app_factory import makeApp
 
 _SECRET_KEY_PATCH = 'app.SpotifyDashboardApp._get_or_create_secret_key'
 
 
 class ReadOnlyUserDbTestCase(unittest.TestCase):
-    @patch(_SECRET_KEY_PATCH, return_value='test-secret-key')
-    @patch('app.SpotifyDashboardApp.startVersionCheck_thread')
-    @patch('app.SpotifyDashboardApp.checkLogin_thread')
-    @patch('app.migrateIfNeeded')
-    @patch('app.Path.exists')
-    def _makeApp(self, mock_exists, mock_migrate, mock_check, mock_version, mock_secret):
-        mock_exists.return_value = False
-        app = SpotifyDashboardApp()
+    def _makeApp(self):
+        app = makeApp()
         app.repo.upsertUser("alice", "alice@example.com")
         return app
-
 
 class TestGetReadOnlyUserDb(ReadOnlyUserDbTestCase):
     def test_cold_user_gets_a_db_without_activation(self):
