@@ -13,6 +13,42 @@ from pathlib import Path
 import pytest
 
 
+@pytest.fixture(autouse=True, scope="session")
+def _fastLastfmRateLimiter():
+    """Database.lastfm.RATE_LIMITER is a real, process-wide singleton
+    (Database/lastfm.py:174) that every LastfmClient(...) call defaults to
+    (routes/auth.py's save_lastfm handler included) - it really does
+    time.sleep() to keep requests LASTFM_REQUESTS_PER_SECOND apart, which is
+    correct in production but means any test that touches a real
+    (non-mocked-class) LastfmClient shares one real-time clock with every
+    other such test in the session, each paying a real wait. No test asserts
+    on this singleton's actual pacing (that's RateLimiterTestCase in
+    test_lastfm_client.py, which builds its own fresh LastfmRateLimiter
+    instances instead), so collapsing its interval to 0 removes the wait
+    without touching what's actually under test."""
+    import Database.lastfm as lastfmModule
+
+    lastfmModule.RATE_LIMITER._interval = 0.0
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _fastPasswordHashing():
+    """generate_password_hash defaults to scrypt (~85ms/call - a real,
+    deliberately-expensive security parameter, not something app logic
+    controls). Every login/register/reset-password test pays that cost, and
+    no test asserts on the hash's method/format, so a single cheap pbkdf2
+    round is fine here. Mutates the shared function object's __defaults__
+    rather than reassigning werkzeug.security.generate_password_hash itself:
+    routes/auth.py and several test files already did `from werkzeug.security
+    import generate_password_hash`, each binding its own reference to this
+    same function object, so only mutating the object in place (not
+    rebinding the name in werkzeug.security) reaches every one of them
+    regardless of import order."""
+    from werkzeug.security import generate_password_hash
+
+    generate_password_hash.__defaults__ = ("pbkdf2:sha256:1", 16)
+
+
 @pytest.fixture(autouse=True)
 def _blockNetwork(monkeypatch):
     def guardedConnect(self, address):
