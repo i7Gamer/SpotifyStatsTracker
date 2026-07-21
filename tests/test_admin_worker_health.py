@@ -170,9 +170,9 @@ class TestAdminWorkerHealthRoute(unittest.TestCase):
 
         insights = {
             "getCatalogGenreCoverage": {
-                "song": {"covered": 10, "total": 20, "percent": 50.0},
-                "album": {"covered": 15, "total": 30, "percent": 50.0},
-                "artist": {"covered": 20, "total": 40, "percent": 50.0},
+                "song": {"covered": 10, "own_covered": 5, "total": 20, "percent": 50.0, "own_percent": 25.0, "ownPercent": 25.0},
+                "album": {"covered": 15, "own_covered": 9, "total": 30, "percent": 50.0, "own_percent": 30.0, "ownPercent": 30.0},
+                "artist": {"covered": 20, "own_covered": 20, "total": 40, "percent": 50.0, "own_percent": 50.0, "ownPercent": 50.0},
                 "overall": {"percent": 50.0},
             },
             "getCatalogBiographyCoverage": {
@@ -212,6 +212,9 @@ class TestAdminWorkerHealthRoute(unittest.TestCase):
             self.assertIn("Covered: 20 / 40", body)
             self.assertIn("Covered: 5 / 10", body)
             self.assertIn("Covered: 8 / 16", body)
+            self.assertIn("Un-inherited: 25.0%", body)
+            self.assertIn("Un-inherited: 30.0%", body)
+            self.assertIn("Un-inherited: 50.0%", body)
 
 
 if __name__ == "__main__":

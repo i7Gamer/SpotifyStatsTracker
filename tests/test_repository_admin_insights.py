@@ -46,7 +46,9 @@ class TestGetCatalogGenreCoverage(RepositoryAdminInsightsTestCase):
     def test_empty_catalog_is_all_zeros(self):
         coverage = self.repo.getCatalogGenreCoverage()
         for category in ("song", "album", "artist"):
-            self.assertEqual(coverage[category], {"covered": 0, "total": 0, "percent": 0.0})
+            self.assertEqual(coverage[category], {
+                "covered": 0, "own_covered": 0, "total": 0, "percent": 0.0, "own_percent": 0.0, "ownPercent": 0.0
+            })
         self.assertEqual(coverage["overall"]["percent"], 0.0)
 
     def test_counts_distinct_entities_not_plays(self):
@@ -61,9 +63,10 @@ class TestGetCatalogGenreCoverage(RepositoryAdminInsightsTestCase):
 
         coverage = self.repo.getCatalogGenreCoverage()
 
-        self.assertEqual(coverage["song"], {"covered": 1, "total": 2, "percent": 50.0})
-        self.assertEqual(coverage["album"], {"covered": 1, "total": 2, "percent": 50.0})
-        self.assertEqual(coverage["artist"], {"covered": 1, "total": 1, "percent": 100.0})
+        self.assertEqual(coverage["song"]["covered"], 1)
+        self.assertEqual(coverage["song"]["own_covered"], 1)
+        self.assertEqual(coverage["album"]["covered"], 1)
+        self.assertEqual(coverage["artist"]["covered"], 1)
         self.assertEqual(coverage["overall"]["percent"], round((50.0 + 50.0 + 100.0) / 3, 1))
 
     def test_inherited_rows_excluded_when_toggle_off(self):

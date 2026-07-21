@@ -2920,12 +2920,28 @@ class Repository:
                     """,
                     (inherited,),
                 ).fetchone()[0]
+                own_covered = conn.execute(
+                    f"""
+                    SELECT COUNT(DISTINCT e.id) FROM {table} e
+                    JOIN {genreTable} g ON g.{idColumn} = e.id
+                    WHERE g.inherited = 0
+                    """
+                ).fetchone()[0]
             else:
                 covered = conn.execute(
                     f"SELECT COUNT(DISTINCT e.id) FROM {table} e JOIN {genreTable} g ON g.{idColumn} = e.id"
                 ).fetchone()[0]
+                own_covered = covered
             percent = round(covered / total * 100, 1) if total else 0.0
-            return {"covered": covered, "total": total, "percent": percent}
+            own_percent = round(own_covered / total * 100, 1) if total else 0.0
+            return {
+                "covered": covered,
+                "own_covered": own_covered,
+                "total": total,
+                "percent": percent,
+                "own_percent": own_percent,
+                "ownPercent": own_percent,
+            }
 
         coverage = {
             "song": category("tracks", "track_genres", "track_id", True),
