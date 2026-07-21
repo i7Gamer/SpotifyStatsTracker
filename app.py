@@ -2876,18 +2876,62 @@ class SpotifyDashboardApp:
 
                 has_api = bool(u["spotify_client_id"] and u["spotify_refresh_token"])
 
-                # Per-user Last.fm genre worker status, for the Worker Health
-                # insight below - same lookup overviewPage does for just the
-                # logged-in user, done here for every account.
+                # Per-user background worker statuses for the Worker Health panel
+                spotify_api_worker = {"configured": has_api, "running": False}
                 genre_worker = {"configured": has_lastfm_key, "running": False}
-                if u_db is not None and has_lastfm_key:
+                album_bio_worker = {"configured": has_lastfm_key, "running": False}
+                artist_bio_worker = {"configured": has_lastfm_key, "running": False}
+                auto_importer_worker = {"configured": True, "running": False}
+                wrapped_worker = {"configured": True, "running": False}
+
+                if u_db is not None:
                     try:
-                        workerStatus = u_db.getLastfmWorkerStatus()
-                        if isinstance(workerStatus, dict):
-                            genre_worker = {"configured": bool(workerStatus.get("configured")),
-                                            "running": bool(workerStatus.get("running"))}
+                        if hasattr(u_db, "getSpotifyApiWorkerStatus"):
+                            st = u_db.getSpotifyApiWorkerStatus()
+                            if isinstance(st, dict):
+                                spotify_api_worker = {"configured": bool(st.get("configured")), "running": bool(st.get("running"))}
                     except Exception as e:
-                        logger.warning("Last.fm worker status lookup failed for %s: %s", u_username, e)
+                        logger.warning("Spotify API worker status lookup failed for %s: %s", u_username, e)
+
+                    if has_lastfm_key:
+                        try:
+                            workerStatus = u_db.getLastfmWorkerStatus()
+                            if isinstance(workerStatus, dict):
+                                genre_worker = {"configured": bool(workerStatus.get("configured")), "running": bool(workerStatus.get("running"))}
+                        except Exception as e:
+                            logger.warning("Last.fm worker status lookup failed for %s: %s", u_username, e)
+
+                        try:
+                            if hasattr(u_db, "getLastfmAlbumBiographyWorkerStatus"):
+                                st = u_db.getLastfmAlbumBiographyWorkerStatus()
+                                if isinstance(st, dict):
+                                    album_bio_worker = {"configured": bool(st.get("configured")), "running": bool(st.get("running"))}
+                        except Exception as e:
+                            logger.warning("Last.fm album bio worker status lookup failed for %s: %s", u_username, e)
+
+                        try:
+                            if hasattr(u_db, "getLastfmBiographyWorkerStatus"):
+                                st = u_db.getLastfmBiographyWorkerStatus()
+                                if isinstance(st, dict):
+                                    artist_bio_worker = {"configured": bool(st.get("configured")), "running": bool(st.get("running"))}
+                        except Exception as e:
+                            logger.warning("Last.fm artist bio worker status lookup failed for %s: %s", u_username, e)
+
+                    try:
+                        if hasattr(u_db, "getAutoImporterWorkerStatus"):
+                            st = u_db.getAutoImporterWorkerStatus()
+                            if isinstance(st, dict):
+                                auto_importer_worker = {"configured": bool(st.get("configured")), "running": bool(st.get("running"))}
+                    except Exception as e:
+                        logger.warning("AutoImporter worker status lookup failed for %s: %s", u_username, e)
+
+                    try:
+                        if hasattr(u_db, "getWrappedWorkerStatus"):
+                            st = u_db.getWrappedWorkerStatus()
+                            if isinstance(st, dict):
+                                wrapped_worker = {"configured": bool(st.get("configured")), "running": bool(st.get("running"))}
+                    except Exception as e:
+                        logger.warning("Wrapped worker status lookup failed for %s: %s", u_username, e)
 
                 created_at_val = u.get("created_at")
                 created_date_str = ""
@@ -2907,6 +2951,11 @@ class SpotifyDashboardApp:
                     #  is encrypted and never needs decrypting here
                     "lastfm_api_status": "Configured" if u.get("lastfm_api_key") else "Not Configured",
                     "genre_worker": genre_worker,
+                    "spotify_api_worker": spotify_api_worker,
+                    "album_bio_worker": album_bio_worker,
+                    "artist_bio_worker": artist_bio_worker,
+                    "auto_importer_worker": auto_importer_worker,
+                    "wrapped_worker": wrapped_worker,
                     "plays_count": self.repo.getPlaysCount(u_username),
                     "skips_count": self.repo.getSkipCount(u_username),
                     "created_at": created_date_str,
@@ -2916,15 +2965,73 @@ class SpotifyDashboardApp:
             for u in users_list:
                 listener_summary[u["sync_status"]] = listener_summary.get(u["sync_status"], 0) + 1
 
+            spotify_api_worker_summary = {"running": 0, "idle": 0, "no_key": 0}
             lastfm_worker_summary = {"running": 0, "idle": 0, "no_key": 0}
+            lastfm_album_bio_worker_summary = {"running": 0, "idle": 0, "no_key": 0}
+            lastfm_artist_bio_worker_summary = {"running": 0, "idle": 0, "no_key": 0}
+            auto_importer_worker_summary = {"running": 0, "idle": 0}
+            wrapped_worker_summary = {"running": 0, "idle": 0}
+
             for u in users_list:
-                gw = u["genre_worker"]
-                if not gw["configured"]:
+                # Spotify API Backfill
+                w = u["spotify_api_worker"]
+                if not w["configured"]:
+                    spotify_api_worker_summary["no_key"] += 1
+                elif w["running"]:
+                    spotify_api_worker_summary["running"] += 1
+                else:
+                    spotify_api_worker_summary["idle"] += 1
+
+                # Last.fm Genre
+                w = u["genre_worker"]
+                if not w["configured"]:
                     lastfm_worker_summary["no_key"] += 1
-                elif gw["running"]:
+                elif w["running"]:
                     lastfm_worker_summary["running"] += 1
                 else:
                     lastfm_worker_summary["idle"] += 1
+
+                # Last.fm Album Bio
+                w = u["album_bio_worker"]
+                if not w["configured"]:
+                    lastfm_album_bio_worker_summary["no_key"] += 1
+                elif w["running"]:
+                    lastfm_album_bio_worker_summary["running"] += 1
+                else:
+                    lastfm_album_bio_worker_summary["idle"] += 1
+
+                # Last.fm Artist Bio
+                w = u["artist_bio_worker"]
+                if not w["configured"]:
+                    lastfm_artist_bio_worker_summary["no_key"] += 1
+                elif w["running"]:
+                    lastfm_artist_bio_worker_summary["running"] += 1
+                else:
+                    lastfm_artist_bio_worker_summary["idle"] += 1
+
+                # AutoImporter
+                w = u["auto_importer_worker"]
+                if w["running"]:
+                    auto_importer_worker_summary["running"] += 1
+                else:
+                    auto_importer_worker_summary["idle"] += 1
+
+                # Wrapped Worker
+                w = u["wrapped_worker"]
+                if w["running"]:
+                    wrapped_worker_summary["running"] += 1
+                else:
+                    wrapped_worker_summary["idle"] += 1
+
+            backup_worker_running = False
+            if hasattr(self, "backupWorker") and self.backupWorker is not None:
+                th = getattr(self.backupWorker, "thread", None)
+                if th is not None:
+                    backup_worker_running = th.is_alive()
+                elif hasattr(self.backupWorker, "is_alive"):
+                    backup_worker_running = self.backupWorker.is_alive()
+
+            backup_worker_summary = {"status": "RUNNING" if backup_worker_running else "INACTIVE"}
 
             return render_template(
                 "admin.html",
@@ -2935,7 +3042,13 @@ class SpotifyDashboardApp:
                 sharing_enabled=self.repo.isDataSharingEnabled(),
                 inherited_genres_enabled=self.repo.isInheritedGenresEnabled(),
                 listener_summary=listener_summary,
+                spotify_api_worker_summary=spotify_api_worker_summary,
                 lastfm_worker_summary=lastfm_worker_summary,
+                lastfm_album_bio_worker_summary=lastfm_album_bio_worker_summary,
+                lastfm_artist_bio_worker_summary=lastfm_artist_bio_worker_summary,
+                auto_importer_worker_summary=auto_importer_worker_summary,
+                wrapped_worker_summary=wrapped_worker_summary,
+                backup_worker_summary=backup_worker_summary,
                 catalog_genre_coverage=self.repo.getCatalogGenreCoverage(),
                 catalog_biography_coverage=self.repo.getCatalogBiographyCoverage(),
                 registration_counts=self.repo.getRecentRegistrationCounts(),

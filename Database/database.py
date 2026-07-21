@@ -2149,6 +2149,36 @@ class Database:
             "running": self.lastfm_album_biography_thread is not None and self.lastfm_album_biography_thread.is_alive(),
         }
 
+    def getSpotifyApiWorkerStatus(self) -> dict:
+        """Same shape as getLastfmWorkerStatus, for the Spotify API metadata
+        backfiller worker thread."""
+        has_creds = bool(self.repo.getUserSpotifyCredentials(self.user))
+        running = hasattr(self, "backfiller_thread") and self.backfiller_thread is not None and self.backfiller_thread.is_alive()
+        return {
+            "configured": has_creds,
+            "running": running,
+        }
+
+    def getAutoImporterWorkerStatus(self) -> dict:
+        """Same shape as getLastfmWorkerStatus, for the user's autoImport drop-folder watchdog."""
+        wd = getattr(self, "autoImporter", None)
+        thread = getattr(wd, "thread", None) if wd is not None else None
+        watchdog = getattr(wd, "wd", None) if wd is not None else None
+        running = thread is not None and thread.is_alive() and getattr(watchdog, "run", False)
+        return {
+            "configured": True,
+            "running": running,
+        }
+
+    def getWrappedWorkerStatus(self) -> dict:
+        """Same shape as getLastfmWorkerStatus, for the asynchronous Wrapped stats calculator."""
+        running = hasattr(self, "wrapped_thread") and self.wrapped_thread is not None and self.wrapped_thread.is_alive()
+        return {
+            "configured": True,
+            "running": running,
+        }
+
+
     def _reconcileWithWebApiHistory(self, apiItems: list[dict]) -> None:
         """Remove PROVABLE duplicate local plays: Web API backfill copies of a
         play another source already recorded. Both the live listener and the

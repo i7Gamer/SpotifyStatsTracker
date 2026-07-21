@@ -127,19 +127,63 @@
   <article class="card" style="padding: 1.5rem;">
     <h3 style="margin-top: 0; font-family: var(--font-headings);">Worker Health</h3>
     <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem; margin-bottom: 1rem;">
-      Background worker/thread state across every account.
+      Background worker/thread state across every account and instance services.
     </p>
+
     <p style="font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">Listener Sync</p>
-    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1.25rem;">
+    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem;">
       {% for status, count in listener_summary.items() %}
         <span class="badge badge-secondary">{{ status }}: {{ count }}</span>
       {% endfor %}
     </div>
+
+    <p style="font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">Spotify API Backfill Workers</p>
+    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem;">
+      <span class="badge badge-success">RUNNING: {{ spotify_api_worker_summary.running }}</span>
+      <span class="badge badge-warning">IDLE: {{ spotify_api_worker_summary.idle }}</span>
+      <span class="badge badge-secondary">NOT CONFIGURED: {{ spotify_api_worker_summary.no_key }}</span>
+    </div>
+
     <p style="font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">Last.fm Genre Workers</p>
-    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem;">
       <span class="badge badge-success">RUNNING: {{ lastfm_worker_summary.running }}</span>
       <span class="badge badge-warning">IDLE: {{ lastfm_worker_summary.idle }}</span>
       <span class="badge badge-secondary">NO API KEY: {{ lastfm_worker_summary.no_key }}</span>
+    </div>
+
+    <p style="font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">Last.fm Album Bio Workers</p>
+    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem;">
+      <span class="badge badge-success">RUNNING: {{ lastfm_album_bio_worker_summary.running }}</span>
+      <span class="badge badge-warning">IDLE: {{ lastfm_album_bio_worker_summary.idle }}</span>
+      <span class="badge badge-secondary">NO API KEY: {{ lastfm_album_bio_worker_summary.no_key }}</span>
+    </div>
+
+    <p style="font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">Last.fm Artist Bio Workers</p>
+    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem;">
+      <span class="badge badge-success">RUNNING: {{ lastfm_artist_bio_worker_summary.running }}</span>
+      <span class="badge badge-warning">IDLE: {{ lastfm_artist_bio_worker_summary.idle }}</span>
+      <span class="badge badge-secondary">NO API KEY: {{ lastfm_artist_bio_worker_summary.no_key }}</span>
+    </div>
+
+    <p style="font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">Auto-Importer Watchdogs</p>
+    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem;">
+      <span class="badge badge-success">RUNNING: {{ auto_importer_worker_summary.running }}</span>
+      <span class="badge badge-warning">IDLE: {{ auto_importer_worker_summary.idle }}</span>
+    </div>
+
+    <p style="font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">Wrapped Calculation Workers</p>
+    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem;">
+      <span class="badge badge-success">RUNNING: {{ wrapped_worker_summary.running }}</span>
+      <span class="badge badge-warning">IDLE: {{ wrapped_worker_summary.idle }}</span>
+    </div>
+
+    <p style="font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">Database Backup Service</p>
+    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+      {% if backup_worker_summary.status == 'RUNNING' %}
+        <span class="badge badge-success">RUNNING</span>
+      {% else %}
+        <span class="badge badge-secondary">INACTIVE</span>
+      {% endif %}
     </div>
   </article>
 
