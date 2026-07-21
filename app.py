@@ -18,7 +18,7 @@ from flask_wtf.csrf import CSRFProtect
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import generate_password_hash, check_password_hash
 
-from Database.database import Database, GENRE_COVERAGE_CATEGORIES
+from Database.database import Database
 from Database.backup import BackupWorker
 from Database.db import SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON
 from Database.repository import Repository
@@ -27,6 +27,16 @@ from Database.Listeners.spotifyListener import _suppress_signal_in_thread
 from Database.lastfm import LastfmClient
 from Database.logging_config import configureLogging
 from Database.utils import msToString, convertToDatetime, formatDuration, dateToString, versionTuple, now, startOfDay, parseDateString
+# Genre-gate / coverage helpers live in services/genre_gate.py; re-exported here
+# so route code (and the test suite, which imports several by name) still reach
+# them through `app`.
+from services.genre_gate import (
+    GENRE_GATE_OVERALL_MIN_PERCENT, GENRE_GATE_CATEGORY_MIN_PERCENT,
+    emptyGenreCoverage, sanitizeGenreCoverage, resolveGenreCoverage,
+    resolveGenreDistribution, genreGatePasses, emptyBiographyCoverage,
+    sanitizeBiographyCoverage, resolveBiographyCoverage,
+    resolveGenresForTrack, resolveGenresForAlbum, resolveGenresForArtist,
+)
 import SpotipyFree
 from SpotipyFree import saveSession, parseCookieString
 
@@ -40,13 +50,8 @@ WRAPPED_TOP_GENRES_LIMIT = 5   #< genres listed on the Wrapped genre card
 COMPARE_TOP_GENRES_LIMIT = 10  #< per-side genres (and shared genres) shown on Compare
 COMPARE_GENRE_POOL_SIZE = 50   #< per-side genre pool the shared-genre intersection is computed over
 TRACK_CARD_GENRE_LIMIT = 3     #< genre pills shown per track/artist/album card, position-ordered
-# The genre-feature unlock gate: genre insights on Charts/Wrapped/Compare only
-# render once the play-weighted Last.fm coverage over the page's date range is
-# strictly above the overall minimum (mean of the three categories) AND at
-# least at the per-category minimum for songs, albums and artists - partial
-# data would silently misrepresent someone's taste otherwise.
-GENRE_GATE_OVERALL_MIN_PERCENT = 50
-GENRE_GATE_CATEGORY_MIN_PERCENT = 30
+# GENRE_GATE_OVERALL_MIN_PERCENT / GENRE_GATE_CATEGORY_MIN_PERCENT now live in
+# services/genre_gate.py (imported above).
 WRAPPED_LIST_SIZE = 10          #< default/fallback for ?limit= - how many items per category the Wrapped page shows
 WRAPPED_LIMIT_OPTIONS = (10, 25, 50, 100)   #< selectable values for Wrapped's items-per-category dropdown
 # Public Wrapped share-link expiry choices: form value -> seconds until
@@ -216,144 +221,6 @@ def _passwordPolicyError(password: str) -> str | None:
     if not any(c.isdigit() or not c.isalnum() for c in password):
         return "Password must contain at least one number or special character."
     return None
-
-
-def emptyGenreCoverage() -> dict:
-    """The all-zeros coverage shape - what guests, empty ranges and sanitize
-    failures all resolve to (and the gate always rejects)."""
-    coverage = {categoryName: {"covered": 0, "total": 0, "percent": 0.0}
-                for categoryName in GENRE_COVERAGE_CATEGORIES}
-    coverage["overall"] = {"percent": 0.0}
-    return coverage
-
-
-def _requireNumber(value):
-    """The value if it's a real number. Explicit isinstance rather than
-    int()/float() coercion: MagicMock happily answers __int__ with 1, which
-    would let an unstubbed test db masquerade as real coverage."""
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise TypeError(f"not a number: {value!r}")
-    return value
-
-
-def sanitizeGenreCoverage(coverage) -> dict:
-    """`coverage` if it is shaped like Database.getGenreCoverage's result,
-    else all zeros. Route code must only ever consume coverage through this:
-    stubbed dbs in tests (and any unexpected failure) then degrade to the
-    locked state instead of crashing template rendering."""
-    try:
-        sanitized = {}
-        for categoryName in GENRE_COVERAGE_CATEGORIES:
-            categoryData = coverage[categoryName]
-            sanitizedCategory = {field: _requireNumber(categoryData[field])
-                                 for field in ("covered", "total", "percent")}
-            # Optional (older callers/stubs don't produce it), but validated
-            # like every other field when present - the template only renders
-            # the own-tags split when the key survives sanitization.
-            if isinstance(categoryData, dict) and "ownPercent" in categoryData:
-                sanitizedCategory["ownPercent"] = _requireNumber(categoryData["ownPercent"])
-            sanitized[categoryName] = sanitizedCategory
-        sanitized["overall"] = {"percent": _requireNumber(coverage["overall"]["percent"])}
-        return sanitized
-    except (TypeError, KeyError):
-        return emptyGenreCoverage()
-
-
-def resolveGenreCoverage(db, startDate, endDate) -> dict:
-    """Sanitized genre coverage for a user db over a range; zeros when the
-    lookup fails for any reason (never let the genre gate break a page)."""
-    try:
-        return sanitizeGenreCoverage(db.getGenreCoverage(startDate=startDate, endDate=endDate))
-    except Exception as e:
-        logger.warning("Genre coverage lookup failed: %s", e)
-        return emptyGenreCoverage()
-
-
-def resolveGenreDistribution(db, startDate, endDate, limit) -> dict:
-    """Genre distribution for a user db over a range; {} when the lookup
-    fails or returns a non-dict (stubbed dbs) - the same degradation
-    contract as resolveGenreCoverage, so every genre surface consumes
-    distributions through this one chokepoint."""
-    try:
-        distribution = db.getGenreDistribution(startDate=startDate, endDate=endDate, limit=limit)
-    except Exception as e:
-        logger.warning("Genre distribution lookup failed: %s", e)
-        return {}
-    return distribution if isinstance(distribution, dict) else {}
-
-
-def genreGatePasses(coverage: dict) -> bool:
-    """The unlock rule on a sanitized coverage dict: overall strictly above
-    GENRE_GATE_OVERALL_MIN_PERCENT and every category at or above
-    GENRE_GATE_CATEGORY_MIN_PERCENT."""
-    if coverage["overall"]["percent"] <= GENRE_GATE_OVERALL_MIN_PERCENT:
-        return False
-    return all(coverage[categoryName]["percent"] >= GENRE_GATE_CATEGORY_MIN_PERCENT
-               for categoryName in GENRE_COVERAGE_CATEGORIES)
-
-
-BIOGRAPHY_COVERAGE_CATEGORIES = ("artist", "album")
-
-
-def emptyBiographyCoverage() -> dict:
-    """The all-zeros shape for the Overview "Biography Backfill Progress"
-    widget - what guests and sanitize failures resolve to, mirroring
-    emptyGenreCoverage. Unlike genre coverage this is a plain entity-count
-    percentage (has a bio or not), not play-weighted."""
-    return {categoryName: {"covered": 0, "total": 0, "percent": 0.0}
-            for categoryName in BIOGRAPHY_COVERAGE_CATEGORIES}
-
-
-def sanitizeBiographyCoverage(coverage) -> dict:
-    """`coverage` if it is shaped like Repository.getBiographyCoverage's
-    result, else all zeros - same defensive chokepoint as
-    sanitizeGenreCoverage, so a stubbed db or unexpected failure degrades
-    instead of crashing template rendering."""
-    try:
-        sanitized = {}
-        for categoryName in BIOGRAPHY_COVERAGE_CATEGORIES:
-            covered = _requireNumber(coverage[categoryName]["covered"])
-            total = _requireNumber(coverage[categoryName]["total"])
-            percent = round(covered / total * 100, 1) if total else 0.0
-            sanitized[categoryName] = {"covered": covered, "total": total, "percent": percent}
-        return sanitized
-    except (TypeError, KeyError):
-        return emptyBiographyCoverage()
-
-
-def resolveBiographyCoverage(db, username: str) -> dict:
-    """Sanitized biography coverage for a user; zeros when the lookup fails
-    for any reason (never let this break the Overview page)."""
-    try:
-        return sanitizeBiographyCoverage(db.repo.getBiographyCoverage(username))
-    except Exception as e:
-        logger.warning("Biography coverage lookup failed: %s", e)
-        return emptyBiographyCoverage()
-
-
-def _resolveGenresFor(db, entityId, dbMethodName: str) -> list[str]:
-    """Shared degradation contract for the per-item genre lookups below: a
-    lookup failure, or a stubbed test db whose genre method was never
-    configured (a bare MagicMock() return value), degrades to [] instead of
-    breaking every page that renders a track/artist/album card."""
-    try:
-        genres = getattr(db, dbMethodName)(entityId)
-    except Exception as e:
-        logger.warning("%s(%r) failed: %s", dbMethodName, entityId, e)
-        return []
-    return genres if isinstance(genres, list) else []
-
-
-def resolveGenresForTrack(db, trackId) -> list[str]:
-    return _resolveGenresFor(db, trackId, "getGenresForTrack")
-
-
-def resolveGenresForAlbum(db, albumId) -> list[str]:
-    return _resolveGenresFor(db, albumId, "getGenresForAlbum")
-
-
-def resolveGenresForArtist(db, artistId) -> list[str]:
-    return _resolveGenresFor(db, artistId, "getGenresForArtist")
 
 
 class _RateLimiter:
