@@ -26,6 +26,7 @@ class TestReconnectBackoff(unittest.TestCase):
              patch('Database.database.Path.exists', return_value=False), \
              patch.dict(os.environ, {}, clear=False):
             db = Database(user="TestUser", email="test@example.com")
+        self.addCleanup(db.stop)
         return db
 
     def test_exponential_backoff_calculation(self):
@@ -82,6 +83,7 @@ class TestReconnectShutdownGate(unittest.TestCase):
              patch('Database.database.Path.exists', return_value=False), \
              patch.dict(os.environ, {}, clear=False):
             db = Database(user="TestUser", email="test@example.com")
+        self.addCleanup(db.stop)
         return db
 
     def test_onstale_aborts_immediately_when_shutting_down(self):

@@ -117,8 +117,21 @@ class DatabaseTestCase(unittest.TestCase):
         self._nextDbIndex = 0
 
     def _makeDb(self, tracks, entries, username="testuser"):
+        from Database.database import Database
+
         self._nextDbIndex += 1
         dbPath = Path(self._tmpdir.name) / f"test{self._nextDbIndex}.db"
         db = makeDatabaseWithData(dbPath, tracks, entries, username)
         self.addCleanup(db.repo.connectionManager.close)
+        # Only the 5 always-on background workers, not stop() as a whole:
+        # Database.__init__ never auto-starts the listener/autoImporter watchdog
+        # (those need an explicit startListener()/watchFolder() call a test opts
+        # into), but some tests (e.g. test_now_playing.py) replace db.listener
+        # with a bare stub - db.stop() would crash on stub.stop() at teardown.
+        self.addCleanup(db.stopMetadataBackfiller)
+        self.addCleanup(db.stopWrappedCalculationsWorker)
+        self.addCleanup(db.stopLastfmGenreBackfiller)
+        self.addCleanup(db.stopLastfmBiographyBackfiller)
+        self.addCleanup(db.stopLastfmAlbumBiographyBackfiller)
+        self.addCleanup(Database._active_backfills.clear)
         return db

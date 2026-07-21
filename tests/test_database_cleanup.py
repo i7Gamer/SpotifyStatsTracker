@@ -37,6 +37,7 @@ class TestDatabaseCleanup(DatabaseTestCase):
         Database._cleanup_done = False
         db_new = Database(user="testuser", dbPath=db.repo.connectionManager.dbPath)
         self.addCleanup(db_new.repo.connectionManager.close)
+        self.addCleanup(db_new.stop)
 
         # Verify orphaned records are NOT deleted (feature removed)
         self.assertEqual(conn.execute("SELECT COUNT(*) FROM tracks WHERE id='tr_orphan'").fetchone()[0], 1)
