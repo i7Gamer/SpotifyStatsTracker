@@ -150,7 +150,18 @@
     <p style="font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">Listener Sync</p>
     <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem;">
       {% for status, count in listener_summary.items() %}
-        <span class="badge badge-secondary">{{ status }}: {{ count }}</span>
+        {% set st_lower = status | lower %}
+        {% if st_lower == 'healthy' %}
+          <span class="badge badge-success">{{ status }}: {{ count }}</span>
+        {% elif st_lower == 'initializing' %}
+          <span class="badge badge-warning">{{ status }}: {{ count }}</span>
+        {% elif st_lower == 'degraded' %}
+          <span class="badge badge-orange">{{ status }}: {{ count }}</span>
+        {% elif st_lower == 'dead' %}
+          <span class="badge badge-danger">{{ status }}: {{ count }}</span>
+        {% else %}
+          <span class="badge badge-secondary">{{ status }}: {{ count }}</span>
+        {% endif %}
       {% endfor %}
     </div>
 

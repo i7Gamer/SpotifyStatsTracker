@@ -155,6 +155,92 @@ class TestAdminWorkerHealthRoute(unittest.TestCase):
             self.assertIn("Auto-Importer Watchdogs", body)
             self.assertIn("Wrapped Calculation Workers", body)
             self.assertIn("Database Backup Service", body)
+            self.assertIn('<span class="badge badge-success">HEALTHY: 1</span>', body)
+
+    @patch('app.SpotifyDashboardApp._get_or_create_secret_key', return_value='test-secret-key')
+    @patch('app.SpotifyDashboardApp.startVersionCheck_thread')
+    @patch('app.SpotifyDashboardApp.checkLogin_thread')
+    @patch('app.migrateIfNeeded')
+    @patch('app.Path.exists')
+    def test_listener_sync_badge_status_colors(self, mock_exists, mock_migrate, mock_check, mock_version, mock_secret):
+        mock_exists.return_value = False
+        dash = SpotifyDashboardApp()
+
+        users = [
+            {
+                "username": "alice", "email": "alice@example.com",
+                "cookies_json": '{"sp_dc": "123"}',
+                "spotify_client_id": None, "spotify_refresh_token": None,
+                "lastfm_api_key": None, "created_at": 1718000000.0, "is_admin": True,
+            },
+            {
+                "username": "bob", "email": "bob@example.com",
+                "cookies_json": '{"sp_dc": "456"}',
+                "spotify_client_id": None, "spotify_refresh_token": None,
+                "lastfm_api_key": None, "created_at": 1718000000.0, "is_admin": False,
+            }
+        ]
+
+        mock_db_alice = MagicMock()
+        mock_db_alice.getListenerHealth.return_value = {"status": "HEALTHY"}
+        mock_db_alice.getLastfmWorkerStatus.return_value = {"configured": False, "running": False}
+        mock_db_alice.getSpotifyApiWorkerStatus.return_value = {"configured": False, "running": False}
+        mock_db_alice.getLastfmAlbumBiographyWorkerStatus.return_value = {"configured": False, "running": False}
+        mock_db_alice.getLastfmBiographyWorkerStatus.return_value = {"configured": False, "running": False}
+        mock_db_alice.getAutoImporterWorkerStatus.return_value = {"configured": False, "running": False}
+        mock_db_alice.getWrappedWorkerStatus.return_value = {"configured": False, "running": False}
+
+        mock_db_bob = MagicMock()
+        mock_db_bob.getListenerHealth.return_value = {"status": "DEGRADED"}
+        mock_db_bob.getLastfmWorkerStatus.return_value = {"configured": False, "running": False}
+        mock_db_bob.getSpotifyApiWorkerStatus.return_value = {"configured": False, "running": False}
+        mock_db_bob.getLastfmAlbumBiographyWorkerStatus.return_value = {"configured": False, "running": False}
+        mock_db_bob.getLastfmBiographyWorkerStatus.return_value = {"configured": False, "running": False}
+        mock_db_bob.getAutoImporterWorkerStatus.return_value = {"configured": False, "running": False}
+        mock_db_bob.getWrappedWorkerStatus.return_value = {"configured": False, "running": False}
+
+        dash.user_databases = {"alice": mock_db_alice, "bob": mock_db_bob}
+
+        insights = {
+            "getCatalogGenreCoverage": {
+                "song": {"covered": 0, "total": 0, "percent": 0.0},
+                "album": {"covered": 0, "total": 0, "percent": 0.0},
+                "artist": {"covered": 0, "total": 0, "percent": 0.0},
+                "overall": {"percent": 0.0},
+            },
+            "getCatalogBiographyCoverage": {
+                "artist": {"covered": 0, "total": 0}, "album": {"covered": 0, "total": 0},
+            },
+            "getRecentRegistrationCounts": {"last_7_days": 0, "last_30_days": 0},
+            "getInstanceShareCounts": {"pending": 0, "accepted": 0},
+            "getActiveShareLinksCount": 0,
+        }
+
+        patches = [
+            patch.object(dash.repo, 'getGlobalDatabaseStats', return_value={}),
+            patch.object(dash.repo, 'getAllUsersDetails', return_value=users),
+            patch.object(dash.repo, 'isAdmin', return_value=True),
+            patch.object(dash.repo, 'getPlaysCount', return_value=10),
+            patch.object(dash.repo, 'getSkipCount', return_value=2),
+            patch.object(dash.repo, 'getAdminUsernames', return_value=['alice']),
+            patch.object(dash, 'is_user_logged_in', return_value=True),
+            patch.object(dash, 'get_username_for_email', return_value='alice'),
+        ]
+        for name, value in insights.items():
+            patches.append(patch.object(dash.repo, name, return_value=value))
+
+        with contextlib.ExitStack() as stack:
+            for p in patches:
+                stack.enter_context(p)
+            client = dash.app.test_client()
+            with client.session_transaction() as sess:
+                sess['email'] = 'alice@example.com'
+            resp = client.get("/admin")
+            body = resp.data.decode()
+
+            self.assertEqual(resp.status_code, 200)
+            self.assertIn('<span class="badge badge-success">HEALTHY: 1</span>', body)
+            self.assertIn('<span class="badge badge-orange">DEGRADED: 1</span>', body)
 
     @patch('app.SpotifyDashboardApp._get_or_create_secret_key', return_value='test-secret-key')
     @patch('app.SpotifyDashboardApp.startVersionCheck_thread')
