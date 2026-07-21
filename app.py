@@ -525,6 +525,35 @@ class SpotifyDashboardApp:
         self._login_cache[email] = (result, now_ts + LOGIN_CACHE_TTL_SECONDS)
         return result
 
+    def get_current_user_or_redirect(self):
+        """The (email, username, db) triple for the authenticated session, or
+        (None, None, None) when no live session exists - route handlers redirect
+        to /login on the None case. Also self-heals a session whose username
+        drifted from its email mapping, and stashes the db on g for teardown."""
+        email = session.get("email")
+        if not email or not self.is_user_logged_in(email):
+            return None, None, None
+
+        # Ensure the username matches the correct email mapping to prevent session pollution from legacy user "Tzur"
+        correct_username = self.get_username_for_email(email)
+        if not correct_username:
+            correct_username = self.get_or_create_user(email)
+
+        if session.get("username") != correct_username:
+            session["username"] = correct_username
+
+        username = correct_username
+        db = self.get_user_db(username, email)
+        g.db = db
+        return email, username, db
+
+    def _rateLimited(self, bucket: str) -> bool:
+        """True if this request's source IP has exceeded RATE_LIMIT_MAX_ATTEMPTS
+        for `bucket` within RATE_LIMIT_WINDOW_SECONDS - callers should reject
+        the request with RATE_LIMIT_ERROR_MESSAGE when this returns True."""
+        identifier = request.remote_addr or "unknown"
+        return not self._authRateLimiter.hit(bucket, identifier)
+
     def checkLogin_thread(self):
         self._ensureAllUsersLogin()
         thread = threading.Thread(target=self._checkLoginLoop, daemon=True)
@@ -1605,24 +1634,6 @@ class SpotifyDashboardApp:
                 logger.error("Health check failed: %s", e)
                 return jsonify({"status": "error", "detail": str(e)}), 503
 
-        def get_current_user_or_redirect():
-            email = session.get("email")
-            if not email or not self.is_user_logged_in(email):
-                return None, None, None
-            
-            # Ensure the username matches the correct email mapping to prevent session pollution from legacy user "Tzur"
-            correct_username = self.get_username_for_email(email)
-            if not correct_username:
-                correct_username = self.get_or_create_user(email)
-            
-            if session.get("username") != correct_username:
-                session["username"] = correct_username
-
-            username = correct_username
-            db = self.get_user_db(username, email)
-            g.db = db
-            return email, username, db
-
         def _authorized_image_username():
             """Returns the username the current session is allowed to view images for, or None."""
             email = session.get("email")
@@ -1659,7 +1670,7 @@ class SpotifyDashboardApp:
 
         @self.app.route("/import-history", methods=["POST"])
         def importHistory():
-            email, username, db = get_current_user_or_redirect()
+            email, username, db = self.get_current_user_or_redirect()
             if not email:
                 return redirect(url_for("login"))
 
@@ -1700,7 +1711,7 @@ class SpotifyDashboardApp:
 
         @self.app.route("/import", methods=["GET"])
         def importPage():
-            email, username, db = get_current_user_or_redirect()
+            email, username, db = self.get_current_user_or_redirect()
             if not email:
                 return redirect(url_for("login"))
             return render_template(
@@ -1720,7 +1731,7 @@ class SpotifyDashboardApp:
             """Stream the current user's full play history as a download.
             JSON is shaped like Spotify's own extended export (re-importable
             through /import-history); CSV is for spreadsheets."""
-            email, username, db = get_current_user_or_redirect()
+            email, username, db = self.get_current_user_or_redirect()
             if not email:
                 return redirect(url_for("login", next=request.path))
 
@@ -1751,13 +1762,6 @@ class SpotifyDashboardApp:
                 return None
             return nextUrl
 
-        def _rateLimited(bucket: str) -> bool:
-            """True if this request's source IP has exceeded RATE_LIMIT_MAX_ATTEMPTS
-            for `bucket` within RATE_LIMIT_WINDOW_SECONDS - callers should reject
-            the request with RATE_LIMIT_ERROR_MESSAGE when this returns True."""
-            identifier = request.remote_addr or "unknown"
-            return not self._authRateLimiter.hit(bucket, identifier)
-
         @self.app.route("/login", methods=["GET", "POST"])
         def login():
             if request.method == "GET":
@@ -1766,7 +1770,7 @@ class SpotifyDashboardApp:
             email = request.form.get("email", "").strip()
             nextUrl = _safeNextUrl(request.form.get("next"))
 
-            if _rateLimited("login"):
+            if self._rateLimited("login"):
                 return render_template(
                     "login.html", email=email, next=nextUrl,
                     error=RATE_LIMIT_ERROR_MESSAGE), 429
@@ -1855,7 +1859,7 @@ class SpotifyDashboardApp:
             confirmPassword = request.form.get("confirm_password", "")
             cookies = request.form.get("cookies", "")
 
-            if _rateLimited("register"):
+            if self._rateLimited("register"):
                 return render_template(
                     "register.html", email=email, error=RATE_LIMIT_ERROR_MESSAGE), 429
 
@@ -1915,7 +1919,7 @@ class SpotifyDashboardApp:
             confirmPassword = request.form.get("confirm_password", "")
             cookies = request.form.get("cookies", "")
 
-            if _rateLimited("reset-password"):
+            if self._rateLimited("reset-password"):
                 return render_template(
                     "reset_password.html", email=email, error=RATE_LIMIT_ERROR_MESSAGE), 429
 
@@ -1967,7 +1971,7 @@ class SpotifyDashboardApp:
 
         @self.app.route("/profile", methods=["GET", "POST"])
         def profilePage():
-            email, username, db = get_current_user_or_redirect()
+            email, username, db = self.get_current_user_or_redirect()
             if not email:
                 return redirect(url_for("login", next=request.path))
 
@@ -1998,7 +2002,7 @@ class SpotifyDashboardApp:
                     # Throttled like login/register: declines delete the row,
                     # so nothing else stops a rejected requester from re-
                     # requesting (or fanning out to every user) indefinitely.
-                    if _rateLimited("request_share"):
+                    if self._rateLimited("request_share"):
                         error = RATE_LIMIT_ERROR_MESSAGE
                         responseStatus = 429
                     elif not target_username:
@@ -2022,7 +2026,7 @@ class SpotifyDashboardApp:
                         abort(404)
                     # Throttled like request_share: every save fires a live
                     # validation request against Last.fm.
-                    if _rateLimited("save_lastfm"):
+                    if self._rateLimited("save_lastfm"):
                         error = RATE_LIMIT_ERROR_MESSAGE
                         responseStatus = 429
                     else:
@@ -2133,7 +2137,7 @@ class SpotifyDashboardApp:
         def profileDisconnect():
             if not os.environ.get("SPOTIFY_CALLBACK_URL"):
                 abort(404)
-            email, username, db = get_current_user_or_redirect()
+            email, username, db = self.get_current_user_or_redirect()
             if not email:
                 return redirect(url_for("login"))
 
@@ -2147,7 +2151,7 @@ class SpotifyDashboardApp:
         def profileShareAction(share_id):
             if not self.repo.isDataSharingEnabled():
                 abort(404)
-            email, username, db = get_current_user_or_redirect()
+            email, username, db = self.get_current_user_or_redirect()
             if not email:
                 return redirect(url_for("login"))
 
@@ -2180,7 +2184,7 @@ class SpotifyDashboardApp:
             spotify_callback_url = os.environ.get("SPOTIFY_CALLBACK_URL")
             if not spotify_callback_url:
                 abort(404)
-            email, username, db = get_current_user_or_redirect()
+            email, username, db = self.get_current_user_or_redirect()
             if not email:
                 return redirect(url_for("login"))
 
@@ -2210,7 +2214,7 @@ class SpotifyDashboardApp:
             spotify_callback_url = os.environ.get("SPOTIFY_CALLBACK_URL")
             if not spotify_callback_url:
                 abort(404)
-            email, username, db = get_current_user_or_redirect()
+            email, username, db = self.get_current_user_or_redirect()
             if not email:
                 return redirect(url_for("login"))
 
@@ -2274,7 +2278,7 @@ class SpotifyDashboardApp:
 
         @self.app.route("/import-progress", methods=["GET"])
         def importProgress():
-            email, username, db = get_current_user_or_redirect()
+            email, username, db = self.get_current_user_or_redirect()
             if not email:
                 return jsonify({"error": "unauthorized"}), 401
             return jsonify(db.readProgress())
@@ -2291,7 +2295,7 @@ class SpotifyDashboardApp:
 
         @self.app.route("/api/listener-status", methods=["GET"])
         def listenerStatus():
-            email, username, db = get_current_user_or_redirect()
+            email, username, db = self.get_current_user_or_redirect()
             if not email:
                 return jsonify({"error": "Not logged in"}), 401
             health = db.getListenerHealth()
@@ -2301,7 +2305,7 @@ class SpotifyDashboardApp:
         def nowPlayingStatus():
             """What the user is playing right now, from the listener's cached
             connect state (no Spotify calls) - polled by the dashboard."""
-            email, username, db = get_current_user_or_redirect()
+            email, username, db = self.get_current_user_or_redirect()
             if not email:
                 return jsonify({"error": "Not logged in"}), 401
             return jsonify({"nowPlaying": db.getNowPlaying()})
@@ -2443,7 +2447,7 @@ class SpotifyDashboardApp:
             read-only instance-wide insights. Fully gated (unlike
             overviewPage, which stays visible to everyone) since there's
             nothing here for a non-admin to see."""
-            email, username, db = get_current_user_or_redirect()
+            email, username, db = self.get_current_user_or_redirect()
             if not email:
                 return redirect(url_for("login", next=url_for("adminPage")))
             if not self.repo.isAdmin(username):
@@ -2658,7 +2662,7 @@ class SpotifyDashboardApp:
             """Admin-only: instance-wide toggles for data sharing (Compare +
             share requests), new user registration, and public Wrapped share
             links - see Database/repository.py's app_settings."""
-            email, username, db = get_current_user_or_redirect()
+            email, username, db = self.get_current_user_or_redirect()
             if not email:
                 return redirect(url_for("login", next=url_for("adminPage")))
             if not self.repo.isAdmin(username):
@@ -2675,7 +2679,7 @@ class SpotifyDashboardApp:
             backfill, and whether inherited (artist-derived) genre rows count
             in genre stats and coverage - see Database/repository.py's
             app_settings."""
-            email, username, db = get_current_user_or_redirect()
+            email, username, db = self.get_current_user_or_redirect()
             if not email:
                 return redirect(url_for("login", next=url_for("adminPage")))
             if not self.repo.isAdmin(username):
@@ -2699,7 +2703,7 @@ class SpotifyDashboardApp:
             detailRoute = routeByKind[kind]
             idKwarg = idKwargByKind[kind]
 
-            email, username, db = get_current_user_or_redirect()
+            email, username, db = self.get_current_user_or_redirect()
             if not email:
                 return redirect(url_for("login", next=url_for(detailRoute, **{idKwarg: entity_id})))
             if not self.repo.isAdmin(username):
@@ -2726,7 +2730,7 @@ class SpotifyDashboardApp:
         def adminSpotifySettings():
             """Admin-only: the Spotify Developer API backfill kill switch
             (missed-plays recovery and album/track metadata fetching)."""
-            email, username, db = get_current_user_or_redirect()
+            email, username, db = self.get_current_user_or_redirect()
             if not email:
                 return redirect(url_for("login", next=url_for("adminPage")))
             if not self.repo.isAdmin(username):
@@ -2740,7 +2744,7 @@ class SpotifyDashboardApp:
             demote the instance's last remaining admin - Repository.setUserAdmin
             otherwise happily allows zero admins, which would strand the
             instance with nobody able to reach any admin-gated surface."""
-            email, actingUsername, db = get_current_user_or_redirect()
+            email, actingUsername, db = self.get_current_user_or_redirect()
             if not email:
                 return redirect(url_for("login", next=url_for("adminPage")))
             if not self.repo.isAdmin(actingUsername):
@@ -2753,7 +2757,7 @@ class SpotifyDashboardApp:
 
         @self.app.route("/", methods=["GET"])
         def dashboard():
-            email, username, db = get_current_user_or_redirect()
+            email, username, db = self.get_current_user_or_redirect()
             if not email:
                 return redirect(url_for("login", next=request.path))
 
@@ -2852,7 +2856,7 @@ class SpotifyDashboardApp:
 
         @self.app.route("/top-songs", methods=["GET"])
         def topSongsPage():
-            email, username, db = get_current_user_or_redirect()
+            email, username, db = self.get_current_user_or_redirect()
             if not email:
                 return redirect(url_for("login", next=request.path))
 
@@ -2914,7 +2918,7 @@ class SpotifyDashboardApp:
 
         @self.app.route("/top-albums", methods=["GET"])
         def topAlbumsPage():
-            email, username, db = get_current_user_or_redirect()
+            email, username, db = self.get_current_user_or_redirect()
             if not email:
                 return redirect(url_for("login", next=request.path))
 
@@ -2973,7 +2977,7 @@ class SpotifyDashboardApp:
 
         @self.app.route("/top-artists", methods=["GET"])
         def topArtistsPage():
-            email, username, db = get_current_user_or_redirect()
+            email, username, db = self.get_current_user_or_redirect()
             if not email:
                 return redirect(url_for("login", next=request.path))
 
@@ -3035,7 +3039,7 @@ class SpotifyDashboardApp:
 
         @self.app.route("/charts", methods=["GET"])
         def chartsPage():
-            email, username, db = get_current_user_or_redirect()
+            email, username, db = self.get_current_user_or_redirect()
             if not email:
                 return redirect(url_for("login", next=request.path))
 
@@ -3115,7 +3119,7 @@ class SpotifyDashboardApp:
 
         @self.app.route("/wrapped", methods=["GET"])
         def wrappedPage():
-            email, username, db = get_current_user_or_redirect()
+            email, username, db = self.get_current_user_or_redirect()
             if not email:
                 return redirect(url_for("login", next=request.path))
 
@@ -3215,14 +3219,14 @@ class SpotifyDashboardApp:
             background and swaps in the returned panel HTML instead of
             leaving the page."""
             isAjax = request.args.get("ajax") == "true"
-            email, username, db = get_current_user_or_redirect()
+            email, username, db = self.get_current_user_or_redirect()
             if not email:
                 if isAjax:
                     return jsonify(error="Please log in again."), 401
                 return redirect(url_for("login", next=url_for("wrappedPage")))
             if not self.repo.isShareLinksEnabled():
                 abort(404)
-            if _rateLimited("share_link_create"):
+            if self._rateLimited("share_link_create"):
                 if isAjax:
                     return jsonify(error=RATE_LIMIT_ERROR_MESSAGE), 429
                 return redirect(url_for("wrappedPage", error=RATE_LIMIT_ERROR_MESSAGE, openShareModal=1))
@@ -3268,7 +3272,7 @@ class SpotifyDashboardApp:
                 # Only misses count against the limit - repeat visits to a
                 # real link must never be throttled (see the plan's rate-
                 # limiting note), only someone guessing random tokens.
-                if _rateLimited("shared_token"):
+                if self._rateLimited("shared_token"):
                     abort(429)
                 abort(404)
 
@@ -3368,7 +3372,7 @@ class SpotifyDashboardApp:
             modal's revoke form (see createWrappedShareLink); profile.html's
             own revoke form never sets it and keeps the classic redirect."""
             isAjax = request.args.get("ajax") == "true"
-            email, username, db = get_current_user_or_redirect()
+            email, username, db = self.get_current_user_or_redirect()
             if not email:
                 if isAjax:
                     return jsonify(error="Please log in again."), 401
@@ -3392,7 +3396,7 @@ class SpotifyDashboardApp:
         def comparePage():
             if not self.repo.isDataSharingEnabled():
                 abort(404)
-            email, username, db = get_current_user_or_redirect()
+            email, username, db = self.get_current_user_or_redirect()
             if not email:
                 return redirect(url_for("login", next=request.path))
 
@@ -3686,7 +3690,7 @@ class SpotifyDashboardApp:
 
         @self.app.route("/song/<track_id>", methods=["GET"])
         def songDetailPage(track_id):
-            email, username, db = get_current_user_or_redirect()
+            email, username, db = self.get_current_user_or_redirect()
             if not email:
                 return redirect(url_for("login", next=request.path))
 
@@ -3719,7 +3723,7 @@ class SpotifyDashboardApp:
 
         @self.app.route("/artist/<artist_id>", methods=["GET"])
         def artistDetailPage(artist_id):
-            email, username, db = get_current_user_or_redirect()
+            email, username, db = self.get_current_user_or_redirect()
             if not email:
                 return redirect(url_for("login", next=request.path))
 
@@ -3768,7 +3772,7 @@ class SpotifyDashboardApp:
 
         @self.app.route("/album/<album_id>", methods=["GET"])
         def albumDetailPage(album_id):
-            email, username, db = get_current_user_or_redirect()
+            email, username, db = self.get_current_user_or_redirect()
             if not email:
                 return redirect(url_for("login", next=request.path))
 
