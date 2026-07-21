@@ -411,8 +411,10 @@ class LastfmBackfillMixin:
                     self.repo.setAlbumBio(row["id"], None)
                     processedAny = True
                     continue
-                outcome = client.getAlbumInfo(primary["artist_name"], row["name"],
-                                              stop_event=self.lastfm_album_biography_stop_event)
+                outcome = self._lastfmLookupBioOutcome(
+                    lambda name: client.getAlbumInfo(primary["artist_name"], name,
+                                                     stop_event=self.lastfm_album_biography_stop_event),
+                    row["name"])
                 if outcome is None:   #< rate-limit slot aborted: we're stopping
                     break
                 if outcome.status == _dbmod.OUTCOME_INVALID_KEY:
@@ -421,19 +423,6 @@ class LastfmBackfillMixin:
                     continue   #< stays unattempted, retried next cycle
 
                 bio = outcome.bio if outcome.status == _dbmod.OUTCOME_OK else None
-                if bio is None:
-                    cleanedName = _dbmod.cleanLookupName(row["name"])
-                    if cleanedName != row["name"]:
-                        retryOutcome = client.getAlbumInfo(primary["artist_name"], cleanedName,
-                                                             stop_event=self.lastfm_album_biography_stop_event)
-                        if retryOutcome is None:
-                            break
-                        if retryOutcome.status == _dbmod.OUTCOME_INVALID_KEY:
-                            raise _dbmod._LastfmInvalidKeyError()
-                        if retryOutcome.status == _dbmod.OUTCOME_TRANSIENT:
-                            continue
-                        bio = retryOutcome.bio if retryOutcome.status == _dbmod.OUTCOME_OK else None
-
                 self.repo.setAlbumBio(row["id"], bio)
                 processedAny = True
 
@@ -494,6 +483,30 @@ class LastfmBackfillMixin:
             return False, [], True
         definitive, genres = self._lastfmOutcomeGenres(outcome)
         return definitive, genres, False
+
+    def _lastfmLookupBioOutcome(self, lookup, entityName: str):
+        """Final ArtistInfoOutcome|AlbumInfoOutcome (or None = rate-limit slot
+        aborted) for a *.getinfo bio lookup with one cleaned-name retry - the
+        bio counterpart of _lastfmLookupOwnGenres, sharing the exact same
+        decoration-stripping fallback (cleanLookupName) so the background
+        backfillers and the admin "Refresh Last.fm Data" button behave
+        identically. When the verbatim name yields a definitive result
+        carrying no bio, it re-asks with the cleaned form, since Last.fm often
+        only knows the undecorated title ("Album (Deluxe Edition)" -> "Album").
+        A non-definitive (transient/invalid-key) outcome is returned unchanged
+        for the caller to classify; the retry fires only on a definitive-but-
+        bioless result and its own outcome replaces the first, whatever the
+        status. `lookup(name)` -> outcome | None."""
+        outcome = lookup(entityName)
+        if outcome is None:
+            return None
+        definitive = outcome.status in (_dbmod.OUTCOME_OK, _dbmod.OUTCOME_NOT_FOUND)
+        if not definitive or outcome.bio is not None:
+            return outcome
+        cleanedName = _dbmod.cleanLookupName(entityName)
+        if cleanedName == entityName:
+            return outcome
+        return lookup(cleanedName)
 
     def _processLastfmArtistBatch(self, client: LastfmClient, scopeUsername: str | None) -> bool:
         rows = self.repo.getArtistsMissingGenres(self.LASTFM_QUEUE_BATCH_SIZE, scopeUsername)

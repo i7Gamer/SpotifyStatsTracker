@@ -315,7 +315,9 @@ class MediaFetchMixin:
                 client, "album", albumId, genres, primary["artist_id"], primary["artist_name"]):
             return {"status": "transient"}
 
-        bioOutcome = client.getAlbumInfo(primary["artist_name"], row["name"])
+        bioOutcome = self._lastfmLookupBioOutcome(
+            lambda name: client.getAlbumInfo(primary["artist_name"], name),
+            row["name"])
         if bioOutcome is not None and bioOutcome.status in (_dbmod.OUTCOME_OK, _dbmod.OUTCOME_NOT_FOUND):
             self.repo.setAlbumBio(albumId, bioOutcome.bio if bioOutcome.status == _dbmod.OUTCOME_OK else None)
 

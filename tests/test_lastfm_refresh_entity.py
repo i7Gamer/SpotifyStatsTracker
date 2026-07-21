@@ -171,6 +171,35 @@ class RefreshLastfmEntityTestCase(DatabaseTestCase):
         client.getAlbumTopTags.assert_any_call("Artist X", "Album P", stop_event=db.lastfm_stop_event)
         client.getAlbumInfo.assert_called_once_with("Artist X", "Album P")
 
+    @patch("Database.database.LastfmClient")
+    def test_album_refresh_bio_retries_with_cleaned_name_like_the_worker(self, mockClientClass):
+        """The button must reuse the album-bio worker's "(Deluxe Edition)"
+        fallback: a decorated album whose verbatim name has no bio on Last.fm
+        re-asks with the cleaned name."""
+        tracks = {"tD": {"id": "tD", "name": "Song D",
+                         "artists": [{"id": "aX", "name": "Artist X"}],
+                         "album": _album("alD", "Album D (Deluxe Edition)")}}
+        entries = [{"id": "tD", "playedAt": 1000, "timePlayed": 5000}]
+        db = self._makeDb(tracks, entries, username="user1")
+        db.repo.updateUserLastfmApiKey("user1", "key123")
+
+        def bioSideEffect(artist, album):
+            if album == "Album D":
+                return AlbumInfoOutcome(OUTCOME_OK, "The deluxe-stripped bio.")
+            return AlbumInfoOutcome(OUTCOME_NOT_FOUND, None)
+
+        client = self._clientReturning(getAlbumTopTags=ROCK_TAGS)
+        client.getAlbumInfo.side_effect = bioSideEffect
+        mockClientClass.return_value = client
+
+        result = db.refreshLastfmEntity("album", "alD")
+
+        self.assertEqual(result, {"status": "ok", "name": "Album D (Deluxe Edition)"})
+        self.assertEqual(db.getAlbumBio("alD"), "The deluxe-stripped bio.")
+        self.assertEqual(client.getAlbumInfo.call_count, 2)
+        client.getAlbumInfo.assert_any_call("Artist X", "Album D (Deluxe Edition)")
+        client.getAlbumInfo.assert_any_call("Artist X", "Album D")
+
     def test_album_with_no_resolvable_artist_is_reported(self):
         db = self._makeDbWithPlays()
         db.repo.updateUserLastfmApiKey("user1", "key123")
