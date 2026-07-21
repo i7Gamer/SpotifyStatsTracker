@@ -207,8 +207,10 @@ class TestOverviewDatabaseStats(unittest.TestCase):
         stats_before = self.repo.getGlobalDatabaseStats()
         db_size_before = stats_before["db_size_bytes"]
 
-        # Create a test file in the media directory
-        media_dir = Path(__file__).resolve().parent.parent / "Database" / "Data" / "Media"
+        # Create a test file in the media directory (conftest's _isolateMediaDir
+        # points this at a per-test tmp_path, not the real Data/Media cache)
+        import Database.database as databaseModule
+        media_dir = databaseModule.MEDIA_DIR
         media_dir.mkdir(parents=True, exist_ok=True)
         test_file = media_dir / "test_image.jpeg"
         test_content = b"test" * 256  # Create a file with ~1KB of data

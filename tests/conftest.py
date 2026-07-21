@@ -38,6 +38,19 @@ def _isolateEncryptionKey(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolateMediaDir(tmp_path, monkeypatch):
+    """No test should scan or write into the real Database/Data/Media folder -
+    Repository.getGlobalDatabaseStats() walks it (Database.queries.settings
+    re-imports Database.database.MEDIA_DIR at call time, so this monkeypatch
+    takes effect), and a real dev checkout's media cache can be large enough
+    to make that walk noticeably slow, and shared enough to flake two
+    concurrent test runs (e.g. under pytest-xdist) into each other."""
+    import Database.database as databaseModule
+
+    monkeypatch.setattr(databaseModule, "MEDIA_DIR", tmp_path / "test_media")
+
+
+@pytest.fixture(autouse=True)
 def _isolateDefaultDbPath(tmp_path, monkeypatch):
     """No test should ever touch the real Database/Users/spotify_stats.db - only
     tests that explicitly pass dbPath= are meant to touch a database at all.
