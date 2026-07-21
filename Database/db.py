@@ -305,6 +305,36 @@ CREATE INDEX IF NOT EXISTS idx_share_links_username ON share_links(username);
 """
 
 
+_schemaTemplateLock = threading.Lock()
+_schemaTemplateConn: sqlite3.Connection | None = None
+_schemaTemplateSchema: str | None = None   #< SCHEMA the cached template was built from
+
+
+def _getSchemaTemplate() -> sqlite3.Connection:
+    """A schema-initialized :memory: connection, cached and reused via
+    .backup() by _newConnection() below. executescript(SCHEMA) - a ~260-line
+    DDL script - is the dominant cost of opening a brand-new database file
+    (measured ~16ms vs ~7ms for the backup() copy); every test that builds
+    its own temp-file Repository/Database pays that cost once, so across a
+    suite with hundreds of them it adds up. Rebuilds whenever SCHEMA itself
+    has changed since the cached copy was made (compared by value, not just
+    "already built") - migration tests patch.object(dbModule, "SCHEMA", ...)
+    to simulate a pre-migration DB, and a stale cache would silently stamp
+    the real current schema onto what's meant to be a legacy one. Lazy +
+    lock-guarded since tests construct Repository/Database instances from
+    several threads."""
+    global _schemaTemplateConn, _schemaTemplateSchema
+    if _schemaTemplateConn is None or _schemaTemplateSchema != SCHEMA:
+        with _schemaTemplateLock:
+            if _schemaTemplateConn is None or _schemaTemplateSchema != SCHEMA:
+                conn = sqlite3.connect(":memory:")
+                conn.executescript(SCHEMA)
+                conn.commit()
+                _schemaTemplateConn = conn
+                _schemaTemplateSchema = SCHEMA
+    return _schemaTemplateConn
+
+
 class ConnectionManager:
     """Owns one SQLite connection per thread for a given database file.
 
@@ -325,7 +355,28 @@ class ConnectionManager:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
         conn.execute("PRAGMA foreign_keys=ON")
-        conn.executescript(SCHEMA)   #< idempotent (IF NOT EXISTS), safe to run per connection
+        # Emptiness is checked via this connection's own sqlite_master, not
+        # self.dbPath.exists() - Path.exists is patched globally by some test
+        # helpers (e.g. _app_factory.py's patch("app.Path.exists", ...),
+        # which patches the pathlib.Path class itself, not just app's
+        # reference to it) for unrelated reasons, which would make an
+        # existing, populated file look "new" and get wiped by backup()
+        # below. Querying the connection's actual contents is unaffected by
+        # that and is exact rather than a proxy.
+        isEmpty = conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()[0] == 0
+        if isEmpty:
+            # .backup() copies the template's pages wholesale - much cheaper
+            # than re-parsing+executing the DDL, but it OVERWRITES the
+            # destination, so it's only safe for a connection that's the
+            # first to see this file empty. A second thread racing to open
+            # the same brand-new file either serializes behind SQLite's own
+            # file locking (same as any other concurrent write) or, if it
+            # still observes an empty db, performs the same idempotent copy
+            # again - not a new failure mode versus the previous
+            # executescript-for-everyone behavior.
+            _getSchemaTemplate().backup(conn)
+        else:
+            conn.executescript(SCHEMA)   #< idempotent (IF NOT EXISTS), safe to run per connection
         conn.commit()
         return conn
 
