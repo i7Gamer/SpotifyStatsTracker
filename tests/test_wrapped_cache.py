@@ -102,8 +102,11 @@ class TestWrappedBackgroundWorker(DatabaseTestCase):
         # Clear existing cache if any
         db.repo.deleteUserWrapped(db.user, 2026)
 
-        # Run checkAndRecalculate
-        db._checkAndRecalculateWrapped()
+        # Run checkAndRecalculate (bypass the real WRAPPED_YEAR_DELAY_SECONDS
+        # breathing-room wait between recalculated years - see the same patch
+        # in test_boundary_play_does_not_cause_perpetual_recalculation below)
+        with patch.object(db.wrapped_stop_event, "wait", return_value=False):
+            db._checkAndRecalculateWrapped()
 
         # Check if cache is now populated
         cached = db.repo.getCachedWrapped(db.user, 2026)
@@ -124,7 +127,8 @@ class TestWrappedBackgroundWorker(DatabaseTestCase):
         db.repo.insertPlay(db.user, "t1", 1774000000, 30000, "listener")  # somewhere in 2026
         db.repo.deleteUserWrapped(db.user, 2026)
 
-        with self.assertLogs("Database.database", level="INFO") as cm:
+        with self.assertLogs("Database.database", level="INFO") as cm, \
+             patch.object(db.wrapped_stop_event, "wait", return_value=False):
             db._checkAndRecalculateWrapped()
 
         recalcLines = [line for line in cm.output if "Recalculating wrapped" in line]
@@ -144,17 +148,18 @@ class TestWrappedBackgroundWorker(DatabaseTestCase):
         })
         db.repo.insertPlay(db.user, "t1", 1775000000, 30000, "listener") # late play
 
-        # Check and populate cache
-        db._checkAndRecalculateWrapped()
-        cached1 = db.repo.getCachedWrapped(db.user, 2026)
-        self.assertEqual(cached1["total_plays"], 1)
-        self.assertEqual(cached1["max_played_at"], 1775000000)
+        with patch.object(db.wrapped_stop_event, "wait", return_value=False):
+            # Check and populate cache
+            db._checkAndRecalculateWrapped()
+            cached1 = db.repo.getCachedWrapped(db.user, 2026)
+            self.assertEqual(cached1["total_plays"], 1)
+            self.assertEqual(cached1["max_played_at"], 1775000000)
 
-        # Now insert an earlier play (historical, in-between) in 2026
-        db.repo.insertPlay(db.user, "t1", 1774000000, 30000, "listener") # earlier play (max_played_at is still 1775000000)
+            # Now insert an earlier play (historical, in-between) in 2026
+            db.repo.insertPlay(db.user, "t1", 1774000000, 30000, "listener") # earlier play (max_played_at is still 1775000000)
 
-        # Run check
-        db._checkAndRecalculateWrapped()
+            # Run check
+            db._checkAndRecalculateWrapped()
 
         # Cache should have updated and now show 2 plays
         cached2 = db.repo.getCachedWrapped(db.user, 2026)
@@ -276,7 +281,8 @@ class TestWrappedRecalcLocking(DatabaseTestCase):
         db = self._makeDb({}, [])
         self._seedOnePlayIn2026(db)
 
-        db._checkAndRecalculateWrapped()   #< populates a fresh cache
+        with patch.object(db.wrapped_stop_event, "wait", return_value=False):
+            db._checkAndRecalculateWrapped()   #< populates a fresh cache
         with patch.object(db, "_calculateAndSaveWrapped") as spy:
             db.recalculateWrappedForYear(2026)
         spy.assert_not_called()
