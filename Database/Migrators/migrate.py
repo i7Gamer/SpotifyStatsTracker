@@ -72,6 +72,32 @@ def _resolveDatabaseVersion(runtimeDir: Path) -> str | None:
     return None   #< pre-database (JSON-history) era, nothing on disk yet - fresh install
 
 
+def _snapshotBeforeMigrating(runtimeDir: Path) -> None:
+    """One-off safety snapshot taken right before the first migration step
+    runs this startup. Migrations run automatically at every app boot,
+    before the backup worker's own scheduled snapshot has a chance to run
+    (its randomized startup delay exists specifically to not race this) - so
+    without this, the most recent recovery point for a migration that
+    corrupts data (a logic bug, or a crash mid multi-step migration) could be
+    up to BACKUP_INTERVAL_HOURS (default 24h) stale.
+
+    Best-effort: a database that doesn't exist yet (pre-1.7.0, JSON-history
+    era, or a fresh install) has nothing to snapshot, and a failed snapshot
+    must never block startup - migrating with no extra safety net is still
+    better than refusing to start at all."""
+    dbPath = runtimeDir / "spotify_stats.db"
+    if not dbPath.exists():
+        return
+    try:
+        from Database.backup import BackupWorker
+    except ModuleNotFoundError:
+        from backup import BackupWorker
+    try:
+        BackupWorker(dbPath=dbPath).runBackup()
+    except Exception as e:
+        print(f"Pre-migration snapshot failed (continuing without it): {e}")
+
+
 def migrateIfNeeded():
     baseDir = Path(__file__).resolve().parent
     appVersionFile = baseDir / ".." / "VERSION"
@@ -92,6 +118,9 @@ def migrateIfNeeded():
     # "1.7.0" vs "2.7.0") would be mistaken for already being up to date, and
     # a genuine major bump would make the loop below hunt forever for a
     # migrator file that can never satisfy a minor-only comparison.
+    if BaseMigrator.getMajorMinor(databaseVersion) != BaseMigrator.getMajorMinor(appVersion):
+        _snapshotBeforeMigrating(runtimeDir)
+
     while BaseMigrator.getMajorMinor(databaseVersion) != BaseMigrator.getMajorMinor(appVersion):
         dbMajor, dbMinor = BaseMigrator.getMajorMinor(databaseVersion)
         migrate(dbMajor, dbMinor, baseDir)

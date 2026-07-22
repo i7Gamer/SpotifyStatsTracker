@@ -21,7 +21,7 @@
       <p class="import-note">Upload both the <code>Streaming_History_Audio_*.json</code> and
         <code>Streaming_History_Video_*.json</code> files - music-video streams are real plays too.</p>
       <label class="import-overwrite-option">
-        <input type="checkbox" name="overwrite_range" />
+        <input id="overwrite-range" type="checkbox" name="overwrite_range" />
         Replace existing data in the time covered by these files
       </label>
       <p class="import-note">Deletes <strong>all</strong> recorded plays in the years these files cover - including
@@ -80,7 +80,15 @@
       fetchProgress();
     }
 
-    importForm?.addEventListener('submit', () => {
+    importForm?.addEventListener('submit', (event) => {
+      const overwriteChecked = document.getElementById('overwrite-range').checked;
+      if (overwriteChecked && !confirm(
+        'This deletes ALL recorded plays in the years these files cover - including live-tracked and ' +
+        'manually added ones - then re-imports them fresh. This cannot be undone.\n\nContinue?'
+      )) {
+        event.preventDefault();
+        return;
+      }
       const fileCount = document.getElementById('history_file').files.length;
       const label = fileCount > 1 ? `Starting import of ${fileCount} files...` : 'Starting import...';
       progressMessage.textContent = label;
