@@ -510,11 +510,14 @@ class LastfmClient:
 
     def _lookupWithArtistNameFallback(self, artistName: str, fetchOne, isHit, logLabel: str):
         """Runs `fetchOne(artistName)` first. On a definitive-but-no-hit
-        result (isHit(outcome) is False), retries fetchOne under each of
-        normalizeArtistLookupName's transformed spellings - a candidate that
-        doesn't hit (including a transient hiccup on that one name) is
-        silently skipped rather than aborting the rest, since it says
-        nothing about whether a *different* spelling would work.
+        result (isHit(outcome) is False) - which includes NOT_FOUND (error 6):
+        a verbatim name with no Last.fm match at all is exactly the case the
+        slash/plus transforms exist for, e.g. "Axwell /\\ Ingrosso" 404s
+        verbatim but resolves under "Axwell & Ingrosso" - retries fetchOne
+        under each of normalizeArtistLookupName's transformed spellings. A
+        candidate that doesn't hit (including a transient hiccup on that one
+        name) is silently skipped rather than aborting the rest, since it
+        says nothing about whether a *different* spelling would work.
         foldStylizedArtistName's plain-ASCII fold is then tried once more as
         the last resort, and its outcome (hit or not, even an aborted None)
         is returned unconditionally - the only later attempt allowed to
@@ -523,7 +526,7 @@ class LastfmClient:
         nothing extra on the majority of names with nothing to transform or
         fold. `fetchOne(name)` -> outcome | None; `isHit(outcome)` -> bool."""
         outcome = fetchOne(artistName)
-        if outcome is None or outcome.status != OUTCOME_OK or isHit(outcome):
+        if outcome is None or outcome.status not in (OUTCOME_OK, OUTCOME_NOT_FOUND) or isHit(outcome):
             return outcome
 
         for candidate in normalizeArtistLookupName(artistName):

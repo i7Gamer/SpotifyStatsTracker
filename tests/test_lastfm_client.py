@@ -456,6 +456,24 @@ class ArtistNameFoldFallbackTestCase(unittest.TestCase):
         outcome = client.getArtistTopTags("HUGØ")
         self.assertEqual(outcome.status, OUTCOME_NOT_FOUND)
 
+    @patch("Database.lastfm.requests.get")
+    def test_slash_normalization_retry_fires_when_verbatim_is_not_found(self, mockGet):
+        """A verbatim lookup can come back as error 6 (not just OK-with-no-
+        tags) when the stored name has no Last.fm match at all - confirmed
+        live for "Axwell /\\ Ingrosso" (real page only exists as "Axwell &
+        Ingrosso"). The name-transform retry must still fire in that case."""
+        client, _ = self._client()
+        mockGet.side_effect = [
+            _response(statusCode=400, payload={"error": 6, "message": "not found"}),
+            _response(payload={"toptags": {"tag": [{"name": "house", "count": 10}]}}),
+        ]
+        outcome = client.getArtistTopTags("Axwell /\\ Ingrosso")
+        self.assertEqual(outcome.status, OUTCOME_OK)
+        self.assertEqual([t["name"] for t in outcome.tags], ["house"])
+        self.assertEqual(mockGet.call_count, 2)
+        secondParams = mockGet.call_args_list[1].kwargs["params"]
+        self.assertEqual(secondParams["artist"], "Axwell & Ingrosso")
+
 
 class AlbumGetInfoFallbackTestCase(unittest.TestCase):
     """album.gettoptags is confirmed unreliable for some albums - getAlbumTopTags
