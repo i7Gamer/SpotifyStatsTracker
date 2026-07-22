@@ -198,7 +198,7 @@ class GenreQueries:
             JOIN track_artists ta ON ta.track_id = p.track_id
             JOIN artists ar ON ar.id = ta.artist_id
             JOIN artist_genres g ON g.artist_id = ar.id AND g.genre IN ({genrePlaceholders})
-            WHERE p.username = ?{excludeClause}
+            WHERE p.username = ? AND p.is_skip = 0{excludeClause}
             GROUP BY ar.id
             ORDER BY shared_genre_count DESC, play_count ASC, ar.id ASC
             LIMIT ?
@@ -234,7 +234,7 @@ class GenreQueries:
             FROM plays p
             JOIN track_genres g ON g.track_id = p.track_id
             WHERE (? OR g.inherited = 0) AND g.genre IN ({genrePlaceholders})
-              AND p.username = ?{rangeClause}
+              AND p.username = ? AND p.is_skip = 0{rangeClause}
             """,
             params,
         ).fetchall()
@@ -257,7 +257,7 @@ class GenreQueries:
                    COALESCE(SUM(p.time_played), 0) AS total_time
             FROM plays p
             JOIN track_genres g ON g.track_id = p.track_id AND (? OR g.inherited = 0) AND g.genre = ?
-            WHERE p.username = ?{rangeClause}
+            WHERE p.username = ? AND p.is_skip = 0{rangeClause}
             GROUP BY bucket
             ORDER BY bucket
             """,
@@ -286,7 +286,7 @@ class GenreQueries:
                 AND g.genre IN ({placeholders})
             JOIN track_artists ta ON ta.track_id = p.track_id
             JOIN artists ar ON ar.id = ta.artist_id
-            WHERE p.username = ?
+            WHERE p.username = ? AND p.is_skip = 0
             GROUP BY g.genre
             """,
             params,
@@ -305,7 +305,7 @@ class GenreQueries:
                    MIN(p.played_at) AS first_ts
             FROM plays p
             JOIN track_genres g ON g.track_id = p.track_id
-            WHERE (? OR g.inherited = 0) AND g.genre = ? AND p.username = ?{rangeClause}
+            WHERE (? OR g.inherited = 0) AND g.genre = ? AND p.username = ? AND p.is_skip = 0{rangeClause}
             """,
             params,
         ).fetchone()
@@ -323,7 +323,7 @@ class GenreQueries:
         row = conn.execute(
             f"""
             SELECT COUNT(*) AS c FROM plays p
-            WHERE p.username = ?{rangeClause}
+            WHERE p.username = ? AND p.is_skip = 0{rangeClause}
               AND EXISTS (SELECT 1 FROM track_genres g
                           WHERE g.track_id = p.track_id AND (? OR g.inherited = 0))
             """,
@@ -347,7 +347,7 @@ class GenreQueries:
             JOIN track_genres g ON g.track_id = p.track_id AND (? OR g.inherited = 0) AND g.genre = ?
             JOIN track_artists ta ON ta.track_id = p.track_id
             JOIN artists ar ON ar.id = ta.artist_id
-            WHERE p.username = ?{rangeClause}
+            WHERE p.username = ? AND p.is_skip = 0{rangeClause}
             GROUP BY ar.id
             ORDER BY play_count DESC, ar.name COLLATE NOCASE ASC, ar.id ASC
             LIMIT ?
@@ -375,7 +375,7 @@ class GenreQueries:
             JOIN tracks t ON t.id = p.track_id
             LEFT JOIN track_artists ta ON ta.track_id = t.id AND ta.position = 0
             LEFT JOIN artists ar ON ar.id = ta.artist_id
-            WHERE p.username = ?{rangeClause}
+            WHERE p.username = ? AND p.is_skip = 0{rangeClause}
             GROUP BY t.id
             ORDER BY play_count DESC, t.name COLLATE NOCASE ASC, t.id ASC
             LIMIT ?

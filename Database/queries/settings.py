@@ -86,8 +86,10 @@ class SettingQueries:
         tracks_count = conn.execute("SELECT COUNT(*) FROM tracks").fetchone()[0]
         artists_count = conn.execute("SELECT COUNT(*) FROM artists").fetchone()[0]
         albums_count = conn.execute("SELECT COUNT(*) FROM albums").fetchone()[0]
-        plays_count = conn.execute("SELECT COUNT(*) FROM plays").fetchone()[0]
-        total_time_ms = conn.execute("SELECT SUM(time_played) FROM plays").fetchone()[0] or 0
+        # is_skip=0: instance-wide "plays" and listen time mean real plays,
+        # matching every per-user stat (skips live in plays as is_skip=1 now).
+        plays_count = conn.execute("SELECT COUNT(*) FROM plays WHERE is_skip = 0").fetchone()[0]
+        total_time_ms = conn.execute("SELECT SUM(time_played) FROM plays WHERE is_skip = 0").fetchone()[0] or 0
 
         try:
             db_size = self.connectionManager.dbPath.stat().st_size

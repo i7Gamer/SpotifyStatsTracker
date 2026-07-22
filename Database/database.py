@@ -570,7 +570,7 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
                 COALESCE(SUM(CASE WHEN t.explicit THEN 0 ELSE 1 END), 0) AS clean_count
             FROM plays p
             JOIN tracks t ON p.track_id = t.id
-            WHERE p.username = ?{rangeClause}
+            WHERE p.username = ? AND p.is_skip = 0{rangeClause}
         """
         row = conn.execute(query, params).fetchone()
         return {"explicit": row["explicit_count"], "clean": row["clean_count"]}
@@ -593,7 +593,7 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
             FROM plays p
             JOIN tracks t ON p.track_id = t.id
             JOIN albums al ON t.album_id = al.id
-            WHERE p.username = ?{rangeClause}
+            WHERE p.username = ? AND p.is_skip = 0{rangeClause}
               AND al.release_date IS NOT NULL
               AND al.release_date != 0
             GROUP BY decade
@@ -655,7 +655,7 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
                            JOIN album_genres g ON g.album_id = t.album_id
                            WHERE t.id = p.track_id AND g.inherited = 0) AS album_own
                 FROM plays p
-                WHERE p.username = ?{rangeClause}
+                WHERE p.username = ? AND p.is_skip = 0{rangeClause}
                 GROUP BY p.track_id
             )
         """
@@ -697,7 +697,7 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
             SELECT g.genre AS genre, COUNT(*) AS plays
             FROM plays p
             JOIN track_genres g ON g.track_id = p.track_id
-            WHERE (? OR g.inherited = 0) AND p.username = ?{rangeClause}
+            WHERE (? OR g.inherited = 0) AND p.username = ? AND p.is_skip = 0{rangeClause}
             GROUP BY g.genre
             ORDER BY plays DESC, g.genre ASC{limitClause}
         """
