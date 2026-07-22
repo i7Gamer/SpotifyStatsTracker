@@ -2615,9 +2615,22 @@ html.theme-red {
   font-weight: 700;
 }
 
-/* Dashboard live cards (streak / on this day / discover) */
+/* Dashboard live cards (now playing + streak / on this day / discover) - their
+   own panel above the filter form + results, since they're filter-independent. */
+.dashboard-live {
+  margin-bottom: 24px;
+  padding: 16px 20px;
+  border-radius: 20px;
+  background: linear-gradient(135deg, var(--accent-glow), rgba(255, 255, 255, 0.03));
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+/* Neutralize the base .dashboard-summary edge-bleed margins here: this row is
+   the panel's only child, so it aligns to the panel's own padding instead. The
+   small padding keeps room for the cards' hover lift/shadow and any scrollbar. */
 .dashboard-summary-live {
-  margin-bottom: 1.5rem;
+  margin: 0;
+  padding: 4px 2px 8px;
 }
 
 .dashboard-card-empty {
@@ -2626,8 +2639,16 @@ html.theme-red {
   margin-top: 0.5rem;
 }
 
-.streak-card .summary-value {
+/* Streak lives below the now-playing sub-panel inside the same card; the
+   divider only appears when now-playing is actually showing above it. */
+.streak-block .summary-value {
   font-variant-numeric: tabular-nums;
+}
+
+.now-playing-card.has-now-playing .streak-block {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
 }
 
 .onthisday-list,
@@ -2636,6 +2657,7 @@ html.theme-red {
   flex-direction: column;
   gap: 0.4rem;
   margin-top: 0.5rem;
+  min-width: 0;   /* grid item of .summary-card: allow children to shrink + ellipsis */
 }
 
 .onthisday-row {
@@ -2645,9 +2667,10 @@ html.theme-red {
   text-decoration: none;
   color: inherit;
   font-size: 0.9rem;
+  min-width: 0;
 }
 
-.onthisday-row:hover .onthisday-track {
+.onthisday-row:hover .onthisday-name {
   color: var(--accent);
 }
 
@@ -2663,15 +2686,15 @@ html.theme-red {
   flex: 1;
   display: flex;
   flex-direction: column;
-  min-width: 0;
-  overflow: hidden;
+  min-width: 0;   /* without this the long name pushes past the card edge */
 }
 
-.onthisday-track,
+.onthisday-name,
 .onthisday-artist {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  max-width: 100%;
 }
 
 .onthisday-artist {
@@ -2691,6 +2714,7 @@ html.theme-red {
   gap: 0.6rem;
   text-decoration: none;
   color: inherit;
+  min-width: 0;
 }
 
 .discover-row:hover .discover-name {
@@ -2708,6 +2732,7 @@ html.theme-red {
 .discover-meta {
   display: flex;
   flex-direction: column;
+  flex: 1;
   min-width: 0;
 }
 
@@ -2716,6 +2741,7 @@ html.theme-red {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  max-width: 100%;
 }
 
 .discover-genre {

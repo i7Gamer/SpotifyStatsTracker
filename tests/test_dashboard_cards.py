@@ -62,6 +62,39 @@ class DashboardCardsTestCase(AppTestCase):
         self.assertNotEqual(formIndex, -1)
         self.assertLess(npIndex, formIndex)
 
+    def test_live_cards_in_separate_panel_above_the_hero(self):
+        dash = self._makeApp()
+        body = self._get(dash, self._makeDb()).data.decode()
+        liveIndex = body.find('class="dashboard-live"')
+        heroIndex = body.find('<section class="hero">')
+        formIndex = body.find('class="filter-section dashboard-filter"')
+        self.assertNotEqual(liveIndex, -1)
+        self.assertNotEqual(heroIndex, -1)
+        # The live panel is its own section, before the hero (form + results).
+        self.assertLess(liveIndex, heroIndex)
+        self.assertLess(liveIndex, formIndex)
+
+    def test_streak_lives_inside_the_now_playing_panel(self):
+        dash = self._makeApp()
+        body = self._get(dash, self._makeDb(streak={"days": 4, "activeToday": True})).data.decode()
+        panelIndex = body.find('id="nowPlayingPanel"')
+        streakIndex = body.find('streak-block')
+        nextCardIndex = body.find('onthisday-card')
+        self.assertNotEqual(panelIndex, -1)
+        self.assertNotEqual(streakIndex, -1)
+        # Streak markup sits after the panel opens and before the next card.
+        self.assertLess(panelIndex, streakIndex)
+        self.assertLess(streakIndex, nextCardIndex)
+
+    def test_on_this_day_name_is_wrapped_for_truncation(self):
+        dash = self._makeApp()
+        onThisDay = [{"year": 2024, "yearsAgo": 2, "trackId": "trk1",
+                      "trackName": "An Extremely Long Song Title That Would Overflow",
+                      "artistName": "Some Artist", "playCount": 7}]
+        body = self._get(dash, self._makeDb(onThisDay=onThisDay)).data.decode()
+        self.assertIn('class="onthisday-name"', body)
+        self.assertIn("An Extremely Long Song Title That Would Overflow", body)
+
     def test_active_streak_shows_day_count(self):
         dash = self._makeApp()
         resp = self._get(dash, self._makeDb(streak={"days": 5, "activeToday": True}))
