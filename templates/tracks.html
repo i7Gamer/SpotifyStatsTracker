@@ -58,29 +58,15 @@
       </div>
 
       {% if lastfmGenreEnabled %}
-      <div class="summary-card discover-card">
+      <div class="summary-card discover-card" id="discoverCard">
         <h2>Discover</h2>
-        {% if recommendationsUnlocked %}
-          {% if recommendations %}
-            <div class="discover-list">
-              {% for artist in recommendations %}
-              <a class="discover-row" href="{{ url_for('artistDetailPage', artist_id=artist.id) }}">
-                <img class="discover-cover" loading="lazy" alt=""
-                     src="/img/{{ username }}/artists/{{ artist.imageId }}.jpeg"
-                     onerror="this.onerror=null;this.src=window.PLACEHOLDER_IMG;" />
-                <span class="discover-meta">
-                  <span class="discover-name">{{ artist.name }}</span>
-                  {% if artist.matchedGenres %}<span class="discover-genre">{{ artist.matchedGenres[0] }}</span>{% endif %}
-                </span>
-              </a>
-              {% endfor %}
-            </div>
-          {% else %}
-            <p class="dashboard-card-empty">No fresh picks right now &mdash; keep listening!</p>
-          {% endif %}
-        {% else %}
-          <p class="dashboard-card-empty">Unlock artist recommendations as your <a href="{{ url_for('genresPage') }}">genre data</a> fills in.</p>
-        {% endif %}
+        {# Populated by JS after first paint (see script block below) - the
+           coverage-gate check and recommendation query are full-history scans
+           too slow to block the dashboard's initial render on. #}
+        <p class="dashboard-card-empty" id="discoverLoading">Loading picks…</p>
+        <div class="discover-list" id="discoverList" style="display: none;"></div>
+        <p class="dashboard-card-empty" id="discoverEmpty" style="display: none;">No fresh picks right now &mdash; keep listening!</p>
+        <p class="dashboard-card-empty" id="discoverLocked" style="display: none;">Unlock artist recommendations as your <a href="{{ url_for('genresPage') }}">genre data</a> fills in.</p>
       </div>
       {% endif %}
     </div>
@@ -331,6 +317,68 @@
 
       poll();
       setInterval(poll, NOW_PLAYING_POLL_MS);
+    })();
+
+    // Discover: fetched once after first paint instead of computed inline -
+    // see routes/charts.py's dashboardDiscover for why (full-history queries
+    // that were blocking the dashboard's initial render).
+    (function () {
+      var USERNAME = {{ username | tojson }};
+      var loadingEl = document.getElementById('discoverLoading');
+      if (!loadingEl) return;
+      var listEl = document.getElementById('discoverList');
+      var emptyEl = document.getElementById('discoverEmpty');
+      var lockedEl = document.getElementById('discoverLocked');
+
+      function artistRow(artist) {
+        var row = document.createElement('a');
+        row.className = 'discover-row';
+        row.href = '/artist/' + encodeURIComponent(artist.id);
+
+        var img = document.createElement('img');
+        img.className = 'discover-cover';
+        img.loading = 'lazy';
+        img.alt = '';
+        img.src = '/img/' + encodeURIComponent(USERNAME) + '/artists/' + encodeURIComponent(artist.imageId) + '.jpeg';
+        img.onerror = function () { img.onerror = null; img.src = window.PLACEHOLDER_IMG; };
+        row.appendChild(img);
+
+        var meta = document.createElement('span');
+        meta.className = 'discover-meta';
+        var name = document.createElement('span');
+        name.className = 'discover-name';
+        name.textContent = artist.name;
+        meta.appendChild(name);
+        if (artist.matchedGenres && artist.matchedGenres.length) {
+          var genre = document.createElement('span');
+          genre.className = 'discover-genre';
+          genre.textContent = artist.matchedGenres[0];
+          meta.appendChild(genre);
+        }
+        row.appendChild(meta);
+        return row;
+      }
+
+      fetch('/api/dashboard-discover')
+        .then(function (resp) { return resp.ok ? resp.json() : null; })
+        .then(function (data) {
+          loadingEl.style.display = 'none';
+          if (!data || !data.unlocked) {
+            lockedEl.style.display = '';
+            return;
+          }
+          if (!data.recommendations || !data.recommendations.length) {
+            emptyEl.style.display = '';
+            return;
+          }
+          data.recommendations.forEach(function (artist) { listEl.appendChild(artistRow(artist)); });
+          listEl.style.display = '';
+        })
+        .catch(function () {
+          // Transient network error - leave the card blank rather than show
+          // a locked/empty message that isn't actually true.
+          loadingEl.style.display = 'none';
+        });
     })();
   </script>
 {% endblock %}

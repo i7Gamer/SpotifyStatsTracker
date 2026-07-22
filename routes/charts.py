@@ -9,7 +9,7 @@ dashboard instance.
 """
 import logging
 
-from flask import render_template, redirect, request, url_for, session
+from flask import render_template, redirect, request, url_for, session, jsonify
 
 import app as appmod
 from Database.utils import msToString
@@ -233,31 +233,20 @@ def register(app, dashboard):
         is_authenticated = bool(creds.get("refresh_token"))
 
         # Unfiltered dashboard cards (independent of the interval/date-range
-        # filter above): live streak, "on this day" resurfacing, and genre-
-        # based recommendations. Recommendations reuse the same Last.fm kill
-        # switch + coverage unlock as the Charts/Genres genre surfaces.
+        # filter above): live streak and "on this day" resurfacing are cheap
+        # and rendered inline. The Discover card's genre-coverage gate and
+        # recommendations are full-history queries (~700ms combined on a large
+        # library - see dashboardDiscover) so they're fetched by the page's
+        # own JS after first paint instead of blocking this render.
         currentStreak = db.getCurrentStreak()
         onThisDay = db.getOnThisDay(limit=appmod.ON_THIS_DAY_YEARS_LIMIT)
         lastfmGenreEnabled = dashboard.repo.isLastfmGenreBackfillEnabled()
-        recommendations = []
-        recommendationsUnlocked = False
-        if lastfmGenreEnabled:
-            recommendationsUnlocked = genreGatePasses(resolveGenreCoverage(db, None, None))
-            if recommendationsUnlocked:
-                recommendations = db.getRecommendedArtists(
-                    # Admin-tunable, read live per request; falls back to the code default.
-                    limit=dashboard.repo.getDiscoverArtistLimit(appmod.RECOMMENDATION_ARTIST_LIMIT),
-                    genrePool=appmod.RECOMMENDATION_GENRE_POOL,
-                    excludeTopN=appmod.RECOMMENDATION_EXCLUDE_TOP_N,
-                )
 
         return render_template(
             "tracks.html",
             currentStreak=currentStreak,
             onThisDay=onThisDay,
             lastfmGenreEnabled=lastfmGenreEnabled,
-            recommendations=recommendations,
-            recommendationsUnlocked=recommendationsUnlocked,
             tracks=tracks,
             totalSongsPlayed=stats["totalSongsPlayed"],
             totalListenTime=totalDurationText,
@@ -279,6 +268,30 @@ def register(app, dashboard):
             **pagination,
         )
     app.add_url_rule("/", "dashboard", dashboardIndex, methods=["GET"])
+
+    def dashboardDiscover():
+        """JSON for the dashboard's Discover card, fetched by tracks.html's own
+        JS after first paint (see dashboardIndex) rather than computed inline -
+        the genre-coverage gate check and recommendation query are full-history
+        scans that noticeably slowed the dashboard once added."""
+        email, username, db = dashboard.get_current_user_or_redirect()
+        if not email:
+            return jsonify({"error": "Not logged in"}), 401
+
+        if not dashboard.repo.isLastfmGenreBackfillEnabled():
+            return jsonify({"unlocked": False, "recommendations": []})
+
+        unlocked = genreGatePasses(resolveGenreCoverage(db, None, None))
+        recommendations = []
+        if unlocked:
+            recommendations = db.getRecommendedArtists(
+                # Admin-tunable, read live per request; falls back to the code default.
+                limit=dashboard.repo.getDiscoverArtistLimit(appmod.RECOMMENDATION_ARTIST_LIMIT),
+                genrePool=appmod.RECOMMENDATION_GENRE_POOL,
+                excludeTopN=appmod.RECOMMENDATION_EXCLUDE_TOP_N,
+            )
+        return jsonify({"unlocked": unlocked, "recommendations": recommendations})
+    app.add_url_rule("/api/dashboard-discover", "dashboardDiscover", dashboardDiscover, methods=["GET"])
 
     def topSongsPage():
         email, username, db = dashboard.get_current_user_or_redirect()

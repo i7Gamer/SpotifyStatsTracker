@@ -42,14 +42,14 @@ class DashboardCardsTestCase(AppTestCase):
             db.getRecommendedArtists.return_value = recommendations
         return db
 
-    def _get(self, dash, db):
+    def _get(self, dash, db, path="/"):
         client = dash.app.test_client()
         with patch.object(dash, 'is_user_logged_in', return_value=True), \
              patch.object(dash, 'get_username_for_email', return_value='alice'), \
              patch.object(dash, 'get_user_db', return_value=db):
             with client.session_transaction() as sess:
                 sess['email'] = 'alice@example.com'
-            return client.get("/")
+            return client.get(path)
 
     def test_now_playing_card_precedes_filter_form(self):
         dash = self._makeApp()
@@ -153,25 +153,17 @@ class DashboardCardsTestCase(AppTestCase):
         resp = self._get(dash, self._makeDb(onThisDay=[]))
         self.assertIn(b"No past plays on today's date yet.", resp.data)
 
-    def test_discover_locked_message_when_coverage_low(self):
+    def test_discover_card_placeholder_rendered_when_lastfm_enabled(self):
+        # The dashboard render only emits the (empty) Discover card shell; its
+        # contents are fetched by JS from /api/dashboard-discover after load,
+        # so the initial page must not run the coverage/recommendation queries.
         dash = self._makeApp()
-        resp = self._get(dash, self._makeDb(coverage=coverageDict(10, 10, 10)))
-        body = resp.data.decode()
-        self.assertIn("Discover", body)
-        self.assertIn("Unlock artist recommendations", body)
-
-    def test_discover_shows_recommendations_when_unlocked(self):
-        dash = self._makeApp()
-        db = self._makeDb(coverage=coverageDict(80, 60, 90),
-                          recommendations=[{"id": "art1", "name": "Fresh Artist",
-                                            "imageId": "img1", "playCount": 2,
-                                            "sharedGenreCount": 2, "matchedGenres": ["rock", "indie"]}])
+        db = self._makeDb(coverage=coverageDict(80, 60, 90))
         resp = self._get(dash, db)
-        body = resp.data.decode()
-        self.assertIn("Fresh Artist", body)
-        self.assertIn("/artist/art1", body)
-        self.assertIn("rock", body)
-        db.getRecommendedArtists.assert_called_once()
+        self.assertIn(b'id="discoverCard"', resp.data)
+        self.assertIn(b'id="discoverLoading"', resp.data)
+        db.getGenreCoverage.assert_not_called()
+        db.getRecommendedArtists.assert_not_called()
 
     def test_discover_card_hidden_when_lastfm_disabled(self):
         dash = self._makeApp()
@@ -179,6 +171,36 @@ class DashboardCardsTestCase(AppTestCase):
         db = self._makeDb(coverage=coverageDict(80, 60, 90))
         resp = self._get(dash, db)
         self.assertNotIn(b'class="summary-card discover-card"', resp.data)
+        db.getGenreCoverage.assert_not_called()
+
+    def test_discover_api_locked_when_coverage_low(self):
+        dash = self._makeApp()
+        db = self._makeDb(coverage=coverageDict(10, 10, 10))
+        resp = self._get(dash, db, path="/api/dashboard-discover")
+        data = resp.get_json()
+        self.assertFalse(data["unlocked"])
+        self.assertEqual(data["recommendations"], [])
+        db.getRecommendedArtists.assert_not_called()
+
+    def test_discover_api_returns_recommendations_when_unlocked(self):
+        dash = self._makeApp()
+        db = self._makeDb(coverage=coverageDict(80, 60, 90),
+                          recommendations=[{"id": "art1", "name": "Fresh Artist",
+                                            "imageId": "img1", "playCount": 2,
+                                            "sharedGenreCount": 2, "matchedGenres": ["rock", "indie"]}])
+        resp = self._get(dash, db, path="/api/dashboard-discover")
+        data = resp.get_json()
+        self.assertTrue(data["unlocked"])
+        self.assertEqual(data["recommendations"][0]["name"], "Fresh Artist")
+        db.getRecommendedArtists.assert_called_once()
+
+    def test_discover_api_disabled_when_lastfm_off(self):
+        dash = self._makeApp()
+        dash.repo.setLastfmGenreBackfillEnabled(False)
+        db = self._makeDb(coverage=coverageDict(80, 60, 90))
+        resp = self._get(dash, db, path="/api/dashboard-discover")
+        data = resp.get_json()
+        self.assertFalse(data["unlocked"])
         db.getGenreCoverage.assert_not_called()
 
 
