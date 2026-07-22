@@ -372,3 +372,42 @@ class GenreQueries:
         percents = [coverage["song"]["percent"], coverage["album"]["percent"], coverage["artist"]["percent"]]
         coverage["overall"] = {"percent": round(sum(percents) / len(percents), 1)}
         return coverage
+
+    def getTrackSecondaryArtists(self, trackId: str) -> list[dict]:
+        """Credited artists for a track at 0 < position <= GENRE_BACKFILL_MAX_ARTIST_POSITION
+        (positions 1 through 4), ordered by position ASC."""
+        rows = self._conn().execute(
+            """
+            SELECT ta.artist_id AS artist_id, ar.name AS artist_name, ta.position AS position
+            FROM track_artists ta
+            JOIN artists ar ON ar.id = ta.artist_id
+            WHERE ta.track_id = ? AND ta.position > 0 AND ta.position <= ?
+            ORDER BY ta.position ASC
+            """,
+            (trackId, GENRE_BACKFILL_MAX_ARTIST_POSITION),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def requeueArtistsWithTransformedNamesWithoutGenres(self) -> int:
+        """Requeues artists whose Last.fm lookup was attempted before normalizeArtistLookupName
+        gained slash/plus/credit transformations. Returns how many artists were requeued."""
+        conn = self._conn()
+        rows = conn.execute(
+            """
+            SELECT id, name FROM artists
+            WHERE lastfm_attempted_at IS NOT NULL
+              AND id NOT IN (SELECT DISTINCT artist_id FROM artist_genres)
+            """
+        ).fetchall()
+        from Database.lastfm import normalizeArtistLookupName
+        transformable_ids = [row["id"] for row in rows
+                             if row["name"] and len(normalizeArtistLookupName(row["name"])) > 0]
+        if not transformable_ids:
+            return 0
+        with conn:
+            conn.executemany(
+                "UPDATE artists SET lastfm_attempted_at = NULL WHERE id = ?",
+                [(artistId,) for artistId in transformable_ids],
+            )
+        return len(transformable_ids)
+

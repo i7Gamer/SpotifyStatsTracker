@@ -2176,3 +2176,9 @@ zouglou
 zouk
 zouk love
 zydeco
+soundtrack
+film score
+game soundtrack
+darkwave
+vocaloid
+retrowave

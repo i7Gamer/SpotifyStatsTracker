@@ -65,7 +65,51 @@ GENRE_TAG_ALIASES = {
     "alt rock": "alternative rock",
     "indie": "indie rock",
     "rnb": "r&b",
+    "r and b": "r&b",
+    "r n b": "r&b",
+    "synthpop": "synth-pop",
+    "lofi": "lo-fi",
+    "kpop": "k-pop",
+    "jpop": "j-pop",
+    "cpop": "c-pop",
+    "dnb": "drum and bass",
+    "alt pop": "alternative pop",
+    "ost": "soundtrack",
+    "game score": "soundtrack",
+    "movie soundtrack": "soundtrack",
 }
+
+
+
+
+def normalizeArtistLookupName(name: str) -> list[str]:
+    r"""Returns candidate transformed artist names to retry when verbatim lookup
+    yields no tags/bio on Last.fm. Handles slash separators (/\ or \/ -> &),
+    plus signs (+ -> and), and multi-artist credit joiners. Returns an empty
+    list if no transformations apply."""
+    candidates: list[str] = []
+
+    if "/\\" in name or "\\/" in name:
+        slash_fixed = name.replace("/\\", "&").replace("\\/", "&")
+        candidates.append(slash_fixed)
+
+    if " + " in name:
+        plus_fixed = name.replace(" + ", " and ")
+        candidates.append(plus_fixed)
+        if " + The " in name:
+            candidates.append(name.replace(" + The ", " and the "))
+
+    current = name
+    if "/\\" in current or "\\/" in current:
+        current = current.replace("/\\", "&").replace("\\/", "&")
+    if " + " in current:
+        current = current.replace(" + ", " and ")
+    if current != name and current not in candidates:
+        candidates.append(current)
+
+    return candidates
+
+
 
 # Spotify title decorations: version/credit qualifiers appended to the
 # canonical name ("Song - Radio Edit", "Song (feat. X) [Y Remix]") that
@@ -447,6 +491,17 @@ class LastfmClient:
         outcome = self._fetchTopTags("artist.gettoptags", {"artist": artistName}, stop_event)
         if outcome is None or outcome.status != OUTCOME_OK or outcome.tags:
             return outcome
+
+        candidates = normalizeArtistLookupName(artistName)
+        for candidate in candidates:
+            if candidate == artistName:
+                continue
+            alt_outcome = self._fetchTopTags("artist.gettoptags", {"artist": candidate}, stop_event)
+            if alt_outcome is not None and alt_outcome.status == OUTCOME_OK and alt_outcome.tags:
+                logger.info("[Lastfm] artist name transformation recovered %d tag(s) for %r (tried as %r)",
+                            len(alt_outcome.tags), artistName, candidate)
+                return alt_outcome
+
         # A definitive-empty result under the exact stored name - retry once
         # with decorative/stylized characters folded to plain ASCII (see
         # foldStylizedArtistName). Never replaces a real result and costs
@@ -541,6 +596,23 @@ class LastfmClient:
         from the genre workers' gettoptags traffic), sharing the same
         process-wide rate limiter since it's still real load against the
         same per-IP ceiling."""
+        outcome = self._fetchArtistInfoSingle(artistName, stop_event, timeout)
+        if outcome is None or outcome.status != OUTCOME_OK or outcome.bio is not None:
+            return outcome
+
+        candidates = normalizeArtistLookupName(artistName)
+        for candidate in candidates:
+            if candidate == artistName:
+                continue
+            alt_outcome = self._fetchArtistInfoSingle(candidate, stop_event, timeout)
+            if alt_outcome is not None and alt_outcome.status == OUTCOME_OK and alt_outcome.bio is not None:
+                return alt_outcome
+
+        return outcome
+
+    def _fetchArtistInfoSingle(self, artistName: str,
+                               stop_event: threading.Event | None = None,
+                               timeout: float | None = None) -> ArtistInfoOutcome | None:
         if not self.rateLimiter.acquire(stop_event=stop_event, timeout=timeout):
             return None
         query = {"method": "artist.getinfo", "api_key": self.apiKey, "format": "json",
@@ -555,6 +627,7 @@ class LastfmClient:
         if status is not None:
             return ArtistInfoOutcome(status, None)
         return ArtistInfoOutcome(OUTCOME_OK, _extractArtistBio(payload))
+
 
     def getAlbumInfo(self, artistName: str, albumName: str,
                      stop_event: threading.Event | None = None,

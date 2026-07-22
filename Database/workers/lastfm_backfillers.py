@@ -561,17 +561,33 @@ class LastfmBackfillMixin:
                     self.repo.markAlbumsLastfmAttempted([row["id"]])
                     processedAny = True
                     continue
-                definitive, genres, aborted = self._lastfmLookupOwnGenres(
-                    lambda name: client.getAlbumTopTags(primary["artist_name"], name,
-                                                        stop_event=self.lastfm_stop_event),
-                    row["name"])
+
+                candidates = self.repo.getAlbumCandidateArtists(row["id"])
+                if not candidates:
+                    candidates = [primary]
+
+                definitive = False
+                genres = []
+                aborted = False
+                selected_primary = primary
+                for cand in candidates:
+                    definitive, genres, aborted = self._lastfmLookupOwnGenres(
+                        lambda name, c_name=cand["artist_name"]: client.getAlbumTopTags(c_name, name,
+                                                                                        stop_event=self.lastfm_stop_event),
+                        row["name"])
+                    if aborted:
+                        break
+                    if definitive and genres:
+                        selected_primary = cand
+                        break
+
                 if aborted:
                     break
                 if not definitive:
                     continue
                 if self._storeLastfmGenresWithInheritance(
                         client, "album", row["id"], genres,
-                        primary["artist_id"], primary["artist_name"]):
+                        selected_primary["artist_id"], selected_primary["artist_name"]):
                     processedAny = True
         finally:
             self._releaseLastfmEntities("album", claimed)
@@ -652,5 +668,34 @@ class LastfmBackfillMixin:
             replaceGenres(entityId, artistState["genres"], inherited=True)
             markAttempted([entityId])
             return True
+
+        # Secondary artist fallback for track / album inheritance when primary artist has 0 genres:
+        secondaryArtists = []
+        if kind == "track":
+            secondaryArtists = self.repo.getTrackSecondaryArtists(entityId)
+        elif kind == "album":
+            secondaryArtists = [cand for cand in self.repo.getAlbumCandidateArtists(entityId)
+                                if cand["artist_id"] != artistId]
+
+        for sec in secondaryArtists:
+            secId, secName = sec["artist_id"], sec["artist_name"]
+            secState = self.repo.getArtistLastfmState(secId)
+            if secState["attempted_at"] is None and not secState["genres"]:
+                outcome = client.getArtistTopTags(secName, stop_event=self.lastfm_stop_event)
+                if outcome is None:
+                    return False
+                def_sec, secGenres = self._lastfmOutcomeGenres(outcome)
+                if not def_sec:
+                    return False
+                if secGenres:
+                    self.repo.replaceArtistGenres(secId, secGenres)
+                self.repo.markArtistsLastfmAttempted([secId])
+                secState = {"attempted_at": _dbmod.time.time(), "genres": secGenres}
+            if secState["genres"]:
+                replaceGenres(entityId, secState["genres"], inherited=True)
+                markAttempted([entityId])
+                return True
+
         markAttempted([entityId])   #< definitively tag-less everywhere
         return True
+

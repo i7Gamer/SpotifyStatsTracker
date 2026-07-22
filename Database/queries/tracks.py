@@ -499,3 +499,24 @@ class TrackQueries:
                 primaries[row["album_id"]] = {"artist_id": row["artist_id"],
                                               "artist_name": row["artist_name"]}
         return primaries
+
+    def getAlbumCandidateArtists(self, albumId: str) -> list[dict]:
+        """Ordered candidate artists for an album across all tracks (combining
+        primary and secondary credited artists up to position <= 4), ranked
+        by count DESC."""
+        conn = self._conn()
+        from Database.queries._base import GENRE_BACKFILL_MAX_ARTIST_POSITION
+        rows = conn.execute(
+            """
+            SELECT ar.id AS artist_id, ar.name AS artist_name, COUNT(*) AS cnt
+            FROM tracks t
+            JOIN track_artists ta ON ta.track_id = t.id AND ta.position <= ?
+            JOIN artists ar ON ar.id = ta.artist_id
+            WHERE t.album_id = ?
+            GROUP BY ar.id
+            ORDER BY cnt DESC, ar.id ASC
+            """,
+            (GENRE_BACKFILL_MAX_ARTIST_POSITION, albumId),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
