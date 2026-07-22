@@ -108,6 +108,28 @@ class TestMultiArtistFallback(unittest.TestCase):
         self.assertTrue(len(candidates) >= 2)
         self.assertEqual(candidates[0]["artist_id"], "a2")
 
+    def test_get_album_candidate_artists_is_capped(self):
+        """A "Various Artists" compilation with more distinct credited
+        artists than GENRE_BACKFILL_MAX_ARTIST_POSITION must not return them
+        all - each candidate costs up to two rate-limited Last.fm requests
+        against the shared, cross-user budget, so the backfiller only tries
+        the top few by track count."""
+        from Database.queries._base import GENRE_BACKFILL_MAX_ARTIST_POSITION
+        conn = self.repo._conn()
+        artistCount = GENRE_BACKFILL_MAX_ARTIST_POSITION + 3
+        with conn:
+            conn.execute("INSERT INTO albums (id, name, url) VALUES ('alb1', 'Compilation', 'http://alb1')")
+            for i in range(artistCount):
+                trackId, artistId = f"t{i}", f"a{i}"
+                conn.execute("INSERT INTO tracks (id, name, url, album_id) VALUES (?, ?, ?, 'alb1')",
+                            (trackId, f"Track {i}", f"http://{trackId}"))
+                conn.execute("INSERT INTO artists (id, name, url) VALUES (?, ?, ?)",
+                            (artistId, f"Artist {i}", f"http://{artistId}"))
+                conn.execute("INSERT INTO track_artists (track_id, artist_id, position) VALUES (?, ?, 0)",
+                            (trackId, artistId))
+
+        candidates = self.repo.getAlbumCandidateArtists("alb1")
+        self.assertEqual(len(candidates), GENRE_BACKFILL_MAX_ARTIST_POSITION)
 
     def test_track_genre_inheritance_multi_artist_fallback(self):
         client = LastfmClient("dummy_key")

@@ -486,50 +486,76 @@ class LastfmClient:
         self.apiKey = apiKey
         self.rateLimiter = rateLimiter if rateLimiter is not None else RATE_LIMITER
 
-    def getArtistTopTags(self, artistName: str,
-                         stop_event: threading.Event | None = None) -> FetchOutcome | None:
-        outcome = self._fetchTopTags("artist.gettoptags", {"artist": artistName}, stop_event)
-        if outcome is None or outcome.status != OUTCOME_OK or outcome.tags:
+    def _lookupWithArtistNameFallback(self, artistName: str, fetchOne, isHit, logLabel: str):
+        """Runs `fetchOne(artistName)` first. On a definitive-but-no-hit
+        result (isHit(outcome) is False), retries fetchOne under each of
+        normalizeArtistLookupName's transformed spellings - a candidate that
+        doesn't hit (including a transient hiccup on that one name) is
+        silently skipped rather than aborting the rest, since it says
+        nothing about whether a *different* spelling would work.
+        foldStylizedArtistName's plain-ASCII fold is then tried once more as
+        the last resort, and its outcome (hit or not, even an aborted None)
+        is returned unconditionally - the only later attempt allowed to
+        override the original verbatim result, since it's the final word
+        this lookup has left to give. Never replaces a real result and costs
+        nothing extra on the majority of names with nothing to transform or
+        fold. `fetchOne(name)` -> outcome | None; `isHit(outcome)` -> bool."""
+        outcome = fetchOne(artistName)
+        if outcome is None or outcome.status != OUTCOME_OK or isHit(outcome):
             return outcome
 
-        candidates = normalizeArtistLookupName(artistName)
-        for candidate in candidates:
+        for candidate in normalizeArtistLookupName(artistName):
             if candidate == artistName:
                 continue
-            alt_outcome = self._fetchTopTags("artist.gettoptags", {"artist": candidate}, stop_event)
-            if alt_outcome is not None and alt_outcome.status == OUTCOME_OK and alt_outcome.tags:
-                logger.info("[Lastfm] artist name transformation recovered %d tag(s) for %r (tried as %r)",
-                            len(alt_outcome.tags), artistName, candidate)
-                return alt_outcome
+            altOutcome = fetchOne(candidate)
+            if altOutcome is not None and altOutcome.status == OUTCOME_OK and isHit(altOutcome):
+                logger.info("[Lastfm] %s: artist name transformation recovered a result for %r "
+                            "(tried as %r)", logLabel, artistName, candidate)
+                return altOutcome
 
-        # A definitive-empty result under the exact stored name - retry once
-        # with decorative/stylized characters folded to plain ASCII (see
-        # foldStylizedArtistName). Never replaces a real result and costs
-        # nothing extra on the majority of artists whose name doesn't fold
-        # to anything different.
         folded = foldStylizedArtistName(artistName)
         if folded == artistName:
             return outcome
-        fallback = self._fetchTopTags("artist.gettoptags", {"artist": folded}, stop_event)
-        if fallback is not None and fallback.status == OUTCOME_OK and fallback.tags:
-            logger.info("[Lastfm] stylized-name fold recovered %d tag(s) for %r (tried as %r)",
-                       len(fallback.tags), artistName, folded)
+        fallback = fetchOne(folded)
+        if fallback is not None and fallback.status == OUTCOME_OK and isHit(fallback):
+            logger.info("[Lastfm] %s: stylized-name fold recovered a result for %r (tried as %r)",
+                       logLabel, artistName, folded)
         return fallback
+
+    def getArtistTopTags(self, artistName: str,
+                         stop_event: threading.Event | None = None) -> FetchOutcome | None:
+        return self._lookupWithArtistNameFallback(
+            artistName,
+            lambda name: self._fetchTopTags("artist.gettoptags", {"artist": name}, stop_event),
+            lambda outcome: bool(outcome.tags),
+            "artist tags")
 
     def getAlbumTopTags(self, artistName: str, albumName: str,
                         stop_event: threading.Event | None = None) -> FetchOutcome | None:
+        return self._lookupWithArtistNameFallback(
+            artistName,
+            lambda name: self._fetchAlbumTopTagsForArtist(name, albumName, stop_event),
+            lambda outcome: bool(outcome.tags),
+            "album tags")
+
+    def _fetchAlbumTopTagsForArtist(self, artistName: str, albumName: str,
+                                    stop_event: threading.Event | None) -> FetchOutcome | None:
+        """One album.gettoptags call for `artistName`/`albumName`, falling
+        back to album.getinfo's embedded tags on a definitive-empty result -
+        album.gettoptags is confirmed unreliable for some albums: Last.fm's
+        album.getinfo carries tag data (in its embedded `tags` field) that
+        gettoptags misses for the identical (artist, album) pair, a
+        persistent server-side inconsistency verified directly against the
+        live API (not a caching or autocorrect artifact). Only tried on a
+        definitive-empty gettoptags result - never replaces a real result,
+        and costs nothing extra on the (large) majority of albums where
+        gettoptags already succeeds. This is the per-artist-name unit that
+        getAlbumTopTags retries under alternate spellings via
+        _lookupWithArtistNameFallback."""
         outcome = self._fetchTopTags("album.gettoptags",
                                      {"artist": artistName, "album": albumName}, stop_event)
         if outcome is None or outcome.status != OUTCOME_OK or outcome.tags:
             return outcome
-        # album.gettoptags is confirmed unreliable for some albums: Last.fm's
-        # album.getinfo carries tag data (in its embedded `tags` field) that
-        # gettoptags misses for the identical (artist, album) pair, a
-        # persistent server-side inconsistency verified directly against the
-        # live API (not a caching or autocorrect artifact). Only tried on a
-        # definitive-empty gettoptags result - never replaces a real result,
-        # and costs nothing extra on the (large) majority of albums where
-        # gettoptags already succeeds.
         fallback = self._fetchTopTags("album.getinfo",
                                       {"artist": artistName, "album": albumName}, stop_event,
                                       extractFn=_extractAlbumInfoTags)
@@ -541,8 +567,12 @@ class LastfmClient:
 
     def getTrackTopTags(self, artistName: str, trackName: str,
                         stop_event: threading.Event | None = None) -> FetchOutcome | None:
-        return self._fetchTopTags("track.gettoptags",
-                                  {"artist": artistName, "track": trackName}, stop_event)
+        return self._lookupWithArtistNameFallback(
+            artistName,
+            lambda name: self._fetchTopTags("track.gettoptags",
+                                            {"artist": name, "track": trackName}, stop_event),
+            lambda outcome: bool(outcome.tags),
+            "track tags")
 
     def validateApiKey(self) -> dict:
         """One cheap lookup to vet a key before storing it. {"ok": bool,
@@ -595,20 +625,15 @@ class LastfmClient:
         biography backfiller's own 30-day retry cycle (a separate schedule
         from the genre workers' gettoptags traffic), sharing the same
         process-wide rate limiter since it's still real load against the
-        same per-IP ceiling."""
-        outcome = self._fetchArtistInfoSingle(artistName, stop_event, timeout)
-        if outcome is None or outcome.status != OUTCOME_OK or outcome.bio is not None:
-            return outcome
-
-        candidates = normalizeArtistLookupName(artistName)
-        for candidate in candidates:
-            if candidate == artistName:
-                continue
-            alt_outcome = self._fetchArtistInfoSingle(candidate, stop_event, timeout)
-            if alt_outcome is not None and alt_outcome.status == OUTCOME_OK and alt_outcome.bio is not None:
-                return alt_outcome
-
-        return outcome
+        same per-IP ceiling. Retries under normalizeArtistLookupName's and
+        foldStylizedArtistName's transformed spellings on a definitive
+        no-bio result, same as getArtistTopTags - see
+        _lookupWithArtistNameFallback."""
+        return self._lookupWithArtistNameFallback(
+            artistName,
+            lambda name: self._fetchArtistInfoSingle(name, stop_event, timeout),
+            lambda outcome: outcome.bio is not None,
+            "artist bio")
 
     def _fetchArtistInfoSingle(self, artistName: str,
                                stop_event: threading.Event | None = None,
@@ -637,7 +662,19 @@ class LastfmClient:
         dedicated call (not piggybacked on getAlbumTopTags's own
         album.getinfo fallback, which only fires when album.gettoptags comes
         back empty - the minority case) so bio coverage isn't starved for
-        the majority of albums where gettoptags already succeeds."""
+        the majority of albums where gettoptags already succeeds. Retries
+        under normalizeArtistLookupName's and foldStylizedArtistName's
+        transformed artist spellings on a definitive no-bio result, same as
+        getArtistInfo - see _lookupWithArtistNameFallback."""
+        return self._lookupWithArtistNameFallback(
+            artistName,
+            lambda name: self._fetchAlbumInfoSingle(name, albumName, stop_event, timeout),
+            lambda outcome: outcome.bio is not None,
+            "album bio")
+
+    def _fetchAlbumInfoSingle(self, artistName: str, albumName: str,
+                              stop_event: threading.Event | None = None,
+                              timeout: float | None = None) -> AlbumInfoOutcome | None:
         if not self.rateLimiter.acquire(stop_event=stop_event, timeout=timeout):
             return None
         query = {"method": "album.getinfo", "api_key": self.apiKey, "format": "json",

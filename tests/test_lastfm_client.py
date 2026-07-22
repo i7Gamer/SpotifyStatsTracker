@@ -557,6 +557,97 @@ class AlbumGetInfoFallbackTestCase(unittest.TestCase):
         self.assertEqual(outcome.status, OUTCOME_NOT_FOUND)
 
 
+class AlbumTopTagsArtistNameFallbackTestCase(unittest.TestCase):
+    """getAlbumTopTags retries under normalizeArtistLookupName's and
+    foldStylizedArtistName's transformed artist spellings on a definitive
+    no-tags result, same as getArtistTopTags - each candidate name still
+    goes through the full gettoptags -> album.getinfo fallback pair."""
+
+    def _client(self):
+        limiter = MagicMock()
+        limiter.acquire.return_value = True
+        return LastfmClient("test-key", rateLimiter=limiter)
+
+    @patch("Database.lastfm.requests.get")
+    def test_slash_normalization_retry_recovers_tags(self, mockGet):
+        client = self._client()
+        mockGet.side_effect = [
+            _response(payload={"toptags": {"tag": []}}),                              # verbatim gettoptags
+            _response(payload={"album": {"tags": {"tag": []}}}),                       # verbatim getinfo
+            _response(payload={"toptags": {"tag": [{"name": "pop", "count": 10}]}}),   # candidate gettoptags
+        ]
+        outcome = client.getAlbumTopTags("Axwell /\\ Ingrosso", "Something New")
+        self.assertEqual(outcome.status, OUTCOME_OK)
+        self.assertEqual([t["name"] for t in outcome.tags], ["pop"])
+        thirdParams = mockGet.call_args_list[2].kwargs["params"]
+        self.assertEqual(thirdParams["method"], "album.gettoptags")
+        self.assertEqual(thirdParams["artist"], "Axwell & Ingrosso")
+        self.assertEqual(thirdParams["album"], "Something New")
+
+    @patch("Database.lastfm.requests.get")
+    def test_stylized_fold_retry_recovers_tags(self, mockGet):
+        client = self._client()
+        mockGet.side_effect = [
+            _response(payload={"toptags": {"tag": []}}),
+            _response(payload={"album": {"tags": {"tag": []}}}),
+            _response(payload={"toptags": {"tag": [{"name": "rock", "count": 5}]}}),
+        ]
+        outcome = client.getAlbumTopTags("HUGØ", "Some Album")
+        self.assertEqual(outcome.status, OUTCOME_OK)
+        self.assertEqual([t["name"] for t in outcome.tags], ["rock"])
+        thirdParams = mockGet.call_args_list[2].kwargs["params"]
+        self.assertEqual(thirdParams["artist"], "HUGO")
+
+
+class TrackTopTagsArtistNameFallbackTestCase(unittest.TestCase):
+    """getTrackTopTags previously had no retry at all beyond the caller's
+    own cleanLookupName title-decoration retry - it now also retries under
+    normalizeArtistLookupName's and foldStylizedArtistName's transformed
+    artist spellings, same as the other three lookup methods."""
+
+    def _client(self):
+        limiter = MagicMock()
+        limiter.acquire.return_value = True
+        return LastfmClient("test-key", rateLimiter=limiter)
+
+    @patch("Database.lastfm.requests.get")
+    def test_slash_normalization_retry_recovers_tags(self, mockGet):
+        client = self._client()
+        mockGet.side_effect = [
+            _response(payload={"toptags": {"tag": []}}),
+            _response(payload={"toptags": {"tag": [{"name": "house", "count": 20}]}}),
+        ]
+        outcome = client.getTrackTopTags("Axwell /\\ Ingrosso", "Something New")
+        self.assertEqual(outcome.status, OUTCOME_OK)
+        self.assertEqual([t["name"] for t in outcome.tags], ["house"])
+        secondParams = mockGet.call_args_list[1].kwargs["params"]
+        self.assertEqual(secondParams["method"], "track.gettoptags")
+        self.assertEqual(secondParams["artist"], "Axwell & Ingrosso")
+        self.assertEqual(secondParams["track"], "Something New")
+
+    @patch("Database.lastfm.requests.get")
+    def test_stylized_fold_retry_recovers_tags(self, mockGet):
+        client = self._client()
+        mockGet.side_effect = [
+            _response(payload={"toptags": {"tag": []}}),
+            _response(payload={"toptags": {"tag": [{"name": "pop", "count": 8}]}}),
+        ]
+        outcome = client.getTrackTopTags("HUGØ", "Some Track")
+        self.assertEqual(outcome.status, OUTCOME_OK)
+        self.assertEqual([t["name"] for t in outcome.tags], ["pop"])
+        secondParams = mockGet.call_args_list[1].kwargs["params"]
+        self.assertEqual(secondParams["artist"], "HUGO")
+
+    @patch("Database.lastfm.requests.get")
+    def test_no_extra_requests_when_the_artist_name_has_no_transform(self, mockGet):
+        client = self._client()
+        mockGet.return_value = _response(payload={"toptags": {"tag": []}})
+        outcome = client.getTrackTopTags("Radiohead", "Karma Police")
+        self.assertEqual(outcome.status, OUTCOME_OK)
+        self.assertEqual(outcome.tags, [])
+        mockGet.assert_called_once()
+
+
 class ArtistInfoBioTestCase(unittest.TestCase):
     """getArtistInfo (artist.getinfo) for the artist-bio feature: HTML
     stripping, dead "Read more" link text removal, and the "+"-name
@@ -880,6 +971,101 @@ class AlbumInfoBioTestCase(unittest.TestCase):
         import requests as requestsModule
         mockGet.side_effect = requestsModule.exceptions.ConnectionError("boom")
         self.assertEqual(client.getAlbumInfo("x", "x"), AlbumInfoOutcome(OUTCOME_TRANSIENT, None))
+
+
+class ArtistInfoArtistNameFallbackTestCase(unittest.TestCase):
+    """getArtistInfo already retried under normalizeArtistLookupName's
+    transforms (untested directly until now); it now also gets
+    foldStylizedArtistName's fold retry, same as getArtistTopTags."""
+
+    def _client(self):
+        limiter = MagicMock()
+        limiter.acquire.return_value = True
+        return LastfmClient("test-key", rateLimiter=limiter)
+
+    @staticmethod
+    def _bioResponse(summary):
+        return _response(payload={"artist": {"name": "x", "bio": {"summary": summary}}})
+
+    @staticmethod
+    def _noBioResponse():
+        return _response(payload={"artist": {"name": "x"}})
+
+    @patch("Database.lastfm.requests.get")
+    def test_slash_normalization_retry_recovers_a_bio(self, mockGet):
+        client = self._client()
+        mockGet.side_effect = [self._noBioResponse(), self._bioResponse("A duo bio.")]
+        outcome = client.getArtistInfo("Axwell /\\ Ingrosso")
+        self.assertEqual(outcome.status, OUTCOME_OK)
+        self.assertEqual(outcome.bio, "A duo bio.")
+        secondParams = mockGet.call_args_list[1].kwargs["params"]
+        self.assertEqual(secondParams["artist"], "Axwell & Ingrosso")
+
+    @patch("Database.lastfm.requests.get")
+    def test_stylized_fold_retry_recovers_a_bio(self, mockGet):
+        client = self._client()
+        mockGet.side_effect = [self._noBioResponse(), self._bioResponse("A folded bio.")]
+        outcome = client.getArtistInfo("HUGØ")
+        self.assertEqual(outcome.status, OUTCOME_OK)
+        self.assertEqual(outcome.bio, "A folded bio.")
+        secondParams = mockGet.call_args_list[1].kwargs["params"]
+        self.assertEqual(secondParams["artist"], "HUGO")
+
+    @patch("Database.lastfm.requests.get")
+    def test_no_extra_requests_when_the_artist_name_has_no_transform(self, mockGet):
+        client = self._client()
+        mockGet.return_value = self._noBioResponse()
+        outcome = client.getArtistInfo("Radiohead")
+        self.assertIsNone(outcome.bio)
+        mockGet.assert_called_once()
+
+
+class AlbumInfoArtistNameFallbackTestCase(unittest.TestCase):
+    """getAlbumInfo had no retry at all - it now retries under
+    normalizeArtistLookupName's and foldStylizedArtistName's transformed
+    artist spellings on a definitive no-bio result, same as getArtistInfo."""
+
+    def _client(self):
+        limiter = MagicMock()
+        limiter.acquire.return_value = True
+        return LastfmClient("test-key", rateLimiter=limiter)
+
+    @staticmethod
+    def _wikiResponse(summary):
+        return _response(payload={"album": {"name": "x", "wiki": {"summary": summary}}})
+
+    @staticmethod
+    def _noWikiResponse():
+        return _response(payload={"album": {"name": "x"}})
+
+    @patch("Database.lastfm.requests.get")
+    def test_slash_normalization_retry_recovers_a_bio(self, mockGet):
+        client = self._client()
+        mockGet.side_effect = [self._noWikiResponse(), self._wikiResponse("An album wiki.")]
+        outcome = client.getAlbumInfo("Axwell /\\ Ingrosso", "Something New")
+        self.assertEqual(outcome.status, OUTCOME_OK)
+        self.assertEqual(outcome.bio, "An album wiki.")
+        secondParams = mockGet.call_args_list[1].kwargs["params"]
+        self.assertEqual(secondParams["artist"], "Axwell & Ingrosso")
+        self.assertEqual(secondParams["album"], "Something New")
+
+    @patch("Database.lastfm.requests.get")
+    def test_stylized_fold_retry_recovers_a_bio(self, mockGet):
+        client = self._client()
+        mockGet.side_effect = [self._noWikiResponse(), self._wikiResponse("A folded album wiki.")]
+        outcome = client.getAlbumInfo("HUGØ", "Some Album")
+        self.assertEqual(outcome.status, OUTCOME_OK)
+        self.assertEqual(outcome.bio, "A folded album wiki.")
+        secondParams = mockGet.call_args_list[1].kwargs["params"]
+        self.assertEqual(secondParams["artist"], "HUGO")
+
+    @patch("Database.lastfm.requests.get")
+    def test_no_extra_requests_when_the_artist_name_has_no_transform(self, mockGet):
+        client = self._client()
+        mockGet.return_value = self._noWikiResponse()
+        outcome = client.getAlbumInfo("Radiohead", "OK Computer")
+        self.assertIsNone(outcome.bio)
+        mockGet.assert_called_once()
 
 
 class ValidateApiKeyTestCase(unittest.TestCase):

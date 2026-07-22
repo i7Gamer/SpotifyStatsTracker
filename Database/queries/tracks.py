@@ -503,7 +503,13 @@ class TrackQueries:
     def getAlbumCandidateArtists(self, albumId: str) -> list[dict]:
         """Ordered candidate artists for an album across all tracks (combining
         primary and secondary credited artists up to position <= 4), ranked
-        by count DESC."""
+        by count DESC and capped at GENRE_BACKFILL_MAX_ARTIST_POSITION
+        candidates - same bound as getTrackSecondaryArtists's per-track
+        position cutoff, applied here to the distinct-artist count instead.
+        Without it, a "Various Artists" compilation album (many tracks, many
+        different credited artists) would make the genre backfiller try
+        every single one - each up to two rate-limited Last.fm requests -
+        against the process-wide, cross-user rate limit before giving up."""
         conn = self._conn()
         from Database.queries._base import GENRE_BACKFILL_MAX_ARTIST_POSITION
         rows = conn.execute(
@@ -515,8 +521,9 @@ class TrackQueries:
             WHERE t.album_id = ?
             GROUP BY ar.id
             ORDER BY cnt DESC, ar.id ASC
+            LIMIT ?
             """,
-            (GENRE_BACKFILL_MAX_ARTIST_POSITION, albumId),
+            (GENRE_BACKFILL_MAX_ARTIST_POSITION, albumId, GENRE_BACKFILL_MAX_ARTIST_POSITION),
         ).fetchall()
         return [dict(r) for r in rows]
 
