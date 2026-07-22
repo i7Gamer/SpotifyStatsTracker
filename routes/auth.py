@@ -103,7 +103,7 @@ def register(app, dashboard):
         # Verification happens against a throwaway session file, so nothing
         # is persisted for this email unless the cookies really are theirs.
         parsedCookies = parseCookieString(cookies)
-        if not dashboard.skipEmailVerification and not dashboard._verifyCookiesMatchEmail(parsedCookies, email):
+        if not dashboard.skipEmailVerification and dashboard.repo.isEmailVerificationEnabled() and not dashboard._verifyCookiesMatchEmail(parsedCookies, email):
             return render_template(
                 "login.html", email=email, next=nextUrl,
                 error=f"Couldn't verify that these cookies belong to {email}. "
@@ -159,7 +159,7 @@ def register(app, dashboard):
         # Verification happens against a throwaway session file, so nothing
         # is persisted for this email unless the cookies really are theirs.
         parsedCookies = parseCookieString(cookies)
-        if not dashboard.skipEmailVerification and not dashboard._verifyCookiesMatchEmail(parsedCookies, email):
+        if not dashboard.skipEmailVerification and dashboard.repo.isEmailVerificationEnabled() and not dashboard._verifyCookiesMatchEmail(parsedCookies, email):
             return render_template(
                 "register.html", email=email,
                 error=f"Couldn't verify that these cookies belong to {email}. "
@@ -225,7 +225,7 @@ def register(app, dashboard):
         # of identity is the same as everywhere else in this app: valid,
         # matching Spotify cookies for the account's email.
         parsedCookies = parseCookieString(cookies)
-        if not dashboard.skipEmailVerification and not dashboard._verifyCookiesMatchEmail(parsedCookies, email):
+        if not dashboard.skipEmailVerification and dashboard.repo.isEmailVerificationEnabled() and not dashboard._verifyCookiesMatchEmail(parsedCookies, email):
             return render_template(
                 "reset_password.html", email=email,
                 error=f"Couldn't verify that these cookies belong to {email}. "

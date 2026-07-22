@@ -27,7 +27,10 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import generate_password_hash, check_password_hash
 
 from Database.database import Database
-from Database.backup import BackupWorker
+from Database.backup import (
+    BackupWorker, _envInt, BACKUP_INTERVAL_ENV_VAR, BACKUP_RETENTION_ENV_VAR,
+    DEFAULT_BACKUP_INTERVAL_HOURS, DEFAULT_BACKUP_RETENTION_COUNT,
+)
 from Database.db import SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON
 from Database.repository import Repository
 from Database.Migrators.migrate import migrateIfNeeded
@@ -216,7 +219,14 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
         self._stop_event = threading.Event()
         # Snapshots the shared database on a schedule (see Database/backup.py) -
         # a manual backup command in the README protects nobody who doesn't run it.
-        self.backupWorker = BackupWorker()
+        # Interval/retention come from admin settings, falling back to the env
+        # vars then the code defaults; read once here, so changes apply on restart.
+        self.backupWorker = BackupWorker(
+            intervalHours=self.repo.getBackupIntervalHours(
+                _envInt(BACKUP_INTERVAL_ENV_VAR, DEFAULT_BACKUP_INTERVAL_HOURS)),
+            retentionCount=self.repo.getBackupRetentionCount(
+                _envInt(BACKUP_RETENTION_ENV_VAR, DEFAULT_BACKUP_RETENTION_COUNT)),
+        )
         self.backupWorker.start()
         self.startVersionCheck_thread()
         self.checkLogin_thread()

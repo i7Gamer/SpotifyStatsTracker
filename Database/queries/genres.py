@@ -410,7 +410,7 @@ class GenreQueries:
         conn = self._conn()
         params: list = []
         userClause = self._queueUserClause(params, username)
-        params.extend([time.time() - GENRE_BACKFILL_RETRY_SECONDS, limit])
+        params.extend([time.time() - self.getGenreBackfillRetrySeconds(), limit])
         rows = conn.execute(
             f"""
             SELECT ar.id AS id, ar.name AS name, COUNT(*) AS play_count
@@ -433,7 +433,7 @@ class GenreQueries:
         conn = self._conn()
         params: list = []
         userClause = self._queueUserClause(params, username)
-        params.extend([time.time() - GENRE_BACKFILL_RETRY_SECONDS, limit])
+        params.extend([time.time() - self.getGenreBackfillRetrySeconds(), limit])
         rows = conn.execute(
             f"""
             SELECT al.id AS id, al.name AS name, COUNT(*) AS play_count
@@ -459,7 +459,7 @@ class GenreQueries:
         conn = self._conn()
         params: list = []
         userClause = self._queueUserClause(params, username)
-        params.extend([time.time() - GENRE_BACKFILL_RETRY_SECONDS, limit])
+        params.extend([time.time() - self.getGenreBackfillRetrySeconds(), limit])
         rows = conn.execute(
             f"""
             SELECT t.id AS id, t.name AS name, t.album_id AS album_id,

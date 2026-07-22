@@ -314,6 +314,14 @@ class TestAdminUserSettings(AdminRouteTestBase):
         self.assertTrue(dash.repo.isArtistBioEnabled())
         self.assertTrue(dash.repo.isAlbumBioEnabled())
 
+    def test_toggles_email_verification(self):
+        dash = self._makeApp()
+        self.assertTrue(dash.repo.isEmailVerificationEnabled())
+        self._post(dash, "/admin/user_settings", isAdmin=True, data={})   #< nothing checked -> disabled
+        self.assertFalse(dash.repo.isEmailVerificationEnabled())
+        self._post(dash, "/admin/user_settings", isAdmin=True, data={"email_verification": "1"})
+        self.assertTrue(dash.repo.isEmailVerificationEnabled())
+
 
 class TestAdminSkipSettings(AdminRouteTestBase):
     def test_non_admin_post_is_forbidden(self):
@@ -362,6 +370,12 @@ class TestAdminSkipSettings(AdminRouteTestBase):
             self._post(dash, "/admin/skip_settings", isAdmin=True,
                        data={"skip_mode": "seconds", "skip_value": "30"})
             recompute.assert_called_once()
+
+    def test_saves_completion_percent(self):
+        dash = self._makeApp()
+        self._post(dash, "/admin/skip_settings", isAdmin=True,
+                   data={"skip_mode": "seconds", "skip_value": "5", "completion_complete_percent": "70"})
+        self.assertEqual(dash.repo.getCompletionCompletePercent(), 70)
 
 
 class TestAdminTuningSettings(AdminRouteTestBase):
@@ -461,6 +475,33 @@ class TestAdminLastfmSettings(AdminRouteTestBase):
         self._post(dash, "/admin/lastfm_settings", isAdmin=True, data={})
         self.assertTrue(dash.repo.isDataSharingEnabled())
         self.assertTrue(dash.repo.isSpotifyApiBackfillEnabled())
+
+    def test_saves_backfill_retry_days(self):
+        dash = self._makeApp()
+        self._post(dash, "/admin/lastfm_settings", isAdmin=True,
+                   data={"genre_backfill_retry_days": "14", "bio_backfill_retry_days": "60"})
+        self.assertEqual(dash.repo.getGenreBackfillRetryDays(), 14)
+        self.assertEqual(dash.repo.getBioBackfillRetryDays(), 60)
+
+
+class TestAdminBackupSettings(AdminRouteTestBase):
+    def test_non_admin_post_is_forbidden(self):
+        dash = self._makeApp()
+        resp = self._post(dash, "/admin/backup_settings", isAdmin=False, data={"backup_interval_hours": "12"})
+        self.assertEqual(resp.status_code, 403)
+
+    def test_admin_can_set_interval_and_retention(self):
+        dash = self._makeApp()
+        resp = self._post(dash, "/admin/backup_settings", isAdmin=True,
+                          data={"backup_interval_hours": "12", "backup_retention_count": "10"})
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(dash.repo.getBackupIntervalHours(24), 12)
+        self.assertEqual(dash.repo.getBackupRetentionCount(7), 10)
+
+    def test_zero_disables(self):
+        dash = self._makeApp()
+        self._post(dash, "/admin/backup_settings", isAdmin=True, data={"backup_interval_hours": "0"})
+        self.assertEqual(dash.repo.getBackupIntervalHours(24), 0)
 
 
 class TestAdminRefreshLastfmEntity(AdminRouteTestBase):

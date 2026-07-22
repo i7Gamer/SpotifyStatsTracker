@@ -125,7 +125,7 @@ class BioQueries:
         conn = self._conn()
         params: list = []
         userClause = self._queueUserClause(params, username)
-        params.extend([time.time() - BIOGRAPHY_BACKFILL_RETRY_SECONDS, limit])
+        params.extend([time.time() - self.getBioBackfillRetrySeconds(), limit])
         rows = conn.execute(
             f"""
             SELECT ar.id AS id, ar.name AS name, COUNT(*) AS play_count
@@ -152,7 +152,7 @@ class BioQueries:
         conn = self._conn()
         params: list = []
         userClause = self._queueUserClause(params, username)
-        params.extend([time.time() - BIOGRAPHY_BACKFILL_RETRY_SECONDS, limit])
+        params.extend([time.time() - self.getBioBackfillRetrySeconds(), limit])
         rows = conn.execute(
             f"""
             SELECT al.id AS id, al.name AS name, COUNT(*) AS play_count

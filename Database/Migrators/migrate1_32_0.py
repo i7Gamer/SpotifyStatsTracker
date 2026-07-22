@@ -1,26 +1,70 @@
+import os
+
 try:
     from Database.Migrators.base import BaseMigrator, resolveRuntimeDir
     from Database.repository import (
         Repository, SKIP_THRESHOLD_MODE_KEY,
         SKIP_THRESHOLD_DEFAULT_MODE, SKIP_THRESHOLD_DEFAULT_VALUE,
+        COMPLETION_COMPLETE_PERCENT_KEY, COMPLETION_COMPLETE_PERCENT_DEFAULT,
+        GENRE_BACKFILL_RETRY_DAYS_KEY, BIO_BACKFILL_RETRY_DAYS_KEY,
+        GENRE_BACKFILL_RETRY_SECONDS, BIOGRAPHY_BACKFILL_RETRY_SECONDS, SECONDS_PER_DAY,
+        BACKUP_INTERVAL_HOURS_KEY, BACKUP_RETENTION_COUNT_KEY,
+        EMAIL_VERIFICATION_SETTING_KEY,
     )
+    from Database.backup import (
+        _envInt, BACKUP_INTERVAL_ENV_VAR, BACKUP_RETENTION_ENV_VAR,
+        DEFAULT_BACKUP_INTERVAL_HOURS, DEFAULT_BACKUP_RETENTION_COUNT,
+    )
+    from config import TRUTHY_ENV_VALUES
 except ModuleNotFoundError:
     from Migrators.base import BaseMigrator, resolveRuntimeDir
     from repository import (
         Repository, SKIP_THRESHOLD_MODE_KEY,
         SKIP_THRESHOLD_DEFAULT_MODE, SKIP_THRESHOLD_DEFAULT_VALUE,
+        COMPLETION_COMPLETE_PERCENT_KEY, COMPLETION_COMPLETE_PERCENT_DEFAULT,
+        GENRE_BACKFILL_RETRY_DAYS_KEY, BIO_BACKFILL_RETRY_DAYS_KEY,
+        GENRE_BACKFILL_RETRY_SECONDS, BIOGRAPHY_BACKFILL_RETRY_SECONDS, SECONDS_PER_DAY,
+        BACKUP_INTERVAL_HOURS_KEY, BACKUP_RETENTION_COUNT_KEY,
+        EMAIL_VERIFICATION_SETTING_KEY,
     )
+    from backup import (
+        _envInt, BACKUP_INTERVAL_ENV_VAR, BACKUP_RETENTION_ENV_VAR,
+        DEFAULT_BACKUP_INTERVAL_HOURS, DEFAULT_BACKUP_RETENTION_COUNT,
+    )
+    from config import TRUTHY_ENV_VALUES
 
 
 class Migrator(BaseMigrator):
-    """1.32.0 -> 1.33.0: merge play_skips back into plays.
+    """1.32.0 -> 1.33.0: merge play_skips into plays + seed instance settings.
 
     Rebuilds the plays table to add is_skip and relax the time_played CHECK to
     >= 0, folds every play_skips row in as is_skip=1 (then drops play_skips), and
-    seeds the instance-wide skip threshold at its default (seconds/5) - the
-    boundary the rebuild used to classify the existing plays. Retires the
-    separate skip table and getCompletionStats' 30s line in favour of one
-    admin-tunable threshold. See Repository.mergePlaySkipsIntoPlays."""
+    seeds the instance-wide settings this release moved into app_settings: the
+    skip threshold, the completion complete-percent, the Last.fm genre/biography
+    backfill retry intervals, the backup interval/retention (from the existing
+    env vars), and the cookie<->email verification toggle (disabled iff the
+    SKIP_EMAIL_VERIFICATION env var is set). Each seed is idempotent - only
+    written when the row is absent, so a re-run or an admin's prior change is
+    never clobbered. See Repository.mergePlaySkipsIntoPlays."""
+
+    def _seedSettings(self, repo) -> None:
+        emailVerification = "0" if os.environ.get("SKIP_EMAIL_VERIFICATION", "").strip().lower() in TRUTHY_ENV_VALUES else "1"
+        seeds = {
+            SKIP_THRESHOLD_MODE_KEY: SKIP_THRESHOLD_DEFAULT_MODE,   #< value seeded via setSkipThreshold below
+            COMPLETION_COMPLETE_PERCENT_KEY: str(COMPLETION_COMPLETE_PERCENT_DEFAULT),
+            GENRE_BACKFILL_RETRY_DAYS_KEY: str(GENRE_BACKFILL_RETRY_SECONDS // SECONDS_PER_DAY),
+            BIO_BACKFILL_RETRY_DAYS_KEY: str(BIOGRAPHY_BACKFILL_RETRY_SECONDS // SECONDS_PER_DAY),
+            BACKUP_INTERVAL_HOURS_KEY: str(_envInt(BACKUP_INTERVAL_ENV_VAR, DEFAULT_BACKUP_INTERVAL_HOURS)),
+            BACKUP_RETENTION_COUNT_KEY: str(_envInt(BACKUP_RETENTION_ENV_VAR, DEFAULT_BACKUP_RETENTION_COUNT)),
+            EMAIL_VERIFICATION_SETTING_KEY: emailVerification,
+        }
+        if repo.getAppSetting(SKIP_THRESHOLD_MODE_KEY) is None:
+            repo.setSkipThreshold(SKIP_THRESHOLD_DEFAULT_MODE, SKIP_THRESHOLD_DEFAULT_VALUE)
+        for key, value in seeds.items():
+            if key == SKIP_THRESHOLD_MODE_KEY:
+                continue   #< handled by setSkipThreshold (also seeds the value key)
+            if repo.getAppSetting(key) is None:
+                repo.setAppSetting(key, value)
 
     def migrate(self):
         self.checkPreconditions()
@@ -28,15 +72,12 @@ class Migrator(BaseMigrator):
         repo = Repository(resolveRuntimeDir(self.baseDir) / "spotify_stats.db")
         try:
             result = repo.mergePlaySkipsIntoPlays()
-            # Seed the threshold default only when unset, so re-running (or a
-            # future re-migration) never clobbers an admin's chosen value.
-            if repo.getAppSetting(SKIP_THRESHOLD_MODE_KEY) is None:
-                repo.setSkipThreshold(SKIP_THRESHOLD_DEFAULT_MODE, SKIP_THRESHOLD_DEFAULT_VALUE)
+            self._seedSettings(repo)
             repo.commit()
         finally:
             repo.connectionManager.close()
 
-        print(f"Merged play_skips into plays ({result}); seeded skip threshold default.")
+        print(f"Merged play_skips into plays ({result}); seeded instance settings.")
         self.updateAppVersion("1.33.0")
 
 

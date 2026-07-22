@@ -57,12 +57,11 @@ ARTIST_BIO_FETCH_WORKERS = 2   #< bounds concurrent artist-bio fetches for the w
 ALBUM_BIO_FETCH_WORKERS = 2    #< separate pool from ARTIST_BIO_FETCH_WORKERS so album lazy-fetches never
                                 #  queue behind artist lazy-fetches (or vice versa)
 
-# getCompletionStats' completion ratio: among real plays (is_skip=0), a listen
-# at/over 80% of the track's duration counts as complete, anything less is a
-# partial. Skips are no longer a separate 30s line here - they're the is_skip=1
-# rows (the single admin-tunable skip threshold that replaced both the old 30s
-# line and the play_skips table). See getCompletionStats.
-COMPLETION_COMPLETE_RATIO = 0.8
+# getCompletionStats' complete-vs-partial boundary is now an admin setting
+# (COMPLETION_COMPLETE_PERCENT_KEY, default 80%): among real plays (is_skip=0), a
+# listen at/over that percent of the track's duration counts as complete, else
+# partial. Skips are the is_skip=1 rows (the admin-tunable skip threshold that
+# replaced both the old 30s line and the play_skips table). See getCompletionStats.
 
 # Images are shared across every user (album art / artist photos are the same
 # bytes for everyone), so they live in one directory tree instead of under each
@@ -822,14 +821,15 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         Compare page's Skip Rate. A skip is any play with is_skip=1 - the single
         admin-tunable skip threshold, materialized per row (it replaced both the
         old 30s line and the separate play_skips table). Among real plays
-        (is_skip=0), a listen at/over COMPLETION_COMPLETE_RATIO of the track's
-        duration counts as complete (unknown <=0 durations count as complete
-        since partial can't be told apart), else partial."""
+        (is_skip=0), a listen at/over the admin-set complete percent of the
+        track's duration counts as complete (unknown <=0 durations count as
+        complete since partial can't be told apart), else partial."""
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
         conn = self.repo._conn()
         # Fully classified in SQL - one aggregate row instead of a row per
         # distinct (time_played, duration) pair.
-        params = [COMPLETION_COMPLETE_RATIO, COMPLETION_COMPLETE_RATIO, self.user]
+        ratio = self.repo.getCompletionCompletePercent() / 100.0
+        params = [ratio, ratio, self.user]
         rangeClause = self.repo._dateRangeClause(params, startTs, endTs, column="p.played_at")
         query = f"""
             SELECT

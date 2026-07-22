@@ -156,6 +156,46 @@ class TestMigrate1_32_0(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_seeds_new_instance_settings(self):
+        # Clean env so backup/email seeds land on their defaults.
+        with patch.dict(os.environ, {}, clear=False):
+            for key in ("BACKUP_INTERVAL_HOURS", "BACKUP_RETENTION_COUNT", "SKIP_EMAIL_VERIFICATION"):
+                os.environ.pop(key, None)
+            self._migrate()
+
+        conn = sqlite3.connect(self.dbPath)
+        try:
+            settings = dict(conn.execute("SELECT key, value FROM app_settings").fetchall())
+        finally:
+            conn.close()
+
+        self.assertEqual(settings.get("skip_threshold_mode"), "seconds")
+        self.assertEqual(settings.get("skip_threshold_value"), "5")
+        self.assertEqual(settings.get("completion_complete_percent"), "80")
+        self.assertEqual(settings.get("genre_backfill_retry_days"), "30")
+        self.assertEqual(settings.get("bio_backfill_retry_days"), "30")
+        self.assertEqual(settings.get("backup_interval_hours"), "24")
+        self.assertEqual(settings.get("backup_retention_count"), "7")
+        self.assertEqual(settings.get("email_verification_enabled"), "1")
+
+    def test_seeding_does_not_clobber_existing_values(self):
+        # A prior admin choice (row already present) must survive the migration.
+        conn = sqlite3.connect(self.dbPath)
+        with conn:
+            conn.execute("CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+            conn.execute("INSERT INTO app_settings (key, value) VALUES ('completion_complete_percent', '95')")
+        conn.close()
+
+        self._migrate()
+
+        conn = sqlite3.connect(self.dbPath)
+        try:
+            value = conn.execute(
+                "SELECT value FROM app_settings WHERE key='completion_complete_percent'").fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual(value, "95")   #< not reset to the default 80
+
 
 if __name__ == "__main__":
     unittest.main()

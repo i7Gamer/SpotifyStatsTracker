@@ -23,7 +23,13 @@ from Database.repository import (
     DISCOVER_ARTIST_LIMIT_KEY, DISCOVER_ARTIST_LIMIT_MIN, DISCOVER_ARTIST_LIMIT_MAX,
     IMAGE_DOWNLOAD_WORKERS_KEY, ARTIST_BIO_FETCH_WORKERS_KEY, ALBUM_BIO_FETCH_WORKERS_KEY,
     WORKER_COUNT_MIN, WORKER_COUNT_MAX,
+    COMPLETION_COMPLETE_PERCENT_KEY, COMPLETION_COMPLETE_PERCENT_MIN, COMPLETION_COMPLETE_PERCENT_MAX,
+    BACKUP_INTERVAL_HOURS_KEY, BACKUP_INTERVAL_HOURS_MIN, BACKUP_INTERVAL_HOURS_MAX,
+    BACKUP_RETENTION_COUNT_KEY, BACKUP_RETENTION_COUNT_MIN, BACKUP_RETENTION_COUNT_MAX,
+    GENRE_BACKFILL_RETRY_DAYS_KEY, BIO_BACKFILL_RETRY_DAYS_KEY,
+    BACKFILL_RETRY_DAYS_MIN, BACKFILL_RETRY_DAYS_MAX,
 )
+from Database.backup import DEFAULT_BACKUP_INTERVAL_HOURS, DEFAULT_BACKUP_RETENTION_COUNT
 from Database.utils import convertToDatetime
 
 logger = logging.getLogger(__name__)
@@ -284,6 +290,16 @@ def register(app, dashboard):
             album_bio_workers=dashboard.repo.getAlbumBioFetchWorkers(ALBUM_BIO_FETCH_WORKERS),
             discover_min=DISCOVER_ARTIST_LIMIT_MIN, discover_max=DISCOVER_ARTIST_LIMIT_MAX,
             worker_min=WORKER_COUNT_MIN, worker_max=WORKER_COUNT_MAX,
+            completion_complete_percent=dashboard.repo.getCompletionCompletePercent(),
+            completion_min=COMPLETION_COMPLETE_PERCENT_MIN, completion_max=COMPLETION_COMPLETE_PERCENT_MAX,
+            email_verification_enabled=dashboard.repo.isEmailVerificationEnabled(),
+            genre_backfill_retry_days=dashboard.repo.getGenreBackfillRetryDays(),
+            bio_backfill_retry_days=dashboard.repo.getBioBackfillRetryDays(),
+            backfill_retry_min=BACKFILL_RETRY_DAYS_MIN, backfill_retry_max=BACKFILL_RETRY_DAYS_MAX,
+            backup_interval_hours=dashboard.repo.getBackupIntervalHours(DEFAULT_BACKUP_INTERVAL_HOURS),
+            backup_retention_count=dashboard.repo.getBackupRetentionCount(DEFAULT_BACKUP_RETENTION_COUNT),
+            backup_interval_min=BACKUP_INTERVAL_HOURS_MIN, backup_interval_max=BACKUP_INTERVAL_HOURS_MAX,
+            backup_retention_min=BACKUP_RETENTION_COUNT_MIN, backup_retention_max=BACKUP_RETENTION_COUNT_MAX,
             listener_summary=listener_summary,
             spotify_api_worker_summary=spotify_api_worker_summary,
             lastfm_worker_summary=lastfm_worker_summary,
@@ -315,6 +331,7 @@ def register(app, dashboard):
         dashboard.repo.setDataSharingEnabled(request.form.get("data_sharing") == "1")
         dashboard.repo.setRegistrationEnabled(request.form.get("registration") == "1")
         dashboard.repo.setShareLinksEnabled(request.form.get("share_links") == "1")
+        dashboard.repo.setEmailVerificationEnabled(request.form.get("email_verification") == "1")
         return redirect(url_for("adminPage"))
     app.add_url_rule("/admin/user_settings", "adminUserSettings", adminUserSettings, methods=["POST"])
 
@@ -332,6 +349,15 @@ def register(app, dashboard):
         dashboard.repo.setArtistBioEnabled(request.form.get("artist_bio") == "1")
         dashboard.repo.setAlbumBioEnabled(request.form.get("album_bio") == "1")
         dashboard.repo.setInheritedGenresEnabled(request.form.get("include_inherited") == "1")
+        # Backfill retry intervals (days) for the empty-result re-attempt gate.
+        for field, key in (("genre_backfill_retry_days", GENRE_BACKFILL_RETRY_DAYS_KEY),
+                           ("bio_backfill_retry_days", BIO_BACKFILL_RETRY_DAYS_KEY)):
+            raw = request.form.get(field)
+            if raw:
+                try:
+                    dashboard.repo.setIntSetting(key, int(raw), BACKFILL_RETRY_DAYS_MIN, BACKFILL_RETRY_DAYS_MAX)
+                except (TypeError, ValueError):
+                    pass
         return redirect(url_for("adminPage"))
     app.add_url_rule("/admin/lastfm_settings", "adminLastfmSettings", adminLastfmSettings, methods=["POST"])
 
@@ -402,8 +428,40 @@ def register(app, dashboard):
             return redirect(url_for("adminPage", error="Skip threshold must be a whole number."))
         dashboard.repo.setSkipThreshold(mode, value)   #< clamps to the mode's bounds
         dashboard.repo.recomputeSkipFlags()             #< self-commits; reclassifies every play
+        # Completion complete-percent (live; no recompute needed) - the second
+        # half of the completion pie. Lenient on a blank/bad value.
+        raw = request.form.get("completion_complete_percent")
+        if raw:
+            try:
+                dashboard.repo.setIntSetting(COMPLETION_COMPLETE_PERCENT_KEY, int(raw),
+                                             COMPLETION_COMPLETE_PERCENT_MIN, COMPLETION_COMPLETE_PERCENT_MAX)
+            except (TypeError, ValueError):
+                pass
         return redirect(url_for("adminPage"))
     app.add_url_rule("/admin/skip_settings", "adminSkipSettings", adminSkipSettings, methods=["POST"])
+
+    def adminBackupSettings():
+        """Admin-only: automatic-backup interval (hours) and retention (count),
+        0 to disable either. Read when the BackupWorker is constructed, so a
+        change applies after the app restarts."""
+        email, username, db = dashboard.get_current_user_or_redirect()
+        if not email:
+            return redirect(url_for("login", next=url_for("adminPage")))
+        if not dashboard.repo.isAdmin(username):
+            abort(403)
+        for field, key, lo, hi in (
+            ("backup_interval_hours", BACKUP_INTERVAL_HOURS_KEY, BACKUP_INTERVAL_HOURS_MIN, BACKUP_INTERVAL_HOURS_MAX),
+            ("backup_retention_count", BACKUP_RETENTION_COUNT_KEY, BACKUP_RETENTION_COUNT_MIN, BACKUP_RETENTION_COUNT_MAX),
+        ):
+            raw = request.form.get(field)
+            if raw is None or raw == "":
+                continue   #< allow "0" (disable); only skip a truly empty field
+            try:
+                dashboard.repo.setIntSetting(key, int(raw), lo, hi)
+            except (TypeError, ValueError):
+                pass
+        return redirect(url_for("adminPage"))
+    app.add_url_rule("/admin/backup_settings", "adminBackupSettings", adminBackupSettings, methods=["POST"])
 
     def adminTuningSettings():
         """Admin-only: numeric tunables migrated out of code constants. The

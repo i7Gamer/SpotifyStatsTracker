@@ -263,9 +263,13 @@
           <input type="checkbox" name="registration" value="1" {% if registration_enabled %}checked{% endif %}>
           New user registration
         </label>
-        <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; margin-bottom: 1rem;">
+        <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; margin-bottom: 0.6rem;">
           <input type="checkbox" name="share_links" value="1" {% if share_links_enabled %}checked{% endif %}>
           Public Wrapped share links (no-login links to a user's own yearly recap)
+        </label>
+        <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; margin-bottom: 1rem;">
+          <input type="checkbox" name="email_verification" value="1" {% if email_verification_enabled %}checked{% endif %}>
+          Cookie–email verification at login (stops one user claiming another's account)
         </label>
         <button type="submit" class="primary-button" style="padding: 4px 16px;">Save</button>
       </form>
@@ -292,9 +296,17 @@
           <input type="checkbox" name="album_bio" value="1" {% if album_bio_enabled %}checked{% endif %}>
           Album biographies (Last.fm biography on album pages)
         </label>
-        <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; margin-bottom: 1rem;">
+        <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; margin-bottom: 0.8rem;">
           <input type="checkbox" name="include_inherited" value="1" {% if inherited_genres_enabled %}checked{% endif %}>
           Count inherited genres (songs/albums without own Last.fm tags use their artist's genres)
+        </label>
+        <label style="display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); margin-bottom: 0.6rem;">
+          <span>Genre re-attempt interval (empty results)</span>
+          <span style="white-space: nowrap;"><input type="number" name="genre_backfill_retry_days" value="{{ genre_backfill_retry_days }}" min="{{ backfill_retry_min }}" max="{{ backfill_retry_max }}" step="1" style="width: 4.5rem; padding: 4px 8px; background: var(--card-bg, #1e1e1e); color: var(--fg, #eee); border: 1px solid var(--border, #444); border-radius: 4px;"> days</span>
+        </label>
+        <label style="display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); margin-bottom: 1rem;">
+          <span>Biography re-attempt interval (empty results)</span>
+          <span style="white-space: nowrap;"><input type="number" name="bio_backfill_retry_days" value="{{ bio_backfill_retry_days }}" min="{{ backfill_retry_min }}" max="{{ backfill_retry_max }}" step="1" style="width: 4.5rem; padding: 4px 8px; background: var(--card-bg, #1e1e1e); color: var(--fg, #eee); border: 1px solid var(--border, #444); border-radius: 4px;"> days</span>
         </label>
         <button type="submit" class="primary-button" style="padding: 4px 16px;">Save</button>
       </form>
@@ -320,8 +332,8 @@
 
   <article class="card" style="padding: 0;">
     <div class="card-header" style="padding: 1.5rem 1.5rem 0.5rem 1.5rem;">
-      <h2 style="margin: 0; font-family: var(--font-headings); font-size: 1.15rem;">Skip Threshold</h2>
-      <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem;">What counts as a skip vs a real listen. Plays under the threshold are excluded from play counts, listen time, top lists and streaks. Saving reclassifies all history.</p>
+      <h2 style="margin: 0; font-family: var(--font-headings); font-size: 1.15rem;">Playback Classification</h2>
+      <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem;">The skip threshold decides skip vs. real listen (plays under it are excluded from counts, listen time, top lists and streaks — saving reclassifies all history). The completion percent then splits real plays into complete vs. partial on the Charts completion chart.</p>
     </div>
     <div style="padding: 0 1.5rem 1.5rem 1.5rem;">
       <form method="post" action="{{ url_for('adminSkipSettings') }}">
@@ -342,6 +354,31 @@
                  style="width: 6rem; padding: 4px 8px; background: var(--card-bg, #1e1e1e); color: var(--fg, #eee); border: 1px solid var(--border, #444); border-radius: 4px;">
           <span id="skipValueUnit" style="color: var(--muted);">{{ '%' if skip_mode == skip_mode_percent else 's' }}</span>
         </div>
+        <label style="display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); margin-bottom: 1rem;">
+          <span>Counts as a complete listen at/over</span>
+          <span style="white-space: nowrap;"><input type="number" name="completion_complete_percent" value="{{ completion_complete_percent }}" min="{{ completion_min }}" max="{{ completion_max }}" step="1" style="width: 4.5rem; padding: 4px 8px; background: var(--card-bg, #1e1e1e); color: var(--fg, #eee); border: 1px solid var(--border, #444); border-radius: 4px;"> % of duration</span>
+        </label>
+        <button type="submit" class="primary-button" style="padding: 4px 16px;">Save</button>
+      </form>
+    </div>
+  </article>
+
+  <article class="card" style="padding: 0;">
+    <div class="card-header" style="padding: 1.5rem 1.5rem 0.5rem 1.5rem;">
+      <h2 style="margin: 0; font-family: var(--font-headings); font-size: 1.15rem;">Backups</h2>
+      <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem;">Automatic database snapshots into Database/Data/Backups. Set either to 0 to disable. Applies after the app restarts.</p>
+    </div>
+    <div style="padding: 0 1.5rem 1.5rem 1.5rem;">
+      <form method="post" action="{{ url_for('adminBackupSettings') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+        <label style="display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); margin-bottom: 0.6rem;">
+          <span>Snapshot every</span>
+          <span style="white-space: nowrap;"><input type="number" name="backup_interval_hours" value="{{ backup_interval_hours }}" min="{{ backup_interval_min }}" max="{{ backup_interval_max }}" step="1" style="width: 4.5rem; padding: 4px 8px; background: var(--card-bg, #1e1e1e); color: var(--fg, #eee); border: 1px solid var(--border, #444); border-radius: 4px;"> hours</span>
+        </label>
+        <label style="display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); margin-bottom: 1rem;">
+          <span>Keep newest</span>
+          <span style="white-space: nowrap;"><input type="number" name="backup_retention_count" value="{{ backup_retention_count }}" min="{{ backup_retention_min }}" max="{{ backup_retention_max }}" step="1" style="width: 4.5rem; padding: 4px 8px; background: var(--card-bg, #1e1e1e); color: var(--fg, #eee); border: 1px solid var(--border, #444); border-radius: 4px;"> snapshots</span>
+        </label>
         <button type="submit" class="primary-button" style="padding: 4px 16px;">Save</button>
       </form>
     </div>

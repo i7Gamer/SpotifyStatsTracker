@@ -167,6 +167,45 @@ class SettingQueries:
     def getAlbumBioFetchWorkers(self, default: int) -> int:
         return self.getIntSetting(ALBUM_BIO_FETCH_WORKERS_KEY, default, WORKER_COUNT_MIN, WORKER_COUNT_MAX)
 
+    def getCompletionCompletePercent(self) -> int:
+        """Completion pie's complete-vs-partial boundary, as a percent of the
+        track's duration (live, per request). See getCompletionStats."""
+        return self.getIntSetting(COMPLETION_COMPLETE_PERCENT_KEY, COMPLETION_COMPLETE_PERCENT_DEFAULT,
+                                  COMPLETION_COMPLETE_PERCENT_MIN, COMPLETION_COMPLETE_PERCENT_MAX)
+
+    def getBackupIntervalHours(self, default: int) -> int:
+        """Hours between automatic DB snapshots (0 disables). `default` is the
+        env-or-code fallback, so the setting overrides the env var when set."""
+        return self.getIntSetting(BACKUP_INTERVAL_HOURS_KEY, default, BACKUP_INTERVAL_HOURS_MIN, BACKUP_INTERVAL_HOURS_MAX)
+
+    def getBackupRetentionCount(self, default: int) -> int:
+        """How many DB snapshots to keep (0 disables). See getBackupIntervalHours."""
+        return self.getIntSetting(BACKUP_RETENTION_COUNT_KEY, default, BACKUP_RETENTION_COUNT_MIN, BACKUP_RETENTION_COUNT_MAX)
+
+    def isEmailVerificationEnabled(self) -> bool:
+        """Whether login enforces the cookie<->email match (absent = enabled).
+        The SKIP_EMAIL_VERIFICATION env var still force-disables regardless."""
+        return self._isFeatureEnabled(EMAIL_VERIFICATION_SETTING_KEY)
+
+    def setEmailVerificationEnabled(self, enabled: bool) -> None:
+        self._setFeatureEnabled(EMAIL_VERIFICATION_SETTING_KEY, enabled)
+
+    def getGenreBackfillRetryDays(self) -> int:
+        return self.getIntSetting(GENRE_BACKFILL_RETRY_DAYS_KEY, GENRE_BACKFILL_RETRY_SECONDS // SECONDS_PER_DAY,
+                                  BACKFILL_RETRY_DAYS_MIN, BACKFILL_RETRY_DAYS_MAX)
+
+    def getBioBackfillRetryDays(self) -> int:
+        return self.getIntSetting(BIO_BACKFILL_RETRY_DAYS_KEY, BIOGRAPHY_BACKFILL_RETRY_SECONDS // SECONDS_PER_DAY,
+                                  BACKFILL_RETRY_DAYS_MIN, BACKFILL_RETRY_DAYS_MAX)
+
+    def getGenreBackfillRetrySeconds(self) -> int:
+        """Retry cutoff for the Last.fm genre backfill queue (see getArtistsMissingGenres)."""
+        return self.getGenreBackfillRetryDays() * SECONDS_PER_DAY
+
+    def getBioBackfillRetrySeconds(self) -> int:
+        """Retry cutoff for the Last.fm biography backfill queue (see getArtistsMissingBiographies)."""
+        return self.getBioBackfillRetryDays() * SECONDS_PER_DAY
+
     # ---- Skip threshold (single source of truth for plays.is_skip) -------------
 
     @staticmethod

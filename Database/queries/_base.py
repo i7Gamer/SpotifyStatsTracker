@@ -105,6 +105,38 @@ ALBUM_BIO_FETCH_WORKERS_KEY = "album_bio_fetch_workers"
 WORKER_COUNT_MIN = 1
 WORKER_COUNT_MAX = 32
 
+# getCompletionStats' complete-vs-partial boundary, stored as an int percent of
+# the track's duration (a listen at/over this counts as complete, else partial).
+# Companion to the skip threshold - together they define the completion pie.
+COMPLETION_COMPLETE_PERCENT_KEY = "completion_complete_percent"
+COMPLETION_COMPLETE_PERCENT_MIN = 50
+COMPLETION_COMPLETE_PERCENT_MAX = 100
+COMPLETION_COMPLETE_PERCENT_DEFAULT = 80
+
+# Backup schedule (was env-only: BACKUP_INTERVAL_HOURS / BACKUP_RETENTION_COUNT).
+# 0 disables. Read once when the BackupWorker is constructed -> applies after a
+# restart. The env vars remain the fallback default when the setting is unset.
+BACKUP_INTERVAL_HOURS_KEY = "backup_interval_hours"
+BACKUP_INTERVAL_HOURS_MIN = 0
+BACKUP_INTERVAL_HOURS_MAX = 168        #< one week
+BACKUP_RETENTION_COUNT_KEY = "backup_retention_count"
+BACKUP_RETENTION_COUNT_MIN = 0
+BACKUP_RETENTION_COUNT_MAX = 365
+
+# Whether login enforces the "do these cookies belong to this email" check
+# (was env-only: SKIP_EMAIL_VERIFICATION disabled it). Absent row = enabled;
+# the env var still force-disables regardless of the toggle.
+EMAIL_VERIFICATION_SETTING_KEY = "email_verification_enabled"
+
+# How long the Last.fm genre / biography backfillers wait before re-attempting an
+# entity whose lookup came back empty, stored in DAYS (was the fixed
+# *_BACKFILL_RETRY_SECONDS constants above). Bounds keep it sane.
+GENRE_BACKFILL_RETRY_DAYS_KEY = "genre_backfill_retry_days"
+BIO_BACKFILL_RETRY_DAYS_KEY = "bio_backfill_retry_days"
+BACKFILL_RETRY_DAYS_MIN = 1
+BACKFILL_RETRY_DAYS_MAX = 365
+SECONDS_PER_DAY = 24 * 3600
+
 # getBucketedPlayTotals' fixed UTC bucket width. 15 minutes is the smallest
 # granularity any real-world UTC offset uses (e.g. Asia/Kathmandu +5:45), so
 # every play in one bucket maps to the same local day/hour/weekday no matter
