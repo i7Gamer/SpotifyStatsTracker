@@ -176,16 +176,21 @@ class BioQueries:
         already have a stored Last.fm biography, out of how many total. A
         simple boolean-per-entity count (not the genre backfill's
         play-weighted percentage - see getGenreCoverage) since a bio is
-        present-or-absent per entity, not a per-play attribute."""
+        present-or-absent per entity, not a per-play attribute.
+
+        Joins against a DISTINCT-track_id subquery rather than the raw plays
+        table: joining plays directly (as this used to) repeats the same
+        track_artists/artists (or tracks/albums) join once per play instead
+        of once per distinct track, which on a real listening history means
+        paying the join cost dozens of times over for a track's replays."""
         conn = self._conn()
         artistRow = conn.execute(
             """
             SELECT COUNT(DISTINCT ar.id) AS total,
                    COUNT(DISTINCT CASE WHEN ar.bio IS NOT NULL THEN ar.id END) AS covered
-            FROM plays p
+            FROM (SELECT DISTINCT track_id FROM plays WHERE username = ?) p
             JOIN track_artists ta ON ta.track_id = p.track_id AND ta.position = 0
             JOIN artists ar ON ar.id = ta.artist_id
-            WHERE p.username = ?
             """,
             (username,),
         ).fetchone()
@@ -193,10 +198,9 @@ class BioQueries:
             """
             SELECT COUNT(DISTINCT al.id) AS total,
                    COUNT(DISTINCT CASE WHEN al.bio IS NOT NULL THEN al.id END) AS covered
-            FROM plays p
+            FROM (SELECT DISTINCT track_id FROM plays WHERE username = ?) p
             JOIN tracks t ON t.id = p.track_id
             JOIN albums al ON al.id = t.album_id
-            WHERE p.username = ?
             """,
             (username,),
         ).fetchone()
