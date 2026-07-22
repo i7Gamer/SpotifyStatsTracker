@@ -176,6 +176,35 @@ class TestSongDetailRoute(_DetailRouteTestBase):
         self.assertIn(b'class="track-card"', resp.data)
         self.assertNotIn(b'has-genres', resp.data)
 
+    def test_play_history_panel_hidden_for_single_play_song(self):
+        dash = self._makeApp()
+        db = MagicMock()
+        song = self._song()
+        song["plays"] = 1
+        db.getSong.return_value = song
+        db.getListeningTimeSeries.return_value = []
+        db.getHourOfDayHeatmap.return_value = [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
+
+        resp = self._getPath(dash, db, "/song/t1")
+
+        self.assertNotIn(b"Play History", resp.data)
+        self.assertNotIn(b'id="timeSeriesChart"', resp.data)
+        self.assertIn(b"When You Listen to This Song", resp.data)
+
+    def test_play_history_panel_shown_for_multiple_plays(self):
+        dash = self._makeApp()
+        db = MagicMock()
+        song = self._song()
+        song["plays"] = 2
+        db.getSong.return_value = song
+        db.getListeningTimeSeries.return_value = []
+        db.getHourOfDayHeatmap.return_value = [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
+
+        resp = self._getPath(dash, db, "/song/t1")
+
+        self.assertIn(b"Play History", resp.data)
+        self.assertIn(b'id="timeSeriesChart"', resp.data)
+
     def test_unknown_song_redirects_to_top_songs(self):
         dash = self._makeApp()
         db = MagicMock()

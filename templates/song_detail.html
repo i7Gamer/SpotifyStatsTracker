@@ -40,12 +40,14 @@
   </section>
 
   <section class="card chart-card">
+    {% if song.get('plays', 0) > 1 %}
     <div class="chart-section">
       <h2>Play History</h2>
       <div class="chart-canvas-wrap">
         <canvas id="timeSeriesChart"></canvas>
       </div>
     </div>
+    {% endif %}
 
     <div class="chart-section">
       <h2>When You Listen to This Song</h2>
