@@ -272,6 +272,81 @@
     canvas.onmouseleave = hideTooltip;
   }
 
+  /* Horizontal bar chart from [label, value] pairs - one row each, the full
+   * label above its bar (so long category names stay readable, unlike the
+   * cramped x-axis of the vertical bars). The canvas sizes itself to the row
+   * count, so its wrapper should NOT have a fixed height. */
+  function renderHorizontalBars(canvas, pairs, opts) {
+    opts = opts || {};
+    if (!canvas) return;
+    pairs = pairs || [];
+    var rowHeight = opts.rowHeight || 40;   //< label line + bar + gap
+    var padTop = 6, padBottom = 6;
+    var valueColWidth = 34;                 //< reserved right column for the value number
+    var barHeight = 11, labelGap = 3;
+    var cssHeight = pairs.length ? padTop + padBottom + pairs.length * rowHeight : 120;
+    var config = setupCanvas(canvas, cssHeight);
+    var ctx = config.ctx, width = config.width, height = config.height;
+    ctx.clearRect(0, 0, width, height);
+
+    if (pairs.length === 0) {
+      drawEmptyState(ctx, width, height, opts.emptyMessage || 'No data yet.');
+      return;
+    }
+
+    var maxVal = Math.max.apply(null, pairs.map(function (p) { return p[1]; }));
+    if (maxVal === 0) maxVal = 1;
+    var plotWidth = width - valueColWidth;
+    var suffix = opts.valueSuffix || '';
+
+    var bars = pairs.map(function (pair, i) {
+      var key = pair[0], val = pair[1];
+      var rowTop = padTop + i * rowHeight;
+
+      // Label above the bar, using the full width; ellipsize only if truly huge.
+      ctx.fillStyle = '#e0e0e0';
+      ctx.font = '12px sans-serif';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'top';
+      var label = key;
+      if (ctx.measureText(label).width > width) {
+        while (label.length > 1 && ctx.measureText(label + '…').width > width) {
+          label = label.slice(0, -1);
+        }
+        label += '…';
+      }
+      ctx.fillText(label, 0, rowTop);
+
+      var barY = rowTop + 12 + labelGap;
+      var barW = Math.max(2, plotWidth * val / maxVal);
+      ctx.fillStyle = PALETTE[i % PALETTE.length];
+      ctx.fillRect(0, barY, barW, barHeight);
+
+      ctx.fillStyle = '#b0b0b0';
+      ctx.font = '11px sans-serif';
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(String(val), width, barY + barHeight / 2);
+
+      return { key: key, value: val, top: rowTop, bottom: rowTop + rowHeight };
+    });
+
+    canvas.onmousemove = function (evt) {
+      var rect = canvas.getBoundingClientRect();
+      var my = evt.clientY - rect.top;
+      var found = null;
+      bars.forEach(function (bar) {
+        if (my >= bar.top && my <= bar.bottom) found = bar;
+      });
+      if (found) {
+        showTooltip(evt, '<strong>' + escapeHtml(found.key) + '</strong><br>' + found.value + suffix);
+      } else {
+        hideTooltip();
+      }
+    };
+    canvas.onmouseleave = hideTooltip;
+  }
+
   /* Donut chart. slices = [{ label, value, color }]; the caller supplies the
    * total (so a leftover "other" share can be represented without a slice). */
   function drawDonutChart(canvas, slices, total, opts) {
@@ -462,6 +537,7 @@
     renderHeatmap: renderHeatmap,
     renderMultiLineChart: renderMultiLineChart,
     renderBarsFromPairs: renderBarsFromPairs,
+    renderHorizontalBars: renderHorizontalBars,
     drawDonutChart: drawDonutChart,
   };
 })();

@@ -1876,8 +1876,21 @@ progress::-moz-progress-bar {
 }
 
 .chart-section:not(:last-of-type) {
-  border-bottom: 1px solid var(--border);
   margin-bottom: 24px;
+}
+
+/* A paired-chart row gets a single box border around both charts, instead of
+   the per-section bottom divider (which rendered as a stray line under just
+   one grid column). Used on the Charts and Genres pages. */
+.chart-section-grid {
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 20px;
+}
+
+.chart-section-grid .chart-section {
+  padding: 0;
+  margin-bottom: 0;
 }
 
 .chart-card h2 {

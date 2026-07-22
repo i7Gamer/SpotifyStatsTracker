@@ -44,23 +44,23 @@
     }
     CU.drawDonutChart(canvas, slices, grandTotal, { emptyMessage: 'No genre data yet.' });
 
-    // The donut has many slices, so the legend lives in HTML below it (with
-    // play counts + %) rather than crammed onto the canvas.
+    // The donut has many slices, so the legend lives in HTML below it. It shows
+    // just the genre name; the play count + % stay in the hover tooltip only.
     var legend = document.getElementById('genreShareLegend');
     if (legend) {
       legend.innerHTML = grandTotal ? slices.map(function (s) {
-        var pct = Math.round((s.value / grandTotal) * 100);
         return '<span class="chart-legend-item"><span class="chart-legend-swatch" style="background:' + s.color + '"></span>' +
-          CU.escapeHtml(s.label) + ' — ' + s.value + ' (' + pct + '%)</span>';
+          CU.escapeHtml(s.label) + '</span>';
       }).join('') : '';
     }
   }
 
+  var GENRE_BREADTH_LIMIT = 8;   //< keep the horizontal breadth chart to a readable height
+
   function renderBreadth() {
-    var pairs = (window.__genreData && window.__genreData.breadthPairs) || [];
-    CU.renderBarsFromPairs(document.getElementById('genreBreadthChart'), pairs, {
+    var pairs = ((window.__genreData && window.__genreData.breadthPairs) || []).slice(0, GENRE_BREADTH_LIMIT);
+    CU.renderHorizontalBars(document.getElementById('genreBreadthChart'), pairs, {
       emptyMessage: 'No genre data yet.',
-      fitLabel: fitGenreLabel,
       valueSuffix: ' artists'
     });
   }
