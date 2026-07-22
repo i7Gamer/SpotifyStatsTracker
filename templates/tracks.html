@@ -2,6 +2,81 @@
 {% block content %}
   <section class="hero">
     <div class="hero-content">
+      {# Unfiltered row: live/always-current cards that don't depend on the
+         interval/date-range filter below. #}
+      <div class="dashboard-summary dashboard-summary-live">
+        <div class="summary-card now-playing-card" id="nowPlayingCard" style="display: none;">
+          <h2>Now playing <span id="nowPlayingState" class="now-playing-state">Playing</span></h2>
+          <div class="now-playing-body">
+            {# No src attribute until the now-playing JS assigns one: src=""
+               fails at parse time, firing (and burning) the one-shot onerror
+               fallback before there was ever a real cover URL to fall back
+               from. #}
+            <img id="nowPlayingCover" class="now-playing-cover" alt="Album cover"
+                 onerror="this.onerror=null;this.src=window.PLACEHOLDER_IMG;" />
+            <div class="now-playing-meta">
+              <a id="nowPlayingName" class="now-playing-name" href="#"></a>
+              <div id="nowPlayingArtists" class="now-playing-artists"></div>
+              <div class="now-playing-progress"><div id="nowPlayingBar" class="now-playing-bar"></div></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="summary-card streak-card">
+          <h2>Listening streak</h2>
+          <p class="summary-value">🔥 {{ currentStreak.days }}</p>
+          {% if currentStreak.days > 0 %}
+            <div class="summary-change">{{ 'day' if currentStreak.days == 1 else 'days' }} in a row{% if not currentStreak.activeToday %} &middot; play today to keep it{% endif %}</div>
+          {% else %}
+            <div class="summary-change">Play something today to start one</div>
+          {% endif %}
+        </div>
+
+        <div class="summary-card onthisday-card">
+          <h2>On this day</h2>
+          {% if onThisDay %}
+            <div class="onthisday-list">
+              {% for item in onThisDay %}
+              <a class="onthisday-row" href="{{ url_for('songDetailPage', track_id=item.trackId) }}">
+                <span class="onthisday-years">{{ item.yearsAgo }}y ago</span>
+                <span class="onthisday-track">{{ item.trackName }}<span class="onthisday-artist">{{ item.artistName }}</span></span>
+                <span class="onthisday-count">{{ item.playCount }}×</span>
+              </a>
+              {% endfor %}
+            </div>
+          {% else %}
+            <p class="dashboard-card-empty">No past plays on today's date yet.</p>
+          {% endif %}
+        </div>
+
+        {% if lastfmGenreEnabled %}
+        <div class="summary-card discover-card">
+          <h2>Discover</h2>
+          {% if recommendationsUnlocked %}
+            {% if recommendations %}
+              <div class="discover-list">
+                {% for artist in recommendations %}
+                <a class="discover-row" href="{{ url_for('artistDetailPage', artist_id=artist.id) }}">
+                  <img class="discover-cover" loading="lazy" alt=""
+                       src="/img/{{ username }}/artists/{{ artist.imageId }}.jpeg"
+                       onerror="this.onerror=null;this.src=window.PLACEHOLDER_IMG;" />
+                  <span class="discover-meta">
+                    <span class="discover-name">{{ artist.name }}</span>
+                    {% if artist.matchedGenres %}<span class="discover-genre">{{ artist.matchedGenres[0] }}</span>{% endif %}
+                  </span>
+                </a>
+                {% endfor %}
+              </div>
+            {% else %}
+              <p class="dashboard-card-empty">No fresh picks right now &mdash; keep listening!</p>
+            {% endif %}
+          {% else %}
+            <p class="dashboard-card-empty">Unlock artist recommendations as your <a href="{{ url_for('genresPage') }}">genre data</a> fills in.</p>
+          {% endif %}
+        </div>
+        {% endif %}
+      </div>
+
       <form class="filter-section dashboard-filter" method="get" action="/">
         <div class="filter-group filter-search">
           <label for="dashboardSearch">Search:</label>
@@ -45,22 +120,6 @@
         </noscript>
       </form>
       <div class="dashboard-summary">
-        <div class="summary-card now-playing-card" id="nowPlayingCard" style="display: none;">
-          <h2>Now playing <span id="nowPlayingState" class="now-playing-state">Playing</span></h2>
-          <div class="now-playing-body">
-            {# No src attribute until the now-playing JS assigns one: src=""
-               fails at parse time, firing (and burning) the one-shot onerror
-               fallback before there was ever a real cover URL to fall back
-               from. #}
-            <img id="nowPlayingCover" class="now-playing-cover" alt="Album cover"
-                 onerror="this.onerror=null;this.src=window.PLACEHOLDER_IMG;" />
-            <div class="now-playing-meta">
-              <a id="nowPlayingName" class="now-playing-name" href="#"></a>
-              <div id="nowPlayingArtists" class="now-playing-artists"></div>
-              <div class="now-playing-progress"><div id="nowPlayingBar" class="now-playing-bar"></div></div>
-            </div>
-          </div>
-        </div>
         <div class="summary-card">
           <h2>Total songs played</h2>
           <p class="summary-value">{{ totalSongsPlayed or 0 }}</p>

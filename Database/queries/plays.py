@@ -948,6 +948,32 @@ class PlayQueries:
                  "plays": r["plays"],
                  "totalTimeListened": r["total_time"]} for r in rows]
 
+    def getPlaysForMonthDays(self, username: str, monthDays: list[str]) -> list[dict]:
+        """Raw plays whose UTC calendar month-day is in `monthDays` (each a
+        "%m-%d" string), each with its track name and primary (position-0)
+        artist name. Deliberately over-selects a ±1-day UTC window: the caller
+        (Database.getOnThisDay) converts played_at to the user's local
+        timezone and does the exact local month/day + year grouping, and a
+        play's local date can differ from its UTC date by up to a day."""
+        if not monthDays:
+            return []
+        conn = self._conn()
+        placeholders = ",".join("?" for _ in monthDays)
+        rows = conn.execute(
+            f"""
+            SELECT p.played_at AS played_at, p.track_id AS track_id,
+                   t.name AS track_name, ar.name AS artist_name
+            FROM plays p
+            JOIN tracks t ON t.id = p.track_id
+            LEFT JOIN track_artists ta ON ta.track_id = p.track_id AND ta.position = 0
+            LEFT JOIN artists ar ON ar.id = ta.artist_id
+            WHERE p.username = ?
+              AND strftime('%m-%d', p.played_at, 'unixepoch') IN ({placeholders})
+            """,
+            [username, *monthDays],
+        ).fetchall()
+        return [dict(r) for r in rows]
+
     def getBucketedArtistPlayCounts(self, username: str, startTs: float | None = None,
                                      endTs: float | None = None) -> list[dict]:
         """Play counts per (fixed PLAY_BUCKET_SECONDS UTC bucket, artist id) -

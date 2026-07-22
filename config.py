@@ -16,6 +16,14 @@ WRAPPED_TOP_GENRES_LIMIT = 5   #< genres listed on the Wrapped genre card
 COMPARE_TOP_GENRES_LIMIT = 10  #< per-side genres (and shared genres) shown on Compare
 COMPARE_GENRE_POOL_SIZE = 50   #< per-side genre pool the shared-genre intersection is computed over
 TRACK_CARD_GENRE_LIMIT = 3     #< genre pills shown per track/artist/album card, position-ordered
+ON_THIS_DAY_YEARS_LIMIT = 5    #< max prior years surfaced in the dashboard "On this day" card
+RECOMMENDATION_ARTIST_LIMIT = 6    #< artists shown in the dashboard "Discover" recommendations card
+RECOMMENDATION_GENRE_POOL = 15     #< how many of the user's top genres candidate artists are matched against
+RECOMMENDATION_EXCLUDE_TOP_N = 25  #< user's most-played artists excluded from recommendations (already well-known to them)
+GENRE_PAGE_LIST_LIMIT = 12         #< genres shown in the Genres page distribution bars / share donut / chip list
+GENRE_MIX_TREND_TOP_N = 6          #< genres plotted on the Genres page "mix over time" multi-line chart (kept small so it stays legible)
+GENRE_PAGE_TOP_ARTISTS_LIMIT = 10  #< top artists listed for the selected genre
+GENRE_PAGE_TOP_TRACKS_LIMIT = 10   #< top tracks listed for the selected genre
 WRAPPED_LIST_SIZE = 10          #< default/fallback for ?limit= - how many items per category the Wrapped page shows
 WRAPPED_LIMIT_OPTIONS = (10, 25, 50, 100)   #< selectable values for Wrapped's items-per-category dropdown
 # Public Wrapped share-link expiry choices: form value -> seconds until

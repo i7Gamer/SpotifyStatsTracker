@@ -99,6 +99,55 @@ def genreGatePasses(coverage: dict) -> bool:
                for categoryName in GENRE_COVERAGE_CATEGORIES)
 
 
+def resolveGenreTrends(db, genres, startDate, endDate) -> dict:
+    """Monthly genre trend ({"buckets", "series"}) for a user db; the empty
+    shape when the lookup fails or returns something unexpected (stubbed dbs) -
+    same degradation contract as resolveGenreDistribution."""
+    empty = {"buckets": [], "series": []}
+    try:
+        trends = db.getGenreTrends(genres, startDate=startDate, endDate=endDate)
+    except Exception as e:
+        logger.warning("Genre trends lookup failed: %s", e)
+        return empty
+    if not isinstance(trends, dict) or "buckets" not in trends or "series" not in trends:
+        return empty
+    return trends
+
+
+def resolveGenreStats(db, genre, startDate, endDate) -> dict:
+    """Per-genre stat strip for a user db; zeros when the lookup fails or
+    returns a non-dict (stubbed dbs)."""
+    empty = {"plays": 0, "listenMs": 0, "firstPlayedTs": None, "sharePercent": 0.0}
+    try:
+        stats = db.getGenreStats(genre, startDate=startDate, endDate=endDate)
+    except Exception as e:
+        logger.warning("Genre stats lookup failed: %s", e)
+        return empty
+    return stats if isinstance(stats, dict) else empty
+
+
+def resolveTopArtistsForGenre(db, genre, limit) -> list:
+    """Top artists for one genre; [] when the lookup fails or returns a
+    non-list (stubbed dbs)."""
+    try:
+        artists = db.getTopArtistsForGenre(genre, limit)
+    except Exception as e:
+        logger.warning("Top artists for genre lookup failed: %s", e)
+        return []
+    return artists if isinstance(artists, list) else []
+
+
+def resolveTopTracksForGenre(db, genre, limit) -> list:
+    """Top tracks for one genre; [] when the lookup fails or returns a
+    non-list (stubbed dbs)."""
+    try:
+        tracks = db.getTopTracksForGenre(genre, limit)
+    except Exception as e:
+        logger.warning("Top tracks for genre lookup failed: %s", e)
+        return []
+    return tracks if isinstance(tracks, list) else []
+
+
 def emptyBiographyCoverage() -> dict:
     """The all-zeros shape for the Overview "Biography Backfill Progress"
     widget - what guests and sanitize failures resolve to, mirroring

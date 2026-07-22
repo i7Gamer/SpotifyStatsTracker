@@ -170,6 +170,168 @@ class GenreQueries:
             )
         return len(foldableIds)
 
+    def getArtistsByGenres(self, username: str, genres: list[str],
+                           excludeArtistIds: list[str], limit: int) -> list[dict]:
+        """Recommendation candidates: artists credited on this user's played
+        tracks whose own (artist_genres) tags overlap `genres`, excluding
+        `excludeArtistIds`. Ranked most-relevant first: more shared genres
+        wins, then FEWER plays (surface under-played artists that fit the
+        user's taste), then id for a stable order. Each row carries
+        sharedGenreCount and the matched genre names (for a "why" chip)."""
+        if not genres:
+            return []
+        conn = self._conn()
+        genrePlaceholders = ",".join("?" for _ in genres)
+        params: list = [*genres, username]
+        excludeClause = ""
+        if excludeArtistIds:
+            excludeClause = f" AND ar.id NOT IN ({','.join('?' for _ in excludeArtistIds)})"
+            params.extend(excludeArtistIds)
+        params.append(limit)
+        rows = conn.execute(
+            f"""
+            SELECT ar.id AS id, ar.name AS name, ar.image_id AS image_id,
+                   COUNT(DISTINCT p.id) AS play_count,
+                   COUNT(DISTINCT g.genre) AS shared_genre_count,
+                   GROUP_CONCAT(DISTINCT g.genre) AS matched_genres
+            FROM plays p
+            JOIN track_artists ta ON ta.track_id = p.track_id
+            JOIN artists ar ON ar.id = ta.artist_id
+            JOIN artist_genres g ON g.artist_id = ar.id AND g.genre IN ({genrePlaceholders})
+            WHERE p.username = ?{excludeClause}
+            GROUP BY ar.id
+            ORDER BY shared_genre_count DESC, play_count ASC, ar.id ASC
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
+        return [
+            {
+                "id": r["id"], "name": r["name"], "imageId": r["image_id"],
+                "playCount": r["play_count"], "sharedGenreCount": r["shared_genre_count"],
+                "matchedGenres": r["matched_genres"].split(",") if r["matched_genres"] else [],
+            }
+            for r in rows
+        ]
+
+    # ---- Genres page: trends, per-genre stats, per-genre top lists ----------
+
+    def getGenrePlayRows(self, username: str, genres: list[str], includeInherited: int,
+                         startTs: float | None, endTs: float | None) -> list[dict]:
+        """(played_at, genre) for every play on a track tagged with any of
+        `genres`, over track_genres (the finest granularity, matching
+        getGenreDistribution). The caller buckets played_at into local-time
+        months in Python. Empty `genres` -> []."""
+        if not genres:
+            return []
+        conn = self._conn()
+        genrePlaceholders = ",".join("?" for _ in genres)
+        params: list = [includeInherited, *genres, username]
+        rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
+        rows = conn.execute(
+            f"""
+            SELECT p.played_at AS played_at, g.genre AS genre
+            FROM plays p
+            JOIN track_genres g ON g.track_id = p.track_id
+            WHERE (? OR g.inherited = 0) AND g.genre IN ({genrePlaceholders})
+              AND p.username = ?{rangeClause}
+            """,
+            params,
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def getGenrePlayStats(self, username: str, genre: str, includeInherited: int,
+                          startTs: float | None, endTs: float | None) -> dict:
+        """{plays, listenMs, firstPlayedTs} for one genre's plays."""
+        conn = self._conn()
+        params: list = [includeInherited, genre, username]
+        rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
+        row = conn.execute(
+            f"""
+            SELECT COUNT(*) AS plays, COALESCE(SUM(p.time_played), 0) AS listen_ms,
+                   MIN(p.played_at) AS first_ts
+            FROM plays p
+            JOIN track_genres g ON g.track_id = p.track_id
+            WHERE (? OR g.inherited = 0) AND g.genre = ? AND p.username = ?{rangeClause}
+            """,
+            params,
+        ).fetchone()
+        return {"plays": row["plays"], "listenMs": row["listen_ms"], "firstPlayedTs": row["first_ts"]}
+
+    def getTotalGenreTaggedPlays(self, username: str, includeInherited: int,
+                                 startTs: float | None, endTs: float | None) -> int:
+        """How many of the user's plays land on a track carrying any genre row
+        (respecting the inherited toggle) - the denominator for a genre's
+        listening share."""
+        conn = self._conn()
+        params: list = [username]
+        rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
+        params.append(includeInherited)
+        row = conn.execute(
+            f"""
+            SELECT COUNT(*) AS c FROM plays p
+            WHERE p.username = ?{rangeClause}
+              AND EXISTS (SELECT 1 FROM track_genres g
+                          WHERE g.track_id = p.track_id AND (? OR g.inherited = 0))
+            """,
+            params,
+        ).fetchone()
+        return row["c"]
+
+    def getTopArtistsForGenre(self, username: str, genre: str, includeInherited: int,
+                              limit: int, startTs: float | None = None,
+                              endTs: float | None = None) -> list[dict]:
+        """Top artists (by play count) credited on tracks tagged `genre`."""
+        conn = self._conn()
+        params: list = [includeInherited, genre, username]
+        rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
+        params.append(limit)
+        rows = conn.execute(
+            f"""
+            SELECT ar.id AS id, ar.name AS name, ar.image_id AS image_id,
+                   COUNT(DISTINCT p.id) AS play_count
+            FROM plays p
+            JOIN track_genres g ON g.track_id = p.track_id AND (? OR g.inherited = 0) AND g.genre = ?
+            JOIN track_artists ta ON ta.track_id = p.track_id
+            JOIN artists ar ON ar.id = ta.artist_id
+            WHERE p.username = ?{rangeClause}
+            GROUP BY ar.id
+            ORDER BY play_count DESC, ar.name COLLATE NOCASE ASC, ar.id ASC
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
+        return [{"id": r["id"], "name": r["name"], "imageId": r["image_id"],
+                 "playCount": r["play_count"]} for r in rows]
+
+    def getTopTracksForGenre(self, username: str, genre: str, includeInherited: int,
+                             limit: int, startTs: float | None = None,
+                             endTs: float | None = None) -> list[dict]:
+        """Top tracks (by play count) tagged `genre`, each with its primary
+        (position-0) artist name."""
+        conn = self._conn()
+        params: list = [includeInherited, genre, username]
+        rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
+        params.append(limit)
+        rows = conn.execute(
+            f"""
+            SELECT t.id AS id, t.name AS name, t.image_id AS image_id,
+                   ar.name AS artist_name, COUNT(p.id) AS play_count
+            FROM plays p
+            JOIN track_genres g ON g.track_id = p.track_id AND (? OR g.inherited = 0) AND g.genre = ?
+            JOIN tracks t ON t.id = p.track_id
+            LEFT JOIN track_artists ta ON ta.track_id = t.id AND ta.position = 0
+            LEFT JOIN artists ar ON ar.id = ta.artist_id
+            WHERE p.username = ?{rangeClause}
+            GROUP BY t.id
+            ORDER BY play_count DESC, t.name COLLATE NOCASE ASC, t.id ASC
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
+        return [{"id": r["id"], "name": r["name"], "imageId": r["image_id"],
+                 "artistName": r["artist_name"], "playCount": r["play_count"]} for r in rows]
+
     def getArtistLastfmState(self, artistId: str) -> dict:
         """Attempt stamp + current genres for one artist - the inheritance
         decision for a tag-less track/album re-reads this at process time (the

@@ -43,6 +43,11 @@ TRUTHY_DEBUG_VALUES = {"1", "true"}
 # count must track this tuple - never a bare literal.
 GENRE_COVERAGE_CATEGORIES = ("song", "album", "artist")
 
+# How far back getCurrentStreak scans for the ongoing daily streak. A live
+# streak is always far shorter; this only bounds the bucket query so it never
+# walks the whole history to compute a number that can't exceed this anyway.
+CURRENT_STREAK_LOOKBACK_DAYS = 400
+
 IMAGE_DOWNLOAD_WORKERS = 5   #< bounds total concurrent image downloads for the whole process, not per user
 
 ARTIST_BIO_FETCH_WORKERS = 2   #< bounds concurrent artist-bio fetches for the whole process; each is one
@@ -685,6 +690,74 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         rows = conn.execute(query, params).fetchall()
         return {row["genre"]: row["plays"] for row in rows}
 
+    def getGenreTrends(self, genres: list[str], startDate: datetime.datetime = None,
+                       endDate: datetime.datetime = None, includeInherited: bool | None = None) -> dict:
+        """Plays per local-time month per genre, in the {"buckets", "series"}
+        shape the multi-line trend chart consumes (same shape as getArtistTrend).
+        `buckets` is the sorted union of the "%Y-%m" months in which any of the
+        requested genres has a play; each series' `data` aligns to it (0 where
+        that genre had no play that month). Requested-genre order is preserved;
+        genres with no plays at all are dropped. Empty input or no plays ->
+        {"buckets": [], "series": []}."""
+        startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
+        inherited = self._resolveIncludeInherited(includeInherited)
+        rows = self.repo.getGenrePlayRows(self.user, genres, inherited, startTs, endTs)
+
+        counts: dict = {}  # genre -> {month: count}
+        months: set = set()
+        for row in rows:
+            month = convertToDatetime(row["played_at"], tz=self.tz).strftime("%Y-%m")
+            months.add(month)
+            genreMonths = counts.setdefault(row["genre"], {})
+            genreMonths[month] = genreMonths.get(month, 0) + 1
+
+        if not months:
+            return {"buckets": [], "series": []}
+
+        buckets = sorted(months)
+        series = [
+            {"name": genre, "data": [counts[genre].get(month, 0) for month in buckets]}
+            for genre in genres if genre in counts
+        ]
+        return {"buckets": buckets, "series": series}
+
+    def getGenreStats(self, genre: str, startDate: datetime.datetime = None,
+                      endDate: datetime.datetime = None, includeInherited: bool | None = None) -> dict:
+        """{plays, listenMs, firstPlayedTs, sharePercent} for one genre.
+        sharePercent is this genre's plays as a share of all genre-tagged
+        plays in range (0.0 when the user has none)."""
+        startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
+        inherited = self._resolveIncludeInherited(includeInherited)
+        stats = self.repo.getGenrePlayStats(self.user, genre, inherited, startTs, endTs)
+        total = self.repo.getTotalGenreTaggedPlays(self.user, inherited, startTs, endTs)
+        stats["sharePercent"] = round(stats["plays"] / total * 100, 1) if total else 0.0
+        return stats
+
+    def getTopArtistsForGenre(self, genre: str, limit: int, startDate: datetime.datetime = None,
+                              endDate: datetime.datetime = None, includeInherited: bool | None = None) -> list[dict]:
+        startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
+        inherited = self._resolveIncludeInherited(includeInherited)
+        return self.repo.getTopArtistsForGenre(self.user, genre, inherited, limit, startTs, endTs)
+
+    def getTopTracksForGenre(self, genre: str, limit: int, startDate: datetime.datetime = None,
+                             endDate: datetime.datetime = None, includeInherited: bool | None = None) -> list[dict]:
+        startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
+        inherited = self._resolveIncludeInherited(includeInherited)
+        return self.repo.getTopTracksForGenre(self.user, genre, inherited, limit, startTs, endTs)
+
+    def getRecommendedArtists(self, limit: int, genrePool: int, excludeTopN: int) -> list[dict]:
+        """"Discover" recommendations: under-played artists already in the
+        user's library whose genres overlap the user's top `genrePool` genres,
+        excluding the user's `excludeTopN` most-played artists. Returns [] when
+        the user has no genre data at all. Callers gate this behind the genre
+        coverage unlock (see genre_gate) so it only surfaces once the tag data
+        is dense enough to be meaningful."""
+        topGenres = list(self.getGenreDistribution(limit=genrePool).keys())
+        if not topGenres:
+            return []
+        topArtistIds = [artist["id"] for artist in self.getTopArtists(by="plays", limit=excludeTopN)]
+        return self.repo.getArtistsByGenres(self.user, topGenres, topArtistIds, limit)
+
     def getGenresForTrack(self, trackId: str, includeInherited: bool | None = None) -> list[str]:
         """This track's own genre names, position-ordered - the track-card
         badge's data source. Respects the same inherited-genre toggle as
@@ -783,20 +856,106 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
         return self.repo.getPlayTotals(self.user, startTs, endTs)
 
-    def getLongestStreak(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> int:
-        """Longest consecutive days of plays in range. Works off SQL-side
-        15-minute buckets (getBucketedPlayTotals) - a bucket's start shares
-        its local date with every play inside it, so the distinct-dates set
-        is identical to a per-play scan's."""
-        startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
+    def _getPlayDateSet(self, startTs: float | None, endTs: float | None) -> set[str]:
+        """Distinct local ("%Y-%m-%d") dates on which this user has any play in
+        [startTs, endTs). Works off SQL-side buckets (getBucketedPlayTotals) -
+        a bucket's start shares its local date with every play inside it, so the
+        set is identical to a per-play scan's. Shared by the longest-streak and
+        current-streak calculations."""
         rows = self.repo.getBucketedPlayTotals(self.user, startTs, endTs)
-        if not rows:
-            return 0
-
-        play_dates = sorted({
+        return {
             convertToDatetime(r["bucketStartTs"], tz=self.tz).strftime("%Y-%m-%d")
             for r in rows
+        }
+
+    def getCurrentStreak(self, now: datetime.datetime = None) -> dict:
+        """The user's ongoing consecutive-days listening streak as of `now`
+        (defaults to the current local time). Returns {"days", "activeToday"}:
+        - activeToday is True when there's already a play logged today.
+        - The streak stays "alive" (days > 0) if the most recent play was
+          today OR yesterday - a day with no play yet doesn't break it until it
+          ends. Two or more empty days since the last play -> days = 0.
+        Only scans the last CURRENT_STREAK_LOOKBACK_DAYS (any live streak is far
+        shorter, and this keeps the bucket query bounded)."""
+        nowLocal = now.astimezone(self.tz) if now is not None else datetime.datetime.now(tz=self.tz)
+        today = nowLocal.date()
+        startTs = (nowLocal - datetime.timedelta(days=CURRENT_STREAK_LOOKBACK_DAYS)).timestamp()
+        play_dates = self._getPlayDateSet(startTs, None)
+
+        yesterday = today - datetime.timedelta(days=1)
+        todayStr = today.strftime("%Y-%m-%d")
+        if todayStr in play_dates:
+            anchor, activeToday = today, True
+        elif yesterday.strftime("%Y-%m-%d") in play_dates:
+            anchor, activeToday = yesterday, False
+        else:
+            return {"days": 0, "activeToday": False}
+
+        days = 0
+        cursor = anchor
+        while cursor.strftime("%Y-%m-%d") in play_dates:
+            days += 1
+            cursor -= datetime.timedelta(days=1)
+        return {"days": days, "activeToday": activeToday}
+
+    def getOnThisDay(self, now: datetime.datetime = None, limit: int | None = None) -> list[dict]:
+        """"On this day" resurfacing: for each PRIOR year that has plays on
+        today's local month/day, the track played most that day. Returns
+        [{year, yearsAgo, trackId, trackName, artistName, playCount}], newest
+        year first, capped at `limit` (None = uncapped). The repo over-selects
+        a ±1-day UTC window; the exact local month/day match is applied here so
+        it's correct across timezone offsets and DST."""
+        nowLocal = now.astimezone(self.tz) if now is not None else datetime.datetime.now(tz=self.tz)
+        today = nowLocal.date()
+        monthDays = sorted({
+            (today + datetime.timedelta(days=offset)).strftime("%m-%d")
+            for offset in (-1, 0, 1)
         })
+        rows = self.repo.getPlaysForMonthDays(self.user, monthDays)
+
+        perYearTrack: dict = {}
+        for r in rows:
+            localDt = convertToDatetime(r["played_at"], tz=self.tz)
+            if (localDt.month, localDt.day) != (today.month, today.day):
+                continue
+            if localDt.year == today.year:
+                continue
+            key = (localDt.year, r["track_id"])
+            agg = perYearTrack.get(key)
+            if agg is None:
+                perYearTrack[key] = {"count": 1, "trackName": r["track_name"],
+                                     "artistName": r["artist_name"]}
+            else:
+                agg["count"] += 1
+
+        def sortKey(entry: dict) -> tuple:
+            # Highest play count wins; track name (then id) breaks ties so the
+            # pick is deterministic.
+            return (-entry["playCount"], entry["trackName"] or "", entry["trackId"])
+
+        bestByYear: dict = {}
+        for (year, trackId), agg in perYearTrack.items():
+            entry = {"year": year, "trackId": trackId, "trackName": agg["trackName"],
+                     "artistName": agg["artistName"], "playCount": agg["count"]}
+            current = bestByYear.get(year)
+            if current is None or sortKey(entry) < sortKey(current):
+                bestByYear[year] = entry
+
+        result = sorted(bestByYear.values(), key=lambda e: e["year"], reverse=True)
+        if limit is not None:
+            result = result[:limit]
+        for entry in result:
+            entry["yearsAgo"] = today.year - entry["year"]
+        return result
+
+    def getLongestStreak(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> int:
+        """Longest consecutive days of plays in range. See _getPlayDateSet for
+        why SQL-side buckets give the same distinct-dates set as a per-play
+        scan."""
+        startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
+        play_dates = sorted(self._getPlayDateSet(startTs, endTs))
+        if not play_dates:
+            return 0
 
         max_streak = 1
         current_streak = 1

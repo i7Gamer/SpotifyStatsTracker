@@ -70,6 +70,9 @@
           </div>
         </div>
         <a class="{{ 'active' if section == 'charts' }}" {% if section == 'charts' %}aria-current="page"{% endif %} href="{{ url_for('chartsPage') }}">Charts</a>
+        {% if lastfm_genre_enabled %}
+        <a class="{{ 'active' if section == 'genres' }}" {% if section == 'genres' %}aria-current="page"{% endif %} href="{{ url_for('genresPage') }}">Genres</a>
+        {% endif %}
         <a class="{{ 'active' if section == 'wrapped' }}" {% if section == 'wrapped' %}aria-current="page"{% endif %} href="{{ url_for('wrappedPage') }}">Wrapped</a>
         {% if hasAcceptedShares %}
         <a class="{{ 'active' if section == 'compare' }}" {% if section == 'compare' %}aria-current="page"{% endif %} href="{{ url_for('comparePage') }}">Compare</a>

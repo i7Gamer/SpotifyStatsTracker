@@ -33,6 +33,8 @@ from services.genre_gate import (
     resolveGenreDistribution, genreGatePasses, emptyBiographyCoverage,
     sanitizeBiographyCoverage, resolveBiographyCoverage,
     resolveGenresForTrack, resolveGenresForAlbum, resolveGenresForArtist,
+    resolveGenreTrends, resolveGenreStats, resolveTopArtistsForGenre,
+    resolveTopTracksForGenre,
 )
 # Taste-match scoring lives in services/taste_match.py; the compare route calls
 # _tasteMatchPercent/_markLinkExternally and _buildSharedItems calls
@@ -43,6 +45,7 @@ from services.taste_match import (
 from routes.media import register as registerMediaRoutes
 from routes.admin import register as registerAdminRoutes
 from routes.charts import register as registerChartsRoutes
+from routes.genres import register as registerGenresRoutes
 from routes.compare import register as registerCompareRoutes
 from routes.wrapped import register as registerWrappedRoutes
 from routes.auth import register as registerAuthRoutes
@@ -602,6 +605,15 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
             return {"album_bio_enabled": self.repo.isAlbumBioEnabled()}
 
         @self.app.context_processor
+        def _injectLastfmGenreStatus():
+            # Lets layout.html's nav show the "Genres" link only when the
+            # admin's instance-wide Last.fm genre backfill is enabled - the
+            # same kill switch the Charts genre section already respects, so
+            # the nav never advertises a page whose entire content is off.
+            # Cheap settings read, instance-wide (no per-user memoization).
+            return {"lastfm_genre_enabled": self.repo.isLastfmGenreBackfillEnabled()}
+
+        @self.app.context_processor
         def _injectShareStatus():
             # Lets layout.html's nav show a "Compare" link only for users who
             # have at least one usable accepted share, and the topbar badges
@@ -666,6 +678,8 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
         registerAuthRoutes(self.app, self)
 
         registerChartsRoutes(self.app, self)
+
+        registerGenresRoutes(self.app, self)
 
         registerAdminRoutes(self.app, self)
 

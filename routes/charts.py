@@ -231,8 +231,31 @@ def register(app, dashboard):
         has_api = bool(creds.get("client_id") and creds.get("client_secret"))
         is_authenticated = bool(creds.get("refresh_token"))
 
+        # Unfiltered dashboard cards (independent of the interval/date-range
+        # filter above): live streak, "on this day" resurfacing, and genre-
+        # based recommendations. Recommendations reuse the same Last.fm kill
+        # switch + coverage unlock as the Charts/Genres genre surfaces.
+        currentStreak = db.getCurrentStreak()
+        onThisDay = db.getOnThisDay(limit=appmod.ON_THIS_DAY_YEARS_LIMIT)
+        lastfmGenreEnabled = dashboard.repo.isLastfmGenreBackfillEnabled()
+        recommendations = []
+        recommendationsUnlocked = False
+        if lastfmGenreEnabled:
+            recommendationsUnlocked = genreGatePasses(resolveGenreCoverage(db, None, None))
+            if recommendationsUnlocked:
+                recommendations = db.getRecommendedArtists(
+                    limit=appmod.RECOMMENDATION_ARTIST_LIMIT,
+                    genrePool=appmod.RECOMMENDATION_GENRE_POOL,
+                    excludeTopN=appmod.RECOMMENDATION_EXCLUDE_TOP_N,
+                )
+
         return render_template(
             "tracks.html",
+            currentStreak=currentStreak,
+            onThisDay=onThisDay,
+            lastfmGenreEnabled=lastfmGenreEnabled,
+            recommendations=recommendations,
+            recommendationsUnlocked=recommendationsUnlocked,
             tracks=tracks,
             totalSongsPlayed=stats["totalSongsPlayed"],
             totalListenTime=totalDurationText,
