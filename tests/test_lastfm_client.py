@@ -599,11 +599,102 @@ class AlbumTopTagsArtistNameFallbackTestCase(unittest.TestCase):
         self.assertEqual(thirdParams["artist"], "HUGO")
 
 
+class TrackGetInfoFallbackTestCase(unittest.TestCase):
+    """track.gettoptags is assumed to share the same confirmed-live
+    gettoptags-vs-getinfo server-side inconsistency as album.gettoptags (see
+    AlbumGetInfoFallbackTestCase) - getTrackTopTags falls back to
+    track.getinfo's embedded tags on a definitive-empty gettoptags result."""
+
+    def _client(self, acquireResult=True):
+        limiter = MagicMock()
+        limiter.acquire.return_value = acquireResult
+        return LastfmClient("test-key", rateLimiter=limiter), limiter
+
+    @patch("Database.lastfm.requests.get")
+    def test_fallback_triggers_on_empty_gettoptags_and_uses_getinfo_tags(self, mockGet):
+        client, _ = self._client()
+        mockGet.side_effect = [
+            _response(payload={"toptags": {"tag": []}}),
+            _response(payload={"track": {"toptags": {"tag": [
+                {"name": "rock"}, {"name": "indie rock"}]}}}),
+        ]
+        outcome = client.getTrackTopTags("Imagine Dragons", "Wrecked")
+        self.assertEqual(outcome.status, OUTCOME_OK)
+        self.assertEqual([t["name"] for t in outcome.tags], ["rock", "indie rock"])
+        self.assertEqual(mockGet.call_count, 2)
+        secondParams = mockGet.call_args_list[1].kwargs["params"]
+        self.assertEqual(secondParams["method"], "track.getinfo")
+        self.assertEqual(secondParams["artist"], "Imagine Dragons")
+        self.assertEqual(secondParams["track"], "Wrecked")
+
+    @patch("Database.lastfm.requests.get")
+    def test_fallback_not_triggered_when_gettoptags_succeeds(self, mockGet):
+        client, _ = self._client()
+        mockGet.return_value = _response(payload={"toptags": {"tag": [{"name": "rock", "count": 10}]}})
+        outcome = client.getTrackTopTags("Metallica", "Master of Puppets")
+        self.assertEqual(outcome.status, OUTCOME_OK)
+        self.assertEqual(len(outcome.tags), 1)
+        mockGet.assert_called_once()   #< getinfo never called - gettoptags already succeeded
+
+    @patch("Database.lastfm.requests.get")
+    def test_both_endpoints_empty_stays_a_definitive_empty_result(self, mockGet):
+        client, _ = self._client()
+        mockGet.side_effect = [
+            _response(payload={"toptags": {"tag": []}}),
+            _response(payload={"track": {"toptags": {"tag": []}}}),
+        ]
+        outcome = client.getTrackTopTags("Pikayzo", "Some Track")
+        self.assertEqual(outcome.status, OUTCOME_OK)
+        self.assertEqual(outcome.tags, [])
+        self.assertEqual(mockGet.call_count, 2)
+
+    @patch("Database.lastfm.requests.get")
+    def test_getinfo_bare_tag_dict_is_normalized_to_a_list(self, mockGet):
+        client, _ = self._client()
+        mockGet.side_effect = [
+            _response(payload={"toptags": {"tag": []}}),
+            _response(payload={"track": {"toptags": {"tag": {"name": "soundtrack"}}}}),
+        ]
+        outcome = client.getTrackTopTags("Joe Hisaishi", "One Summer's Day")
+        self.assertEqual(outcome.tags, [{"name": "soundtrack"}])
+
+    @patch("Database.lastfm.requests.get")
+    def test_fallback_abort_propagates_none_not_the_stale_empty_result(self, mockGet):
+        client, limiter = self._client()
+        limiter.acquire.side_effect = [True, False]   #< gettoptags succeeds, getinfo's slot never granted
+        mockGet.return_value = _response(payload={"toptags": {"tag": []}})
+        outcome = client.getTrackTopTags("Imagine Dragons", "Wrecked", stop_event=threading.Event())
+        self.assertIsNone(outcome)
+        mockGet.assert_called_once()   #< only the first (gettoptags) request went out
+
+    @patch("Database.lastfm.requests.get")
+    def test_fallback_transient_error_is_not_definitive(self, mockGet):
+        client, _ = self._client()
+        mockGet.side_effect = [
+            _response(payload={"toptags": {"tag": []}}),
+            _response(statusCode=500, jsonError=True),
+        ]
+        outcome = client.getTrackTopTags("Imagine Dragons", "Wrecked")
+        self.assertEqual(outcome.status, OUTCOME_TRANSIENT)
+
+    @patch("Database.lastfm.requests.get")
+    def test_fallback_not_found_is_still_definitive(self, mockGet):
+        client, _ = self._client()
+        mockGet.side_effect = [
+            _response(payload={"toptags": {"tag": []}}),
+            _response(statusCode=400, payload={"error": 6, "message": "not found"}),
+        ]
+        outcome = client.getTrackTopTags("Imagine Dragons", "Wrecked")
+        self.assertEqual(outcome.status, OUTCOME_NOT_FOUND)
+
+
 class TrackTopTagsArtistNameFallbackTestCase(unittest.TestCase):
     """getTrackTopTags previously had no retry at all beyond the caller's
     own cleanLookupName title-decoration retry - it now also retries under
     normalizeArtistLookupName's and foldStylizedArtistName's transformed
-    artist spellings, same as the other three lookup methods."""
+    artist spellings, same as the other three lookup methods. Each candidate
+    name goes through the full gettoptags -> track.getinfo fallback pair
+    (see TrackGetInfoFallbackTestCase), same as the album case."""
 
     def _client(self):
         limiter = MagicMock()
@@ -614,38 +705,43 @@ class TrackTopTagsArtistNameFallbackTestCase(unittest.TestCase):
     def test_slash_normalization_retry_recovers_tags(self, mockGet):
         client = self._client()
         mockGet.side_effect = [
-            _response(payload={"toptags": {"tag": []}}),
-            _response(payload={"toptags": {"tag": [{"name": "house", "count": 20}]}}),
+            _response(payload={"toptags": {"tag": []}}),                              # verbatim gettoptags
+            _response(payload={"track": {"toptags": {"tag": []}}}),                    # verbatim getinfo
+            _response(payload={"toptags": {"tag": [{"name": "house", "count": 20}]}}), # candidate gettoptags
         ]
         outcome = client.getTrackTopTags("Axwell /\\ Ingrosso", "Something New")
         self.assertEqual(outcome.status, OUTCOME_OK)
         self.assertEqual([t["name"] for t in outcome.tags], ["house"])
-        secondParams = mockGet.call_args_list[1].kwargs["params"]
-        self.assertEqual(secondParams["method"], "track.gettoptags")
-        self.assertEqual(secondParams["artist"], "Axwell & Ingrosso")
-        self.assertEqual(secondParams["track"], "Something New")
+        thirdParams = mockGet.call_args_list[2].kwargs["params"]
+        self.assertEqual(thirdParams["method"], "track.gettoptags")
+        self.assertEqual(thirdParams["artist"], "Axwell & Ingrosso")
+        self.assertEqual(thirdParams["track"], "Something New")
 
     @patch("Database.lastfm.requests.get")
     def test_stylized_fold_retry_recovers_tags(self, mockGet):
         client = self._client()
         mockGet.side_effect = [
             _response(payload={"toptags": {"tag": []}}),
+            _response(payload={"track": {"toptags": {"tag": []}}}),
             _response(payload={"toptags": {"tag": [{"name": "pop", "count": 8}]}}),
         ]
         outcome = client.getTrackTopTags("HUGØ", "Some Track")
         self.assertEqual(outcome.status, OUTCOME_OK)
         self.assertEqual([t["name"] for t in outcome.tags], ["pop"])
-        secondParams = mockGet.call_args_list[1].kwargs["params"]
-        self.assertEqual(secondParams["artist"], "HUGO")
+        thirdParams = mockGet.call_args_list[2].kwargs["params"]
+        self.assertEqual(thirdParams["artist"], "HUGO")
 
     @patch("Database.lastfm.requests.get")
     def test_no_extra_requests_when_the_artist_name_has_no_transform(self, mockGet):
         client = self._client()
-        mockGet.return_value = _response(payload={"toptags": {"tag": []}})
-        outcome = client.getTrackTopTags("Radiohead", "Karma Police")
+        mockGet.side_effect = [
+            _response(payload={"toptags": {"tag": []}}),
+            _response(payload={"track": {"toptags": {"tag": []}}}),
+        ]
+        outcome = client.getTrackTopTags("Pikayzo", "Karma Police")
         self.assertEqual(outcome.status, OUTCOME_OK)
         self.assertEqual(outcome.tags, [])
-        mockGet.assert_called_once()
+        self.assertEqual(mockGet.call_count, 2)   #< gettoptags + getinfo only, no name candidates to try
 
 
 class ArtistInfoBioTestCase(unittest.TestCase):

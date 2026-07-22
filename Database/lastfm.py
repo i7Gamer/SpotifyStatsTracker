@@ -348,6 +348,28 @@ def _extractAlbumInfoTags(payload) -> list:
     return []
 
 
+def _extractTrackInfoTags(payload) -> list:
+    """track.toptags.tag from a track.getinfo payload - the fallback source
+    for tracks where track.gettoptags comes back empty, mirroring
+    _extractAlbumInfoTags for the same confirmed-live gettoptags-vs-getinfo
+    server-side inconsistency (Last.fm's own API docs show track.getInfo
+    embeds toptags.tag under the `track` key, the same shape album.getInfo
+    embeds tags.tag under `album`). Same bare-dict-vs-list normalization as
+    _extractTags."""
+    track = payload.get("track") if isinstance(payload, dict) else None
+    if not isinstance(track, dict):
+        return []
+    tagsContainer = track.get("toptags")
+    if not isinstance(tagsContainer, dict):
+        return []
+    tags = tagsContainer.get("tag")
+    if isinstance(tags, dict):
+        return [tags]
+    if isinstance(tags, list):
+        return tags
+    return []
+
+
 # Artist-bio cleaning: Last.fm bios carry embedded HTML (a trailing "Read
 # more on Last.fm" link) - that HTML is never rendered as-is (no sanitizer
 # dependency added just for this; the tags are simply stripped, converting
@@ -569,10 +591,33 @@ class LastfmClient:
                         stop_event: threading.Event | None = None) -> FetchOutcome | None:
         return self._lookupWithArtistNameFallback(
             artistName,
-            lambda name: self._fetchTopTags("track.gettoptags",
-                                            {"artist": name, "track": trackName}, stop_event),
+            lambda name: self._fetchTrackTopTagsForArtist(name, trackName, stop_event),
             lambda outcome: bool(outcome.tags),
             "track tags")
+
+    def _fetchTrackTopTagsForArtist(self, artistName: str, trackName: str,
+                                    stop_event: threading.Event | None) -> FetchOutcome | None:
+        """One track.gettoptags call for `artistName`/`trackName`, falling
+        back to track.getinfo's embedded tags on a definitive-empty result -
+        mirrors _fetchAlbumTopTagsForArtist for the same confirmed-live
+        gettoptags-vs-getinfo server-side inconsistency (see
+        _extractTrackInfoTags). Only tried on a definitive-empty gettoptags
+        result - never replaces a real result, and costs nothing extra on
+        the majority of tracks where gettoptags already succeeds. This is
+        the per-artist-name unit that getTrackTopTags retries under
+        alternate spellings via _lookupWithArtistNameFallback."""
+        outcome = self._fetchTopTags("track.gettoptags",
+                                     {"artist": artistName, "track": trackName}, stop_event)
+        if outcome is None or outcome.status != OUTCOME_OK or outcome.tags:
+            return outcome
+        fallback = self._fetchTopTags("track.getinfo",
+                                      {"artist": artistName, "track": trackName}, stop_event,
+                                      extractFn=_extractTrackInfoTags)
+        if fallback is not None and fallback.status == OUTCOME_OK and fallback.tags:
+            logger.info("[Lastfm] track.getinfo fallback recovered %d tag(s) for %r / %r "
+                       "after an empty track.gettoptags result", len(fallback.tags),
+                       artistName, trackName)
+        return fallback
 
     def validateApiKey(self) -> dict:
         """One cheap lookup to vet a key before storing it. {"ok": bool,
