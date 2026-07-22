@@ -19,7 +19,7 @@ from Database.utils import msToString, convertToDatetime
 from services.genre_gate import (
     emptyGenreCoverage, resolveGenreCoverage, genreGatePasses, resolveGenreDistribution,
     resolveGenreTrends, resolveGenreStats, resolveTopArtistsForGenre, resolveTopTracksForGenre,
-    resolveGenreHeatmap, emptyHeatmapGrid,
+    resolveGenreHeatmap, emptyHeatmapGrid, resolveGenreArtistCounts,
 )
 
 logger = logging.getLogger(__name__)
@@ -77,6 +77,7 @@ def register(app, dashboard):
         genreNames = []
         selectedGenre = None
         mixTrend = {"buckets": [], "series": []}
+        breadthPairs = []
         detail = None
 
         if lastfmEnabled:
@@ -86,6 +87,11 @@ def register(app, dashboard):
                 distribution = resolveGenreDistribution(db, None, None, GENRE_PAGE_LIST_LIMIT)
                 genreNames = list(distribution.keys())
                 mixTrend = resolveGenreTrends(db, genreNames[:GENRE_MIX_TREND_TOP_N], None, None)
+                # Breadth (distinct artists per genre) - the companion to the
+                # play-weighted share donut. Ranked most-artists-first, so it
+                # reads differently from the plays-ranked distribution.
+                breadth = resolveGenreArtistCounts(db, genreNames)
+                breadthPairs = sorted(breadth.items(), key=lambda kv: (-kv[1], kv[0]))
 
                 requested = request.args.get("genre")
                 selectedGenre = requested if requested in distribution else (genreNames[0] if genreNames else None)
@@ -116,6 +122,7 @@ def register(app, dashboard):
             genreCoverage=genreCoverage,
             genreUnlocked=genreUnlocked,
             distributionPairs=list(distribution.items()),
+            breadthPairs=breadthPairs,
             genreNames=genreNames,
             mixTrend=mixTrend,
             selectedTrend=detail["selectedTrend"] if detail else {"buckets": [], "series": []},

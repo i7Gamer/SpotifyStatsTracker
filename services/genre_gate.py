@@ -148,6 +148,18 @@ def resolveTopTracksForGenre(db, genre, limit) -> list:
     return tracks if isinstance(tracks, list) else []
 
 
+def resolveGenreArtistCounts(db, genres) -> dict:
+    """{genre: artist count} for a user db; {} when the lookup fails or returns
+    a non-dict (stubbed dbs) - same degradation contract as the other genre
+    resolvers."""
+    try:
+        counts = db.getGenreArtistCounts(genres)
+    except Exception as e:
+        logger.warning("Genre artist counts lookup failed: %s", e)
+        return {}
+    return counts if isinstance(counts, dict) else {}
+
+
 def emptyHeatmapGrid() -> list:
     """The all-zeros 7x24 listening-clock grid - what a failed/stubbed genre
     heatmap lookup degrades to."""

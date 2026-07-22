@@ -144,6 +144,23 @@ class GenreTrendTestCase(DatabaseTestCase):
         grid = db.getGenreHourOfDayHeatmap("nonexistent")
         self.assertTrue(all(cell["plays"] == 0 for row in grid for cell in row))
 
+    # ---- getGenreArtistCounts (breadth) -------------------------------------
+
+    def test_genre_artist_counts(self):
+        db = self._seed()
+        counts = db.getGenreArtistCounts(["rock", "indie", "jazz"])
+        # rock: a1 (t1,t2) + a2 (t3) = 2 distinct artists; indie: a2; jazz: a3.
+        self.assertEqual(counts, {"rock": 2, "indie": 1, "jazz": 1})
+
+    def test_genre_artist_counts_empty_input(self):
+        db = self._seed()
+        self.assertEqual(db.getGenreArtistCounts([]), {})
+
+    def test_genre_artist_counts_omits_genres_with_no_plays(self):
+        db = self._seed()
+        counts = db.getGenreArtistCounts(["rock", "nonexistent"])
+        self.assertEqual(counts, {"rock": 2})
+
 
 if __name__ == "__main__":
     unittest.main()

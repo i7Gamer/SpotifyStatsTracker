@@ -195,8 +195,14 @@ def timeToIntUTC(timestampOrStr):
     except (ValueError, TypeError):
         return timeToInt(timestampOrStr)
 
-def msToString(ms: int | float) -> str:
-    """ Converts milliseconds into a human-readable duration string. """
+def msToString(ms: int | float, hideSecondsAboveHours: int | None = None) -> str:
+    """Converts milliseconds into a human-readable duration string.
+
+    When `hideSecondsAboveHours` is set and the duration is at least that many
+    hours, the seconds component is dropped (e.g. a 12h total reads "12h 3m"
+    instead of "12h 3m 41s") - the seconds are noise at that scale. Left as None
+    everywhere the precise value matters (now-playing progress, tooltips, ...).
+    """
     if ms is None or ms <= 0:
         return "0s"
 
@@ -212,7 +218,8 @@ def msToString(ms: int | float) -> str:
         parts.append(f"{hours}h")
     if minutes > 0 or hours > 0:
         parts.append(f"{minutes}m")
-    if seconds > 0 or minutes > 0 or hours > 0:
+    showSeconds = hideSecondsAboveHours is None or hours < hideSecondsAboveHours
+    if showSeconds and (seconds > 0 or minutes > 0 or hours > 0):
         parts.append(f"{seconds}s")
 
     return " ".join(parts)

@@ -399,9 +399,13 @@ button {
    as one family. */
 .summary-top-item {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 12px;
   min-width: 0;
+}
+
+.summary-top-meta {
+  flex: 1;
 }
 
 .summary-top-cover {
@@ -430,26 +434,6 @@ button {
 
 .summary-top-name:hover {
   text-decoration: underline;
-}
-
-/* Desktop: Top song / Top artist cards stack the cover on its own row under
-   the heading with the text below it, at double the mobile thumbnail size;
-   mobile keeps the compact side-by-side row. (Now Playing keeps its text-left /
-   cover-top-right row at every width - see .now-playing-body.) */
-@media (min-width: 901px) {
-  .summary-top-item {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-
-  .summary-top-cover {
-    width: 112px;
-    height: 112px;
-  }
-
-  .summary-top-meta {
-    width: 100%;
-  }
 }
 
 .summary-change {
@@ -2764,11 +2748,6 @@ html.theme-red {
 }
 
 /* Genres page */
-.genre-share-wrap {
-  max-width: 520px;
-  margin: 0 auto;
-}
-
 #genreDetail {
   transition: opacity 0.15s ease;
 }

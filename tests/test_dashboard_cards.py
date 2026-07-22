@@ -86,6 +86,31 @@ class DashboardCardsTestCase(AppTestCase):
         self.assertLess(panelIndex, streakIndex)
         self.assertLess(streakIndex, nextCardIndex)
 
+    def test_total_listen_time_hides_seconds_above_10h(self):
+        dash = self._makeApp()
+        db = self._makeDb()
+        db.getOverallStats.return_value = {
+            "currentTopSongs": [], "currentTopArtists": [],
+            "totalSongsPlayed": 100,
+            "totalDurationMs": (12 * 3600 + 3 * 60 + 41) * 1000,
+            "previousSongsPlayed": 0, "previousDurationMs": 0,
+        }
+        body = self._get(dash, db).data.decode()
+        self.assertIn("12h 3m", body)
+        self.assertNotIn("12h 3m 41s", body)
+
+    def test_total_listen_time_keeps_seconds_below_10h(self):
+        dash = self._makeApp()
+        db = self._makeDb()
+        db.getOverallStats.return_value = {
+            "currentTopSongs": [], "currentTopArtists": [],
+            "totalSongsPlayed": 100,
+            "totalDurationMs": (9 * 3600 + 5 * 60 + 7) * 1000,
+            "previousSongsPlayed": 0, "previousDurationMs": 0,
+        }
+        body = self._get(dash, db).data.decode()
+        self.assertIn("9h 5m 7s", body)
+
     def test_on_this_day_name_is_wrapped_for_truncation(self):
         dash = self._makeApp()
         onThisDay = [{"year": 2024, "yearsAgo": 2, "trackId": "trk1",

@@ -267,6 +267,32 @@ class GenreQueries:
                  "plays": r["plays"],
                  "totalTimeListened": r["total_time"]} for r in rows]
 
+    def getArtistCountsByGenres(self, username: str, genres: list[str],
+                                includeInherited: int) -> dict:
+        """{genre: distinct artist count} over the given genres - how many
+        different artists the user has played within each genre (breadth),
+        complementing the play-weighted distribution/share (depth). Genres with
+        no plays are omitted. Empty input -> {}."""
+        if not genres:
+            return {}
+        conn = self._conn()
+        placeholders = ",".join("?" for _ in genres)
+        params: list = [includeInherited, *genres, username]
+        rows = conn.execute(
+            f"""
+            SELECT g.genre AS genre, COUNT(DISTINCT ar.id) AS artist_count
+            FROM plays p
+            JOIN track_genres g ON g.track_id = p.track_id AND (? OR g.inherited = 0)
+                AND g.genre IN ({placeholders})
+            JOIN track_artists ta ON ta.track_id = p.track_id
+            JOIN artists ar ON ar.id = ta.artist_id
+            WHERE p.username = ?
+            GROUP BY g.genre
+            """,
+            params,
+        ).fetchall()
+        return {r["genre"]: r["artist_count"] for r in rows}
+
     def getGenrePlayStats(self, username: str, genre: str, includeInherited: int,
                           startTs: float | None, endTs: float | None) -> dict:
         """{plays, listenMs, firstPlayedTs} for one genre's plays."""

@@ -208,7 +208,8 @@ def register(app, dashboard):
 
         stats = db.getOverallStats(startDate, endDate)
 
-        totalDurationText = msToString(stats["totalDurationMs"])
+        totalDurationText = msToString(stats["totalDurationMs"],
+                                       hideSecondsAboveHours=appmod.LISTEN_TIME_HIDE_SECONDS_ABOVE_HOURS)
 
         currentTopSong = dashboard._embedTopSongTextElements(stats["currentTopSongs"][0], sortBy="plays", totalPlays=stats["totalSongsPlayed"], totalMs=stats["totalDurationMs"]) if stats["currentTopSongs"] else None
         currentTopArtist = dashboard._embedArtistTextElement(stats["currentTopArtists"][0], sortBy="totalTimeListened", totalPlays=stats["totalSongsPlayed"], totalMs=stats["totalDurationMs"]) if stats["currentTopArtists"] else None

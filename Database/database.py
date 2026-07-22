@@ -745,6 +745,12 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         inherited = self._resolveIncludeInherited(includeInherited)
         return self.repo.getTopTracksForGenre(self.user, genre, inherited, limit, startTs, endTs)
 
+    def getGenreArtistCounts(self, genres: list[str], includeInherited: bool | None = None) -> dict:
+        """{genre: distinct artist count} for the given genres - the breadth
+        view that pairs with the play-weighted share donut on the Genres page."""
+        inherited = self._resolveIncludeInherited(includeInherited)
+        return self.repo.getArtistCountsByGenres(self.user, genres, inherited)
+
     def getGenreHourOfDayHeatmap(self, genre: str, startDate: datetime.datetime = None,
                                  endDate: datetime.datetime = None, includeInherited: bool | None = None) -> list:
         """7x24 grid (Monday=0..Sunday=6 x hour 0-23) of listening time/plays

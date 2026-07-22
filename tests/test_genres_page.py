@@ -35,6 +35,7 @@ class GenresPageTestCase(AppTestCase):
         db.getTopArtistsForGenre.return_value = []
         db.getTopTracksForGenre.return_value = []
         db.getGenreHourOfDayHeatmap.return_value = [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
+        db.getGenreArtistCounts.return_value = {"rock": 12, "jazz": 4}
         return db
 
     def _get(self, dash, db, query=""):
@@ -81,6 +82,20 @@ class GenresPageTestCase(AppTestCase):
         self.assertIn(b'id="genreClockChart"', resp.data)
         self.assertIn(b'Listening Clock', resp.data)
         db.getGenreHourOfDayHeatmap.assert_called_with("rock")
+
+    def test_unlocked_renders_share_legend_and_breadth_chart(self):
+        dash = self._makeApp()
+        db = self._makeDb(coverage=coverageDict(80, 60, 90),
+                          distribution={"rock": 120, "jazz": 40})
+        resp = self._get(dash, db)
+        body = resp.data.decode()
+        # Genre Share now has a legend element, and a companion breadth chart.
+        self.assertIn('id="genreShareLegend"', body)
+        self.assertIn('id="genreBreadthChart"', body)
+        self.assertIn('Artists per Genre', body)
+        db.getGenreArtistCounts.assert_called_with(["rock", "jazz"])
+        # Breadth ships as [label, value] pairs, ranked most-artists-first.
+        self.assertIn('["rock", 12]', body)
 
     def test_ajax_returns_detail_json(self):
         dash = self._makeApp()

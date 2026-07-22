@@ -43,6 +43,26 @@
       slices.push({ label: 'Other', value: otherValue, color: 'rgba(255,255,255,0.25)' });
     }
     CU.drawDonutChart(canvas, slices, grandTotal, { emptyMessage: 'No genre data yet.' });
+
+    // The donut has many slices, so the legend lives in HTML below it (with
+    // play counts + %) rather than crammed onto the canvas.
+    var legend = document.getElementById('genreShareLegend');
+    if (legend) {
+      legend.innerHTML = grandTotal ? slices.map(function (s) {
+        var pct = Math.round((s.value / grandTotal) * 100);
+        return '<span class="chart-legend-item"><span class="chart-legend-swatch" style="background:' + s.color + '"></span>' +
+          CU.escapeHtml(s.label) + ' — ' + s.value + ' (' + pct + '%)</span>';
+      }).join('') : '';
+    }
+  }
+
+  function renderBreadth() {
+    var pairs = (window.__genreData && window.__genreData.breadthPairs) || [];
+    CU.renderBarsFromPairs(document.getElementById('genreBreadthChart'), pairs, {
+      emptyMessage: 'No genre data yet.',
+      fitLabel: fitGenreLabel,
+      valueSuffix: ' artists'
+    });
   }
 
   function renderMix() {
@@ -60,6 +80,7 @@
   function renderOverview() {
     renderDistribution();
     renderShare();
+    renderBreadth();
     renderMix();
   }
 
