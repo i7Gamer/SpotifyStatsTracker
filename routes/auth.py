@@ -10,6 +10,7 @@ per-group _safeNextUrl helper lives here.
 import os
 import secrets
 import logging
+from urllib.parse import urlencode
 
 from flask import render_template, redirect, request, url_for, session, abort, jsonify
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -480,15 +481,14 @@ def register(app, dashboard):
         state = secrets.token_urlsafe(SPOTIFY_OAUTH_STATE_NUM_BYTES)
         session[SPOTIFY_OAUTH_STATE_SESSION_KEY] = state
 
-        auth_url = (
-            f"https://accounts.spotify.com/authorize"
-            f"?client_id={client_id}"
-            f"&response_type=code"
-            f"&redirect_uri={spotify_callback_url}"
-            f"&scope={scope}"
-            f"&state={state}"
-        )
-        return redirect(auth_url)
+        query = urlencode({
+            "client_id": client_id,
+            "response_type": "code",
+            "redirect_uri": spotify_callback_url,
+            "scope": scope,
+            "state": state,
+        })
+        return redirect(f"https://accounts.spotify.com/authorize?{query}")
     app.add_url_rule("/spotify-authorize", "spotifyAuthorize", spotifyAuthorize, methods=["GET"])
 
     def spotifyCallback():

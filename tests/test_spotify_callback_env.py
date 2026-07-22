@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import patch, MagicMock
 import sys
 import os
+from urllib.parse import urlparse, parse_qs
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -81,8 +82,10 @@ class TestSpotifyCallbackEnv(SpotifyEnvTestCase):
             # GET /spotify-authorize should redirect
             resp = client.get("/spotify-authorize")
             self.assertEqual(resp.status_code, 302)
-            self.assertIn("https://accounts.spotify.com/authorize", resp.headers["Location"])
-            self.assertIn("redirect_uri=http://localhost:5000/spotify-callback", resp.headers["Location"])
+            location = resp.headers["Location"]
+            self.assertTrue(location.startswith("https://accounts.spotify.com/authorize?"))
+            query = parse_qs(urlparse(location).query)
+            self.assertEqual(query["redirect_uri"], ["http://localhost:5000/spotify-callback"])
 
 
 @patch.dict(os.environ, {"SPOTIFY_CALLBACK_URL": "http://localhost:5000/spotify-callback"})
