@@ -2626,12 +2626,13 @@ html.theme-red {
   border: 1px solid rgba(255, 255, 255, 0.08);
 }
 
-/* Neutralize the base .dashboard-summary edge-bleed margins here: this row is
-   the panel's only child, so it aligns to the panel's own padding instead. The
-   small padding keeps room for the cards' hover lift/shadow and any scrollbar. */
+/* This row's own overflow-x: auto clips at its own padding box regardless of
+   the panel's padding, so the negative margin here re-bleeds it back out to
+   the panel's edges (matching .dashboard-live's padding) and the padding is
+   sized to fit the .summary-card:hover lift/shadow without it being cut off. */
 .dashboard-summary-live {
-  margin: 0;
-  padding: 4px 2px 8px;
+  margin: -16px -20px -20px;
+  padding: 16px 20px 28px;
 }
 
 .dashboard-card-empty {
