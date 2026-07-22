@@ -71,6 +71,8 @@ Then you can run `docker compose up -d` and the app should start on `http://127.
 
 To update the container if an update is available, run `docker compose pull`
 
+> **Note on scaling:** the app runs as a single process (Waitress/Flask). In-memory state - the per-IP auth rate limiter, the login-status cache, and the background worker pools - lives in that one process and is not shared, so run one instance rather than scaling it horizontally behind a load balancer.
+
 ### Upgrading from an older version
 
 Listening history, tracks, images, and login sessions live in a single SQLite
