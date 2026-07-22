@@ -168,8 +168,8 @@ class MetadataBackfillMixin:
                     if use_fallback:
                         import SpotipyFree
                         import time
+                        cookiesFile = self._materializeCookiesFile()
                         try:
-                            cookiesFile = self._materializeCookiesFile()
                             sp = SpotipyFree.Spotify(cookiesFile=str(cookiesFile))
                             for album_id in target_ids:
                                 if stop_event.is_set():
