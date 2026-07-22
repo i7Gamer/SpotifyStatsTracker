@@ -10,27 +10,30 @@
         <div id="nowPlayingCard" class="now-playing-inner" style="display: none;">
           <h2>Now playing <span id="nowPlayingState" class="now-playing-state">Playing</span></h2>
           <div class="now-playing-body">
+            {# Text on the left below the heading, cover art in the top-right. #}
+            <div class="now-playing-meta">
+              <a id="nowPlayingName" class="now-playing-name" href="#"></a>
+              <div id="nowPlayingArtists" class="now-playing-artists"></div>
+              <div class="now-playing-progress"><div id="nowPlayingBar" class="now-playing-bar"></div></div>
+            </div>
             {# No src attribute until the now-playing JS assigns one: src=""
                fails at parse time, firing (and burning) the one-shot onerror
                fallback before there was ever a real cover URL to fall back
                from. #}
             <img id="nowPlayingCover" class="now-playing-cover" alt="Album cover"
                  onerror="this.onerror=null;this.src=window.PLACEHOLDER_IMG;" />
-            <div class="now-playing-meta">
-              <a id="nowPlayingName" class="now-playing-name" href="#"></a>
-              <div id="nowPlayingArtists" class="now-playing-artists"></div>
-              <div class="now-playing-progress"><div id="nowPlayingBar" class="now-playing-bar"></div></div>
-            </div>
           </div>
         </div>
         <div class="streak-block">
           <h2>Listening streak</h2>
-          <p class="summary-value">🔥 {{ currentStreak.days }}</p>
-          {% if currentStreak.days > 0 %}
-            <div class="summary-change">{{ 'day' if currentStreak.days == 1 else 'days' }} in a row{% if not currentStreak.activeToday %} &middot; play today to keep it{% endif %}</div>
-          {% else %}
-            <div class="summary-change">Play something today to start one</div>
-          {% endif %}
+          <div class="streak-line">
+            <p class="summary-value">🔥 {{ currentStreak.days }}</p>
+            {% if currentStreak.days > 0 %}
+              <div class="summary-change">{{ 'day' if currentStreak.days == 1 else 'days' }} in a row{% if not currentStreak.activeToday %} &middot; play today to keep it{% endif %}</div>
+            {% else %}
+              <div class="summary-change">Play something today to start one</div>
+            {% endif %}
+          </div>
         </div>
       </div>
 

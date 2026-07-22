@@ -272,10 +272,11 @@ button {
   transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-/* Now Playing card (dashboard) - hidden until /api/now-playing reports a track */
+/* Now Playing card (dashboard) - hidden until /api/now-playing reports a track.
+   Text sits on the left below the heading, cover art in the top-right. */
 .now-playing-body {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 12px;
   min-width: 0;
 }
@@ -431,23 +432,21 @@ button {
   text-decoration: underline;
 }
 
-/* Desktop: Now Playing / Top song / Top artist cards stack the cover on its
-   own row under the heading with the text below it, at double the mobile
-   thumbnail size; mobile keeps the compact side-by-side row. */
+/* Desktop: Top song / Top artist cards stack the cover on its own row under
+   the heading with the text below it, at double the mobile thumbnail size;
+   mobile keeps the compact side-by-side row. (Now Playing keeps its text-left /
+   cover-top-right row at every width - see .now-playing-body.) */
 @media (min-width: 901px) {
-  .now-playing-body,
   .summary-top-item {
     flex-direction: column;
     align-items: flex-start;
   }
 
-  .now-playing-cover,
   .summary-top-cover {
     width: 112px;
     height: 112px;
   }
 
-  .now-playing-meta,
   .summary-top-meta {
     width: 100%;
   }
@@ -2643,6 +2642,20 @@ html.theme-red {
    divider only appears when now-playing is actually showing above it. */
 .streak-block .summary-value {
   font-variant-numeric: tabular-nums;
+  margin: 0;
+}
+
+/* Streak count and its label sit on one line (label to the right of the
+   number), baseline-aligned, wrapping only if the card is too narrow. */
+.streak-line {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.3rem 0.5rem;
+}
+
+.streak-line .summary-change {
+  margin-top: 0;
 }
 
 .now-playing-card.has-now-playing .streak-block {
