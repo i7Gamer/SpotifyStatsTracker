@@ -12,7 +12,7 @@
   // distinct, theme-appropriate color for every category instead of cycling
   // through a handful of colors that repeat and never adapt to the theme.
   var CHART_COLOR_VAR_COUNT = 12;
-  var PALETTE = [];
+  var PALETTE = ['#FB717B', '#5DD97C', '#5AC8FA', '#FFD166', '#C77DFF', '#FF9F45'];
   var GRID_LINE_COUNT = 4;
   var MIN_AXIS_LABEL_SPACING_PX = 70;
   var Y_AXIS_LABEL_FONT = '11px sans-serif';
