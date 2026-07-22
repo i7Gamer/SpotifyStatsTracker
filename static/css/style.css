@@ -273,10 +273,11 @@ button {
 }
 
 /* Now Playing card (dashboard) - hidden until /api/now-playing reports a track.
-   Text sits on the left below the heading, cover art in the top-right. */
+   Text sits on the left, cover art on the right; the text is bottom-aligned so
+   it lines up with the base of the (taller) cover instead of the heading. */
 .now-playing-body {
   display: flex;
-  align-items: flex-start;
+  align-items: flex-end;
   gap: 12px;
   min-width: 0;
 }
@@ -399,7 +400,7 @@ button {
    as one family. */
 .summary-top-item {
   display: flex;
-  align-items: flex-start;
+  align-items: flex-end;
   gap: 12px;
   min-width: 0;
 }
@@ -434,6 +435,17 @@ button {
 
 .summary-top-name:hover {
   text-decoration: underline;
+}
+
+/* Desktop restores the larger cover art; mobile keeps the compact thumbnail.
+   (Placed after the base 56px rules so it wins the cascade.) The bottom
+   alignment on the rows lines the text up with the cover's base. */
+@media (min-width: 901px) {
+  .now-playing-cover,
+  .summary-top-cover {
+    width: 112px;
+    height: 112px;
+  }
 }
 
 .summary-change {
@@ -2636,6 +2648,7 @@ html.theme-red {
   align-items: baseline;
   flex-wrap: wrap;
   gap: 0.3rem 0.5rem;
+  margin-top: 10px;   /* breathing room under the "Listening streak" heading */
 }
 
 .streak-line .summary-change {
