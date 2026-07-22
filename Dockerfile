@@ -6,12 +6,12 @@ WORKDIR /app
 COPY requirements.txt .
 
 # Install system dependencies, install python dependencies, install custom SpotAPI, then remove bloat
-RUN apt-get update && apt-get install -y --no-install-recommends gcc git \
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends gcc git \
     && pip install --no-cache-dir -r requirements.txt \
     && pip uninstall spotAPI -y \
     && pip install git+https://github.com/TzurSoffer/SpotAPI \
-    && apt-get remove -y git gcc \
-    && apt-get autoremove -y \
+    && apt-get purge -y git gcc \
+    && apt-get autoremove --purge -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy application code
