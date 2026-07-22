@@ -311,6 +311,29 @@
     ctx.arc(cx, cy, innerRadius, 0, Math.PI * 2);
     ctx.fill();
 
+    // Optional swatch + "Label: value (pct%)" legend row under the ring - the
+    // /charts explicit/completion donuts show it; the Genres share donut leaves
+    // it off and relies on the hover tooltip + chip list instead.
+    if (opts.showLabels) {
+      ctx.textBaseline = 'middle';
+      ctx.font = '11px sans-serif';
+      var labelY = height - 20;
+      var activeSlices = slices.filter(function (s) { return s.value > 0; });
+      var stepX = width / (activeSlices.length + 1);
+      activeSlices.forEach(function (slice, idx) {
+        var x = stepX * (idx + 1);
+        var percentage = Math.round((slice.value / total) * 100);
+        var text = slice.label + ': ' + slice.value + ' (' + percentage + '%)';
+        ctx.fillStyle = slice.color;
+        ctx.beginPath();
+        ctx.arc(x - 60, labelY, 5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#ffffff';
+        ctx.textAlign = 'left';
+        ctx.fillText(text, x - 45, labelY);
+      });
+    }
+
     canvas.onmousemove = function (evt) {
       var rect = canvas.getBoundingClientRect();
       var dx = (evt.clientX - rect.left) - cx, dy = (evt.clientY - rect.top) - cy;
@@ -338,11 +361,14 @@
   window.ChartUtils = {
     PALETTE: PALETTE,
     getAccentColor: getAccentColor,
+    parseHex: parseHex,
     escapeHtml: escapeHtml,
     setupCanvas: setupCanvas,
     showTooltip: showTooltip,
     hideTooltip: hideTooltip,
     drawEmptyState: drawEmptyState,
+    drawYAxisGrid: drawYAxisGrid,
+    drawSparseXLabels: drawSparseXLabels,
     renderMultiLineChart: renderMultiLineChart,
     renderBarsFromPairs: renderBarsFromPairs,
     drawDonutChart: drawDonutChart,

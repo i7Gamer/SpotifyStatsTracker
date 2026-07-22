@@ -1,91 +1,37 @@
-/* Hand-rolled canvas charts for the /charts page - no external dependencies, so
- * the app stays self-contained for offline/Docker use. Reads data from
- * window.__chartData, set inline by charts.html before this script loads. */
+/* Hand-rolled canvas charts for the /charts + /compare pages - no external
+ * dependencies, so the app stays self-contained for offline/Docker use. Reads
+ * data from window.__chartData, set inline by charts.html/compare.html before
+ * this script loads.
+ *
+ * The generic canvas primitives (palette, setupCanvas, accent, tooltip, empty
+ * state, axis grid, sparse x-labels, donut, multi-line, categorical bars) live
+ * in static/js/chart-utils.js (window.ChartUtils), loaded first and shared with
+ * the Genres page. Only the charts-only pieces (time-series bars, heatmap, the
+ * Compare mirror, and the ms/padding label helpers those need) stay here. */
 (function () {
-  var CHART_PALETTE = ['#FB717B', '#5DD97C', '#5AC8FA', '#FFD166', '#C77DFF', '#FF9F45'];
+  var CU = window.ChartUtils;
+  // Local aliases for the shared primitives so the charts-only helpers below
+  // read the same as before the extraction.
+  var PALETTE = CU.PALETTE;
+  var getAccentColor = CU.getAccentColor;
+  var parseHex = CU.parseHex;
+  var escapeHtml = CU.escapeHtml;
+  var setupCanvas = CU.setupCanvas;
+  var showTooltip = CU.showTooltip;
+  var hideTooltip = CU.hideTooltip;
+  var drawEmptyState = CU.drawEmptyState;
+  var drawYAxisGrid = CU.drawYAxisGrid;
+  var drawSparseXLabels = CU.drawSparseXLabels;
+
+  // Consts still needed by the charts-only helpers (yAxisPaddingLeft, the
+  // time-series/mirror label spacing). They mirror the same-named constants in
+  // chart-utils.js - GRID_LINE_COUNT in particular must match the grid drawn by
+  // ChartUtils.drawYAxisGrid so yAxisPaddingLeft sizes for the labels actually rendered.
   var GRID_LINE_COUNT = 4;
   var MIN_AXIS_LABEL_SPACING_PX = 70;
   var Y_AXIS_LABEL_FONT = '11px sans-serif';
   var Y_AXIS_LABEL_GAP_PX = 8;     //< space between a y-axis label's right edge and the axis line
   var Y_AXIS_MIN_PADDING_PX = 34;  //< floor so narrow labels (e.g. "0m") still get consistent left padding
-
-  function getAccentColor() {
-    var computedAccent = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim();
-    return computedAccent || '#FB717B';
-  }
-
-  // Artist names (unlike every other label this file builds tooltip/legend
-  // HTML strings from - date buckets, day names, decade labels, hardcoded
-  // stat labels) come from the user's own imported listening history and
-  // aren't guaranteed HTML-safe - escape before splicing one into an
-  // innerHTML string.
-  function escapeHtml(str) {
-    var div = document.createElement('div');
-    div.textContent = str;
-    return div.innerHTML;
-  }
-
-  function parseHex(hex) {
-    hex = hex.replace(/^#/, '');
-    if (hex.length === 3) {
-      hex = hex[0] + hex[0] + hex[1] + hex[1] + hex[2] + hex[2];
-    }
-    var num = parseInt(hex, 16);
-    if (isNaN(num)) {
-      return { r: 251, g: 113, b: 123 };
-    }
-    return {
-      r: (num >> 16) & 255,
-      g: (num >> 8) & 255,
-      b: num & 255
-    };
-  }
-
-  function setupCanvas(canvas, cssHeight) {
-    var dpr = window.devicePixelRatio || 1;
-    var width = Math.max(canvas.parentElement.getBoundingClientRect().width, 280);
-    canvas.style.width = width + 'px';
-    canvas.style.height = cssHeight + 'px';
-    canvas.width = Math.round(width * dpr);
-    canvas.height = Math.round(cssHeight * dpr);
-    var ctx = canvas.getContext('2d');
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    return { ctx: ctx, width: width, height: cssHeight };
-  }
-
-  function ensureTooltip() {
-    var tooltip = document.getElementById('chartTooltip');
-    if (!tooltip) {
-      tooltip = document.createElement('div');
-      tooltip.id = 'chartTooltip';
-      tooltip.className = 'chart-tooltip';
-      document.body.appendChild(tooltip);
-    }
-    return tooltip;
-  }
-
-  function showTooltip(evt, html) {
-    var tooltip = ensureTooltip();
-    tooltip.innerHTML = html;
-    tooltip.style.left = (evt.clientX + 14) + 'px';
-    tooltip.style.top = (evt.clientY + 14) + 'px';
-    tooltip.style.display = 'block';
-  }
-
-  function hideTooltip() {
-    var tooltip = document.getElementById('chartTooltip');
-    if (tooltip) {
-      tooltip.style.display = 'none';
-    }
-  }
-
-  function drawEmptyState(ctx, width, height, message) {
-    ctx.fillStyle = '#b0b0b0';
-    ctx.font = '13px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(message, width / 2, height / 2);
-  }
 
   function msToShortLabel(ms) {
     if (!ms) {
@@ -119,52 +65,6 @@
     return Math.max(Y_AXIS_MIN_PADDING_PX, maxWidth + Y_AXIS_LABEL_GAP_PX * 2);
   }
 
-  function drawYAxisGrid(ctx, paddingLeft, paddingTop, plotWidth, plotHeight, maxValue, formatLabel) {
-    ctx.strokeStyle = 'rgba(255,255,255,0.08)';
-    ctx.fillStyle = '#b0b0b0';
-    ctx.font = Y_AXIS_LABEL_FONT;
-    ctx.textAlign = 'right';
-    ctx.textBaseline = 'middle';
-    for (var i = 0; i <= GRID_LINE_COUNT; i++) {
-      var y = paddingTop + plotHeight - (plotHeight * i / GRID_LINE_COUNT);
-      ctx.beginPath();
-      ctx.moveTo(paddingLeft, y);
-      ctx.lineTo(paddingLeft + plotWidth, y);
-      ctx.stroke();
-      ctx.fillText(formatLabel(maxValue * i / GRID_LINE_COUNT), paddingLeft - Y_AXIS_LABEL_GAP_PX, y);
-    }
-  }
-
-  function drawSparseXLabels(ctx, labels, paddingLeft, plotWidth, plotHeight, paddingTop, labelForIndex, minSpacing) {
-    ctx.textBaseline = 'top';
-    ctx.fillStyle = '#b0b0b0';
-    ctx.font = '11px sans-serif';
-    var spacing = minSpacing !== undefined ? minSpacing : MIN_AXIS_LABEL_SPACING_PX;
-    var maxLabels = Math.max(2, Math.floor(plotWidth / spacing));
-    var step = Math.max(1, Math.ceil(labels.length / maxLabels));
-    var lastIndex = labels.length - 1;
-    var lastStepIndex = Math.floor(lastIndex / step) * step;
-
-    for (var i = 0; i <= lastStepIndex; i += step) {
-      // Every label centers on its tick - except when the final bucket lands
-      // exactly on a step boundary: that tick sits at the plot's right edge,
-      // where centering would push half the text past the canvas edge and
-      // clip it, so right-align just that one to hug the edge instead.
-      ctx.textAlign = (i === lastIndex) ? 'right' : 'center';
-      ctx.fillText(labels[i].slice(0, 7), labelForIndex(i), paddingTop + plotHeight + 8);
-    }
-
-    // The final bucket rarely lands exactly on a step boundary. Force-
-    // showing it anyway (so the chart's right end always has a date) is
-    // only safe when it's far enough from the last stepped label not to
-    // overlap it - otherwise drop it rather than crowd two labels together.
-    if (lastIndex !== lastStepIndex &&
-        labelForIndex(lastIndex) - labelForIndex(lastStepIndex) >= spacing) {
-      ctx.textAlign = 'right';
-      ctx.fillText(labels[lastIndex].slice(0, 7), labelForIndex(lastIndex), paddingTop + plotHeight + 8);
-    }
-  }
-
   function renderTimeSeriesChart() {
     var canvas = document.getElementById('timeSeriesChart');
     if (!canvas) {
@@ -196,7 +96,7 @@
       var x = paddingLeft + i * slotWidth + barGap / 2;
       var barHeight = plotHeight * (d.totalTimeListened / maxMs);
       var y = paddingTop + plotHeight - barHeight;
-      ctx.fillStyle = CHART_PALETTE[0];
+      ctx.fillStyle = PALETTE[0];
       ctx.fillRect(x, y, barWidth, barHeight);
       return { x: x, width: barWidth, d: d, hourIndex: i };
     });
@@ -345,116 +245,19 @@
   }
 
   function renderArtistTrend() {
-    var formatValue = function (v) { return Math.round(v) + ' plays'; };
-    var formatAxisValue = function (v) { return Math.round(v); };
-    var emptyMessage = 'Not enough data yet to show an artist trend.';
-    var canvas = document.getElementById('artistTrendChart');
-    var legendEl = document.getElementById('artistTrendLegend');
-    if (!canvas) {
-      return;
-    }
-    var data = (window.__chartData && window.__chartData.artistTrend) || { buckets: [], series: [] };
-    var setup = setupCanvas(canvas, 260);
-    var ctx = setup.ctx, width = setup.width, height = setup.height;
-    ctx.clearRect(0, 0, width, height);
-
-    if (!data.buckets.length || !data.series.length) {
-      drawEmptyState(ctx, width, height, emptyMessage);
-      if (legendEl) {
-        legendEl.innerHTML = '';
+    CU.renderMultiLineChart(
+      document.getElementById('artistTrendChart'),
+      document.getElementById('artistTrendLegend'),
+      (window.__chartData && window.__chartData.artistTrend) || { buckets: [], series: [] },
+      {
+        emptyMessage: 'Not enough data yet to show an artist trend.',
+        formatValue: function (v) { return Math.round(v) + ' plays'; },
+        // Clicking a line/point navigates to that artist's detail page - see
+        // app.py's getArtistTrend, which picks a representative id for
+        // same-named artists sharing one merged line.
+        onClickId: function (id) { window.location.href = '/artist/' + encodeURIComponent(id); }
       }
-      return;
-    }
-
-    var paddingLeft = 40, paddingBottom = 26, paddingTop = 16, paddingRight = 16;
-    var plotWidth = width - paddingLeft - paddingRight;
-    var plotHeight = height - paddingTop - paddingBottom;
-    var maxPlays = 1;
-    data.series.forEach(function (s) {
-      maxPlays = Math.max(maxPlays, Math.max.apply(null, s.data));
-    });
-    var stepX = data.buckets.length > 1 ? plotWidth / (data.buckets.length - 1) : 0;
-
-    drawYAxisGrid(ctx, paddingLeft, paddingTop, plotWidth, plotHeight, maxPlays, formatAxisValue);
-    drawSparseXLabels(ctx, data.buckets, paddingLeft, plotWidth, plotHeight, paddingTop, function (i) {
-      return paddingLeft + i * stepX;
-    }, MIN_AXIS_LABEL_SPACING_PX);
-
-    var lines = data.series.map(function (series, si) {
-      var color = CHART_PALETTE[si % CHART_PALETTE.length];
-      var points = series.data.map(function (v, i) {
-        return { x: paddingLeft + i * stepX, y: paddingTop + plotHeight - (plotHeight * v / maxPlays), v: v };
-      });
-
-      ctx.strokeStyle = color;
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      points.forEach(function (p, i) {
-        if (i === 0) {
-          ctx.moveTo(p.x, p.y);
-        } else {
-          ctx.lineTo(p.x, p.y);
-        }
-      });
-      ctx.stroke();
-
-      ctx.fillStyle = color;
-      points.forEach(function (p) {
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
-        ctx.fill();
-      });
-
-      return { name: series.name, id: series.id, color: color, points: points };
-    });
-
-    function findClosestPoint(mx, my) {
-      var closest = null, closestDist = 12;
-      lines.forEach(function (line) {
-        line.points.forEach(function (p, i) {
-          var dist = Math.hypot(p.x - mx, p.y - my);
-          if (dist < closestDist) {
-            closestDist = dist;
-            closest = { name: line.name, id: line.id, bucket: data.buckets[i], value: p.v };
-          }
-        });
-      });
-      return closest;
-    }
-
-    canvas.onmousemove = function (evt) {
-      var rect = canvas.getBoundingClientRect();
-      var mx = evt.clientX - rect.left, my = evt.clientY - rect.top;
-      var closest = findClosestPoint(mx, my);
-      if (closest) {
-        showTooltip(evt, '<strong>' + escapeHtml(closest.name) + '</strong><br>' + closest.bucket + ' &middot; ' + formatValue(closest.value));
-        canvas.style.cursor = closest.id ? 'pointer' : 'crosshair';
-      } else {
-        hideTooltip();
-        canvas.style.cursor = 'crosshair';
-      }
-    };
-    canvas.onmouseleave = function () {
-      hideTooltip();
-      canvas.style.cursor = 'crosshair';
-    };
-    // Clicking a line/point navigates to that artist's detail page - see
-    // app.py's getArtistTrend, which picks a representative id for
-    // same-named artists sharing one merged line.
-    canvas.onclick = function (evt) {
-      var rect = canvas.getBoundingClientRect();
-      var mx = evt.clientX - rect.left, my = evt.clientY - rect.top;
-      var closest = findClosestPoint(mx, my);
-      if (closest && closest.id) {
-        window.location.href = '/artist/' + encodeURIComponent(closest.id);
-      }
-    };
-
-    if (legendEl) {
-      legendEl.innerHTML = lines.map(function (l) {
-        return '<span class="chart-legend-item"><span class="chart-legend-swatch" style="background:' + l.color + '"></span>' + escapeHtml(l.name) + '</span>';
-      }).join('');
-    }
+    );
   }
 
   // Compare page: two users' listening time as a MIRRORED area chart - the
@@ -475,7 +278,7 @@
   // series can never drift from the rest of the page.
   function getTheirsColor() {
     var value = getComputedStyle(document.documentElement).getPropertyValue('--compare-theirs').trim();
-    return value || CHART_PALETTE[1];
+    return value || PALETTE[1];
   }
 
   function renderComparisonMirror() {
@@ -507,7 +310,7 @@
     var half = plotHeight / 2;
     var midY = paddingTop + half;
     var stepX = data.buckets.length > 1 ? plotWidth / (data.buckets.length - 1) : 0;
-    var colors = [CHART_PALETTE[0], getTheirsColor()];
+    var colors = [PALETTE[0], getTheirsColor()];
 
     // Hour buckets are "YYYY-MM-DD HH:00" - drawSparseXLabels' 7-char slice
     // would render them all as the same date prefix, so show the time part
@@ -651,116 +454,19 @@
     }
   }
 
-  function drawDonutChart(ctx, width, height, slices, total, canvas) {
-    var cx = width / 2;
-    var cy = height / 2 - 15;
-    var outerRadius = Math.min(width, height) / 2 - 30;
-    var innerRadius = outerRadius * 0.65;
-
-    var startAngle = -Math.PI / 2;
-
-    slices.forEach(function (slice) {
-      if (slice.value === 0) return;
-      var angle = (slice.value / total) * Math.PI * 2;
-      var endAngle = startAngle + angle;
-
-      ctx.fillStyle = slice.color;
-      ctx.beginPath();
-      ctx.arc(cx, cy, outerRadius, startAngle, endAngle);
-      ctx.arc(cx, cy, innerRadius, endAngle, startAngle, true);
-      ctx.closePath();
-      ctx.fill();
-
-      slice.startAngle = startAngle;
-      slice.endAngle = endAngle;
-      startAngle = endAngle;
-    });
-
-    ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--bg-card').trim() || '#1c1c1e';
-    ctx.beginPath();
-    ctx.arc(cx, cy, innerRadius, 0, Math.PI * 2);
-    ctx.fill();
-
-    ctx.textBaseline = 'middle';
-    ctx.font = '11px sans-serif';
-
-    var labelY = height - 20;
-    var activeSlices = slices.filter(function(s) { return s.value > 0; });
-    var stepX = width / (activeSlices.length + 1);
-
-    activeSlices.forEach(function(slice, idx) {
-      var x = stepX * (idx + 1);
-      var percentage = Math.round((slice.value / total) * 100);
-      var text = slice.label + ': ' + slice.value + ' (' + percentage + '%)';
-
-      // Draw circle (swatch) first
-      ctx.fillStyle = slice.color;
-      ctx.beginPath();
-      ctx.arc(x - 60, labelY, 5, 0, Math.PI * 2);
-      ctx.fill();
-
-      // Draw text aligned to the right of the circle
-      ctx.fillStyle = '#ffffff';
-      ctx.textAlign = 'left';
-      ctx.fillText(text, x - 45, labelY);
-    });
-
-    canvas.onmousemove = function(evt) {
-      var rect = canvas.getBoundingClientRect();
-      var mx = evt.clientX - rect.left, my = evt.clientY - rect.top;
-      var dx = mx - cx, dy = my - cy;
-      var dist = Math.hypot(dx, dy);
-
-      if (dist >= innerRadius && dist <= outerRadius) {
-        var angle = Math.atan2(dy, dx);
-        if (angle < -Math.PI / 2) {
-          angle += Math.PI * 2;
-        }
-        var found = null;
-        slices.forEach(function(slice) {
-          if (slice.value > 0) {
-            var start = slice.startAngle;
-            var end = slice.endAngle;
-            if (angle >= start && angle <= end) {
-              found = slice;
-            }
-          }
-        });
-
-        if (found) {
-          var pct = ((found.value / total) * 100).toFixed(1);
-          showTooltip(evt, '<strong>' + found.label + '</strong><br>' + found.value + ' plays (' + pct + '%)');
-        } else {
-          hideTooltip();
-        }
-      } else {
-        hideTooltip();
-      }
-    };
-    canvas.onmouseleave = hideTooltip;
-  }
-
   function renderExplicitChart() {
     var canvas = document.getElementById('explicitChart');
     if (!canvas) return;
     var data = window.__chartData.explicitRatio;
     if (!data) return;
 
-    var config = setupCanvas(canvas, 250);
-    var ctx = config.ctx, width = config.width, height = config.height;
-
-    var total = data.explicit + data.clean;
-    if (total === 0) {
-      drawEmptyState(ctx, width, height, 'No listening history in this period.');
-      return;
-    }
-
     var slices = [
       { label: 'Explicit', value: data.explicit, color: getAccentColor() },
       { label: 'Clean', value: data.clean, color: '#5AC8FA' }
     ];
 
-    drawDonutChart(ctx, width, height, slices, total, canvas);
+    CU.drawDonutChart(canvas, slices, data.explicit + data.clean,
+      { height: 250, showLabels: true, emptyMessage: 'No listening history in this period.' });
   }
 
   function renderCompletionChart() {
@@ -769,116 +475,38 @@
     var data = window.__chartData.completionStats;
     if (!data) return;
 
-    var config = setupCanvas(canvas, 250);
-    var ctx = config.ctx, width = config.width, height = config.height;
-
-    var total = data.skips + data.completes + data.partials;
-    if (total === 0) {
-      drawEmptyState(ctx, width, height, 'No listening history in this period.');
-      return;
-    }
-
     var slices = [
       { label: 'Completed', value: data.completes, color: getAccentColor() },
       { label: 'Partial', value: data.partials, color: '#5DD97C' },
       { label: 'Skipped', value: data.skips, color: '#5AC8FA' }
     ];
 
-    drawDonutChart(ctx, width, height, slices, total, canvas);
-  }
-
-  /* Shared vertical-bar renderer for the categorical distributions (release
-     decades, genres). fitLabel, when given, shrinks an axis label to its bar
-     slot - tooltips always keep the full key. */
-  function renderCategoryBarChart(canvasId, dataKey, emptyMessage, fitLabel) {
-    var canvas = document.getElementById(canvasId);
-    if (!canvas) return;
-    /* [label, value] pairs, not a {label: value} object - object key order
-       isn't guaranteed to survive JSON serialization (Flask sorts dict keys
-       alphabetically), so the server ships pre-ordered pairs instead. */
-    var pairs = window.__chartData[dataKey];
-    if (!pairs) return;
-
-    var config = setupCanvas(canvas, 300);
-    var ctx = config.ctx, width = config.width, height = config.height;
-
-    if (pairs.length === 0) {
-      drawEmptyState(ctx, width, height, emptyMessage);
-      return;
-    }
-
-    var values = pairs.map(function(p) { return p[1]; });
-    var maxVal = Math.max.apply(null, values);
-    if (maxVal === 0) maxVal = 1;
-
-    var paddingLeft = 50, paddingRight = 20, paddingTop = 20, paddingBottom = 40;
-    var plotWidth = width - paddingLeft - paddingRight;
-    var plotHeight = height - paddingTop - paddingBottom;
-
-    drawYAxisGrid(ctx, paddingLeft, paddingTop, plotWidth, plotHeight, maxVal, function(v) { return Math.round(v); });
-
-    var barCount = pairs.length;
-    var rawBarWidth = plotWidth / barCount;
-    var spacing = Math.max(rawBarWidth * 0.25, 6);
-    var barWidth = rawBarWidth - spacing;
-
-    var bars = pairs.map(function(pair, i) {
-      var key = pair[0], val = pair[1];
-      var barHeight = plotHeight * val / maxVal;
-      var x = paddingLeft + i * rawBarWidth + spacing / 2;
-      var y = paddingTop + plotHeight - barHeight;
-
-      ctx.fillStyle = CHART_PALETTE[i % CHART_PALETTE.length];
-      ctx.fillRect(x, y, barWidth, barHeight);
-
-      var label = fitLabel ? fitLabel(key, rawBarWidth) : key;
-      ctx.fillStyle = '#b0b0b0';
-      ctx.font = '11px sans-serif';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'top';
-      ctx.fillText(label, x + barWidth / 2, paddingTop + plotHeight + 8);
-
-      return { key: key, value: val, x: x, y: y, w: barWidth, h: barHeight };
-    });
-
-    canvas.onmousemove = function(evt) {
-      var rect = canvas.getBoundingClientRect();
-      var mx = evt.clientX - rect.left, my = evt.clientY - rect.top;
-      var found = null;
-
-      bars.forEach(function(bar) {
-        if (mx >= bar.x && mx <= bar.x + bar.w && my >= bar.y && my <= bar.y + bar.h) {
-          found = bar;
-        }
-      });
-
-      if (found) {
-        showTooltip(evt, '<strong>' + found.key + '</strong><br>' + found.value + ' plays');
-      } else {
-        hideTooltip();
-      }
-    };
-    canvas.onmouseleave = hideTooltip;
+    CU.drawDonutChart(canvas, slices, data.skips + data.completes + data.partials,
+      { height: 250, showLabels: true, emptyMessage: 'No listening history in this period.' });
   }
 
   function renderDecadeChart() {
-    renderCategoryBarChart('decadeChart', 'decadeDistribution',
-      'No album release information in this period.');
+    CU.renderBarsFromPairs(document.getElementById('decadeChart'),
+      window.__chartData.decadeDistribution,
+      { emptyMessage: 'No album release information in this period.' });
   }
 
   function renderGenreChart() {
     // Genre names run long ("progressive electronic") - fit the axis label
     // to the bar slot.
-    renderCategoryBarChart('genreChart', 'genreDistribution',
-      'No genre data for the plays in this period.',
-      function(key, rawBarWidth) {
-        var maxLabelChars = Math.max(4, Math.floor(rawBarWidth / 7));
-        return key.length > maxLabelChars ? key.slice(0, maxLabelChars - 1) + '…' : key;
+    CU.renderBarsFromPairs(document.getElementById('genreChart'),
+      window.__chartData.genreDistribution,
+      {
+        emptyMessage: 'No genre data for the plays in this period.',
+        fitLabel: function (key, rawBarWidth) {
+          var maxLabelChars = Math.max(4, Math.floor(rawBarWidth / 7));
+          return key.length > maxLabelChars ? key.slice(0, maxLabelChars - 1) + '…' : key;
+        }
       });
   }
 
   function renderAllCharts() {
-    CHART_PALETTE[0] = getAccentColor();
+    PALETTE[0] = getAccentColor();
     renderTimeSeriesChart();
     renderHeatmap();
     renderArtistTrend();
