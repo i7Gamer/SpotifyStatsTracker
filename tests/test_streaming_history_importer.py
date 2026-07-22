@@ -160,9 +160,9 @@ class TestImportTimePlayedNotCapped(unittest.TestCase):
 
 class TestSkipThresholdRouting(unittest.TestCase):
     """Entries shorter than SKIP_THRESHOLD_MS still flow through the same
-    track resolution but come out tagged isSkip=True - the DB writer routes
-    them to play_skips instead of plays. Only negative durations are dropped
-    outright."""
+    track resolution but come out tagged isSkip=True - the DB writer records
+    them into plays as is_skip=1 (and bypasses near-time matching). Only
+    negative durations are dropped outright."""
 
     def _importer(self):
         importer = Importer()
