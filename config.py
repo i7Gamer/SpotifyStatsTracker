@@ -115,9 +115,11 @@ LOGIN_CHECK_MAX_START_DELAY_SECONDS = 300
 # onerror=, style=...), none of which are nonce/hash-tagged - disallowing
 # unsafe-inline here would break the app outright, not just tighten it.
 # Google Fonts is the only external resource any template actually loads.
-# No Strict-Transport-Security: this app is normally self-hosted over plain
-# HTTP on a local network/Docker host (see README), and HSTS would force
-# HTTPS for the origin going forward - actively breaking that expected setup.
+# Strict-Transport-Security is NOT in this baseline dict: it's opt-in via the
+# ENABLE_HSTS env var (see _hstsEnabled/_setSecurityHeaders in app.py). Kept
+# off by default because this app is normally self-hosted over plain HTTP on a
+# local network/Docker host (see README), where HSTS would force HTTPS for the
+# origin going forward - actively breaking that expected setup.
 SECURITY_HEADERS = {
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
@@ -135,3 +137,11 @@ SECURITY_HEADERS = {
         "frame-ancestors 'none'"
     ),
 }
+
+# Opt-in HTTP Strict-Transport-Security, sent only when ENABLE_HSTS is truthy
+# (see _hstsEnabled/_setSecurityHeaders in app.py). Enable it only when a
+# TLS-terminating reverse proxy fronts the app - on a plain-HTTP deployment it
+# would pin browsers to HTTPS for the origin and break access.
+ENABLE_HSTS_ENV_VAR = "ENABLE_HSTS"
+HSTS_MAX_AGE_SECONDS = 31536000   #< 1 year - the minimum max-age the HSTS preload list accepts
+HSTS_HEADER_VALUE = f"max-age={HSTS_MAX_AGE_SECONDS}; includeSubDomains"

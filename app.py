@@ -90,6 +90,15 @@ def _trustedProxyCount() -> int:
         return 1 if raw in TRUTHY_ENV_VALUES else 0
 
 
+def _hstsEnabled() -> bool:
+    """Whether to send a Strict-Transport-Security header, per the ENABLE_HSTS
+    env var. Off by default: the app is normally self-hosted over plain HTTP
+    (see SECURITY_HEADERS in config.py), where pinning HTTPS for the origin
+    would break access. Enable it only when a TLS-terminating reverse proxy is
+    in front. Read live per response so a flip doesn't need a restart."""
+    return os.environ.get(ENABLE_HSTS_ENV_VAR, "").strip().lower() in TRUTHY_ENV_VALUES
+
+
 def _passwordPolicyError(password: str) -> str | None:
     """None if `password` satisfies the account password policy, otherwise a
     user-facing message naming the first unmet rule."""
@@ -561,6 +570,8 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
         def _setSecurityHeaders(response):
             for header, value in SECURITY_HEADERS.items():
                 response.headers.setdefault(header, value)
+            if _hstsEnabled():
+                response.headers.setdefault("Strict-Transport-Security", HSTS_HEADER_VALUE)
             return response
 
         @self.app.context_processor
