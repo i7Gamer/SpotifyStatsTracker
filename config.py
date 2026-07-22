@@ -63,6 +63,15 @@ DEFAULT_SORT_BY = "totalTimeListened"
 # falling back to the default.
 VALID_SORT_BY = {"totalTimeListened", "plays", "name"}
 TRUTHY_ENV_VALUES = {"1", "true", "yes", "on"}
+# Admin-triggered graceful restart (POST /admin/restart). The button gracefully
+# stops workers then exits so a *supervising* launch script relaunches the
+# process - it must NOT be relied on for a bare, unsupervised process (the app
+# would just stop). Off unless this env var is truthy, so it can only be enabled
+# from a launch script the operator has made relaunch-on-exit.
+ALLOW_INSTANCE_RESTART_ENV_VAR = "ALLOW_INSTANCE_RESTART"
+# Delay before the graceful shutdown+exit runs, so the HTTP response for the
+# restart request reaches the admin's browser before the process dies.
+INSTANCE_RESTART_DELAY_SECONDS = 0.5
 # Opt-in to honoring X-Forwarded-* headers from a reverse proxy (see
 # _trustedProxyCount). Without it, every visitor behind a proxy shares the
 # proxy's IP, so the per-IP auth rate limiter would let any one client lock

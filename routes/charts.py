@@ -245,7 +245,8 @@ def register(app, dashboard):
             recommendationsUnlocked = genreGatePasses(resolveGenreCoverage(db, None, None))
             if recommendationsUnlocked:
                 recommendations = db.getRecommendedArtists(
-                    limit=appmod.RECOMMENDATION_ARTIST_LIMIT,
+                    # Admin-tunable, read live per request; falls back to the code default.
+                    limit=dashboard.repo.getDiscoverArtistLimit(appmod.RECOMMENDATION_ARTIST_LIMIT),
                     genrePool=appmod.RECOMMENDATION_GENRE_POOL,
                     excludeTopN=appmod.RECOMMENDATION_EXCLUDE_TOP_N,
                 )

@@ -57,12 +57,11 @@ ARTIST_BIO_FETCH_WORKERS = 2   #< bounds concurrent artist-bio fetches for the w
 ALBUM_BIO_FETCH_WORKERS = 2    #< separate pool from ARTIST_BIO_FETCH_WORKERS so album lazy-fetches never
                                 #  queue behind artist lazy-fetches (or vice versa)
 
-# getCompletionStats' play classification thresholds: under 30s counts as a
-# skip (Spotify's own royalty threshold), at/over 80% of the track's duration
-# counts as a completed listen, anything between is a partial. This bucket is
-# combined with the true (<5s, SKIP_THRESHOLD_MS) events in play_skips, which
-# never reach the plays table at all - see getCompletionStats.
-COMPLETION_SKIP_THRESHOLD_MS = 30_000
+# getCompletionStats' completion ratio: among real plays (is_skip=0), a listen
+# at/over 80% of the track's duration counts as complete, anything less is a
+# partial. Skips are no longer a separate 30s line here - they're the is_skip=1
+# rows (the single admin-tunable skip threshold that replaced both the old 30s
+# line and the play_skips table). See getCompletionStats.
 COMPLETION_COMPLETE_RATIO = 0.8
 
 # Images are shared across every user (album art / artist photos are the same
@@ -248,6 +247,23 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
     # so two users' workers must not fetch the same (kind, id) concurrently.
     _lastfm_active = set()
     _lastfm_active_lock = threading.Lock()
+
+    @classmethod
+    def configureWorkerPools(cls, repo) -> None:
+        """Resize the shared background thread pools from admin settings, read
+        once at startup (SpotifyDashboardApp.__init__, after migrations). These
+        pools are process-wide and sized before any task is submitted, so a
+        changed setting only takes effect after a restart - the admin panel
+        labels them accordingly. Each falls back to its code default. Recreating
+        the executors here is safe: ThreadPoolExecutor spawns no threads until a
+        task is submitted, and none has been at startup, so the import-time
+        placeholders are discarded without leaking threads."""
+        cls._imageDownloadExecutor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=repo.getImageDownloadWorkers(IMAGE_DOWNLOAD_WORKERS))
+        cls._artistBioFetchExecutor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=repo.getArtistBioFetchWorkers(ARTIST_BIO_FETCH_WORKERS))
+        cls._albumBioFetchExecutor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=repo.getAlbumBioFetchWorkers(ALBUM_BIO_FETCH_WORKERS))
 
     def __init__(self, user: str, cookiesFile: str | None = None, email: str | None = None, dbPath=None,
                  shutdown_event: threading.Event | None = None):
@@ -494,7 +510,7 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         return self._paginateEntries(entries) if fullPagination else entries
 
     def getSkipEntriesFromOld(self, count: int | None = None, startIndex: int = 0, fullPagination: bool = True) -> list:
-        """Skip events (play_skips) oldest first, hydrated like plays - the
+        """Skip events (plays.is_skip=1) oldest first, hydrated like plays - the
         JSON export's trailing section, so skips round-trip between
         instances (they re-import as sub-threshold entries)."""
         entries = self.repo.getSkipsOldestFirst(self.user, count=count, startIndex=startIndex)
@@ -803,31 +819,25 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
 
     def getCompletionStats(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> dict:
         """Skip/complete/partial breakdown for the Charts pie chart and the
-        Compare page's Skip Rate. "skips" combines two distinct sources: rows
-        in `plays` under the 30s threshold (a real listen that was abandoned
-        early), and true play_skips events (<5s, never inserted into `plays`
-        at all - see SKIP_THRESHOLD_MS) for the same range. Without the
-        latter, imported sub-5s skips would be invisible to this stat."""
+        Compare page's Skip Rate. A skip is any play with is_skip=1 - the single
+        admin-tunable skip threshold, materialized per row (it replaced both the
+        old 30s line and the separate play_skips table). Among real plays
+        (is_skip=0), a listen at/over COMPLETION_COMPLETE_RATIO of the track's
+        duration counts as complete (unknown <=0 durations count as complete
+        since partial can't be told apart), else partial."""
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
         conn = self.repo._conn()
         # Fully classified in SQL - one aggregate row instead of a row per
-        # distinct (time_played, duration) pair. Unknown (<=0) durations
-        # can't distinguish partial from complete, so anything past the skip
-        # threshold counts as complete for them.
-        params = [
-            COMPLETION_SKIP_THRESHOLD_MS,
-            COMPLETION_SKIP_THRESHOLD_MS, COMPLETION_COMPLETE_RATIO,
-            COMPLETION_SKIP_THRESHOLD_MS, COMPLETION_COMPLETE_RATIO,
-            self.user,
-        ]
+        # distinct (time_played, duration) pair.
+        params = [COMPLETION_COMPLETE_RATIO, COMPLETION_COMPLETE_RATIO, self.user]
         rangeClause = self.repo._dateRangeClause(params, startTs, endTs, column="p.played_at")
         query = f"""
             SELECT
-                COALESCE(SUM(CASE WHEN p.time_played < ? THEN 1 ELSE 0 END), 0) AS skips,
-                COALESCE(SUM(CASE WHEN p.time_played >= ?
+                COALESCE(SUM(CASE WHEN p.is_skip = 1 THEN 1 ELSE 0 END), 0) AS skips,
+                COALESCE(SUM(CASE WHEN p.is_skip = 0
                                    AND (t.duration_ms <= 0 OR p.time_played >= t.duration_ms * ?)
                                   THEN 1 ELSE 0 END), 0) AS completes,
-                COALESCE(SUM(CASE WHEN p.time_played >= ?
+                COALESCE(SUM(CASE WHEN p.is_skip = 0
                                    AND t.duration_ms > 0 AND p.time_played < t.duration_ms * ?
                                   THEN 1 ELSE 0 END), 0) AS partials
             FROM plays p
@@ -835,8 +845,7 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
             WHERE p.username = ?{rangeClause}
         """
         row = conn.execute(query, params).fetchone()
-        trueSkips = self.repo.getSkipCount(self.user, startTs, endTs)
-        return {"skips": row["skips"] + trueSkips, "completes": row["completes"], "partials": row["partials"]}
+        return {"skips": row["skips"], "completes": row["completes"], "partials": row["partials"]}
 
     def getSongsStats(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None,
                        sortBy: str = "plays", limit: int | None = None, offset: int = 0,

@@ -1,9 +1,10 @@
 """Skip routing, behavioral enrichment, and wrapped invalidation in the
 import write path (Database._importHistoryLocked) and the listener path.
 
-The importer decides what is a skip (meta["isSkip"], threshold in exactly one
-place) - the DB writer only routes on the tag: skips go to play_skips via
-INSERT OR IGNORE and never enter the near-time play matching."""
+The importer tags sub-floor events (meta["isSkip"], the fixed 5s import floor
+in exactly one place) - the DB writer only routes on the tag: tagged events are
+recorded into plays as is_skip=1 via INSERT OR IGNORE and never enter the
+near-time play matching."""
 import sys
 import os
 import time
@@ -44,15 +45,15 @@ class _ImportTestBase(DatabaseTestCase):
 
     def _skipRows(self, db):
         return [dict(r) for r in db.repo._conn().execute(
-            "SELECT * FROM play_skips ORDER BY played_at").fetchall()]
+            "SELECT * FROM plays WHERE is_skip=1 ORDER BY played_at").fetchall()]
 
     def _playRows(self, db):
         return [dict(r) for r in db.repo._conn().execute(
-            "SELECT * FROM plays ORDER BY played_at").fetchall()]
+            "SELECT * FROM plays WHERE is_skip=0 ORDER BY played_at").fetchall()]
 
 
 class TestImportSkipRouting(_ImportTestBase):
-    def test_skip_meta_lands_in_play_skips_not_plays(self):
+    def test_skip_meta_lands_as_is_skip_row_not_real_play(self):
         db = self._makeDb({}, [])
 
         def gen():
@@ -60,10 +61,11 @@ class TestImportSkipRouting(_ImportTestBase):
 
         self._import(db, gen)
 
-        self.assertEqual(self._playRows(db), [])
+        self.assertEqual(self._playRows(db), [])   #< no real (is_skip=0) play
         skips = self._skipRows(db)
         self.assertEqual(len(skips), 1)
         self.assertEqual(skips[0]["time_played"], 400)
+        self.assertEqual(skips[0]["is_skip"], 1)
         self.assertEqual(skips[0]["reason_end"], "trackdone")
         self.assertEqual(skips[0]["created_reason"], f"history_import (user: {db.user})")
         # The track itself is still cataloged (FK + future skip analytics)
@@ -253,8 +255,9 @@ class TestWrappedInvalidationOnCorrection(_ImportTestBase):
 
 
 class TestListenerSkipRecording(_ImportTestBase):
-    """appendSkipData: the listener-path counterpart of appendTrackData for
-    sub-threshold events."""
+    """The listener records sub-threshold events through appendTrackData now
+    (appendSkipData is gone): they land in plays as is_skip=1, computed from the
+    current threshold + the track's duration."""
 
     def _rawTrack(self, trackId="t_live"):
         return {
@@ -269,16 +272,17 @@ class TestListenerSkipRecording(_ImportTestBase):
                                    "external_urls": {"spotify": "https://open.spotify.com/artist/art_live"}}]},
         }
 
-    def test_append_skip_data_records_skip_with_source_reason(self):
+    def test_listener_sub_threshold_event_lands_as_is_skip_row(self):
         db = self._makeDb({}, [])
         playedAt = time.time() - 60
 
-        db.appendSkipData(playedAt, self._rawTrack(), 3000)
+        db.appendTrackData(playedAt, self._rawTrack(), 3000)   #< 3s < default 5s -> skip
 
         skips = self._skipRows(db)
         self.assertEqual(len(skips), 1)
         self.assertEqual(skips[0]["time_played"], 3000)
-        self.assertEqual(skips[0]["created_reason"], f"listener_skip (user: {db.user})")
+        self.assertEqual(skips[0]["is_skip"], 1)
+        self.assertEqual(skips[0]["created_reason"], f"listener_play (user: {db.user})")
         self.assertIsNotNone(db.repo.getTrack("t_live"))
         self.assertEqual(self._playRows(db), [])
 

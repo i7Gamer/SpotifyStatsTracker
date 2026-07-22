@@ -70,20 +70,13 @@ class ListenerMixin:
                 )
                 msPlayed = track_duration
 
-            # Events under the skip threshold are recorded as skip events
-            # (play_skips), not plays - same boundary as the importer.
-            if msPlayed < _dbmod.SKIP_THRESHOLD_MS:
-                if track:
-                    try:
-                        self.appendSkipData(timestamp, track, msPlayed, source=source)
-                    except Exception as e:
-                        _dbmod.logger.error("Error recording skip for track %s from listener: %s", track.get("id"), _dbmod.parseError(e))
-                        had_errors = True
-                continue
             if track:
                 # Per-item isolation: if the callback raised, the listener would
                 # retry the whole batch forever and record nothing new until the
-                # bad item aged out of the recently-played feed.
+                # bad item aged out of the recently-played feed. Sub-threshold
+                # events are no longer split off to a separate table here -
+                # appendTrackData records every event into plays, with is_skip
+                # materialized from the current skip threshold.
                 try:
                     self.appendTrackData(timestamp, track, msPlayed, context=item.get("context", None), source=source)
                 except Exception as e:

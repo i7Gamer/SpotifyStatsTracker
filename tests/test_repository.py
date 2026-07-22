@@ -690,16 +690,17 @@ class TestPlaySkips(RepositoryTestCase):
         self.repo.upsertTrack(makeTrack(trackId="t2"))
 
     def test_insert_skip_and_exact_duplicate_ignored(self):
-        self.assertTrue(self.repo.insertSkip("alice", "t1", 1000.0, 400))
-        self.assertFalse(self.repo.insertSkip("alice", "t1", 1000.0, 400))
-        count = self.repo._conn().execute("SELECT COUNT(*) FROM play_skips").fetchone()[0]
+        # Skips are is_skip=1 rows in plays (no separate play_skips table).
+        self.assertTrue(self.repo.insertPlay("alice", "t1", 1000.0, 400, is_skip=1))
+        self.assertFalse(self.repo.insertPlay("alice", "t1", 1000.0, 400, is_skip=1))
+        count = self.repo._conn().execute("SELECT COUNT(*) FROM plays WHERE is_skip=1").fetchone()[0]
         self.assertEqual(count, 1)
 
     def test_insert_skip_accepts_zero_duration_and_stamps_reason(self):
-        self.assertTrue(self.repo.insertSkip("alice", "t1", 1000.0, 0,
+        self.assertTrue(self.repo.insertPlay("alice", "t1", 1000.0, 0, is_skip=1,
                                              extras=EXTRAS_FULL,
                                              created_reason="history_import (user: alice)"))
-        row = self.repo._conn().execute("SELECT * FROM play_skips").fetchone()
+        row = self.repo._conn().execute("SELECT * FROM plays WHERE is_skip=1").fetchone()
         self.assertEqual(row["time_played"], 0)
         self.assertEqual(row["created_reason"], "history_import (user: alice)")
         self.assertIsNotNone(row["created_at"])
@@ -707,14 +708,14 @@ class TestPlaySkips(RepositoryTestCase):
 
     def test_insert_skip_does_not_commit(self):
         self.repo.commit()  #< persist the seeded user/tracks first
-        self.repo.insertSkip("alice", "t1", 1000.0, 400)
+        self.repo.insertPlay("alice", "t1", 1000.0, 400, is_skip=1)
         self.repo.rollback()
-        count = self.repo._conn().execute("SELECT COUNT(*) FROM play_skips").fetchone()[0]
+        count = self.repo._conn().execute("SELECT COUNT(*) FROM plays WHERE is_skip=1").fetchone()[0]
         self.assertEqual(count, 0)
 
     def test_get_skips_oldest_first(self):
-        self.repo.insertSkip("alice", "t2", 2000.0, 300, extras=EXTRAS_FULL)
-        self.repo.insertSkip("alice", "t1", 1000.0, 400)
+        self.repo.insertPlay("alice", "t2", 2000.0, 300, is_skip=1, extras=EXTRAS_FULL)
+        self.repo.insertPlay("alice", "t1", 1000.0, 400, is_skip=1)
         entries = self.repo.getSkipsOldestFirst("alice")
         self.assertEqual([e["id"] for e in entries], ["t1", "t2"])
         self.assertEqual(entries[0]["playedAt"], 1000.0)
@@ -723,11 +724,20 @@ class TestPlaySkips(RepositoryTestCase):
         self.assertIsNone(entries[0]["extras"])
         self.assertEqual(entries[1]["extras"]["platform"], "ios")
 
+    def test_get_skips_oldest_first_excludes_real_plays(self):
+        # A real play (is_skip=0) at the same time must not leak into the skip feed.
+        self.repo.insertPlay("alice", "t1", 500.0, 60000)
+        self.repo.insertPlay("alice", "t2", 1000.0, 400, is_skip=1)
+        entries = self.repo.getSkipsOldestFirst("alice")
+        self.assertEqual([e["id"] for e in entries], ["t2"])
+
     def test_get_skip_count_scoped_to_user_and_range(self):
         self.repo.upsertUser("bob", "bob@example.com")
-        self.repo.insertSkip("alice", "t1", 1000.0, 400)
-        self.repo.insertSkip("alice", "t1", 2000.0, 400)
-        self.repo.insertSkip("bob", "t1", 1500.0, 400)
+        self.repo.insertPlay("alice", "t1", 1000.0, 400, is_skip=1)
+        self.repo.insertPlay("alice", "t1", 2000.0, 400, is_skip=1)
+        self.repo.insertPlay("bob", "t1", 1500.0, 400, is_skip=1)
+        # A real play must not be counted as a skip.
+        self.repo.insertPlay("alice", "t2", 1200.0, 60000)
 
         self.assertEqual(self.repo.getSkipCount("alice"), 2)
         self.assertEqual(self.repo.getSkipCount("alice", startTs=1500.0), 1)
@@ -764,14 +774,17 @@ class TestRangeDeletes(RepositoryTestCase):
         self.assertEqual(deleted, 2)
 
     def test_delete_skips_in_range_scoped_to_user_and_range(self):
-        self.repo.insertSkip("alice", "t1", 1000.0, 400)
-        self.repo.insertSkip("alice", "t1", 2000.0, 400)
-        self.repo.insertSkip("bob", "t1", 2000.0, 400)
+        self.repo.insertPlay("alice", "t1", 1000.0, 400, is_skip=1)
+        self.repo.insertPlay("alice", "t1", 2000.0, 400, is_skip=1)
+        self.repo.insertPlay("bob", "t1", 2000.0, 400, is_skip=1)
+        # A real play in range must survive deleteSkipsInRange.
+        self.repo.insertPlay("alice", "t1", 2100.0, 60000)
 
         deleted = self.repo.deleteSkipsInRange("alice", 1500.0, 2500.0)
 
         self.assertEqual(deleted, 1)
-        remaining = self.repo._conn().execute("SELECT username, played_at FROM play_skips ORDER BY played_at").fetchall()
+        remaining = self.repo._conn().execute(
+            "SELECT username, played_at FROM plays WHERE is_skip=1 ORDER BY played_at").fetchall()
         self.assertEqual([(r["username"], r["played_at"]) for r in remaining],
                          [("alice", 1000.0), ("bob", 2000.0)])
 

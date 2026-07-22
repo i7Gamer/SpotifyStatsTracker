@@ -130,6 +130,115 @@ class SettingQueries:
                 (key, value),
             )
 
+    # ---- Typed numeric settings ------------------------------------------------
+
+    def getIntSetting(self, key: str, default: int, minValue: int, maxValue: int) -> int:
+        """An app_settings value read as a clamped int - falls back to `default`
+        when the row is absent or unparseable, so a code constant stays the
+        effective value until an admin overrides it."""
+        raw = self.getAppSetting(key)
+        if raw is None:
+            return default
+        try:
+            return max(minValue, min(maxValue, int(raw)))
+        except (TypeError, ValueError):
+            return default
+
+    def setIntSetting(self, key: str, value: int, minValue: int, maxValue: int) -> int:
+        """Store a clamped int setting; returns the clamped value actually
+        written (so a caller can echo the corrected value back to the admin)."""
+        clamped = max(minValue, min(maxValue, int(value)))
+        self.setAppSetting(key, str(clamped))
+        return clamped
+
+    def getDiscoverArtistLimit(self, default: int) -> int:
+        """How many artists the dashboard Discover card shows (live, per request)."""
+        return self.getIntSetting(DISCOVER_ARTIST_LIMIT_KEY, default,
+                                  DISCOVER_ARTIST_LIMIT_MIN, DISCOVER_ARTIST_LIMIT_MAX)
+
+    def getImageDownloadWorkers(self, default: int) -> int:
+        return self.getIntSetting(IMAGE_DOWNLOAD_WORKERS_KEY, default, WORKER_COUNT_MIN, WORKER_COUNT_MAX)
+
+    def getArtistBioFetchWorkers(self, default: int) -> int:
+        return self.getIntSetting(ARTIST_BIO_FETCH_WORKERS_KEY, default, WORKER_COUNT_MIN, WORKER_COUNT_MAX)
+
+    def getAlbumBioFetchWorkers(self, default: int) -> int:
+        return self.getIntSetting(ALBUM_BIO_FETCH_WORKERS_KEY, default, WORKER_COUNT_MIN, WORKER_COUNT_MAX)
+
+    # ---- Skip threshold (single source of truth for plays.is_skip) -------------
+
+    @staticmethod
+    def _clampSkipValue(mode: str, value: int) -> int:
+        lo, hi = ((SKIP_PERCENT_MIN, SKIP_PERCENT_MAX) if mode == SKIP_MODE_PERCENT
+                  else (SKIP_SECONDS_MIN, SKIP_SECONDS_MAX))
+        return max(lo, min(hi, value))
+
+    def getSkipThreshold(self) -> tuple[str, int]:
+        """(mode, value) for the instance-wide skip threshold - defaults to
+        (seconds, 5) when unset, and defensively normalizes an out-of-range or
+        unparseable stored value."""
+        mode = self.getAppSetting(SKIP_THRESHOLD_MODE_KEY, SKIP_THRESHOLD_DEFAULT_MODE)
+        if mode not in (SKIP_MODE_SECONDS, SKIP_MODE_PERCENT):
+            mode = SKIP_THRESHOLD_DEFAULT_MODE
+        raw = self.getAppSetting(SKIP_THRESHOLD_VALUE_KEY)
+        try:
+            value = int(raw) if raw is not None else SKIP_THRESHOLD_DEFAULT_VALUE
+        except (TypeError, ValueError):
+            value = SKIP_THRESHOLD_DEFAULT_VALUE
+        return mode, self._clampSkipValue(mode, value)
+
+    def setSkipThreshold(self, mode: str, value: int) -> tuple[str, int]:
+        """Persist the skip threshold (clamped to the mode's bounds). Does NOT
+        recompute existing rows - callers pair this with recomputeSkipFlags()."""
+        if mode not in (SKIP_MODE_SECONDS, SKIP_MODE_PERCENT):
+            raise ValueError(f"Unknown skip threshold mode: {mode!r}")
+        value = self._clampSkipValue(mode, int(value))
+        self.setAppSetting(SKIP_THRESHOLD_MODE_KEY, mode)
+        self.setAppSetting(SKIP_THRESHOLD_VALUE_KEY, str(value))
+        return mode, value
+
+    def computeIsSkip(self, timePlayed: int, durationMs: int | None = None,
+                      threshold: tuple[str, int] | None = None) -> int:
+        """1 if this play counts as a skip under the current (or supplied)
+        threshold, else 0. Percent mode needs the track's duration; an unknown
+        (<=0/None) duration falls back to the fixed sub-5s db.SKIP_THRESHOLD_MS
+        floor. Pass `threshold` to avoid a per-row settings read in bulk loops."""
+        mode, value = threshold if threshold is not None else self.getSkipThreshold()
+        if mode == SKIP_MODE_PERCENT:
+            if durationMs and durationMs > 0:
+                return 1 if timePlayed < durationMs * value / 100 else 0
+            return 1 if timePlayed < db.SKIP_THRESHOLD_MS else 0
+        return 1 if timePlayed < value * 1000 else 0
+
+    def recomputeSkipFlags(self) -> int:
+        """Rewrite plays.is_skip for every row under the current threshold - run
+        after the admin changes it. Returns the number of rows processed.
+        Self-committing maintenance op (like setAppSetting)."""
+        mode, value = self.getSkipThreshold()
+        conn = self._conn()
+        with conn:
+            if mode == SKIP_MODE_PERCENT:
+                # Per-row threshold: pct of the track's duration, or the fixed
+                # floor for tracks whose duration isn't known (<=0/missing).
+                cur = conn.execute(
+                    """
+                    UPDATE plays SET is_skip = CASE WHEN time_played < COALESCE(
+                        (SELECT CASE WHEN t.duration_ms > 0
+                                     THEN t.duration_ms * ? / 100.0
+                                     ELSE ? END
+                         FROM tracks t WHERE t.id = plays.track_id),
+                        ?)
+                    THEN 1 ELSE 0 END
+                    """,
+                    (value, db.SKIP_THRESHOLD_MS, db.SKIP_THRESHOLD_MS),
+                )
+            else:
+                cur = conn.execute(
+                    "UPDATE plays SET is_skip = CASE WHEN time_played < ? THEN 1 ELSE 0 END",
+                    (value * 1000,),
+                )
+            return cur.rowcount
+
     def isInheritedGenresEnabled(self) -> bool:
         return self.getAppSetting(INHERITED_GENRES_SETTING_KEY, APP_SETTING_TRUE) != APP_SETTING_FALSE
 

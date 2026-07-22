@@ -71,7 +71,7 @@ class TestOverwriteDeletesCoveredRange(_OverwriteTestBase):
             {"id": "old21", "playedAt": _ts(2021), "timePlayed": 60000},  #< outside the span
         ])
         db.repo.upsertTrack(normalizeTrackForTest({"id": "t_skip", "name": "S", "artists": []}))
-        db.repo.insertSkip(db.user, "t_skip", _ts(2018, 7), 400)
+        db.repo.insertPlay(db.user, "t_skip", _ts(2018, 7), 400, is_skip=1)
         db.repo.commit()
 
         fileSpecs = {
@@ -89,7 +89,7 @@ class TestOverwriteDeletesCoveredRange(_OverwriteTestBase):
         self.assertIn(_ts(2021), playedAts)      #< outside span - untouched
         self.assertIn(_ts(2018, 3), playedAts)   #< re-imported fresh
         self.assertIn(_ts(2019, 4), playedAts)
-        skipCount = db.repo._conn().execute("SELECT COUNT(*) FROM play_skips").fetchone()[0]
+        skipCount = db.repo._conn().execute("SELECT COUNT(*) FROM plays WHERE is_skip=1").fetchone()[0]
         self.assertEqual(skipCount, 0)           #< covered-range skips wiped too
 
     def test_gap_inside_a_covered_year_is_wiped_too(self):

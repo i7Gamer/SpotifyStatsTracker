@@ -13,7 +13,6 @@ from Database.db import ConnectionManager, BEHAVIORAL_COLUMNS
 EXPECTED_TABLES = {
     "artists", "albums", "tracks", "track_artists", "playlists",
     "images", "users", "plays", "import_progress", "user_shares",
-    "play_skips",
 }
 
 
@@ -79,7 +78,7 @@ class TestConnectionManagerSchema(unittest.TestCase):
         for column in BEHAVIORAL_COLUMNS:
             self.assertIn(column, columns)
 
-    def _insertSkipDeps(self, conn):
+    def _insertPlayDeps(self, conn):
         conn.execute("INSERT INTO users (username, email, created_at) VALUES (?, ?, ?)",
                      ("alice", "alice@example.com", 0))
         conn.execute("INSERT INTO albums (id, name, url) VALUES (?, ?, ?)",
@@ -87,31 +86,28 @@ class TestConnectionManagerSchema(unittest.TestCase):
         conn.execute("INSERT INTO tracks (id, name, url, album_id) VALUES (?, ?, ?, ?)",
                      ("t1", "Song", "http://example.com", "alb1"))
 
-    def test_play_skips_unique_constraint_blocks_exact_duplicate(self):
+    def test_play_skips_table_is_gone(self):
         conn = self.manager.connection()
-        self._insertSkipDeps(conn)
-        conn.execute(
-            "INSERT INTO play_skips (username, track_id, played_at, time_played) VALUES (?, ?, ?, ?)",
-            ("alice", "t1", 1000.0, 400),
-        )
-        conn.commit()
+        tables = {row["name"] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        self.assertNotIn("play_skips", tables)
 
-        with self.assertRaises(sqlite3.IntegrityError):
-            conn.execute(
-                "INSERT INTO play_skips (username, track_id, played_at, time_played) VALUES (?, ?, ?, ?)",
-                ("alice", "t1", 1000.0, 400),
-            )
-
-    def test_play_skips_accepts_zero_but_not_negative_time_played(self):
+    def test_plays_has_is_skip_column(self):
         conn = self.manager.connection()
-        self._insertSkipDeps(conn)
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(plays)").fetchall()}
+        self.assertIn("is_skip", columns)
+
+    def test_plays_accepts_zero_but_not_negative_time_played(self):
+        # Merged skips can be 0ms, so the plays CHECK relaxed from >=1000 to >=0.
+        conn = self.manager.connection()
+        self._insertPlayDeps(conn)
         conn.execute(
-            "INSERT INTO play_skips (username, track_id, played_at, time_played) VALUES (?, ?, ?, ?)",
-            ("alice", "t1", 2000.0, 0),
+            "INSERT INTO plays (username, track_id, played_at, time_played, is_skip) VALUES (?, ?, ?, ?, ?)",
+            ("alice", "t1", 2000.0, 0, 1),
         )
         with self.assertRaises(sqlite3.IntegrityError):
             conn.execute(
-                "INSERT INTO play_skips (username, track_id, played_at, time_played) VALUES (?, ?, ?, ?)",
+                "INSERT INTO plays (username, track_id, played_at, time_played) VALUES (?, ?, ?, ?)",
                 ("alice", "t1", 3000.0, -1),
             )
 

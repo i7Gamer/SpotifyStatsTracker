@@ -154,7 +154,7 @@ class TestExportBehavioralFields(DatabaseTestCase, _AppTestBase):
 
     def test_skips_are_exported_after_plays(self):
         db = self._makeDb(_TRACKS, _ENTRIES, username="alice")
-        db.repo.insertSkip("alice", "t2", 1700009000, 400, extras={"reason_end": "fwdbtn"})
+        db.repo.insertPlay("alice", "t2", 1700009000, 400, is_skip=1, extras={"reason_end": "fwdbtn"})
         db.repo.commit()
 
         items = self._exportItems(db)
@@ -167,7 +167,7 @@ class TestExportBehavioralFields(DatabaseTestCase, _AppTestBase):
 
     def test_csv_export_stays_plays_only(self):
         db = self._makeDb(_TRACKS, _ENTRIES, username="alice")
-        db.repo.insertSkip("alice", "t2", 1700009000, 400)
+        db.repo.insertPlay("alice", "t2", 1700009000, 400, is_skip=1)
         db.repo.commit()
 
         dash = self._makeApp()
@@ -182,7 +182,7 @@ class TestSkipAndOfflineRoundTrip(DatabaseTestCase, _AppTestBase):
         sourceDb = self._makeDb(_TRACKS, [], username="alice")
         sourceDb.repo.insertPlay("alice", "t1", 1700000000, 200000,
                                  extras={"platform": "ios", "offline": 1, "reason_end": "trackdone"})
-        sourceDb.repo.insertSkip("alice", "t2", 1700005000, 400,
+        sourceDb.repo.insertPlay("alice", "t2", 1700005000, 400, is_skip=1,
                                  extras={"reason_end": "fwdbtn", "skipped": 1})
         sourceDb.repo.commit()
 
@@ -196,7 +196,7 @@ class TestSkipAndOfflineRoundTrip(DatabaseTestCase, _AppTestBase):
             targetDb.importHistory(exportedJson)
 
         playRows = targetDb.repo._conn().execute(
-            "SELECT * FROM plays WHERE username='bob'").fetchall()
+            "SELECT * FROM plays WHERE username='bob' AND is_skip=0").fetchall()
         self.assertEqual(len(playRows), 1)
         play = dict(playRows[0])
         self.assertEqual(play["played_at"], 1700000000)   #< corrected offline start survives
@@ -205,7 +205,7 @@ class TestSkipAndOfflineRoundTrip(DatabaseTestCase, _AppTestBase):
         self.assertEqual(play["reason_end"], "trackdone")
 
         skipRows = targetDb.repo._conn().execute(
-            "SELECT * FROM play_skips WHERE username='bob'").fetchall()
+            "SELECT * FROM plays WHERE username='bob' AND is_skip=1").fetchall()
         self.assertEqual(len(skipRows), 1)
         skip = dict(skipRows[0])
         self.assertEqual(skip["track_id"], "t2")

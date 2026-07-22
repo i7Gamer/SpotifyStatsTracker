@@ -10,7 +10,7 @@ class PlayQueries:
 
     def insertPlay(self, username: str, trackId: str, playedAt: float, timePlayed: int,
                    playedFrom: str | None = None, created_reason: str | None = None,
-                   extras: dict | None = None) -> bool:
+                   extras: dict | None = None, is_skip: int = 0) -> bool:
         """Returns True if a new row was inserted, False if this exact
         (username, trackId, playedAt) play was already recorded (updates
         time_played if different, and enriches behavioral columns from
@@ -18,6 +18,14 @@ class PlayQueries:
         value never clobbers).
         If created_reason is provided, it's only set on INSERT (never updated
         on an existing play, matching upsertTrack()'s semantics).
+
+        is_skip: 0 for a real play (the default), 1 for a skip. The write paths
+        that classify (the importer, and the listener/backfill via
+        appendMetadata) compute it from the current threshold and pass it here;
+        direct callers default to a real play, and recomputeSkipFlags()
+        reclassifies every row when the admin changes the threshold. It's also
+        written on the update path so a re-recorded play tracks the supplied
+        value.
 
         Does NOT commit - see upsertTrack()'s docstring."""
         conn = self._conn()
@@ -36,8 +44,8 @@ class PlayQueries:
             if existing["time_played"] != timePlayed or behavioralChanged:
                 behavioralSet = ", ".join(f"{column} = COALESCE(?, {column})" for column in BEHAVIORAL_COLUMNS)
                 conn.execute(
-                    f"UPDATE plays SET time_played = ?, played_from = COALESCE(?, played_from), {behavioralSet} WHERE id = ?",
-                    (timePlayed, playedFrom, *[extras.get(column) for column in BEHAVIORAL_COLUMNS], existing["id"])
+                    f"UPDATE plays SET time_played = ?, is_skip = ?, played_from = COALESCE(?, played_from), {behavioralSet} WHERE id = ?",
+                    (timePlayed, is_skip, playedFrom, *[extras.get(column) for column in BEHAVIORAL_COLUMNS], existing["id"])
                 )
             return False
 
@@ -46,30 +54,9 @@ class PlayQueries:
         behavioralInsert = ", ".join(BEHAVIORAL_COLUMNS)
         behavioralPlaceholders = ", ".join("?" for _ in BEHAVIORAL_COLUMNS)
         cur = conn.execute(
-            f"INSERT OR IGNORE INTO plays (username, track_id, played_at, time_played, played_from, created_at, created_reason, {behavioralInsert}) "
-            f"VALUES (?, ?, ?, ?, ?, ?, ?, {behavioralPlaceholders})",
-            (username, trackId, playedAt, timePlayed, playedFrom, createdAt, created_reason,
-             *[extras.get(column) for column in BEHAVIORAL_COLUMNS]),
-        )
-        return cur.rowcount > 0
-
-    def insertSkip(self, username: str, trackId: str, playedAt: float, timePlayed: int,
-                   extras: dict | None = None, created_reason: str | None = None) -> bool:
-        """Record a skip event (a play shorter than SKIP_THRESHOLD_MS) in
-        play_skips. Returns True if a new row was inserted, False on an exact
-        (username, trackId, playedAt) duplicate. No near-time matching - the
-        UNIQUE constraint is the whole dedup story for skips.
-
-        Does NOT commit - see upsertTrack()'s docstring."""
-        conn = self._conn()
-        extras = extras or {}
-        createdAt = time.time() if created_reason else None
-        behavioralInsert = ", ".join(BEHAVIORAL_COLUMNS)
-        behavioralPlaceholders = ", ".join("?" for _ in BEHAVIORAL_COLUMNS)
-        cur = conn.execute(
-            f"INSERT OR IGNORE INTO play_skips (username, track_id, played_at, time_played, created_at, created_reason, {behavioralInsert}) "
-            f"VALUES (?, ?, ?, ?, ?, ?, {behavioralPlaceholders})",
-            (username, trackId, playedAt, timePlayed, createdAt, created_reason,
+            f"INSERT OR IGNORE INTO plays (username, track_id, played_at, time_played, played_from, created_at, created_reason, is_skip, {behavioralInsert}) "
+            f"VALUES (?, ?, ?, ?, ?, ?, ?, ?, {behavioralPlaceholders})",
+            (username, trackId, playedAt, timePlayed, playedFrom, createdAt, created_reason, is_skip,
              *[extras.get(column) for column in BEHAVIORAL_COLUMNS]),
         )
         return cur.rowcount > 0
@@ -94,8 +81,11 @@ class PlayQueries:
         is a wide, defense-in-depth guard applied only to Web API backfill
         inserts, not the live listener's own insert path."""
         conn = self._conn()
+        # is_skip=0: near-time matching only ever considered real plays (skips
+        # used to live in a separate table); a backfill row must never dedup
+        # against, or claim/correct, a merged skip row.
         row = conn.execute(
-            "SELECT 1 FROM plays WHERE username=? AND track_id=? AND played_at BETWEEN ? AND ? LIMIT 1",
+            "SELECT 1 FROM plays WHERE username=? AND track_id=? AND played_at BETWEEN ? AND ? AND is_skip=0 LIMIT 1",
             (username, trackId, playedAt - toleranceSeconds, playedAt + toleranceSeconds),
         ).fetchone()
         return row is not None
@@ -107,33 +97,36 @@ class PlayQueries:
         carries the behavioral columns so the import can enrich NULLs in place."""
         conn = self._conn()
         behavioralSelect = ", ".join(BEHAVIORAL_COLUMNS)
+        # is_skip=0: only real plays are correction/dedup candidates (see hasPlayNearTime).
         rows = conn.execute(
             f"SELECT id, played_at, time_played, {behavioralSelect} FROM plays "
-            f"WHERE username=? AND track_id=? AND played_at BETWEEN ? AND ?",
+            f"WHERE username=? AND track_id=? AND played_at BETWEEN ? AND ? AND is_skip=0",
             (username, trackId, playedAt - toleranceSeconds, playedAt + toleranceSeconds),
         ).fetchall()
         return [dict(row) for row in rows]
 
     def deletePlaysInRange(self, username: str, startTs: float, endTs: float) -> int:
-        """Delete every play of this user whose played_at falls inside the
-        closed [startTs, endTs] window - the overwrite-import wipe. Returns
-        the number of rows removed.
+        """Delete every real play (is_skip=0) of this user whose played_at falls
+        inside the closed [startTs, endTs] window - the overwrite-import wipe.
+        Skips in the same range are removed by deleteSkipsInRange, so the two
+        counts stay separately reportable. Returns the number of rows removed.
 
         Does NOT commit - see upsertTrack()'s docstring."""
         conn = self._conn()
         cur = conn.execute(
-            "DELETE FROM plays WHERE username=? AND played_at BETWEEN ? AND ?",
+            "DELETE FROM plays WHERE username=? AND played_at BETWEEN ? AND ? AND is_skip=0",
             (username, startTs, endTs),
         )
         return cur.rowcount
 
     def deleteSkipsInRange(self, username: str, startTs: float, endTs: float) -> int:
-        """play_skips counterpart of deletePlaysInRange().
+        """Skip counterpart of deletePlaysInRange(): removes the is_skip=1 rows
+        in range (skips now live in plays, not a separate play_skips table).
 
         Does NOT commit - see upsertTrack()'s docstring."""
         conn = self._conn()
         cur = conn.execute(
-            "DELETE FROM play_skips WHERE username=? AND played_at BETWEEN ? AND ?",
+            "DELETE FROM plays WHERE username=? AND played_at BETWEEN ? AND ? AND is_skip=1",
             (username, startTs, endTs),
         )
         return cur.rowcount
@@ -153,7 +146,7 @@ class PlayQueries:
         conn = self._conn()
         params = [username]
         rangeClause = self._dateRangeClause(params, startTs, endTs)
-        row = conn.execute(f"SELECT COUNT(*) AS c FROM plays WHERE username=?{rangeClause}", params).fetchone()
+        row = conn.execute(f"SELECT COUNT(*) AS c FROM plays WHERE username=? AND is_skip=0{rangeClause}", params).fetchone()
         return row["c"]
 
     def getPlaysNewestFirst(self, username: str, count: int | None = None, startIndex: int = 0,
@@ -165,7 +158,7 @@ class PlayQueries:
         params += [limit, startIndex]
         rows = conn.execute(
             f"SELECT track_id, played_at, time_played, played_from FROM plays "
-            f"WHERE username=?{rangeClause} ORDER BY played_at DESC, id DESC LIMIT ? OFFSET ?",
+            f"WHERE username=? AND is_skip=0{rangeClause} ORDER BY played_at DESC, id DESC LIMIT ? OFFSET ?",
             params,
         ).fetchall()
         return [self._playRowToEntry(r) for r in rows]
@@ -180,34 +173,33 @@ class PlayQueries:
         behavioralSelect = ", ".join(BEHAVIORAL_COLUMNS)
         rows = conn.execute(
             f"SELECT track_id, played_at, time_played, played_from, {behavioralSelect} FROM plays "
-            f"WHERE username=?{rangeClause} ORDER BY played_at ASC, id ASC LIMIT ? OFFSET ?",
+            f"WHERE username=? AND is_skip=0{rangeClause} ORDER BY played_at ASC, id ASC LIMIT ? OFFSET ?",
             params,
         ).fetchall()
         return [self._playRowToEntry(r) for r in rows]
 
     def getSkipsOldestFirst(self, username: str, count: int | None = None, startIndex: int = 0) -> list[dict]:
-        """Skip events oldest-first, shaped like getPlaysOldestFirst entries
-        (play_skips has no played_from - it comes back None). Feeds the JSON
+        """Skip events (is_skip=1) oldest-first, shaped like getPlaysOldestFirst
+        entries (skips carry no played_from - it comes back None). Feeds the JSON
         export so skips round-trip between instances."""
         conn = self._conn()
         limit = -1 if count is None else count
         behavioralSelect = ", ".join(BEHAVIORAL_COLUMNS)
         rows = conn.execute(
-            f"SELECT track_id, played_at, time_played, {behavioralSelect} FROM play_skips "
-            f"WHERE username=? ORDER BY played_at ASC, id ASC LIMIT ? OFFSET ?",
+            f"SELECT track_id, played_at, time_played, {behavioralSelect} FROM plays "
+            f"WHERE username=? AND is_skip=1 ORDER BY played_at ASC, id ASC LIMIT ? OFFSET ?",
             (username, limit, startIndex),
         ).fetchall()
         return [self._playRowToEntry(r) for r in rows]
 
     def getSkipCount(self, username: str, startTs: float | None = None, endTs: float | None = None) -> int:
-        """Number of true skip events (play_skips rows) in range - every row
-        is already known to be under SKIP_THRESHOLD_MS at insert time, so
-        unlike getCompletionStats' plays-table query this needs no duration
-        check, just a count."""
+        """Number of skip events (plays.is_skip=1) in range - the boundary is
+        the admin-tunable skip threshold, materialized per row, so this is a
+        plain count with no per-row duration check."""
         conn = self._conn()
         params = [username]
         rangeClause = self._dateRangeClause(params, startTs, endTs)
-        row = conn.execute(f"SELECT COUNT(*) AS c FROM play_skips WHERE username=?{rangeClause}", params).fetchone()
+        row = conn.execute(f"SELECT COUNT(*) AS c FROM plays WHERE username=? AND is_skip=1{rangeClause}", params).fetchone()
         return row["c"]
 
     def getPlaysWithSourceInRange(self, username: str, startTs: float, endTs: float) -> list[dict]:
@@ -220,7 +212,7 @@ class PlayQueries:
         conn = self._conn()
         rows = conn.execute(
             "SELECT track_id, played_at, time_played, created_reason FROM plays "
-            "WHERE username=? AND played_at BETWEEN ? AND ?",
+            "WHERE username=? AND played_at BETWEEN ? AND ? AND is_skip=0",
             (username, startTs, endTs),
         ).fetchall()
         return [
@@ -249,7 +241,7 @@ class PlayQueries:
         conn = self._conn()
         placeholders = ",".join("?" for _ in trackIds)
         rows = conn.execute(
-            f"SELECT DISTINCT track_id FROM plays WHERE username=? AND track_id IN ({placeholders})",
+            f"SELECT DISTINCT track_id FROM plays WHERE username=? AND is_skip=0 AND track_id IN ({placeholders})",
             [username, *trackIds],
         ).fetchall()
         return {r["track_id"] for r in rows}
@@ -268,7 +260,7 @@ class PlayQueries:
             SELECT DISTINCT ta.artist_id AS artist_id
             FROM plays p
             JOIN track_artists ta ON ta.track_id = p.track_id
-            WHERE p.username=? AND ta.artist_id IN ({placeholders})
+            WHERE p.username=? AND p.is_skip=0 AND ta.artist_id IN ({placeholders})
             """,
             [username, *artistIds],
         ).fetchall()
@@ -287,7 +279,7 @@ class PlayQueries:
             SELECT DISTINCT t.album_id AS album_id
             FROM plays p
             JOIN tracks t ON t.id = p.track_id
-            WHERE p.username=? AND t.album_id IN ({placeholders})
+            WHERE p.username=? AND p.is_skip=0 AND t.album_id IN ({placeholders})
             """,
             [username, *albumIds],
         ).fetchall()
@@ -362,7 +354,7 @@ class PlayQueries:
                    p.time_played AS time_played, p.played_from AS played_from
             FROM plays p
             {self._SEARCH_JOIN_CLAUSE}
-            WHERE p.username = ? {self._SEARCH_MATCH_CLAUSE}{rangeClause}
+            WHERE p.username = ? AND p.is_skip=0 {self._SEARCH_MATCH_CLAUSE}{rangeClause}
             ORDER BY p.played_at DESC, p.id DESC
             LIMIT ? OFFSET ?
             """,
@@ -383,7 +375,7 @@ class PlayQueries:
             SELECT COUNT(*) AS c
             FROM plays p
             {self._SEARCH_JOIN_CLAUSE}
-            WHERE p.username = ? {self._SEARCH_MATCH_CLAUSE}{rangeClause}
+            WHERE p.username = ? AND p.is_skip=0 {self._SEARCH_MATCH_CLAUSE}{rangeClause}
             """,
             params,
         ).fetchone()
@@ -427,7 +419,7 @@ class PlayQueries:
             SELECT track_id, COUNT(*) AS plays, SUM(time_played) AS total_time_listened,
                    MIN(played_at) AS first_listened_at
             FROM plays
-            WHERE username = ?{rangeClause}
+            WHERE username = ? AND is_skip=0{rangeClause}
             GROUP BY track_id
             """,
             params,
@@ -478,7 +470,7 @@ class PlayQueries:
             FROM plays p
             JOIN track_artists ta ON ta.track_id = p.track_id
             JOIN artists ar ON ar.id = ta.artist_id
-            WHERE p.username = ?{rangeClause}{extraClauses}
+            WHERE p.username = ? AND p.is_skip=0{rangeClause}{extraClauses}
             GROUP BY ar.id
             ORDER BY {sortColumn} {direction}, total_time_listened DESC, name COLLATE NOCASE ASC, id ASC
             LIMIT ? OFFSET ?
@@ -512,7 +504,7 @@ class PlayQueries:
                 SELECT ta.artist_id FROM plays p
                 JOIN track_artists ta ON ta.track_id = p.track_id
                 JOIN artists ar ON ar.id = ta.artist_id
-                WHERE p.username = ?{rangeClause}{searchClause}
+                WHERE p.username = ? AND p.is_skip=0{rangeClause}{searchClause}
                 GROUP BY ta.artist_id
             )
             """,
@@ -542,7 +534,7 @@ class PlayQueries:
                        SUM(p.time_played) AS total_time_listened
                 FROM plays p
                 JOIN track_artists ta ON ta.track_id = p.track_id
-                WHERE p.username = ?{rangeClause}
+                WHERE p.username = ? AND p.is_skip=0{rangeClause}
                 GROUP BY ta.artist_id
             )
             """,
@@ -621,7 +613,7 @@ class PlayQueries:
             FROM plays p
             JOIN tracks t ON t.id = p.track_id
             LEFT JOIN albums al ON al.id = t.album_id
-            WHERE p.username = ?{rangeClause}{extraClauses}
+            WHERE p.username = ? AND p.is_skip=0{rangeClause}{extraClauses}
             GROUP BY t.id
             ORDER BY {sortColumn} {direction}, total_time_listened DESC, name COLLATE NOCASE ASC, track_id ASC
             LIMIT ? OFFSET ?
@@ -646,7 +638,7 @@ class PlayQueries:
             row = conn.execute(
                 f"""
                 SELECT COUNT(*) AS c FROM (
-                    SELECT track_id FROM plays WHERE username = ?{rangeClause}
+                    SELECT track_id FROM plays WHERE username = ? AND is_skip=0{rangeClause}
                     GROUP BY track_id
                 )
                 """,
@@ -664,7 +656,7 @@ class PlayQueries:
                 SELECT p.track_id FROM plays p
                 JOIN tracks t ON t.id = p.track_id
                 LEFT JOIN albums al ON al.id = t.album_id
-                WHERE p.username = ?{rangeClause}
+                WHERE p.username = ? AND p.is_skip=0{rangeClause}
                 AND (
                     t.name LIKE ? ESCAPE '\\'
                     OR al.name LIKE ? ESCAPE '\\'
@@ -734,7 +726,7 @@ class PlayQueries:
             FROM plays p
             JOIN tracks t ON t.id = p.track_id
             JOIN albums al ON al.id = t.album_id
-            WHERE p.username = ?{rangeClause}{extraClauses}
+            WHERE p.username = ? AND p.is_skip=0{rangeClause}{extraClauses}
             GROUP BY al.id
             ORDER BY {sortColumn} {direction}, total_time_listened DESC, name COLLATE NOCASE ASC, album_id ASC
             LIMIT ? OFFSET ?
@@ -761,7 +753,7 @@ class PlayQueries:
                 SELECT COUNT(*) AS c FROM (
                     SELECT t.album_id FROM plays p
                     JOIN tracks t ON t.id = p.track_id
-                    WHERE p.username = ?{rangeClause}
+                    WHERE p.username = ? AND p.is_skip=0{rangeClause}
                     GROUP BY t.album_id
                 )
                 """,
@@ -779,7 +771,7 @@ class PlayQueries:
                 SELECT t.album_id FROM plays p
                 JOIN tracks t ON t.id = p.track_id
                 JOIN albums al ON al.id = t.album_id
-                WHERE p.username = ?{rangeClause}
+                WHERE p.username = ? AND p.is_skip=0{rangeClause}
                 AND (
                     al.name LIKE ? ESCAPE '\\'
                     OR EXISTS (
@@ -938,7 +930,7 @@ class PlayQueries:
             SELECT CAST(played_at / {PLAY_BUCKET_SECONDS} AS INTEGER) AS bucket,
                    COUNT(*) AS plays,
                    COALESCE(SUM(time_played), 0) AS total_time
-            FROM plays WHERE username = ?{rangeClause}{extraClauses}
+            FROM plays WHERE username = ? AND is_skip=0{rangeClause}{extraClauses}
             GROUP BY bucket
             ORDER BY bucket
             """,
@@ -967,7 +959,7 @@ class PlayQueries:
             JOIN tracks t ON t.id = p.track_id
             LEFT JOIN track_artists ta ON ta.track_id = p.track_id AND ta.position = 0
             LEFT JOIN artists ar ON ar.id = ta.artist_id
-            WHERE p.username = ?
+            WHERE p.username = ? AND p.is_skip=0
               AND strftime('%m-%d', p.played_at, 'unixepoch') IN ({placeholders})
             """,
             [username, *monthDays],
@@ -996,7 +988,7 @@ class PlayQueries:
             FROM plays p
             JOIN track_artists ta ON ta.track_id = p.track_id
             JOIN artists ar ON ar.id = ta.artist_id
-            WHERE p.username = ?{rangeClause}
+            WHERE p.username = ? AND p.is_skip=0{rangeClause}
             GROUP BY bucket, ar.id, ar.name
             ORDER BY bucket, ar.name
             """,
@@ -1014,7 +1006,7 @@ class PlayQueries:
         rangeClause = self._dateRangeClause(params, startTs, endTs)
         row = conn.execute(
             f"SELECT COUNT(*) AS c, COALESCE(SUM(time_played), 0) AS total FROM plays "
-            f"WHERE username = ?{rangeClause}",
+            f"WHERE username = ? AND is_skip=0{rangeClause}",
             params,
         ).fetchone()
         return row["c"], row["total"]
@@ -1028,8 +1020,8 @@ class PlayQueries:
             SELECT COUNT(*) AS c FROM (
                 SELECT DISTINCT p.track_id
                 FROM plays p
-                WHERE p.username = ? AND p.played_at BETWEEN ? AND ?
-                AND (SELECT MIN(played_at) FROM plays WHERE username = ? AND track_id = p.track_id)
+                WHERE p.username = ? AND p.is_skip=0 AND p.played_at BETWEEN ? AND ?
+                AND (SELECT MIN(played_at) FROM plays WHERE username = ? AND is_skip=0 AND track_id = p.track_id)
                     BETWEEN ? AND ?
             )
             """,
@@ -1047,9 +1039,9 @@ class PlayQueries:
                 SELECT DISTINCT ta.artist_id
                 FROM plays p
                 JOIN track_artists ta ON ta.track_id = p.track_id
-                WHERE p.username = ? AND p.played_at BETWEEN ? AND ?
+                WHERE p.username = ? AND p.is_skip=0 AND p.played_at BETWEEN ? AND ?
                 AND (SELECT MIN(played_at) FROM plays
-                     WHERE username = ? AND track_id IN (
+                     WHERE username = ? AND is_skip=0 AND track_id IN (
                          SELECT track_id FROM track_artists WHERE artist_id = ta.artist_id
                      ))
                     BETWEEN ? AND ?
@@ -1061,7 +1053,7 @@ class PlayQueries:
 
     def getMaxPlayedAtInPeriod(self, username: str, startTs: float, endTs: float) -> float | None:
         row = self._conn().execute(
-            "SELECT MAX(played_at) FROM plays WHERE username = ? AND played_at >= ? AND played_at < ?",
+            "SELECT MAX(played_at) FROM plays WHERE username = ? AND is_skip=0 AND played_at >= ? AND played_at < ?",
             (username, startTs, endTs)
         ).fetchone()
         return row[0] if row else None
@@ -1072,7 +1064,7 @@ class PlayQueries:
         an explicit range (e.g. the Compare page aligning two users' trend
         buckets over one shared axis)."""
         row = self._conn().execute(
-            "SELECT MIN(played_at) AS minTs, MAX(played_at) AS maxTs FROM plays WHERE username = ?",
+            "SELECT MIN(played_at) AS minTs, MAX(played_at) AS maxTs FROM plays WHERE username = ? AND is_skip=0",
             (username,),
         ).fetchone()
         if row is None or row["minTs"] is None:
@@ -1081,7 +1073,7 @@ class PlayQueries:
 
     def getPlayCountInPeriod(self, username: str, startTs: float, endTs: float) -> int:
         row = self._conn().execute(
-            "SELECT COUNT(*) FROM plays WHERE username = ? AND played_at >= ? AND played_at < ?",
+            "SELECT COUNT(*) FROM plays WHERE username = ? AND is_skip=0 AND played_at >= ? AND played_at < ?",
             (username, startTs, endTs)
         ).fetchone()
         return row[0] if row else 0

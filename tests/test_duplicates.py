@@ -7,9 +7,11 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from conftest import DatabaseTestCase, normalizeTrackForTest
 
 
-def _meta(trackId, playedAt, timePlayed=1000):
+def _meta(trackId, playedAt, timePlayed=60000):
     """A full importer-yielded item: entry fields + enough track metadata to
-    satisfy Repository.upsertTrack (mirrors what Client.formatTrack produces)."""
+    satisfy Repository.upsertTrack (mirrors what Client.formatTrack produces).
+    Default duration is a full listen (> the 5s skip floor) so imported entries
+    are real plays (is_skip=0) unless a test overrides timePlayed."""
     track = normalizeTrackForTest({"id": trackId, "name": f"Song {trackId}", "artists": []})
     track["playedAt"] = playedAt
     track["timePlayed"] = timePlayed
@@ -318,9 +320,13 @@ class TestDatabaseDeduplication(DatabaseTestCase):
         with patch("Database.database.Importer", return_value=self._mockImporter(gen)):
             db.importHistory("raw export")
 
-        plays = db.getEntriesFromNew(fullPagination=False)
-        self.assertEqual(len(plays), 2)
-        self.assertEqual(sorted(p["playedAt"] for p in plays), [SKIP_START, RESTART_START])
+        # The 2538ms event is a skip (is_skip=1) under the default 5s threshold,
+        # the restart a real play (is_skip=0) - two separate rows, not collapsed
+        # (the restart must not claim the skip's row, nor vice versa).
+        rows = db.repo._conn().execute(
+            "SELECT played_at, is_skip FROM plays ORDER BY played_at").fetchall()
+        self.assertEqual([(r["played_at"], r["is_skip"]) for r in rows],
+                         [(SKIP_START, 1), (RESTART_START, 0)])
 
     def test_import_match_window_uses_track_duration(self):
         """The end-time match rule must use the track's actual duration: a
@@ -399,9 +405,13 @@ class TestDatabaseDeduplication(DatabaseTestCase):
         with patch("Database.database.Importer", return_value=importer):
             db.importHistoryBatch(["file one", "file two"])
 
-        plays = db.getEntriesFromNew(fullPagination=False)
-        self.assertEqual(len(plays), 2)
-        self.assertEqual(sorted(p["playedAt"] for p in plays), [SKIP_START, REPLAY_START])
+        # The end-of-file-1 skip (is_skip=1) and its start-of-file-2 replay
+        # (is_skip=0) must both survive as separate rows - run-state claims span
+        # the batch so the replay can't claim the skip's row.
+        rows = db.repo._conn().execute(
+            "SELECT played_at, is_skip FROM plays ORDER BY played_at").fetchall()
+        self.assertEqual([(r["played_at"], r["is_skip"]) for r in rows],
+                         [(SKIP_START, 1), (REPLAY_START, 0)])
 
     def test_import_updates_synthetic_track_duration(self):
         """Synthetic track durations should be updated in the catalog when a longer play duration is imported."""

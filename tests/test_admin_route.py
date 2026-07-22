@@ -315,6 +315,115 @@ class TestAdminUserSettings(AdminRouteTestBase):
         self.assertTrue(dash.repo.isAlbumBioEnabled())
 
 
+class TestAdminSkipSettings(AdminRouteTestBase):
+    def test_non_admin_post_is_forbidden(self):
+        dash = self._makeApp()
+        resp = self._post(dash, "/admin/skip_settings", isAdmin=False,
+                          data={"skip_mode": "seconds", "skip_value": "30"})
+        self.assertEqual(resp.status_code, 403)
+
+    def test_anonymous_post_redirects_to_login(self):
+        dash = self._makeApp()
+        resp = self._post(dash, "/admin/skip_settings", isAdmin=True,
+                          data={"skip_mode": "seconds", "skip_value": "30"}, loggedIn=False)
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn("/login", resp.headers["Location"])
+
+    def test_admin_can_set_seconds_threshold(self):
+        dash = self._makeApp()
+        resp = self._post(dash, "/admin/skip_settings", isAdmin=True,
+                          data={"skip_mode": "seconds", "skip_value": "30"})
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn("/admin", resp.headers["Location"])
+        self.assertEqual(dash.repo.getSkipThreshold(), ("seconds", 30))
+
+    def test_admin_can_set_percent_threshold(self):
+        dash = self._makeApp()
+        self._post(dash, "/admin/skip_settings", isAdmin=True,
+                   data={"skip_mode": "percent", "skip_value": "20"})
+        self.assertEqual(dash.repo.getSkipThreshold(), ("percent", 20))
+
+    def test_value_is_clamped_to_mode_bounds(self):
+        dash = self._makeApp()
+        self._post(dash, "/admin/skip_settings", isAdmin=True,
+                   data={"skip_mode": "seconds", "skip_value": "999"})
+        self.assertEqual(dash.repo.getSkipThreshold(), ("seconds", 60))
+
+    def test_invalid_value_redirects_with_error(self):
+        dash = self._makeApp()
+        resp = self._post(dash, "/admin/skip_settings", isAdmin=True,
+                          data={"skip_mode": "seconds", "skip_value": "abc"})
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn("error=", resp.headers["Location"])
+
+    def test_saving_recomputes_skip_flags(self):
+        dash = self._makeApp()
+        with patch.object(dash.repo, "recomputeSkipFlags") as recompute:
+            self._post(dash, "/admin/skip_settings", isAdmin=True,
+                       data={"skip_mode": "seconds", "skip_value": "30"})
+            recompute.assert_called_once()
+
+
+class TestAdminTuningSettings(AdminRouteTestBase):
+    def test_non_admin_post_is_forbidden(self):
+        dash = self._makeApp()
+        resp = self._post(dash, "/admin/tuning_settings", isAdmin=False,
+                          data={"discover_artist_limit": "10"})
+        self.assertEqual(resp.status_code, 403)
+
+    def test_admin_can_set_discover_limit(self):
+        dash = self._makeApp()
+        resp = self._post(dash, "/admin/tuning_settings", isAdmin=True,
+                          data={"discover_artist_limit": "12"})
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(dash.repo.getDiscoverArtistLimit(5), 12)
+
+    def test_worker_counts_are_clamped(self):
+        dash = self._makeApp()
+        self._post(dash, "/admin/tuning_settings", isAdmin=True,
+                   data={"image_download_workers": "999"})
+        self.assertEqual(dash.repo.getImageDownloadWorkers(5), 32)
+
+    def test_blank_field_is_left_unchanged(self):
+        dash = self._makeApp()
+        dash.repo.setIntSetting("discover_artist_limit", 8, 1, 25)
+        self._post(dash, "/admin/tuning_settings", isAdmin=True,
+                   data={"discover_artist_limit": ""})
+        self.assertEqual(dash.repo.getDiscoverArtistLimit(5), 8)
+
+
+class TestAdminRestart(AdminRouteTestBase):
+    def test_non_admin_post_is_forbidden(self):
+        dash = self._makeApp()
+        resp = self._post(dash, "/admin/restart", isAdmin=False, data={})
+        self.assertEqual(resp.status_code, 403)
+
+    def test_anonymous_post_redirects_to_login(self):
+        dash = self._makeApp()
+        resp = self._post(dash, "/admin/restart", isAdmin=True, data={}, loggedIn=False)
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn("/login", resp.headers["Location"])
+
+    def test_disabled_by_default_does_not_schedule_exit(self):
+        dash = self._makeApp()
+        with patch("threading.Timer") as timer, patch.dict(os.environ, clear=False):
+            os.environ.pop("ALLOW_INSTANCE_RESTART", None)
+            resp = self._post(dash, "/admin/restart", isAdmin=True, data={})
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn("error=", resp.headers["Location"])
+        timer.assert_not_called()
+
+    def test_enabled_schedules_graceful_exit(self):
+        # threading.Timer is mocked, so the scheduled shutdown+os._exit never
+        # fires - the test only asserts the exit was scheduled.
+        dash = self._makeApp()
+        with patch("threading.Timer") as timer, \
+             patch.dict(os.environ, {"ALLOW_INSTANCE_RESTART": "1"}):
+            resp = self._post(dash, "/admin/restart", isAdmin=True, data={})
+        self.assertEqual(resp.status_code, 302)
+        timer.assert_called_once()
+
+
 class TestAdminLastfmSettings(AdminRouteTestBase):
     def test_non_admin_post_is_forbidden(self):
         dash = self._makeApp()

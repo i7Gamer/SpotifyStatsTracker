@@ -29,9 +29,9 @@ def iterExportEntries(db, includeSkips=False):
     played_at, so they can only appear at the very end - earlier chunks
     can't shift underneath the OFFSET pagination.
 
-    includeSkips: skip events follow after every play (their sub-threshold
-    ms_played routes them back into play_skips on reimport). JSON only -
-    the CSV stays plays-only for spreadsheet use."""
+    includeSkips: skip events (plays.is_skip=1) follow after every play (their
+    sub-threshold ms_played re-imports as is_skip=1). JSON only - the CSV stays
+    real-plays-only for spreadsheet use."""
     startIndex = 0
     while True:
         entries = db.getEntriesFromOld(count=EXPORT_CHUNK_SIZE, startIndex=startIndex)

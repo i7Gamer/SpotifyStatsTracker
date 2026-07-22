@@ -97,6 +97,13 @@ http://127.0.0.1:5444
 
 **Note:** The Docker container persists data in the `Database/Data/` directory on your host machine.
 
+### Restarting the app (admin restart button)
+
+The admin console has an optional **"Restart app to apply"** button — used after changing worker-pool sizes on the Advanced Tuning panel, since those only take effect on restart. It works by gracefully stopping background workers and exiting, so **something must relaunch the process**. It stays hidden unless you set `ALLOW_INSTANCE_RESTART=1`.
+
+- **Docker** already relaunches on exit (`restart: always` in `docker-compose.yml`), so it is safe to enable there.
+- **Running `python wsgi.py` directly**, wrap it in a supervisor that restarts on exit (a Windows service via NSSM, a Task Scheduler task, or a simple loop script such as `while ($true) { python wsgi.py }`) **before** enabling this — otherwise the button just stops the app with nothing to bring it back.
+
 ### Backups
 
 Listening history, tracks, images, and login sessions all live in one SQLite file at `Database/Data/spotify_stats.db`.

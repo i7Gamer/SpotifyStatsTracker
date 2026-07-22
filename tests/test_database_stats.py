@@ -374,31 +374,33 @@ class TestNewChartsStats(DatabaseTestCase):
             "t2": {"id": "t2", "name": "Song Two", "artists": [], "duration": 100000}
         }
         entries = [
-            {"id": "t1", "playedAt": 100, "timePlayed": 15000},
-            {"id": "t1", "playedAt": 200, "timePlayed": 85000},
-            {"id": "t2", "playedAt": 300, "timePlayed": 50000},
+            {"id": "t1", "playedAt": 200, "timePlayed": 85000},   #< complete (>=80%)
+            {"id": "t2", "playedAt": 300, "timePlayed": 50000},   #< partial (<80%)
         ]
         db = self._makeDb(tracks, entries)
+        db.repo.insertPlay("testuser", "t1", 100, 2000, is_skip=1)   #< a skip (is_skip=1 row)
+        db.repo.commit()
         stats = db.getCompletionStats()
         self.assertEqual(stats["skips"], 1)
         self.assertEqual(stats["completes"], 1)
         self.assertEqual(stats["partials"], 1)
 
     def test_completion_stats_boundaries(self):
-        """Pins the classification edges: exactly the 30s skip threshold is
-        NOT a skip, exactly 80% of the duration IS a complete, and unknown
-        (<=0) durations split on the skip threshold alone."""
+        """Among real plays (is_skip=0): exactly 80% of the duration IS a
+        complete, and unknown (<=0) durations always count as complete. The
+        skips bucket is purely the is_skip=1 rows (no separate 30s line)."""
         tracks = {
             "zero": {"id": "zero", "name": "No Duration", "artists": [], "duration": 0},
             "t1": {"id": "t1", "name": "Song", "artists": [], "duration": 100000},
         }
         entries = [
-            {"id": "zero", "playedAt": 100, "timePlayed": 30000},   #< at threshold, no duration -> complete
-            {"id": "zero", "playedAt": 200, "timePlayed": 29999},   #< under threshold -> skip
+            {"id": "zero", "playedAt": 100, "timePlayed": 30000},   #< unknown duration -> complete
             {"id": "t1", "playedAt": 300, "timePlayed": 80000},     #< exactly 80% -> complete
             {"id": "t1", "playedAt": 400, "timePlayed": 79999},     #< just under 80% -> partial
         ]
         db = self._makeDb(tracks, entries)
+        db.repo.insertPlay("testuser", "t1", 200, 2000, is_skip=1)   #< the only skip
+        db.repo.commit()
 
         stats = db.getCompletionStats()
 
@@ -408,46 +410,48 @@ class TestNewChartsStats(DatabaseTestCase):
         db = self._makeDb({}, [])
         self.assertEqual(db.getCompletionStats(), {"skips": 0, "completes": 0, "partials": 0})
 
-    def test_completion_stats_includes_true_skips_in_range(self):
-        """play_skips events (<5s, never inserted into `plays`) must add to
-        the "skips" bucket the Charts/Compare Skip Rate is built from."""
+    def test_completion_stats_counts_is_skip_rows(self):
+        """The skips bucket the Charts/Compare Skip Rate is built from is just
+        the is_skip=1 rows in plays."""
         tracks = {"t1": {"id": "t1", "name": "Song", "artists": [], "duration": 100000}}
         entries = [{"id": "t1", "playedAt": 100, "timePlayed": 85000}]  #< 1 complete
         db = self._makeDb(tracks, entries)
-        db.repo.insertSkip("testuser", "t1", 200, 400)
-        db.repo.insertSkip("testuser", "t1", 300, 400)
+        db.repo.insertPlay("testuser", "t1", 200, 400, is_skip=1)
+        db.repo.insertPlay("testuser", "t1", 300, 400, is_skip=1)
+        db.repo.commit()
 
         stats = db.getCompletionStats()
 
         self.assertEqual(stats, {"skips": 2, "completes": 1, "partials": 0})
 
-    def test_completion_stats_true_skips_respect_date_range_and_user(self):
+    def test_completion_stats_skips_respect_date_range_and_user(self):
         tracks = {"t1": {"id": "t1", "name": "Song", "artists": [], "duration": 100000}}
         entries = [{"id": "t1", "playedAt": 1000, "timePlayed": 85000}]
         db = self._makeDb(tracks, entries)
         db.repo.upsertUser("otheruser", "other@example.com")
-        db.repo.insertSkip("testuser", "t1", 500, 400)     #< before the range below
-        db.repo.insertSkip("otheruser", "t1", 1500, 400)   #< in range, wrong user
+        db.repo.insertPlay("testuser", "t1", 500, 400, is_skip=1)     #< before the range below
+        db.repo.insertPlay("otheruser", "t1", 1500, 400, is_skip=1)   #< in range, wrong user
+        db.repo.commit()
 
         startDate = datetime.datetime.fromtimestamp(900, tz=datetime.timezone.utc)
         stats = db.getCompletionStats(startDate=startDate)
 
         self.assertEqual(stats, {"skips": 0, "completes": 1, "partials": 0})
 
-    def test_completion_stats_unchanged_when_play_skips_table_empty(self):
-        """Listener-only accounts never write to play_skips (see
-        appendTrackData) - their existing skip/complete/partial split must be
-        untouched by folding in play_skips."""
+    def test_early_abandon_is_partial_not_skip(self):
+        """A real play abandoned early (above the default 5s skip threshold) is
+        a partial, not a skip - completion stats no longer uses a separate 30s
+        line, only is_skip plus the 80% complete ratio."""
         tracks = {"t1": {"id": "t1", "name": "Song", "artists": [], "duration": 100000}}
         entries = [
-            {"id": "t1", "playedAt": 100, "timePlayed": 15000},
-            {"id": "t1", "playedAt": 200, "timePlayed": 85000},
+            {"id": "t1", "playedAt": 100, "timePlayed": 15000},   #< 15s > 5s -> real play, <80% -> partial
+            {"id": "t1", "playedAt": 200, "timePlayed": 85000},   #< complete
         ]
         db = self._makeDb(tracks, entries)
 
         stats = db.getCompletionStats()
 
-        self.assertEqual(stats, {"skips": 1, "completes": 1, "partials": 0})
+        self.assertEqual(stats, {"skips": 0, "completes": 1, "partials": 1})
 
     def test_explicit_ratio_empty_database_returns_zeros(self):
         db = self._makeDb({}, [])

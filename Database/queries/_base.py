@@ -70,6 +70,41 @@ SHARE_LINKS_SETTING_KEY = "share_links_enabled"
 ARTIST_BIO_SETTING_KEY = "artist_bio_enabled"
 ALBUM_BIO_SETTING_KEY = "album_bio_enabled"
 
+# Instance-wide skip threshold (app_settings). This is the single, admin-tunable
+# boundary between a "skip" and a real listen - it replaced both the old fixed
+# play_skips split and getCompletionStats' 30s line. Two modes:
+#   "seconds": a play is a skip when time_played < value * 1000 (value in 5..60s)
+#   "percent": a skip when it played less than value% of the track's duration
+#              (value in 5..25%); tracks with unknown duration (<=0) fall back to
+#              the fixed db.SKIP_THRESHOLD_MS floor.
+# Materialized per row into plays.is_skip at write time and by recomputeSkipFlags()
+# whenever the threshold changes. Default seconds/5 matches the historical
+# SKIP_THRESHOLD_MS the merge migration seeds.
+SKIP_THRESHOLD_MODE_KEY = "skip_threshold_mode"
+SKIP_THRESHOLD_VALUE_KEY = "skip_threshold_value"
+SKIP_MODE_SECONDS = "seconds"
+SKIP_MODE_PERCENT = "percent"
+SKIP_SECONDS_MIN = 5
+SKIP_SECONDS_MAX = 60
+SKIP_PERCENT_MIN = 5
+SKIP_PERCENT_MAX = 25
+SKIP_THRESHOLD_DEFAULT_MODE = SKIP_MODE_SECONDS
+SKIP_THRESHOLD_DEFAULT_VALUE = 5
+
+# app_settings keys for numeric tunables migrated out of code constants. Each
+# falls back to its code default (config.py / Database.database) when the row is
+# absent, so behavior is unchanged until an admin sets one. DISCOVER_ARTIST_LIMIT
+# is read per request (live). The *_WORKERS values size ThreadPoolExecutors built
+# once at process start, so a change only applies after a restart.
+DISCOVER_ARTIST_LIMIT_KEY = "discover_artist_limit"
+DISCOVER_ARTIST_LIMIT_MIN = 1
+DISCOVER_ARTIST_LIMIT_MAX = 25
+IMAGE_DOWNLOAD_WORKERS_KEY = "image_download_workers"
+ARTIST_BIO_FETCH_WORKERS_KEY = "artist_bio_fetch_workers"
+ALBUM_BIO_FETCH_WORKERS_KEY = "album_bio_fetch_workers"
+WORKER_COUNT_MIN = 1
+WORKER_COUNT_MAX = 32
+
 # getBucketedPlayTotals' fixed UTC bucket width. 15 minutes is the smallest
 # granularity any real-world UTC offset uses (e.g. Asia/Kathmandu +5:45), so
 # every play in one bucket maps to the same local day/hour/weekday no matter

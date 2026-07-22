@@ -28,7 +28,7 @@ _IMPORT_HOLD_SECONDS = 0.05   #< long enough that unserialized imports reliably 
 def _meta(trackId, playedAt):
     track = normalizeTrackForTest({"id": trackId, "name": f"Song {trackId}", "artists": []})
     track["playedAt"] = playedAt
-    track["timePlayed"] = 1000
+    track["timePlayed"] = 60000   #< a full listen (> the 5s skip floor) -> real play
     track["playedFrom"] = None
     return track
 

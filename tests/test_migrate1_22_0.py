@@ -1,9 +1,11 @@
-"""1.22.0 -> 1.23.0: behavioral play metadata + skip events.
+"""1.22.0 -> 1.23.0: behavioral play metadata.
 
 Adds the 8 nullable behavioral columns (platform, conn_country, reason_start,
 reason_end, shuffle, skipped, offline, incognito) to a pre-existing plays
-table and ensures the play_skips table exists. Existing play rows must
-survive untouched.
+table. Existing play rows must survive untouched. (This migration historically
+also created a separate play_skips table via SCHEMA; that table was later
+merged back into plays and removed from SCHEMA, so it's no longer created here -
+see migrate1_32_0.)
 """
 import sqlite3
 import sys
@@ -73,7 +75,7 @@ class TestMigrate1_22_0(unittest.TestCase):
     def _columns(self, conn, table):
         return {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
 
-    def test_adds_behavioral_columns_and_play_skips_table(self):
+    def test_adds_behavioral_columns(self):
         self._migrate()
 
         conn = sqlite3.connect(self.dbPath)
@@ -86,13 +88,10 @@ class TestMigrate1_22_0(unittest.TestCase):
             row = conn.execute("SELECT username, track_id, time_played FROM plays").fetchone()
             self.assertEqual(row, ("u1", "t1", 60000))
 
+            # play_skips is retired: no longer in SCHEMA, so this migration no
+            # longer creates it (migrate1_32_0 folds one in if present).
             tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
-            self.assertIn("play_skips", tables)
-            skipColumns = self._columns(conn, "play_skips")
-            for column in BEHAVIORAL_COLUMNS:
-                self.assertIn(column, skipColumns)
-            indexes = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='index'").fetchall()}
-            self.assertIn("idx_play_skips_user_time", indexes)
+            self.assertNotIn("play_skips", tables)
         finally:
             conn.close()
 

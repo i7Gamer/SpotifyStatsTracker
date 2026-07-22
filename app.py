@@ -173,6 +173,10 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
         # (see Database/repository.py) instead of secrets/users_map.json and
         # secrets/cookies.json.
         self.repo = Repository()
+        # Size the shared background thread pools from admin settings, once,
+        # before any Database instance (and its workers) is constructed. A
+        # changed value applies only after a restart - see configureWorkerPools.
+        Database.configureWorkerPools(self.repo)
         # No download is in flight this early, so any surviving 'pending'
         # image claim is stale (a previous run died mid-download) and would
         # block that image from ever being fetched.

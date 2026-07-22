@@ -5,10 +5,25 @@ Repository.isAdmin. register(app, dashboard) wires them via app.add_url_rule
 under their original endpoint names.
 """
 import logging
+import os
+import threading
 
 from flask import render_template, redirect, request, url_for, abort
 
-from Database.database import Database
+from config import (
+    RECOMMENDATION_ARTIST_LIMIT, TRUTHY_ENV_VALUES,
+    ALLOW_INSTANCE_RESTART_ENV_VAR, INSTANCE_RESTART_DELAY_SECONDS,
+)
+from Database.database import (
+    Database, IMAGE_DOWNLOAD_WORKERS, ARTIST_BIO_FETCH_WORKERS, ALBUM_BIO_FETCH_WORKERS,
+)
+from Database.repository import (
+    SKIP_MODE_SECONDS, SKIP_MODE_PERCENT,
+    SKIP_SECONDS_MIN, SKIP_SECONDS_MAX, SKIP_PERCENT_MIN, SKIP_PERCENT_MAX,
+    DISCOVER_ARTIST_LIMIT_KEY, DISCOVER_ARTIST_LIMIT_MIN, DISCOVER_ARTIST_LIMIT_MAX,
+    IMAGE_DOWNLOAD_WORKERS_KEY, ARTIST_BIO_FETCH_WORKERS_KEY, ALBUM_BIO_FETCH_WORKERS_KEY,
+    WORKER_COUNT_MIN, WORKER_COUNT_MAX,
+)
 from Database.utils import convertToDatetime
 
 logger = logging.getLogger(__name__)
@@ -245,14 +260,30 @@ def register(app, dashboard):
 
         backup_worker_summary = {"status": "RUNNING" if backup_worker_running else "INACTIVE"}
 
+        skip_mode, skip_value = dashboard.repo.getSkipThreshold()
+        restart_enabled = os.environ.get(ALLOW_INSTANCE_RESTART_ENV_VAR, "").lower() in TRUTHY_ENV_VALUES
+
         return render_template(
             "admin.html",
+            restart_enabled=restart_enabled,
             users_list=users_list,
             admin_count=len(dashboard.repo.getAdminUsernames()),
             spotify_backfill_enabled=dashboard.repo.isSpotifyApiBackfillEnabled(),
             lastfm_backfill_enabled=dashboard.repo.isLastfmGenreBackfillEnabled(),
             sharing_enabled=dashboard.repo.isDataSharingEnabled(),
             inherited_genres_enabled=dashboard.repo.isInheritedGenresEnabled(),
+            skip_mode=skip_mode,
+            skip_value=skip_value,
+            skip_mode_seconds=SKIP_MODE_SECONDS,
+            skip_mode_percent=SKIP_MODE_PERCENT,
+            skip_seconds_min=SKIP_SECONDS_MIN, skip_seconds_max=SKIP_SECONDS_MAX,
+            skip_percent_min=SKIP_PERCENT_MIN, skip_percent_max=SKIP_PERCENT_MAX,
+            discover_artist_limit=dashboard.repo.getDiscoverArtistLimit(RECOMMENDATION_ARTIST_LIMIT),
+            image_download_workers=dashboard.repo.getImageDownloadWorkers(IMAGE_DOWNLOAD_WORKERS),
+            artist_bio_workers=dashboard.repo.getArtistBioFetchWorkers(ARTIST_BIO_FETCH_WORKERS),
+            album_bio_workers=dashboard.repo.getAlbumBioFetchWorkers(ALBUM_BIO_FETCH_WORKERS),
+            discover_min=DISCOVER_ARTIST_LIMIT_MIN, discover_max=DISCOVER_ARTIST_LIMIT_MAX,
+            worker_min=WORKER_COUNT_MIN, worker_max=WORKER_COUNT_MAX,
             listener_summary=listener_summary,
             spotify_api_worker_summary=spotify_api_worker_summary,
             lastfm_worker_summary=lastfm_worker_summary,
@@ -351,6 +382,83 @@ def register(app, dashboard):
         dashboard.repo.setSpotifyApiBackfillEnabled(request.form.get("spotify_backfill") == "1")
         return redirect(url_for("adminPage"))
     app.add_url_rule("/admin/spotify_settings", "adminSpotifySettings", adminSpotifySettings, methods=["POST"])
+
+    def adminSkipSettings():
+        """Admin-only: the instance-wide skip threshold (a plain seconds value
+        or a percent of each track's duration). Saving recomputes plays.is_skip
+        across every user's history via recomputeSkipFlags(), so all skip vs
+        real-play stats reflect the new boundary immediately."""
+        email, username, db = dashboard.get_current_user_or_redirect()
+        if not email:
+            return redirect(url_for("login", next=url_for("adminPage")))
+        if not dashboard.repo.isAdmin(username):
+            abort(403)
+        mode = request.form.get("skip_mode", SKIP_MODE_SECONDS)
+        if mode not in (SKIP_MODE_SECONDS, SKIP_MODE_PERCENT):
+            mode = SKIP_MODE_SECONDS
+        try:
+            value = int(request.form.get("skip_value", ""))
+        except (TypeError, ValueError):
+            return redirect(url_for("adminPage", error="Skip threshold must be a whole number."))
+        dashboard.repo.setSkipThreshold(mode, value)   #< clamps to the mode's bounds
+        dashboard.repo.recomputeSkipFlags()             #< self-commits; reclassifies every play
+        return redirect(url_for("adminPage"))
+    app.add_url_rule("/admin/skip_settings", "adminSkipSettings", adminSkipSettings, methods=["POST"])
+
+    def adminTuningSettings():
+        """Admin-only: numeric tunables migrated out of code constants. The
+        Discover artist count is read live per request; the worker pool sizes
+        apply only after a restart (see Database.configureWorkerPools). Each
+        value is clamped to its bounds; a blank/unparseable field is left as-is."""
+        email, username, db = dashboard.get_current_user_or_redirect()
+        if not email:
+            return redirect(url_for("login", next=url_for("adminPage")))
+        if not dashboard.repo.isAdmin(username):
+            abort(403)
+
+        def _save(field, key, lo, hi):
+            raw = request.form.get(field)
+            if not raw:
+                return
+            try:
+                dashboard.repo.setIntSetting(key, int(raw), lo, hi)
+            except (TypeError, ValueError):
+                pass
+
+        _save("discover_artist_limit", DISCOVER_ARTIST_LIMIT_KEY, DISCOVER_ARTIST_LIMIT_MIN, DISCOVER_ARTIST_LIMIT_MAX)
+        _save("image_download_workers", IMAGE_DOWNLOAD_WORKERS_KEY, WORKER_COUNT_MIN, WORKER_COUNT_MAX)
+        _save("artist_bio_workers", ARTIST_BIO_FETCH_WORKERS_KEY, WORKER_COUNT_MIN, WORKER_COUNT_MAX)
+        _save("album_bio_workers", ALBUM_BIO_FETCH_WORKERS_KEY, WORKER_COUNT_MIN, WORKER_COUNT_MAX)
+        return redirect(url_for("adminPage"))
+    app.add_url_rule("/admin/tuning_settings", "adminTuningSettings", adminTuningSettings, methods=["POST"])
+
+    def adminRestart():
+        """Admin-only: gracefully stop every worker and exit so a SUPERVISING
+        launch script relaunches the process - the only way restart-only
+        settings (worker pool sizes) take effect. Gated behind
+        ALLOW_INSTANCE_RESTART so it can't be triggered on a bare, unsupervised
+        process, which would just stop the app. The exit is deferred by
+        INSTANCE_RESTART_DELAY_SECONDS so this response reaches the browser
+        first; threading.Timer is the testable seam (no real os._exit under
+        test, which patches it)."""
+        email, username, db = dashboard.get_current_user_or_redirect()
+        if not email:
+            return redirect(url_for("login", next=url_for("adminPage")))
+        if not dashboard.repo.isAdmin(username):
+            abort(403)
+        if os.environ.get(ALLOW_INSTANCE_RESTART_ENV_VAR, "").lower() not in TRUTHY_ENV_VALUES:
+            return redirect(url_for("adminPage",
+                error="Instance restart is disabled. Set ALLOW_INSTANCE_RESTART=1 in a supervised launch to enable it."))
+
+        def _gracefulExit():
+            try:
+                dashboard.shutdown()
+            finally:
+                os._exit(0)
+        threading.Timer(INSTANCE_RESTART_DELAY_SECONDS, _gracefulExit).start()
+        return redirect(url_for("adminPage",
+            error="Restarting now - the app will be back in a few seconds if the process is supervised."))
+    app.add_url_rule("/admin/restart", "adminRestart", adminRestart, methods=["POST"])
 
     def adminSetUserAdmin(username):
         """Admin-only: promote/demote a user's admin status. Refuses to

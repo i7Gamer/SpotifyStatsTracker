@@ -317,6 +317,91 @@
       </form>
     </div>
   </article>
+
+  <article class="card" style="padding: 0;">
+    <div class="card-header" style="padding: 1.5rem 1.5rem 0.5rem 1.5rem;">
+      <h2 style="margin: 0; font-family: var(--font-headings); font-size: 1.15rem;">Skip Threshold</h2>
+      <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem;">What counts as a skip vs a real listen. Plays under the threshold are excluded from play counts, listen time, top lists and streaks. Saving reclassifies all history.</p>
+    </div>
+    <div style="padding: 0 1.5rem 1.5rem 1.5rem;">
+      <form method="post" action="{{ url_for('adminSkipSettings') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+        <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; margin-bottom: 0.6rem;">
+          <input type="radio" name="skip_mode" id="skipModeSeconds" value="{{ skip_mode_seconds }}" {% if skip_mode == skip_mode_seconds %}checked{% endif %} onchange="onSkipModeChange()">
+          Fixed seconds ({{ skip_seconds_min }}–{{ skip_seconds_max }}s)
+        </label>
+        <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; margin-bottom: 0.8rem;">
+          <input type="radio" name="skip_mode" id="skipModePercent" value="{{ skip_mode_percent }}" {% if skip_mode == skip_mode_percent %}checked{% endif %} onchange="onSkipModeChange()">
+          Percent of track duration ({{ skip_percent_min }}–{{ skip_percent_max }}%)
+        </label>
+        <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 1rem;">
+          <input type="number" name="skip_value" id="skipValueInput" value="{{ skip_value }}"
+                 min="{{ skip_seconds_min if skip_mode == skip_mode_seconds else skip_percent_min }}"
+                 max="{{ skip_seconds_max if skip_mode == skip_mode_seconds else skip_percent_max }}"
+                 step="1" required
+                 style="width: 6rem; padding: 4px 8px; background: var(--card-bg, #1e1e1e); color: var(--fg, #eee); border: 1px solid var(--border, #444); border-radius: 4px;">
+          <span id="skipValueUnit" style="color: var(--muted);">{{ '%' if skip_mode == skip_mode_percent else 's' }}</span>
+        </div>
+        <button type="submit" class="primary-button" style="padding: 4px 16px;">Save</button>
+      </form>
+    </div>
+  </article>
+
+  <article class="card" style="padding: 0;">
+    <div class="card-header" style="padding: 1.5rem 1.5rem 0.5rem 1.5rem;">
+      <h2 style="margin: 0; font-family: var(--font-headings); font-size: 1.15rem;">Advanced Tuning</h2>
+      <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem;">Numeric limits that were previously fixed in code. Worker counts apply after the app restarts.</p>
+    </div>
+    <div style="padding: 0 1.5rem 1.5rem 1.5rem;">
+      <form method="post" action="{{ url_for('adminTuningSettings') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+        {% set tuning_fields = [
+          ('discover_artist_limit', 'Discover artists on dashboard', 'live', discover_artist_limit, discover_min, discover_max),
+          ('image_download_workers', 'Image download workers', 'restart', image_download_workers, worker_min, worker_max),
+          ('artist_bio_workers', 'Artist biography workers', 'restart', artist_bio_workers, worker_min, worker_max),
+          ('album_bio_workers', 'Album biography workers', 'restart', album_bio_workers, worker_min, worker_max)
+        ] %}
+        {% for name, label, kind, value, lo, hi in tuning_fields %}
+        <label style="display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); margin-bottom: 0.6rem;">
+          <span>{{ label }} <em style="font-style: normal; opacity: 0.65;">({{ kind }})</em></span>
+          <input type="number" name="{{ name }}" value="{{ value }}" min="{{ lo }}" max="{{ hi }}" step="1"
+                 style="width: 5rem; padding: 4px 8px; background: var(--card-bg, #1e1e1e); color: var(--fg, #eee); border: 1px solid var(--border, #444); border-radius: 4px;">
+        </label>
+        {% endfor %}
+        <button type="submit" class="primary-button" style="padding: 4px 16px; margin-top: 0.4rem;">Save</button>
+      </form>
+      {% if restart_enabled %}
+      <form method="post" action="{{ url_for('adminRestart') }}" style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--border, #333);"
+            onsubmit="return confirm('Restart the app now? Worker-count changes apply after the restart. This only recovers if the process is supervised (a relaunch-on-exit launch script) - otherwise the app will stop.');">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+        <button type="submit" style="padding: 4px 16px; background: transparent; color: var(--danger, #e57373); border: 1px solid var(--danger, #e57373); border-radius: 4px; cursor: pointer;">Restart app to apply</button>
+      </form>
+      {% else %}
+      <p style="color: var(--muted); font-size: 0.8rem; margin: 1rem 0 0 0; padding-top: 1rem; border-top: 1px solid var(--border, #333);">Worker-count changes apply after you restart the app. A one-click restart button appears here when <code>ALLOW_INSTANCE_RESTART=1</code> is set in a supervised launch.</p>
+      {% endif %}
+    </div>
+  </article>
 </section>
+
+<script>
+  var SKIP_BOUNDS = {
+    "{{ skip_mode_seconds }}": {min: {{ skip_seconds_min }}, max: {{ skip_seconds_max }}, unit: "s"},
+    "{{ skip_mode_percent }}": {min: {{ skip_percent_min }}, max: {{ skip_percent_max }}, unit: "%"}
+  };
+  function onSkipModeChange() {
+    var mode = document.getElementById("skipModePercent").checked
+      ? "{{ skip_mode_percent }}" : "{{ skip_mode_seconds }}";
+    var b = SKIP_BOUNDS[mode];
+    var input = document.getElementById("skipValueInput");
+    input.min = b.min;
+    input.max = b.max;
+    document.getElementById("skipValueUnit").textContent = b.unit;
+    var v = parseInt(input.value, 10);
+    if (isNaN(v) || v < b.min) v = b.min;
+    if (v > b.max) v = b.max;
+    input.value = v;
+  }
+  onSkipModeChange();
+</script>
 
 {% endblock %}

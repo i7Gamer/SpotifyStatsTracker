@@ -24,24 +24,14 @@ class ImportMixin:
         self.saveImagesFromTrack(meta)
         entry, track = self._splitEntryAndTrack(meta)
         self.repo.upsertTrack(track, created_reason=created_reason)
+        # Classify against the current threshold + the track's duration (percent
+        # mode needs it); a sub-threshold event now lands as is_skip=1 in plays
+        # rather than in a separate table.
+        is_skip = self.repo.computeIsSkip(entry["timePlayed"], track.get("duration"))
         was_inserted = self.repo.insertPlay(self.user, entry["id"], entry["playedAt"], entry["timePlayed"], entry.get("playedFrom"),
-                              created_reason=created_reason)
+                              created_reason=created_reason, is_skip=is_skip)
         self.repo.commit()
         self.updatePlaylists(entry.get("playedFrom"))
-        return was_inserted
-
-    def appendSkipData(self, timestamp, track, timePlayed, source="listener"):
-        """Record a sub-threshold event from the listener/backfill path as a
-        skip: catalog the track (FK + future skip analytics), insert into
-        play_skips, commit. The listener carries no behavioral metadata -
-        extras stay NULL."""
-        formatted = _dbmod.Client.formatTrack(track, timestamp, timePlayed)
-        entry, trackMeta = self._splitEntryAndTrack(formatted)
-        created_reason = f"{source}_skip (user: {self.user})"
-        self.repo.upsertTrack(trackMeta, created_reason=created_reason)
-        was_inserted = self.repo.insertSkip(self.user, entry["id"], entry["playedAt"], entry["timePlayed"],
-                                            created_reason=created_reason)
-        self.repo.commit()
         return was_inserted
 
     def appendTrackData(self, timestamp, track, timePlayed, context=None, source="listener"):
@@ -172,6 +162,9 @@ class ImportMixin:
             skipsSavedCount = 0
             correctedYears = set()
             behavioralSetSql = ", ".join(f"{column} = COALESCE(?, {column})" for column in _dbmod.BEHAVIORAL_COLUMNS)
+            # Fetch the skip threshold once for the whole batch so each row's
+            # is_skip is computed without a per-row settings read.
+            skipThreshold = self.repo.getSkipThreshold()
             for entry in stagedPlays:
                 track_id = entry["id"]
                 played_at = entry["playedAt"]
@@ -180,13 +173,14 @@ class ImportMixin:
                 extras = entry.get("importExtras") or {}
                 extrasValues = [extras.get(column) for column in _dbmod.BEHAVIORAL_COLUMNS]
 
-                # Skip events bypass the near-time play matching entirely: they
-                # are not plays (must never claim/correct a play row), and their
-                # own dedup is play_skips' UNIQUE constraint.
+                # Sub-5s events (entry["isSkip"], the fixed import floor) bypass
+                # near-time play matching entirely: they must never claim/correct
+                # a real play row, and their dedup is plays' UNIQUE constraint.
+                # They're always is_skip=1 (the stats threshold is >= 5s).
                 if entry.get("isSkip"):
-                    if self.repo.insertSkip(self.user, track_id, played_at, time_played,
-                                            extras=entry.get("importExtras"),
-                                            created_reason=f"history_import (user: {self.user})"):
+                    if self.repo.insertPlay(self.user, track_id, played_at, time_played,
+                                            created_reason=f"history_import (user: {self.user})",
+                                            extras=entry.get("importExtras"), is_skip=1):
                         skipsSavedCount += 1
                     continue
 
@@ -230,11 +224,15 @@ class ImportMixin:
                         )
 
                         if data_differs:
-                            # Update both fields with imported data (more accurate source)
+                            # Update both fields with imported data (more accurate source).
+                            # A corrected time_played can cross the skip threshold, so
+                            # is_skip is recomputed alongside it.
                             conn = self.repo._conn()
+                            corrected_is_skip = self.repo.computeIsSkip(
+                                time_played, track.get("duration") if track else None, threshold=skipThreshold)
                             conn.execute(
-                                f"UPDATE plays SET played_at = ?, time_played = ?, {behavioralSetSql} WHERE id = ?",
-                                (played_at, time_played, *extrasValues, existing_play["id"])
+                                f"UPDATE plays SET played_at = ?, time_played = ?, is_skip = ?, {behavioralSetSql} WHERE id = ?",
+                                (played_at, time_played, corrected_is_skip, *extrasValues, existing_play["id"])
                             )
                             changes = []
                             if int(existing_play["played_at"]) != int(played_at):
@@ -282,10 +280,13 @@ class ImportMixin:
                             )
                         continue
 
-                # If no matches, proceed to insert as usual
+                # If no matches, proceed to insert as usual. is_skip uses the
+                # batch threshold + this track's duration (percent mode).
+                is_skip = self.repo.computeIsSkip(
+                    time_played, track.get("duration") if track else None, threshold=skipThreshold)
                 if self.repo.insertPlay(self.user, track_id, played_at, time_played, played_from,
                                         created_reason=f"history_import (user: {self.user})",
-                                        extras=entry.get("importExtras")):
+                                        extras=entry.get("importExtras"), is_skip=is_skip):
                     insertedCount += 1
                 runState.insertedPlayKeys.add((track_id, played_at))
 

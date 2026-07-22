@@ -19,11 +19,15 @@ SYNTHETIC_FALLBACK_REASON = "synthetic_fallback"
 # real metadata arriving later overwrites the marker.
 RESTRICTED_FALLBACK_REASON = "restricted_fallback"
 
-# Events played shorter than this are skip events (play_skips table), not
-# listens (plays table). Spotify's export has no duration-based skip
-# definition (its `skipped` flag only means "user pressed next"; 30s is the
-# royalty "counted stream" line) - 5s is this app's own boundary. Shared by
-# the importer and the live listener so both classify identically.
+# The fixed lower floor (5s) below which an imported/listened event is treated
+# as a non-play for DEDUP purposes only: such events bypass the importer's
+# near-time play-matching (they must never claim/correct a real play row). This
+# is deliberately NOT the (admin-tunable) stats skip threshold - that lives in
+# app_settings and is materialized per row into plays.is_skip (see
+# SKIP_THRESHOLD_* and computeIsSkip in Database/queries). Kept fixed so moving
+# the admin slider never changes how data is recorded/deduplicated; also the
+# percent-mode fallback for tracks whose duration is unknown. Shared by the
+# importer and the live listener so both dedup identically.
 SKIP_THRESHOLD_MS = 5000
 
 # Per-play behavioral metadata from Spotify's extended export, stored as
@@ -171,13 +175,22 @@ CREATE TABLE IF NOT EXISTS users (
 );
 
 -- Per-user play history. This is the only high-cardinality, per-user table -
--- everything else above is shared, global catalog data.
+-- everything else above is shared, global catalog data. Skips live here too
+-- (they used to be a separate play_skips table): is_skip=1 marks a sub-threshold
+-- event, materialized from the admin-tunable skip threshold at write time and by
+-- recomputeSkipFlags() when the threshold changes. Every "real plays" aggregate
+-- filters is_skip=0 (a cheap residual on idx_plays_user_time, since skips are a
+-- small fraction); skip analytics reads is_skip=1. time_played allows 0 (skips
+-- can be 0ms) - it was CHECK >= 1000 while skips were quarantined elsewhere.
+-- NOTE: is_skip must not appear in any SCHEMA index - SCHEMA is re-stamped onto
+-- pre-1.32.0 databases (whose plays has no is_skip yet) before migrate1_32_0
+-- rebuilds the table, and a CREATE INDEX referencing is_skip would fail there.
 CREATE TABLE IF NOT EXISTS plays (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     username        TEXT NOT NULL REFERENCES users(username),
     track_id        TEXT NOT NULL REFERENCES tracks(id),
     played_at       REAL NOT NULL,
-    time_played     INTEGER NOT NULL CHECK (time_played >= 1000),
+    time_played     INTEGER NOT NULL CHECK (time_played >= 0),
     played_from     TEXT,
     created_at      REAL,
     created_reason  TEXT,
@@ -189,33 +202,11 @@ CREATE TABLE IF NOT EXISTS plays (
     skipped         INTEGER,
     offline         INTEGER,
     incognito       INTEGER,
+    is_skip         INTEGER NOT NULL DEFAULT 0,
     UNIQUE (username, track_id, played_at)
 );
 CREATE INDEX IF NOT EXISTS idx_plays_user_time ON plays(username, played_at);
 CREATE INDEX IF NOT EXISTS idx_plays_user_track ON plays(username, track_id);
-
--- Skip events: plays shorter than SKIP_THRESHOLD_MS. Kept out of plays so
--- every play count/time aggregation stays a plain query over plays - skip
--- analytics explicitly opts into this table instead.
-CREATE TABLE IF NOT EXISTS play_skips (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    username        TEXT NOT NULL REFERENCES users(username),
-    track_id        TEXT NOT NULL REFERENCES tracks(id),
-    played_at       REAL NOT NULL,
-    time_played     INTEGER NOT NULL CHECK (time_played >= 0),
-    created_at      REAL,
-    created_reason  TEXT,
-    platform        TEXT,
-    conn_country    TEXT,
-    reason_start    TEXT,
-    reason_end      TEXT,
-    shuffle         INTEGER,
-    skipped         INTEGER,
-    offline         INTEGER,
-    incognito       INTEGER,
-    UNIQUE (username, track_id, played_at)
-);
-CREATE INDEX IF NOT EXISTS idx_play_skips_user_time ON play_skips(username, played_at);
 
 CREATE TABLE IF NOT EXISTS import_progress (
     username    TEXT PRIMARY KEY REFERENCES users(username),

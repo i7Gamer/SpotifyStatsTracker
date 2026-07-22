@@ -24,9 +24,10 @@ class Importer:
     # to avoid rate limits/network blocking without long delays.
     CHUNK_SIZE = 1000
     MAX_PREFETCH_WORKERS = 14
-    # Entries shorter than this are yielded tagged isSkip=True - the DB writer
-    # routes them into play_skips instead of plays. Only negative durations
-    # are dropped outright.
+    # Entries shorter than this fixed floor are yielded tagged isSkip=True - the
+    # DB writer records them into plays as is_skip=1 and has them bypass near-time
+    # play matching. This is the fixed import-dedup floor, not the admin-tunable
+    # stats threshold (see Database/db.py). Only negative durations are dropped.
     SKIP_THRESHOLD_MS = SKIP_THRESHOLD_MS
 
     # offline_timestamp is seconds in some export eras and milliseconds in

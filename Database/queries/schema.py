@@ -64,9 +64,12 @@ class SchemaQueries:
 
     def addPlayBehavioralColumnsIfMissing(self) -> None:
         """Add the behavioral metadata columns (BEHAVIORAL_COLUMNS) to plays if
-        missing (migrate1_22_0). play_skips is a plain CREATE TABLE IF NOT
-        EXISTS in SCHEMA, so only the pre-existing plays table needs ALTERs.
-        Guarded so re-running the migration doesn't fail."""
+        missing (migrate1_22_0). Only the pre-existing plays table needs ALTERs.
+        (Historically this migration also relied on SCHEMA creating a separate
+        play_skips table; that table was later merged back into plays and
+        removed from SCHEMA - see mergePlaySkipsIntoPlays / migrate1_32_0 - so an
+        old DB migrating through 1.22.0 no longer gets one, and the merge is a
+        no-op for the absent table.) Guarded so re-running doesn't fail."""
         conn = self._conn()
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(plays)").fetchall()}
         columnTypes = {"shuffle": "INTEGER", "skipped": "INTEGER", "offline": "INTEGER", "incognito": "INTEGER"}
@@ -74,6 +77,104 @@ class SchemaQueries:
             for column in BEHAVIORAL_COLUMNS:
                 if column not in columns:
                     conn.execute(f"ALTER TABLE plays ADD COLUMN {column} {columnTypes.get(column, 'TEXT')}")
+
+    # plays table shape as of migrate1_32_0 (is_skip added, time_played CHECK
+    # relaxed to >=0). Pinned here rather than derived from SCHEMA because the
+    # rebuild below must reproduce this exact shape regardless of how SCHEMA
+    # later evolves. Indexes are recreated separately after the RENAME.
+    _PLAYS_NEW_TABLE_SQL = """
+    CREATE TABLE plays_new (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        username        TEXT NOT NULL REFERENCES users(username),
+        track_id        TEXT NOT NULL REFERENCES tracks(id),
+        played_at       REAL NOT NULL,
+        time_played     INTEGER NOT NULL CHECK (time_played >= 0),
+        played_from     TEXT,
+        created_at      REAL,
+        created_reason  TEXT,
+        platform        TEXT,
+        conn_country    TEXT,
+        reason_start    TEXT,
+        reason_end      TEXT,
+        shuffle         INTEGER,
+        skipped         INTEGER,
+        offline         INTEGER,
+        incognito       INTEGER,
+        is_skip         INTEGER NOT NULL DEFAULT 0,
+        UNIQUE (username, track_id, played_at)
+    )
+    """
+
+    def mergePlaySkipsIntoPlays(self) -> dict:
+        """One-time rebuild for the play_skips -> plays merge (migrate1_32_0):
+        add plays.is_skip, relax the time_played CHECK to >= 0, and fold every
+        play_skips row back into plays as is_skip=1. Existing plays are seeded
+        with is_skip = (time_played < SKIP_THRESHOLD_MS), matching the default
+        seconds/5 threshold the migration also seeds. A full table rebuild is
+        required because SQLite can't ALTER a CHECK constraint.
+
+        No-op if plays already has is_skip (already migrated, or a fresh SCHEMA
+        db). Robust to play_skips being absent (an old DB that migrated through
+        1.22.0 after play_skips was removed from SCHEMA). Returns fold-in counts.
+        Does NOT rely on the caller's transaction - it toggles foreign_keys and
+        commits its own rebuild, mirroring SQLite's standard table-redefinition
+        procedure."""
+        conn = self._conn()
+        playColumns = {row["name"] for row in conn.execute("PRAGMA table_info(plays)").fetchall()}
+        if "is_skip" in playColumns:
+            return {"plays": 0, "skips": 0, "noop": True}
+
+        tables = {row["name"] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        hasSkips = "play_skips" in tables
+
+        playsBefore = conn.execute("SELECT COUNT(*) FROM plays").fetchone()[0]
+        skipsBefore = conn.execute("SELECT COUNT(*) FROM play_skips").fetchone()[0] if hasSkips else 0
+
+        conn.commit()   #< settle any pending state so the PRAGMA below is honored (ignored inside a tx)
+        conn.execute("PRAGMA foreign_keys=OFF")
+        try:
+            with conn:
+                conn.execute(self._PLAYS_NEW_TABLE_SQL)
+                # Existing plays keep played_from and get a computed is_skip.
+                conn.execute(
+                    """
+                    INSERT INTO plays_new
+                        (username, track_id, played_at, time_played, played_from, created_at, created_reason,
+                         platform, conn_country, reason_start, reason_end, shuffle, skipped, offline, incognito, is_skip)
+                    SELECT username, track_id, played_at, time_played, played_from, created_at, created_reason,
+                           platform, conn_country, reason_start, reason_end, shuffle, skipped, offline, incognito,
+                           CASE WHEN time_played < ? THEN 1 ELSE 0 END
+                    FROM plays
+                    """,
+                    (db.SKIP_THRESHOLD_MS,),
+                )
+                skipsFolded = 0
+                if hasSkips:
+                    # play_skips has no played_from (-> NULL); all rows are skips.
+                    # INSERT OR IGNORE so a skip colliding with an existing play on
+                    # (username, track_id, played_at) yields to the play.
+                    cur = conn.execute(
+                        """
+                        INSERT OR IGNORE INTO plays_new
+                            (username, track_id, played_at, time_played, created_at, created_reason,
+                             platform, conn_country, reason_start, reason_end, shuffle, skipped, offline, incognito, is_skip)
+                        SELECT username, track_id, played_at, time_played, created_at, created_reason,
+                               platform, conn_country, reason_start, reason_end, shuffle, skipped, offline, incognito, 1
+                        FROM play_skips
+                        """
+                    )
+                    skipsFolded = cur.rowcount
+                    conn.execute("DROP TABLE play_skips")
+                conn.execute("DROP TABLE plays")
+                conn.execute("ALTER TABLE plays_new RENAME TO plays")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_plays_user_time ON plays(username, played_at)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_plays_user_track ON plays(username, track_id)")
+            conn.execute("PRAGMA foreign_key_check")
+        finally:
+            conn.execute("PRAGMA foreign_keys=ON")
+
+        return {"plays": playsBefore, "skips": skipsBefore, "folded": skipsFolded}
 
     def addUserSettingsColumnsIfMissing(self) -> None:
         """Add default_dashboard_window and timezone columns to users table if missing."""
