@@ -23,6 +23,7 @@ class TestChartsRoute(AppTestCase):
         db.getExplicitRatio.return_value = {"explicit": 0, "clean": 0}
         db.getReleaseDecadeDistribution.return_value = {}
         db.getCompletionStats.return_value = {"skips": 0, "completes": 0, "partials": 0}
+        db.repo.getUserSettings.return_value = {"default_dashboard_window": "month", "timezone": None}
         return db
 
     def _get(self, dash, db, query=""):
@@ -50,6 +51,27 @@ class TestChartsRoute(AppTestCase):
 
         self.assertEqual(resp.status_code, 200)
         db.getListeningTimeSeries.assert_called_once()
+
+    def test_default_time_window_setting_is_used_when_no_interval_given(self):
+        """Charts must honor the user's saved default_dashboard_window
+        profile setting (like the dashboard and compare routes already do)
+        instead of hardcoding 'month'."""
+        dash = self._makeApp()
+        db = self._makeDb()
+        db.repo.getUserSettings.return_value = {"default_dashboard_window": "week", "timezone": None}
+
+        resp = self._get(dash, db)
+
+        self.assertIn(b'<option value="week" selected>Last Week</option>', resp.data)
+
+    def test_explicit_interval_param_overrides_the_default_time_window_setting(self):
+        dash = self._makeApp()
+        db = self._makeDb()
+        db.repo.getUserSettings.return_value = {"default_dashboard_window": "week", "timezone": None}
+
+        resp = self._get(dash, db, query="?interval=year")
+
+        self.assertIn(b'<option value="year" selected>Last Year</option>', resp.data)
 
     def test_decade_distribution_order_survives_json_serialization(self):
         """getReleaseDecadeDistribution returns decades chronologically

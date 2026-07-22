@@ -481,14 +481,17 @@ def register(app, dashboard):
         if not email:
             return redirect(url_for("login", next=request.path))
 
-        interval = dashboard._getValidInterval(request.args.get("interval", "month"), default="month")
+        settings = db.repo.getUserSettings(username)
+        defaultWindow = settings.get("default_dashboard_window", "day")
+
+        interval = dashboard._getValidInterval(request.args.get("interval", defaultWindow), default=defaultWindow)
         customStart = request.args.get("startDate", "")
         customEnd = request.args.get("endDate", "")
         if interval == "custom" and not (customStart and customEnd):
-            interval = "month"
+            interval = defaultWindow
         groupBy = dashboard._getValidGroupBy(request.args.get("groupBy", "day"))
 
-        startDate, endDate = dashboard._getDateRange(interval, customStart, customEnd, default="month", tz=db.tz)
+        startDate, endDate = dashboard._getDateRange(interval, customStart, customEnd, default=defaultWindow, tz=db.tz)
         intervalLabel = dashboard._getIntervalLabel(interval, customStart, customEnd)
 
         isSingleDayView = interval in ("day", "today")

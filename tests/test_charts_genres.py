@@ -117,6 +117,7 @@ class ChartsGenresTestCase(AppTestCase):
         db.getExplicitRatio.return_value = {"explicit": 0, "clean": 0}
         db.getReleaseDecadeDistribution.return_value = {}
         db.getCompletionStats.return_value = {"skips": 0, "completes": 0, "partials": 0}
+        db.repo.getUserSettings.return_value = {"default_dashboard_window": "month", "timezone": None}
         if coverage is not None:
             db.getGenreCoverage.return_value = coverage
         if distribution is not None:
