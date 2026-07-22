@@ -51,8 +51,6 @@
         </div>
         <div id="genreMixLegend" class="chart-legend"></div>
       </div>
-      {% import "_genre_macros.html" as genreMacros %}
-      {{ genreMacros.lastfmAttribution(marginTop='1rem') }}
     </section>
 
     {# ---- Per-genre drill-down zone -------------------------------------- #}
@@ -67,6 +65,9 @@
 
       <div id="genreDetail">{% include "_genre_detail.html" %}</div>
     </section>
+
+    {% import "_genre_macros.html" as genreMacros %}
+    {{ genreMacros.lastfmAttribution(marginTop='1rem') }}
 
     <script>
       window.__genreData = {
