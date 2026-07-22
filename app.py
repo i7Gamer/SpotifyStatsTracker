@@ -4,12 +4,22 @@ import os
 import json
 import random
 import secrets
+import sys
 import tempfile
 import threading
 import requests
 from pathlib import Path
 import time
 from datetime import timedelta, datetime, timezone
+
+# When this file is run directly (py app.py), Python registers it in
+# sys.modules as "__main__", not "app". The routes/* modules below do
+# `import app as appmod` to reach PAGE_SIZE etc.; without this line that
+# import can't find "app" in sys.modules and re-executes this file from
+# scratch, re-entering the routes.charts import mid-flight before its
+# register() is defined - a circular ImportError. No-op on a normal
+# `import app`, since sys.modules["app"] is already this module by then.
+sys.modules.setdefault("app", sys.modules[__name__])
 
 from flask import Flask, render_template, redirect, request, url_for, jsonify, send_from_directory, session, g, abort, Response, stream_with_context, make_response
 from flask_wtf.csrf import CSRFProtect
