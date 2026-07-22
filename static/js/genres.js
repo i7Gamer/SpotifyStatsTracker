@@ -112,7 +112,7 @@
   }
 
   function renderAll() {
-    CU.PALETTE[0] = CU.getAccentColor();
+    CU.refreshPalette();
     renderOverview();
     renderDetailCharts();
   }

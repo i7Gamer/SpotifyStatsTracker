@@ -422,7 +422,7 @@
   }
 
   function renderAllCharts() {
-    PALETTE[0] = getAccentColor();
+    CU.refreshPalette();
     renderTimeSeriesChart();
     renderHeatmap();
     renderArtistTrend();

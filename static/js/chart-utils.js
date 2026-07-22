@@ -4,11 +4,36 @@
  * The older /charts + /compare charts.js still carries its own private copies of
  * these primitives; converging it onto this library is tracked separately. */
 (function () {
-  var PALETTE = ['#FB717B', '#5DD97C', '#5AC8FA', '#FFD166', '#C77DFF', '#FF9F45'];
+  // Fallback if a theme's --chart-N vars are ever missing (e.g. stale cached CSS).
+  var FALLBACK_PALETTE = ['#FB717B', '#5DD97C', '#5AC8FA', '#FFD166', '#C77DFF', '#FF9F45'];
+  // Must match the --chart-1..--chart-N custom properties defined per theme in
+  // style.css (html.theme-rose/green/purple/red) - one color per chart category
+  // so multi-bar/slice charts (genre distribution, breadth, share donut) get a
+  // distinct, theme-appropriate color for every category instead of cycling
+  // through a handful of colors that repeat and never adapt to the theme.
+  var CHART_COLOR_VAR_COUNT = 12;
+  var PALETTE = [];
   var GRID_LINE_COUNT = 4;
   var MIN_AXIS_LABEL_SPACING_PX = 70;
   var Y_AXIS_LABEL_FONT = '11px sans-serif';
   var Y_AXIS_LABEL_GAP_PX = 8;
+
+  // Re-reads --chart-1..--chart-N from the current theme into PALETTE in place
+  // (mutated, not reassigned, so existing `CU.PALETTE` references stay live).
+  // Call whenever the theme may have changed, before rendering charts.
+  function refreshPalette() {
+    var style = getComputedStyle(document.documentElement);
+    var colors = [];
+    for (var i = 1; i <= CHART_COLOR_VAR_COUNT; i++) {
+      var value = style.getPropertyValue('--chart-' + i).trim();
+      if (value) colors.push(value);
+    }
+    if (!colors.length) colors = FALLBACK_PALETTE;
+    PALETTE.length = 0;
+    Array.prototype.push.apply(PALETTE, colors);
+    return PALETTE;
+  }
+  refreshPalette();
 
   function getAccentColor() {
     var accent = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim();
@@ -525,6 +550,7 @@
 
   window.ChartUtils = {
     PALETTE: PALETTE,
+    refreshPalette: refreshPalette,
     getAccentColor: getAccentColor,
     parseHex: parseHex,
     escapeHtml: escapeHtml,

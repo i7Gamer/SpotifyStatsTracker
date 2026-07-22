@@ -18,6 +18,23 @@
   /* Compare page identity colors: "you" is always the primary theme accent (var(--accent)), "them"
      is always the secondary theme accent color (var(--accent-secondary)). */
   --compare-theirs: var(--accent-secondary);
+  /* Chart categorical palette (charts.js/genres.js via ChartUtils.refreshPalette): one
+     entry per bar/slice so multi-category charts (genre distribution, breadth, share
+     donut) never repeat a color. --chart-1/2 mirror --accent/--accent-secondary; the
+     rest are hue-rotated at fixed saturation/lightness per theme (see .theme-* below)
+     so every theme gets its own distinguishable set instead of one shared rainbow. */
+  --chart-1: #FB717B;
+  --chart-2: #EFAD7B;
+  --chart-3: #EFE67B;
+  --chart-4: #BDEF7B;
+  --chart-5: #84EF7B;
+  --chart-6: #7BEFAD;
+  --chart-7: #7BEFE6;
+  --chart-8: #7BBDEF;
+  --chart-9: #7B84EF;
+  --chart-10: #A78BFA;
+  --chart-11: #E67BEF;
+  --chart-12: #EF7BBD;
 }
 
 * {
@@ -2160,6 +2177,18 @@ html.theme-rose {
   --glow-color-1: rgba(251, 113, 123, 0.15);
   --glow-color-2: rgba(29, 185, 84, 0.1);
   --glow-color-3: rgba(25, 25, 25, 0.3);
+  --chart-1: #FB717B;
+  --chart-2: #EFAD7B;
+  --chart-3: #EFE67B;
+  --chart-4: #BDEF7B;
+  --chart-5: #84EF7B;
+  --chart-6: #7BEFAD;
+  --chart-7: #7BEFE6;
+  --chart-8: #7BBDEF;
+  --chart-9: #7B84EF;
+  --chart-10: #A78BFA;
+  --chart-11: #E67BEF;
+  --chart-12: #EF7BBD;
 }
 
 html.theme-green {
@@ -2169,6 +2198,18 @@ html.theme-green {
   --glow-color-1: rgba(29, 185, 84, 0.15);
   --glow-color-2: rgba(25, 20, 20, 0.3);
   --glow-color-3: rgba(18, 18, 18, 0.4);
+  --chart-1: #1DB954;
+  --chart-2: #60E1CE;
+  --chart-3: #60A5FA;
+  --chart-4: #6073E1;
+  --chart-5: #8E60E1;
+  --chart-6: #CE60E1;
+  --chart-7: #E160B4;
+  --chart-8: #E16073;
+  --chart-9: #E18E60;
+  --chart-10: #E1CE60;
+  --chart-11: #B4E160;
+  --chart-12: #73E160;
 }
 
 html.theme-purple {
@@ -2178,6 +2219,18 @@ html.theme-purple {
   --glow-color-1: rgba(187, 134, 252, 0.15);
   --glow-color-2: rgba(3, 218, 198, 0.1);
   --glow-color-3: rgba(18, 18, 18, 0.4);
+  --chart-1: #BB86FC;
+  --chart-2: #EB7EF1;
+  --chart-3: #F17EBD;
+  --chart-4: #F17E84;
+  --chart-5: #F1B27E;
+  --chart-6: #F1EB7E;
+  --chart-7: #BDF17E;
+  --chart-8: #84F17E;
+  --chart-9: #7EF1B2;
+  --chart-10: #00E5FF;
+  --chart-11: #7EBDF1;
+  --chart-12: #7E84F1;
 }
 
 html.theme-red {
@@ -2187,6 +2240,18 @@ html.theme-red {
   --glow-color-1: rgba(229, 9, 20, 0.15);
   --glow-color-2: rgba(229, 9, 20, 0.08);
   --glow-color-3: rgba(20, 20, 20, 0.4);
+  --chart-1: #E50914;
+  --chart-2: #FB923C;
+  --chart-3: #E2DB50;
+  --chart-4: #A0E250;
+  --chart-5: #57E250;
+  --chart-6: #50E292;
+  --chart-7: #50E2DB;
+  --chart-8: #50A0E2;
+  --chart-9: #5057E2;
+  --chart-10: #9250E2;
+  --chart-11: #DB50E2;
+  --chart-12: #E250A0;
 }
 
 /* --- THEME SELECTOR DROPDOWN --- */
