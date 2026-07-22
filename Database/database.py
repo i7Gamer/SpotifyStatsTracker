@@ -1278,9 +1278,17 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         totalPlaysByArtist = {}
         idPlaysByArtist = {}   #< {name: {artistId: totalPlays}} - picks a click-through target below
         bucketedCounts = []
+        # Many rows share the same 15-minute bucketStartTs (one per artist
+        # active in it), so the local-timezone conversion + bucket-key mapping
+        # is memoized per distinct bucket rather than recomputed per row -
+        # ~77k rows collapse to ~21k conversions on a large library.
+        bucketKeyCache: dict = {}
         for row in rows:
-            date = convertToDatetime(row["bucketStartTs"], tz=self.tz)
-            key = self._bucketKey(date, groupBy)
+            bucketStartTs = row["bucketStartTs"]
+            key = bucketKeyCache.get(bucketStartTs)
+            if key is None:
+                key = self._bucketKey(convertToDatetime(bucketStartTs, tz=self.tz), groupBy)
+                bucketKeyCache[bucketStartTs] = key
             name = row["artistName"]
             bucketedCounts.append((key, name, row["plays"]))
             totalPlaysByArtist[name] = totalPlaysByArtist.get(name, 0) + row["plays"]
