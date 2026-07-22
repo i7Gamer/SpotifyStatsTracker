@@ -67,6 +67,11 @@ SPOTIFY_TRACK_URI_PREFIX = "spotify:track:"  #< connect-state prev_tracks mixes 
 
 WEB_API_POLL_INTERVAL_SECONDS = 15 * 60  #< Query Web API recently-played backfill every 15 minutes
 
+WEB_API_BACKFILL_DEDUP_TOLERANCE_SECONDS = 2  #< max gap between a Web API item's played_at (interpreted as
+                                               #  either a start or end time - see the comment at its use site)
+                                               #  and an already-recorded play's timestamp for them to count as
+                                               #  the same play rather than a genuinely missing one
+
 # Sentinel returned by _fetch_recently_played_from_web_api to distinguish a
 # scope-related rejection (the stored refresh token was never granted
 # user-read-recently-played - re-authorization required) from a transient
@@ -665,7 +670,8 @@ class Listener:
                 # seconds after the true start - before deciding this play is
                 # genuinely missing.
                 is_recorded = any(
-                    abs(timestamp - recorded_t) <= 2 or abs(timestamp - duration_s - recorded_t) <= 2
+                    abs(timestamp - recorded_t) <= WEB_API_BACKFILL_DEDUP_TOLERANCE_SECONDS
+                    or abs(timestamp - duration_s - recorded_t) <= WEB_API_BACKFILL_DEDUP_TOLERANCE_SECONDS
                     for recorded_t in recorded_timestamps
                 )
                 if not is_recorded:
