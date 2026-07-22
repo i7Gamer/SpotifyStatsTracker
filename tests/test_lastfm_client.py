@@ -574,6 +574,24 @@ class AlbumGetInfoFallbackTestCase(unittest.TestCase):
         outcome = client.getAlbumTopTags("Imagine Dragons", "Wrecked")
         self.assertEqual(outcome.status, OUTCOME_NOT_FOUND)
 
+    @patch("Database.lastfm.requests.get")
+    def test_getinfo_fallback_fires_when_gettoptags_itself_is_not_found(self, mockGet):
+        """album.gettoptags can 404 (error 6) on a pair that album.getinfo
+        still resolves - the same gettoptags-vs-getinfo divergence this
+        fallback exists for, just surfacing as NOT_FOUND instead of an
+        OK-with-empty-tags result. The getinfo attempt must still fire."""
+        client, _ = self._client()
+        mockGet.side_effect = [
+            _response(statusCode=400, payload={"error": 6, "message": "not found"}),
+            _response(payload={"album": {"tags": {"tag": [{"name": "pop"}]}}}),
+        ]
+        outcome = client.getAlbumTopTags("Imagine Dragons", "Wrecked")
+        self.assertEqual(outcome.status, OUTCOME_OK)
+        self.assertEqual(outcome.tags, [{"name": "pop"}])
+        self.assertEqual(mockGet.call_count, 2)
+        secondParams = mockGet.call_args_list[1].kwargs["params"]
+        self.assertEqual(secondParams["method"], "album.getinfo")
+
 
 class AlbumTopTagsArtistNameFallbackTestCase(unittest.TestCase):
     """getAlbumTopTags retries under normalizeArtistLookupName's and
@@ -704,6 +722,22 @@ class TrackGetInfoFallbackTestCase(unittest.TestCase):
         ]
         outcome = client.getTrackTopTags("Imagine Dragons", "Wrecked")
         self.assertEqual(outcome.status, OUTCOME_NOT_FOUND)
+
+    @patch("Database.lastfm.requests.get")
+    def test_getinfo_fallback_fires_when_gettoptags_itself_is_not_found(self, mockGet):
+        """Mirrors AlbumGetInfoFallbackTestCase's equivalent: track.gettoptags
+        can 404 on a pair that track.getinfo still resolves."""
+        client, _ = self._client()
+        mockGet.side_effect = [
+            _response(statusCode=400, payload={"error": 6, "message": "not found"}),
+            _response(payload={"track": {"toptags": {"tag": [{"name": "rock"}]}}}),
+        ]
+        outcome = client.getTrackTopTags("Imagine Dragons", "Wrecked")
+        self.assertEqual(outcome.status, OUTCOME_OK)
+        self.assertEqual(outcome.tags, [{"name": "rock"}])
+        self.assertEqual(mockGet.call_count, 2)
+        secondParams = mockGet.call_args_list[1].kwargs["params"]
+        self.assertEqual(secondParams["method"], "track.getinfo")
 
 
 class TrackTopTagsArtistNameFallbackTestCase(unittest.TestCase):

@@ -566,20 +566,22 @@ class LastfmClient:
     def _fetchAlbumTopTagsForArtist(self, artistName: str, albumName: str,
                                     stop_event: threading.Event | None) -> FetchOutcome | None:
         """One album.gettoptags call for `artistName`/`albumName`, falling
-        back to album.getinfo's embedded tags on a definitive-empty result -
-        album.gettoptags is confirmed unreliable for some albums: Last.fm's
-        album.getinfo carries tag data (in its embedded `tags` field) that
-        gettoptags misses for the identical (artist, album) pair, a
-        persistent server-side inconsistency verified directly against the
-        live API (not a caching or autocorrect artifact). Only tried on a
-        definitive-empty gettoptags result - never replaces a real result,
-        and costs nothing extra on the (large) majority of albums where
-        gettoptags already succeeds. This is the per-artist-name unit that
-        getAlbumTopTags retries under alternate spellings via
-        _lookupWithArtistNameFallback."""
+        back to album.getinfo's embedded tags on a definitive-empty OR
+        not-found result - album.gettoptags is confirmed unreliable for some
+        albums: Last.fm's album.getinfo carries tag data (in its embedded
+        `tags` field) that gettoptags misses for the identical (artist,
+        album) pair, a persistent server-side inconsistency verified
+        directly against the live API (not a caching or autocorrect
+        artifact); the same divergence between the two endpoints can also
+        surface as gettoptags 404ing (error 6) on a pair getinfo still
+        resolves, so NOT_FOUND gets the same fallback as OK-with-no-tags.
+        Never replaces a real result, and costs nothing extra on the (large)
+        majority of albums where gettoptags already succeeds. This is the
+        per-artist-name unit that getAlbumTopTags retries under alternate
+        spellings via _lookupWithArtistNameFallback."""
         outcome = self._fetchTopTags("album.gettoptags",
                                      {"artist": artistName, "album": albumName}, stop_event)
-        if outcome is None or outcome.status != OUTCOME_OK or outcome.tags:
+        if outcome is None or outcome.status not in (OUTCOME_OK, OUTCOME_NOT_FOUND) or outcome.tags:
             return outcome
         fallback = self._fetchTopTags("album.getinfo",
                                       {"artist": artistName, "album": albumName}, stop_event,
@@ -601,17 +603,17 @@ class LastfmClient:
     def _fetchTrackTopTagsForArtist(self, artistName: str, trackName: str,
                                     stop_event: threading.Event | None) -> FetchOutcome | None:
         """One track.gettoptags call for `artistName`/`trackName`, falling
-        back to track.getinfo's embedded tags on a definitive-empty result -
-        mirrors _fetchAlbumTopTagsForArtist for the same confirmed-live
-        gettoptags-vs-getinfo server-side inconsistency (see
-        _extractTrackInfoTags). Only tried on a definitive-empty gettoptags
-        result - never replaces a real result, and costs nothing extra on
-        the majority of tracks where gettoptags already succeeds. This is
-        the per-artist-name unit that getTrackTopTags retries under
-        alternate spellings via _lookupWithArtistNameFallback."""
+        back to track.getinfo's embedded tags on a definitive-empty OR
+        not-found result - mirrors _fetchAlbumTopTagsForArtist for the same
+        confirmed-live gettoptags-vs-getinfo server-side inconsistency (see
+        _extractTrackInfoTags), including gettoptags 404ing (error 6) on a
+        pair getinfo still resolves. Never replaces a real result, and costs
+        nothing extra on the majority of tracks where gettoptags already
+        succeeds. This is the per-artist-name unit that getTrackTopTags
+        retries under alternate spellings via _lookupWithArtistNameFallback."""
         outcome = self._fetchTopTags("track.gettoptags",
                                      {"artist": artistName, "track": trackName}, stop_event)
-        if outcome is None or outcome.status != OUTCOME_OK or outcome.tags:
+        if outcome is None or outcome.status not in (OUTCOME_OK, OUTCOME_NOT_FOUND) or outcome.tags:
             return outcome
         fallback = self._fetchTopTags("track.getinfo",
                                       {"artist": artistName, "track": trackName}, stop_event,
