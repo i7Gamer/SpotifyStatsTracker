@@ -358,6 +358,96 @@
     canvas.onmouseleave = hideTooltip;
   }
 
+  function heatColor(intensity) {
+    var clamped = Math.max(0, Math.min(1, intensity));
+    if (clamped === 0) {
+      return 'rgba(255,255,255,0.05)';
+    }
+    var rgb = parseHex(getAccentColor());
+    var r = Math.round(30 + (rgb.r - 30) * clamped);
+    var g = Math.round(30 + (rgb.g - 30) * clamped);
+    var b = Math.round(30 + (rgb.b - 30) * clamped);
+    return 'rgb(' + r + ',' + g + ',' + b + ')';
+  }
+
+  /* Day-of-week x hour-of-day heatmap. grid = 7 rows (Mon..Sun) x 24 cols, each
+   * cell { totalTimeListened, totalTimeListenedText, plays }. Used by the /charts
+   * "When You Listen" heatmap and the Genres page per-genre listening clock. */
+  function renderHeatmap(canvas, grid, opts) {
+    opts = opts || {};
+    if (!canvas) return;
+    grid = grid || [];
+    var rows = grid.length;
+    var cols = rows ? grid[0].length : 24;
+    var cellHeight = 26;
+    var cssHeight = rows * cellHeight + 34;
+    var setup = setupCanvas(canvas, cssHeight);
+    var ctx = setup.ctx, width = setup.width;
+    ctx.clearRect(0, 0, width, cssHeight);
+
+    if (rows === 0) {
+      drawEmptyState(ctx, width, cssHeight, opts.emptyMessage || 'No listening data in this period yet.');
+      return;
+    }
+
+    var paddingLeft = 40, paddingTop = 6;
+    var plotWidth = width - paddingLeft - 10;
+    var cellWidth = plotWidth / cols;
+    var dayLabels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+    var maxMs = 1;
+    for (var r = 0; r < rows; r++) {
+      for (var c = 0; c < cols; c++) {
+        maxMs = Math.max(maxMs, grid[r][c].totalTimeListened);
+      }
+    }
+
+    ctx.font = '10px sans-serif';
+    var cells = [];
+    for (r = 0; r < rows; r++) {
+      ctx.fillStyle = '#b0b0b0';
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(dayLabels[r], paddingLeft - 8, paddingTop + r * cellHeight + cellHeight / 2);
+      for (c = 0; c < cols; c++) {
+        var cell = grid[r][c];
+        var x = paddingLeft + c * cellWidth;
+        var y = paddingTop + r * cellHeight;
+        ctx.fillStyle = heatColor(cell.totalTimeListened / maxMs);
+        ctx.fillRect(x, y, Math.max(1, cellWidth - 2), cellHeight - 2);
+        cells.push({ x: x, y: y, width: cellWidth - 2, height: cellHeight - 2, cell: cell, day: dayLabels[r], hour: c });
+      }
+    }
+
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.fillStyle = '#b0b0b0';
+    for (c = 0; c < cols; c += 3) {
+      var lx = paddingLeft + c * cellWidth + cellWidth / 2;
+      ctx.fillText(String(c).padStart ? String(c).padStart(2, '0') : ('0' + c).slice(-2), lx, paddingTop + rows * cellHeight + 6);
+    }
+
+    canvas.onmousemove = function (evt) {
+      var rect = canvas.getBoundingClientRect();
+      var mx = evt.clientX - rect.left, my = evt.clientY - rect.top;
+      var hit = null;
+      for (var i = 0; i < cells.length; i++) {
+        var cl = cells[i];
+        if (mx >= cl.x && mx <= cl.x + cl.width && my >= cl.y && my <= cl.y + cl.height) {
+          hit = cl;
+          break;
+        }
+      }
+      if (hit) {
+        var hourLabel = (hit.hour < 10 ? '0' : '') + hit.hour;
+        showTooltip(evt, '<strong>' + hit.day + ' ' + hourLabel + ':00</strong><br>' + (hit.cell.totalTimeListenedText || '0s') + ' &middot; ' + hit.cell.plays + ' plays');
+      } else {
+        hideTooltip();
+      }
+    };
+    canvas.onmouseleave = hideTooltip;
+  }
+
   window.ChartUtils = {
     PALETTE: PALETTE,
     getAccentColor: getAccentColor,
@@ -369,6 +459,7 @@
     drawEmptyState: drawEmptyState,
     drawYAxisGrid: drawYAxisGrid,
     drawSparseXLabels: drawSparseXLabels,
+    renderHeatmap: renderHeatmap,
     renderMultiLineChart: renderMultiLineChart,
     renderBarsFromPairs: renderBarsFromPairs,
     drawDonutChart: drawDonutChart,

@@ -148,6 +148,23 @@ def resolveTopTracksForGenre(db, genre, limit) -> list:
     return tracks if isinstance(tracks, list) else []
 
 
+def emptyHeatmapGrid() -> list:
+    """The all-zeros 7x24 listening-clock grid - what a failed/stubbed genre
+    heatmap lookup degrades to."""
+    return [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
+
+
+def resolveGenreHeatmap(db, genre) -> list:
+    """Per-genre listening-clock grid for a user db; a zeroed 7x24 grid when
+    the lookup fails or returns a non-list (stubbed dbs)."""
+    try:
+        grid = db.getGenreHourOfDayHeatmap(genre)
+    except Exception as e:
+        logger.warning("Genre heatmap lookup failed: %s", e)
+        return emptyHeatmapGrid()
+    return grid if isinstance(grid, list) else emptyHeatmapGrid()
+
+
 def emptyBiographyCoverage() -> dict:
     """The all-zeros shape for the Overview "Biography Backfill Progress"
     widget - what guests and sanitize failures resolve to, mirroring

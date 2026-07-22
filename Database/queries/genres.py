@@ -240,6 +240,33 @@ class GenreQueries:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    def getGenreBucketedPlayTotals(self, username: str, genre: str, includeInherited: int,
+                                   startTs: float | None = None, endTs: float | None = None) -> list[dict]:
+        """Plays/time summed per fixed PLAY_BUCKET_SECONDS UTC bucket for plays
+        on tracks tagged `genre` - the genre-scoped analogue of
+        getBucketedPlayTotals, feeding the per-genre listening-clock heatmap.
+        Same timezone-agnostic bucket contract: the caller maps each bucket to
+        a local weekday/hour cell."""
+        conn = self._conn()
+        params: list = [includeInherited, genre, username]
+        rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
+        rows = conn.execute(
+            f"""
+            SELECT CAST(p.played_at / {PLAY_BUCKET_SECONDS} AS INTEGER) AS bucket,
+                   COUNT(*) AS plays,
+                   COALESCE(SUM(p.time_played), 0) AS total_time
+            FROM plays p
+            JOIN track_genres g ON g.track_id = p.track_id AND (? OR g.inherited = 0) AND g.genre = ?
+            WHERE p.username = ?{rangeClause}
+            GROUP BY bucket
+            ORDER BY bucket
+            """,
+            params,
+        ).fetchall()
+        return [{"bucketStartTs": r["bucket"] * PLAY_BUCKET_SECONDS,
+                 "plays": r["plays"],
+                 "totalTimeListened": r["total_time"]} for r in rows]
+
     def getGenrePlayStats(self, username: str, genre: str, includeInherited: int,
                           startTs: float | None, endTs: float | None) -> dict:
         """{plays, listenMs, firstPlayedTs} for one genre's plays."""

@@ -2725,6 +2725,19 @@ html.theme-red {
 }
 
 /* Genres page */
+.genre-share-wrap {
+  max-width: 520px;
+  margin: 0 auto;
+}
+
+#genreDetail {
+  transition: opacity 0.15s ease;
+}
+
+#genreDetail.is-loading {
+  opacity: 0.45;
+}
+
 .genre-chip-row {
   display: flex;
   flex-wrap: wrap;

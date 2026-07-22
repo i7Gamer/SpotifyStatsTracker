@@ -34,7 +34,7 @@ from services.genre_gate import (
     sanitizeBiographyCoverage, resolveBiographyCoverage,
     resolveGenresForTrack, resolveGenresForAlbum, resolveGenresForArtist,
     resolveGenreTrends, resolveGenreStats, resolveTopArtistsForGenre,
-    resolveTopTracksForGenre,
+    resolveTopTracksForGenre, resolveGenreHeatmap, emptyHeatmapGrid,
 )
 # Taste-match scoring lives in services/taste_match.py; the compare route calls
 # _tasteMatchPercent/_markLinkExternally and _buildSharedItems calls

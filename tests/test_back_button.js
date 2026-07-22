@@ -40,6 +40,14 @@ run('compare referrer', () => {
   assert.deepStrictEqual(resolveBackTarget(`${ORIGIN}/compare`, ORIGIN), { label: '← Back to Compare' });
 });
 
+run('genres referrer', () => {
+  assert.deepStrictEqual(resolveBackTarget(`${ORIGIN}/genres`, ORIGIN), { label: '← Back to Genres' });
+});
+
+run('genres referrer with a selected genre keeps its label', () => {
+  assert.deepStrictEqual(resolveBackTarget(`${ORIGIN}/genres?genre=rock`, ORIGIN), { label: '← Back to Genres' });
+});
+
 run('compare referrer with filters keeps its label', () => {
   assert.deepStrictEqual(
     resolveBackTarget(`${ORIGIN}/compare?with=bob&interval=year&limit=25`, ORIGIN),

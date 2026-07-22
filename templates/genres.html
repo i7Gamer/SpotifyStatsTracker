@@ -26,20 +26,20 @@
         </div>
       </div>
 
-      <div class="chart-section-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 2rem; margin-top: 2rem;">
-        <div class="chart-section">
-          <h2>Genre Share</h2>
-          <div class="chart-canvas-wrap" style="height: 300px;">
-            <canvas id="genreShareChart"></canvas>
-          </div>
+      <div class="chart-section" style="margin-top: 2rem;">
+        <h2>Genre Share</h2>
+        <div class="chart-canvas-wrap genre-share-wrap" style="height: 300px;">
+          <canvas id="genreShareChart"></canvas>
         </div>
-        <div class="chart-section">
-          <h2>Genre Mix Over Time</h2>
-          <div class="chart-canvas-wrap">
-            <canvas id="genreMixChart"></canvas>
-          </div>
-          <div id="genreMixLegend" class="chart-legend"></div>
+      </div>
+
+      {# Mix over time needs the full page width to be legible - its own row. #}
+      <div class="chart-section" style="margin-top: 2rem;">
+        <h2>Genre Mix Over Time</h2>
+        <div class="chart-canvas-wrap">
+          <canvas id="genreMixChart"></canvas>
         </div>
+        <div id="genreMixLegend" class="chart-legend"></div>
       </div>
       {% import "_genre_macros.html" as genreMacros %}
       {{ genreMacros.lastfmAttribution(marginTop='1rem') }}
@@ -51,84 +51,19 @@
       <div class="genre-chip-row">
         {% for name in genreNames %}
           <a class="genre-chip {{ 'selected' if name == selectedGenre }}"
-             href="{{ url_for('genresPage', genre=name) }}">{{ name }}</a>
+             href="{{ url_for('genresPage', genre=name) }}" data-genre="{{ name }}">{{ name }}</a>
         {% endfor %}
       </div>
 
-      {% if selectedGenre %}
-        <h3 class="genre-selected-title">{{ selectedGenre }}</h3>
-
-        {% if genreStats %}
-        <div class="dashboard-summary genre-stat-strip">
-          <div class="summary-card">
-            <h2>Plays</h2>
-            <p class="summary-value">{{ "{:,}".format(genreStats.plays) }}</p>
-          </div>
-          <div class="summary-card">
-            <h2>Listen time</h2>
-            <p class="summary-value">{{ genreStats.listenText }}</p>
-          </div>
-          <div class="summary-card">
-            <h2>Share of tagged plays</h2>
-            <p class="summary-value">{{ genreStats.sharePercent }}%</p>
-          </div>
-          <div class="summary-card">
-            <h2>First heard</h2>
-            <p class="summary-value">{{ genreStats.firstPlayedText }}</p>
-          </div>
-        </div>
-        {% endif %}
-
-        <div class="chart-section" style="margin-top: 1.5rem;">
-          <h3>Plays Over Time</h3>
-          <div class="chart-canvas-wrap">
-            <canvas id="genreTrendChart"></canvas>
-          </div>
-        </div>
-
-        <div class="genre-top-grid">
-          <div class="genre-top-col">
-            <h3>Top Artists</h3>
-            {% if topArtists %}
-              {% for artist in topArtists %}
-              <a class="genre-top-row" href="{{ url_for('artistDetailPage', artist_id=artist.id) }}">
-                <img class="genre-top-cover" loading="lazy" alt=""
-                     src="/img/{{ username }}/artists/{{ artist.imageId }}.jpeg"
-                     onerror="this.onerror=null;this.src=window.PLACEHOLDER_IMG;" />
-                <span class="genre-top-name">{{ artist.name }}</span>
-                <span class="genre-top-count">{{ "{:,}".format(artist.playCount) }} plays</span>
-              </a>
-              {% endfor %}
-            {% else %}
-              <p class="loading">No artists for this genre yet.</p>
-            {% endif %}
-          </div>
-
-          <div class="genre-top-col">
-            <h3>Top Tracks</h3>
-            {% if topTracks %}
-              {% for track in topTracks %}
-              <a class="genre-top-row" href="{{ url_for('songDetailPage', track_id=track.id) }}">
-                <img class="genre-top-cover" loading="lazy" alt=""
-                     src="/img/{{ username }}/tracks/{{ track.imageId }}.jpeg"
-                     onerror="this.onerror=null;this.src=window.PLACEHOLDER_IMG;" />
-                <span class="genre-top-name">{{ track.name }}<span class="genre-top-artist">{{ track.artistName }}</span></span>
-                <span class="genre-top-count">{{ "{:,}".format(track.playCount) }} plays</span>
-              </a>
-              {% endfor %}
-            {% else %}
-              <p class="loading">No tracks for this genre yet.</p>
-            {% endif %}
-          </div>
-        </div>
-      {% endif %}
+      <div id="genreDetail">{% include "_genre_detail.html" %}</div>
     </section>
 
     <script>
       window.__genreData = {
         distributionPairs: {{ distributionPairs | tojson }},
         mixTrend: {{ mixTrend | tojson }},
-        selectedTrend: {{ selectedTrend | tojson }}
+        selectedTrend: {{ selectedTrend | tojson }},
+        clock: {{ clock | tojson }}
       };
     </script>
     <script src="{{ url_for('static', filename='js/chart-utils.js') }}"></script>

@@ -745,6 +745,22 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         inherited = self._resolveIncludeInherited(includeInherited)
         return self.repo.getTopTracksForGenre(self.user, genre, inherited, limit, startTs, endTs)
 
+    def getGenreHourOfDayHeatmap(self, genre: str, startDate: datetime.datetime = None,
+                                 endDate: datetime.datetime = None, includeInherited: bool | None = None) -> list:
+        """7x24 grid (Monday=0..Sunday=6 x hour 0-23) of listening time/plays
+        for one genre - the per-genre "listening clock". Genre-scoped analogue
+        of getHourOfDayHeatmap; same local weekday/hour mapping in Python."""
+        startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
+        inherited = self._resolveIncludeInherited(includeInherited)
+        rows = self.repo.getGenreBucketedPlayTotals(self.user, genre, inherited, startTs, endTs)
+        grid = [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
+        for row in rows:
+            date = convertToDatetime(row["bucketStartTs"], tz=self.tz)
+            cell = grid[date.weekday()][date.hour]
+            cell["totalTimeListened"] += row["totalTimeListened"]
+            cell["plays"] += row["plays"]
+        return grid
+
     def getRecommendedArtists(self, limit: int, genrePool: int, excludeTopN: int) -> list[dict]:
         """"Discover" recommendations: under-played artists already in the
         user's library whose genres overlap the user's top `genrePool` genres,

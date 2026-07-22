@@ -34,6 +34,7 @@ class GenresPageTestCase(AppTestCase):
         db.getGenreStats.return_value = {"plays": 10, "listenMs": 60000, "firstPlayedTs": None, "sharePercent": 25.0}
         db.getTopArtistsForGenre.return_value = []
         db.getTopTracksForGenre.return_value = []
+        db.getGenreHourOfDayHeatmap.return_value = [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
         return db
 
     def _get(self, dash, db, query=""):
@@ -72,6 +73,37 @@ class GenresPageTestCase(AppTestCase):
         # First distribution genre (rock) is the default drill-down selection.
         selectedTrendCall = db.getGenreTrends.call_args_list[-1]
         self.assertEqual(selectedTrendCall.args[0], ["rock"])
+
+    def test_unlocked_renders_listening_clock_canvas(self):
+        dash = self._makeApp()
+        db = self._makeDb(coverage=coverageDict(80, 60, 90), distribution={"rock": 120})
+        resp = self._get(dash, db)
+        self.assertIn(b'id="genreClockChart"', resp.data)
+        self.assertIn(b'Listening Clock', resp.data)
+        db.getGenreHourOfDayHeatmap.assert_called_with("rock")
+
+    def test_ajax_returns_detail_json(self):
+        dash = self._makeApp()
+        db = self._makeDb(coverage=coverageDict(80, 60, 90),
+                          distribution={"rock": 120, "jazz": 40})
+        resp = self._get(dash, db, query="?genre=jazz&ajax=true")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.mimetype, "application/json")
+        payload = resp.get_json()
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["genre"], "jazz")
+        self.assertIn("genreClockChart", payload["detailHtml"])
+        self.assertIn("selectedTrend", payload)
+        self.assertIn("clock", payload)
+        # AJAX detail is just the partial, not the whole page (no overview chart).
+        self.assertNotIn("genreDistChart", payload["detailHtml"])
+
+    def test_ajax_when_locked_returns_not_ok(self):
+        dash = self._makeApp()
+        db = self._makeDb(coverage=coverageDict(10, 10, 10))
+        resp = self._get(dash, db, query="?genre=rock&ajax=true")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_json(), {"ok": False})
 
     def test_genre_query_override(self):
         dash = self._makeApp()

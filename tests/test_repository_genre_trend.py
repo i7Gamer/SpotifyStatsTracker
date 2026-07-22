@@ -116,6 +116,34 @@ class GenreTrendTestCase(DatabaseTestCase):
         tracks = db.getTopTracksForGenre("rock", limit=1)
         self.assertEqual([t["id"] for t in tracks], ["t1"])
 
+    # ---- getGenreHourOfDayHeatmap -------------------------------------------
+
+    def test_genre_heatmap_shape_and_zeroed(self):
+        db = self._seed()
+        grid = db.getGenreHourOfDayHeatmap("rock")
+        self.assertEqual(len(grid), 7)
+        self.assertTrue(all(len(row) == 24 for row in grid))
+        # A cell with no plays stays zeroed.
+        self.assertEqual(grid[3][3], {"totalTimeListened": 0, "plays": 0})
+
+    def test_genre_heatmap_places_plays_by_local_weekday_hour(self):
+        # 2026-01-05 is a Monday (weekday 0); the seed plays t1 at 12:00 UTC.
+        db = self._seed()
+        grid = db.getGenreHourOfDayHeatmap("rock")
+        self.assertEqual(grid[0][12]["plays"], 1)  # Monday 12:00 (t1 @ 2026-01-05 12:00)
+
+    def test_genre_heatmap_filters_by_genre(self):
+        db = self._seed()
+        rockTotal = sum(cell["plays"] for row in db.getGenreHourOfDayHeatmap("rock") for cell in row)
+        jazzTotal = sum(cell["plays"] for row in db.getGenreHourOfDayHeatmap("jazz") for cell in row)
+        self.assertEqual(rockTotal, 4)   # t1x2, t2, t3
+        self.assertEqual(jazzTotal, 1)   # t4 only
+
+    def test_genre_heatmap_unknown_genre_is_zeroed(self):
+        db = self._seed()
+        grid = db.getGenreHourOfDayHeatmap("nonexistent")
+        self.assertTrue(all(cell["plays"] == 0 for row in grid for cell in row))
+
 
 if __name__ == "__main__":
     unittest.main()
