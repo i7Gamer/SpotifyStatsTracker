@@ -130,8 +130,7 @@ def register(app, dashboard):
         # One row per entity kind for the combined "Biography Backfill
         # Progress" card (templates/_biography_progress.html) - built
         # here rather than assembled in Jinja so the template stays a
-        # dumb iteration over a pre-shaped list, same spirit as how
-        # users_list is built above.
+        # dumb iteration over a pre-shaped list.
         biography_rows = [
             {"label": "Artist", "enabled": artist_bio_enabled, "worker": biography_worker["artist"],
              **biography_coverage["artist"]},
