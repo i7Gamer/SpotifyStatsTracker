@@ -171,7 +171,8 @@ CREATE TABLE IF NOT EXISTS users (
     default_dashboard_window TEXT DEFAULT 'day',
     is_admin              INTEGER NOT NULL DEFAULT 0,
     timezone              TEXT,
-    spotify_needs_reauth  INTEGER NOT NULL DEFAULT 0
+    spotify_needs_reauth  INTEGER NOT NULL DEFAULT 0,
+    milestones_baseline_at REAL
 );
 
 -- Per-user play history. This is the only high-cardinality, per-user table -
@@ -294,6 +295,28 @@ CREATE TABLE IF NOT EXISTS share_links (
     expires_at  REAL
 );
 CREATE INDEX IF NOT EXISTS idx_share_links_username ON share_links(username);
+
+-- Per-user achievement milestones: lifetime play-count and listen-time
+-- thresholds, listening-streak thresholds, and each change of the all-time #1
+-- artist. A row is written once its milestone is reached; seen=0 drives the
+-- topbar "new milestone" badge until the user opens the Milestones section on
+-- /profile (markMilestonesSeen). The user's FIRST detection pass seeds every
+-- already-achieved milestone as seen=1 (see users.milestones_baseline_at and
+-- services/milestones.py) so shipping this never floods an existing account
+-- with notifications for milestones it passed long ago.
+-- kind is 'plays' | 'listen_time' | 'streak' | 'top_artist'. threshold holds
+-- the numeric level crossed (plays / hours / streak-days); top_artist rows
+-- leave it 0 and carry the artist in detail (JSON {"id","name"}).
+CREATE TABLE IF NOT EXISTS user_milestones (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    username     TEXT NOT NULL REFERENCES users(username),
+    kind         TEXT NOT NULL,
+    threshold    INTEGER NOT NULL DEFAULT 0,
+    detail       TEXT,
+    achieved_at  REAL NOT NULL,
+    seen         INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_user_milestones_user ON user_milestones(username, seen);
 """
 
 

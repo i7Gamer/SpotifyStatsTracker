@@ -56,6 +56,7 @@ from services.genre_gate import (
 from services.taste_match import (
     _tasteMatchPercent, _markLinkExternally, _rankById, _sharedRankScore,
 )
+from services.milestones import detectMilestones
 from routes.media import register as registerMediaRoutes
 from routes.admin import register as registerAdminRoutes
 from routes.charts import register as registerChartsRoutes
@@ -486,6 +487,20 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
         g.db = db
         return email, username, db
 
+    def _detectMilestonesSafely(self, db, username):
+        """Run one user's milestone-detection pass from the periodic background
+        loop (_ensureAllUsersLogin), never the request path - so a page render
+        never pays for the aggregate queries or the DB write, and the badge
+        just reads an already-computed count. Failures are logged and
+        swallowed so one user's bad pass can't stall the loop. Only users with
+        stored cookies are covered (that's who the loop iterates); an
+        import-only account with no live session first gets its milestones on
+        its next cookie login."""
+        try:
+            detectMilestones(db, db.repo, username)
+        except Exception as e:
+            logger.warning("Milestone detection failed for %s: %s", username, e)
+
     def _rateLimited(self, bucket: str) -> bool:
         """True if this request's source IP has exceeded RATE_LIMIT_MAX_ATTEMPTS
         for `bucket` within RATE_LIMIT_WINDOW_SECONDS - callers should reject
@@ -514,6 +529,11 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
                 ):
                     logger.warning("Listener thread for user %s is not running or is DEAD. Restarting...", username)
                     db.startListener(email=email)
+                # Cheap enough to fold into this existing per-user pass rather
+                # than run its own loop - detection dedups already-recorded
+                # milestones, so re-running every cycle is a no-op past the
+                # first time a threshold is crossed.
+                self._detectMilestonesSafely(db, username)
             except Exception as e:
                 logger.error("Error initializing user %s: %s", username, e)
     
@@ -702,6 +722,22 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
                     and self.repo.getSpotifyNeedsReauth(username)
                 )
             return {"spotifyNeedsReauthBadge": g.spotifyNeedsReauthBadge}
+
+        @self.app.context_processor
+        def _injectMilestoneStatus():
+            # Topbar badge for unacknowledged achievement milestones (new
+            # play/listen-time/streak thresholds or a new #1 artist), cleared
+            # when the user opens the Milestones section on /profile
+            # (markMilestonesSeen). Memoized on g like _injectShareStatus: one
+            # request can render several templates and each re-runs every
+            # context processor, so this cheap indexed count must not repeat per
+            # partial. No is_user_logged_in check, for the same reason
+            # _injectShareStatus skips it - the worst case is a badge that 302s
+            # to login like every other nav item.
+            if "unseenMilestoneCount" not in g:
+                username = session.get("username")
+                g.unseenMilestoneCount = self.repo.getUnseenMilestoneCount(username) if username else 0
+            return {"unseenMilestoneCount": g.unseenMilestoneCount}
 
         registerSystemRoutes(self.app, self)
 

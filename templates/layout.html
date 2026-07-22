@@ -47,6 +47,11 @@
         {{ unseenAcceptedShareCount }} share request{{ 's' if unseenAcceptedShareCount != 1 else '' }} accepted!
       </a>
       {% endif %}
+      {% if unseenMilestoneCount %}
+      <a href="{{ url_for('profilePage') }}" class="milestone-badge" title="New listening milestone reached">
+        🏆 {{ unseenMilestoneCount }} new milestone{{ 's' if unseenMilestoneCount != 1 else '' }}
+      </a>
+      {% endif %}
       {% if spotifyNeedsReauthBadge %}
       <a href="{{ url_for('profilePage') }}" class="spotify-reauth-badge" title="Spotify backfill is stuck - re-authorization needed">
         Spotify re-authorization needed

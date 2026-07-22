@@ -19,6 +19,7 @@ import app as appmod
 from SpotipyFree import parseCookieString
 from Database.lastfm import LastfmClient
 from Database.utils import dateToString
+from services.milestones import formatMilestone
 
 logger = logging.getLogger(__name__)
 
@@ -387,8 +388,19 @@ def register(app, dashboard):
             for link in dashboard.repo.getShareLinksForUser(username)
         ]
 
+        # Achievement milestones (newest first) for the Milestones section, then
+        # clear the topbar "new milestone" badge - reaching this render means the
+        # user is looking at them, same acknowledgment pattern as the accepted-
+        # share notification above.
+        milestones = [
+            {**formatMilestone(row), "dateText": dateToString(row["achieved_at"], tz=db.tz)}
+            for row in dashboard.repo.getMilestonesForUser(username)
+        ]
+        dashboard.repo.markMilestonesSeen(username)
+
         return render_template(
             "profile.html",
+            milestones=milestones,
             username=username,
             email=email,
             client_id=client_id,

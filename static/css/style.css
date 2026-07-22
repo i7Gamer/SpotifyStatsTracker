@@ -1871,6 +1871,76 @@ progress::-moz-progress-bar {
   opacity: 0.85;
 }
 
+.milestone-badge {
+  display: inline-flex;
+  justify-content: flex-start;
+  align-items: center;
+  gap: 8px;
+  margin-left: 12px;
+  margin-right: auto;
+  padding: 3px 6px;
+  background: #ffd24a;
+  color: #2a1e00;
+  border-radius: 8px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.milestone-badge:hover {
+  opacity: 0.85;
+}
+
+/* Profile > Milestones section */
+.milestone-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.milestone-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  background: var(--glass-bg, rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--glass-border, rgba(255, 255, 255, 0.08));
+  border-radius: 10px;
+}
+
+.milestone-icon {
+  font-size: 1.25rem;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.milestone-label {
+  flex: 1 1 auto;
+  font-weight: 600;
+}
+
+.milestone-label a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.milestone-label a:hover {
+  text-decoration: underline;
+}
+
+.milestone-date {
+  flex-shrink: 0;
+  color: var(--muted, #b0b0b0);
+  font-size: 0.85rem;
+}
+
+.milestone-empty {
+  color: var(--muted, #b0b0b0);
+}
+
 .chart-card {
   margin-bottom: 24px;
 }

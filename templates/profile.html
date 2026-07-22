@@ -18,6 +18,25 @@
       <p class="success" style="color: #4aff4a; margin-bottom: 1rem;">{{ success }}</p>
     {% endif %}
 
+    <h2>Milestones</h2>
+    <div class="milestones-section" style="margin-bottom: 2rem; padding-bottom: 2rem; border-bottom: 1px solid var(--border-color, #2d2d2d);">
+      {% if milestones %}
+        <ul class="milestone-list">
+          {% for m in milestones %}
+          <li class="milestone-item">
+            <span class="milestone-icon" aria-hidden="true">{{ m.icon }}</span>
+            <span class="milestone-label">
+              {% if m.artistId %}<a href="{{ url_for('artistDetailPage', artist_id=m.artistId) }}">{{ m.label }}</a>{% else %}{{ m.label }}{% endif %}
+            </span>
+            <span class="milestone-date">{{ m.dateText }}</span>
+          </li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <p class="milestone-empty">No milestones yet &mdash; keep listening and they'll show up here as you hit play-count, listening-time, and streak achievements.</p>
+      {% endif %}
+    </div>
+
     <h2>Preferences</h2>
     <form class="login-form" method="post" action="{{ url_for('profilePage') }}" style="margin-bottom: 2rem; padding-bottom: 2rem; border-bottom: 1px solid var(--border-color, #2d2d2d);">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>

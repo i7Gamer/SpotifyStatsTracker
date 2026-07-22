@@ -22,7 +22,7 @@ class TestMigrate1_30_0(unittest.TestCase):
     re-authorization prompt instead of the listener silently failing every
     poll forever."""
 
-    NEEDS_REAUTH_LINE = "    spotify_needs_reauth  INTEGER NOT NULL DEFAULT 0\n"
+    NEEDS_REAUTH_LINE = "    spotify_needs_reauth  INTEGER NOT NULL DEFAULT 0,\n"
 
     def setUp(self):
         self._tmpdir = tempfile.TemporaryDirectory()
@@ -44,16 +44,14 @@ class TestMigrate1_30_0(unittest.TestCase):
         self.dbPath = self.dataDir / "spotify_stats.db"
 
     def _preColumnSchema(self):
-        """SCHEMA with spotify_needs_reauth stripped out and the preceding
-        line's trailing comma restored, simulating a pre-1.31.0 database -
-        without this, a fresh Repository() connection would create the
-        column via SCHEMA's own CREATE TABLE before the migration's ALTER
-        TABLE ever runs."""
+        """SCHEMA with the spotify_needs_reauth line stripped out, simulating a
+        pre-1.31.0 database - without this, a fresh Repository() connection
+        would create the column via SCHEMA's own CREATE TABLE before the
+        migration's ALTER TABLE ever runs. Removing the whole line (its
+        trailing comma included) keeps the users definition valid now that
+        later columns follow it."""
         self.assertIn(self.NEEDS_REAUTH_LINE, dbModule.SCHEMA)
-        return dbModule.SCHEMA.replace(
-            "    timezone              TEXT,\n" + self.NEEDS_REAUTH_LINE,
-            "    timezone              TEXT\n",
-        )
+        return dbModule.SCHEMA.replace(self.NEEDS_REAUTH_LINE, "")
 
     def _columnNames(self, table):
         conn = sqlite3.connect(self.dbPath)

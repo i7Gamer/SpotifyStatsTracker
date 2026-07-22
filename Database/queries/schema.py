@@ -260,3 +260,18 @@ class SchemaQueries:
         if "spotify_needs_reauth" not in columns:
             with conn:
                 conn.execute("ALTER TABLE users ADD COLUMN spotify_needs_reauth INTEGER NOT NULL DEFAULT 0")
+
+    def addMilestonesBaselineColumnIfMissing(self) -> None:
+        """Add users.milestones_baseline_at (migrate1_33_0) if missing - the
+        timestamp of a user's first milestone-detection pass, which marks
+        everything they'd already achieved by then as seen (no notification)
+        so the feature shipping doesn't flood existing accounts. The
+        user_milestones table itself is a plain CREATE TABLE IF NOT EXISTS in
+        SCHEMA (auto-created on the next connect), so only this column on the
+        pre-existing users table needs an ALTER. Guarded so re-running the
+        migration doesn't fail."""
+        conn = self._conn()
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
+        if "milestones_baseline_at" not in columns:
+            with conn:
+                conn.execute("ALTER TABLE users ADD COLUMN milestones_baseline_at REAL")
