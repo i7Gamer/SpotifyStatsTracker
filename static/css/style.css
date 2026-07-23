@@ -394,36 +394,40 @@ button {
   line-height: 1.05;
 }
 
-.summary-item {
-  display: grid;
-  gap: 4px;
+/* Top song / Top artist summary cards: the title gets its own full-width line
+   so long names use the whole card before truncating; the linked cover and the
+   "…listened" detail share the row beneath it. */
+.summary-top-item {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
 }
 
-.summary-item strong {
+.summary-top-title {
   display: block;
+  min-width: 0;
   font-size: 1.2rem;
   font-weight: 700;
   line-height: 1.15;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.summary-item span {
-  font-size: 0.9rem;
-  color: var(--muted);
-  line-height: 1.35;
-}
-
-/* Top song / Top artist summary cards: linked cover next to the linked
-   name, mirroring the Now Playing card's layout so the summary row reads
-   as one family. */
-.summary-top-item {
+.summary-top-detail {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   gap: 12px;
   min-width: 0;
 }
 
-.summary-top-meta {
+.summary-top-sub {
   flex: 1;
+  min-width: 0;
+  font-size: 0.9rem;
+  color: var(--muted);
+  line-height: 1.35;
 }
 
 .summary-top-cover {
@@ -433,16 +437,6 @@ button {
   object-fit: cover;
   flex-shrink: 0;
   display: block;
-}
-
-.summary-top-meta {
-  min-width: 0;
-}
-
-.summary-top-meta strong {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .summary-top-name {
@@ -457,8 +451,9 @@ button {
 /* Full-nav widths restore the larger cover art; once the top nav collapses to
    the hamburger (<=1024px, see the .nav-toggle media query) the covers drop
    back to the compact 56px thumbnail so both shrink at the same breakpoint.
-   (Placed after the base 56px rules so it wins the cascade.) The bottom
-   alignment on the rows lines the text up with the cover's base. */
+   (Placed after the base 56px rules so it wins the cascade.) Now Playing keeps
+   its text bottom-aligned to the cover's base; the top-song/artist detail row
+   centres its "…listened" text against the cover instead. */
 @media (min-width: 1025px) {
   .now-playing-cover,
   .summary-top-cover {

@@ -42,6 +42,26 @@ class DashboardCardsTestCase(AppTestCase):
             db.getRecommendedArtists.return_value = recommendations
         return db
 
+    def _makeDbWithTops(self):
+        """A db whose overall stats include a Top song and Top artist, both with
+        deliberately long names so the full-width-title layout is exercised."""
+        db = self._makeDb()
+        db.getOverallStats.return_value = {
+            "currentTopSongs": [{
+                "id": "trk1", "name": "An Extremely Long Song Title That Overflows",
+                "imageId": "img1", "totalTimeListened": 3600000,
+                "firstListenedAt": 0, "plays": 5,
+            }],
+            "currentTopArtists": [{
+                "id": "art1", "name": "An Extremely Long Artist Name That Overflows",
+                "imageId": "img2", "totalTimeListened": 7200000,
+                "firstListenedAt": 0, "plays": 3,
+            }],
+            "totalSongsPlayed": 100, "totalDurationMs": 10000000,
+            "previousSongsPlayed": 0, "previousDurationMs": 0,
+        }
+        return db
+
     def _get(self, dash, db, path="/"):
         client = dash.app.test_client()
         with patch.object(dash, 'is_user_logged_in', return_value=True), \
@@ -193,6 +213,49 @@ class DashboardCardsTestCase(AppTestCase):
         self.assertTrue(data["unlocked"])
         self.assertEqual(data["recommendations"][0]["name"], "Fresh Artist")
         db.getRecommendedArtists.assert_called_once()
+
+    def test_top_song_title_spans_full_width_above_detail_row(self):
+        # The title is its own full-width line; the cover art and the
+        # "…listened" text share the row beneath it (summary-top-detail).
+        dash = self._makeApp()
+        body = self._get(dash, self._makeDbWithTops()).data.decode()
+        cardStart = body.find("<h2>Top song</h2>")
+        self.assertNotEqual(cardStart, -1)
+        titleIndex = body.find('class="summary-top-title"', cardStart)
+        detailIndex = body.find('class="summary-top-detail"', cardStart)
+        coverIndex = body.find('class="summary-top-cover"', cardStart)
+        self.assertNotEqual(titleIndex, -1)
+        self.assertNotEqual(detailIndex, -1)
+        self.assertNotEqual(coverIndex, -1)
+        # Title first, then the cover lives inside the detail row below it.
+        self.assertLess(titleIndex, detailIndex)
+        self.assertLess(detailIndex, coverIndex)
+        self.assertIn("An Extremely Long Song Title That Overflows", body)
+        self.assertIn("/song/trk1", body)
+
+    def test_top_artist_title_spans_full_width_above_detail_row(self):
+        dash = self._makeApp()
+        body = self._get(dash, self._makeDbWithTops()).data.decode()
+        cardStart = body.find("<h2>Top artist</h2>")
+        self.assertNotEqual(cardStart, -1)
+        titleIndex = body.find('class="summary-top-title"', cardStart)
+        detailIndex = body.find('class="summary-top-detail"', cardStart)
+        coverIndex = body.find('class="summary-top-cover"', cardStart)
+        self.assertNotEqual(titleIndex, -1)
+        self.assertNotEqual(detailIndex, -1)
+        self.assertNotEqual(coverIndex, -1)
+        self.assertLess(titleIndex, detailIndex)
+        self.assertLess(detailIndex, coverIndex)
+        self.assertIn("An Extremely Long Artist Name That Overflows", body)
+        self.assertIn("/artist/art1", body)
+
+    def test_top_cards_show_empty_state_without_data(self):
+        # The else-branch still renders when there is no top song/artist.
+        dash = self._makeApp()
+        body = self._get(dash, self._makeDb()).data.decode()
+        self.assertIn("No songs played in this period.", body)
+        self.assertIn("No artists played in this period.", body)
+        self.assertNotIn('class="summary-top-title"', body)
 
     def test_discover_api_disabled_when_lastfm_off(self):
         dash = self._makeApp()
