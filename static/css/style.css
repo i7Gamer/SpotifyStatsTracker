@@ -1943,24 +1943,26 @@ progress::-moz-progress-bar {
   color: var(--muted, #b0b0b0);
 }
 
-.milestone-more {
-  margin-top: 8px;
+/* .milestone-item is display:flex, so the plain [hidden] attribute (UA
+   display:none) is overridden - this puts it back for the collapsed tail. */
+.milestone-item[hidden] {
+  display: none;
 }
 
-.milestone-more > summary {
+.milestone-more-btn {
+  margin-top: 8px;
+  background: none;
+  border: none;
+  padding: 4px 0;
   cursor: pointer;
   color: var(--muted, #b0b0b0);
   font-size: 0.9rem;
   font-weight: 600;
-  padding: 4px 0;
+  font-family: inherit;
 }
 
-.milestone-more > summary:hover {
+.milestone-more-btn:hover {
   color: var(--text);
-}
-
-.milestone-more-list {
-  margin-top: 8px;
 }
 
 .chart-card {

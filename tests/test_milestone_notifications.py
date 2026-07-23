@@ -120,9 +120,11 @@ class TestProfileMilestonesSection(_BadgeTestCase):
         self.assertIn(b"New #1 artist: Boards of Canada", resp.data)
         self.assertIn(b"/artist/art9", resp.data)
 
-    def test_only_most_recent_shown_with_collapsible_more(self):
-        # With more than one milestone, only the newest renders above a
-        # "show more" disclosure; the older ones live inside the <details>.
+    def test_extra_milestones_collapsed_behind_show_more_button(self):
+        # Server renders every milestone but leaves only the most recent one
+        # visible; the rest carry `hidden` and milestone-more.js reveals them in
+        # chunks via the button. Newest-first ordering => the visible one is the
+        # most recent.
         client = self._loginAs("alice", "alice@example.com")
         self.dash.repo.recordMilestone("alice", "plays", 1000, None, 1609459200.0, seen=True)   # older
         self.dash.repo.recordMilestone("alice", "streak", 7, None, 1612137600.0, seen=True)      # newer
@@ -131,21 +133,26 @@ class TestProfileMilestonesSection(_BadgeTestCase):
         body = resp.data
 
         self.assertEqual(resp.status_code, 200)
-        self.assertIn(b'class="milestone-more"', body)
-        self.assertIn(b"Show 1 more", body)
-        # Newest milestone sits above the toggle; the older one is inside it.
-        moreIdx = body.index(b'class="milestone-more"')
-        self.assertLess(body.index(b"7-day listening streak"), moreIdx)
-        self.assertGreater(body.index(b"1,000 lifetime plays"), moreIdx)
+        # Both milestones are in the DOM, newest first.
+        self.assertIn(b"7-day listening streak", body)
+        self.assertIn(b"1,000 lifetime plays", body)
+        self.assertLess(body.index(b"7-day listening streak"), body.index(b"1,000 lifetime plays"))
+        # Exactly one item is left visible; the older one carries `hidden`.
+        self.assertEqual(body.count(b'class="milestone-item"'), 2)
+        self.assertEqual(body.count(b'class="milestone-item" hidden'), 1)
+        # The reveal control is present with the chunk size milestone-more.js reads.
+        self.assertIn(b"data-milestone-more", body)
+        self.assertIn(b'data-chunk-size="5"', body)
 
-    def test_no_collapsible_with_single_milestone(self):
+    def test_no_show_more_button_with_single_milestone(self):
         client = self._loginAs("alice", "alice@example.com")
         self.dash.repo.recordMilestone("alice", "plays", 1000, None, 1609459200.0, seen=True)
 
         resp = client.get("/profile")
 
         self.assertIn(b"1,000 lifetime plays", resp.data)
-        self.assertNotIn(b"milestone-more", resp.data)
+        self.assertNotIn(b"data-milestone-more", resp.data)
+        self.assertNotIn(b'class="milestone-item" hidden', resp.data)
 
     def test_empty_state_when_no_milestones(self):
         client = self._loginAs("alice", "alice@example.com")
