@@ -61,6 +61,51 @@ class MilestoneQueries:
             )
         return cursor.lastrowid
 
+    def getNthPlayTimestamp(self, username: str, n: int) -> float | None:
+        """played_at of `username`'s n-th non-skip play in chronological order
+        (1-based), or None with fewer than n plays - the data-derived date a
+        lifetime play-count milestone was actually reached (see
+        services/milestones.py recalculateMilestoneDates)."""
+        if n < 1:
+            return None
+        row = self._conn().execute(
+            "SELECT played_at FROM plays WHERE username=? AND is_skip=0 "
+            "ORDER BY played_at, id LIMIT 1 OFFSET ?",
+            (username, n - 1),
+        ).fetchone()
+        return row["played_at"] if row else None
+
+    def getListenTimeCrossingTimestamp(self, username: str, targetMs: int) -> float | None:
+        """played_at of the non-skip play at which `username`'s cumulative
+        time_played first reaches `targetMs`, or None if their lifetime total
+        never does - the data-derived date a listen-time milestone was reached
+        (see services/milestones.py recalculateMilestoneDates)."""
+        row = self._conn().execute(
+            "SELECT played_at FROM ("
+            " SELECT played_at, id, SUM(time_played) OVER (ORDER BY played_at, id) AS cum_ms"
+            " FROM plays WHERE username=? AND is_skip=0"
+            ") WHERE cum_ms >= ? ORDER BY played_at, id LIMIT 1",
+            (username, targetMs),
+        ).fetchone()
+        return row["played_at"] if row else None
+
+    def updateMilestoneAchievedAt(self, milestoneId: int, achievedAt: float) -> None:
+        """Rewrites one milestone row's achieved date, leaving seen untouched -
+        date recalculation must never re-badge an acknowledged milestone."""
+        conn = self._conn()
+        with conn:
+            conn.execute(
+                "UPDATE user_milestones SET achieved_at=? WHERE id=?", (achievedAt, milestoneId)
+            )
+
+    def getMilestoneUsernames(self) -> list[str]:
+        """Every user with at least one milestone row - who migrate1_35_0's
+        achieved-at recalculation needs to visit."""
+        rows = self._conn().execute(
+            "SELECT DISTINCT username FROM user_milestones ORDER BY username"
+        ).fetchall()
+        return [r["username"] for r in rows]
+
     def getUnseenMilestoneCount(self, username: str) -> int:
         """How many milestones this user hasn't acknowledged (by opening the
         Milestones section on /profile) - the topbar badge count. Runs on every

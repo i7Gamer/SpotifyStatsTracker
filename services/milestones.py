@@ -15,9 +15,13 @@ notify (seen=0).
 Kept free of Flask/template concerns so it stays unit-testable against a plain
 Database + Repository, mirroring services/genre_gate.py and services/taste_match.py.
 """
+import datetime
 import json
 import logging
 import time
+from zoneinfo import ZoneInfo
+
+from Database.utils import convertToDatetime, getTimezone
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +126,150 @@ def detectMilestones(db, repo, username, changeCache=None) -> int:
     if changeCache is not None:
         changeCache[username] = (totalPlays, totalMs)
     return recorded
+
+
+def resolveUserTimezone(repo, username):
+    """The tz `username`'s local day boundaries use - users.timezone when set
+    and valid, else the app default - mirroring Database.refreshSettings so
+    recalculated streak dates agree with what the streak features show."""
+    try:
+        tzName = repo.getUserSettings(username).get("timezone")
+        if tzName:
+            return ZoneInfo(tzName)
+    except Exception:
+        pass
+    return getTimezone()
+
+
+def _dayFirstPlayTimestamps(repo, username, tz) -> dict:
+    """{"%Y-%m-%d" local date: earliest 15-minute bucket start that day}
+    across the user's whole history - the same bucket->local-date mapping
+    _getPlayDateSet/getListeningCalendar use, so streak dates recalculated
+    from it agree with the streak features."""
+    dayFirst: dict = {}
+    for row in repo.getBucketedPlayTotals(username):
+        dateStr = convertToDatetime(row["bucketStartTs"], tz=tz).strftime("%Y-%m-%d")
+        if dateStr not in dayFirst or row["bucketStartTs"] < dayFirst[dateStr]:
+            dayFirst[dateStr] = row["bucketStartTs"]
+    return dayFirst
+
+
+def computeStreakAchievedTimestamps(dayFirstTs, thresholds) -> dict:
+    """{threshold: timestamp of the FIRST day ever that a consecutive-day run
+    reached it}, from a {"%Y-%m-%d" local date: first play timestamp that day}
+    map. Thresholds no run ever reached are absent. Runs grow one day at a
+    time, so each threshold lands exactly on some run's threshold-th day; only
+    the earliest occurrence is kept (seeding recorded only the then-current
+    run, which may not have been the first to get there)."""
+    wanted = set(thresholds)
+    achieved: dict = {}
+    if not wanted or not dayFirstTs:
+        return achieved
+    previousDay = None
+    runLength = 0
+    for day in sorted(datetime.date.fromisoformat(d) for d in dayFirstTs):
+        runLength = runLength + 1 if previousDay is not None and (day - previousDay).days == 1 else 1
+        previousDay = day
+        if runLength in wanted and runLength not in achieved:
+            achieved[runLength] = dayFirstTs[day.isoformat()]
+    return achieved
+
+
+def computeTopArtistTakeover(bucketRows) -> tuple | None:
+    """(artistId, bucket timestamp of their LAST takeover) for the final
+    all-time #1 in `bucketRows` (getBucketedArtistPlayCounts output, already
+    bucket-ordered), or None with no plays. The lead only changes hands on a
+    strictly greater play count - a tie never displaces the sitting leader -
+    evaluated after each 15-minute bucket's increments, so the takeover
+    moment is bucket-precise (plenty for a date display)."""
+    counts: dict = {}
+    leader = None
+    leaderSince = None
+    index = 0
+    total = len(bucketRows)
+    while index < total:
+        bucketTs = bucketRows[index]["bucketStartTs"]
+        while index < total and bucketRows[index]["bucketStartTs"] == bucketTs:
+            row = bucketRows[index]
+            counts[row["artistId"]] = counts.get(row["artistId"], 0) + row["plays"]
+            index += 1
+        challengers = [a for a, c in counts.items() if leader is None or c > counts[leader]]
+        if challengers:
+            newLeader = max(challengers, key=lambda a: (counts[a], a))
+            if newLeader != leader:
+                leader, leaderSince = newLeader, bucketTs
+    if leader is None:
+        return None
+    return leader, leaderSince
+
+
+def _topArtistTakeoverTs(repo, username, row) -> float | None:
+    """The recalculated date for a top_artist row: when its artist last took
+    the all-time #1 spot per the play data - or None (leave the row alone)
+    when the detail is unreadable or the data's leader isn't that artist
+    (tie ordering or same-name artist merges can make getTopArtists disagree
+    with this id-based scan; no safe date to claim then)."""
+    try:
+        detail = json.loads(row["detail"]) if row.get("detail") else {}
+    except (ValueError, TypeError):
+        return None
+    artistId = detail.get("id")
+    if not artistId:
+        return None
+    takeover = computeTopArtistTakeover(repo.getBucketedArtistPlayCounts(username))
+    if takeover is None or takeover[0] != artistId:
+        return None
+    return takeover[1]
+
+
+def _recalculatedAchievedAt(repo, username, row, streakTs, topArtistRowCount) -> float | None:
+    """The data-derived achieved_at for one milestone row, or None to leave it
+    unchanged. top_artist is only recalculated for a user's SINGLE (seeded)
+    row: with multiple rows (organic #1 changes), moving the latest one
+    earlier could re-order getLatestMilestone below an older row, and the next
+    detection pass would then re-record the current #1 as a fresh
+    notification."""
+    kind = row["kind"]
+    if kind == MILESTONE_KIND_PLAYS:
+        return repo.getNthPlayTimestamp(username, row["threshold"])
+    if kind == MILESTONE_KIND_LISTEN_TIME:
+        return repo.getListenTimeCrossingTimestamp(username, row["threshold"] * MS_PER_HOUR)
+    if kind == MILESTONE_KIND_STREAK:
+        return streakTs.get(row["threshold"])
+    if kind == MILESTONE_KIND_TOP_ARTIST and topArtistRowCount == 1:
+        return _topArtistTakeoverTs(repo, username, row)
+    return None
+
+
+def recalculateMilestoneDates(repo, username, tz) -> int:
+    """Rewrite `username`'s milestone achieved_at values to what the plays
+    table says they really were, returning how many rows changed. The 1.34.0
+    seeding pass stamped every already-achieved milestone with the seeding
+    moment itself; organically recorded rows also carry "when the background
+    pass noticed" (up to a poll interval late, or import time for imported
+    history) rather than the actual crossing - the data-derived date is the
+    truthful one for every threshold kind, so all of them are recomputed.
+
+    Rows whose threshold today's data no longer supports (an overwrite import
+    or a stricter skip threshold shrank history) keep their existing date
+    rather than getting a guessed one. seen flags are never touched, so
+    nothing re-notifies. Idempotent - a second run changes nothing."""
+    rows = repo.getMilestonesForUser(username)
+    if not rows:
+        return 0
+
+    streakThresholds = {r["threshold"] for r in rows if r["kind"] == MILESTONE_KIND_STREAK}
+    streakTs = computeStreakAchievedTimestamps(
+        _dayFirstPlayTimestamps(repo, username, tz), streakThresholds) if streakThresholds else {}
+    topArtistRowCount = sum(1 for r in rows if r["kind"] == MILESTONE_KIND_TOP_ARTIST)
+
+    updated = 0
+    for row in rows:
+        achievedAt = _recalculatedAchievedAt(repo, username, row, streakTs, topArtistRowCount)
+        if achievedAt is not None and achievedAt != row["achieved_at"]:
+            repo.updateMilestoneAchievedAt(row["id"], achievedAt)
+            updated += 1
+    return updated
 
 
 def nextMilestoneProgress(currentValue, thresholds) -> dict | None:
