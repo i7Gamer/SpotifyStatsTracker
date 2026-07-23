@@ -516,30 +516,33 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
             # landing mid-import (this loop runs every 5 minutes and large
             # imports span that), where the flag doesn't exist yet.
             recalcEnabled = self.repo.isMilestoneRecalcEnabled()
-            pending = importing = False
-            if recalcEnabled:
-                importing = db.readProgress().get("status") == "running"
-                # The end-of-batch flag keeps its one shot for a pass with no
-                # import in flight - consuming it mid-import would spend it on
-                # data still being rewritten.
-                if not importing:
-                    pending = db.consumeMilestoneRecalcFlag()
+            # While an import is rewriting this user's history, the whole pass
+            # is wasted energy: any row detection recorded would land seen=1
+            # (invisible) and be re-dated by the settled pass the end-of-batch
+            # flag guarantees, while detection's aggregate queries compete
+            # with the import's writes. Skip everything, leaving the flag its
+            # one shot. A stale "running" can't wedge this permanently -
+            # get_user_db resets import progress on activation after a
+            # restart. Gated on the hygiene toggle: off = pre-1.36.0 behavior
+            # wholesale, including mid-import detection.
+            if recalcEnabled and db.readProgress().get("status") == "running":
+                return
+            pending = db.consumeMilestoneRecalcFlag() if recalcEnabled else False
             recorded = detectMilestones(db, db.repo, username,
                                         changeCache=self._milestoneChangeCache,
-                                        markSeen=pending or importing)
+                                        markSeen=pending)
             # Date re-derivation strictly after detection so import-crossed
-            # rows exist first, and deferred entirely while an import is still
-            # running (its end-of-batch flag guarantees a settled pass).
-            # Triggered by that flag or by any recorded crossing - the latter
-            # turns "when this pass noticed" timestamps into actual crossing
-            # times and self-heals a flag lost to a restart. Only the settled
-            # post-import pass may also prune rows the rewritten history no
-            # longer supports (removeUnsupported) - never organic passes,
-            # where a tightened skip threshold shrinking totals would delete
-            # rows only to re-notify them later. While the toggle is off the
-            # flag stays raised so enabling later catches up. See
-            # services/milestones.py recalculateMilestoneDates for details.
-            if recalcEnabled and not importing and (pending or recorded > 0):
+            # rows exist first. Triggered by the end-of-batch flag or by any
+            # recorded crossing - the latter turns "when this pass noticed"
+            # timestamps into actual crossing times and self-heals a flag lost
+            # to a restart. Only the settled post-import pass may also prune
+            # rows the rewritten history no longer supports (removeUnsupported)
+            # - never organic passes, where a tightened skip threshold
+            # shrinking totals would delete rows only to re-notify them later.
+            # While the toggle is off the flag stays raised so enabling later
+            # catches up. See services/milestones.py recalculateMilestoneDates
+            # for details.
+            if recalcEnabled and (pending or recorded > 0):
                 recalculateMilestoneDates(db.repo, username, db.tz,
                                           removeUnsupported=pending)
         except Exception as e:

@@ -14,11 +14,11 @@ restart). Everything is gated by the instance-wide admin toggle
 The same toggle also suppresses the badge flood a big import would cause:
 crossings surfaced by imported history are recorded as already seen
 (detectMilestones' markSeen - same no-notification contract as first-pass
-seeding), covering both the flag-consuming pass and passes landing mid-import.
-And the settled flag-consuming pass alone may prune rows a shrinking
-overwrite import's rewritten history no longer supports (removeUnsupported) -
-organic passes never delete, so a tightened skip threshold can't cause
-delete/re-notify churn.
+seeding). While an import is still running the whole pass is skipped (its
+outcome would be redone by the settled flag-consuming pass anyway), and that
+settled pass alone may prune rows a shrinking overwrite import's rewritten
+history no longer supports (removeUnsupported) - organic passes never delete,
+so a tightened skip threshold can't cause delete/re-notify churn.
 
 The recalculation logic itself is covered by test_milestone_recalc.py and
 markSeen's record-level behavior by test_milestones.py; this file covers the
@@ -113,10 +113,10 @@ class TestAutoRecalcWiring(AppTestCase):
     in place so enabling later still catches up.
 
     The same toggle suppresses the badge flood: crossings surfaced by an
-    import are recorded as already seen (markSeen), both on the flag-consuming
-    pass after the batch AND on passes landing mid-import (the loop runs every
-    5 minutes, large imports span that - readProgress is the signal there,
-    with the recalc deferred to the flag-raised pass at batch end)."""
+    import are recorded as already seen (markSeen) on the flag-consuming pass
+    after the batch. Passes landing mid-import (the loop runs every 5
+    minutes, large imports span that - readProgress is the signal) skip
+    milestone work entirely: the settled pass redoes it all anyway."""
 
     def _db(self, pending=False, importing=False):
         db = MagicMock()
@@ -196,21 +196,33 @@ class TestAutoRecalcWiring(AppTestCase):
 
         self.assertTrue(mockDetect.call_args.kwargs["markSeen"])
 
-    def test_running_import_marks_seen_and_defers_recalc(self):
-        # Mid-import pass: the end-of-batch flag doesn't exist yet, but the
-        # crossings being recorded come from imported history - no badge, and
-        # the (partial-data) recalc waits for the flag-raised pass at the end.
+    def test_running_import_skips_the_whole_pass(self):
+        # Mid-import, every milestone outcome would be redone by the settled
+        # pass anyway (rows land seen=1 and get re-dated) while the detection
+        # queries compete with the import's writes - so nothing runs at all,
+        # and the end-of-batch flag keeps its one shot for settled data.
         dash = self._makeApp()
         db = self._db(pending=False, importing=True)
         with patch("app.detectMilestones", return_value=3) as mockDetect, \
              patch("app.recalculateMilestoneDates") as mockRecalc:
             dash._detectMilestonesSafely(db, "alice")
 
-        self.assertTrue(mockDetect.call_args.kwargs["markSeen"])
+        mockDetect.assert_not_called()
         mockRecalc.assert_not_called()
-        # The end-of-batch flag keeps its one shot for a settled pass - a
-        # concurrent batch's data is still being rewritten under it.
         db.consumeMilestoneRecalcFlag.assert_not_called()
+
+    def test_toggle_off_keeps_detection_running_mid_import(self):
+        # The hygiene toggle off = pre-1.36.0 behavior wholesale, including
+        # detection during an import (crossings notify as they always did).
+        dash = self._makeApp()
+        dash.repo.setMilestoneRecalcEnabled(False)
+        db = self._db(pending=False, importing=True)
+        with patch("app.detectMilestones", return_value=1) as mockDetect, \
+             patch("app.recalculateMilestoneDates"):
+            dash._detectMilestonesSafely(db, "alice")
+
+        mockDetect.assert_called_once()
+        self.assertFalse(mockDetect.call_args.kwargs["markSeen"])
 
     def test_normal_pass_does_not_mark_seen(self):
         dash = self._makeApp()
