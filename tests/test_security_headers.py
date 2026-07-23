@@ -88,6 +88,18 @@ class TestSecurityHeaders(AppTestCase):
         self.assertIn("frame-ancestors 'none'", csp)
         self.assertEqual(resp.headers.get("X-Frame-Options"), "DENY")
 
+    def test_non_detail_pages_do_not_get_unsafe_eval(self):
+        """'unsafe-eval' is needed only by Spotify's iFrame API bundle (webpack
+        eval devtool) and must be confined to the detail routes - every other
+        page keeps an eval-free script-src. See DETAIL_CSP_ENDPOINTS in app.py."""
+        dash = self._makeApp()
+        client = dash.app.test_client()
+
+        resp = client.get("/login")
+        csp = resp.headers.get("Content-Security-Policy", "")
+
+        self.assertNotIn("unsafe-eval", csp)
+
 
 class TestHstsToggleParsing(unittest.TestCase):
     """_hstsEnabled reads ENABLE_HSTS with the same truthy/junk tolerance as

@@ -145,6 +145,17 @@ SECURITY_HEADERS = {
     ),
 }
 
+# The detail pages (/song, /artist, /album) run Spotify's iFrame API bundle in
+# our page context; that bundle is a webpack build with the `eval` devtool, so
+# it needs 'unsafe-eval'. That directive can't be scoped to a host in CSP, so it
+# is confined to just those three routes (see DETAIL_CSP_ENDPOINTS/
+# _setSecurityHeaders in app.py) instead of relaxing the whole app. Derived from
+# the baseline above so the two stay in lockstep.
+DETAIL_PAGE_CSP = SECURITY_HEADERS["Content-Security-Policy"].replace(
+    "script-src 'self' 'unsafe-inline'",
+    "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
+)
+
 # Opt-in HTTP Strict-Transport-Security, sent only when ENABLE_HSTS is truthy
 # (see _hstsEnabled/_setSecurityHeaders in app.py). Enable it only when a
 # TLS-terminating reverse proxy fronts the app - on a plain-HTTP deployment it

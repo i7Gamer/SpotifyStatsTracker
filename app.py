@@ -641,11 +641,18 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
         "artist": resolveGenresForArtist,
     }
 
+    # The three routes whose responses embed Spotify's iFrame API and therefore
+    # need the eval-allowing CSP variant (DETAIL_PAGE_CSP). Confined here so
+    # 'unsafe-eval' never leaks onto the rest of the app.
+    _DETAIL_CSP_ENDPOINTS = frozenset({"songDetailPage", "artistDetailPage", "albumDetailPage"})
+
     def registerRoutes(self):
         @self.app.after_request
         def _setSecurityHeaders(response):
             for header, value in SECURITY_HEADERS.items():
                 response.headers.setdefault(header, value)
+            if request.endpoint in self._DETAIL_CSP_ENDPOINTS:
+                response.headers["Content-Security-Policy"] = DETAIL_PAGE_CSP
             if _hstsEnabled():
                 response.headers.setdefault("Strict-Transport-Security", HSTS_HEADER_VALUE)
             return response

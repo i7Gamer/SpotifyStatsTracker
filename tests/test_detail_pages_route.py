@@ -227,6 +227,20 @@ class TestSongDetailRoute(_DetailRouteTestBase):
 
         self.assertIn(b'js/play-embed.js', resp.data)
 
+    def test_csp_allows_unsafe_eval_for_the_spotify_embed(self):
+        """Spotify's iFrame API bundle is a webpack eval-devtool build that runs
+        in our page context, so the detail responses (and only those) must allow
+        'unsafe-eval' - see DETAIL_CSP_ENDPOINTS in app.py."""
+        dash = self._makeApp()
+        db = MagicMock()
+        db.getSong.return_value = self._song()
+        db.getListeningTimeSeries.return_value = []
+        db.getHourOfDayHeatmap.return_value = [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
+
+        resp = self._getPath(dash, db, "/song/t1")
+
+        self.assertIn("'unsafe-eval'", resp.headers.get("Content-Security-Policy", ""))
+
     def test_track_card_gets_has_genres_class_only_when_genres_exist(self):
         dash = self._makeApp()
         db = MagicMock()
@@ -518,6 +532,18 @@ class TestArtistDetailRoute(_DetailRouteTestBase):
         self.assertIn(b'data-embed-type="artist"', resp.data)
         self.assertIn(b'Open in Spotify', resp.data)
 
+    def test_csp_allows_unsafe_eval_for_the_spotify_embed(self):
+        dash = self._makeApp()
+        db = MagicMock()
+        db.getArtist.return_value = self._artist()
+        db.getArtistBio.return_value = None
+        db.getSongsStats.return_value = []
+        db.getListeningTimeSeries.return_value = []
+
+        resp = self._getPath(dash, db, "/artist/a1")
+
+        self.assertIn("'unsafe-eval'", resp.headers.get("Content-Security-Policy", ""))
+
     def test_first_song_you_listened_to_is_shown(self):
         dash = self._makeApp()
         db = MagicMock()
@@ -723,6 +749,17 @@ class TestAlbumDetailRoute(_DetailRouteTestBase):
         self.assertEqual(resp.data.count(b'play-now-button'), 1)
         self.assertIn(b'data-embed-type="album"', resp.data)
         self.assertIn(b'Open in Spotify', resp.data)
+
+    def test_csp_allows_unsafe_eval_for_the_spotify_embed(self):
+        dash = self._makeApp()
+        db = MagicMock()
+        db.getAlbum.return_value = self._album()
+        db.getSongsStats.return_value = []
+        db.getListeningTimeSeries.return_value = []
+
+        resp = self._getPath(dash, db, "/album/alb1")
+
+        self.assertIn("'unsafe-eval'", resp.headers.get("Content-Security-Policy", ""))
 
     def test_unique_song_count_card_is_shown(self):
         dash = self._makeApp()
