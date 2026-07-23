@@ -24,6 +24,7 @@ from _app_factory import AppTestCase
 from dashboard.date_ranges import DateRangeMixin
 from config import COMPARE_TREND_WEEK_SPAN_DAYS, COMPARE_TREND_MONTH_SPAN_DAYS
 from Database.repository import Repository
+import Database.utils as utilsModule
 
 UTC = datetime.timezone.utc
 SECONDS_PER_DAY = 86400
@@ -65,6 +66,39 @@ class TestResolveGroupBy(unittest.TestCase):
     def test_missing_dates_fall_back_to_day(self):
         self.assertEqual(self.dash._resolveGroupBy(""), "day")
         self.assertEqual(self.dash._resolveGroupBy("", _spanDates(10)[0], None), "day")
+
+
+class TestGetDateRangeEndDateDoesNotSpillIntoTomorrow(unittest.TestCase):
+    """week/month/year/5years all fall through to _getDateRange's default
+    endDate (no interval branch sets one). It must cap at the start of
+    tomorrow, local time - not "now plus a day", which stamps today's
+    time-of-day onto tomorrow's date and manufactures an empty future bucket
+    once getListeningTimeSeries gap-fills up to it."""
+
+    def setUp(self):
+        self.dash = _Resolver()
+        # startOfDay/convertToDatetime fall back to Database.utils' global tz
+        # when _getDateRange isn't given one explicitly (the routes' real
+        # calls always pass db.tz - this pins it so the test is deterministic
+        # regardless of the machine's TZ env var).
+        patcher = patch.object(utilsModule, "tz", UTC)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    @patch("dashboard.date_ranges.now")
+    def test_week_month_year_5years_end_at_start_of_tomorrow(self, mockNow):
+        mockNow.return_value = datetime.datetime(2026, 7, 23, 15, 30, tzinfo=UTC)
+        expected = datetime.datetime(2026, 7, 24, 0, 0, tzinfo=UTC)
+        for interval in ("week", "month", "year", "5years"):
+            with self.subTest(interval=interval):
+                _, endDate = self.dash._getDateRange(interval)
+                self.assertEqual(endDate, expected)
+
+    @patch("dashboard.date_ranges.now")
+    def test_end_of_tomorrow_is_stable_even_right_at_midnight(self, mockNow):
+        mockNow.return_value = datetime.datetime(2026, 7, 23, 0, 0, tzinfo=UTC)
+        _, endDate = self.dash._getDateRange("week")
+        self.assertEqual(endDate, datetime.datetime(2026, 7, 24, 0, 0, tzinfo=UTC))
 
 
 def _track(trackId, artistIds, albumId):

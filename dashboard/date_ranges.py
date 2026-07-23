@@ -56,9 +56,10 @@ class DateRangeMixin:
             nowLocal = now(tz=tz)
             startDate = None
 
-            futureBuffer = timedelta(days=1) 
-
-            endDate = nowLocal + futureBuffer   #< bypass any timezone issues
+            #< the start of tomorrow, local time - always covers all of today
+            #  regardless of what time "now" is, without spilling a whole extra
+            #  day (with today's time-of-day) into a future bucket
+            endDate = convertToDatetime(startOfDay(nowLocal + timedelta(days=1), tz=tz), tz=tz)
 
             if customStart and customEnd:
                 try:
