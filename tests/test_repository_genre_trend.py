@@ -1,4 +1,5 @@
-"""Genres-page data layer: monthly genre trends, per-genre stat strip, and
+"""Genres-page data layer: bucketed genre trends (month by default, day/week/
+hour via groupBy - the Trend buckets control), per-genre stat strip, and
 per-genre top artists/tracks."""
 import sys
 import os
@@ -61,6 +62,27 @@ class GenreTrendTestCase(DatabaseTestCase):
         self.assertEqual(trend["buckets"], ["2026-01", "2026-02"])
         self.assertEqual(trend["series"][0]["name"], "rock")
         self.assertEqual(trend["series"][0]["data"], [3, 1])
+
+    def test_trends_day_buckets(self):
+        db = self._seed()
+        trend = db.getGenreTrends(["rock"], groupBy="day")
+        self.assertEqual(trend["buckets"], ["2026-01-05", "2026-01-06", "2026-01-15", "2026-02-10"])
+        self.assertEqual(trend["series"][0]["data"], [1, 1, 1, 1])
+
+    def test_trends_week_buckets(self):
+        # 2026-01-05 is a Monday: Jan 5+6 share its week, Jan 15 falls in the
+        # Jan 12 week, Feb 10 in the Feb 9 week - keys are the week's Monday,
+        # same _bucketKey convention as every other trend chart.
+        db = self._seed()
+        trend = db.getGenreTrends(["rock"], groupBy="week")
+        self.assertEqual(trend["buckets"], ["2026-01-05", "2026-01-12", "2026-02-09"])
+        self.assertEqual(trend["series"][0]["data"], [2, 1, 1])
+
+    def test_trends_hour_buckets(self):
+        # The single-day views' bucket size (see genresPage's trendGroupBy).
+        db = self._seed()
+        trend = db.getGenreTrends(["rock"], groupBy="hour")
+        self.assertEqual(trend["buckets"][0], "2026-01-05 12:00")
 
     def test_trends_respect_inherited_toggle(self):
         db = self._seed()

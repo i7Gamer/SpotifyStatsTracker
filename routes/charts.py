@@ -552,18 +552,6 @@ def register(app, dashboard):
         )
     app.add_url_rule("/top-artists", "topArtistsPage", topArtistsPage, methods=["GET"])
 
-    def _playRangeDates(username, tz, trackId=None, artistId=None, albumId=None):
-        """(start, end) datetimes spanning the user's (or one item's) whole
-        play history, or (None, None) with no plays - the span an open-ended
-        range's auto trend-bucket resolution derives from (see
-        _resolveGroupBy). Reads the shared repo like Compare's identical
-        all-time pinning does."""
-        playRange = dashboard.repo.getPlayTimeRange(username, trackId=trackId,
-                                                    artistId=artistId, albumId=albumId)
-        if not playRange:
-            return None, None
-        return convertToDatetime(playRange[0], tz=tz), convertToDatetime(playRange[1], tz=tz)
-
     def chartsPage():
         email, username, db = dashboard.get_current_user_or_redirect()
         if not email:
@@ -584,7 +572,7 @@ def register(app, dashboard):
         startDate, endDate = dashboard._getDateRange(interval, customStart, customEnd, default=defaultWindow, tz=db.tz)
         spanStart, spanEnd = startDate, endDate
         if spanStart is None or spanEnd is None:
-            spanStart, spanEnd = _playRangeDates(username, db.tz)   #< "All Time" has no explicit range
+            spanStart, spanEnd = dashboard._playRangeSpanDates(username, db.tz)   #< "All Time" has no explicit range
         groupBy = dashboard._resolveGroupBy(groupByParam, spanStart, spanEnd)
         intervalLabel = dashboard._getIntervalLabel(interval, customStart, customEnd)
 
@@ -686,7 +674,7 @@ def register(app, dashboard):
 
         groupByParam = request.args.get("groupBy", "")   #< raw: the select keeps showing Auto
         groupBy = dashboard._resolveGroupBy(
-            groupByParam, *_playRangeDates(username, db.tz, trackId=track_id))
+            groupByParam, *dashboard._playRangeSpanDates(username, db.tz, trackId=track_id))
 
         timeSeries = dashboard._embedTimeSeriesTextElements(
             db.getListeningTimeSeries(trackId=track_id, groupBy=groupBy)
@@ -727,7 +715,7 @@ def register(app, dashboard):
 
         groupByParam = request.args.get("groupBy", "")   #< raw: the select keeps showing Auto
         groupBy = dashboard._resolveGroupBy(
-            groupByParam, *_playRangeDates(username, db.tz, artistId=artist_id))
+            groupByParam, *dashboard._playRangeSpanDates(username, db.tz, artistId=artist_id))
 
         timeSeries = dashboard._embedTimeSeriesTextElements(
             db.getListeningTimeSeries(artistId=artist_id, groupBy=groupBy)
@@ -781,7 +769,7 @@ def register(app, dashboard):
 
         groupByParam = request.args.get("groupBy", "")   #< raw: the select keeps showing Auto
         groupBy = dashboard._resolveGroupBy(
-            groupByParam, *_playRangeDates(username, db.tz, albumId=album_id))
+            groupByParam, *dashboard._playRangeSpanDates(username, db.tz, albumId=album_id))
 
         timeSeries = dashboard._embedTimeSeriesTextElements(
             db.getListeningTimeSeries(albumId=album_id, groupBy=groupBy)

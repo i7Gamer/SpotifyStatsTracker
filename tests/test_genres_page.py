@@ -105,6 +105,52 @@ class GenresPageTestCase(AppTestCase):
         self.assertIn(b'id="genreChipRow"', resp.data)
         db.getGenreDistribution.assert_not_called()
 
+    def test_shell_has_auto_trend_buckets_control(self):
+        dash = self._makeApp()
+        db = self._makeDb(coverage=coverageDict(80, 60, 90), distribution={"rock": 1})
+        resp = self._get(dash, db)
+        self.assertIn(b"Trend buckets:", resp.data)
+        self.assertIn(b'<option value="" selected>Auto</option>', resp.data)
+
+    def test_trend_buckets_control_hidden_on_single_day_windows(self):
+        # Mirrors charts.html: single-day views bucket by hour, so the control
+        # would be a no-op - it's hidden, not just ignored.
+        dash = self._makeApp()
+        db = self._makeDb(coverage=coverageDict(80, 60, 90), distribution={"rock": 1}, window="day")
+        resp = self._get(dash, db)
+        self.assertIn(b'id="groupByContainer" style="display: none;"', resp.data)
+
+    def test_explicit_groupby_scopes_every_trend_query(self):
+        dash = self._makeApp()
+        db = self._makeDb(coverage=coverageDict(80, 60, 90),
+                          distribution={"rock": 120, "indie": 80}, window="month")
+        self._getData(dash, db, query="?groupBy=week")
+        for call in db.getGenreTrends.call_args_list:   #< the mix trend AND the drill-down trend
+            self.assertEqual(call.kwargs.get("groupBy"), "week")
+
+    def test_auto_groupby_resolves_from_the_play_range_on_all_time(self):
+        import datetime
+        dash = self._makeApp()
+        db = self._makeDb(coverage=coverageDict(80, 60, 90), distribution={"rock": 1}, window="all time")
+        db.tz = datetime.timezone.utc
+        longSpan = (3 * 365) * 86400.0
+        with patch.object(dash.repo, "getPlayTimeRange", return_value=(0.0, longSpan)):
+            self._getData(dash, db)
+        self.assertEqual(db.getGenreTrends.call_args.kwargs.get("groupBy"), "month")
+
+    def test_auto_groupby_short_window_is_day(self):
+        # The reported bug: a sub-month window month-bucketed into <=2 points.
+        dash = self._makeApp()
+        db = self._makeDb(coverage=coverageDict(80, 60, 90), distribution={"rock": 1}, window="week")
+        self._getData(dash, db)
+        self.assertEqual(db.getGenreTrends.call_args.kwargs.get("groupBy"), "day")
+
+    def test_single_day_view_uses_hour_buckets(self):
+        dash = self._makeApp()
+        db = self._makeDb(coverage=coverageDict(80, 60, 90), distribution={"rock": 1})
+        self._getData(dash, db, query="?interval=day")
+        self.assertEqual(db.getGenreTrends.call_args.kwargs.get("groupBy"), "hour")
+
     def test_ajax_full_payload_selects_top_genre_and_scopes_data(self):
         dash = self._makeApp()
         db = self._makeDb(coverage=coverageDict(80, 60, 90),

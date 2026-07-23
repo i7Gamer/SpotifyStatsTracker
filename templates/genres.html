@@ -42,6 +42,18 @@
         <span id="dateError" style="color: var(--accent); font-size: 0.85rem; display: none; margin-left: 10px;"></span>
       </div>
 
+      {# Hidden on single-day views like charts.html: those bucket by hour,
+         so the control would be a no-op there. #}
+      <div class="filter-group" id="groupByContainer" {% if interval in ['today', 'day'] %}style="display: none;"{% endif %}>
+        <label for="groupBy">Trend buckets:</label>
+        <select id="groupBy" name="groupBy" onchange="updateGenresGroupByFilter()">
+          <option value="" {% if not groupBy %}selected{% endif %}>Auto</option>
+          <option value="day" {% if groupBy == 'day' %}selected{% endif %}>Day</option>
+          <option value="week" {% if groupBy == 'week' %}selected{% endif %}>Week</option>
+          <option value="month" {% if groupBy == 'month' %}selected{% endif %}>Month</option>
+        </select>
+      </div>
+
       <noscript>
         <button class="primary-button" type="submit">Apply</button>
       </noscript>

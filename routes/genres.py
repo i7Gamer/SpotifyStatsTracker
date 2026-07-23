@@ -1,7 +1,9 @@
 """The dedicated /genres page: a genre-profile overview (distribution bars,
 share donut, genre-mix-over-time) plus a per-genre drill-down (stat strip,
-monthly trend, listening clock, top artists, top tracks). All genre surfaces
-gate behind the same Last.fm coverage unlock as Charts/Wrapped/Compare.
+bucketed trend, listening clock, top artists, top tracks). All genre surfaces
+gate behind the same Last.fm coverage unlock as Charts/Wrapped/Compare. Both
+trend charts follow the shared Trend-buckets control (Auto default, resolved
+server-side like every other page - see _resolveGroupBy).
 
 The page loads in two phases, like Charts: the initial GET renders a lightweight
 shell (filter controls + empty chart canvases), and static/js/genres.js then
@@ -39,12 +41,14 @@ def register(app, dashboard):
     GENRE_PAGE_TOP_ARTISTS_LIMIT = appmod.GENRE_PAGE_TOP_ARTISTS_LIMIT
     GENRE_PAGE_TOP_TRACKS_LIMIT = appmod.GENRE_PAGE_TOP_TRACKS_LIMIT
 
-    def _buildGenreDetail(db, username, selectedGenre, startDate, endDate, intervalLabel):
+    def _buildGenreDetail(db, username, selectedGenre, startDate, endDate, intervalLabel, trendGroupBy):
         """The per-genre drill-down context (stat strip + top lists) plus its
-        two chart datasets (monthly trend line, listening-clock heatmap), all
-        scoped to the selected date range. Shared by the full payload and the
-        chip-click detail swap so they can't drift."""
-        selectedTrend = resolveGenreTrends(db, [selectedGenre], startDate, endDate)
+        two chart datasets (bucketed trend line, listening-clock heatmap), all
+        scoped to the selected date range. `trendGroupBy` is the resolved
+        Trend-buckets size (hour on single-day views - see genresPage).
+        Shared by the full payload and the chip-click detail swap so they
+        can't drift."""
+        selectedTrend = resolveGenreTrends(db, [selectedGenre], startDate, endDate, groupBy=trendGroupBy)
         clock = dashboard._embedHeatmapTextElements(resolveGenreHeatmap(db, selectedGenre, startDate, endDate))
         topArtists = resolveTopArtistsForGenre(db, selectedGenre, GENRE_PAGE_TOP_ARTISTS_LIMIT, startDate, endDate)
         topTracks = resolveTopTracksForGenre(db, selectedGenre, GENRE_PAGE_TOP_TRACKS_LIMIT, startDate, endDate)
@@ -87,6 +91,18 @@ def register(app, dashboard):
         startDate, endDate = dashboard._getDateRange(interval, customStart, customEnd, default=defaultWindow, tz=db.tz)
         intervalLabel = dashboard._getIntervalLabel(interval, customStart, customEnd)
 
+        #< the raw param, not the resolved bucketing - the template's select
+        #  must keep showing Auto rather than pinning the derived value
+        groupByParam = request.args.get("groupBy", "")
+        spanStart, spanEnd = startDate, endDate
+        if spanStart is None or spanEnd is None:
+            spanStart, spanEnd = dashboard._playRangeSpanDates(username, db.tz)   #< "All Time" has no explicit range
+        groupBy = dashboard._resolveGroupBy(groupByParam, spanStart, spanEnd)
+        # Single-day views bucket by hour, mirroring chartsPage - one 'day'
+        # bucket would collapse both trend charts into a single point (the
+        # template hides the Trend-buckets control there too).
+        trendGroupBy = "hour" if interval in ("day", "today") else groupBy
+
         # Same instance-wide kill switch as the Charts genre section. The unlock
         # GATE is intentionally all-time (unlock is a library-wide achievement,
         # like the Overview coverage card): the selected window below only scopes
@@ -114,6 +130,7 @@ def register(app, dashboard):
                 interval=interval,
                 customStart=customStart,
                 customEnd=customEnd,
+                groupBy=groupByParam,
                 intervalLabel=intervalLabel,
                 defaultWindow=defaultWindow,
             )
@@ -131,7 +148,7 @@ def register(app, dashboard):
         # chart datasets (the overview charts and chips are unchanged by a
         # genre switch, so they're never re-sent).
         if request.args.get("scope") == "detail":
-            detail = _buildGenreDetail(db, username, selectedGenre, startDate, endDate, intervalLabel) if selectedGenre else None
+            detail = _buildGenreDetail(db, username, selectedGenre, startDate, endDate, intervalLabel, trendGroupBy) if selectedGenre else None
             if detail is None:
                 return jsonify({"ok": False})
             return jsonify({
@@ -146,14 +163,14 @@ def register(app, dashboard):
         # chip row is re-sent because a range change changes which genres have
         # plays (and thus appear). The mix-over-time trend is computed before the
         # per-genre detail so its top-N query runs first.
-        mixTrend = resolveGenreTrends(db, genreNames[:GENRE_MIX_TREND_TOP_N], startDate, endDate)
+        mixTrend = resolveGenreTrends(db, genreNames[:GENRE_MIX_TREND_TOP_N], startDate, endDate, groupBy=trendGroupBy)
         # Breadth (distinct artists per genre) stays all-time - the underlying
         # count has no date-range variant - so it reads as overall taste breadth
         # for the genres present in the range. Ranked most-artists-first.
         breadth = resolveGenreArtistCounts(db, genreNames)
         breadthPairs = sorted(breadth.items(), key=lambda kv: (-kv[1], kv[0]))
 
-        detail = _buildGenreDetail(db, username, selectedGenre, startDate, endDate, intervalLabel) if selectedGenre else None
+        detail = _buildGenreDetail(db, username, selectedGenre, startDate, endDate, intervalLabel, trendGroupBy) if selectedGenre else None
         detailHtml = render_template("_genre_detail.html", username=username, **detail["context"]) if detail else ""
         return jsonify({
             "ok": True,

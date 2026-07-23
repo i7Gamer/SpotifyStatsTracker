@@ -736,32 +736,37 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         return {row["genre"]: row["plays"] for row in rows}
 
     def getGenreTrends(self, genres: list[str], startDate: datetime.datetime = None,
-                       endDate: datetime.datetime = None, includeInherited: bool | None = None) -> dict:
-        """Plays per local-time month per genre, in the {"buckets", "series"}
+                       endDate: datetime.datetime = None, includeInherited: bool | None = None,
+                       groupBy: str = "month") -> dict:
+        """Plays per local-time bucket per genre, in the {"buckets", "series"}
         shape the multi-line trend chart consumes (same shape as getArtistTrend).
-        `buckets` is the sorted union of the "%Y-%m" months in which any of the
+        `groupBy` sizes the buckets - day/week/month, or hour for single-day
+        views - with the same keys _bucketKey gives every other trend chart
+        (all lexically sortable, so the sorted union below stays
+        chronological). Default month preserves the pre-Trend-buckets
+        behavior. `buckets` is the sorted union of buckets in which any of the
         requested genres has a play; each series' `data` aligns to it (0 where
-        that genre had no play that month). Requested-genre order is preserved;
-        genres with no plays at all are dropped. Empty input or no plays ->
-        {"buckets": [], "series": []}."""
+        that genre had no play in that bucket). Requested-genre order is
+        preserved; genres with no plays at all are dropped. Empty input or no
+        plays -> {"buckets": [], "series": []}."""
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
         inherited = self._resolveIncludeInherited(includeInherited)
         rows = self.repo.getGenrePlayRows(self.user, genres, inherited, startTs, endTs)
 
-        counts: dict = {}  # genre -> {month: count}
-        months: set = set()
+        counts: dict = {}  # genre -> {bucket: count}
+        bucketKeys: set = set()
         for row in rows:
-            month = convertToDatetime(row["played_at"], tz=self.tz).strftime("%Y-%m")
-            months.add(month)
-            genreMonths = counts.setdefault(row["genre"], {})
-            genreMonths[month] = genreMonths.get(month, 0) + 1
+            bucket = self._bucketKey(convertToDatetime(row["played_at"], tz=self.tz), groupBy)
+            bucketKeys.add(bucket)
+            genreBuckets = counts.setdefault(row["genre"], {})
+            genreBuckets[bucket] = genreBuckets.get(bucket, 0) + 1
 
-        if not months:
+        if not bucketKeys:
             return {"buckets": [], "series": []}
 
-        buckets = sorted(months)
+        buckets = sorted(bucketKeys)
         series = [
-            {"name": genre, "data": [counts[genre].get(month, 0) for month in buckets]}
+            {"name": genre, "data": [counts[genre].get(bucket, 0) for bucket in buckets]}
             for genre in genres if genre in counts
         ]
         return {"buckets": buckets, "series": series}

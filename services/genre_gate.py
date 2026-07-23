@@ -99,13 +99,15 @@ def genreGatePasses(coverage: dict) -> bool:
                for categoryName in GENRE_COVERAGE_CATEGORIES)
 
 
-def resolveGenreTrends(db, genres, startDate, endDate) -> dict:
-    """Monthly genre trend ({"buckets", "series"}) for a user db; the empty
-    shape when the lookup fails or returns something unexpected (stubbed dbs) -
-    same degradation contract as resolveGenreDistribution."""
+def resolveGenreTrends(db, genres, startDate, endDate, groupBy="month") -> dict:
+    """Bucketed genre trend ({"buckets", "series"}) for a user db - `groupBy`
+    sizes the buckets (see Database.getGenreTrends; default month keeps old
+    callers unchanged); the empty shape when the lookup fails or returns
+    something unexpected (stubbed dbs) - same degradation contract as
+    resolveGenreDistribution."""
     empty = {"buckets": [], "series": []}
     try:
-        trends = db.getGenreTrends(genres, startDate=startDate, endDate=endDate)
+        trends = db.getGenreTrends(genres, startDate=startDate, endDate=endDate, groupBy=groupBy)
     except Exception as e:
         logger.warning("Genre trends lookup failed: %s", e)
         return empty

@@ -35,6 +35,19 @@ class DateRangeMixin:
             return "week"
         return "day"
 
+    def _playRangeSpanDates(self, username, tz, trackId=None, artistId=None, albumId=None):
+        """(start, end) datetimes spanning the user's (or one item's) whole
+        play history, or (None, None) with no plays - the span an open-ended
+        range's auto trend-bucket resolution derives from (see
+        _resolveGroupBy). Reads the shared repo like Compare's identical
+        all-time pinning does; used by /charts and /genres for "All Time" and
+        by the detail pages for an item's whole history."""
+        playRange = self.repo.getPlayTimeRange(username, trackId=trackId,
+                                               artistId=artistId, albumId=albumId)
+        if not playRange:
+            return None, None
+        return convertToDatetime(playRange[0], tz=tz), convertToDatetime(playRange[1], tz=tz)
+
     def _getDateRange(self, interval: str = None, customStart: str = None, customEnd: str = None, default="day", tz=None):
             """Get start and end dates based on interval or custom dates.
 

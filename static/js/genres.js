@@ -264,9 +264,19 @@
 
   // ---- Time-period filter handlers (globals for the inline onchange) -------
 
+  function setGroupByVisibility(interval) {
+    // Single-day views bucket by hour server-side - the control is a no-op
+    // there, so it hides (mirrors charts-page.js).
+    var container = document.getElementById('groupByContainer');
+    if (container) {
+      container.style.display = (interval === 'today' || interval === 'day') ? 'none' : 'flex';
+    }
+  }
+
   window.updateGenresIntervalFilter = function () {
     var interval = document.getElementById('interval').value;
     var customDates = document.getElementById('genresCustomDates');
+    setGroupByVisibility(interval);
     if (interval === 'custom') {
       customDates.style.display = 'flex';
       return;   //< wait for both custom dates before fetching
@@ -278,6 +288,18 @@
       params.set('interval', interval);
       params.delete('startDate');
       params.delete('endDate');
+    });
+    loadGenresData();
+  };
+
+  window.updateGenresGroupByFilter = function () {
+    var groupBy = document.getElementById('groupBy').value;
+    pushGenresUrl(function (params) {
+      if (groupBy) {
+        params.set('groupBy', groupBy);
+      } else {
+        params.delete('groupBy');   //< Auto: let the server derive from the range span
+      }
     });
     loadGenresData();
   };
@@ -323,6 +345,9 @@
     if (endEl) endEl.value = params.get('endDate') || '';
     var customDates = document.getElementById('genresCustomDates');
     if (customDates) customDates.style.display = (interval === 'custom') ? 'flex' : 'none';
+    var groupBySelect = document.getElementById('groupBy');
+    if (groupBySelect) groupBySelect.value = params.get('groupBy') || '';   //< bare URL = Auto
+    setGroupByVisibility(interval);
     loadGenresData();
   });
 
