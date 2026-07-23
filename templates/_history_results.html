@@ -1,0 +1,22 @@
+{# The play-history list + pagination strip, swapped as one unit into
+   #historyResults by history.html's own JS - on first paint and again on
+   every search/filter/page change (see routes/charts.py's historyPage ajax
+   branch and loadHistoryResults). Expects: tracks, startIndex, interval,
+   is_authenticated, plus everything _pagination.html needs (page,
+   totalPages, prevUrl, nextUrl, pageLinks, showingStart, showingEnd,
+   totalCount) - see dashboard/pagination.py's _buildPaginationContext. #}
+<section class="track-list">
+  {% if tracks %}
+    {% for track in tracks %}
+      {% set item_number = track.get('absoluteIndex') if track.get('absoluteIndex') else (startIndex | default(0)) + loop.index %}
+      {% set section = 'history' %}
+      {% include '_track_card.html' %}
+    {% endfor %}
+  {% elif not request.args.get('q', '') and interval != 'custom' and totalCount == 0 and not is_authenticated %}
+    <p class="loading">You haven't connected Spotify yet. <a href="{{ url_for('profilePage') }}">Connect Spotify</a>, or <a href="{{ url_for('importPage') }}">import your listening history</a>, to get started.</p>
+  {% else %}
+    <p class="loading">No history tracks found. Go listen to some music or import your history from the import section.</p>
+  {% endif %}
+</section>
+
+{% include '_pagination.html' %}

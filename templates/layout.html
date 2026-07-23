@@ -155,6 +155,15 @@
         }
 
         const page = Math.min(Math.max(value, 1), totalPages);
+
+        // A page can register window.__paginationAjaxHandler (see
+        // history.html) to handle the jump in place instead of navigating -
+        // unset on every other page, so this falls through to the default.
+        if (window.__paginationAjaxHandler) {
+          window.__paginationAjaxHandler(page);
+          return;
+        }
+
         const params = new URLSearchParams(window.location.search);
         params.set('page', page);
         window.location = window.location.pathname + '?' + params.toString();

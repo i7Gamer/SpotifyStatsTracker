@@ -20,6 +20,7 @@ class _ListRouteTestBase(AppTestCase):
 
     def _makeDb(self, entryCount):
         db = MagicMock()
+        db.repo.getUserSettings.return_value = {"default_dashboard_window": "day"}
         db.getEntriesFromNew.return_value = []
         db.getEntriesCount.return_value = entryCount
         db.searchEntries.return_value = []
@@ -56,6 +57,14 @@ class _ListRouteTestBase(AppTestCase):
     def _getHistory(self, dash, db, query=""):
         return self._getPath(dash, db, f"/history{query}")
 
+    def _getHistoryAjax(self, dash, db, query=""):
+        """/history is a two-phase load (see routes/charts.py's historyPage) -
+        the list/pagination content only exists behind ?ajax=true. Returns
+        (resp, resultsHtml)."""
+        sep = '&' if query else '?'
+        resp = self._getHistory(dash, db, query=f"{query}{sep}ajax=true")
+        return resp, (resp.get_json() or {}).get("resultsHtml", "")
+
     def _getTopSongs(self, dash, db, query=""):
         return self._getPath(dash, db, f"/top-songs{query}")
 
@@ -87,49 +96,49 @@ class TestHistoryPagination(_ListRouteTestBase):
 
         with patch.object(dash, "_embedSongsTextElements", side_effect=lambda songs: songs), \
              patch.object(dash, "_attachGenres", side_effect=lambda db, tracks, kind: tracks):
-            resp = self._getHistory(dash, db)
+            resp, resultsHtml = self._getHistoryAjax(dash, db)
 
         self.assertEqual(resp.status_code, 200)
-        self.assertIn(b"Test Song", resp.data)
-        self.assertIn(b"Played at 20 Jul 2026, 15:30", resp.data)
+        self.assertIn("Test Song", resultsHtml)
+        self.assertIn("Played at 20 Jul 2026, 15:30", resultsHtml)
 
     def test_without_search_fetches_only_one_page(self):
         dash = self._makeApp()
         db = self._makeDb(entryCount=120)
 
-        resp = self._getHistory(dash, db)
+        resp, resultsHtml = self._getHistoryAjax(dash, db)
 
         self.assertEqual(resp.status_code, 200)
         db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=0, startDate=None, endDate=None)
-        self.assertIn(b"Page 1 of 3", resp.data)
+        self.assertIn("Page 1 of 3", resultsHtml)
 
     def test_without_search_requests_correct_offset_for_page(self):
         dash = self._makeApp()
         db = self._makeDb(entryCount=120)
 
-        resp = self._getHistory(dash, db, query="?page=2")
+        resp, resultsHtml = self._getHistoryAjax(dash, db, query="?page=2")
 
         db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=appModule.PAGE_SIZE, startDate=None, endDate=None)
-        self.assertIn(b"Page 2 of 3", resp.data)
+        self.assertIn("Page 2 of 3", resultsHtml)
 
     def test_without_search_clamps_page_beyond_range(self):
         dash = self._makeApp()
         db = self._makeDb(entryCount=120)
 
-        resp = self._getHistory(dash, db, query="?page=99")
+        resp, resultsHtml = self._getHistoryAjax(dash, db, query="?page=99")
 
         db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=2 * appModule.PAGE_SIZE, startDate=None, endDate=None)
-        self.assertIn(b"Page 3 of 3", resp.data)
+        self.assertIn("Page 3 of 3", resultsHtml)
 
     def test_without_search_handles_empty_database(self):
         dash = self._makeApp()
         db = self._makeDb(entryCount=0)
 
-        resp = self._getHistory(dash, db)
+        resp, resultsHtml = self._getHistoryAjax(dash, db)
 
         self.assertEqual(resp.status_code, 200)
         db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=0, startDate=None, endDate=None)
-        self.assertIn(b"Page 1 of 1", resp.data)
+        self.assertIn("Page 1 of 1", resultsHtml)
 
     def test_with_search_paginates_and_matches_in_sql(self):
         """Search is pushed into SQL (Repository.searchPlays) and paginated
@@ -139,7 +148,7 @@ class TestHistoryPagination(_ListRouteTestBase):
         db = self._makeDb(entryCount=120)
         db.searchEntriesCount.return_value = 5
 
-        resp = self._getHistory(dash, db, query="?q=foo")
+        resp, _ = self._getHistoryAjax(dash, db, query="?q=foo")
 
         self.assertEqual(resp.status_code, 200)
         db.searchEntriesCount.assert_called_once_with("foo", startDate=None, endDate=None)
@@ -152,11 +161,43 @@ class TestHistoryPagination(_ListRouteTestBase):
         db = self._makeDb(entryCount=0)
         db.searchEntriesCount.return_value = 120
 
-        resp = self._getHistory(dash, db, query="?q=foo&page=9999")
+        resp, resultsHtml = self._getHistoryAjax(dash, db, query="?q=foo&page=9999")
 
         self.assertEqual(resp.status_code, 200)
         db.searchEntries.assert_called_once_with("foo", count=appModule.PAGE_SIZE, startIndex=2 * appModule.PAGE_SIZE, startDate=None, endDate=None)
-        self.assertIn(b"Page 3 of 3", resp.data)
+        self.assertIn("Page 3 of 3", resultsHtml)
+
+
+class TestHistoryAjaxShell(_ListRouteTestBase):
+    """/history is a two-phase load like /compare, /charts, /genres: the plain
+    GET is just the filter form + an empty #historyResults placeholder, and
+    history.html's own JS fetches the real list via ?ajax=true right after
+    first paint - see routes/charts.py's historyPage and loadHistoryResults."""
+
+    def test_shell_renders_the_placeholder_without_querying_the_list(self):
+        dash = self._makeApp()
+        db = self._makeDb(entryCount=120)
+
+        resp = self._getHistory(dash, db)
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn(b'id="historyResults"', resp.data)
+        self.assertIn(b'id="historySearch"', resp.data)   #< the filter form still renders
+        db.getEntriesFromNew.assert_not_called()
+        db.getEntriesCount.assert_not_called()
+        db.searchEntries.assert_not_called()
+        db.searchEntriesCount.assert_not_called()
+
+    def test_ajax_returns_a_json_partial_not_a_full_page(self):
+        dash = self._makeApp()
+        db = self._makeDb(entryCount=0)
+
+        resp, resultsHtml = self._getHistoryAjax(dash, db)
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("track-list", resultsHtml)
+        self.assertNotIn("<html", resultsHtml.lower())
+        self.assertNotIn('id="historySearch"', resultsHtml)   #< the filter form isn't part of this chunk
 
 
 class TestHistoryCustomRangeListScoping(_ListRouteTestBase):
@@ -172,7 +213,7 @@ class TestHistoryCustomRangeListScoping(_ListRouteTestBase):
         dash = self._makeApp()
         db = self._makeDb(entryCount=0)
 
-        resp = self._getHistory(dash, db, query="?interval=custom&startDate=2026-07-01&endDate=2026-07-05")
+        resp, _ = self._getHistoryAjax(dash, db, query="?interval=custom&startDate=2026-07-01&endDate=2026-07-05")
 
         self.assertEqual(resp.status_code, 200)
         kwargs = db.getEntriesFromNew.call_args.kwargs
@@ -187,7 +228,7 @@ class TestHistoryCustomRangeListScoping(_ListRouteTestBase):
         dash = self._makeApp()
         db = self._makeDb(entryCount=0)
 
-        resp = self._getHistory(
+        resp, _ = self._getHistoryAjax(
             dash, db, query="?q=foo&interval=custom&startDate=2026-07-01&endDate=2026-07-05")
 
         self.assertEqual(resp.status_code, 200)
@@ -199,7 +240,7 @@ class TestHistoryCustomRangeListScoping(_ListRouteTestBase):
         dash = self._makeApp()
         db = self._makeDb(entryCount=0)
 
-        resp = self._getHistory(dash, db, query="?interval=week")
+        resp, _ = self._getHistoryAjax(dash, db, query="?interval=week")
 
         self.assertEqual(resp.status_code, 200)
         # A named interval must not scope the /history list (the stats cards it
@@ -213,7 +254,7 @@ class TestHistoryCustomRangeListScoping(_ListRouteTestBase):
         dash = self._makeApp()
         db = self._makeDb(entryCount=0)
 
-        resp = self._getHistory(dash, db)
+        resp, _ = self._getHistoryAjax(dash, db)
 
         self.assertEqual(resp.status_code, 200)
         db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=0, startDate=None, endDate=None)
@@ -224,7 +265,7 @@ class TestHistoryCustomRangeListScoping(_ListRouteTestBase):
         dash = self._makeApp()
         db = self._makeDb(entryCount=0)
 
-        resp = self._getHistory(dash, db, query="?interval=custom")
+        resp, _ = self._getHistoryAjax(dash, db, query="?interval=custom")
 
         self.assertEqual(resp.status_code, 200)
         db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=0, startDate=None, endDate=None)
@@ -355,17 +396,17 @@ class TestPageParamParsing(_ListRouteTestBase):
         dash = self._makeApp()
         db = self._makeDb(entryCount=120)
 
-        resp = self._getHistory(dash, db, query="?page=abc")
+        resp, resultsHtml = self._getHistoryAjax(dash, db, query="?page=abc")
 
         self.assertEqual(resp.status_code, 200)
         db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=0, startDate=None, endDate=None)
-        self.assertIn(b"Page 1 of 3", resp.data)
+        self.assertIn("Page 1 of 3", resultsHtml)
 
     def test_dashboard_clamps_negative_page(self):
         dash = self._makeApp()
         db = self._makeDb(entryCount=120)
 
-        resp = self._getHistory(dash, db, query="?page=-5")
+        resp, _ = self._getHistoryAjax(dash, db, query="?page=-5")
 
         self.assertEqual(resp.status_code, 200)
         db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=0, startDate=None, endDate=None)
@@ -438,9 +479,8 @@ class TestPaginationExtras(_ListRouteTestBase):
         dash = self._makeApp()
         db = self._makeDb(entryCount=500)   #< 10 pages of PAGE_SIZE=50
 
-        resp = self._getHistory(dash, db, query="?page=5")
+        _, body = self._getHistoryAjax(dash, db, query="?page=5")
 
-        body = resp.data.decode()
         for page in (1, 3, 4, 5, 6, 7, 10):
             self.assertIn(f">{page}<", body)
         self.assertNotIn(">2<", body)   #< skipped, covered by the ellipsis instead
@@ -451,51 +491,51 @@ class TestPaginationExtras(_ListRouteTestBase):
         dash = self._makeApp()
         db = self._makeDb(entryCount=500)
 
-        resp = self._getHistory(dash, db, query="?page=5")
+        _, resultsHtml = self._getHistoryAjax(dash, db, query="?page=5")
 
-        self.assertIn(b'class="pagination-page active"', resp.data)
+        self.assertIn('class="pagination-page active"', resultsHtml)
 
     def test_no_ellipsis_when_all_pages_fit_in_the_window(self):
         dash = self._makeApp()
         db = self._makeDb(entryCount=120)   #< 3 pages, well within the window
 
-        resp = self._getHistory(dash, db, query="?page=2")
+        _, body = self._getHistoryAjax(dash, db, query="?page=2")
 
-        self.assertNotIn(b"&hellip;", resp.data)
+        self.assertNotIn("&hellip;", body)
         for page in (1, 2, 3):
-            self.assertIn(f">{page}<".encode(), resp.data)
+            self.assertIn(f">{page}<", body)
 
     def test_showing_x_of_y_on_first_page(self):
         dash = self._makeApp()
         db = self._makeDb(entryCount=120)
 
-        resp = self._getHistory(dash, db)
+        _, resultsHtml = self._getHistoryAjax(dash, db)
 
-        self.assertIn(b"Showing 1-50 of 120", resp.data)
+        self.assertIn("Showing 1-50 of 120", resultsHtml)
 
     def test_showing_x_of_y_on_last_page(self):
         dash = self._makeApp()
         db = self._makeDb(entryCount=120)
 
-        resp = self._getHistory(dash, db, query="?page=3")
+        _, resultsHtml = self._getHistoryAjax(dash, db, query="?page=3")
 
-        self.assertIn(b"Showing 101-120 of 120", resp.data)
+        self.assertIn("Showing 101-120 of 120", resultsHtml)
 
     def test_showing_x_of_y_with_no_results(self):
         dash = self._makeApp()
         db = self._makeDb(entryCount=0)
 
-        resp = self._getHistory(dash, db)
+        _, resultsHtml = self._getHistoryAjax(dash, db)
 
-        self.assertIn(b"Showing 0-0 of 0", resp.data)
+        self.assertIn("Showing 0-0 of 0", resultsHtml)
 
     def test_jump_to_page_input_max_matches_total_pages(self):
         dash = self._makeApp()
         db = self._makeDb(entryCount=120)
 
-        resp = self._getHistory(dash, db)
+        _, resultsHtml = self._getHistoryAjax(dash, db)
 
-        self.assertIn(b'max="3"', resp.data)
+        self.assertIn('max="3"', resultsHtml)
 
 
 class TestHistoryConnectionEmptyState(_ListRouteTestBase):
@@ -521,19 +561,19 @@ class TestHistoryConnectionEmptyState(_ListRouteTestBase):
         dash = self._makeApp()
         db = self._makeDb(entryCount=0)
 
-        resp = self._getHistory(dash, db)
+        _, resultsHtml = self._getHistoryAjax(dash, db)
 
-        self.assertIn(b"haven't connected Spotify yet", resp.data)
-        self.assertNotIn(b"No history tracks found", resp.data)
+        self.assertIn("haven't connected Spotify yet", resultsHtml)
+        self.assertNotIn("No history tracks found", resultsHtml)
 
     def test_shows_generic_empty_message_when_spotify_connected_but_no_data(self):
         dash = self._makeApp()
         db = self._makeDb(entryCount=0, hasApi=True, isAuthenticated=True)
 
-        resp = self._getHistory(dash, db)
+        _, resultsHtml = self._getHistoryAjax(dash, db)
 
-        self.assertIn(b"No history tracks found", resp.data)
-        self.assertNotIn(b"haven't connected Spotify yet", resp.data)
+        self.assertIn("No history tracks found", resultsHtml)
+        self.assertNotIn("haven't connected Spotify yet", resultsHtml)
 
     def test_shows_connect_banner_when_only_lastfm_connected(self):
         """Last.fm alone can't produce any plays, so being connected there
@@ -542,18 +582,18 @@ class TestHistoryConnectionEmptyState(_ListRouteTestBase):
         db = self._makeDb(entryCount=0)
         db.getUserLastfmApiKey.return_value = "key"
 
-        resp = self._getHistory(dash, db)
+        _, resultsHtml = self._getHistoryAjax(dash, db)
 
-        self.assertIn(b"haven't connected Spotify yet", resp.data)
-        self.assertNotIn(b"No history tracks found", resp.data)
+        self.assertIn("haven't connected Spotify yet", resultsHtml)
+        self.assertNotIn("No history tracks found", resultsHtml)
 
     def test_connect_banner_absent_once_history_exists(self):
         dash = self._makeApp()
         db = self._makeDb(entryCount=120)
 
-        resp = self._getHistory(dash, db)
+        _, resultsHtml = self._getHistoryAjax(dash, db)
 
-        self.assertNotIn(b"haven't connected Spotify yet", resp.data)
+        self.assertNotIn("haven't connected Spotify yet", resultsHtml)
 
     def test_connect_banner_does_not_hijack_a_no_match_search(self):
         """Searching for text with zero hits is a normal empty search result,
@@ -563,10 +603,10 @@ class TestHistoryConnectionEmptyState(_ListRouteTestBase):
         db = self._makeDb(entryCount=0)
         db.searchEntriesCount.return_value = 0
 
-        resp = self._getHistory(dash, db, query="?q=nonexistent")
+        _, resultsHtml = self._getHistoryAjax(dash, db, query="?q=nonexistent")
 
-        self.assertIn(b"No history tracks found", resp.data)
-        self.assertNotIn(b"haven't connected Spotify yet", resp.data)
+        self.assertIn("No history tracks found", resultsHtml)
+        self.assertNotIn("haven't connected Spotify yet", resultsHtml)
 
     def test_connect_banner_does_not_hijack_an_empty_custom_range(self):
         """A custom date range with no plays just means nothing happened in
@@ -574,10 +614,11 @@ class TestHistoryConnectionEmptyState(_ListRouteTestBase):
         dash = self._makeApp()
         db = self._makeDb(entryCount=0)
 
-        resp = self._getHistory(dash, db, query="?interval=custom&startDate=2020-01-01&endDate=2020-01-02")
+        _, resultsHtml = self._getHistoryAjax(
+            dash, db, query="?interval=custom&startDate=2020-01-01&endDate=2020-01-02")
 
-        self.assertIn(b"No history tracks found", resp.data)
-        self.assertNotIn(b"haven't connected Spotify yet", resp.data)
+        self.assertIn("No history tracks found", resultsHtml)
+        self.assertNotIn("haven't connected Spotify yet", resultsHtml)
 
 
 if __name__ == "__main__":

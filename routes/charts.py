@@ -264,8 +264,6 @@ def register(app, dashboard):
         settings = db.repo.getUserSettings(username)
         default_window = settings.get("default_dashboard_window", "day")
 
-        page = dashboard._getPageParam()
-        searchQuery = request.args.get("q", "")
         customStart = request.args.get("startDate", "")
         customEnd = request.args.get("endDate", "")
 
@@ -275,7 +273,25 @@ def register(app, dashboard):
         if interval == "custom" and not (customStart and customEnd):
             interval = "all time"
 
-        intervalLabel = dashboard._getIntervalLabel(interval, customStart, customEnd)
+        # Lightweight shell, same two-phase load as /compare, /charts, /genres:
+        # the initial GET renders just the filter controls + an empty results
+        # placeholder, and history.html's own JS fetches the real list (and
+        # pagination strip) via ?ajax=true right after first paint, and again
+        # on every search/filter/page change - see loadHistoryResults.
+        if request.args.get("ajax") != "true":
+            return render_template(
+                "history.html",
+                username=username,
+                section="history",
+                interval=interval,
+                customStart=customStart,
+                customEnd=customEnd,
+                defaultWindow=default_window,
+            )
+
+        page = dashboard._getPageParam()
+        searchQuery = request.args.get("q", "")
+
         startDate, endDate = dashboard._getDateRange(interval, customStart, customEnd, default="day", tz=db.tz)
 
         # Only an explicit custom range (typically a chart click-through - see
@@ -316,19 +332,17 @@ def register(app, dashboard):
         creds = db.getUserSpotifyCredentials() or {}
         is_authenticated = bool(creds.get("refresh_token"))
 
-        return render_template(
-            "history.html",
-            tracks=tracks,
-            startIndex=startIndex,
-            intervalLabel=intervalLabel,
-            username=username,
-            section="history",
-            interval=interval,
-            customStart=customStart,
-            customEnd=customEnd,
-            is_authenticated=is_authenticated,
-            **pagination,
-        )
+        return jsonify({
+            "resultsHtml": render_template(
+                "_history_results.html",
+                tracks=tracks,
+                startIndex=startIndex,
+                interval=interval,
+                is_authenticated=is_authenticated,
+                username=username,
+                **pagination,
+            ),
+        })
     app.add_url_rule("/history", "history", historyPage, methods=["GET"])
 
     def dashboardDiscover():
