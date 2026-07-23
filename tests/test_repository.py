@@ -442,6 +442,63 @@ class TestPlaysHistory(RepositoryTestCase):
 
         self.assertEqual(self.repo.getPlaysCount("alice", startTs=2000.0, endTs=3000.0), 1)
 
+    def test_newest_first_filtered_by_track_id(self):
+        self.repo.insertPlay("alice", "t1", 1000.0, 5000)
+        self.repo.insertPlay("alice", "t2", 2000.0, 5000)
+
+        entries = self.repo.getPlaysNewestFirst("alice", trackId="t1")
+
+        self.assertEqual([e["id"] for e in entries], ["t1"])
+
+    def test_newest_first_filtered_by_artist_id(self):
+        self.repo.upsertTrack(makeTrack(trackId="t3", albumId="alb2", artistId="art2"))
+        self.repo.insertPlay("alice", "t1", 1000.0, 5000)
+        self.repo.insertPlay("alice", "t3", 2000.0, 5000)
+
+        entries = self.repo.getPlaysNewestFirst("alice", artistId="art2")
+
+        self.assertEqual([e["id"] for e in entries], ["t3"])
+
+    def test_newest_first_filtered_by_album_id(self):
+        self.repo.upsertTrack(makeTrack(trackId="t3", albumId="alb2", artistId="art2"))
+        self.repo.insertPlay("alice", "t1", 1000.0, 5000)
+        self.repo.insertPlay("alice", "t3", 2000.0, 5000)
+
+        entries = self.repo.getPlaysNewestFirst("alice", albumId="alb2")
+
+        self.assertEqual([e["id"] for e in entries], ["t3"])
+
+    def test_oldest_first_filtered_by_track_id(self):
+        self.repo.insertPlay("alice", "t1", 2000.0, 5000)
+        self.repo.insertPlay("alice", "t2", 1000.0, 5000)
+        self.repo.insertPlay("alice", "t1", 1500.0, 5000)
+
+        entries = self.repo.getPlaysOldestFirst("alice", trackId="t1")
+
+        self.assertEqual([(e["id"], e["playedAt"]) for e in entries],
+                         [("t1", 1500.0), ("t1", 2000.0)])
+
+    def test_count_filtered_by_track_id(self):
+        self.repo.insertPlay("alice", "t1", 1000.0, 5000)
+        self.repo.insertPlay("alice", "t1", 2000.0, 5000)
+        self.repo.insertPlay("alice", "t2", 3000.0, 5000)
+
+        self.assertEqual(self.repo.getPlaysCount("alice", trackId="t1"), 2)
+
+    def test_count_filtered_by_artist_id(self):
+        self.repo.upsertTrack(makeTrack(trackId="t3", albumId="alb2", artistId="art2"))
+        self.repo.insertPlay("alice", "t1", 1000.0, 5000)
+        self.repo.insertPlay("alice", "t3", 2000.0, 5000)
+
+        self.assertEqual(self.repo.getPlaysCount("alice", artistId="art1"), 1)
+
+    def test_count_filtered_by_album_id(self):
+        self.repo.upsertTrack(makeTrack(trackId="t3", albumId="alb2", artistId="art2"))
+        self.repo.insertPlay("alice", "t1", 1000.0, 5000)
+        self.repo.insertPlay("alice", "t3", 2000.0, 5000)
+
+        self.assertEqual(self.repo.getPlaysCount("alice", albumId="alb1"), 1)
+
     def test_get_plays_with_source_in_range_returns_created_reason_and_respects_window(self):
         self.repo.insertPlay("alice", "t1", 1000.0, 5000, created_reason="listener_play (user: alice)")
         self.repo.insertPlay("alice", "t1", 1003.0, 5000, created_reason="web_api_backfill_play (user: alice)")
@@ -1047,6 +1104,15 @@ class TestSearchPlays(RepositoryTestCase):
 
         self.assertEqual(self.repo.searchPlays("alice", "nonexistent"), [])
         self.assertEqual(self.repo.searchPlaysCount("alice", "nonexistent"), 0)
+
+    def test_oldest_first_orders_ascending(self):
+        self.repo.insertPlay("alice", "t1", 300.0, 5000)
+        self.repo.insertPlay("alice", "t1", 100.0, 5000)
+        self.repo.insertPlay("alice", "t1", 200.0, 5000)
+
+        results = self.repo.searchPlays("alice", "bohemian", oldestFirst=True)
+
+        self.assertEqual([r["playedAt"] for r in results], [100.0, 200.0, 300.0])
 
     def test_percent_and_underscore_are_matched_literally_not_as_wildcards(self):
         self.repo.upsertTrack(makeSearchableTrack("t4", "100% Pure Love", "Random Artist", "Random Album"))

@@ -8,8 +8,10 @@
     </div>
   </section>
 
-  {% if error %}<p class="error" style="color: #ff4a4a; margin-bottom: 1rem;">{{ error }}</p>{% endif %}
-  {% if success %}<p class="success" style="color: #4aff4a; margin-bottom: 1rem;">{{ success }}</p>{% endif %}
+  <div id="detail-flash">
+    {% if error %}<p class="error" style="color: #ff4a4a; margin-bottom: 1rem;">{{ error }}</p>{% endif %}
+    {% if success %}<p class="success" style="color: #4aff4a; margin-bottom: 1rem;">{{ success }}</p>{% endif %}
+  </div>
 
   <div class="detail-toolbar">
     <a id="back-button" class="button" href="{{ url_for('topSongsPage') }}">&larr; Back to Top Songs</a>
@@ -67,6 +69,10 @@
     </div>
   </section>
 
+  <div id="detailHistoryResults">
+    {% include '_play_log.html' %}
+  </div>
+
   <script src="{{ url_for('static', filename='js/back-button.js') }}"></script>
   <script>
     window.__chartData = {
@@ -79,5 +85,7 @@
   <script src="{{ url_for('static', filename='js/chart-utils.js') }}"></script>
   <script src="{{ url_for('static', filename='js/charts.js') }}"></script>
   <script src="{{ url_for('static', filename='js/detail-chart.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/detail-history.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/admin-refresh.js') }}"></script>
   <script src="{{ url_for('static', filename='js/play-embed.js') }}"></script>
 {% endblock %}

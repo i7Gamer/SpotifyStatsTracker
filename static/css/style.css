@@ -2249,6 +2249,26 @@ progress::-moz-progress-bar {
   color: #111;
 }
 
+/* The detail pages' play-history list header: heading + the Date sort toggle
+   on one row (see _play_log.html/_detail_history_results.html). */
+.play-log-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 32px 0 18px;
+}
+
+.play-log-header h2 {
+  margin: 0;
+}
+
+.sort-toggle {
+  padding: 8px 16px;
+  min-height: 36px;
+  font-size: 0.9rem;
+}
+
 [data-category] {
   display: none;
 }

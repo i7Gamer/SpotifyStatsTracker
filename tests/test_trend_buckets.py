@@ -161,6 +161,13 @@ class TestPlayTimeRangeItemScope(unittest.TestCase):
 
 class _DetailAjaxTestBase(AppTestCase):
     def _getPath(self, dash, db, path):
+        # The detail routes unconditionally fetch a page of play history (see
+        # _detailHistoryContext) - default it to "no history", same as
+        # test_detail_pages_route.py's _DetailRouteTestBase.
+        if not isinstance(db.getEntriesCount.return_value, int):
+            db.getEntriesCount.return_value = 0
+        if not isinstance(db.getEntriesFromNew.return_value, list):
+            db.getEntriesFromNew.return_value = []
         client = dash.app.test_client()
         with patch.object(dash, 'is_user_logged_in', return_value=True), \
              patch.object(dash, 'get_username_for_email', return_value='alice'), \

@@ -142,38 +142,50 @@ class PlayQueries:
         cur = conn.execute("DELETE FROM plays WHERE time_played <= 0")
         return cur.rowcount
 
-    def getPlaysCount(self, username: str, startTs: float | None = None, endTs: float | None = None) -> int:
+    def getPlaysCount(self, username: str, startTs: float | None = None, endTs: float | None = None,
+                       trackId: str | None = None, artistId: str | None = None,
+                       albumId: str | None = None) -> int:
         conn = self._conn()
         params = [username]
         rangeClause = self._dateRangeClause(params, startTs, endTs)
-        row = conn.execute(f"SELECT COUNT(*) AS c FROM plays WHERE username=? AND is_skip=0{rangeClause}", params).fetchone()
+        extraClauses = self._itemFilterClauses(params, trackId, artistId, albumId)
+        row = conn.execute(
+            f"SELECT COUNT(*) AS c FROM plays WHERE username=? AND is_skip=0{rangeClause}{extraClauses}",
+            params,
+        ).fetchone()
         return row["c"]
 
     def getPlaysNewestFirst(self, username: str, count: int | None = None, startIndex: int = 0,
-                             startTs: float | None = None, endTs: float | None = None) -> list[dict]:
+                             startTs: float | None = None, endTs: float | None = None,
+                             trackId: str | None = None, artistId: str | None = None,
+                             albumId: str | None = None) -> list[dict]:
         conn = self._conn()
         limit = -1 if count is None else count
         params = [username]
         rangeClause = self._dateRangeClause(params, startTs, endTs)
+        extraClauses = self._itemFilterClauses(params, trackId, artistId, albumId)
         params += [limit, startIndex]
         rows = conn.execute(
             f"SELECT track_id, played_at, time_played, played_from FROM plays "
-            f"WHERE username=? AND is_skip=0{rangeClause} ORDER BY played_at DESC, id DESC LIMIT ? OFFSET ?",
+            f"WHERE username=? AND is_skip=0{rangeClause}{extraClauses} ORDER BY played_at DESC, id DESC LIMIT ? OFFSET ?",
             params,
         ).fetchall()
         return [self._playRowToEntry(r) for r in rows]
 
     def getPlaysOldestFirst(self, username: str, count: int | None = None, startIndex: int = 0,
-                             startTs: float | None = None, endTs: float | None = None) -> list[dict]:
+                             startTs: float | None = None, endTs: float | None = None,
+                             trackId: str | None = None, artistId: str | None = None,
+                             albumId: str | None = None) -> list[dict]:
         conn = self._conn()
         limit = -1 if count is None else count
         params = [username]
         rangeClause = self._dateRangeClause(params, startTs, endTs)
+        extraClauses = self._itemFilterClauses(params, trackId, artistId, albumId)
         params += [limit, startIndex]
         behavioralSelect = ", ".join(BEHAVIORAL_COLUMNS)
         rows = conn.execute(
             f"SELECT track_id, played_at, time_played, played_from, {behavioralSelect} FROM plays "
-            f"WHERE username=? AND is_skip=0{rangeClause} ORDER BY played_at ASC, id ASC LIMIT ? OFFSET ?",
+            f"WHERE username=? AND is_skip=0{rangeClause}{extraClauses} ORDER BY played_at ASC, id ASC LIMIT ? OFFSET ?",
             params,
         ).fetchall()
         return [self._playRowToEntry(r) for r in rows]
@@ -338,16 +350,19 @@ class PlayQueries:
     """
 
     def searchPlays(self, username: str, query: str, limit: int | None = None, offset: int = 0,
-                     startTs: float | None = None, endTs: float | None = None) -> list[dict]:
-        """Plays (newest first) whose track name, artist(s), album, or source
-        playlist/album match `query` - the SQL-pushed-down, paginated
-        replacement for fetching every play and filtering in Python."""
+                     startTs: float | None = None, endTs: float | None = None,
+                     oldestFirst: bool = False) -> list[dict]:
+        """Plays (newest first, or oldest first with `oldestFirst`) whose track
+        name, artist(s), album, or source playlist/album match `query` - the
+        SQL-pushed-down, paginated replacement for fetching every play and
+        filtering in Python."""
         conn = self._conn()
         limitValue = -1 if limit is None else limit
         pattern = self._likePattern(query)
         params = [username, pattern, pattern, pattern, pattern]
         rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
         params += [limitValue, offset]
+        direction = "ASC" if oldestFirst else "DESC"
         rows = conn.execute(
             f"""
             SELECT p.track_id AS track_id, p.played_at AS played_at,
@@ -355,7 +370,7 @@ class PlayQueries:
             FROM plays p
             {self._SEARCH_JOIN_CLAUSE}
             WHERE p.username = ? AND p.is_skip=0 {self._SEARCH_MATCH_CLAUSE}{rangeClause}
-            ORDER BY p.played_at DESC, p.id DESC
+            ORDER BY p.played_at {direction}, p.id {direction}
             LIMIT ? OFFSET ?
             """,
             params,

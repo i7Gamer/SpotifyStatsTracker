@@ -71,6 +71,18 @@ class PaginationMixin:
         sortBy = request.args.get("sortBy", default)
         return sortBy if sortBy in VALID_SORT_BY else default
 
+    def _getDetailViewParam(self, default="top-songs"):
+        """Artist/album detail pages' ?view= tab (top-songs/history) - same
+        tolerate-junk-input contract as _getSortByParam."""
+        view = request.args.get("view", default)
+        return view if view in ("top-songs", "history") else default
+
+    def _getHistorySortParam(self, default="newest"):
+        """The play-history lists' ?sort= date order (newest/oldest) - same
+        tolerate-junk-input contract as _getSortByParam."""
+        sort = request.args.get("sort", default)
+        return sort if sort in ("newest", "oldest") else default
+
     def _calculatePagination(self, totalCount):
         """Calculate safe page bounds given a total count.
         Returns (page, totalPages, startIndex) where page is clamped to valid range."""

@@ -579,7 +579,7 @@ class TestAdminRefreshLastfmEntity(AdminRouteTestBase):
     tests/test_lastfm_refresh_entity.py; this only exercises the route's
     admin gating and its status -> redirect/message mapping."""
 
-    def _postRefresh(self, dash, kind, entity_id, isAdmin=True, loggedIn=True, db=None, data=None):
+    def _postRefresh(self, dash, kind, entity_id, isAdmin=True, loggedIn=True, db=None, data=None, headers=None):
         with patch.object(dash.repo, 'isAdmin', return_value=isAdmin), \
              patch.object(dash, 'is_user_logged_in', return_value=loggedIn), \
              patch.object(dash, 'get_username_for_email', return_value='alice'), \
@@ -589,7 +589,8 @@ class TestAdminRefreshLastfmEntity(AdminRouteTestBase):
                 with client.session_transaction() as sess:
                     sess['email'] = 'alice@example.com'
                     sess['username'] = 'alice'
-            return client.post(f"/admin/lastfm/refresh/{kind}/{entity_id}", data=data or {})
+            return client.post(f"/admin/lastfm/refresh/{kind}/{entity_id}", data=data or {},
+                               headers=headers or {})
 
     def test_non_admin_post_is_forbidden(self):
         dash = self._makeApp()
@@ -635,6 +636,36 @@ class TestAdminRefreshLastfmEntity(AdminRouteTestBase):
         db.refreshLastfmEntity.return_value = {"status": "ok", "name": "Song A"}
         resp = self._postRefresh(dash, "track", "tA", db=db)
         self.assertIn("/song/tA", resp.headers["Location"])
+
+    def test_ajax_post_returns_json_instead_of_redirecting(self):
+        """The detail pages submit the form via fetch (admin-refresh.js) so a
+        refresh doesn't navigate away and reset tab/sort/page state - the
+        route answers XHR posts with the message JSON instead of a redirect."""
+        dash = self._makeApp()
+        db = self._makeDb()
+        db.refreshLastfmEntity.return_value = {"status": "ok", "name": "Artist X"}
+
+        resp = self._postRefresh(dash, "artist", "aX", db=db,
+                                 headers={"X-Requested-With": "XMLHttpRequest"})
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.mimetype, "application/json")
+        payload = resp.get_json()
+        self.assertEqual(payload["kind"], "success")
+        self.assertIn("Artist X", payload["message"])
+
+    def test_ajax_post_returns_error_kind_for_error_statuses(self):
+        dash = self._makeApp()
+        db = self._makeDb()
+        db.refreshLastfmEntity.return_value = {"status": "transient"}
+
+        resp = self._postRefresh(dash, "album", "alP", db=db,
+                                 headers={"X-Requested-With": "XMLHttpRequest"})
+
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.get_json()
+        self.assertEqual(payload["kind"], "error")
+        self.assertIn("didn't respond", payload["message"])
 
 
 class TestAdminSpotifySettings(AdminRouteTestBase):

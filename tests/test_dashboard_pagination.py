@@ -22,6 +22,7 @@ class _ListRouteTestBase(AppTestCase):
         db = MagicMock()
         db.repo.getUserSettings.return_value = {"default_dashboard_window": "day"}
         db.getEntriesFromNew.return_value = []
+        db.getEntriesFromOld.return_value = []
         db.getEntriesCount.return_value = entryCount
         db.searchEntries.return_value = []
         db.searchEntriesCount.return_value = 0
@@ -152,7 +153,8 @@ class TestHistoryPagination(_ListRouteTestBase):
 
         self.assertEqual(resp.status_code, 200)
         db.searchEntriesCount.assert_called_once_with("foo", startDate=None, endDate=None)
-        db.searchEntries.assert_called_once_with("foo", count=appModule.PAGE_SIZE, startIndex=0, startDate=None, endDate=None)
+        db.searchEntries.assert_called_once_with("foo", count=appModule.PAGE_SIZE, startIndex=0, startDate=None, endDate=None,
+                                                 oldestFirst=False)
         db.getEntriesFromNew.assert_not_called()
         db.getEntriesCount.assert_not_called()
 
@@ -164,8 +166,58 @@ class TestHistoryPagination(_ListRouteTestBase):
         resp, resultsHtml = self._getHistoryAjax(dash, db, query="?q=foo&page=9999")
 
         self.assertEqual(resp.status_code, 200)
-        db.searchEntries.assert_called_once_with("foo", count=appModule.PAGE_SIZE, startIndex=2 * appModule.PAGE_SIZE, startDate=None, endDate=None)
+        db.searchEntries.assert_called_once_with("foo", count=appModule.PAGE_SIZE, startIndex=2 * appModule.PAGE_SIZE, startDate=None, endDate=None,
+                                                 oldestFirst=False)
         self.assertIn("Page 3 of 3", resultsHtml)
+
+    def test_sort_oldest_fetches_entries_from_old(self):
+        dash = self._makeApp()
+        db = self._makeDb(entryCount=120)
+
+        resp, _ = self._getHistoryAjax(dash, db, query="?sort=oldest")
+
+        self.assertEqual(resp.status_code, 200)
+        db.getEntriesFromOld.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=0, startDate=None, endDate=None)
+        db.getEntriesFromNew.assert_not_called()
+
+    def test_sort_junk_falls_back_to_newest(self):
+        dash = self._makeApp()
+        db = self._makeDb(entryCount=120)
+
+        resp, _ = self._getHistoryAjax(dash, db, query="?sort=bogus")
+
+        self.assertEqual(resp.status_code, 200)
+        db.getEntriesFromNew.assert_called_once()
+        db.getEntriesFromOld.assert_not_called()
+
+    def test_search_with_sort_oldest_passes_oldest_first(self):
+        dash = self._makeApp()
+        db = self._makeDb(entryCount=0)
+        db.searchEntriesCount.return_value = 5
+
+        resp, _ = self._getHistoryAjax(dash, db, query="?q=foo&sort=oldest")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(db.searchEntries.call_args.kwargs.get("oldestFirst"))
+
+    def test_pagination_links_carry_sort(self):
+        dash = self._makeApp()
+        db = self._makeDb(entryCount=120)
+
+        resp, resultsHtml = self._getHistoryAjax(dash, db, query="?sort=oldest")
+
+        self.assertIn("sort=oldest", resultsHtml)
+
+    def test_sort_button_renders_in_shell_with_current_order(self):
+        dash = self._makeApp()
+        db = self._makeDb(entryCount=0)
+
+        newest = self._getHistory(dash, db)
+        oldest = self._getHistory(dash, db, query="?sort=oldest")
+
+        self.assertIn('id="historySort"'.encode(), newest.data)
+        self.assertIn("Date ↓".encode(), newest.data)
+        self.assertIn("Date ↑".encode(), oldest.data)
 
 
 class TestHistoryAjaxShell(_ListRouteTestBase):

@@ -273,6 +273,9 @@ def register(app, dashboard):
         if interval == "custom" and not (customStart and customEnd):
             interval = "all time"
 
+        sortOrder = dashboard._getHistorySortParam()
+        oldestFirst = sortOrder == "oldest"
+
         # Lightweight shell, same two-phase load as /compare, /charts, /genres:
         # the initial GET renders just the filter controls + an empty results
         # placeholder, and history.html's own JS fetches the real list (and
@@ -287,6 +290,7 @@ def register(app, dashboard):
                 customStart=customStart,
                 customEnd=customEnd,
                 defaultWindow=default_window,
+                sort=sortOrder,
             )
 
         page = dashboard._getPageParam()
@@ -306,15 +310,17 @@ def register(app, dashboard):
             totalCount = db.searchEntriesCount(searchQuery, startDate=listStartDate, endDate=listEndDate)
             page, totalPages, startIndex = dashboard._calculatePagination(totalCount)
             tracks = db.searchEntries(searchQuery, count=PAGE_SIZE, startIndex=startIndex,
-                                      startDate=listStartDate, endDate=listEndDate)
+                                      startDate=listStartDate, endDate=listEndDate,
+                                      oldestFirst=oldestFirst)
         else:
             # Only materialize the page being shown - joining full track
             # metadata onto every entry ever recorded on every request gets
             # slow once the history grows large.
             totalCount = db.getEntriesCount(startDate=listStartDate, endDate=listEndDate)
             page, totalPages, startIndex = dashboard._calculatePagination(totalCount)
-            tracks = db.getEntriesFromNew(count=PAGE_SIZE, startIndex=startIndex,
-                                          startDate=listStartDate, endDate=listEndDate)
+            fetchEntries = db.getEntriesFromOld if oldestFirst else db.getEntriesFromNew
+            tracks = fetchEntries(count=PAGE_SIZE, startIndex=startIndex,
+                                  startDate=listStartDate, endDate=listEndDate)
         tracks = dashboard._embedSongsTextElements(tracks)
         tracks = dashboard._attachGenres(db, tracks, "track")
 
@@ -327,6 +333,7 @@ def register(app, dashboard):
             interval=interval,
             startDate=customStart,
             endDate=customEnd,
+            sort=sortOrder if oldestFirst else None,
         )
 
         creds = db.getUserSpotifyCredentials() or {}
@@ -663,6 +670,32 @@ def register(app, dashboard):
         )
     app.add_url_rule("/charts", "chartsPage", chartsPage, methods=["GET"])
 
+    def _detailHistoryContext(db, endpoint, linkArgs, groupByParam="",
+                               trackId=None, artistId=None, albumId=None):
+        """The detail pages' play-history list context: one sorted+paginated
+        page of the item's individual plays, the Date-sort toggle URL, and
+        _pagination.html's context. `linkArgs` are the endpoint kwargs every
+        list URL must carry (the item id, plus view=history for the artist/
+        album tabs); groupBy rides along in every URL so list navigation
+        never resets the Trend-buckets chart selection."""
+        sortOrder = dashboard._getHistorySortParam()
+        oldestFirst = sortOrder == "oldest"
+        totalCount = db.getEntriesCount(trackId=trackId, artistId=artistId, albumId=albumId)
+        page, totalPages, startIndex = dashboard._calculatePagination(totalCount)
+        fetchEntries = db.getEntriesFromOld if oldestFirst else db.getEntriesFromNew
+        plays = fetchEntries(count=PAGE_SIZE, startIndex=startIndex,
+                             trackId=trackId, artistId=artistId, albumId=albumId)
+        plays = dashboard._embedSongsTextElements(plays)
+        sharedArgs = dict(linkArgs, groupBy=groupByParam, sort=sortOrder if oldestFirst else None)
+        return {
+            "plays": plays,
+            "startIndex": startIndex,
+            "sortOldest": oldestFirst,
+            #< sort flips link to page 1 - page N of one order isn't page N of the other
+            "sortToggleUrl": dashboard._buildPageUrl(endpoint, 1, **dict(sharedArgs, sort=None if oldestFirst else "oldest")),
+            **dashboard._buildPaginationContext(endpoint, page, totalPages, totalCount, **sharedArgs),
+        }
+
     def songDetailPage(track_id):
         email, username, db = dashboard.get_current_user_or_redirect()
         if not email:
@@ -673,17 +706,29 @@ def register(app, dashboard):
             return redirect(url_for("topSongsPage"))
 
         groupByParam = request.args.get("groupBy", "")   #< raw: the select keeps showing Auto
-        groupBy = dashboard._resolveGroupBy(
-            groupByParam, *dashboard._playRangeSpanDates(username, db.tz, trackId=track_id))
-
-        timeSeries = dashboard._embedTimeSeriesTextElements(
-            db.getListeningTimeSeries(trackId=track_id, groupBy=groupBy)
-        )
         # The bucket select re-fetches just the play-history series (see
         # static/js/detail-chart.js) - everything else on the page is
         # bucket-independent, so the full render below is skipped.
         if request.args.get("ajax") == "true":
+            groupBy = dashboard._resolveGroupBy(
+                groupByParam, *dashboard._playRangeSpanDates(username, db.tz, trackId=track_id))
+            timeSeries = dashboard._embedTimeSeriesTextElements(
+                db.getListeningTimeSeries(trackId=track_id, groupBy=groupBy)
+            )
             return jsonify(timeSeries=timeSeries, groupBy=groupBy)
+
+        listCtx = _detailHistoryContext(db, "songDetailPage", {"track_id": track_id},
+                                        groupByParam=groupByParam, trackId=track_id)
+        # The sort toggle / pagination links re-fetch just the play log (see
+        # static/js/detail-history.js) - chart/heatmap work is skipped.
+        if request.args.get("ajax") == "list":
+            return jsonify(resultsHtml=render_template("_play_log.html", username=username, **listCtx))
+
+        groupBy = dashboard._resolveGroupBy(
+            groupByParam, *dashboard._playRangeSpanDates(username, db.tz, trackId=track_id))
+        timeSeries = dashboard._embedTimeSeriesTextElements(
+            db.getListeningTimeSeries(trackId=track_id, groupBy=groupBy)
+        )
 
         song = dashboard._embedSongTextElements(song)
         song = dashboard._embedTopSongTextElements(song)
@@ -701,6 +746,7 @@ def register(app, dashboard):
             section="top_songs",
             success=request.args.get("success"),
             error=request.args.get("error"),
+            **listCtx,
         )
     app.add_url_rule("/song/<track_id>", "songDetailPage", songDetailPage, methods=["GET"])
 
@@ -714,15 +760,29 @@ def register(app, dashboard):
             return redirect(url_for("topArtistsPage"))
 
         groupByParam = request.args.get("groupBy", "")   #< raw: the select keeps showing Auto
+        # Bucket-only AJAX refetch - see songDetailPage's identical branch.
+        if request.args.get("ajax") == "true":
+            groupBy = dashboard._resolveGroupBy(
+                groupByParam, *dashboard._playRangeSpanDates(username, db.tz, artistId=artist_id))
+            timeSeries = dashboard._embedTimeSeriesTextElements(
+                db.getListeningTimeSeries(artistId=artist_id, groupBy=groupBy)
+            )
+            return jsonify(timeSeries=timeSeries, groupBy=groupBy)
+
+        listCtx = _detailHistoryContext(db, "artistDetailPage", {"artist_id": artist_id, "view": "history"},
+                                        groupByParam=groupByParam, artistId=artist_id)
+        listCtx["plays"] = dashboard._attachGenres(db, listCtx["plays"], "track")
+        # List-only AJAX refetch - see songDetailPage's identical branch.
+        if request.args.get("ajax") == "list":
+            return jsonify(resultsHtml=render_template(
+                "_detail_history_results.html", username=username,
+                itemName=artist.get("name", ""), **listCtx))
+
         groupBy = dashboard._resolveGroupBy(
             groupByParam, *dashboard._playRangeSpanDates(username, db.tz, artistId=artist_id))
-
         timeSeries = dashboard._embedTimeSeriesTextElements(
             db.getListeningTimeSeries(artistId=artist_id, groupBy=groupBy)
         )
-        # Bucket-only AJAX refetch - see songDetailPage's identical branch.
-        if request.args.get("ajax") == "true":
-            return jsonify(timeSeries=timeSeries, groupBy=groupBy)
 
         songs = db.getSongsStats(sortBy="plays", artistId=artist_id)
         firstSong = min(songs, key=lambda s: s.get("firstListenedAt") or float("inf")) if songs else None
@@ -755,6 +815,9 @@ def register(app, dashboard):
             section="top_artists",
             success=request.args.get("success"),
             error=request.args.get("error"),
+            view=dashboard._getDetailViewParam(),
+            itemName=artist.get("name", ""),
+            **listCtx,
         )
     app.add_url_rule("/artist/<artist_id>", "artistDetailPage", artistDetailPage, methods=["GET"])
 
@@ -768,15 +831,29 @@ def register(app, dashboard):
             return redirect(url_for("topAlbumsPage"))
 
         groupByParam = request.args.get("groupBy", "")   #< raw: the select keeps showing Auto
+        # Bucket-only AJAX refetch - see songDetailPage's identical branch.
+        if request.args.get("ajax") == "true":
+            groupBy = dashboard._resolveGroupBy(
+                groupByParam, *dashboard._playRangeSpanDates(username, db.tz, albumId=album_id))
+            timeSeries = dashboard._embedTimeSeriesTextElements(
+                db.getListeningTimeSeries(albumId=album_id, groupBy=groupBy)
+            )
+            return jsonify(timeSeries=timeSeries, groupBy=groupBy)
+
+        listCtx = _detailHistoryContext(db, "albumDetailPage", {"album_id": album_id, "view": "history"},
+                                        groupByParam=groupByParam, albumId=album_id)
+        listCtx["plays"] = dashboard._attachGenres(db, listCtx["plays"], "track")
+        # List-only AJAX refetch - see songDetailPage's identical branch.
+        if request.args.get("ajax") == "list":
+            return jsonify(resultsHtml=render_template(
+                "_detail_history_results.html", username=username,
+                itemName=album.get("name", ""), **listCtx))
+
         groupBy = dashboard._resolveGroupBy(
             groupByParam, *dashboard._playRangeSpanDates(username, db.tz, albumId=album_id))
-
         timeSeries = dashboard._embedTimeSeriesTextElements(
             db.getListeningTimeSeries(albumId=album_id, groupBy=groupBy)
         )
-        # Bucket-only AJAX refetch - see songDetailPage's identical branch.
-        if request.args.get("ajax") == "true":
-            return jsonify(timeSeries=timeSeries, groupBy=groupBy)
 
         songs = db.getSongsStats(sortBy="plays", albumId=album_id)
         firstSong = min(songs, key=lambda s: s.get("firstListenedAt") or float("inf")) if songs else None
@@ -813,5 +890,8 @@ def register(app, dashboard):
             section="top_albums",
             success=request.args.get("success"),
             error=request.args.get("error"),
+            view=dashboard._getDetailViewParam(),
+            itemName=album.get("name", ""),
+            **listCtx,
         )
     app.add_url_rule("/album/<album_id>", "albumDetailPage", albumDetailPage, methods=["GET"])

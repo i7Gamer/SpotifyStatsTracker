@@ -8,8 +8,10 @@
     </div>
   </section>
 
-  {% if error %}<p class="error" style="color: #ff4a4a; margin-bottom: 1rem;">{{ error }}</p>{% endif %}
-  {% if success %}<p class="success" style="color: #4aff4a; margin-bottom: 1rem;">{{ success }}</p>{% endif %}
+  <div id="detail-flash">
+    {% if error %}<p class="error" style="color: #ff4a4a; margin-bottom: 1rem;">{{ error }}</p>{% endif %}
+    {% if success %}<p class="success" style="color: #4aff4a; margin-bottom: 1rem;">{{ success }}</p>{% endif %}
+  </div>
 
   <div class="detail-toolbar">
     <a id="back-button" class="button" href="{{ url_for('topAlbumsPage') }}">&larr; Back to Top Albums</a>
@@ -82,18 +84,31 @@
     </div>
   </section>
 
-  <h2>Top Songs on {{ album.get('name', '') }}</h2>
-  <section class="track-list">
-    {% if songs %}
-      {% for track in songs %}
-        {% set item_number = loop.index %}
-        {% set section = 'top_songs' %}
-        {% include '_track_card.html' %}
-      {% endfor %}
-    {% else %}
-      <p class="loading">No songs found for this album.</p>
-    {% endif %}
-  </section>
+  <nav class="wrapped-stats-filters" aria-label="Switch between top songs and play history">
+    <button class="stats-filter-button{{ ' active' if view != 'history' else '' }}" data-filter="top-songs">Top Songs</button>
+    <button class="stats-filter-button{{ ' active' if view == 'history' else '' }}" data-filter="history">History</button>
+  </nav>
+
+  <div data-category="top-songs" class="{{ 'visible' if view != 'history' else '' }}">
+    <h2>Top Songs on {{ album.get('name', '') }}</h2>
+    <section class="track-list">
+      {% if songs %}
+        {% for track in songs %}
+          {% set item_number = loop.index %}
+          {% set section = 'top_songs' %}
+          {% include '_track_card.html' %}
+        {% endfor %}
+      {% else %}
+        <p class="loading">No songs found for this album.</p>
+      {% endif %}
+    </section>
+  </div>
+
+  <div data-category="history" class="{{ 'visible' if view == 'history' else '' }}">
+    <div id="detailHistoryResults">
+      {% include '_detail_history_results.html' %}
+    </div>
+  </div>
 
   <script src="{{ url_for('static', filename='js/back-button.js') }}"></script>
   <script>
@@ -106,5 +121,7 @@
   <script src="{{ url_for('static', filename='js/chart-utils.js') }}"></script>
   <script src="{{ url_for('static', filename='js/charts.js') }}"></script>
   <script src="{{ url_for('static', filename='js/detail-chart.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/detail-history.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/admin-refresh.js') }}"></script>
   <script src="{{ url_for('static', filename='js/play-embed.js') }}"></script>
 {% endblock %}

@@ -49,6 +49,12 @@
           <span id="dateError" style="color: var(--accent); font-size: 0.85rem; display: none; margin-left: 10px;"></span>
         </div>
 
+        <div class="filter-group">
+          <label for="historySort">Sort:</label>
+          <button type="button" class="button sort-toggle" id="historySort" onclick="updateHistorySort()"
+                  aria-label="Toggle date sort order">Date {{ '↑' if sort == 'oldest' else '↓' }}</button>
+        </div>
+
         <noscript>
           <button class="primary-button" type="submit">Apply</button>
         </noscript>
@@ -206,6 +212,24 @@
       loadHistoryResults();
     }
 
+    // The Date sort toggle: flips newest-first (default) <-> oldest-first,
+    // resets to page 1 (page N of one order isn't page N of the other), and
+    // refreshes the list in place like every other filter change.
+    function updateHistorySort() {
+      var params = new URLSearchParams(window.location.search);
+      var next = params.get('sort') === 'oldest' ? 'newest' : 'oldest';
+      pushHistoryUrl(function (p) {
+        if (next === 'oldest') { p.set('sort', 'oldest'); } else { p.delete('sort'); }
+        p.delete('page');
+      });
+      updateHistorySortLabel(next);
+      loadHistoryResults();
+    }
+
+    function updateHistorySortLabel(sort) {
+      document.getElementById('historySort').textContent = sort === 'oldest' ? 'Date ↑' : 'Date ↓';
+    }
+
     // Pagination: Previous/Next + page-number links, and the "Go to page"
     // input (_pagination.html) - all navigate within #historyResults via
     // ajax instead of a full reload.
@@ -242,6 +266,7 @@
       document.getElementById('historyCustomDates').style.display = hasCustom ? 'flex' : 'none';
       const searchInput = document.getElementById('historySearch');
       if (searchInput) searchInput.value = params.get('q') || '';
+      updateHistorySortLabel(params.get('sort') === 'oldest' ? 'oldest' : 'newest');
       loadHistoryResults();
     });
 

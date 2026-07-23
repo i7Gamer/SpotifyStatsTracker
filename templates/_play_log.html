@@ -1,0 +1,35 @@
+{# The song detail page's list of every individual play - swapped into
+   #detailHistoryResults by detail-history.js on sort/page changes (the
+   ?ajax=list branch of songDetailPage). Rows are track-cards minus the media
+   block: every play is the same song, so cover/name/artist live once in the
+   hero card above and each row carries only the per-play facts.
+   Expects: plays (_embedSongsTextElements-shaped dicts), sortOldest,
+   sortToggleUrl, plus everything _pagination.html needs. #}
+<div class="play-log-header">
+  <h2>All Plays</h2>
+  <a class="button sort-toggle" href="{{ sortToggleUrl }}"
+     aria-label="Sorted {{ 'oldest' if sortOldest else 'newest' }} first - click to sort {{ 'newest' if sortOldest else 'oldest' }} first">Date {{ '↑' if sortOldest else '↓' }}</a>
+</div>
+<section class="track-list">
+  {% if plays %}
+    {% for play in plays %}
+      <article class="track-card">
+        <div class="track-details">
+          <div class="track-details-top">
+            <div class="track-header">
+              <h3>{{ play.get('playedAtText') }}</h3>
+            </div>
+            <div class="track-attributes">
+              {% if play.get('timePlayedText') %}<span class="track-label">Time Played: {{ play.get('timePlayedText') }}</span>{% endif %}
+              {% if play.get('contextName') %}<span class="track-label">Played from {{ play.get('contextName') }}</span>{% endif %}
+            </div>
+          </div>
+        </div>
+      </article>
+    {% endfor %}
+  {% else %}
+    <p class="loading">No plays recorded yet.</p>
+  {% endif %}
+</section>
+
+{% include '_pagination.html' %}

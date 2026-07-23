@@ -1,0 +1,114 @@
+/* The song/artist/album detail pages' play-history list: the Top Songs /
+ * History tab toggle (artist/album only - same click-to-toggle-visibility
+ * pattern as wrapped.js's [data-category].visible) and in-place AJAX
+ * navigation for the list's sort toggle + pagination links, via the routes'
+ * ?ajax=list branch (mirrors history.html's loadHistoryResults: abort
+ * superseded loads, loading-fade, swap resultsHtml). All tab content is
+ * server-rendered on every full load, so tab clicks only flip classes and
+ * keep ?view= in sync via pushState. */
+(function () {
+  var DETAIL_HISTORY_FADE_MS = 200;
+
+  var filterButtons = document.querySelectorAll('.stats-filter-button');
+  var categoryDivs = document.querySelectorAll('[data-category]');
+
+  function activateView(view, pushUrl) {
+    filterButtons.forEach(function (btn) { btn.classList.toggle('active', btn.dataset.filter === view); });
+    categoryDivs.forEach(function (div) { div.classList.toggle('visible', div.dataset.category === view); });
+    if (pushUrl) {
+      var params = new URLSearchParams(window.location.search);
+      if (view === 'top-songs') { params.delete('view'); } else { params.set('view', view); }
+      var query = params.toString();
+      window.history.pushState({}, '', window.location.pathname + (query ? '?' + query : ''));
+    }
+  }
+
+  filterButtons.forEach(function (button) {
+    button.addEventListener('click', function () { activateView(button.dataset.filter, true); });
+  });
+
+  var container = document.getElementById('detailHistoryResults');
+
+  //< the in-flight fetch ({controller}) - a newer sort/page change aborts it
+  //  so a slow older response can't land after (and clobber) the newer one
+  var activeLoad = null;
+
+  function loadDetailHistory() {
+    if (!container) {
+      return;
+    }
+    if (activeLoad) {
+      activeLoad.controller.abort();
+      container.classList.remove('loading-fade');
+    }
+    var controller = new AbortController();
+    activeLoad = { controller: controller };
+    container.classList.add('loading-fade');
+
+    var params = new URLSearchParams(window.location.search);
+    params.set('ajax', 'list');
+    var delay = new Promise(function (resolve) { setTimeout(resolve, DETAIL_HISTORY_FADE_MS); });
+    var fetched = fetch(window.location.pathname + '?' + params.toString(), {
+      headers: { 'X-Requested-With': 'XMLHttpRequest' },
+      signal: controller.signal
+    }).then(function (resp) { return resp.ok ? resp.json() : null; });
+
+    Promise.all([fetched, delay])
+      .then(function (results) {
+        //< a response that settled before its abort can still reach here;
+        //  never swap stale data in over a newer load's
+        if (!activeLoad || activeLoad.controller !== controller) {
+          return;
+        }
+        if (results[0]) {
+          container.innerHTML = results[0].resultsHtml;
+        }
+      })
+      .catch(function (err) {
+        if (err.name !== 'AbortError') {
+          console.error(err);
+        }
+      })
+      .finally(function () {
+        if (activeLoad && activeLoad.controller === controller) {
+          activeLoad = null;
+          container.classList.remove('loading-fade');
+        }
+      });
+  }
+
+  if (container) {
+    // The container persists across ajax swaps (only its innerHTML is
+    // replaced), so this delegated listener survives every refresh - it
+    // covers both the pagination links and the Date sort toggle, whose
+    // hrefs the server builds with the full sort/page/view/groupBy state.
+    container.addEventListener('click', function (evt) {
+      var link = evt.target.closest('.pagination-controls a, a.sort-toggle');
+      if (!link) return;
+      // Let modified clicks (new tab, etc.) behave normally.
+      if (evt.metaKey || evt.ctrlKey || evt.shiftKey || evt.altKey) return;
+      evt.preventDefault();
+      var url = new URL(link.href);
+      window.history.pushState({}, '', url.pathname + url.search);
+      loadDetailHistory();
+    });
+
+    // _pagination.html's jump-to-page input calls the shared
+    // handleJumpToPageKeydown (layout.html), which defers to this hook when
+    // present instead of navigating.
+    window.__paginationAjaxHandler = function (page) {
+      var params = new URLSearchParams(window.location.search);
+      params.set('page', page);
+      window.history.pushState({}, '', window.location.pathname + '?' + params.toString());
+      loadDetailHistory();
+    };
+  }
+
+  window.addEventListener('popstate', function () {
+    if (filterButtons.length) {
+      var params = new URLSearchParams(window.location.search);
+      activateView(params.get('view') === 'history' ? 'history' : 'top-songs', false);
+    }
+    loadDetailHistory();
+  });
+})();

@@ -8,7 +8,7 @@ import logging
 import os
 import threading
 
-from flask import render_template, redirect, request, url_for, abort
+from flask import render_template, redirect, request, url_for, abort, jsonify
 
 from config import (
     RECOMMENDATION_ARTIST_LIMIT, TRUTHY_ENV_VALUES,
@@ -412,6 +412,12 @@ def register(app, dashboard):
             "ok": ("success", f"Refreshed Last.fm data for “{result.get('name', '')}”."),
         }
         messageKind, message = STATUS_MESSAGES[result["status"]]
+
+        # The detail pages submit this form via fetch (static/js/admin-refresh.js)
+        # so a refresh doesn't navigate away and reset tab/sort/page state; the
+        # redirect below stays as the no-JS fallback.
+        if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+            return jsonify(kind=messageKind, message=message)
 
         redirectArgs = {idKwarg: entity_id, messageKind: message}
         groupBy = request.form.get("groupBy")

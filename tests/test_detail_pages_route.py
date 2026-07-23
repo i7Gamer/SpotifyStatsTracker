@@ -14,6 +14,16 @@ from _app_factory import AppTestCase
 
 class _DetailRouteTestBase(AppTestCase):
     def _getPath(self, dash, db, path):
+        # Every detail route now unconditionally fetches a page of the item's
+        # play history (see _detailHistoryContext) - default it to "no
+        # history" so tests that don't care about it need no stub of their
+        # own; a test's explicit stub (set before calling _getPath) wins.
+        if not isinstance(db.getEntriesCount.return_value, int):
+            db.getEntriesCount.return_value = 0
+        if not isinstance(db.getEntriesFromNew.return_value, list):
+            db.getEntriesFromNew.return_value = []
+        if not isinstance(db.getEntriesFromOld.return_value, list):
+            db.getEntriesFromOld.return_value = []
         client = dash.app.test_client()
         with patch.object(dash, 'is_user_logged_in', return_value=True), \
              patch.object(dash, 'get_username_for_email', return_value='alice'), \
@@ -361,6 +371,118 @@ class TestSongDetailRoute(_DetailRouteTestBase):
         self.assertEqual(db.getListeningTimeSeries.call_args.kwargs.get("groupBy"), "month")
         self.assertEqual(resp.get_json().get("groupBy"), "month")
 
+    def _playEntry(self, playedAtText="20 Jul 2026, 15:30", timePlayedText="3m 20s"):
+        """A play entry as _embedSongsTextElements would emit it - tests stub
+        the embedder to identity (the /history tests' convention), so the
+        text fields are supplied directly."""
+        return {"id": "t1", "name": "Song One", "playedAtText": playedAtText,
+                "timePlayedText": timePlayedText, "contextName": None, "artists": []}
+
+    def test_play_log_renders_play_rows(self):
+        dash = self._makeApp()
+        db = MagicMock()
+        db.getSong.return_value = self._song()
+        db.getListeningTimeSeries.return_value = []
+        db.getHourOfDayHeatmap.return_value = [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
+        db.getEntriesCount.return_value = 2
+        db.getEntriesFromNew.return_value = [
+            self._playEntry("20 Jul 2026, 15:30"),
+            self._playEntry("19 Jul 2026, 09:12"),
+        ]
+
+        with patch.object(dash, "_embedSongsTextElements", side_effect=lambda songs: songs):
+            resp = self._getPath(dash, db, "/song/t1")
+
+        self.assertIn(b"All Plays", resp.data)
+        self.assertIn(b"20 Jul 2026, 15:30", resp.data)
+        self.assertIn(b"19 Jul 2026, 09:12", resp.data)
+        self.assertIn(b"Time Played: 3m 20s", resp.data)
+
+    def test_play_log_scoped_to_track_id(self):
+        dash = self._makeApp()
+        db = MagicMock()
+        db.getSong.return_value = self._song()
+        db.getListeningTimeSeries.return_value = []
+        db.getHourOfDayHeatmap.return_value = [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
+
+        self._getPath(dash, db, "/song/t1")
+
+        self.assertEqual(db.getEntriesCount.call_args.kwargs.get("trackId"), "t1")
+        self.assertEqual(db.getEntriesFromNew.call_args.kwargs.get("trackId"), "t1")
+
+    def test_play_log_page_2_offsets_by_page_size(self):
+        from app import PAGE_SIZE
+        dash = self._makeApp()
+        db = MagicMock()
+        db.getSong.return_value = self._song()
+        db.getListeningTimeSeries.return_value = []
+        db.getHourOfDayHeatmap.return_value = [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
+        db.getEntriesCount.return_value = PAGE_SIZE * 2 + 5
+
+        self._getPath(dash, db, "/song/t1?page=2")
+
+        self.assertEqual(db.getEntriesFromNew.call_args.kwargs.get("startIndex"), PAGE_SIZE)
+        self.assertEqual(db.getEntriesFromNew.call_args.kwargs.get("count"), PAGE_SIZE)
+
+    def test_play_log_empty_state(self):
+        dash = self._makeApp()
+        db = MagicMock()
+        db.getSong.return_value = self._song()
+        db.getListeningTimeSeries.return_value = []
+        db.getHourOfDayHeatmap.return_value = [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
+
+        resp = self._getPath(dash, db, "/song/t1")
+
+        self.assertIn(b"No plays recorded yet.", resp.data)
+
+    def test_sort_oldest_uses_entries_from_old(self):
+        dash = self._makeApp()
+        db = MagicMock()
+        db.getSong.return_value = self._song()
+        db.getListeningTimeSeries.return_value = []
+        db.getHourOfDayHeatmap.return_value = [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
+
+        resp = self._getPath(dash, db, "/song/t1?sort=oldest")
+
+        self.assertEqual(db.getEntriesFromOld.call_args.kwargs.get("trackId"), "t1")
+        db.getEntriesFromNew.assert_not_called()
+        self.assertIn("Date ↑".encode(), resp.data)   #< arrow shows the current order
+
+    def test_sort_newest_is_the_default_and_shows_down_arrow(self):
+        dash = self._makeApp()
+        db = MagicMock()
+        db.getSong.return_value = self._song()
+        db.getListeningTimeSeries.return_value = []
+        db.getHourOfDayHeatmap.return_value = [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
+
+        resp = self._getPath(dash, db, "/song/t1?sort=bogus")
+
+        db.getEntriesFromNew.assert_called_once()
+        db.getEntriesFromOld.assert_not_called()
+        self.assertIn("Date ↓".encode(), resp.data)
+        self.assertIn(b"sort=oldest", resp.data)   #< the toggle links to the flipped order
+
+    def test_ajax_list_returns_results_html_and_skips_chart_work(self):
+        """The sort toggle / pagination links re-fetch just the play log via
+        ?ajax=list (static/js/detail-history.js) - chart and heatmap work
+        must be skipped."""
+        dash = self._makeApp()
+        db = MagicMock()
+        db.getSong.return_value = self._song()
+        db.getEntriesCount.return_value = 1
+        db.getEntriesFromNew.return_value = [self._playEntry()]
+
+        with patch.object(dash, "_embedSongsTextElements", side_effect=lambda songs: songs):
+            resp = self._getPath(dash, db, "/song/t1?ajax=list")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.mimetype, "application/json")
+        resultsHtml = resp.get_json().get("resultsHtml", "")
+        self.assertIn("All Plays", resultsHtml)
+        self.assertIn("20 Jul 2026, 15:30", resultsHtml)
+        db.getListeningTimeSeries.assert_not_called()
+        db.getHourOfDayHeatmap.assert_not_called()
+
 
 class TestArtistDetailRoute(_DetailRouteTestBase):
     def _artist(self):
@@ -573,6 +695,95 @@ class TestArtistDetailRoute(_DetailRouteTestBase):
         self.assertIn(b"Unique Songs Listened", resp.data)
         self.assertIn(b'<p class="summary-value">2</p>', resp.data)
 
+    def _makeHistoryDb(self):
+        db = MagicMock()
+        db.getArtist.return_value = self._artist()
+        db.getArtistBio.return_value = None
+        db.getSongsStats.return_value = []
+        db.getListeningTimeSeries.return_value = []
+        return db
+
+    def test_history_tab_scoped_to_artist_id(self):
+        dash = self._makeApp()
+        db = self._makeHistoryDb()
+
+        self._getPath(dash, db, "/artist/a1")
+
+        self.assertEqual(db.getEntriesCount.call_args.kwargs.get("artistId"), "a1")
+        self.assertEqual(db.getEntriesFromNew.call_args.kwargs.get("artistId"), "a1")
+
+    def test_default_view_activates_top_songs_tab(self):
+        dash = self._makeApp()
+        db = self._makeHistoryDb()
+
+        resp = self._getPath(dash, db, "/artist/a1")
+
+        self.assertIn(b'<div data-category="top-songs" class="visible">', resp.data)
+        self.assertIn(b'<div data-category="history" class="">', resp.data)
+
+    def test_view_history_activates_history_tab(self):
+        dash = self._makeApp()
+        db = self._makeHistoryDb()
+
+        resp = self._getPath(dash, db, "/artist/a1?view=history")
+
+        self.assertIn(b'<div data-category="top-songs" class="">', resp.data)
+        self.assertIn(b'<div data-category="history" class="visible">', resp.data)
+        self.assertIn(b"History with Artist A", resp.data)
+
+    def test_unknown_view_falls_back_to_top_songs(self):
+        dash = self._makeApp()
+        db = self._makeHistoryDb()
+
+        resp = self._getPath(dash, db, "/artist/a1?view=bogus")
+
+        self.assertIn(b'<div data-category="top-songs" class="visible">', resp.data)
+        self.assertIn(b'<div data-category="history" class="">', resp.data)
+
+    def test_history_pagination_link_carries_view_and_groupby(self):
+        from app import PAGE_SIZE
+        dash = self._makeApp()
+        db = self._makeHistoryDb()
+        db.getEntriesCount.return_value = PAGE_SIZE * 2 + 5
+
+        resp = self._getPath(dash, db, "/artist/a1?groupBy=month")
+
+        body = resp.data.decode()
+        self.assertIn("view=history", body)
+        self.assertIn("groupBy=month", body)
+        self.assertIn("page=2", body)
+
+    def test_sort_oldest_uses_entries_from_old(self):
+        dash = self._makeApp()
+        db = self._makeHistoryDb()
+
+        resp = self._getPath(dash, db, "/artist/a1?sort=oldest")
+
+        self.assertEqual(db.getEntriesFromOld.call_args.kwargs.get("artistId"), "a1")
+        db.getEntriesFromNew.assert_not_called()
+        self.assertIn("Date ↑".encode(), resp.data)
+
+    def test_ajax_list_skips_heavy_work(self):
+        dash = self._makeApp()
+        db = self._makeHistoryDb()
+        db.getEntriesCount.return_value = 1
+        db.getEntriesFromNew.return_value = [
+            {"id": "t1", "name": "History Song", "playedAtText": "20 Jul 2026, 15:30", "artists": []}]
+
+        with patch.object(dash, "_embedSongsTextElements", side_effect=lambda songs: songs), \
+             patch.object(dash, "_attachGenres", side_effect=lambda db_, tracks, kind: tracks):
+            resp = self._getPath(dash, db, "/artist/a1?ajax=list")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.mimetype, "application/json")
+        resultsHtml = resp.get_json().get("resultsHtml", "")
+        self.assertIn("History with Artist A", resultsHtml)
+        self.assertIn("History Song", resultsHtml)
+        self.assertIn("Played at 20 Jul 2026, 15:30", resultsHtml)
+        db.getSongsStats.assert_not_called()
+        db.lazyFetchArtistBio.assert_not_called()
+        db.getListeningTimeSeries.assert_not_called()
+
 
 class TestAlbumDetailRoute(_DetailRouteTestBase):
     def _album(self):
@@ -772,6 +983,72 @@ class TestAlbumDetailRoute(_DetailRouteTestBase):
 
         self.assertIn(b"Unique Songs Listened", resp.data)
         self.assertIn(b'<p class="summary-value">2</p>', resp.data)
+
+    def _makeHistoryDb(self):
+        db = MagicMock()
+        db.getAlbum.return_value = self._album()
+        db.getAlbumBio.return_value = None
+        db.getSongsStats.return_value = []
+        db.getListeningTimeSeries.return_value = []
+        return db
+
+    def test_history_tab_scoped_to_album_id(self):
+        dash = self._makeApp()
+        db = self._makeHistoryDb()
+
+        self._getPath(dash, db, "/album/alb1")
+
+        self.assertEqual(db.getEntriesCount.call_args.kwargs.get("albumId"), "alb1")
+        self.assertEqual(db.getEntriesFromNew.call_args.kwargs.get("albumId"), "alb1")
+
+    def test_view_history_activates_history_tab(self):
+        dash = self._makeApp()
+        db = self._makeHistoryDb()
+
+        resp = self._getPath(dash, db, "/album/alb1?view=history")
+
+        self.assertIn(b'<div data-category="top-songs" class="">', resp.data)
+        self.assertIn(b'<div data-category="history" class="visible">', resp.data)
+        self.assertIn(b"History with Album One", resp.data)
+
+    def test_default_view_activates_top_songs_tab(self):
+        dash = self._makeApp()
+        db = self._makeHistoryDb()
+
+        resp = self._getPath(dash, db, "/album/alb1")
+
+        self.assertIn(b'<div data-category="top-songs" class="visible">', resp.data)
+        self.assertIn(b'<div data-category="history" class="">', resp.data)
+
+    def test_sort_oldest_uses_entries_from_old(self):
+        dash = self._makeApp()
+        db = self._makeHistoryDb()
+
+        resp = self._getPath(dash, db, "/album/alb1?sort=oldest")
+
+        self.assertEqual(db.getEntriesFromOld.call_args.kwargs.get("albumId"), "alb1")
+        db.getEntriesFromNew.assert_not_called()
+        self.assertIn("Date ↑".encode(), resp.data)
+
+    def test_ajax_list_skips_heavy_work(self):
+        dash = self._makeApp()
+        db = self._makeHistoryDb()
+        db.getEntriesCount.return_value = 1
+        db.getEntriesFromNew.return_value = [
+            {"id": "t1", "name": "History Song", "playedAtText": "20 Jul 2026, 15:30", "artists": []}]
+
+        with patch.object(dash, "_embedSongsTextElements", side_effect=lambda songs: songs), \
+             patch.object(dash, "_attachGenres", side_effect=lambda db_, tracks, kind: tracks):
+            resp = self._getPath(dash, db, "/album/alb1?ajax=list")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.mimetype, "application/json")
+        resultsHtml = resp.get_json().get("resultsHtml", "")
+        self.assertIn("History with Album One", resultsHtml)
+        self.assertIn("History Song", resultsHtml)
+        db.getSongsStats.assert_not_called()
+        db.lazyFetchAlbumBio.assert_not_called()
+        db.getListeningTimeSeries.assert_not_called()
 
 
 if __name__ == "__main__":
