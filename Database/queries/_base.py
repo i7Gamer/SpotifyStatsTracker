@@ -70,6 +70,7 @@ SHARE_LINKS_SETTING_KEY = "share_links_enabled"
 ARTIST_BIO_SETTING_KEY = "artist_bio_enabled"
 ALBUM_BIO_SETTING_KEY = "album_bio_enabled"
 MILESTONES_SETTING_KEY = "milestones_enabled"
+MILESTONE_RECALC_SETTING_KEY = "milestone_recalc_enabled"
 
 # Instance-wide skip threshold (app_settings). This is the single, admin-tunable
 # boundary between a "skip" and a real listen - it replaced both the old fixed

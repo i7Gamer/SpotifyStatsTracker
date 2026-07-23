@@ -293,6 +293,7 @@ def register(app, dashboard):
             completion_complete_percent=dashboard.repo.getCompletionCompletePercent(),
             completion_min=COMPLETION_COMPLETE_PERCENT_MIN, completion_max=COMPLETION_COMPLETE_PERCENT_MAX,
             email_verification_enabled=dashboard.repo.isEmailVerificationEnabled(),
+            milestone_recalc_enabled=dashboard.repo.isMilestoneRecalcEnabled(),
             genre_backfill_retry_days=dashboard.repo.getGenreBackfillRetryDays(),
             bio_backfill_retry_days=dashboard.repo.getBioBackfillRetryDays(),
             backfill_retry_min=BACKFILL_RETRY_DAYS_MIN, backfill_retry_max=BACKFILL_RETRY_DAYS_MAX,
@@ -321,7 +322,8 @@ def register(app, dashboard):
     def adminUserSettings():
         """Admin-only: instance-wide toggles for data sharing (Compare +
         share requests), new user registration, public Wrapped share links,
-        and achievement milestones - see Database/repository.py's app_settings."""
+        achievement milestones, and automatic milestone-date recalculation -
+        see Database/repository.py's app_settings."""
         email, username, db = dashboard.get_current_user_or_redirect()
         if not email:
             return redirect(url_for("login", next=url_for("adminPage")))
@@ -333,6 +335,7 @@ def register(app, dashboard):
         dashboard.repo.setShareLinksEnabled(request.form.get("share_links") == "1")
         dashboard.repo.setEmailVerificationEnabled(request.form.get("email_verification") == "1")
         dashboard.repo.setMilestonesEnabled(request.form.get("milestones") == "1")
+        dashboard.repo.setMilestoneRecalcEnabled(request.form.get("milestone_recalc") == "1")
         return redirect(url_for("adminPage"))
     app.add_url_rule("/admin/user_settings", "adminUserSettings", adminUserSettings, methods=["POST"])
 

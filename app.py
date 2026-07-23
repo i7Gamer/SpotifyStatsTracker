@@ -56,7 +56,7 @@ from services.genre_gate import (
 from services.taste_match import (
     _tasteMatchPercent, _markLinkExternally, _rankById, _sharedRankScore,
 )
-from services.milestones import detectMilestones
+from services.milestones import detectMilestones, recalculateMilestoneDates
 from routes.media import register as registerMediaRoutes
 from routes.admin import register as registerAdminRoutes
 from routes.charts import register as registerChartsRoutes
@@ -507,7 +507,19 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
         if not self.repo.isMilestonesEnabled():
             return
         try:
-            detectMilestones(db, db.repo, username, changeCache=self._milestoneChangeCache)
+            recorded = detectMilestones(db, db.repo, username, changeCache=self._milestoneChangeCache)
+            # Date hygiene, strictly after detection so import-crossed rows
+            # exist before their dates are re-derived. Triggered by a completed
+            # import (db's flag) or by any recorded crossing - the latter turns
+            # "when this pass noticed" timestamps into actual crossing times
+            # and self-heals a flag lost to a restart. Gated by its own admin
+            # toggle; while disabled the flag is left raised so enabling later
+            # still catches up. See services/milestones.py
+            # recalculateMilestoneDates for what is (and isn't) rewritten.
+            if self.repo.isMilestoneRecalcEnabled():
+                pending = db.consumeMilestoneRecalcFlag()
+                if pending or recorded > 0:
+                    recalculateMilestoneDates(db.repo, username, db.tz)
         except Exception as e:
             logger.warning("Milestone detection failed for %s: %s", username, e)
 

@@ -345,6 +345,17 @@ class SettingQueries:
     def setMilestonesEnabled(self, enabled: bool) -> None:
         self._setFeatureEnabled(MILESTONES_SETTING_KEY, enabled)
 
+    def isMilestoneRecalcEnabled(self) -> bool:
+        """Whether the periodic milestone pass re-derives achieved_at dates
+        from play history after an import (or any pass that recorded rows) -
+        see _detectMilestonesSafely in app.py. Absent row = enabled. Separate
+        from isMilestonesEnabled so an admin can keep milestones on but pin
+        their recorded dates."""
+        return self._isFeatureEnabled(MILESTONE_RECALC_SETTING_KEY)
+
+    def setMilestoneRecalcEnabled(self, enabled: bool) -> None:
+        self._setFeatureEnabled(MILESTONE_RECALC_SETTING_KEY, enabled)
+
     def getRecentRegistrationCounts(self) -> dict:
         """How many accounts were created in the last 7/30 days - an admin
         activity signal with no per-user equivalent."""

@@ -352,8 +352,16 @@ class ImportMixin:
         so unchanged files re-import fresh."""
         with self._importLock:
             if overwriteRange:
-                return self._importHistoryBatchOverwriteLocked(fileContents)
-            return self._importHistoryBatchLocked(fileContents)
+                outcomes = self._importHistoryBatchOverwriteLocked(fileContents)
+            else:
+                outcomes = self._importHistoryBatchLocked(fileContents)
+        if "imported" in outcomes:
+            # Milestone achieved_at dates derive from play history, which this
+            # batch just changed - raise the marker the periodic milestone pass
+            # consumes to re-derive them (see Database.consumeMilestoneRecalcFlag).
+            # All-skipped/all-failed batches changed nothing, so nothing is due.
+            self.milestonesRecalcPending = True
+        return outcomes
 
     def _importHistoryBatchLocked(self, fileContents: list[str]) -> list[str]:
         if not fileContents:

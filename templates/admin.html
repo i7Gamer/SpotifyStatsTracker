@@ -271,9 +271,13 @@
           <input type="checkbox" name="email_verification" value="1" {% if email_verification_enabled %}checked{% endif %}>
           Cookie–email verification at login (stops one user claiming another's account)
         </label>
-        <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; margin-bottom: 1rem;">
+        <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; margin-bottom: 0.6rem;">
           <input type="checkbox" name="milestones" value="1" {% if milestones_enabled %}checked{% endif %}>
           Achievement milestones (topbar badge and Milestones section on Profile)
+        </label>
+        <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; margin-bottom: 1rem;">
+          <input type="checkbox" name="milestone_recalc" value="1" {% if milestone_recalc_enabled %}checked{% endif %}>
+          Auto-recalculate milestone dates from play history (after imports and new crossings)
         </label>
         <button type="submit" class="primary-button" style="padding: 4px 16px;">Save</button>
       </form>

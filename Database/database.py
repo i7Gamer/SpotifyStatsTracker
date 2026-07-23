@@ -301,6 +301,11 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         self.repo = Repository(dbPath) if dbPath is not None else Repository()
         self.repo.upsertUser(user, email)
 
+        # Raised by importHistoryBatch once a batch actually changed play
+        # history; the periodic milestone pass consumes it to re-derive
+        # milestone achieved_at dates (see consumeMilestoneRecalcFlag).
+        self.milestonesRecalcPending = False
+
         self.refreshSettings()
 
         self.autoImportFolderPath = self.baseDir / ".." / "autoImport" / self.user
@@ -353,6 +358,20 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         self.lastfm_album_biography_thread = None
         self.lastfm_album_biography_stop_event = threading.Event()
         self.startLastfmAlbumBiographyBackfiller()
+
+    def consumeMilestoneRecalcFlag(self) -> bool:
+        """One-shot read of the "an import just changed play history" marker
+        raised by importHistoryBatch: the periodic milestone pass
+        (_detectMilestonesSafely in app.py) consumes it and re-derives this
+        user's milestone achieved_at dates right after detection has recorded
+        any import-crossed rows. Deliberately in-memory only - a restart drops
+        it, which self-heals because the next pass that records a crossing
+        also triggers a full re-derivation. A plain boolean flip either side
+        (GIL-atomic), so no lock: worst case a re-raised flag costs one extra
+        idempotent recalculation a cycle later."""
+        pending = self.milestonesRecalcPending
+        self.milestonesRecalcPending = False
+        return pending
 
     def refreshSettings(self) -> None:
         from zoneinfo import ZoneInfo

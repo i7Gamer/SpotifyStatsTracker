@@ -330,6 +330,14 @@ class TestAdminUserSettings(AdminRouteTestBase):
         self._post(dash, "/admin/user_settings", isAdmin=True, data={"milestones": "1"})
         self.assertTrue(dash.repo.isMilestonesEnabled())
 
+    def test_toggles_milestone_recalc(self):
+        dash = self._makeApp()
+        self.assertTrue(dash.repo.isMilestoneRecalcEnabled())   #< absent row = enabled
+        self._post(dash, "/admin/user_settings", isAdmin=True, data={})   #< nothing checked -> disabled
+        self.assertFalse(dash.repo.isMilestoneRecalcEnabled())
+        self._post(dash, "/admin/user_settings", isAdmin=True, data={"milestone_recalc": "1"})
+        self.assertTrue(dash.repo.isMilestoneRecalcEnabled())
+
 
 class TestAdminSkipSettings(AdminRouteTestBase):
     def test_non_admin_post_is_forbidden(self):
