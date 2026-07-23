@@ -40,6 +40,8 @@ class _ListRouteTestBase(AppTestCase):
         }
         db.getCurrentStreak.return_value = {"days": 0, "activeToday": False}
         db.getOnThisDay.return_value = []
+        db.getListeningCalendar.return_value = {
+            "weeks": [], "monthLabels": [], "maxCount": 0, "activeDays": 0, "totalPlays": 0}
         return db
 
     def _getPath(self, dash, db, path):

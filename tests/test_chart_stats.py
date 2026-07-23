@@ -451,6 +451,51 @@ class TestGetArtistTrend(ChartStatsTestCase):
         self.assertEqual(result["series"][0]["id"], "id1")   #< lexicographically smaller id wins ties
 
 
+class TestGetListeningCalendar(ChartStatsTestCase):
+    """DB->grid wiring for the dashboard streak calendar - the grid layout
+    itself is covered in test_listening_calendar.py. `now` is injected for a
+    deterministic 'today', mirroring getCurrentStreak."""
+
+    _NOW = datetime.datetime(2026, 7, 23, 12, tzinfo=datetime.timezone.utc)   # Thursday
+
+    def test_maps_plays_to_local_days_with_summed_counts(self):
+        entries = [
+            {"id": "t1", "playedAt": _ts(2026, 7, 20, 9), "timePlayed": 1000},    # Monday
+            {"id": "t1", "playedAt": _ts(2026, 7, 20, 20), "timePlayed": 1000},   # Monday again -> 2
+            {"id": "t1", "playedAt": _ts(2026, 7, 22, 9), "timePlayed": 1000},    # Wednesday
+        ]
+        db = self._makeDb({}, entries)
+
+        cal = db.getListeningCalendar(now=self._NOW, weeks=1)
+
+        col = cal["weeks"][-1]
+        self.assertEqual(col[0]["count"], 2)   # Monday
+        self.assertEqual(col[2]["count"], 1)   # Wednesday
+        self.assertEqual(col[1]["count"], 0)   # Tuesday
+        self.assertEqual(cal["activeDays"], 2)
+        self.assertEqual(cal["totalPlays"], 3)
+        self.assertEqual(cal["maxCount"], 2)
+
+    def test_empty_database_is_a_full_grid_of_zero_cells(self):
+        from services.listening_calendar import CALENDAR_WEEKS
+        db = self._makeDb({}, [])
+
+        cal = db.getListeningCalendar(now=self._NOW)
+
+        self.assertEqual(len(cal["weeks"]), CALENDAR_WEEKS)
+        self.assertEqual(cal["activeDays"], 0)
+        self.assertEqual(cal["totalPlays"], 0)
+
+    def test_plays_before_the_window_are_excluded(self):
+        entries = [{"id": "t1", "playedAt": _ts(2025, 1, 1, 9), "timePlayed": 1000}]
+        db = self._makeDb({}, entries)
+
+        cal = db.getListeningCalendar(now=self._NOW, weeks=4)
+
+        self.assertEqual(cal["activeDays"], 0)
+        self.assertEqual(cal["totalPlays"], 0)
+
+
 if __name__ == "__main__":
     import unittest
     unittest.main()

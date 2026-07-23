@@ -2787,6 +2787,94 @@ html.theme-red {
 .dashboard-summary-live {
   margin: -16px -20px -20px;
   padding: 16px 20px 28px;
+  /* Stack the card row and the streak-calendar row vertically (the base
+     .dashboard-summary is a horizontal flex row); the cards keep their own
+     horizontal scroll on .dashboard-summary-cards below. */
+  flex-direction: column;
+}
+
+/* The original horizontal row of live cards, now nested so the calendar can
+   sit on its own row beneath it inside .dashboard-summary-live. */
+.dashboard-summary-cards {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 20px;
+  overflow-x: auto;
+}
+
+/* Streak calendar: a GitHub-style contribution grid of listening days. Columns
+   are weeks, rows Mon..Sun; --weeks (set inline) is the column count so the
+   month-label track lines up with the day grid. */
+.streak-calendar-card {
+  flex: 0 0 auto;   /* full-width row, sized to content (don't grow like cards) */
+}
+
+.streak-calendar-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.streak-calendar-sub {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.streak-calendar-scroll {
+  overflow-x: auto;
+  margin-top: 10px;
+  padding-bottom: 4px;
+}
+
+.streak-calendar-months {
+  display: grid;
+  grid-template-columns: repeat(var(--weeks), 13px);
+  gap: 3px;
+  margin-bottom: 4px;
+  min-width: max-content;
+}
+
+.streak-calendar-month {
+  grid-row: 1;
+  font-size: 0.7rem;
+  color: var(--muted);
+  white-space: nowrap;   /* let a label overflow its 13px column, GitHub-style */
+}
+
+.streak-calendar-grid {
+  display: grid;
+  grid-template-columns: repeat(var(--weeks), 13px);
+  grid-template-rows: repeat(7, 13px);
+  grid-auto-flow: column;   /* cells emitted week-by-week fill top-to-bottom */
+  gap: 3px;
+  min-width: max-content;
+}
+
+.streak-calendar-day {
+  width: 13px;
+  height: 13px;
+  border-radius: 3px;
+  background: var(--border);   /* level 0 = no plays */
+}
+
+/* Heat ramp keyed off the active theme's --accent so it tracks theme switches. */
+.streak-calendar-day[data-level="1"] { background: color-mix(in srgb, var(--accent) 30%, transparent); }
+.streak-calendar-day[data-level="2"] { background: color-mix(in srgb, var(--accent) 55%, transparent); }
+.streak-calendar-day[data-level="3"] { background: color-mix(in srgb, var(--accent) 78%, transparent); }
+.streak-calendar-day[data-level="4"] { background: var(--accent); }
+
+.streak-calendar-day.is-future { background: transparent; }
+.streak-calendar-day.is-today { outline: 1px solid var(--accent); outline-offset: 1px; }
+
+.streak-calendar-legend {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 8px;
+  font-size: 0.75rem;
+  color: var(--muted);
 }
 
 .dashboard-card-empty {

@@ -36,6 +36,11 @@ class DashboardCardsTestCase(AppTestCase):
         }
         db.getCurrentStreak.return_value = streak or {"days": 0, "activeToday": False}
         db.getOnThisDay.return_value = onThisDay or []
+        # Empty grid by default: the calendar card only renders when weeks is
+        # non-empty, so most card tests aren't perturbed by it. The dedicated
+        # test below overrides this with a real built grid.
+        db.getListeningCalendar.return_value = {
+            "weeks": [], "monthLabels": [], "maxCount": 0, "activeDays": 0, "totalPlays": 0}
         if coverage is not None:
             db.getGenreCoverage.return_value = coverage
         if recommendations is not None:
@@ -172,6 +177,27 @@ class DashboardCardsTestCase(AppTestCase):
         dash = self._makeApp()
         resp = self._get(dash, self._makeDb(onThisDay=[]))
         self.assertIn(b"No past plays on today's date yet.", resp.data)
+
+    def test_streak_calendar_renders_cells_from_calendar_data(self):
+        import datetime
+        from services.listening_calendar import buildListeningCalendar
+        dash = self._makeApp()
+        db = self._makeDb()
+        # One busy day (busiest -> top level) so we can assert its cell.
+        db.getListeningCalendar.return_value = buildListeningCalendar(
+            {"2026-07-20": 7}, datetime.date(2026, 7, 23), weeks=6)
+
+        resp = self._get(dash, db)
+
+        self.assertIn(b"streak-calendar-card", resp.data)
+        self.assertIn(b'title="7 plays on 2026-07-20"', resp.data)
+        self.assertIn(b'data-level="4"', resp.data)   # busiest day is the top heat level
+
+    def test_streak_calendar_absent_when_no_grid(self):
+        # Empty weeks (the _makeDb default) => the card isn't rendered at all.
+        dash = self._makeApp()
+        resp = self._get(dash, self._makeDb())
+        self.assertNotIn(b"streak-calendar-card", resp.data)
 
     def test_discover_card_placeholder_rendered_when_lastfm_enabled(self):
         # The dashboard render only emits the (empty) Discover card shell; its

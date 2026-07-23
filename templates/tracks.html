@@ -4,6 +4,7 @@
      in their own panel above the form + results. #}
   <section class="dashboard-live">
     <div class="dashboard-summary dashboard-summary-live">
+      <div class="dashboard-summary-cards">
       <div class="summary-card now-playing-card" id="nowPlayingPanel">
         {# The now-playing sub-panel toggles with playback; the listening streak
            sits below it in the same panel and is always shown. #}
@@ -67,6 +68,36 @@
         <div class="discover-list" id="discoverList" style="display: none;"></div>
         <p class="dashboard-card-empty" id="discoverEmpty" style="display: none;">No fresh picks right now &mdash; keep listening!</p>
         <p class="dashboard-card-empty" id="discoverLocked" style="display: none;">Unlock artist recommendations as your <a href="{{ url_for('genresPage') }}">genre data</a> fills in.</p>
+      </div>
+      {% endif %}
+      </div>{# .dashboard-summary-cards #}
+
+      {% if listeningCalendar and listeningCalendar.weeks %}
+      <div class="summary-card streak-calendar-card">
+        <div class="streak-calendar-head">
+          <h2>Listening calendar</h2>
+          <span class="streak-calendar-sub">{{ listeningCalendar.activeDays }} active {{ 'day' if listeningCalendar.activeDays == 1 else 'days' }} in the past year</span>
+        </div>
+        <div class="streak-calendar-scroll" style="--weeks: {{ listeningCalendar.weeks | length }};">
+          <div class="streak-calendar-months" aria-hidden="true">
+            {% for m in listeningCalendar.monthLabels %}
+            <span class="streak-calendar-month" style="grid-column: {{ m.weekIndex + 1 }};">{{ m.label }}</span>
+            {% endfor %}
+          </div>
+          <div class="streak-calendar-grid" role="img"
+               aria-label="Daily listening over the past year, {{ listeningCalendar.activeDays }} active days">
+            {% for week in listeningCalendar.weeks %}{% for cell in week %}
+            <span class="streak-calendar-day{% if cell.future %} is-future{% endif %}{% if cell.today %} is-today{% endif %}"
+                  data-level="{{ cell.level }}"{% if not cell.future %}
+                  title="{{ cell.count }} play{{ 's' if cell.count != 1 else '' }} on {{ cell.date }}"{% endif %}></span>
+            {% endfor %}{% endfor %}
+          </div>
+        </div>
+        <div class="streak-calendar-legend">
+          <span>Less</span>
+          {% for lvl in range(0, 5) %}<span class="streak-calendar-day" data-level="{{ lvl }}"></span>{% endfor %}
+          <span>More</span>
+        </div>
       </div>
       {% endif %}
     </div>

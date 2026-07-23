@@ -145,6 +145,7 @@ class _ImportRunState:
 from Database.media_fetch import MediaFetchMixin
 from Database.import_service import ImportMixin
 from Database.workers import WorkerLifecycleMixin
+from services.listening_calendar import buildListeningCalendar, CALENDAR_WEEKS
 
 
 class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
@@ -935,6 +936,29 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
             days += 1
             cursor -= datetime.timedelta(days=1)
         return {"days": days, "activeToday": activeToday}
+
+    def getListeningCalendar(self, now: datetime.datetime = None,
+                             weeks: int = CALENDAR_WEEKS) -> dict:
+        """Per-day listening grid for the dashboard's streak calendar: the last
+        `weeks` week-columns of daily play counts, each day shaded by volume
+        relative to the window's busiest day - reinforcing the getCurrentStreak
+        card shown beside it. `now` (defaults to the current local time) fixes
+        'today', mirroring getCurrentStreak. Reuses getBucketedPlayTotals and
+        the same bucket->local-date mapping as _getPlayDateSet, folding the
+        15-minute buckets up to per-day counts, then hands off to
+        buildListeningCalendar for the pure grid layout."""
+        nowLocal = now.astimezone(self.tz) if now is not None else datetime.datetime.now(tz=self.tz)
+        today = nowLocal.date()
+        lastMonday = today - datetime.timedelta(days=today.weekday())
+        firstMonday = lastMonday - datetime.timedelta(weeks=weeks - 1)
+        startTs = datetime.datetime(firstMonday.year, firstMonday.month, firstMonday.day,
+                                    tzinfo=self.tz).timestamp()
+
+        dayCounts: dict = {}
+        for row in self.repo.getBucketedPlayTotals(self.user, startTs, None):
+            dateStr = convertToDatetime(row["bucketStartTs"], tz=self.tz).strftime("%Y-%m-%d")
+            dayCounts[dateStr] = dayCounts.get(dateStr, 0) + row["plays"]
+        return buildListeningCalendar(dayCounts, today, weeks=weeks)
 
     def getOnThisDay(self, now: datetime.datetime = None, limit: int | None = None) -> list[dict]:
         """"On this day" resurfacing: for each PRIOR year that has plays on

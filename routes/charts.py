@@ -240,11 +240,17 @@ def register(app, dashboard):
         currentStreak = db.getCurrentStreak()
         onThisDay = db.getOnThisDay(limit=appmod.ON_THIS_DAY_YEARS_LIMIT)
         lastfmGenreEnabled = dashboard.repo.isLastfmGenreBackfillEnabled()
+        # Streak calendar: ~1 year of daily play counts, rendered inline below
+        # the live cards. Comparable cost to getCurrentStreak above (a similar
+        # bounded bucket scan), so it rides along in this render rather than
+        # being deferred like the full-history Discover card.
+        listeningCalendar = db.getListeningCalendar()
 
         return render_template(
             "tracks.html",
             currentStreak=currentStreak,
             onThisDay=onThisDay,
+            listeningCalendar=listeningCalendar,
             lastfmGenreEnabled=lastfmGenreEnabled,
             tracks=tracks,
             totalSongsPlayed=stats["totalSongsPlayed"],
