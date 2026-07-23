@@ -2,7 +2,8 @@
    Rendered both by genres.html (initial load) and the /genres?ajax=true genre
    swap, so the two can't drift. The two canvases are drawn client-side by
    genres.js from window.__genreData (refreshed on each AJAX swap).
-   Expects: selectedGenre, genreStats, topArtists, topTracks, username. #}
+   Expects: selectedGenre, genreStats, topArtists, topTracks, username,
+   intervalLabel (for the range-scoped "Plays · <label>" heading). #}
 {% if selectedGenre %}
   <h3 class="genre-selected-title">{{ selectedGenre }}</h3>
 
@@ -28,7 +29,7 @@
   {% endif %}
 
   <div class="chart-section" style="margin-top: 1.5rem;">
-    <h3>Plays Over Time</h3>
+    <h3>Plays{% if intervalLabel %} &middot; {{ intervalLabel }}{% endif %}</h3>
     <div class="chart-canvas-wrap">
       <canvas id="genreTrendChart"></canvas>
     </div>

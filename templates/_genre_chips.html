@@ -1,0 +1,9 @@
+{# The selectable genre chip row for the /genres drill-down. Rendered into the
+   shell's #genreChipRow placeholder by the /genres?ajax=true full payload, and
+   re-sent whenever the time filter changes (a range change changes which
+   genres have plays, and thus which chips appear).
+   Expects: genreNames, selectedGenre. #}
+{% for name in genreNames %}
+  <a class="genre-chip {{ 'selected' if name == selectedGenre }}"
+     href="{{ url_for('genresPage', genre=name) }}" data-genre="{{ name }}">{{ name }}</a>
+{% endfor %}

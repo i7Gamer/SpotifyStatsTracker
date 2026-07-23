@@ -7,6 +7,8 @@
     </div>
   </section>
 
+  {# method/action kept for the <noscript> fallback; with JS the controls fire
+     the AJAX filter handlers in charts-page.js and never submit this form. #}
   <form class="filter-section" method="get" action="{{ url_for('chartsPage') }}">
     <div class="filter-group">
       <label for="interval">Time Period:</label>
@@ -44,9 +46,9 @@
     </noscript>
   </form>
 
-  <section class="card chart-card">
+  <section class="card chart-card" id="chartsCard">
     <div class="chart-section">
-      <h2>Listening Time &middot; {{ intervalLabel }}{% if lastDayDate %} ({{ lastDayDate }}){% endif %}</h2>
+      <h2>Listening Time &middot; <span id="chartsTimeSeriesLabel">{{ intervalLabel }}{% if lastDayDate %} ({{ lastDayDate }}){% endif %}</span></h2>
       <div class="chart-canvas-wrap">
         <canvas id="timeSeriesChart"></canvas>
       </div>
@@ -60,15 +62,15 @@
       </div>
     </div>
 
-    {% if artistTrend %}
-    <div class="chart-section">
-      <h2>Top Artists Over Time</h2>
+    {# Hidden until the payload confirms a multi-bucket range: single-day views
+       carry no artist trend, so charts-page.js re-hides it then. #}
+    <div class="chart-section" id="chartsArtistTrendSection" {% if isSingleDayView %}style="display: none;"{% endif %}>
+      <h2>Top Artists &middot; <span id="chartsArtistTrendLabel">{{ intervalLabel }}</span></h2>
       <div class="chart-canvas-wrap">
         <canvas id="artistTrendChart"></canvas>
       </div>
       <div id="artistTrendLegend" class="chart-legend"></div>
     </div>
-    {% endif %}
 
     <div class="chart-section-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 2rem; margin-top: 2rem;">
       <div class="chart-section">
@@ -96,102 +98,23 @@
     {% if lastfmEnabled %}
     <div class="chart-section" style="margin-top: 2rem;">
       <h2>Top Genres</h2>
-      {% if genreUnlocked %}
-      <div class="chart-canvas-wrap" style="height: 300px;">
-        <canvas id="genreChart"></canvas>
-      </div>
-      {% import "_genre_macros.html" as genreMacros %}
-      {{ genreMacros.lastfmAttribution(marginTop='0.5rem') }}
-      {% else %}
-      {% with coverage = genreCoverage %}{% include "_genre_progress.html" %}{% endwith %}
-      {% endif %}
+      {# Filled by the /charts?ajax=true payload (genreSectionHtml) - its
+         locked/unlocked structure is range-scoped, so it ships as HTML. #}
+      <div id="chartsGenreSection"><p class="loading">Loading…</p></div>
     </div>
     {% endif %}
   </section>
 
+  {# charts.js is shared with /compare, where it renders inline at load. Here
+     the data is fetched after first paint instead, so tell charts.js to skip
+     its own initial render - charts-page.js drives it once the payload lands. #}
   <script>
-    window.__chartData = {
-      timeSeries: {{ timeSeries | tojson }},
-      heatmap: {{ heatmap | tojson }},
-      artistTrend: {{ artistTrend | tojson }},
-      explicitRatio: {{ explicitRatio | tojson }},
-      decadeDistribution: {{ decadeDistribution | tojson }},
-      completionStats: {{ completionStats | tojson }},
-      genreDistribution: {{ genreDistribution | tojson }},
-      groupBy: {{ groupBy | tojson }},
-      interval: {{ interval | tojson }}
-    };
-
-    function updateChartsIntervalFilter() {
-      const interval = document.getElementById('interval').value;
-      const customDates = document.getElementById('chartsCustomDates');
-      const groupByContainer = document.getElementById('groupByContainer');
-
-      if (interval === 'today' || interval === 'day') {
-        groupByContainer.style.display = 'none';
-      } else {
-        groupByContainer.style.display = 'flex';
-      }
-
-      if (interval === 'custom') {
-        customDates.style.display = 'flex';
-        return;
-      }
-
-      customDates.style.display = 'none';
-      updateChartsFilters();
-    }
-
-    function updateChartsDateFilter() {
-      const startDateElem = document.getElementById('startDate');
-      const endDateElem = document.getElementById('endDate');
-      const errorElem = document.getElementById('dateError');
-      const startDate = startDateElem.value;
-      const endDate = endDateElem.value;
-
-      errorElem.style.display = 'none';
-      startDateElem.style.borderColor = '';
-      endDateElem.style.borderColor = '';
-
-      if (startDate && endDate) {
-        if (new Date(startDate) > new Date(endDate)) {
-          errorElem.textContent = 'Start date cannot be after end date.';
-          errorElem.style.display = 'block';
-          startDateElem.style.borderColor = 'var(--accent)';
-          endDateElem.style.borderColor = 'var(--accent)';
-          return;
-        }
-        updateChartsFilters(true);
-      }
-    }
-
-    function updateChartsFilters(forceCustom = false) {
-      const interval = document.getElementById('interval').value;
-      const groupBy = document.getElementById('groupBy').value;
-      const params = new URLSearchParams(window.location.search);
-
-      params.set('groupBy', groupBy);
-
-      if (interval === 'custom' || forceCustom) {
-        const startDate = document.getElementById('startDate').value;
-        const endDate = document.getElementById('endDate').value;
-
-        if (!startDate || !endDate) {
-          return;
-        }
-
-        params.set('interval', 'custom');
-        params.set('startDate', startDate);
-        params.set('endDate', endDate);
-      } else {
-        params.set('interval', interval);
-        params.delete('startDate');
-        params.delete('endDate');
-      }
-
-      window.location = window.location.pathname + '?' + params.toString();
-    }
+    window.__deferInitialChartRender = true;
+    // Profile default window - the popstate fallback interval for a bare URL
+    // (no ?interval), so Back to it re-selects what the server would resolve.
+    window.__chartsDefaultInterval = {{ defaultWindow | tojson }};
   </script>
   <script src="{{ url_for('static', filename='js/chart-utils.js') }}"></script>
   <script src="{{ url_for('static', filename='js/charts.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/charts-page.js') }}"></script>
 {% endblock %}

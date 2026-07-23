@@ -496,6 +496,32 @@ def register(app, dashboard):
         isSingleDayView = interval in ("day", "today")
         lastDayDate = startDate.strftime("%Y-%m-%d") if isSingleDayView and startDate else None
 
+        # The admin's instance-wide kill switch: checked before spending any
+        # genre queries, and the whole Top Genres section hides on the template
+        # side when this is False. Cheap instance setting, so it's resolved for
+        # both the shell and the ajax payload.
+        lastfmEnabled = dashboard.repo.isLastfmGenreBackfillEnabled()
+
+        # Lightweight shell: the page's structure (filter, headings, empty
+        # canvases) renders immediately; static/js/charts-page.js then fetches
+        # the ajax payload below after first paint (and on every filter change),
+        # so none of the heavy per-range chart queries block the initial load.
+        if request.args.get("ajax") != "true":
+            return render_template(
+                "charts.html",
+                username=username,
+                section="charts",
+                interval=interval,
+                customStart=customStart,
+                customEnd=customEnd,
+                groupBy=groupBy,
+                intervalLabel=intervalLabel,
+                lastDayDate=lastDayDate,
+                isSingleDayView=isSingleDayView,
+                defaultWindow=defaultWindow,
+                lastfmEnabled=lastfmEnabled,
+            )
+
         timeSeriesGroupBy = "hour" if isSingleDayView else groupBy
 
         timeSeries = dashboard._embedTimeSeriesTextElements(
@@ -515,12 +541,6 @@ def register(app, dashboard):
         decadeDistribution = list(db.getReleaseDecadeDistribution(startDate=startDate, endDate=endDate).items())
         completionStats = db.getCompletionStats(startDate=startDate, endDate=endDate)
 
-        # The admin's instance-wide kill switch: checked before spending
-        # any genre queries, and the whole Top Genres section (chart AND
-        # its locked-progress fallback) hides on the template side when
-        # this is False - showing "add a Last.fm key" for a feature the
-        # admin turned off would be misleading.
-        lastfmEnabled = dashboard.repo.isLastfmGenreBackfillEnabled()
         genreCoverage = emptyGenreCoverage()
         genreUnlocked = False
         genreDistribution = None
@@ -535,13 +555,16 @@ def register(app, dashboard):
                 # bar chart's own display order is reversed to read ascending.
                 genreDistribution = list(reversed(distribution.items()))
 
-        return render_template(
-            "charts.html",
-            username=username,
-            section="charts",
+        # The Top Genres section's locked/unlocked structure is range-scoped
+        # (coverage over the selected window), so it's shipped as pre-rendered
+        # HTML the client swaps in - not just data - and the whole section
+        # stays hidden when the admin killed the feature.
+        genreSectionHtml = render_template(
+            "_charts_genre_section.html", genreUnlocked=genreUnlocked, genreCoverage=genreCoverage,
+        ) if lastfmEnabled else ""
+
+        return jsonify(
             interval=interval,
-            customStart=customStart,
-            customEnd=customEnd,
             groupBy=groupBy,
             intervalLabel=intervalLabel,
             lastDayDate=lastDayDate,
@@ -551,10 +574,9 @@ def register(app, dashboard):
             explicitRatio=explicitRatio,
             decadeDistribution=decadeDistribution,
             completionStats=completionStats,
-            genreCoverage=genreCoverage,
-            genreUnlocked=genreUnlocked,
             genreDistribution=genreDistribution,
-            lastfmEnabled=lastfmEnabled,
+            genreUnlocked=genreUnlocked,
+            genreSectionHtml=genreSectionHtml,
         )
     app.add_url_rule("/charts", "chartsPage", chartsPage, methods=["GET"])
 

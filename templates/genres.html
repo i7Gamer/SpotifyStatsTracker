@@ -17,8 +17,38 @@
       {% with coverage = genreCoverage %}{% include "_genre_progress.html" %}{% endwith %}
     </section>
   {% else %}
-    {# ---- Overview zone -------------------------------------------------- #}
-    <section class="card chart-card">
+    {# method/action kept for the <noscript> fallback; with JS the controls fire
+       the AJAX filter handlers in genres.js and never submit this form. #}
+    <form class="filter-section" method="get" action="{{ url_for('genresPage') }}">
+      <div class="filter-group">
+        <label for="interval">Time Period:</label>
+        <select id="interval" name="interval" onchange="updateGenresIntervalFilter()">
+          <option value="today" {% if interval == 'today' %}selected{% endif %}>Today</option>
+          <option value="day" {% if interval == 'day' %}selected{% endif %}>Yesterday</option>
+          <option value="week" {% if interval == 'week' %}selected{% endif %}>Last Week</option>
+          <option value="month" {% if interval == 'month' %}selected{% endif %}>Last Month</option>
+          <option value="year" {% if interval == 'year' %}selected{% endif %}>Last Year</option>
+          <option value="5years" {% if interval == '5years' %}selected{% endif %}>Last 5 Years</option>
+          <option value="all time" {% if interval == 'all time' %}selected{% endif %}>All Time</option>
+          <option value="custom" {% if interval == 'custom' %}selected{% endif %}>Custom Date Range</option>
+        </select>
+      </div>
+
+      <div class="filter-group custom-dates" id="genresCustomDates" {% if interval != 'custom' %}style="display: none;"{% endif %}>
+        <label for="startDate">From:</label>
+        <input type="date" id="startDate" name="startDate" value="{{ customStart }}" onchange="scheduleSearchFilter('startDate', updateGenresDateFilter)">
+        <label for="endDate">To:</label>
+        <input type="date" id="endDate" name="endDate" value="{{ customEnd }}" onchange="scheduleSearchFilter('endDate', updateGenresDateFilter)">
+        <span id="dateError" style="color: var(--accent); font-size: 0.85rem; display: none; margin-left: 10px;"></span>
+      </div>
+
+      <noscript>
+        <button class="primary-button" type="submit">Apply</button>
+      </noscript>
+    </form>
+
+    {# ---- Overview zone (canvases filled by the /genres?ajax=true payload) -- #}
+    <section class="card chart-card" id="genresOverview">
       <div class="chart-section">
         <h2>Genre Distribution</h2>
         <div class="chart-canvas-wrap" style="height: 300px;">
@@ -45,7 +75,7 @@
 
       {# Mix over time needs the full page width to be legible - its own row. #}
       <div class="chart-section" style="margin-top: 2rem;">
-        <h2>Genre Mix Over Time</h2>
+        <h2>Genre Mix &middot; <span id="genreMixLabel">{{ intervalLabel }}</span></h2>
         <div class="chart-canvas-wrap">
           <canvas id="genreMixChart"></canvas>
         </div>
@@ -53,30 +83,20 @@
       </div>
     </section>
 
-    {# ---- Per-genre drill-down zone -------------------------------------- #}
+    {# ---- Per-genre drill-down zone (chips + detail filled via AJAX) -------- #}
     <section class="card">
       <h2>Explore a Genre</h2>
-      <div class="genre-chip-row">
-        {% for name in genreNames %}
-          <a class="genre-chip {{ 'selected' if name == selectedGenre }}"
-             href="{{ url_for('genresPage', genre=name) }}" data-genre="{{ name }}">{{ name }}</a>
-        {% endfor %}
-      </div>
-
-      <div id="genreDetail">{% include "_genre_detail.html" %}</div>
+      <div class="genre-chip-row" id="genreChipRow"></div>
+      <div id="genreDetail"><p class="loading">Loading…</p></div>
     </section>
 
     {% import "_genre_macros.html" as genreMacros %}
     {{ genreMacros.lastfmAttribution(marginTop='1rem') }}
 
-    <script>
-      window.__genreData = {
-        distributionPairs: {{ distributionPairs | tojson }},
-        breadthPairs: {{ breadthPairs | tojson }},
-        mixTrend: {{ mixTrend | tojson }},
-        selectedTrend: {{ selectedTrend | tojson }},
-        clock: {{ clock | tojson }}
-      };
+    {# Initial filter state for genres.js. defaultWindow is the profile default
+       window - the popstate fallback interval for a bare URL (no ?interval). #}
+    <script type="application/json" id="genres-bootstrap">
+{{ { "interval": interval, "customStart": customStart, "customEnd": customEnd, "defaultWindow": defaultWindow } | tojson }}
     </script>
     <script src="{{ url_for('static', filename='js/chart-utils.js') }}"></script>
     <script src="{{ url_for('static', filename='js/genres.js') }}"></script>

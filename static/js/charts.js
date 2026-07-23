@@ -436,8 +436,15 @@
   window.renderTimeSeriesChart = renderTimeSeriesChart;
   // The Compare page re-renders the mirror chart after AJAX filter swaps.
   window.renderComparisonMirror = renderComparisonMirror;
+  // The /charts page fetches its data after first paint and then drives
+  // rendering itself (see charts-page.js), so it opts out of this initial
+  // render via window.__deferInitialChartRender. /compare (which sets
+  // window.__chartData inline before this script loads) renders immediately.
+  window.renderAllCharts = renderAllCharts;
 
-  renderAllCharts();
+  if (!window.__deferInitialChartRender) {
+    renderAllCharts();
+  }
 
   var resizeTimer;
   window.addEventListener('resize', function () {

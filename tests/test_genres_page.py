@@ -1,6 +1,8 @@
-"""The dedicated /genres page: the same coverage unlock gate as Charts, default
-genre selection, ?genre= override with fallback, nav-link visibility tied to the
-Last.fm kill switch, and the mix-over-time series cap."""
+"""The dedicated /genres page: a two-phase load (shell GET + ?ajax=true data
+payload), a time-period filter defaulting to the profile window, the all-time
+unlock gate, default genre selection, ?genre= override with fallback, the
+chip-click detail swap (scope=detail), nav-link visibility tied to the Last.fm
+kill switch, and the mix-over-time series cap."""
 import unittest
 from unittest.mock import patch, MagicMock
 import sys
@@ -24,8 +26,9 @@ def coverageDict(song, album, artist, total=1000):
 
 
 class GenresPageTestCase(AppTestCase):
-    def _makeDb(self, coverage=None, distribution=None):
+    def _makeDb(self, coverage=None, distribution=None, window="all time"):
         db = MagicMock()
+        db.repo.getUserSettings.return_value = {"default_dashboard_window": window, "timezone": None}
         if coverage is not None:
             db.getGenreCoverage.return_value = coverage
         if distribution is not None:
@@ -39,6 +42,7 @@ class GenresPageTestCase(AppTestCase):
         return db
 
     def _get(self, dash, db, query=""):
+        """The page shell (no ajax)."""
         client = dash.app.test_client()
         with patch.object(dash, 'is_user_logged_in', return_value=True), \
              patch.object(dash, 'get_username_for_email', return_value='alice'), \
@@ -47,7 +51,18 @@ class GenresPageTestCase(AppTestCase):
                 sess['email'] = 'alice@example.com'
             return client.get(f"/genres{query}")
 
-    def test_locked_state_when_coverage_unstubbed(self):
+    def _getData(self, dash, db, query=""):
+        """The ajax JSON payload (full, or scope=detail when the query sets it)."""
+        client = dash.app.test_client()
+        sep = "&" if query else "?"
+        with patch.object(dash, 'is_user_logged_in', return_value=True), \
+             patch.object(dash, 'get_username_for_email', return_value='alice'), \
+             patch.object(dash, 'get_user_db', return_value=db):
+            with client.session_transaction() as sess:
+                sess['email'] = 'alice@example.com'
+            return client.get(f"/genres{query}{sep}ajax=true")
+
+    def test_locked_shell_shows_progress_and_defers_data(self):
         dash = self._makeApp()
         db = self._makeDb()   #< getGenreCoverage is a bare MagicMock -> sanitizes to zeros
         resp = self._get(dash, db)
@@ -63,45 +78,80 @@ class GenresPageTestCase(AppTestCase):
         self.assertIn(b"Genre insights unlock", resp.data)
         db.getGenreDistribution.assert_not_called()
 
-    def test_unlocked_default_selection_is_top_genre(self):
+    def test_unlock_gate_uses_all_time_coverage_not_the_selected_window(self):
+        """A narrow window must not hide the page: the gate is evaluated
+        all-time (startDate/endDate both None), only the displayed data below
+        is scoped to the window."""
         dash = self._makeApp()
-        db = self._makeDb(coverage=coverageDict(80, 60, 90),
-                          distribution={"rock": 120, "indie": 80, "jazz": 40})
+        db = self._makeDb(coverage=coverageDict(80, 60, 90), distribution={"rock": 1}, window="day")
+        self._get(dash, db)
+        _, coverageKwargs = db.getGenreCoverage.call_args
+        self.assertIsNone(coverageKwargs["startDate"])
+        self.assertIsNone(coverageKwargs["endDate"])
+
+    def test_default_time_window_setting_selects_the_filter_option(self):
+        dash = self._makeApp()
+        db = self._makeDb(coverage=coverageDict(80, 60, 90), distribution={"rock": 1}, window="week")
+        resp = self._get(dash, db)
+        self.assertIn(b'<option value="week" selected>Last Week</option>', resp.data)
+
+    def test_shell_renders_overview_canvases_and_defers_data(self):
+        dash = self._makeApp()
+        db = self._makeDb(coverage=coverageDict(80, 60, 90), distribution={"rock": 120})
         resp = self._get(dash, db)
         self.assertEqual(resp.status_code, 200)
         self.assertIn(b'id="genreDistChart"', resp.data)
         self.assertIn(b'id="genreMixChart"', resp.data)
+        self.assertIn(b'id="genreChipRow"', resp.data)
+        db.getGenreDistribution.assert_not_called()
+
+    def test_ajax_full_payload_selects_top_genre_and_scopes_data(self):
+        dash = self._makeApp()
+        db = self._makeDb(coverage=coverageDict(80, 60, 90),
+                          distribution={"rock": 120, "indie": 80, "jazz": 40}, window="month")
+        resp = self._getData(dash, db)
+        payload = resp.get_json()
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["genre"], "rock")
+        self.assertIn("chipsHtml", payload)
+        self.assertIn("distributionPairs", payload)
         # First distribution genre (rock) is the default drill-down selection.
         selectedTrendCall = db.getGenreTrends.call_args_list[-1]
         self.assertEqual(selectedTrendCall.args[0], ["rock"])
+        # A non-all-time window scopes the distribution query.
+        _, distKwargs = db.getGenreDistribution.call_args
+        self.assertIsNotNone(distKwargs["startDate"])
 
-    def test_unlocked_renders_listening_clock_canvas(self):
+    def test_ajax_detail_scoped_heatmap_and_partial(self):
         dash = self._makeApp()
         db = self._makeDb(coverage=coverageDict(80, 60, 90), distribution={"rock": 120})
-        resp = self._get(dash, db)
-        self.assertIn(b'id="genreClockChart"', resp.data)
-        self.assertIn(b'Listening Clock', resp.data)
-        db.getGenreHourOfDayHeatmap.assert_called_with("rock")
+        resp = self._getData(dash, db)
+        payload = resp.get_json()
+        self.assertIn("genreClockChart", payload["detailHtml"])
+        self.assertIn("Listening Clock", payload["detailHtml"])
+        # The per-genre heatmap is fetched for the selected genre.
+        self.assertEqual(db.getGenreHourOfDayHeatmap.call_args.args[0], "rock")
 
-    def test_unlocked_renders_share_legend_and_breadth_chart(self):
+    def test_ajax_full_payload_ships_breadth_pairs(self):
         dash = self._makeApp()
         db = self._makeDb(coverage=coverageDict(80, 60, 90),
                           distribution={"rock": 120, "jazz": 40})
-        resp = self._get(dash, db)
-        body = resp.data.decode()
-        # Genre Share now has a legend element, and a companion breadth chart.
-        self.assertIn('id="genreShareLegend"', body)
-        self.assertIn('id="genreBreadthChart"', body)
-        self.assertIn('Artists per Genre', body)
+        shell = self._get(dash, db)
+        # Genre Share legend + companion breadth chart live in the shell.
+        self.assertIn(b'id="genreShareLegend"', shell.data)
+        self.assertIn(b'id="genreBreadthChart"', shell.data)
+        self.assertIn(b'Artists per Genre', shell.data)
+
+        payload = self._getData(dash, db).get_json()
         db.getGenreArtistCounts.assert_called_with(["rock", "jazz"])
         # Breadth ships as [label, value] pairs, ranked most-artists-first.
-        self.assertIn('["rock", 12]', body)
+        self.assertIn(["rock", 12], payload["breadthPairs"])
 
-    def test_ajax_returns_detail_json(self):
+    def test_ajax_detail_scope_returns_only_the_detail(self):
         dash = self._makeApp()
         db = self._makeDb(coverage=coverageDict(80, 60, 90),
                           distribution={"rock": 120, "jazz": 40})
-        resp = self._get(dash, db, query="?genre=jazz&ajax=true")
+        resp = self._getData(dash, db, query="?genre=jazz&scope=detail")
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.mimetype, "application/json")
         payload = resp.get_json()
@@ -110,13 +160,14 @@ class GenresPageTestCase(AppTestCase):
         self.assertIn("genreClockChart", payload["detailHtml"])
         self.assertIn("selectedTrend", payload)
         self.assertIn("clock", payload)
-        # AJAX detail is just the partial, not the whole page (no overview chart).
+        # scope=detail is just the partial, not the whole payload.
+        self.assertNotIn("distributionPairs", payload)
         self.assertNotIn("genreDistChart", payload["detailHtml"])
 
     def test_ajax_when_locked_returns_not_ok(self):
         dash = self._makeApp()
         db = self._makeDb(coverage=coverageDict(10, 10, 10))
-        resp = self._get(dash, db, query="?genre=rock&ajax=true")
+        resp = self._getData(dash, db, query="?genre=rock")
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.get_json(), {"ok": False})
 
@@ -124,7 +175,7 @@ class GenresPageTestCase(AppTestCase):
         dash = self._makeApp()
         db = self._makeDb(coverage=coverageDict(80, 60, 90),
                           distribution={"rock": 120, "indie": 80, "jazz": 40})
-        resp = self._get(dash, db, query="?genre=jazz")
+        resp = self._getData(dash, db, query="?genre=jazz")
         self.assertEqual(resp.status_code, 200)
         selectedTrendCall = db.getGenreTrends.call_args_list[-1]
         self.assertEqual(selectedTrendCall.args[0], ["jazz"])
@@ -133,7 +184,7 @@ class GenresPageTestCase(AppTestCase):
         dash = self._makeApp()
         db = self._makeDb(coverage=coverageDict(80, 60, 90),
                           distribution={"rock": 120, "indie": 80})
-        resp = self._get(dash, db, query="?genre=doesnotexist")
+        resp = self._getData(dash, db, query="?genre=doesnotexist")
         self.assertEqual(resp.status_code, 200)
         selectedTrendCall = db.getGenreTrends.call_args_list[-1]
         self.assertEqual(selectedTrendCall.args[0], ["rock"])
@@ -142,7 +193,7 @@ class GenresPageTestCase(AppTestCase):
         dash = self._makeApp()
         manyGenres = {f"g{i}": 100 - i for i in range(GENRE_MIX_TREND_TOP_N + 4)}
         db = self._makeDb(coverage=coverageDict(80, 60, 90), distribution=manyGenres)
-        resp = self._get(dash, db)
+        resp = self._getData(dash, db)
         self.assertEqual(resp.status_code, 200)
         # First getGenreTrends call is the mix-over-time overview chart.
         mixCall = db.getGenreTrends.call_args_list[0]

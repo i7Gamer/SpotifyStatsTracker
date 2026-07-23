@@ -1,21 +1,32 @@
-/* Genres page charts + AJAX genre switching. Reads window.__genreData (set
- * inline by genres.html) and draws with the shared window.ChartUtils primitives
- * (chart-utils.js, loaded first). Switching the drill-down genre fetches just
- * the detail partial + its two chart datasets and swaps them in place - no full
- * page reload. Self-contained, no external dependencies. */
+/* Genres page: fetches its data after first paint (the initial GET is just a
+ * shell), draws with the shared window.ChartUtils primitives (chart-utils.js,
+ * loaded first), and refreshes on filter/genre changes without a full reload.
+ *
+ * Two AJAX shapes, both against /genres:
+ *   - full (?ajax=true): overview datasets + chip row + the selected genre's
+ *     detail - fetched on load and on every time-period filter change.
+ *   - detail (?ajax=true&scope=detail): just the drill-down partial + its two
+ *     chart datasets - fetched on a chip click.
+ * All data is scoped to the selected time window; the URL carries interval/
+ * date/genre so Back/Forward and refresh reproduce the view. Self-contained. */
 (function () {
   var CU = window.ChartUtils;
   if (!CU) return;
 
+  var bootstrapEl = document.getElementById('genres-bootstrap');
+  var bootstrap = bootstrapEl ? JSON.parse(bootstrapEl.textContent) : {};
+  window.__genreData = window.__genreData || {};
+
   var GENRE_LABEL_CHAR_PX = 7;   //< approx px per char, to fit a long genre label into its bar slot
   var MIN_GENRE_LABEL_CHARS = 4;
+  var GENRE_BREADTH_LIMIT = 8;   //< keep the horizontal breadth chart to a readable height
 
   function fitGenreLabel(key, slotWidth) {
     var maxChars = Math.max(MIN_GENRE_LABEL_CHARS, Math.floor(slotWidth / GENRE_LABEL_CHAR_PX));
     return key.length > maxChars ? key.slice(0, maxChars - 1) + '…' : key;
   }
 
-  // ---- Overview charts (unchanged when the drill-down genre switches) -------
+  // ---- Overview charts (redrawn on each time-period change) -----------------
 
   function renderDistribution() {
     var pairs = (window.__genreData && window.__genreData.distributionPairs) || [];
@@ -54,8 +65,6 @@
       }).join('') : '';
     }
   }
-
-  var GENRE_BREADTH_LIMIT = 8;   //< keep the horizontal breadth chart to a readable height
 
   function renderBreadth() {
     var pairs = ((window.__genreData && window.__genreData.breadthPairs) || []).slice(0, GENRE_BREADTH_LIMIT);
@@ -117,9 +126,16 @@
     renderDetailCharts();
   }
 
-  // ---- AJAX genre switching ------------------------------------------------
+  // ---- URL helpers ---------------------------------------------------------
 
-  var loadToken = 0;
+  function pushGenresUrl(mutate) {
+    var params = new URLSearchParams(window.location.search);
+    mutate(params);
+    params.delete('ajax');
+    params.delete('scope');
+    var query = params.toString();
+    window.history.pushState({}, '', window.location.pathname + (query ? '?' + query : ''));
+  }
 
   function setSelectedChip(genre) {
     document.querySelectorAll('.genre-chip').forEach(function (chip) {
@@ -127,19 +143,88 @@
     });
   }
 
-  function loadGenre(genre, chipHref, push) {
+  //< a newer load supersedes an older one - a stale response then no-ops
+  var loadToken = 0;
+
+  // ---- Full data load (initial paint + time-period changes) ----------------
+
+  function overviewFadeTargets() {
+    return Array.prototype.slice.call(
+      document.querySelectorAll('#genresOverview .chart-canvas-wrap'));
+  }
+
+  function loadGenresData(opts) {
+    opts = opts || {};
+    var initial = !!opts.initial;
     var token = ++loadToken;
+
+    var overviewTargets = initial ? [] : overviewFadeTargets();
     var detail = document.getElementById('genreDetail');
-    if (detail) detail.classList.add('is-loading');
-    fetch('/genres?genre=' + encodeURIComponent(genre) + '&ajax=true', {
+    overviewTargets.forEach(function (t) { t.classList.add('loading-fade'); });
+    if (!initial && detail) detail.classList.add('is-loading');
+
+    var params = new URLSearchParams(window.location.search);
+    params.set('ajax', 'true');
+    params.delete('scope');
+    fetch(window.location.pathname + '?' + params.toString(), {
       headers: { 'X-Requested-With': 'XMLHttpRequest' }
     })
       .then(function (resp) { return resp.ok ? resp.json() : null; })
       .then(function (data) {
-        if (token !== loadToken) return;   //< a newer click superseded this one
+        if (token !== loadToken) return;   //< superseded by a newer load
+        //< ok:false should not happen once the shell rendered unlocked (the
+        //  gate is all-time and stable) - leave the placeholders rather than
+        //  risk a reload loop
+        if (!data || !data.ok) return;
+
+        window.__genreData.distributionPairs = data.distributionPairs;
+        window.__genreData.breadthPairs = data.breadthPairs;
+        window.__genreData.mixTrend = data.mixTrend;
+        window.__genreData.selectedTrend = data.selectedTrend;
+        window.__genreData.clock = data.clock;
+
+        var chipRow = document.getElementById('genreChipRow');
+        if (chipRow) chipRow.innerHTML = data.chipsHtml;
+        if (detail) detail.innerHTML = data.detailHtml;
+        var mixLabel = document.getElementById('genreMixLabel');
+        if (mixLabel && data.intervalLabel) mixLabel.textContent = data.intervalLabel;
+
+        renderAll();
+      })
+      .catch(function () { /* leave placeholders; token guard covers staleness */ })
+      .finally(function () {
+        if (token !== loadToken) return;
+        overviewTargets.forEach(function (t) { t.classList.remove('loading-fade'); });
+        if (detail) detail.classList.remove('is-loading');
+      });
+  }
+
+  // ---- Chip-click drill-down swap (detail only) ----------------------------
+
+  function detailFallbackUrl(genre) {
+    var params = new URLSearchParams(window.location.search);
+    params.set('genre', genre);
+    params.delete('ajax');
+    params.delete('scope');
+    return window.location.pathname + '?' + params.toString();
+  }
+
+  function loadGenreDetail(genre, push) {
+    var token = ++loadToken;
+    var detail = document.getElementById('genreDetail');
+    if (detail) detail.classList.add('is-loading');
+    var params = new URLSearchParams(window.location.search);
+    params.set('genre', genre);
+    params.set('ajax', 'true');
+    params.set('scope', 'detail');
+    fetch(window.location.pathname + '?' + params.toString(), {
+      headers: { 'X-Requested-With': 'XMLHttpRequest' }
+    })
+      .then(function (resp) { return resp.ok ? resp.json() : null; })
+      .then(function (data) {
+        if (token !== loadToken) return;
         if (!data || !data.ok) {
-          // Fall back to a real navigation if the swap can't be served.
-          window.location.href = chipHref || ('/genres?genre=' + encodeURIComponent(genre));
+          window.location.href = detailFallbackUrl(genre);
           return;
         }
         window.__genreData.selectedTrend = data.selectedTrend;
@@ -151,12 +236,12 @@
         setSelectedChip(data.genre);
         renderDetailCharts();
         if (push) {
-          history.pushState({ genre: data.genre }, '', '/genres?genre=' + encodeURIComponent(data.genre));
+          pushGenresUrl(function (p) { p.set('genre', data.genre); });
         }
       })
       .catch(function () {
         if (token !== loadToken) return;
-        window.location.href = chipHref || ('/genres?genre=' + encodeURIComponent(genre));
+        window.location.href = detailFallbackUrl(genre);
       });
   }
 
@@ -169,27 +254,79 @@
     if (!genre) return;
     evt.preventDefault();
     if (chip.classList.contains('selected')) return;   //< already showing this genre
-    loadGenre(genre, chip.getAttribute('href'), true);
+    loadGenreDetail(genre, true);
   }
 
-  var chipRow = document.querySelector('.genre-chip-row');
-  if (chipRow) {
-    chipRow.addEventListener('click', onChipClick);
-  }
+  // The chip row element persists across full loads (only its innerHTML is
+  // swapped), so this delegated listener survives every refresh.
+  var chipRow = document.getElementById('genreChipRow');
+  if (chipRow) chipRow.addEventListener('click', onChipClick);
 
-  // Back/forward within the page: re-swap to the genre in the URL without
-  // pushing a new entry. A full navigation (e.g. the detail pages' Back button)
-  // reloads /genres server-side instead and never reaches this.
+  // ---- Time-period filter handlers (globals for the inline onchange) -------
+
+  window.updateGenresIntervalFilter = function () {
+    var interval = document.getElementById('interval').value;
+    var customDates = document.getElementById('genresCustomDates');
+    if (interval === 'custom') {
+      customDates.style.display = 'flex';
+      return;   //< wait for both custom dates before fetching
+    }
+    customDates.style.display = 'none';
+    // The selected genre is kept in the URL: the server keeps it when it still
+    // has plays in the new range, else falls back to that range's top genre.
+    pushGenresUrl(function (params) {
+      params.set('interval', interval);
+      params.delete('startDate');
+      params.delete('endDate');
+    });
+    loadGenresData();
+  };
+
+  window.updateGenresDateFilter = function () {
+    var startEl = document.getElementById('startDate');
+    var endEl = document.getElementById('endDate');
+    var errorEl = document.getElementById('dateError');
+    var startDate = startEl.value, endDate = endEl.value;
+
+    errorEl.style.display = 'none';
+    startEl.style.borderColor = '';
+    endEl.style.borderColor = '';
+
+    if (startDate && endDate) {
+      if (new Date(startDate) > new Date(endDate)) {
+        errorEl.textContent = 'Start date cannot be after end date.';
+        errorEl.style.display = 'block';
+        startEl.style.borderColor = 'var(--accent)';
+        endEl.style.borderColor = 'var(--accent)';
+        return;
+      }
+      pushGenresUrl(function (params) {
+        params.set('interval', 'custom');
+        params.set('startDate', startDate);
+        params.set('endDate', endDate);
+      });
+      loadGenresData();
+    }
+  };
+
+  // Back/forward: reconcile the filter controls with the URL, then reload the
+  // full payload (which resolves the genre from the URL too).
   window.addEventListener('popstate', function () {
     var params = new URLSearchParams(window.location.search);
-    var genre = params.get('genre');
-    var selected = document.querySelector('.genre-chip.selected');
-    if (genre && (!selected || selected.getAttribute('data-genre') !== genre)) {
-      loadGenre(genre, null, false);
-    }
+    var hasCustom = params.get('startDate') && params.get('endDate');
+    var interval = hasCustom ? 'custom' : (params.get('interval') || bootstrap.defaultWindow || 'day');
+    var intervalEl = document.getElementById('interval');
+    if (intervalEl) intervalEl.value = interval;
+    var startEl = document.getElementById('startDate');
+    var endEl = document.getElementById('endDate');
+    if (startEl) startEl.value = params.get('startDate') || '';
+    if (endEl) endEl.value = params.get('endDate') || '';
+    var customDates = document.getElementById('genresCustomDates');
+    if (customDates) customDates.style.display = (interval === 'custom') ? 'flex' : 'none';
+    loadGenresData();
   });
 
-  renderAll();
+  loadGenresData({ initial: true });
 
   var resizeTimer;
   window.addEventListener('resize', function () {

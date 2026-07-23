@@ -1,0 +1,16 @@
+{# The body of the Charts "Top Genres" section - either the unlocked bar chart
+   (drawn client-side by charts.js from window.__chartData.genreDistribution)
+   or the locked coverage-progress fallback. Rendered both into the shell's
+   #chartsGenreSection placeholder via the /charts?ajax=true payload (its
+   coverage is range-scoped, so the locked/unlocked structure can change with
+   the filter and must ship as HTML, not just data).
+   Expects: genreUnlocked, genreCoverage. #}
+{% if genreUnlocked %}
+  <div class="chart-canvas-wrap" style="height: 300px;">
+    <canvas id="genreChart"></canvas>
+  </div>
+  {% import "_genre_macros.html" as genreMacros %}
+  {{ genreMacros.lastfmAttribution(marginTop='0.5rem') }}
+{% else %}
+  {% with coverage = genreCoverage %}{% include "_genre_progress.html" %}{% endwith %}
+{% endif %}

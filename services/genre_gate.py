@@ -126,22 +126,22 @@ def resolveGenreStats(db, genre, startDate, endDate) -> dict:
     return stats if isinstance(stats, dict) else empty
 
 
-def resolveTopArtistsForGenre(db, genre, limit) -> list:
-    """Top artists for one genre; [] when the lookup fails or returns a
-    non-list (stubbed dbs)."""
+def resolveTopArtistsForGenre(db, genre, limit, startDate=None, endDate=None) -> list:
+    """Top artists for one genre over a date range (all-time when both dates
+    are None); [] when the lookup fails or returns a non-list (stubbed dbs)."""
     try:
-        artists = db.getTopArtistsForGenre(genre, limit)
+        artists = db.getTopArtistsForGenre(genre, limit, startDate=startDate, endDate=endDate)
     except Exception as e:
         logger.warning("Top artists for genre lookup failed: %s", e)
         return []
     return artists if isinstance(artists, list) else []
 
 
-def resolveTopTracksForGenre(db, genre, limit) -> list:
-    """Top tracks for one genre; [] when the lookup fails or returns a
-    non-list (stubbed dbs)."""
+def resolveTopTracksForGenre(db, genre, limit, startDate=None, endDate=None) -> list:
+    """Top tracks for one genre over a date range (all-time when both dates
+    are None); [] when the lookup fails or returns a non-list (stubbed dbs)."""
     try:
-        tracks = db.getTopTracksForGenre(genre, limit)
+        tracks = db.getTopTracksForGenre(genre, limit, startDate=startDate, endDate=endDate)
     except Exception as e:
         logger.warning("Top tracks for genre lookup failed: %s", e)
         return []
@@ -166,11 +166,12 @@ def emptyHeatmapGrid() -> list:
     return [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
 
 
-def resolveGenreHeatmap(db, genre) -> list:
-    """Per-genre listening-clock grid for a user db; a zeroed 7x24 grid when
-    the lookup fails or returns a non-list (stubbed dbs)."""
+def resolveGenreHeatmap(db, genre, startDate=None, endDate=None) -> list:
+    """Per-genre listening-clock grid for a user db over a date range (all-time
+    when both dates are None); a zeroed 7x24 grid when the lookup fails or
+    returns a non-list (stubbed dbs)."""
     try:
-        grid = db.getGenreHourOfDayHeatmap(genre)
+        grid = db.getGenreHourOfDayHeatmap(genre, startDate=startDate, endDate=endDate)
     except Exception as e:
         logger.warning("Genre heatmap lookup failed: %s", e)
         return emptyHeatmapGrid()
