@@ -2494,6 +2494,11 @@ html.theme-red {
   display: inline-block;
 }
 
+/* Account menu sits at the far right of the nav, apart from the content items. */
+.nav-account-dropdown {
+  margin-left: auto;
+}
+
 .dropdown-trigger {
   color: var(--muted);
   cursor: pointer;
@@ -2578,6 +2583,11 @@ html.theme-red {
     display: block;
     width: 100%;
     text-align: center;
+  }
+
+  /* No right-push in the stacked mobile menu - just another flattened section. */
+  .nav-account-dropdown {
+    margin-left: 0;
   }
 
   .dropdown-trigger {

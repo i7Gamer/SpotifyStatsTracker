@@ -220,6 +220,20 @@ class DashboardCardsTestCase(AppTestCase):
         self.assertIn(b"820 / 1,000 lifetime plays", resp.data)
         db.getPlayTotals.assert_called_once()
 
+    def test_nav_groups_analytics_and_account(self):
+        # The analytics pages live under an Insights dropdown; account/management
+        # pages plus Log out live under the right-aligned Account dropdown.
+        dash = self._makeApp()
+        resp = self._get(dash, self._makeDb())
+        body = resp.data
+        self.assertIn(b"Insights", body)
+        self.assertIn(b">Charts</a>", body)
+        self.assertIn(b">Wrapped</a>", body)
+        self.assertIn(b"nav-account-dropdown", body)
+        self.assertIn(b">Profile</a>", body)
+        self.assertIn(b">Import</a>", body)
+        self.assertIn(b">Log out</a>", body)   #< previously only reachable from the Profile page
+
     def test_discover_card_placeholder_rendered_when_lastfm_enabled(self):
         # The dashboard render only emits the (empty) Discover card shell; its
         # contents are fetched by JS from /api/dashboard-discover after load,

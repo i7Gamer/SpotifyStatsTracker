@@ -75,19 +75,32 @@
             <a class="{{ 'active' if section == 'top_albums' }}" {% if section == 'top_albums' %}aria-current="page"{% endif %} href="{{ url_for('topAlbumsPage', q=currentQuery) if currentQuery else url_for('topAlbumsPage') }}">Top Albums</a>
           </div>
         </div>
-        <a class="{{ 'active' if section == 'charts' }}" {% if section == 'charts' %}aria-current="page"{% endif %} href="{{ url_for('chartsPage') }}">Charts</a>
-        {% if lastfm_genre_enabled %}
-        <a class="{{ 'active' if section == 'genres' }}" {% if section == 'genres' %}aria-current="page"{% endif %} href="{{ url_for('genresPage') }}">Genres</a>
-        {% endif %}
-        <a class="{{ 'active' if section == 'wrapped' }}" {% if section == 'wrapped' %}aria-current="page"{% endif %} href="{{ url_for('wrappedPage') }}">Wrapped</a>
+        {% set insights_active = section in ['charts', 'genres', 'wrapped'] %}
+        <div class="nav-item-dropdown {% if insights_active %}active-parent{% endif %}">
+          <span class="dropdown-trigger">Insights <span class="chevron">▾</span></span>
+          <div class="dropdown-content">
+            <a class="{{ 'active' if section == 'charts' }}" {% if section == 'charts' %}aria-current="page"{% endif %} href="{{ url_for('chartsPage') }}">Charts</a>
+            {% if lastfm_genre_enabled %}
+            <a class="{{ 'active' if section == 'genres' }}" {% if section == 'genres' %}aria-current="page"{% endif %} href="{{ url_for('genresPage') }}">Genres</a>
+            {% endif %}
+            <a class="{{ 'active' if section == 'wrapped' }}" {% if section == 'wrapped' %}aria-current="page"{% endif %} href="{{ url_for('wrappedPage') }}">Wrapped</a>
+          </div>
+        </div>
         {% if hasAcceptedShares %}
         <a class="{{ 'active' if section == 'compare' }}" {% if section == 'compare' %}aria-current="page"{% endif %} href="{{ url_for('comparePage') }}">Compare</a>
         {% endif %}
-        <a class="{{ 'active' if section == 'import' }}" {% if section == 'import' %}aria-current="page"{% endif %} href="{{ url_for('importPage') }}">Import</a>
-        <a class="{{ 'active' if section == 'profile' }}" {% if section == 'profile' %}aria-current="page"{% endif %} href="{{ url_for('profilePage') }}">Profile</a>
-        {% if isAdmin %}
-        <a class="{{ 'active' if section == 'admin' }}" {% if section == 'admin' %}aria-current="page"{% endif %} href="{{ url_for('adminPage') }}">Admin</a>
-        {% endif %}
+        {% set account_active = section in ['profile', 'import', 'admin'] %}
+        <div class="nav-item-dropdown nav-account-dropdown {% if account_active %}active-parent{% endif %}">
+          <span class="dropdown-trigger">{{ session.get('username') or 'Account' }} <span class="chevron">▾</span></span>
+          <div class="dropdown-content">
+            <a class="{{ 'active' if section == 'profile' }}" {% if section == 'profile' %}aria-current="page"{% endif %} href="{{ url_for('profilePage') }}">Profile</a>
+            <a class="{{ 'active' if section == 'import' }}" {% if section == 'import' %}aria-current="page"{% endif %} href="{{ url_for('importPage') }}">Import</a>
+            {% if isAdmin %}
+            <a class="{{ 'active' if section == 'admin' }}" {% if section == 'admin' %}aria-current="page"{% endif %} href="{{ url_for('adminPage') }}">Admin</a>
+            {% endif %}
+            <a href="{{ url_for('logout') }}">Log out</a>
+          </div>
+        </div>
       </nav>
     </header>
 
