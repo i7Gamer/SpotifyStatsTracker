@@ -993,6 +993,36 @@ progress::-moz-progress-bar {
   border: 1px solid var(--accent);
 }
 
+/* "Play now" button on the detail-page hero card: same pill as its sibling
+   labels, but styled as an action (accent fill + pointer) - it toggles the
+   embedded Spotify player rather than linking out. */
+.play-now-button {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  background: var(--accent-glow);
+  border: 1px solid var(--accent);
+  transition: box-shadow 0.15s ease;
+}
+
+.play-now-button:hover {
+  box-shadow: 0 0 8px var(--accent-glow);
+}
+
+/* The embedded Spotify player, revealed between the hero card and the charts
+   by static/js/play-embed.js (hidden until the button is pressed). */
+.play-embed {
+  margin: 1.5rem 0;
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.play-embed iframe {
+  display: block;
+  width: 100%;
+  border: 0;
+}
+
 /* Desktop: pull genre badges out of .track-attributes' flow and overflow
    them above the card's top-right corner, overlapping the header instead of
    reserving space for them. .has-genres is only added by the template when

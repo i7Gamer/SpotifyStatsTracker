@@ -115,6 +115,12 @@ LOGIN_CHECK_MAX_START_DELAY_SECONDS = 300
 # onerror=, style=...), none of which are nonce/hash-tagged - disallowing
 # unsafe-inline here would break the app outright, not just tighten it.
 # Google Fonts is the only external resource any template actually loads.
+# The two Spotify hosts exist solely for the detail pages' "Play now" embed
+# (lazily loaded, only after a click): open.spotify.com serves the iFrame API
+# loader script and the player iframe, and embed-cdn.spotifycdn.com serves the
+# loader's actual payload script - hence both a script-src and a frame-src
+# allowance. frame-ancestors 'none'/X-Frame-Options restrict others framing
+# *this* app and are unaffected by us framing Spotify.
 # Strict-Transport-Security is NOT in this baseline dict: it's opt-in via the
 # ENABLE_HSTS env var (see _hstsEnabled/_setSecurityHeaders in app.py). Kept
 # off by default because this app is normally self-hosted over plain HTTP on a
@@ -126,11 +132,12 @@ SECURITY_HEADERS = {
     "Referrer-Policy": "same-origin",
     "Content-Security-Policy": (
         "default-src 'self'; "
-        "script-src 'self' 'unsafe-inline'; "
+        "script-src 'self' 'unsafe-inline' https://open.spotify.com https://embed-cdn.spotifycdn.com; "
         "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
         "font-src 'self' https://fonts.gstatic.com; "
         "img-src 'self' data:; "
         "connect-src 'self'; "
+        "frame-src https://open.spotify.com; "
         "object-src 'none'; "
         "base-uri 'self'; "
         "form-action 'self'; "

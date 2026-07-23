@@ -208,8 +208,16 @@
           {% endfor %}
         </div>
         {% endif %}
+        {% set playNowButton = playNowButton if playNowButton is defined else false %}
         {% if track.get('url') %}
-          <a class="track-label track-spotify-link" href="{{ track.get('url') }}" target="_blank" rel="noreferrer noopener">Open in Spotify ↗</a>
+          {% if playNowButton %}
+            {% set playNowEmbedType = {'top_artists': 'artist', 'top_albums': 'album'}.get(section, 'track') %}
+            <button type="button" class="track-label track-spotify-link play-now-button"
+                    data-spotify-url="{{ track.get('url') }}" data-embed-type="{{ playNowEmbedType }}"
+                    aria-expanded="false" aria-controls="play-embed">Play now</button>
+          {% else %}
+            <a class="track-label track-spotify-link" href="{{ track.get('url') }}" target="_blank" rel="noreferrer noopener">Open in Spotify ↗</a>
+          {% endif %}
         {% endif %}
       </div>
     </div>

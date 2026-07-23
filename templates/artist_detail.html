@@ -36,8 +36,16 @@
     {% set track = artist %}
     {% set section = 'top_artists' %}
     {% set item_number = '' %}
+    {% set playNowButton = true %}
     {% include '_track_card.html' %}
   </section>
+  {% set playNowButton = false %}
+
+  {% if artist.get('url') %}
+  <section id="play-embed" class="play-embed" hidden>
+    <div id="play-embed-slot"></div>
+  </section>
+  {% endif %}
 
   {% if artist_bio_enabled and artist.get('bio') %}
   <section class="card biography-card">
@@ -97,4 +105,5 @@
   <script src="{{ url_for('static', filename='js/chart-utils.js') }}"></script>
   <script src="{{ url_for('static', filename='js/charts.js') }}"></script>
   <script src="{{ url_for('static', filename='js/detail-chart.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/play-embed.js') }}"></script>
 {% endblock %}

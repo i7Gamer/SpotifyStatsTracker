@@ -57,8 +57,9 @@ class TestSecurityHeaders(AppTestCase):
 
     def test_csp_does_not_allow_arbitrary_external_connect_or_script_hosts(self):
         """default-src/connect-src/script-src must only allowlist 'self' (plus
-        the inline-script/style exception this app's own templates need) -
-        nothing pointing at an arbitrary third party."""
+        the inline-script/style exception this app's own templates need and the
+        two named Spotify embed hosts) - nothing pointing at an arbitrary third
+        party, and no wildcards."""
         dash = self._makeApp()
         client = dash.app.test_client()
 
@@ -67,6 +68,25 @@ class TestSecurityHeaders(AppTestCase):
 
         self.assertIn("connect-src 'self'", csp)
         self.assertNotIn("*", csp)
+
+    def test_csp_allows_the_spotify_embed_frame_and_api_script(self):
+        """The detail pages' Play now embed loads Spotify's iFrame API loader
+        (from open.spotify.com), whose payload script comes from
+        embed-cdn.spotifycdn.com, and frames the player from open.spotify.com.
+        All three hosts must be allowlisted; framing *this* app by others stays
+        forbidden (frame-ancestors/X-Frame-Options untouched)."""
+        dash = self._makeApp()
+        client = dash.app.test_client()
+
+        resp = client.get("/login")
+        csp = resp.headers.get("Content-Security-Policy", "")
+
+        scriptSrc = next(d for d in csp.split(";") if d.strip().startswith("script-src"))
+        self.assertIn("https://open.spotify.com", scriptSrc)
+        self.assertIn("https://embed-cdn.spotifycdn.com", scriptSrc)
+        self.assertIn("frame-src https://open.spotify.com", csp)
+        self.assertIn("frame-ancestors 'none'", csp)
+        self.assertEqual(resp.headers.get("X-Frame-Options"), "DENY")
 
 
 class TestHstsToggleParsing(unittest.TestCase):

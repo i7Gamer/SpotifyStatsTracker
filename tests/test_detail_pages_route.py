@@ -135,7 +135,7 @@ class TestSongDetailRoute(_DetailRouteTestBase):
         self.assertLess(durationLabelIdx, genreContainerIdx)
         self.assertLess(genreContainerIdx, attributesCloseIdx)
 
-    def test_spotify_link_renders_last_after_genre_badges(self):
+    def test_play_now_button_renders_last_after_genre_badges(self):
         dash = self._makeApp()
         db = MagicMock()
         db.getSong.return_value = self._song()
@@ -146,10 +146,86 @@ class TestSongDetailRoute(_DetailRouteTestBase):
         resp = self._getPath(dash, db, "/song/t1")
         body = resp.data.decode()
 
-        self.assertIn('class="track-label track-spotify-link"', body)
+        self.assertIn('class="track-label track-spotify-link play-now-button"', body)
         genreContainerIdx = body.index('class="genre-badges-container"')
-        spotifyLinkIdx = body.index('class="track-label track-spotify-link"')
-        self.assertLess(genreContainerIdx, spotifyLinkIdx)
+        buttonIdx = body.index('class="track-label track-spotify-link play-now-button"')
+        self.assertLess(genreContainerIdx, buttonIdx)
+
+    def test_play_now_button_replaces_open_in_spotify_on_the_hero_card(self):
+        dash = self._makeApp()
+        db = MagicMock()
+        db.getSong.return_value = self._song()
+        db.getListeningTimeSeries.return_value = []
+        db.getHourOfDayHeatmap.return_value = [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
+
+        resp = self._getPath(dash, db, "/song/t1")
+
+        self.assertIn(b'play-now-button', resp.data)
+        self.assertNotIn(b'Open in Spotify', resp.data)
+        self.assertIn(b'data-spotify-url="http://example.com/t1"', resp.data)
+        self.assertIn(b'data-embed-type="track"', resp.data)
+
+    def test_play_embed_container_renders_hidden_between_card_and_charts(self):
+        dash = self._makeApp()
+        db = MagicMock()
+        db.getSong.return_value = self._song()
+        db.getListeningTimeSeries.return_value = []
+        db.getHourOfDayHeatmap.return_value = [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
+
+        resp = self._getPath(dash, db, "/song/t1")
+        body = resp.data.decode()
+
+        self.assertIn('id="play-embed"', body)
+        embedTag = body[body.index('id="play-embed"'):body.index('>', body.index('id="play-embed"')) + 1]
+        self.assertIn('hidden', embedTag)
+        trackListIdx = body.index('id="track-list"')
+        embedIdx = body.index('id="play-embed"')
+        chartCardIdx = body.index('chart-card')
+        self.assertLess(trackListIdx, embedIdx)
+        self.assertLess(embedIdx, chartCardIdx)
+
+    def test_play_embed_renders_even_when_the_chart_section_is_absent(self):
+        dash = self._makeApp()
+        db = MagicMock()
+        song = self._song()
+        song["plays"] = 1   #< single play => no Play History chart section
+        db.getSong.return_value = song
+        db.getListeningTimeSeries.return_value = []
+        db.getHourOfDayHeatmap.return_value = [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
+
+        resp = self._getPath(dash, db, "/song/t1")
+
+        self.assertNotIn(b'id="timeSeriesChart"', resp.data)
+        self.assertIn(b'id="play-embed"', resp.data)
+
+    def test_no_play_button_or_embed_for_a_fabricated_song(self):
+        """A deleted/unavailable track has an empty url (a fabricated md5 id) -
+        it gets neither the Spotify anchor nor a Play now button/embed, same
+        guard the anchor always used."""
+        dash = self._makeApp()
+        db = MagicMock()
+        song = self._song()
+        song["url"] = ""
+        db.getSong.return_value = song
+        db.getListeningTimeSeries.return_value = []
+        db.getHourOfDayHeatmap.return_value = [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
+
+        resp = self._getPath(dash, db, "/song/t1")
+
+        self.assertNotIn(b'play-now-button', resp.data)
+        self.assertNotIn(b'track-spotify-link', resp.data)
+        self.assertNotIn(b'id="play-embed"', resp.data)
+
+    def test_play_embed_script_is_included(self):
+        dash = self._makeApp()
+        db = MagicMock()
+        db.getSong.return_value = self._song()
+        db.getListeningTimeSeries.return_value = []
+        db.getHourOfDayHeatmap.return_value = [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
+
+        resp = self._getPath(dash, db, "/song/t1")
+
+        self.assertIn(b'js/play-embed.js', resp.data)
 
     def test_track_card_gets_has_genres_class_only_when_genres_exist(self):
         dash = self._makeApp()
@@ -421,6 +497,27 @@ class TestArtistDetailRoute(_DetailRouteTestBase):
         db.lazyFetchArtistBio.assert_not_called()
         db.getArtistBio.assert_not_called()
 
+    def test_hero_gets_play_button_but_song_sublist_keeps_spotify_anchors(self):
+        """Only the hero artist card becomes a Play now button; the songs
+        sub-list below (a second _track_card.html include) must keep its normal
+        Open in Spotify anchors - the playNowButton flag must not leak into
+        that loop's shared page context."""
+        dash = self._makeApp()
+        db = MagicMock()
+        db.getArtist.return_value = self._artist()
+        db.getArtistBio.return_value = None
+        db.getSongsStats.return_value = [
+            self._song("t1", "Song One", firstListenedAt=100),
+            self._song("t2", "Song Two", firstListenedAt=200),
+        ]
+        db.getListeningTimeSeries.return_value = []
+
+        resp = self._getPath(dash, db, "/artist/a1")
+
+        self.assertEqual(resp.data.count(b'play-now-button'), 1)
+        self.assertIn(b'data-embed-type="artist"', resp.data)
+        self.assertIn(b'Open in Spotify', resp.data)
+
     def test_first_song_you_listened_to_is_shown(self):
         dash = self._makeApp()
         db = MagicMock()
@@ -610,6 +707,22 @@ class TestAlbumDetailRoute(_DetailRouteTestBase):
         db.getSongsStats.assert_not_called()
         db.lazyFetchAlbumBio.assert_not_called()
         db.getAlbumBio.assert_not_called()
+
+    def test_hero_gets_play_button_but_song_sublist_keeps_spotify_anchors(self):
+        """Only the hero album card becomes a Play now button; the tracklist
+        below keeps its Open in Spotify anchors (playNowButton flag must not
+        leak into that loop's shared page context)."""
+        dash = self._makeApp()
+        db = MagicMock()
+        db.getAlbum.return_value = self._album()
+        db.getSongsStats.return_value = [self._song("t1", 100), self._song("t2", 200)]
+        db.getListeningTimeSeries.return_value = []
+
+        resp = self._getPath(dash, db, "/album/alb1")
+
+        self.assertEqual(resp.data.count(b'play-now-button'), 1)
+        self.assertIn(b'data-embed-type="album"', resp.data)
+        self.assertIn(b'Open in Spotify', resp.data)
 
     def test_unique_song_count_card_is_shown(self):
         dash = self._makeApp()
