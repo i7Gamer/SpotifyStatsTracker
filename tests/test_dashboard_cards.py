@@ -191,7 +191,10 @@ class DashboardCardsTestCase(AppTestCase):
         resp = self._get(dash, db)
 
         self.assertIn(b"streak-calendar-card", resp.data)
-        self.assertIn(b'title="7 plays on 2026-07-20"', resp.data)
+        # The play count/date live on data-* attrs now (the JS overlay reads them);
+        # the native title hint was replaced by a cursor-following tooltip.
+        self.assertIn(b'data-count="7" data-date="2026-07-20"', resp.data)
+        self.assertNotIn(b'title="7 plays on 2026-07-20"', resp.data)
         self.assertIn(b'data-level="4"', resp.data)   # busiest day is the top heat level
 
     def test_streak_calendar_absent_when_no_grid(self):

@@ -89,7 +89,7 @@
             {% for week in listeningCalendar.weeks %}{% for cell in week %}
             <span class="streak-calendar-day{% if cell.future %} is-future{% endif %}{% if cell.today %} is-today{% endif %}"
                   data-level="{{ cell.level }}"{% if not cell.future %}
-                  title="{{ cell.count }} play{{ 's' if cell.count != 1 else '' }} on {{ cell.date }}"{% endif %}></span>
+                  data-count="{{ cell.count }}" data-date="{{ cell.date }}"{% endif %}></span>
             {% endfor %}{% endfor %}
           </div>
         </div>
@@ -394,6 +394,55 @@
           // a locked/empty message that isn't actually true.
           loadingEl.style.display = 'none';
         });
+    })();
+
+    // Listening calendar: a cursor-following overlay on hover (like the charts
+    // page tooltips), replacing the native `title` hint so the day's play count
+    // shows instantly instead of after the browser's slow title-hover delay.
+    // Reuses the global #chartTooltip element + .chart-tooltip styling and is
+    // delegated off the grid so all ~370 day cells share a single handler.
+    (function () {
+      var grid = document.querySelector('.streak-calendar-grid');
+      if (!grid) return;
+
+      function ensureTooltip() {
+        var tip = document.getElementById('chartTooltip');
+        if (!tip) {
+          tip = document.createElement('div');
+          tip.id = 'chartTooltip';
+          tip.className = 'chart-tooltip';
+          document.body.appendChild(tip);
+        }
+        return tip;
+      }
+
+      function hideTooltip() {
+        var tip = document.getElementById('chartTooltip');
+        if (tip) tip.style.display = 'none';
+      }
+
+      // Build the date from its parts so the label doesn't slip a day in
+      // timezones behind UTC (new Date("2026-07-20") parses as UTC midnight).
+      function formatDay(iso) {
+        var p = iso.split('-');
+        var d = new Date(+p[0], (+p[1]) - 1, +p[2]);
+        return d.toLocaleDateString(undefined,
+          { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+      }
+
+      grid.addEventListener('mousemove', function (evt) {
+        // Future cells carry no data-date, so they (and the gaps) get no tooltip.
+        var cell = evt.target.closest('.streak-calendar-day[data-date]');
+        if (!cell) { hideTooltip(); return; }
+        var count = cell.getAttribute('data-count');
+        var tip = ensureTooltip();
+        tip.innerHTML = '<strong>' + formatDay(cell.getAttribute('data-date')) +
+          '</strong><br>' + count + ' play' + (count === '1' ? '' : 's');
+        tip.style.left = (evt.clientX + 14) + 'px';
+        tip.style.top = (evt.clientY + 14) + 'px';
+        tip.style.display = 'block';
+      });
+      grid.addEventListener('mouseleave', hideTooltip);
     })();
   </script>
 {% endblock %}
