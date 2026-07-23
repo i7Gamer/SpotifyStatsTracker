@@ -322,6 +322,14 @@ class TestAdminUserSettings(AdminRouteTestBase):
         self._post(dash, "/admin/user_settings", isAdmin=True, data={"email_verification": "1"})
         self.assertTrue(dash.repo.isEmailVerificationEnabled())
 
+    def test_toggles_milestones(self):
+        dash = self._makeApp()
+        self.assertTrue(dash.repo.isMilestonesEnabled())
+        self._post(dash, "/admin/user_settings", isAdmin=True, data={})   #< nothing checked -> disabled
+        self.assertFalse(dash.repo.isMilestonesEnabled())
+        self._post(dash, "/admin/user_settings", isAdmin=True, data={"milestones": "1"})
+        self.assertTrue(dash.repo.isMilestonesEnabled())
+
 
 class TestAdminSkipSettings(AdminRouteTestBase):
     def test_non_admin_post_is_forbidden(self):

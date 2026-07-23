@@ -320,8 +320,8 @@ def register(app, dashboard):
 
     def adminUserSettings():
         """Admin-only: instance-wide toggles for data sharing (Compare +
-        share requests), new user registration, and public Wrapped share
-        links - see Database/repository.py's app_settings."""
+        share requests), new user registration, public Wrapped share links,
+        and achievement milestones - see Database/repository.py's app_settings."""
         email, username, db = dashboard.get_current_user_or_redirect()
         if not email:
             return redirect(url_for("login", next=url_for("adminPage")))
@@ -332,6 +332,7 @@ def register(app, dashboard):
         dashboard.repo.setRegistrationEnabled(request.form.get("registration") == "1")
         dashboard.repo.setShareLinksEnabled(request.form.get("share_links") == "1")
         dashboard.repo.setEmailVerificationEnabled(request.form.get("email_verification") == "1")
+        dashboard.repo.setMilestonesEnabled(request.form.get("milestones") == "1")
         return redirect(url_for("adminPage"))
     app.add_url_rule("/admin/user_settings", "adminUserSettings", adminUserSettings, methods=["POST"])
 

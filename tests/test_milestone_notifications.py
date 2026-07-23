@@ -84,6 +84,17 @@ class TestMilestoneTopbarBadge(_BadgeTestCase):
 
         self.assertNotIn(b"milestone-badge", resp.data)
 
+    def test_badge_hidden_when_feature_disabled(self):
+        # Admin kill switch hides the badge without deleting the rows (same
+        # contract as data-sharing's toggle zeroing the share badges).
+        client = self._loginAs("alice", "alice@example.com")
+        self.dash.repo.recordMilestone("alice", "plays", 1000, None, 1.0, seen=False)
+        self.dash.repo.setMilestonesEnabled(False)
+
+        resp = client.get("/import")
+
+        self.assertNotIn(b"milestone-badge", resp.data)
+
 
 class TestProfileMilestonesSection(_BadgeTestCase):
     def test_lists_milestone_and_clears_badge(self):
@@ -116,6 +127,17 @@ class TestProfileMilestonesSection(_BadgeTestCase):
 
         self.assertIn(b"No milestones yet", resp.data)
 
+    def test_section_hidden_when_feature_disabled(self):
+        client = self._loginAs("alice", "alice@example.com")
+        self.dash.repo.recordMilestone("alice", "plays", 1000, None, 1609459200.0, seen=True)
+        self.dash.repo.setMilestonesEnabled(False)
+
+        resp = client.get("/profile")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotIn(b"milestones-section", resp.data)
+        self.assertNotIn(b"1,000 lifetime plays", resp.data)
+
 
 class TestDetectionWiring(AppTestCase):
     def test_ensure_all_users_login_runs_detection(self):
@@ -136,6 +158,19 @@ class TestDetectionWiring(AppTestCase):
         dash = self._makeApp()
         with patch("app.detectMilestones", side_effect=RuntimeError("boom")):
             dash._detectMilestonesSafely(MagicMock(), "alice")   #< must not raise
+
+    def test_detection_skipped_when_feature_disabled(self):
+        dash = self._makeApp()
+        dash.repo.setMilestonesEnabled(False)
+        db = MagicMock()
+        db.getListenerHealth.return_value = {"status": "OK"}
+        db.listener.thread.is_alive.return_value = True
+        with patch.object(dash.repo, "getAllUsersWithCookies", return_value=[("alice", "alice@example.com")]), \
+             patch.object(dash, "get_user_db", return_value=db), \
+             patch("app.detectMilestones") as mockDetect:
+            dash._ensureAllUsersLogin()
+
+        mockDetect.assert_not_called()
 
 
 if __name__ == "__main__":

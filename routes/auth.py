@@ -391,12 +391,16 @@ def register(app, dashboard):
         # Achievement milestones (newest first) for the Milestones section, then
         # clear the topbar "new milestone" badge - reaching this render means the
         # user is looking at them, same acknowledgment pattern as the accepted-
-        # share notification above.
-        milestones = [
-            {**formatMilestone(row), "dateText": dateToString(row["achieved_at"], tz=db.tz)}
-            for row in dashboard.repo.getMilestonesForUser(username)
-        ]
-        dashboard.repo.markMilestonesSeen(username)
+        # share notification above. Skipped entirely when the admin kill switch
+        # is off (the section is hidden then, so don't build the list or clear
+        # the badge - milestones_enabled comes from _injectMilestoneStatus).
+        milestones = []
+        if dashboard.repo.isMilestonesEnabled():
+            milestones = [
+                {**formatMilestone(row), "dateText": dateToString(row["achieved_at"], tz=db.tz)}
+                for row in dashboard.repo.getMilestonesForUser(username)
+            ]
+            dashboard.repo.markMilestonesSeen(username)
 
         return render_template(
             "profile.html",

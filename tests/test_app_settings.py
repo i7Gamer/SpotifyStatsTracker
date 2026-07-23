@@ -11,6 +11,7 @@ from conftest import DatabaseTestCase
 from Database.repository import (
     SPOTIFY_BACKFILL_SETTING_KEY, LASTFM_BACKFILL_SETTING_KEY,
     DATA_SHARING_SETTING_KEY, REGISTRATION_SETTING_KEY,
+    MILESTONES_SETTING_KEY,
 )
 
 
@@ -30,6 +31,8 @@ class FeatureToggleTestCase(DatabaseTestCase):
              DATA_SHARING_SETTING_KEY),
             (db.repo.isRegistrationEnabled, db.repo.setRegistrationEnabled,
              REGISTRATION_SETTING_KEY),
+            (db.repo.isMilestonesEnabled, db.repo.setMilestonesEnabled,
+             MILESTONES_SETTING_KEY),
         )
 
     def test_defaults_to_enabled_when_never_set(self):

@@ -18,6 +18,7 @@
       <p class="success" style="color: #4aff4a; margin-bottom: 1rem;">{{ success }}</p>
     {% endif %}
 
+    {% if milestones_enabled %}
     <h2>Milestones</h2>
     <div class="milestones-section" style="margin-bottom: 2rem; padding-bottom: 2rem; border-bottom: 1px solid var(--border-color, #2d2d2d);">
       {% if milestones %}
@@ -36,6 +37,7 @@
         <p class="milestone-empty">No milestones yet &mdash; keep listening and they'll show up here as you hit play-count, listening-time, and streak achievements.</p>
       {% endif %}
     </div>
+    {% endif %}
 
     <h2>Preferences</h2>
     <form class="login-form" method="post" action="{{ url_for('profilePage') }}" style="margin-bottom: 2rem; padding-bottom: 2rem; border-bottom: 1px solid var(--border-color, #2d2d2d);">

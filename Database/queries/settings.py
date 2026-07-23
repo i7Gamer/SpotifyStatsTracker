@@ -335,6 +335,16 @@ class SettingQueries:
     def setAlbumBioEnabled(self, enabled: bool) -> None:
         self._setFeatureEnabled(ALBUM_BIO_SETTING_KEY, enabled)
 
+    def isMilestonesEnabled(self) -> bool:
+        """Whether the achievement-milestones feature is on instance-wide
+        (absent row = enabled). Gates background detection plus the topbar badge
+        and the /profile Milestones section - disabling hides them without
+        deleting recorded rows, so re-enabling restores the history."""
+        return self._isFeatureEnabled(MILESTONES_SETTING_KEY)
+
+    def setMilestonesEnabled(self, enabled: bool) -> None:
+        self._setFeatureEnabled(MILESTONES_SETTING_KEY, enabled)
+
     def getRecentRegistrationCounts(self) -> dict:
         """How many accounts were created in the last 7/30 days - an admin
         activity signal with no per-user equivalent."""

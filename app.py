@@ -501,7 +501,11 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
         swallowed so one user's bad pass can't stall the loop. Only users with
         stored cookies are covered (that's who the loop iterates); an
         import-only account with no live session first gets its milestones on
-        its next cookie login."""
+        its next cookie login. No-op when the admin kill switch is off (see
+        isMilestonesEnabled) - the badge/section are hidden then too, so there's
+        no point recording new rows."""
+        if not self.repo.isMilestonesEnabled():
+            return
         try:
             detectMilestones(db, db.repo, username, changeCache=self._milestoneChangeCache)
         except Exception as e:
@@ -740,11 +744,19 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
             # context processor, so this cheap indexed count must not repeat per
             # partial. No is_user_logged_in check, for the same reason
             # _injectShareStatus skips it - the worst case is a badge that 302s
-            # to login like every other nav item.
+            # to login like every other nav item. The admin kill switch
+            # (milestones_enabled) zeroes the count and hides the /profile
+            # section rather than deleting rows, mirroring how the data-sharing
+            # switch zeroes the share badges.
             if "unseenMilestoneCount" not in g:
+                g.milestonesEnabled = self.repo.isMilestonesEnabled()
                 username = session.get("username")
-                g.unseenMilestoneCount = self.repo.getUnseenMilestoneCount(username) if username else 0
-            return {"unseenMilestoneCount": g.unseenMilestoneCount}
+                g.unseenMilestoneCount = (
+                    self.repo.getUnseenMilestoneCount(username)
+                    if g.milestonesEnabled and username else 0
+                )
+            return {"unseenMilestoneCount": g.unseenMilestoneCount,
+                    "milestones_enabled": g.milestonesEnabled}
 
         registerSystemRoutes(self.app, self)
 
