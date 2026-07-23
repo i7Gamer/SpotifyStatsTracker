@@ -518,22 +518,30 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
             recalcEnabled = self.repo.isMilestoneRecalcEnabled()
             pending = importing = False
             if recalcEnabled:
-                pending = db.consumeMilestoneRecalcFlag()
                 importing = db.readProgress().get("status") == "running"
+                # The end-of-batch flag keeps its one shot for a pass with no
+                # import in flight - consuming it mid-import would spend it on
+                # data still being rewritten.
+                if not importing:
+                    pending = db.consumeMilestoneRecalcFlag()
             recorded = detectMilestones(db, db.repo, username,
                                         changeCache=self._milestoneChangeCache,
                                         markSeen=pending or importing)
             # Date re-derivation strictly after detection so import-crossed
-            # rows exist first, and deferred while an import is still running
-            # (its end-of-batch flag guarantees a final pass on settled data).
+            # rows exist first, and deferred entirely while an import is still
+            # running (its end-of-batch flag guarantees a settled pass).
             # Triggered by that flag or by any recorded crossing - the latter
             # turns "when this pass noticed" timestamps into actual crossing
-            # times and self-heals a flag lost to a restart. While the toggle
-            # is off the flag stays raised so enabling later catches up. See
-            # services/milestones.py recalculateMilestoneDates for what is
-            # (and isn't) rewritten.
-            if recalcEnabled and (pending or (recorded > 0 and not importing)):
-                recalculateMilestoneDates(db.repo, username, db.tz)
+            # times and self-heals a flag lost to a restart. Only the settled
+            # post-import pass may also prune rows the rewritten history no
+            # longer supports (removeUnsupported) - never organic passes,
+            # where a tightened skip threshold shrinking totals would delete
+            # rows only to re-notify them later. While the toggle is off the
+            # flag stays raised so enabling later catches up. See
+            # services/milestones.py recalculateMilestoneDates for details.
+            if recalcEnabled and not importing and (pending or recorded > 0):
+                recalculateMilestoneDates(db.repo, username, db.tz,
+                                          removeUnsupported=pending)
         except Exception as e:
             logger.warning("Milestone detection failed for %s: %s", username, e)
 

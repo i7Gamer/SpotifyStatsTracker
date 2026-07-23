@@ -98,6 +98,14 @@ class MilestoneQueries:
                 "UPDATE user_milestones SET achieved_at=? WHERE id=?", (achievedAt, milestoneId)
             )
 
+    def deleteMilestone(self, milestoneId: int) -> None:
+        """Removes one milestone row - the post-import prune for rows whose
+        milestone the rewritten play history no longer supports (see
+        services/milestones.py recalculateMilestoneDates' removeUnsupported)."""
+        conn = self._conn()
+        with conn:
+            conn.execute("DELETE FROM user_milestones WHERE id=?", (milestoneId,))
+
     def getMilestoneUsernames(self) -> list[str]:
         """Every user with at least one milestone row - who migrate1_35_0's
         achieved-at recalculation needs to visit."""

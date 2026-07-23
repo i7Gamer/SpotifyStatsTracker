@@ -15,6 +15,10 @@ The same toggle also suppresses the badge flood a big import would cause:
 crossings surfaced by imported history are recorded as already seen
 (detectMilestones' markSeen - same no-notification contract as first-pass
 seeding), covering both the flag-consuming pass and passes landing mid-import.
+And the settled flag-consuming pass alone may prune rows a shrinking
+overwrite import's rewritten history no longer supports (removeUnsupported) -
+organic passes never delete, so a tightened skip threshold can't cause
+delete/re-notify churn.
 
 The recalculation logic itself is covered by test_milestone_recalc.py and
 markSeen's record-level behavior by test_milestones.py; this file covers the
@@ -130,7 +134,9 @@ class TestAutoRecalcWiring(AppTestCase):
             dash._detectMilestonesSafely(db, "alice")
 
         self.assertEqual(calls, ["detect", "recalc"])   #< rows must exist before dates are re-derived
-        mockRecalc.assert_called_once_with(db.repo, "alice", db.tz)
+        # The settled post-import pass is also the only one allowed to prune
+        # rows the rewritten history no longer supports.
+        mockRecalc.assert_called_once_with(db.repo, "alice", db.tz, removeUnsupported=True)
 
     def test_recorded_crossings_run_recalc_without_flag(self):
         dash = self._makeApp()
@@ -139,7 +145,9 @@ class TestAutoRecalcWiring(AppTestCase):
              patch("app.recalculateMilestoneDates") as mockRecalc:
             dash._detectMilestonesSafely(db, "alice")
 
-        mockRecalc.assert_called_once()
+        # Organic passes re-derive dates but never delete: a tightened skip
+        # threshold must not prune rows only to re-notify them later.
+        mockRecalc.assert_called_once_with(db.repo, "alice", db.tz, removeUnsupported=False)
 
     def test_quiet_pass_skips_recalc(self):
         dash = self._makeApp()
@@ -200,6 +208,9 @@ class TestAutoRecalcWiring(AppTestCase):
 
         self.assertTrue(mockDetect.call_args.kwargs["markSeen"])
         mockRecalc.assert_not_called()
+        # The end-of-batch flag keeps its one shot for a settled pass - a
+        # concurrent batch's data is still being rewritten under it.
+        db.consumeMilestoneRecalcFlag.assert_not_called()
 
     def test_normal_pass_does_not_mark_seen(self):
         dash = self._makeApp()

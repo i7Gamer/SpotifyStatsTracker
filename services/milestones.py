@@ -227,13 +227,25 @@ def _topArtistTakeoverTs(repo, username, row) -> float | None:
     return takeover[1]
 
 
-def _recalculatedAchievedAt(repo, username, row, streakTs, topArtistRowCount) -> float | None:
-    """The data-derived achieved_at for one milestone row, or None to leave it
-    unchanged. top_artist is only recalculated for a user's SINGLE (seeded)
-    row: with multiple rows (organic #1 changes), moving the latest one
-    earlier could re-order getLatestMilestone below an older row, and the next
-    detection pass would then re-record the current #1 as a fresh
-    notification."""
+# _recalculatedAchievedAt sentinel: this row must be left exactly as it is -
+# distinct from None, which means "the current data does not support this
+# milestone at all" (deletable under removeUnsupported).
+_KEEP_ROW = object()
+
+
+def _recalculatedAchievedAt(repo, username, row, streakTs, topArtistRowCount):
+    """The data-derived achieved_at for one milestone row, None when the
+    current play history can't support the milestone at all (fewer plays/
+    hours than the threshold, no such streak run, or no plays whatsoever), or
+    _KEEP_ROW when there's no safe answer and the row must stay untouched.
+
+    top_artist is only re-dated for a user's SINGLE (seeded) row: with
+    multiple rows (organic #1 changes), moving the latest one earlier could
+    re-order getLatestMilestone below an older row, and the next detection
+    pass would then re-record the current #1 as a fresh notification. A
+    detail the id-based scan disagrees with is ambiguity (tie order,
+    same-name artist merges), not lack of support - also _KEEP_ROW. Only a
+    completely play-less history makes a top_artist row unsupported."""
     kind = row["kind"]
     if kind == MILESTONE_KIND_PLAYS:
         return repo.getNthPlayTimestamp(username, row["threshold"])
@@ -241,23 +253,35 @@ def _recalculatedAchievedAt(repo, username, row, streakTs, topArtistRowCount) ->
         return repo.getListenTimeCrossingTimestamp(username, row["threshold"] * MS_PER_HOUR)
     if kind == MILESTONE_KIND_STREAK:
         return streakTs.get(row["threshold"])
-    if kind == MILESTONE_KIND_TOP_ARTIST and topArtistRowCount == 1:
-        return _topArtistTakeoverTs(repo, username, row)
-    return None
+    if kind == MILESTONE_KIND_TOP_ARTIST:
+        if repo.getPlayTimeRange(username) is None:
+            return None   #< no plays at all - nobody can be #1 of an empty history
+        if topArtistRowCount != 1:
+            return _KEEP_ROW
+        takeoverTs = _topArtistTakeoverTs(repo, username, row)
+        return takeoverTs if takeoverTs is not None else _KEEP_ROW
+    return _KEEP_ROW   #< unknown kind: never touch
 
 
-def recalculateMilestoneDates(repo, username, tz) -> int:
+def recalculateMilestoneDates(repo, username, tz, removeUnsupported=False) -> int:
     """Rewrite `username`'s milestone achieved_at values to what the plays
-    table says they really were, returning how many rows changed. The 1.34.0
-    seeding pass stamped every already-achieved milestone with the seeding
-    moment itself; organically recorded rows also carry "when the background
-    pass noticed" (up to a poll interval late, or import time for imported
-    history) rather than the actual crossing - the data-derived date is the
-    truthful one for every threshold kind, so all of them are recomputed.
+    table says they really were, returning how many rows changed (dates
+    rewritten + rows removed). The 1.34.0 seeding pass stamped every
+    already-achieved milestone with the seeding moment itself; organically
+    recorded rows also carry "when the background pass noticed" (up to a poll
+    interval late, or import time for imported history) rather than the
+    actual crossing - the data-derived date is the truthful one for every
+    threshold kind, so all of them are recomputed.
 
-    Rows whose threshold today's data no longer supports (an overwrite import
-    or a stricter skip threshold shrank history) keep their existing date
-    rather than getting a guessed one. seen flags are never touched, so
+    Rows the current data can't support at all (see _recalculatedAchievedAt)
+    keep their existing date by default - but with `removeUnsupported=True`
+    they are deleted instead. That mode belongs to the settled pass after an
+    import (see _detectMilestonesSafely in app.py), where an overwrite import
+    may have rewritten history to something smaller and the remaining rows
+    would be claims the data visibly contradicts. Organic passes must keep
+    the default: a tightened skip threshold also shrinks totals, and deleting
+    for that would re-notify every affected milestone once it's re-crossed
+    (or the threshold is loosened again). seen flags are never touched, so
     nothing re-notifies. Idempotent - a second run changes nothing."""
     rows = repo.getMilestonesForUser(username)
     if not rows:
@@ -268,13 +292,20 @@ def recalculateMilestoneDates(repo, username, tz) -> int:
         _dayFirstPlayTimestamps(repo, username, tz), streakThresholds) if streakThresholds else {}
     topArtistRowCount = sum(1 for r in rows if r["kind"] == MILESTONE_KIND_TOP_ARTIST)
 
-    updated = 0
+    changed = 0
     for row in rows:
         achievedAt = _recalculatedAchievedAt(repo, username, row, streakTs, topArtistRowCount)
-        if achievedAt is not None and achievedAt != row["achieved_at"]:
+        if achievedAt is _KEEP_ROW:
+            continue
+        if achievedAt is None:
+            if removeUnsupported:
+                repo.deleteMilestone(row["id"])
+                changed += 1
+            continue
+        if achievedAt != row["achieved_at"]:
             repo.updateMilestoneAchievedAt(row["id"], achievedAt)
-            updated += 1
-    return updated
+            changed += 1
+    return changed
 
 
 def nextMilestoneProgress(currentValue, thresholds) -> dict | None:

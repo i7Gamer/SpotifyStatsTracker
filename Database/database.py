@@ -362,13 +362,16 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
     def consumeMilestoneRecalcFlag(self) -> bool:
         """One-shot read of the "an import just changed play history" marker
         raised by importHistoryBatch: the periodic milestone pass
-        (_detectMilestonesSafely in app.py) consumes it and re-derives this
-        user's milestone achieved_at dates right after detection has recorded
-        any import-crossed rows. Deliberately in-memory only - a restart drops
-        it, which self-heals because the next pass that records a crossing
-        also triggers a full re-derivation. A plain boolean flip either side
-        (GIL-atomic), so no lock: worst case a re-raised flag costs one extra
-        idempotent recalculation a cycle later."""
+        (_detectMilestonesSafely in app.py) consumes it - on a pass with no
+        import still in flight - to re-derive this user's milestone
+        achieved_at dates and prune rows the rewritten history no longer
+        supports, right after detection has recorded any import-crossed rows.
+        Deliberately in-memory only - a restart drops it, which self-heals for
+        dates because the next pass that records a crossing also triggers a
+        re-derivation (pruning waits for the next import's flag). A plain
+        boolean flip either side (GIL-atomic), so no lock: worst case a
+        re-raised flag costs one extra idempotent recalculation a cycle
+        later."""
         pending = self.milestonesRecalcPending
         self.milestonesRecalcPending = False
         return pending

@@ -150,6 +150,12 @@ class TestMilestoneRowHelpers(_RecalcTestCase):
     def test_milestone_usernames_empty_table(self):
         self.assertEqual(self.repo.getMilestoneUsernames(), [])
 
+    def test_delete_milestone_removes_only_that_row(self):
+        goneId = self._milestone(MILESTONE_KIND_PLAYS, 1000)
+        keptId = self._milestone(MILESTONE_KIND_PLAYS, 5000)
+        self.repo.deleteMilestone(goneId)
+        self.assertEqual({r["id"] for r in self.repo.getMilestonesForUser(self.USER)}, {keptId})
+
 
 class TestRecalculateThresholdKinds(_RecalcTestCase):
     def setUp(self):
@@ -297,6 +303,69 @@ class TestRecalculateTopArtist(_RecalcTestCase):
         milestoneId = self._milestone(MILESTONE_KIND_TOP_ARTIST, 0, detail="not json")
         self.assertEqual(recalculateMilestoneDates(self.repo, self.USER, UTC), 0)
         self.assertEqual(self._achievedAt(milestoneId), SEEDED_AT)
+
+
+class TestRemoveUnsupportedRows(_RecalcTestCase):
+    """removeUnsupported=True - the settled pass after an overwrite import:
+    rows whose threshold the rewritten history can no longer reach are
+    deleted, so the Milestones section reflects the data that actually
+    exists. Organic recalculation passes keep the default (False) so e.g. a
+    tightened skip threshold never deletes rows only to re-notify them when
+    it's loosened again."""
+
+    def setUp(self):
+        super().setUp()
+        for ts in (100.0, 200.0, 300.0):
+            self._play(ts, timePlayed=HALF_HOUR_MS)
+
+    def test_unreachable_threshold_rows_are_removed(self):
+        keptId = self._milestone(MILESTONE_KIND_PLAYS, 2)
+        self._milestone(MILESTONE_KIND_PLAYS, 10)          #< only 3 plays exist
+        self._milestone(MILESTONE_KIND_LISTEN_TIME, 2)     #< only 1.5h exists
+        self._milestone(MILESTONE_KIND_STREAK, 2)          #< all plays on one day
+
+        changed = recalculateMilestoneDates(self.repo, self.USER, UTC, removeUnsupported=True)
+
+        self.assertEqual(changed, 4)   #< 1 date update + 3 removals
+        self.assertEqual({r["id"] for r in self.repo.getMilestonesForUser(self.USER)}, {keptId})
+        self.assertEqual(self._achievedAt(keptId), 200.0)   #< supported rows still get re-dated
+
+    def test_default_keeps_unreachable_rows(self):
+        keptId = self._milestone(MILESTONE_KIND_PLAYS, 10)
+        recalculateMilestoneDates(self.repo, self.USER, UTC)
+        self.assertEqual({r["id"] for r in self.repo.getMilestonesForUser(self.USER)}, {keptId})
+        self.assertEqual(self._achievedAt(keptId), SEEDED_AT)
+
+    def test_top_artist_with_plays_is_never_removed(self):
+        # A detail id the scan disagrees with is ambiguity (tie order,
+        # same-name merges), not proof the data doesn't support it.
+        rowId = self._milestone(MILESTONE_KIND_TOP_ARTIST, 0,
+                                detail=json.dumps({"id": "zz", "name": "Nobody"}))
+        recalculateMilestoneDates(self.repo, self.USER, UTC, removeUnsupported=True)
+        self.assertIn(rowId, {r["id"] for r in self.repo.getMilestonesForUser(self.USER)})
+
+
+class TestRemoveUnsupportedWithoutPlays(_RecalcTestCase):
+    """A wiped history (overwrite import that removed everything) supports no
+    milestone of any kind - with removeUnsupported every row goes, including
+    top_artist rows (nobody can be #1 of an empty history)."""
+
+    def test_all_rows_removed_when_history_is_empty(self):
+        self._milestone(MILESTONE_KIND_PLAYS, 2)
+        self._milestone(MILESTONE_KIND_STREAK, 2)
+        self._milestone(MILESTONE_KIND_TOP_ARTIST, 0, detail=json.dumps({"id": "a1", "name": "A"}))
+        self._milestone(MILESTONE_KIND_TOP_ARTIST, 0, detail=json.dumps({"id": "a2", "name": "B"}))
+
+        changed = recalculateMilestoneDates(self.repo, self.USER, UTC, removeUnsupported=True)
+
+        self.assertEqual(changed, 4)
+        self.assertEqual(self.repo.getMilestonesForUser(self.USER), [])
+
+    def test_default_keeps_rows_when_history_is_empty(self):
+        self._milestone(MILESTONE_KIND_PLAYS, 2)
+        self._milestone(MILESTONE_KIND_TOP_ARTIST, 0, detail=json.dumps({"id": "a1", "name": "A"}))
+        self.assertEqual(recalculateMilestoneDates(self.repo, self.USER, UTC), 0)
+        self.assertEqual(len(self.repo.getMilestonesForUser(self.USER)), 2)
 
 
 class TestComputeStreakAchievedTimestamps(unittest.TestCase):
