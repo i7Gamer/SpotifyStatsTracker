@@ -429,7 +429,7 @@ class LastfmBackfillMixin:
                 outcome = self._lastfmLookupBioOutcome(
                     lambda name: client.getAlbumInfo(primary["artist_name"], name,
                                                      stop_event=self.lastfm_album_biography_stop_event),
-                    row["name"])
+                    row["name"], stop_event=self.lastfm_album_biography_stop_event)
                 if outcome is None:   #< rate-limit slot aborted: we're stopping
                     break
                 if outcome.status == _dbmod.OUTCOME_INVALID_KEY:
@@ -499,10 +499,12 @@ class LastfmBackfillMixin:
         definitive, genres = self._lastfmOutcomeGenres(outcome)
         return definitive, genres, False
 
-    def _lastfmLookupBioOutcome(self, lookup, entityName: str):
+    def _lastfmLookupBioOutcome(self, lookup, entityName: str,
+                                stop_event: threading.Event | None = None):
         """Final ArtistInfoOutcome|AlbumInfoOutcome (or None = rate-limit slot
-        aborted) for a *.getinfo bio lookup with one cleaned-name retry - the
-        bio counterpart of _lastfmLookupOwnGenres, sharing the exact same
+        aborted, or `stop_event` fired between the two lookups) for a
+        *.getinfo bio lookup with one cleaned-name retry - the bio
+        counterpart of _lastfmLookupOwnGenres, sharing the exact same
         decoration-stripping fallback (cleanLookupName) so the background
         backfillers and the admin "Refresh Last.fm Data" button behave
         identically. When the verbatim name yields a definitive result
@@ -511,13 +513,21 @@ class LastfmBackfillMixin:
         A non-definitive (transient/invalid-key) outcome is returned unchanged
         for the caller to classify; the retry fires only on a definitive-but-
         bioless result and its own outcome replaces the first, whatever the
-        status. `lookup(name)` -> outcome | None."""
+        status. `lookup(name)` -> outcome | None.
+
+        `stop_event` is optional (the on-demand lazy-fetch/refresh callers
+        pass none, same as before) - a background-worker caller passes its
+        own stop event so a shutdown signaled right after the verbatim
+        lookup skips the retry's own full name-fallback HTTP chain instead
+        of running it to completion before the per-row loop notices."""
         outcome = lookup(entityName)
         if outcome is None:
             return None
         definitive = outcome.status in (_dbmod.OUTCOME_OK, _dbmod.OUTCOME_NOT_FOUND)
         if not definitive or outcome.bio is not None:
             return outcome
+        if stop_event is not None and stop_event.is_set():
+            return None
         cleanedName = _dbmod.cleanLookupName(entityName)
         if cleanedName == entityName:
             return outcome

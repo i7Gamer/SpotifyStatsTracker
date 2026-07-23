@@ -347,6 +347,35 @@ class WorkerBatchTestCase(AlbumBiographyWorkerBase):
         self.assertEqual(state["bio"], "Bio for The Game")
         self.assertIsNotNone(state["attempted_at"])
 
+    def test_cleaned_name_retry_is_skipped_once_stop_is_signaled(self):
+        """A stop signaled between the verbatim lookup and the cleaned-name
+        retry must abort immediately rather than firing another full
+        name-fallback HTTP chain - this is what makes album-bio shutdown
+        slower than the other Last.fm workers (see
+        _lastfmLookupBioOutcome's stop_event param)."""
+        tracks = {"tDecorated": {"id": "tDecorated", "name": "Song",
+                                 "artists": [{"id": "a1", "name": "Queen"}],
+                                 "album": self._album("alDecorated", "The Game (2011 Remaster)")}}
+        entries = [{"id": "tDecorated", "playedAt": 1000, "timePlayed": 5000}]
+        db = self._makeDb(tracks, entries)
+
+        def side_effect(artist, album, stop_event=None):
+            if album == "The Game (2011 Remaster)":
+                db.lastfm_album_biography_stop_event.set()
+                return AlbumInfoOutcome(OUTCOME_NOT_FOUND, None)
+            raise AssertionError("cleaned-name retry must not fire after stop was signaled")
+
+        client = MagicMock()
+        client.getAlbumInfo.side_effect = side_effect
+
+        processed = db._processLastfmAlbumBiographyBatch(client, "testuser")
+
+        self.assertFalse(processed)
+        self.assertEqual(client.getAlbumInfo.call_count, 1)
+        state = db.repo.getAlbumBioState("alDecorated")
+        self.assertIsNone(state["attempted_at"])   #< stays unattempted, retried next start
+        db._releaseLastfmEntities("album_bio", [{"id": "alDecorated"}])
+
     def test_decorated_album_name_does_not_retry_if_verbatim_succeeds(self):
         tracks = {"tDecorated": {"id": "tDecorated", "name": "Song",
                                  "artists": [{"id": "a1", "name": "Queen"}],
