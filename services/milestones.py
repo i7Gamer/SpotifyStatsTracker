@@ -80,13 +80,18 @@ def _detectTopArtistMilestone(repo, db, username, achievedAt, seen) -> int:
     return 1
 
 
-def detectMilestones(db, repo, username, changeCache=None) -> int:
+def detectMilestones(db, repo, username, changeCache=None, markSeen=False) -> int:
     """Detect and record any newly-reached milestones for `username`, returning
     how many rows were recorded this pass.
 
     On the user's first pass (no milestones_baseline_at yet) everything already
     achieved is recorded as seen and the baseline is stamped; afterwards new
     crossings are recorded unseen (seen=0) so the topbar badge surfaces them.
+    `markSeen=True` records this pass's crossings as already seen instead -
+    the import-backfill case (see _detectMilestonesSafely in app.py): crossings
+    surfaced by imported history are past achievements, so they get the same
+    no-notification contract as first-pass seeding rather than flooding the
+    badge.
 
     `changeCache` is an optional mutable {username: (totalPlays, totalMs)} dict
     (the periodic background loop passes a per-process one). When supplied, a
@@ -100,7 +105,7 @@ def detectMilestones(db, repo, username, changeCache=None) -> int:
     now = time.time()
     baseline = repo.getMilestoneBaselineAt(username)
     seed = baseline is None   #< first-ever pass: seed already-achieved milestones silently
-    seen = seed
+    seen = seed or markSeen
 
     totalPlays, totalMs = db.getPlayTotals(None, None)
     # Idle-cycle short-circuit (see docstring). Never on the seeding pass - that

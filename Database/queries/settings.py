@@ -346,11 +346,13 @@ class SettingQueries:
         self._setFeatureEnabled(MILESTONES_SETTING_KEY, enabled)
 
     def isMilestoneRecalcEnabled(self) -> bool:
-        """Whether the periodic milestone pass re-derives achieved_at dates
-        from play history after an import (or any pass that recorded rows) -
-        see _detectMilestonesSafely in app.py. Absent row = enabled. Separate
-        from isMilestonesEnabled so an admin can keep milestones on but pin
-        their recorded dates."""
+        """Whether the periodic milestone pass treats imported history as
+        backlog - re-deriving achieved_at dates from play history after an
+        import (or any pass that recorded rows) AND recording import-surfaced
+        crossings as already seen instead of flooding the topbar badge - see
+        _detectMilestonesSafely in app.py. Absent row = enabled. Separate from
+        isMilestonesEnabled so an admin can keep milestones on but restore the
+        pre-1.36.0 recording behavior."""
         return self._isFeatureEnabled(MILESTONE_RECALC_SETTING_KEY)
 
     def setMilestoneRecalcEnabled(self, enabled: bool) -> None:

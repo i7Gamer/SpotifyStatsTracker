@@ -148,6 +148,39 @@ class TestDetectMilestones(_RepoTestCase):
         self.assertIsNone(self.repo.getLatestMilestone(self.USER, MILESTONE_KIND_TOP_ARTIST))
 
 
+class TestDetectMilestonesMarkSeen(_RepoTestCase):
+    """markSeen records a pass's crossings as already seen - the post-import
+    backfill case (see _detectMilestonesSafely in app.py): crossings surfaced
+    by imported history are past achievements and get the same
+    no-notification contract as first-pass seeding."""
+
+    def test_marked_threshold_crossings_do_not_notify(self):
+        detectMilestones(_FakeDb(plays=0), self.repo, self.USER)   #< baseline, nothing achieved
+
+        recorded = detectMilestones(_FakeDb(plays=1500), self.repo, self.USER, markSeen=True)
+
+        self.assertEqual(recorded, 1)
+        self.assertEqual(self.repo.getUnseenMilestoneCount(self.USER), 0)
+        self.assertTrue(self.repo.hasThresholdMilestone(self.USER, MILESTONE_KIND_PLAYS, 1000))
+
+    def test_marked_top_artist_change_does_not_notify(self):
+        detectMilestones(_FakeDb(topArtist={"id": "a1", "name": "A"}), self.repo, self.USER)
+
+        detectMilestones(_FakeDb(topArtist={"id": "a2", "name": "B"}), self.repo, self.USER, markSeen=True)
+
+        self.assertEqual(self.repo.getUnseenMilestoneCount(self.USER), 0)
+        latest = self.repo.getLatestMilestone(self.USER, MILESTONE_KIND_TOP_ARTIST)
+        self.assertEqual(json.loads(latest["detail"])["id"], "a2")   #< still recorded
+
+    def test_later_organic_crossing_still_notifies(self):
+        detectMilestones(_FakeDb(plays=0), self.repo, self.USER)
+        detectMilestones(_FakeDb(plays=1500), self.repo, self.USER, markSeen=True)
+
+        detectMilestones(_FakeDb(plays=5500), self.repo, self.USER)   #< back to the default
+
+        self.assertEqual(self.repo.getUnseenMilestoneCount(self.USER), 1)
+
+
 class TestDetectMilestonesChangeCache(_RepoTestCase):
     """The optional changeCache lets the periodic background pass skip the
     heavier streak + top-artist queries on cycles where the user's play totals

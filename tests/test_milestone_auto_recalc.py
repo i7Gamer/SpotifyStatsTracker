@@ -11,8 +11,14 @@ that recorded rows triggers the same re-derivation even without the flag
 restart). Everything is gated by the instance-wide admin toggle
 (milestone_recalc_enabled) on top of the milestones kill switch.
 
-The recalculation logic itself is covered by test_milestone_recalc.py; this
-file covers the trigger wiring on both ends.
+The same toggle also suppresses the badge flood a big import would cause:
+crossings surfaced by imported history are recorded as already seen
+(detectMilestones' markSeen - same no-notification contract as first-pass
+seeding), covering both the flag-consuming pass and passes landing mid-import.
+
+The recalculation logic itself is covered by test_milestone_recalc.py and
+markSeen's record-level behavior by test_milestones.py; this file covers the
+trigger wiring on both ends.
 """
 import os
 import sys
@@ -100,12 +106,19 @@ class TestAutoRecalcWiring(AppTestCase):
     """_detectMilestonesSafely: detect first (so import-crossed rows exist),
     then re-derive dates when the import flag was raised or the pass recorded
     rows - gated by the admin toggle, which must also leave an unconsumed flag
-    in place so enabling later still catches up."""
+    in place so enabling later still catches up.
 
-    def _db(self, pending=False):
+    The same toggle suppresses the badge flood: crossings surfaced by an
+    import are recorded as already seen (markSeen), both on the flag-consuming
+    pass after the batch AND on passes landing mid-import (the loop runs every
+    5 minutes, large imports span that - readProgress is the signal there,
+    with the recalc deferred to the flag-raised pass at batch end)."""
+
+    def _db(self, pending=False, importing=False):
         db = MagicMock()
         db.tz = datetime.timezone.utc
         db.consumeMilestoneRecalcFlag.return_value = pending
+        db.readProgress.return_value = {"status": "running" if importing else "idle"}
         return db
 
     def test_import_flag_runs_recalc_after_detection(self):
@@ -165,6 +178,50 @@ class TestAutoRecalcWiring(AppTestCase):
         with patch("app.detectMilestones", return_value=0), \
              patch("app.recalculateMilestoneDates", side_effect=RuntimeError("boom")):
             dash._detectMilestonesSafely(db, "alice")   #< must not raise
+
+    def test_pending_flag_marks_crossings_seen(self):
+        dash = self._makeApp()
+        db = self._db(pending=True)
+        with patch("app.detectMilestones", return_value=0) as mockDetect, \
+             patch("app.recalculateMilestoneDates"):
+            dash._detectMilestonesSafely(db, "alice")
+
+        self.assertTrue(mockDetect.call_args.kwargs["markSeen"])
+
+    def test_running_import_marks_seen_and_defers_recalc(self):
+        # Mid-import pass: the end-of-batch flag doesn't exist yet, but the
+        # crossings being recorded come from imported history - no badge, and
+        # the (partial-data) recalc waits for the flag-raised pass at the end.
+        dash = self._makeApp()
+        db = self._db(pending=False, importing=True)
+        with patch("app.detectMilestones", return_value=3) as mockDetect, \
+             patch("app.recalculateMilestoneDates") as mockRecalc:
+            dash._detectMilestonesSafely(db, "alice")
+
+        self.assertTrue(mockDetect.call_args.kwargs["markSeen"])
+        mockRecalc.assert_not_called()
+
+    def test_normal_pass_does_not_mark_seen(self):
+        dash = self._makeApp()
+        db = self._db(pending=False, importing=False)
+        with patch("app.detectMilestones", return_value=1) as mockDetect, \
+             patch("app.recalculateMilestoneDates"):
+            dash._detectMilestonesSafely(db, "alice")
+
+        self.assertFalse(mockDetect.call_args.kwargs["markSeen"])   #< organic crossings still notify
+
+    def test_toggle_off_does_not_mark_seen(self):
+        # Toggle off = the whole import-hygiene behavior off: crossings
+        # notify like before, flag untouched, no recalc.
+        dash = self._makeApp()
+        dash.repo.setMilestoneRecalcEnabled(False)
+        db = self._db(pending=True, importing=True)
+        with patch("app.detectMilestones", return_value=1) as mockDetect, \
+             patch("app.recalculateMilestoneDates") as mockRecalc:
+            dash._detectMilestonesSafely(db, "alice")
+
+        self.assertFalse(mockDetect.call_args.kwargs["markSeen"])
+        mockRecalc.assert_not_called()
 
 
 if __name__ == "__main__":

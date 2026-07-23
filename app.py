@@ -507,19 +507,33 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
         if not self.repo.isMilestonesEnabled():
             return
         try:
-            recorded = detectMilestones(db, db.repo, username, changeCache=self._milestoneChangeCache)
-            # Date hygiene, strictly after detection so import-crossed rows
-            # exist before their dates are re-derived. Triggered by a completed
-            # import (db's flag) or by any recorded crossing - the latter turns
-            # "when this pass noticed" timestamps into actual crossing times
-            # and self-heals a flag lost to a restart. Gated by its own admin
-            # toggle; while disabled the flag is left raised so enabling later
-            # still catches up. See services/milestones.py
-            # recalculateMilestoneDates for what is (and isn't) rewritten.
-            if self.repo.isMilestoneRecalcEnabled():
+            # Import-backfill hygiene, one admin toggle for both halves:
+            # crossings surfaced by imported history are recorded as already
+            # seen (they're past achievements - the same no-notification
+            # contract as first-pass seeding), and milestone dates are
+            # re-derived from play history. `pending` is the end-of-batch
+            # flag; the readProgress check additionally catches passes
+            # landing mid-import (this loop runs every 5 minutes and large
+            # imports span that), where the flag doesn't exist yet.
+            recalcEnabled = self.repo.isMilestoneRecalcEnabled()
+            pending = importing = False
+            if recalcEnabled:
                 pending = db.consumeMilestoneRecalcFlag()
-                if pending or recorded > 0:
-                    recalculateMilestoneDates(db.repo, username, db.tz)
+                importing = db.readProgress().get("status") == "running"
+            recorded = detectMilestones(db, db.repo, username,
+                                        changeCache=self._milestoneChangeCache,
+                                        markSeen=pending or importing)
+            # Date re-derivation strictly after detection so import-crossed
+            # rows exist first, and deferred while an import is still running
+            # (its end-of-batch flag guarantees a final pass on settled data).
+            # Triggered by that flag or by any recorded crossing - the latter
+            # turns "when this pass noticed" timestamps into actual crossing
+            # times and self-heals a flag lost to a restart. While the toggle
+            # is off the flag stays raised so enabling later catches up. See
+            # services/milestones.py recalculateMilestoneDates for what is
+            # (and isn't) rewritten.
+            if recalcEnabled and (pending or (recorded > 0 and not importing)):
+                recalculateMilestoneDates(db.repo, username, db.tz)
         except Exception as e:
             logger.warning("Milestone detection failed for %s: %s", username, e)
 
