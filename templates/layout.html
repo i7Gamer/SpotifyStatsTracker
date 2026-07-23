@@ -64,7 +64,8 @@
       </button>
       <nav class="nav-links" id="nav-menu">
         {% set currentQuery = request.args.get('q', '') %}
-        <a class="{{ 'active' if section == 'dashboard' }}" {% if section == 'dashboard' %}aria-current="page"{% endif %} href="{{ url_for('dashboard', q=currentQuery) if currentQuery else url_for('dashboard') }}">Dashboard</a>
+        <a class="{{ 'active' if section == 'dashboard' }}" {% if section == 'dashboard' %}aria-current="page"{% endif %} href="{{ url_for('dashboard') }}">Dashboard</a>
+        <a class="{{ 'active' if section == 'history' }}" {% if section == 'history' %}aria-current="page"{% endif %} href="{{ url_for('history', q=currentQuery) if currentQuery else url_for('history') }}">History</a>
         {% set top_active = section in ['top_songs', 'top_artists', 'top_albums'] %}
         <div class="nav-item-dropdown {% if top_active %}active-parent{% endif %}">
           <span class="dropdown-trigger">Top Stats <span class="chevron">▾</span></span>

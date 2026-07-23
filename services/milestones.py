@@ -32,7 +32,7 @@ MILESTONE_PLAYS_THRESHOLDS = (1000, 5000, 10000, 25000, 50000, 100000, 250000, 5
 MILESTONE_LISTEN_HOURS_THRESHOLDS = (100, 250, 500, 1000, 2500, 5000, 10000)
 MILESTONE_STREAK_DAY_THRESHOLDS = (7, 30, 100, 365, 1000)
 
-_MS_PER_HOUR = 1000 * 60 * 60
+MS_PER_HOUR = 1000 * 60 * 60
 
 
 def _detectThresholdMilestones(repo, username, kind, thresholds, currentValue, achievedAt, seen) -> int:
@@ -104,7 +104,7 @@ def detectMilestones(db, repo, username, changeCache=None) -> int:
     if changeCache is not None and not seed and changeCache.get(username) == (totalPlays, totalMs):
         return 0
 
-    totalHours = (totalMs or 0) // _MS_PER_HOUR
+    totalHours = (totalMs or 0) // MS_PER_HOUR
     streak = db.getCurrentStreak()
     streakDays = streak.get("days", 0) if isinstance(streak, dict) else 0
 
@@ -122,6 +122,40 @@ def detectMilestones(db, repo, username, changeCache=None) -> int:
     if changeCache is not None:
         changeCache[username] = (totalPlays, totalMs)
     return recorded
+
+
+def nextMilestoneProgress(currentValue, thresholds) -> dict | None:
+    """`{current, target, remaining, percent}` for the next not-yet-reached
+    threshold above `currentValue`, or None once every threshold is reached.
+    `thresholds` is ascending (see the MILESTONE_*_THRESHOLDS tuples); reaching
+    a threshold exactly counts as done, so progress points at the one after.
+    percent is an int 0..100 for a progress bar."""
+    for threshold in thresholds:
+        if currentValue < threshold:
+            percent = int(currentValue / threshold * 100) if threshold else 0
+            return {"current": currentValue, "target": threshold,
+                    "remaining": threshold - currentValue, "percent": percent}
+    return None
+
+
+def buildNextMilestones(totalPlays, totalHours, streakDays) -> list:
+    """The next play-count, listen-time, and streak milestone the user is
+    working toward, for the dashboard's "Next milestones" panel. Each entry is
+    `{kind, icon, label, current, target, remaining, percent}`; a kind whose
+    every threshold is already reached is omitted. Same thresholds detection
+    uses, so a bar filling to 100% lines up with the achievement being recorded
+    (see detectMilestones)."""
+    specs = (
+        (MILESTONE_KIND_PLAYS, "🎧", "lifetime plays", totalPlays, MILESTONE_PLAYS_THRESHOLDS),
+        (MILESTONE_KIND_LISTEN_TIME, "⏱️", "hours listened", totalHours, MILESTONE_LISTEN_HOURS_THRESHOLDS),
+        (MILESTONE_KIND_STREAK, "🔥", "day streak", streakDays, MILESTONE_STREAK_DAY_THRESHOLDS),
+    )
+    out = []
+    for kind, icon, label, value, thresholds in specs:
+        progress = nextMilestoneProgress(value, thresholds)
+        if progress is not None:
+            out.append({"kind": kind, "icon": icon, "label": label, **progress})
+    return out
 
 
 def _formatNumber(value) -> str:

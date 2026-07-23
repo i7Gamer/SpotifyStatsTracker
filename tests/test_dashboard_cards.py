@@ -36,6 +36,7 @@ class DashboardCardsTestCase(AppTestCase):
         }
         db.getCurrentStreak.return_value = streak or {"days": 0, "activeToday": False}
         db.getOnThisDay.return_value = onThisDay or []
+        db.getPlayTotals.return_value = (0, 0)   #< lifetime totals feed the Next-milestones bars
         # Empty grid by default: the calendar card only renders when weeks is
         # non-empty, so most card tests aren't perturbed by it. The dedicated
         # test below overrides this with a real built grid.
@@ -198,6 +199,26 @@ class DashboardCardsTestCase(AppTestCase):
         dash = self._makeApp()
         resp = self._get(dash, self._makeDb())
         self.assertNotIn(b"streak-calendar-card", resp.data)
+
+    def test_dashboard_has_no_search_or_track_list(self):
+        # The searchable play history moved to /history; the dashboard keeps
+        # only the Time Period filter + stats + live cards.
+        dash = self._makeApp()
+        resp = self._get(dash, self._makeDb())
+        self.assertNotIn(b'id="dashboardSearch"', resp.data)
+        self.assertNotIn(b'class="track-list"', resp.data)
+        # The Time Period filter and stats cards do stay.
+        self.assertIn(b'id="interval"', resp.data)
+        self.assertIn(b"Total songs played", resp.data)
+
+    def test_next_milestones_render_with_progress(self):
+        dash = self._makeApp()
+        db = self._makeDb()
+        db.getPlayTotals.return_value = (820, 0)   #< 820 lifetime plays -> next is 1,000
+        resp = self._get(dash, db)
+        self.assertIn(b"next-milestone-card", resp.data)
+        self.assertIn(b"820 / 1,000 lifetime plays", resp.data)
+        db.getPlayTotals.assert_called_once()
 
     def test_discover_card_placeholder_rendered_when_lastfm_enabled(self):
         # The dashboard render only emits the (empty) Discover card shell; its

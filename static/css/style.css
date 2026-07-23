@@ -2877,6 +2877,59 @@ html.theme-red {
   color: var(--muted);
 }
 
+/* Next milestones: progress bars toward the next play-count / listen-time /
+   streak threshold. Full-width row in the live panel, like the calendar. */
+.next-milestone-card {
+  flex: 0 0 auto;
+}
+
+.next-milestone-list {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.next-milestone-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 0.9rem;
+  margin-bottom: 5px;
+}
+
+.next-milestone-icon {
+  flex-shrink: 0;
+}
+
+.next-milestone-text {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.next-milestone-remaining {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
+.next-milestone-bar {
+  height: 8px;
+  border-radius: 6px;
+  background: var(--border);
+  overflow: hidden;
+}
+
+.next-milestone-fill {
+  height: 100%;
+  border-radius: 6px;
+  background: var(--accent);
+  transition: width 0.3s ease;
+}
+
 .dashboard-card-empty {
   font-size: 0.85rem;
   color: var(--muted);

@@ -17,6 +17,7 @@ from services.genre_gate import (
     emptyGenreCoverage, resolveGenreCoverage, genreGatePasses, resolveGenreDistribution,
     emptyBiographyCoverage, resolveBiographyCoverage,
 )
+from services.milestones import buildNextMilestones, MS_PER_HOUR
 
 logger = logging.getLogger(__name__)
 
@@ -163,8 +164,6 @@ def register(app, dashboard):
         settings = db.repo.getUserSettings(username)
         default_window = settings.get("default_dashboard_window", "day")
 
-        page = dashboard._getPageParam()
-        searchQuery = request.args.get("q", "")
         customStart = request.args.get("startDate", "")
         customEnd = request.args.get("endDate", "")
 
@@ -178,12 +177,95 @@ def register(app, dashboard):
         intervalLabel = dashboard._getIntervalLabel(interval, customStart, customEnd)
         startDate, endDate = dashboard._getDateRange(interval, customStart, customEnd, default="day", tz=db.tz)
 
-        # Only an explicit custom range (typically a chart click-through -
-        # see static/js/charts.js) scopes the play-history list below. The
-        # named intervals (day/week/...) only ever scoped the stats cards
-        # above; making every default/named-interval visit also filter the
-        # list would silently hide most of a user's history behind
-        # whatever their default dashboard window happens to be.
+        # The Time Period filter scopes these summary cards. The searchable play
+        # history itself lives on its own /history page now (see historyPage).
+        stats = db.getOverallStats(startDate, endDate)
+
+        totalDurationText = msToString(stats["totalDurationMs"],
+                                       hideSecondsAboveHours=appmod.LISTEN_TIME_HIDE_SECONDS_ABOVE_HOURS)
+
+        currentTopSong = dashboard._embedTopSongTextElements(stats["currentTopSongs"][0], sortBy="plays", totalPlays=stats["totalSongsPlayed"], totalMs=stats["totalDurationMs"]) if stats["currentTopSongs"] else None
+        currentTopArtist = dashboard._embedArtistTextElement(stats["currentTopArtists"][0], sortBy="totalTimeListened", totalPlays=stats["totalSongsPlayed"], totalMs=stats["totalDurationMs"]) if stats["currentTopArtists"] else None
+
+        totalSongsChangeText, totalSongsChangeClass = dashboard._getChangeText(stats["totalSongsPlayed"], stats["previousSongsPlayed"])
+        totalListenChangeText, totalListenChangeClass = dashboard._getChangeText(stats["totalDurationMs"], stats["previousDurationMs"])
+
+        # Unfiltered dashboard cards (independent of the interval/date-range
+        # filter above): live streak and "on this day" resurfacing are cheap
+        # and rendered inline. The Discover card's genre-coverage gate and
+        # recommendations are full-history queries (~700ms combined on a large
+        # library - see dashboardDiscover) so they're fetched by the page's
+        # own JS after first paint instead of blocking this render.
+        currentStreak = db.getCurrentStreak()
+        onThisDay = db.getOnThisDay(limit=appmod.ON_THIS_DAY_YEARS_LIMIT)
+        lastfmGenreEnabled = dashboard.repo.isLastfmGenreBackfillEnabled()
+        # Streak calendar: ~1 year of daily play counts, rendered inline below
+        # the live cards. Comparable cost to getCurrentStreak above (a similar
+        # bounded bucket scan), so it rides along in this render rather than
+        # being deferred like the full-history Discover card.
+        listeningCalendar = db.getListeningCalendar()
+
+        # "Next milestones" progress bars: lifetime totals against the same
+        # thresholds detection uses. getPlayTotals is a single COUNT+SUM scan;
+        # removing the play-history list from this page more than pays for it.
+        totalPlays, totalMs = db.getPlayTotals(None, None)
+        streakDays = currentStreak.get("days", 0) if isinstance(currentStreak, dict) else 0
+        nextMilestones = buildNextMilestones(totalPlays, (totalMs or 0) // MS_PER_HOUR, streakDays)
+
+        return render_template(
+            "tracks.html",
+            currentStreak=currentStreak,
+            onThisDay=onThisDay,
+            listeningCalendar=listeningCalendar,
+            nextMilestones=nextMilestones,
+            lastfmGenreEnabled=lastfmGenreEnabled,
+            totalSongsPlayed=stats["totalSongsPlayed"],
+            totalListenTime=totalDurationText,
+            totalSongsChangeText=totalSongsChangeText,
+            totalSongsChangeClass=totalSongsChangeClass,
+            totalListenChangeText=totalListenChangeText,
+            totalListenChangeClass=totalListenChangeClass,
+            currentTopSong=currentTopSong,
+            currentTopArtist=currentTopArtist,
+            intervalLabel=intervalLabel,
+            username=username,
+            section="dashboard",
+            interval=interval,
+            customStart=customStart,
+            customEnd=customEnd,
+        )
+    app.add_url_rule("/", "dashboard", dashboardIndex, methods=["GET"])
+
+    def historyPage():
+        """The searchable, paginated play-history list - split out of the
+        dashboard so that page can stay a glanceable overview. Carries the same
+        search + Time Period filter the dashboard used to host, and the same
+        list-scoping rule: only an explicit custom range (a chart click-through)
+        scopes the list; named intervals don't."""
+        email, username, db = dashboard.get_current_user_or_redirect()
+        if not email:
+            return redirect(url_for("login", next=request.path))
+
+        settings = db.repo.getUserSettings(username)
+        default_window = settings.get("default_dashboard_window", "day")
+
+        page = dashboard._getPageParam()
+        searchQuery = request.args.get("q", "")
+        customStart = request.args.get("startDate", "")
+        customEnd = request.args.get("endDate", "")
+
+        interval = request.args.get("interval", default_window)
+        if interval == "":
+            interval = default_window
+        if interval == "custom" and not (customStart and customEnd):
+            interval = "all time"
+
+        intervalLabel = dashboard._getIntervalLabel(interval, customStart, customEnd)
+        startDate, endDate = dashboard._getDateRange(interval, customStart, customEnd, default="day", tz=db.tz)
+
+        # Only an explicit custom range (typically a chart click-through - see
+        # static/js/charts.js) scopes the list; named intervals (including the
+        # user's default window) do not, matching the old dashboard behavior.
         listStartDate = startDate if interval == "custom" else None
         listEndDate = endDate if interval == "custom" else None
 
@@ -205,19 +287,8 @@ def register(app, dashboard):
         tracks = dashboard._embedSongsTextElements(tracks)
         tracks = dashboard._attachGenres(db, tracks, "track")
 
-        stats = db.getOverallStats(startDate, endDate)
-
-        totalDurationText = msToString(stats["totalDurationMs"],
-                                       hideSecondsAboveHours=appmod.LISTEN_TIME_HIDE_SECONDS_ABOVE_HOURS)
-
-        currentTopSong = dashboard._embedTopSongTextElements(stats["currentTopSongs"][0], sortBy="plays", totalPlays=stats["totalSongsPlayed"], totalMs=stats["totalDurationMs"]) if stats["currentTopSongs"] else None
-        currentTopArtist = dashboard._embedArtistTextElement(stats["currentTopArtists"][0], sortBy="totalTimeListened", totalPlays=stats["totalSongsPlayed"], totalMs=stats["totalDurationMs"]) if stats["currentTopArtists"] else None
-
-        totalSongsChangeText, totalSongsChangeClass = dashboard._getChangeText(stats["totalSongsPlayed"], stats["previousSongsPlayed"])
-        totalListenChangeText, totalListenChangeClass = dashboard._getChangeText(stats["totalDurationMs"], stats["previousDurationMs"])
-
         pagination = dashboard._buildPaginationContext(
-            "dashboard",
+            "history",
             page,
             totalPages,
             totalCount,
@@ -228,51 +299,22 @@ def register(app, dashboard):
         )
 
         creds = db.getUserSpotifyCredentials() or {}
-        has_api = bool(creds.get("client_id") and creds.get("client_secret"))
         is_authenticated = bool(creds.get("refresh_token"))
 
-        # Unfiltered dashboard cards (independent of the interval/date-range
-        # filter above): live streak and "on this day" resurfacing are cheap
-        # and rendered inline. The Discover card's genre-coverage gate and
-        # recommendations are full-history queries (~700ms combined on a large
-        # library - see dashboardDiscover) so they're fetched by the page's
-        # own JS after first paint instead of blocking this render.
-        currentStreak = db.getCurrentStreak()
-        onThisDay = db.getOnThisDay(limit=appmod.ON_THIS_DAY_YEARS_LIMIT)
-        lastfmGenreEnabled = dashboard.repo.isLastfmGenreBackfillEnabled()
-        # Streak calendar: ~1 year of daily play counts, rendered inline below
-        # the live cards. Comparable cost to getCurrentStreak above (a similar
-        # bounded bucket scan), so it rides along in this render rather than
-        # being deferred like the full-history Discover card.
-        listeningCalendar = db.getListeningCalendar()
-
         return render_template(
-            "tracks.html",
-            currentStreak=currentStreak,
-            onThisDay=onThisDay,
-            listeningCalendar=listeningCalendar,
-            lastfmGenreEnabled=lastfmGenreEnabled,
+            "history.html",
             tracks=tracks,
-            totalSongsPlayed=stats["totalSongsPlayed"],
-            totalListenTime=totalDurationText,
-            totalSongsChangeText=totalSongsChangeText,
-            totalSongsChangeClass=totalSongsChangeClass,
-            totalListenChangeText=totalListenChangeText,
-            totalListenChangeClass=totalListenChangeClass,
-            currentTopSong=currentTopSong,
-            currentTopArtist=currentTopArtist,
+            startIndex=startIndex,
             intervalLabel=intervalLabel,
             username=username,
-            startIndex=startIndex,
-            section="dashboard",
+            section="history",
             interval=interval,
             customStart=customStart,
             customEnd=customEnd,
-            has_api=has_api,
             is_authenticated=is_authenticated,
             **pagination,
         )
-    app.add_url_rule("/", "dashboard", dashboardIndex, methods=["GET"])
+    app.add_url_rule("/history", "history", historyPage, methods=["GET"])
 
     def dashboardDiscover():
         """JSON for the dashboard's Discover card, fetched by tracks.html's own

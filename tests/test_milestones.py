@@ -16,8 +16,10 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from Database.repository import Repository
 from services.milestones import (
     detectMilestones, formatMilestone,
+    nextMilestoneProgress, buildNextMilestones,
     MILESTONE_KIND_PLAYS, MILESTONE_KIND_LISTEN_TIME, MILESTONE_KIND_STREAK, MILESTONE_KIND_TOP_ARTIST,
-    _MS_PER_HOUR,
+    MILESTONE_PLAYS_THRESHOLDS, MILESTONE_STREAK_DAY_THRESHOLDS,
+    MS_PER_HOUR,
 )
 
 
@@ -98,7 +100,7 @@ class TestMilestoneRepo(_RepoTestCase):
 
 class TestDetectMilestones(_RepoTestCase):
     def test_first_pass_seeds_everything_as_seen(self):
-        db = _FakeDb(plays=12000, ms=300 * _MS_PER_HOUR, streakDays=40,
+        db = _FakeDb(plays=12000, ms=300 * MS_PER_HOUR, streakDays=40,
                      topArtist={"id": "art1", "name": "Radiohead"})
         recorded = detectMilestones(db, self.repo, self.USER)
 
@@ -154,7 +156,7 @@ class TestDetectMilestonesChangeCache(_RepoTestCase):
 
     def test_unchanged_totals_skip_heavy_queries_on_next_pass(self):
         cache: dict = {}
-        db = _FakeDb(plays=1500, ms=5 * _MS_PER_HOUR, streakDays=10,
+        db = _FakeDb(plays=1500, ms=5 * MS_PER_HOUR, streakDays=10,
                      topArtist={"id": "a1", "name": "A"})
 
         detectMilestones(db, self.repo, self.USER, changeCache=cache)   #< first pass runs fully
@@ -207,6 +209,54 @@ class TestDetectMilestonesChangeCache(_RepoTestCase):
 
         self.assertEqual(recorded, 0)
         self.assertEqual((db.streakCalls, db.topArtistCalls), (0, 0))
+
+
+class TestNextMilestoneProgress(unittest.TestCase):
+    def test_returns_next_unreached_threshold(self):
+        prog = nextMilestoneProgress(820, MILESTONE_PLAYS_THRESHOLDS)
+        self.assertEqual(prog["target"], 1000)
+        self.assertEqual(prog["current"], 820)
+        self.assertEqual(prog["remaining"], 180)
+        self.assertEqual(prog["percent"], 82)
+
+    def test_skips_already_reached_thresholds(self):
+        # 6000 plays: 1000 and 5000 are done, next is 10000.
+        prog = nextMilestoneProgress(6000, MILESTONE_PLAYS_THRESHOLDS)
+        self.assertEqual(prog["target"], 10000)
+        self.assertEqual(prog["remaining"], 4000)
+
+    def test_exactly_on_a_threshold_targets_the_next_one(self):
+        # Reaching a threshold means it's done - progress points at the one after.
+        prog = nextMilestoneProgress(1000, MILESTONE_PLAYS_THRESHOLDS)
+        self.assertEqual(prog["target"], 5000)
+
+    def test_none_when_every_threshold_reached(self):
+        self.assertIsNone(nextMilestoneProgress(2_000_000, MILESTONE_PLAYS_THRESHOLDS))
+
+    def test_zero_value_targets_first_threshold(self):
+        prog = nextMilestoneProgress(0, MILESTONE_STREAK_DAY_THRESHOLDS)
+        self.assertEqual(prog["target"], 7)
+        self.assertEqual(prog["percent"], 0)
+
+
+class TestBuildNextMilestones(unittest.TestCase):
+    def test_one_entry_per_kind_in_order(self):
+        items = buildNextMilestones(totalPlays=820, totalHours=87, streakDays=5)
+        self.assertEqual([i["kind"] for i in items],
+                         [MILESTONE_KIND_PLAYS, MILESTONE_KIND_LISTEN_TIME, MILESTONE_KIND_STREAK])
+        plays = items[0]
+        self.assertEqual((plays["current"], plays["target"], plays["remaining"]), (820, 1000, 180))
+        self.assertTrue(plays["icon"] and plays["label"])
+
+    def test_maxed_kind_is_omitted(self):
+        # Streak past its final threshold drops out; plays/hours still climbing.
+        items = buildNextMilestones(totalPlays=100, totalHours=1, streakDays=99999)
+        kinds = [i["kind"] for i in items]
+        self.assertIn(MILESTONE_KIND_PLAYS, kinds)
+        self.assertNotIn(MILESTONE_KIND_STREAK, kinds)
+
+    def test_all_maxed_returns_empty(self):
+        self.assertEqual(buildNextMilestones(9_000_000, 999_999, 999_999), [])
 
 
 class TestFormatMilestone(unittest.TestCase):

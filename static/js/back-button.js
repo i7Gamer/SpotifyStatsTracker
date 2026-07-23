@@ -6,6 +6,7 @@
 
 const BACK_BUTTON_PATH_LABELS = [
   { test: (pathname) => pathname === '/', label: 'Dashboard' },
+  { test: (pathname) => pathname === '/history', label: 'History' },
   { test: (pathname) => pathname === '/wrapped', label: 'Wrapped' },
   { test: (pathname) => pathname === '/genres', label: 'Genres' },
   { test: (pathname) => pathname === '/compare', label: 'Compare' },

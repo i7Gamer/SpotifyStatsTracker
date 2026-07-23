@@ -53,23 +53,51 @@ class _ListRouteTestBase(AppTestCase):
                 sess['email'] = 'alice@example.com'
             return client.get(path)
 
-    def _getDashboard(self, dash, db, query=""):
-        return self._getPath(dash, db, f"/{query}")
+    def _getHistory(self, dash, db, query=""):
+        return self._getPath(dash, db, f"/history{query}")
 
     def _getTopSongs(self, dash, db, query=""):
         return self._getPath(dash, db, f"/top-songs{query}")
 
 
-class TestDashboardPagination(_ListRouteTestBase):
-    """Without a search query the dashboard must only materialize the page being
-    shown - joining full track metadata onto every entry ever recorded on every
-    request gets slow once the history grows large."""
+class TestHistoryPagination(_ListRouteTestBase):
+    """The play-history list lives on /history now. Without a search query it
+    must only materialize the page being shown - joining full track metadata
+    onto every entry ever recorded on every request gets slow once the history
+    grows large."""
+
+    def test_history_page_hosts_the_search_box(self):
+        dash = self._makeApp()
+        db = self._makeDb(entryCount=0)
+
+        resp = self._getHistory(dash, db)
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn(b'id="historySearch"', resp.data)
+        self.assertIn(b'name="q"', resp.data)
+
+    def test_history_track_card_shows_played_at(self):
+        """The play-history cards must still show the "Played at" timestamp on
+        /history (section='history'), the way the dashboard list used to
+        (section='dashboard') - see templates/_track_card.html."""
+        dash = self._makeApp()
+        db = self._makeDb(entryCount=1)
+        db.getEntriesFromNew.return_value = [
+            {"id": "t1", "name": "Test Song", "playedAtText": "20 Jul 2026, 15:30", "artists": []}]
+
+        with patch.object(dash, "_embedSongsTextElements", side_effect=lambda songs: songs), \
+             patch.object(dash, "_attachGenres", side_effect=lambda db, tracks, kind: tracks):
+            resp = self._getHistory(dash, db)
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn(b"Test Song", resp.data)
+        self.assertIn(b"Played at 20 Jul 2026, 15:30", resp.data)
 
     def test_without_search_fetches_only_one_page(self):
         dash = self._makeApp()
         db = self._makeDb(entryCount=120)
 
-        resp = self._getDashboard(dash, db)
+        resp = self._getHistory(dash, db)
 
         self.assertEqual(resp.status_code, 200)
         db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=0, startDate=None, endDate=None)
@@ -79,7 +107,7 @@ class TestDashboardPagination(_ListRouteTestBase):
         dash = self._makeApp()
         db = self._makeDb(entryCount=120)
 
-        resp = self._getDashboard(dash, db, query="?page=2")
+        resp = self._getHistory(dash, db, query="?page=2")
 
         db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=appModule.PAGE_SIZE, startDate=None, endDate=None)
         self.assertIn(b"Page 2 of 3", resp.data)
@@ -88,7 +116,7 @@ class TestDashboardPagination(_ListRouteTestBase):
         dash = self._makeApp()
         db = self._makeDb(entryCount=120)
 
-        resp = self._getDashboard(dash, db, query="?page=99")
+        resp = self._getHistory(dash, db, query="?page=99")
 
         db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=2 * appModule.PAGE_SIZE, startDate=None, endDate=None)
         self.assertIn(b"Page 3 of 3", resp.data)
@@ -97,7 +125,7 @@ class TestDashboardPagination(_ListRouteTestBase):
         dash = self._makeApp()
         db = self._makeDb(entryCount=0)
 
-        resp = self._getDashboard(dash, db)
+        resp = self._getHistory(dash, db)
 
         self.assertEqual(resp.status_code, 200)
         db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=0, startDate=None, endDate=None)
@@ -111,7 +139,7 @@ class TestDashboardPagination(_ListRouteTestBase):
         db = self._makeDb(entryCount=120)
         db.searchEntriesCount.return_value = 5
 
-        resp = self._getDashboard(dash, db, query="?q=foo")
+        resp = self._getHistory(dash, db, query="?q=foo")
 
         self.assertEqual(resp.status_code, 200)
         db.searchEntriesCount.assert_called_once_with("foo", startDate=None, endDate=None)
@@ -124,14 +152,14 @@ class TestDashboardPagination(_ListRouteTestBase):
         db = self._makeDb(entryCount=0)
         db.searchEntriesCount.return_value = 120
 
-        resp = self._getDashboard(dash, db, query="?q=foo&page=9999")
+        resp = self._getHistory(dash, db, query="?q=foo&page=9999")
 
         self.assertEqual(resp.status_code, 200)
         db.searchEntries.assert_called_once_with("foo", count=appModule.PAGE_SIZE, startIndex=2 * appModule.PAGE_SIZE, startDate=None, endDate=None)
         self.assertIn(b"Page 3 of 3", resp.data)
 
 
-class TestDashboardCustomRangeListScoping(_ListRouteTestBase):
+class TestHistoryCustomRangeListScoping(_ListRouteTestBase):
     """A custom date range (the querystring shape a chart click-through
     produces - see static/js/charts.js) must scope the play-history list
     below, not just the stats cards above. A named interval (day/week/...),
@@ -144,7 +172,7 @@ class TestDashboardCustomRangeListScoping(_ListRouteTestBase):
         dash = self._makeApp()
         db = self._makeDb(entryCount=0)
 
-        resp = self._getDashboard(dash, db, query="?interval=custom&startDate=2026-07-01&endDate=2026-07-05")
+        resp = self._getHistory(dash, db, query="?interval=custom&startDate=2026-07-01&endDate=2026-07-05")
 
         self.assertEqual(resp.status_code, 200)
         kwargs = db.getEntriesFromNew.call_args.kwargs
@@ -159,7 +187,7 @@ class TestDashboardCustomRangeListScoping(_ListRouteTestBase):
         dash = self._makeApp()
         db = self._makeDb(entryCount=0)
 
-        resp = self._getDashboard(
+        resp = self._getHistory(
             dash, db, query="?q=foo&interval=custom&startDate=2026-07-01&endDate=2026-07-05")
 
         self.assertEqual(resp.status_code, 200)
@@ -171,14 +199,12 @@ class TestDashboardCustomRangeListScoping(_ListRouteTestBase):
         dash = self._makeApp()
         db = self._makeDb(entryCount=0)
 
-        resp = self._getDashboard(dash, db, query="?interval=week")
+        resp = self._getHistory(dash, db, query="?interval=week")
 
         self.assertEqual(resp.status_code, 200)
+        # A named interval must not scope the /history list (the stats cards it
+        # used to scope now live on the dashboard, not here).
         db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=0, startDate=None, endDate=None)
-        # The stats card is still scoped to the named interval - only the list is exempt.
-        statsArgs = db.getOverallStats.call_args.args
-        self.assertIsNotNone(statsArgs[0])
-        self.assertIsNotNone(statsArgs[1])
 
     def test_default_unscoped_visit_does_not_scope_the_list(self):
         """A plain visit to '/' (no query params) resolves interval to the
@@ -187,7 +213,7 @@ class TestDashboardCustomRangeListScoping(_ListRouteTestBase):
         dash = self._makeApp()
         db = self._makeDb(entryCount=0)
 
-        resp = self._getDashboard(dash, db)
+        resp = self._getHistory(dash, db)
 
         self.assertEqual(resp.status_code, 200)
         db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=0, startDate=None, endDate=None)
@@ -198,7 +224,7 @@ class TestDashboardCustomRangeListScoping(_ListRouteTestBase):
         dash = self._makeApp()
         db = self._makeDb(entryCount=0)
 
-        resp = self._getDashboard(dash, db, query="?interval=custom")
+        resp = self._getHistory(dash, db, query="?interval=custom")
 
         self.assertEqual(resp.status_code, 200)
         db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=0, startDate=None, endDate=None)
@@ -329,7 +355,7 @@ class TestPageParamParsing(_ListRouteTestBase):
         dash = self._makeApp()
         db = self._makeDb(entryCount=120)
 
-        resp = self._getDashboard(dash, db, query="?page=abc")
+        resp = self._getHistory(dash, db, query="?page=abc")
 
         self.assertEqual(resp.status_code, 200)
         db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=0, startDate=None, endDate=None)
@@ -339,7 +365,7 @@ class TestPageParamParsing(_ListRouteTestBase):
         dash = self._makeApp()
         db = self._makeDb(entryCount=120)
 
-        resp = self._getDashboard(dash, db, query="?page=-5")
+        resp = self._getHistory(dash, db, query="?page=-5")
 
         self.assertEqual(resp.status_code, 200)
         db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=0, startDate=None, endDate=None)
@@ -412,7 +438,7 @@ class TestPaginationExtras(_ListRouteTestBase):
         dash = self._makeApp()
         db = self._makeDb(entryCount=500)   #< 10 pages of PAGE_SIZE=50
 
-        resp = self._getDashboard(dash, db, query="?page=5")
+        resp = self._getHistory(dash, db, query="?page=5")
 
         body = resp.data.decode()
         for page in (1, 3, 4, 5, 6, 7, 10):
@@ -425,7 +451,7 @@ class TestPaginationExtras(_ListRouteTestBase):
         dash = self._makeApp()
         db = self._makeDb(entryCount=500)
 
-        resp = self._getDashboard(dash, db, query="?page=5")
+        resp = self._getHistory(dash, db, query="?page=5")
 
         self.assertIn(b'class="pagination-page active"', resp.data)
 
@@ -433,7 +459,7 @@ class TestPaginationExtras(_ListRouteTestBase):
         dash = self._makeApp()
         db = self._makeDb(entryCount=120)   #< 3 pages, well within the window
 
-        resp = self._getDashboard(dash, db, query="?page=2")
+        resp = self._getHistory(dash, db, query="?page=2")
 
         self.assertNotIn(b"&hellip;", resp.data)
         for page in (1, 2, 3):
@@ -443,7 +469,7 @@ class TestPaginationExtras(_ListRouteTestBase):
         dash = self._makeApp()
         db = self._makeDb(entryCount=120)
 
-        resp = self._getDashboard(dash, db)
+        resp = self._getHistory(dash, db)
 
         self.assertIn(b"Showing 1-50 of 120", resp.data)
 
@@ -451,7 +477,7 @@ class TestPaginationExtras(_ListRouteTestBase):
         dash = self._makeApp()
         db = self._makeDb(entryCount=120)
 
-        resp = self._getDashboard(dash, db, query="?page=3")
+        resp = self._getHistory(dash, db, query="?page=3")
 
         self.assertIn(b"Showing 101-120 of 120", resp.data)
 
@@ -459,7 +485,7 @@ class TestPaginationExtras(_ListRouteTestBase):
         dash = self._makeApp()
         db = self._makeDb(entryCount=0)
 
-        resp = self._getDashboard(dash, db)
+        resp = self._getHistory(dash, db)
 
         self.assertIn(b"Showing 0-0 of 0", resp.data)
 
@@ -467,12 +493,12 @@ class TestPaginationExtras(_ListRouteTestBase):
         dash = self._makeApp()
         db = self._makeDb(entryCount=120)
 
-        resp = self._getDashboard(dash, db)
+        resp = self._getHistory(dash, db)
 
         self.assertIn(b'max="3"', resp.data)
 
 
-class TestDashboardConnectionEmptyState(_ListRouteTestBase):
+class TestHistoryConnectionEmptyState(_ListRouteTestBase):
     """A brand-new user with zero history and Spotify not authorized sees a
     banner pointing at Profile/Import instead of the generic 'go listen to
     some music' message, which doesn't help someone who hasn't set up
@@ -495,7 +521,7 @@ class TestDashboardConnectionEmptyState(_ListRouteTestBase):
         dash = self._makeApp()
         db = self._makeDb(entryCount=0)
 
-        resp = self._getDashboard(dash, db)
+        resp = self._getHistory(dash, db)
 
         self.assertIn(b"haven't connected Spotify yet", resp.data)
         self.assertNotIn(b"No history tracks found", resp.data)
@@ -504,7 +530,7 @@ class TestDashboardConnectionEmptyState(_ListRouteTestBase):
         dash = self._makeApp()
         db = self._makeDb(entryCount=0, hasApi=True, isAuthenticated=True)
 
-        resp = self._getDashboard(dash, db)
+        resp = self._getHistory(dash, db)
 
         self.assertIn(b"No history tracks found", resp.data)
         self.assertNotIn(b"haven't connected Spotify yet", resp.data)
@@ -516,7 +542,7 @@ class TestDashboardConnectionEmptyState(_ListRouteTestBase):
         db = self._makeDb(entryCount=0)
         db.getUserLastfmApiKey.return_value = "key"
 
-        resp = self._getDashboard(dash, db)
+        resp = self._getHistory(dash, db)
 
         self.assertIn(b"haven't connected Spotify yet", resp.data)
         self.assertNotIn(b"No history tracks found", resp.data)
@@ -525,7 +551,7 @@ class TestDashboardConnectionEmptyState(_ListRouteTestBase):
         dash = self._makeApp()
         db = self._makeDb(entryCount=120)
 
-        resp = self._getDashboard(dash, db)
+        resp = self._getHistory(dash, db)
 
         self.assertNotIn(b"haven't connected Spotify yet", resp.data)
 
@@ -537,7 +563,7 @@ class TestDashboardConnectionEmptyState(_ListRouteTestBase):
         db = self._makeDb(entryCount=0)
         db.searchEntriesCount.return_value = 0
 
-        resp = self._getDashboard(dash, db, query="?q=nonexistent")
+        resp = self._getHistory(dash, db, query="?q=nonexistent")
 
         self.assertIn(b"No history tracks found", resp.data)
         self.assertNotIn(b"haven't connected Spotify yet", resp.data)
@@ -548,7 +574,7 @@ class TestDashboardConnectionEmptyState(_ListRouteTestBase):
         dash = self._makeApp()
         db = self._makeDb(entryCount=0)
 
-        resp = self._getDashboard(dash, db, query="?interval=custom&startDate=2020-01-01&endDate=2020-01-02")
+        resp = self._getHistory(dash, db, query="?interval=custom&startDate=2020-01-01&endDate=2020-01-02")
 
         self.assertIn(b"No history tracks found", resp.data)
         self.assertNotIn(b"haven't connected Spotify yet", resp.data)

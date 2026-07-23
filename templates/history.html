@@ -1,0 +1,142 @@
+{% extends "layout.html" %}
+{% block content %}
+  {# The searchable, paginated play history - split off the dashboard so that
+     page stays a glanceable overview. Filter form mirrors the one the dashboard
+     used to host; only an explicit custom range scopes the list (see
+     historyPage in routes/charts.py). #}
+  <section class="hero">
+    <div class="hero-content">
+      <form class="filter-section dashboard-filter" method="get" action="{{ url_for('history') }}">
+        <div class="filter-group filter-search">
+          <label for="historySearch">Search:</label>
+          <input
+            type="search"
+            id="historySearch"
+            class="auto-search-focus"
+            name="q"
+            value="{{ request.args.get('q', '') }}"
+            placeholder="Search songs, artists, playlists"
+            aria-label="Search your listening history"
+            onkeydown="handleSearchKeydown(event, updateHistoryFilters)"
+            onblur="handleSearchBlur(event, updateHistoryFilters)"
+          />
+        </div>
+
+        <div class="filter-group">
+          <label for="interval">Time Period:</label>
+          <select id="interval" name="interval" onchange="updateHistoryInterval()">
+            <option value="all time" {% if interval == 'all time' %}selected{% endif %}>All Time</option>
+            <option value="today" {% if interval == 'today' %}selected{% endif %}>Today</option>
+            <option value="day" {% if interval == 'day' %}selected{% endif %}>Yesterday</option>
+            <option value="week" {% if interval == 'week' %}selected{% endif %}>Last Week</option>
+            <option value="month" {% if interval == 'month' %}selected{% endif %}>Last Month</option>
+            <option value="year" {% if interval == 'year' %}selected{% endif %}>Last Year</option>
+            <option value="5years" {% if interval == '5years' %}selected{% endif %}>Last 5 Years</option>
+            <option value="custom" {% if interval == 'custom' %}selected{% endif %}>Custom Date Range</option>
+          </select>
+        </div>
+
+        <div class="filter-group custom-dates" id="historyCustomDates" {% if interval != 'custom' %}style="display: none;"{% endif %}>
+          <label for="startDate">From:</label>
+          <input type="date" id="startDate" name="startDate" value="{{ customStart }}" onchange="scheduleSearchFilter('startDate', updateHistoryDateFilter)">
+          <label for="endDate">To:</label>
+          <input type="date" id="endDate" name="endDate" value="{{ customEnd }}" onchange="scheduleSearchFilter('endDate', updateHistoryDateFilter)">
+          <span id="dateError" style="color: var(--accent); font-size: 0.85rem; display: none; margin-left: 10px;"></span>
+        </div>
+
+        <noscript>
+          <button class="primary-button" type="submit">Apply</button>
+        </noscript>
+      </form>
+    </div>
+  </section>
+
+  <section class="track-list">
+    {% if tracks %}
+      {% for track in tracks %}
+        {% set item_number = track.get('absoluteIndex') if track.get('absoluteIndex') else (startIndex | default(0)) + loop.index %}
+        {% set section = 'history' %}
+        {% include '_track_card.html' %}
+      {% endfor %}
+    {% elif not request.args.get('q', '') and interval != 'custom' and totalCount == 0 and not is_authenticated %}
+      <p class="loading">You haven't connected Spotify yet. <a href="{{ url_for('profilePage') }}">Connect Spotify</a>, or <a href="{{ url_for('importPage') }}">import your listening history</a>, to get started.</p>
+    {% else %}
+      <p class="loading">No history tracks found. Go listen to some music or import your history from the import section.</p>
+    {% endif %}
+  </section>
+
+  {% include '_pagination.html' %}
+
+  <script>
+    // Filter behavior for the history list - the interval/custom-range/search
+    // reload logic the dashboard used to own, now that the list lives here.
+    function updateHistoryInterval() {
+      const interval = document.getElementById('interval').value;
+      const customDates = document.getElementById('historyCustomDates');
+
+      if (interval === 'custom') {
+        customDates.style.display = 'flex';
+        return;
+      }
+
+      customDates.style.display = 'none';
+      updateHistoryFilters();
+    }
+
+    function updateHistoryDateFilter() {
+      const startDateElem = document.getElementById('startDate');
+      const endDateElem = document.getElementById('endDate');
+      const errorElem = document.getElementById('dateError');
+      const startDate = startDateElem.value;
+      const endDate = endDateElem.value;
+
+      errorElem.style.display = 'none';
+      startDateElem.style.borderColor = '';
+      endDateElem.style.borderColor = '';
+
+      if (startDate && endDate) {
+        if (new Date(startDate) > new Date(endDate)) {
+          errorElem.textContent = 'Start date cannot be after end date.';
+          errorElem.style.display = 'block';
+          startDateElem.style.borderColor = 'var(--accent)';
+          endDateElem.style.borderColor = 'var(--accent)';
+          return;
+        }
+        updateHistoryFilters(true);
+      }
+    }
+
+    function updateHistoryFilters(forceCustom = false) {
+      const interval = document.getElementById('interval').value;
+      const searchInput = document.getElementById('historySearch');
+      const params = new URLSearchParams(window.location.search);
+      const searchQuery = searchInput ? searchInput.value : '';
+
+      if (searchQuery.trim()) {
+        params.set('q', searchQuery);
+      } else {
+        params.delete('q');
+      }
+
+      if (interval === 'custom' || forceCustom) {
+        const startDate = document.getElementById('startDate').value;
+        const endDate = document.getElementById('endDate').value;
+
+        if (!startDate || !endDate) {
+          return;
+        }
+
+        params.set('interval', 'custom');
+        params.set('startDate', startDate);
+        params.set('endDate', endDate);
+      } else {
+        params.set('interval', interval);
+        params.delete('startDate');
+        params.delete('endDate');
+      }
+
+      params.delete('page');
+      window.location = window.location.pathname + '?' + params.toString();
+    }
+  </script>
+{% endblock %}

@@ -32,6 +32,16 @@ run('dashboard root referrer', () => {
   assert.deepStrictEqual(resolveBackTarget(`${ORIGIN}/`, ORIGIN), { label: '← Back to Dashboard' });
 });
 
+run('history referrer', () => {
+  assert.deepStrictEqual(resolveBackTarget(`${ORIGIN}/history`, ORIGIN), { label: '← Back to History' });
+});
+
+run('history referrer with search + pagination keeps its label', () => {
+  assert.deepStrictEqual(
+    resolveBackTarget(`${ORIGIN}/history?q=daft&interval=year&page=2`, ORIGIN),
+    { label: '← Back to History' });
+});
+
 run('wrapped referrer', () => {
   assert.deepStrictEqual(resolveBackTarget(`${ORIGIN}/wrapped`, ORIGIN), { label: '← Back to Wrapped' });
 });

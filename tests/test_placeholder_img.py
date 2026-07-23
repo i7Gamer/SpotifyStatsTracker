@@ -39,6 +39,7 @@ class TestPlaceholderImgDefinition(AppTestCase):
         db.getOnThisDay.return_value = []
         db.getListeningCalendar.return_value = {
             "weeks": [], "monthLabels": [], "maxCount": 0, "activeDays": 0, "totalPlays": 0}
+        db.getPlayTotals.return_value = (0, 0)   #< lifetime totals feed the Next-milestones bars
         return db
 
     def _getDashboardHtml(self, dash):
