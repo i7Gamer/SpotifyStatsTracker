@@ -44,7 +44,11 @@ def register(app, dashboard):
             if dashboard.repo.getUserCookies(u) is not None
         ]
         if not acceptedUsernames:
-            abort(404)
+            # A real page explaining what to do next, not a bare 404 - covers
+            # both "never requested a share" and the cookie-less-counterpart
+            # edge case above alike, since either way there's nothing to
+            # compare against right now.
+            return render_template("compare_empty.html", username=username, section="compare")
 
         withUsername = request.args.get("with", acceptedUsernames[0])
         if withUsername not in acceptedUsernames:

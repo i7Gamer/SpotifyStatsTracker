@@ -1,0 +1,17 @@
+{% extends "layout.html" %}
+{% block content %}
+
+{# Shown instead of the full compare.html shell when comparePage() finds no
+   usable accepted share (see routes/compare.py) - a real page explaining
+   what to do next, not a bare 404. #}
+<section class="hero">
+  <div class="hero-content">
+    <h1>Compare</h1>
+    <p>
+      See how your listening stats stack up against someone who shares their data with you.
+      You haven't connected with anyone yet - <a href="{{ url_for('profilePage') }}#data-sharing">request a share from your Profile</a> to get started.
+    </p>
+  </div>
+</section>
+
+{% endblock %}

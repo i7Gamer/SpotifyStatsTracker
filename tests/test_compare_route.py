@@ -116,12 +116,16 @@ class TestCompareRoute(AppTestCase):
         _, data = self._ajax(client, url)
         return shellResp.data.decode("utf-8") + self._ajaxHtml(data)
 
-    def test_404_with_no_accepted_shares(self):
+    def test_shows_empty_state_with_no_accepted_shares(self):
+        """A real page pointing at Profile's Data Sharing section, not a bare
+        404 - see routes/compare.py's comparePage() and compare_empty.html."""
         client = self._loginAs("alice")
 
         resp = client.get("/compare")
 
-        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn(b"haven't connected with anyone yet", resp.data)
+        self.assertIn(b'href="/profile#data-sharing"', resp.data)
 
     def test_404_when_data_sharing_is_disabled(self):
         """The admin's instance-wide kill switch blocks the route outright,
@@ -198,7 +202,7 @@ class TestCompareRoute(AppTestCase):
 
         resp = client.get("/compare")
 
-        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(resp.status_code, 200)   #< the empty state, not a crash
         calledUsernames = [call.args[0] for call in self.get_user_db_mock.call_args_list]
         self.assertNotIn("dave", calledUsernames)
 
@@ -1540,7 +1544,8 @@ class TestCompareRoute(AppTestCase):
 
         resp = client.get("/compare?ajax=true")
 
-        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn(b"haven't connected with anyone yet", resp.data)
 
     def test_leader_cells_carry_a_non_color_marker(self):
         """The accent color alone can't mark the leading side for color-blind
