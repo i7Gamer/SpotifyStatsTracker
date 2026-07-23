@@ -454,10 +454,12 @@ button {
   text-decoration: underline;
 }
 
-/* Desktop restores the larger cover art; mobile keeps the compact thumbnail.
+/* Full-nav widths restore the larger cover art; once the top nav collapses to
+   the hamburger (<=1024px, see the .nav-toggle media query) the covers drop
+   back to the compact 56px thumbnail so both shrink at the same breakpoint.
    (Placed after the base 56px rules so it wins the cascade.) The bottom
    alignment on the rows lines the text up with the cover's base. */
-@media (min-width: 901px) {
+@media (min-width: 1025px) {
   .now-playing-cover,
   .summary-top-cover {
     width: 112px;
