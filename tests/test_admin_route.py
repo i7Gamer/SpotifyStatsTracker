@@ -339,6 +339,59 @@ class TestAdminUserSettings(AdminRouteTestBase):
         self.assertTrue(dash.repo.isMilestoneRecalcEnabled())
 
 
+class TestAdminMilestoneWorkerHealth(AdminRouteTestBase):
+    """The Worker Health panel's Milestone Detection entry. The milestone pass
+    has no thread of its own - it rides the periodic login-check loop - so its
+    health is that hosting thread's: RUNNING while alive, INACTIVE otherwise,
+    DISABLED when the admin kill switch turns the whole feature off, plus a
+    warning badge when the import-hygiene auto-recalc toggle is off."""
+
+    def _milestoneSection(self, resp):
+        """The Milestone Detection badge markup only - RUNNING/INACTIVE also
+        appear in other Worker Health sections, so assertions must scope to
+        this section's marker id."""
+        self.assertIn(b'id="milestoneWorkerStatus"', resp.data)
+        return resp.data.split(b'id="milestoneWorkerStatus"')[1][:300]
+
+    def _makeAppWithLoopThread(self):
+        dash = self._makeApp()
+        dash._checkLoginThread = MagicMock()
+        dash._checkLoginThread.is_alive.return_value = True
+        return dash
+
+    def test_inactive_without_the_login_check_loop(self):
+        # The test app never starts checkLogin_thread, so the hosting loop
+        # thread is absent - the panel must say so instead of implying health.
+        dash = self._makeApp()
+        resp = self._getAdmin(dash)
+        self.assertIn(b"Milestone Detection", resp.data)
+        self.assertIn(b"INACTIVE", self._milestoneSection(resp))
+
+    def test_running_with_a_live_loop_thread(self):
+        dash = self._makeAppWithLoopThread()
+        resp = self._getAdmin(dash)
+        section = self._milestoneSection(resp)
+        self.assertIn(b"RUNNING", section)
+        self.assertNotIn(b"AUTO-RECALC OFF", section)
+
+    def test_disabled_by_the_kill_switch(self):
+        dash = self._makeAppWithLoopThread()
+        dash.repo.setMilestonesEnabled(False)
+        resp = self._getAdmin(dash)
+        section = self._milestoneSection(resp)
+        self.assertIn(b"DISABLED", section)
+        self.assertNotIn(b"RUNNING", section)
+        self.assertNotIn(b"AUTO-RECALC OFF", section)   #< moot while the whole feature is off
+
+    def test_warns_when_auto_recalc_is_off(self):
+        dash = self._makeAppWithLoopThread()
+        dash.repo.setMilestoneRecalcEnabled(False)
+        resp = self._getAdmin(dash)
+        section = self._milestoneSection(resp)
+        self.assertIn(b"RUNNING", section)
+        self.assertIn(b"AUTO-RECALC OFF", section)
+
+
 class TestAdminSkipSettings(AdminRouteTestBase):
     def test_non_admin_post_is_forbidden(self):
         dash = self._makeApp()

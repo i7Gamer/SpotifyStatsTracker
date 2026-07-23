@@ -233,6 +233,11 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
         # In-process is sufficient: detection only runs from the single
         # _checkLoginLoop thread, and this app is single-process by design.
         self._milestoneChangeCache: dict = {}
+        # The periodic login-check loop's thread (started by
+        # checkLogin_thread; None until then, e.g. under test) - /admin reads
+        # its liveness as the Milestone Detection health, since the milestone
+        # pass runs inside that loop rather than on a thread of its own.
+        self._checkLoginThread: threading.Thread | None = None
         # Snapshots the shared database on a schedule (see Database/backup.py) -
         # a manual backup command in the README protects nobody who doesn't run it.
         # Interval/retention come from admin settings, falling back to the env
@@ -557,8 +562,11 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
 
     def checkLogin_thread(self):
         self._ensureAllUsersLogin()
-        thread = threading.Thread(target=self._checkLoginLoop, daemon=True)
-        thread.start()
+        # Stored (not just started) so /admin's Worker Health panel can report
+        # this loop's liveness - it hosts the per-user milestone pass, which
+        # has no thread of its own to inspect.
+        self._checkLoginThread = threading.Thread(target=self._checkLoginLoop, daemon=True)
+        self._checkLoginThread.start()
 
     def _ensureAllUsersLogin(self):
         try:

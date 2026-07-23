@@ -266,6 +266,24 @@ def register(app, dashboard):
 
         backup_worker_summary = {"status": "RUNNING" if backup_worker_running else "INACTIVE"}
 
+        # Milestone detection has no thread of its own - it rides the periodic
+        # login-check loop (see _detectMilestonesSafely), so its health IS that
+        # thread's liveness. DISABLED reflects the admin kill switch (the pass
+        # no-ops then regardless of the thread); recalc_enabled surfaces the
+        # import-hygiene toggle as a warning badge, since with it off imports
+        # silently stop recalculating dates / suppressing badge floods.
+        loginCheckThread = getattr(dashboard, "_checkLoginThread", None)
+        if not dashboard.repo.isMilestonesEnabled():
+            milestone_status = "DISABLED"
+        elif loginCheckThread is not None and loginCheckThread.is_alive():
+            milestone_status = "RUNNING"
+        else:
+            milestone_status = "INACTIVE"
+        milestone_worker_summary = {
+            "status": milestone_status,
+            "recalc_enabled": dashboard.repo.isMilestoneRecalcEnabled(),
+        }
+
         skip_mode, skip_value = dashboard.repo.getSkipThreshold()
         restart_enabled = os.environ.get(ALLOW_INSTANCE_RESTART_ENV_VAR, "").lower() in TRUTHY_ENV_VALUES
 
@@ -309,6 +327,7 @@ def register(app, dashboard):
             auto_importer_worker_summary=auto_importer_worker_summary,
             wrapped_worker_summary=wrapped_worker_summary,
             backup_worker_summary=backup_worker_summary,
+            milestone_worker_summary=milestone_worker_summary,
             catalog_genre_coverage=dashboard.repo.getCatalogGenreCoverage(),
             catalog_biography_coverage=dashboard.repo.getCatalogBiographyCoverage(),
             registration_counts=dashboard.repo.getRecentRegistrationCounts(),

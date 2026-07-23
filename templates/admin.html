@@ -220,6 +220,24 @@
       {% endif %}
     </div>
 
+    {# Milestone detection rides the periodic login-check loop (no thread of
+       its own) - RUNNING/INACTIVE is that loop's liveness, DISABLED the admin
+       kill switch, and the warning badge the import-hygiene auto-recalc
+       toggle being off. #}
+    <p style="font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">Milestone Detection</p>
+    <div id="milestoneWorkerStatus" style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem;">
+      {% if milestone_worker_summary.status == 'RUNNING' %}
+        <span class="badge badge-success">RUNNING</span>
+      {% elif milestone_worker_summary.status == 'DISABLED' %}
+        <span class="badge badge-secondary">DISABLED</span>
+      {% else %}
+        <span class="badge badge-secondary">INACTIVE</span>
+      {% endif %}
+      {% if milestone_worker_summary.status != 'DISABLED' and not milestone_worker_summary.recalc_enabled %}
+        <span class="badge badge-warning">AUTO-RECALC OFF</span>
+      {% endif %}
+    </div>
+
     <p style="font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">Database Backup Service</p>
     <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
       {% if backup_worker_summary.status == 'RUNNING' %}
