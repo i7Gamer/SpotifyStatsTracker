@@ -241,6 +241,36 @@ class TestSongDetailRoute(_DetailRouteTestBase):
 
         self.assertEqual(db.getListeningTimeSeries.call_args.kwargs.get("groupBy"), "day")
 
+    def test_ajax_returns_only_the_time_series_json_and_skips_heavy_work(self):
+        """The Trend-buckets select re-fetches just the play-history series via
+        ?ajax=true (static/js/detail-chart.js); the heavy per-page work (heatmap,
+        genres) must be deferred - see the branch in songDetailPage."""
+        dash = self._makeApp()
+        db = MagicMock()
+        db.getSong.return_value = self._song()
+        db.getListeningTimeSeries.return_value = [{"label": "2026-07-01", "totalTimeListened": 1000, "plays": 1}]
+
+        resp = self._getPath(dash, db, "/song/t1?ajax=true")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.mimetype, "application/json")
+        payload = resp.get_json()
+        self.assertEqual(sorted(payload.keys()), ["groupBy", "timeSeries"])
+        self.assertEqual(db.getListeningTimeSeries.call_args.kwargs.get("trackId"), "t1")
+        db.getHourOfDayHeatmap.assert_not_called()
+        db.getGenresForTrack.assert_not_called()
+
+    def test_ajax_groupby_is_passed_through_and_echoed(self):
+        dash = self._makeApp()
+        db = MagicMock()
+        db.getSong.return_value = self._song()
+        db.getListeningTimeSeries.return_value = []
+
+        resp = self._getPath(dash, db, "/song/t1?groupBy=month&ajax=true")
+
+        self.assertEqual(db.getListeningTimeSeries.call_args.kwargs.get("groupBy"), "month")
+        self.assertEqual(resp.get_json().get("groupBy"), "month")
+
 
 class TestArtistDetailRoute(_DetailRouteTestBase):
     def _artist(self):
@@ -373,6 +403,23 @@ class TestArtistDetailRoute(_DetailRouteTestBase):
 
         self.assertEqual(db.getListeningTimeSeries.call_args.kwargs.get("groupBy"), "month")
         self.assertIn(b'<option value="month" selected>Month</option>', resp.data)
+
+    def test_ajax_returns_only_the_time_series_json_and_skips_heavy_work(self):
+        dash = self._makeApp()
+        db = MagicMock()
+        db.getArtist.return_value = self._artist()
+        db.getListeningTimeSeries.return_value = [{"label": "2026-07-01", "totalTimeListened": 1000, "plays": 1}]
+
+        resp = self._getPath(dash, db, "/artist/a1?ajax=true")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.mimetype, "application/json")
+        payload = resp.get_json()
+        self.assertEqual(sorted(payload.keys()), ["groupBy", "timeSeries"])
+        self.assertEqual(db.getListeningTimeSeries.call_args.kwargs.get("artistId"), "a1")
+        db.getSongsStats.assert_not_called()
+        db.lazyFetchArtistBio.assert_not_called()
+        db.getArtistBio.assert_not_called()
 
     def test_first_song_you_listened_to_is_shown(self):
         dash = self._makeApp()
@@ -546,6 +593,23 @@ class TestAlbumDetailRoute(_DetailRouteTestBase):
 
         self.assertEqual(db.getListeningTimeSeries.call_args.kwargs.get("groupBy"), "month")
         self.assertIn(b'<option value="month" selected>Month</option>', resp.data)
+
+    def test_ajax_returns_only_the_time_series_json_and_skips_heavy_work(self):
+        dash = self._makeApp()
+        db = MagicMock()
+        db.getAlbum.return_value = self._album()
+        db.getListeningTimeSeries.return_value = [{"label": "2026-07-01", "totalTimeListened": 1000, "plays": 1}]
+
+        resp = self._getPath(dash, db, "/album/alb1?ajax=true")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.mimetype, "application/json")
+        payload = resp.get_json()
+        self.assertEqual(sorted(payload.keys()), ["groupBy", "timeSeries"])
+        self.assertEqual(db.getListeningTimeSeries.call_args.kwargs.get("albumId"), "alb1")
+        db.getSongsStats.assert_not_called()
+        db.lazyFetchAlbumBio.assert_not_called()
+        db.getAlbumBio.assert_not_called()
 
     def test_unique_song_count_card_is_shown(self):
         dash = self._makeApp()
