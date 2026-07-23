@@ -408,17 +408,13 @@
   }
 
   function renderGenreChart() {
-    // Genre names run long ("progressive electronic") - fit the axis label
-    // to the bar slot.
-    CU.renderBarsFromPairs(document.getElementById('genreChart'),
+    // Horizontal bars (full label per row, not a cramped x-axis) - long
+    // genre names never truncate into an ambiguous collision, like
+    // "alternative rock"/"alternative metal" both cutting down to
+    // "alternative…" used to.
+    CU.renderHorizontalBars(document.getElementById('genreChart'),
       window.__chartData.genreDistribution,
-      {
-        emptyMessage: 'No genre data for the plays in this period.',
-        fitLabel: function (key, rawBarWidth) {
-          var maxLabelChars = Math.max(4, Math.floor(rawBarWidth / 7));
-          return key.length > maxLabelChars ? key.slice(0, maxLabelChars - 1) + '…' : key;
-        }
-      });
+      { emptyMessage: 'No genre data for the plays in this period.', valueSuffix: ' plays' });
   }
 
   function renderAllCharts() {

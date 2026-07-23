@@ -17,22 +17,17 @@
   var bootstrap = bootstrapEl ? JSON.parse(bootstrapEl.textContent) : {};
   window.__genreData = window.__genreData || {};
 
-  var GENRE_LABEL_CHAR_PX = 7;   //< approx px per char, to fit a long genre label into its bar slot
-  var MIN_GENRE_LABEL_CHARS = 4;
   var GENRE_BREADTH_LIMIT = 8;   //< keep the horizontal breadth chart to a readable height
-
-  function fitGenreLabel(key, slotWidth) {
-    var maxChars = Math.max(MIN_GENRE_LABEL_CHARS, Math.floor(slotWidth / GENRE_LABEL_CHAR_PX));
-    return key.length > maxChars ? key.slice(0, maxChars - 1) + '…' : key;
-  }
 
   // ---- Overview charts (redrawn on each time-period change) -----------------
 
   function renderDistribution() {
     var pairs = (window.__genreData && window.__genreData.distributionPairs) || [];
-    CU.renderBarsFromPairs(document.getElementById('genreDistChart'), pairs, {
+    // Horizontal bars, like Artists per Genre below - long genre names never
+    // truncate into an ambiguous collision, like "alternative rock"/
+    // "alternative metal" both cutting down to "alternative…" used to.
+    CU.renderHorizontalBars(document.getElementById('genreDistChart'), pairs, {
       emptyMessage: 'No genre data yet.',
-      fitLabel: fitGenreLabel,
       valueSuffix: ' plays'
     });
   }
