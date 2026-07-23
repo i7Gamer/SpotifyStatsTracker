@@ -250,16 +250,10 @@
     }
 
     function updateDashboardFilters(forceCustom = false) {
+      // Dashboard filter only drives the stats cards' Time Period now - search
+      // and the paginated list moved to /history, so no q/page handling here.
       const interval = document.getElementById('interval').value;
-      const searchInput = document.getElementById('dashboardSearch');
       const params = new URLSearchParams(window.location.search);
-      const searchQuery = searchInput ? searchInput.value : '';
-
-      if (searchQuery.trim()) {
-        params.set('q', searchQuery);
-      } else {
-        params.delete('q');
-      }
 
       if (interval === 'custom' || forceCustom) {
         const startDate = document.getElementById('startDate').value;
@@ -278,7 +272,6 @@
         params.delete('endDate');
       }
 
-      params.delete('page');
       window.location = window.location.pathname + '?' + params.toString();
     }
 
