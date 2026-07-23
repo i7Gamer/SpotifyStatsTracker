@@ -238,6 +238,20 @@ class ListenerMixin:
                         "re-login with matching cookies to resume tracking"
                     )
                 return True
+            if self.listener.loginFailed:
+                # The stored cookies didn't authenticate at all (see
+                # Listener.__init__'s isLoggedIn guard) - same DEAD-with-reason
+                # treatment as contaminationDetected, instead of leaving this
+                # user's Database uncached (get_user_db's except-and-rollback,
+                # triggered by the AttributeError this used to raise) with
+                # nothing in the UI explaining why.
+                with self._health_lock:
+                    self.listener_health = "DEAD"
+                    self.listener_last_error = (
+                        "Spotify login failed - stored cookies may be invalid or expired; "
+                        "re-login to resume tracking"
+                    )
+                return True
             with self._health_lock:
                 self.listener_health = "HEALTHY"
                 self.listener_error_count = 0

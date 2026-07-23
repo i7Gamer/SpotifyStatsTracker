@@ -88,6 +88,7 @@ class TestStartListenerAndImportHistoryUseDatabaseCookies(DatabaseTestCase):
         with patch("Database.database.Listener") as mockListenerClass:
             mockListener = MagicMock()
             mockListener.contaminationDetected = False  #< a bare MagicMock's auto-attribute is truthy = contaminated
+            mockListener.loginFailed = False  #< same trap - see above
             mockListenerClass.return_value = mockListener
 
             db.startListener(email="alice@example.com")
@@ -109,7 +110,9 @@ class TestStartListenerAndImportHistoryUseDatabaseCookies(DatabaseTestCase):
         with patch("Database.database.Listener") as mockListenerClass:
             firstListener, secondListener = MagicMock(), MagicMock()
             firstListener.contaminationDetected = False  #< see test above
+            firstListener.loginFailed = False
             secondListener.contaminationDetected = False
+            secondListener.loginFailed = False
             mockListenerClass.side_effect = [firstListener, secondListener]
 
             db.startListener(email="alice@example.com")

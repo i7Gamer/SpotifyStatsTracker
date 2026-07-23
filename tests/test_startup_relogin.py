@@ -20,11 +20,12 @@ _SECRET_KEY_PATCH = 'app.SpotifyDashboardApp._get_or_create_secret_key'
 
 
 def _healthyListenerMock():
-    """A fake Listener whose contamination flag is explicitly clear - a bare
-    MagicMock's auto-created contaminationDetected attribute is truthy, which
-    would make Database.startListener treat it as contaminated."""
+    """A fake Listener whose contamination/login-failure flags are explicitly
+    clear - a bare MagicMock's auto-created attributes are truthy, which would
+    make Database.startListener treat it as contaminated or login-failed."""
     listener = MagicMock()
     listener.contaminationDetected = False
+    listener.loginFailed = False
     return listener
 
 

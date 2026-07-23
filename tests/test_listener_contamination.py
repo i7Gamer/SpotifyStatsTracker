@@ -139,6 +139,7 @@ class TestContaminatedListenerHealth(DatabaseTestCase):
     def test_clean_listener_marks_health_healthy_and_starts(self):
         listener = MagicMock()
         listener.contaminationDetected = False
+        listener.loginFailed = False
 
         db = self._startWithListener(listener)
 

@@ -272,6 +272,7 @@ class Listener:
         self.email = email  #< store expected email for validation
         self._authenticated_user_id = None  #< cache spotify user id for validation
         self.contaminationDetected = False  #< True when the cookies authenticate as a DIFFERENT account than self.email
+        self.loginFailed = False  #< True when the stored cookies didn't authenticate at all (see below)
         self.get_credentials = get_credentials
         # Optional admin kill switch, re-read each poll (like get_credentials)
         # so a restart is never needed to see a flip - None (the default for
@@ -289,7 +290,22 @@ class Listener:
         self._lastWebApiPollTime = None  #< None means "never polled yet" - forces an immediate first poll
         with _suppress_signal_in_thread():
             self.sp = Spotify(cookiesFile=cookiesFile, email=email)
-            self.sp.startRecentlyPlayedListener(refreshInterval=refreshInterval)
+            if self.sp.isLoggedIn():
+                self.sp.startRecentlyPlayedListener(refreshInterval=refreshInterval)
+            else:
+                # self.sp.user_auth stays a plain bool (SpotipyFree's own
+                # not-logged-in sentinel) when the stored cookies fail to
+                # authenticate. Calling startRecentlyPlayedListener() anyway
+                # doesn't fail cleanly - it builds a PlayerStatus/
+                # WebsocketStreamer around that bool, and spotapi's own
+                # WebsocketStreamer.__init__ does `login.logged_in`, raising
+                # AttributeError deep inside a third-party dependency instead
+                # of leaving this listener in a clean, detectable non-working
+                # state. Skip it and let startListener() (Database/workers/
+                # listener.py) report this the same way it already does for
+                # contaminationDetected below.
+                self.loginFailed = True
+                logger.warning("Spotify login failed for user %s - stored cookies may be invalid or expired", email)
 
         # Validate that this Spotify client is properly authenticated for the expected user
         try:
