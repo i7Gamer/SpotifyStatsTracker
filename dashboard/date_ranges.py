@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 from Database.utils import convertToDatetime, msToString, now, parseDateString, startOfDay
+from config import COMPARE_TREND_WEEK_SPAN_DAYS, COMPARE_TREND_MONTH_SPAN_DAYS
 
 
 class DateRangeMixin:
@@ -15,6 +16,24 @@ class DateRangeMixin:
     def _getValidGroupBy(self, groupBy, default="day"):
         """Validate groupBy parameter, falling back to default for unrecognized values."""
         return groupBy if groupBy in ("day", "week", "month") else default
+
+    def _resolveGroupBy(self, groupByParam, startDate=None, endDate=None):
+        """The trend-bucket size for a time-series chart: an explicit valid
+        choice wins; anything else (the "Auto" option's empty value, or junk)
+        derives day/week/month from the range span so the trend stays
+        readable at any range - day buckets across a multi-year span are
+        sub-pixel. Same thresholds Compare's trend has always auto-bucketed
+        with; callers with an open-ended range (all time, a detail page's
+        whole item history) pass play-range-derived dates, and no dates at
+        all fall back to day."""
+        if groupByParam in ("day", "week", "month"):
+            return groupByParam
+        spanDays = (endDate - startDate).days if startDate and endDate else 0
+        if spanDays > COMPARE_TREND_MONTH_SPAN_DAYS:
+            return "month"
+        if spanDays > COMPARE_TREND_WEEK_SPAN_DAYS:
+            return "week"
+        return "day"
 
     def _getDateRange(self, interval: str = None, customStart: str = None, customEnd: str = None, default="day", tz=None):
             """Get start and end dates based on interval or custom dates.

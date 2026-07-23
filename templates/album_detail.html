@@ -22,8 +22,9 @@
       </form>
       {% endif %}
       <div class="filter-group">
-        <label for="groupBy">Group by:</label>
+        <label for="groupBy">Trend buckets:</label>
         <select id="groupBy" name="groupBy" onchange="updateDetailGroupByFilter()">
+          <option value="" {% if not groupBy %}selected{% endif %}>Auto</option>
           <option value="day" {% if groupBy == 'day' %}selected{% endif %}>Day</option>
           <option value="week" {% if groupBy == 'week' %}selected{% endif %}>Week</option>
           <option value="month" {% if groupBy == 'month' %}selected{% endif %}>Month</option>
@@ -96,4 +97,5 @@
   </script>
   <script src="{{ url_for('static', filename='js/chart-utils.js') }}"></script>
   <script src="{{ url_for('static', filename='js/charts.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/detail-chart.js') }}"></script>
 {% endblock %}

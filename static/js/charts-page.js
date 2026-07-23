@@ -162,6 +162,16 @@
     var interval = document.getElementById('interval').value;
     var groupBy = document.getElementById('groupBy').value;
 
+    //< Auto ("") drops the param so the server derives the bucket from the
+    //  range span - pinning the derived value would freeze auto mode
+    function setGroupBy(params) {
+      if (groupBy) {
+        params.set('groupBy', groupBy);
+      } else {
+        params.delete('groupBy');
+      }
+    }
+
     if (interval === 'custom' || forceCustom) {
       var startDate = document.getElementById('startDate').value;
       var endDate = document.getElementById('endDate').value;
@@ -169,14 +179,14 @@
         return;
       }
       pushChartsUrl(function (params) {
-        params.set('groupBy', groupBy);
+        setGroupBy(params);
         params.set('interval', 'custom');
         params.set('startDate', startDate);
         params.set('endDate', endDate);
       });
     } else {
       pushChartsUrl(function (params) {
-        params.set('groupBy', groupBy);
+        setGroupBy(params);
         params.set('interval', interval);
         params.delete('startDate');
         params.delete('endDate');
@@ -194,7 +204,7 @@
     document.getElementById('startDate').value = params.get('startDate') || '';
     document.getElementById('endDate').value = params.get('endDate') || '';
     document.getElementById('chartsCustomDates').style.display = (interval === 'custom') ? 'flex' : 'none';
-    document.getElementById('groupBy').value = params.get('groupBy') || 'day';
+    document.getElementById('groupBy').value = params.get('groupBy') || '';   //< bare URL = Auto
     document.getElementById('groupByContainer').style.display =
       (interval === 'today' || interval === 'day') ? 'none' : 'flex';
     loadChartsData();

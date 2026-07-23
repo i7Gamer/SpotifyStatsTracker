@@ -227,7 +227,10 @@ class TestSongDetailRoute(_DetailRouteTestBase):
         self.assertEqual(db.getListeningTimeSeries.call_args.kwargs.get("groupBy"), "month")
         self.assertIn(b'<option value="month" selected>Month</option>', resp.data)
 
-    def test_invalid_groupby_falls_back_to_week(self):
+    def test_invalid_groupby_resolves_like_auto(self):
+        # Junk goes through the same span-derived resolution as the Auto
+        # option (see _resolveGroupBy) - with no recorded plays the span is
+        # empty, which resolves to day.
         dash = self._makeApp()
         db = MagicMock()
         db.getSong.return_value = self._song()
@@ -236,7 +239,7 @@ class TestSongDetailRoute(_DetailRouteTestBase):
 
         self._getPath(dash, db, "/song/t1?groupBy=nonsense")
 
-        self.assertEqual(db.getListeningTimeSeries.call_args.kwargs.get("groupBy"), "week")
+        self.assertEqual(db.getListeningTimeSeries.call_args.kwargs.get("groupBy"), "day")
 
 
 class TestArtistDetailRoute(_DetailRouteTestBase):

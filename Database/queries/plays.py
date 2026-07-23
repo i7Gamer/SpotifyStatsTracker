@@ -1076,14 +1076,20 @@ class PlayQueries:
         ).fetchone()
         return row[0] if row else None
 
-    def getPlayTimeRange(self, username: str) -> tuple[float, float] | None:
+    def getPlayTimeRange(self, username: str, trackId: str | None = None,
+                          artistId: str | None = None, albumId: str | None = None) -> tuple[float, float] | None:
         """(earliest, latest) played_at across the user's whole history, or
         None if they have no plays - lets a caller pin an "all time" query to
         an explicit range (e.g. the Compare page aligning two users' trend
-        buckets over one shared axis)."""
+        buckets over one shared axis). `trackId`/`artistId`/`albumId` narrow
+        it to one item's plays - the span the detail pages' auto trend-bucket
+        resolution derives from."""
+        params: list = [username]
+        extraClauses = self._itemFilterClauses(params, trackId, artistId, albumId)
         row = self._conn().execute(
-            "SELECT MIN(played_at) AS minTs, MAX(played_at) AS maxTs FROM plays WHERE username = ? AND is_skip=0",
-            (username,),
+            f"SELECT MIN(played_at) AS minTs, MAX(played_at) AS maxTs FROM plays "
+            f"WHERE username = ? AND is_skip=0{extraClauses}",
+            params,
         ).fetchone()
         if row is None or row["minTs"] is None:
             return None

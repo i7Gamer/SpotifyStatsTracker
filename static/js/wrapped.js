@@ -298,7 +298,7 @@ function updateWrappedFilters() {
 
   const newParams = new URLSearchParams();
   newParams.set('year', year);
-  newParams.set('groupBy', groupBy);
+  if (groupBy) newParams.set('groupBy', groupBy);   //< Auto: server derives from the year span
   newParams.set('limit', limit);
   newParams.set('sortBy', sortBy);
   window.history.pushState({}, '', window.location.pathname + '?' + newParams.toString());
@@ -331,7 +331,7 @@ document.querySelectorAll('.wrapped-year-badge').forEach(badge => {
 
     const newParams = new URLSearchParams();
     newParams.set('year', year);
-    newParams.set('groupBy', groupBy);
+    if (groupBy) newParams.set('groupBy', groupBy);   //< Auto: server derives from the year span
     newParams.set('limit', limit);
     newParams.set('sortBy', sortBy);
     window.history.pushState({}, '', window.location.pathname + '?' + newParams.toString());
@@ -346,7 +346,7 @@ document.querySelectorAll('.wrapped-year-badge').forEach(badge => {
 window.addEventListener('popstate', function() {
   const params = new URLSearchParams(window.location.search);
   const year = params.get('year') || String(wrappedBootstrap.year);
-  const groupBy = params.get('groupBy') || 'week';
+  const groupBy = params.get('groupBy') || '';   //< bare URL = Auto
   const limit = params.get('limit') || '50';
   const sortBy = params.get('sortBy') || 'plays';
 

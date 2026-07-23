@@ -141,15 +141,6 @@
         }
       };
 
-      // Shared by song_detail.html/artist_detail.html/album_detail.html's
-      // group-by dropdown next to the back button.
-      window.updateDetailGroupByFilter = function() {
-        const groupBy = document.getElementById('groupBy').value;
-        const params = new URLSearchParams(window.location.search);
-        params.set('groupBy', groupBy);
-        window.location = window.location.pathname + '?' + params.toString();
-      };
-
       // _pagination.html's "Go to page" input - Enter navigates, clamped to
       // [1, totalPages] so a stray typo can't request a nonexistent page.
       window.handleJumpToPageKeydown = function(event, totalPages) {

@@ -12,7 +12,7 @@ import logging
 from flask import render_template, redirect, request, url_for, session, jsonify
 
 import app as appmod
-from Database.utils import msToString
+from Database.utils import convertToDatetime, msToString
 from services.genre_gate import (
     emptyGenreCoverage, resolveGenreCoverage, genreGatePasses, resolveGenreDistribution,
     emptyBiographyCoverage, resolveBiographyCoverage,
@@ -523,6 +523,18 @@ def register(app, dashboard):
         )
     app.add_url_rule("/top-artists", "topArtistsPage", topArtistsPage, methods=["GET"])
 
+    def _playRangeDates(username, tz, trackId=None, artistId=None, albumId=None):
+        """(start, end) datetimes spanning the user's (or one item's) whole
+        play history, or (None, None) with no plays - the span an open-ended
+        range's auto trend-bucket resolution derives from (see
+        _resolveGroupBy). Reads the shared repo like Compare's identical
+        all-time pinning does."""
+        playRange = dashboard.repo.getPlayTimeRange(username, trackId=trackId,
+                                                    artistId=artistId, albumId=albumId)
+        if not playRange:
+            return None, None
+        return convertToDatetime(playRange[0], tz=tz), convertToDatetime(playRange[1], tz=tz)
+
     def chartsPage():
         email, username, db = dashboard.get_current_user_or_redirect()
         if not email:
@@ -536,9 +548,15 @@ def register(app, dashboard):
         customEnd = request.args.get("endDate", "")
         if interval == "custom" and not (customStart and customEnd):
             interval = defaultWindow
-        groupBy = dashboard._getValidGroupBy(request.args.get("groupBy", "day"))
+        #< the raw param, not the resolved bucketing - the template's select
+        #  must keep showing Auto rather than pinning the derived value
+        groupByParam = request.args.get("groupBy", "")
 
         startDate, endDate = dashboard._getDateRange(interval, customStart, customEnd, default=defaultWindow, tz=db.tz)
+        spanStart, spanEnd = startDate, endDate
+        if spanStart is None or spanEnd is None:
+            spanStart, spanEnd = _playRangeDates(username, db.tz)   #< "All Time" has no explicit range
+        groupBy = dashboard._resolveGroupBy(groupByParam, spanStart, spanEnd)
         intervalLabel = dashboard._getIntervalLabel(interval, customStart, customEnd)
 
         isSingleDayView = interval in ("day", "today")
@@ -562,7 +580,7 @@ def register(app, dashboard):
                 interval=interval,
                 customStart=customStart,
                 customEnd=customEnd,
-                groupBy=groupBy,
+                groupBy=groupByParam,
                 intervalLabel=intervalLabel,
                 lastDayDate=lastDayDate,
                 isSingleDayView=isSingleDayView,
@@ -637,22 +655,30 @@ def register(app, dashboard):
         if song is None:
             return redirect(url_for("topSongsPage"))
 
-        groupBy = dashboard._getValidGroupBy(request.args.get("groupBy", "week"), default="week")
+        groupByParam = request.args.get("groupBy", "")   #< raw: the select keeps showing Auto
+        groupBy = dashboard._resolveGroupBy(
+            groupByParam, *_playRangeDates(username, db.tz, trackId=track_id))
+
+        timeSeries = dashboard._embedTimeSeriesTextElements(
+            db.getListeningTimeSeries(trackId=track_id, groupBy=groupBy)
+        )
+        # The bucket select re-fetches just the play-history series (see
+        # static/js/detail-chart.js) - everything else on the page is
+        # bucket-independent, so the full render below is skipped.
+        if request.args.get("ajax") == "true":
+            return jsonify(timeSeries=timeSeries, groupBy=groupBy)
 
         song = dashboard._embedSongTextElements(song)
         song = dashboard._embedTopSongTextElements(song)
         song = dashboard._attachGenres(db, [song], "track")[0]
 
-        timeSeries = dashboard._embedTimeSeriesTextElements(
-            db.getListeningTimeSeries(trackId=track_id, groupBy=groupBy)
-        )
         heatmap = dashboard._embedHeatmapTextElements(db.getHourOfDayHeatmap(trackId=track_id))
 
         return render_template(
             "song_detail.html",
             song=song,
             username=username,
-            groupBy=groupBy,
+            groupBy=groupByParam,
             timeSeries=timeSeries,
             heatmap=heatmap,
             section="top_songs",
@@ -670,7 +696,16 @@ def register(app, dashboard):
         if artist is None:
             return redirect(url_for("topArtistsPage"))
 
-        groupBy = dashboard._getValidGroupBy(request.args.get("groupBy", "week"), default="week")
+        groupByParam = request.args.get("groupBy", "")   #< raw: the select keeps showing Auto
+        groupBy = dashboard._resolveGroupBy(
+            groupByParam, *_playRangeDates(username, db.tz, artistId=artist_id))
+
+        timeSeries = dashboard._embedTimeSeriesTextElements(
+            db.getListeningTimeSeries(artistId=artist_id, groupBy=groupBy)
+        )
+        # Bucket-only AJAX refetch - see songDetailPage's identical branch.
+        if request.args.get("ajax") == "true":
+            return jsonify(timeSeries=timeSeries, groupBy=groupBy)
 
         songs = db.getSongsStats(sortBy="plays", artistId=artist_id)
         firstSong = min(songs, key=lambda s: s.get("firstListenedAt") or float("inf")) if songs else None
@@ -692,17 +727,13 @@ def register(app, dashboard):
         db.lazyFetchArtistBio(artist_id, artist.get("name", ""))
         artist["bio"] = db.getArtistBio(artist_id) if dashboard.repo.isArtistBioEnabled() else None
 
-        timeSeries = dashboard._embedTimeSeriesTextElements(
-            db.getListeningTimeSeries(artistId=artist_id, groupBy=groupBy)
-        )
-
         return render_template(
             "artist_detail.html",
             artist=artist,
             songs=songs,
             firstSongName=firstSongName,
             username=username,
-            groupBy=groupBy,
+            groupBy=groupByParam,
             timeSeries=timeSeries,
             section="top_artists",
             success=request.args.get("success"),
@@ -719,7 +750,16 @@ def register(app, dashboard):
         if album is None:
             return redirect(url_for("topAlbumsPage"))
 
-        groupBy = dashboard._getValidGroupBy(request.args.get("groupBy", "week"), default="week")
+        groupByParam = request.args.get("groupBy", "")   #< raw: the select keeps showing Auto
+        groupBy = dashboard._resolveGroupBy(
+            groupByParam, *_playRangeDates(username, db.tz, albumId=album_id))
+
+        timeSeries = dashboard._embedTimeSeriesTextElements(
+            db.getListeningTimeSeries(albumId=album_id, groupBy=groupBy)
+        )
+        # Bucket-only AJAX refetch - see songDetailPage's identical branch.
+        if request.args.get("ajax") == "true":
+            return jsonify(timeSeries=timeSeries, groupBy=groupBy)
 
         songs = db.getSongsStats(sortBy="plays", albumId=album_id)
         firstSong = min(songs, key=lambda s: s.get("firstListenedAt") or float("inf")) if songs else None
@@ -745,16 +785,12 @@ def register(app, dashboard):
             db.lazyFetchAlbumBio(album_id, album.get("name", ""), primaryArtistName)
         album["bio"] = db.getAlbumBio(album_id) if dashboard.repo.isAlbumBioEnabled() else None
 
-        timeSeries = dashboard._embedTimeSeriesTextElements(
-            db.getListeningTimeSeries(albumId=album_id, groupBy=groupBy)
-        )
-
         return render_template(
             "album_detail.html",
             album=album,
             songs=songs,
             firstSongName=firstSongName,
-            groupBy=groupBy,
+            groupBy=groupByParam,
             username=username,
             timeSeries=timeSeries,
             section="top_albums",

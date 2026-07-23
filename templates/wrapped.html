@@ -87,8 +87,9 @@
     <input type="hidden" name="year" value="{{ year }}">
     <div style="display: flex; gap: 1rem; flex-wrap: wrap; align-items: center;">
       <div class="filter-group">
-        <label for="groupBy">Group by:</label>
+        <label for="groupBy">Trend buckets:</label>
         <select id="groupBy" name="groupBy" onchange="updateWrappedFilters()">
+          <option value="" {% if not groupBy %}selected{% endif %}>Auto</option>
           <option value="day" {% if groupBy == 'day' %}selected{% endif %}>Day</option>
           <option value="week" {% if groupBy == 'week' %}selected{% endif %}>Week</option>
           <option value="month" {% if groupBy == 'month' %}selected{% endif %}>Month</option>

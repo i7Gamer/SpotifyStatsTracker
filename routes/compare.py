@@ -26,8 +26,6 @@ def register(app, dashboard):
     COMPARE_SHARED_POOL_SIZE = appmod.COMPARE_SHARED_POOL_SIZE
     COMPARE_GENRE_POOL_SIZE = appmod.COMPARE_GENRE_POOL_SIZE
     COMPARE_TOP_GENRES_LIMIT = appmod.COMPARE_TOP_GENRES_LIMIT
-    COMPARE_TREND_MONTH_SPAN_DAYS = appmod.COMPARE_TREND_MONTH_SPAN_DAYS
-    COMPARE_TREND_WEEK_SPAN_DAYS = appmod.COMPARE_TREND_WEEK_SPAN_DAYS
 
     def comparePage():
         if not dashboard.repo.isDataSharingEnabled():
@@ -225,18 +223,9 @@ def register(app, dashboard):
                 trendStartDate = convertToDatetime(min(r[0] for r in playRanges), tz=db.tz)
                 trendEndDate = convertToDatetime(max(r[1] for r in playRanges), tz=db.tz) + timedelta(seconds=1)
 
-        if groupByParam:
-            groupBy = dashboard._getValidGroupBy(groupByParam)
-        else:
-            # No explicit choice: bucket so the trend stays readable at any
-            # range - day buckets across a multi-year span are sub-pixel.
-            spanDays = (trendEndDate - trendStartDate).days if trendStartDate and trendEndDate else 0
-            if spanDays > COMPARE_TREND_MONTH_SPAN_DAYS:
-                groupBy = "month"
-            elif spanDays > COMPARE_TREND_WEEK_SPAN_DAYS:
-                groupBy = "week"
-            else:
-                groupBy = "day"
+        # Auto ("") buckets from the range span - the shared resolver every
+        # trend-bucket control goes through now (see _resolveGroupBy).
+        groupBy = dashboard._resolveGroupBy(groupByParam, trendStartDate, trendEndDate)
         # Single-day ranges bucket by hour, mirroring chartsPage's
         # isSingleDayView - one 'day' bucket would collapse the whole
         # trend into a single point.

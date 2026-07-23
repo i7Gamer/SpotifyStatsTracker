@@ -50,7 +50,10 @@ class WrappedBuilderMixin:
         identical kill-switch comment; _wrapped_genres.html hides its whole
         section (chart AND locked-progress fallback) when lastfmEnabled is
         False."""
-        groupBy = self._getValidGroupBy(request.args.get("groupBy", "week"), default="week")
+        # Raw param: "" is the Auto option, resolved per-year inside
+        # _buildWrappedContext (the year span is known there) - the template's
+        # select must keep showing Auto rather than pinning the derived value.
+        groupBy = request.args.get("groupBy", "")
 
         limit = request.args.get("limit", type=int)
         if limit not in WRAPPED_LIMIT_OPTIONS:
@@ -165,6 +168,12 @@ class WrappedBuilderMixin:
         nowLocal = now(tz=db.tz)
         yearStart = nowLocal.replace(year=year, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
         yearEnd = nowLocal.replace(year=year + 1, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+
+        # Auto ("") buckets from the year's span clamped to now: an
+        # in-progress year still early on gets day buckets, anything longer
+        # week - the same shared resolver every trend-bucket control uses
+        # (see _resolveGroupBy). An explicit day/week/month choice wins.
+        groupBy = self._resolveGroupBy(groupBy, yearStart, min(yearEnd, nowLocal))
 
         # Genre data is deliberately computed live - never from the
         # user_wrapped cache below: coverage keeps growing while the Last.fm
