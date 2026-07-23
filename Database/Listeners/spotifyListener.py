@@ -97,28 +97,76 @@ def _flaskDebugEnabled() -> bool:
     return os.environ.get("FLASK_DEBUG", "").lower() in TRUTHY_DEBUG_VALUES
 
 
-def _is_auth_error(exc: Exception) -> bool:
-    """Check if an exception is an authentication-related error (expired/invalid
-    credentials, 401/403) rather than transient network issues."""
-    exc_str = str(exc).lower()
-    exc_type = type(exc).__name__.lower()
-    return (
-        "loginerror" in exc_type
-        or "loginerror" in exc_str
-        or "401" in exc_str
-        or "403" in exc_str
-        or "unauthorized" in exc_str
-        or re.search(r"invalid\s+.*token", exc_str)
-        or re.search(r"session\s+.*expired", exc_str)
+def _describeException(exc: Exception) -> str:
+    """Fully-qualified type + repr, for the classification diagnostic below -
+    richer than parseError's bare type name, so a misclassification report
+    (gathered with FLASK_DEBUG on) shows whether an error was, say, a spotapi
+    RequestError vs a JSONDecodeError vs a KeyError. That's the signal a later,
+    type-aware classification pass needs before it can safely narrow the
+    string heuristics here."""
+    excType = type(exc)
+    return f"{excType.__module__}.{excType.__qualname__}: {exc!r}"
+
+
+def _matchesAuthError(excStr: str, excTypeName: str) -> bool:
+    """The auth-error string/type-name heuristic, factored out of
+    classifyListenerError so it can be read and tested on its own. Inputs are
+    already lower-cased."""
+    return bool(
+        "loginerror" in excTypeName
+        or "loginerror" in excStr
+        or "401" in excStr
+        or "403" in excStr
+        or "unauthorized" in excStr
+        or re.search(r"invalid\s+.*token", excStr)
+        or re.search(r"session\s+.*expired", excStr)
     )
 
 
+def _matchesTransientError(excStr: str) -> bool:
+    """The transient-error (429 rate limit / malformed-JSON) string heuristic.
+    Input is already lower-cased."""
+    return "429" in excStr or ("rate" in excStr and "limit" in excStr) or "json" in excStr
+
+
+def classifyListenerError(exc: Exception) -> tuple[bool, bool]:
+    """(isAuth, isTransient) for a listener-path exception - the single source
+    of truth behind _is_auth_error/_is_rate_limit_error.
+
+    The two flags are INDEPENDENT: an error can be both (e.g. a rate-limited
+    login failure), and every call site applies its own precedence (auth-first
+    in startListener's loop, transient-first in the validate/poll paths).
+    Collapsing them into one bucket would silently change the outcome for
+    errors that match both, so this returns a pair rather than a single class.
+
+    Today this is purely the same string/type-name heuristic the two
+    predicates always used, just consolidated behind one seam and made
+    observable - a later type-aware pass (isinstance against spotapi's
+    exception hierarchy, JSONDecodeError, etc.) can sharpen it here without
+    touching the five call sites. The diagnostic is gated on FLASK_DEBUG, the
+    same switch the rest of this module's verbose logging uses."""
+    excStr = str(exc).lower()
+    excTypeName = type(exc).__name__.lower()
+    isAuth = _matchesAuthError(excStr, excTypeName)
+    isTransient = _matchesTransientError(excStr)
+    if _flaskDebugEnabled():
+        logger.info("Listener error classified isAuth=%s isTransient=%s: %s",
+                    isAuth, isTransient, _describeException(exc))
+    return isAuth, isTransient
+
+
+def _is_auth_error(exc: Exception) -> bool:
+    """Whether an exception is an authentication-related error (expired/invalid
+    credentials, 401/403) rather than a transient network issue - thin wrapper
+    over classifyListenerError (see there)."""
+    return classifyListenerError(exc)[0]
+
+
 def _is_rate_limit_error(exc: Exception) -> bool:
-    """Check if an exception is a rate limit error (429 Too Many Requests)
-    or other transient Spotify API error (malformed JSON, etc.)."""
-    exc_str = str(exc).lower()
-    return ("429" in exc_str or ("rate" in exc_str and "limit" in exc_str) or
-            "json" in exc_str)  # Invalid JSON usually indicates Spotify API issue
+    """Whether an exception is a rate-limit (429) or other transient Spotify
+    API error (malformed JSON, etc.) - thin wrapper over classifyListenerError
+    (see there)."""
+    return classifyListenerError(exc)[1]  # Invalid JSON usually indicates Spotify API issue
 
 
 def _refresh_spotify_access_token(client_id: str, client_secret: str, refresh_token: str,

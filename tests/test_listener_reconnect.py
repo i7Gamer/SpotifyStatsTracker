@@ -24,6 +24,8 @@ from Database.Listeners.spotifyListener import (
     LISTENER_STALE_TIMEOUT_SECONDS,
     USER_VALIDATION_CACHE_SECONDS,
     _is_auth_error,
+    _is_rate_limit_error,
+    classifyListenerError,
 )
 
 # Comfortably past USER_VALIDATION_CACHE_SECONDS so _validateCurrentUser's
@@ -144,6 +146,106 @@ class TestAuthErrorDetection(unittest.TestCase):
     def test_timeout_error_is_not_detected_as_auth_error(self):
         exc = Exception("Connection timeout")
         self.assertFalse(_is_auth_error(exc))
+
+
+class TestRateLimitErrorDetection(unittest.TestCase):
+    """Characterization of _is_rate_limit_error (the transient bucket), which
+    had no direct tests before. Pins today's string heuristic so a later
+    narrowing pass is a conscious, test-visible change."""
+
+    def test_429_is_transient(self):
+        self.assertTrue(_is_rate_limit_error(Exception("HTTP 429 Too Many Requests")))
+
+    def test_rate_limit_phrase_is_transient(self):
+        self.assertTrue(_is_rate_limit_error(Exception("Rate limit exceeded, slow down")))
+
+    def test_malformed_json_wording_is_transient(self):
+        # The "json" substring is what today catches Spotify answering with a
+        # non-JSON bot-check page instead of the profile JSON.
+        self.assertTrue(_is_rate_limit_error(Exception("Invalid JSON in response body")))
+
+    def test_503_is_not_transient(self):
+        self.assertFalse(_is_rate_limit_error(Exception("HTTP 503 Service Unavailable")))
+
+    def test_timeout_is_not_transient(self):
+        self.assertFalse(_is_rate_limit_error(Exception("Connection timeout")))
+
+
+class TestClassifyListenerError(unittest.TestCase):
+    """classifyListenerError is the single seam behind both predicates; its
+    (isAuth, isTransient) pair must stay INDEPENDENT - some errors are both,
+    and call-site precedence relies on that rather than one flag winning."""
+
+    def test_pure_auth_error(self):
+        self.assertEqual(classifyListenerError(Exception("HTTP 401 Unauthorized")), (True, False))
+
+    def test_pure_transient_error(self):
+        self.assertEqual(classifyListenerError(Exception("HTTP 429 Too Many Requests")), (False, True))
+
+    def test_neither_bucket(self):
+        self.assertEqual(classifyListenerError(Exception("HTTP 503 Service Unavailable")), (False, False))
+
+    def test_error_that_is_both_auth_and_transient(self):
+        # A rate-limited login failure matches both; the flags must stay
+        # independent so each call site's own precedence still applies.
+        self.assertEqual(classifyListenerError(Exception("LoginError: 429 rate limited")), (True, True))
+
+    def test_predicates_are_thin_wrappers_over_the_pair(self):
+        exc = Exception("Invalid access token")
+        isAuth, isTransient = classifyListenerError(exc)
+        self.assertEqual(_is_auth_error(exc), isAuth)
+        self.assertEqual(_is_rate_limit_error(exc), isTransient)
+
+
+class TestClassifyRealSpotapiExceptions(unittest.TestCase):
+    """The classifier must handle actual spotapi exception instances, not just
+    Exception('...text...'): LoginError is classified by its type name even
+    when its message carries no auth keyword."""
+
+    def test_spotapi_loginerror_is_auth_by_type_name(self):
+        from spotapi.exceptions.errors import LoginError
+        # Message has NO auth keyword - the type name is what classifies it.
+        self.assertEqual(classifyListenerError(LoginError("Could not GET recently played")), (True, False))
+
+    def test_spotapi_requesterror_429_is_transient(self):
+        from spotapi.exceptions.errors import RequestError
+        self.assertEqual(classifyListenerError(RequestError("Got status 429 from server")), (False, True))
+
+    def test_spotapi_requesterror_503_is_neither(self):
+        from spotapi.exceptions.errors import RequestError
+        self.assertEqual(classifyListenerError(RequestError("Got status 503 from server")), (False, False))
+
+
+class TestClassificationDiagnostic(unittest.TestCase):
+    """The FLASK_DEBUG-gated diagnostic that records the concrete exception type
+    at each classification - the observability a real misclassification report
+    needs before the heuristics can be safely narrowed. Off by default so it
+    never spams production logs."""
+
+    _LOGGER = "Database.Listeners.spotifyListener"
+
+    def test_logs_type_and_flags_when_flask_debug_enabled(self):
+        with patch("Database.Listeners.spotifyListener._flaskDebugEnabled", return_value=True):
+            with self.assertLogs(self._LOGGER, level="INFO") as cm:
+                classifyListenerError(Exception("HTTP 401 Unauthorized"))
+        joined = "\n".join(cm.output)
+        self.assertIn("isAuth=True", joined)
+        self.assertIn("isTransient=False", joined)
+        self.assertIn("builtins.Exception", joined)   #< the fully-qualified type
+
+    def test_silent_when_flask_debug_disabled(self):
+        import logging
+        records = []
+        handler = logging.Handler()
+        handler.emit = lambda record: records.append(record)
+        moduleLogger = logging.getLogger(self._LOGGER)
+        moduleLogger.addHandler(handler)
+        try:
+            with patch("Database.Listeners.spotifyListener._flaskDebugEnabled", return_value=False):
+                classifyListenerError(Exception("HTTP 401 Unauthorized"))
+        finally:
+            moduleLogger.removeHandler(handler)
+        self.assertEqual([r for r in records if "classified" in r.getMessage()], [])
 
 
 class TestValidateCurrentUser(unittest.TestCase):
