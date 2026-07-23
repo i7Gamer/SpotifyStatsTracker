@@ -22,9 +22,14 @@ def coverageDict(song, album, artist, total=1000):
     }
 
 
-class DashboardCardsTestCase(AppTestCase):
+class _DashboardHelpers:
+    """Shared fixtures for exercising the dashboard route with a mocked
+    per-user db - split out so DashboardAjaxFilterTestCase doesn't have to
+    inherit from (and re-run) DashboardCardsTestCase's own tests."""
+
     def _makeDb(self, streak=None, onThisDay=None, coverage=None, recommendations=None):
         db = MagicMock()
+        db.repo.getUserSettings.return_value = {"default_dashboard_window": "day"}
         db.getEntriesFromNew.return_value = []
         db.getEntriesCount.return_value = 0
         db.searchEntries.return_value = []
@@ -76,6 +81,9 @@ class DashboardCardsTestCase(AppTestCase):
             with client.session_transaction() as sess:
                 sess['email'] = 'alice@example.com'
             return client.get(path)
+
+
+class DashboardCardsTestCase(_DashboardHelpers, AppTestCase):
 
     def test_now_playing_card_precedes_filter_form(self):
         dash = self._makeApp()
@@ -329,6 +337,72 @@ class DashboardCardsTestCase(AppTestCase):
         data = resp.get_json()
         self.assertFalse(data["unlocked"])
         db.getGenreCoverage.assert_not_called()
+
+
+class DashboardAjaxFilterTestCase(_DashboardHelpers, AppTestCase):
+    """The Time Period filter (interval/date range) now updates via ?ajax=true
+    instead of a full page reload - static/js in tracks.html swaps the
+    rendered partial into #dashboardSummary, same fade-and-swap pattern as
+    compare.html/genres.html. Only the four Time-Period-scoped cards
+    (_dashboard_summary.html) are part of that payload - the live cards
+    (streak, on this day, discover, calendar) and next-milestones are
+    unfiltered and must not be recomputed on an ajax filter change."""
+
+    def test_wrapper_div_present_for_the_ajax_swap_target(self):
+        dash = self._makeApp()
+        resp = self._get(dash, self._makeDb())
+
+        self.assertIn(b'id="dashboardSummary"', resp.data)
+
+    def test_ajax_returns_a_json_partial_not_a_full_page(self):
+        dash = self._makeApp()
+        db = self._makeDb()
+        db.getOverallStats.return_value = {
+            "currentTopSongs": [], "currentTopArtists": [],
+            "totalSongsPlayed": 42, "totalDurationMs": 0,
+            "previousSongsPlayed": 0, "previousDurationMs": 0,
+        }
+
+        resp = self._get(dash, db, path="/?ajax=true")
+
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertIn("summaryHtml", data)
+        self.assertIn('<p class="summary-value">42</p>', data["summaryHtml"])
+        self.assertNotIn("<html", data["summaryHtml"].lower())
+        self.assertNotIn("dashboard-live", data["summaryHtml"])   #< the unfiltered panel isn't part of this chunk
+
+    def test_ajax_scopes_stats_by_the_requested_interval(self):
+        dash = self._makeApp()
+        db = self._makeDb()
+
+        self._get(dash, db, path="/?ajax=true&interval=week")
+
+        self.assertEqual(db.getOverallStats.call_count, 1)   #< scoped by the request's own date range
+
+    def test_ajax_skips_the_unfiltered_live_queries(self):
+        """The interval/date-range filter never affects streak, on-this-day,
+        the listening calendar, or lifetime totals - an ajax filter change
+        must not pay for any of that."""
+        dash = self._makeApp()
+        db = self._makeDb()
+
+        self._get(dash, db, path="/?ajax=true")
+
+        db.getCurrentStreak.assert_not_called()
+        db.getOnThisDay.assert_not_called()
+        db.getListeningCalendar.assert_not_called()
+        db.getPlayTotals.assert_not_called()
+
+    def test_non_ajax_request_still_renders_everything(self):
+        dash = self._makeApp()
+        db = self._makeDb(streak={"days": 2, "activeToday": True})
+
+        resp = self._get(dash, db)
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn(b"streak-block", resp.data)
+        db.getCurrentStreak.assert_called_once()
 
 
 if __name__ == "__main__":

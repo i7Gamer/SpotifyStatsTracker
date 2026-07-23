@@ -71,9 +71,10 @@ class CompareGenresTestCase(AppTestCase):
 
     def test_unstubbed_dbs_render_the_locked_block(self):
         client = self._loginAs("alice")
-        resp = client.get("/compare")
+        resp = client.get("/compare?ajax=true")
+        payload = json.loads(resp.data)
         self.assertEqual(resp.status_code, 200)
-        self.assertIn(b"Genre comparison unlocks", resp.data)
+        self.assertIn("Genre comparison unlocks", payload["genresHtml"])
         self.dbs["alice"].getGenreDistribution.assert_not_called()
         self.dbs["bob"].getGenreDistribution.assert_not_called()
 
@@ -82,23 +83,23 @@ class CompareGenresTestCase(AppTestCase):
                                              distribution={"rock": 1})
         client = self._loginAs("alice")
 
-        resp = client.get("/compare")
+        resp = client.get("/compare?ajax=true")
 
-        self.assertIn(b"Genre comparison unlocks", resp.data)
+        self.assertIn("Genre comparison unlocks", json.loads(resp.data)["genresHtml"])
         self.dbs["alice"].getGenreDistribution.assert_not_called()   #< no point querying one side
 
     def test_unlocked_shows_both_sides_and_the_shared_intersection(self):
         self._unlockBoth()
         client = self._loginAs("alice")
 
-        resp = client.get("/compare")
+        resp = client.get("/compare?ajax=true")
 
         self.assertEqual(resp.status_code, 200)
-        self.assertNotIn(b"Genre comparison unlocks", resp.data)
-        for genre in (b"rock", b"shoegaze", b"jazz", b"techno"):
-            self.assertIn(genre, resp.data)
+        body = json.loads(resp.data)["genresHtml"]
+        self.assertNotIn("Genre comparison unlocks", body)
+        for genre in ("rock", "shoegaze", "jazz", "techno"):
+            self.assertIn(genre, body)
         # Shared = intersection ordered by combined plays: rock 140 > jazz 90.
-        body = resp.data.decode()
         self.assertLess(body.find("You both listen to"), body.find("Last.fm"))
         sharedSection = body[body.find("You both listen to"):]
         self.assertLess(sharedSection.find("rock"), sharedSection.find("jazz"))
@@ -164,11 +165,12 @@ class CompareGenresTestCase(AppTestCase):
         self.dash.repo.setLastfmGenreBackfillEnabled(False)
         client = self._loginAs("alice")
 
-        resp = client.get("/compare")
+        resp = client.get("/compare?ajax=true")
 
         self.assertEqual(resp.status_code, 200)
-        self.assertNotIn(b"Genre comparison unlocks", resp.data)
-        self.assertNotIn(b"You both listen to", resp.data)
+        body = json.loads(resp.data)["genresHtml"]
+        self.assertNotIn("Genre comparison unlocks", body)
+        self.assertNotIn("You both listen to", body)
         self.dbs["alice"].getGenreCoverage.assert_not_called()
         self.dbs["bob"].getGenreCoverage.assert_not_called()
 

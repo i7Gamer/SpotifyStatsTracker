@@ -23,6 +23,7 @@ from _app_factory import AppTestCase
 class TestPlaceholderImgDefinition(AppTestCase):
     def _makeDb(self):
         db = MagicMock()
+        db.repo.getUserSettings.return_value = {"default_dashboard_window": "day"}
         db.getEntriesFromNew.return_value = []
         db.getEntriesCount.return_value = 0
         db.searchEntries.return_value = []

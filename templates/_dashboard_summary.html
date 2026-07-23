@@ -1,0 +1,61 @@
+{# The four Time-Period-scoped dashboard cards, extracted out of tracks.html
+   so routes/charts.py's dashboardIndex ajax branch (?ajax=true) can re-render
+   just this chunk on an interval/date-range change instead of the whole page -
+   same fade-and-swap pattern as compare.html/genres.html.
+   Expects: totalSongsPlayed, totalListenTime, totalSongsChangeText/Class,
+   totalListenChangeText/Class, currentTopSong, currentTopArtist, username. #}
+<div class="summary-card">
+  <h2>Total songs played</h2>
+  <p class="summary-value">{{ totalSongsPlayed or 0 }}</p>
+  {% if totalSongsChangeText %}
+    <div class="summary-change {{ totalSongsChangeClass }}">{{ totalSongsChangeText }}</div>
+  {% endif %}
+</div>
+<div class="summary-card">
+  <h2>Total listen time</h2>
+  <p class="summary-value">{{ totalListenTime or "0:00" }}</p>
+  {% if totalListenChangeText %}
+    <div class="summary-change {{ totalListenChangeClass }}">{{ totalListenChangeText }}</div>
+  {% endif %}
+</div>
+<div class="summary-card">
+  <h2>Top song</h2>
+  {% if currentTopSong %}
+    {# Title on its own full-width line, then the cover art + "…listened"
+       text share the row beneath it, so long names use the whole card
+       instead of being squeezed into the column beside the cover. The
+       cover link duplicates the name link right above it - skipped for
+       keyboard/screen-reader users so it isn't announced and tabbed twice. #}
+    <div class="summary-top-item">
+      <strong class="summary-top-title"><a class="summary-top-name" href="{{ url_for('songDetailPage', track_id=currentTopSong.id) }}">{{ currentTopSong.name }}</a></strong>
+      <div class="summary-top-detail">
+        <a href="{{ url_for('songDetailPage', track_id=currentTopSong.id) }}" tabindex="-1" aria-hidden="true">
+          <img class="summary-top-cover" loading="lazy" alt=""
+               src="/img/{{ username }}/tracks/{{ currentTopSong.imageId }}.jpeg"
+               onerror="this.onerror=null;this.src=window.PLACEHOLDER_IMG;" />
+        </a>
+        <span class="summary-top-sub">{{ currentTopSong.totalTimeListenedText }} listened in this period</span>
+      </div>
+    </div>
+  {% else %}
+    <p>No songs played in this period.</p>
+  {% endif %}
+</div>
+<div class="summary-card">
+  <h2>Top artist</h2>
+  {% if currentTopArtist %}
+    <div class="summary-top-item">
+      <strong class="summary-top-title"><a class="summary-top-name" href="{{ url_for('artistDetailPage', artist_id=currentTopArtist.id) }}">{{ currentTopArtist.name }}</a></strong>
+      <div class="summary-top-detail">
+        <a href="{{ url_for('artistDetailPage', artist_id=currentTopArtist.id) }}" tabindex="-1" aria-hidden="true">
+          <img class="summary-top-cover" loading="lazy" alt=""
+               src="/img/{{ username }}/artists/{{ currentTopArtist.imageId }}.jpeg"
+               onerror="this.onerror=null;this.src=window.PLACEHOLDER_IMG;" />
+        </a>
+        <span class="summary-top-sub">{{ currentTopArtist.totalTimeListenedText }} listened in this period</span>
+      </div>
+    </div>
+  {% else %}
+    <p>No artists played in this period.</p>
+  {% endif %}
+</div>

@@ -11,7 +11,12 @@
 // onchange="updateCompare*Filter()" handlers in compare.html depend on them.
 const compareBootstrap = JSON.parse(document.getElementById('compare-bootstrap').textContent);
 window.__chartData = window.__chartData || {};
-window.__chartData.comparisonTrend = compareBootstrap.comparisonTrend;
+// The shell renders before any data query runs (see compare.py) - charts.js
+// would otherwise draw the mirror chart immediately off empty
+// window.__chartData. loadCompareData's initial fetch below sets
+// window.__chartData.comparisonTrend and calls renderComparisonMirror
+// itself once the real data lands.
+window.__deferInitialChartRender = true;
 
 // ---- AJAX filter updates: interval/date/user switches swap the dynamic
 // regions in place (same fade-and-swap pattern as the Wrapped page)
@@ -57,7 +62,7 @@ function compareSwapTargets(sortByOnly = false) {
 //  clobber) the newer one's swap
 let activeCompareLoad = null;
 
-function loadCompareData({ sortByOnly = false } = {}) {
+function loadCompareData({ sortByOnly = false, initial = false } = {}) {
   if (activeCompareLoad) {
     activeCompareLoad.controller.abort();
     //< the aborted load skips its own cleanup (see the finally guard) -
@@ -66,7 +71,9 @@ function loadCompareData({ sortByOnly = false } = {}) {
     activeCompareLoad.targets.forEach(t => t.classList.remove('loading-fade'));
   }
   const controller = new AbortController();
-  const targets = compareSwapTargets(sortByOnly);
+  //< the initial load has "Loading…" placeholders, not stale content - no
+  //  fade-out needed, only the fade-in once real content swaps in
+  const targets = initial ? [] : compareSwapTargets(sortByOnly);
   activeCompareLoad = { controller, targets };
   targets.forEach(t => t.classList.add('loading-fade'));
 
@@ -237,6 +244,10 @@ window.addEventListener('popstate', function () {
   });
   loadCompareData();
 });
+
+// The shell (see compare.py) renders no data - fetch it now, the same way
+// every filter change already does, just fired once more up front.
+loadCompareData({ initial: true });
 
 // ---- Category filter badges - same show/hide + staggered fade-in pattern
 // as the Wrapped page ([data-category].visible in style.css). ----

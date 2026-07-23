@@ -206,22 +206,25 @@ class TestCompareArtistOverflow(AppTestCase):
     def test_all_three_render_contexts_collapse(self):
         client = self._loginAs("alice")
 
-        resp = client.get("/compare")
+        resp = client.get("/compare?ajax=true")
 
         self.assertEqual(resp.status_code, 200)
-        data = resp.data.decode()
-        # Shared card + my column + their column.
+        payload = resp.get_json()
+        # Shared card + my column + their column - the three fragments that
+        # each render the same track (see the class docstring).
+        data = payload["sharedSongsHtml"] + payload["myTopSongsHtml"] + payload["theirTopSongsHtml"]
         self.assertEqual(data.count(TOGGLE_BUTTON), 3)
 
     def test_counterpart_overflow_links_to_spotify_not_detail_pages(self):
         client = self._loginAs("alice")
 
-        resp = client.get("/compare")
+        resp = client.get("/compare?ajax=true")
 
-        data = resp.data.decode()
+        payload = resp.get_json()
+        # Page order: shared Top Common card, then my column, then theirs.
+        data = payload["sharedSongsHtml"] + payload["myTopSongsHtml"] + payload["theirTopSongsHtml"]
         overflows = OVERFLOW_SPAN_RE.findall(data)
         self.assertEqual(len(overflows), 3)
-        # Page order: shared Top Common card, then my column, then theirs.
         sharedOverflow, myOverflow, theirOverflow = overflows
         self.assertIn('/artist/', sharedOverflow)
         self.assertIn('/artist/', myOverflow)

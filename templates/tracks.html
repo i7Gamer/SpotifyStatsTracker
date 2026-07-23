@@ -152,67 +152,70 @@
           <button class="primary-button" type="submit">Apply</button>
         </noscript>
       </form>
-      <div class="dashboard-summary">
-        <div class="summary-card">
-          <h2>Total songs played</h2>
-          <p class="summary-value">{{ totalSongsPlayed or 0 }}</p>
-          {% if totalSongsChangeText %}
-            <div class="summary-change {{ totalSongsChangeClass }}">{{ totalSongsChangeText }}</div>
-          {% endif %}
-        </div>
-        <div class="summary-card">
-          <h2>Total listen time</h2>
-          <p class="summary-value">{{ totalListenTime or "0:00" }}</p>
-          {% if totalListenChangeText %}
-            <div class="summary-change {{ totalListenChangeClass }}">{{ totalListenChangeText }}</div>
-          {% endif %}
-        </div>
-        <div class="summary-card">
-          <h2>Top song</h2>
-          {% if currentTopSong %}
-            {# Title on its own full-width line, then the cover art + "…listened"
-               text share the row beneath it, so long names use the whole card
-               instead of being squeezed into the column beside the cover. The
-               cover link duplicates the name link right above it - skipped for
-               keyboard/screen-reader users so it isn't announced and tabbed twice. #}
-            <div class="summary-top-item">
-              <strong class="summary-top-title"><a class="summary-top-name" href="{{ url_for('songDetailPage', track_id=currentTopSong.id) }}">{{ currentTopSong.name }}</a></strong>
-              <div class="summary-top-detail">
-                <a href="{{ url_for('songDetailPage', track_id=currentTopSong.id) }}" tabindex="-1" aria-hidden="true">
-                  <img class="summary-top-cover" loading="lazy" alt=""
-                       src="/img/{{ username }}/tracks/{{ currentTopSong.imageId }}.jpeg"
-                       onerror="this.onerror=null;this.src=window.PLACEHOLDER_IMG;" />
-                </a>
-                <span class="summary-top-sub">{{ currentTopSong.totalTimeListenedText }} listened in this period</span>
-              </div>
-            </div>
-          {% else %}
-            <p>No songs played in this period.</p>
-          {% endif %}
-        </div>
-        <div class="summary-card">
-          <h2>Top artist</h2>
-          {% if currentTopArtist %}
-            <div class="summary-top-item">
-              <strong class="summary-top-title"><a class="summary-top-name" href="{{ url_for('artistDetailPage', artist_id=currentTopArtist.id) }}">{{ currentTopArtist.name }}</a></strong>
-              <div class="summary-top-detail">
-                <a href="{{ url_for('artistDetailPage', artist_id=currentTopArtist.id) }}" tabindex="-1" aria-hidden="true">
-                  <img class="summary-top-cover" loading="lazy" alt=""
-                       src="/img/{{ username }}/artists/{{ currentTopArtist.imageId }}.jpeg"
-                       onerror="this.onerror=null;this.src=window.PLACEHOLDER_IMG;" />
-                </a>
-                <span class="summary-top-sub">{{ currentTopArtist.totalTimeListenedText }} listened in this period</span>
-              </div>
-            </div>
-          {% else %}
-            <p>No artists played in this period.</p>
-          {% endif %}
-        </div>
+      <div class="dashboard-summary" id="dashboardSummary">
+        {% include '_dashboard_summary.html' %}
       </div>
     </div>
   </section>
 
   <script>
+    // Dashboard filter only drives the stats cards' Time Period now - search
+    // and the paginated list moved to /history, so no q/page handling here.
+    // A change fetches just the four cards via ?ajax=true and fades them in
+    // in place (same pattern as compare.html/genres.html) instead of a full
+    // page reload - the live cards above (streak, on this day, discover,
+    // calendar) and next-milestones are unfiltered and stay untouched.
+    var DASHBOARD_DEFAULT_WINDOW = {{ defaultWindow | tojson }};
+    var DASHBOARD_FADE_MS = 200;
+    var activeDashboardLoad = null;
+
+    function loadDashboardSummary() {
+      var target = document.getElementById('dashboardSummary');
+      if (activeDashboardLoad) {
+        activeDashboardLoad.controller.abort();
+        target.classList.remove('loading-fade');
+      }
+      var controller = new AbortController();
+      activeDashboardLoad = { controller: controller };
+      target.classList.add('loading-fade');
+
+      var params = new URLSearchParams(window.location.search);
+      params.set('ajax', 'true');
+      var delay = new Promise(function (resolve) { setTimeout(resolve, DASHBOARD_FADE_MS); });
+      var fetched = fetch(window.location.pathname + '?' + params.toString(), { signal: controller.signal })
+        .then(function (response) { return response.json(); });
+
+      Promise.all([fetched, delay])
+        .then(function (results) {
+          var data = results[0];
+          //< a response that resolved before its abort can still reach here -
+          //  never swap stale data in over a newer load's
+          if (!activeDashboardLoad || activeDashboardLoad.controller !== controller) {
+            return;
+          }
+          target.innerHTML = data.summaryHtml;
+        })
+        .catch(function (err) {
+          if (err.name !== 'AbortError') {
+            console.error(err);
+          }
+        })
+        .finally(function () {
+          if (activeDashboardLoad && activeDashboardLoad.controller === controller) {
+            activeDashboardLoad = null;
+            target.classList.remove('loading-fade');
+          }
+        });
+    }
+
+    function pushDashboardUrl(mutate) {
+      var params = new URLSearchParams(window.location.search);
+      mutate(params);
+      params.delete('ajax');
+      var query = params.toString();
+      window.history.pushState({}, '', window.location.pathname + (query ? '?' + query : ''));
+    }
+
     function updateDashboardInterval() {
       const interval = document.getElementById('interval').value;
       const customDates = document.getElementById('dashboardCustomDates');
@@ -250,10 +253,7 @@
     }
 
     function updateDashboardFilters(forceCustom = false) {
-      // Dashboard filter only drives the stats cards' Time Period now - search
-      // and the paginated list moved to /history, so no q/page handling here.
       const interval = document.getElementById('interval').value;
-      const params = new URLSearchParams(window.location.search);
 
       if (interval === 'custom' || forceCustom) {
         const startDate = document.getElementById('startDate').value;
@@ -263,17 +263,33 @@
           return;
         }
 
-        params.set('interval', 'custom');
-        params.set('startDate', startDate);
-        params.set('endDate', endDate);
+        pushDashboardUrl(function (params) {
+          params.set('interval', 'custom');
+          params.set('startDate', startDate);
+          params.set('endDate', endDate);
+        });
       } else {
-        params.set('interval', interval);
-        params.delete('startDate');
-        params.delete('endDate');
+        pushDashboardUrl(function (params) {
+          params.set('interval', interval);
+          params.delete('startDate');
+          params.delete('endDate');
+        });
       }
 
-      window.location = window.location.pathname + '?' + params.toString();
+      loadDashboardSummary();
     }
+
+    // Back/forward: reconcile the filter controls with the URL, then re-fetch.
+    window.addEventListener('popstate', function () {
+      const params = new URLSearchParams(window.location.search);
+      const hasCustom = params.get('startDate') && params.get('endDate');
+      const interval = hasCustom ? 'custom' : (params.get('interval') || DASHBOARD_DEFAULT_WINDOW);
+      document.getElementById('interval').value = interval;
+      document.getElementById('startDate').value = params.get('startDate') || '';
+      document.getElementById('endDate').value = params.get('endDate') || '';
+      document.getElementById('dashboardCustomDates').style.display = hasCustom ? 'flex' : 'none';
+      loadDashboardSummary();
+    });
 
     // Now Playing: poll the listener's cached connect state (no Spotify
     // calls server-side) and show the now-playing sub-panel only while

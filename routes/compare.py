@@ -82,6 +82,30 @@ def register(app, dashboard):
         # taste-match never read it (see _buildSharedItems).
         sortBy = dashboard._getSortByParam(default="plays")
 
+        # Lightweight shell, same two-phase load as /charts and /genres: the
+        # initial GET renders just the filter controls + empty placeholders,
+        # and static/js/compare.js fetches the real payload via ?ajax=true
+        # right after first paint (and again on every filter change) - see
+        # loadCompareData's `initial` option. Every query below this point
+        # only runs for an ajax request.
+        if request.args.get("ajax") != "true":
+            return render_template(
+                "compare.html",
+                section="compare",
+                username=username,
+                withUsername=withUsername,
+                acceptedUsernames=acceptedUsernames,
+                interval=interval,
+                customStart=customStart,
+                customEnd=customEnd,
+                limit=limit,
+                limitOptions=WRAPPED_LIMIT_OPTIONS,
+                #< the raw param, not the resolved bucketing - links that pin
+                #  the auto-derived value would freeze auto mode
+                groupBy=groupByParam,
+                sortBy=sortBy,
+            )
+
         my = dashboard._gatherCompareStats(db, startDate, endDate, limit=limit, sortBy=sortBy)
         their = dashboard._gatherCompareStats(otherDb, startDate, endDate, limit=limit, sortBy=sortBy)
 
@@ -246,70 +270,38 @@ def register(app, dashboard):
             ],
         }
 
-        if request.args.get("ajax") == "true":
-            # Same fade-and-swap partial updates as the Wrapped page: the
-            # filter controls fetch these chunks and swap them in place
-            # instead of a full page reload.
-            return jsonify({
-                **sortableListsJson(),
-                "withUsername": withUsername,
-                "tasteMatch": tasteMatch,
-                "statsTableHtml": render_template(
-                    "_compare_stats_table.html", my=my, their=their,
-                    username=username, withUsername=withUsername),
-                "similaritiesHtml": render_template(
-                    "_compare_similarities.html", similarities=similarities,
-                    username=username),   #< the cover-image URLs' session-authorization segment
-                "genresHtml": render_template(
-                    "_compare_genres.html", username=username, withUsername=withUsername,
-                    myTopGenres=myTopGenres, theirTopGenres=theirTopGenres,
-                    sharedGenres=sharedGenres, myGenreCoverage=myGenreCoverage,
-                    theirGenreCoverage=theirGenreCoverage, genresUnlocked=genresUnlocked,
-                    lastfmEnabled=lastfmEnabled),
-                "sharedArtistsHtml": render_template(
-                    "_wrapped_list.html", items=sharedArtists, section="top_artists",
-                    username=username, compareWith=withUsername,
-                    emptyMessage="No shared top artists in this period yet."),
-                "sharedSongsHtml": render_template(
-                    "_wrapped_list.html", items=sharedSongs, section="top_songs",
-                    username=username, compareWith=withUsername,
-                    emptyMessage="No shared top songs in this period yet."),
-                "sharedAlbumsHtml": render_template(
-                    "_wrapped_list.html", items=sharedAlbums, section="top_albums",
-                    username=username, compareWith=withUsername,
-                    emptyMessage="No shared top albums in this period yet."),
-                "comparisonTrend": comparisonTrend,
-            })
-
-        return render_template(
-            "compare.html",
-            section="compare",
-            username=username,
-            withUsername=withUsername,
-            acceptedUsernames=acceptedUsernames,
-            my=my,
-            their=their,
-            sharedArtists=sharedArtists,
-            sharedSongs=sharedSongs,
-            sharedAlbums=sharedAlbums,
-            similarities=similarities,
-            tasteMatch=tasteMatch,
-            myTopGenres=myTopGenres,
-            theirTopGenres=theirTopGenres,
-            sharedGenres=sharedGenres,
-            myGenreCoverage=myGenreCoverage,
-            theirGenreCoverage=theirGenreCoverage,
-            genresUnlocked=genresUnlocked,
-            lastfmEnabled=lastfmEnabled,
-            comparisonTrend=comparisonTrend,
-            interval=interval,
-            customStart=customStart,
-            customEnd=customEnd,
-            limit=limit,
-            limitOptions=WRAPPED_LIMIT_OPTIONS,
-            #< the raw param, not the resolved bucketing - links that pin
-            #  the auto-derived value would freeze auto mode
-            groupBy=groupByParam,
-            sortBy=sortBy,
-        )
+        # Reaching here means ajax=true (the shell branch above returns
+        # earlier otherwise) - same fade-and-swap partial updates as the
+        # Wrapped page: the filter controls (and the shell's own initial
+        # load) fetch these chunks and swap them in place.
+        return jsonify({
+            **sortableListsJson(),
+            "withUsername": withUsername,
+            "tasteMatch": tasteMatch,
+            "statsTableHtml": render_template(
+                "_compare_stats_table.html", my=my, their=their,
+                username=username, withUsername=withUsername),
+            "similaritiesHtml": render_template(
+                "_compare_similarities.html", similarities=similarities,
+                username=username),   #< the cover-image URLs' session-authorization segment
+            "genresHtml": render_template(
+                "_compare_genres.html", username=username, withUsername=withUsername,
+                myTopGenres=myTopGenres, theirTopGenres=theirTopGenres,
+                sharedGenres=sharedGenres, myGenreCoverage=myGenreCoverage,
+                theirGenreCoverage=theirGenreCoverage, genresUnlocked=genresUnlocked,
+                lastfmEnabled=lastfmEnabled),
+            "sharedArtistsHtml": render_template(
+                "_wrapped_list.html", items=sharedArtists, section="top_artists",
+                username=username, compareWith=withUsername,
+                emptyMessage="No shared top artists in this period yet."),
+            "sharedSongsHtml": render_template(
+                "_wrapped_list.html", items=sharedSongs, section="top_songs",
+                username=username, compareWith=withUsername,
+                emptyMessage="No shared top songs in this period yet."),
+            "sharedAlbumsHtml": render_template(
+                "_wrapped_list.html", items=sharedAlbums, section="top_albums",
+                username=username, compareWith=withUsername,
+                emptyMessage="No shared top albums in this period yet."),
+            "comparisonTrend": comparisonTrend,
+        })
     app.add_url_rule("/compare", "comparePage", comparePage, methods=["GET"])

@@ -1,7 +1,15 @@
 """GET /compare: a Compare page only visible/reachable for users with at
-least one accepted mutual share - see app.py's comparePage() route.
+least one accepted mutual share - see routes/compare.py's comparePage().
+
+The route is a two-phase load like /charts and /genres: a plain GET renders
+a lightweight shell (filter controls + empty placeholders, no data queries),
+and every actual data query only runs on the ?ajax=true payload that
+static/js/compare.js fetches right after first paint (and again on every
+filter change). Tests that only care about the shell's own markup (404s,
+redirects, dropdown state, DOM section ordering, nav links) hit the plain
+GET; everything that asserts on computed data goes through the ajax
+helpers below.
 """
-import re
 import unittest
 from unittest.mock import patch, MagicMock
 
@@ -30,16 +38,23 @@ def _album(albumId, name, **extra):
     return {"id": albumId, "name": name, "artists": [], **extra}
 
 
-def _tasteMatchFromResponse(resp):
-    match = re.search(rb'taste-match-value js-taste-match">(\d+)%', resp.data)
-    return match.group(1) if match else None
-
-
 def _zeroHeatmapGrid():
     return [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
 
 
 class TestCompareRoute(AppTestCase):
+    # Every ajax-rendered HTML fragment the full (non-sortable-scope) payload
+    # carries - concatenated, this is what compare.js swaps into the shell's
+    # placeholder divs on load. Used by tests that only care whether/how-often
+    # something appears anywhere on the page, not which specific chunk.
+    _AJAX_HTML_FIELDS = (
+        "statsTableHtml", "similaritiesHtml", "genresHtml",
+        "sharedArtistsHtml", "sharedSongsHtml", "sharedAlbumsHtml",
+        "myTopSongsHtml", "theirTopSongsHtml",
+        "myTopArtistsHtml", "theirTopArtistsHtml",
+        "myTopAlbumsHtml", "theirTopAlbumsHtml",
+    )
+
     def _makeStubDb(self, tz=None):
         db = MagicMock()
         db.tz = tz
@@ -83,6 +98,24 @@ class TestCompareRoute(AppTestCase):
         shareId = self.dash.repo.getPendingIncomingShares(recipient)[0]["id"]
         self.dash.repo.respondToShareRequest(shareId, recipient, accept=True)
 
+    def _ajax(self, client, url):
+        """Fetch the real data payload (the same fetch compare.js's initial
+        load and every filter change trigger) and return (resp, json dict)."""
+        sep = '&' if '?' in url else '?'
+        resp = client.get(f"{url}{sep}ajax=true")
+        return resp, resp.get_json()
+
+    def _ajaxHtml(self, data):
+        return "".join(data.get(k) or "" for k in self._AJAX_HTML_FIELDS)
+
+    def _fullPage(self, client, url):
+        """Shell text + every ajax fragment concatenated, for tests spanning
+        both (e.g. counting a CSS class that appears in both the shell's
+        static column headings and the ajax-rendered stats table)."""
+        shellResp = client.get(url)
+        _, data = self._ajax(client, url)
+        return shellResp.data.decode("utf-8") + self._ajaxHtml(data)
+
     def test_404_with_no_accepted_shares(self):
         client = self._loginAs("alice")
 
@@ -117,14 +150,14 @@ class TestCompareRoute(AppTestCase):
         resp = client.get("/compare")
 
         self.assertEqual(resp.status_code, 200)
-        self.assertIn(b"bob", resp.data)
+        self.assertIn(b"bob", resp.data)   #< the shell's own hero heading
 
     def test_with_param_selects_among_multiple_accepted_shares(self):
         self._accept("alice", "bob")
         self._accept("alice", "carol")
         client = self._loginAs("alice")
 
-        resp = client.get("/compare?with=carol")
+        resp, _ = self._ajax(client, "/compare?with=carol")
 
         self.assertEqual(resp.status_code, 200)
         self.dbs["carol"].getPlayTotals.assert_called()
@@ -138,18 +171,19 @@ class TestCompareRoute(AppTestCase):
         self._accept("bob", "carol")   #< carol shares with bob, NOT with alice
         client = self._loginAs("alice")
 
-        resp = client.get("/compare?with=carol")
+        resp, data = self._ajax(client, "/compare?with=carol")
 
         self.assertEqual(resp.status_code, 200)
         self.dbs["carol"].getPlayTotals.assert_not_called()
         self.dbs["bob"].getPlayTotals.assert_called()
-        self.assertNotIn(b"carol", resp.data)
+        self.assertEqual(data["withUsername"], "bob")
+        self.assertNotIn("carol", self._ajaxHtml(data))
 
     def test_default_with_is_the_only_accepted_share(self):
         self._accept("alice", "bob")
         client = self._loginAs("alice")
 
-        client.get("/compare")
+        self._ajax(client, "/compare")
 
         self.dbs["bob"].getPlayTotals.assert_called()
 
@@ -185,7 +219,7 @@ class TestCompareRoute(AppTestCase):
         self._accept("alice", "bob")
         client = self._loginAs("alice")
 
-        client.get("/compare?interval=today")
+        self._ajax(client, "/compare?interval=today")
 
         self.assertEqual(self.dbs["alice"].getListeningTimeSeries.call_args.kwargs["groupBy"], "hour")
         self.assertEqual(self.dbs["bob"].getListeningTimeSeries.call_args.kwargs["groupBy"], "hour")
@@ -200,7 +234,7 @@ class TestCompareRoute(AppTestCase):
 
         playRanges = {"alice": (1000.0, 2000.0), "bob": (500000.0, 600000.0)}
         with patch.object(self.dash.repo, 'getPlayTimeRange', side_effect=lambda u: playRanges[u]):
-            client.get("/compare")
+            self._ajax(client, "/compare")
 
         for stub in (self.dbs["alice"], self.dbs["bob"]):
             trendStart, trendEnd = stub.getListeningTimeSeries.call_args.args
@@ -218,11 +252,11 @@ class TestCompareRoute(AppTestCase):
         ]
         client = self._loginAs("alice")
 
-        resp = client.get("/compare")
+        _, data = self._ajax(client, "/compare")
 
-        self.assertIn(b'"buckets": ["2026-01-01", "2026-01-02"]', resp.data)
-        self.assertIn(b"[100, 0]", resp.data)   #< alice zero-filled on bob's day
-        self.assertIn(b"[0, 200]", resp.data)   #< bob zero-filled on alice's day
+        self.assertEqual(data["comparisonTrend"]["buckets"], ["2026-01-01", "2026-01-02"])
+        self.assertEqual(data["comparisonTrend"]["series"][0]["data"], [100, 0])   #< alice zero-filled on bob's day
+        self.assertEqual(data["comparisonTrend"]["series"][1]["data"], [0, 200])   #< bob zero-filled on alice's day
 
     def test_overlap_includes_shared_artists_beyond_the_displayed_top_ten(self):
         """The Top Common intersection runs over the 100-deep pools, not
@@ -237,15 +271,16 @@ class TestCompareRoute(AppTestCase):
         self.dbs["bob"].getTopArtists.return_value = [_artist("b0", "BobTopArtist"), shared]
         client = self._loginAs("alice")
 
-        resp = client.get("/compare")
+        resp, data = self._ajax(client, "/compare")
 
         self.assertEqual(resp.status_code, 200)
+        html = self._ajaxHtml(data)
         # Each rendered card mentions the name twice (img alt= + <h3>). The
         # artist must appear in bob's column AND in Top Common Artists, but NOT
         # in alice's top-ten column (it's her #11) - exactly 2 cards, plus one
         # mention as the "Common Top Artist" similarity cell.
-        self.assertEqual(resp.data.count(b"OverlapOnlyArtist"), 5)
-        self.assertIn(b"AliceArtist9", resp.data)   #< her actual top ten still renders
+        self.assertEqual(html.count("OverlapOnlyArtist"), 5)
+        self.assertIn("AliceArtist9", html)   #< her actual top ten still renders
 
     def test_summary_row_derives_from_the_same_lists_the_page_shows(self):
         """The 'Top Song'/'Top Artist' summary cells must agree with the #1
@@ -258,12 +293,13 @@ class TestCompareRoute(AppTestCase):
         self.dbs["alice"].getTopArtists.return_value = [_artist("f1", "AliceFavArtist")]
         client = self._loginAs("alice")
 
-        resp = client.get("/compare")
+        resp, data = self._ajax(client, "/compare")
 
         self.assertEqual(resp.status_code, 200)
-        self.assertIn(b"1,234", resp.data)
-        self.assertIn(b"AliceTopSong", resp.data)
-        self.assertIn(b"AliceFavArtist", resp.data)
+        html = self._ajaxHtml(data)
+        self.assertIn("1,234", html)
+        self.assertIn("AliceTopSong", html)
+        self.assertIn("AliceFavArtist", html)
         self.dbs["alice"].getOverallStats.assert_not_called()
 
     def test_cards_carry_the_embedded_stat_text_like_other_pages(self):
@@ -276,10 +312,11 @@ class TestCompareRoute(AppTestCase):
         ]
         client = self._loginAs("alice")
 
-        resp = client.get("/compare")
+        _, data = self._ajax(client, "/compare")
 
-        self.assertIn(b"7 plays", resp.data)
-        self.assertIn(b"1h 0m 0s", resp.data)   #< msToString(3600000), only present when embedded
+        html = self._ajaxHtml(data)
+        self.assertIn("7 plays", html)
+        self.assertIn("1h 0m 0s", html)   #< msToString(3600000), only present when embedded
 
     def test_counterpart_cards_are_not_linked_to_detail_pages(self):
         """Detail pages resolve against the VIEWER's own db, so linking the
@@ -292,11 +329,12 @@ class TestCompareRoute(AppTestCase):
         self.dbs["bob"].getTopSongs.return_value = [_song("their-song-1", "TheirSong")]
         client = self._loginAs("alice")
 
-        resp = client.get("/compare")
+        _, data = self._ajax(client, "/compare")
 
-        self.assertIn(b"/song/my-song-1", resp.data)
-        self.assertIn(b"TheirSong", resp.data)
-        self.assertNotIn(b"/song/their-song-1", resp.data)
+        html = self._ajaxHtml(data)
+        self.assertIn("/song/my-song-1", html)
+        self.assertIn("TheirSong", html)
+        self.assertNotIn("/song/their-song-1", html)
 
     def test_default_time_window_setting_is_used_when_no_interval_given(self):
         """Compare's initial view must honor the user's saved
@@ -346,7 +384,7 @@ class TestCompareRoute(AppTestCase):
         self._accept("alice", "bob")
         client = self._loginAs("alice")
 
-        resp = client.get("/compare?interval=custom&startDate=2026-01-01&endDate=2026-01-31")
+        resp, _ = self._ajax(client, "/compare?interval=custom&startDate=2026-01-01&endDate=2026-01-31")
 
         self.assertEqual(resp.status_code, 200)
         startDate, endDate = self.dbs["alice"].getPlayTotals.call_args.args
@@ -398,13 +436,11 @@ class TestCompareRoute(AppTestCase):
         ]
         client = self._loginAs("alice")
 
-        resp = client.get("/compare")
+        _, data = self._ajax(client, "/compare")
 
-        commonSection = resp.data[
-            resp.data.index(b'data-category="common-top-artists"'):
-            resp.data.index(b'data-category="common-top-albums"')]
-        self.assertIn(b"HighCombined", commonSection)
-        self.assertNotIn(b"LowCombined", commonSection)
+        commonSection = data["sharedArtistsHtml"]
+        self.assertIn("HighCombined", commonSection)
+        self.assertNotIn("LowCombined", commonSection)
 
     def test_shared_artist_overlap_is_capped_like_every_other_list(self):
         """The Top Common lists are built from the 200-deep sharedXPool
@@ -416,12 +452,13 @@ class TestCompareRoute(AppTestCase):
         self.dbs["bob"].getTopArtists.return_value = sharedPool
         client = self._loginAs("alice")
 
-        resp = client.get("/compare")
+        resp, data = self._ajax(client, "/compare")
 
         self.assertEqual(resp.status_code, 200)
-        self.assertIn(b"SharedArtist9", resp.data)      #< 10th kept everywhere
-        self.assertNotIn(b"SharedArtist10", resp.data)  #< 11th/12th sliced from every list
-        self.assertNotIn(b"SharedArtist11", resp.data)
+        html = self._ajaxHtml(data)
+        self.assertIn("SharedArtist9", html)      #< 10th kept everywhere
+        self.assertNotIn("SharedArtist10", html)  #< 11th/12th sliced from every list
+        self.assertNotIn("SharedArtist11", html)
 
     def test_nav_link_appears_only_once_a_share_is_accepted(self):
         client = self._loginAs("alice")
@@ -458,24 +495,25 @@ class TestCompareRoute(AppTestCase):
         self.dbs["alice"].getHourOfDayHeatmap.return_value = grid
         client = self._loginAs("alice")
 
-        resp = client.get("/compare")
+        resp, data = self._ajax(client, "/compare")
 
         self.assertEqual(resp.status_code, 200)
-        self.assertIn(b"1,111", resp.data)       #< unique songs, thousands-formatted
-        self.assertIn(b"222", resp.data)         #< unique artists
-        self.assertIn(b"25%", resp.data)         #< skip rate AND explicit share: 1 of 4
-        self.assertIn(b"14:00", resp.data)       #< peak listening hour
-        self.assertIn(b"Wednesday", resp.data)   #< most active weekday
+        table = data["statsTableHtml"]
+        self.assertIn("1,111", table)       #< unique songs, thousands-formatted
+        self.assertIn("222", table)         #< unique artists
+        self.assertIn("25%", table)         #< skip rate AND explicit share: 1 of 4
+        self.assertIn("14:00", table)       #< peak listening hour
+        self.assertIn("Wednesday", table)   #< most active weekday
 
     def test_style_rows_show_placeholder_without_any_plays(self):
         """Zero plays must render placeholders, not divide by zero."""
         self._accept("alice", "bob")
         client = self._loginAs("alice")
 
-        resp = client.get("/compare")
+        resp, data = self._ajax(client, "/compare")
 
         self.assertEqual(resp.status_code, 200)
-        self.assertIn("—".encode("utf-8"), resp.data)
+        self.assertIn("—", data["statsTableHtml"])
 
     def test_peak_day_is_a_stats_table_column_not_a_separate_card(self):
         """Top Day moved out of its own card (which had no cover art and
@@ -487,11 +525,12 @@ class TestCompareRoute(AppTestCase):
         self.dbs["alice"].getHourOfDayHeatmap.return_value = grid
         client = self._loginAs("alice")
 
-        resp = client.get("/compare")
+        _, data = self._ajax(client, "/compare")
 
-        self.assertIn(b'<th class="value">Peak Day</th>', resp.data)
-        self.assertIn(b"Wednesday", resp.data)
-        self.assertNotIn(b"<h3>Top Day</h3>", resp.data)
+        table = data["statsTableHtml"]
+        self.assertIn('<th class="value">Peak Day</th>', table)
+        self.assertIn("Wednesday", table)
+        self.assertNotIn("<h3>Top Day</h3>", table)
 
     def test_songs_and_artists_columns_drop_the_unique_qualifier(self):
         """"Unique Songs"/"Unique Artists" read as clutter in the transposed
@@ -500,12 +539,12 @@ class TestCompareRoute(AppTestCase):
         self._accept("alice", "bob")
         client = self._loginAs("alice")
 
-        resp = client.get("/compare")
-        body = resp.data.decode()
+        _, data = self._ajax(client, "/compare")
+        table = data["statsTableHtml"]
 
-        self.assertNotIn("Unique", body)
-        self.assertIn('<th class="value" title="Number of distinct songs played">Songs</th>', body)
-        self.assertIn('<th class="value" title="Number of distinct artists played">Artists</th>', body)
+        self.assertNotIn("Unique", table)
+        self.assertIn('<th class="value" title="Number of distinct songs played">Songs</th>', table)
+        self.assertIn('<th class="value" title="Number of distinct artists played">Artists</th>', table)
 
     def test_identical_top_song_merges_into_one_bigger_row(self):
         """Both users' #1 song is the exact same track: the Top Song card
@@ -517,15 +556,14 @@ class TestCompareRoute(AppTestCase):
         self.dbs["bob"].getTopSongs.return_value = [dict(sameSong)]
         client = self._loginAs("alice")
 
-        resp = client.get("/compare")
+        _, data = self._ajax(client, "/compare")
+        table = data["statsTableHtml"]
 
-        topSongCard = resp.data[
-            resp.data.index(b"<h3>Top Song</h3>"):
-            resp.data.index(b"<h3>Top Artist</h3>")]
-        self.assertIn(b"compare-top-side--merged", topSongCard)
-        self.assertEqual(topSongCard.count(b"SharedTopSong"), 1)
-        self.assertIn(b'compare-user-mine compare-user-label js-my-username">alice</span>', topSongCard)
-        self.assertIn(b'compare-user-theirs compare-user-label js-with-username">bob</span>', topSongCard)
+        topSongCard = table[table.index("<h3>Top Song</h3>"):table.index("<h3>Top Artist</h3>")]
+        self.assertIn("compare-top-side--merged", topSongCard)
+        self.assertEqual(topSongCard.count("SharedTopSong"), 1)
+        self.assertIn('compare-user-mine compare-user-label js-my-username">alice</span>', topSongCard)
+        self.assertIn('compare-user-theirs compare-user-label js-with-username">bob</span>', topSongCard)
 
     def test_different_top_songs_render_two_separate_rows(self):
         """The common case: different #1 songs must keep the existing
@@ -535,14 +573,13 @@ class TestCompareRoute(AppTestCase):
         self.dbs["bob"].getTopSongs.return_value = [_song("s2", "BobSong")]
         client = self._loginAs("alice")
 
-        resp = client.get("/compare")
+        _, data = self._ajax(client, "/compare")
+        table = data["statsTableHtml"]
 
-        topSongCard = resp.data[
-            resp.data.index(b"<h3>Top Song</h3>"):
-            resp.data.index(b"<h3>Top Artist</h3>")]
-        self.assertNotIn(b"compare-top-side--merged", topSongCard)
-        self.assertIn(b"AliceSong", topSongCard)
-        self.assertIn(b"BobSong", topSongCard)
+        topSongCard = table[table.index("<h3>Top Song</h3>"):table.index("<h3>Top Artist</h3>")]
+        self.assertNotIn("compare-top-side--merged", topSongCard)
+        self.assertIn("AliceSong", topSongCard)
+        self.assertIn("BobSong", topSongCard)
 
     def test_summary_rows_link_own_items_to_detail_pages(self):
         self._accept("alice", "bob")
@@ -551,16 +588,17 @@ class TestCompareRoute(AppTestCase):
         self.dbs["alice"].getTopAlbums.return_value = [_album("al1", "AliceTopAlbum")]
         client = self._loginAs("alice")
 
-        resp = client.get("/compare")
+        _, data = self._ajax(client, "/compare")
+        table = data["statsTableHtml"]
 
-        self.assertIn(b'<a class="compare-cell-link" href="/song/s1">', resp.data)
-        self.assertIn(b'<a class="compare-cell-link" href="/artist/f1">', resp.data)
-        self.assertIn(b'<a class="compare-cell-link" href="/album/al1">', resp.data)
+        self.assertIn('<a class="compare-cell-link" href="/song/s1">', table)
+        self.assertIn('<a class="compare-cell-link" href="/artist/f1">', table)
+        self.assertIn('<a class="compare-cell-link" href="/album/al1">', table)
         # the cover next to each cell links to the same detail page (skipped
         # for keyboard/screen-reader users - the name link sits right there)
-        self.assertIn(b'<a class="compare-cover-link" href="/song/s1"', resp.data)
-        self.assertIn(b'<a class="compare-cover-link" href="/artist/f1"', resp.data)
-        self.assertIn(b'<a class="compare-cover-link" href="/album/al1"', resp.data)
+        self.assertIn('<a class="compare-cover-link" href="/song/s1"', table)
+        self.assertIn('<a class="compare-cover-link" href="/artist/f1"', table)
+        self.assertIn('<a class="compare-cover-link" href="/album/al1"', table)
 
     def test_summary_rows_link_counterpart_items_to_spotify(self):
         """A counterpart summary cell links to Spotify only when the viewer
@@ -573,15 +611,16 @@ class TestCompareRoute(AppTestCase):
         self.dbs["bob"].getTopArtists.return_value = [_artist("their-artist-1", "TheirArtist", url="")]
         client = self._loginAs("alice")
 
-        resp = client.get("/compare")
+        _, data = self._ajax(client, "/compare")
+        table = data["statsTableHtml"]
 
-        self.assertIn(b'href="https://open.spotify.com/track/xyz1" target="_blank"', resp.data)
-        self.assertNotIn(b"/song/their-song-1", resp.data)
-        self.assertNotIn(b"/artist/their-artist-1", resp.data)   #< empty url: plain text, no link
+        self.assertIn('href="https://open.spotify.com/track/xyz1" target="_blank"', table)
+        self.assertNotIn("/song/their-song-1", table)
+        self.assertNotIn("/artist/their-artist-1", table)   #< empty url: plain text, no link
         # the cover mirrors the cell: Spotify link for the song, and the
         # empty-url artist cover renders unlinked (song is the only linked one)
-        self.assertIn(b'<a class="compare-cover-link" href="https://open.spotify.com/track/xyz1" target="_blank"', resp.data)
-        self.assertEqual(resp.data.count(b"compare-cover-link"), 1)
+        self.assertIn('<a class="compare-cover-link" href="https://open.spotify.com/track/xyz1" target="_blank"', table)
+        self.assertEqual(table.count("compare-cover-link"), 1)
 
     def test_counterpart_card_titles_link_to_spotify_when_url_exists(self):
         """Card-title variant of the zero-data rule above: alice's stub db
@@ -591,11 +630,12 @@ class TestCompareRoute(AppTestCase):
             _song("their-song-1", "TheirSong", url="https://open.spotify.com/track/xyz1")]
         client = self._loginAs("alice")
 
-        resp = client.get("/compare")
+        _, data = self._ajax(client, "/compare")
 
+        theirSongs = data["theirTopSongsHtml"]
         # external cover link marker (internal covers have no target attr)
-        self.assertIn(b'class="track-cover-link" target="_blank"', resp.data)
-        self.assertNotIn(b"/song/their-song-1", resp.data)
+        self.assertIn('class="track-cover-link" target="_blank"', theirSongs)
+        self.assertNotIn("/song/their-song-1", theirSongs)
 
     def test_counterpart_items_the_viewer_played_link_to_their_own_detail_pages(self):
         """The viewer may well have their own plays of a counterpart's top
@@ -614,19 +654,20 @@ class TestCompareRoute(AppTestCase):
         self.dbs["alice"].getPlayedAlbumIds.return_value = {"known-album"}
         client = self._loginAs("alice")
 
-        resp = client.get("/compare")
+        _, data = self._ajax(client, "/compare")
+        html = self._ajaxHtml(data)
 
-        self.assertIn(b"/song/known-song", resp.data)
-        self.assertIn(b"/artist/known-artist", resp.data)
-        self.assertIn(b"/album/known-album", resp.data)
+        self.assertIn("/song/known-song", html)
+        self.assertIn("/artist/known-artist", html)
+        self.assertIn("/album/known-album", html)
         #< the summary-card covers follow the same rule and link internally
-        self.assertIn(b'<a class="compare-cover-link" href="/song/known-song"', resp.data)
-        self.assertIn(b'<a class="compare-cover-link" href="/artist/known-artist"', resp.data)
-        self.assertIn(b'<a class="compare-cover-link" href="/album/known-album"', resp.data)
+        self.assertIn('<a class="compare-cover-link" href="/song/known-song"', html)
+        self.assertIn('<a class="compare-cover-link" href="/artist/known-artist"', html)
+        self.assertIn('<a class="compare-cover-link" href="/album/known-album"', html)
         #< no external card links anywhere: every counterpart item resolves
         #  internally (the "Open in Spotify" attribute label is separate and
         #  carries class track-label, not track-cover-link)
-        self.assertNotIn(b'class="track-cover-link" target="_blank"', resp.data)
+        self.assertNotIn('class="track-cover-link" target="_blank"', html)
 
     def test_played_lookup_is_batched_over_the_displayed_counterpart_ids(self):
         """One query per category over exactly the displayed items - not one
@@ -636,7 +677,7 @@ class TestCompareRoute(AppTestCase):
             _song("ts1", "TheirSong1"), _song("ts2", "TheirSong2")]
         client = self._loginAs("alice")
 
-        client.get("/compare")
+        self._ajax(client, "/compare")
 
         self.dbs["alice"].getPlayedTrackIds.assert_called_once_with(["ts1", "ts2"])
         self.dbs["alice"].getPlayedArtistIds.assert_called_once_with([])
@@ -653,24 +694,25 @@ class TestCompareRoute(AppTestCase):
             _artist("sh1", "SharedArtist", plays=5, totalTimeListened=1_800_000, uniqueSongCount=2)]
         client = self._loginAs("alice")
 
-        resp = client.get("/compare")
+        _, data = self._ajax(client, "/compare")
+        html = self._ajaxHtml(data)
 
-        self.assertIn(b"15 plays", resp.data)        #< combined, on the card's top stat line
-        self.assertIn(b"1h 30m 0s", resp.data)       #< combined listening time
+        self.assertIn("15 plays", html)        #< combined, on the card's top stat line
+        self.assertIn("1h 30m 0s", html)       #< combined listening time
         #< versus lines lead with each side's own plays-rank (#1 here - the
         #  shared artist is both users' only one)
-        self.assertIn("alice: #1 · 10 plays".encode("utf-8"), resp.data)
-        self.assertIn("bob: #1 · 5 plays".encode("utf-8"), resp.data)
+        self.assertIn("alice: #1 · 10 plays", html)
+        self.assertIn("bob: #1 · 5 plays", html)
         #< no separate "Together" line in the versus block - the combined
         #  totals already lead the card's top stat line (asserted above)
-        self.assertNotIn(b"Together:", resp.data)
-        self.assertIn(b'style="width: 67%"', resp.data)   #< round(3.6/5.4*100)
+        self.assertNotIn("Together:", html)
+        self.assertIn('style="width: 67%"', html)   #< round(3.6/5.4*100)
         # The versus block must appear ONLY on the shared card - the same dict
         # also feeds alice's own Top Artists column, so it must be copied
         # before the comparison data is attached.
-        self.assertEqual(resp.data.count(b"compare-split-bar\""), 1)
+        self.assertEqual(html.count('compare-split-bar"'), 1)
         #< the copy also keeps the combined totals off her own column's card
-        self.assertIn(b"10 plays", resp.data)
+        self.assertIn("10 plays", html)
 
     def test_similarities_come_from_the_deep_pools(self):
         """Common top song/album cells run over the 100-deep pools, not the
@@ -683,14 +725,15 @@ class TestCompareRoute(AppTestCase):
         self.dbs["bob"].getTopSongs.return_value = bobSongs + [shared]       #< his #11
         client = self._loginAs("alice")
 
-        resp = client.get("/compare")
+        _, data = self._ajax(client, "/compare")
+        html = self._ajaxHtml(data)
 
         # Neither column displays it (rank 11 on both sides), so it shows in
         # the "Common Top Song" similarity cell (1 mention) plus its shared-
         # songs card (img alt + h3 = 2) - linked to the viewer's own detail
         # page, which resolves since she played it.
-        self.assertEqual(resp.data.count(b"DeepSharedSong"), 3)
-        self.assertIn(b"/song/shdeep", resp.data)
+        self.assertEqual(html.count("DeepSharedSong"), 3)
+        self.assertIn("/song/shdeep", html)
 
     def test_shared_songs_and_albums_render_with_versus_data(self):
         self._accept("alice", "bob")
@@ -704,23 +747,24 @@ class TestCompareRoute(AppTestCase):
             _album("sh-alb", "SharedAlbum", plays=6, totalTimeListened=240_000, uniqueSongCount=3)]
         client = self._loginAs("alice")
 
-        resp = client.get("/compare")
+        _, data = self._ajax(client, "/compare")
+        html = self._ajaxHtml(data)
 
-        self.assertIn("alice: #1 · 3 plays".encode("utf-8"), resp.data)   #< shared song, mine (versus block, rank-led)
-        self.assertIn(b"11 plays", resp.data)         #< shared song top line: combined plays
-        self.assertIn(b"1m 30s", resp.data)           #< ...and combined time
-        self.assertIn(b"10 plays", resp.data)         #< shared album combined plays
-        self.assertIn(b"6m 0s", resp.data)            #< shared album combined time
-        self.assertIn("alice: #1 · 4 plays · 2m 0s · 2 songs".encode("utf-8"), resp.data)   #< versus keeps song counts
+        self.assertIn("alice: #1 · 3 plays", html)   #< shared song, mine (versus block, rank-led)
+        self.assertIn("11 plays", html)         #< shared song top line: combined plays
+        self.assertIn("1m 30s", html)           #< ...and combined time
+        self.assertIn("10 plays", html)         #< shared album combined plays
+        self.assertIn("6m 0s", html)            #< shared album combined time
+        self.assertIn("alice: #1 · 4 plays · 2m 0s · 2 songs", html)   #< versus keeps song counts
         # the viewer-specific "You played N songs from X" line stays on the
         # album card in alice's own column (1 mention) but is replaced by the
         # versus block's per-user counts on the shared card (not 2)
-        self.assertEqual(resp.data.count(b"You played 2 songs from SharedAlbum"), 1)
+        self.assertEqual(html.count("You played 2 songs from SharedAlbum"), 1)
         # song cards carry no unique-song counts - the segment is omitted,
         # not rendered as "0 songs"
-        self.assertNotIn(b"0 songs", resp.data)
+        self.assertNotIn("0 songs", html)
         #< one split bar per shared card: song + album (no shared artists here)
-        self.assertEqual(resp.data.count(b'class="compare-split-bar"'), 2)
+        self.assertEqual(html.count('class="compare-split-bar"'), 2)
 
     def test_track_card_you_played_line_is_never_replaced_by_a_username(self):
         """Regression for _track_card.html's publicView conditional (added
@@ -732,10 +776,11 @@ class TestCompareRoute(AppTestCase):
             _album("solo-alb", "SoloAlbum", plays=4, totalTimeListened=120_000, uniqueSongCount=2)]
         client = self._loginAs("alice")
 
-        resp = client.get("/compare")
+        _, data = self._ajax(client, "/compare")
+        html = self._ajaxHtml(data)
 
-        self.assertIn(b"You played 2 songs from SoloAlbum", resp.data)
-        self.assertNotIn(b"alice played", resp.data)
+        self.assertIn("You played 2 songs from SoloAlbum", html)
+        self.assertNotIn("alice played", html)
 
     def test_shared_song_and_album_lists_are_capped(self):
         self._accept("alice", "bob")
@@ -744,11 +789,12 @@ class TestCompareRoute(AppTestCase):
         self.dbs["bob"].getTopSongs.return_value = sharedSongs
         client = self._loginAs("alice")
 
-        resp = client.get("/compare")
+        _, data = self._ajax(client, "/compare")
+        sharedHtml = data["sharedSongsHtml"]
 
-        self.assertIn(b"CapSong9", resp.data)
-        self.assertNotIn(b"CapSong10", resp.data)
-        self.assertNotIn(b"CapSong11", resp.data)
+        self.assertIn("CapSong9", sharedHtml)
+        self.assertNotIn("CapSong10", sharedHtml)
+        self.assertNotIn("CapSong11", sharedHtml)
 
     def test_ajax_includes_shared_song_and_album_chunks(self):
         self._accept("alice", "bob")
@@ -795,7 +841,9 @@ class TestCompareRoute(AppTestCase):
     def test_similarities_sit_above_the_chart_and_shared_lists_join_categories(self):
         """Common Top Artist/Song/Album cards come directly above the trend
         chart; the shared lists are filterable Top Common Songs/Artists/
-        Albums categories ahead of the per-user top lists."""
+        Albums categories ahead of the per-user top lists. All of this is
+        shell markup - the placeholder divs' ids and data-category wrappers
+        are present (and in this order) before any ajax data lands."""
         self._accept("alice", "bob")
         client = self._loginAs("alice")
 
@@ -824,12 +872,12 @@ class TestCompareRoute(AppTestCase):
         self.dbs["bob"].getTopSongs.return_value = [_song("shsong", "CommonSong")]
         client = self._loginAs("alice")
 
-        resp = client.get("/compare")
+        _, data = self._ajax(client, "/compare")
+        html = self._ajaxHtml(data)
 
         # once on the stats-table Top Song card (mine side), once on the
         # Common Top Song similarity card
-        self.assertEqual(
-            resp.data.count(b'<a class="compare-cover-link" href="/song/shsong"'), 2)
+        self.assertEqual(html.count('<a class="compare-cover-link" href="/song/shsong"'), 2)
 
     def test_filter_badges_render_for_each_category(self):
         self._accept("alice", "bob")
@@ -859,19 +907,20 @@ class TestCompareRoute(AppTestCase):
         self._accept("alice", "bob")
         client = self._loginAs("alice")
 
-        resp = client.get("/compare")
+        _, data = self._ajax(client, "/compare")
+        table = data["statsTableHtml"]
 
-        self.assertIn(b"compare-table", resp.data)
-        self.assertNotIn(b'<tr style="border-bottom', resp.data)
+        self.assertIn("compare-table", table)
+        self.assertNotIn('<tr style="border-bottom', table)
 
     def test_track_cards_wrap_number_and_cover_in_a_media_column(self):
         self._accept("alice", "bob")
         self.dbs["alice"].getTopSongs.return_value = [_song("s1", "AliceTopSong")]
         client = self._loginAs("alice")
 
-        resp = client.get("/compare")
+        _, data = self._ajax(client, "/compare")
 
-        self.assertIn(b'class="track-media"', resp.data)
+        self.assertIn("track-media", data["myTopSongsHtml"])
 
     def test_trend_groupby_auto_coarsens_with_the_range_span(self):
         """Without an explicit groupBy, day buckets over a 5-year range mean
@@ -880,7 +929,7 @@ class TestCompareRoute(AppTestCase):
         client = self._loginAs("alice")
 
         for interval, expected in (("month", "day"), ("year", "week"), ("5years", "month")):
-            client.get(f"/compare?interval={interval}")
+            self._ajax(client, f"/compare?interval={interval}")
             self.assertEqual(
                 self.dbs["alice"].getListeningTimeSeries.call_args.kwargs["groupBy"],
                 expected, f"interval={interval}")
@@ -903,7 +952,7 @@ class TestCompareRoute(AppTestCase):
         self._accept("alice", "bob")
         client = self._loginAs("alice")
 
-        client.get("/compare?interval=5years&groupBy=day")
+        self._ajax(client, "/compare?interval=5years&groupBy=day")
 
         self.assertEqual(self.dbs["alice"].getListeningTimeSeries.call_args.kwargs["groupBy"], "day")
 
@@ -911,20 +960,21 @@ class TestCompareRoute(AppTestCase):
         """"You" is always the accent color, "them" always --compare-theirs -
         the classes must appear on the table headers and both columns'
         headings so every section reads with the same color mapping as the
-        trend chart."""
+        trend chart. Spans both the shell (column headings, hero name) and
+        the ajax stats table (row header, summary card sides)."""
         self._accept("alice", "bob")
         client = self._loginAs("alice")
 
-        resp = client.get("/compare")
+        page = self._fullPage(client, "/compare")
 
-        self.assertIn(b'compare-user-mine compare-user-label js-my-username">alice</span>', resp.data)
-        self.assertIn(b'compare-user-theirs compare-user-label js-with-username">bob</span>', resp.data)
+        self.assertIn('compare-user-mine compare-user-label js-my-username">alice</span>', page)
+        self.assertIn('compare-user-theirs compare-user-label js-with-username">bob</span>', page)
         #< seven mine-labels: table row header + three column headings + the
         #  three Top Song/Artist/Album card sides under the stats table (Top
         #  Day moved into the stats table itself as a Peak Day column)
-        self.assertEqual(resp.data.count(b"compare-user-mine"), 7)
+        self.assertEqual(page.count("compare-user-mine"), 7)
         #< theirs additionally colors the hero name (no label dot there)
-        self.assertEqual(resp.data.count(b"compare-user-theirs"), 8)
+        self.assertEqual(page.count("compare-user-theirs"), 8)
 
     def test_limit_param_controls_displayed_list_sizes(self):
         """The dropdown slices the displayed lists (and shared lists) deeper
@@ -935,10 +985,11 @@ class TestCompareRoute(AppTestCase):
             _artist(f"pa{i}", f"PagedArtist{i}") for i in range(30)]
         client = self._loginAs("alice")
 
-        resp = client.get("/compare?limit=25")
+        _, data = self._ajax(client, "/compare?limit=25")
+        html = self._ajaxHtml(data)
 
-        self.assertIn(b"PagedArtist24", resp.data)
-        self.assertNotIn(b"PagedArtist25", resp.data)
+        self.assertIn("PagedArtist24", html)
+        self.assertNotIn("PagedArtist25", html)
 
     def test_invalid_limit_falls_back_to_the_default(self):
         self._accept("alice", "bob")
@@ -946,10 +997,11 @@ class TestCompareRoute(AppTestCase):
             _artist(f"pa{i}", f"PagedArtist{i}") for i in range(30)]
         client = self._loginAs("alice")
 
-        resp = client.get("/compare?limit=13")
+        _, data = self._ajax(client, "/compare?limit=13")
+        html = self._ajaxHtml(data)
 
-        self.assertIn(b"PagedArtist9", resp.data)
-        self.assertNotIn(b"PagedArtist10", resp.data)
+        self.assertIn("PagedArtist9", html)
+        self.assertNotIn("PagedArtist10", html)
 
     def test_limit_applies_to_the_shared_lists_too(self):
         self._accept("alice", "bob")
@@ -958,10 +1010,11 @@ class TestCompareRoute(AppTestCase):
         self.dbs["bob"].getTopSongs.return_value = sharedSongs
         client = self._loginAs("alice")
 
-        resp = client.get("/compare?limit=25")
+        _, data = self._ajax(client, "/compare?limit=25")
+        sharedHtml = data["sharedSongsHtml"]
 
-        self.assertIn(b"CapSong24", resp.data)
-        self.assertNotIn(b"CapSong25", resp.data)
+        self.assertIn("CapSong24", sharedHtml)
+        self.assertNotIn("CapSong25", sharedHtml)
 
     def test_items_per_category_dropdown_renders(self):
         self._accept("alice", "bob")
@@ -984,7 +1037,7 @@ class TestCompareRoute(AppTestCase):
         self._accept("alice", "bob")
         client = self._loginAs("alice")
 
-        client.get("/compare")
+        self._ajax(client, "/compare")
 
         self.assertEqual(self.dbs["alice"].getTopSongs.call_count, 1)
         self.assertEqual(self.dbs["alice"].getTopArtists.call_count, 1)
@@ -1002,7 +1055,7 @@ class TestCompareRoute(AppTestCase):
         self._accept("alice", "bob")
         client = self._loginAs("alice")
 
-        client.get("/compare?sortBy=totalTimeListened")
+        self._ajax(client, "/compare?sortBy=totalTimeListened")
 
         calls = self.dbs["alice"].getTopSongs.call_args_list
         self.assertEqual(len(calls), 2)
@@ -1026,12 +1079,9 @@ class TestCompareRoute(AppTestCase):
         self.dbs["bob"].getTopArtists.return_value = bobFiller + [mutual]    #< bob's #101
         client = self._loginAs("alice")
 
-        resp = client.get("/compare")
+        _, data = self._ajax(client, "/compare")
 
-        commonSection = resp.data[
-            resp.data.index(b'data-category="common-top-artists"'):
-            resp.data.index(b'data-category="common-top-albums"')]
-        self.assertIn(b"MutualFavorite", commonSection)
+        self.assertIn("MutualFavorite", data["sharedArtistsHtml"])
 
     def test_deeper_shared_pool_does_not_change_the_taste_match_score(self):
         """Widening the shared-item search must never move taste-match - its
@@ -1051,28 +1101,22 @@ class TestCompareRoute(AppTestCase):
 
         self.dbs["alice"].getTopArtists.return_value = baseAlice
         self.dbs["bob"].getTopArtists.return_value = baseBob
-        respWithout = client.get("/compare")
+        _, dataWithout = self._ajax(client, "/compare")
 
         extraMatch = _artist("extra-deep-match", "ExtraDeepMatch")   #< rank 101 on both sides
         self.dbs["alice"].getTopArtists.return_value = baseAlice + [extraMatch]
         self.dbs["bob"].getTopArtists.return_value = baseBob + [extraMatch]
-        respWith = client.get("/compare")
+        _, dataWith = self._ajax(client, "/compare")
 
-        tasteMatchWithout = _tasteMatchFromResponse(respWithout)
-        tasteMatchWith = _tasteMatchFromResponse(respWith)
-        self.assertIsNotNone(tasteMatchWithout)
-        self.assertEqual(tasteMatchWithout, tasteMatchWith)
-
-        commonSection = respWith.data[
-            respWith.data.index(b'data-category="common-top-artists"'):
-            respWith.data.index(b'data-category="common-top-albums"')]
-        self.assertIn(b"ExtraDeepMatch", commonSection)
+        self.assertIsNotNone(dataWithout["tasteMatch"])
+        self.assertEqual(dataWithout["tasteMatch"], dataWith["tasteMatch"])
+        self.assertIn("ExtraDeepMatch", dataWith["sharedArtistsHtml"])
 
     def test_invalid_sort_by_falls_back_to_plays(self):
         self._accept("alice", "bob")
         client = self._loginAs("alice")
 
-        client.get("/compare?sortBy=bogus")
+        self._ajax(client, "/compare?sortBy=bogus")
 
         #< no extra display query at the "plays" default - the one
         #  COMPARE_SHARED_POOL_SIZE-deep query serves both taste-match's
@@ -1115,17 +1159,16 @@ class TestCompareRoute(AppTestCase):
         ] + [_artist("a10", "Aardvark", plays=1)]   #< #11 by plays
         client = self._loginAs("alice")
 
-        resp = client.get("/compare?sortBy=name")
+        shellResp = client.get("/compare?sortBy=name")
+        _, data = self._ajax(client, "/compare?sortBy=name")
 
-        self.assertIn(b'<option value="name" selected>Name (A-Z)</option>', resp.data)
-        section = resp.data[
-            resp.data.index(b'id="myTopArtistsList"'):
-            resp.data.index(b'id="theirTopArtistsList"')]
-        self.assertNotIn(b"Aardvark", section)
+        self.assertIn(b'<option value="name" selected>Name (A-Z)</option>', shellResp.data)
+        section = data["myTopArtistsHtml"]
+        self.assertNotIn("Aardvark", section)
         #< plays order would put Juliet first and Alpha last - alphabetizing
         #  the top-ten slice reverses it
-        self.assertLess(section.index(b"Alpha"), section.index(b"Bravo"))
-        self.assertLess(section.index(b"Bravo"), section.index(b"Juliet"))
+        self.assertLess(section.index("Alpha"), section.index("Bravo"))
+        self.assertLess(section.index("Bravo"), section.index("Juliet"))
         #< one plays-ranked pool query serves membership AND order - no
         #  second by="name" display query
         self.assertEqual(self.dbs["alice"].getTopArtists.call_count, 1)
@@ -1147,23 +1190,18 @@ class TestCompareRoute(AppTestCase):
         self.dbs["bob"].getTopArtists.return_value = list(pool)
         client = self._loginAs("alice")
 
-        byPlays = client.get("/compare")
-        byTime = client.get("/compare?sortBy=totalTimeListened")
+        _, byPlays = self._ajax(client, "/compare")
+        _, byTime = self._ajax(client, "/compare?sortBy=totalTimeListened")
 
-        def commonSection(resp):
-            return resp.data[
-                resp.data.index(b'data-category="common-top-artists"'):
-                resp.data.index(b'data-category="common-top-albums"')]
-
-        playsSection = commonSection(byPlays)
-        timeSection = commonSection(byTime)
+        playsSection = byPlays["sharedArtistsHtml"]
+        timeSection = byTime["sharedArtistsHtml"]
         #< SharedA0 has the most plays but the least totalTimeListened, and
         #  vice versa for SharedA4 - if sortBy leaked into the shared-list
         #  ranking, ?sortBy=totalTimeListened would flip their relative
         #  order; it must not.
-        self.assertLess(playsSection.index(b"SharedA0"), playsSection.index(b"SharedA4"))
-        self.assertLess(timeSection.index(b"SharedA0"), timeSection.index(b"SharedA4"))
-        self.assertIn(b'class="taste-match-value js-taste-match">100%</span>', byTime.data)
+        self.assertLess(playsSection.index("SharedA0"), playsSection.index("SharedA4"))
+        self.assertLess(timeSection.index("SharedA0"), timeSection.index("SharedA4"))
+        self.assertEqual(byTime["tasteMatch"], 100)
 
     def test_shared_list_ties_break_by_combined_time_played(self):
         """Reaching the combined-time tiebreak takes a genuine tie on the
@@ -1185,12 +1223,10 @@ class TestCompareRoute(AppTestCase):
         ]
         client = self._loginAs("alice")
 
-        resp = client.get("/compare")
+        _, data = self._ajax(client, "/compare")
 
-        section = resp.data[
-            resp.data.index(b'data-category="common-top-artists"'):
-            resp.data.index(b'data-category="common-top-albums"')]
-        self.assertLess(section.index(b"Zulu"), section.index(b"Alpha"))
+        section = data["sharedArtistsHtml"]
+        self.assertLess(section.index("Zulu"), section.index("Alpha"))
 
     def test_shared_list_full_ties_fall_back_to_name(self):
         """Shared artists tied through shared-rank score (cross-side #1s,
@@ -1210,12 +1246,10 @@ class TestCompareRoute(AppTestCase):
         ]
         client = self._loginAs("alice")
 
-        resp = client.get("/compare")
+        _, data = self._ajax(client, "/compare")
 
-        section = resp.data[
-            resp.data.index(b'data-category="common-top-artists"'):
-            resp.data.index(b'data-category="common-top-albums"')]
-        self.assertLess(section.index(b"Alpha"), section.index(b"Zeta"))
+        section = data["sharedArtistsHtml"]
+        self.assertLess(section.index("Alpha"), section.index("Zeta"))
 
     def test_shared_list_ranks_by_mutual_favorite_not_raw_combined_plays(self):
         """MutualFavorite: alice's #1 (plays=1000), but bob ranks it last among
@@ -1237,12 +1271,10 @@ class TestCompareRoute(AppTestCase):
         ]
         client = self._loginAs("alice")
 
-        resp = client.get("/compare")
+        _, data = self._ajax(client, "/compare")
 
-        section = resp.data[
-            resp.data.index(b'data-category="common-top-artists"'):
-            resp.data.index(b'data-category="common-top-albums"')]
-        self.assertLess(section.index(b"MutualFavorite"), section.index(b"ModerateBoth"))
+        section = data["sharedArtistsHtml"]
+        self.assertLess(section.index("MutualFavorite"), section.index("ModerateBoth"))
 
     def test_shared_cards_show_each_sides_rank(self):
         """The Top Common order is rank-driven (see _sharedRankScore), so
@@ -1263,15 +1295,13 @@ class TestCompareRoute(AppTestCase):
         ]
         client = self._loginAs("alice")
 
-        resp = client.get("/compare")
+        _, data = self._ajax(client, "/compare")
 
-        section = resp.data[
-            resp.data.index(b'data-category="common-top-artists"'):
-            resp.data.index(b'data-category="common-top-albums"')]
-        self.assertIn("alice: #1 ·".encode(), section)   #< MutualFavorite's my-side rank
-        self.assertIn("bob: #3 ·".encode(), section)     #< MutualFavorite's their-side rank
-        self.assertIn("alice: #2 ·".encode(), section)   #< ModerateBoth, both sides' #2
-        self.assertIn("bob: #2 ·".encode(), section)
+        section = data["sharedArtistsHtml"]
+        self.assertIn("alice: #1 ·", section)   #< MutualFavorite's my-side rank
+        self.assertIn("bob: #3 ·", section)     #< MutualFavorite's their-side rank
+        self.assertIn("alice: #2 ·", section)   #< ModerateBoth, both sides' #2
+        self.assertIn("bob: #2 ·", section)
 
     def test_shared_list_one_sided_favorite_loses_to_true_mutual_item(self):
         """The sharp edge a min()-based mutual score would have: OneSided is
@@ -1295,12 +1325,10 @@ class TestCompareRoute(AppTestCase):
         ]
         client = self._loginAs("alice")
 
-        resp = client.get("/compare")
+        _, data = self._ajax(client, "/compare")
 
-        section = resp.data[
-            resp.data.index(b'data-category="common-top-artists"'):
-            resp.data.index(b'data-category="common-top-albums"')]
-        self.assertLess(section.index(b"TrueMutual"), section.index(b"OneSided"))
+        section = data["sharedArtistsHtml"]
+        self.assertLess(section.index("TrueMutual"), section.index("OneSided"))
 
     def test_shared_list_shared_score_ties_break_by_combined_plays(self):
         """Two shared artists tie on shared-rank score when each grabs rank
@@ -1320,12 +1348,10 @@ class TestCompareRoute(AppTestCase):
         ]
         client = self._loginAs("alice")
 
-        resp = client.get("/compare")
+        _, data = self._ajax(client, "/compare")
 
-        section = resp.data[
-            resp.data.index(b'data-category="common-top-artists"'):
-            resp.data.index(b'data-category="common-top-albums"')]
-        self.assertLess(section.index(b"Alpha"), section.index(b"Beta"))
+        section = data["sharedArtistsHtml"]
+        self.assertLess(section.index("Alpha"), section.index("Beta"))
 
     def test_taste_match_is_full_for_identical_pools(self):
         self._accept("alice", "bob")
@@ -1334,9 +1360,9 @@ class TestCompareRoute(AppTestCase):
         self.dbs["bob"].getTopArtists.return_value = list(pool)
         client = self._loginAs("alice")
 
-        resp = client.get("/compare")
+        _, data = self._ajax(client, "/compare")
 
-        self.assertIn(b'class="taste-match-value js-taste-match">100%</span>', resp.data)
+        self.assertEqual(data["tasteMatch"], 100)
 
     def test_taste_match_rewards_shared_favorites_over_deep_overlap(self):
         """Rank weighting (2x the shared item's better-side rank discount,
@@ -1351,14 +1377,14 @@ class TestCompareRoute(AppTestCase):
 
         self.dbs["alice"].getTopArtists.return_value = [_artist("top", "SharedTop"), _artist("a2", "A2")]
         self.dbs["bob"].getTopArtists.return_value = [_artist("top", "SharedTop"), _artist("b2", "B2")]
-        respTop = client.get("/compare")
+        _, dataTop = self._ajax(client, "/compare")
 
         self.dbs["alice"].getTopArtists.return_value = [_artist("a1", "A1"), _artist("deep", "SharedDeep")]
         self.dbs["bob"].getTopArtists.return_value = [_artist("b1", "B1"), _artist("deep", "SharedDeep")]
-        respDeep = client.get("/compare")
+        _, dataDeep = self._ajax(client, "/compare")
 
-        self.assertIn(b'class="taste-match-value js-taste-match">75%</span>', respTop.data)
-        self.assertIn(b'class="taste-match-value js-taste-match">57%</span>', respDeep.data)
+        self.assertEqual(dataTop["tasteMatch"], 75)
+        self.assertEqual(dataDeep["tasteMatch"], 57)
 
     def test_taste_match_mutual_favorite_credited_at_its_better_rank(self):
         """A shared artist ranked #1 by one side and #10 by the other is
@@ -1374,9 +1400,9 @@ class TestCompareRoute(AppTestCase):
         self.dbs["bob"].getTopArtists.return_value = theirArtists
         client = self._loginAs("alice")
 
-        resp = client.get("/compare")
+        _, data = self._ajax(client, "/compare")
 
-        self.assertIn(b'class="taste-match-value js-taste-match">40%</span>', resp.data)
+        self.assertEqual(data["tasteMatch"], 40)
 
     def test_taste_match_credits_a_song_by_a_shared_artist_even_without_an_exact_match(self):
         """A song that isn't itself an exact match still earns
@@ -1394,16 +1420,16 @@ class TestCompareRoute(AppTestCase):
 
         self.dbs["alice"].getTopSongs.return_value = [_song("as1", "AS1", artists=[_artist("ax1", "Unrelated1")])]
         self.dbs["bob"].getTopSongs.return_value = [_song("bs1", "BS1", artists=[_artist("bx1", "Unrelated2")])]
-        respUnrelated = client.get("/compare")
+        _, dataUnrelated = self._ajax(client, "/compare")
 
         self.dbs["alice"].getTopSongs.return_value = [
             _song("as1", "AS1", artists=[_artist("shared1", "SharedArtist")])]
         self.dbs["bob"].getTopArtists.return_value = [_artist("shared1", "SharedArtist")]
         self.dbs["bob"].getTopSongs.return_value = [_song("bs1", "BS1", artists=[_artist("bx1", "Unrelated2")])]
-        respRelated = client.get("/compare")
+        _, dataRelated = self._ajax(client, "/compare")
 
-        self.assertIn(b'class="taste-match-value js-taste-match">0%</span>', respUnrelated.data)
-        self.assertIn(b'class="taste-match-value js-taste-match">38%</span>', respRelated.data)
+        self.assertEqual(dataUnrelated["tasteMatch"], 0)
+        self.assertEqual(dataRelated["tasteMatch"], 38)
 
     def test_taste_match_weights_category_overlaps(self):
         """artists identical (1.0, weight .7), albums identical (1.0, weight
@@ -1420,9 +1446,9 @@ class TestCompareRoute(AppTestCase):
         self.dbs["bob"].getTopSongs.return_value = [_song(f"bs{i}", f"BS{i}") for i in range(5)]
         client = self._loginAs("alice")
 
-        resp = client.get("/compare")
+        _, data = self._ajax(client, "/compare")
 
-        self.assertIn(b'class="taste-match-value js-taste-match">94%</span>', resp.data)
+        self.assertEqual(data["tasteMatch"], 94)
 
     def test_taste_match_excludes_categories_without_data_on_both_sides(self):
         """Only artists have data: 5 shared at ranks 1-5 of 10 on both sides.
@@ -1435,9 +1461,9 @@ class TestCompareRoute(AppTestCase):
         self.dbs["bob"].getTopArtists.return_value = sharedArtists + [_artist(f"b{i}", f"B{i}") for i in range(5)]
         client = self._loginAs("alice")
 
-        resp = client.get("/compare")
+        _, data = self._ajax(client, "/compare")
 
-        self.assertIn(b'class="taste-match-value js-taste-match">77%</span>', resp.data)
+        self.assertEqual(data["tasteMatch"], 77)
 
     def test_taste_match_caps_the_ideal_at_top_taste_match_ideal_depth(self):
         """Sharing an entire top-20 (out of 100-deep pools) should score high
@@ -1452,17 +1478,21 @@ class TestCompareRoute(AppTestCase):
         self.dbs["bob"].getTopArtists.return_value = sharedArtists + [_artist(f"b{i}", f"B{i}") for i in range(80)]
         client = self._loginAs("alice")
 
-        resp = client.get("/compare")
+        _, data = self._ajax(client, "/compare")
 
-        self.assertIn(b'class="taste-match-value js-taste-match">85%</span>', resp.data)
+        self.assertEqual(data["tasteMatch"], 85)
 
     def test_taste_match_hidden_without_any_pool_data(self):
         self._accept("alice", "bob")
         client = self._loginAs("alice")
 
-        resp = client.get("/compare")
+        #< the shell always renders it hidden up front - it doesn't know
+        #  yet whether there'll be a score
+        shellResp = client.get("/compare")
+        self.assertIn(b'id="tasteMatch" style="display: none;"', shellResp.data)
 
-        self.assertIn(b'id="tasteMatch" style="display: none;"', resp.data)
+        _, data = self._ajax(client, "/compare")
+        self.assertIsNone(data["tasteMatch"])   #< empty stub pools -> stays hidden
 
     def test_ajax_includes_the_taste_match(self):
         self._accept("alice", "bob")
@@ -1521,12 +1551,13 @@ class TestCompareRoute(AppTestCase):
         self.dbs["bob"].getPlayTotals.return_value = (5, 500)
         client = self._loginAs("alice")
 
-        resp = client.get("/compare")
+        _, data = self._ajax(client, "/compare")
+        table = data["statsTableHtml"]
 
-        marker = ' <span class="leader-marker" aria-hidden="true">▲</span><span class="visually-hidden">(higher)</span>'.encode("utf-8")
+        marker = ' <span class="leader-marker" aria-hidden="true">▲</span><span class="visually-hidden">(higher)</span>'
         #< alice leads plays AND time: exactly two marked cells
-        self.assertEqual(resp.data.count(marker), 2)
-        self.assertIn(b'class="value leader leader-mine">10', resp.data)
+        self.assertEqual(table.count(marker), 2)
+        self.assertIn('class="value leader leader-mine">10', table)
 
     def test_leader_color_follows_the_columns_identity(self):
         """A leading counterpart cell must carry the counterpart's identity
@@ -1537,10 +1568,11 @@ class TestCompareRoute(AppTestCase):
         self.dbs["bob"].getPlayTotals.return_value = (12, 1200)
         client = self._loginAs("alice")
 
-        resp = client.get("/compare")
+        _, data = self._ajax(client, "/compare")
+        table = data["statsTableHtml"]
 
-        self.assertIn(b'class="value leader leader-theirs">12', resp.data)
-        self.assertNotIn(b'class="value leader leader-mine"', resp.data)   #< alice leads nothing here
+        self.assertIn('class="value leader leader-theirs">12', table)
+        self.assertNotIn('class="value leader leader-mine"', table)   #< alice leads nothing here
 
     def test_split_bar_carries_an_accessible_description(self):
         self._accept("alice", "bob")
@@ -1550,13 +1582,14 @@ class TestCompareRoute(AppTestCase):
             _artist("sh1", "SharedArtist", plays=5, totalTimeListened=1_800_000)]
         client = self._loginAs("alice")
 
-        resp = client.get("/compare")
+        _, data = self._ajax(client, "/compare")
+        html = self._ajaxHtml(data)
 
         #< apostrophes render autoescaped (&#39;) inside the attributes
         self.assertIn(
-            b'role="img" title="67% of the combined listening time is alice&#39;s, 33% bob&#39;s" '
-            b'aria-label="67% of the combined listening time is alice&#39;s, 33% bob&#39;s"',
-            resp.data)
+            'role="img" title="67% of the combined listening time is alice&#39;s, 33% bob&#39;s" '
+            'aria-label="67% of the combined listening time is alice&#39;s, 33% bob&#39;s"',
+            html)
 
     def test_trend_canvas_has_an_accessible_label(self):
         self._accept("alice", "bob")

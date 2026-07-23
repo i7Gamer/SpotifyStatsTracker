@@ -190,6 +190,26 @@ def register(app, dashboard):
         totalSongsChangeText, totalSongsChangeClass = dashboard._getChangeText(stats["totalSongsPlayed"], stats["previousSongsPlayed"])
         totalListenChangeText, totalListenChangeClass = dashboard._getChangeText(stats["totalDurationMs"], stats["previousDurationMs"])
 
+        summaryArgs = dict(
+            totalSongsPlayed=stats["totalSongsPlayed"],
+            totalListenTime=totalDurationText,
+            totalSongsChangeText=totalSongsChangeText,
+            totalSongsChangeClass=totalSongsChangeClass,
+            totalListenChangeText=totalListenChangeText,
+            totalListenChangeClass=totalListenChangeClass,
+            currentTopSong=currentTopSong,
+            currentTopArtist=currentTopArtist,
+            username=username,
+        )
+
+        # The Time Period filter only rescopes these four cards - the live
+        # cards below (streak, on this day, discover, calendar) and next-
+        # milestones are unfiltered, so a filter change's ajax fetch re-renders
+        # just this one partial and skips every query below entirely (same
+        # fade-and-swap pattern as compare.html/genres.html).
+        if request.args.get("ajax") == "true":
+            return jsonify({"summaryHtml": render_template("_dashboard_summary.html", **summaryArgs)})
+
         # Unfiltered dashboard cards (independent of the interval/date-range
         # filter above): live streak and "on this day" resurfacing are cheap
         # and rendered inline. The Discover card's genre-coverage gate and
@@ -219,20 +239,15 @@ def register(app, dashboard):
             listeningCalendar=listeningCalendar,
             nextMilestones=nextMilestones,
             lastfmGenreEnabled=lastfmGenreEnabled,
-            totalSongsPlayed=stats["totalSongsPlayed"],
-            totalListenTime=totalDurationText,
-            totalSongsChangeText=totalSongsChangeText,
-            totalSongsChangeClass=totalSongsChangeClass,
-            totalListenChangeText=totalListenChangeText,
-            totalListenChangeClass=totalListenChangeClass,
-            currentTopSong=currentTopSong,
-            currentTopArtist=currentTopArtist,
             intervalLabel=intervalLabel,
-            username=username,
             section="dashboard",
             interval=interval,
             customStart=customStart,
             customEnd=customEnd,
+            #< the popstate fallback when a Back navigation lands on a bare
+            #  URL with no explicit ?interval= (see loadDashboardSummary)
+            defaultWindow=default_window,
+            **summaryArgs,
         )
     app.add_url_rule("/", "dashboard", dashboardIndex, methods=["GET"])
 

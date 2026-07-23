@@ -5,8 +5,9 @@
   <div class="hero-content">
     <h1>Compare with <span class="compare-user-theirs js-with-username">{{ withUsername }}</span></h1>
     <p>See how your listening stats stack up against someone who shares their data with you.</p>
-    <div class="taste-match" id="tasteMatch"{% if tasteMatch is none %} style="display: none;"{% endif %}>
-      <span class="taste-match-value js-taste-match">{{ tasteMatch if tasteMatch is not none else '' }}%</span>
+    {# tasteMatch isn't known until the ajax payload lands - hidden until compare.js fills it in. #}
+    <div class="taste-match" id="tasteMatch" style="display: none;">
+      <span class="taste-match-value js-taste-match"></span>
       <span class="taste-match-label">taste match</span>
     </div>
   </div>
@@ -82,23 +83,27 @@
   </div>
 </section>
 
+{# The sections below are filled in by compare.js's initial ajax load
+   (loadCompareData({ initial: true })) - same fetch the filter controls
+   already trigger on every change, just fired once more up front instead
+   of the server pre-rendering this first response. #}
 <section class="card" style="margin: 1.5rem 0; overflow-x: auto;">
   {# Outside #compareStatsTable so the AJAX swap doesn't re-render it. #}
   <h2 style="margin: 0 0 0.75rem 0; font-family: var(--font-headings);">Stats Comparison</h2>
   <div id="compareStatsTable">
-    {% include '_compare_stats_table.html' %}
+    <p class="loading">Loading…</p>
   </div>
 </section>
 
 <section class="track-summary-grid-3 compare-similarities" id="compareSimilarities">
-  {% include '_compare_similarities.html' %}
+  <p class="loading">Loading…</p>
 </section>
 
 <section class="card" style="margin: 1.5rem 0;">
   {# Outside #compareGenres so the AJAX swap doesn't re-render it. #}
   <h2 style="margin: 0 0 0.75rem 0; font-family: var(--font-headings);">Genres</h2>
   <div id="compareGenres">
-    {% include '_compare_genres.html' %}
+    <p class="loading">Loading…</p>
   </div>
 </section>
 
@@ -123,19 +128,11 @@
   <button class="stats-filter-button" data-filter="top-albums">Top Albums</button>
 </nav>
 
-{# The overlap entries come from the viewer's own pool, so their detail
-   links resolve correctly - keep them linked. compareWith feeds the
-   per-card versus block (both users' plays/time and the split bar). #}
-{% set suppressDetailLinks = false %}
-{% set compareWith = withUsername %}
 <div data-category="common-top-songs">
   <section style="margin-bottom: 2.5rem;">
     <h2>Top Common Songs</h2>
-    {% set section = 'top_songs' %}
     <div class="track-list" id="sharedSongsList">
-      {% set items = sharedSongs %}
-      {% set emptyMessage = 'No shared top songs in this period yet.' %}
-      {% include '_wrapped_list.html' %}
+      <p class="loading">Loading…</p>
     </div>
   </section>
 </div>
@@ -143,11 +140,8 @@
 <div data-category="common-top-artists">
   <section style="margin-bottom: 2.5rem;">
     <h2>Top Common Artists</h2>
-    {% set section = 'top_artists' %}
     <div class="track-list" id="sharedArtistsList">
-      {% set items = sharedArtists %}
-      {% set emptyMessage = 'No shared top artists in this period yet.' %}
-      {% include '_wrapped_list.html' %}
+      <p class="loading">Loading…</p>
     </div>
   </section>
 </div>
@@ -155,82 +149,58 @@
 <div data-category="common-top-albums">
   <section style="margin-bottom: 2.5rem;">
     <h2>Top Common Albums</h2>
-    {% set section = 'top_albums' %}
     <div class="track-list" id="sharedAlbumsList">
-      {% set items = sharedAlbums %}
-      {% set emptyMessage = 'No shared top albums in this period yet.' %}
-      {% include '_wrapped_list.html' %}
+      <p class="loading">Loading…</p>
     </div>
   </section>
 </div>
-{% set compareWith = none %}
 
-{% set emptyMessage = 'No plays in this period.' %}
-
-{% set section = 'top_songs' %}
 <div data-category="top-songs">
   <section class="compare-columns">
     <div>
       <h2><span class="compare-user-mine compare-user-label js-my-username">{{ username }}</span>'s Top Songs</h2>
       <div class="track-list" id="myTopSongsList">
-        {% set suppressDetailLinks = false %}
-        {% set items = my.topSongs %}
-        {% include '_wrapped_list.html' %}
+        <p class="loading">Loading…</p>
       </div>
     </div>
     <div>
       <h2><span class="compare-user-theirs compare-user-label js-with-username">{{ withUsername }}</span>'s Top Songs</h2>
       <div class="track-list" id="theirTopSongsList">
-        {# Each item's own linkExternally decides internal vs. Spotify - see
-           app.py's _markLinkExternally. #}
-        {% set items = their.topSongs %}
-        {% include '_wrapped_list.html' %}
+        <p class="loading">Loading…</p>
       </div>
     </div>
   </section>
 </div>
 
-{% set section = 'top_artists' %}
 <div data-category="top-artists">
   <section class="compare-columns">
     <div>
       <h2><span class="compare-user-mine compare-user-label js-my-username">{{ username }}</span>'s Top Artists</h2>
       <div class="track-list" id="myTopArtistsList">
-        {% set suppressDetailLinks = false %}
-        {% set items = my.topArtists %}
-        {% include '_wrapped_list.html' %}
+        <p class="loading">Loading…</p>
       </div>
     </div>
     <div>
       <h2><span class="compare-user-theirs compare-user-label js-with-username">{{ withUsername }}</span>'s Top Artists</h2>
       <div class="track-list" id="theirTopArtistsList">
-        {# Each item's own linkExternally decides internal vs. Spotify - see
-           app.py's _markLinkExternally. #}
-        {% set items = their.topArtists %}
-        {% include '_wrapped_list.html' %}
+        <p class="loading">Loading…</p>
       </div>
     </div>
   </section>
 </div>
 
-{% set section = 'top_albums' %}
 <div data-category="top-albums">
   <section class="compare-columns">
     <div>
       <h2><span class="compare-user-mine compare-user-label js-my-username">{{ username }}</span>'s Top Albums</h2>
       <div class="track-list" id="myTopAlbumsList">
-        {% set suppressDetailLinks = false %}
-        {% set items = my.topAlbums %}
-        {% include '_wrapped_list.html' %}
+        <p class="loading">Loading…</p>
       </div>
     </div>
     <div>
       <h2><span class="compare-user-theirs compare-user-label js-with-username">{{ withUsername }}</span>'s Top Albums</h2>
       <div class="track-list" id="theirTopAlbumsList">
-        {# Each item's own linkExternally decides internal vs. Spotify - see
-           app.py's _markLinkExternally. #}
-        {% set items = their.topAlbums %}
-        {% include '_wrapped_list.html' %}
+        <p class="loading">Loading…</p>
       </div>
     </div>
   </section>
@@ -238,10 +208,11 @@
 
 <!-- Server-rendered comparison trend + default limit for the Compare client
      logic in static/js/compare.js. JSON data island (not executable script)
-     parsed via document.getElementById('compare-bootstrap').textContent. -->
+     parsed via document.getElementById('compare-bootstrap').textContent.
+     No comparisonTrend here anymore - the shell renders before that query
+     runs; compare.js's initial ajax load fills it in (see loadCompareData). -->
 <script type="application/json" id="compare-bootstrap">
 {{ {
-  "comparisonTrend": comparisonTrend,
   "limitDefault": limitOptions[0]
 } | tojson }}
 </script>
