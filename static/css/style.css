@@ -1943,6 +1943,26 @@ progress::-moz-progress-bar {
   color: var(--muted, #b0b0b0);
 }
 
+.milestone-more {
+  margin-top: 8px;
+}
+
+.milestone-more > summary {
+  cursor: pointer;
+  color: var(--muted, #b0b0b0);
+  font-size: 0.9rem;
+  font-weight: 600;
+  padding: 4px 0;
+}
+
+.milestone-more > summary:hover {
+  color: var(--text);
+}
+
+.milestone-more-list {
+  margin-top: 8px;
+}
+
 .chart-card {
   margin-bottom: 24px;
 }

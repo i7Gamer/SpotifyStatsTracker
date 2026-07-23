@@ -120,6 +120,33 @@ class TestProfileMilestonesSection(_BadgeTestCase):
         self.assertIn(b"New #1 artist: Boards of Canada", resp.data)
         self.assertIn(b"/artist/art9", resp.data)
 
+    def test_only_most_recent_shown_with_collapsible_more(self):
+        # With more than one milestone, only the newest renders above a
+        # "show more" disclosure; the older ones live inside the <details>.
+        client = self._loginAs("alice", "alice@example.com")
+        self.dash.repo.recordMilestone("alice", "plays", 1000, None, 1609459200.0, seen=True)   # older
+        self.dash.repo.recordMilestone("alice", "streak", 7, None, 1612137600.0, seen=True)      # newer
+
+        resp = client.get("/profile")
+        body = resp.data
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn(b'class="milestone-more"', body)
+        self.assertIn(b"Show 1 more", body)
+        # Newest milestone sits above the toggle; the older one is inside it.
+        moreIdx = body.index(b'class="milestone-more"')
+        self.assertLess(body.index(b"7-day listening streak"), moreIdx)
+        self.assertGreater(body.index(b"1,000 lifetime plays"), moreIdx)
+
+    def test_no_collapsible_with_single_milestone(self):
+        client = self._loginAs("alice", "alice@example.com")
+        self.dash.repo.recordMilestone("alice", "plays", 1000, None, 1609459200.0, seen=True)
+
+        resp = client.get("/profile")
+
+        self.assertIn(b"1,000 lifetime plays", resp.data)
+        self.assertNotIn(b"milestone-more", resp.data)
+
     def test_empty_state_when_no_milestones(self):
         client = self._loginAs("alice", "alice@example.com")
 

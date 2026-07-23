@@ -22,8 +22,7 @@
     <h2>Milestones</h2>
     <div class="milestones-section" style="margin-bottom: 2rem; padding-bottom: 2rem; border-bottom: 1px solid var(--border-color, #2d2d2d);">
       {% if milestones %}
-        <ul class="milestone-list">
-          {% for m in milestones %}
+        {% macro milestoneItem(m) %}
           <li class="milestone-item">
             <span class="milestone-icon" aria-hidden="true">{{ m.icon }}</span>
             <span class="milestone-label">
@@ -31,8 +30,20 @@
             </span>
             <span class="milestone-date">{{ m.dateText }}</span>
           </li>
-          {% endfor %}
+        {% endmacro %}
+        <ul class="milestone-list">
+          {{ milestoneItem(milestones[0]) }}
         </ul>
+        {% if milestones|length > 1 %}
+        <details class="milestone-more">
+          <summary>Show {{ milestones|length - 1 }} more</summary>
+          <ul class="milestone-list milestone-more-list">
+            {% for m in milestones[1:] %}
+              {{ milestoneItem(m) }}
+            {% endfor %}
+          </ul>
+        </details>
+        {% endif %}
       {% else %}
         <p class="milestone-empty">No milestones yet &mdash; keep listening and they'll show up here as you hit play-count, listening-time, and streak achievements.</p>
       {% endif %}
