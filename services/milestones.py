@@ -76,19 +76,34 @@ def _detectTopArtistMilestone(repo, db, username, achievedAt, seen) -> int:
     return 1
 
 
-def detectMilestones(db, repo, username) -> int:
+def detectMilestones(db, repo, username, changeCache=None) -> int:
     """Detect and record any newly-reached milestones for `username`, returning
     how many rows were recorded this pass.
 
     On the user's first pass (no milestones_baseline_at yet) everything already
     achieved is recorded as seen and the baseline is stamped; afterwards new
-    crossings are recorded unseen (seen=0) so the topbar badge surfaces them."""
+    crossings are recorded unseen (seen=0) so the topbar badge surfaces them.
+
+    `changeCache` is an optional mutable {username: (totalPlays, totalMs)} dict
+    (the periodic background loop passes a per-process one). When supplied, a
+    non-seeding pass whose play totals equal the last pass's short-circuits
+    before the heavier streak + top-artist queries: every milestone kind derives
+    from the plays table, so unchanged (count, listen-time) totals mean nothing
+    can have crossed. getPlayTotals is a single indexed scan and doubles as that
+    change signal, so it always runs; the join-and-group getTopArtists query and
+    the streak scan are what the guard saves on the common idle cycle. Omitting
+    the cache keeps the old always-run behavior (used by the unit tests)."""
     now = time.time()
     baseline = repo.getMilestoneBaselineAt(username)
     seed = baseline is None   #< first-ever pass: seed already-achieved milestones silently
     seen = seed
 
     totalPlays, totalMs = db.getPlayTotals(None, None)
+    # Idle-cycle short-circuit (see docstring). Never on the seeding pass - that
+    # must record the already-achieved backlog once, even against a stale cache.
+    if changeCache is not None and not seed and changeCache.get(username) == (totalPlays, totalMs):
+        return 0
+
     totalHours = (totalMs or 0) // _MS_PER_HOUR
     streak = db.getCurrentStreak()
     streakDays = streak.get("days", 0) if isinstance(streak, dict) else 0
@@ -104,6 +119,8 @@ def detectMilestones(db, repo, username) -> int:
 
     if seed:
         repo.setMilestoneBaselineAt(username, now)
+    if changeCache is not None:
+        changeCache[username] = (totalPlays, totalMs)
     return recorded
 
 

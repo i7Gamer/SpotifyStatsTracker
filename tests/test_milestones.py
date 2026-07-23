@@ -30,14 +30,22 @@ class _FakeDb:
         self._ms = ms
         self._streakDays = streakDays
         self._topArtist = topArtist
+        # Call counters so tests can assert the idle-cycle short-circuit skips
+        # the heavier streak/top-artist queries (see detectMilestones).
+        self.playTotalsCalls = 0
+        self.streakCalls = 0
+        self.topArtistCalls = 0
 
     def getPlayTotals(self, start, end):
+        self.playTotalsCalls += 1
         return (self._plays, self._ms)
 
     def getCurrentStreak(self):
+        self.streakCalls += 1
         return {"days": self._streakDays, "activeToday": True}
 
     def getTopArtists(self, startDate=None, endDate=None, by="plays", limit=None):
+        self.topArtistCalls += 1
         return [self._topArtist] if self._topArtist else []
 
 
@@ -136,6 +144,69 @@ class TestDetectMilestones(_RepoTestCase):
     def test_no_top_artist_records_nothing(self):
         detectMilestones(_FakeDb(topArtist=None), self.repo, self.USER)
         self.assertIsNone(self.repo.getLatestMilestone(self.USER, MILESTONE_KIND_TOP_ARTIST))
+
+
+class TestDetectMilestonesChangeCache(_RepoTestCase):
+    """The optional changeCache lets the periodic background pass skip the
+    heavier streak + top-artist queries on cycles where the user's play totals
+    are unchanged - every milestone kind derives from the plays table, so
+    unchanged (count, listen-time) totals mean nothing can have crossed."""
+
+    def test_unchanged_totals_skip_heavy_queries_on_next_pass(self):
+        cache: dict = {}
+        db = _FakeDb(plays=1500, ms=5 * _MS_PER_HOUR, streakDays=10,
+                     topArtist={"id": "a1", "name": "A"})
+
+        detectMilestones(db, self.repo, self.USER, changeCache=cache)   #< first pass runs fully
+        self.assertEqual((db.streakCalls, db.topArtistCalls), (1, 1))
+
+        recorded = detectMilestones(db, self.repo, self.USER, changeCache=cache)
+
+        self.assertEqual(recorded, 0)
+        self.assertEqual(db.playTotalsCalls, 2)          #< the change signal still runs each pass
+        self.assertEqual((db.streakCalls, db.topArtistCalls), (1, 1))   #< but the heavy pair did not
+
+    def test_changed_totals_run_full_detection_and_notify(self):
+        cache: dict = {}
+        detectMilestones(_FakeDb(plays=0), self.repo, self.USER, changeCache=cache)   #< baseline, nothing achieved
+
+        db = _FakeDb(plays=1500, streakDays=0)
+        recorded = detectMilestones(db, self.repo, self.USER, changeCache=cache)
+
+        self.assertEqual(recorded, 1)
+        self.assertEqual((db.streakCalls, db.topArtistCalls), (1, 1))   #< heavy queries ran this pass
+        self.assertEqual(self.repo.getUnseenMilestoneCount(self.USER), 1)
+
+    def test_first_pass_never_short_circuits_even_with_prefilled_cache(self):
+        # A stale cache entry (e.g. from a previous process) must not suppress
+        # the one-time baseline seeding pass.
+        cache = {self.USER: (1500, 0)}
+        db = _FakeDb(plays=1500, ms=0, streakDays=0)
+
+        detectMilestones(db, self.repo, self.USER, changeCache=cache)
+
+        self.assertEqual((db.streakCalls, db.topArtistCalls), (1, 1))
+        self.assertIsNotNone(self.repo.getMilestoneBaselineAt(self.USER))
+        self.assertTrue(self.repo.hasThresholdMilestone(self.USER, MILESTONE_KIND_PLAYS, 1000))
+
+    def test_without_cache_every_pass_runs_full(self):
+        # Backward compatibility: callers that pass no cache keep the old
+        # always-run behavior.
+        db = _FakeDb(plays=1500)
+        detectMilestones(db, self.repo, self.USER)
+        detectMilestones(db, self.repo, self.USER)
+        self.assertEqual((db.streakCalls, db.topArtistCalls), (2, 2))
+
+    def test_cache_updates_when_totals_change_so_new_plateau_short_circuits(self):
+        cache: dict = {}
+        detectMilestones(_FakeDb(plays=0), self.repo, self.USER, changeCache=cache)
+
+        detectMilestones(_FakeDb(plays=1500), self.repo, self.USER, changeCache=cache)   #< totals moved
+        db = _FakeDb(plays=1500)
+        recorded = detectMilestones(db, self.repo, self.USER, changeCache=cache)         #< now steady again
+
+        self.assertEqual(recorded, 0)
+        self.assertEqual((db.streakCalls, db.topArtistCalls), (0, 0))
 
 
 class TestFormatMilestone(unittest.TestCase):

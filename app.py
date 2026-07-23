@@ -227,6 +227,12 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
         self.latestVersion = None
         self._version_lock = threading.Lock()
         self._stop_event = threading.Event()
+        # Per-user {username: (totalPlays, totalMs)} from the last milestone
+        # pass, so an idle background cycle skips the heavy streak/top-artist
+        # queries when a user's totals haven't moved (see detectMilestones).
+        # In-process is sufficient: detection only runs from the single
+        # _checkLoginLoop thread, and this app is single-process by design.
+        self._milestoneChangeCache: dict = {}
         # Snapshots the shared database on a schedule (see Database/backup.py) -
         # a manual backup command in the README protects nobody who doesn't run it.
         # Interval/retention come from admin settings, falling back to the env
@@ -497,7 +503,7 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
         import-only account with no live session first gets its milestones on
         its next cookie login."""
         try:
-            detectMilestones(db, db.repo, username)
+            detectMilestones(db, db.repo, username, changeCache=self._milestoneChangeCache)
         except Exception as e:
             logger.warning("Milestone detection failed for %s: %s", username, e)
 
@@ -529,10 +535,11 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
                 ):
                     logger.warning("Listener thread for user %s is not running or is DEAD. Restarting...", username)
                     db.startListener(email=email)
-                # Cheap enough to fold into this existing per-user pass rather
-                # than run its own loop - detection dedups already-recorded
-                # milestones, so re-running every cycle is a no-op past the
-                # first time a threshold is crossed.
+                # Folded into this existing per-user pass rather than a loop of
+                # its own. On a cycle where the user's play totals haven't moved
+                # it costs just the one getPlayTotals scan (the change signal) -
+                # the heavier streak/top-artist queries are skipped via
+                # _milestoneChangeCache; see detectMilestones.
                 self._detectMilestonesSafely(db, username)
             except Exception as e:
                 logger.error("Error initializing user %s: %s", username, e)
