@@ -12,6 +12,7 @@ A web application that allows users to track and analyze their Spotify listening
 
 - **Top Lists**: View your top songs, artists, and albums with detailed statistics
 - **Listening History**: See your listening history and track Spotify activity in real time
+- **Achievement Milestones**: Automatically celebrate lifetime play-count and listening-time thresholds, listening streaks, and each new all-time #1 artist - surfaced as a topbar badge and a Milestones section on your Profile
 - **Charts & Analytics**: Visualize your listening patterns and statistics with interactive charts, including a Top Genres breakdown once enough genre data has been backfilled (see Genre Insights below)
 - **Yearly Wrapped & Share Links**: Get a personalized recap of your yearly listening with category filters (Top Songs, Artists, Albums, Discovered Songs, Artists, Albums) plus top genres, and generate shareable links with custom expiration
 - **Data Sharing & Comparison**: Request to share your listening stats with another user - once they accept, compare top songs/artists/albums, a taste-match score, and shared genres side by side on the Compare page
