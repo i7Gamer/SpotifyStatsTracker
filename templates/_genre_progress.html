@@ -22,6 +22,14 @@
     </span>
   </div>
   {% endfor %}
+  {# Overall folded in as a final aligned row (was a separate spaced-out line) so the panel stays compact. #}
+  <div style="display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.6rem;">
+    <span style="flex: 0 0 4.5rem; font-size: 0.85rem; color: var(--muted, #aaa); font-weight: bold;">Overall</span>
+    <div style="position: relative; flex: 1; background: rgba(255, 255, 255, 0.08); border-radius: 4px; height: 10px; overflow: hidden;">
+      <div style="width: {{ [coverage.overall.percent, 100] | min }}%; background: var(--accent); height: 100%; border-radius: 4px;"></div>
+    </div>
+    <span style="flex: 0 0 11rem; font-size: 0.8rem; color: var(--muted, #aaa); text-align: right;"><strong>{{ coverage.overall.percent }}%</strong></span>
+  </div>
   {% if coverage.song.ownPercent is defined and (coverage.song.ownPercent != coverage.song.percent
         or coverage.album.ownPercent != coverage.album.percent) %}
   <p style="font-size: 0.8rem; color: var(--muted, #aaa); margin-top: 0.25rem;">
@@ -29,12 +37,11 @@
     songs <strong style="color: var(--accent-secondary);">{{ coverage.song.ownPercent }}%</strong>, albums <strong style="color: var(--accent-secondary);">{{ coverage.album.ownPercent }}%</strong>.
   </p>
   {% endif %}
-  <p style="font-size: 0.85rem; color: var(--muted, #aaa); margin-top: 0.75rem;">
-    Overall: <strong>{{ coverage.overall.percent }}%</strong>
-    {% if not coverage.song.total %}
-      &mdash; add a Last.fm API key on {{ (username + "'s") if publicView else "your" }} <a href="{{ url_for('profilePage') }}" style="color: var(--accent);">profile</a> to start backfilling genre data.
-    {% endif %}
+  {% if not coverage.song.total %}
+  <p style="font-size: 0.85rem; color: var(--muted, #aaa); margin-top: 0.5rem;">
+    Add a Last.fm API key on {{ (username + "'s") if publicView else "your" }} <a href="{{ url_for('profilePage') }}" style="color: var(--accent);">profile</a> to start backfilling genre data.
   </p>
+  {% endif %}
   {% import "_genre_macros.html" as genreMacros %}
   {{ genreMacros.lastfmAttribution(marginTop='0.5rem') }}
 </div>
