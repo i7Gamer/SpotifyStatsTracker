@@ -9,7 +9,7 @@
       <span style="color: var(--muted);">{{ link.expiryLabel }}</span>
     </div>
     <div style="display: flex; gap: 0.5rem; align-items: center;">
-      <button type="button" class="primary-button" style="padding: 4px 12px;" data-url="{{ url_for('sharedWrappedPage', token=link.token, _external=True) }}" onclick="navigator.clipboard.writeText(this.dataset.url)">Copy</button>
+      <button type="button" class="primary-button" style="padding: 4px 12px;" data-url="{{ url_for('sharedWrappedPage', token=link.token, _external=True) }}" onclick="copyShareLink(this)">Copy</button>
       <form method="post" action="{{ url_for('profileShareLinkAction', link_id=link.id) }}" class="share-link-revoke-form" style="margin: 0; display: inline-block;">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
         <input type="hidden" name="year" value="{{ year }}"/>

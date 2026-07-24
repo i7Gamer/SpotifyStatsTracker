@@ -35,6 +35,8 @@
           var removeBtn = document.createElement('button');
           removeBtn.type = 'button';
           removeBtn.className = 'btn-remove-tag';
+          removeBtn.setAttribute('aria-label', 'Remove tag ' + t);
+          removeBtn.title = 'Remove tag';
           removeBtn.dataset.tag = t;
           removeBtn.style.cssText = 'background: none; border: none; color: inherit; cursor: pointer; padding: 0 2px; font-weight: bold;';
           removeBtn.innerHTML = '&times;';
