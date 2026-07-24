@@ -1068,6 +1068,44 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
             entry["yearsAgo"] = today.year - entry["year"]
         return result
 
+    def getDashboardTrends(self, now_ts: float | None = None) -> dict[str, dict | None]:
+        """Fetch dashboard trend insights (Obsession, Rediscovery, Forgotten Favorite) with song metadata."""
+        raw = self.repo.getDashboardTrendsRaw(self.user, now_ts=now_ts)
+        now_ts = now_ts or time.time()
+
+        result = {"obsession": None, "rediscovery": None, "forgotten": None}
+
+        if raw.get("obsession"):
+            item = raw["obsession"]
+            song = self.repo.getTrack(item["track_id"])
+            if song:
+                cnt = item["recent_count"]
+                song["trend_subtitle"] = f"{cnt} play{'s' if cnt != 1 else ''} in the past week"
+                result["obsession"] = song
+
+        if raw.get("rediscovery"):
+            item = raw["rediscovery"]
+            song = self.repo.getTrack(item["track_id"])
+            if song:
+                cnt = item["recent_count"]
+                max_old = item["max_old_played_at"]
+                days_ago = max(1, int((now_ts - max_old) // 86400)) if max_old else 0
+                song["trend_subtitle"] = f"{cnt} play{'s' if cnt != 1 else ''} this week · unplayed for {days_ago} days"
+                result["rediscovery"] = song
+
+        if raw.get("forgotten"):
+            item = raw["forgotten"]
+            song = self.repo.getTrack(item["track_id"])
+            if song:
+                total = item["total_plays"]
+                last_played = item["last_played_at"]
+                days_ago = max(1, int((now_ts - last_played) // 86400)) if last_played else 0
+                months_ago = max(1, days_ago // 30)
+                song["trend_subtitle"] = f"{total} plays all-time · last played {months_ago} month{'s' if months_ago != 1 else ''} ago"
+                result["forgotten"] = song
+
+        return result
+
     def getLongestStreak(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> int:
         """Longest consecutive days of plays in range. See _getPlayDateSet for
         why SQL-side buckets give the same distinct-dates set as a per-play

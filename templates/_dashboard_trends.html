@@ -1,0 +1,89 @@
+{# Three trend insight cards: Current Obsession, Recent Rediscovery, and Forgotten Favorite.
+   Loaded asynchronously on the dashboard page via GET /api/dashboard-trends. #}
+
+<div class="summary-card trend-card obsession-card">
+  <h2>🔥 Current Obsession</h2>
+  {% if trends and trends.obsession %}
+    {% set item = trends.obsession %}
+    <div class="summary-top-item">
+      <strong class="summary-top-title">
+        <a class="summary-top-name" href="{{ url_for('songDetailPage', track_id=item.id) }}">{{ item.name }}</a>
+      </strong>
+      <div class="summary-top-detail">
+        <a href="{{ url_for('songDetailPage', track_id=item.id) }}" tabindex="-1" aria-hidden="true">
+          <img class="summary-top-cover" loading="lazy" alt=""
+               src="/img/{{ username }}/tracks/{{ item.imageId }}.jpeg"
+               onerror="this.onerror=null;this.src=window.PLACEHOLDER_IMG;" />
+        </a>
+        <div style="display: flex; flex-direction: column; gap: 2px;">
+          <span class="summary-top-artist" style="font-size: 0.85rem; color: var(--muted, #888);">
+            by {{ item.artists[0].name if item.artists else 'Unknown Artist' }}
+          </span>
+          <span class="summary-top-sub" style="font-size: 0.85rem; color: var(--accent-color, #fb717b);">
+            {{ item.trend_subtitle }}
+          </span>
+        </div>
+      </div>
+    </div>
+  {% else %}
+    <p class="dashboard-card-empty">No clear obsession detected yet. Keep listening!</p>
+  {% endif %}
+</div>
+
+<div class="summary-card trend-card rediscovery-card">
+  <h2>✨ Recent Rediscovery</h2>
+  {% if trends and trends.rediscovery %}
+    {% set item = trends.rediscovery %}
+    <div class="summary-top-item">
+      <strong class="summary-top-title">
+        <a class="summary-top-name" href="{{ url_for('songDetailPage', track_id=item.id) }}">{{ item.name }}</a>
+      </strong>
+      <div class="summary-top-detail">
+        <a href="{{ url_for('songDetailPage', track_id=item.id) }}" tabindex="-1" aria-hidden="true">
+          <img class="summary-top-cover" loading="lazy" alt=""
+               src="/img/{{ username }}/tracks/{{ item.imageId }}.jpeg"
+               onerror="this.onerror=null;this.src=window.PLACEHOLDER_IMG;" />
+        </a>
+        <div style="display: flex; flex-direction: column; gap: 2px;">
+          <span class="summary-top-artist" style="font-size: 0.85rem; color: var(--muted, #888);">
+            by {{ item.artists[0].name if item.artists else 'Unknown Artist' }}
+          </span>
+          <span class="summary-top-sub" style="font-size: 0.85rem; color: var(--accent-color, #fb717b);">
+            {{ item.trend_subtitle }}
+          </span>
+        </div>
+      </div>
+    </div>
+  {% else %}
+    <p class="dashboard-card-empty">No rediscovery matches found recently.</p>
+  {% endif %}
+</div>
+
+<div class="summary-card trend-card forgotten-card">
+  <h2>🕰️ Forgotten Favorite</h2>
+  {% if trends and trends.forgotten %}
+    {% set item = trends.forgotten %}
+    <div class="summary-top-item">
+      <strong class="summary-top-title">
+        <a class="summary-top-name" href="{{ url_for('songDetailPage', track_id=item.id) }}">{{ item.name }}</a>
+      </strong>
+      <div class="summary-top-detail">
+        <a href="{{ url_for('songDetailPage', track_id=item.id) }}" tabindex="-1" aria-hidden="true">
+          <img class="summary-top-cover" loading="lazy" alt=""
+               src="/img/{{ username }}/tracks/{{ item.imageId }}.jpeg"
+               onerror="this.onerror=null;this.src=window.PLACEHOLDER_IMG;" />
+        </a>
+        <div style="display: flex; flex-direction: column; gap: 2px;">
+          <span class="summary-top-artist" style="font-size: 0.85rem; color: var(--muted, #888);">
+            by {{ item.artists[0].name if item.artists else 'Unknown Artist' }}
+          </span>
+          <span class="summary-top-sub" style="font-size: 0.85rem; color: var(--accent-color, #fb717b);">
+            {{ item.trend_subtitle }}
+          </span>
+        </div>
+      </div>
+    </div>
+  {% else %}
+    <p class="dashboard-card-empty">No forgotten favorites right now.</p>
+  {% endif %}
+</div>

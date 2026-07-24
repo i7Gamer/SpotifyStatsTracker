@@ -104,6 +104,14 @@ RATE_LIMIT_WINDOW_SECONDS = 300  #< 5 minutes
 RATE_LIMIT_ERROR_MESSAGE = "Too many attempts. Please wait a few minutes and try again."
 EXPORT_FORMATS = ("json", "csv")
 PLAYLIST_EXPORT_FORMATS = ("csv", "m3u", "xspf")
+
+# Dashboard Trend Insights thresholds
+TREND_OBSESSION_DAYS = 7
+TREND_OBSESSION_MIN_PLAYS = 5
+TREND_REDISCOVERY_GAP_DAYS = 180
+TREND_REDISCOVERY_MIN_HISTORICAL_PLAYS = 3
+TREND_FORGOTTEN_GAP_DAYS = 180
+TREND_FORGOTTEN_MIN_HISTORICAL_PLAYS = 15
 # Random startup-offset bounds for this module's periodic workers, so a
 # restart doesn't fire every worker at the same instant (the metadata
 # backfiller and wrapped worker in Database/database.py already stagger

@@ -376,6 +376,17 @@ def register(app, dashboard):
         return jsonify({"unlocked": unlocked, "recommendations": recommendations})
     app.add_url_rule("/api/dashboard-discover", "dashboardDiscover", dashboardDiscover, methods=["GET"])
 
+    def dashboardTrends():
+        """JSON/HTML for the dashboard's Obsession, Rediscovery, and Forgotten Favorite trend cards."""
+        email, username, db = dashboard.get_current_user_or_redirect()
+        if not email:
+            return jsonify({"error": "Not logged in"}), 401
+
+        trends = db.getDashboardTrends()
+        html = render_template("_dashboard_trends.html", username=username, trends=trends)
+        return jsonify({"trendsHtml": html, "trends": trends})
+    app.add_url_rule("/api/dashboard-trends", "dashboardTrends", dashboardTrends, methods=["GET"])
+
     def topSongsPage():
         email, username, db = dashboard.get_current_user_or_redirect()
         if not email:

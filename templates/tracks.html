@@ -72,6 +72,13 @@
       {% endif %}
       </div>{# .dashboard-summary-cards #}
 
+      {# Listening trends row: Obsession, Rediscovery, Forgotten Favorite #}
+      <div class="dashboard-summary-cards" id="dashboardTrendsContainer" style="margin-top: 1rem;">
+        <div class="summary-card"><p class="dashboard-card-empty">Loading listening trends…</p></div>
+        <div class="summary-card"><p class="dashboard-card-empty">Loading listening trends…</p></div>
+        <div class="summary-card"><p class="dashboard-card-empty">Loading listening trends…</p></div>
+      </div>
+
       {% if listeningCalendar and listeningCalendar.weeks %}
       <div class="summary-card streak-calendar-card">
         <div class="streak-calendar-head">
@@ -476,5 +483,19 @@
       });
       grid.addEventListener('mouseleave', hideTooltip);
     })();
+
+    document.addEventListener('DOMContentLoaded', function() {
+      fetch('/api/dashboard-trends')
+        .then(function(res) { return res.json(); })
+        .then(function(data) {
+          if (data && data.trendsHtml) {
+            var container = document.getElementById('dashboardTrendsContainer');
+            if (container) container.innerHTML = data.trendsHtml;
+          }
+        })
+        .catch(function(err) {
+          console.error('Error fetching dashboard trends:', err);
+        });
+    });
   </script>
 {% endblock %}
