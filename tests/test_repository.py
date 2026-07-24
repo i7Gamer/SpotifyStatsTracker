@@ -9,6 +9,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from Database.repository import (
     Repository, IMAGE_KIND_TRACK, IMAGE_STATUS_OK, IMAGE_STATUS_FAILED,
     SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON,
+    COMPLETION_COMPLETE_PERCENT_KEY, COMPLETION_COMPLETE_PERCENT_MIN, COMPLETION_COMPLETE_PERCENT_MAX,
 )
 
 
@@ -2276,6 +2277,133 @@ class TestAlbumsPage(RepositoryTestCase):
         self.assertEqual(self.repo.getAlbumsCount("alice", searchQuery="bohemian"), 2)
         page = self.repo.getAlbumsPage("alice", searchQuery="bohemian", limit=1, offset=0)
         self.assertEqual(len(page), 1)
+
+
+class TestFullPlaysOnlyFilter(RepositoryTestCase):
+    """`fullPlaysOnly` on getSongsPage/getSongsCount, getAlbumsPage/
+    getAlbumsCount, getArtistAggregates/getArtistsCount/getArtistTotals, and
+    getPlayTotals - a play only counts as "full" once it reaches the admin's
+    completion-complete percent of the track's duration (COMPLETION_COMPLETE_
+    PERCENT_KEY, default 80%), same standard as getCompletionStats() and the
+    Forgotten Favorite trend. Every track here uses makeTrack()'s default
+    200000ms duration, so the default 80% threshold is 160000ms."""
+
+    def setUp(self):
+        super().setUp()
+        self.repo.upsertUser("alice", "alice@example.com")
+
+    def _track(self, trackId, albumId, *artistIds, durationMs=200000):
+        track = makeTrack(trackId=trackId, albumId=albumId)
+        track["duration"] = durationMs
+        track["artists"] = [
+            {"id": aid, "name": f"Artist {aid}", "url": "u", "imageUrl": "", "imageId": aid}
+            for aid in artistIds
+        ]
+        return track
+
+    def test_songs_page_excludes_partial_only_track_when_enabled(self):
+        self.repo.upsertTrack(self._track("full", "alb1", "a1"))
+        self.repo.upsertTrack(self._track("partial", "alb1", "a1"))
+        self.repo.insertPlay("alice", "full", 100.0, 200000)      # 100% - full
+        self.repo.insertPlay("alice", "partial", 200.0, 50000)    # 25% - partial
+        self.repo.commit()
+
+        unfiltered = {s["id"] for s in self.repo.getSongsPage("alice")}
+        filtered = {s["id"] for s in self.repo.getSongsPage("alice", fullPlaysOnly=True)}
+
+        self.assertEqual(unfiltered, {"full", "partial"})
+        self.assertEqual(filtered, {"full"})
+
+    def test_songs_count_matches_songs_page_filtering(self):
+        self.repo.upsertTrack(self._track("full", "alb1", "a1"))
+        self.repo.upsertTrack(self._track("partial", "alb1", "a1"))
+        self.repo.insertPlay("alice", "full", 100.0, 200000)
+        self.repo.insertPlay("alice", "partial", 200.0, 50000)
+        self.repo.commit()
+
+        self.assertEqual(self.repo.getSongsCount("alice"), 2)
+        self.assertEqual(self.repo.getSongsCount("alice", fullPlaysOnly=True), 1)
+        # The search-query path joins tracks differently - must agree too.
+        self.assertEqual(self.repo.getSongsCount("alice", searchQuery="Song", fullPlaysOnly=True), 1)
+
+    def test_albums_page_and_count_exclude_partial_only_album(self):
+        self.repo.upsertTrack(self._track("full", "alb-full", "a1"))
+        self.repo.upsertTrack(self._track("partial", "alb-partial", "a1"))
+        self.repo.insertPlay("alice", "full", 100.0, 200000)
+        self.repo.insertPlay("alice", "partial", 200.0, 50000)
+        self.repo.commit()
+
+        self.assertEqual(self.repo.getAlbumsCount("alice"), 2)
+        self.assertEqual(self.repo.getAlbumsCount("alice", fullPlaysOnly=True), 1)
+        self.assertEqual(self.repo.getAlbumsCount("alice", searchQuery="alb", fullPlaysOnly=True), 1)
+        filtered = {a["id"] for a in self.repo.getAlbumsPage("alice", fullPlaysOnly=True)}
+        self.assertEqual(filtered, {"alb-full"})
+
+    def test_artist_queries_exclude_artist_whose_only_plays_are_partial(self):
+        self.repo.upsertTrack(self._track("full", "alb1", "a-full"))
+        self.repo.upsertTrack(self._track("partial", "alb1", "a-partial"))
+        self.repo.insertPlay("alice", "full", 100.0, 200000)
+        self.repo.insertPlay("alice", "partial", 200.0, 50000)
+        self.repo.commit()
+
+        self.assertEqual(self.repo.getArtistsCount("alice"), 2)
+        self.assertEqual(self.repo.getArtistsCount("alice", fullPlaysOnly=True), 1)
+
+        filtered = {a["id"] for a in self.repo.getArtistAggregates("alice", fullPlaysOnly=True)}
+        self.assertEqual(filtered, {"a-full"})
+
+        totalPlays, totalUnique, totalTime = self.repo.getArtistTotals("alice", fullPlaysOnly=True)
+        self.assertEqual((totalPlays, totalUnique, totalTime), (1, 1, 200000))
+
+    def test_artist_aggregate_counts_only_the_full_plays_of_a_mixed_artist(self):
+        """One artist with both a full and a partial play - the partial play
+        must not inflate that artist's own plays/time when the filter is on,
+        not just cause a different artist to be dropped entirely."""
+        self.repo.upsertTrack(self._track("t1", "alb1", "a1"))
+        self.repo.upsertTrack(self._track("t2", "alb1", "a1"))
+        self.repo.insertPlay("alice", "t1", 100.0, 200000)   # full
+        self.repo.insertPlay("alice", "t2", 200.0, 50000)    # partial
+        self.repo.commit()
+
+        artist = self.repo.getArtistAggregates("alice", fullPlaysOnly=True)[0]
+
+        self.assertEqual(artist["plays"], 1)
+        self.assertEqual(artist["totalTimeListened"], 200000)
+
+    def test_play_totals_excludes_partial_plays_when_enabled(self):
+        self.repo.upsertTrack(self._track("full", "alb1", "a1"))
+        self.repo.upsertTrack(self._track("partial", "alb1", "a1"))
+        self.repo.insertPlay("alice", "full", 100.0, 200000)
+        self.repo.insertPlay("alice", "partial", 200.0, 50000)
+        self.repo.commit()
+
+        self.assertEqual(self.repo.getPlayTotals("alice"), (2, 250000))
+        self.assertEqual(self.repo.getPlayTotals("alice", fullPlaysOnly=True), (1, 200000))
+
+    def test_unknown_duration_track_counts_as_full(self):
+        """Mirrors getCompletionStats(): a track with duration_ms<=0 can't be
+        told apart from a full listen, so it counts as complete rather than
+        being penalized for missing metadata."""
+        self.repo.upsertTrack(self._track("unknown", "alb1", "a1", durationMs=0))
+        self.repo.insertPlay("alice", "unknown", 100.0, 5000)
+        self.repo.commit()
+
+        self.assertEqual(self.repo.getSongsCount("alice", fullPlaysOnly=True), 1)
+
+    def test_respects_admin_tunable_completion_percent(self):
+        """Lowering the completion-complete percent must lower the full-play
+        bar for every one of these queries, not just getCompletionStats()."""
+        self.repo.upsertTrack(self._track("t1", "alb1", "a1"))
+        self.repo.insertPlay("alice", "t1", 100.0, 110000)   # 55% of 200000ms
+        self.repo.commit()
+
+        # Under the default 80% bar, 55% doesn't qualify as a full play...
+        self.assertEqual(self.repo.getSongsCount("alice", fullPlaysOnly=True), 0)
+
+        # ...but lowering the admin's bar to 50% (the allowed minimum) does.
+        self.repo.setIntSetting(COMPLETION_COMPLETE_PERCENT_KEY, COMPLETION_COMPLETE_PERCENT_MIN,
+                                 COMPLETION_COMPLETE_PERCENT_MIN, COMPLETION_COMPLETE_PERCENT_MAX)
+        self.assertEqual(self.repo.getSongsCount("alice", fullPlaysOnly=True), 1)
 
 
 class TestUsersAndCookies(RepositoryTestCase):

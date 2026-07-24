@@ -1721,6 +1721,20 @@ progress::-moz-progress-bar {
   white-space: nowrap;
 }
 
+.filter-checkbox label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.filter-checkbox input[type="checkbox"] {
+  accent-color: var(--accent);
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}
+
 .filter-group select,
 .filter-group input[type="date"] {
   padding: 10px 14px;

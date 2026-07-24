@@ -399,6 +399,10 @@ def register(app, dashboard):
         customStart = request.args.get("startDate", "")
         customEnd = request.args.get("endDate", "")
         tag = request.args.get("tag", "")
+        # Defaults to on (a favorite has to have actually been heard) - see
+        # templates/_page_card.html's checkbox. Explicit ?fullOnly=0 opts out.
+        fullOnly = request.args.get("fullOnly", "1")
+        fullPlaysOnly = fullOnly != "0"
         # Only offered to users who've actually tagged something - see
         # templates/_page_card.html's {% if user_tags %} guard.
         user_tags = db.repo.getUserTags(username)
@@ -407,19 +411,21 @@ def register(app, dashboard):
         startDate, endDate = dashboard._getDateRange(interval, customStart, customEnd, default="all time", tz=db.tz)
         # totalPlays/totalMs are a whole-range aggregate regardless of search -
         # a cheap dedicated query instead of summing every song's metadata.
-        totalPlays, totalMs = db.getPlayTotals(startDate, endDate)
-        uniqueSongs = db.getSongsCount(startDate, endDate)
+        totalPlays, totalMs = db.getPlayTotals(startDate, endDate, fullPlaysOnly=fullPlaysOnly)
+        uniqueSongs = db.getSongsCount(startDate, endDate, fullPlaysOnly=fullPlaysOnly)
 
         # Only materialize the page being shown - SQL-level LIMIT/OFFSET and
         # WHERE-clause matching (see Repository.getSongsPage) instead of
         # sorting+hydrating+filtering every song ever played in Python.
         if searchQuery or tag:
-            totalCount = db.getSongsCount(startDate, endDate, searchQuery=searchQuery, trackIds=trackIds)
+            totalCount = db.getSongsCount(startDate, endDate, searchQuery=searchQuery, trackIds=trackIds,
+                                           fullPlaysOnly=fullPlaysOnly)
         else:
             totalCount = uniqueSongs
         page, totalPages, startIndex = dashboard._calculatePagination(totalCount)
         tracks = db.getTopSongs(startDate=startDate, endDate=endDate, by=sortBy, limit=PAGE_SIZE,
-                                 offset=startIndex, searchQuery=searchQuery, trackIds=trackIds)
+                                 offset=startIndex, searchQuery=searchQuery, trackIds=trackIds,
+                                 fullPlaysOnly=fullPlaysOnly)
 
         pagination = dashboard._buildPaginationContext(
             "topSongsPage",
@@ -432,6 +438,7 @@ def register(app, dashboard):
             interval=interval,
             startDate=customStart,
             endDate=customEnd,
+            fullOnly=fullOnly,
         )
 
         tracks = dashboard._embedSongsTextElements(tracks)
@@ -453,6 +460,7 @@ def register(app, dashboard):
             customEnd=customEnd,
             tag=tag,
             user_tags=user_tags,
+            fullPlaysOnly=fullPlaysOnly,
             **pagination,
         )
     app.add_url_rule("/top-songs", "topSongsPage", topSongsPage, methods=["GET"])
@@ -469,23 +477,28 @@ def register(app, dashboard):
         customStart = request.args.get("startDate", "")
         customEnd = request.args.get("endDate", "")
         tag = request.args.get("tag", "")
+        # Defaults to on - see topSongsPage's fullOnly comment.
+        fullOnly = request.args.get("fullOnly", "1")
+        fullPlaysOnly = fullOnly != "0"
         user_tags = db.repo.getUserTags(username)
         albumIds = db.repo.getTaggedAlbumIds(username, [tag]) if tag else None
 
         startDate, endDate = dashboard._getDateRange(interval, customStart, customEnd, default="all time", tz=db.tz)
-        totalPlays, totalMs = db.getPlayTotals(startDate, endDate)
-        uniqueAlbums = db.getAlbumsCount(startDate, endDate)
+        totalPlays, totalMs = db.getPlayTotals(startDate, endDate, fullPlaysOnly=fullPlaysOnly)
+        uniqueAlbums = db.getAlbumsCount(startDate, endDate, fullPlaysOnly=fullPlaysOnly)
 
         # Only materialize the page being shown - SQL-level LIMIT/OFFSET and
         # WHERE-clause matching (see Repository.getAlbumsPage) instead of
         # sorting+hydrating+filtering every album ever played in Python.
         if searchQuery or tag:
-            totalCount = db.getAlbumsCount(startDate, endDate, searchQuery=searchQuery, albumIds=albumIds)
+            totalCount = db.getAlbumsCount(startDate, endDate, searchQuery=searchQuery, albumIds=albumIds,
+                                            fullPlaysOnly=fullPlaysOnly)
         else:
             totalCount = uniqueAlbums
         page, totalPages, startIndex = dashboard._calculatePagination(totalCount)
         albums = db.getTopAlbums(startDate=startDate, endDate=endDate, by=sortBy, limit=PAGE_SIZE,
-                                  offset=startIndex, searchQuery=searchQuery, albumIds=albumIds)
+                                  offset=startIndex, searchQuery=searchQuery, albumIds=albumIds,
+                                  fullPlaysOnly=fullPlaysOnly)
 
         pagination = dashboard._buildPaginationContext(
             "topAlbumsPage",
@@ -498,6 +511,7 @@ def register(app, dashboard):
             interval=interval,
             startDate=customStart,
             endDate=customEnd,
+            fullOnly=fullOnly,
         )
 
         albums = dashboard._embedAlbumsTextElements(albums, sortBy=sortBy, totalPlays=totalPlays, totalMs=totalMs)
@@ -518,6 +532,7 @@ def register(app, dashboard):
             customEnd=customEnd,
             tag=tag,
             user_tags=user_tags,
+            fullPlaysOnly=fullPlaysOnly,
             **pagination,
         )
     app.add_url_rule("/top-albums", "topAlbumsPage", topAlbumsPage, methods=["GET"])
@@ -534,6 +549,9 @@ def register(app, dashboard):
         customStart = request.args.get("startDate", "")
         customEnd = request.args.get("endDate", "")
         tag = request.args.get("tag", "")
+        # Defaults to on - see topSongsPage's fullOnly comment.
+        fullOnly = request.args.get("fullOnly", "1")
+        fullPlaysOnly = fullOnly != "0"
         user_tags = db.repo.getUserTags(username)
         artistIds = db.repo.getTaggedArtistIds(username, [tag]) if tag else None
 
@@ -542,18 +560,20 @@ def register(app, dashboard):
         # list's totals regardless of search - mirrors getPlayTotals()'s role
         # for the songs/albums pages, computed via a dedicated SQL aggregate
         # instead of fetching every artist and summing in Python.
-        totalPlays, totalUnique, totalMs = db.getArtistTotals(startDate, endDate)
-        uniqueArtists = db.getArtistsCount(startDate, endDate)
+        totalPlays, totalUnique, totalMs = db.getArtistTotals(startDate, endDate, fullPlaysOnly=fullPlaysOnly)
+        uniqueArtists = db.getArtistsCount(startDate, endDate, fullPlaysOnly=fullPlaysOnly)
 
         # Only materialize the page being shown - SQL-level LIMIT/OFFSET
         # instead of sorting+hydrating every artist ever played.
         if searchQuery or tag:
-            totalCount = db.getArtistsCount(startDate, endDate, searchQuery=searchQuery, artistIds=artistIds)
+            totalCount = db.getArtistsCount(startDate, endDate, searchQuery=searchQuery, artistIds=artistIds,
+                                             fullPlaysOnly=fullPlaysOnly)
         else:
             totalCount = uniqueArtists
         page, totalPages, startIndex = dashboard._calculatePagination(totalCount)
         artists = db.getTopArtists(startDate=startDate, endDate=endDate, by=sortBy, limit=PAGE_SIZE,
-                                    offset=startIndex, searchQuery=searchQuery, artistIds=artistIds)
+                                    offset=startIndex, searchQuery=searchQuery, artistIds=artistIds,
+                                    fullPlaysOnly=fullPlaysOnly)
 
         artists = dashboard._embedArtistsTextElements(artists, sortBy=sortBy, totalPlays=totalPlays, totalMs=totalMs)
         artists = dashboard._attachGenres(db, artists, "artist")
@@ -568,6 +588,7 @@ def register(app, dashboard):
             interval=interval,
             startDate=customStart,
             endDate=customEnd,
+            fullOnly=fullOnly,
         )
 
         return render_template(
@@ -586,6 +607,7 @@ def register(app, dashboard):
             customEnd=customEnd,
             tag=tag,
             user_tags=user_tags,
+            fullPlaysOnly=fullPlaysOnly,
             **pagination,
         )
     app.add_url_rule("/top-artists", "topArtistsPage", topArtistsPage, methods=["GET"])

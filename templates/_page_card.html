@@ -46,6 +46,15 @@
     </select>
 </div>
 {% endif %}
+
+{% if fullPlaysOnly is defined %}
+<div class="filter-group filter-checkbox">
+    <label for="fullPlaysOnly">
+        <input type="checkbox" id="fullPlaysOnly" {% if fullPlaysOnly %}checked{% endif %} onchange="updateFullPlaysFilter()">
+        Full plays only
+    </label>
+</div>
+{% endif %}
 </section>
 
 <script>
@@ -179,6 +188,16 @@ function updateTagFilter() {
     } else {
         params.delete('tag');
     }
+
+    params.delete('page');
+    window.location = window.location.pathname + '?' + params.toString();
+}
+
+function updateFullPlaysFilter() {
+    const fullPlaysOnly = document.getElementById('fullPlaysOnly');
+    const params = new URLSearchParams(window.location.search);
+
+    params.set('fullOnly', fullPlaysOnly.checked ? '1' : '0');
 
     params.delete('page');
     window.location = window.location.pathname + '?' + params.toString();

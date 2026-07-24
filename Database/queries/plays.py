@@ -477,7 +477,8 @@ class PlayQueries:
     def getArtistAggregates(self, username: str, startTs: float | None = None,
                              endTs: float | None = None, artistId: str | None = None,
                              sortBy: str = "plays", limit: int | None = None, offset: int = 0,
-                             searchQuery: str | None = None, artistIds: list[str] | None = None) -> list[dict]:
+                             searchQuery: str | None = None, artistIds: list[str] | None = None,
+                             fullPlaysOnly: bool = False) -> list[dict]:
         """One row per artist who appears on at least one played track, grouped by
         artist id (not name - two different artists that happen to share a display
         name are no longer merged, unlike the old name-keyed in-memory grouping).
@@ -490,7 +491,10 @@ class PlayQueries:
         page) so the caller aggregates only those rows; an empty list matches
         nothing. `searchQuery` narrows to artists whose name matches (the only
         field Top Artists' search ever matched, since a bare artist dict
-        carries no track/album/playlist text to search)."""
+        carries no track/album/playlist text to search). `fullPlaysOnly`
+        mirrors getSongsPage()'s param of the same name - adds a `tracks` join
+        (not needed otherwise here, since this aggregates via track_artists)
+        only when set, so the default (unfiltered) path is unaffected."""
         if sortBy not in ARTIST_SORT_COLUMNS:
             raise ValueError(f"Unknown sortBy: {sortBy!r}")
         sortColumn = ARTIST_SORT_COLUMNS[sortBy]
@@ -519,6 +523,12 @@ class PlayQueries:
                 params += artistIds
             else:
                 aggFilter += " AND 0"   #< explicit empty set matches nothing
+        aggJoin = ""
+        if fullPlaysOnly:
+            ratio = self.getCompletionCompletePercent() / 100.0
+            aggJoin = " JOIN tracks t ON t.id = p.track_id"
+            aggFilter += " AND (t.duration_ms <= 0 OR p.time_played >= t.duration_ms * ?)"
+            params.append(ratio)
         outerFilter = ""
         if searchQuery:
             # The name filter only selects WHICH artists to return; it never
@@ -534,7 +544,7 @@ class PlayQueries:
                        COUNT(*) AS plays, SUM(p.time_played) AS total_time_listened,
                        MIN(p.played_at) AS first_listened_at, COUNT(DISTINCT p.track_id) AS unique_song_count
                 FROM plays p
-                JOIN track_artists ta ON ta.track_id = p.track_id
+                JOIN track_artists ta ON ta.track_id = p.track_id{aggJoin}
                 WHERE p.username = ? AND p.is_skip=0{rangeClause}{aggFilter}
                 GROUP BY ta.artist_id
             )
@@ -558,11 +568,13 @@ class PlayQueries:
         ]
 
     def getArtistsCount(self, username: str, startTs: float | None = None, endTs: float | None = None,
-                         searchQuery: str | None = None, artistIds: list[str] | None = None) -> int:
+                         searchQuery: str | None = None, artistIds: list[str] | None = None,
+                         fullPlaysOnly: bool = False) -> int:
         """Number of distinct artists played in range - the paging counterpart
         to getArtistAggregates(), used to compute total page count without
         fetching every artist's metadata. `artistIds` mirrors the same param
-        on getArtistAggregates()."""
+        on getArtistAggregates(). `fullPlaysOnly` mirrors getArtistAggregates()'s
+        param of the same name."""
         conn = self._conn()
         params = [username]
         rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
@@ -577,12 +589,18 @@ class PlayQueries:
                 params += artistIds
             else:
                 searchClause += " AND 0"   #< explicit empty set matches nothing
+        joinClause = ""
+        if fullPlaysOnly:
+            ratio = self.getCompletionCompletePercent() / 100.0
+            joinClause = " JOIN tracks t ON t.id = p.track_id"
+            searchClause += " AND (t.duration_ms <= 0 OR p.time_played >= t.duration_ms * ?)"
+            params.append(ratio)
         row = conn.execute(
             f"""
             SELECT COUNT(*) AS c FROM (
                 SELECT ta.artist_id FROM plays p
                 JOIN track_artists ta ON ta.track_id = p.track_id
-                JOIN artists ar ON ar.id = ta.artist_id
+                JOIN artists ar ON ar.id = ta.artist_id{joinClause}
                 WHERE p.username = ? AND p.is_skip=0{rangeClause}{searchClause}
                 GROUP BY ta.artist_id
             )
@@ -592,17 +610,25 @@ class PlayQueries:
         return row["c"]
 
     def getArtistTotals(self, username: str, startTs: float | None = None,
-                         endTs: float | None = None) -> tuple[int, int, int]:
+                         endTs: float | None = None, fullPlaysOnly: bool = False) -> tuple[int, int, int]:
         """(total plays, total unique songs, total time listened) summed across
         every artist in range - the Top Artists page's "(top list)" totals.
         Deliberately a sum of each artist's own aggregate (an artist with N
         plays contributes N; a multi-artist track's plays are counted once per
         artist on it), not the same number as getPlayTotals()'s track-level
         total - matches the totals the old fetch-everything-then-sum-in-Python
-        code computed, just without hydrating every artist's name/url first."""
+        code computed, just without hydrating every artist's name/url first.
+        `fullPlaysOnly` mirrors getArtistAggregates()'s param of the same name."""
         conn = self._conn()
         params = [username]
         rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
+        joinClause = ""
+        fullPlaysClause = ""
+        if fullPlaysOnly:
+            ratio = self.getCompletionCompletePercent() / 100.0
+            joinClause = " JOIN tracks t ON t.id = p.track_id"
+            fullPlaysClause = " AND (t.duration_ms <= 0 OR p.time_played >= t.duration_ms * ?)"
+            params.append(ratio)
         row = conn.execute(
             f"""
             SELECT COALESCE(SUM(plays), 0) AS total_plays,
@@ -612,8 +638,8 @@ class PlayQueries:
                 SELECT COUNT(*) AS plays, COUNT(DISTINCT p.track_id) AS unique_song_count,
                        SUM(p.time_played) AS total_time_listened
                 FROM plays p
-                JOIN track_artists ta ON ta.track_id = p.track_id
-                WHERE p.username = ? AND p.is_skip=0{rangeClause}
+                JOIN track_artists ta ON ta.track_id = p.track_id{joinClause}
+                WHERE p.username = ? AND p.is_skip=0{rangeClause}{fullPlaysClause}
                 GROUP BY ta.artist_id
             )
             """,
@@ -625,7 +651,7 @@ class PlayQueries:
                       sortBy: str = "plays", limit: int | None = None, offset: int = 0,
                       trackId: str | None = None, artistId: str | None = None,
                       albumId: str | None = None, searchQuery: str | None = None,
-                      trackIds: list[str] | None = None) -> list[dict]:
+                      trackIds: list[str] | None = None, fullPlaysOnly: bool = False) -> list[dict]:
         """Sorted/paged song stats in one batched round-trip, replacing the old
         "aggregate, then getTrack() per row" N+1 pattern - a caller asking for
         page N now pays for page N, not for every song ever played.
@@ -648,6 +674,15 @@ class PlayQueries:
         own t.id (unlike getAlbumsPage(), every row already shares the same
         t.id within a GROUP BY t.id group, so there's no risk of the filter
         seeing a different track's data than the one being aggregated).
+
+        `fullPlaysOnly`: when True, only counts plays that reached the admin's
+        completion-complete percent of the track's duration (same standard as
+        getCompletionStats() and the Forgotten Favorite trend) - a play that
+        was merely started/skipped-late never counts as a "listen" of the
+        song. Defaults False so every other caller (song-detail page, tagged
+        exports, search) keeps its full play history unfiltered; only the Top
+        Songs page opts in. tracks is already joined here regardless, so this
+        costs one extra WHERE predicate, no new join.
         """
         if sortBy not in SONG_SORT_COLUMNS:
             raise ValueError(f"Unknown sortBy: {sortBy!r}")
@@ -686,6 +721,10 @@ class PlayQueries:
                 )
             )"""
             params += [pattern, pattern, pattern]
+        if fullPlaysOnly:
+            ratio = self.getCompletionCompletePercent() / 100.0
+            extraClauses += " AND (t.duration_ms <= 0 OR p.time_played >= t.duration_ms * ?)"
+            params.append(ratio)
         params += [limitValue, offset]
 
         rows = conn.execute(
@@ -715,14 +754,18 @@ class PlayQueries:
         return [self._songRowToDict(row, artistsByTrack.get(row["track_id"], [])) for row in rows]
 
     def getSongsCount(self, username: str, startTs: float | None = None, endTs: float | None = None,
-                       searchQuery: str | None = None, trackIds: list[str] | None = None) -> int:
+                       searchQuery: str | None = None, trackIds: list[str] | None = None,
+                       fullPlaysOnly: bool = False) -> int:
         """Number of distinct songs played in range - the paging counterpart to
         getSongsPage(), used to compute total page count without fetching every
-        song's metadata. `trackIds` mirrors the same param on getSongsPage()."""
+        song's metadata. `trackIds` mirrors the same param on getSongsPage().
+        `fullPlaysOnly` mirrors getSongsPage()'s param of the same name -
+        defaults False (unfiltered) for every caller except the Top Songs page."""
         conn = self._conn()
         if not searchQuery:
             # No name/artist/album lookup needed, so skip the joins entirely -
-            # this stays exactly as cheap as before search support was added.
+            # this stays exactly as cheap as before search support was added,
+            # unless fullPlaysOnly needs tracks.duration_ms.
             params = [username]
             rangeClause = self._dateRangeClause(params, startTs, endTs)
             trackIdsClause = ""
@@ -733,10 +776,17 @@ class PlayQueries:
                     params += trackIds
                 else:
                     trackIdsClause = " AND 0"   #< explicit empty set matches nothing
+            joinClause = ""
+            fullPlaysClause = ""
+            if fullPlaysOnly:
+                ratio = self.getCompletionCompletePercent() / 100.0
+                joinClause = " JOIN tracks t ON t.id = plays.track_id"
+                fullPlaysClause = " AND (t.duration_ms <= 0 OR plays.time_played >= t.duration_ms * ?)"
+                params.append(ratio)
             row = conn.execute(
                 f"""
                 SELECT COUNT(*) AS c FROM (
-                    SELECT track_id FROM plays WHERE username = ? AND is_skip=0{rangeClause}{trackIdsClause}
+                    SELECT track_id FROM plays{joinClause} WHERE username = ? AND is_skip=0{rangeClause}{trackIdsClause}{fullPlaysClause}
                     GROUP BY track_id
                 )
                 """,
@@ -755,6 +805,11 @@ class PlayQueries:
                 params += trackIds
             else:
                 trackIdsClause = " AND 0"   #< explicit empty set matches nothing
+        fullPlaysClause = ""
+        if fullPlaysOnly:
+            ratio = self.getCompletionCompletePercent() / 100.0
+            fullPlaysClause = " AND (t.duration_ms <= 0 OR p.time_played >= t.duration_ms * ?)"
+            params.append(ratio)
         params += [pattern, pattern, pattern]
         row = conn.execute(
             f"""
@@ -762,7 +817,7 @@ class PlayQueries:
                 SELECT p.track_id FROM plays p
                 JOIN tracks t ON t.id = p.track_id
                 LEFT JOIN albums al ON al.id = t.album_id
-                WHERE p.username = ? AND p.is_skip=0{rangeClause}{trackIdsClause}
+                WHERE p.username = ? AND p.is_skip=0{rangeClause}{trackIdsClause}{fullPlaysClause}
                 AND (
                     t.name LIKE ? ESCAPE '\\'
                     OR al.name LIKE ? ESCAPE '\\'
@@ -781,7 +836,7 @@ class PlayQueries:
     def getAlbumsPage(self, username: str, startTs: float | None = None, endTs: float | None = None,
                        sortBy: str = "plays", limit: int | None = None, offset: int = 0,
                        albumId: str | None = None, searchQuery: str | None = None,
-                       albumIds: list[str] | None = None) -> list[dict]:
+                       albumIds: list[str] | None = None, fullPlaysOnly: bool = False) -> list[dict]:
         """Sorted/paged album stats in one batched round-trip - one row per
         album, aggregated across every track on it this user played. Mirrors
         getSongsPage()'s SQL-first sort/page pattern exactly.
@@ -831,6 +886,10 @@ class PlayQueries:
                 )
             )"""
             params += [pattern, pattern]
+        if fullPlaysOnly:
+            ratio = self.getCompletionCompletePercent() / 100.0
+            extraClauses += " AND (t.duration_ms <= 0 OR p.time_played >= t.duration_ms * ?)"
+            params.append(ratio)
         params += [limitValue, offset]
 
         rows = conn.execute(
@@ -855,14 +914,17 @@ class PlayQueries:
         return [self._albumStatsRowToDict(row, artistsByAlbum.get(row["album_id"], [])) for row in rows]
 
     def getAlbumsCount(self, username: str, startTs: float | None = None, endTs: float | None = None,
-                        searchQuery: str | None = None, albumIds: list[str] | None = None) -> int:
+                        searchQuery: str | None = None, albumIds: list[str] | None = None,
+                        fullPlaysOnly: bool = False) -> int:
         """Number of distinct albums played in range - the paging counterpart to
         getAlbumsPage(), used to compute total page count without fetching every
-        album's metadata. `albumIds` mirrors the same param on getAlbumsPage()."""
+        album's metadata. `albumIds` mirrors the same param on getAlbumsPage().
+        `fullPlaysOnly` mirrors getAlbumsPage()'s param of the same name."""
         conn = self._conn()
         if not searchQuery:
             # No name/artist lookup needed, so skip the joins entirely - stays
-            # exactly as cheap as before search support was added.
+            # exactly as cheap as before search support was added. tracks is
+            # already joined for album_id, so fullPlaysOnly costs nothing extra.
             params = [username]
             rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
             albumIdsClause = ""
@@ -873,12 +935,17 @@ class PlayQueries:
                     params += albumIds
                 else:
                     albumIdsClause = " AND 0"   #< explicit empty set matches nothing
+            fullPlaysClause = ""
+            if fullPlaysOnly:
+                ratio = self.getCompletionCompletePercent() / 100.0
+                fullPlaysClause = " AND (t.duration_ms <= 0 OR p.time_played >= t.duration_ms * ?)"
+                params.append(ratio)
             row = conn.execute(
                 f"""
                 SELECT COUNT(*) AS c FROM (
                     SELECT t.album_id FROM plays p
                     JOIN tracks t ON t.id = p.track_id
-                    WHERE p.username = ? AND p.is_skip=0{rangeClause}{albumIdsClause}
+                    WHERE p.username = ? AND p.is_skip=0{rangeClause}{albumIdsClause}{fullPlaysClause}
                     GROUP BY t.album_id
                 )
                 """,
@@ -897,6 +964,11 @@ class PlayQueries:
                 params += albumIds
             else:
                 albumIdsClause = " AND 0"   #< explicit empty set matches nothing
+        fullPlaysClause = ""
+        if fullPlaysOnly:
+            ratio = self.getCompletionCompletePercent() / 100.0
+            fullPlaysClause = " AND (t.duration_ms <= 0 OR p.time_played >= t.duration_ms * ?)"
+            params.append(ratio)
         params += [pattern, pattern]
         row = conn.execute(
             f"""
@@ -904,7 +976,7 @@ class PlayQueries:
                 SELECT t.album_id FROM plays p
                 JOIN tracks t ON t.id = p.track_id
                 JOIN albums al ON al.id = t.album_id
-                WHERE p.username = ? AND p.is_skip=0{rangeClause}{albumIdsClause}
+                WHERE p.username = ? AND p.is_skip=0{rangeClause}{albumIdsClause}{fullPlaysClause}
                 AND (
                     al.name LIKE ? ESCAPE '\\'
                     OR EXISTS (
@@ -1134,13 +1206,24 @@ class PlayQueries:
                  "plays": r["plays"]} for r in rows]
 
     def getPlayTotals(self, username: str, startTs: float | None = None,
-                       endTs: float | None = None) -> tuple[int, int]:
+                       endTs: float | None = None, fullPlaysOnly: bool = False) -> tuple[int, int]:
+        """`fullPlaysOnly` mirrors getSongsPage()'s param of the same name -
+        defaults False (unfiltered) for every existing caller (milestones,
+        Wrapped, Compare, dashboard); only the Top Songs/Albums header totals
+        opt in, to stay consistent with their own fullPlaysOnly-filtered list."""
         conn = self._conn()
         params = [username]
         rangeClause = self._dateRangeClause(params, startTs, endTs)
+        joinClause = ""
+        fullPlaysClause = ""
+        if fullPlaysOnly:
+            ratio = self.getCompletionCompletePercent() / 100.0
+            joinClause = " JOIN tracks t ON t.id = plays.track_id"
+            fullPlaysClause = " AND (t.duration_ms <= 0 OR plays.time_played >= t.duration_ms * ?)"
+            params.append(ratio)
         row = conn.execute(
-            f"SELECT COUNT(*) AS c, COALESCE(SUM(time_played), 0) AS total FROM plays "
-            f"WHERE username = ? AND is_skip=0{rangeClause}",
+            f"SELECT COUNT(*) AS c, COALESCE(SUM(time_played), 0) AS total FROM plays{joinClause} "
+            f"WHERE username = ? AND is_skip=0{rangeClause}{fullPlaysClause}",
             params,
         ).fetchone()
         return row["c"], row["total"]

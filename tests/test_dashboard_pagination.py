@@ -386,8 +386,8 @@ class TestTopSongsPagination(_ListRouteTestBase):
 
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(db.getSongsCount.call_count, 2)
-        db.getSongsCount.assert_any_call(None, None)
-        db.getSongsCount.assert_any_call(None, None, searchQuery="foo", trackIds=None)
+        db.getSongsCount.assert_any_call(None, None, fullPlaysOnly=True)
+        db.getSongsCount.assert_any_call(None, None, searchQuery="foo", trackIds=None, fullPlaysOnly=True)
         kwargs = db.getTopSongs.call_args.kwargs
         self.assertEqual(kwargs["limit"], appModule.PAGE_SIZE)
         self.assertEqual(kwargs["offset"], 0)

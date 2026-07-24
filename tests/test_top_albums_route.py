@@ -88,8 +88,8 @@ class TestTopAlbumsRoute(AppTestCase):
 
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(db.getAlbumsCount.call_count, 2)
-        db.getAlbumsCount.assert_any_call(None, None)
-        db.getAlbumsCount.assert_any_call(None, None, searchQuery="foo", albumIds=None)
+        db.getAlbumsCount.assert_any_call(None, None, fullPlaysOnly=True)
+        db.getAlbumsCount.assert_any_call(None, None, searchQuery="foo", albumIds=None, fullPlaysOnly=True)
         kwargs = db.getTopAlbums.call_args.kwargs
         self.assertEqual(kwargs["limit"], appModule.PAGE_SIZE)
         self.assertEqual(kwargs["offset"], 0)
@@ -120,6 +120,32 @@ class TestTopAlbumsRoute(AppTestCase):
         self.assertEqual(resp.status_code, 200)
         db.getPlayTotals.assert_called_once()
         self.assertIn(b'<p class="summary-value">42</p>', resp.data)
+
+    def test_full_plays_only_defaults_on(self):
+        """A favorite has to have actually been heard - the filter is on by
+        default, with no ?fullOnly needed, and the checkbox renders checked."""
+        dash = self._makeApp()
+        db = self._makeDb()
+
+        resp = self._getTopAlbums(dash, db)
+
+        self.assertEqual(resp.status_code, 200)
+        db.getPlayTotals.assert_called_once_with(None, None, fullPlaysOnly=True)
+        db.getAlbumsCount.assert_called_once_with(None, None, fullPlaysOnly=True)
+        self.assertEqual(db.getTopAlbums.call_args.kwargs["fullPlaysOnly"], True)
+        self.assertIn(b'id="fullPlaysOnly"', resp.data)
+        self.assertIn(b'checked', resp.data)
+
+    def test_full_plays_only_can_be_explicitly_disabled(self):
+        dash = self._makeApp()
+        db = self._makeDb()
+
+        resp = self._getTopAlbums(dash, db, query="?fullOnly=0")
+
+        self.assertEqual(resp.status_code, 200)
+        db.getPlayTotals.assert_called_once_with(None, None, fullPlaysOnly=False)
+        db.getAlbumsCount.assert_called_once_with(None, None, fullPlaysOnly=False)
+        self.assertEqual(db.getTopAlbums.call_args.kwargs["fullPlaysOnly"], False)
 
     def test_page_survives_non_numeric_page(self):
         dash = self._makeApp()
