@@ -1,0 +1,28 @@
+{# The AJAX-swapped results for the Top Songs/Artists/Albums pages: the
+   filter-scoped stat header, the list itself, and the pagination strip. The
+   shell (top_*.html) renders only the filter card + an empty #topListResults
+   placeholder; routes/charts.py returns this partial as JSON for ?ajax=true,
+   and static/js/top-list.js swaps it in on first paint and every filter/page
+   change. `statCards` is a list of {label, value}; `section` selects the card
+   type in _track_card.html. #}
+<section class="track-summary-grid-3">
+  {% for card in statCards %}
+  <article class="track-summary-card">
+    <h3>{{ card.label }}</h3>
+    <p class="summary-value">{{ card.value }}</p>
+  </article>
+  {% endfor %}
+</section>
+
+<section id="track-list" class="track-list">
+  {% if tracks %}
+    {% for track in tracks %}
+      {% set item_number = track.get('absoluteIndex') if track.get('absoluteIndex') else (startIndex | default(0)) + loop.index %}
+      {% include '_track_card.html' %}
+    {% endfor %}
+  {% else %}
+    <p class="loading">{{ emptyMessage }}</p>
+  {% endif %}
+</section>
+
+{% include '_pagination.html' %}

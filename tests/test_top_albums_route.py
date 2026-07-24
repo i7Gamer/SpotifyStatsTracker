@@ -25,14 +25,19 @@ class TestTopAlbumsRoute(AppTestCase):
         db.repo.getUserTags.return_value = []
         return db
 
-    def _getTopAlbums(self, dash, db, query=""):
+    def _getTopAlbums(self, dash, db, query="", ajax=True):
+        # Two-phase load: the list/pagination/totals only exist behind
+        # ?ajax=true; the filter card (checkbox, nav) is in the shell (ajax=False).
+        path = f"/top-albums{query}"
+        if ajax:
+            path += ('&' if query else '?') + 'ajax=true'
         client = dash.app.test_client()
         with patch.object(dash, 'is_user_logged_in', return_value=True), \
              patch.object(dash, 'get_username_for_email', return_value='alice'), \
              patch.object(dash, 'get_user_db', return_value=db):
             with client.session_transaction() as sess:
                 sess['email'] = 'alice@example.com'
-            return client.get(f"/top-albums{query}")
+            return client.get(path)
 
     def test_without_search_fetches_only_one_page(self):
         dash = self._makeApp()
@@ -107,7 +112,8 @@ class TestTopAlbumsRoute(AppTestCase):
 
         resp = self._getTopAlbums(dash, db)
 
-        self.assertIn(b'<span class="track-label genre-label">indie rock</span>', resp.data)
+        self.assertIn('<span class="track-label genre-label">indie rock</span>',
+                      resp.get_json()["resultsHtml"])
         db.getGenresForAlbum.assert_called_once_with("alb1")
 
     def test_totals_come_from_get_play_totals(self):
@@ -119,7 +125,7 @@ class TestTopAlbumsRoute(AppTestCase):
 
         self.assertEqual(resp.status_code, 200)
         db.getPlayTotals.assert_called_once()
-        self.assertIn(b'<p class="summary-value">42</p>', resp.data)
+        self.assertIn('<p class="summary-value">42</p>', resp.get_json()["resultsHtml"])
 
     def test_full_plays_only_defaults_on(self):
         """A favorite has to have actually been heard - the filter is on by
@@ -127,14 +133,15 @@ class TestTopAlbumsRoute(AppTestCase):
         dash = self._makeApp()
         db = self._makeDb()
 
-        resp = self._getTopAlbums(dash, db)
+        resp = self._getTopAlbums(dash, db)                    #< ajax: the queries
+        shell = self._getTopAlbums(dash, db, ajax=False)       #< shell: the checkbox
 
         self.assertEqual(resp.status_code, 200)
         db.getPlayTotals.assert_called_once_with(None, None, fullPlaysOnly=True)
         db.getAlbumsCount.assert_called_once_with(None, None, fullPlaysOnly=True)
         self.assertEqual(db.getTopAlbums.call_args.kwargs["fullPlaysOnly"], True)
-        self.assertIn(b'id="fullPlaysOnly"', resp.data)
-        self.assertIn(b'checked', resp.data)
+        self.assertIn(b'id="fullPlaysOnly"', shell.data)
+        self.assertIn(b'checked', shell.data)
 
     def test_full_plays_only_can_be_explicitly_disabled(self):
         dash = self._makeApp()
@@ -183,7 +190,7 @@ class TestTopAlbumsRoute(AppTestCase):
         dash = self._makeApp()
         db = self._makeDb()
 
-        resp = self._getTopAlbums(dash, db)
+        resp = self._getTopAlbums(dash, db, ajax=False)   #< the nav lives in the shell/layout
 
         self.assertIn(b'/top-albums', resp.data)
 

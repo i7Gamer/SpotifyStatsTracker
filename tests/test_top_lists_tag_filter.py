@@ -95,7 +95,7 @@ class TestTopListsTagFilter(AppTestCase):
         self.dash.repo.commit()
         self.dash.repo.setTagsEnabled(False)
 
-        resp = self.client.get("/top-songs?tag=roadtrip")
+        resp = self.client.get("/top-songs?tag=roadtrip&ajax=true")
 
         body = resp.get_data(as_text=True)
         self.assertIn("Tagged Song", body)
@@ -116,7 +116,7 @@ class TestTopListsTagFilter(AppTestCase):
         self.dash.repo.addTag(self.username, "roadtrip", "track", "t1")
         self.dash.repo.commit()
 
-        resp = self.client.get("/top-songs?tag=roadtrip")
+        resp = self.client.get("/top-songs?tag=roadtrip&ajax=true")
 
         body = resp.get_data(as_text=True)
         self.assertIn("Tagged Song", body)
@@ -130,7 +130,7 @@ class TestTopListsTagFilter(AppTestCase):
         self.dash.repo.addTag(self.username, "favorites", "track", "t2")   # should not leak into artists
         self.dash.repo.commit()
 
-        resp = self.client.get("/top-artists?tag=favorites")
+        resp = self.client.get("/top-artists?tag=favorites&ajax=true")
 
         body = resp.get_data(as_text=True)
         self.assertIn("Tagged Artist", body)
@@ -142,7 +142,7 @@ class TestTopListsTagFilter(AppTestCase):
         self.dash.repo.addTag(self.username, "favorites", "track", "t2")   # should not leak into albums
         self.dash.repo.commit()
 
-        resp = self.client.get("/top-albums?tag=favorites")
+        resp = self.client.get("/top-albums?tag=favorites&ajax=true")
 
         body = resp.get_data(as_text=True)
         self.assertIn("Tagged Album", body)
@@ -153,7 +153,7 @@ class TestTopListsTagFilter(AppTestCase):
         self.dash.repo.addTag(self.username, "roadtrip", "track", "t1")
         self.dash.repo.commit()
 
-        resp = self.client.get("/top-songs?tag=nonexistent")
+        resp = self.client.get("/top-songs?tag=nonexistent&ajax=true")
 
         body = resp.get_data(as_text=True)
         self.assertNotIn("Tagged Song", body)
@@ -168,12 +168,13 @@ class TestTopListsTagFilter(AppTestCase):
         self.dash.repo.addTag(self.username, "roadtrip", "track", "t1")
         self.dash.repo.commit()
 
-        resp = self.client.get("/top-songs?tag=roadtrip&sortBy=name")
+        ajaxBody = self.client.get("/top-songs?tag=roadtrip&sortBy=name&ajax=true").get_data(as_text=True)
+        self.assertIn("Tagged Song", ajaxBody)
+        self.assertNotIn("Other Song", ajaxBody)
 
-        body = resp.get_data(as_text=True)
-        self.assertIn("Tagged Song", body)
-        self.assertNotIn("Other Song", body)
-        self.assertIn('value="roadtrip" selected', body)
+        # The tag dropdown lives in the shell; it must keep the active tag selected.
+        shellBody = self.client.get("/top-songs?tag=roadtrip&sortBy=name").get_data(as_text=True)
+        self.assertIn('value="roadtrip" selected', shellBody)
 
 
 if __name__ == "__main__":

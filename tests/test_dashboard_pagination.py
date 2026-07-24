@@ -68,7 +68,14 @@ class _ListRouteTestBase(AppTestCase):
         return resp, (resp.get_json() or {}).get("resultsHtml", "")
 
     def _getTopSongs(self, dash, db, query=""):
-        return self._getPath(dash, db, f"/top-songs{query}")
+        # Top lists are a two-phase load now (shell + ?ajax=true JSON results),
+        # so the list/pagination/totals only exist behind ajax=true.
+        sep = '&' if query else '?'
+        return self._getPath(dash, db, f"/top-songs{query}{sep}ajax=true")
+
+    def _getTopArtists(self, dash, db, query=""):
+        sep = '&' if query else '?'
+        return self._getPath(dash, db, f"/top-artists{query}{sep}ajax=true")
 
 
 class TestHistoryPagination(_ListRouteTestBase):
@@ -405,7 +412,7 @@ class TestTopSongsPagination(_ListRouteTestBase):
 
         self.assertEqual(resp.status_code, 200)
         db.getPlayTotals.assert_called_once()
-        self.assertIn(b'<p class="summary-value">42</p>', resp.data)
+        self.assertIn('<p class="summary-value">42</p>', resp.get_json()["resultsHtml"])
 
     def test_totals_are_fetched_in_search_branch_too(self):
         dash = self._makeApp()
@@ -416,7 +423,7 @@ class TestTopSongsPagination(_ListRouteTestBase):
 
         self.assertEqual(resp.status_code, 200)
         db.getPlayTotals.assert_called_once()
-        self.assertIn(b'<p class="summary-value">7</p>', resp.data)
+        self.assertIn('<p class="summary-value">7</p>', resp.get_json()["resultsHtml"])
 
     def test_unknown_sortby_falls_back_to_default_instead_of_500(self):
         """Repository.getSongsPage raises ValueError for a sortBy outside
@@ -497,7 +504,7 @@ class TestTopArtistsSortAndPageClamp(_ListRouteTestBase):
         dash = self._makeApp()
         db = self._makeArtistsDb()
 
-        resp = self._getPath(dash, db, "/top-artists?sortBy=not_a_real_column")
+        resp = self._getTopArtists(dash, db, query="?sortBy=not_a_real_column")
 
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(db.getTopArtists.call_args.kwargs["by"], appModule.DEFAULT_SORT_BY)
@@ -506,18 +513,18 @@ class TestTopArtistsSortAndPageClamp(_ListRouteTestBase):
         dash = self._makeApp()
         db = self._makeArtistsDb(artistCount=120)
 
-        resp = self._getPath(dash, db, "/top-artists?page=9999")
+        resp = self._getTopArtists(dash, db, query="?page=9999")
 
         self.assertEqual(resp.status_code, 200)
         kwargs = db.getTopArtists.call_args.kwargs
         self.assertEqual(kwargs["offset"], 2 * appModule.PAGE_SIZE)   #< last page (3) of 120/50
-        self.assertIn(b"Page 3 of 3", resp.data)
+        self.assertIn("Page 3 of 3", resp.get_json()["resultsHtml"])
 
     def test_search_query_is_passed_through_to_sql(self):
         dash = self._makeApp()
         db = self._makeArtistsDb(artistCount=1)
 
-        resp = self._getPath(dash, db, "/top-artists?q=queen")
+        resp = self._getTopArtists(dash, db, query="?q=queen")
 
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(db.getArtistsCount.call_args.kwargs["searchQuery"], "queen")
