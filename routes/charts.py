@@ -793,6 +793,8 @@ def register(app, dashboard):
 
         heatmap = dashboard._embedHeatmapTextElements(db.getHourOfDayHeatmap(trackId=track_id))
 
+        entity_tags = db.repo.getTagsForEntity(username, "track", track_id)
+
         return render_template(
             "song_detail.html",
             song=song,
@@ -800,6 +802,7 @@ def register(app, dashboard):
             groupBy=groupByParam,
             timeSeries=timeSeries,
             heatmap=heatmap,
+            entity_tags=entity_tags,
             section="top_songs",
             success=request.args.get("success"),
             error=request.args.get("error"),
@@ -861,6 +864,8 @@ def register(app, dashboard):
         db.lazyFetchArtistBio(artist_id, artist.get("name", ""))
         artist["bio"] = db.getArtistBio(artist_id) if dashboard.repo.isArtistBioEnabled() else None
 
+        entity_tags = db.repo.getTagsForEntity(username, "artist", artist_id)
+
         return render_template(
             "artist_detail.html",
             artist=artist,
@@ -869,6 +874,7 @@ def register(app, dashboard):
             username=username,
             groupBy=groupByParam,
             timeSeries=timeSeries,
+            entity_tags=entity_tags,
             section="top_artists",
             success=request.args.get("success"),
             error=request.args.get("error"),
@@ -936,6 +942,8 @@ def register(app, dashboard):
             db.lazyFetchAlbumBio(album_id, album.get("name", ""), primaryArtistName)
         album["bio"] = db.getAlbumBio(album_id) if dashboard.repo.isAlbumBioEnabled() else None
 
+        entity_tags = db.repo.getTagsForEntity(username, "album", album_id)
+
         return render_template(
             "album_detail.html",
             album=album,
@@ -944,6 +952,7 @@ def register(app, dashboard):
             groupBy=groupByParam,
             username=username,
             timeSeries=timeSeries,
+            entity_tags=entity_tags,
             section="top_albums",
             success=request.args.get("success"),
             error=request.args.get("error"),

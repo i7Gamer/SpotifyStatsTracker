@@ -89,6 +89,7 @@
         {% if hasAcceptedShares %}
         <a class="{{ 'active' if section == 'compare' }}" {% if section == 'compare' %}aria-current="page"{% endif %} href="{{ url_for('comparePage') }}">Compare</a>
         {% endif %}
+        <a class="{{ 'active' if section == 'playlists' }}" {% if section == 'playlists' %}aria-current="page"{% endif %} href="{{ url_for('playlistsPage') }}">Playlists</a>
         {% set account_active = section in ['profile', 'import', 'admin'] %}
         <div class="nav-item-dropdown nav-account-dropdown {% if account_active %}active-parent{% endif %}">
           <span class="dropdown-trigger" tabindex="0" role="button" aria-haspopup="true">{{ session.get('username') or 'Account' }} <span class="chevron">▾</span></span>

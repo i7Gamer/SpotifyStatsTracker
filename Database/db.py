@@ -154,6 +154,17 @@ CREATE TABLE IF NOT EXISTS images (
     PRIMARY KEY (id, kind)
 );
 
+CREATE TABLE IF NOT EXISTS user_tags (
+    username    TEXT NOT NULL REFERENCES users(username),
+    tag         TEXT NOT NULL,
+    entity_type TEXT NOT NULL CHECK (entity_type IN ('track', 'artist', 'album')),
+    entity_id   TEXT NOT NULL,
+    created_at  REAL NOT NULL,
+    PRIMARY KEY (username, tag, entity_type, entity_id)
+);
+CREATE INDEX IF NOT EXISTS idx_user_tags_lookup ON user_tags(username, entity_type, entity_id);
+CREATE INDEX IF NOT EXISTS idx_user_tags_tag ON user_tags(username, tag);
+
 -- email is nullable: a Database instance can be constructed for maintenance/
 -- scripting purposes (e.g. the __main__ smoke test) before the email is known.
 -- SQLite treats each NULL as distinct for UNIQUE, so multiple email-less users

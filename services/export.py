@@ -115,3 +115,68 @@ def generateCsvExport(db):
             buffer.seek(0)
             buffer.truncate(0)
     yield buffer.getvalue()
+
+
+PLAYLIST_CSV_COLUMNS = ("Spotify URI", "Track Name", "Artist Name", "Album Name", "ISRC", "Spotify URL")
+
+
+def generatePlaylistCsv(tracks: list[dict]):
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, lineterminator="\n")
+    writer.writerow(PLAYLIST_CSV_COLUMNS)
+    for track in tracks:
+        artists = track.get("artists") or []
+        album = track.get("album") or {}
+        artist_names = ", ".join(a.get("name", "") for a in artists)
+        album_name = album.get("name", "") if isinstance(album, dict) else ""
+        spotify_uri = f"spotify:track:{track['id']}"
+        spotify_url = track.get("url") or f"https://open.spotify.com/track/{track['id']}"
+        isrc = track.get("isrc") or ""
+        writer.writerow([
+            spotify_uri,
+            track.get("name", ""),
+            artist_names,
+            album_name,
+            isrc,
+            spotify_url,
+        ])
+        if buffer.tell() >= 64 * 1024:
+            yield buffer.getvalue()
+            buffer.seek(0)
+            buffer.truncate(0)
+    yield buffer.getvalue()
+
+
+def generatePlaylistM3u(tracks: list[dict]):
+    yield "#EXTM3U\n"
+    for track in tracks:
+        artists = track.get("artists") or []
+        artist_names = ", ".join(a.get("name", "") for a in artists)
+        title = track.get("name", "")
+        spotify_uri = f"spotify:track:{track['id']}"
+        yield f"#EXTINF:-1,{artist_names} - {title}\n{spotify_uri}\n"
+
+
+def generatePlaylistXspf(tracks: list[dict], title: str = "Spotify Tracker Playlist"):
+    import xml.sax.saxutils as xml_escape
+    yield '<?xml version="1.0" encoding="UTF-8"?>\n'
+    yield '<playlist version="1" xmlns="http://xspf.org/ns/0/">\n'
+    yield f'  <title>{xml_escape.escape(title)}</title>\n'
+    yield '  <trackList>\n'
+    for track in tracks:
+        artists = track.get("artists") or []
+        artist_names = ", ".join(a.get("name", "") for a in artists)
+        track_title = track.get("name", "")
+        album = track.get("album") or {}
+        album_name = album.get("name", "") if isinstance(album, dict) else ""
+        spotify_uri = f"spotify:track:{track['id']}"
+        yield '    <track>\n'
+        yield f'      <location>{xml_escape.escape(spotify_uri)}</location>\n'
+        yield f'      <title>{xml_escape.escape(track_title)}</title>\n'
+        if artist_names:
+            yield f'      <creator>{xml_escape.escape(artist_names)}</creator>\n'
+        if album_name:
+            yield f'      <album>{xml_escape.escape(album_name)}</album>\n'
+        yield '    </track>\n'
+    yield '  </trackList>\n'
+    yield '</playlist>\n'

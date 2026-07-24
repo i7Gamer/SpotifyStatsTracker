@@ -34,6 +34,10 @@
     </div>
   </div>
 
+  {% set entity_type = 'artist' %}
+  {% set entity_id = artist.get('id') %}
+  {% include '_tag_widget.html' %}
+
   <section id="track-list" class="track-list">
     {% set track = artist %}
     {% set section = 'top_artists' %}
@@ -123,4 +127,5 @@
   <script src="{{ url_for('static', filename='js/detail-history.js') }}"></script>
   <script src="{{ url_for('static', filename='js/admin-refresh.js') }}"></script>
   <script src="{{ url_for('static', filename='js/play-embed.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/tags.js') }}"></script>
 {% endblock %}

@@ -16,9 +16,10 @@ from Database.queries.bios import BioQueries
 from Database.queries.settings import SettingQueries
 from Database.queries.wrapped import WrappedQueries
 from Database.queries.milestones import MilestoneQueries
+from Database.queries.tags import TagQueries
 
 
-class Repository(TrackQueries, PlayQueries, UserQueries, ShareQueries, SchemaQueries, GenreQueries, BioQueries, SettingQueries, WrappedQueries, MilestoneQueries):
+class Repository(TrackQueries, PlayQueries, UserQueries, ShareQueries, SchemaQueries, GenreQueries, BioQueries, SettingQueries, WrappedQueries, MilestoneQueries, TagQueries):
     """Data-access layer over the shared SQLite database.
 
     Catalog methods (tracks/artists/albums/playlists/images) operate on data

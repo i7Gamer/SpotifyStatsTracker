@@ -65,6 +65,7 @@ from routes.compare import register as registerCompareRoutes
 from routes.wrapped import register as registerWrappedRoutes
 from routes.auth import register as registerAuthRoutes
 from routes.system import register as registerSystemRoutes
+from routes.tags import register as registerTagsRoutes
 import SpotipyFree
 from SpotipyFree import saveSession, parseCookieString
 
@@ -917,6 +918,8 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
         registerWrappedRoutes(self.app, self)
 
         registerCompareRoutes(self.app, self)
+
+        registerTagsRoutes(self.app, self)
 
     def shutdown(self):
         self._stop_event.set()

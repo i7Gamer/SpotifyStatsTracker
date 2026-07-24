@@ -103,6 +103,7 @@ RATE_LIMIT_MAX_ATTEMPTS = 10     #< max POSTs allowed per window, per source IP,
 RATE_LIMIT_WINDOW_SECONDS = 300  #< 5 minutes
 RATE_LIMIT_ERROR_MESSAGE = "Too many attempts. Please wait a few minutes and try again."
 EXPORT_FORMATS = ("json", "csv")
+PLAYLIST_EXPORT_FORMATS = ("csv", "m3u", "xspf")
 # Random startup-offset bounds for this module's periodic workers, so a
 # restart doesn't fire every worker at the same instant (the metadata
 # backfiller and wrapped worker in Database/database.py already stagger

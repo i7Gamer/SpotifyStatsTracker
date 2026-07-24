@@ -1,0 +1,168 @@
+"""Tagging system and tag-filtered playlist export routes.
+"""
+import logging
+from flask import render_template, redirect, request, url_for, jsonify, Response, stream_with_context
+
+import app as appmod
+from services.export import generatePlaylistCsv, generatePlaylistM3u, generatePlaylistXspf
+
+logger = logging.getLogger(__name__)
+
+
+def register(app, dashboard):
+    PLAYLIST_EXPORT_FORMATS = appmod.PLAYLIST_EXPORT_FORMATS
+
+    def addTagApi():
+        email, username, db = dashboard.get_current_user_or_redirect()
+        if not email:
+            return jsonify({"error": "unauthorized"}), 401
+
+        data = request.get_json(silent=True) or request.form
+        entity_type = data.get("entity_type", "").strip()
+        entity_id = data.get("entity_id", "").strip()
+        tag = data.get("tag", "").strip()
+
+        if not entity_type or not entity_id or not tag:
+            return jsonify({"error": "Missing entity_type, entity_id, or tag"}), 400
+
+        try:
+            norm = db.repo.addTag(username, tag, entity_type, entity_id)
+            db.repo.commit()
+            tags = db.repo.getTagsForEntity(username, entity_type, entity_id)
+            return jsonify({"success": True, "tag": norm, "tags": tags})
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        except Exception as e:
+            logger.error("Error adding tag: %s", e)
+            return jsonify({"error": "Failed to add tag"}), 500
+
+    app.add_url_rule("/api/tags", "addTagApi", addTagApi, methods=["POST"])
+
+    def removeTagApi():
+        email, username, db = dashboard.get_current_user_or_redirect()
+        if not email:
+            return jsonify({"error": "unauthorized"}), 401
+
+        data = request.get_json(silent=True) or request.form
+        entity_type = data.get("entity_type", "").strip()
+        entity_id = data.get("entity_id", "").strip()
+        tag = data.get("tag", "").strip()
+
+        if not entity_type or not entity_id or not tag:
+            return jsonify({"error": "Missing entity_type, entity_id, or tag"}), 400
+
+        try:
+            db.repo.removeTag(username, tag, entity_type, entity_id)
+            db.repo.commit()
+            tags = db.repo.getTagsForEntity(username, entity_type, entity_id)
+            return jsonify({"success": True, "tags": tags})
+        except Exception as e:
+            logger.error("Error removing tag: %s", e)
+            return jsonify({"error": "Failed to remove tag"}), 500
+
+    app.add_url_rule("/api/tags", "removeTagApi", removeTagApi, methods=["DELETE"])
+
+    def listUserTagsApi():
+        email, username, db = dashboard.get_current_user_or_redirect()
+        if not email:
+            return jsonify({"error": "unauthorized"}), 401
+
+        tags = db.repo.getUserTags(username)
+        return jsonify({"tags": tags})
+
+    app.add_url_rule("/api/tags", "listUserTagsApi", listUserTagsApi, methods=["GET"])
+
+    def renameTagApi():
+        email, username, db = dashboard.get_current_user_or_redirect()
+        if not email:
+            return jsonify({"error": "unauthorized"}), 401
+
+        data = request.get_json(silent=True) or request.form
+        old_tag = data.get("old_tag", "").strip()
+        new_tag = data.get("new_tag", "").strip()
+
+        if not old_tag or not new_tag:
+            return jsonify({"error": "Missing old_tag or new_tag"}), 400
+
+        cnt = db.repo.renameTag(username, old_tag, new_tag)
+        db.repo.commit()
+        return jsonify({"success": True, "count": cnt})
+
+    app.add_url_rule("/api/tags/rename", "renameTagApi", renameTagApi, methods=["POST"])
+
+    def deleteTagApi(tag):
+        email, username, db = dashboard.get_current_user_or_redirect()
+        if not email:
+            return jsonify({"error": "unauthorized"}), 401
+
+        cnt = db.repo.deleteTag(username, tag)
+        db.repo.commit()
+        return jsonify({"success": True, "count": cnt})
+
+    app.add_url_rule("/api/tags/<tag>", "deleteTagApi", deleteTagApi, methods=["DELETE"])
+
+    def playlistsPage():
+        email, username, db = dashboard.get_current_user_or_redirect()
+        if not email:
+            return redirect(url_for("login", next=request.path))
+
+        user_tags = db.repo.getUserTags(username)
+        return render_template("playlists.html", section="playlists", username=username, user_tags=user_tags)
+
+    app.add_url_rule("/playlists", "playlistsPage", playlistsPage, methods=["GET"])
+
+    def playlistPreviewApi():
+        email, username, db = dashboard.get_current_user_or_redirect()
+        if not email:
+            return jsonify({"error": "unauthorized"}), 401
+
+        tags_param = request.args.get("tags", "")
+        tags = [t.strip() for t in tags_param.split(",") if t.strip()]
+        match_mode = request.args.get("match", "any")
+
+        if not tags:
+            return jsonify({"track_count": 0})
+
+        tracks = db.getTaggedTracks(tags, match_mode=match_mode)
+        return jsonify({"track_count": len(tracks)})
+
+    app.add_url_rule("/api/playlists/preview", "playlistPreviewApi", playlistPreviewApi, methods=["GET"])
+
+    def playlistExport():
+        email, username, db = dashboard.get_current_user_or_redirect()
+        if not email:
+            return redirect(url_for("login", next=request.path))
+
+        tags_param = request.args.get("tags", "")
+        tags = [t.strip() for t in tags_param.split(",") if t.strip()]
+        match_mode = request.args.get("match", "any")
+        fmt = request.args.get("format", "csv").lower()
+        sortBy = request.args.get("sort", "plays")
+
+        if fmt not in PLAYLIST_EXPORT_FORMATS:
+            fmt = "csv"
+
+        if sortBy not in ("plays", "recent", "name"):
+            sortBy = "plays"
+
+        tracks = db.getTaggedTracks(tags, match_mode=match_mode, sortBy=sortBy)
+
+        tag_summary = "_".join(tags[:3]) if tags else "all"
+        filename = f"playlist_{tag_summary}.{fmt}"
+
+        if fmt == "m3u":
+            generator = generatePlaylistM3u(tracks)
+            mimetype = "audio/x-mpegurl"
+        elif fmt == "xspf":
+            title = f"Playlist ({', '.join(tags)})" if tags else "Playlist"
+            generator = generatePlaylistXspf(tracks, title=title)
+            mimetype = "application/xspf+xml; charset=utf-8"
+        else:
+            generator = generatePlaylistCsv(tracks)
+            mimetype = "text/csv; charset=utf-8"
+
+        response = Response(stream_with_context(generator), mimetype=mimetype)
+        response.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+        return response
+
+    app.add_url_rule("/playlist/export", "playlistExport", playlistExport, methods=["GET"])
