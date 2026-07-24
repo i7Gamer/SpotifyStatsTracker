@@ -126,11 +126,21 @@ class ViewModelMixin:
         return formatted, cssClass
 
     def _enrichSongTimelineEntries(self, plays: list[dict], trackDurationMs: int | None = None,
-                                    completePercentThreshold: float | int = 80) -> list[dict]:
+                                    completePercentThreshold: int | None = None) -> list[dict]:
         """Enriches play entries for the song detail timeline with playType,
-        percentPlayed, monthYearHeader, and timePassedText."""
+        percentPlayed, monthYearHeader, and timePassedText.
+
+        The full-vs-partial cutoff defaults to the admin's instance-wide
+        completion-complete percent (getCompletionCompletePercent) - the same
+        boundary Top Songs' "Full plays only" filter, getCompletionStats, and
+        the Forgotten Favorite trend use - so the timeline's "Full Play" vs
+        "Partial" label never diverges from them (it was previously hardcoded
+        to 80, which silently disagreed once an admin changed the setting).
+        Callers may pass an explicit threshold."""
         from flask import has_app_context, g
         from Database.utils import convertToDatetime, formatTimeGap
+        if completePercentThreshold is None:
+            completePercentThreshold = self.repo.getCompletionCompletePercent()
         db = g.get("db", None) if has_app_context() else None
         tz = db.tz if db else None
 

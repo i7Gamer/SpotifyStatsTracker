@@ -151,6 +151,34 @@ class TestEnrichSongTimelineEntries(AppTestCase):
         self.assertIn("timePassedText", enriched[1])
         self.assertEqual(enriched[1]["timePassedText"], "3 hours later")
 
+    def test_play_type_respects_explicit_threshold(self):
+        # The full-vs-partial cutoff is a parameter, not a hardcoded 80: a 90%
+        # play is "partial" under a 95% bar and "full" under an 80% bar.
+        dash = self._makeApp()
+        play = {"id": "t1", "playedAt": 1784560000, "timePlayed": 180000, "isSkip": False}  # 90%
+
+        strict = dash._enrichSongTimelineEntries([dict(play)], trackDurationMs=200000,
+                                                 completePercentThreshold=95)
+        self.assertEqual(strict[0]["playType"], "partial")
+
+        lenient = dash._enrichSongTimelineEntries([dict(play)], trackDurationMs=200000,
+                                                  completePercentThreshold=80)
+        self.assertEqual(lenient[0]["playType"], "full")
+
+    def test_play_type_defaults_to_admin_completion_percent(self):
+        # With no explicit threshold the cutoff comes from the admin's
+        # instance-wide completion-complete percent, not a hardcoded 80 - so a
+        # 90% play reads as "partial" once the admin raises the bar to 95%,
+        # keeping the timeline label consistent with Top Songs' "Full plays
+        # only" filter and the Forgotten Favorite trend.
+        dash = self._makeApp()
+        play = {"id": "t1", "playedAt": 1784560000, "timePlayed": 180000, "isSkip": False}  # 90%
+
+        with patch.object(dash.repo, "getCompletionCompletePercent", return_value=95):
+            enriched = dash._enrichSongTimelineEntries([dict(play)], trackDurationMs=200000)
+
+        self.assertEqual(enriched[0]["playType"], "partial")
+
     def test_month_year_headers(self):
         dash = self._makeApp()
         import datetime
