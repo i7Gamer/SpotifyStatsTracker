@@ -128,6 +128,21 @@ class TestTrendQueries(unittest.TestCase):
         raw = self.repo.getDashboardTrendsRaw("alice", now_ts=self.now_ts)
         self.assertEqual(raw["rediscovery"]["track_id"], "rediscovery_track")
 
+    def test_obsession_fallback_for_light_listener(self):
+        # A user who never clears the primary TREND_OBSESSION_MIN_PLAYS bar still
+        # gets an obsession from the relaxed fallback floor (>= 2). bob has one
+        # track played 3 times in the last 7 days.
+        self.repo.upsertUser("bob", "bob@example.com")
+        self.repo.upsertTrack(makeTrack(trackId="bob_track", name="Bob Song"))
+        for i in range(3):
+            self.repo.insertPlay("bob", "bob_track", self.now_ts - (i * 3600), 200000)
+        self.repo.commit()
+
+        raw = self.repo.getDashboardTrendsRaw("bob", now_ts=self.now_ts)
+        self.assertIsNotNone(raw["obsession"])
+        self.assertEqual(raw["obsession"]["track_id"], "bob_track")
+        self.assertEqual(raw["obsession"]["recent_count"], 3)
+
     def test_get_dashboard_trends_hydrated(self):
         trends = self.db.getDashboardTrends(now_ts=self.now_ts)
         self.assertIsNotNone(trends["obsession"])

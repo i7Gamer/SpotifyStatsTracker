@@ -3,10 +3,13 @@ import time
 from config import (
     TREND_OBSESSION_DAYS,
     TREND_OBSESSION_MIN_PLAYS,
+    TREND_OBSESSION_FALLBACK_MIN_PLAYS,
+    TREND_REDISCOVERY_RECENT_DAYS,
     TREND_REDISCOVERY_GAP_DAYS,
     TREND_REDISCOVERY_MIN_HISTORICAL_PLAYS,
     TREND_FORGOTTEN_GAP_DAYS,
     TREND_FORGOTTEN_MIN_HISTORICAL_PLAYS,
+    TREND_FORGOTTEN_FALLBACK_MIN_PLAYS,
 )
 
 SECONDS_PER_DAY = 86400
@@ -49,18 +52,19 @@ class TrendQueries:
                 FROM plays
                 WHERE username = ? AND is_skip = 0 AND played_at >= ?
                 GROUP BY track_id
-                HAVING recent_count >= 2
+                HAVING recent_count >= ?
                 ORDER BY recent_count DESC, recent_ms DESC
                 LIMIT 1
                 """,
-                (username, obsession_cutoff),
+                (username, obsession_cutoff, TREND_OBSESSION_FALLBACK_MIN_PLAYS),
             ).fetchone()
 
         # 2. Rediscovery
+        rediscovery_recent_cutoff = now_ts - (TREND_REDISCOVERY_RECENT_DAYS * SECONDS_PER_DAY)
         rediscovery_gap_cutoff = now_ts - (TREND_REDISCOVERY_GAP_DAYS * SECONDS_PER_DAY)
         rediscovery_row = conn.execute(
             """
-            SELECT track_id, 
+            SELECT track_id,
                    COUNT(CASE WHEN played_at >= ? THEN 1 END) as recent_count,
                    COUNT(CASE WHEN played_at < ? THEN 1 END) as old_count,
                    MAX(CASE WHEN played_at < ? THEN played_at END) as max_old_played_at
@@ -75,9 +79,9 @@ class TrendQueries:
             LIMIT 1
             """,
             (
-                obsession_cutoff,
-                obsession_cutoff,
-                obsession_cutoff,
+                rediscovery_recent_cutoff,
+                rediscovery_recent_cutoff,
+                rediscovery_recent_cutoff,
                 username,
                 TREND_REDISCOVERY_MIN_HISTORICAL_PLAYS,
                 rediscovery_gap_cutoff,
@@ -117,11 +121,11 @@ class TrendQueries:
                   AND p.is_skip = 0
                   AND (t.duration_ms <= 0 OR p.time_played >= t.duration_ms * ?)
                 GROUP BY p.track_id
-                HAVING last_played_at <= ? AND total_plays >= 2
+                HAVING last_played_at <= ? AND total_plays >= ?
                 ORDER BY total_plays DESC, last_played_at DESC
                 LIMIT 1
                 """,
-                (username, completion_ratio, forgotten_gap_cutoff),
+                (username, completion_ratio, forgotten_gap_cutoff, TREND_FORGOTTEN_FALLBACK_MIN_PLAYS),
             ).fetchone()
 
         return {

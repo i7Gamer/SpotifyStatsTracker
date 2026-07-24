@@ -110,8 +110,18 @@ TREND_OBSESSION_DAYS = 7
 TREND_OBSESSION_MIN_PLAYS = 5
 TREND_REDISCOVERY_GAP_DAYS = 180
 TREND_REDISCOVERY_MIN_HISTORICAL_PLAYS = 3
+# The "recent" side of the rediscovery split (plays newer than this count as
+# the rediscovery; older ones are the historical listens it was rediscovered
+# from). Kept equal to TREND_OBSESSION_DAYS but named separately so tuning the
+# obsession window can't silently move rediscovery's boundary.
+TREND_REDISCOVERY_RECENT_DAYS = 7
 TREND_FORGOTTEN_GAP_DAYS = 180
 TREND_FORGOTTEN_MIN_HISTORICAL_PLAYS = 15
+# Relaxed play-count floors used only when nobody clears the primary
+# MIN_PLAYS bar above, so the card still surfaces something for lighter
+# listeners rather than rendering empty.
+TREND_OBSESSION_FALLBACK_MIN_PLAYS = 2
+TREND_FORGOTTEN_FALLBACK_MIN_PLAYS = 2
 # Random startup-offset bounds for this module's periodic workers, so a
 # restart doesn't fire every worker at the same instant (the metadata
 # backfiller and wrapped worker in Database/database.py already stagger
