@@ -2292,14 +2292,15 @@ progress::-moz-progress-bar {
 .timeline-container {
   position: relative;
   margin-top: 12px;
-  padding-left: 26px;
+  padding-left: 0;
 }
 
 .timeline-stem {
   position: absolute;
   top: 10px;
   bottom: 10px;
-  left: 10px;
+  left: 50%;
+  transform: translateX(-50%);
   width: 2px;
   background: linear-gradient(to bottom, var(--accent) 0%, var(--accent-secondary) 50%, var(--border) 100%);
   border-radius: 2px;
@@ -2315,7 +2316,9 @@ progress::-moz-progress-bar {
 /* Date Header */
 .timeline-date-header {
   position: relative;
-  margin: 10px 0 2px -26px;
+  display: flex;
+  justify-content: center;
+  margin: 12px 0 4px 0;
   z-index: 2;
 }
 
@@ -2328,7 +2331,7 @@ progress::-moz-progress-bar {
   color: var(--accent);
   background: var(--background);
   border: 1px solid var(--border);
-  padding: 2px 10px;
+  padding: 2px 12px;
   border-radius: 10px;
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
 }
@@ -2336,7 +2339,9 @@ progress::-moz-progress-bar {
 /* Gap Connector */
 .timeline-gap-connector {
   position: relative;
-  margin: -4px 0 -4px 4px;
+  display: flex;
+  justify-content: center;
+  margin: 2px 0;
   z-index: 2;
 }
 
@@ -2356,12 +2361,24 @@ progress::-moz-progress-bar {
 .timeline-item {
   position: relative;
   display: flex;
-  align-items: flex-start;
+  width: 50%;
+  box-sizing: border-box;
+}
+
+/* Alternating Left / Right Cards */
+.timeline-item:nth-of-type(odd) {
+  align-self: flex-start;
+  padding-right: 20px;
+}
+
+.timeline-item:nth-of-type(even) {
+  align-self: flex-end;
+  margin-left: 50%;
+  padding-left: 20px;
 }
 
 .timeline-node {
   position: absolute;
-  left: -26px;
   top: 8px;
   width: 20px;
   height: 20px;
@@ -2374,6 +2391,16 @@ progress::-moz-progress-bar {
   z-index: 2;
   box-shadow: 0 0 8px var(--accent-glow);
   transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.timeline-item:nth-of-type(odd) .timeline-node {
+  right: -10px;
+  left: auto;
+}
+
+.timeline-item:nth-of-type(even) .timeline-node {
+  left: -10px;
+  right: auto;
 }
 
 .timeline-node .node-icon {
@@ -2427,7 +2454,12 @@ progress::-moz-progress-bar {
   transition: border-color 0.2s ease, transform 0.2s ease;
 }
 
-.timeline-content:hover {
+.timeline-item:nth-of-type(odd) .timeline-content:hover {
+  border-color: var(--border);
+  transform: translateX(-4px);
+}
+
+.timeline-item:nth-of-type(even) .timeline-content:hover {
   border-color: var(--border);
   transform: translateX(4px);
 }
@@ -2513,26 +2545,43 @@ progress::-moz-progress-bar {
   }
   .timeline-stem {
     left: 7px;
-  }
-  .timeline-node {
-    left: -20px;
-    width: 20px;
-    height: 20px;
-    top: 12px;
-  }
-  .timeline-node .node-icon {
-    font-size: 0.65rem;
+    transform: none;
   }
   .timeline-date-header {
-    margin-left: -20px;
+    justify-content: flex-start;
+    margin: 10px 0 2px -20px;
+  }
+  .timeline-gap-connector {
+    justify-content: flex-start;
+    margin: -4px 0 -4px 4px;
+  }
+  .timeline-item,
+  .timeline-item:nth-of-type(odd),
+  .timeline-item:nth-of-type(even) {
+    width: 100%;
+    margin-left: 0;
+    padding-left: 0;
+    padding-right: 0;
+  }
+  .timeline-node,
+  .timeline-item:nth-of-type(odd) .timeline-node,
+  .timeline-item:nth-of-type(even) .timeline-node {
+    left: -20px;
+    right: auto;
+    width: 18px;
+    height: 18px;
+    top: 8px;
+  }
+  .timeline-node .node-icon {
+    font-size: 0.6rem;
   }
   .timeline-content {
-    padding: 10px 14px;
+    padding: 6px 12px;
   }
   .timeline-content-header {
     flex-direction: column;
     align-items: flex-start;
-    gap: 4px;
+    gap: 2px;
   }
 }
 
