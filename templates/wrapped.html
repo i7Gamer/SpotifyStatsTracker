@@ -240,11 +240,14 @@
       <h2>Top Songs</h2>
       {% if not publicView and topSongs %}
       <div class="play-log-controls">
-        <select id="wrappedPlaylistFormat" aria-label="Top 100 playlist file format">
-          <option value="csv">CSV</option>
-          <option value="m3u">M3U</option>
-          <option value="xspf">XSPF</option>
-        </select>
+        <div class="filter-group">
+          <label for="wrappedPlaylistFormat">Format:</label>
+          <select id="wrappedPlaylistFormat">
+            <option value="csv">CSV</option>
+            <option value="m3u">M3U</option>
+            <option value="xspf">XSPF</option>
+          </select>
+        </div>
         <button type="button" id="downloadWrappedPlaylistBtn" class="button" data-year="{{ year }}">
           Download Top 100
         </button>
