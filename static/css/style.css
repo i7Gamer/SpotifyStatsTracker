@@ -4,6 +4,7 @@
   --accent: #FB717B;
   --accent-secondary: #a78bfa;
   --accent-glow: rgba(251, 113, 123, 0.25);
+  --accent-secondary-glow: rgba(167, 139, 250, 0.25);
   --background: #060606;
   --content-background: #0b0b0b;
   --surface: rgba(25, 25, 25, 0.45);
@@ -2436,13 +2437,13 @@ progress::-moz-progress-bar {
 .play-type-badge.badge-full {
   background: var(--accent-glow);
   color: var(--accent);
-  border: 1px solid rgba(251, 113, 123, 0.3);
+  border: 1px solid var(--accent-glow);
 }
 
 .play-type-badge.badge-partial {
-  background: rgba(167, 139, 250, 0.15);
+  background: var(--accent-secondary-glow);
   color: var(--accent-secondary);
-  border: 1px solid rgba(167, 139, 250, 0.3);
+  border: 1px solid var(--accent-secondary-glow);
 }
 
 .play-type-badge.badge-skip {
@@ -2559,6 +2560,7 @@ html.theme-rose {
   --accent: #FB717B;
   --accent-secondary: #A78BFA;
   --accent-glow: rgba(251, 113, 123, 0.25);
+  --accent-secondary-glow: rgba(167, 139, 250, 0.25);
   --glow-color-1: rgba(251, 113, 123, 0.15);
   --glow-color-2: rgba(29, 185, 84, 0.1);
   --glow-color-3: rgba(25, 25, 25, 0.3);
@@ -2580,6 +2582,7 @@ html.theme-green {
   --accent: #1DB954;
   --accent-secondary: #60A5FA;
   --accent-glow: rgba(29, 185, 84, 0.25);
+  --accent-secondary-glow: rgba(96, 165, 250, 0.25);
   --glow-color-1: rgba(29, 185, 84, 0.15);
   --glow-color-2: rgba(25, 20, 20, 0.3);
   --glow-color-3: rgba(18, 18, 18, 0.4);
@@ -2601,6 +2604,7 @@ html.theme-purple {
   --accent: #BB86FC;
   --accent-secondary: #00E5FF;
   --accent-glow: rgba(187, 134, 252, 0.25);
+  --accent-secondary-glow: rgba(0, 229, 255, 0.25);
   --glow-color-1: rgba(187, 134, 252, 0.15);
   --glow-color-2: rgba(3, 218, 198, 0.1);
   --glow-color-3: rgba(18, 18, 18, 0.4);
@@ -2622,6 +2626,7 @@ html.theme-red {
   --accent: #E50914;
   --accent-secondary: #FB923C;
   --accent-glow: rgba(229, 9, 20, 0.25);
+  --accent-secondary-glow: rgba(251, 146, 60, 0.25);
   --glow-color-1: rgba(229, 9, 20, 0.15);
   --glow-color-2: rgba(229, 9, 20, 0.08);
   --glow-color-3: rgba(20, 20, 20, 0.4);

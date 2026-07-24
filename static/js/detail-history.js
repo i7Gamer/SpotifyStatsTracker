@@ -10,6 +10,8 @@
  * instead of stepping back through sort/page/tab states. */
 (function () {
   var DETAIL_HISTORY_FADE_MS = 200;
+  var SHOW_MORE_BATCH_SIZE = 50;
+  var SHOW_MORE_LABEL = 'Show More Plays (' + SHOW_MORE_BATCH_SIZE + ')';
 
   var filterButtons = document.querySelectorAll('.stats-filter-button');
   var categoryDivs = document.querySelectorAll('[data-category]');
@@ -112,7 +114,7 @@
           .then(function (data) {
             if (!data || !data.resultsHtml) {
               showMoreBtn.disabled = false;
-              showMoreBtn.textContent = 'Show More Plays (50)';
+              showMoreBtn.textContent = SHOW_MORE_LABEL;
               return;
             }
 
@@ -132,7 +134,7 @@
             if (data.hasMore && data.nextOffset) {
               showMoreBtn.disabled = false;
               showMoreBtn.dataset.offset = data.nextOffset;
-              showMoreBtn.textContent = 'Show More Plays (50)';
+              showMoreBtn.textContent = SHOW_MORE_LABEL;
             } else if (actionsDiv) {
               actionsDiv.remove();
             }
@@ -140,20 +142,11 @@
           .catch(function (err) {
             console.error(err);
             showMoreBtn.disabled = false;
-            showMoreBtn.textContent = 'Show More Plays (50)';
+            showMoreBtn.textContent = SHOW_MORE_LABEL;
           });
       }
     });
 
-    // _pagination.html's jump-to-page input calls the shared
-    // handleJumpToPageKeydown (layout.html), which defers to this hook when
-    // present instead of navigating.
-    window.__paginationAjaxHandler = function (page) {
-      var params = new URLSearchParams(window.location.search);
-      params.set('page', page);
-      window.history.replaceState({}, '', window.location.pathname + '?' + params.toString());
-      loadDetailHistory();
-    };
   }
 
   window.addEventListener('popstate', function () {
