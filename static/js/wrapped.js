@@ -492,6 +492,13 @@ document.getElementById('shareWrappedBtn')?.addEventListener('click', function()
   if (modal) modal.style.display = 'flex';
 });
 
+document.getElementById('downloadWrappedPlaylistBtn')?.addEventListener('click', function() {
+  const year = this.dataset.year;
+  const format = document.getElementById('wrappedPlaylistFormat').value;
+  window.location.href = '/playlist/export?year=' + encodeURIComponent(year) +
+                          '&format=' + encodeURIComponent(format);
+});
+
 document.getElementById('shareLinkModal')?.addEventListener('click', function(e) {
   if (e.target === this) this.style.display = 'none';
 });

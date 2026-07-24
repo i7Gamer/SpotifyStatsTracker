@@ -34,6 +34,18 @@
     <option value="name" {% if sortBy == 'name' %}selected{% endif %}>Name (A-Z)</option>
     </select>
 </div>
+
+{% if user_tags %}
+<div class="filter-group">
+    <label for="tagFilter">Tag:</label>
+    <select id="tagFilter" name="tag" onchange="updateTagFilter()">
+    <option value="">All Tags</option>
+    {% for t in user_tags %}
+    <option value="{{ t.tag }}" {% if tag == t.tag %}selected{% endif %}>#{{ t.tag }} ({{ t.count }})</option>
+    {% endfor %}
+    </select>
+</div>
+{% endif %}
 </section>
 
 <script>
@@ -154,6 +166,20 @@ function updateFilters() {
     params.delete('startDate');
     params.delete('endDate');
     }
+    params.delete('page');
+    window.location = window.location.pathname + '?' + params.toString();
+}
+
+function updateTagFilter() {
+    const tagFilter = document.getElementById('tagFilter');
+    const params = new URLSearchParams(window.location.search);
+
+    if (tagFilter.value) {
+        params.set('tag', tagFilter.value);
+    } else {
+        params.delete('tag');
+    }
+
     params.delete('page');
     window.location = window.location.pathname + '?' + params.toString();
 }

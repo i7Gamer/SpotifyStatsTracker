@@ -22,6 +22,7 @@ class TestTopAlbumsRoute(AppTestCase):
         db.getTopAlbums.return_value = []
         db.getAlbumsCount.return_value = albumCount
         db.getPlayTotals.return_value = (0, 0)
+        db.repo.getUserTags.return_value = []
         return db
 
     def _getTopAlbums(self, dash, db, query=""):
@@ -88,7 +89,7 @@ class TestTopAlbumsRoute(AppTestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(db.getAlbumsCount.call_count, 2)
         db.getAlbumsCount.assert_any_call(None, None)
-        db.getAlbumsCount.assert_any_call(None, None, searchQuery="foo")
+        db.getAlbumsCount.assert_any_call(None, None, searchQuery="foo", albumIds=None)
         kwargs = db.getTopAlbums.call_args.kwargs
         self.assertEqual(kwargs["limit"], appModule.PAGE_SIZE)
         self.assertEqual(kwargs["offset"], 0)

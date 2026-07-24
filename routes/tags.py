@@ -2,7 +2,7 @@
 """
 import logging
 import re
-from flask import render_template, redirect, request, url_for, jsonify, Response, stream_with_context
+from flask import render_template, redirect, request, url_for, jsonify, Response, stream_with_context, abort
 
 import app as appmod
 from services.export import generatePlaylistCsv, generatePlaylistM3u, generatePlaylistXspf
@@ -140,28 +140,45 @@ def register(app, dashboard):
         if not email:
             return redirect(url_for("login", next=request.path))
 
-        tags_param = request.args.get("tags", "")
-        tags = [t.strip() for t in tags_param.split(",") if t.strip()]
-        match_mode = request.args.get("match", "any")
         fmt = request.args.get("format", "csv").lower()
-        sortBy = request.args.get("sort", "plays")
-
         if fmt not in PLAYLIST_EXPORT_FORMATS:
             fmt = "csv"
 
-        if sortBy not in ("plays", "recent", "name"):
-            sortBy = "plays"
+        yearParam = request.args.get("year")
+        if yearParam is not None:
+            # Wrapped's Top 100 songs for one year, reusing the same cached
+            # pool the Wrapped page itself renders from (see
+            # dashboard._buildWrappedContext) - not a tag filter.
+            try:
+                year = int(yearParam)
+            except (TypeError, ValueError):
+                abort(400)
+            if year not in dashboard._computeAvailableYears(db):
+                abort(400)
 
-        tracks = db.getTaggedTracks(tags, match_mode=match_mode, sortBy=sortBy)
+            ctx = dashboard._buildWrappedContext(db, year, groupBy="week", limit=100, sortBy="plays",
+                                                  includeGenres=False)
+            tracks = ctx["topSongs"]
+            filename = f"wrapped_top100_{year}.{fmt}"
+            title = f"Wrapped {year} Top 100"
+        else:
+            tags_param = request.args.get("tags", "")
+            tags = [t.strip() for t in tags_param.split(",") if t.strip()]
+            match_mode = request.args.get("match", "any")
+            sortBy = request.args.get("sort", "plays")
+            if sortBy not in ("plays", "recent", "name"):
+                sortBy = "plays"
 
-        tag_summary = FILENAME_UNSAFE_RE.sub("_", "_".join(tags[:3])).strip("_") if tags else "all"
-        filename = f"playlist_{tag_summary or 'all'}.{fmt}"
+            tracks = db.getTaggedTracks(tags, match_mode=match_mode, sortBy=sortBy)
+
+            tag_summary = FILENAME_UNSAFE_RE.sub("_", "_".join(tags[:3])).strip("_") if tags else "all"
+            filename = f"playlist_{tag_summary or 'all'}.{fmt}"
+            title = f"Playlist ({', '.join(tags)})" if tags else "Playlist"
 
         if fmt == "m3u":
             generator = generatePlaylistM3u(tracks)
             mimetype = "audio/x-mpegurl"
         elif fmt == "xspf":
-            title = f"Playlist ({', '.join(tags)})" if tags else "Playlist"
             generator = generatePlaylistXspf(tracks, title=title)
             mimetype = "application/xspf+xml; charset=utf-8"
         else:

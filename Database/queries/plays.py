@@ -477,7 +477,7 @@ class PlayQueries:
     def getArtistAggregates(self, username: str, startTs: float | None = None,
                              endTs: float | None = None, artistId: str | None = None,
                              sortBy: str = "plays", limit: int | None = None, offset: int = 0,
-                             searchQuery: str | None = None) -> list[dict]:
+                             searchQuery: str | None = None, artistIds: list[str] | None = None) -> list[dict]:
         """One row per artist who appears on at least one played track, grouped by
         artist id (not name - two different artists that happen to share a display
         name are no longer merged, unlike the old name-keyed in-memory grouping).
@@ -485,10 +485,12 @@ class PlayQueries:
         fetching every artist and sorting/paging in Python.
 
         `artistId` narrows this to a single artist - reused by artist-detail
-        pages to fetch that one artist's own aggregate stats. `searchQuery`
-        narrows to artists whose name matches (the only field Top Artists'
-        search ever matched, since a bare artist dict carries no track/album/
-        playlist text to search)."""
+        pages to fetch that one artist's own aggregate stats. `artistIds`
+        narrows to an explicit set of artist ids (the tag-filtered Top Artists
+        page) so the caller aggregates only those rows; an empty list matches
+        nothing. `searchQuery` narrows to artists whose name matches (the only
+        field Top Artists' search ever matched, since a bare artist dict
+        carries no track/album/playlist text to search)."""
         if sortBy not in ARTIST_SORT_COLUMNS:
             raise ValueError(f"Unknown sortBy: {sortBy!r}")
         sortColumn = ARTIST_SORT_COLUMNS[sortBy]
@@ -510,6 +512,13 @@ class PlayQueries:
             # ar.id filter but prunes the aggregation to the one artist.
             aggFilter += " AND ta.artist_id = ?"
             params.append(artistId)
+        if artistIds is not None:
+            if artistIds:
+                placeholders = ",".join("?" for _ in artistIds)
+                aggFilter += f" AND ta.artist_id IN ({placeholders})"
+                params += artistIds
+            else:
+                aggFilter += " AND 0"   #< explicit empty set matches nothing
         outerFilter = ""
         if searchQuery:
             # The name filter only selects WHICH artists to return; it never
@@ -549,10 +558,11 @@ class PlayQueries:
         ]
 
     def getArtistsCount(self, username: str, startTs: float | None = None, endTs: float | None = None,
-                         searchQuery: str | None = None) -> int:
+                         searchQuery: str | None = None, artistIds: list[str] | None = None) -> int:
         """Number of distinct artists played in range - the paging counterpart
         to getArtistAggregates(), used to compute total page count without
-        fetching every artist's metadata."""
+        fetching every artist's metadata. `artistIds` mirrors the same param
+        on getArtistAggregates()."""
         conn = self._conn()
         params = [username]
         rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
@@ -560,6 +570,13 @@ class PlayQueries:
         if searchQuery:
             searchClause = " AND ar.name LIKE ? ESCAPE '\\'"
             params.append(self._likePattern(searchQuery))
+        if artistIds is not None:
+            if artistIds:
+                placeholders = ",".join("?" for _ in artistIds)
+                searchClause += f" AND ta.artist_id IN ({placeholders})"
+                params += artistIds
+            else:
+                searchClause += " AND 0"   #< explicit empty set matches nothing
         row = conn.execute(
             f"""
             SELECT COUNT(*) AS c FROM (
@@ -698,20 +715,28 @@ class PlayQueries:
         return [self._songRowToDict(row, artistsByTrack.get(row["track_id"], [])) for row in rows]
 
     def getSongsCount(self, username: str, startTs: float | None = None, endTs: float | None = None,
-                       searchQuery: str | None = None) -> int:
+                       searchQuery: str | None = None, trackIds: list[str] | None = None) -> int:
         """Number of distinct songs played in range - the paging counterpart to
         getSongsPage(), used to compute total page count without fetching every
-        song's metadata."""
+        song's metadata. `trackIds` mirrors the same param on getSongsPage()."""
         conn = self._conn()
         if not searchQuery:
             # No name/artist/album lookup needed, so skip the joins entirely -
             # this stays exactly as cheap as before search support was added.
             params = [username]
             rangeClause = self._dateRangeClause(params, startTs, endTs)
+            trackIdsClause = ""
+            if trackIds is not None:
+                if trackIds:
+                    placeholders = ",".join("?" for _ in trackIds)
+                    trackIdsClause = f" AND track_id IN ({placeholders})"
+                    params += trackIds
+                else:
+                    trackIdsClause = " AND 0"   #< explicit empty set matches nothing
             row = conn.execute(
                 f"""
                 SELECT COUNT(*) AS c FROM (
-                    SELECT track_id FROM plays WHERE username = ? AND is_skip=0{rangeClause}
+                    SELECT track_id FROM plays WHERE username = ? AND is_skip=0{rangeClause}{trackIdsClause}
                     GROUP BY track_id
                 )
                 """,
@@ -722,6 +747,14 @@ class PlayQueries:
         pattern = self._likePattern(searchQuery)
         params = [username]
         rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
+        trackIdsClause = ""
+        if trackIds is not None:
+            if trackIds:
+                placeholders = ",".join("?" for _ in trackIds)
+                trackIdsClause = f" AND p.track_id IN ({placeholders})"
+                params += trackIds
+            else:
+                trackIdsClause = " AND 0"   #< explicit empty set matches nothing
         params += [pattern, pattern, pattern]
         row = conn.execute(
             f"""
@@ -729,7 +762,7 @@ class PlayQueries:
                 SELECT p.track_id FROM plays p
                 JOIN tracks t ON t.id = p.track_id
                 LEFT JOIN albums al ON al.id = t.album_id
-                WHERE p.username = ? AND p.is_skip=0{rangeClause}
+                WHERE p.username = ? AND p.is_skip=0{rangeClause}{trackIdsClause}
                 AND (
                     t.name LIKE ? ESCAPE '\\'
                     OR al.name LIKE ? ESCAPE '\\'
@@ -747,20 +780,24 @@ class PlayQueries:
 
     def getAlbumsPage(self, username: str, startTs: float | None = None, endTs: float | None = None,
                        sortBy: str = "plays", limit: int | None = None, offset: int = 0,
-                       albumId: str | None = None, searchQuery: str | None = None) -> list[dict]:
+                       albumId: str | None = None, searchQuery: str | None = None,
+                       albumIds: list[str] | None = None) -> list[dict]:
         """Sorted/paged album stats in one batched round-trip - one row per
         album, aggregated across every track on it this user played. Mirrors
         getSongsPage()'s SQL-first sort/page pattern exactly.
 
         `albumId` narrows this to a single album - reused by album-detail pages
-        to fetch that one album's own aggregate stats. `searchQuery` narrows to
-        albums whose name or any artist on them matches - the artist check
-        deliberately looks up every track on the album (`t2.album_id = al.id`)
-        rather than just the current row's own track: unlike getSongsPage()
-        (grouped by t.id, so every row in a group already shares one track),
-        an album's rows span multiple different tracks, so filtering by the
-        current row's track alone would silently drop that album's non-matching
-        tracks from the aggregate instead of keeping the album's true totals.
+        to fetch that one album's own aggregate stats. `albumIds` narrows to an
+        explicit set of album ids (the tag-filtered Top Albums page) so the
+        caller aggregates only those rows; an empty list matches nothing.
+        `searchQuery` narrows to albums whose name or any artist on them
+        matches - the artist check deliberately looks up every track on the
+        album (`t2.album_id = al.id`) rather than just the current row's own
+        track: unlike getSongsPage() (grouped by t.id, so every row in a group
+        already shares one track), an album's rows span multiple different
+        tracks, so filtering by the current row's track alone would silently
+        drop that album's non-matching tracks from the aggregate instead of
+        keeping the album's true totals.
         """
         if sortBy not in ALBUM_SORT_COLUMNS:
             raise ValueError(f"Unknown sortBy: {sortBy!r}")
@@ -775,6 +812,13 @@ class PlayQueries:
         if albumId is not None:
             extraClauses += " AND al.id = ?"
             params.append(albumId)
+        if albumIds is not None:
+            if albumIds:
+                placeholders = ",".join("?" for _ in albumIds)
+                extraClauses += f" AND al.id IN ({placeholders})"
+                params += albumIds
+            else:
+                extraClauses += " AND 0"   #< explicit empty set matches nothing
         if searchQuery:
             pattern = self._likePattern(searchQuery)
             extraClauses += """ AND (
@@ -811,22 +855,30 @@ class PlayQueries:
         return [self._albumStatsRowToDict(row, artistsByAlbum.get(row["album_id"], [])) for row in rows]
 
     def getAlbumsCount(self, username: str, startTs: float | None = None, endTs: float | None = None,
-                        searchQuery: str | None = None) -> int:
+                        searchQuery: str | None = None, albumIds: list[str] | None = None) -> int:
         """Number of distinct albums played in range - the paging counterpart to
         getAlbumsPage(), used to compute total page count without fetching every
-        album's metadata."""
+        album's metadata. `albumIds` mirrors the same param on getAlbumsPage()."""
         conn = self._conn()
         if not searchQuery:
             # No name/artist lookup needed, so skip the joins entirely - stays
             # exactly as cheap as before search support was added.
             params = [username]
             rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
+            albumIdsClause = ""
+            if albumIds is not None:
+                if albumIds:
+                    placeholders = ",".join("?" for _ in albumIds)
+                    albumIdsClause = f" AND t.album_id IN ({placeholders})"
+                    params += albumIds
+                else:
+                    albumIdsClause = " AND 0"   #< explicit empty set matches nothing
             row = conn.execute(
                 f"""
                 SELECT COUNT(*) AS c FROM (
                     SELECT t.album_id FROM plays p
                     JOIN tracks t ON t.id = p.track_id
-                    WHERE p.username = ? AND p.is_skip=0{rangeClause}
+                    WHERE p.username = ? AND p.is_skip=0{rangeClause}{albumIdsClause}
                     GROUP BY t.album_id
                 )
                 """,
@@ -837,6 +889,14 @@ class PlayQueries:
         pattern = self._likePattern(searchQuery)
         params = [username]
         rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
+        albumIdsClause = ""
+        if albumIds is not None:
+            if albumIds:
+                placeholders = ",".join("?" for _ in albumIds)
+                albumIdsClause = f" AND t.album_id IN ({placeholders})"
+                params += albumIds
+            else:
+                albumIdsClause = " AND 0"   #< explicit empty set matches nothing
         params += [pattern, pattern]
         row = conn.execute(
             f"""
@@ -844,7 +904,7 @@ class PlayQueries:
                 SELECT t.album_id FROM plays p
                 JOIN tracks t ON t.id = p.track_id
                 JOIN albums al ON al.id = t.album_id
-                WHERE p.username = ? AND p.is_skip=0{rangeClause}
+                WHERE p.username = ? AND p.is_skip=0{rangeClause}{albumIdsClause}
                 AND (
                     al.name LIKE ? ESCAPE '\\'
                     OR EXISTS (

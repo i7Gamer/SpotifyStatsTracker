@@ -119,6 +119,45 @@ class TestTagQueries(unittest.TestCase):
         self.assertEqual(
             self.repo.getTaggedTrackIds("alice", ["chill", "#chill", " CHILL "], match_mode="any"), ["t1"])
 
+    def test_get_tagged_artist_ids_matches_direct_tags_only(self):
+        self.repo.addTag("alice", "favorite", "artist", "art1")
+        # A track tagged (not its artist) must not leak into artist results -
+        # unlike getTaggedTrackIds, this is a direct-tag-only lookup.
+        self.repo.addTag("alice", "favorite", "track", "t2")
+
+        artist_ids = self.repo.getTaggedArtistIds("alice", ["favorite"])
+        self.assertEqual(artist_ids, ["art1"])
+
+    def test_get_tagged_artist_ids_unions_multiple_tags(self):
+        self.repo.addTag("alice", "rock", "artist", "art1")
+        self.repo.addTag("alice", "pop", "artist", "art2")
+
+        artist_ids = self.repo.getTaggedArtistIds("alice", ["rock", "pop"])
+        self.assertCountEqual(artist_ids, ["art1", "art2"])
+
+    def test_get_tagged_artist_ids_empty_when_no_tags(self):
+        self.assertEqual(self.repo.getTaggedArtistIds("alice", []), [])
+        self.assertEqual(self.repo.getTaggedArtistIds("alice", ["nonexistent"]), [])
+
+    def test_get_tagged_album_ids_matches_direct_tags_only(self):
+        self.repo.addTag("alice", "roadtrip", "album", "alb1")
+        # A track tagged (not its album) must not leak into album results.
+        self.repo.addTag("alice", "roadtrip", "track", "t2")
+
+        album_ids = self.repo.getTaggedAlbumIds("alice", ["roadtrip"])
+        self.assertEqual(album_ids, ["alb1"])
+
+    def test_get_tagged_album_ids_unions_multiple_tags(self):
+        self.repo.addTag("alice", "chill", "album", "alb1")
+        self.repo.addTag("alice", "workout", "album", "alb2")
+
+        album_ids = self.repo.getTaggedAlbumIds("alice", ["chill", "workout"])
+        self.assertCountEqual(album_ids, ["alb1", "alb2"])
+
+    def test_get_tagged_album_ids_empty_when_no_tags(self):
+        self.assertEqual(self.repo.getTaggedAlbumIds("alice", []), [])
+        self.assertEqual(self.repo.getTaggedAlbumIds("alice", ["nonexistent"]), [])
+
     def test_rename_tag(self):
         self.repo.addTag("alice", "oldname", "track", "t1")
         self.repo.addTag("alice", "oldname", "artist", "art1")

@@ -146,6 +146,20 @@
         Share
       </button>
       {% endif %}
+      {% if topSongs %}
+      <select id="wrappedPlaylistFormat" aria-label="Top 100 playlist file format" style="padding: 9px 10px; border-radius: 12px; background: var(--surface); color: var(--text); border: 1px solid var(--border, #444);">
+        <option value="csv">CSV</option>
+        <option value="m3u">M3U</option>
+        <option value="xspf">XSPF</option>
+      </select>
+      <button type="button" id="downloadWrappedPlaylistBtn" class="primary-button" data-year="{{ year }}" style="background: var(--accent); color: #111; font-weight: bold; border: none; padding: 10px 20px; border-radius: 20px; cursor: pointer; display: inline-flex; align-items: center; gap: 8px;">
+        <svg width="16" height="16" fill="currentColor" viewBox="0 0 16 16" style="display:inline-block;">
+          <path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z"/>
+          <path d="M7.646 11.854a.5.5 0 0 0 .708 0l3-3a.5.5 0 0 0-.708-.708L8.5 10.293V1.5a.5.5 0 0 0-1 0v8.793L5.354 8.146a.5.5 0 1 0-.708.708l3 3z"/>
+        </svg>
+        Download Top 100
+      </button>
+      {% endif %}
     </div>
     {% endif %}
 

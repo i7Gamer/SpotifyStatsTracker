@@ -117,6 +117,42 @@ class TagQueries:
         ).fetchall()
         return [r["id"] for r in rows]
 
+    def getTaggedArtistIds(self, username: str, tags: list[str]) -> list[str]:
+        """Artist ids directly tagged with any of `tags` - unlike
+        getTaggedTrackIds, this does not expand outward to e.g. artists of a
+        tagged track's other artists, since "tagged" on an artist-list page
+        means the artist itself was tagged, not merely associated with one."""
+        norm_tags = list(dict.fromkeys(normalizeTag(t) for t in tags if normalizeTag(t)))
+        if not norm_tags:
+            return []
+        conn = self._conn()
+        placeholders = ",".join("?" for _ in norm_tags)
+        rows = conn.execute(
+            f"""
+            SELECT entity_id AS id FROM user_tags
+            WHERE username = ? AND entity_type = 'artist' AND tag IN ({placeholders})
+            """,
+            (username, *norm_tags),
+        ).fetchall()
+        return [r["id"] for r in rows]
+
+    def getTaggedAlbumIds(self, username: str, tags: list[str]) -> list[str]:
+        """Album ids directly tagged with any of `tags` - see getTaggedArtistIds
+        for why this doesn't expand to e.g. albums of a tagged track."""
+        norm_tags = list(dict.fromkeys(normalizeTag(t) for t in tags if normalizeTag(t)))
+        if not norm_tags:
+            return []
+        conn = self._conn()
+        placeholders = ",".join("?" for _ in norm_tags)
+        rows = conn.execute(
+            f"""
+            SELECT entity_id AS id FROM user_tags
+            WHERE username = ? AND entity_type = 'album' AND tag IN ({placeholders})
+            """,
+            (username, *norm_tags),
+        ).fetchall()
+        return [r["id"] for r in rows]
+
     def renameTag(self, username: str, old_tag: str, new_tag: str) -> int:
         old_norm = normalizeTag(old_tag)
         new_norm = normalizeTag(new_tag)

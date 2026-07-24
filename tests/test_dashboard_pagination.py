@@ -21,6 +21,7 @@ class _ListRouteTestBase(AppTestCase):
     def _makeDb(self, entryCount):
         db = MagicMock()
         db.repo.getUserSettings.return_value = {"default_dashboard_window": "day"}
+        db.repo.getUserTags.return_value = []
         db.getEntriesFromNew.return_value = []
         db.getEntriesFromOld.return_value = []
         db.getEntriesCount.return_value = entryCount
@@ -386,7 +387,7 @@ class TestTopSongsPagination(_ListRouteTestBase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(db.getSongsCount.call_count, 2)
         db.getSongsCount.assert_any_call(None, None)
-        db.getSongsCount.assert_any_call(None, None, searchQuery="foo")
+        db.getSongsCount.assert_any_call(None, None, searchQuery="foo", trackIds=None)
         kwargs = db.getTopSongs.call_args.kwargs
         self.assertEqual(kwargs["limit"], appModule.PAGE_SIZE)
         self.assertEqual(kwargs["offset"], 0)
