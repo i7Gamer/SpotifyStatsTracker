@@ -275,6 +275,42 @@ class TestOverwriteGating(_OverwriteTestBase):
         self.assertEqual(years, {2022})
 
 
+class TestOverwriteStagesBeforeDeleting(_OverwriteTestBase):
+    """Item 1 (2026-07-24 review): the network-bound metadata staging must run
+    BEFORE the covered-range delete opens the write transaction, so SQLite's
+    single write lock is never held across Spotify lookups (which would time
+    concurrent writers - the live listener - out and lose their plays)."""
+
+    def test_all_metadata_is_staged_before_the_delete_opens_the_transaction(self):
+        db = self._makeDb({}, [{"id": "old20", "playedAt": _ts(2020), "timePlayed": 60000}])
+
+        events = []
+
+        def gen():
+            # A generator body runs on first next(), i.e. when staging consumes
+            # it - not when _mockImporter creates it. So this marks staging time.
+            events.append("stage")
+            yield _meta("n20", _ts(2020, 6, 2))
+
+        fileSpecs = {"exportA": ((_ts(2020, 1), _ts(2020, 12), {2020}), gen)}
+
+        realDelete = db.repo.deletePlaysInRange
+
+        def recordingDelete(*args, **kwargs):
+            events.append("delete")
+            return realDelete(*args, **kwargs)
+
+        db.repo.deletePlaysInRange = recordingDelete
+        self._runBatch(db, fileSpecs)
+
+        self.assertIn("stage", events)
+        self.assertIn("delete", events)
+        self.assertLess(
+            events.index("stage"), events.index("delete"),
+            "staging (network) must complete before the delete opens the write transaction",
+        )
+
+
 if __name__ == "__main__":
     import unittest
     unittest.main()

@@ -216,6 +216,14 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
         self._activatedUsers: set = set()
         self._db_lock = threading.RLock()
         self._session_lock = threading.RLock()
+        # Per-username locks serialize the (possibly network-bound) construct +
+        # activate of one user's Database WITHOUT holding the global _db_lock,
+        # so a slow Spotify login for one user can't stall every other request
+        # in the process. _db_lock now only guards the brief user_databases /
+        # _activatedUsers dict ops. Lock order is always per-user lock -> _db_lock,
+        # never the reverse.
+        self._userLocks: dict = {}
+        self._userLocksGuard = threading.Lock()
         self._login_cache: dict = {}  #< {email: (result: bool, expires_at: float)}
         # Throttles POSTs to /login, /register, /reset-password per source IP -
         # without this, a network-reachable instance is brute-forceable
@@ -389,41 +397,64 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
             except OSError:
                 pass
 
+    def _userLock(self, username):
+        """The per-username RLock guarding that user's construct/activate, so a
+        slow Spotify login for one user never blocks another. Created on demand."""
+        with self._userLocksGuard:
+            lock = self._userLocks.get(username)
+            if lock is None:
+                lock = threading.RLock()
+                self._userLocks[username] = lock
+            return lock
+
     def get_user_db(self, username, email):
+        # Fast path: already constructed AND activated - hand it back under a
+        # brief dict read. Deliberately does NOT block on another user's
+        # (possibly slow, network-bound) activation.
         with self._db_lock:
             db = self.user_databases.get(username)
-            needsActivation = db is None or username not in self._activatedUsers
+            if db is not None and username in self._activatedUsers:
+                return db
+
+        # Slow path: construct/activate under THIS user's lock only. The global
+        # _db_lock is taken solely for the brief dict reads/writes here, never
+        # across startListener() (a live Spotify login) below - that was the old
+        # behavior that let one user's slow login stall every request.
+        with self._userLock(username):
+            with self._db_lock:
+                db = self.user_databases.get(username)
+                if db is not None and username in self._activatedUsers:
+                    return db
             if db is None:
                 # Share the app-wide stop event so the listener reconnect
                 # paths can refuse to fire once shutdown has begun.
                 db = Database(user=username, email=email, shutdown_event=self._stop_event)
 
-            if needsActivation:
+            try:
+                db.startAutoImporter()
+                db.resetProgress()
+                db.startListener(email=email)
+            except Exception:
+                # Database.__init__ already started this instance's background
+                # threads (wrapped worker, metadata backfiller); startAutoImporter
+                # added its watchdog. If a later step fails (startListener is a
+                # live Spotify call) the instance must not stay reachable
+                # half-activated, so it's stopped and both caches rolled back -
+                # every retry would otherwise stack another full set of threads
+                # per user, or silently keep serving the dead instance.
                 try:
-                    db.startAutoImporter()
-                    db.resetProgress()
-                    db.startListener(email=email)
-                except Exception:
-                    # Database.__init__ already started this instance's
-                    # background threads (wrapped worker, metadata
-                    # backfiller); startAutoImporter added its watchdog. If a
-                    # later step fails (startListener is a live Spotify call)
-                    # the instance must not stay reachable half-activated, so
-                    # both caches are rolled back along with stopping it -
-                    # every retry would otherwise stack another full set of
-                    # threads per user, or silently keep serving the dead
-                    # instance to the next caller.
-                    try:
-                        db.stop()
-                    except Exception as stopError:
-                        logger.error("Failed to stop partially-started Database for user %s: %s",
-                                     username, stopError)
+                    db.stop()
+                except Exception as stopError:
+                    logger.error("Failed to stop partially-started Database for user %s: %s",
+                                 username, stopError)
+                with self._db_lock:
                     self.user_databases.pop(username, None)
                     self._activatedUsers.discard(username)
-                    raise
+                raise
+            with self._db_lock:
                 self.user_databases[username] = db
                 self._activatedUsers.add(username)
-            return self.user_databases[username]
+            return db
 
     def _getReadOnlyUserDb(self, username):
         """A Database for `username` suitable for a public, unauthenticated
@@ -442,9 +473,18 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
             if db is not None:
                 return db
 
+        # Construct under the per-user lock (not the global _db_lock) so this
+        # never blocks other users, and can't double-construct against a
+        # concurrent get_user_db() for the same username.
+        with self._userLock(username):
+            with self._db_lock:
+                db = self.user_databases.get(username)
+                if db is not None:
+                    return db
             email = self.repo.getEmailForUsername(username)
             db = Database(user=username, email=email, shutdown_event=self._stop_event)
-            self.user_databases[username] = db
+            with self._db_lock:
+                self.user_databases[username] = db
             return db
 
     def _refresh_user_session(self, username, email):
@@ -456,7 +496,11 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
         place until the process restarts."""
         with self._db_lock:
             db = self.user_databases.get(username)
-            if db is not None:
+        if db is not None:
+            # Under the per-user lock, NOT the global _db_lock: listener.stop()
+            # can join for up to 5s and startListener() is a live Spotify call -
+            # holding _db_lock across either would stall every other request.
+            with self._userLock(username):
                 if db.listener is not None:
                     db.listener.stop()
                 db.startListener(email=email)

@@ -8,6 +8,7 @@ silently drifting from the real DDL, and the "existing file" fallback path
 losing data on reopen.
 """
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -200,6 +201,45 @@ class TestExistingSchemaDdlRunsOnceProcessWide(unittest.TestCase):
                 currentManager.close()
 
             self.assertIn("app_settings", tableNames())
+
+
+class TestSchemaTemplateBackupIsThreadSafe(unittest.TestCase):
+    """The cached :memory: schema template is the backup() SOURCE for every
+    thread that opens a brand-new db file, but it is built by whichever thread
+    first needs it - not necessarily the thread that later opens a fresh file.
+    With the source created check_same_thread=True (the default), that
+    cross-thread backup() raised sqlite3.ProgrammingError. Regression guard.
+    """
+
+    def test_a_worker_thread_can_open_a_fresh_db_using_a_main_thread_template(self):
+        # Force a clean template built in THIS (main) thread, so the worker
+        # below exercises genuine cross-thread use of the source connection.
+        with dbModule._schemaTemplateLock:
+            dbModule._schemaTemplateConn = None
+            dbModule._schemaTemplateSchema = None
+        dbModule._getSchemaTemplate()
+
+        errors = []
+        with tempfile.TemporaryDirectory() as tmpDir:
+            def worker():
+                try:
+                    manager = ConnectionManager(Path(tmpDir) / "fromWorker.db")
+                    try:
+                        names = {
+                            row[0] for row in manager.connection().execute(
+                                "SELECT name FROM sqlite_master WHERE type='table'")
+                        }
+                        self.assertIn("plays", names)
+                    finally:
+                        manager.close()
+                except Exception as exc:   # report any error to the assertion below
+                    errors.append(repr(exc))
+
+            worker_thread = threading.Thread(target=worker)
+            worker_thread.start()
+            worker_thread.join()
+
+        self.assertEqual(errors, [], f"cross-thread schema init failed: {errors}")
 
 
 class TestSchemaTemplateRespectsAPatchedSchema(unittest.TestCase):

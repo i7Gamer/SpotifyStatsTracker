@@ -283,7 +283,9 @@ class TestAppShutdownTwoPhase(unittest.TestCase):
         dash = SpotifyDashboardApp.__new__(SpotifyDashboardApp)
         dash._stop_event = threading.Event()
         dash.backupWorker = MagicMock()
-        dash._db_lock = threading.Lock()
+        dash._db_lock = threading.RLock()
+        dash._userLocks = {}
+        dash._userLocksGuard = threading.Lock()
         dash.user_databases = {}
         dash._activatedUsers = set()
         return dash

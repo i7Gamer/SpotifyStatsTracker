@@ -358,7 +358,14 @@ def _getSchemaTemplate() -> sqlite3.Connection:
     if _schemaTemplateConn is None or _schemaTemplateSchema != SCHEMA:
         with _schemaTemplateLock:
             if _schemaTemplateConn is None or _schemaTemplateSchema != SCHEMA:
-                conn = sqlite3.connect(":memory:")
+                # check_same_thread=False: this one cached connection is the
+                # backup() SOURCE for every thread that opens a fresh db file,
+                # and .backup() is invoked from whichever thread got there -
+                # not necessarily the one that built the template. With the
+                # default (True), that cross-thread use raises ProgrammingError.
+                # Concurrent use of the single source is serialized by
+                # _schemaTemplateLock at each backup() call site.
+                conn = sqlite3.connect(":memory:", check_same_thread=False)
                 conn.executescript(SCHEMA)
                 conn.commit()
                 _schemaTemplateConn = conn
@@ -399,14 +406,20 @@ class ConnectionManager:
         if isEmpty:
             # .backup() copies the template's pages wholesale - much cheaper
             # than re-parsing+executing the DDL, but it OVERWRITES the
-            # destination, so it's only safe for a connection that's the
-            # first to see this file empty. A second thread racing to open
-            # the same brand-new file either serializes behind SQLite's own
-            # file locking (same as any other concurrent write) or, if it
-            # still observes an empty db, performs the same idempotent copy
-            # again - not a new failure mode versus the previous
-            # executescript-for-everyone behavior.
-            _getSchemaTemplate().backup(conn)
+            # destination, so it's only safe while the file is still empty.
+            # Build the template first (its own locking), then serialize the
+            # copy under _schemaTemplateLock: that both prevents concurrent use
+            # of the single shared source connection AND closes a
+            # check-then-backup race - a second thread that saw the file empty
+            # a moment ago must re-confirm it is STILL empty before overwriting,
+            # or it would wipe rows a first thread already stamped and committed.
+            template = _getSchemaTemplate()
+            with _schemaTemplateLock:
+                stillEmpty = conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()[0] == 0
+                if stillEmpty:
+                    template.backup(conn)
+                else:
+                    conn.executescript(SCHEMA)   #< idempotent (IF NOT EXISTS)
             with _stampedSchemaLock:
                 _stampedSchemaByPath[resolvedPath] = SCHEMA
         else:
