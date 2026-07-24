@@ -44,6 +44,7 @@ class TestTrendQueries(unittest.TestCase):
         self.repo.upsertTrack(makeTrack(trackId="obsession_track", name="Obsession Song"))
         self.repo.upsertTrack(makeTrack(trackId="rediscovery_track", name="Rediscovery Song"))
         self.repo.upsertTrack(makeTrack(trackId="forgotten_track", name="Forgotten Song"))
+        self.repo.upsertTrack(makeTrack(trackId="partial_track", name="Partial Song"))
         
         # 1. Obsession: 6 plays in the last 7 days
         for i in range(6):
@@ -55,9 +56,17 @@ class TestTrendQueries(unittest.TestCase):
         self.repo.insertPlay("alice", "rediscovery_track", self.now_ts - 1000, 200000)
         self.repo.insertPlay("alice", "rediscovery_track", self.now_ts - 500, 200000)
 
-        # 3. Forgotten: 20 plays 200 days ago, none since
+        # 3. Forgotten: 20 full plays 200 days ago, none since
         for i in range(20):
             self.repo.insertPlay("alice", "forgotten_track", self.now_ts - (200 * self.day) - (i * 1000), 200000)
+
+        # 4. Partial-only: 30 plays 300 days ago that never finished (25% of the
+        # 200000ms duration - well past the skip threshold but under the 80%
+        # completion-complete percent). Despite outnumbering forgotten_track's
+        # raw play count, none of these are full listens, so this track must
+        # never win (or even qualify for) the Forgotten Favorite slot.
+        for i in range(30):
+            self.repo.insertPlay("alice", "partial_track", self.now_ts - (300 * self.day) - (i * 1000), 50000)
 
         self.repo.commit()
 
@@ -76,6 +85,18 @@ class TestTrendQueries(unittest.TestCase):
         self.assertIsNotNone(raw["forgotten"])
         self.assertEqual(raw["forgotten"]["track_id"], "forgotten_track")
         self.assertEqual(raw["forgotten"]["total_plays"], 20)
+
+    def test_forgotten_favorite_excludes_partial_plays(self):
+        # partial_track has 30 raw plays (more than forgotten_track's 20) but
+        # none are full listens, so it must not outrank or replace forgotten_track.
+        raw = self.repo.getDashboardTrendsRaw("alice", now_ts=self.now_ts)
+        self.assertEqual(raw["forgotten"]["track_id"], "forgotten_track")
+
+        # Directly confirm partial_track never qualifies at all, even alone.
+        self.repo.connection().execute("DELETE FROM plays WHERE track_id = 'forgotten_track'")
+        self.repo.commit()
+        raw = self.repo.getDashboardTrendsRaw("alice", now_ts=self.now_ts)
+        self.assertIsNone(raw["forgotten"])
 
     def test_get_dashboard_trends_hydrated(self):
         trends = self.db.getDashboardTrends(now_ts=self.now_ts)

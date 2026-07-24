@@ -1104,7 +1104,7 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
                 last_played = item["last_played_at"]
                 days_ago = max(1, int((now_ts - last_played) // 86400)) if last_played else 0
                 months_ago = max(1, days_ago // 30)
-                song["trend_subtitle"] = f"{total} plays all-time · last played {months_ago} month{'s' if months_ago != 1 else ''} ago"
+                song["trend_subtitle"] = f"{total} full plays all-time · last played {months_ago} month{'s' if months_ago != 1 else ''} ago"
                 result["forgotten"] = song
 
         return result

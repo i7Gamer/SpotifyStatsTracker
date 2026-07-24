@@ -13,7 +13,9 @@ SECONDS_PER_DAY = 86400
 
 
 class TrendQueries:
-    """TrendQueries: SQL queries for Dashboard Obsession, Rediscovery, and Forgotten Favorites."""
+    """TrendQueries: SQL queries for Dashboard Obsession, Rediscovery, and Forgotten Favorites.
+
+    Forgotten Favorite only counts full listens - see getDashboardTrendsRaw."""
 
     def getDashboardTrendsRaw(self, username: str, now_ts: float | None = None) -> dict[str, dict | None]:
         if now_ts is None:
@@ -79,34 +81,44 @@ class TrendQueries:
             ),
         ).fetchone()
 
-        # 3. Forgotten Favorite
+        # 3. Forgotten Favorite - only counts full listens (is_skip=0 and at/over
+        # the admin's completion-complete percent, same boundary getCompletionStats
+        # uses), so a track that was merely started/skipped a lot never reads as a
+        # forgotten favorite - a favorite has to have been actually heard.
         forgotten_gap_cutoff = now_ts - (TREND_FORGOTTEN_GAP_DAYS * SECONDS_PER_DAY)
+        completion_ratio = self.getCompletionCompletePercent() / 100.0
         forgotten_row = conn.execute(
             """
-            SELECT track_id, COUNT(*) as total_plays, MAX(played_at) as last_played_at
-            FROM plays
-            WHERE username = ?
-            GROUP BY track_id
+            SELECT p.track_id as track_id, COUNT(*) as total_plays, MAX(p.played_at) as last_played_at
+            FROM plays p
+            JOIN tracks t ON p.track_id = t.id
+            WHERE p.username = ?
+              AND p.is_skip = 0
+              AND (t.duration_ms <= 0 OR p.time_played >= t.duration_ms * ?)
+            GROUP BY p.track_id
             HAVING last_played_at <= ? AND total_plays >= ?
             ORDER BY total_plays DESC, last_played_at DESC
             LIMIT 1
             """,
-            (username, forgotten_gap_cutoff, TREND_FORGOTTEN_MIN_HISTORICAL_PLAYS),
+            (username, completion_ratio, forgotten_gap_cutoff, TREND_FORGOTTEN_MIN_HISTORICAL_PLAYS),
         ).fetchone()
 
         # Fallback for forgotten if no track hits high threshold
         if not forgotten_row:
             forgotten_row = conn.execute(
                 """
-                SELECT track_id, COUNT(*) as total_plays, MAX(played_at) as last_played_at
-                FROM plays
-                WHERE username = ?
-                GROUP BY track_id
+                SELECT p.track_id as track_id, COUNT(*) as total_plays, MAX(p.played_at) as last_played_at
+                FROM plays p
+                JOIN tracks t ON p.track_id = t.id
+                WHERE p.username = ?
+                  AND p.is_skip = 0
+                  AND (t.duration_ms <= 0 OR p.time_played >= t.duration_ms * ?)
+                GROUP BY p.track_id
                 HAVING last_played_at <= ? AND total_plays >= 2
                 ORDER BY total_plays DESC, last_played_at DESC
                 LIMIT 1
                 """,
-                (username, forgotten_gap_cutoff),
+                (username, completion_ratio, forgotten_gap_cutoff),
             ).fetchone()
 
         return {
