@@ -188,8 +188,15 @@
         if (mixLabel && data.intervalLabel) mixLabel.textContent = data.intervalLabel;
 
         renderAll();
+        if (window.AjaxStatus) window.AjaxStatus.clearBanner();
       })
-      .catch(function () { /* leave placeholders; token guard covers staleness */ })
+      .catch(function () {
+        //< genuine failure of the current load: surface a banner + Retry (a
+        //  superseded load's failure is ignored by the token guard)
+        if (token === loadToken && window.AjaxStatus) {
+          window.AjaxStatus.showBanner(function () { loadGenresData(); });
+        }
+      })
       .finally(function () {
         if (token !== loadToken) return;
         overviewTargets.forEach(function (t) { t.classList.remove('loading-fade'); });

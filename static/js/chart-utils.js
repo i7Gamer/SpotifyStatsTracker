@@ -33,7 +33,11 @@
     Array.prototype.push.apply(PALETTE, colors);
     return PALETTE;
   }
-  refreshPalette();
+  // Guarded so the module can be required under node (no document) for unit
+  // tests of the pure helpers; in the browser this still primes the palette.
+  if (typeof document !== 'undefined') {
+    refreshPalette();
+  }
 
   function getAccentColor() {
     var accent = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim();
@@ -122,6 +126,18 @@
     }
   }
 
+  // Bucket labels come from the server as "YYYY-MM-DD" (day/week),
+  // "YYYY-MM-DD HH:00" (hour), or "YYYY-MM" (month). A blanket slice(0,7) used
+  // to collapse the first two to "YYYY-MM", so every day/week bar in a month
+  // rendered the identical label. Keep month labels whole; drop the redundant
+  // leading year from finer buckets so labels within a month stay distinct.
+  function formatAxisLabel(label) {
+    if (typeof label !== 'string') return label;
+    if (/^\d{4}-\d{2}$/.test(label)) return label;
+    if (/^\d{4}-\d{2}-\d{2}/.test(label)) return label.slice(5);
+    return label;
+  }
+
   function drawSparseXLabels(ctx, labels, paddingLeft, plotWidth, plotHeight, paddingTop, labelForIndex, minSpacing) {
     ctx.textBaseline = 'top';
     ctx.fillStyle = '#b0b0b0';
@@ -134,13 +150,13 @@
 
     for (var i = 0; i <= lastStepIndex; i += step) {
       ctx.textAlign = (i === lastIndex) ? 'right' : 'center';
-      ctx.fillText(labels[i].slice(0, 7), labelForIndex(i), paddingTop + plotHeight + 8);
+      ctx.fillText(formatAxisLabel(labels[i]), labelForIndex(i), paddingTop + plotHeight + 8);
     }
 
     if (lastIndex !== lastStepIndex &&
         labelForIndex(lastIndex) - labelForIndex(lastStepIndex) >= spacing) {
       ctx.textAlign = 'right';
-      ctx.fillText(labels[lastIndex].slice(0, 7), labelForIndex(lastIndex), paddingTop + plotHeight + 8);
+      ctx.fillText(formatAxisLabel(labels[lastIndex]), labelForIndex(lastIndex), paddingTop + plotHeight + 8);
     }
   }
 
@@ -548,7 +564,7 @@
     canvas.onmouseleave = hideTooltip;
   }
 
-  window.ChartUtils = {
+  var ChartUtils = {
     PALETTE: PALETTE,
     refreshPalette: refreshPalette,
     getAccentColor: getAccentColor,
@@ -560,10 +576,18 @@
     drawEmptyState: drawEmptyState,
     drawYAxisGrid: drawYAxisGrid,
     drawSparseXLabels: drawSparseXLabels,
+    formatAxisLabel: formatAxisLabel,
     renderHeatmap: renderHeatmap,
     renderMultiLineChart: renderMultiLineChart,
     renderBarsFromPairs: renderBarsFromPairs,
     renderHorizontalBars: renderHorizontalBars,
     drawDonutChart: drawDonutChart,
   };
+
+  if (typeof window !== 'undefined') {
+    window.ChartUtils = ChartUtils;
+  }
+  if (typeof module !== 'undefined' && module.exports) {
+    module.exports = ChartUtils;
+  }
 })();

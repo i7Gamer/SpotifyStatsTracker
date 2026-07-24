@@ -43,7 +43,10 @@
     var fetched = fetch(window.location.pathname + '?' + params.toString(), {
       headers: { 'X-Requested-With': 'XMLHttpRequest' },
       signal: controller.signal
-    }).then(function (resp) { return resp.ok ? resp.json() : null; });
+    }).then(function (resp) {
+      if (!resp.ok) throw new Error('charts data fetch failed: ' + resp.status);
+      return resp.json();
+    });
 
     Promise.all([fetched, delay])
       .then(function (results) {
@@ -52,13 +55,17 @@
         if (!activeLoad || activeLoad.controller !== controller) {
           return;
         }
-        if (results[0]) {
-          applyChartsData(results[0]);
-        }
+        applyChartsData(results[0]);
+        if (window.AjaxStatus) window.AjaxStatus.clearBanner();
       })
       .catch(function (err) {
         if (err.name !== 'AbortError') {
           console.error(err);
+          //< genuine failure (not superseded): the canvases can't hold a message,
+          //  so surface a page-level banner with Retry
+          if ((!activeLoad || activeLoad.controller === controller) && window.AjaxStatus) {
+            window.AjaxStatus.showBanner(function () { loadChartsData(); });
+          }
         }
       })
       .finally(function () {

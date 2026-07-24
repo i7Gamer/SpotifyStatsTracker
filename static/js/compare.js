@@ -133,11 +133,18 @@ function loadCompareData({ sortByOnly = false, initial = false } = {}) {
           img.addEventListener('load', () => img.classList.add('loaded'));
         }
       });
+
+      if (window.AjaxStatus) window.AjaxStatus.clearBanner();
     })
     .catch(err => {
       //< an abort is the expected fate of a superseded load, not an error
       if (err.name !== 'AbortError') {
         console.error(err);
+        //< genuine failure (not superseded): the shell has many swap targets,
+        //  so surface a page-level banner with Retry
+        if ((!activeCompareLoad || activeCompareLoad.controller === controller) && window.AjaxStatus) {
+          window.AjaxStatus.showBanner(() => { loadCompareData(); });
+        }
       }
     })
     .finally(() => {

@@ -198,6 +198,11 @@
         .catch(function (err) {
           if (err.name !== 'AbortError') {
             console.error(err);
+            //< genuine failure (not superseded): replace the stuck/stale cards
+            //  with an inline error + Retry so the numbers aren't silently stale
+            if ((!activeDashboardLoad || activeDashboardLoad.controller === controller) && window.AjaxStatus) {
+              window.AjaxStatus.renderInto(target, function () { loadDashboardSummary(); });
+            }
           }
         })
         .finally(function () {

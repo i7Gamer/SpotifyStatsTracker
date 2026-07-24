@@ -120,6 +120,11 @@
         .catch(function (err) {
           if (err.name !== 'AbortError') {
             console.error(err);
+            //< genuine failure (not superseded): show an inline error + Retry
+            //  in place of the stuck "Loading…" / stale list
+            if ((!activeHistoryLoad || activeHistoryLoad.controller === controller) && window.AjaxStatus) {
+              window.AjaxStatus.renderInto(target, function () { loadHistoryResults(); });
+            }
           }
         })
         .finally(function () {

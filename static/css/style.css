@@ -1105,6 +1105,41 @@ progress::-moz-progress-bar {
   transition: opacity 0.2s ease-in-out;
 }
 
+/* AJAX failure UI (see static/js/ajax-status.js): shown when a shell page's
+   data fetch fails, so the user gets a signal and a way to retry instead of a
+   permanent "Loading…" / blank canvas. */
+.ajax-error-inline {
+  text-align: center;
+  padding: 2rem 1rem;
+  color: var(--muted);
+}
+.ajax-error-banner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin: 0 0 1.25rem;
+  padding: 0.75rem 1rem;
+  border-radius: 8px;
+  background: rgba(255, 107, 74, 0.12);
+  border: 1px solid rgba(255, 107, 74, 0.35);
+  color: var(--fg, #f0f0f0);
+}
+.ajax-error-retry {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 0.4rem 1.1rem;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 0.9rem;
+}
+.ajax-error-retry:hover {
+  filter: brightness(1.1);
+}
+
 /* Profile's share tables ("Requests waiting on you" / "Requests you sent" /
    "Active shares"): row borders as a class (not inline styles) so the last
    row can drop its bottom border. */
@@ -2638,7 +2673,11 @@ html.theme-red {
   color: var(--accent);
 }
 
-.nav-item-dropdown:hover .dropdown-content {
+.nav-item-dropdown:hover .dropdown-content,
+/* Keyboard access: revealing on focus-within (the trigger is focusable via
+   tabindex) lets Tab reach the submenu links, which are otherwise unreachable
+   because display:none elements can't be focused. */
+.nav-item-dropdown:focus-within .dropdown-content {
   display: block;
 }
 

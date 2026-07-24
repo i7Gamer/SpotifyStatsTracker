@@ -247,6 +247,15 @@ class DashboardCardsTestCase(_DashboardHelpers, AppTestCase):
         self.assertIn(b"dropdown-logout-form", body)
         self.assertIn(b">Log out</button>", body)
 
+    def test_nav_dropdown_triggers_are_keyboard_focusable(self):
+        # The dropdown triggers must be focusable (tabindex) so keyboard users
+        # can reach the submenu links, which open via CSS :focus-within.
+        dash = self._makeApp()
+        resp = self._get(dash, self._makeDb())
+        body = resp.data
+        self.assertIn(b'class="dropdown-trigger" tabindex="0"', body)
+        self.assertIn(b'aria-haspopup="true"', body)
+
     def test_discover_card_placeholder_rendered_when_lastfm_enabled(self):
         # The dashboard render only emits the (empty) Discover card shell; its
         # contents are fetched by JS from /api/dashboard-discover after load,

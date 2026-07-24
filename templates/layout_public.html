@@ -51,7 +51,10 @@
       })();
 
       // Scroll-to-top button with circular progress - mirrors layout.html.
+      // Deferred to DOMContentLoaded because the button element lives near
+      // </body>, after this parse-time script.
       (function() {
+        function initScrollToTop() {
         const btn = document.getElementById('scroll-to-top');
         const circle = btn ? btn.querySelector('.progress-ring__circle') : null;
         if (!btn || !circle) return;
@@ -96,6 +99,12 @@
         btn.addEventListener('click', () => {
           window.scrollTo({ top: 0, behavior: 'smooth' });
         });
+        }
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', initScrollToTop);
+        } else {
+          initScrollToTop();
+        }
       })();
     </script>
 
