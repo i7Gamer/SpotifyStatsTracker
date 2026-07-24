@@ -50,6 +50,9 @@ def register(app, dashboard):
             abort(403)
 
         users_list = []
+        # One grouped scan for every user's play/skip counts instead of a
+        # getPlaysCount()+getSkipCount() pair per user (2*N queries).
+        countsByUser = dashboard.repo.getPlayAndSkipCountsByUser()
         for u in dashboard.repo.getAllUsersDetails():
             u_username = u["username"]
             u_email = u["email"]
@@ -176,8 +179,8 @@ def register(app, dashboard):
                 "artist_bio_worker": artist_bio_worker,
                 "auto_importer_worker": auto_importer_worker,
                 "wrapped_worker": wrapped_worker,
-                "plays_count": dashboard.repo.getPlaysCount(u_username),
-                "skips_count": dashboard.repo.getSkipCount(u_username),
+                "plays_count": countsByUser.get(u_username, {}).get("plays", 0),
+                "skips_count": countsByUser.get(u_username, {}).get("skips", 0),
                 "created_at": created_date_str,
             })
 

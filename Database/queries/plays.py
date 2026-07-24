@@ -214,6 +214,24 @@ class PlayQueries:
         row = conn.execute(f"SELECT COUNT(*) AS c FROM plays WHERE username=? AND is_skip=1{rangeClause}", params).fetchone()
         return row["c"]
 
+    def getPlayAndSkipCountsByUser(self) -> dict[str, dict]:
+        """All-time play (is_skip=0) and skip (is_skip=1) counts for every user,
+        as {username: {"plays": int, "skips": int}}, in ONE grouped scan - the
+        admin user table's old getPlaysCount()+getSkipCount() pair per user was
+        2*N queries. Users with no plays are simply absent; the caller defaults
+        them to 0."""
+        conn = self._conn()
+        rows = conn.execute(
+            """
+            SELECT username,
+                   SUM(CASE WHEN is_skip = 0 THEN 1 ELSE 0 END) AS plays,
+                   SUM(CASE WHEN is_skip = 1 THEN 1 ELSE 0 END) AS skips
+            FROM plays
+            GROUP BY username
+            """
+        ).fetchall()
+        return {r["username"]: {"plays": r["plays"], "skips": r["skips"]} for r in rows}
+
     def getPlaysWithSourceInRange(self, username: str, startTs: float, endTs: float) -> list[dict]:
         """Plays in the closed [startTs, endTs] window including their
         created_reason. The Web API reconciliation needs the source to
@@ -1048,17 +1066,21 @@ class PlayQueries:
                                  endTs: float | None = None) -> int:
         """Count of distinct songs first played (across all time) within the year range."""
         conn = self._conn()
+        # A song is "discovered in range" iff its all-time first (non-skip) play
+        # falls in range - which already implies it was played in range. So group
+        # once per track and keep those whose MIN(played_at) is in range, instead
+        # of the old per-row correlated MIN() subquery (O(plays) vs O(plays^2)).
         row = conn.execute(
-            f"""
+            """
             SELECT COUNT(*) AS c FROM (
-                SELECT DISTINCT p.track_id
-                FROM plays p
-                WHERE p.username = ? AND p.is_skip=0 AND p.played_at BETWEEN ? AND ?
-                AND (SELECT MIN(played_at) FROM plays WHERE username = ? AND is_skip=0 AND track_id = p.track_id)
-                    BETWEEN ? AND ?
+                SELECT track_id
+                FROM plays
+                WHERE username = ? AND is_skip=0
+                GROUP BY track_id
+                HAVING MIN(played_at) BETWEEN ? AND ?
             )
             """,
-            (username, startTs, endTs, username, startTs, endTs),
+            (username, startTs, endTs),
         ).fetchone()
         return row["c"]
 
@@ -1066,21 +1088,24 @@ class PlayQueries:
                                    endTs: float | None = None) -> int:
         """Count of distinct artists first played (across all time) within the year range."""
         conn = self._conn()
+        # Same shape as getDiscoveredSongsCount: an artist is "discovered in
+        # range" iff their all-time first (non-skip) play - across any of their
+        # tracks - is in range. Group once per artist over the plays<->artist
+        # join and keep those whose MIN(played_at) is in range, instead of the
+        # old correlated per-row subquery (which re-scanned every track of the
+        # artist for each candidate row).
         row = conn.execute(
-            f"""
+            """
             SELECT COUNT(*) AS c FROM (
-                SELECT DISTINCT ta.artist_id
+                SELECT ta.artist_id
                 FROM plays p
                 JOIN track_artists ta ON ta.track_id = p.track_id
-                WHERE p.username = ? AND p.is_skip=0 AND p.played_at BETWEEN ? AND ?
-                AND (SELECT MIN(played_at) FROM plays
-                     WHERE username = ? AND is_skip=0 AND track_id IN (
-                         SELECT track_id FROM track_artists WHERE artist_id = ta.artist_id
-                     ))
-                    BETWEEN ? AND ?
+                WHERE p.username = ? AND p.is_skip=0
+                GROUP BY ta.artist_id
+                HAVING MIN(p.played_at) BETWEEN ? AND ?
             )
             """,
-            (username, startTs, endTs, username, startTs, endTs),
+            (username, startTs, endTs),
         ).fetchone()
         return row["c"]
 
