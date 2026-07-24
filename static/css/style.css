@@ -2280,8 +2280,37 @@ progress::-moz-progress-bar {
   gap: 10px;
 }
 
+/* Wrapped's "Download Top 100" format select (templates/wrapped.html) reuses
+   .play-log-controls for its heading-row layout, but that row otherwise only
+   ever holds .button links/buttons - mirror .filter-group select's theming
+   here rather than widen that selector's scope to every .play-log-controls
+   consumer. */
+.play-log-controls select {
+  padding: 8px 12px;
+  min-height: 36px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.play-log-controls select:hover {
+  border-color: var(--accent);
+}
+
+.play-log-controls select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-glow);
+}
+
 .skips-toggle,
-.sort-toggle {
+.sort-toggle,
+.play-log-controls .button {
   padding: 8px 16px;
   min-height: 36px;
   font-size: 0.9rem;
