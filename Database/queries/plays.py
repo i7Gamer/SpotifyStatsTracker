@@ -132,20 +132,27 @@ class PlayQueries:
         return cur.rowcount
 
     def deleteZeroDurationPlays(self) -> int:
-        """Remove real plays (is_skip=0) with zero (or negative) recorded
-        listening time, across every user - leftover skip/error events that
-        older importer versions recorded as real plays before the importer
-        started filtering them out at import time. Returns the number removed.
+        """Remove real plays with zero (or negative) recorded listening time,
+        across every user - leftover skip/error events that older importer
+        versions recorded as real plays before the importer started filtering
+        them out at import time. Returns the number removed.
 
-        The `is_skip=0` guard matters since migrate1_32_0: merged skip rows can
-        legitimately be 0ms, and must NOT be deleted here. The current callers
-        (migrate1_7_0 / migrate1_9_0) predate skips - the schema is stamped on
-        connect so the column exists, and pre-skip data is all is_skip=0, so this
-        deletes exactly what it always did while staying safe for any later use.
+        Since migrate1_32_0 a merged skip row can legitimately be 0ms and must
+        NOT be deleted, so the delete is scoped to is_skip=0 WHEN that column
+        exists. But this method's only callers are migrate1_7_0 / migrate1_9_0,
+        which run BEFORE migrate1_32_0 adds plays.is_skip: on a genuinely old
+        (<=1.9) database the column doesn't exist yet, and CREATE TABLE IF NOT
+        EXISTS on connect never adds a column to an existing table (the same
+        reason the SCHEMA forbids indexing is_skip - see db.py). Referencing
+        is_skip unconditionally would raise "no such column: is_skip" and abort
+        the upgrade, so the guard is added only when the column is present.
 
         Does NOT commit - see upsertTrack()'s docstring."""
         conn = self._conn()
-        cur = conn.execute("DELETE FROM plays WHERE time_played <= 0 AND is_skip = 0")
+        hasIsSkip = any(row["name"] == "is_skip"
+                        for row in conn.execute("PRAGMA table_info(plays)").fetchall())
+        skipClause = " AND is_skip = 0" if hasIsSkip else ""
+        cur = conn.execute(f"DELETE FROM plays WHERE time_played <= 0{skipClause}")
         return cur.rowcount
 
     def getPlaysCount(self, username: str, startTs: float | None = None, endTs: float | None = None,

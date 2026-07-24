@@ -68,6 +68,59 @@ class TestTrackCatalog(RepositoryTestCase):
         self.assertEqual(fetched["artists"][0]["id"], "art1")
         self.assertEqual(fetched["artists"][0]["name"], "Artist One")
 
+    def test_upsert_does_not_blank_existing_album_metadata(self):
+        # A later partial payload (missing release_date/total_tracks/name) must
+        # not overwrite good album metadata a prior full play already recorded -
+        # matching updateAlbumMetadata's "blank fields aren't data" guard.
+        self.repo.upsertTrack(makeTrack(trackId="t1", albumId="alb1"))
+        self.repo.commit()
+
+        blank = makeTrack(trackId="t1", albumId="alb1")
+        blank["album"]["releaseDate"] = 0
+        blank["album"]["totalTracks"] = 0
+        blank["album"]["name"] = ""
+        self.repo.upsertTrack(blank)
+        self.repo.commit()
+
+        row = self.repo.connection().execute(
+            "SELECT name, total_tracks, release_date FROM albums WHERE id='alb1'"
+        ).fetchone()
+        self.assertEqual(row["name"], "Album One")
+        self.assertEqual(row["total_tracks"], 10)
+        self.assertEqual(row["release_date"], 12345.0)
+
+    def test_upsert_does_not_blank_existing_track_duration(self):
+        # A zero duration (Client.formatTrack's `duration_ms or 0` for a payload
+        # without one) must not wipe a real duration - a 0 corrupts skip and
+        # completion classification.
+        self.repo.upsertTrack(makeTrack(trackId="t1"))
+        self.repo.commit()
+
+        blank = makeTrack(trackId="t1")
+        blank["duration"] = 0
+        self.repo.upsertTrack(blank)
+        self.repo.commit()
+
+        self.assertEqual(self.repo.getTrack("t1")["duration"], 200000)
+
+    def test_delete_zero_duration_plays_without_is_skip_column(self):
+        # deleteZeroDurationPlays' only callers (migrate1_7_0 / migrate1_9_0) run
+        # before migrate1_32_0 adds plays.is_skip, so on a legacy table the
+        # column is absent - the method must not reference it there.
+        conn = self.repo.connection()
+        conn.execute("DROP TABLE plays")
+        conn.execute("CREATE TABLE plays (id INTEGER PRIMARY KEY, username TEXT, "
+                     "track_id TEXT, played_at REAL, time_played INTEGER)")
+        conn.execute("INSERT INTO plays (username, track_id, played_at, time_played) VALUES ('alice','t1',100,0)")
+        conn.execute("INSERT INTO plays (username, track_id, played_at, time_played) VALUES ('alice','t2',200,5000)")
+        self.repo.commit()
+
+        removed = self.repo.deleteZeroDurationPlays()
+
+        self.assertEqual(removed, 1)
+        remaining = [r["track_id"] for r in conn.execute("SELECT track_id FROM plays").fetchall()]
+        self.assertEqual(remaining, ["t2"])
+
     def test_unknown_track_returns_none(self):
         self.assertIsNone(self.repo.getTrack("missing"))
 

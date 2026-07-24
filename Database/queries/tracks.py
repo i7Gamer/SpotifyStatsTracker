@@ -54,8 +54,11 @@ class TrackQueries:
             INSERT INTO albums (id, name, url, total_tracks, release_date, image_id, image_url)
             VALUES (:id, :name, :url, :totalTracks, :releaseDate, :id, :imageUrl)
             ON CONFLICT(id) DO UPDATE SET
-                name=excluded.name, url=excluded.url, total_tracks=excluded.total_tracks,
-                release_date=excluded.release_date, image_url=excluded.image_url
+                name = CASE WHEN excluded.name <> '' THEN excluded.name ELSE albums.name END,
+                url = CASE WHEN excluded.url <> '' THEN excluded.url ELSE albums.url END,
+                total_tracks = CASE WHEN excluded.total_tracks > 0 THEN excluded.total_tracks ELSE albums.total_tracks END,
+                release_date = CASE WHEN excluded.release_date > 0 THEN excluded.release_date ELSE albums.release_date END,
+                image_url = CASE WHEN excluded.image_url <> '' THEN excluded.image_url ELSE albums.image_url END
             """,
             album,
         )
@@ -96,7 +99,8 @@ class TrackQueries:
             VALUES (:id, :name, :url, :albumId, :imageId, :duration, :explicit, :isrc, :discNumber, :trackNumber, :created_at, :created_reason, :availability_reason)
             ON CONFLICT(id) DO UPDATE SET
                 name=excluded.name, url=excluded.url, album_id=excluded.album_id, image_id=excluded.image_id,
-                duration_ms=excluded.duration_ms, explicit=excluded.explicit, isrc=excluded.isrc,
+                duration_ms = CASE WHEN excluded.duration_ms > 0 THEN excluded.duration_ms ELSE tracks.duration_ms END,
+                explicit=excluded.explicit, isrc=excluded.isrc,
                 disc_number=excluded.disc_number, track_number=excluded.track_number,
                 availability_reason=excluded.availability_reason,
                 created_at=CASE
