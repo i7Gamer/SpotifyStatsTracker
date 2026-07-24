@@ -102,6 +102,44 @@ class TestGetNowPlaying(DatabaseTestCase):
         self.assertFalse(nowPlaying["isPaused"])
         self.assertEqual(nowPlaying["durationMs"], 200000)
 
+    def test_played_track_and_artists_are_flagged_for_internal_links(self):
+        tracks = {"t1": {"id": "t1", "name": "Live Song",
+                         "artists": [{"id": "a1", "name": "Artist One"}]}}
+        entries = [{"id": "t1", "playedAt": 1000.0, "timePlayed": 200000}]
+        db = self._makeDb(tracks, entries)
+        db.listener = SimpleNamespace(getConnectPlayerState=lambda: _playingState("t1"))
+
+        nowPlaying = db.getNowPlaying()
+
+        self.assertTrue(nowPlaying["trackPlayed"])
+        self.assertEqual(nowPlaying["artists"],
+                         [{"id": "a1", "name": "Artist One", "played": True}])
+
+    def test_catalog_track_never_played_is_not_flagged(self):
+        # In the catalog (someone's play seeded it) but this user never played
+        # it - so it links out to Spotify, not our empty detail page.
+        tracks = {"t1": {"id": "t1", "name": "Live Song",
+                         "artists": [{"id": "a1", "name": "Artist One"}]}}
+        db = self._makeDb(tracks, [])
+        db.listener = SimpleNamespace(getConnectPlayerState=lambda: _playingState("t1"))
+
+        nowPlaying = db.getNowPlaying()
+
+        self.assertFalse(nowPlaying["trackPlayed"])
+        self.assertEqual(nowPlaying["artists"],
+                         [{"id": "a1", "name": "Artist One", "played": False}])
+
+    def test_first_listen_fallback_has_no_structured_artists(self):
+        # Not in the catalog yet -> no artist ids -> the UI keeps plain-text
+        # artistsText and the Spotify fallback link.
+        meta = {"title": "Fresh Track", "artist_name": "New Artist"}
+        db = self._makeDbWithState(_playingState("brandnew", metadata=meta))
+        with patch.object(db, "saveTrackImg"):
+            nowPlaying = db.getNowPlaying()
+        self.assertFalse(nowPlaying["trackPlayed"])
+        self.assertEqual(nowPlaying["artists"], [])
+        self.assertEqual(nowPlaying["artistsText"], "New Artist")
+
     _T1_CATALOG = {"t1": {"id": "t1", "name": "Live Song", "artists": []}}
 
     def test_position_advances_with_elapsed_time_while_playing(self):

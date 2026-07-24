@@ -21,8 +21,10 @@
                fails at parse time, firing (and burning) the one-shot onerror
                fallback before there was ever a real cover URL to fall back
                from. #}
-            <img id="nowPlayingCover" class="now-playing-cover" alt="Album cover"
-                 onerror="this.onerror=null;this.src=window.PLACEHOLDER_IMG;" />
+            <a id="nowPlayingCoverLink" class="now-playing-cover-link" aria-label="Open the current track">
+              <img id="nowPlayingCover" class="now-playing-cover" alt="Album cover"
+                   onerror="this.onerror=null;this.src=window.PLACEHOLDER_IMG;" />
+            </a>
           </div>
         </div>
         <div class="streak-block">
@@ -324,32 +326,72 @@
         }
         var nameEl = document.getElementById('nowPlayingName');
         nameEl.textContent = np.name;
-        // Links to the real Spotify track page rather than our own
-        // /song/<id> route: a currently-playing track usually has no
-        // completed play logged yet, so the internal detail page would
-        // have nothing to show and silently redirect to Top Songs.
-        if (np.trackId) {
-          nameEl.href = 'https://open.spotify.com/track/' + encodeURIComponent(np.trackId);
-          nameEl.target = '_blank';
-          nameEl.rel = 'noreferrer noopener';
-        } else {
-          // Local files / podcasts / transitional states carry a name but no
-          // track id - show plain text instead of a .../track/undefined link.
-          nameEl.removeAttribute('href');
-          nameEl.removeAttribute('target');
-          nameEl.removeAttribute('rel');
+
+        // Link the title (and cover) to our own /song/<id> page when the user
+        // has actually played this track before; otherwise fall back to Spotify
+        // (a track playing for the first time has no completed play logged yet,
+        // so the internal detail page would have nothing to show). No id at all
+        // (local files / podcasts / transitional states) -> plain text.
+        function applyTrackLink(el) {
+          if (!el) return;
+          if (np.trackId && np.trackPlayed) {
+            el.href = '/song/' + encodeURIComponent(np.trackId);
+            el.removeAttribute('target');
+            el.removeAttribute('rel');
+          } else if (np.trackId) {
+            el.href = 'https://open.spotify.com/track/' + encodeURIComponent(np.trackId);
+            el.target = '_blank';
+            el.rel = 'noreferrer noopener';
+          } else {
+            el.removeAttribute('href');
+            el.removeAttribute('target');
+            el.removeAttribute('rel');
+          }
         }
-        document.getElementById('nowPlayingArtists').textContent = np.artistsText || '';
+        applyTrackLink(nameEl);
+        applyTrackLink(document.getElementById('nowPlayingCoverLink'));
+
+        // Artist names: link each to our /artist/<id> page when the user has
+        // played that artist before, else to their Spotify page (first play).
+        // The first-listen fallback carries no artist ids, so keep plain text.
+        var artistsEl = document.getElementById('nowPlayingArtists');
+        if (np.artists && np.artists.length) {
+          artistsEl.textContent = '';
+          np.artists.forEach(function (a, i) {
+            if (i) artistsEl.appendChild(document.createTextNode(', '));
+            var el;
+            if (a.id && a.played) {
+              el = document.createElement('a');
+              el.href = '/artist/' + encodeURIComponent(a.id);
+            } else if (a.id) {
+              el = document.createElement('a');
+              el.href = 'https://open.spotify.com/artist/' + encodeURIComponent(a.id);
+              el.target = '_blank';
+              el.rel = 'noreferrer noopener';
+            } else {
+              el = document.createElement('span');
+            }
+            el.className = 'now-playing-artist-link';
+            el.textContent = a.name;
+            artistsEl.appendChild(el);
+          });
+        } else {
+          artistsEl.textContent = np.artistsText || '';
+        }
+
         var stateEl = document.getElementById('nowPlayingState');
         stateEl.textContent = np.isPaused ? 'Paused' : 'Playing';
         stateEl.classList.toggle('paused', !!np.isPaused);
         var cover = document.getElementById('nowPlayingCover');
+        var coverLink = document.getElementById('nowPlayingCoverLink');
         if (np.imageId) {
           var src = '/img/' + encodeURIComponent(USERNAME) + '/tracks/' + encodeURIComponent(np.imageId) + '.jpeg';
           if (cover.getAttribute('src') !== src) cover.src = src;
           cover.style.display = '';
+          if (coverLink) coverLink.style.display = '';
         } else {
           cover.style.display = 'none';
+          if (coverLink) coverLink.style.display = 'none';
         }
         var bar = document.getElementById('nowPlayingBar');
         if (np.durationMs > 0) {

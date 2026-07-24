@@ -475,10 +475,30 @@ class ListenerMixin:
         if not name:
             return None   #< nothing presentable to show
 
+        # Whether the current user has actually played this track / these
+        # artists before decides whether Now Playing links to our own detail
+        # pages or falls back to Spotify: a track playing for the first time has
+        # no completed play logged yet, so /song/<id> would have nothing to show
+        # (this is why it used to always link out to Spotify). artists carry ids
+        # only in the catalog branch; a first-listen fallback has none, so the
+        # UI keeps showing artistsText as plain text there.
+        trackPlayed = bool(self.repo.getPlayedTrackIds(self.user, [trackId]))
+        artists = []
+        if track:
+            artistList = track.get("artists") or []
+            artistIds = [a.get("id") for a in artistList if a.get("id")]
+            playedArtistIds = self.repo.getPlayedArtistIds(self.user, artistIds) if artistIds else set()
+            artists = [
+                {"id": a.get("id"), "name": a.get("name", ""), "played": a.get("id") in playedArtistIds}
+                for a in artistList if a.get("id")
+            ]
+
         return {
             "trackId": trackId,
             "name": name,
             "artistsText": artistsText,
+            "artists": artists,
+            "trackPlayed": trackPlayed,
             "imageId": imageId,
             "isPaused": isPaused,
             "positionMs": currentPositionMs,
