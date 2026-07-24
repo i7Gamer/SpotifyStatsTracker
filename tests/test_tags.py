@@ -101,6 +101,24 @@ class TestTagQueries(unittest.TestCase):
         track_ids = self.repo.getTaggedTrackIds("alice", ["chill", "workout"], match_mode="all")
         self.assertEqual(track_ids, ["t1"])
 
+    def test_match_mode_any_unions_multiple_tags(self):
+        # Exercises the single-query `tag IN (...)` union path across >1 tag.
+        self.repo.addTag("alice", "chill", "track", "t1")
+        self.repo.addTag("alice", "workout", "track", "t2")
+
+        track_ids = self.repo.getTaggedTrackIds("alice", ["chill", "workout"], match_mode="any")
+        self.assertCountEqual(track_ids, ["t1", "t2"])
+
+    def test_duplicate_tags_are_deduped(self):
+        # A repeated tag must not change the result in either mode (and in "all"
+        # must not make the tag count require an impossible double-match).
+        self.repo.addTag("alice", "chill", "track", "t1")
+
+        self.assertEqual(
+            self.repo.getTaggedTrackIds("alice", ["chill", "chill"], match_mode="all"), ["t1"])
+        self.assertEqual(
+            self.repo.getTaggedTrackIds("alice", ["chill", "#chill", " CHILL "], match_mode="any"), ["t1"])
+
     def test_rename_tag(self):
         self.repo.addTag("alice", "oldname", "track", "t1")
         self.repo.addTag("alice", "oldname", "artist", "art1")
