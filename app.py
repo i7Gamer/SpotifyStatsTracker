@@ -697,26 +697,34 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
         thread.start()
 
     def _versionCheckLoop(self):
-        # Check version from GitHub shortly after startup (random offset, so a
-        # restart doesn't fire every worker at once) and then every hour.
-        url = "https://raw.githubusercontent.com/i7Gamer/SpotifyStatsTracker/main/Database/VERSION"
+        # Check the latest published GitHub Release - not just whatever
+        # Database/VERSION says on main, which can be bumped ahead of what's
+        # actually been released/tagged (see .github/workflows/dockerReleaseTag.yml)
+        # - shortly after startup (random offset, so a restart doesn't fire
+        # every worker at once) and then every hour.
+        url = "https://api.github.com/repos/i7Gamer/SpotifyStatsTracker/releases/latest"
         if self._stop_event.wait(random.randint(VERSION_CHECK_MIN_START_DELAY_SECONDS,
                                                 VERSION_CHECK_MAX_START_DELAY_SECONDS)):
             return
         while not self._stop_event.is_set():
             try:
-                resp = requests.get(url, timeout=6)
+                resp = requests.get(url, timeout=6, headers={"Accept": "application/vnd.github+json"})
                 if resp.status_code == 200:
-                    remoteVersion = resp.text.strip()
+                    # Releases are tagged e.g. "1.31.0" (occasionally "v1.31.0").
+                    remoteVersion = resp.json().get("tag_name", "").strip().lstrip("vV")
                     # store remoteVersion if it's newer than current
                     try:
                         with self._version_lock:
-                            if versionTuple(remoteVersion) > versionTuple(self.currentVersion):
+                            if remoteVersion and versionTuple(remoteVersion) > versionTuple(self.currentVersion):
                                 self.latestVersion = remoteVersion
                             else:
                                 self.latestVersion = None
                     except Exception as e:
-                        logger.warning("Ignoring malformed remote VERSION %r: %s", remoteVersion, e)
+                        logger.warning("Ignoring malformed release tag %r: %s", remoteVersion, e)
+                elif resp.status_code == 404:
+                    # No release has ever been published - nothing to notify about.
+                    with self._version_lock:
+                        self.latestVersion = None
             except Exception as e:
                 # Transient (DNS/TLS/GitHub outage) - debug, not warning, so an
                 # offline instance doesn't spam its log every hour.
