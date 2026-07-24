@@ -61,6 +61,24 @@ class TestSongDetailRoute(_DetailRouteTestBase):
         self.assertEqual(db.getListeningTimeSeries.call_args.kwargs.get("trackId"), "t1")
         self.assertEqual(db.getHourOfDayHeatmap.call_args.kwargs.get("trackId"), "t1")
 
+    def test_rendered_page_has_balanced_div_tags(self):
+        """Guard against an unclosed container leaking every section below it
+        into the toolbar (the tag-widget insert once dropped .detail-toolbar's
+        closing </div>, which cascaded the whole subpage layout)."""
+        import re
+        dash = self._makeApp()
+        db = MagicMock()
+        db.getSong.return_value = self._song()
+        db.getListeningTimeSeries.return_value = []
+        db.getHourOfDayHeatmap.return_value = [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
+
+        resp = self._getPath(dash, db, "/song/t1")
+        body = resp.data.decode()
+
+        opens = len(re.findall(r"<div[\s>]", body))
+        closes = body.count("</div>")
+        self.assertEqual(opens, closes, f"unbalanced <div> tags: {opens} open vs {closes} close")
+
     def test_genre_badge_renders_when_track_has_genres(self):
         dash = self._makeApp()
         db = MagicMock()
