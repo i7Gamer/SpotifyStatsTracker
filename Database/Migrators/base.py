@@ -43,7 +43,9 @@ class BaseMigrator:
             dbVersion = dbversion.readDbVersion(self.dbPath)
             if dbVersion is not None:
                 return dbVersion
-        return self.databaseVersionFile.read_text().strip()
+        if self.databaseVersionFile.exists():
+            return self.databaseVersionFile.read_text().strip()
+        return "1.0.0"
 
     @staticmethod
     def getMajorMinor(version):

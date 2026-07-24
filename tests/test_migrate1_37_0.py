@@ -1,6 +1,7 @@
 import unittest
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 from Database.Migrators.migrate1_37_0 import Migrator
 from Database.Migrators.dbversion import writeDbVersion, readDbVersion
 
@@ -20,13 +21,10 @@ class TestMigrate1370(unittest.TestCase):
     def tearDown(self):
         self.tmpdir.cleanup()
 
-    def test_migration_updates_version(self):
+    @patch("Database.Migrators.base.resolveRuntimeDir")
+    def test_migration_updates_version(self, mock_resolve):
+        mock_resolve.return_value = self.data_dir
         migrator = Migrator("1.37.0", "1.38.0")
-        migrator.baseDir = self.base_dir
-        migrator.dbPath = self.db_path
-        migrator.databaseVersionFile = self.version_file
-        migrator.databaseVersion = "1.37.0"
-
         migrator.migrate()
 
         self.assertEqual(readDbVersion(self.db_path), "1.38.0")
