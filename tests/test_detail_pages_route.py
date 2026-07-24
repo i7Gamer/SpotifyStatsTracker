@@ -32,6 +32,17 @@ class _DetailRouteTestBase(AppTestCase):
                 sess['email'] = 'alice@example.com'
             return client.get(path)
 
+    def _assertNoNavItemActive(self, body):
+        """Detail subpages aren't the Top Songs/Artists/Albums list pages
+        themselves, so nothing in the main nav should render as active/current
+        while viewing one (see templates/layout.html's nav-links block)."""
+        import re
+        navMatch = re.search(r'<nav class="nav-links".*?</nav>', body, re.DOTALL)
+        self.assertIsNotNone(navMatch, "could not find nav-links block")
+        navHtml = navMatch.group(0)
+        self.assertNotIn("active-parent", navHtml)
+        self.assertNotIn('class="active"', navHtml)
+
 
 class TestSongDetailRoute(_DetailRouteTestBase):
     def _song(self):
@@ -60,6 +71,17 @@ class TestSongDetailRoute(_DetailRouteTestBase):
         db.getListeningTimeSeries.assert_called_once()
         self.assertEqual(db.getListeningTimeSeries.call_args.kwargs.get("trackId"), "t1")
         self.assertEqual(db.getHourOfDayHeatmap.call_args.kwargs.get("trackId"), "t1")
+
+    def test_no_nav_item_is_active(self):
+        dash = self._makeApp()
+        db = MagicMock()
+        db.getSong.return_value = self._song()
+        db.getListeningTimeSeries.return_value = []
+        db.getHourOfDayHeatmap.return_value = [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
+
+        resp = self._getPath(dash, db, "/song/t1")
+
+        self._assertNoNavItemActive(resp.data.decode())
 
     def test_rendered_page_has_balanced_div_tags(self):
         """Guard against an unclosed container leaking every section below it
@@ -581,6 +603,18 @@ class TestArtistDetailRoute(_DetailRouteTestBase):
         self.assertEqual(db.getSongsStats.call_args.kwargs.get("artistId"), "a1")
         self.assertEqual(db.getListeningTimeSeries.call_args.kwargs.get("artistId"), "a1")
 
+    def test_no_nav_item_is_active(self):
+        dash = self._makeApp()
+        db = MagicMock()
+        db.getArtist.return_value = self._artist()
+        db.getArtistBio.return_value = None
+        db.getSongsStats.return_value = []
+        db.getListeningTimeSeries.return_value = []
+
+        resp = self._getPath(dash, db, "/artist/a1")
+
+        self._assertNoNavItemActive(resp.data.decode())
+
     def test_genre_badge_renders_when_artist_has_genres(self):
         dash = self._makeApp()
         db = MagicMock()
@@ -880,6 +914,17 @@ class TestAlbumDetailRoute(_DetailRouteTestBase):
         db.getAlbum.assert_called_once_with("alb1")
         self.assertEqual(db.getSongsStats.call_args.kwargs.get("albumId"), "alb1")
         self.assertEqual(db.getListeningTimeSeries.call_args.kwargs.get("albumId"), "alb1")
+
+    def test_no_nav_item_is_active(self):
+        dash = self._makeApp()
+        db = MagicMock()
+        db.getAlbum.return_value = self._album()
+        db.getSongsStats.return_value = []
+        db.getListeningTimeSeries.return_value = []
+
+        resp = self._getPath(dash, db, "/album/alb1")
+
+        self._assertNoNavItemActive(resp.data.decode())
 
     def test_genre_badge_renders_when_album_has_genres(self):
         dash = self._makeApp()
