@@ -4,7 +4,7 @@
       <span style="font-size: 0.9rem; font-weight: bold; color: var(--text-muted, #888888);">Tags:</span>
       {% if entity_tags %}
         {% for t in entity_tags %}
-          <span class="tag-chip" data-tag="{{ t }}" style="display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 12px; background: rgba(251, 113, 123, 0.15); color: var(--accent-color, #fb717b); font-size: 0.85rem;">
+          <span class="tag-chip" data-tag="{{ t }}" style="display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 12px; background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent); font-size: 0.85rem;">
             #{{ t }}
             <button type="button" class="btn-remove-tag" data-tag="{{ t }}" style="background: none; border: none; color: inherit; cursor: pointer; padding: 0 2px; font-weight: bold;">&times;</button>
           </span>

@@ -26,9 +26,9 @@
           chip.style.color = 'inherit';
         } else {
           selectedTags.add(tag);
-          chip.style.background = 'rgba(251, 113, 123, 0.2)';
-          chip.style.borderColor = 'var(--accent-color, #fb717b)';
-          chip.style.color = 'var(--accent-color, #fb717b)';
+          chip.style.background = 'color-mix(in srgb, var(--accent) 20%, transparent)';
+          chip.style.borderColor = 'var(--accent)';
+          chip.style.color = 'var(--accent)';
         }
         updatePreview();
       });

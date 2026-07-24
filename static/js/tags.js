@@ -29,7 +29,7 @@
           var chip = document.createElement('span');
           chip.className = 'tag-chip';
           chip.dataset.tag = t;
-          chip.style.cssText = 'display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 12px; background: rgba(251, 113, 123, 0.15); color: var(--accent-color, #fb717b); font-size: 0.85rem;';
+          chip.style.cssText = 'display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 12px; background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent); font-size: 0.85rem;';
           chip.appendChild(document.createTextNode('#' + t));
 
           var removeBtn = document.createElement('button');

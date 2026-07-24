@@ -46,9 +46,9 @@
       </div>
     </div>
 
-    <div style="margin-top: 2rem; padding: 1rem 1.5rem; background: rgba(251, 113, 123, 0.08); border-radius: 8px; border: 1px solid rgba(251, 113, 123, 0.2); display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 1rem;">
+    <div style="margin-top: 2rem; padding: 1rem 1.5rem; background: color-mix(in srgb, var(--accent) 8%, transparent); border-radius: 8px; border: 1px solid color-mix(in srgb, var(--accent) 20%, transparent); display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 1rem;">
       <div>
-        <strong style="font-size: 1.1rem; color: var(--accent-color, #fb717b);" id="previewCount">0 tracks match selection</strong>
+        <strong style="font-size: 1.1rem; color: var(--accent);" id="previewCount">0 tracks match selection</strong>
         <p style="font-size: 0.85rem; color: var(--text-muted, #aaa); margin: 4px 0 0 0;">Select one or more tags above to generate a playlist.</p>
       </div>
       <button type="button" id="btnDownloadPlaylist" class="button" disabled style="padding: 10px 20px; font-weight: bold;">Download Playlist</button>
@@ -70,7 +70,7 @@
       <tbody>
         {% for t in user_tags %}
         <tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">
-          <td style="padding: 8px; font-weight: bold; color: var(--accent-color, #fb717b);">#{{ t.tag }}</td>
+          <td style="padding: 8px; font-weight: bold; color: var(--accent);">#{{ t.tag }}</td>
           <td style="padding: 8px;">{{ t.count }}</td>
           <td style="padding: 8px; text-align: right; display: flex; gap: 8px; justify-content: flex-end;">
             <button type="button" class="button button-small btn-rename-tag" data-tag="{{ t.tag }}" style="padding: 2px 8px; font-size: 0.8rem;">Rename</button>
