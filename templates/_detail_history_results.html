@@ -4,7 +4,7 @@
    changes (the ?ajax=list branch of artistDetailPage/albumDetailPage).
    Expects: plays, startIndex, itemName, sortOldest, sortToggleUrl, plus
    everything _pagination.html needs. #}
-<div class="play-log-header">
+<div class="play-log-header detail-tabs-heading">
   <h2>History with {{ itemName }}</h2>
   <a class="button sort-toggle" href="{{ sortToggleUrl }}"
      aria-label="Sorted {{ 'oldest' if sortOldest else 'newest' }} first - click to sort {{ 'newest' if sortOldest else 'oldest' }} first">Date {{ '↑' if sortOldest else '↓' }}</a>

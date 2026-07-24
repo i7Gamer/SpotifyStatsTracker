@@ -94,7 +94,7 @@
   </nav>
 
   <div data-category="top-songs" class="{{ 'visible' if view != 'history' else '' }}">
-    <h2>Top Songs on {{ album.get('name', '') }}</h2>
+    <h2 class="detail-tabs-heading">Top Songs on {{ album.get('name', '') }}</h2>
     <section class="track-list">
       {% if songs %}
         {% for track in songs %}

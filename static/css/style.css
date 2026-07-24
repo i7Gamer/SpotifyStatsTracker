@@ -2262,6 +2262,18 @@ progress::-moz-progress-bar {
   margin: 0;
 }
 
+/* Album/artist detail pages only (album_detail.html, artist_detail.html,
+   _detail_history_results.html): matches the Top Songs tab's h2 margin
+   (.page > h2, 36px/18px) so its gap to the filter buttons above and the
+   list below lines up with the History tab's heading. Scoped to this class
+   rather than reusing .page > h2 or widening .play-log-header's own margin,
+   since both selectors are shared with other pages (wrapped.html/
+   compare.html's [data-category] headings, song_detail.html's Play Timeline
+   heading via _play_log.html) that shouldn't shift. */
+.detail-tabs-heading {
+  margin: 36px 0 18px;
+}
+
 .play-log-controls {
   display: flex;
   align-items: center;
