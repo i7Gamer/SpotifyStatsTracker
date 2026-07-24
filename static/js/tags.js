@@ -17,18 +17,38 @@
     }
 
     function renderTags(tags) {
-      var html = '<span style="font-size: 0.9rem; font-weight: bold; color: var(--text-muted, #888888);">Tags:</span>';
+      chipsContainer.innerHTML = '';
+
+      var label = document.createElement('span');
+      label.style.cssText = 'font-size: 0.9rem; font-weight: bold; color: var(--text-muted, #888888);';
+      label.textContent = 'Tags:';
+      chipsContainer.appendChild(label);
+
       if (tags && tags.length > 0) {
         tags.forEach(function(t) {
-          html += '<span class="tag-chip" data-tag="' + t + '" style="display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 12px; background: rgba(251, 113, 123, 0.15); color: var(--accent-color, #fb717b); font-size: 0.85rem;">' +
-                  '#' + t +
-                  '<button type="button" class="btn-remove-tag" data-tag="' + t + '" style="background: none; border: none; color: inherit; cursor: pointer; padding: 0 2px; font-weight: bold;">&times;</button>' +
-                  '</span>';
+          var chip = document.createElement('span');
+          chip.className = 'tag-chip';
+          chip.dataset.tag = t;
+          chip.style.cssText = 'display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 12px; background: rgba(251, 113, 123, 0.15); color: var(--accent-color, #fb717b); font-size: 0.85rem;';
+          chip.appendChild(document.createTextNode('#' + t));
+
+          var removeBtn = document.createElement('button');
+          removeBtn.type = 'button';
+          removeBtn.className = 'btn-remove-tag';
+          removeBtn.dataset.tag = t;
+          removeBtn.style.cssText = 'background: none; border: none; color: inherit; cursor: pointer; padding: 0 2px; font-weight: bold;';
+          removeBtn.innerHTML = '&times;';
+          chip.appendChild(removeBtn);
+
+          chipsContainer.appendChild(chip);
         });
       } else {
-        html += '<span class="no-tags-text" style="font-size: 0.85rem; color: var(--text-muted, #888888); italic;">No tags added yet</span>';
+        var empty = document.createElement('span');
+        empty.className = 'no-tags-text';
+        empty.style.cssText = 'font-size: 0.85rem; color: var(--text-muted, #888888); italic;';
+        empty.textContent = 'No tags added yet';
+        chipsContainer.appendChild(empty);
       }
-      chipsContainer.innerHTML = html;
       bindRemoveButtons();
     }
 

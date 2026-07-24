@@ -77,6 +77,22 @@ class TestTagQueries(unittest.TestCase):
         track_ids = self.repo.getTaggedTrackIds("alice", ["rock"], match_mode="any")
         self.assertCountEqual(track_ids, ["t1", "t2"])
 
+    def test_inherited_tagging_matches_featured_not_just_primary_artist(self):
+        # t1 already has a single primary artist (art1); add a featured
+        # (non-primary, position 1) artist so tagging them still surfaces t1.
+        track = makeTrack(trackId="t1", albumId="alb1", artistId="art1")
+        track["artists"].append(
+            {"id": "feat1", "name": "Artist feat1", "url": "http://example.com/artist/feat1",
+             "imageUrl": "", "imageId": "feat1"}
+        )
+        self.repo.upsertTrack(track)
+        self.repo.commit()
+
+        self.repo.addTag("alice", "duet", "artist", "feat1")
+
+        track_ids = self.repo.getTaggedTrackIds("alice", ["duet"], match_mode="any")
+        self.assertEqual(track_ids, ["t1"])
+
     def test_match_mode_all(self):
         self.repo.addTag("alice", "chill", "track", "t1")
         self.repo.addTag("alice", "workout", "track", "t1")

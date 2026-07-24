@@ -1716,6 +1716,27 @@ class TestSongsPage(RepositoryTestCase):
         with self.assertRaises(ValueError):
             self.repo.getSongsPage("alice", sortBy="; DROP TABLE plays;--")
 
+    def test_order_by_recent_descending(self):
+        self._seedThreeSongs()
+        # t3 (400.0) was played most recently, then t2 (300.0), then t1 (100.0).
+
+        songs = self.repo.getSongsPage("alice", sortBy="recent")
+
+        self.assertEqual([s["id"] for s in songs], ["t3", "t2", "t1"])
+
+    def test_recent_uses_latest_play_not_first(self):
+        self.repo.upsertTrack(self._track("t1", "alb1", "a1", name="First played, last replayed"))
+        self.repo.upsertTrack(self._track("t2", "alb1", "a1", name="Only played once, in between"))
+        self.repo.insertPlay("alice", "t1", 100.0, 1000)
+        self.repo.insertPlay("alice", "t2", 200.0, 1000)
+        self.repo.insertPlay("alice", "t1", 300.0, 1000)   # t1's most recent play beats t2's
+        self.repo.commit()
+
+        songs = self.repo.getSongsPage("alice", sortBy="recent")
+
+        self.assertEqual([s["id"] for s in songs], ["t1", "t2"])
+        self.assertEqual(songs[0]["lastPlayedAt"], 300.0)
+
     def test_limit_and_offset_paginate_default_order(self):
         self._seedThreeSongs()
 
@@ -1834,6 +1855,7 @@ class TestSongsPage(RepositoryTestCase):
             "album_total_tracks": None, "album_release_date": None,
             "album_image_id": None, "album_image_url": None,
             "plays": 1, "total_time_listened": 1000, "first_listened_at": 100.0,
+            "last_played_at": 100.0,
         }
 
         song = Repository._songRowToDict(row, [])

@@ -118,6 +118,15 @@ class TestTagsRoutes(AppTestCase):
         self.assertIn("application/xspf+xml", resp.mimetype)
         self.assertIn("<location>spotify:track:t1</location>", resp.get_data(as_text=True))
 
+    def test_playlist_export_sort_by_recent(self):
+        self._login()
+        self.client.post("/api/tags", json={"entity_type": "track", "entity_id": "t1", "tag": "workout"})
+
+        resp = self.client.get("/playlist/export?tags=workout&format=csv&sort=recent")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("Rock Song", resp.get_data(as_text=True))
+
     def test_playlists_page_renders(self):
         self._login()
         resp = self.client.get("/playlists")

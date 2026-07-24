@@ -77,13 +77,14 @@ class TagQueries:
 
         query = """
             SELECT DISTINCT t.id FROM tracks t
-            LEFT JOIN track_artists ta ON ta.track_id = t.id AND ta.position = 0
             WHERE t.id IN (
                 SELECT entity_id FROM user_tags WHERE username = ? AND entity_type = 'track' AND tag = ?
             ) OR t.album_id IN (
                 SELECT entity_id FROM user_tags WHERE username = ? AND entity_type = 'album' AND tag = ?
-            ) OR ta.artist_id IN (
-                SELECT entity_id FROM user_tags WHERE username = ? AND entity_type = 'artist' AND tag = ?
+            ) OR EXISTS (
+                SELECT 1 FROM track_artists ta WHERE ta.track_id = t.id AND ta.artist_id IN (
+                    SELECT entity_id FROM user_tags WHERE username = ? AND entity_type = 'artist' AND tag = ?
+                )
             )
         """
 

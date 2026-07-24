@@ -157,6 +157,7 @@ SONG_SORT_COLUMNS = {
     "plays": "plays",
     "totalTimeListened": "total_time_listened",
     "name": "name COLLATE NOCASE",
+    "recent": "last_played_at",
 }
 
 ALBUM_SORT_COLUMNS = {

@@ -671,7 +671,7 @@ class PlayQueries:
                 al.total_tracks AS album_total_tracks, al.release_date AS album_release_date,
                 al.image_id AS album_image_id, al.image_url AS album_image_url,
                 COUNT(*) AS plays, SUM(p.time_played) AS total_time_listened,
-                MIN(p.played_at) AS first_listened_at
+                MIN(p.played_at) AS first_listened_at, MAX(p.played_at) AS last_played_at
             FROM plays p
             JOIN tracks t ON t.id = p.track_id
             LEFT JOIN albums al ON al.id = t.album_id
@@ -947,6 +947,7 @@ class PlayQueries:
             "plays": row["plays"],
             "totalTimeListened": row["total_time_listened"],
             "firstListenedAt": row["first_listened_at"],
+            "lastPlayedAt": row["last_played_at"],
             "created_reason": row["created_reason"],
             "availability_reason": row["availability_reason"],
         }
