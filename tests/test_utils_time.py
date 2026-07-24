@@ -89,5 +89,36 @@ class TestTimeToIntUTC(unittest.TestCase):
         self.assertEqual(utilsModule.timeToIntUTC(1234567890), utilsModule.timeToInt(1234567890))
 
 
+class TestFormatTimeGap(unittest.TestCase):
+    """formatTimeGap must convert a delta in seconds into human-readable time-gap strings."""
+
+    def test_seconds_under_one_minute(self):
+        self.assertEqual(utilsModule.formatTimeGap(30), "< 1 min later")
+        self.assertEqual(utilsModule.formatTimeGap(0), "< 1 min later")
+
+    def test_minutes(self):
+        self.assertEqual(utilsModule.formatTimeGap(60), "1 min later")
+        self.assertEqual(utilsModule.formatTimeGap(300), "5 mins later")
+        self.assertEqual(utilsModule.formatTimeGap(3599), "59 mins later")
+
+    def test_hours(self):
+        self.assertEqual(utilsModule.formatTimeGap(3600), "1 hour later")
+        self.assertEqual(utilsModule.formatTimeGap(7200), "2 hours later")
+        self.assertEqual(utilsModule.formatTimeGap(82800), "23 hours later")
+
+    def test_days(self):
+        self.assertEqual(utilsModule.formatTimeGap(86400), "1 day later")
+        self.assertEqual(utilsModule.formatTimeGap(86400 * 5), "5 days later")
+
+    def test_months(self):
+        self.assertEqual(utilsModule.formatTimeGap(86400 * 30), "1 month later")
+        self.assertEqual(utilsModule.formatTimeGap(86400 * 90), "3 months later")
+
+    def test_years(self):
+        self.assertEqual(utilsModule.formatTimeGap(86400 * 365), "1 year later")
+        self.assertEqual(utilsModule.formatTimeGap(86400 * 365 * 3), "3 years later")
+
+
 if __name__ == "__main__":
     unittest.main()
+

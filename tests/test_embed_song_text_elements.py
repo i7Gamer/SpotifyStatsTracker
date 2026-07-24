@@ -96,5 +96,59 @@ class TestEmbedAlbumTextElementsReleaseDate(AppTestCase):
         self.assertNotEqual(result["releaseDateText"], "")
 
 
+class TestEnrichSongTimelineEntries(AppTestCase):
+    """_enrichSongTimelineEntries must add playType, timePassedText, and monthYearHeader tokens."""
+
+    def test_play_type_classification(self):
+        dash = self._makeApp()
+        track_duration = 200000  # 200s
+        plays = [
+            {"id": "t1", "playedAt": 1784560000, "timePlayed": 190000, "isSkip": False},  # 190s / 200s = 95% -> full
+            {"id": "t1", "playedAt": 1784540000, "timePlayed": 100000, "isSkip": False},  # 100s / 200s = 50% -> partial
+            {"id": "t1", "playedAt": 1784520000, "timePlayed": 5000, "isSkip": True},     # skip
+        ]
+
+        enriched = dash._enrichSongTimelineEntries(plays, trackDurationMs=track_duration, oldestFirst=False)
+
+        self.assertEqual(enriched[0]["playType"], "full")
+        self.assertEqual(enriched[1]["playType"], "partial")
+        self.assertEqual(enriched[2]["playType"], "skip")
+
+    def test_time_passed_between_plays(self):
+        dash = self._makeApp()
+        # Newest first: 15:00, then 12:00 (3 hours difference)
+        ts_newer = 1784560000       # 2026-07-20 15:06:40 UTC
+        ts_older = ts_newer - 10800 # 3 hours earlier
+        plays = [
+            {"id": "t1", "playedAt": ts_newer, "timePlayed": 180000, "isSkip": False},
+            {"id": "t1", "playedAt": ts_older, "timePlayed": 180000, "isSkip": False},
+        ]
+
+        enriched = dash._enrichSongTimelineEntries(plays, trackDurationMs=200000, oldestFirst=False)
+
+        self.assertIn("timePassedText", enriched[0])
+        self.assertEqual(enriched[0]["timePassedText"], "3 hours later")
+        self.assertIsNone(enriched[1].get("timePassedText"))
+
+    def test_month_year_headers(self):
+        dash = self._makeApp()
+        import datetime
+        dt1 = datetime.datetime(2026, 7, 20, 15, 0, tzinfo=datetime.timezone.utc).timestamp()
+        dt2 = datetime.datetime(2026, 6, 15, 10, 0, tzinfo=datetime.timezone.utc).timestamp()
+        dt3 = datetime.datetime(2026, 6, 10, 10, 0, tzinfo=datetime.timezone.utc).timestamp()
+        plays = [
+            {"id": "t1", "playedAt": dt1, "timePlayed": 180000, "isSkip": False},
+            {"id": "t1", "playedAt": dt2, "timePlayed": 180000, "isSkip": False},
+            {"id": "t1", "playedAt": dt3, "timePlayed": 180000, "isSkip": False},
+        ]
+
+        enriched = dash._enrichSongTimelineEntries(plays, trackDurationMs=200000, oldestFirst=False)
+
+        self.assertEqual(enriched[0].get("monthYearHeader"), "July 2026")
+        self.assertEqual(enriched[1].get("monthYearHeader"), "June 2026")
+        self.assertIsNone(enriched[2].get("monthYearHeader"))
+
+
 if __name__ == "__main__":
     unittest.main()
+

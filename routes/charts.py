@@ -671,7 +671,8 @@ def register(app, dashboard):
     app.add_url_rule("/charts", "chartsPage", chartsPage, methods=["GET"])
 
     def _detailHistoryContext(db, endpoint, linkArgs, groupByParam="",
-                               trackId=None, artistId=None, albumId=None):
+                               trackId=None, artistId=None, albumId=None,
+                               trackDurationMs=None):
         """The detail pages' play-history list context: one sorted+paginated
         page of the item's individual plays, the Date-sort toggle URL, and
         _pagination.html's context. `linkArgs` are the endpoint kwargs every
@@ -680,6 +681,57 @@ def register(app, dashboard):
         never resets the Trend-buckets chart selection."""
         sortOrder = dashboard._getHistorySortParam()
         oldestFirst = sortOrder == "oldest"
+        isSongDetail = trackId is not None and artistId is None and albumId is None
+
+        if isSongDetail:
+            skipsParam = request.args.get("skips", "true").lower()
+            showSkips = skipsParam != "false"
+
+            try:
+                pageParam = int(request.args.get("page", 1))
+                defaultOffset = (pageParam - 1) * PAGE_SIZE if pageParam > 1 else 0
+            except (ValueError, TypeError):
+                defaultOffset = 0
+
+            try:
+                offset = max(0, int(request.args.get("offset", defaultOffset)))
+            except (ValueError, TypeError):
+                offset = defaultOffset
+
+            try:
+                limit = max(1, int(request.args.get("limit", PAGE_SIZE)))
+            except (ValueError, TypeError):
+                limit = PAGE_SIZE
+
+            totalCount = db.getEntriesCount(trackId=trackId, includeSkips=showSkips)
+            fetchEntries = db.getEntriesFromOld if oldestFirst else db.getEntriesFromNew
+            plays = fetchEntries(count=limit, startIndex=offset,
+                                 trackId=trackId, includeSkips=showSkips)
+            plays = dashboard._embedSongsTextElements(plays)
+            plays = dashboard._enrichSongTimelineEntries(plays, trackDurationMs=trackDurationMs, oldestFirst=oldestFirst)
+
+            hasMore = (offset + len(plays)) < totalCount
+            nextOffset = offset + len(plays)
+
+            sharedArgs = dict(linkArgs, groupBy=groupByParam,
+                              sort=sortOrder if oldestFirst else None,
+                              skips="false" if not showSkips else None)
+            sortToggleArgs = dict(sharedArgs, sort=None if oldestFirst else "oldest", offset=0)
+            skipsToggleArgs = dict(sharedArgs, skips="false" if showSkips else "true", offset=0)
+
+            return {
+                "plays": plays,
+                "totalCount": totalCount,
+                "offset": offset,
+                "hasMore": hasMore,
+                "nextOffset": nextOffset,
+                "sortOldest": oldestFirst,
+                "showSkips": showSkips,
+                "isSongDetail": True,
+                "sortToggleUrl": dashboard._buildPageUrl(endpoint, 1, **sortToggleArgs),
+                "skipsToggleUrl": dashboard._buildPageUrl(endpoint, 1, **skipsToggleArgs),
+            }
+
         totalCount = db.getEntriesCount(trackId=trackId, artistId=artistId, albumId=albumId)
         page, totalPages, startIndex = dashboard._calculatePagination(totalCount)
         fetchEntries = db.getEntriesFromOld if oldestFirst else db.getEntriesFromNew
@@ -691,7 +743,7 @@ def register(app, dashboard):
             "plays": plays,
             "startIndex": startIndex,
             "sortOldest": oldestFirst,
-            #< sort flips link to page 1 - page N of one order isn't page N of the other
+            "isSongDetail": False,
             "sortToggleUrl": dashboard._buildPageUrl(endpoint, 1, **dict(sharedArgs, sort=None if oldestFirst else "oldest")),
             **dashboard._buildPaginationContext(endpoint, page, totalPages, totalCount, **sharedArgs),
         }
@@ -718,11 +770,16 @@ def register(app, dashboard):
             return jsonify(timeSeries=timeSeries, groupBy=groupBy)
 
         listCtx = _detailHistoryContext(db, "songDetailPage", {"track_id": track_id},
-                                        groupByParam=groupByParam, trackId=track_id)
+                                        groupByParam=groupByParam, trackId=track_id,
+                                        trackDurationMs=song.get("duration"))
         # The sort toggle / pagination links re-fetch just the play log (see
         # static/js/detail-history.js) - chart/heatmap work is skipped.
         if request.args.get("ajax") == "list":
-            return jsonify(resultsHtml=render_template("_play_log.html", username=username, **listCtx))
+            return jsonify(
+                resultsHtml=render_template("_play_log.html", username=username, **listCtx),
+                hasMore=listCtx.get("hasMore", False),
+                nextOffset=listCtx.get("nextOffset", 0),
+            )
 
         groupBy = dashboard._resolveGroupBy(
             groupByParam, *dashboard._playRangeSpanDates(username, db.tz, trackId=track_id))

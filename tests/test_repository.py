@@ -485,6 +485,27 @@ class TestPlaysHistory(RepositoryTestCase):
 
         self.assertEqual(self.repo.getPlaysCount("alice", trackId="t1"), 2)
 
+    def test_get_plays_include_skips(self):
+        self.repo.insertPlay("alice", "t1", 1000.0, 5000, is_skip=0)
+        self.repo.insertPlay("alice", "t1", 2000.0, 1000, is_skip=1)
+
+        normal_plays = self.repo.getPlaysNewestFirst("alice", trackId="t1", includeSkips=False)
+        self.assertEqual(len(normal_plays), 1)
+        self.assertFalse(normal_plays[0].get("isSkip", False))
+
+        all_plays = self.repo.getPlaysNewestFirst("alice", trackId="t1", includeSkips=True)
+        self.assertEqual(len(all_plays), 2)
+        self.assertTrue(all_plays[0]["isSkip"])
+        self.assertFalse(all_plays[1]["isSkip"])
+
+    def test_get_plays_count_include_skips(self):
+        self.repo.insertPlay("alice", "t1", 1000.0, 5000, is_skip=0)
+        self.repo.insertPlay("alice", "t1", 2000.0, 1000, is_skip=1)
+
+        self.assertEqual(self.repo.getPlaysCount("alice", trackId="t1", includeSkips=False), 1)
+        self.assertEqual(self.repo.getPlaysCount("alice", trackId="t1", includeSkips=True), 2)
+
+
     def test_count_filtered_by_artist_id(self):
         self.repo.upsertTrack(makeTrack(trackId="t3", albumId="alb2", artistId="art2"))
         self.repo.insertPlay("alice", "t1", 1000.0, 5000)

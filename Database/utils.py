@@ -230,9 +230,35 @@ def formatDuration(ms: int) -> str:
     remaining = seconds % 60
     return f"{minutes}:{remaining:02d}"
 
+def formatTimeGap(seconds: float | int) -> str:
+    """Formats a time gap in seconds into a human-readable string for timeline connectors."""
+    sec = max(0, int(seconds))
+    if sec < 60:
+        return "< 1 min later"
+    
+    minutes = sec // 60
+    if minutes < 60:
+        return f"{minutes} min later" if minutes == 1 else f"{minutes} mins later"
+        
+    hours = sec // 3600
+    if hours < 24:
+        return f"{hours} hour later" if hours == 1 else f"{hours} hours later"
+        
+    days = sec // 86400
+    if days < 30:
+        return f"{days} day later" if days == 1 else f"{days} days later"
+        
+    months = sec // (86400 * 30)
+    if months < 12:
+        return f"{months} month later" if months == 1 else f"{months} months later"
+        
+    years = sec // (86400 * 365)
+    return f"{years} year later" if years == 1 else f"{years} years later"
+
 def versionTuple(version: str) -> tuple:
     """ Can be used to compare versions with > and < """
     return tuple(int(x) for x in version.split("."))
+
 
 if __name__ == "__main__":
     import code

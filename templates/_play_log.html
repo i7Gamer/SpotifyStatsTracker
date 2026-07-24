@@ -1,35 +1,71 @@
-{# The song detail page's list of every individual play - swapped into
-   #detailHistoryResults by detail-history.js on sort/page changes (the
-   ?ajax=list branch of songDetailPage). Rows are track-cards minus the media
-   block: every play is the same song, so cover/name/artist live once in the
-   hero card above and each row carries only the per-play facts.
-   Expects: plays (_embedSongsTextElements-shaped dicts), sortOldest,
-   sortToggleUrl, plus everything _pagination.html needs. #}
 <div class="play-log-header">
-  <h2>All Plays</h2>
-  <a class="button sort-toggle" href="{{ sortToggleUrl }}"
-     aria-label="Sorted {{ 'oldest' if sortOldest else 'newest' }} first - click to sort {{ 'newest' if sortOldest else 'oldest' }} first">Date {{ '↑' if sortOldest else '↓' }}</a>
+  <h2>Play Timeline</h2>
+  <div class="play-log-controls">
+    <a class="button skips-toggle" href="{{ skipsToggleUrl }}"
+       aria-label="{{ 'Hide skips from timeline' if showSkips else 'Show skips on timeline' }}">
+      {{ 'Hide Skips' if showSkips else 'Show Skips' }}
+    </a>
+    <a class="button sort-toggle" href="{{ sortToggleUrl }}"
+       aria-label="Sorted {{ 'oldest' if sortOldest else 'newest' }} first - click to sort {{ 'newest' if sortOldest else 'oldest' }} first">
+      Date {{ '↑' if sortOldest else '↓' }}
+    </a>
+  </div>
 </div>
-<section class="track-list">
-  {% if plays %}
-    {% for play in plays %}
-      <article class="track-card">
-        <div class="track-details">
-          <div class="track-details-top">
-            <div class="track-header">
-              <h3>{{ play.get('playedAtText') }}</h3>
+
+<div class="timeline-container" data-has-more="{{ 'true' if hasMore else 'false' }}" data-next-offset="{{ nextOffset }}">
+  <div class="timeline-stem"></div>
+  <div class="timeline-items" id="timelineItems">
+    {% if plays %}
+      {% for play in plays %}
+        {% if play.monthYearHeader %}
+          <div class="timeline-date-header">
+            <span>{{ play.monthYearHeader }}</span>
+          </div>
+        {% endif %}
+
+        {% if play.timePassedText %}
+          <div class="timeline-gap-connector">
+            <span class="timeline-gap-badge">{{ play.timePassedText }}</span>
+          </div>
+        {% endif %}
+
+        <article class="timeline-item play-type-{{ play.playType or 'full' }}">
+          <div class="timeline-node" title="{{ play.playTypeLabel or 'Full Play' }}">
+            {% if play.playType == 'skip' %}
+              <span class="node-icon">⏭</span>
+            {% elif play.playType == 'partial' %}
+              <span class="node-icon">◔</span>
+            {% else %}
+              <span class="node-icon">✓</span>
+            {% endif %}
+          </div>
+          <div class="timeline-content card">
+            <div class="timeline-content-header">
+              <span class="timeline-time">{{ play.get('playedAtText') }}</span>
+              <span class="play-type-badge badge-{{ play.playType or 'full' }}">{{ play.playTypeLabel or 'Full Play' }}</span>
             </div>
-            <div class="track-attributes">
-              {% if play.get('timePlayedText') %}<span class="track-label">Time Played: {{ play.get('timePlayedText') }}</span>{% endif %}
-              {% if play.get('contextName') %}<span class="track-label">Played from {{ play.get('contextName') }}</span>{% endif %}
+            <div class="timeline-attributes">
+              {% if play.get('timePlayedText') %}
+                <span class="track-label">Time Played: {{ play.get('timePlayedText') }}</span>
+              {% endif %}
+              {% if play.get('contextName') %}
+                <span class="track-label">From {{ play.get('contextName') }}</span>
+              {% endif %}
             </div>
           </div>
-        </div>
-      </article>
-    {% endfor %}
-  {% else %}
-    <p class="loading">No plays recorded yet.</p>
-  {% endif %}
-</section>
+        </article>
+      {% endfor %}
+    {% else %}
+      <p class="loading">No plays recorded yet.</p>
+    {% endif %}
+  </div>
 
-{% include '_pagination.html' %}
+  {% if hasMore %}
+    <div class="timeline-actions">
+      <button type="button" class="button show-more-btn" id="showMorePlaysBtn" data-offset="{{ nextOffset }}">
+        Show More Plays (50)
+      </button>
+    </div>
+  {% endif %}
+</div>
+

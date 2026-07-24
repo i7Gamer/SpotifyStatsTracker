@@ -124,3 +124,61 @@ class ViewModelMixin:
         formatted = f"{abs(round(change, 1))}% {'more' if change > 0 else 'less'} than the previous period"
         cssClass = "change-positive" if change > 0 else "change-negative"
         return formatted, cssClass
+
+    def _enrichSongTimelineEntries(self, plays: list[dict], trackDurationMs: int | None = None,
+                                    oldestFirst: bool = False, completePercentThreshold: float | int = 80) -> list[dict]:
+        """Enriches play entries for the song detail timeline with playType,
+        percentPlayed, monthYearHeader, and timePassedText."""
+        from flask import has_app_context, g
+        from Database.utils import convertToDatetime, formatTimeGap
+        db = g.get("db", None) if has_app_context() else None
+        tz = db.tz if db else None
+
+        lastMonthYear = None
+        n = len(plays)
+
+        for i, play in enumerate(plays):
+            is_skip = play.get("isSkip", False)
+            duration = play.get("duration") or trackDurationMs or 0
+            time_played = play.get("timePlayed", 0)
+
+            if is_skip:
+                play["playType"] = "skip"
+                play["playTypeLabel"] = "Skipped"
+                play["percentPlayed"] = round((time_played / duration * 100), 1) if duration > 0 else 0
+            elif duration > 0:
+                pct = (time_played / duration) * 100
+                play["percentPlayed"] = round(pct, 1)
+                if pct >= completePercentThreshold:
+                    play["playType"] = "full"
+                    play["playTypeLabel"] = "Full Play"
+                else:
+                    play["playType"] = "partial"
+                    play["playTypeLabel"] = f"Partial • {round(pct)}%"
+            else:
+                play["playType"] = "full"
+                play["playTypeLabel"] = "Full Play"
+                play["percentPlayed"] = 100
+
+            played_at_dt = convertToDatetime(play.get("playedAt", 0), tz=tz)
+            month_year_str = played_at_dt.strftime("%B %Y")
+            if month_year_str != lastMonthYear:
+                play["monthYearHeader"] = month_year_str
+                lastMonthYear = month_year_str
+            else:
+                play["monthYearHeader"] = None
+
+            play["timePassedText"] = None
+            if not oldestFirst and i + 1 < n:
+                newer_ts = play.get("playedAt", 0)
+                older_ts = plays[i + 1].get("playedAt", 0)
+                delta_sec = max(0, float(newer_ts) - float(older_ts))
+                play["timePassedText"] = formatTimeGap(delta_sec)
+            elif oldestFirst and i > 0:
+                newer_ts = play.get("playedAt", 0)
+                older_ts = plays[i - 1].get("playedAt", 0)
+                delta_sec = max(0, float(newer_ts) - float(older_ts))
+                play["timePassedText"] = formatTimeGap(delta_sec)
+
+        return plays
+

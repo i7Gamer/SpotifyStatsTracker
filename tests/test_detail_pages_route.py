@@ -393,7 +393,7 @@ class TestSongDetailRoute(_DetailRouteTestBase):
         with patch.object(dash, "_embedSongsTextElements", side_effect=lambda songs: songs):
             resp = self._getPath(dash, db, "/song/t1")
 
-        self.assertIn(b"All Plays", resp.data)
+        self.assertIn(b"Play Timeline", resp.data)
         self.assertIn(b"20 Jul 2026, 15:30", resp.data)
         self.assertIn(b"19 Jul 2026, 09:12", resp.data)
         self.assertIn(b"Time Played: 3m 20s", resp.data)
@@ -478,8 +478,37 @@ class TestSongDetailRoute(_DetailRouteTestBase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.mimetype, "application/json")
         resultsHtml = resp.get_json().get("resultsHtml", "")
-        self.assertIn("All Plays", resultsHtml)
-        self.assertIn("20 Jul 2026, 15:30", resultsHtml)
+        self.assertIn("20 Jul 2026", resultsHtml)
+        db.getHourOfDayHeatmap.assert_not_called()
+
+    def test_song_detail_skips_toggle_passed_to_db(self):
+        dash = self._makeApp()
+        db = MagicMock()
+        db.getSong.return_value = self._song()
+        db.getListeningTimeSeries.return_value = []
+        db.getHourOfDayHeatmap.return_value = []
+        db.getEntriesCount.return_value = 2
+        db.getEntriesFromNew.return_value = [self._playEntry()]
+
+        with patch.object(dash, "_embedSongsTextElements", side_effect=lambda songs: songs):
+            self._getPath(dash, db, "/song/t1?skips=false")
+
+        self.assertEqual(db.getEntriesFromNew.call_args.kwargs.get("includeSkips"), False)
+
+    def test_song_detail_ajax_list_has_more_and_next_offset(self):
+        dash = self._makeApp()
+        db = MagicMock()
+        db.getSong.return_value = self._song()
+        db.getEntriesCount.return_value = 120
+        db.getEntriesFromNew.return_value = [self._playEntry() for _ in range(50)]
+
+        with patch.object(dash, "_embedSongsTextElements", side_effect=lambda songs: songs):
+            resp = self._getPath(dash, db, "/song/t1?ajax=list&offset=0")
+
+        payload = resp.get_json()
+        self.assertTrue(payload.get("hasMore"))
+        self.assertEqual(payload.get("nextOffset"), 50)
+        self.assertIn("20 Jul 2026", payload.get("resultsHtml", ""))
         db.getListeningTimeSeries.assert_not_called()
         db.getHourOfDayHeatmap.assert_not_called()
 

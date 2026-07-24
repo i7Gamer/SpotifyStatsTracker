@@ -150,13 +150,14 @@ class PlayQueries:
 
     def getPlaysCount(self, username: str, startTs: float | None = None, endTs: float | None = None,
                        trackId: str | None = None, artistId: str | None = None,
-                       albumId: str | None = None) -> int:
+                       albumId: str | None = None, includeSkips: bool = False) -> int:
         conn = self._conn()
         params = [username]
         rangeClause = self._dateRangeClause(params, startTs, endTs)
         extraClauses = self._itemFilterClauses(params, trackId, artistId, albumId)
+        skipClause = "" if includeSkips else " AND is_skip=0"
         row = conn.execute(
-            f"SELECT COUNT(*) AS c FROM plays WHERE username=? AND is_skip=0{rangeClause}{extraClauses}",
+            f"SELECT COUNT(*) AS c FROM plays WHERE username=?{skipClause}{rangeClause}{extraClauses}",
             params,
         ).fetchone()
         return row["c"]
@@ -164,16 +165,17 @@ class PlayQueries:
     def getPlaysNewestFirst(self, username: str, count: int | None = None, startIndex: int = 0,
                              startTs: float | None = None, endTs: float | None = None,
                              trackId: str | None = None, artistId: str | None = None,
-                             albumId: str | None = None) -> list[dict]:
+                             albumId: str | None = None, includeSkips: bool = False) -> list[dict]:
         conn = self._conn()
         limit = -1 if count is None else count
         params = [username]
         rangeClause = self._dateRangeClause(params, startTs, endTs)
         extraClauses = self._itemFilterClauses(params, trackId, artistId, albumId)
         params += [limit, startIndex]
+        skipClause = "" if includeSkips else " AND is_skip=0"
         rows = conn.execute(
-            f"SELECT track_id, played_at, time_played, played_from FROM plays "
-            f"WHERE username=? AND is_skip=0{rangeClause}{extraClauses} ORDER BY played_at DESC, id DESC LIMIT ? OFFSET ?",
+            f"SELECT track_id, played_at, time_played, played_from, is_skip FROM plays "
+            f"WHERE username=?{skipClause}{rangeClause}{extraClauses} ORDER BY played_at DESC, id DESC LIMIT ? OFFSET ?",
             params,
         ).fetchall()
         return [self._playRowToEntry(r) for r in rows]
@@ -181,7 +183,7 @@ class PlayQueries:
     def getPlaysOldestFirst(self, username: str, count: int | None = None, startIndex: int = 0,
                              startTs: float | None = None, endTs: float | None = None,
                              trackId: str | None = None, artistId: str | None = None,
-                             albumId: str | None = None) -> list[dict]:
+                             albumId: str | None = None, includeSkips: bool = False) -> list[dict]:
         conn = self._conn()
         limit = -1 if count is None else count
         params = [username]
@@ -189,12 +191,14 @@ class PlayQueries:
         extraClauses = self._itemFilterClauses(params, trackId, artistId, albumId)
         params += [limit, startIndex]
         behavioralSelect = ", ".join(BEHAVIORAL_COLUMNS)
+        skipClause = "" if includeSkips else " AND is_skip=0"
         rows = conn.execute(
-            f"SELECT track_id, played_at, time_played, played_from, {behavioralSelect} FROM plays "
-            f"WHERE username=? AND is_skip=0{rangeClause}{extraClauses} ORDER BY played_at ASC, id ASC LIMIT ? OFFSET ?",
+            f"SELECT track_id, played_at, time_played, played_from, is_skip, {behavioralSelect} FROM plays "
+            f"WHERE username=?{skipClause}{rangeClause}{extraClauses} ORDER BY played_at ASC, id ASC LIMIT ? OFFSET ?",
             params,
         ).fetchall()
         return [self._playRowToEntry(r) for r in rows]
+
 
     def getSkipsOldestFirst(self, username: str, count: int | None = None, startIndex: int = 0) -> list[dict]:
         """Skip events (is_skip=1) oldest-first, shaped like getPlaysOldestFirst
@@ -329,6 +333,7 @@ class PlayQueries:
             "playedAt": row["played_at"],
             "timePlayed": row["time_played"],
             "playedFrom": row["played_from"] if "played_from" in columns else None,
+            "isSkip": bool(row["is_skip"]) if "is_skip" in columns else False,
         }
         # Behavioral columns are only attached when the SELECT carried them
         # (wider play/skip reads) - narrower SELECT sites keep their shape.

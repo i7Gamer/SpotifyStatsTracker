@@ -80,19 +80,69 @@
   }
 
   if (container) {
-    // The container persists across ajax swaps (only its innerHTML is
-    // replaced), so this delegated listener survives every refresh - it
-    // covers both the pagination links and the Date sort toggle, whose
-    // hrefs the server builds with the full sort/page/view/groupBy state.
+    // Delegated click listener covering pagination links, sort toggle, and skips toggle.
     container.addEventListener('click', function (evt) {
-      var link = evt.target.closest('.pagination-controls a, a.sort-toggle');
-      if (!link) return;
-      // Let modified clicks (new tab, etc.) behave normally.
-      if (evt.metaKey || evt.ctrlKey || evt.shiftKey || evt.altKey) return;
-      evt.preventDefault();
-      var url = new URL(link.href);
-      window.history.replaceState({}, '', url.pathname + url.search);
-      loadDetailHistory();
+      var link = evt.target.closest('.pagination-controls a, a.sort-toggle, a.skips-toggle');
+      if (link) {
+        if (evt.metaKey || evt.ctrlKey || evt.shiftKey || evt.altKey) return;
+        evt.preventDefault();
+        var url = new URL(link.href);
+        window.history.replaceState({}, '', url.pathname + url.search);
+        loadDetailHistory();
+        return;
+      }
+
+      var showMoreBtn = evt.target.closest('#showMorePlaysBtn, .show-more-btn');
+      if (showMoreBtn) {
+        evt.preventDefault();
+        var offset = showMoreBtn.dataset.offset;
+        if (!offset) return;
+
+        showMoreBtn.disabled = true;
+        showMoreBtn.textContent = 'Loading...';
+
+        var params = new URLSearchParams(window.location.search);
+        params.set('ajax', 'list');
+        params.set('offset', offset);
+
+        fetch(window.location.pathname + '?' + params.toString(), {
+          headers: { 'X-Requested-With': 'XMLHttpRequest' }
+        })
+          .then(function (resp) { return resp.ok ? resp.json() : null; })
+          .then(function (data) {
+            if (!data || !data.resultsHtml) {
+              showMoreBtn.disabled = false;
+              showMoreBtn.textContent = 'Show More Plays (50)';
+              return;
+            }
+
+            var tempDiv = document.createElement('div');
+            tempDiv.innerHTML = data.resultsHtml;
+
+            var newItems = tempDiv.querySelectorAll('#timelineItems > *');
+            var targetList = container.querySelector('#timelineItems');
+
+            if (targetList && newItems.length) {
+              newItems.forEach(function (child) {
+                targetList.appendChild(child);
+              });
+            }
+
+            var actionsDiv = container.querySelector('.timeline-actions');
+            if (data.hasMore && data.nextOffset) {
+              showMoreBtn.disabled = false;
+              showMoreBtn.dataset.offset = data.nextOffset;
+              showMoreBtn.textContent = 'Show More Plays (50)';
+            } else if (actionsDiv) {
+              actionsDiv.remove();
+            }
+          })
+          .catch(function (err) {
+            console.error(err);
+            showMoreBtn.disabled = false;
+            showMoreBtn.textContent = 'Show More Plays (50)';
+          });
+      }
     });
 
     // _pagination.html's jump-to-page input calls the shared
@@ -114,3 +164,4 @@
     loadDetailHistory();
   });
 })();
+
