@@ -1,7 +1,7 @@
-<img width="1437" height="1946" alt="SpotifyTrackerOverviewV2" src="https://github.com/user-attachments/assets/7ca9d5f5-3e97-4cd3-b0f8-f57376733c6f" />
-<img width="1438" height="2350" alt="SpotifyTrackerCompare" src="https://github.com/user-attachments/assets/d1637725-5bb6-4755-af5d-88d8c501d45a" />
-<img width="1438" height="2169" alt="SpotifyTrackerChartsV3" src="https://github.com/user-attachments/assets/2dbc0b6a-0d30-4527-a895-582ab30db639" />
-<img width="1437" height="1468" alt="SpotifyTrackerWrappedV3" src="https://github.com/user-attachments/assets/da01ff13-f9a3-4eb0-b2c4-bc72f16f992b" />
+<img width="1438" height="2337" alt="SpotifyTrackerOverviewV3" src="https://github.com/user-attachments/assets/44009d72-edbe-4681-8d7d-3b6f4c2e3419" />
+<img width="1438" height="2265" alt="SpotifyTrackerCompareV2" src="https://github.com/user-attachments/assets/c3495dfb-268b-48b2-8f83-4388fbda3ab8" />
+<img width="1437" height="2373" alt="SpotifyTrackerGenres" src="https://github.com/user-attachments/assets/e34579e5-a397-43aa-97a0-102f4cb3974d" />
+<img width="1438" height="1744" alt="SpotifyTrackerWrappedV5" src="https://github.com/user-attachments/assets/be8526a3-efdf-4a48-8912-384c53439ee2" />
 
 ## Spotify Stats Tracker - [![Tests](https://github.com/i7Gamer/SpotifyStatsTracker/actions/workflows/tests.yml/badge.svg)](https://github.com/i7Gamer/SpotifyStatsTracker/actions/workflows/tests.yml)
 
@@ -164,8 +164,7 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 For support, please open an issue on the GitHub repository or contact me.
 
 Additional Screenshots:
-<img width="1437" height="931" alt="SpotifyTrackerTopSongs" src="https://github.com/user-attachments/assets/b11e504d-399f-46ff-9097-239ef404c7da" />
-<img width="659" height="1726" alt="SpotifyTrackerProfile" src="https://github.com/user-attachments/assets/5bfd55d5-1af6-4251-9ecd-6c13b3b3c92e" />
-<img width="1437" height="1175" alt="SpotifyTrackerArtistSubpage" src="https://github.com/user-attachments/assets/bdfc8a58-2064-4a19-a1d1-68433a1edb07" />
-<img width="1438" height="1166" alt="SpotifyTrackerSongSubpage" src="https://github.com/user-attachments/assets/82ae38ae-27c8-4311-9e7e-e1317433222d" />
-<img width="1429" height="1190" alt="SpotifyTrackerAlbumSubpage" src="https://github.com/user-attachments/assets/52ae6921-0a03-4a31-9464-dca94ef97d64" />
+
+<img width="1437" height="2297" alt="SpotifyTrackerAdmin" src="https://github.com/user-attachments/assets/8aebd4be-041b-4991-9a0f-a85e88800a30" />
+<img width="1438" height="867" alt="SpotifyTrackerTopSongsV2" src="https://github.com/user-attachments/assets/a7bb6a78-fd65-47ea-a0f6-bfecca2498a9" />
+<img width="1438" height="2308" alt="SpotifyTrackerSongSubpageV2" src="https://github.com/user-attachments/assets/328ab683-b803-4671-8749-bc13e579d53c" />
