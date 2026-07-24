@@ -123,13 +123,16 @@
 
   // ---- URL helpers ---------------------------------------------------------
 
-  function pushGenresUrl(mutate) {
+  // Update the URL in place (replaceState, not push) so a filter/genre change
+  // stays shareable/refreshable without stacking a history entry - Back then
+  // returns to the page the user came from instead of stepping back through it.
+  function replaceGenresUrl(mutate) {
     var params = new URLSearchParams(window.location.search);
     mutate(params);
     params.delete('ajax');
     params.delete('scope');
     var query = params.toString();
-    window.history.pushState({}, '', window.location.pathname + (query ? '?' + query : ''));
+    window.history.replaceState({}, '', window.location.pathname + (query ? '?' + query : ''));
   }
 
   function setSelectedChip(genre) {
@@ -231,7 +234,7 @@
         setSelectedChip(data.genre);
         renderDetailCharts();
         if (push) {
-          pushGenresUrl(function (p) { p.set('genre', data.genre); });
+          replaceGenresUrl(function (p) { p.set('genre', data.genre); });
         }
       })
       .catch(function () {
@@ -279,7 +282,7 @@
     customDates.style.display = 'none';
     // The selected genre is kept in the URL: the server keeps it when it still
     // has plays in the new range, else falls back to that range's top genre.
-    pushGenresUrl(function (params) {
+    replaceGenresUrl(function (params) {
       params.set('interval', interval);
       params.delete('startDate');
       params.delete('endDate');
@@ -289,7 +292,7 @@
 
   window.updateGenresGroupByFilter = function () {
     var groupBy = document.getElementById('groupBy').value;
-    pushGenresUrl(function (params) {
+    replaceGenresUrl(function (params) {
       if (groupBy) {
         params.set('groupBy', groupBy);
       } else {
@@ -317,7 +320,7 @@
         endEl.style.borderColor = 'var(--accent)';
         return;
       }
-      pushGenresUrl(function (params) {
+      replaceGenresUrl(function (params) {
         params.set('interval', 'custom');
         params.set('startDate', startDate);
         params.set('endDate', endDate);

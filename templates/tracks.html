@@ -208,12 +208,15 @@
         });
     }
 
-    function pushDashboardUrl(mutate) {
+    // Update the URL in place (replaceState, not push) so a filter change stays
+    // shareable/refreshable without stacking a history entry - Back then returns
+    // to the previous page instead of stepping back through past filters.
+    function replaceDashboardUrl(mutate) {
       var params = new URLSearchParams(window.location.search);
       mutate(params);
       params.delete('ajax');
       var query = params.toString();
-      window.history.pushState({}, '', window.location.pathname + (query ? '?' + query : ''));
+      window.history.replaceState({}, '', window.location.pathname + (query ? '?' + query : ''));
     }
 
     function updateDashboardInterval() {
@@ -263,13 +266,13 @@
           return;
         }
 
-        pushDashboardUrl(function (params) {
+        replaceDashboardUrl(function (params) {
           params.set('interval', 'custom');
           params.set('startDate', startDate);
           params.set('endDate', endDate);
         });
       } else {
-        pushDashboardUrl(function (params) {
+        replaceDashboardUrl(function (params) {
           params.set('interval', interval);
           params.delete('startDate');
           params.delete('endDate');

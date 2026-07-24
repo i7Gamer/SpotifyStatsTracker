@@ -87,7 +87,9 @@
 
   function updateDetailGroupByFilter() {
     var groupBy = document.getElementById('groupBy').value;
-    window.history.pushState({}, '',
+    // replaceState, not push: keep the URL shareable without stacking a history
+    // entry, so Back returns to the previous page rather than past bucket states.
+    window.history.replaceState({}, '',
       detailPageUrl(window.location.pathname, window.location.search, groupBy));
     // The admin "Refresh Last.fm Data" form redirects back with its hidden
     // groupBy - keep it matching the visible choice instead of the value the

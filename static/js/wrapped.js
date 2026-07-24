@@ -301,7 +301,9 @@ function updateWrappedFilters() {
   if (groupBy) newParams.set('groupBy', groupBy);   //< Auto: server derives from the year span
   newParams.set('limit', limit);
   newParams.set('sortBy', sortBy);
-  window.history.pushState({}, '', window.location.pathname + '?' + newParams.toString());
+  // replaceState, not push: keep the URL shareable without stacking a history
+  // entry, so Back returns to the previous page rather than past filter states.
+  window.history.replaceState({}, '', window.location.pathname + '?' + newParams.toString());
 
   loadWrappedData(year, groupBy, limit, sortBy, updateType);
 }
@@ -334,7 +336,9 @@ document.querySelectorAll('.wrapped-year-badge').forEach(badge => {
     if (groupBy) newParams.set('groupBy', groupBy);   //< Auto: server derives from the year span
     newParams.set('limit', limit);
     newParams.set('sortBy', sortBy);
-    window.history.pushState({}, '', window.location.pathname + '?' + newParams.toString());
+    // replaceState, not push: keep the URL shareable without stacking a history
+    // entry, so Back returns to the previous page rather than past filter states.
+    window.history.replaceState({}, '', window.location.pathname + '?' + newParams.toString());
 
     document.querySelectorAll('.wrapped-year-badge').forEach(b => b.classList.remove('active'));
     this.classList.add('active');

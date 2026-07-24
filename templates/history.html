@@ -130,12 +130,15 @@
         });
     }
 
-    function pushHistoryUrl(mutate) {
+    // Update the URL in place (replaceState, not push) so a filter/sort/page
+    // change stays shareable/refreshable without stacking a history entry - Back
+    // then returns to the previous page instead of stepping back through it.
+    function replaceHistoryUrl(mutate) {
       var params = new URLSearchParams(window.location.search);
       mutate(params);
       params.delete('ajax');
       var query = params.toString();
-      window.history.pushState({}, '', window.location.pathname + (query ? '?' + query : ''));
+      window.history.replaceState({}, '', window.location.pathname + (query ? '?' + query : ''));
     }
 
     function updateHistoryInterval() {
@@ -189,7 +192,7 @@
         }
       }
 
-      pushHistoryUrl(function (params) {
+      replaceHistoryUrl(function (params) {
         if (searchQuery.trim()) {
           params.set('q', searchQuery);
         } else {
@@ -218,7 +221,7 @@
     function updateHistorySort() {
       var params = new URLSearchParams(window.location.search);
       var next = params.get('sort') === 'oldest' ? 'newest' : 'oldest';
-      pushHistoryUrl(function (p) {
+      replaceHistoryUrl(function (p) {
         if (next === 'oldest') { p.set('sort', 'oldest'); } else { p.delete('sort'); }
         p.delete('page');
       });
@@ -234,7 +237,7 @@
     // input (_pagination.html) - all navigate within #historyResults via
     // ajax instead of a full reload.
     function goToHistoryPage(page) {
-      pushHistoryUrl(function (params) { params.set('page', page); });
+      replaceHistoryUrl(function (params) { params.set('page', page); });
       loadHistoryResults();
     }
 

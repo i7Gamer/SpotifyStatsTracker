@@ -5,7 +5,9 @@
  * ?ajax=list branch (mirrors history.html's loadHistoryResults: abort
  * superseded loads, loading-fade, swap resultsHtml). All tab content is
  * server-rendered on every full load, so tab clicks only flip classes and
- * keep ?view= in sync via pushState. */
+ * keep ?view= in sync via replaceState (see activateView). All in-page URL
+ * updates replaceState rather than push, so Back returns to the previous page
+ * instead of stepping back through sort/page/tab states. */
 (function () {
   var DETAIL_HISTORY_FADE_MS = 200;
 
@@ -19,7 +21,7 @@
       var params = new URLSearchParams(window.location.search);
       if (view === 'top-songs') { params.delete('view'); } else { params.set('view', view); }
       var query = params.toString();
-      window.history.pushState({}, '', window.location.pathname + (query ? '?' + query : ''));
+      window.history.replaceState({}, '', window.location.pathname + (query ? '?' + query : ''));
     }
   }
 
@@ -89,7 +91,7 @@
       if (evt.metaKey || evt.ctrlKey || evt.shiftKey || evt.altKey) return;
       evt.preventDefault();
       var url = new URL(link.href);
-      window.history.pushState({}, '', url.pathname + url.search);
+      window.history.replaceState({}, '', url.pathname + url.search);
       loadDetailHistory();
     });
 
@@ -99,7 +101,7 @@
     window.__paginationAjaxHandler = function (page) {
       var params = new URLSearchParams(window.location.search);
       params.set('page', page);
-      window.history.pushState({}, '', window.location.pathname + '?' + params.toString());
+      window.history.replaceState({}, '', window.location.pathname + '?' + params.toString());
       loadDetailHistory();
     };
   }

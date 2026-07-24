@@ -113,12 +113,15 @@
 
   // ---- URL + filter handlers (globals for the inline onchange handlers) ----
 
-  function pushChartsUrl(mutate) {
+  // Update the URL in place (replaceState, not push) so a filter change stays
+  // shareable/refreshable without stacking a history entry - Back then returns
+  // to the page the user came from instead of stepping back through past filters.
+  function replaceChartsUrl(mutate) {
     var params = new URLSearchParams(window.location.search);
     mutate(params);
     params.delete('ajax');
     var query = params.toString();
-    window.history.pushState({}, '', window.location.pathname + (query ? '?' + query : ''));
+    window.history.replaceState({}, '', window.location.pathname + (query ? '?' + query : ''));
   }
 
   window.updateChartsIntervalFilter = function () {
@@ -178,14 +181,14 @@
       if (!startDate || !endDate) {
         return;
       }
-      pushChartsUrl(function (params) {
+      replaceChartsUrl(function (params) {
         setGroupBy(params);
         params.set('interval', 'custom');
         params.set('startDate', startDate);
         params.set('endDate', endDate);
       });
     } else {
-      pushChartsUrl(function (params) {
+      replaceChartsUrl(function (params) {
         setGroupBy(params);
         params.set('interval', interval);
         params.delete('startDate');

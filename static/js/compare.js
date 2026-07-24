@@ -150,12 +150,15 @@ function loadCompareData({ sortByOnly = false, initial = false } = {}) {
     });
 }
 
-function pushCompareUrl(mutate) {
+// Update the URL in place (replaceState, not push) so a filter change stays
+// shareable/refreshable without stacking a history entry - Back then returns
+// to the page the user came from instead of stepping back through past filters.
+function replaceCompareUrl(mutate) {
   const params = new URLSearchParams(window.location.search);
   mutate(params);
   params.delete('ajax');
   const query = params.toString();
-  window.history.pushState({}, '', window.location.pathname + (query ? '?' + query : ''));
+  window.history.replaceState({}, '', window.location.pathname + (query ? '?' + query : ''));
 }
 
 function updateCompareIntervalFilter() {
@@ -168,7 +171,7 @@ function updateCompareIntervalFilter() {
   }
 
   customDates.style.display = 'none';
-  pushCompareUrl(params => {
+  replaceCompareUrl(params => {
     params.set('interval', interval);
     params.delete('startDate');
     params.delete('endDate');
@@ -183,7 +186,7 @@ function updateCompareDateFilter() {
     return;
   }
 
-  pushCompareUrl(params => {
+  replaceCompareUrl(params => {
     params.set('interval', 'custom');
     params.set('startDate', startDate);
     params.set('endDate', endDate);
@@ -193,13 +196,13 @@ function updateCompareDateFilter() {
 
 function updateCompareLimitFilter() {
   const limit = document.getElementById('limit').value;
-  pushCompareUrl(params => params.set('limit', limit));
+  replaceCompareUrl(params => params.set('limit', limit));
   loadCompareData();
 }
 
 function updateCompareGroupByFilter() {
   const groupBy = document.getElementById('groupBy').value;
-  pushCompareUrl(params => {
+  replaceCompareUrl(params => {
     if (groupBy) {
       params.set('groupBy', groupBy);
     } else {
@@ -211,7 +214,7 @@ function updateCompareGroupByFilter() {
 
 function updateCompareSortByFilter() {
   const sortBy = document.getElementById('sortBy').value;
-  pushCompareUrl(params => params.set('sortBy', sortBy));
+  replaceCompareUrl(params => params.set('sortBy', sortBy));
   loadCompareData({ sortByOnly: true });
 }
 
@@ -221,7 +224,7 @@ document.querySelectorAll('.wrapped-year-badge').forEach(badge => {
     const withUser = new URL(this.href).searchParams.get('with');
     document.querySelectorAll('.wrapped-year-badge').forEach(b => b.classList.remove('active'));
     this.classList.add('active');
-    pushCompareUrl(params => params.set('with', withUser));
+    replaceCompareUrl(params => params.set('with', withUser));
     loadCompareData();
   });
 });
