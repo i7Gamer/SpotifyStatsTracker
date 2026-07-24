@@ -35,7 +35,7 @@
     </select>
 </div>
 
-{% if user_tags %}
+{% if tags_enabled and user_tags %}
 <div class="filter-group">
     <label for="tagFilter">Tag:</label>
     <select id="tagFilter" name="tag" onchange="updateTagFilter()">

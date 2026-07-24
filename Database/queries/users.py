@@ -228,23 +228,37 @@ class UserQueries:
     def getUserSettings(self, username: str) -> dict:
         conn = self._conn()
         row = conn.execute(
-            "SELECT default_dashboard_window, timezone FROM users WHERE username=?",
+            "SELECT default_dashboard_window, timezone, hide_tags_panel FROM users WHERE username=?",
             (username,),
         ).fetchone()
         if row:
             return {
                 "default_dashboard_window": row["default_dashboard_window"] or "day",
-                "timezone": row["timezone"]
+                "timezone": row["timezone"],
+                "hide_tags_panel": bool(row["hide_tags_panel"]),
             }
-        return {"default_dashboard_window": "day", "timezone": None}
+        return {"default_dashboard_window": "day", "timezone": None, "hide_tags_panel": False}
 
-    def updateUserSettings(self, username: str, default_dashboard_window: str, timezone: str | None) -> None:
+    def updateUserSettings(self, username: str, default_dashboard_window: str, timezone: str | None,
+                           hide_tags_panel: bool = False) -> None:
         conn = self._conn()
         with conn:
             conn.execute(
-                "UPDATE users SET default_dashboard_window=?, timezone=? WHERE username=?",
-                (default_dashboard_window, timezone, username),
+                "UPDATE users SET default_dashboard_window=?, timezone=?, hide_tags_panel=? WHERE username=?",
+                (default_dashboard_window, timezone, int(hide_tags_panel), username),
             )
+
+    def getHideTagsPanel(self, username: str) -> bool:
+        """Cheap standalone read of the per-user "hide the tag panel"
+        preference (set on /profile) - for the context processor that gates
+        _tag_widget.html on song/artist/album detail pages, which runs on
+        every render and has no other reason to touch the rest of
+        getUserSettings. Mirrors getSpotifyNeedsReauth's rationale."""
+        conn = self._conn()
+        row = conn.execute(
+            "SELECT hide_tags_panel FROM users WHERE username=?", (username,)
+        ).fetchone()
+        return bool(row["hide_tags_panel"]) if row else False
 
     def getAllUsernamesExcept(self, username: str) -> list[str]:
         """Plain username list for a "who can I request a share with" picker -

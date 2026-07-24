@@ -21,7 +21,7 @@ class TestMigrate1_33_0(unittest.TestCase):
     everything already achieved by then is seeded as seen (no notification) and
     only later crossings surface the topbar badge."""
 
-    MILESTONES_LINE = "    milestones_baseline_at REAL\n"
+    MILESTONES_LINE = "    milestones_baseline_at REAL,\n"
 
     def setUp(self):
         self._tmpdir = tempfile.TemporaryDirectory()
@@ -43,15 +43,14 @@ class TestMigrate1_33_0(unittest.TestCase):
         self.dbPath = self.dataDir / "spotify_stats.db"
 
     def _preColumnSchema(self):
-        """SCHEMA with milestones_baseline_at stripped out and the preceding
-        line's trailing comma restored, simulating a pre-1.34.0 database -
-        without this, a fresh Repository() connection would create the column
-        via SCHEMA's own CREATE TABLE before the migration's ALTER TABLE runs."""
+        """SCHEMA with milestones_baseline_at stripped out (hide_tags_panel,
+        added after it in migrate1_38_0, is left in place - this test only
+        cares about the 1.33.0 -> 1.34.0 step), simulating a pre-1.34.0
+        database - without this, a fresh Repository() connection would create
+        the column via SCHEMA's own CREATE TABLE before the migration's ALTER
+        TABLE runs."""
         self.assertIn(self.MILESTONES_LINE, dbModule.SCHEMA)
-        return dbModule.SCHEMA.replace(
-            "    spotify_needs_reauth  INTEGER NOT NULL DEFAULT 0,\n" + self.MILESTONES_LINE,
-            "    spotify_needs_reauth  INTEGER NOT NULL DEFAULT 0\n",
-        )
+        return dbModule.SCHEMA.replace(self.MILESTONES_LINE, "")
 
     def _columnNames(self, table):
         conn = sqlite3.connect(self.dbPath)

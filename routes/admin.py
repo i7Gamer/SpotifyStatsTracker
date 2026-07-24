@@ -345,7 +345,8 @@ def register(app, dashboard):
     def adminUserSettings():
         """Admin-only: instance-wide toggles for data sharing (Compare +
         share requests), new user registration, public Wrapped share links,
-        achievement milestones, and automatic milestone-date recalculation -
+        achievement milestones, automatic milestone-date recalculation, and
+        the personal tagging system (tag panel, tag filters, Playlists page) -
         see Database/repository.py's app_settings."""
         email, username, db = dashboard.get_current_user_or_redirect()
         if not email:
@@ -359,6 +360,7 @@ def register(app, dashboard):
         dashboard.repo.setEmailVerificationEnabled(request.form.get("email_verification") == "1")
         dashboard.repo.setMilestonesEnabled(request.form.get("milestones") == "1")
         dashboard.repo.setMilestoneRecalcEnabled(request.form.get("milestone_recalc") == "1")
+        dashboard.repo.setTagsEnabled(request.form.get("tags") == "1")
         return redirect(url_for("adminPage"))
     app.add_url_rule("/admin/user_settings", "adminUserSettings", adminUserSettings, methods=["POST"])
 

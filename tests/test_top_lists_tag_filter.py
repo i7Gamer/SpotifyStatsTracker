@@ -71,6 +71,21 @@ class TestTopListsTagFilter(AppTestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertNotIn(b'id="tagFilter"', resp.data)
 
+    def test_top_songs_tag_filter_hidden_when_admin_disables_tags(self):
+        """The admin's instance-wide tags kill switch (isTagsEnabled) hides the
+        filter even for a user who already has tags - see app.py's
+        _injectTagsStatus and _page_card.html's {% if tags_enabled and
+        user_tags %} guard."""
+        self._login()
+        self.dash.repo.addTag(self.username, "roadtrip", "track", "t1")
+        self.dash.repo.commit()
+        self.dash.repo.setTagsEnabled(False)
+
+        resp = self.client.get("/top-songs")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotIn(b'id="tagFilter"', resp.data)
+
     def test_top_songs_tag_filter_shows_once_a_tag_exists(self):
         self._login()
         self.dash.repo.addTag(self.username, "roadtrip", "track", "t1")

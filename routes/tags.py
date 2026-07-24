@@ -23,6 +23,8 @@ def register(app, dashboard):
         email, username, db = dashboard.get_current_user_or_redirect()
         if not email:
             return jsonify({"error": "unauthorized"}), 401
+        if not dashboard.repo.isTagsEnabled():
+            abort(404)
 
         data = request.get_json(silent=True) or request.form
         entity_type = data.get("entity_type", "").strip()
@@ -49,6 +51,8 @@ def register(app, dashboard):
         email, username, db = dashboard.get_current_user_or_redirect()
         if not email:
             return jsonify({"error": "unauthorized"}), 401
+        if not dashboard.repo.isTagsEnabled():
+            abort(404)
 
         data = request.get_json(silent=True) or request.form
         entity_type = data.get("entity_type", "").strip()
@@ -73,6 +77,8 @@ def register(app, dashboard):
         email, username, db = dashboard.get_current_user_or_redirect()
         if not email:
             return jsonify({"error": "unauthorized"}), 401
+        if not dashboard.repo.isTagsEnabled():
+            abort(404)
 
         tags = db.repo.getUserTags(username)
         return jsonify({"tags": tags})
@@ -83,6 +89,8 @@ def register(app, dashboard):
         email, username, db = dashboard.get_current_user_or_redirect()
         if not email:
             return jsonify({"error": "unauthorized"}), 401
+        if not dashboard.repo.isTagsEnabled():
+            abort(404)
 
         data = request.get_json(silent=True) or request.form
         old_tag = data.get("old_tag", "").strip()
@@ -101,6 +109,8 @@ def register(app, dashboard):
         email, username, db = dashboard.get_current_user_or_redirect()
         if not email:
             return jsonify({"error": "unauthorized"}), 401
+        if not dashboard.repo.isTagsEnabled():
+            abort(404)
 
         cnt = db.repo.deleteTag(username, tag)
         db.repo.commit()
@@ -112,6 +122,8 @@ def register(app, dashboard):
         email, username, db = dashboard.get_current_user_or_redirect()
         if not email:
             return redirect(url_for("login", next=request.path))
+        if not dashboard.repo.isTagsEnabled():
+            abort(404)
 
         user_tags = db.repo.getUserTags(username)
         return render_template("playlists.html", section="playlists", username=username, user_tags=user_tags)
@@ -122,6 +134,8 @@ def register(app, dashboard):
         email, username, db = dashboard.get_current_user_or_redirect()
         if not email:
             return jsonify({"error": "unauthorized"}), 401
+        if not dashboard.repo.isTagsEnabled():
+            abort(404)
 
         tags_param = request.args.get("tags", "")
         tags = [t.strip() for t in tags_param.split(",") if t.strip()]
@@ -162,6 +176,8 @@ def register(app, dashboard):
             filename = f"wrapped_top100_{year}.{fmt}"
             title = f"Wrapped {year} Top 100"
         else:
+            if not dashboard.repo.isTagsEnabled():
+                abort(404)
             tags_param = request.args.get("tags", "")
             tags = [t.strip() for t in tags_param.split(",") if t.strip()]
             match_mode = request.args.get("match", "any")

@@ -83,6 +83,44 @@ class TestSongDetailRoute(_DetailRouteTestBase):
 
         self._assertNoNavItemActive(resp.data.decode())
 
+    def test_tag_widget_shown_by_default(self):
+        dash = self._makeApp()
+        db = MagicMock()
+        db.getSong.return_value = self._song()
+        db.getListeningTimeSeries.return_value = []
+        db.getHourOfDayHeatmap.return_value = [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
+
+        resp = self._getPath(dash, db, "/song/t1")
+
+        self.assertIn(b'class="tag-widget"', resp.data)
+
+    def test_tag_widget_hidden_when_admin_disables_tags(self):
+        dash = self._makeApp()
+        dash.repo.setTagsEnabled(False)
+        db = MagicMock()
+        db.getSong.return_value = self._song()
+        db.getListeningTimeSeries.return_value = []
+        db.getHourOfDayHeatmap.return_value = [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
+
+        resp = self._getPath(dash, db, "/song/t1")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotIn(b'class="tag-widget"', resp.data)
+
+    def test_tag_widget_hidden_when_user_hides_it(self):
+        dash = self._makeApp()
+        dash.repo.upsertUser("alice", "alice@example.com")
+        dash.repo.updateUserSettings("alice", "day", None, hide_tags_panel=True)
+        db = MagicMock()
+        db.getSong.return_value = self._song()
+        db.getListeningTimeSeries.return_value = []
+        db.getHourOfDayHeatmap.return_value = [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
+
+        resp = self._getPath(dash, db, "/song/t1")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotIn(b'class="tag-widget"', resp.data)
+
     def test_rendered_page_has_balanced_div_tags(self):
         """Guard against an unclosed container leaking every section below it
         into the toolbar (the tag-widget insert once dropped .detail-toolbar's
@@ -615,6 +653,20 @@ class TestArtistDetailRoute(_DetailRouteTestBase):
 
         self._assertNoNavItemActive(resp.data.decode())
 
+    def test_tag_widget_hidden_when_admin_disables_tags(self):
+        dash = self._makeApp()
+        dash.repo.setTagsEnabled(False)
+        db = MagicMock()
+        db.getArtist.return_value = self._artist()
+        db.getArtistBio.return_value = None
+        db.getSongsStats.return_value = []
+        db.getListeningTimeSeries.return_value = []
+
+        resp = self._getPath(dash, db, "/artist/a1")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotIn(b'class="tag-widget"', resp.data)
+
     def test_genre_badge_renders_when_artist_has_genres(self):
         dash = self._makeApp()
         db = MagicMock()
@@ -925,6 +977,19 @@ class TestAlbumDetailRoute(_DetailRouteTestBase):
         resp = self._getPath(dash, db, "/album/alb1")
 
         self._assertNoNavItemActive(resp.data.decode())
+
+    def test_tag_widget_hidden_when_admin_disables_tags(self):
+        dash = self._makeApp()
+        dash.repo.setTagsEnabled(False)
+        db = MagicMock()
+        db.getAlbum.return_value = self._album()
+        db.getSongsStats.return_value = []
+        db.getListeningTimeSeries.return_value = []
+
+        resp = self._getPath(dash, db, "/album/alb1")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotIn(b'class="tag-widget"', resp.data)
 
     def test_genre_badge_renders_when_album_has_genres(self):
         dash = self._makeApp()

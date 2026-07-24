@@ -292,3 +292,15 @@ class SchemaQueries:
         if "milestones_baseline_at" not in columns:
             with conn:
                 conn.execute("ALTER TABLE users ADD COLUMN milestones_baseline_at REAL")
+
+    def addHideTagsPanelColumnIfMissing(self) -> None:
+        """Add users.hide_tags_panel (migrate1_38_0) if missing - a per-user
+        preference (set on /profile) that hides the tag panel on song/artist/
+        album detail pages, independent of the admin's instance-wide tags
+        kill switch (isTagsEnabled). Guarded so re-running the migration
+        doesn't fail."""
+        conn = self._conn()
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
+        if "hide_tags_panel" not in columns:
+            with conn:
+                conn.execute("ALTER TABLE users ADD COLUMN hide_tags_panel INTEGER NOT NULL DEFAULT 0")

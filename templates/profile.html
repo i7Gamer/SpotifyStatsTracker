@@ -97,6 +97,15 @@
         </select>
       </div>
 
+      {% if tags_enabled %}
+      <div class="form-group">
+        <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer;">
+          <input type="checkbox" name="hide_tags_panel" value="1" {% if hide_tags_panel %}checked{% endif %}>
+          Hide the tag panel on song/artist/album pages
+        </label>
+      </div>
+      {% endif %}
+
       <button type="submit" class="primary-button" style="width: 100%;">Save Preferences</button>
     </form>
 

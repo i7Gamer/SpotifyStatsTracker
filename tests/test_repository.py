@@ -2415,20 +2415,39 @@ class TestUserSettings(RepositoryTestCase):
         settings = self.repo.getUserSettings("alice")
         self.assertEqual(settings["default_dashboard_window"], "day")
         self.assertIsNone(settings["timezone"])
+        self.assertFalse(settings["hide_tags_panel"])
 
     def test_update_and_get_settings(self):
         self.repo.updateUserSettings("alice", "month", "Europe/London")
         settings = self.repo.getUserSettings("alice")
         self.assertEqual(settings["default_dashboard_window"], "month")
         self.assertEqual(settings["timezone"], "Europe/London")
+        self.assertFalse(settings["hide_tags_panel"])   #< defaults to False when omitted
+
+    def test_update_and_get_settings_with_hide_tags_panel(self):
+        self.repo.updateUserSettings("alice", "month", "Europe/London", hide_tags_panel=True)
+        settings = self.repo.getUserSettings("alice")
+        self.assertTrue(settings["hide_tags_panel"])
+
+        self.repo.updateUserSettings("alice", "month", "Europe/London", hide_tags_panel=False)
+        self.assertFalse(self.repo.getUserSettings("alice")["hide_tags_panel"])
 
     def test_settings_scoped_per_user(self):
         self.repo.upsertUser("bob", "bob@example.com")
-        self.repo.updateUserSettings("alice", "week", "Asia/Tokyo")
-        
+        self.repo.updateUserSettings("alice", "week", "Asia/Tokyo", hide_tags_panel=True)
+
         bob_settings = self.repo.getUserSettings("bob")
         self.assertEqual(bob_settings["default_dashboard_window"], "day")
         self.assertIsNone(bob_settings["timezone"])
+        self.assertFalse(bob_settings["hide_tags_panel"])
+
+    def test_get_hide_tags_panel_cheap_read(self):
+        self.assertFalse(self.repo.getHideTagsPanel("alice"))
+        self.repo.updateUserSettings("alice", "day", None, hide_tags_panel=True)
+        self.assertTrue(self.repo.getHideTagsPanel("alice"))
+
+    def test_get_hide_tags_panel_unknown_user_returns_false(self):
+        self.assertFalse(self.repo.getHideTagsPanel("nobody"))
 
 
 if __name__ == "__main__":

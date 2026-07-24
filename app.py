@@ -830,6 +830,28 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
             return {"lastfm_genre_enabled": self.repo.isLastfmGenreBackfillEnabled()}
 
         @self.app.context_processor
+        def _injectTagsStatus():
+            # Lets layout.html hide the "Playlists" nav link, _page_card.html
+            # hide the Top Songs/Artists/Albums tag filter, and the detail
+            # pages hide the tag panel when the admin's instance-wide tags
+            # kill switch is off - same shape as _injectLastfmGenreStatus
+            # above. Instance-wide, no per-user memoization needed.
+            return {"tags_enabled": self.repo.isTagsEnabled()}
+
+        @self.app.context_processor
+        def _injectTagsPanelStatus():
+            # Per-user "hide the tag panel" preference (set on /profile),
+            # independent of the admin-wide tags_enabled switch above - lets
+            # song/artist/album detail pages skip _tag_widget.html for a user
+            # who just doesn't want to see it. Memoized on g like
+            # _injectSpotifyReauthStatus: one request can render several
+            # templates.
+            if "hideTagsPanel" not in g:
+                username = session.get("username")
+                g.hideTagsPanel = self.repo.getHideTagsPanel(username) if username else False
+            return {"hide_tags_panel": g.hideTagsPanel}
+
+        @self.app.context_processor
         def _injectShareStatus():
             # Lets layout.html's nav show a "Compare" link only for users who
             # have at least one usable accepted share, and the topbar badges

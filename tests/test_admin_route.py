@@ -338,6 +338,14 @@ class TestAdminUserSettings(AdminRouteTestBase):
         self._post(dash, "/admin/user_settings", isAdmin=True, data={"milestone_recalc": "1"})
         self.assertTrue(dash.repo.isMilestoneRecalcEnabled())
 
+    def test_toggles_tags(self):
+        dash = self._makeApp()
+        self.assertTrue(dash.repo.isTagsEnabled())   #< absent row = enabled
+        self._post(dash, "/admin/user_settings", isAdmin=True, data={})   #< nothing checked -> disabled
+        self.assertFalse(dash.repo.isTagsEnabled())
+        self._post(dash, "/admin/user_settings", isAdmin=True, data={"tags": "1"})
+        self.assertTrue(dash.repo.isTagsEnabled())
+
 
 class TestAdminMilestoneWorkerHealth(AdminRouteTestBase):
     """The Worker Health panel's Milestone Detection entry. The milestone pass

@@ -367,6 +367,17 @@ class SettingQueries:
     def setMilestoneRecalcEnabled(self, enabled: bool) -> None:
         self._setFeatureEnabled(MILESTONE_RECALC_SETTING_KEY, enabled)
 
+    def isTagsEnabled(self) -> bool:
+        """Whether the personal tagging system is on instance-wide (absent
+        row = enabled). Gates the tag panel on song/artist/album pages, the
+        tag filter on Top Songs/Artists/Albums, and the Playlists page/nav
+        link - disabling hides them without deleting recorded user_tags
+        rows, so re-enabling restores everything."""
+        return self._isFeatureEnabled(TAGS_SETTING_KEY)
+
+    def setTagsEnabled(self, enabled: bool) -> None:
+        self._setFeatureEnabled(TAGS_SETTING_KEY, enabled)
+
     def getRecentRegistrationCounts(self) -> dict:
         """How many accounts were created in the last 7/30 days - an admin
         activity signal with no per-user equivalent."""

@@ -273,8 +273,10 @@ def register(app, dashboard):
                 timezone = request.form.get("timezone")
                 if timezone == "":
                     timezone = None
+                # Unchecked checkbox isn't submitted: absence means show the panel.
+                hide_tags_panel = request.form.get("hide_tags_panel") == "1"
                 try:
-                    db.repo.updateUserSettings(username, default_window, timezone)
+                    db.repo.updateUserSettings(username, default_window, timezone, hide_tags_panel)
                     db.refreshSettings()
                     success = "Preferences saved successfully!"
                 except Exception as e:
