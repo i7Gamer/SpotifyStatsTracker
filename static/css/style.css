@@ -976,17 +976,36 @@ progress::-moz-progress-bar {
 }
 
 /* The embedded Spotify player, revealed between the hero card and the charts
-   by static/js/play-embed.js (hidden until the button is pressed). */
+   by static/js/play-embed.js. Collapsed via max-height/opacity (not `hidden`)
+   so the reveal/hide can transition instead of popping; play-embed.js sets
+   --embed-max-height per embed type before adding .is-visible. */
 .play-embed {
-  margin: 1.5rem 0;
+  margin: 0;
   border-radius: 12px;
   overflow: hidden;
+  max-height: 0;
+  opacity: 0;
+  transform: translateY(-8px);
+  transition: max-height 0.35s ease, opacity 0.25s ease, transform 0.35s ease, margin 0.35s ease;
+}
+
+.play-embed.is-visible {
+  margin: 1.5rem 0;
+  max-height: var(--embed-max-height, 352px);
+  opacity: 1;
+  transform: translateY(0);
 }
 
 .play-embed iframe {
   display: block;
   width: 100%;
   border: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .play-embed {
+    transition: none;
+  }
 }
 
 /* Desktop: pull genre badges out of .track-attributes' flow and overflow

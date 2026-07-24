@@ -122,9 +122,36 @@ function initPlayEmbed() {
       controller.pause();
     }
 
-    container.hidden = !state.visible;
+    setContainerVisible(state.visible);
     button.textContent = next.label;
     button.setAttribute('aria-expanded', String(state.visible));
+  }
+
+  // Animates the reveal/hide via the .is-visible class (CSS transitions
+  // max-height/opacity) instead of toggling `hidden`, which snaps instantly.
+  // `hidden` is still applied once the hide transition finishes so the
+  // collapsed player stays out of layout and the accessibility tree.
+  function setContainerVisible(visible) {
+    if (visible) {
+      container.style.setProperty('--embed-max-height', `${embedHeightFor(button.dataset.embedType)}px`);
+      container.hidden = false;
+      // Force a reflow so the browser registers the collapsed state before
+      // adding .is-visible - otherwise the two class changes coalesce and
+      // there's nothing to transition from.
+      void container.offsetHeight;
+      container.classList.add('is-visible');
+    } else {
+      container.classList.remove('is-visible');
+      container.addEventListener(
+        'transitionend',
+        (event) => {
+          if (event.target === container && !container.classList.contains('is-visible')) {
+            container.hidden = true;
+          }
+        },
+        { once: true },
+      );
+    }
   }
 
   button.addEventListener('click', () => dispatch('click'));
