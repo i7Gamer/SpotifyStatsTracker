@@ -165,45 +165,48 @@
   </div>
   {% endif %}
 
+  {# data-stat lets wrapped.js target each tile by name instead of by
+     :nth-child position, so reordering a card can't write a value into the
+     wrong tile. #}
   <section class="track-summary-grid">
-    <article class="track-summary-card">
+    <article class="track-summary-card" data-stat="plays">
       <h3>Total Plays</h3>
       <p class="summary-value">{{ totalPlays }}</p>
     </article>
-    <article class="track-summary-card">
+    <article class="track-summary-card" data-stat="time">
       <h3>Total Time</h3>
       <p class="summary-value">{{ totalTime }}</p>
     </article>
   </section>
 
   <section class="track-summary-grid-3">
-    <article class="track-summary-card">
+    <article class="track-summary-card" data-stat="streak">
       <h3>Longest Streak</h3>
       <p class="summary-value">{{ longestStreak }} days</p>
     </article>
-    <article class="track-summary-card">
+    <article class="track-summary-card" data-stat="peak">
       <h3>Peak Day</h3>
       <div class="peak-day-container">
         <span class="summary-value">{{ peakListeningTime[0] if peakListeningTime else 'N/A' }}</span>
         <span class="summary-subtitle">{{ peakListeningTime[1] if peakListeningTime else '' }} plays</span>
       </div>
     </article>
-    <article class="track-summary-card">
+    <article class="track-summary-card" data-stat="uniqueSongs">
       <h3>Unique Songs</h3>
       <p class="summary-value">{{ uniqueSongsCount }}</p>
     </article>
   </section>
 
   <section class="track-summary-grid-3">
-    <article class="track-summary-card">
+    <article class="track-summary-card" data-stat="uniqueArtists">
       <h3>Unique Artists</h3>
       <p class="summary-value">{{ uniqueArtistsCount }}</p>
     </article>
-    <article class="track-summary-card">
+    <article class="track-summary-card" data-stat="discoveredSongs">
       <h3>Songs Discovered</h3>
       <p class="summary-value">{{ discoveredSongsCount }}</p>
     </article>
-    <article class="track-summary-card">
+    <article class="track-summary-card" data-stat="discoveredArtists">
       <h3>Artists Discovered</h3>
       <p class="summary-value">{{ discoveredArtistsCount }}</p>
     </article>
@@ -213,7 +216,7 @@
     <div class="chart-section">
       <h2>Listening Over {{ year }}</h2>
       <div class="chart-canvas-wrap">
-        <canvas id="timeSeriesChart"></canvas>
+        <canvas id="timeSeriesChart" role="img" aria-label="Listening across the year"></canvas>
       </div>
     </div>
   </section>

@@ -64,7 +64,7 @@
       <div class="chart-section">
         <h2>Genre Distribution</h2>
         <div class="chart-canvas-wrap">
-          <canvas id="genreDistChart"></canvas>
+          <canvas id="genreDistChart" role="img" aria-label="Genre distribution"></canvas>
         </div>
       </div>
 
@@ -72,7 +72,7 @@
         <div class="chart-section">
           <h2>Genre Share</h2>
           <div class="chart-canvas-wrap" style="height: 300px;">
-            <canvas id="genreShareChart"></canvas>
+            <canvas id="genreShareChart" role="img" aria-label="Genre share of total plays"></canvas>
           </div>
           <div id="genreShareLegend" class="chart-legend"></div>
         </div>
@@ -80,7 +80,7 @@
           <h2>Artists per Genre</h2>
           <p class="chart-subtitle">How many different artists you play in each genre (breadth).</p>
           <div class="chart-canvas-wrap">
-            <canvas id="genreBreadthChart"></canvas>
+            <canvas id="genreBreadthChart" role="img" aria-label="Genre breadth"></canvas>
           </div>
         </div>
       </div>
@@ -89,7 +89,7 @@
       <div class="chart-section" style="margin-top: 2rem;">
         <h2>Genre Mix &middot; <span id="genreMixLabel">{{ intervalLabel }}</span></h2>
         <div class="chart-canvas-wrap">
-          <canvas id="genreMixChart"></canvas>
+          <canvas id="genreMixChart" role="img" aria-label="Genre mix over time"></canvas>
         </div>
         <div id="genreMixLegend" class="chart-legend"></div>
       </div>

@@ -23,6 +23,7 @@
     <input type="date" id="startDate" name="startDate" value="{{ customStart }}" onchange="scheduleSearchFilter('startDate', updateDateFilter)">
     <label for="endDate">To:</label>
     <input type="date" id="endDate" name="endDate" value="{{ customEnd }}" onchange="scheduleSearchFilter('endDate', updateDateFilter)">
+    <span id="dateError" class="date-error" style="display: none; color: var(--accent);"></span>
 </div>
 
 <div class="filter-group">
@@ -49,9 +50,27 @@ function updateIntervalFilter() {
 }
 
 function updateDateFilter() {
-    const startDate = document.getElementById('startDate').value;
-    const endDate = document.getElementById('endDate').value;
-    
+    const startEl = document.getElementById('startDate');
+    const endEl = document.getElementById('endDate');
+    const errorEl = document.getElementById('dateError');
+    const startDate = startEl.value;
+    const endDate = endEl.value;
+
+    // Validate order before navigating - an inverted range used to silently
+    // navigate and return an empty list (matches the other filtered pages).
+    if (errorEl) errorEl.style.display = 'none';
+    startEl.style.borderColor = '';
+    endEl.style.borderColor = '';
+    if (startDate && endDate && new Date(startDate) > new Date(endDate)) {
+        if (errorEl) {
+            errorEl.textContent = 'Start date cannot be after end date.';
+            errorEl.style.display = 'inline';
+        }
+        startEl.style.borderColor = 'var(--accent)';
+        endEl.style.borderColor = 'var(--accent)';
+        return;
+    }
+
     if (startDate && endDate) {
     const params = new URLSearchParams(window.location.search);
     const searchQuery = document.getElementById('searchQuery').value;

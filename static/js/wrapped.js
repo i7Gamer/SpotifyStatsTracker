@@ -128,39 +128,24 @@ function loadWrappedData(year, groupBy, limit, sortBy, updateType = 'all') {
       const heroSubtitle = document.querySelector('.hero p');
       if (heroSubtitle) heroSubtitle.textContent = `A look back at what ${IS_PUBLIC_VIEW ? SHARE_OWNER_NAME : 'you'} listened to in ${year}.`;
 
-      // 1. Update general stats if returned
+      // 1. Update general stats if returned. Target tiles by data-stat name
+      //    (set in wrapped.html) rather than :nth-child position, so a card
+      //    reorder can't silently write a value into the wrong tile.
       if (data.totalPlays !== undefined) {
-        const playsVal = document.querySelector('.track-summary-grid .track-summary-card:nth-child(1) .summary-value');
-        if (playsVal) playsVal.textContent = data.totalPlays;
-        const timeVal = document.querySelector('.track-summary-grid .track-summary-card:nth-child(2) .summary-value');
-        if (timeVal) timeVal.textContent = data.totalTime;
-
-        const grid3_list = document.querySelectorAll('.track-summary-grid-3');
-        if (grid3_list.length >= 2) {
-          const firstGrid = grid3_list[0];
-          const secondGrid = grid3_list[1];
-
-          const streakVal = firstGrid.querySelector('.track-summary-card:nth-child(1) .summary-value');
-          if (streakVal) streakVal.textContent = data.longestStreak + ' days';
-
-          const peakVal = firstGrid.querySelector('.track-summary-card:nth-child(2) .summary-value');
-          if (peakVal) peakVal.textContent = data.peakDay;
-
-          const peakSub = firstGrid.querySelector('.track-summary-card:nth-child(2) .summary-subtitle');
-          if (peakSub) peakSub.textContent = data.peakPlays + ' plays';
-
-          const uniqueSongs = firstGrid.querySelector('.track-summary-card:nth-child(3) .summary-value');
-          if (uniqueSongs) uniqueSongs.textContent = data.uniqueSongsCount;
-
-          const uniqueArtists = secondGrid.querySelector('.track-summary-card:nth-child(1) .summary-value');
-          if (uniqueArtists) uniqueArtists.textContent = data.uniqueArtistsCount;
-
-          const discSongs = secondGrid.querySelector('.track-summary-card:nth-child(2) .summary-value');
-          if (discSongs) discSongs.textContent = data.discoveredSongsCount;
-
-          const discArtists = secondGrid.querySelector('.track-summary-card:nth-child(3) .summary-value');
-          if (discArtists) discArtists.textContent = data.discoveredArtistsCount;
-        }
+        const setStat = (stat, value) => {
+          const el = document.querySelector('[data-stat="' + stat + '"] .summary-value');
+          if (el) el.textContent = value;
+        };
+        setStat('plays', data.totalPlays);
+        setStat('time', data.totalTime);
+        setStat('streak', data.longestStreak + ' days');
+        setStat('peak', data.peakDay);
+        const peakSub = document.querySelector('[data-stat="peak"] .summary-subtitle');
+        if (peakSub) peakSub.textContent = data.peakPlays + ' plays';
+        setStat('uniqueSongs', data.uniqueSongsCount);
+        setStat('uniqueArtists', data.uniqueArtistsCount);
+        setStat('discoveredSongs', data.discoveredSongsCount);
+        setStat('discoveredArtists', data.discoveredArtistsCount);
       }
 
       // Swap the live-computed genre card (year-scoped, so a year change

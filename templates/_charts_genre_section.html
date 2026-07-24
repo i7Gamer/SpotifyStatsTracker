@@ -7,7 +7,7 @@
    Expects: genreUnlocked, genreCoverage. #}
 {% if genreUnlocked %}
   <div class="chart-canvas-wrap">
-    <canvas id="genreChart"></canvas>
+    <canvas id="genreChart" role="img" aria-label="Top genres by plays"></canvas>
   </div>
   {% import "_genre_macros.html" as genreMacros %}
   {{ genreMacros.lastfmAttribution(marginTop='0.5rem') }}

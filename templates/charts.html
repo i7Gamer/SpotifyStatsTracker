@@ -51,7 +51,7 @@
     <div class="chart-section">
       <h2>Listening Time &middot; <span id="chartsTimeSeriesLabel">{{ intervalLabel }}{% if lastDayDate %} ({{ lastDayDate }}){% endif %}</span></h2>
       <div class="chart-canvas-wrap">
-        <canvas id="timeSeriesChart"></canvas>
+        <canvas id="timeSeriesChart" role="img" aria-label="Listening time over the selected period"></canvas>
       </div>
     </div>
 
@@ -59,7 +59,7 @@
       <h2>When You Listen</h2>
       <p class="chart-subtitle">Total listening time by day of week and hour of day.</p>
       <div class="chart-canvas-wrap heatmap-wrap">
-        <canvas id="heatmapChart"></canvas>
+        <canvas id="heatmapChart" role="img" aria-label="When you listen, by day of week and hour of day"></canvas>
       </div>
     </div>
 
@@ -68,7 +68,7 @@
     <div class="chart-section" id="chartsArtistTrendSection" {% if isSingleDayView %}style="display: none;"{% endif %}>
       <h2>Top Artists &middot; <span id="chartsArtistTrendLabel">{{ intervalLabel }}</span></h2>
       <div class="chart-canvas-wrap">
-        <canvas id="artistTrendChart"></canvas>
+        <canvas id="artistTrendChart" role="img" aria-label="Top artists' plays over time"></canvas>
       </div>
       <div id="artistTrendLegend" class="chart-legend"></div>
     </div>
@@ -77,14 +77,14 @@
       <div class="chart-section">
         <h2>Explicit vs Clean Content</h2>
         <div class="chart-canvas-wrap" style="height: 250px;">
-          <canvas id="explicitChart"></canvas>
+          <canvas id="explicitChart" role="img" aria-label="Explicit versus clean plays"></canvas>
         </div>
       </div>
 
       <div class="chart-section">
         <h2>Completion vs Skips</h2>
         <div class="chart-canvas-wrap" style="height: 250px;">
-          <canvas id="completionChart"></canvas>
+          <canvas id="completionChart" role="img" aria-label="Completed, partial, and skipped plays"></canvas>
         </div>
       </div>
     </div>
@@ -92,7 +92,7 @@
     <div class="chart-section" style="margin-top: 2rem;">
       <h2>Release Era Distribution</h2>
       <div class="chart-canvas-wrap" style="height: 300px;">
-        <canvas id="decadeChart"></canvas>
+        <canvas id="decadeChart" role="img" aria-label="Plays by release decade"></canvas>
       </div>
     </div>
 

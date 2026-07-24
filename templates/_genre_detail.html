@@ -31,7 +31,7 @@
   <div class="chart-section" style="margin-top: 1.5rem;">
     <h3>Plays{% if intervalLabel %} &middot; {{ intervalLabel }}{% endif %}</h3>
     <div class="chart-canvas-wrap">
-      <canvas id="genreTrendChart"></canvas>
+      <canvas id="genreTrendChart" role="img" aria-label="Selected genre's plays over time"></canvas>
     </div>
   </div>
 
@@ -39,7 +39,7 @@
     <h3>Listening Clock</h3>
     <p class="chart-subtitle">When you play this genre, by day of week and hour of day.</p>
     <div class="chart-canvas-wrap heatmap-wrap">
-      <canvas id="genreClockChart"></canvas>
+      <canvas id="genreClockChart" role="img" aria-label="Selected genre's plays by hour of day"></canvas>
     </div>
   </div>
 
