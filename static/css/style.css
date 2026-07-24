@@ -2,9 +2,9 @@
   --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
   --font-headings: 'Outfit', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
   --accent: #FB717B;
-  --accent-secondary: #a78bfa;
+  --accent-secondary: #95EFB3;
   --accent-glow: rgba(251, 113, 123, 0.25);
-  --accent-secondary-glow: rgba(167, 139, 250, 0.25);
+  --accent-secondary-glow: rgba(149, 239, 179, 0.25);
   --background: #060606;
   --content-background: #0b0b0b;
   --surface: rgba(25, 25, 25, 0.45);
@@ -2814,9 +2814,9 @@ progress::-moz-progress-bar {
 /* --- THEME CUSTOMIZATION SYSTEM --- */
 html.theme-rose {
   --accent: #FB717B;
-  --accent-secondary: #A78BFA;
+  --accent-secondary: #95EFB3;
   --accent-glow: rgba(251, 113, 123, 0.25);
-  --accent-secondary-glow: rgba(167, 139, 250, 0.25);
+  --accent-secondary-glow: rgba(149, 239, 179, 0.25);
   --glow-color-1: rgba(251, 113, 123, 0.15);
   --glow-color-2: rgba(29, 185, 84, 0.1);
   --glow-color-3: rgba(25, 25, 25, 0.3);
