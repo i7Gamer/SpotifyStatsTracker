@@ -256,16 +256,25 @@
 
       <div class="form-group">
         <label for="clientSecret">Spotify Client Secret</label>
-        <input type="password" id="clientSecret" name="client_secret" value="{{ client_secret or '' }}" placeholder="Enter Client Secret" required>
+        <input type="password" id="clientSecret" name="client_secret" value=""
+               placeholder="{% if has_client_secret %}A secret is saved - enter it again to replace it{% else %}Enter Client Secret{% endif %}" required>
       </div>
 
       <div class="profile-button-row" style="display: flex; gap: 1rem;">
         <button type="submit" class="primary-button" style="flex: 1;">Save Credentials</button>
-        {% if client_id and client_secret %}
-          <a href="{{ url_for('profileDisconnect') }}" class="primary-button" style="flex: 1; background: #c92a2a; text-align: center; text-decoration: none; display: flex; align-items: center; justify-content: center;">Disconnect API</a>
+        {% if has_api %}
+          {# Associated with the separate POST form below via the form= attribute:
+             disconnect is state-changing so it must be a CSRF-protected POST, and
+             a <form> can't be nested inside the credentials form above. #}
+          <button type="submit" form="disconnectApiForm" class="primary-button" style="flex: 1; background: #c92a2a;">Disconnect API</button>
         {% endif %}
       </div>
     </form>
+    {% if has_api %}
+    <form id="disconnectApiForm" method="post" action="{{ url_for('profileDisconnect') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+    </form>
+    {% endif %}
 
     <div class="api-status" style="margin-top: 1rem; padding: 1rem; background: rgba(255, 255, 255, 0.03); border-radius: 8px; border: 1px solid var(--border-color, #2d2d2d);">
       <h3>Connection Status</h3>
@@ -338,7 +347,10 @@
     {% endif %}
 
     <div style="margin-top: 3rem; text-align: center;">
-      <a href="{{ url_for('logout') }}" class="primary-button" style="background: #555; text-decoration: none; display: inline-block; padding: 0.5rem 2rem;">Log out of Tracker</a>
+      <form method="post" action="{{ url_for('logout') }}" style="display: inline;">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+        <button type="submit" class="primary-button" style="background: #555; padding: 0.5rem 2rem;">Log out of Tracker</button>
+      </form>
     </div>
   </div>
 </div>

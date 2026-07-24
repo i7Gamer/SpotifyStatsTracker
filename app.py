@@ -173,6 +173,14 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
         self.baseDir = Path(__file__).resolve().parent
         self.app.secret_key = self._get_or_create_secret_key()
         self.app.permanent_session_lifetime = timedelta(days=30)
+        # Session cookie hardening. HttpOnly (Flask's default) keeps JS off the
+        # cookie; SameSite=Lax stops it riding cross-site POSTs. Secure is gated
+        # on the same TLS signal as HSTS - left off on the plain-HTTP default
+        # deployment, where a Secure cookie would never be sent and would lock
+        # everyone out. Read once at construction, like the proxy-hops setting.
+        self.app.config["SESSION_COOKIE_HTTPONLY"] = True
+        self.app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+        self.app.config["SESSION_COOKIE_SECURE"] = _hstsEnabled()
         # Caps a single import-history request's total upload size (summed across
         # every file in a multi-file upload) - without this, an oversized/
         # accidental upload is read fully into memory before anything can reject
@@ -260,6 +268,16 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
         publicly-known default that used to ship in this repo."""
         envKey = os.environ.get("FLASK_SECRET_KEY")
         if envKey:
+            if envKey.strip() == PLACEHOLDER_FLASK_SECRET_KEY:
+                # Refuse to boot on the shipped placeholder: it is a public value,
+                # so sessions signed with it are forgeable and (when it doubles as
+                # the at-rest encryption key) stored Spotify sessions are readable.
+                raise RuntimeError(
+                    "FLASK_SECRET_KEY is still set to the docker-compose placeholder "
+                    "value. Generate a real random key - e.g. "
+                    "`python -c \"import secrets; print(secrets.token_hex(32))\"` - "
+                    "and set FLASK_SECRET_KEY to it before starting."
+                )
             return envKey
 
         keyFile = self.baseDir / "secrets" / "flask_secret_key.txt"

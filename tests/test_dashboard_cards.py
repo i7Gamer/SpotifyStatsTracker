@@ -243,7 +243,9 @@ class DashboardCardsTestCase(_DashboardHelpers, AppTestCase):
         self.assertIn(b"nav-account-dropdown", body)
         self.assertIn(b">Profile</a>", body)
         self.assertIn(b">Import</a>", body)
-        self.assertIn(b">Log out</a>", body)   #< previously only reachable from the Profile page
+        # Log out is a POST form (state-changing), not a plain link.
+        self.assertIn(b"dropdown-logout-form", body)
+        self.assertIn(b">Log out</button>", body)
 
     def test_discover_card_placeholder_rendered_when_lastfm_enabled(self):
         # The dashboard render only emits the (empty) Discover card shell; its

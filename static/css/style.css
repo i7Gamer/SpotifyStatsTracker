@@ -2606,8 +2606,10 @@ html.theme-red {
   pointer-events: none;
 }
 
-.dropdown-content a {
+.dropdown-content a,
+.dropdown-content .dropdown-logout-form button {
   display: block;
+  width: 100%;
   padding: 8px 16px;
   color: var(--muted);
   text-decoration: none;
@@ -2617,8 +2619,21 @@ html.theme-red {
   margin: 0 !important;
 }
 
+/* The logout control is a POST form (state-changing), styled to match the
+   plain <a> items around it. */
+.dropdown-content .dropdown-logout-form {
+  margin: 0;
+}
+.dropdown-content .dropdown-logout-form button {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-family: inherit;
+}
+
 .dropdown-content a:hover,
-.dropdown-content a.active {
+.dropdown-content a.active,
+.dropdown-content .dropdown-logout-form button:hover {
   background: var(--accent-glow);
   color: var(--accent);
 }
@@ -2674,7 +2689,8 @@ html.theme-red {
     display: none;
   }
 
-  .dropdown-content a {
+  .dropdown-content a,
+  .dropdown-content .dropdown-logout-form button {
     text-align: center;
     padding: 8px 0;
     font-size: 1rem;
@@ -2682,7 +2698,8 @@ html.theme-red {
   }
 
   .dropdown-content a:hover,
-  .dropdown-content a.active {
+  .dropdown-content a.active,
+  .dropdown-content .dropdown-logout-form button:hover {
     background: transparent;
     color: var(--accent);
   }

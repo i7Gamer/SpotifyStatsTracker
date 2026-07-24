@@ -249,7 +249,10 @@ def register(app, dashboard):
     def logout():
         session.clear()
         return redirect(url_for("login"))
-    app.add_url_rule("/logout", "logout", logout, methods=["GET"])
+    # POST-only + CSRF-protected: clearing the session is state-changing, so a
+    # cross-site GET must not be able to trigger it (the session cookie rides
+    # top-level GET navigations even under SameSite=Lax).
+    app.add_url_rule("/logout", "logout", logout, methods=["POST"])
 
     def profilePage():
         email, username, db = dashboard.get_current_user_or_redirect()
@@ -408,7 +411,10 @@ def register(app, dashboard):
             username=username,
             email=email,
             client_id=client_id,
-            client_secret=client_secret,
+            # Never echo the stored secret back into the page - only signal that
+            # one is saved so the field can show a placeholder (mirrors the
+            # Last.fm key field). client_id is not secret and is still shown.
+            has_client_secret=bool(client_secret),
             has_api=bool(client_id and client_secret),
             has_lastfm=bool(db.getUserLastfmApiKey()),
             lastfm_enabled=dashboard.repo.isLastfmGenreBackfillEnabled(),
@@ -444,7 +450,9 @@ def register(app, dashboard):
             return redirect(url_for("profilePage", success="Successfully disconnected Spotify API credentials."))
         except Exception as e:
             return redirect(url_for("profilePage", error=f"Failed to disconnect: {str(e)}"))
-    app.add_url_rule("/profile/disconnect", "profileDisconnect", profileDisconnect, methods=["GET"])
+    # POST-only + CSRF-protected: wiping the stored Spotify credentials is
+    # state-changing, so it must not be reachable via a cross-site GET link.
+    app.add_url_rule("/profile/disconnect", "profileDisconnect", profileDisconnect, methods=["POST"])
 
     def profileShareAction(share_id):
         if not dashboard.repo.isDataSharingEnabled():

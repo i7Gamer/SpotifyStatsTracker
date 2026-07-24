@@ -98,7 +98,10 @@
             {% if isAdmin %}
             <a class="{{ 'active' if section == 'admin' }}" {% if section == 'admin' %}aria-current="page"{% endif %} href="{{ url_for('adminPage') }}">Admin</a>
             {% endif %}
-            <a href="{{ url_for('logout') }}">Log out</a>
+            <form method="post" action="{{ url_for('logout') }}" class="dropdown-logout-form">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+              <button type="submit">Log out</button>
+            </form>
           </div>
         </div>
       </nav>

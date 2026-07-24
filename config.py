@@ -63,6 +63,12 @@ DEFAULT_SORT_BY = "totalTimeListened"
 # falling back to the default.
 VALID_SORT_BY = {"totalTimeListened", "plays", "name"}
 TRUTHY_ENV_VALUES = {"1", "true", "yes", "on"}
+# The literal FLASK_SECRET_KEY shipped as a placeholder in docker-compose.yml.
+# Booting with it signs session cookies - and, when DATA_ENCRYPTION_KEY is unset,
+# encrypts every stored Spotify session/secret at rest - under a publicly-known
+# value, i.e. a trivial full-auth-bypass. _get_or_create_secret_key refuses to
+# start on this exact value (see app.py).
+PLACEHOLDER_FLASK_SECRET_KEY = "changeme-generate-your-own-random-value"
 # Admin-triggered graceful restart (POST /admin/restart). The button gracefully
 # stops workers then exits so a *supervising* launch script relaunches the
 # process - it must NOT be relied on for a bare, unsupervised process (the app

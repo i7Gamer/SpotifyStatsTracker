@@ -50,8 +50,8 @@ class TestSpotifyCallbackEnv(SpotifyEnvTestCase):
             resp = client.post("/profile", data={"client_id": "id", "client_secret": "secret"})
             self.assertEqual(resp.status_code, 404)
 
-            # GET /profile/disconnect should return 404
-            resp = client.get("/profile/disconnect")
+            # POST /profile/disconnect should return 404 (disconnect is POST-only)
+            resp = client.post("/profile/disconnect")
             self.assertEqual(resp.status_code, 404)
 
             # GET /spotify-authorize should return 404
