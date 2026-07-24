@@ -53,18 +53,25 @@ class SettingQueries:
                 if result.returncode == 0 and result.stdout.strip():
                     return int(result.stdout.split()[0])
 
-            # Windows fallback (PowerShell)
+            # Windows fallback (PowerShell). The path is passed via an env var and
+            # read with -LiteralPath rather than interpolated into the command
+            # string: interpolation would both break on a path containing a quote
+            # or a `[` (a -Path wildcard char) and be an injection vector the day
+            # the folder path ever became anything but a fixed config value.
             if platform.system() == "Windows":
+                import os
                 result = subprocess.run(
                     [
                         "powershell",
                         "-NoProfile",
                         "-Command",
-                        f"(Get-ChildItem -Path '{folder_path}' -Recurse -File | Measure-Object -Sum -Property Length).Sum"
+                        "(Get-ChildItem -LiteralPath $env:SPOTIFY_MEDIA_SCAN_DIR -Recurse -File "
+                        "| Measure-Object -Sum -Property Length).Sum",
                     ],
                     capture_output=True,
                     text=True,
-                    timeout=30
+                    timeout=30,
+                    env={**os.environ, "SPOTIFY_MEDIA_SCAN_DIR": str(folder_path)},
                 )
                 if result.stdout.strip():
                     return int(result.stdout.strip())

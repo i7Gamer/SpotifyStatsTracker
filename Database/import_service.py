@@ -13,15 +13,6 @@ class ImportMixin:
 
     # ---- writing plays ---------------------------------------------------------------
 
-    def appendEntries(self, entry: dict):
-        """Record a single play. Named for compatibility with the previous
-        JSON-backed API (it always took one entry despite the plural name)."""
-        if not entry:
-            return
-        self.repo.insertPlay(self.user, entry["id"], entry["playedAt"], entry["timePlayed"], entry.get("playedFrom"),
-                              created_reason=f"manual_entry (user: {self.user})")
-        self.repo.commit()
-
     def appendMetadata(self, meta: dict, created_reason: str | None = None) -> bool:
         self.saveImagesFromTrack(meta)
         entry, track = self._splitEntryAndTrack(meta)

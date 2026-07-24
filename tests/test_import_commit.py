@@ -74,8 +74,12 @@ class TestImportHistoryCommit(DatabaseTestCase):
 
         def gen():
             yield _meta("i1", 200)
-            # Simulate the listener recording a play while the import is running.
-            self.db.appendEntries({"id": "L1", "playedAt": 250, "timePlayed": 1000})
+            # Simulate the listener recording a play while the import is running -
+            # a plain committed insert on the shared connection, like a real
+            # concurrent listener write.
+            self.db.repo.insertPlay(self.db.user, "L1", 250, 1000,
+                                    created_reason="listener_play (test)")
+            self.db.repo.commit()
             yield _meta("i2", 50)
 
         with patch("Database.database.Importer", return_value=self._mockImporter(gen)):

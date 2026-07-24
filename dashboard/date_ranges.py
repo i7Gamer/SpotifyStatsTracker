@@ -53,6 +53,12 @@ class DateRangeMixin:
 
             Returns a half-open local interval [startDate, endDate).
             """
+            # Coerce an unrecognized interval to `default` up front: without this
+            # a junk ?interval= (e.g. from a hand-edited URL) fell through to the
+            # all-time branch below, silently returning ALL-TIME data - and
+            # _getIntervalLabel would then label it "Yesterday". "all time" and
+            # the other known values pass through unchanged.
+            interval = self._getValidInterval(interval, default)
             nowLocal = now(tz=tz)
             startDate = None
 
@@ -100,7 +106,11 @@ class DateRangeMixin:
 
             return startDate, endDate
 
-    def _getIntervalLabel(self, interval: str = None, customStart: str = None, customEnd: str = None):
+    def _getIntervalLabel(self, interval: str = None, customStart: str = None, customEnd: str = None, default: str = "day"):
+        # Match _getDateRange: an unrecognized interval takes `default`, so the
+        # label can't disagree with the data (junk no longer reads "Yesterday"
+        # over some other range's numbers).
+        interval = self._getValidInterval(interval, default)
         labels = {
             "all time": "All Time",
             "today": "Today",

@@ -132,14 +132,20 @@ class PlayQueries:
         return cur.rowcount
 
     def deleteZeroDurationPlays(self) -> int:
-        """Remove plays with zero (or negative) recorded listening time, across
-        every user - leftover skip/error events that older importer versions
-        recorded as real plays before the importer started filtering them out
-        at import time. Returns the number of rows removed.
+        """Remove real plays (is_skip=0) with zero (or negative) recorded
+        listening time, across every user - leftover skip/error events that
+        older importer versions recorded as real plays before the importer
+        started filtering them out at import time. Returns the number removed.
+
+        The `is_skip=0` guard matters since migrate1_32_0: merged skip rows can
+        legitimately be 0ms, and must NOT be deleted here. The current callers
+        (migrate1_7_0 / migrate1_9_0) predate skips - the schema is stamped on
+        connect so the column exists, and pre-skip data is all is_skip=0, so this
+        deletes exactly what it always did while staying safe for any later use.
 
         Does NOT commit - see upsertTrack()'s docstring."""
         conn = self._conn()
-        cur = conn.execute("DELETE FROM plays WHERE time_played <= 0")
+        cur = conn.execute("DELETE FROM plays WHERE time_played <= 0 AND is_skip = 0")
         return cur.rowcount
 
     def getPlaysCount(self, username: str, startTs: float | None = None, endTs: float | None = None,
