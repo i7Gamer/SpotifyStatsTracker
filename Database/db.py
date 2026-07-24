@@ -86,6 +86,11 @@ CREATE TABLE IF NOT EXISTS tracks (
     lastfm_attempted_at REAL,
     availability_reason TEXT
 );
+-- tracks.album_id is a foreign key filtered/joined by every "tracks on this
+-- album" lookup (album detail, artist-per-album rollups, play scans, genre
+-- coverage, tag album-inheritance). Without this index those all fall back to
+-- a full tracks scan.
+CREATE INDEX IF NOT EXISTS idx_tracks_album ON tracks(album_id);
 
 -- Ordered join table: a track can have multiple artists, and display order matters.
 CREATE TABLE IF NOT EXISTS track_artists (

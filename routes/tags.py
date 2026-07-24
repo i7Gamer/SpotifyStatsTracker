@@ -1,12 +1,19 @@
 """Tagging system and tag-filtered playlist export routes.
 """
 import logging
+import re
 from flask import render_template, redirect, request, url_for, jsonify, Response, stream_with_context
 
 import app as appmod
 from services.export import generatePlaylistCsv, generatePlaylistM3u, generatePlaylistXspf
 
 logger = logging.getLogger(__name__)
+
+# Tags are user-controlled free text; strip everything but a safe ASCII subset
+# before putting them in the download filename so a tag containing a quote,
+# newline, or non-Latin-1 character can't break or inject into the
+# Content-Disposition header (Werkzeug encodes it as Latin-1).
+FILENAME_UNSAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
 def register(app, dashboard):
@@ -147,8 +154,8 @@ def register(app, dashboard):
 
         tracks = db.getTaggedTracks(tags, match_mode=match_mode, sortBy=sortBy)
 
-        tag_summary = "_".join(tags[:3]) if tags else "all"
-        filename = f"playlist_{tag_summary}.{fmt}"
+        tag_summary = FILENAME_UNSAFE_RE.sub("_", "_".join(tags[:3])).strip("_") if tags else "all"
+        filename = f"playlist_{tag_summary or 'all'}.{fmt}"
 
         if fmt == "m3u":
             generator = generatePlaylistM3u(tracks)

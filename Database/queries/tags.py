@@ -75,25 +75,30 @@ class TagQueries:
         conn = self._conn()
         track_sets: list[set[str]] = []
 
+        # Expand each tag outward from the (small, indexed) set of tagged
+        # entities rather than scanning the whole tracks catalog and testing
+        # three OR conditions per row: a track matches if it is tagged directly,
+        # its album is tagged, or any of its artists is tagged. UNION dedups, so
+        # this returns the same set as the old DISTINCT-with-ORs. Each branch
+        # rides an index (user_tags PK prefix, then tracks PK / idx_tracks_album
+        # / idx_track_artists_artist).
         query = """
-            SELECT DISTINCT t.id FROM tracks t
-            WHERE t.id IN (
-                SELECT entity_id FROM user_tags WHERE username = ? AND entity_type = 'track' AND tag = ?
-            ) OR t.album_id IN (
-                SELECT entity_id FROM user_tags WHERE username = ? AND entity_type = 'album' AND tag = ?
-            ) OR EXISTS (
-                SELECT 1 FROM track_artists ta WHERE ta.track_id = t.id AND ta.artist_id IN (
-                    SELECT entity_id FROM user_tags WHERE username = ? AND entity_type = 'artist' AND tag = ?
-                )
-            )
+            SELECT t.id FROM tracks t
+                JOIN user_tags ut ON ut.entity_id = t.id
+                WHERE ut.username = ? AND ut.entity_type = 'track' AND ut.tag = ?
+            UNION
+            SELECT t.id FROM tracks t
+                JOIN user_tags ut ON ut.entity_id = t.album_id
+                WHERE ut.username = ? AND ut.entity_type = 'album' AND ut.tag = ?
+            UNION
+            SELECT ta.track_id FROM track_artists ta
+                JOIN user_tags ut ON ut.entity_id = ta.artist_id
+                WHERE ut.username = ? AND ut.entity_type = 'artist' AND ut.tag = ?
         """
 
         for tag in norm_tags:
             rows = conn.execute(query, (username, tag, username, tag, username, tag)).fetchall()
             track_sets.append({r["id"] for r in rows})
-
-        if not track_sets:
-            return []
 
         if match_mode == "all":
             result_set = set.intersection(*track_sets)

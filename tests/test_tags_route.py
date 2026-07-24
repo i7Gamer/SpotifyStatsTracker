@@ -127,6 +127,20 @@ class TestTagsRoutes(AppTestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertIn("Rock Song", resp.get_data(as_text=True))
 
+    def test_playlist_export_filename_is_header_safe(self):
+        self._login()
+        # A tag with a quote (injection) and a non-Latin-1 char (中, which would
+        # make Werkzeug 500 when encoding the Content-Disposition header) must be
+        # sanitized out of the download filename.
+        resp = self.client.get('/playlist/export?tags=chill%E4%B8%AD%22&format=csv')
+
+        self.assertEqual(resp.status_code, 200)
+        cd = resp.headers["Content-Disposition"]
+        self.assertNotIn('"out', cd)
+        self.assertNotIn("中", cd)
+        self.assertTrue(cd.startswith('attachment; filename="playlist_chill'))
+        cd.encode("latin-1")   # must not raise - header would otherwise 500
+
     def test_playlists_page_renders(self):
         self._login()
         resp = self.client.get("/playlists")

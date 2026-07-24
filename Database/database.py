@@ -917,13 +917,16 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
                                        trackId=trackId, artistId=artistId, albumId=albumId, searchQuery=searchQuery)
 
     def getTaggedTracks(self, tags: list[str], match_mode: str = "any", sortBy: str = "plays") -> list[dict]:
-        """Return hydrated tracks matching tag filter for the current user."""
+        """Return hydrated tracks matching tag filter for the current user.
+
+        The tag-matched ids are pushed down into getSongsPage as a `trackIds`
+        filter so the aggregation only touches those rows, rather than paying to
+        aggregate the whole play history and discarding the non-matching rows in
+        Python."""
         track_ids = self.repo.getTaggedTrackIds(self.user, tags, match_mode=match_mode)
         if not track_ids:
             return []
-        all_user_songs = self.repo.getSongsPage(self.user, sortBy=sortBy, limit=None)
-        track_set = set(track_ids)
-        return [song for song in all_user_songs if song["id"] in track_set]
+        return self.repo.getSongsPage(self.user, sortBy=sortBy, limit=None, trackIds=track_ids)
 
     def getSong(self, trackId: str) -> dict | None:
         """A single song's full metadata plus all-time listen totals - the

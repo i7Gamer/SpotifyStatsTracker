@@ -1891,6 +1891,30 @@ class TestSongsPage(RepositoryTestCase):
 
         self.assertEqual(self.repo.getSongsPage("alice", trackId="missing"), [])
 
+    def test_filtered_by_track_ids_returns_only_that_set(self):
+        self._seedThreeSongs()
+
+        songs = self.repo.getSongsPage("alice", trackIds=["t1", "t3"])
+
+        self.assertCountEqual([s["id"] for s in songs], ["t1", "t3"])
+
+    def test_filtered_by_track_ids_preserves_sort_order(self):
+        self._seedThreeSongs()   # totalTimeListened: t3=9000 > t1=5000 > t2=2000
+
+        songs = self.repo.getSongsPage("alice", sortBy="totalTimeListened", trackIds=["t1", "t2", "t3"])
+
+        self.assertEqual([s["id"] for s in songs], ["t3", "t1", "t2"])
+
+    def test_filtered_by_empty_track_ids_matches_nothing(self):
+        self._seedThreeSongs()
+
+        self.assertEqual(self.repo.getSongsPage("alice", trackIds=[]), [])
+
+    def test_track_ids_none_is_unfiltered(self):
+        self._seedThreeSongs()
+
+        self.assertEqual(len(self.repo.getSongsPage("alice", trackIds=None)), 3)
+
     def test_filtered_by_artist_id_returns_only_that_artists_songs(self):
         self.repo.upsertTrack(self._track("t1", "alb1", "a1", name="Song One"))
         self.repo.upsertTrack(self._track("t2", "alb1", "a2", name="Song Two"))

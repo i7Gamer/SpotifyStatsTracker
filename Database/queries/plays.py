@@ -607,7 +607,8 @@ class PlayQueries:
     def getSongsPage(self, username: str, startTs: float | None = None, endTs: float | None = None,
                       sortBy: str = "plays", limit: int | None = None, offset: int = 0,
                       trackId: str | None = None, artistId: str | None = None,
-                      albumId: str | None = None, searchQuery: str | None = None) -> list[dict]:
+                      albumId: str | None = None, searchQuery: str | None = None,
+                      trackIds: list[str] | None = None) -> list[dict]:
         """Sorted/paged song stats in one batched round-trip, replacing the old
         "aggregate, then getTrack() per row" N+1 pattern - a caller asking for
         page N now pays for page N, not for every song ever played.
@@ -622,7 +623,10 @@ class PlayQueries:
         artist's songs, or an album's songs - reused by the song/artist/album
         detail pages instead of a separate query per lookup. `artistId` is
         matched via EXISTS rather than an extra JOIN so a multi-artist track
-        still yields exactly one row. `searchQuery` narrows to songs whose
+        still yields exactly one row. `trackIds` narrows to an explicit set of
+        track ids (the tag-filtered playlist export) so the caller aggregates
+        only those rows instead of the whole library; an empty list matches
+        nothing. `searchQuery` narrows to songs whose
         name, album, or artist(s) match - safe to check via the current row's
         own t.id (unlike getAlbumsPage(), every row already shares the same
         t.id within a GROUP BY t.id group, so there's no risk of the filter
@@ -647,6 +651,13 @@ class PlayQueries:
         if albumId is not None:
             extraClauses += " AND al.id = ?"
             params.append(albumId)
+        if trackIds is not None:
+            if trackIds:
+                placeholders = ",".join("?" for _ in trackIds)
+                extraClauses += f" AND t.id IN ({placeholders})"
+                params += trackIds
+            else:
+                extraClauses += " AND 0"   #< explicit empty set matches nothing
         if searchQuery:
             pattern = self._likePattern(searchQuery)
             extraClauses += """ AND (
