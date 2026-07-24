@@ -17,7 +17,12 @@
         </a>
         <div style="display: flex; flex-direction: column; gap: 2px;">
           <span class="summary-top-artist" style="font-size: 0.85rem; color: var(--muted, #888);">
-            by {{ item.artists[0].name if item.artists else 'Unknown Artist' }}
+            by
+            {% if item.artists and item.artists[0].id %}
+              <a class="summary-top-artist-link" href="{{ url_for('artistDetailPage', artist_id=item.artists[0].id) }}">{{ item.artists[0].name }}</a>
+            {% else %}
+              {{ item.artists[0].name if item.artists else 'Unknown Artist' }}
+            {% endif %}
           </span>
           <span class="summary-top-sub" style="font-size: 0.85rem; color: var(--accent);">
             {{ item.trend_subtitle }}
@@ -46,7 +51,12 @@
         </a>
         <div style="display: flex; flex-direction: column; gap: 2px;">
           <span class="summary-top-artist" style="font-size: 0.85rem; color: var(--muted, #888);">
-            by {{ item.artists[0].name if item.artists else 'Unknown Artist' }}
+            by
+            {% if item.artists and item.artists[0].id %}
+              <a class="summary-top-artist-link" href="{{ url_for('artistDetailPage', artist_id=item.artists[0].id) }}">{{ item.artists[0].name }}</a>
+            {% else %}
+              {{ item.artists[0].name if item.artists else 'Unknown Artist' }}
+            {% endif %}
           </span>
           <span class="summary-top-sub" style="font-size: 0.85rem; color: var(--accent);">
             {{ item.trend_subtitle }}
@@ -75,7 +85,12 @@
         </a>
         <div style="display: flex; flex-direction: column; gap: 2px;">
           <span class="summary-top-artist" style="font-size: 0.85rem; color: var(--muted, #888);">
-            by {{ item.artists[0].name if item.artists else 'Unknown Artist' }}
+            by
+            {% if item.artists and item.artists[0].id %}
+              <a class="summary-top-artist-link" href="{{ url_for('artistDetailPage', artist_id=item.artists[0].id) }}">{{ item.artists[0].name }}</a>
+            {% else %}
+              {{ item.artists[0].name if item.artists else 'Unknown Artist' }}
+            {% endif %}
           </span>
           <span class="summary-top-sub" style="font-size: 0.85rem; color: var(--accent);">
             {{ item.trend_subtitle }}

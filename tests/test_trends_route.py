@@ -74,3 +74,9 @@ class TestTrendsRoute(AppTestCase):
         data = resp.get_json()
         self.assertIn("trendsHtml", data)
         self.assertIn("Obsession Song", data["trendsHtml"])
+
+    def test_trend_card_links_artist_to_artist_page(self):
+        self._login()
+        html = self.client.get("/api/dashboard-trends").get_json()["trendsHtml"]
+        self.assertIn('href="/artist/art1"', html)
+        self.assertIn("summary-top-artist-link", html)
