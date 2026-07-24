@@ -62,8 +62,8 @@
 
   {% if hasMore %}
     <div class="timeline-actions">
-      <button type="button" class="button show-more-btn" id="showMorePlaysBtn" data-offset="{{ nextOffset }}">
-        Show More Plays (50)
+      <button type="button" class="button show-more-btn" id="showMorePlaysBtn" data-offset="{{ nextOffset }}" data-next-batch-size="{{ nextBatchSize or 50 }}">
+        Show More Plays ({{ nextBatchSize or 50 }})
       </button>
     </div>
   {% endif %}

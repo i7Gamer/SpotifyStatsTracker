@@ -723,6 +723,8 @@ def register(app, dashboard):
 
             hasMore = (offset + len(plays)) < totalCount
             nextOffset = offset + len(plays)
+            remainingCount = max(0, totalCount - nextOffset)
+            nextBatchSize = min(PAGE_SIZE, remainingCount)
 
             sharedArgs = dict(linkArgs, groupBy=groupByParam,
                               sort=sortOrder if oldestFirst else None,
@@ -736,6 +738,8 @@ def register(app, dashboard):
                 "offset": offset,
                 "hasMore": hasMore,
                 "nextOffset": nextOffset,
+                "nextBatchSize": nextBatchSize,
+                "remainingCount": remainingCount,
                 "sortOldest": oldestFirst,
                 "showSkips": showSkips,
                 "isSongDetail": True,
@@ -790,6 +794,8 @@ def register(app, dashboard):
                 resultsHtml=render_template("_play_log.html", username=username, **listCtx),
                 hasMore=listCtx.get("hasMore", False),
                 nextOffset=listCtx.get("nextOffset", 0),
+                nextBatchSize=listCtx.get("nextBatchSize", 0),
+                remainingCount=listCtx.get("remainingCount", 0),
             )
 
         groupBy = dashboard._resolveGroupBy(

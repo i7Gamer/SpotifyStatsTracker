@@ -526,9 +526,28 @@ class TestSongDetailRoute(_DetailRouteTestBase):
         payload = resp.get_json()
         self.assertTrue(payload.get("hasMore"))
         self.assertEqual(payload.get("nextOffset"), 50)
+        self.assertEqual(payload.get("nextBatchSize"), 50)
         self.assertIn("20 Jul 2026", payload.get("resultsHtml", ""))
         db.getListeningTimeSeries.assert_not_called()
         db.getHourOfDayHeatmap.assert_not_called()
+
+    def test_song_detail_next_batch_size_partial_remaining(self):
+        dash = self._makeApp()
+        db = MagicMock()
+        db.getSong.return_value = self._song()
+        db.getEntriesCount.return_value = 62
+        db.getEntriesFromNew.return_value = [self._playEntry() for _ in range(50)]
+
+        with patch.object(dash, "_embedSongsTextElements", side_effect=lambda songs: songs):
+            resp = self._getPath(dash, db, "/song/t1?ajax=list&offset=0")
+
+        payload = resp.get_json()
+        self.assertTrue(payload.get("hasMore"))
+        self.assertEqual(payload.get("nextOffset"), 50)
+        self.assertEqual(payload.get("nextBatchSize"), 12)
+        self.assertEqual(payload.get("remainingCount"), 12)
+        self.assertIn("Show More Plays (12)", payload.get("resultsHtml", ""))
+
 
 
 class TestArtistDetailRoute(_DetailRouteTestBase):

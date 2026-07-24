@@ -13,6 +13,14 @@
   var SHOW_MORE_BATCH_SIZE = 50;
   var SHOW_MORE_LABEL = 'Show More Plays (' + SHOW_MORE_BATCH_SIZE + ')';
 
+  function formatShowMoreLabel(batchSize) {
+    var size = parseInt(batchSize, 10);
+    if (isNaN(size) || size <= 0) {
+      size = SHOW_MORE_BATCH_SIZE;
+    }
+    return 'Show More Plays (' + size + ')';
+  }
+
   var filterButtons = document.querySelectorAll('.stats-filter-button');
   var categoryDivs = document.querySelectorAll('[data-category]');
 
@@ -100,6 +108,8 @@
         var offset = showMoreBtn.dataset.offset;
         if (!offset) return;
 
+        var currentBatchSize = showMoreBtn.dataset.nextBatchSize || SHOW_MORE_BATCH_SIZE;
+
         showMoreBtn.disabled = true;
         showMoreBtn.textContent = 'Loading...';
 
@@ -114,7 +124,7 @@
           .then(function (data) {
             if (!data || !data.resultsHtml) {
               showMoreBtn.disabled = false;
-              showMoreBtn.textContent = SHOW_MORE_LABEL;
+              showMoreBtn.textContent = formatShowMoreLabel(currentBatchSize);
               return;
             }
 
@@ -132,9 +142,11 @@
 
             var actionsDiv = container.querySelector('.timeline-actions');
             if (data.hasMore && data.nextOffset) {
+              var nextSize = data.nextBatchSize || currentBatchSize;
               showMoreBtn.disabled = false;
               showMoreBtn.dataset.offset = data.nextOffset;
-              showMoreBtn.textContent = SHOW_MORE_LABEL;
+              showMoreBtn.dataset.nextBatchSize = nextSize;
+              showMoreBtn.textContent = formatShowMoreLabel(nextSize);
             } else if (actionsDiv) {
               actionsDiv.remove();
             }
@@ -142,7 +154,7 @@
           .catch(function (err) {
             console.error(err);
             showMoreBtn.disabled = false;
-            showMoreBtn.textContent = SHOW_MORE_LABEL;
+            showMoreBtn.textContent = formatShowMoreLabel(currentBatchSize);
           });
       }
     });
