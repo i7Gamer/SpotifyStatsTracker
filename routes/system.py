@@ -50,9 +50,6 @@ def register(app, dashboard):
         if not email:
             return redirect(url_for("login"))
 
-        if db.readProgress().get("status") == "running":
-            return redirect(url_for("importPage"))
-
         uploads = [f for f in request.files.getlist("history_file") if f and f.filename]
         if not uploads:
             return redirect(url_for("importPage"))
@@ -70,16 +67,19 @@ def register(app, dashboard):
         if not contents:
             return redirect(url_for("importPage"))
 
-        # Marked "running" here, synchronously, rather than via a
-        # post-thread-start time.sleep(1) "give it a moment" delay - that
-        # blocked a Waitress worker thread on every submission and still
-        # couldn't fully guarantee the background thread's own first
-        # writeProgress() call (inside Database.importHistory, gated on
-        # parsing the export first) had actually landed by the time it
-        # returned.
         # Captured before the thread starts - no request context inside it.
         overwriteRange = request.form.get("overwrite_range") is not None
-        db.writeProgress("running", 0, 0, "Starting import")
+
+        # Atomically claim the "running" slot. This both marks progress running
+        # synchronously (so the state is correct the instant the redirect
+        # returns - no post-thread-start time.sleep needed) AND rejects a
+        # double-submit: the old readProgress()==running check and the later
+        # writeProgress("running") were separate steps, so two rapid submissions
+        # could both pass the check and launch two import threads concurrently
+        # rewriting the same user's history.
+        if not db.tryClaimImportRunning():
+            return redirect(url_for("importPage"))
+
         thread = threading.Thread(target=db.importHistoryBatch, args=(contents,),
                                   kwargs={"overwriteRange": overwriteRange}, daemon=True)
         thread.start()

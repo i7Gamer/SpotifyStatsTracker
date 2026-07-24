@@ -2631,5 +2631,30 @@ class TestUserSettings(RepositoryTestCase):
         self.assertFalse(self.repo.getHideTagsPanel("nobody"))
 
 
+class TestImportProgressClaim(RepositoryTestCase):
+    def test_claim_running_is_atomic_and_single_winner(self):
+        self.repo.upsertUser("alice", "alice@example.com")
+
+        # First claim wins and marks the import running.
+        self.assertTrue(self.repo.tryClaimImportRunning("alice"))
+        self.assertEqual(self.repo.readProgress("alice")["status"], "running")
+
+        # A second claim while it's still running is rejected.
+        self.assertFalse(self.repo.tryClaimImportRunning("alice"))
+
+        # Once it's no longer running, a fresh claim succeeds again.
+        self.repo.writeProgress("alice", "done", 1, 1, "Done", False)
+        self.assertTrue(self.repo.tryClaimImportRunning("alice"))
+
+    def test_claim_is_per_user(self):
+        self.repo.upsertUser("alice", "alice@example.com")
+        self.repo.upsertUser("bob", "bob@example.com")
+
+        self.assertTrue(self.repo.tryClaimImportRunning("alice"))
+        # bob's slot is independent of alice's.
+        self.assertTrue(self.repo.tryClaimImportRunning("bob"))
+        self.assertFalse(self.repo.tryClaimImportRunning("alice"))
+
+
 if __name__ == "__main__":
     unittest.main()

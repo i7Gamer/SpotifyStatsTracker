@@ -576,6 +576,9 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
     def writeProgress(self, status: str, current: int = 0, total: int = 0, message: str = "", error: bool = False):
         self.repo.writeProgress(self.user, status, current, total, message, error)
 
+    def tryClaimImportRunning(self) -> bool:
+        return self.repo.tryClaimImportRunning(self.user)
+
     def readProgress(self) -> dict:
         progress = self.repo.readProgress(self.user)
         if progress is None:

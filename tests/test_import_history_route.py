@@ -94,18 +94,30 @@ class TestImportHistoryRoute(AppTestCase):
         db.importHistoryBatch.assert_called_once()
         self.assertFalse(db.importHistoryBatch.call_args.kwargs.get("overwriteRange"))
 
-    def test_progress_is_marked_running_synchronously_before_the_redirect(self):
+    def test_progress_is_claimed_running_synchronously_before_the_redirect(self):
         """The route used to rely on time.sleep(1) after starting the
         background thread to give it a chance to write "running" progress
-        itself - instead the route must write it directly, so the state is
-        guaranteed correct the instant the response is returned, with no
-        sleep needed."""
+        itself - instead the route claims it directly (atomically), so the
+        state is guaranteed correct the instant the response is returned, with
+        no sleep needed."""
         dash = self._makeApp()
         db = self._makeDb()
 
         self._postImport(dash, db, {'history_file': (io.BytesIO(b'{}'), 'history.json')})
 
-        db.writeProgress.assert_called_once_with("running", 0, 0, "Starting import")
+        db.tryClaimImportRunning.assert_called_once()
+
+    def test_concurrent_import_is_rejected_without_starting_a_second(self):
+        """When the running slot is already claimed (a double-submit), the
+        second request must redirect without launching another import thread."""
+        dash = self._makeApp()
+        db = self._makeDb()
+        db.tryClaimImportRunning.return_value = False
+
+        resp = self._postImport(dash, db, {'history_file': (io.BytesIO(b'{"msPlayed": 1}'), 'history.json')})
+
+        self.assertEqual(resp.status_code, 302)
+        db.importHistoryBatch.assert_not_called()
 
     def test_request_does_not_block_on_a_sleep(self):
         """The route used to time.sleep(1) after spawning the import thread

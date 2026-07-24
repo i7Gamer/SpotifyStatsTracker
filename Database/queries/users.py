@@ -316,6 +316,32 @@ class UserQueries:
                 (username, status, current, total, message, int(error)),
             )
 
+    def tryClaimImportRunning(self, username: str) -> bool:
+        """Atomically mark this user's import 'running' only if it isn't already,
+        so a double-submitted /import-history can't launch two concurrent import
+        threads. Returns True iff this call is the one that claimed the slot.
+
+        The conditional ON CONFLICT ... WHERE runs as one statement under
+        SQLite's write lock, so the "is it running?" check and the "mark it
+        running" claim are indivisible - unlike a readProgress() then
+        writeProgress(), whose gap two rapid submissions could both slip
+        through. total_changes is used rather than cursor.rowcount because the
+        latter is unreliable for INSERT ... ON CONFLICT no-ops."""
+        conn = self._conn()
+        before = conn.total_changes
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO import_progress (username, status, current, total, message, error)
+                VALUES (?, 'running', 0, 0, 'Starting import', 0)
+                ON CONFLICT(username) DO UPDATE SET
+                    status='running', current=0, total=0, message='Starting import', error=0
+                    WHERE import_progress.status <> 'running'
+                """,
+                (username,),
+            )
+        return conn.total_changes > before
+
     def readProgress(self, username: str) -> dict | None:
         conn = self._conn()
         row = conn.execute(
