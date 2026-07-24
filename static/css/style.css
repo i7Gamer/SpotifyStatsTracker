@@ -661,6 +661,11 @@ progress::-moz-progress-bar {
   transition: transform 0.15s ease, box-shadow 0.15s ease, opacity 0.15s ease;
 }
 
+.primary-button:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35), 0 0 12px var(--accent-glow);
+}
+
 .primary-button:active {
   transform: scale(0.96);
   opacity: 0.9;
@@ -922,6 +927,10 @@ progress::-moz-progress-bar {
   text-decoration: underline;
 }
 
+.btn-remove-tag:hover {
+  color: var(--text);
+}
+
 .track-label {
   background: rgba(255, 255, 255, 0.05);
   padding: 6px 10px;
@@ -959,6 +968,10 @@ progress::-moz-progress-bar {
 }
 
 .play-now-button:hover {
+  box-shadow: 0 0 8px var(--accent-glow);
+}
+
+.track-spotify-link:hover {
   box-shadow: 0 0 8px var(--accent-glow);
 }
 
@@ -1745,6 +1758,10 @@ progress::-moz-progress-bar {
   transition: all 0.3s ease;
 }
 
+.nav-toggle:hover span {
+  background: var(--accent);
+}
+
 .nav-toggle.active span:nth-child(1) {
   transform: rotate(45deg) translate(8px, 8px);
 }
@@ -2179,6 +2196,16 @@ progress::-moz-progress-bar {
 .button:active {
   transform: scale(0.96);
   opacity: 0.9;
+}
+
+.button-danger {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.button-danger:hover {
+  background: var(--danger);
+  color: white;
 }
 
 .wrapped-year-badges {

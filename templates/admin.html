@@ -448,7 +448,7 @@
       <form method="post" action="{{ url_for('adminRestart') }}" style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--border, #333);"
             onsubmit="return confirm('Restart the app now? Worker-count changes apply after the restart. This only recovers if the process is supervised (a relaunch-on-exit launch script) - otherwise the app will stop.');">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
-        <button type="submit" style="padding: 4px 16px; background: transparent; color: var(--danger, #e57373); border: 1px solid var(--danger, #e57373); border-radius: 4px; cursor: pointer;">Restart app to apply</button>
+        <button type="submit" class="button button-danger" style="padding: 4px 16px; min-height: auto;">Restart app to apply</button>
       </form>
       {% else %}
       <p style="color: var(--muted); font-size: 0.8rem; margin: 1rem 0 0 0; padding-top: 1rem; border-top: 1px solid var(--border, #333);">Worker-count changes apply after you restart the app. A one-click restart button appears here when <code>ALLOW_INSTANCE_RESTART=1</code> is set in a supervised launch.</p>
