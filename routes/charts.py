@@ -398,14 +398,18 @@ def register(app, dashboard):
         interval = request.args.get("interval", "")
         customStart = request.args.get("startDate", "")
         customEnd = request.args.get("endDate", "")
-        tag = request.args.get("tag", "")
+        # The tag filter is gated on the admin's instance-wide tags kill
+        # switch: with tags off we ignore a hand-crafted ?tag= (the dropdown is
+        # already hidden template-side) and skip the getUserTags query.
+        tags_on = dashboard.repo.isTagsEnabled()
+        tag = request.args.get("tag", "") if tags_on else ""
         # Defaults to on (a favorite has to have actually been heard) - see
         # templates/_page_card.html's checkbox. Explicit ?fullOnly=0 opts out.
         fullOnly = request.args.get("fullOnly", "1")
         fullPlaysOnly = fullOnly != "0"
         # Only offered to users who've actually tagged something - see
-        # templates/_page_card.html's {% if user_tags %} guard.
-        user_tags = db.repo.getUserTags(username)
+        # templates/_page_card.html's {% if tags_enabled and user_tags %} guard.
+        user_tags = db.repo.getUserTags(username) if tags_on else []
         trackIds = db.repo.getTaggedTrackIds(username, [tag]) if tag else None
 
         startDate, endDate = dashboard._getDateRange(interval, customStart, customEnd, default="all time", tz=db.tz)
@@ -476,11 +480,13 @@ def register(app, dashboard):
         interval = request.args.get("interval", "")
         customStart = request.args.get("startDate", "")
         customEnd = request.args.get("endDate", "")
-        tag = request.args.get("tag", "")
+        # Tag filter gated on the admin kill switch - see topSongsPage.
+        tags_on = dashboard.repo.isTagsEnabled()
+        tag = request.args.get("tag", "") if tags_on else ""
         # Defaults to on - see topSongsPage's fullOnly comment.
         fullOnly = request.args.get("fullOnly", "1")
         fullPlaysOnly = fullOnly != "0"
-        user_tags = db.repo.getUserTags(username)
+        user_tags = db.repo.getUserTags(username) if tags_on else []
         albumIds = db.repo.getTaggedAlbumIds(username, [tag]) if tag else None
 
         startDate, endDate = dashboard._getDateRange(interval, customStart, customEnd, default="all time", tz=db.tz)
@@ -548,11 +554,13 @@ def register(app, dashboard):
         interval = request.args.get("interval", "")
         customStart = request.args.get("startDate", "")
         customEnd = request.args.get("endDate", "")
-        tag = request.args.get("tag", "")
+        # Tag filter gated on the admin kill switch - see topSongsPage.
+        tags_on = dashboard.repo.isTagsEnabled()
+        tag = request.args.get("tag", "") if tags_on else ""
         # Defaults to on - see topSongsPage's fullOnly comment.
         fullOnly = request.args.get("fullOnly", "1")
         fullPlaysOnly = fullOnly != "0"
-        user_tags = db.repo.getUserTags(username)
+        user_tags = db.repo.getUserTags(username) if tags_on else []
         artistIds = db.repo.getTaggedArtistIds(username, [tag]) if tag else None
 
         startDate, endDate = dashboard._getDateRange(interval, customStart, customEnd, default="all time", tz=db.tz)

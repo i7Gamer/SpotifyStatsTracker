@@ -86,6 +86,21 @@ class TestTopListsTagFilter(AppTestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertNotIn(b'id="tagFilter"', resp.data)
 
+    def test_top_songs_tag_param_ignored_when_admin_disables_tags(self):
+        """With the tags kill switch off, a hand-crafted ?tag= must not still
+        filter server-side (the dropdown is hidden, but the query param could
+        be supplied directly) - the list comes back unfiltered."""
+        self._login()
+        self.dash.repo.addTag(self.username, "roadtrip", "track", "t1")
+        self.dash.repo.commit()
+        self.dash.repo.setTagsEnabled(False)
+
+        resp = self.client.get("/top-songs?tag=roadtrip")
+
+        body = resp.get_data(as_text=True)
+        self.assertIn("Tagged Song", body)
+        self.assertIn("Other Song", body)   #< tag filter bypassed -> unfiltered
+
     def test_top_songs_tag_filter_shows_once_a_tag_exists(self):
         self._login()
         self.dash.repo.addTag(self.username, "roadtrip", "track", "t1")
