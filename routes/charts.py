@@ -719,7 +719,7 @@ def register(app, dashboard):
             plays = fetchEntries(count=limit, startIndex=offset,
                                  trackId=trackId, includeSkips=showSkips)
             plays = dashboard._embedSongsTextElements(plays)
-            plays = dashboard._enrichSongTimelineEntries(plays, trackDurationMs=trackDurationMs, oldestFirst=oldestFirst)
+            plays = dashboard._enrichSongTimelineEntries(plays, trackDurationMs=trackDurationMs)
 
             hasMore = (offset + len(plays)) < totalCount
             nextOffset = offset + len(plays)

@@ -126,7 +126,7 @@ class ViewModelMixin:
         return formatted, cssClass
 
     def _enrichSongTimelineEntries(self, plays: list[dict], trackDurationMs: int | None = None,
-                                    oldestFirst: bool = False, completePercentThreshold: float | int = 80) -> list[dict]:
+                                    completePercentThreshold: float | int = 80) -> list[dict]:
         """Enriches play entries for the song detail timeline with playType,
         percentPlayed, monthYearHeader, and timePassedText."""
         from flask import has_app_context, g
@@ -135,7 +135,6 @@ class ViewModelMixin:
         tz = db.tz if db else None
 
         lastMonthYear = None
-        n = len(plays)
 
         for i, play in enumerate(plays):
             is_skip = play.get("isSkip", False)
@@ -168,16 +167,14 @@ class ViewModelMixin:
             else:
                 play["monthYearHeader"] = None
 
+            # The gap badge renders directly above this play's card, between it and the
+            # previous card in the list, so it must always describe the gap to the
+            # previous entry regardless of sort direction (see _play_log.html).
             play["timePassedText"] = None
-            if not oldestFirst and i + 1 < n:
-                newer_ts = play.get("playedAt", 0)
-                older_ts = plays[i + 1].get("playedAt", 0)
-                delta_sec = max(0, float(newer_ts) - float(older_ts))
-                play["timePassedText"] = formatTimeGap(delta_sec)
-            elif oldestFirst and i > 0:
-                newer_ts = play.get("playedAt", 0)
-                older_ts = plays[i - 1].get("playedAt", 0)
-                delta_sec = max(0, float(newer_ts) - float(older_ts))
+            if i > 0:
+                current_ts = play.get("playedAt", 0)
+                previous_ts = plays[i - 1].get("playedAt", 0)
+                delta_sec = abs(float(current_ts) - float(previous_ts))
                 play["timePassedText"] = formatTimeGap(delta_sec)
 
         return plays
