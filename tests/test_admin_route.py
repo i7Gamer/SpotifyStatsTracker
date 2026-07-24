@@ -573,6 +573,94 @@ class TestAdminBackupSettings(AdminRouteTestBase):
         self.assertEqual(dash.repo.getBackupIntervalHours(24), 0)
 
 
+class TestAdminCreateBackup(AdminRouteTestBase):
+    def _postBackup(self, dash, isAdmin=True, loggedIn=True, backupWorker=None, headers=None):
+        from pathlib import Path
+        with patch.object(dash.repo, 'isAdmin', return_value=isAdmin), \
+             patch.object(dash, 'is_user_logged_in', return_value=loggedIn), \
+             patch.object(dash, 'get_username_for_email', return_value='alice'), \
+             patch.object(dash, 'get_user_db', return_value=self._makeDb()):
+            dash.backupWorker = backupWorker
+            client = dash.app.test_client()
+            if loggedIn:
+                with client.session_transaction() as sess:
+                    sess['email'] = 'alice@example.com'
+                    sess['username'] = 'alice'
+            return client.post("/admin/create_backup", headers=headers or {})
+
+    def test_unauthenticated_post_redirects_to_login(self):
+        dash = self._makeApp()
+        resp = self._postBackup(dash, loggedIn=False)
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn("/login", resp.headers["Location"])
+
+    def test_non_admin_post_is_forbidden(self):
+        dash = self._makeApp()
+        resp = self._postBackup(dash, isAdmin=False)
+        self.assertEqual(resp.status_code, 403)
+
+    def test_ajax_success_returns_json(self):
+        from pathlib import Path
+        dash = self._makeApp()
+        mock_worker = MagicMock()
+        mock_worker.runBackup.return_value = Path("/fake/Backups/spotify_stats_backup_20260724_120000.db")
+        resp = self._postBackup(dash, backupWorker=mock_worker, headers={"X-Requested-With": "XMLHttpRequest"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.mimetype, "application/json")
+        payload = resp.get_json()
+        self.assertEqual(payload["kind"], "success")
+        self.assertIn("spotify_stats_backup_20260724_120000.db", payload["message"])
+        mock_worker.runBackup.assert_called_once()
+
+    def test_form_success_redirects_with_message(self):
+        from pathlib import Path
+        dash = self._makeApp()
+        mock_worker = MagicMock()
+        mock_worker.runBackup.return_value = Path("/fake/Backups/spotify_stats_backup_20260724_120000.db")
+        resp = self._postBackup(dash, backupWorker=mock_worker)
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn("/admin", resp.headers["Location"])
+        self.assertIn("message=", resp.headers["Location"])
+
+    def test_runs_even_when_scheduler_disabled(self):
+        from pathlib import Path
+        dash = self._makeApp()
+        mock_worker = MagicMock()
+        mock_worker.isEnabled.return_value = False
+        mock_worker.runBackup.return_value = Path("/fake/Backups/spotify_stats_backup_20260724_120000.db")
+        resp = self._postBackup(dash, backupWorker=mock_worker, headers={"X-Requested-With": "XMLHttpRequest"})
+        self.assertEqual(resp.status_code, 200)
+        mock_worker.runBackup.assert_called_once()
+
+    def test_ajax_error_returns_json_200(self):
+        dash = self._makeApp()
+        mock_worker = MagicMock()
+        mock_worker.runBackup.side_effect = RuntimeError("disk full")
+        resp = self._postBackup(dash, backupWorker=mock_worker, headers={"X-Requested-With": "XMLHttpRequest"})
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.get_json()
+        self.assertEqual(payload["kind"], "error")
+        self.assertIn("disk full", payload["message"])
+
+    def test_form_error_redirects_with_error_param(self):
+        dash = self._makeApp()
+        mock_worker = MagicMock()
+        mock_worker.runBackup.side_effect = RuntimeError("disk full")
+        resp = self._postBackup(dash, backupWorker=mock_worker)
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn("/admin", resp.headers["Location"])
+        self.assertIn("error=", resp.headers["Location"])
+
+    def test_missing_backup_worker_returns_error(self):
+        dash = self._makeApp()
+        resp = self._postBackup(dash, backupWorker=None, headers={"X-Requested-With": "XMLHttpRequest"})
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.get_json()
+        self.assertEqual(payload["kind"], "error")
+        self.assertIn("not available", payload["message"])
+
+
+
 class TestAdminRefreshLastfmEntity(AdminRouteTestBase):
     """/admin/lastfm/refresh/<kind>/<entity_id> - the detail pages' "Refresh
     Last.fm Data" button. Database.refreshLastfmEntity itself is covered by

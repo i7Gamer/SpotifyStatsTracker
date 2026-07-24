@@ -14,6 +14,12 @@
 </section>
 {% endif %}
 
+{% if message %}
+<section class="card" style="margin-bottom: 1.5rem; border: 1px solid var(--accent, #1db954); padding: 1rem 1.5rem;">
+  <p style="margin: 0; color: var(--accent, #1db954);">{{ message }}</p>
+</section>
+{% endif %}
+
 <!-- Registered Users & Sync Status: every account, with per-account admin controls -->
 <section class="card" style="margin-bottom: 2.5rem; overflow-x: auto;">
   <div class="card-header" style="padding: 1.5rem 1.5rem 0.5rem 1.5rem;">
@@ -407,6 +413,11 @@
         </label>
         <button type="submit" class="primary-button" style="padding: 4px 16px;">Save</button>
       </form>
+      <div id="backup-status-message" style="margin-top: 0.75rem; min-height: 1.5em;"></div>
+      <form method="post" action="{{ url_for('adminCreateBackup') }}" style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--border, #333);">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+        <button type="submit" id="btn-create-backup" class="primary-button" style="padding: 4px 16px;">Create backup now</button>
+      </form>
     </div>
   </article>
 
@@ -466,5 +477,7 @@
   }
   onSkipModeChange();
 </script>
+
+<script src="{{ url_for('static', filename='js/admin-backup.js') }}"></script>
 
 {% endblock %}

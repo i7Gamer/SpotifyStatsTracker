@@ -337,6 +337,7 @@ def register(app, dashboard):
             instance_share_counts=dashboard.repo.getInstanceShareCounts(),
             active_share_links_count=dashboard.repo.getActiveShareLinksCount(),
             error=request.args.get("error"),
+            message=request.args.get("message"),
             section="admin",
         )
     app.add_url_rule("/admin", "adminPage", adminPage, methods=["GET"])
@@ -494,6 +495,40 @@ def register(app, dashboard):
                 pass
         return redirect(url_for("adminPage"))
     app.add_url_rule("/admin/backup_settings", "adminBackupSettings", adminBackupSettings, methods=["POST"])
+
+    def adminCreateBackup():
+        """Admin-only: trigger an immediate on-demand database backup. Runs
+        unconditionally even if scheduled automatic backups are disabled.
+        Returns JSON when requested via AJAX, or redirects to /admin."""
+        email, username, db = dashboard.get_current_user_or_redirect()
+        if not email:
+            return redirect(url_for("login", next=url_for("adminPage")))
+        if not dashboard.repo.isAdmin(username):
+            abort(403)
+
+        is_ajax = request.headers.get("X-Requested-With") == "XMLHttpRequest"
+
+        backup_worker = getattr(dashboard, "backupWorker", None)
+        if backup_worker is None:
+            message = "Backup worker not available."
+            if is_ajax:
+                return jsonify(kind="error", message=message)
+            return redirect(url_for("adminPage", error=message))
+
+        try:
+            backup_path = backup_worker.runBackup()
+            filename = getattr(backup_path, "name", str(backup_path))
+            message = f"Database snapshot created: {filename}"
+            if is_ajax:
+                return jsonify(kind="success", message=message)
+            return redirect(url_for("adminPage", message=message))
+        except Exception as e:
+            logger.error("Manual database backup failed: %s", e)
+            message = f"Backup failed: {e}"
+            if is_ajax:
+                return jsonify(kind="error", message=message)
+            return redirect(url_for("adminPage", error=message))
+    app.add_url_rule("/admin/create_backup", "adminCreateBackup", adminCreateBackup, methods=["POST"])
 
     def adminTuningSettings():
         """Admin-only: numeric tunables migrated out of code constants. The
