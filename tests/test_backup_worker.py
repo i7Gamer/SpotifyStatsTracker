@@ -55,6 +55,26 @@ class TestRunBackup(BackupWorkerTestCase):
         rows = conn.execute("SELECT note FROM plays").fetchall()
         self.assertEqual(rows, [("keep me safe",)])
 
+    def test_backup_of_a_missing_source_raises_instead_of_an_empty_snapshot(self):
+        """sqlite3.connect() would CREATE a missing source, so a misconfigured
+        path used to produce a valid-looking but EMPTY snapshot. It must raise."""
+        self.dbPath.unlink()
+        worker = self._makeWorker()
+        with self.assertRaises(FileNotFoundError):
+            worker.runBackup()
+
+    def test_runbackup_sweeps_stale_partial_files(self):
+        """A crash mid-backup leaves a .partial; rotation only looks at *.db, so
+        without a sweep they accumulate forever (each a full copy)."""
+        backupDir = self.root / "Backups"
+        backupDir.mkdir(parents=True, exist_ok=True)
+        stale = backupDir / f"{backupModule.BACKUP_FILENAME_PREFIX}20200101_000000.partial"
+        stale.write_bytes(b"leftover from a crashed backup")
+
+        self._makeWorker().runBackup()
+
+        self.assertFalse(stale.exists())
+
     def test_backup_captures_committed_but_uncheckpointed_wal_data(self):
         """Guards the exact risk runBackup() exists to avoid: a raw copy of
         just spotify_stats.db would miss rows sitting in the -wal file that

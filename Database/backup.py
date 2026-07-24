@@ -98,7 +98,19 @@ class BackupWorker:
         """Snapshot the database and rotate old snapshots. Writes to a
         .partial file first and renames only on success, so a crash mid-backup
         can't leave a truncated file that looks like a valid snapshot."""
+        # A missing source would be silently CREATED by sqlite3.connect below,
+        # producing a valid-looking but EMPTY snapshot - refuse instead, so a
+        # misconfigured path can't mask itself as a successful backup.
+        if not self.dbPath.exists():
+            raise FileNotFoundError(f"Database to back up does not exist: {self.dbPath}")
+
         self.backupDir.mkdir(parents=True, exist_ok=True)
+        # Sweep any .partial left by a process that died mid-backup: rotation
+        # only ever looks at *.db, so these would otherwise accumulate forever
+        # (each a full multi-GB copy).
+        for stalePartial in self.backupDir.glob(f"{BACKUP_FILENAME_PREFIX}*.partial"):
+            stalePartial.unlink(missing_ok=True)
+
         stamp = datetime.datetime.now().strftime(BACKUP_TIMESTAMP_FORMAT)
         finalPath = self.backupDir / f"{BACKUP_FILENAME_PREFIX}{stamp}.db"
         partialPath = finalPath.with_suffix(".partial")

@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import logging
+
 from Database.queries._base import *  # noqa: F401,F403 - shared constants/db helpers
+
+logger = logging.getLogger(__name__)
 
 
 class SchemaQueries:
@@ -170,7 +174,20 @@ class SchemaQueries:
                 conn.execute("ALTER TABLE plays_new RENAME TO plays")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_plays_user_time ON plays(username, played_at)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_plays_user_track ON plays(username, track_id)")
-            conn.execute("PRAGMA foreign_key_check")
+            # foreign_key_check reports violations as result rows (it never
+            # raises), so it must be fetched to mean anything. The rebuild ran
+            # with foreign_keys=OFF, so this is exactly where an orphaned
+            # plays row (e.g. a play_skips row referencing a since-deleted
+            # track) would slip through - surface it loudly rather than keep it
+            # silently. Not raised: a dangling track_id FK is invisible in normal
+            # queries (JOINs drop it), so it must not brick an otherwise-good
+            # one-time upgrade.
+            fkViolations = conn.execute("PRAGMA foreign_key_check").fetchall()
+            if fkViolations:
+                logger.error(
+                    "mergePlaySkipsIntoPlays: %d foreign-key violation(s) after the plays rebuild: %s",
+                    len(fkViolations), fkViolations[:10],
+                )
         finally:
             conn.execute("PRAGMA foreign_keys=ON")
 

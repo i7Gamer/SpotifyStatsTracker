@@ -331,7 +331,7 @@ class ListenerMixin:
         for play in localPlays:
             playsByTrack.setdefault(play["id"], []).append(play)
 
-        deletedCount = 0
+        toDelete: list[dict] = []
         for trackId, group in playsByTrack.items():
             if len(group) < 2:
                 continue  # no sibling for this track - nothing proves duplication, never delete
@@ -367,19 +367,36 @@ class ListenerMixin:
                     # restart) - never guess, never delete.
                     continue
 
-                for play in backfillCopies:
-                    if self.repo.deletePlay(self.user, play["id"], play["playedAt"]):
-                        deletedCount += 1
-                        _dbmod.logger.debug(
-                            "Reconciliation deleted duplicate play: user=%s track=%s time=%d",
-                            self.user, play["id"], play["playedAt"]
-                        )
+                # Collect only - the deletes (and their single commit) run below
+                # in one guarded block, so a mid-way failure rolls back cleanly.
+                toDelete.extend(backfillCopies)
 
-        if deletedCount:
-            self.repo.commit()
-            _dbmod.logger.info(
-                "Web API reconciliation: removed %d duplicate play(s) for user %s",
-                deletedCount, self.user,
+        if not toDelete:
+            return
+        # deletePlay doesn't commit on its own, so a failure partway through
+        # (e.g. a locked db) must roll back what was staged rather than leave it
+        # for an unrelated later commit/rollback to decide - the duplicates
+        # re-derive from the next snapshot anyway.
+        try:
+            deletedCount = 0
+            for play in toDelete:
+                if self.repo.deletePlay(self.user, play["id"], play["playedAt"]):
+                    deletedCount += 1
+                    _dbmod.logger.debug(
+                        "Reconciliation deleted duplicate play: user=%s track=%s time=%d",
+                        self.user, play["id"], play["playedAt"]
+                    )
+            if deletedCount:
+                self.repo.commit()
+                _dbmod.logger.info(
+                    "Web API reconciliation: removed %d duplicate play(s) for user %s",
+                    deletedCount, self.user,
+                )
+        except Exception as e:
+            self.repo.rollback()
+            _dbmod.logger.warning(
+                "Web API reconciliation aborted for user %s; staged deletes rolled back: %s",
+                self.user, _dbmod.parseError(e),
             )
 
     @staticmethod

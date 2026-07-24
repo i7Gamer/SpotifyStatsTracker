@@ -26,7 +26,17 @@ def readDbVersion(dbPath: Path) -> str | None:
     meaning, just written by a prior readDbVersion() call)."""
     conn = sqlite3.connect(dbPath)
     try:
-        conn.execute(SCHEMA_VERSION_TABLE_SQL)
+        # Probe rather than CREATE TABLE IF NOT EXISTS: a read must not write.
+        # Creating the table here would fail on a read-only file/filesystem
+        # (e.g. inspecting a backup on read-only media) and leave a stray empty
+        # table + journal on any db that's only being inspected. Table creation
+        # lives in writeDbVersion. A missing table means the same as an empty
+        # one: no version recorded yet -> None.
+        tableExists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_version'"
+        ).fetchone() is not None
+        if not tableExists:
+            return None
         row = conn.execute(
             "SELECT version FROM schema_version ORDER BY applied_at DESC, rowid DESC LIMIT 1"
         ).fetchone()

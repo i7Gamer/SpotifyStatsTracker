@@ -166,6 +166,24 @@ class TestDiscoveredCounts(DatabaseTestCase):
 
         self.assertEqual(artist_count, 2)
 
+    def test_a_play_exactly_on_the_range_end_is_not_double_counted(self):
+        """The count uses a half-open [start, end) - a first play landing exactly
+        on the range end (next Jan 1 midnight, the value callers pass) must count
+        in the LATER year only, matching the discovered lists' strict `< end`.
+        The old closed BETWEEN counted such a play in both years."""
+        boundary = datetime.datetime(2027, 1, 1, tzinfo=datetime.timezone.utc)
+        tracks = {"t1": {"id": "t1", "name": "Boundary Song", "artists": [{"id": "a1", "name": "Boundary Artist"}]}}
+        entries = [{"id": "t1", "playedAt": boundary.timestamp(), "timePlayed": 1000}]
+        db = self._makeDb(tracks, entries)
+
+        y2026 = (datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc), boundary)
+        y2027 = (boundary, datetime.datetime(2028, 1, 1, tzinfo=datetime.timezone.utc))
+
+        self.assertEqual(db.getDiscoveredSongsCount(startDate=y2026[0], endDate=y2026[1]), 0)
+        self.assertEqual(db.getDiscoveredArtistsCount(startDate=y2026[0], endDate=y2026[1]), 0)
+        self.assertEqual(db.getDiscoveredSongsCount(startDate=y2027[0], endDate=y2027[1]), 1)
+        self.assertEqual(db.getDiscoveredArtistsCount(startDate=y2027[0], endDate=y2027[1]), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

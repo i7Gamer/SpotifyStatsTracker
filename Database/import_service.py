@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sqlite3
+
 import Database.database as _dbmod  # noqa: F401 - module-global names
 # (LastfmClient, requests, Importer, logger, time, Path, ...) are reached through
 # the database module so the suite's patch("Database.database.X") targets keep
@@ -275,10 +277,23 @@ class ImportMixin:
                             conn = self.repo._conn()
                             corrected_is_skip = self.repo.computeIsSkip(
                                 time_played, track.get("duration") if track else None, threshold=skipThreshold)
-                            conn.execute(
-                                f"UPDATE plays SET played_at = ?, time_played = ?, is_skip = ?, {behavioralSetSql} WHERE id = ?",
-                                (played_at, time_played, corrected_is_skip, *extrasValues, existing_play["id"])
-                            )
+                            try:
+                                conn.execute(
+                                    f"UPDATE plays SET played_at = ?, time_played = ?, is_skip = ?, {behavioralSetSql} WHERE id = ?",
+                                    (played_at, time_played, corrected_is_skip, *extrasValues, existing_play["id"])
+                                )
+                            except sqlite3.IntegrityError:
+                                # Correcting played_at would collide with an existing
+                                # (username, track_id, played_at) row the near-time
+                                # matcher can't see - it filters is_skip=0, so a merged
+                                # skip sitting at exactly this timestamp is invisible.
+                                # Leave the row uncorrected rather than fail the whole
+                                # file/batch on the UNIQUE violation.
+                                _dbmod.logger.info(
+                                    "Skipping played_at correction for track %s: target timestamp already recorded",
+                                    track_id,
+                                )
+                                continue
                             changes = []
                             if int(existing_play["played_at"]) != int(played_at):
                                 changes.append(f"played_at corrected from {int(existing_play['played_at'])} to {int(played_at)}")

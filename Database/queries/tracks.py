@@ -284,22 +284,20 @@ class TrackQueries:
         previously-failed claim can be reclaimed."""
         conn = self._conn()
         with conn:
-            row = conn.execute(
-                "SELECT status FROM images WHERE id=? AND kind=?",
-                (imageId, kind)
-            ).fetchone()
-
-            if row is not None and row["status"] in (IMAGE_STATUS_OK, IMAGE_STATUS_PENDING):
-                return False
-
-            conn.execute(
+            # Single guarded write, not SELECT-then-INSERT: the old two-step form
+            # had a read-then-write gap where two threads could both observe "no
+            # claim" and both proceed. Here the WHERE only lets the claim land
+            # when the row is absent or previously failed, and rowcount tells us
+            # whether THIS caller won it (1) or someone already holds it (0).
+            cur = conn.execute(
                 """
                 INSERT INTO images (id, kind, status) VALUES (?, ?, ?)
                 ON CONFLICT(id, kind) DO UPDATE SET status=excluded.status
+                    WHERE images.status NOT IN (?, ?)
                 """,
-                (imageId, kind, IMAGE_STATUS_PENDING),
+                (imageId, kind, IMAGE_STATUS_PENDING, IMAGE_STATUS_OK, IMAGE_STATUS_PENDING),
             )
-            return True
+            return cur.rowcount > 0
 
     def markImageStatus(self, imageId: str, kind: str, status: str) -> None:
         conn = self._conn()

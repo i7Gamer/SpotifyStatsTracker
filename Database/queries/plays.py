@@ -1077,7 +1077,7 @@ class PlayQueries:
                 FROM plays
                 WHERE username = ? AND is_skip=0
                 GROUP BY track_id
-                HAVING MIN(played_at) BETWEEN ? AND ?
+                HAVING MIN(played_at) >= ? AND MIN(played_at) < ?
             )
             """,
             (username, startTs, endTs),
@@ -1102,7 +1102,7 @@ class PlayQueries:
                 JOIN track_artists ta ON ta.track_id = p.track_id
                 WHERE p.username = ? AND p.is_skip=0
                 GROUP BY ta.artist_id
-                HAVING MIN(p.played_at) BETWEEN ? AND ?
+                HAVING MIN(p.played_at) >= ? AND MIN(p.played_at) < ?
             )
             """,
             (username, startTs, endTs),

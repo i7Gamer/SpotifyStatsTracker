@@ -30,6 +30,18 @@ class TestReadDbVersion(DbVersionTestCase):
         sqlite3.connect(self.dbPath).close()   #< brand-new, empty file
         self.assertIsNone(dbversion.readDbVersion(self.dbPath))
 
+    def test_read_does_not_create_the_schema_version_table(self):
+        """A read must have no side effects: creating the table here would fail
+        on read-only media (e.g. inspecting a backup) and leave a stray empty
+        table + journal on any db that was only being inspected."""
+        sqlite3.connect(self.dbPath).close()   #< brand-new, empty file
+        dbversion.readDbVersion(self.dbPath)
+        conn = sqlite3.connect(self.dbPath)
+        self.addCleanup(conn.close)
+        tables = {row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        self.assertNotIn("schema_version", tables)
+
     def test_returns_none_for_a_database_with_an_empty_schema_version_table(self):
         conn = sqlite3.connect(self.dbPath)
         conn.execute(dbversion.SCHEMA_VERSION_TABLE_SQL)
