@@ -1,6 +1,7 @@
 import unittest
 from services.export import (
     generatePlaylistCsv, generatePlaylistM3u, generatePlaylistXspf, PLAYLIST_CSV_COLUMNS,
+    _csvSafeCell,
 )
 
 
@@ -32,6 +33,36 @@ class TestPlaylistExport(unittest.TestCase):
         self.assertIn("spotify:track:t1", lines[1])
         self.assertIn("US1234567890", lines[1])
         self.assertIn("Artist & Co", lines[1])
+
+    def test_csv_safe_cell_prefixes_formula_leaders(self):
+        # A cell whose text starts with a spreadsheet formula character is
+        # prefixed with an apostrophe; everything else is passed through.
+        self.assertEqual(_csvSafeCell("=1+1"), "'=1+1")
+        self.assertEqual(_csvSafeCell("+ok"), "'+ok")
+        self.assertEqual(_csvSafeCell("-ok"), "'-ok")
+        self.assertEqual(_csvSafeCell("@ok"), "'@ok")
+        self.assertEqual(_csvSafeCell("\tok"), "'\tok")
+        self.assertEqual(_csvSafeCell("normal"), "normal")
+        self.assertEqual(_csvSafeCell("Artist & Co"), "Artist & Co")
+        self.assertEqual(_csvSafeCell(""), "")
+        self.assertEqual(_csvSafeCell(None), "")
+
+    def test_generate_playlist_csv_neutralizes_formula_injection(self):
+        tracks = [{
+            "id": "t9",
+            "name": '=HYPERLINK("http://evil","x")',
+            "artists": [{"name": "-2+3"}],
+            "album": {"name": "@SUM(A1:A9)"},
+            "isrc": "",
+            "url": "",
+        }]
+        content = "".join(generatePlaylistCsv(tracks))
+        # Each formula-leading text cell is defused with a leading apostrophe.
+        self.assertIn("'=HYPERLINK", content)
+        self.assertIn("'-2+3", content)
+        self.assertIn("'@SUM", content)
+        # The machine-readable URI column is never rewritten.
+        self.assertIn("spotify:track:t9", content)
 
     def test_generate_playlist_m3u(self):
         content = "".join(generatePlaylistM3u(self.sample_tracks))

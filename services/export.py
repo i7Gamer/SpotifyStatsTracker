@@ -50,6 +50,23 @@ def iterExportEntries(db, includeSkips=False):
         startIndex += EXPORT_CHUNK_SIZE
 
 
+# Spreadsheet apps (Excel, Sheets, LibreOffice) treat a cell whose text starts
+# with one of these as a formula. Track/artist/album names come from Spotify's
+# catalog rather than this app, but a name crafted to start with one of these
+# could execute when the exported CSV is opened ("CSV formula injection"), so
+# such a cell is prefixed with an apostrophe to force literal-text rendering.
+# Only the human-readable text columns are guarded; the machine-readable
+# URI/URL/ISRC columns importers match on are left byte-for-byte identical.
+CSV_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _csvSafeCell(value) -> str:
+    text = "" if value is None else str(value)
+    if text and text[0] in CSV_FORMULA_PREFIXES:
+        return "'" + text
+    return text
+
+
 def isoUtc(timestamp: float) -> str:
     return datetime.fromtimestamp(timestamp, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -103,12 +120,12 @@ def generateCsvExport(db):
         album = entry.get("album") or {}
         writer.writerow([
             isoUtc(entry["playedAt"]),   #< the START time - more intuitive for spreadsheet use
-            entry.get("name") or "",
-            ", ".join(a.get("name", "") for a in artists),
-            album.get("name") or "" if album else "",
+            _csvSafeCell(entry.get("name") or ""),
+            _csvSafeCell(", ".join(a.get("name", "") for a in artists)),
+            _csvSafeCell(album.get("name") or "" if album else ""),
             entry["timePlayed"],
             f"spotify:track:{entry['id']}",
-            entry.get("playedFrom") or "",
+            _csvSafeCell(entry.get("playedFrom") or ""),
         ])
         if buffer.tell() >= 64 * 1024:   #< flush in ~64KB chunks instead of per row or all at once
             yield buffer.getvalue()
@@ -134,9 +151,9 @@ def generatePlaylistCsv(tracks: list[dict]):
         isrc = track.get("isrc") or ""
         writer.writerow([
             spotify_uri,
-            track.get("name", ""),
-            artist_names,
-            album_name,
+            _csvSafeCell(track.get("name", "")),
+            _csvSafeCell(artist_names),
+            _csvSafeCell(album_name),
             isrc,
             spotify_url,
         ])
