@@ -202,6 +202,27 @@ class UserQueries:
         with conn:
             conn.execute("UPDATE users SET is_admin=? WHERE username=?", (1 if isAdmin else 0, username))
 
+    def demoteAdmin(self, username: str) -> bool:
+        """Atomically clear a user's admin flag unless they are the only
+        remaining admin. The count guard lives inside the UPDATE (evaluated
+        under SQLite's write lock), so two admins demoting each other at the
+        same instant can't both pass a stale count and strand the instance with
+        zero admins. Returns True iff a row was actually demoted (False = the
+        target wasn't an admin, or was the last one). Unlike setUserAdmin, this
+        never promotes and never leaves zero admins, so it - not setUserAdmin -
+        is what the admin console's demote path calls."""
+        conn = self._conn()
+        with conn:
+            cur = conn.execute(
+                """
+                UPDATE users SET is_admin = 0
+                WHERE username = ? AND is_admin = 1
+                  AND (SELECT COUNT(*) FROM users WHERE is_admin = 1) > 1
+                """,
+                (username,),
+            )
+        return cur.rowcount > 0
+
     def getAdminUsernames(self) -> list[str]:
         conn = self._conn()
         rows = conn.execute("SELECT username FROM users WHERE is_admin=1 ORDER BY username").fetchall()

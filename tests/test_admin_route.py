@@ -851,37 +851,44 @@ class TestAdminSpotifySettings(AdminRouteTestBase):
 
 
 class TestAdminManageAdmins(AdminRouteTestBase):
-    def _postSetAdmin(self, dash, username, isAdmin, makeAdmin, adminUsernames, loggedIn=True):
-        with patch.object(dash.repo, 'isAdmin', return_value=isAdmin), \
-             patch.object(dash.repo, 'getAdminUsernames', return_value=adminUsernames), \
-             patch.object(dash, 'is_user_logged_in', return_value=loggedIn), \
-             patch.object(dash, 'get_username_for_email', return_value='alice'), \
+    """/admin/users/<username>/admin - promote/demote, driven against a real
+    repo so the last-admin invariant (Repository.demoteAdmin) is exercised end
+    to end rather than mocked."""
+
+    def _postSetAdmin(self, dash, username, makeAdmin, acting="alice", loggedIn=True):
+        with patch.object(dash, 'is_user_logged_in', return_value=loggedIn), \
+             patch.object(dash, 'get_username_for_email', return_value=acting), \
              patch.object(dash, 'get_user_db', return_value=self._makeDb()):
             client = dash.app.test_client()
             if loggedIn:
                 with client.session_transaction() as sess:
-                    sess['email'] = 'alice@example.com'
-                    sess['username'] = 'alice'
+                    sess['email'] = f'{acting}@example.com'
+                    sess['username'] = acting
             return client.post(f"/admin/users/{username}/admin",
                                data={"make_admin": "1" if makeAdmin else "0"})
 
     def test_non_admin_post_is_forbidden(self):
         dash = self._makeApp()
-        resp = self._postSetAdmin(dash, "bob", isAdmin=False, makeAdmin=True, adminUsernames=["alice"])
+        dash.repo.upsertUser("bob", "bob@example.com")   #< acting user, not an admin
+        dash.repo.commit()
+        resp = self._postSetAdmin(dash, "alice", makeAdmin=True, acting="bob")
         self.assertEqual(resp.status_code, 403)
 
     def test_anonymous_post_redirects_to_login(self):
         dash = self._makeApp()
-        resp = self._postSetAdmin(dash, "bob", isAdmin=True, makeAdmin=True, adminUsernames=["alice"], loggedIn=False)
+        resp = self._postSetAdmin(dash, "bob", makeAdmin=True, loggedIn=False)
         self.assertEqual(resp.status_code, 302)
         self.assertIn("/login", resp.headers["Location"])
 
     def test_admin_can_promote_another_user(self):
         dash = self._makeApp()
+        dash.repo.upsertUser("alice", "alice@example.com")
         dash.repo.upsertUser("bob", "bob@example.com")
+        dash.repo.setUserAdmin("alice", True)
+        dash.repo.commit()
         self.assertFalse(dash.repo.isAdmin("bob"))
 
-        resp = self._postSetAdmin(dash, "bob", isAdmin=True, makeAdmin=True, adminUsernames=["alice"])
+        resp = self._postSetAdmin(dash, "bob", makeAdmin=True)
 
         self.assertEqual(resp.status_code, 302)
         self.assertIn("/admin", resp.headers["Location"])
@@ -889,25 +896,48 @@ class TestAdminManageAdmins(AdminRouteTestBase):
 
     def test_admin_can_demote_another_admin_when_not_the_last_one(self):
         dash = self._makeApp()
+        dash.repo.upsertUser("alice", "alice@example.com")
         dash.repo.upsertUser("bob", "bob@example.com")
+        dash.repo.setUserAdmin("alice", True)
         dash.repo.setUserAdmin("bob", True)
+        dash.repo.commit()
 
-        resp = self._postSetAdmin(dash, "bob", isAdmin=True, makeAdmin=False, adminUsernames=["alice", "bob"])
+        resp = self._postSetAdmin(dash, "bob", makeAdmin=False)
 
         self.assertEqual(resp.status_code, 302)
+        self.assertNotIn("error=", resp.headers["Location"])
         self.assertFalse(dash.repo.isAdmin("bob"))
+        self.assertTrue(dash.repo.isAdmin("alice"))
 
     def test_cannot_demote_the_last_admin(self):
         dash = self._makeApp()
         dash.repo.upsertUser("alice", "alice@example.com")
         dash.repo.setUserAdmin("alice", True)
+        dash.repo.commit()
 
-        resp = self._postSetAdmin(dash, "alice", isAdmin=True, makeAdmin=False, adminUsernames=["alice"])
+        resp = self._postSetAdmin(dash, "alice", makeAdmin=False)
 
         self.assertEqual(resp.status_code, 302)
         self.assertIn("/admin", resp.headers["Location"])
         self.assertIn("error=", resp.headers["Location"])
         self.assertTrue(dash.repo.isAdmin("alice"), "the last admin must stay an admin")
+
+    def test_demote_non_admin_is_a_noop_not_an_error(self):
+        # Regression: with exactly one admin, demoting a *non-admin* user used to
+        # be falsely blocked with "Cannot remove the instance's last admin" even
+        # though nothing would change.
+        dash = self._makeApp()
+        dash.repo.upsertUser("alice", "alice@example.com")
+        dash.repo.upsertUser("bob", "bob@example.com")
+        dash.repo.setUserAdmin("alice", True)   #< sole admin; bob is not one
+        dash.repo.commit()
+
+        resp = self._postSetAdmin(dash, "bob", makeAdmin=False)
+
+        self.assertEqual(resp.status_code, 302)
+        self.assertNotIn("error=", resp.headers["Location"])
+        self.assertTrue(dash.repo.isAdmin("alice"))
+        self.assertFalse(dash.repo.isAdmin("bob"))
 
 
 class TestAdminInsights(AdminRouteTestBase):

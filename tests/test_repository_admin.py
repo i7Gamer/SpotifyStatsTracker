@@ -49,6 +49,45 @@ class TestIsAdmin(RepositoryAdminTestCase):
         self.assertEqual(self.repo.getAdminUsernames(), ["alice"])
 
 
+class TestDemoteAdmin(RepositoryAdminTestCase):
+    def test_demotes_when_another_admin_remains(self):
+        self.repo.upsertUser("alice", "alice@example.com")
+        self.repo.upsertUser("bob", "bob@example.com")
+        self.repo.setUserAdmin("alice", True)
+        self.repo.setUserAdmin("bob", True)
+
+        self.assertTrue(self.repo.demoteAdmin("bob"))
+        self.assertFalse(self.repo.isAdmin("bob"))
+        self.assertEqual(self.repo.getAdminUsernames(), ["alice"])
+
+    def test_refuses_to_demote_the_last_admin(self):
+        self.repo.upsertUser("alice", "alice@example.com")
+        self.repo.setUserAdmin("alice", True)
+
+        self.assertFalse(self.repo.demoteAdmin("alice"))
+        self.assertTrue(self.repo.isAdmin("alice"))   #< still admin
+
+    def test_demoting_a_non_admin_is_a_noop_returning_false(self):
+        self.repo.upsertUser("alice", "alice@example.com")
+        self.repo.upsertUser("bob", "bob@example.com")
+        self.repo.setUserAdmin("alice", True)   #< sole admin; bob is not one
+
+        self.assertFalse(self.repo.demoteAdmin("bob"))
+        self.assertTrue(self.repo.isAdmin("alice"))   #< untouched
+
+    def test_never_drops_to_zero_admins_across_sequential_demotes(self):
+        # Two admins each demoted in turn: the count guard inside the UPDATE
+        # keeps the second from removing the last one.
+        self.repo.upsertUser("alice", "alice@example.com")
+        self.repo.upsertUser("bob", "bob@example.com")
+        self.repo.setUserAdmin("alice", True)
+        self.repo.setUserAdmin("bob", True)
+
+        self.assertTrue(self.repo.demoteAdmin("alice"))
+        self.assertFalse(self.repo.demoteAdmin("bob"))   #< bob is now the last admin
+        self.assertEqual(self.repo.getAdminUsernames(), ["bob"])
+
+
 class TestPromoteEarliestUser(RepositoryAdminTestCase):
     def test_promotes_the_earliest_created_user(self):
         self.repo.upsertUser("newer", "newer@example.com", createdAt=200.0)

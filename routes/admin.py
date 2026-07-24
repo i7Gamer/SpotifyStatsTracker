@@ -630,18 +630,26 @@ def register(app, dashboard):
     app.add_url_rule("/admin/restart", "adminRestart", adminRestart, methods=["POST"])
 
     def adminSetUserAdmin(username):
-        """Admin-only: promote/demote a user's admin status. Refuses to
-        demote the instance's last remaining admin - Repository.setUserAdmin
-        otherwise happily allows zero admins, which would strand the
-        instance with nobody able to reach any admin-gated surface."""
+        """Admin-only: promote/demote a user's admin status. Demotion goes
+        through Repository.demoteAdmin, which atomically refuses to remove the
+        last remaining admin (setUserAdmin otherwise happily allows zero admins,
+        stranding the instance with nobody able to reach any admin-gated
+        surface). The block is raised only when the target actually IS that last
+        admin - demoting a non-admin is a harmless no-op, not an error."""
         email, actingUsername, db = dashboard.get_current_user_or_redirect()
         if not email:
             return redirect(url_for("login", next=url_for("adminPage")))
         if not dashboard.repo.isAdmin(actingUsername):
             abort(403)
         makeAdmin = request.form.get("make_admin") == "1"
-        if not makeAdmin and len(dashboard.repo.getAdminUsernames()) <= 1:
+        if makeAdmin:
+            dashboard.repo.setUserAdmin(username, True)
+            return redirect(url_for("adminPage"))
+        # Demotion: demoteAdmin returns False both when the target was never an
+        # admin (nothing to do) and when it's the last admin (must be blocked) -
+        # only the latter is an error, so re-check admin status to tell them
+        # apart.
+        if not dashboard.repo.demoteAdmin(username) and dashboard.repo.isAdmin(username):
             return redirect(url_for("adminPage", error="Cannot remove the instance's last admin."))
-        dashboard.repo.setUserAdmin(username, makeAdmin)
         return redirect(url_for("adminPage"))
     app.add_url_rule("/admin/users/<username>/admin", "adminSetUserAdmin", adminSetUserAdmin, methods=["POST"])
