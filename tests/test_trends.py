@@ -98,6 +98,36 @@ class TestTrendQueries(unittest.TestCase):
         raw = self.repo.getDashboardTrendsRaw("alice", now_ts=self.now_ts)
         self.assertIsNone(raw["forgotten"])
 
+    def test_obsession_excludes_skips(self):
+        # A track skipped many times in the last 7 days is not an obsession -
+        # an obsession has to be something actually listened to. Even though
+        # skip_spam_track has more raw recent rows (10) than obsession_track (6),
+        # every one of them is a skip, so obsession_track must still win.
+        self.repo.upsertTrack(makeTrack(trackId="skip_spam_track", name="Skip Spam"))
+        for i in range(10):
+            self.repo.insertPlay("alice", "skip_spam_track", self.now_ts - (i * 60), 3000, is_skip=1)
+        self.repo.commit()
+
+        raw = self.repo.getDashboardTrendsRaw("alice", now_ts=self.now_ts)
+        self.assertEqual(raw["obsession"]["track_id"], "obsession_track")
+        self.assertEqual(raw["obsession"]["recent_count"], 6)
+
+    def test_rediscovery_excludes_skips(self):
+        # A track whose only recent plays are skips has not been "rediscovered".
+        # skip_redisc_track has more real old plays (6) than rediscovery_track (5)
+        # and 3 recent rows, but those recent rows are all skips - so once skips
+        # are excluded its recent_count is 0 and it fails the >=1 recent gate,
+        # leaving rediscovery_track as the winner.
+        self.repo.upsertTrack(makeTrack(trackId="skip_redisc_track", name="Skip Redisc"))
+        for i in range(6):
+            self.repo.insertPlay("alice", "skip_redisc_track", self.now_ts - (200 * self.day) - (i * 100), 200000)
+        for i in range(3):
+            self.repo.insertPlay("alice", "skip_redisc_track", self.now_ts - (i * 100) - 200, 3000, is_skip=1)
+        self.repo.commit()
+
+        raw = self.repo.getDashboardTrendsRaw("alice", now_ts=self.now_ts)
+        self.assertEqual(raw["rediscovery"]["track_id"], "rediscovery_track")
+
     def test_get_dashboard_trends_hydrated(self):
         trends = self.db.getDashboardTrends(now_ts=self.now_ts)
         self.assertIsNotNone(trends["obsession"])

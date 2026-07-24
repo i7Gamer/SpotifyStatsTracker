@@ -15,7 +15,10 @@ SECONDS_PER_DAY = 86400
 class TrendQueries:
     """TrendQueries: SQL queries for Dashboard Obsession, Rediscovery, and Forgotten Favorites.
 
-    Forgotten Favorite only counts full listens - see getDashboardTrendsRaw."""
+    All three exclude skips (plays.is_skip=1): a track you keep skipping is not
+    an obsession, a rediscovery, or a forgotten favorite. Forgotten Favorite
+    additionally requires each counted play to be a full listen (completion
+    ratio) - see getDashboardTrendsRaw."""
 
     def getDashboardTrendsRaw(self, username: str, now_ts: float | None = None) -> dict[str, dict | None]:
         if now_ts is None:
@@ -29,7 +32,7 @@ class TrendQueries:
             """
             SELECT track_id, COUNT(*) as recent_count, SUM(time_played) as recent_ms
             FROM plays
-            WHERE username = ? AND played_at >= ?
+            WHERE username = ? AND is_skip = 0 AND played_at >= ?
             GROUP BY track_id
             HAVING recent_count >= ?
             ORDER BY recent_count DESC, recent_ms DESC
@@ -44,7 +47,7 @@ class TrendQueries:
                 """
                 SELECT track_id, COUNT(*) as recent_count, SUM(time_played) as recent_ms
                 FROM plays
-                WHERE username = ? AND played_at >= ?
+                WHERE username = ? AND is_skip = 0 AND played_at >= ?
                 GROUP BY track_id
                 HAVING recent_count >= 2
                 ORDER BY recent_count DESC, recent_ms DESC
@@ -62,7 +65,7 @@ class TrendQueries:
                    COUNT(CASE WHEN played_at < ? THEN 1 END) as old_count,
                    MAX(CASE WHEN played_at < ? THEN played_at END) as max_old_played_at
             FROM plays
-            WHERE username = ?
+            WHERE username = ? AND is_skip = 0
             GROUP BY track_id
             HAVING recent_count >= 1
                AND old_count >= ?
