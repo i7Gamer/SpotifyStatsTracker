@@ -119,5 +119,44 @@ class TestRateLimiting(AppTestCase):
         self.assertEqual(recoveredResp.status_code, 200)
 
 
+class TestRateLimiterSweep(unittest.TestCase):
+    """The hits map must not grow without bound: a key for a (bucket, IP) that
+    stops sending requests has to be swept once its window fully ages out,
+    otherwise a network-reachable instance scanned from many IPs leaks one entry
+    per IP forever."""
+
+    def test_fully_expired_keys_are_swept_on_a_later_hit(self):
+        from app import _RateLimiter
+
+        base = 1000.0
+        with patch("app.time.monotonic", return_value=base):
+            limiter = _RateLimiter(maxAttempts=5, windowSeconds=100)
+            for i in range(50):
+                limiter.hit("login", f"ip{i}")
+            self.assertEqual(len(limiter._hits), 50)
+
+        # A hit past both the window and the once-per-window sweep interval:
+        # every old key has aged out, so only the new one should remain.
+        with patch("app.time.monotonic", return_value=base + 200):
+            limiter.hit("login", "ipNew")
+
+        self.assertEqual(len(limiter._hits), 1)
+        self.assertIn(("login", "ipNew"), limiter._hits)
+
+    def test_sweep_keeps_still_active_keys(self):
+        from app import _RateLimiter
+
+        base = 1000.0
+        with patch("app.time.monotonic", return_value=base):
+            limiter = _RateLimiter(maxAttempts=5, windowSeconds=100)
+            limiter.hit("login", "old")   #< at base, will expire
+
+        with patch("app.time.monotonic", return_value=base + 150):
+            limiter.hit("login", "recent")   #< triggers a sweep; itself stays
+
+        self.assertNotIn(("login", "old"), limiter._hits)
+        self.assertIn(("login", "recent"), limiter._hits)
+
+
 if __name__ == "__main__":
     unittest.main()

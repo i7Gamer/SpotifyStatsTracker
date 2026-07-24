@@ -29,8 +29,11 @@ def _shutdown_exception_hook(args):
 
     if isinstance(exc, (websockets.exceptions.ConnectionClosed, ConnectionAbortedError)):
         threadName = args.thread.name if args.thread is not None else "unknown"
+        # This hook is process-global, so it can fire for any thread - state the
+        # observed fact only, without promising a recovery the thread may not have
+        # (the listener's own reconnect/stale-feed paths are what actually recover).
         logger.warning(
-            "Background thread '%s' exited after websocket close (%s); reconnect/stale-feed recovery will handle it.",
+            "Background thread '%s' exited after a connection close (%s).",
             threadName, exc,
         )
         return
@@ -769,11 +772,14 @@ class Listener:
                 {
                     "track": item.get("track"),
                     "played_at": item.get("played_at"),
-                    "ms_played": item.get("track", {}).get("duration_ms", 0),
+                    # `or {}` (not get's default): an item can carry "track": None,
+                    # where dict.get returns None and None.get(...) would crash and
+                    # abort the whole rebuild for this poll.
+                    "ms_played": (item.get("track") or {}).get("duration_ms", 0),
                     "context": item.get("context") or {}
                 }
                 for item in items
-                if item.get("played_at") and item.get("track", {}).get("id")
+                if item.get("played_at") and (item.get("track") or {}).get("id")
             ]
 
             if onWebApiSnapshot is not None:

@@ -39,8 +39,10 @@ def register(app, dashboard):
             dashboard.repo.connection().execute("SELECT 1").fetchone()
             return jsonify({"status": "ok"}), 200
         except Exception as e:
+            # Detail stays in the server log only - this endpoint is unauthenticated,
+            # and a raw SQLite error can leak filesystem paths / permission details.
             logger.error("Health check failed: %s", e)
-            return jsonify({"status": "error", "detail": str(e)}), 503
+            return jsonify({"status": "error"}), 503
     app.add_url_rule("/health", "health", health, methods=["GET"])
 
     def importHistory():

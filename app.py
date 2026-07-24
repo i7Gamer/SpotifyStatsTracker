@@ -128,6 +128,22 @@ class _RateLimiter:
         self.windowSeconds = windowSeconds
         self._hits: dict[tuple[str, str], list[float]] = {}
         self._lock = threading.Lock()
+        # hit() only ever prunes the key it touches, so a key for a (bucket, IP)
+        # that stops sending requests would otherwise live forever - one entry
+        # per source IP per bucket, an unbounded leak in a long-lived process
+        # scanned from many IPs. A full sweep, run at most once per window,
+        # drops keys whose every timestamp has aged out.
+        self._lastSweep = time.monotonic()
+
+    def _sweepExpired(self, now_ts: float, cutoff: float):
+        if now_ts - self._lastSweep < self.windowSeconds:
+            return
+        self._lastSweep = now_ts
+        self._hits = {
+            key: fresh
+            for key, timestamps in self._hits.items()
+            if (fresh := [t for t in timestamps if t >= cutoff])
+        }
 
     def hit(self, bucket: str, identifier: str) -> bool:
         """Record one attempt for (bucket, identifier). Returns True if it's
@@ -136,6 +152,7 @@ class _RateLimiter:
         now_ts = time.monotonic()
         cutoff = now_ts - self.windowSeconds
         with self._lock:
+            self._sweepExpired(now_ts, cutoff)
             hits = [t for t in self._hits.get(key, []) if t >= cutoff]
             if len(hits) >= self.maxAttempts:
                 self._hits[key] = hits
@@ -640,10 +657,17 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
         for username, email in usersWithCookies:
             try:
                 db = self.get_user_db(username, email)
-                # If listener has crashed, marked DEAD, or its thread has stopped, restart it
-                if db.getListenerHealth()["status"] == "DEAD" or not (
-                    db.listener and db.listener.thread and db.listener.thread.is_alive()
-                ):
+                # If listener has crashed, marked DEAD, or its thread has stopped, restart it -
+                # UNLESS the last start failed on definitively bad/mismatched cookies. Those
+                # never recover by retrying (every restart re-attempts the same failing Spotify
+                # login, risking bot-detection/rate-limit escalation); only a fresh re-login
+                # (which rebuilds the listener via _refresh_user_session) should retry them.
+                listener = db.listener
+                credentialFailure = listener is not None and (listener.loginFailed or listener.contaminationDetected)
+                needsRestart = db.getListenerHealth()["status"] == "DEAD" or not (
+                    listener and listener.thread and listener.thread.is_alive()
+                )
+                if needsRestart and not credentialFailure:
                     logger.warning("Listener thread for user %s is not running or is DEAD. Restarting...", username)
                     db.startListener(email=email)
                 # Folded into this existing per-user pass rather than a loop of
@@ -690,10 +714,12 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
                                 self.latestVersion = remoteVersion
                             else:
                                 self.latestVersion = None
-                    except Exception:
-                        pass  #< malformed remote VERSION string - skip this check
-            except Exception:
-                pass
+                    except Exception as e:
+                        logger.warning("Ignoring malformed remote VERSION %r: %s", remoteVersion, e)
+            except Exception as e:
+                # Transient (DNS/TLS/GitHub outage) - debug, not warning, so an
+                # offline instance doesn't spam its log every hour.
+                logger.debug("Version check request failed: %s", e)
 
             self._stop_event.wait(60 * 60)
 
