@@ -1515,6 +1515,27 @@ progress::-moz-progress-bar {
   box-shadow: 0 0 12px var(--accent-glow), 0 0 0 2px var(--accent-glow);
 }
 
+/* Tag-widget "Add tag" field: reuse the .form-group input design (profile
+   page look), sized for the compact inline widget row instead of full width. */
+.input-new-tag {
+  width: 200px;
+  max-width: 100%;
+  padding: 12px 14px;
+  font: inherit;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+  box-sizing: border-box;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.input-new-tag:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 12px var(--accent-glow), 0 0 0 2px var(--accent-glow);
+}
+
 .error {
   color: #ff9b9b;
   background: rgba(255, 111, 111, 0.12);
@@ -2270,16 +2291,16 @@ progress::-moz-progress-bar {
 /* Timeline Layout */
 .timeline-container {
   position: relative;
-  margin-top: 16px;
-  padding-left: 28px;
+  margin-top: 12px;
+  padding-left: 26px;
 }
 
 .timeline-stem {
   position: absolute;
   top: 10px;
   bottom: 10px;
-  left: 11px;
-  width: 3px;
+  left: 10px;
+  width: 2px;
   background: linear-gradient(to bottom, var(--accent) 0%, var(--accent-secondary) 50%, var(--border) 100%);
   border-radius: 2px;
   opacity: 0.7;
@@ -2288,46 +2309,46 @@ progress::-moz-progress-bar {
 .timeline-items {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 8px;
 }
 
 /* Date Header */
 .timeline-date-header {
   position: relative;
-  margin: 12px 0 4px -28px;
+  margin: 10px 0 2px -26px;
   z-index: 2;
 }
 
 .timeline-date-header span {
   display: inline-block;
   font-weight: 700;
-  font-size: 0.85rem;
+  font-size: 0.78rem;
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--accent);
   background: var(--background);
   border: 1px solid var(--border);
-  padding: 4px 14px;
-  border-radius: 12px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+  padding: 2px 10px;
+  border-radius: 10px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
 }
 
 /* Gap Connector */
 .timeline-gap-connector {
   position: relative;
-  margin: -6px 0 -6px 4px;
+  margin: -4px 0 -4px 4px;
   z-index: 2;
 }
 
 .timeline-gap-badge {
   display: inline-block;
-  font-size: 0.75rem;
+  font-size: 0.7rem;
   font-weight: 500;
   color: var(--muted);
   background: var(--content-background);
   border: 1px dashed var(--border);
-  padding: 2px 10px;
-  border-radius: 10px;
+  padding: 1px 8px;
+  border-radius: 8px;
   backdrop-filter: blur(4px);
 }
 
@@ -2340,10 +2361,10 @@ progress::-moz-progress-bar {
 
 .timeline-node {
   position: absolute;
-  left: -28px;
-  top: 14px;
-  width: 24px;
-  height: 24px;
+  left: -26px;
+  top: 8px;
+  width: 20px;
+  height: 20px;
   border-radius: 50%;
   background: var(--content-background);
   border: 2px solid var(--accent);
@@ -2351,19 +2372,19 @@ progress::-moz-progress-bar {
   align-items: center;
   justify-content: center;
   z-index: 2;
-  box-shadow: 0 0 10px var(--accent-glow);
+  box-shadow: 0 0 8px var(--accent-glow);
   transition: transform 0.2s ease, box-shadow 0.2s ease;
 }
 
 .timeline-node .node-icon {
-  font-size: 0.7rem;
+  font-size: 0.65rem;
   color: var(--accent);
   line-height: 1;
 }
 
 .timeline-item:hover .timeline-node {
   transform: scale(1.15);
-  box-shadow: 0 0 14px var(--accent-glow);
+  box-shadow: 0 0 12px var(--accent-glow);
 }
 
 /* Play Types */
@@ -2401,8 +2422,8 @@ progress::-moz-progress-bar {
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   border: 1px solid var(--glass-border);
-  border-radius: 12px;
-  padding: 14px 18px;
+  border-radius: 8px;
+  padding: 8px 14px;
   transition: border-color 0.2s ease, transform 0.2s ease;
 }
 
@@ -2415,22 +2436,22 @@ progress::-moz-progress-bar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 6px;
+  gap: 10px;
+  margin-bottom: 2px;
 }
 
 .timeline-time {
   font-weight: 600;
-  font-size: 0.95rem;
+  font-size: 0.88rem;
   color: var(--text);
 }
 
 /* Badges */
 .play-type-badge {
-  font-size: 0.75rem;
+  font-size: 0.7rem;
   font-weight: 600;
-  padding: 3px 10px;
-  border-radius: 12px;
+  padding: 1px 8px;
+  border-radius: 8px;
   letter-spacing: 0.02em;
 }
 
@@ -2455,8 +2476,8 @@ progress::-moz-progress-bar {
 .timeline-attributes {
   display: flex;
   flex-wrap: wrap;
-  gap: 12px;
-  font-size: 0.85rem;
+  gap: 10px;
+  font-size: 0.8rem;
   color: var(--muted);
 }
 
