@@ -34,6 +34,13 @@ from Database.utils import convertToDatetime
 
 logger = logging.getLogger(__name__)
 
+# How long a manual "Create backup now" request waits for the snapshot before
+# returning and letting it finish in the background. The common case (a small
+# database) completes well within this and reports the filename synchronously;
+# only a large database exceeds it, and there we return rather than hold the
+# request thread open (and risk an HTTP timeout).
+MANUAL_BACKUP_SYNC_WAIT_SECONDS = 20
+
 
 def register(app, dashboard):
     def adminPage():
@@ -498,9 +505,21 @@ def register(app, dashboard):
         return redirect(url_for("adminPage"))
     app.add_url_rule("/admin/backup_settings", "adminBackupSettings", adminBackupSettings, methods=["POST"])
 
+    # Rejects a second overlapping manual backup so two snapshots can't race
+    # (they'd share a same-second filename and sweep each other's .partial). One
+    # lock per app instance (closure-local, not module-global, so test apps
+    # don't share it). Held by the background thread until the snapshot finishes.
+    _manual_backup_lock = threading.Lock()
+
     def adminCreateBackup():
         """Admin-only: trigger an immediate on-demand database backup. Runs
         unconditionally even if scheduled automatic backups are disabled.
+
+        The snapshot runs on a background thread so a large database can't tie
+        up the request thread (and risk an HTTP timeout): the request waits up
+        to MANUAL_BACKUP_SYNC_WAIT_SECONDS for the fast common case - reporting
+        the snapshot filename (or the failure) synchronously - and otherwise
+        returns immediately, leaving the backup to finish in the background.
         Returns JSON when requested via AJAX, or redirects to /admin."""
         email, username, db = dashboard.get_current_user_or_redirect()
         if not email:
@@ -510,26 +529,49 @@ def register(app, dashboard):
 
         is_ajax = request.headers.get("X-Requested-With") == "XMLHttpRequest"
 
+        def respond(kind, message):
+            if is_ajax:
+                return jsonify(kind=kind, message=message)
+            key = "message" if kind == "success" else "error"
+            return redirect(url_for("adminPage", **{key: message}))
+
         backup_worker = getattr(dashboard, "backupWorker", None)
         if backup_worker is None:
-            message = "Backup worker not available."
-            if is_ajax:
-                return jsonify(kind="error", message=message)
-            return redirect(url_for("adminPage", error=message))
+            return respond("error", "Backup worker not available.")
 
-        try:
-            backup_path = backup_worker.runBackup()
-            filename = getattr(backup_path, "name", str(backup_path))
-            message = f"Database snapshot created: {filename}"
-            if is_ajax:
-                return jsonify(kind="success", message=message)
-            return redirect(url_for("adminPage", message=message))
-        except Exception as e:
-            logger.error("Manual database backup failed: %s", e)
-            message = f"Backup failed: {e}"
-            if is_ajax:
-                return jsonify(kind="error", message=message)
-            return redirect(url_for("adminPage", error=message))
+        if not _manual_backup_lock.acquire(blocking=False):
+            return respond("error", "A backup is already in progress.")
+
+        result = {}
+
+        def _run():
+            try:
+                result["path"] = backup_worker.runBackup()
+            except Exception as e:
+                # Logged here so a failure that outlives the synchronous wait
+                # (a slow backup that then errors) still reaches the log.
+                result["error"] = e
+                logger.error("Manual database backup failed: %s", e)
+            finally:
+                _manual_backup_lock.release()
+
+        thread = threading.Thread(target=_run, name="manual-backup", daemon=True)
+        thread.start()
+        thread.join(MANUAL_BACKUP_SYNC_WAIT_SECONDS)
+
+        if thread.is_alive():
+            # Still running - return rather than hold the request open; the lock
+            # stays held until the thread finishes, so a follow-up click gets
+            # "already in progress" until then.
+            return respond("success", "Backup started - a large database can take a while, "
+                                      "so the snapshot will appear in the backups folder shortly.")
+
+        if "error" in result:
+            return respond("error", f"Backup failed: {result['error']}")
+
+        backup_path = result.get("path")
+        filename = getattr(backup_path, "name", str(backup_path))
+        return respond("success", f"Database snapshot created: {filename}")
     app.add_url_rule("/admin/create_backup", "adminCreateBackup", adminCreateBackup, methods=["POST"])
 
     def adminTuningSettings():

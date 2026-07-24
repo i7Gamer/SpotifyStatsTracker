@@ -667,6 +667,66 @@ class TestAdminCreateBackup(AdminRouteTestBase):
         self.assertEqual(payload["kind"], "error")
         self.assertIn("not available", payload["message"])
 
+    def test_slow_backup_returns_without_blocking(self):
+        # A backup that outlives the synchronous wait must return promptly with
+        # a "still running" message rather than tie up the request thread.
+        import threading
+        from pathlib import Path
+        dash = self._makeApp()
+        release = threading.Event()
+        started = threading.Event()
+
+        def blocking_backup():
+            started.set()
+            release.wait(5)
+            return Path("/fake/Backups/spotify_stats_backup_20260724_120000.db")
+
+        mock_worker = MagicMock()
+        mock_worker.runBackup.side_effect = blocking_backup
+        try:
+            with patch("routes.admin.MANUAL_BACKUP_SYNC_WAIT_SECONDS", 0.2):
+                resp = self._postBackup(dash, backupWorker=mock_worker,
+                                        headers={"X-Requested-With": "XMLHttpRequest"})
+            self.assertEqual(resp.status_code, 200)
+            payload = resp.get_json()
+            self.assertEqual(payload["kind"], "success")
+            self.assertIn("shortly", payload["message"])
+            self.assertTrue(started.wait(2))
+            mock_worker.runBackup.assert_called_once()
+        finally:
+            release.set()
+
+    def test_concurrent_manual_backup_is_rejected(self):
+        # While one manual backup is still running, a second is refused instead
+        # of racing a duplicate snapshot.
+        import threading
+        from pathlib import Path
+        dash = self._makeApp()
+        release = threading.Event()
+        started = threading.Event()
+
+        def blocking_backup():
+            started.set()
+            release.wait(5)
+            return Path("/fake/Backups/spotify_stats_backup_20260724_120000.db")
+
+        mock_worker = MagicMock()
+        mock_worker.runBackup.side_effect = blocking_backup
+        try:
+            with patch("routes.admin.MANUAL_BACKUP_SYNC_WAIT_SECONDS", 0.2):
+                first = self._postBackup(dash, backupWorker=mock_worker,
+                                         headers={"X-Requested-With": "XMLHttpRequest"})
+                self.assertTrue(started.wait(2))
+                second = self._postBackup(dash, backupWorker=mock_worker,
+                                          headers={"X-Requested-With": "XMLHttpRequest"})
+            self.assertEqual(first.get_json()["kind"], "success")
+            second_payload = second.get_json()
+            self.assertEqual(second_payload["kind"], "error")
+            self.assertIn("already in progress", second_payload["message"])
+            mock_worker.runBackup.assert_called_once()   #< the second request never reached runBackup
+        finally:
+            release.set()
+
 
 
 class TestAdminRefreshLastfmEntity(AdminRouteTestBase):
