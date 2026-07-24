@@ -1593,6 +1593,93 @@ progress::-moz-progress-bar {
   font-size: 0.82rem;
 }
 
+/* Settings toggle: a boolean preference (e.g. "hide the tag panel") rendered as
+   a themed on/off switch inside a glassy surface row, so it fits the accent look
+   of the rest of the profile form instead of a raw browser checkbox. The real
+   checkbox stays the form control but is visually hidden; the .track span is the
+   switch and animates off its :checked state. */
+.setting-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 16px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  cursor: pointer;
+  transition: border-color 0.2s ease, background 0.2s ease;
+}
+
+.setting-toggle:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: var(--accent);
+}
+
+.setting-toggle-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-weight: 600;
+  font-size: 0.9rem;
+  color: var(--text);
+}
+
+.setting-toggle-text small {
+  font-weight: 400;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+/* Visually hidden but still the focusable, submitted control. Overrides the
+   generic .form-group input box styling above. */
+.setting-toggle input[type="checkbox"] {
+  position: absolute;
+  width: 0;
+  height: 0;
+  margin: 0;
+  padding: 0;
+  opacity: 0;
+}
+
+.setting-toggle-track {
+  position: relative;
+  flex: 0 0 auto;
+  width: 42px;
+  height: 24px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid var(--border);
+  transition: background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.setting-toggle-track::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #f6f6f6;
+  transform: translateY(-50%);
+  transition: transform 0.2s ease;
+}
+
+.setting-toggle input:checked ~ .setting-toggle-track {
+  background: var(--accent);
+  border-color: var(--accent);
+  box-shadow: 0 0 10px var(--accent-glow);
+}
+
+.setting-toggle input:checked ~ .setting-toggle-track::after {
+  transform: translate(18px, -50%);
+}
+
+.setting-toggle input:focus-visible ~ .setting-toggle-track {
+  box-shadow: 0 0 0 2px var(--accent-glow);
+}
+
 .auth-links {
   display: flex;
   justify-content: space-between;

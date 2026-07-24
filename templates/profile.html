@@ -99,9 +99,13 @@
 
       {% if tags_enabled %}
       <div class="form-group">
-        <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer;">
+        <label class="setting-toggle">
+          <span class="setting-toggle-text">
+            Hide the tag panel
+            <small>Removes the genre-tag panel from song, artist &amp; album pages.</small>
+          </span>
           <input type="checkbox" name="hide_tags_panel" value="1" {% if hide_tags_panel %}checked{% endif %}>
-          Hide the tag panel on song/artist/album pages
+          <span class="setting-toggle-track" aria-hidden="true"></span>
         </label>
       </div>
       {% endif %}
