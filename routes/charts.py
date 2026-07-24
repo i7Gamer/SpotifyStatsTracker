@@ -261,15 +261,12 @@ def register(app, dashboard):
         if not email:
             return redirect(url_for("login", next=request.path))
 
-        settings = db.repo.getUserSettings(username)
-        default_window = settings.get("default_dashboard_window", "day")
-
         customStart = request.args.get("startDate", "")
         customEnd = request.args.get("endDate", "")
 
-        interval = request.args.get("interval", default_window)
-        if interval == "":
-            interval = default_window
+        # History defaults to All Time (the full list); the Time Period filter
+        # then scopes it to any named interval or a custom range.
+        interval = request.args.get("interval") or "all time"
         if interval == "custom" and not (customStart and customEnd):
             interval = "all time"
 
@@ -289,20 +286,20 @@ def register(app, dashboard):
                 interval=interval,
                 customStart=customStart,
                 customEnd=customEnd,
-                defaultWindow=default_window,
+                defaultWindow="all time",
                 sort=sortOrder,
             )
 
         page = dashboard._getPageParam()
         searchQuery = request.args.get("q", "")
 
-        startDate, endDate = dashboard._getDateRange(interval, customStart, customEnd, default="day", tz=db.tz)
+        startDate, endDate = dashboard._getDateRange(interval, customStart, customEnd, default="all time", tz=db.tz)
 
-        # Only an explicit custom range (typically a chart click-through - see
-        # static/js/charts.js) scopes the list; named intervals (including the
-        # user's default window) do not, matching the old dashboard behavior.
-        listStartDate = startDate if interval == "custom" else None
-        listEndDate = endDate if interval == "custom" else None
+        # The Time Period filter scopes the list for every interval, not just
+        # custom ranges: "Last Week" shows last week's plays, "All Time" (the
+        # default) resolves to (None, None) i.e. the full history.
+        listStartDate = startDate
+        listEndDate = endDate
 
         if searchQuery:
             # Matching and pagination both happen in SQL (Repository.searchPlays)

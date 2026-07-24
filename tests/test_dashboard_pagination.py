@@ -254,13 +254,11 @@ class TestHistoryAjaxShell(_ListRouteTestBase):
 
 
 class TestHistoryCustomRangeListScoping(_ListRouteTestBase):
-    """A custom date range (the querystring shape a chart click-through
-    produces - see static/js/charts.js) must scope the play-history list
-    below, not just the stats cards above. A named interval (day/week/...),
-    including whatever the user's default_dashboard_window resolves to on a
-    plain visit, must NOT scope the list - only the stats cards - preserving
-    today's "list always shows full history" behavior for everything except
-    an explicit custom range."""
+    """The Time Period filter scopes the play-history list for every interval:
+    a custom date range (the querystring shape a chart click-through produces -
+    see static/js/charts.js) and a named interval (day/week/...) alike. A plain
+    visit defaults to All Time, which resolves to (None, None) - the full
+    history."""
 
     def test_custom_range_scopes_the_list(self):
         dash = self._makeApp()
@@ -289,21 +287,23 @@ class TestHistoryCustomRangeListScoping(_ListRouteTestBase):
         self.assertIsNotNone(kwargs["startDate"])
         self.assertIsNotNone(kwargs["endDate"])
 
-    def test_named_interval_does_not_scope_the_list(self):
+    def test_named_interval_scopes_the_list(self):
         dash = self._makeApp()
         db = self._makeDb(entryCount=0)
 
         resp, _ = self._getHistoryAjax(dash, db, query="?interval=week")
 
         self.assertEqual(resp.status_code, 200)
-        # A named interval must not scope the /history list (the stats cards it
-        # used to scope now live on the dashboard, not here).
-        db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=0, startDate=None, endDate=None)
+        # A named interval (Last Week) now scopes the /history list to that range.
+        kwargs = db.getEntriesFromNew.call_args.kwargs
+        self.assertIsNotNone(kwargs["startDate"])
+        self.assertIsNotNone(kwargs["endDate"])
+        countKwargs = db.getEntriesCount.call_args.kwargs
+        self.assertIsNotNone(countKwargs["startDate"])
 
-    def test_default_unscoped_visit_does_not_scope_the_list(self):
-        """A plain visit to '/' (no query params) resolves interval to the
-        user's default_dashboard_window, which is not 'custom' - the list
-        must still show full history, matching today's behavior."""
+    def test_default_visit_is_all_time_and_shows_full_history(self):
+        """A plain visit (no query params) defaults to All Time, so the list is
+        unscoped (startDate/endDate None) - the full history."""
         dash = self._makeApp()
         db = self._makeDb(entryCount=0)
 
