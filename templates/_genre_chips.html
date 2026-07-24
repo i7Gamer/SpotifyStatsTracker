@@ -3,7 +3,13 @@
    re-sent whenever the time filter changes (a range change changes which
    genres have plays, and thus which chips appear).
    Expects: genreNames, selectedGenre. #}
+{# The fallback href (no-JS / ctrl- or middle-click) carries the current time
+   filter so it opens the genre scoped the same way the JS click path does
+   (genres.js detailFallbackUrl); url_for drops the None-valued params. #}
 {% for name in genreNames %}
   <a class="genre-chip {{ 'selected' if name == selectedGenre }}"
-     href="{{ url_for('genresPage', genre=name) }}" data-genre="{{ name }}">{{ name }}</a>
+     href="{{ url_for('genresPage', genre=name,
+                      interval=request.args.get('interval'),
+                      startDate=request.args.get('startDate'),
+                      endDate=request.args.get('endDate')) }}" data-genre="{{ name }}">{{ name }}</a>
 {% endfor %}

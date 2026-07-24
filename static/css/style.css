@@ -10,6 +10,13 @@
   --text: #f6f6f6;
   --muted: #a0a0a0;
   --border: rgba(255, 255, 255, 0.08);
+  /* Tokens the admin/profile inline styles reference with a hardcoded fallback
+     (var(--fg, #f0f0f0) etc.). Defining them once here - at their existing
+     fallback values, so appearance is unchanged - single-sources them and lets
+     a theme override them instead of relying on the fallback. */
+  --fg: var(--text);
+  --danger: #e05252;
+  --border-color: #2d2d2d;
   --glass-bg: rgba(18, 18, 18, 0.65);
   --glass-border: rgba(255, 255, 255, 0.06);
   --glow-color-1: rgba(251, 113, 123, 0.15);
@@ -157,70 +164,15 @@ button {
   color: var(--accent);
 }
 
-@keyframes shimmer {
-  0% { background-position: -1000px 0; }
-  100% { background-position: 1000px 0; }
-}
-
-.skeleton-loader {
-  animation: shimmer 2s infinite linear;
-  background: linear-gradient(to right, rgba(255, 255, 255, 0.03) 4%, rgba(255, 255, 255, 0.08) 25%, rgba(255, 255, 255, 0.03) 36%);
-  background-size: 1000px 100%;
-  border-radius: 12px;
-}
-
 .nav-links a.active {
   color: var(--accent);
   font-weight: 700;
-}
-
-.topbar-search {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-left: auto;
-  max-width: 100%;
-}
-
-.topbar-search input[type="search"] {
-  width: min(340px, 100%);
-  padding: 10px 14px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  background: rgba(255, 255, 255, 0.06);
-  color: var(--text);
-  font: inherit;
-}
-
-.topbar-search input[type="search"]::placeholder {
-  color: var(--muted);
-}
-
-.topbar-search input[type="search"]:focus {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 12px var(--accent-glow), 0 0 0 2px var(--accent-glow);
 }
 
 .filter-search input[type="search"]:focus {
   outline: none;
   border-color: var(--accent);
   box-shadow: 0 0 12px var(--accent-glow), 0 0 0 2px var(--accent-glow);
-}
-
-.topbar-search button {
-  padding: 10px 16px;
-  border: 0;
-  border-radius: 999px;
-  background: var(--accent);
-  color: #111;
-  font-weight: 700;
-  cursor: pointer;
-  transition: transform 0.15s ease;
-}
-
-.topbar-search button:active {
-  transform: scale(0.92);
 }
 
 .page {
@@ -1828,16 +1780,6 @@ progress::-moz-progress-bar {
     margin-right: 0;
   }
 
-  .topbar-search {
-    width: 100%;
-    order: 3;
-  }
-
-  .topbar-search input[type="search"] {
-    flex: 1;
-    width: auto;
-  }
-
   .filter-section {
     flex-direction: column;
     align-items: stretch;
@@ -2755,7 +2697,9 @@ html.theme-red {
   align-items: center;
   gap: 20px;
   padding: 24px;
-  background: var(--card-bg);
+  /* Was var(--card-bg), which is defined nowhere - the cards rendered with no
+     background at all. Use the same surface token every other card uses. */
+  background: var(--surface);
   border: 1px solid var(--glass-border);
   border-radius: 12px;
   transition: transform 0.2s ease, box-shadow 0.2s ease;
@@ -3316,4 +3260,20 @@ html.theme-red {
   flex: 0 0 auto;
   font-size: 0.8rem;
   color: var(--muted);
+}
+
+/* Respect a user's reduced-motion preference: the permanent 20s ambientGlow
+   background animation, the staggered fadeInSlideUp card entrances, and every
+   hover transform/transition are vestibular-motion triggers. Near-instant
+   (not 0s, so animationend/transitionend listeners still fire) rather than
+   fully removed. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
 }

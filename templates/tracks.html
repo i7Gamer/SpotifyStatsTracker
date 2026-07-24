@@ -321,9 +321,17 @@
         // /song/<id> route: a currently-playing track usually has no
         // completed play logged yet, so the internal detail page would
         // have nothing to show and silently redirect to Top Songs.
-        nameEl.href = 'https://open.spotify.com/track/' + encodeURIComponent(np.trackId);
-        nameEl.target = '_blank';
-        nameEl.rel = 'noreferrer noopener';
+        if (np.trackId) {
+          nameEl.href = 'https://open.spotify.com/track/' + encodeURIComponent(np.trackId);
+          nameEl.target = '_blank';
+          nameEl.rel = 'noreferrer noopener';
+        } else {
+          // Local files / podcasts / transitional states carry a name but no
+          // track id - show plain text instead of a .../track/undefined link.
+          nameEl.removeAttribute('href');
+          nameEl.removeAttribute('target');
+          nameEl.removeAttribute('rel');
+        }
         document.getElementById('nowPlayingArtists').textContent = np.artistsText || '';
         var stateEl = document.getElementById('nowPlayingState');
         stateEl.textContent = np.isPaused ? 'Paused' : 'Playing';

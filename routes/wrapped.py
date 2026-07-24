@@ -21,6 +21,7 @@ from Database.utils import msToString, now
 
 def register(app, dashboard):
     WRAPPED_LIMIT_OPTIONS = appmod.WRAPPED_LIMIT_OPTIONS
+    WRAPPED_LIST_SIZE = appmod.WRAPPED_LIST_SIZE   #< server default for a URL with no ?limit
     SHARE_LINK_EXPIRY_CHOICES = appmod.SHARE_LINK_EXPIRY_CHOICES
     SHARE_LINK_MAX_PER_BUCKET = appmod.SHARE_LINK_MAX_PER_BUCKET
     RATE_LIMIT_ERROR_MESSAGE = appmod.RATE_LIMIT_ERROR_MESSAGE
@@ -85,6 +86,7 @@ def register(app, dashboard):
             groupBy=groupBy,
             limit=limit,
             limitOptions=WRAPPED_LIMIT_OPTIONS,
+            limitDefault=WRAPPED_LIST_SIZE,
             sortBy=sortBy,
             totalPlays=totalPlays,
             totalTime=msToString(totalMs),
@@ -209,6 +211,7 @@ def register(app, dashboard):
             groupBy=groupBy,
             limit=limit,
             limitOptions=WRAPPED_LIMIT_OPTIONS,
+            limitDefault=WRAPPED_LIST_SIZE,
             sortBy=sortBy,
             totalPlays=ctx["totalPlays"],
             totalTime=msToString(ctx["totalMs"]),

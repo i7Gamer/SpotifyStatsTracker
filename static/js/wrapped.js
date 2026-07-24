@@ -99,7 +99,14 @@ function loadWrappedData(year, groupBy, limit, sortBy, updateType = 'all') {
   if (hiddenYear) hiddenYear.value = year;
 
   const delayPromise = new Promise(resolve => setTimeout(resolve, 200));
-  const fetchPromise = fetch(`${WRAPPED_FETCH_URL}?year=${year}&groupBy=${groupBy}&limit=${limit}&sortBy=${sortBy}&ajax=true&type=${updateType}`, { signal: controller.signal })
+  // Build with URLSearchParams so each value is encoded - a crafted value (e.g.
+  // a year of "2024&limit=999" from a hand-edited URL restored on Back) can't
+  // inject or desync other params.
+  const fetchParams = new URLSearchParams({
+    year: year, groupBy: groupBy, limit: limit, sortBy: sortBy,
+    ajax: 'true', type: updateType,
+  });
+  const fetchPromise = fetch(`${WRAPPED_FETCH_URL}?${fetchParams.toString()}`, { signal: controller.signal })
     .then(response => response.json());
 
   Promise.all([fetchPromise, delayPromise])
@@ -351,7 +358,9 @@ window.addEventListener('popstate', function() {
   const params = new URLSearchParams(window.location.search);
   const year = params.get('year') || String(wrappedBootstrap.year);
   const groupBy = params.get('groupBy') || '';   //< bare URL = Auto
-  const limit = params.get('limit') || '50';
+  //< a bare URL (no ?limit) means the server default, not a hardcoded 50 that
+  //  would desync the select from the data the server actually returns
+  const limit = params.get('limit') || String(wrappedBootstrap.limitDefault);
   const sortBy = params.get('sortBy') || 'plays';
 
   document.querySelectorAll('.wrapped-year-badge').forEach(badge => {

@@ -373,7 +373,9 @@
   function renderExplicitChart() {
     var canvas = document.getElementById('explicitChart');
     if (!canvas) return;
-    var data = window.__chartData.explicitRatio;
+    // Guard __chartData itself: on /charts the canvas exists in the shell before
+    // the deferred payload lands, and the resize handler calls this regardless.
+    var data = window.__chartData && window.__chartData.explicitRatio;
     if (!data) return;
 
     var slices = [
@@ -388,7 +390,7 @@
   function renderCompletionChart() {
     var canvas = document.getElementById('completionChart');
     if (!canvas) return;
-    var data = window.__chartData.completionStats;
+    var data = window.__chartData && window.__chartData.completionStats;
     if (!data) return;
 
     var slices = [
@@ -403,7 +405,7 @@
 
   function renderDecadeChart() {
     CU.renderBarsFromPairs(document.getElementById('decadeChart'),
-      window.__chartData.decadeDistribution,
+      (window.__chartData && window.__chartData.decadeDistribution) || [],
       { emptyMessage: 'No album release information in this period.' });
   }
 
@@ -413,7 +415,7 @@
     // "alternative rock"/"alternative metal" both cutting down to
     // "alternative…" used to.
     CU.renderHorizontalBars(document.getElementById('genreChart'),
-      window.__chartData.genreDistribution,
+      (window.__chartData && window.__chartData.genreDistribution) || [],
       { emptyMessage: 'No genre data for the plays in this period.', valueSuffix: ' plays' });
   }
 
