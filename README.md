@@ -11,13 +11,13 @@ A web application that allows users to track and analyze their Spotify listening
 ## Features
 
 - **Top Lists**: View your top songs, artists, and albums with detailed statistics
-- **Listening History**: See your listening history and track Spotify activity in real time
-- **Achievement Milestones**: Automatically celebrate lifetime play-count and listening-time thresholds, listening streaks, and each new all-time #1 artist - surfaced as a topbar badge and a Milestones section on your Profile
-- **Charts & Analytics**: Visualize your listening patterns and statistics with interactive charts, including a Top Genres breakdown once enough genre data has been backfilled (see Genre Insights below)
+- **Listening History**: Browse your play history on a dedicated `/history` page with instant AJAX filtering, and track daily listening activity with a contribution-style streak calendar on the Dashboard
+- **Achievement Milestones**: Automatically celebrate lifetime play-count and listening-time thresholds, listening streaks, and each new all-time #1 artist - surfaced as a topbar badge, Next Milestones dashboard panel, and a Milestones section on your Profile
+- **Charts & Analytics**: Visualize your listening patterns and statistics with interactive charts, customizable trend bucket granularity (hour, day, week, month, year), and a Top Genres breakdown once enough genre data has been backfilled (see Genre Insights below)
 - **Yearly Wrapped & Share Links**: Get a personalized recap of your yearly listening with category filters (Top Songs, Artists, Albums, Discovered Songs, Artists, Albums) plus top genres, and generate shareable links with custom expiration
 - **Data Sharing & Comparison**: Request to share your listening stats with another user - once they accept, compare top songs/artists/albums, a taste-match score, and shared genres side by side on the Compare page
 - **Genre Insights & Biographies**: Add a free Last.fm API key on your Profile page to backfill genre tags and rich artist/album biographies in the background (see [Genre Data](#genre-data-optional) below)
-- **Detail Pages & Manual Refresh**: Drill down into individual songs, artists, and albums to see play history, detailed stats, and biographies, with a "Refresh Last.fm Data" button to update metadata on demand
+- **Detail Pages & Interactive Timeline**: Drill down into individual songs, artists, and albums with an interactive play history timeline (with date headers, time gaps, and skip filters), embedded Spotify player, detailed stats, and biographies, plus a "Refresh Last.fm Data" button
 - **Admin Console**: Instance admins can monitor real-time worker health (auto-importer, Last.fm backfiller, backup worker, metadata backfiller), manage user sync states, inspect catalog backfill coverage, and configure instance-wide settings at `/admin`
 - **Multi-File Import**: Import multiple Spotify data export files at once with progress tracking
 - **Overview Page**: See total database statistics, your listening breakdown, API backfill configuration, and genre-backfill progress
