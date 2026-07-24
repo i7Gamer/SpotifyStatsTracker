@@ -10,8 +10,10 @@ A web application that allows users to track and analyze their Spotify listening
 
 ## Features
 
-- **Top Lists**: View your top songs, artists, and albums with detailed statistics
+- **Top Lists**: View your top songs, artists, and albums with detailed statistics, with tag and "full plays only" filters
 - **Listening History**: Browse your play history on a dedicated `/history` page with instant AJAX filtering, and track daily listening activity with a contribution-style streak calendar on the Dashboard
+- **Trend Insights**: Dashboard cards surface your current Obsession (a track in heavy recent rotation), Rediscovery (an old favorite you've come back to), and Forgotten Favorite (a former favorite you haven't played in a while)
+- **Personal Tagging & Playlist Export**: Tag any song, artist, or album with your own free-text labels, then filter and download a tagged playlist (or a Wrapped year's Top 100) as CSV, M3U, or XSPF on the `/playlists` page - ready for Spotify or converters like Soundiiz and TuneMyMusic
 - **Achievement Milestones**: Automatically celebrate lifetime play-count and listening-time thresholds, listening streaks, and each new all-time #1 artist - surfaced as a topbar badge, Next Milestones dashboard panel, and a Milestones section on your Profile
 - **Charts & Analytics**: Visualize your listening patterns and statistics with interactive charts, customizable trend bucket granularity (hour, day, week, month, year), and a Top Genres breakdown once enough genre data has been backfilled (see Genre Insights below)
 - **Yearly Wrapped & Share Links**: Get a personalized recap of your yearly listening with category filters (Top Songs, Artists, Albums, Discovered Songs, Artists, Albums) plus top genres, and generate shareable links with custom expiration
