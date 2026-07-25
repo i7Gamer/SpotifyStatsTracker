@@ -63,6 +63,68 @@ class TestRefreshUserSession(unittest.TestCase):
         self.assertNotIn("ghost", dash.user_databases)
 
 
+class TestLoginCheckInFlightDuringReLogin(unittest.TestCase):
+    """is_user_logged_in evaluates isListenerLoggedIn() outside any lock - a
+    live Spotify round-trip that can take seconds. A check that started against
+    the OLD, dead listener must not finish after a successful re-login and
+    write its stale False over the freshly cleared cache: that marked a
+    just-authenticated user logged out for the whole TTL."""
+
+    def _dash(self, email, username):
+        dash = _makeApp()
+        dash.repo.upsertUser(username, email)
+        dash.repo.setUserCookies(username, {"sp_dc": "cookie"})
+        return dash
+
+    def test_a_stale_in_flight_result_is_not_cached_after_a_re_login(self):
+        email, username = "alice@example.com", "alice"
+        dash = self._dash(email, username)
+        deadDb = MagicMock()
+
+        def slowCheckAgainstDeadListener():
+            # The re-login lands while this check is still in flight.
+            dash._invalidateLoginCache(email)
+            return False
+
+        deadDb.isListenerLoggedIn.side_effect = slowCheckAgainstDeadListener
+
+        with patch.object(dash, "get_user_db", return_value=deadDb):
+            result = dash.is_user_logged_in(email)
+
+        self.assertFalse(result)                        #< this request's answer still stands
+        self.assertNotIn(email, dash._login_cache)      #< but it must not linger for the TTL
+
+    def test_an_uninterrupted_result_is_still_cached(self):
+        email, username = "bob@example.com", "bob"
+        dash = self._dash(email, username)
+        liveDb = MagicMock()
+        liveDb.isListenerLoggedIn.return_value = True
+
+        with patch.object(dash, "get_user_db", return_value=liveDb):
+            result = dash.is_user_logged_in(email)
+
+        self.assertTrue(result)
+        self.assertIn(email, dash._login_cache)
+
+    def test_the_next_check_after_a_re_login_hits_the_new_listener(self):
+        """End state that matters to the user: after the invalidation, the
+        following request re-checks rather than serving a cached logout."""
+        email, username = "carol@example.com", "carol"
+        dash = self._dash(email, username)
+        db = MagicMock()
+        db.isListenerLoggedIn.side_effect = [False, True]
+
+        with patch.object(dash, "get_user_db", return_value=db):
+            dash._invalidateLoginCache(email)
+            first = dash.is_user_logged_in(email)
+            dash._invalidateLoginCache(email)
+            second = dash.is_user_logged_in(email)
+
+        self.assertFalse(first)
+        self.assertTrue(second)
+        self.assertEqual(db.isListenerLoggedIn.call_count, 2)
+
+
 class TestLoginRestartsExistingSession(AppTestCase):
     """Integration through the actual /login route: a re-login for a username
     that already has a live Database must refresh it instead of silently doing

@@ -244,6 +244,9 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
         self._userLocks: dict = {}
         self._userLocksGuard = threading.Lock()
         self._login_cache: dict = {}  #< {email: (result: bool, expires_at: float)}
+        # Bumped by every invalidation, so a login check already in flight can
+        # tell its answer is stale before writing it (see _invalidateLoginCache).
+        self._login_cache_generation: dict = {}  #< {email: int}
         # Throttles POSTs to /login, /register, /reset-password per source IP -
         # without this, a network-reachable instance is brute-forceable
         # indefinitely (check_password_hash costs some compute, but nothing
@@ -523,7 +526,17 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
                 if db.listener is not None:
                     db.listener.stop()
                 db.startListener(email=email)
+        self._invalidateLoginCache(email)
+
+    def _invalidateLoginCache(self, email):
+        """Drop this user's cached login result and fence any check already in
+        flight. is_user_logged_in's miss path evaluates isListenerLoggedIn()
+        outside any lock - a live Spotify round-trip - so a check that started
+        against the OLD, dead listener could otherwise finish after a
+        successful re-login and write its stale False on top, marking a
+        just-authenticated user logged out for the whole TTL."""
         self._login_cache.pop(email, None)
+        self._login_cache_generation[email] = self._login_cache_generation.get(email, 0) + 1
 
     def is_user_logged_in(self, email):
         if not email:
@@ -548,13 +561,18 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
         # assume True for an unloaded user: that's exactly the check the
         # password-login branch relies on to confirm a stored session is
         # still live, not merely that cookies exist.
+        generation = self._login_cache_generation.get(email, 0)
         try:
             result = self.get_user_db(username, email).isListenerLoggedIn()
         except Exception as e:
             logger.error("Error checking login status for %s: %s", email, e)
             result = False
 
-        self._login_cache[email] = (result, now_ts + LOGIN_CACHE_TTL_SECONDS)
+        # Only cache if nothing invalidated this user's status while the check
+        # above was running (a re-login, most importantly) - see
+        # _invalidateLoginCache. The result still stands for THIS request.
+        if self._login_cache_generation.get(email, 0) == generation:
+            self._login_cache[email] = (result, now_ts + LOGIN_CACHE_TTL_SECONDS)
         return result
 
     def get_current_user_or_redirect(self):

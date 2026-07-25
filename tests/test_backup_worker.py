@@ -10,6 +10,7 @@ import os
 import sqlite3
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -146,6 +147,70 @@ class TestRunBackup(BackupWorkerTestCase):
 
         self.assertTrue(newest.exists())
         self.assertTrue(preexisting.exists())
+
+
+class TestConcurrentBackups(BackupWorkerTestCase):
+    """The scheduled loop and the admin's Create Backup Now button are two
+    threads calling the same code. Overlapping runs swept each other's
+    .partial file mid-write (a PermissionError on Windows, where an open
+    handle can't be unlinked) and, starting in the same second, wrote the same
+    path from two connections - so os.replace could promote an interleaved
+    copy to a valid-looking snapshot."""
+
+    def test_a_second_backup_waits_instead_of_overlapping(self):
+        worker = self._makeWorker()
+        overlapped = []
+        inFlight = threading.Event()
+        release = threading.Event()
+        realRun = worker._runBackupLocked
+
+        def slowRun():
+            overlapped.append("start")
+            inFlight.set()
+            release.wait(5)
+            try:
+                return realRun()
+            finally:
+                overlapped.append("end")
+
+        with patch.object(worker, "_runBackupLocked", slowRun):
+            first = threading.Thread(target=worker.runBackup)
+            first.start()
+            self.assertTrue(inFlight.wait(5))
+
+            second = threading.Thread(target=worker.runBackup)
+            second.start()
+            second.join(timeout=0.3)
+            self.assertTrue(second.is_alive(), "the second backup ran while the first was in flight")
+
+            release.set()
+            first.join(timeout=5)
+            second.join(timeout=5)
+
+        # start/end/start/end - never start/start
+        self.assertEqual(overlapped, ["start", "end", "start", "end"])
+
+    def test_is_backup_running_reports_an_in_flight_snapshot(self):
+        worker = self._makeWorker()
+        inFlight = threading.Event()
+        release = threading.Event()
+
+        def slowRun():
+            inFlight.set()
+            release.wait(5)
+            return self.root / "Backups" / "fake.db"
+
+        self.assertFalse(worker.isBackupRunning())
+        with patch.object(worker, "_runBackupLocked", slowRun):
+            thread = threading.Thread(target=worker.runBackup)
+            thread.start()
+            self.assertTrue(inFlight.wait(5))
+
+            self.assertTrue(worker.isBackupRunning())
+
+            release.set()
+            thread.join(timeout=5)
+        self.assertFalse(worker.isBackupRunning())
 
 
 class TestIsDue(BackupWorkerTestCase):

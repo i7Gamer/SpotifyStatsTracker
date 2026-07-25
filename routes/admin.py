@@ -505,12 +505,6 @@ def register(app, dashboard):
         return redirect(url_for("adminPage"))
     app.add_url_rule("/admin/backup_settings", "adminBackupSettings", adminBackupSettings, methods=["POST"])
 
-    # Rejects a second overlapping manual backup so two snapshots can't race
-    # (they'd share a same-second filename and sweep each other's .partial). One
-    # lock per app instance (closure-local, not module-global, so test apps
-    # don't share it). Held by the background thread until the snapshot finishes.
-    _manual_backup_lock = threading.Lock()
-
     def adminCreateBackup():
         """Admin-only: trigger an immediate on-demand database backup. Runs
         unconditionally even if scheduled automatic backups are disabled.
@@ -539,7 +533,11 @@ def register(app, dashboard):
         if backup_worker is None:
             return respond("error", "Backup worker not available.")
 
-        if not _manual_backup_lock.acquire(blocking=False):
+        # Fast, friendly rejection for a second click. The real mutual
+        # exclusion lives in runBackup itself, which also covers the scheduled
+        # worker - this check alone couldn't, since the scheduler can start
+        # between the check and the thread below.
+        if backup_worker.isBackupRunning():
             return respond("error", "A backup is already in progress.")
 
         result = {}
@@ -552,17 +550,15 @@ def register(app, dashboard):
                 # (a slow backup that then errors) still reaches the log.
                 result["error"] = e
                 logger.error("Manual database backup failed: %s", e)
-            finally:
-                _manual_backup_lock.release()
 
         thread = threading.Thread(target=_run, name="manual-backup", daemon=True)
         thread.start()
         thread.join(MANUAL_BACKUP_SYNC_WAIT_SECONDS)
 
         if thread.is_alive():
-            # Still running - return rather than hold the request open; the lock
-            # stays held until the thread finishes, so a follow-up click gets
-            # "already in progress" until then.
+            # Still running - return rather than hold the request open; the
+            # worker's lock stays held until the snapshot finishes, so a
+            # follow-up click gets "already in progress" until then.
             return respond("success", "Backup started - a large database can take a while, "
                                       "so the snapshot will appear in the backups folder shortly.")
 

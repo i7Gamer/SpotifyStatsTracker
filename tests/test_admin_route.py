@@ -582,6 +582,31 @@ class TestAdminBackupSettings(AdminRouteTestBase):
 
 
 class TestAdminCreateBackup(AdminRouteTestBase):
+    def _mockWorker(self, runBackup=None, error=None):
+        """Stand-in BackupWorker whose isBackupRunning() tracks whether a
+        snapshot is in flight, the way the real one's lock does - the route
+        asks it before starting a second run."""
+        import threading
+        from pathlib import Path
+
+        worker = MagicMock()
+        inFlight = threading.Event()
+
+        def run():
+            inFlight.set()
+            try:
+                if error is not None:
+                    raise error
+                if runBackup is not None:
+                    return runBackup()
+                return Path("/fake/Backups/spotify_stats_backup_20260724_120000.db")
+            finally:
+                inFlight.clear()
+
+        worker.runBackup.side_effect = run
+        worker.isBackupRunning.side_effect = inFlight.is_set
+        return worker
+
     def _postBackup(self, dash, isAdmin=True, loggedIn=True, backupWorker=None, headers=None):
         from pathlib import Path
         with patch.object(dash.repo, 'isAdmin', return_value=isAdmin), \
@@ -610,8 +635,7 @@ class TestAdminCreateBackup(AdminRouteTestBase):
     def test_ajax_success_returns_json(self):
         from pathlib import Path
         dash = self._makeApp()
-        mock_worker = MagicMock()
-        mock_worker.runBackup.return_value = Path("/fake/Backups/spotify_stats_backup_20260724_120000.db")
+        mock_worker = self._mockWorker()
         resp = self._postBackup(dash, backupWorker=mock_worker, headers={"X-Requested-With": "XMLHttpRequest"})
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.mimetype, "application/json")
@@ -623,8 +647,7 @@ class TestAdminCreateBackup(AdminRouteTestBase):
     def test_form_success_redirects_with_message(self):
         from pathlib import Path
         dash = self._makeApp()
-        mock_worker = MagicMock()
-        mock_worker.runBackup.return_value = Path("/fake/Backups/spotify_stats_backup_20260724_120000.db")
+        mock_worker = self._mockWorker()
         resp = self._postBackup(dash, backupWorker=mock_worker)
         self.assertEqual(resp.status_code, 302)
         self.assertIn("/admin", resp.headers["Location"])
@@ -633,17 +656,15 @@ class TestAdminCreateBackup(AdminRouteTestBase):
     def test_runs_even_when_scheduler_disabled(self):
         from pathlib import Path
         dash = self._makeApp()
-        mock_worker = MagicMock()
+        mock_worker = self._mockWorker()
         mock_worker.isEnabled.return_value = False
-        mock_worker.runBackup.return_value = Path("/fake/Backups/spotify_stats_backup_20260724_120000.db")
         resp = self._postBackup(dash, backupWorker=mock_worker, headers={"X-Requested-With": "XMLHttpRequest"})
         self.assertEqual(resp.status_code, 200)
         mock_worker.runBackup.assert_called_once()
 
     def test_ajax_error_returns_json_200(self):
         dash = self._makeApp()
-        mock_worker = MagicMock()
-        mock_worker.runBackup.side_effect = RuntimeError("disk full")
+        mock_worker = self._mockWorker(error=RuntimeError("disk full"))
         resp = self._postBackup(dash, backupWorker=mock_worker, headers={"X-Requested-With": "XMLHttpRequest"})
         self.assertEqual(resp.status_code, 200)
         payload = resp.get_json()
@@ -652,8 +673,7 @@ class TestAdminCreateBackup(AdminRouteTestBase):
 
     def test_form_error_redirects_with_error_param(self):
         dash = self._makeApp()
-        mock_worker = MagicMock()
-        mock_worker.runBackup.side_effect = RuntimeError("disk full")
+        mock_worker = self._mockWorker(error=RuntimeError("disk full"))
         resp = self._postBackup(dash, backupWorker=mock_worker)
         self.assertEqual(resp.status_code, 302)
         self.assertIn("/admin", resp.headers["Location"])
@@ -681,8 +701,7 @@ class TestAdminCreateBackup(AdminRouteTestBase):
             release.wait(5)
             return Path("/fake/Backups/spotify_stats_backup_20260724_120000.db")
 
-        mock_worker = MagicMock()
-        mock_worker.runBackup.side_effect = blocking_backup
+        mock_worker = self._mockWorker(runBackup=blocking_backup)
         try:
             with patch("routes.admin.MANUAL_BACKUP_SYNC_WAIT_SECONDS", 0.2):
                 resp = self._postBackup(dash, backupWorker=mock_worker,
@@ -710,8 +729,7 @@ class TestAdminCreateBackup(AdminRouteTestBase):
             release.wait(5)
             return Path("/fake/Backups/spotify_stats_backup_20260724_120000.db")
 
-        mock_worker = MagicMock()
-        mock_worker.runBackup.side_effect = blocking_backup
+        mock_worker = self._mockWorker(runBackup=blocking_backup)
         try:
             with patch("routes.admin.MANUAL_BACKUP_SYNC_WAIT_SECONDS", 0.2):
                 first = self._postBackup(dash, backupWorker=mock_worker,
