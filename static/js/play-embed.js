@@ -49,6 +49,16 @@ function nextPlayEmbedState(state, event) {
       phase = 'ready';
       action = visible ? 'create-and-play' : 'create';
     }
+  } else if (event === 'script-error') {
+    // The API script never arrived (offline, blocked by an extension or a
+    // strict DNS/adblock rule). Without this the phase stayed 'loading'
+    // forever, so the button just toggled an empty box and no click could
+    // ever recover - back to idle instead, and the next click retries.
+    if (phase === 'loading') {
+      phase = 'idle';
+      visible = false;
+      action = 'script-failed';
+    }
   }
 
   return { phase, visible, action, label: visible ? HIDE_LABEL : PLAY_LABEL };
@@ -72,6 +82,7 @@ function initPlayEmbed() {
     const script = document.createElement('script');
     script.src = SPOTIFY_IFRAME_API_SRC;
     script.async = true;
+    script.addEventListener('error', () => dispatch('script-error'));
     document.body.appendChild(script);
   }
 
@@ -112,6 +123,11 @@ function initPlayEmbed() {
 
     if (action === 'load-script') {
       loadScript();
+    } else if (action === 'script-failed') {
+      container.hidden = true;
+      container.classList.remove('is-visible');
+      button.setAttribute('aria-expanded', 'false');
+      window.open(button.dataset.spotifyUrl, '_blank', 'noreferrer,noopener');
     } else if (action === 'create') {
       createController(IFrameAPI, false);
     } else if (action === 'create-and-play') {

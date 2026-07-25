@@ -125,8 +125,15 @@ function loadWrappedData(year, groupBy, limit, sortBy, updateType = 'all') {
       if (!activeWrappedLoad || activeWrappedLoad.controller !== controller) {
         return;
       }
+      if (window.AjaxStatus) window.AjaxStatus.clearBanner();
       if (data.error) {
         console.error(data.error);
+        //< a failed filter/year change used to leave the previous year's data
+        //  on screen under an already-updated URL, with nothing but a console
+        //  line - the page looked like it had simply ignored the click
+        if (window.AjaxStatus) {
+          window.AjaxStatus.showBanner(() => loadWrappedData(year, groupBy, limit, sortBy, updateType));
+        }
         return;
       }
 
@@ -264,6 +271,10 @@ function loadWrappedData(year, groupBy, limit, sortBy, updateType = 'all') {
       //< an abort is the expected fate of a superseded load, not an error
       if (err.name !== 'AbortError') {
         console.error(err);
+        if ((!activeWrappedLoad || activeWrappedLoad.controller === controller)
+            && window.AjaxStatus) {
+          window.AjaxStatus.showBanner(() => loadWrappedData(year, groupBy, limit, sortBy, updateType));
+        }
       }
     })
     .finally(() => {

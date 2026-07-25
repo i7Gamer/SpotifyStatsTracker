@@ -88,4 +88,42 @@ run('embedHeightFor falls back to the track height for unknown types', () => {
   assert.strictEqual(embedHeightFor(undefined), EMBED_HEIGHT_PX.track);
 });
 
+// --- the API script failing to load ------------------------------------------
+// Without a script-error path the phase stayed 'loading' forever: the button
+// kept toggling an empty player box and no click could ever recover.
+
+run('a failed script load returns to idle so the next click can retry', () => {
+  const afterClick = nextPlayEmbedState({ phase: 'idle', visible: false }, 'click');
+  assert.strictEqual(afterClick.phase, 'loading');
+
+  const afterError = nextPlayEmbedState(afterClick, 'script-error');
+
+  assert.strictEqual(afterError.phase, 'idle');
+  assert.strictEqual(afterError.visible, false);
+  assert.strictEqual(afterError.action, 'script-failed');
+});
+
+run('a failed load restores the Play label rather than leaving Hide', () => {
+  const afterError = nextPlayEmbedState({ phase: 'loading', visible: true }, 'script-error');
+
+  assert.strictEqual(afterError.label, 'Play now');
+});
+
+run('clicking again after a failure requests the script once more', () => {
+  const afterError = nextPlayEmbedState({ phase: 'loading', visible: true }, 'script-error');
+
+  const retry = nextPlayEmbedState(afterError, 'click');
+
+  assert.strictEqual(retry.action, 'load-script');
+});
+
+run('a script error once the player is ready changes nothing', () => {
+  const ready = { phase: 'ready', visible: true };
+
+  const after = nextPlayEmbedState(ready, 'script-error');
+
+  assert.strictEqual(after.phase, 'ready');
+  assert.strictEqual(after.action, 'none');
+});
+
 console.log('All play-embed tests passed.');

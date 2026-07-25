@@ -106,4 +106,66 @@ run('clearBanner is safe when no banner exists', () => {
   assert.doesNotThrow(() => AjaxStatus.clearBanner());
 });
 
+// --- expired-session handling ------------------------------------------------
+// A 302 to /login is followed transparently by fetch(), so the loader used to
+// parse the login page's HTML as JSON and show "couldn't load" with a Retry
+// that failed identically forever. Routes now answer ?ajax= with a 401 and the
+// loaders route it through here.
+
+function installDomWithLocation(pathname, search) {
+  const dom = installDom();
+  global.window.location = {
+    pathname: pathname, search: search, href: pathname + search,
+  };
+  return dom;
+}
+
+run('a 401 navigates to the login page', () => {
+  installDomWithLocation('/charts', '?interval=week');
+
+  const handled = AjaxStatus.redirectIfUnauthorized({ status: 401 });
+
+  assert.strictEqual(handled, true);
+  assert.strictEqual(
+    global.window.location.href,
+    '/login?next=' + encodeURIComponent('/charts?interval=week'));
+});
+
+run('the login redirect comes back to the page the user was on', () => {
+  installDomWithLocation('/top-songs', '?sortBy=plays&page=3');
+
+  AjaxStatus.redirectIfUnauthorized({ status: 401 });
+
+  assert.ok(global.window.location.href.indexOf(encodeURIComponent('page=3')) > -1);
+});
+
+run('a normal response is left alone', () => {
+  installDomWithLocation('/charts', '');
+
+  assert.strictEqual(AjaxStatus.redirectIfUnauthorized({ status: 200, ok: true }), false);
+  assert.strictEqual(global.window.location.href, '/charts');
+});
+
+run('a server error is left alone (it gets the retry banner instead)', () => {
+  installDomWithLocation('/charts', '');
+
+  assert.strictEqual(AjaxStatus.redirectIfUnauthorized({ status: 500 }), false);
+  assert.strictEqual(global.window.location.href, '/charts');
+});
+
+run('a missing response is not treated as unauthorized', () => {
+  installDomWithLocation('/charts', '');
+
+  assert.strictEqual(AjaxStatus.redirectIfUnauthorized(null), false);
+});
+
+run('the unauthorized sentinel is recognized so no banner flashes', () => {
+  installDom();
+
+  assert.strictEqual(
+    AjaxStatus.isUnauthorizedError(new Error(AjaxStatus.UNAUTHORIZED_ERROR)), true);
+  assert.strictEqual(AjaxStatus.isUnauthorizedError(new Error('network down')), false);
+  assert.strictEqual(AjaxStatus.isUnauthorizedError(null), false);
+});
+
 console.log('All ajax-status tests passed.');

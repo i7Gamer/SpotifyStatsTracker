@@ -37,7 +37,15 @@
     if (matchMode) matchMode.addEventListener('change', updatePreview);
     if (sortBy) sortBy.addEventListener('change', updatePreview);
 
+    //< every preview request takes the next token; only the newest one may
+    //  write the count. Without this, two quick tag toggles could resolve out
+    //  of order and leave the count (and the Download button's enabled state)
+    //  describing a selection the user has already moved past - including
+    //  re-enabling Download after the selection was cleared to nothing.
+    var previewToken = 0;
+
     function updatePreview() {
+      var token = ++previewToken;
       if (selectedTags.size === 0) {
         if (previewCount) previewCount.textContent = '0 tracks match selection';
         if (btnDownload) btnDownload.disabled = true;
@@ -51,6 +59,7 @@
       fetch(url)
         .then(function(res) { return res.json(); })
         .then(function(data) {
+          if (token !== previewToken) return;   //< superseded by a newer selection
           var cnt = data.track_count || 0;
           if (previewCount) {
             previewCount.textContent = cnt + ' track' + (cnt !== 1 ? 's' : '') + ' match selection';
@@ -61,6 +70,8 @@
         })
         .catch(function(err) {
           console.error('Error fetching preview count:', err);
+          if (token !== previewToken) return;
+          if (previewCount) previewCount.textContent = "Couldn't check how many tracks match.";
         });
     }
 
@@ -95,7 +106,16 @@
         .then(function(data) {
           if (data.success) {
             window.location.reload();
+            return;
           }
+          //< a rejected rename (401 after the session expired, 400 on a bad
+          //  name) used to no-op silently, leaving the old name on screen with
+          //  no hint that anything failed
+          alert(data.error || "Couldn't rename that tag. Please try again.");
+        })
+        .catch(function(err) {
+          console.error('Error renaming tag:', err);
+          alert("Couldn't rename that tag. Please try again.");
         });
       });
     });
@@ -116,7 +136,13 @@
         .then(function(data) {
           if (data.success) {
             window.location.reload();
+            return;
           }
+          alert(data.error || "Couldn't delete that tag. Please try again.");
+        })
+        .catch(function(err) {
+          console.error('Error deleting tag:', err);
+          alert("Couldn't delete that tag. Please try again.");
         });
       });
     });

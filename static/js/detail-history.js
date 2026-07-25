@@ -45,6 +45,12 @@
   //  so a slow older response can't land after (and clobber) the newer one
   var activeLoad = null;
 
+  //< bumped every time the list is re-rendered from scratch. A "Show more"
+  //  request in flight when a sort/filter change swaps the list would
+  //  otherwise append its (now stale) rows into the fresh list and strip the
+  //  new list's own Show-more control.
+  var listGeneration = 0;
+
   function loadDetailHistory() {
     if (!container) {
       return;
@@ -81,6 +87,7 @@
         }
         if (results[0]) {
           container.innerHTML = results[0].resultsHtml;
+          listGeneration += 1;
         }
       })
       .catch(function (err) {
@@ -116,6 +123,7 @@
         if (!offset) return;
 
         var currentBatchSize = showMoreBtn.dataset.nextBatchSize || SHOW_MORE_BATCH_SIZE;
+        var generation = listGeneration;   //< the list these rows belong to
 
         showMoreBtn.disabled = true;
         showMoreBtn.textContent = 'Loading...';
@@ -129,6 +137,9 @@
         })
           .then(function (resp) { return resp.ok ? resp.json() : null; })
           .then(function (data) {
+            //< the list was re-rendered while this was in flight: these rows
+            //  belong to a filter/sort that is no longer on screen
+            if (generation !== listGeneration) return;
             if (!data || !data.resultsHtml) {
               showMoreBtn.disabled = false;
               showMoreBtn.textContent = formatShowMoreLabel(currentBatchSize);
@@ -159,7 +170,9 @@
             }
           })
           .catch(function (err) {
+            if (window.AjaxStatus && window.AjaxStatus.isUnauthorizedError(err)) return;
             console.error(err);
+            if (generation !== listGeneration) return;
             showMoreBtn.disabled = false;
             showMoreBtn.textContent = formatShowMoreLabel(currentBatchSize);
           });

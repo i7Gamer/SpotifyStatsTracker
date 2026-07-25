@@ -205,8 +205,14 @@
         }
       })
       .finally(function () {
-        if (token !== loadToken) return;
+        // Un-fade unconditionally: only THIS load faded these elements, so
+        // being superseded is not a reason to leave them faded. A chip click
+        // during an in-flight filter load takes the next token, and this
+        // block used to bail before clearing - .loading-fade is opacity 0.15
+        // + pointer-events:none, so all four overview charts stayed near-
+        // invisible and unclickable until the next filter change.
         overviewTargets.forEach(function (t) { t.classList.remove('loading-fade'); });
+        if (token !== loadToken) return;
         if (detail) detail.classList.remove('is-loading');
       });
   }
