@@ -140,7 +140,17 @@ def register(app, dashboard):
                 return jsonify(error=RATE_LIMIT_ERROR_MESSAGE), 429
             return redirect(url_for("wrappedPage", error=RATE_LIMIT_ERROR_MESSAGE, openShareModal=1))
 
-        expiresInSeconds = SHARE_LINK_EXPIRY_CHOICES.get(request.form.get("expiry", "never"))
+        # An unrecognized value used to fall through .get() to None, i.e. a
+        # permanent link - the most permissive option. A share link is a
+        # standing unauthenticated access grant, so an unknown expiry is
+        # rejected rather than defaulted.
+        expiryChoice = request.form.get("expiry", "never")
+        if expiryChoice not in SHARE_LINK_EXPIRY_CHOICES:
+            errorMessage = "Unknown link expiry option."
+            if isAjax:
+                return jsonify(error=errorMessage), 400
+            return redirect(url_for("wrappedPage", year=year, error=errorMessage, openShareModal=1))
+        expiresInSeconds = SHARE_LINK_EXPIRY_CHOICES[expiryChoice]
         allYears = request.form.get("allYears") == "1"
         linkYear = None if allYears else year
 
@@ -166,6 +176,31 @@ def register(app, dashboard):
         return redirect(url_for("wrappedPage", year=year, success="Share link created.", openShareModal=1))
     app.add_url_rule("/wrapped/share-links/<int:year>", "createWrappedShareLink", createWrappedShareLink, methods=["POST"])
 
+    def _sharedImageBase(token):
+        """Token-keyed image prefix for _track_card.html. Shared by the full
+        render and the ajax list swap - they drifted apart once already, which
+        left anonymous viewers with placeholder artwork after any re-sort."""
+        return f"/shared/{token}/img"
+
+    def _resolveSharedLink(token):
+        """The share-link lookup every public route shares: the admin kill
+        switch, then the token itself. Returns None when the caller should
+        404 (feature off, or no such link), and aborts 429 once a source IP
+        has burned through the miss allowance.
+
+        Only misses count against the limit - repeat visits to a real link
+        must never be throttled (see the plan's rate-limiting note), only
+        someone guessing random tokens. The image routes go through this too,
+        so guessing at an image URL can't sidestep either control."""
+        if not dashboard.repo.isShareLinksEnabled():
+            return None
+        link = dashboard.repo.getShareLink(token)
+        if link is None:
+            if dashboard._rateLimited("shared_token"):
+                abort(429)
+            return None
+        return link
+
     def sharedWrappedPage(token):
         """Public, unauthenticated view of one user's Wrapped - one fixed
         year for a per-year link, or every year the owner has data for
@@ -173,16 +208,8 @@ def register(app, dashboard):
         years" link (link["year"] is None). No session, no nav, no PII.
         See docs/proposal-admin-and-share-links.md Part B for the design
         this implements."""
-        if not dashboard.repo.isShareLinksEnabled():
-            abort(404)
-
-        link = dashboard.repo.getShareLink(token)
+        link = _resolveSharedLink(token)
         if link is None:
-            # Only misses count against the limit - repeat visits to a
-            # real link must never be throttled (see the plan's rate-
-            # limiting note), only someone guessing random tokens.
-            if dashboard._rateLimited("shared_token"):
-                abort(429)
             abort(404)
 
         db = dashboard._getReadOnlyUserDb(link["username"])
@@ -198,7 +225,9 @@ def register(app, dashboard):
         ctx = dashboard._buildWrappedContext(db, year, groupBy, limit, sortBy, includeGenres=includeGenres)
 
         if isAjaxRequest:
-            return jsonify(dashboard._buildWrappedAjaxResponse(ctx, link["username"], year, ajaxUpdateType, publicView=True))
+            return jsonify(dashboard._buildWrappedAjaxResponse(
+                ctx, link["username"], year, ajaxUpdateType, publicView=True,
+                imageBase=_sharedImageBase(token)))
 
         resp = make_response(render_template(
             "wrapped.html",
@@ -237,7 +266,12 @@ def register(app, dashboard):
             success=None,
             error=None,
             publicView=True,
-            imageBase=f"/shared/{token}/img",
+            imageBase=_sharedImageBase(token),
+            # An anonymous viewer has no session, so every /song|/artist|/album
+            # detail link would bounce them to /login - cards fall through to
+            # their Spotify URL instead (same mechanism the Compare page's
+            # counterpart columns use).
+            suppressDetailLinks=True,
             shareLinksEnabled=False,
             yearLinks=[],
             allYearsLinks=[],
@@ -249,7 +283,7 @@ def register(app, dashboard):
     app.add_url_rule("/shared/<token>", "sharedWrappedPage", sharedWrappedPage, methods=["GET"])
 
     def serveSharedTrackImage(token, filename):
-        link = dashboard.repo.getShareLink(token)
+        link = _resolveSharedLink(token)
         if link is None or filename != os.path.basename(filename):
             return "", 404
         resp = make_response(send_from_directory(Database.imgDir_tracks, filename))
@@ -258,7 +292,7 @@ def register(app, dashboard):
     app.add_url_rule("/shared/<token>/img/tracks/<filename>", "serveSharedTrackImage", serveSharedTrackImage)
 
     def serveSharedArtistImage(token, filename):
-        link = dashboard.repo.getShareLink(token)
+        link = _resolveSharedLink(token)
         if link is None or filename != os.path.basename(filename):
             return "", 404
 
@@ -266,7 +300,14 @@ def register(app, dashboard):
         imagePath = os.path.join(imageDir, filename)
         if not os.path.exists(imagePath):
             parts = os.path.splitext(filename)
-            if len(parts) == 2 and parts[0].isalnum():
+            # Unlike the authenticated route, the caller here is anonymous and
+            # the fetch would run on the LINK OWNER's Spotify credentials, so
+            # it's restricted to ids that actually appear in their listening
+            # data. Otherwise walking arbitrary ids through this route would
+            # insert an images row and dispatch an authenticated lookup per
+            # id, with no session and no backpressure.
+            if (len(parts) == 2 and parts[0].isalnum()
+                    and dashboard.repo.getPlayedArtistIds(link["username"], [parts[0]])):
                 db = dashboard._getReadOnlyUserDb(link["username"])
                 db.lazyFetchArtistImage(parts[0], Path(imagePath))
 

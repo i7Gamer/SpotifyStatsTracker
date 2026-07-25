@@ -97,6 +97,30 @@ class _WrappedRouteTestBase(AppTestCase):
             return client.get(f"/wrapped{query}")
 
 
+class TestWrappedAjaxCardsStayAuthenticated(_WrappedRouteTestBase):
+    """Counterpart to the public share page's ajax cards: the owner's own ajax
+    swaps must keep the session-authorized image prefix and the internal detail
+    links, i.e. the public-view card options must not leak into this path."""
+
+    def test_ajax_list_html_keeps_the_username_image_route_and_detail_links(self):
+        dash = self._makeApp()
+        db = self._makeDb(earliestPlayedAt=_ts(2023))
+        db.getSongsStats.return_value = [_song("song1", "Song", plays=5, firstListenedAt=_ts(2026, 3))]
+        db.getTopSongs.return_value = db.getSongsStats.return_value
+        db.getLongestStreak.return_value = 0
+        db.getPeakListeningTime.return_value = None
+        db.getSongsCount.return_value = 1
+        db.getArtistsCount.return_value = 0
+        db.getDiscoveredSongsCount.return_value = 0
+        db.getDiscoveredArtistsCount.return_value = 0
+
+        resp = self._getWrapped(dash, db, query="?ajax=true&type=lists")
+
+        html = resp.get_json()["topSongsHtml"]
+        self.assertIn('src="/img/alice/tracks/i.jpeg"', html)
+        self.assertIn('href="/song/song1"', html)
+
+
 class TestWrappedYearSelection(_WrappedRouteTestBase):
     def test_js_constants_reflect_authenticated_view(self):
         dash = self._makeApp()

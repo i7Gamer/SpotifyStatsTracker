@@ -341,14 +341,19 @@ class WrappedBuilderMixin:
             "lastfmEnabled": lastfmEnabled,
         }
 
-    def _buildWrappedAjaxResponse(self, ctx: dict, username: str, year: int, updateType: str, publicView: bool) -> dict:
+    def _buildWrappedAjaxResponse(self, ctx: dict, username: str, year: int, updateType: str, publicView: bool,
+                                   imageBase: str | None = None) -> dict:
         """The JSON-able payload for a Wrapped ?ajax=true request - shared by
         the authenticated /wrapped route and the public /shared/<token>
         route so the two can't drift on what an ajax response contains.
         publicView is threaded into the _wrapped_list.html/
         _wrapped_genres.html renders so their "You"/{{ username }} text (see
         _track_card.html) stays correct after a partial swap on the shared
-        page too. Returns a plain dict (not a Response) so wrappedPage() can
+        page too - and, with it, the same card options the shared page's full
+        render uses: `imageBase` (the caller's token-keyed image route, since
+        an anonymous viewer can't authorize against /img/<username>/...) and
+        suppressDetailLinks (login-gated detail pages are dead ends for them).
+        Returns a plain dict (not a Response) so wrappedPage() can
         layer its own owner-only sharePanelHtml key on top before
         jsonify-ing - sharedWrappedPage() never does, since a public visitor
         must never receive share-panel data."""
@@ -358,28 +363,30 @@ class WrappedBuilderMixin:
 
         res = {}
 
+        # imageBase is only set when the caller has one (the public share
+        # route); _track_card.html's own `is defined` fallback builds the
+        # authenticated /img/<username>/ prefix otherwise.
+        cardOptions = {"username": username, "year": year, "publicView": publicView,
+                       "suppressDetailLinks": publicView}
+        if imageBase:
+            cardOptions["imageBase"] = imageBase
+
         if updateType in ("all", "chart"):
             res["timeSeries"] = ctx["timeSeries"]
 
         if updateType in ("all", "lists"):
             res["topSongsHtml"] = render_template(
-                "_wrapped_list.html", items=topSongs, section="top_songs",
-                username=username, year=year, publicView=publicView)
+                "_wrapped_list.html", items=topSongs, section="top_songs", **cardOptions)
             res["topArtistsHtml"] = render_template(
-                "_wrapped_list.html", items=topArtists, section="top_artists",
-                username=username, year=year, publicView=publicView)
+                "_wrapped_list.html", items=topArtists, section="top_artists", **cardOptions)
             res["topAlbumsHtml"] = render_template(
-                "_wrapped_list.html", items=topAlbums, section="top_albums",
-                username=username, year=year, publicView=publicView)
+                "_wrapped_list.html", items=topAlbums, section="top_albums", **cardOptions)
             res["discoveredSongsHtml"] = render_template(
-                "_wrapped_list.html", items=discoveredSongs, section="top_songs",
-                username=username, year=year, publicView=publicView)
+                "_wrapped_list.html", items=discoveredSongs, section="top_songs", **cardOptions)
             res["discoveredArtistsHtml"] = render_template(
-                "_wrapped_list.html", items=discoveredArtists, section="top_artists",
-                username=username, year=year, publicView=publicView)
+                "_wrapped_list.html", items=discoveredArtists, section="top_artists", **cardOptions)
             res["discoveredAlbumsHtml"] = render_template(
-                "_wrapped_list.html", items=discoveredAlbums, section="top_albums",
-                username=username, year=year, publicView=publicView)
+                "_wrapped_list.html", items=discoveredAlbums, section="top_albums", **cardOptions)
 
         if updateType == "all":
             res["topGenresHtml"] = render_template(

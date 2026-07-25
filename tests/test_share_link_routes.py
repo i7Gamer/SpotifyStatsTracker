@@ -107,6 +107,29 @@ class TestCreateShareLink(ShareLinkRoutesTestCase):
         link = self.dash.repo.getShareLinksForUser("alice")[0]
         self.assertIsNotNone(link["expires_at"])
 
+    def test_unrecognized_expiry_value_is_rejected_instead_of_never_expiring(self):
+        """An unknown expiry used to map to None, i.e. the most permissive
+        option (a permanent, unauthenticated public link) - a typo'd or
+        crafted POST must not silently produce one."""
+        client = self._loginAs("alice", "alice@example.com")
+
+        resp = client.post("/wrapped/share-links/2026", data={"expiry": "forever-and-ever"})
+
+        self.assertEqual(self.dash.repo.getShareLinksForUser("alice"), [])
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn("error=", resp.headers["Location"])
+
+    def test_missing_expiry_field_still_defaults_to_never(self):
+        """The form always posts one of the choices; an absent field is the
+        existing default and must keep working."""
+        client = self._loginAs("alice", "alice@example.com")
+
+        client.post("/wrapped/share-links/2026", data={})
+
+        links = self.dash.repo.getShareLinksForUser("alice")
+        self.assertEqual(len(links), 1)
+        self.assertIsNone(links[0]["expires_at"])
+
     def test_all_years_checkbox_creates_a_year_none_link(self):
         client = self._loginAs("alice", "alice@example.com")
 
@@ -595,6 +618,43 @@ class TestPublicSharedWrappedPage(PublicSharedWrappedTestCase):
         self.assertIn(f'src="/shared/{token}/img/tracks/img1.jpeg"', body)
         self.assertNotIn('src="/img/alice/', body)
 
+    def test_track_cards_link_to_spotify_not_authenticated_detail_pages(self):
+        """An anonymous viewer has no session, so a /song/<id> link would just
+        bounce them to /login - the public page has to fall through to the
+        card's Spotify URL, the same way the Compare page's counterpart
+        columns do (see _track_card.html's suppressDetailLinks)."""
+        token = self._createLink()
+        db = self._makeDb()
+        db.getTopSongs.return_value = [{
+            "id": "song1", "name": "Song", "url": "https://open.spotify.com/track/song1",
+            "imageId": "img1", "duration": 0, "explicit": False, "isrc": "",
+            "discNumber": 1, "trackNumber": 1, "releaseDate": 0,
+            "album": {"id": "alb1", "name": "Album", "url": "u", "imageId": "img1", "imageUrl": "",
+                       "totalTracks": 1, "releaseDate": 0},
+            "artists": [], "plays": 5, "totalTimeListened": 5000, "firstListenedAt": 0,
+        }]
+
+        resp = self._getShared(token, db=db)
+        body = resp.data.decode()
+
+        self.assertNotIn('href="/song/song1"', body)
+        self.assertIn('href="https://open.spotify.com/track/song1"', body)
+
+    def test_artist_cards_link_to_spotify_not_authenticated_detail_pages(self):
+        token = self._createLink()
+        db = self._makeDb()
+        db.getTopArtists.return_value = [{
+            "id": "a1", "name": "TestArtist", "url": "https://open.spotify.com/artist/a1",
+            "imageId": "img1", "imageUrl": "", "plays": 5, "totalTimeListened": 5000,
+            "uniqueSongCount": 3, "firstListenedAt": 0,
+        }]
+
+        resp = self._getShared(token, db=db)
+        body = resp.data.decode()
+
+        self.assertNotIn('href="/artist/a1"', body)
+        self.assertIn('href="https://open.spotify.com/artist/a1"', body)
+
     def test_noindex_header_present(self):
         token = self._createLink()
 
@@ -777,6 +837,41 @@ class TestSharedWrappedPageAjax(PublicSharedWrappedTestCase):
 
         html = resp.get_json()["topSongsHtml"]
         self.assertIn("OnlyIn2025", html)
+
+    def test_ajax_list_html_uses_the_token_keyed_image_route(self):
+        """The full render passes imageBase=/shared/<token>/img; the ajax list
+        swap has to pass it too, or every cover in a re-sorted/resized list
+        falls back to /img/<owner>/... , which 404s without a session."""
+        token = self._createLink(year=2026)
+        db = self._makeDb()
+        db.getTopSongs.return_value = [{
+            "id": "song1", "name": "Song", "url": "u", "imageId": "img1", "duration": 0,
+            "explicit": False, "isrc": "", "discNumber": 1, "trackNumber": 1, "releaseDate": 0,
+            "album": {"id": "alb1", "name": "Album", "url": "u", "imageId": "img1", "imageUrl": "",
+                       "totalTracks": 1, "releaseDate": 0},
+            "artists": [], "plays": 5, "totalTimeListened": 5000, "firstListenedAt": 0,
+        }]
+
+        resp = self._getSharedAjax(token, db=db)
+
+        html = resp.get_json()["topSongsHtml"]
+        self.assertIn(f'src="/shared/{token}/img/tracks/img1.jpeg"', html)
+        self.assertNotIn('src="/img/alice/', html)
+
+    def test_ajax_list_html_links_to_spotify_not_authenticated_detail_pages(self):
+        token = self._createLink(year=2026)
+        db = self._makeDb()
+        db.getTopArtists.return_value = [{
+            "id": "a1", "name": "TestArtist", "url": "https://open.spotify.com/artist/a1",
+            "imageId": "img1", "imageUrl": "", "plays": 5, "totalTimeListened": 5000,
+            "uniqueSongCount": 3, "firstListenedAt": 0,
+        }]
+
+        resp = self._getSharedAjax(token, db=db)
+
+        html = resp.get_json()["topArtistsHtml"]
+        self.assertNotIn('href="/artist/a1"', html)
+        self.assertIn('href="https://open.spotify.com/artist/a1"', html)
 
     def test_ajax_response_never_includes_a_share_panel(self):
         """Safety regression: an anonymous visitor must never receive
@@ -989,6 +1084,20 @@ class TestSharedImageRoutes(ShareLinkRoutesTestCase):
         self.dash.repo.upsertUser("alice", "alice@example.com")
         return self.dash.repo.createShareLink("alice", self.dash.repo.SHARE_LINK_KIND_WRAPPED, 2026, None)
 
+    def _seedPlayedArtist(self, artistId, username="alice"):
+        """One real play crediting `artistId`, so the owner-scoping check on the
+        lazy artist-image fetch treats it as an id this owner actually played."""
+        self.dash.repo.upsertTrack({
+            "id": f"track-{artistId}", "name": "Song", "url": "u",
+            "artists": [{"id": artistId, "name": "Artist", "url": "u", "imageUrl": "", "imageId": artistId}],
+            "album": {"id": "alb1", "name": "Album", "url": "u", "imageId": "alb1", "imageUrl": "",
+                       "totalTracks": 1, "releaseDate": 0},
+            "imageUrl": "", "imageId": "alb1", "duration": 200000, "explicit": False,
+            "isrc": "", "discNumber": 1, "trackNumber": 1, "releaseDate": 0,
+        })
+        self.dash.repo.insertPlay(username, f"track-{artistId}", 1000.0, 200000)
+        self.dash.repo.commit()
+
     @patch('routes.wrapped.send_from_directory')
     def test_valid_token_serves_track_image(self, mock_send):
         mock_send.return_value = "OK"
@@ -1021,6 +1130,7 @@ class TestSharedImageRoutes(ShareLinkRoutesTestCase):
     def test_valid_token_lazily_fetches_missing_artist_image(self, mock_exists, mock_send):
         mock_send.return_value = "OK"
         token = self._createLink()
+        self._seedPlayedArtist("art1")
         readOnlyDb = self._makeDb()
         client = self.dash.app.test_client()
 
@@ -1030,6 +1140,66 @@ class TestSharedImageRoutes(ShareLinkRoutesTestCase):
         self.assertEqual(resp.status_code, 200)
         readOnlyDb.lazyFetchArtistImage.assert_called_once()
         self.assertEqual(readOnlyDb.lazyFetchArtistImage.call_args.args[0], "art1")
+
+    @patch('routes.wrapped.send_from_directory')
+    @patch('routes.wrapped.os.path.exists', return_value=False)
+    def test_artist_image_is_not_fetched_for_an_id_the_owner_never_played(self, mock_exists, mock_send):
+        """A share token must not become an open proxy for Spotify lookups on
+        the owner's credentials: walking arbitrary artist ids through this
+        route would insert an images row and dispatch an authenticated fetch
+        per id, unauthenticated and unthrottled."""
+        mock_send.return_value = "OK"
+        token = self._createLink()
+        self._seedPlayedArtist("art1")
+        readOnlyDb = self._makeDb()
+        client = self.dash.app.test_client()
+
+        with patch.object(self.dash, '_getReadOnlyUserDb', return_value=readOnlyDb):
+            resp = client.get(f"/shared/{token}/img/artists/notplayed99.jpeg")
+
+        self.assertEqual(resp.status_code, 200)   #< still serves/404s the file itself, just never fetches
+        readOnlyDb.lazyFetchArtistImage.assert_not_called()
+
+    @patch('routes.wrapped.send_from_directory')
+    def test_disabled_feature_404s_image_routes(self, mock_send):
+        """The kill switch has to cover the image routes too - otherwise an
+        admin turning share links off leaves the artwork of every shared page
+        still fetchable by token."""
+        mock_send.return_value = "OK"
+        token = self._createLink()
+        self.dash.repo.setShareLinksEnabled(False)
+        client = self.dash.app.test_client()
+
+        trackResp = client.get(f"/shared/{token}/img/tracks/abc.jpeg")
+        artistResp = client.get(f"/shared/{token}/img/artists/art1.jpeg")
+
+        self.assertEqual(trackResp.status_code, 404)
+        self.assertEqual(artistResp.status_code, 404)
+
+    def test_unknown_token_image_misses_are_rate_limited(self):
+        """Same anti-guessing throttle the page route applies - aiming the
+        guesses at an image URL instead must not bypass it."""
+        client = self.dash.app.test_client()
+
+        for _ in range(RATE_LIMIT_MAX_ATTEMPTS):
+            self.assertEqual(client.get("/shared/guess/img/tracks/abc.jpeg").status_code, 404)
+
+        resp = client.get("/shared/guess/img/tracks/abc.jpeg")
+
+        self.assertEqual(resp.status_code, 429)
+
+    @patch('routes.wrapped.send_from_directory')
+    def test_repeated_valid_image_requests_are_not_rate_limited(self, mock_send):
+        """A single shared page pulls dozens of images through these routes -
+        only unknown-token misses may count against the limit."""
+        mock_send.return_value = "OK"
+        token = self._createLink()
+        client = self.dash.app.test_client()
+
+        for _ in range(RATE_LIMIT_MAX_ATTEMPTS + 5):
+            resp = client.get(f"/shared/{token}/img/tracks/abc.jpeg")
+
+        self.assertEqual(resp.status_code, 200)
 
 
 class TestActivationGuardViaPublicRoute(ShareLinkRoutesTestCase):
