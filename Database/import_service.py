@@ -7,6 +7,14 @@ import Database.database as _dbmod  # noqa: F401 - module-global names
 # the database module so the suite's patch("Database.database.X") targets keep
 # working after this relocation.
 
+# Drop counters (see StreamingHistoryImporter._processPlay) whose plays WOULD
+# import on a later attempt: the lookup failed, the data didn't. An overwrite
+# import must not delete a range it can't fully rebuild, so any of these aborts
+# the batch. "droppedNoTrack" is deliberately absent - podcast/audiobook rows
+# carry no track name and can never resolve, so treating them as retryable
+# would make overwrite import impossible for most real exports.
+RETRYABLE_DROP_STAT_KEYS = ("droppedTransient", "droppedUnexpected")
+
 
 class ImportMixin:
     """History import / reconciliation (append*, importHistory*, overwrite range), mixed into Database."""
@@ -522,6 +530,23 @@ class ImportMixin:
                                error=True)
             return ["failed"] * total
 
+        # Phase 1b - the delete range covers every play the files PARSED, but
+        # only the plays that survived staging get re-inserted. A play dropped
+        # for a retryable reason (rate limit, timeout, unexpected error) would
+        # therefore be deleted and never replaced, inside the same transaction
+        # that makes the rest atomic - permanent, silent loss of rows the
+        # listener or an earlier import had already recorded. Abort while
+        # nothing has been deleted yet and let the user re-run.
+        droppedStats = self._sumImportStats(stagedFiles)
+        retryableDropped = sum(droppedStats.get(key, 0) for key in RETRYABLE_DROP_STAT_KEYS)
+        if retryableDropped:
+            self.writeProgress("failed", 0, total,
+                               f"Overwrite import aborted: {retryableDropped} play(s) could not be looked up "
+                               "(Spotify rate limit or outage) - nothing was deleted, your data is unchanged. "
+                               "Please try the import again.",
+                               error=True)
+            return ["failed"] * total
+
         # Phase 2 - ONE short transaction: delete the covered range, then apply
         # every file's staged rows. No network here, so the write lock is held
         # only for the local DB work. writeProgress must NOT run between the
@@ -561,8 +586,28 @@ class ImportMixin:
                                error=True)
             return ["failed"] * total
 
-        self.writeProgress("complete", total, total, f"Overwrite import complete: {total}/{total} files imported")
+        # Per-file progress is routed to noProgress in overwrite mode, so this
+        # line is the only place a permanent drop can surface at all.
+        summary = f"Overwrite import complete: {total}/{total} files imported"
+        permanentDropped = droppedStats.get("droppedNoTrack", 0)
+        if permanentDropped:
+            summary += f" ({permanentDropped} entries dropped: no track info, e.g. podcasts)"
+        self.writeProgress("complete", total, total, summary)
         return ["imported"] * total
+
+    @staticmethod
+    def _sumImportStats(stagedFiles: list) -> dict:
+        """Batch-wide totals of the per-file drop counters staging produced.
+        stagedFiles entries are (staged, content, progressPrefix, isFinalFile),
+        where `staged` is None for a valid-but-empty file and otherwise carries
+        its importStats dict as its last element."""
+        totals: dict = {}
+        for staged, *_ in stagedFiles:
+            if staged is None:
+                continue
+            for key, count in staged[3].items():
+                totals[key] = totals.get(key, 0) + count
+        return totals
 
     def _computeCoveredRange(self, fileContents: list[str]) -> tuple | None:
         """Parse every file (no DB writes, no lock) and return

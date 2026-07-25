@@ -516,6 +516,50 @@ class TestVideoExportRows(unittest.TestCase):
         self.assertEqual(stats.get("droppedNoTrack"), 1)
 
 
+    def test_transient_lookup_failure_is_dropped_and_counted(self):
+        """A rate-limited/timed-out lookup drops the play rather than freezing a
+        synthetic record into the catalog. An overwrite import has to be able to
+        tell this retryable drop apart from a permanent one, so it's counted
+        under its own key."""
+        importer = Importer()
+        importer.sp = MagicMock()
+        importer._fetchTrackMeta = MagicMock(side_effect=Exception("HTTP Error 429: Too Many Requests"))
+        entry = {
+            "ts": "2023-05-01T10:00:00Z", "ms_played": 150000,
+            "master_metadata_track_name": "Song One",
+            "master_metadata_album_artist_name": "Artist One",
+            "spotify_track_uri": "spotify:track:track123",
+        }
+        stats = {}
+
+        metas = list(importer.importExtendedHistory([entry], known=[], progressCallback=None, stats=stats))
+
+        self.assertEqual(metas, [])
+        self.assertEqual(stats.get("droppedTransient"), 1)
+
+    def test_unexpected_processing_error_is_dropped_and_counted(self):
+        """The catch-all around _processPlay used to drop a play while bumping
+        no counter at all, making it invisible to callers that need to know
+        whether every parsed play actually made it through."""
+        importer = Importer()
+        importer.sp = MagicMock()
+        importer.sp.track.return_value = FAKE_TRACK
+        entry = {
+            "ts": "2023-05-01T10:00:00Z", "ms_played": 150000,
+            "master_metadata_track_name": "Song One",
+            "master_metadata_album_artist_name": "Artist One",
+            "spotify_track_uri": "spotify:track:track123",
+        }
+        stats = {}
+
+        with patch("Database.Importers.StreamingHistoryImporter.Client.embedPlayInfo",
+                   side_effect=RuntimeError("something unexpected")):
+            metas = list(importer.importExtendedHistory([entry], known=[], progressCallback=None, stats=stats))
+
+        self.assertEqual(metas, [])
+        self.assertEqual(stats.get("droppedUnexpected"), 1)
+
+
 class TestResolveKnownKey(unittest.TestCase):
     def _importer(self):
         importer = Importer()

@@ -407,7 +407,12 @@ class Importer:
                 meta["importExtras"] = extras
             return meta
         except Exception as e:
+            # Counted like the other drops: an overwrite import decides whether
+            # it may delete the covered range based on every parsed play having
+            # made it through staging, and an uncounted drop there is silent
+            # data loss.
             logger.error("Error processing item: %s", parseError(e))
+            self._bumpStat(stats, "droppedUnexpected")
             return None
         
     def _import(self, dataFunction, history, known=None, progressCallback=None, stats=None):

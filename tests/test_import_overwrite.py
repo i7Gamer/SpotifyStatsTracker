@@ -311,6 +311,114 @@ class TestOverwriteStagesBeforeDeleting(_OverwriteTestBase):
         )
 
 
+class TestOverwriteAbortsOnRetryableDrops(_OverwriteTestBase):
+    """The covered range to delete is computed from a parse-only pass, but only
+    the plays that survive staging get re-inserted. A play dropped in between
+    (rate-limited lookup, unexpected error) would therefore be deleted and never
+    replaced - permanently, silently, inside the one transaction. Retryable
+    drops abort the batch before the delete; permanent ones (podcast rows that
+    can never resolve) must still be allowed through, or nobody with podcasts in
+    their export could ever run an overwrite import."""
+
+    def _runBatchWithStats(self, db, fileSpecs, stats):
+        """Like _runBatch, but the mocked importHistory also populates the stats
+        dict the real one fills as it drops plays."""
+        importer = self._mockImporter(fileSpecs)
+        generators = iter([spec[1]() for spec in fileSpecs.values()])
+
+        def importHistory(*args, stats=None, **kwargs):
+            if stats is not None:
+                for key, count in statsToApply.items():
+                    stats[key] = stats.get(key, 0) + count
+            return next(generators)
+
+        statsToApply = stats
+        importer.importHistory.side_effect = importHistory
+        with patch("Database.database.Importer", return_value=importer):
+            return db.importHistoryBatch(list(fileSpecs.keys()), overwriteRange=True)
+
+    def _seededDb(self):
+        return self._makeDb({}, [{"id": "old19", "playedAt": _ts(2019), "timePlayed": 60000}])
+
+    def _fileSpecs(self):
+        return {"file 2019": ((_ts(2019, 1, 5), _ts(2019, 12, 20), {2019}),
+                              lambda: iter([_meta("new19", _ts(2019, 3))]))}
+
+    def test_transient_drop_aborts_before_anything_is_deleted(self):
+        db = self._seededDb()
+
+        outcomes = self._runBatchWithStats(db, self._fileSpecs(), {"droppedTransient": 1})
+
+        self.assertEqual(outcomes, ["failed"])
+        self.assertEqual(self._playedAts(db), [_ts(2019)])   #< original play intact
+        self.assertEqual(db.readProgress()["status"], "failed")
+
+    def test_unexpected_drop_aborts_too(self):
+        db = self._seededDb()
+
+        outcomes = self._runBatchWithStats(db, self._fileSpecs(), {"droppedUnexpected": 2})
+
+        self.assertEqual(outcomes, ["failed"])
+        self.assertEqual(self._playedAts(db), [_ts(2019)])
+
+    def test_abort_message_says_nothing_was_deleted_and_names_the_retry(self):
+        db = self._seededDb()
+
+        self._runBatchWithStats(db, self._fileSpecs(), {"droppedTransient": 3})
+
+        message = db.readProgress()["message"]
+        self.assertIn("3", message)
+        self.assertIn("nothing was deleted", message)
+        self.assertIn("try", message.lower())
+
+    def test_permanent_no_track_drops_do_not_abort(self):
+        """Podcast/audiobook rows can never resolve - aborting on them would
+        make overwrite import impossible for most real exports."""
+        db = self._seededDb()
+
+        outcomes = self._runBatchWithStats(db, self._fileSpecs(), {"droppedNoTrack": 2})
+
+        self.assertEqual(outcomes, ["imported"])
+        self.assertEqual(self._playedAts(db), [_ts(2019, 3)])   #< range replaced as intended
+
+    def test_completion_message_reports_permanent_drops(self):
+        """Overwrite mode routes per-file progress to a no-op, so the only place
+        a drop can surface is the batch's own completion line."""
+        db = self._seededDb()
+
+        self._runBatchWithStats(db, self._fileSpecs(), {"droppedNoTrack": 2})
+
+        message = db.readProgress()["message"]
+        self.assertIn("2", message)
+        self.assertIn("dropped", message.lower())
+
+    def test_clean_batch_message_is_unchanged(self):
+        db = self._seededDb()
+
+        self._runBatchWithStats(db, self._fileSpecs(), {})
+
+        self.assertEqual(db.readProgress()["message"], "Overwrite import complete: 1/1 files imported")
+
+    def test_append_mode_still_imports_despite_a_transient_drop(self):
+        """Append mode never deletes, so a dropped play just isn't added yet -
+        a later re-import picks it up and dedups. Only overwrite must abort."""
+        db = self._seededDb()
+        importer = self._mockImporter(self._fileSpecs())
+        generators = iter([iter([_meta("new19", _ts(2019, 3))])])
+
+        def importHistory(*args, stats=None, **kwargs):
+            if stats is not None:
+                stats["droppedTransient"] = 1
+            return next(generators)
+
+        importer.importHistory.side_effect = importHistory
+        with patch("Database.database.Importer", return_value=importer):
+            outcomes = db.importHistoryBatch(["file 2019"], overwriteRange=False)
+
+        self.assertEqual(outcomes, ["imported"])
+        self.assertEqual(self._playedAts(db), [_ts(2019, 3), _ts(2019)])   #< ordered by played_at
+
+
 if __name__ == "__main__":
     import unittest
     unittest.main()
