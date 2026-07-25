@@ -861,8 +861,17 @@ class TestIncompleteTrackInfo(unittest.TestCase):
       spotapi's own SongError   -> re-raised (not classified as transient)
 
     _get_track_info_with_retry now recognises the first two as one typed error
-    at our own seam, and Spotify.track() degrades to a fallback record so the
-    play survives."""
+    at our own seam, retries it a bounded number of times, and Spotify.track()
+    degrades to a fallback record only once those are exhausted - so the play
+    survives either way."""
+
+    def setUp(self):
+        """The incomplete-response retry sleeps between attempts; patch it away
+        class-wide so no test in here pays real seconds, and so a test that
+        forgets can't quietly add them."""
+        sleepPatcher = patch("Database.patches.time.sleep")
+        self.mockSleep = sleepPatcher.start()
+        self.addCleanup(sleepPatcher.stop)
 
     def _newSpotifyInstance(self):
         import SpotipyFree
@@ -923,16 +932,83 @@ class TestIncompleteTrackInfo(unittest.TestCase):
         self.assertIs(_get_track_info_with_retry("abc123"), union)
 
     @patch("spotapi.Public")
-    def test_incomplete_info_is_not_retried(self, mock_public):
-        """A degraded response is a fact about the track, not a transient
-        failure - retrying it three times just delays the fallback."""
-        from Database.patches import _get_track_info_with_retry, IncompleteTrackInfoError
+    def test_incomplete_info_is_retried_before_giving_up(self, mock_public):
+        """Originally this asserted the opposite - a degraded response was
+        treated as a fact about the track, not a transient failure. The log
+        says otherwise: all 11 incomplete responses in 11 days fall inside one
+        4m47s window (2026-07-16 12:59:44-13:04:31), alongside 14 session and
+        websocket failures. That's one degraded Spotify session, not 11
+        undescribable tracks, so it belongs in the same transient class the
+        retry ladder already exists for."""
+        from Database.patches import (
+            _get_track_info_with_retry, IncompleteTrackInfoError,
+            INCOMPLETE_TRACK_INFO_RETRIES,
+        )
 
         mock_public.song_info.return_value = {"data": None}
 
         with self.assertRaises(IncompleteTrackInfoError):
             _get_track_info_with_retry("abc123")
-        self.assertEqual(mock_public.song_info.call_count, 1)
+
+        self.assertEqual(mock_public.song_info.call_count, INCOMPLETE_TRACK_INFO_RETRIES + 1)
+
+    @patch("spotapi.Public")
+    def test_a_retry_that_succeeds_returns_the_track(self, mock_public):
+        """The whole point: a track that was undescribable during the blip is
+        described a moment later, and no fallback row is ever created."""
+        from Database.patches import _get_track_info_with_retry
+
+        union = fakeTrackUnion("abc123")
+        mock_public.song_info.side_effect = [{"data": None}, {"data": {"trackUnion": union}}]
+
+        self.assertIs(_get_track_info_with_retry("abc123"), union)
+
+    @patch("spotapi.Public")
+    def test_incomplete_retry_uses_a_short_fixed_delay(self, mock_public):
+        """Not the transient ladder's 1/2/4s exponential backoff: this runs
+        inside the poll loop's callback, and a burst means every affected track
+        pays the wait."""
+        from Database.patches import (
+            _get_track_info_with_retry, IncompleteTrackInfoError,
+            INCOMPLETE_TRACK_INFO_RETRY_DELAY_SECONDS,
+        )
+
+        mock_public.song_info.return_value = {"data": None}
+
+        with self.assertRaises(IncompleteTrackInfoError):
+            _get_track_info_with_retry("abc123")
+
+        self.assertTrue(self.mockSleep.called)
+        for call in self.mockSleep.call_args_list:
+            self.assertEqual(call.args[0], INCOMPLETE_TRACK_INFO_RETRY_DELAY_SECONDS)
+
+    @patch("spotapi.Public")
+    def test_incomplete_retries_do_not_consume_the_transient_budget(self, mock_public):
+        """The two failure modes get separate budgets - an incomplete response
+        followed by a rate limit must still get the transient ladder's own
+        attempts, or a blip early in a fetch would silently shorten the
+        recovery window for a completely different problem."""
+        from Database.patches import _get_track_info_with_retry
+
+        union = fakeTrackUnion("abc123")
+        mock_public.song_info.side_effect = [
+            {"data": None},                       #< incomplete: costs an incomplete retry
+            Exception("429 rate limit"),          #< transient: attempt 1
+            Exception("429 rate limit"),          #< transient: attempt 2
+            {"data": {"trackUnion": union}},      #< transient: attempt 3 succeeds
+        ]
+
+        self.assertIs(_get_track_info_with_retry("abc123"), union)
+
+    @patch("spotapi.Public")
+    def test_exhausted_incomplete_retries_still_reach_the_fallback(self, mock_public):
+        """Retrying reduces how often a fallback is created; it must not remove
+        the safety net when Spotify really has nothing."""
+        mock_public.song_info.return_value = {"data": None}
+
+        result = self._newSpotifyInstance().track("abc123")
+
+        self.assertEqual(result["track_id"], "abc123")
 
 
 class TestTrackFallbackOnIncompleteInfo(unittest.TestCase):
@@ -944,6 +1020,14 @@ class TestTrackFallbackOnIncompleteInfo(unittest.TestCase):
     The record is marked RESTRICTED_FALLBACK_REASON (not SYNTHETIC): the track
     id is real, so the Spotify link is real too, and upsertTrack is explicitly
     built never to let a fallback overwrite metadata that arrives later."""
+
+    def setUp(self):
+        """The incomplete-response retry sleeps between attempts; patch it away
+        class-wide so no test in here pays real seconds, and so a test that
+        forgets can't quietly add them."""
+        sleepPatcher = patch("Database.patches.time.sleep")
+        self.mockSleep = sleepPatcher.start()
+        self.addCleanup(sleepPatcher.stop)
 
     def _newSpotifyInstance(self):
         import SpotipyFree

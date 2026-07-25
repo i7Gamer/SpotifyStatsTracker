@@ -224,6 +224,15 @@ except ModuleNotFoundError:
 # "May be unavailable" badge covers this case with no template change.
 TRACK_INFO_UNAVAILABLE_REASON = "TRACK_INFO_UNAVAILABLE"
 
+# How many extra attempts an incomplete song_info response gets before the
+# caller degrades to a fallback record. Kept low and on a SHORT FIXED delay
+# rather than the transient ladder's 1/2/4s exponential backoff: this runs
+# inside the poll loop's callback, so during a burst every affected track pays
+# the wait. One extra attempt is enough to ride out the sub-second gap that
+# produced the observed cluster without making a genuinely-gone track slow.
+INCOMPLETE_TRACK_INFO_RETRIES = 1
+INCOMPLETE_TRACK_INFO_RETRY_DELAY_SECONDS = 2
+
 
 class IncompleteTrackInfoError(Exception):
     """spotapi answered, but not with a usable track.
@@ -237,9 +246,13 @@ class IncompleteTrackInfoError(Exception):
                                             SpotipyFree/Formatter.py, where the
                                             track id is no longer in scope
 
-    Distinguishing this from a transport failure matters: the response arrived
-    intact and simply doesn't describe the track, so retrying is pointless and
-    the caller can degrade instead of losing the play."""
+    Distinguishing this from a transport failure matters because the two need
+    different budgets, not because one is unrecoverable: an incomplete response
+    is usually a symptom of a degraded session rather than a fact about the
+    track. All 11 of these in 11 days of app.log fall inside one 4m47s window
+    (2026-07-16 12:59:44-13:04:31), alongside 14 session/websocket failures - so
+    they get a short bounded retry, and only then does the caller degrade rather
+    than lose the play."""
 
 
 def _extractTrackUnion(payload, trackId: str) -> dict:
@@ -309,17 +322,28 @@ def _get_track_info_with_retry(trackId: str, max_retries: int = 3):
         Validated trackUnion dict from spotapi.Public.song_info()["data"]["trackUnion"]
 
     Raises:
-        IncompleteTrackInfoError: If Spotify answered without a usable track
+        IncompleteTrackInfoError: If Spotify kept answering without a usable track
         Exception: If all retries fail
     """
-    for attempt in range(max_retries):
+    # Two failure modes, two separate budgets. An incomplete response early in a
+    # fetch must not eat the transient ladder's attempts, or a Spotify blip would
+    # silently shorten the recovery window for an unrelated rate limit.
+    incompleteAttempts = 0
+    attempt = 0
+    while attempt < max_retries:
         try:
             return _extractTrackUnion(spotapi.Public.song_info(trackId), trackId)
-        except IncompleteTrackInfoError:
-            # Not transient - the response was well-formed and simply has no
-            # track in it. Re-asking three times only delays the caller's
-            # fallback by the backoff.
-            raise
+        except IncompleteTrackInfoError as e:
+            if incompleteAttempts >= INCOMPLETE_TRACK_INFO_RETRIES:
+                raise
+            incompleteAttempts += 1
+            logger.debug(
+                "Incomplete track info for %s (attempt %d/%d), retrying in %ds: %s",
+                trackId, incompleteAttempts, INCOMPLETE_TRACK_INFO_RETRIES + 1,
+                INCOMPLETE_TRACK_INFO_RETRY_DELAY_SECONDS, e,
+            )
+            time.sleep(INCOMPLETE_TRACK_INFO_RETRY_DELAY_SECONDS)
+            continue  #< deliberately does not advance `attempt`
         except Exception as e:
             error_str = str(e).lower()
             is_rate_limit = "429" in error_str or ("rate" in error_str and "limit" in error_str)
@@ -333,6 +357,7 @@ def _get_track_info_with_retry(trackId: str, max_retries: int = 3):
                 backoff_secs = 2 ** attempt  # 1, 2, 4 seconds
                 logger.warning("Track fetch failed (attempt %d/%d), backing off %ds: %s", attempt + 1, max_retries, backoff_secs, e)
                 time.sleep(backoff_secs)
+                attempt += 1
             else:
                 logger.warning("Track fetch failed after %d attempts: %s", max_retries, e)
                 raise
