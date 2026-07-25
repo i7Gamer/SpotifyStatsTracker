@@ -794,34 +794,46 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
                 g.isAdmin = self.repo.isAdmin(username) if username else False
             return {"isAdmin": g.isAdmin}
 
+        def _memoizedSetting(name: str, read):
+            # Instance-wide settings reads, memoized on g for the current
+            # request. Every context processor re-runs on every render, and one
+            # request can render a dozen templates (the Wrapped AJAX endpoint
+            # alone renders six partials), so an un-memoized "cheap settings
+            # read" is really one app_settings SELECT per setting per partial.
+            key = f"_setting_{name}"
+            if key not in g:
+                setattr(g, key, read())
+            return getattr(g, key)
+
         @self.app.context_processor
         def _injectRegistrationStatus():
             # Lets login.html hide its "Create an account" link when the
-            # admin has disabled new registrations - instance-wide, so no
-            # per-user memoization needed (unlike _injectShareStatus above).
-            return {"registration_enabled": self.repo.isRegistrationEnabled()}
+            # admin has disabled new registrations.
+            return {"registration_enabled": _memoizedSetting(
+                "registration_enabled", self.repo.isRegistrationEnabled)}
 
         @self.app.context_processor
         def _injectShareLinksStatus():
             # Lets wrapped.html hide its "Share this Wrapped" panel and
             # profile.html hide its share-link list when the admin has
-            # disabled public share links - instance-wide, same shape as
-            # _injectRegistrationStatus above.
-            return {"share_links_enabled": self.repo.isShareLinksEnabled()}
+            # disabled public share links.
+            return {"share_links_enabled": _memoizedSetting(
+                "share_links_enabled", self.repo.isShareLinksEnabled)}
 
         @self.app.context_processor
         def _injectArtistBioStatus():
             # Lets artist_detail.html hide its Biography section (even for
             # an artist whose bio was already fetched and stored) and
-            # overview.html's admin panel show the toggle's current state -
-            # instance-wide, same shape as _injectRegistrationStatus above.
-            return {"artist_bio_enabled": self.repo.isArtistBioEnabled()}
+            # overview.html's admin panel show the toggle's current state.
+            return {"artist_bio_enabled": _memoizedSetting(
+                "artist_bio_enabled", self.repo.isArtistBioEnabled)}
 
         @self.app.context_processor
         def _injectAlbumBioStatus():
             # Mirrors _injectArtistBioStatus, for album_detail.html's
             # Biography section and the album_bio toggle's current state.
-            return {"album_bio_enabled": self.repo.isAlbumBioEnabled()}
+            return {"album_bio_enabled": _memoizedSetting(
+                "album_bio_enabled", self.repo.isAlbumBioEnabled)}
 
         @self.app.context_processor
         def _injectLastfmGenreStatus():
@@ -829,17 +841,16 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
             # admin's instance-wide Last.fm genre backfill is enabled - the
             # same kill switch the Charts genre section already respects, so
             # the nav never advertises a page whose entire content is off.
-            # Cheap settings read, instance-wide (no per-user memoization).
-            return {"lastfm_genre_enabled": self.repo.isLastfmGenreBackfillEnabled()}
+            return {"lastfm_genre_enabled": _memoizedSetting(
+                "lastfm_genre_enabled", self.repo.isLastfmGenreBackfillEnabled)}
 
         @self.app.context_processor
         def _injectTagsStatus():
             # Lets layout.html hide the "Playlists" nav link, _page_card.html
             # hide the Top Songs/Artists/Albums tag filter, and the detail
             # pages hide the tag panel when the admin's instance-wide tags
-            # kill switch is off - same shape as _injectLastfmGenreStatus
-            # above. Instance-wide, no per-user memoization needed.
-            return {"tags_enabled": self.repo.isTagsEnabled()}
+            # kill switch is off.
+            return {"tags_enabled": _memoizedSetting("tags_enabled", self.repo.isTagsEnabled)}
 
         @self.app.context_processor
         def _injectTagsPanelStatus():

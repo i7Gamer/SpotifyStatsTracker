@@ -478,14 +478,32 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         return parts[0], parts[1]
 
     def playlistName(self, playlistUri: str | None) -> str | None:
-        """Return the playlist name for a Spotify playlist URI or id, caching it on first lookup."""
+        """Return the playlist name for a Spotify playlist URI or id.
+
+        Memoized for the current request only (the docstring used to claim
+        caching that wasn't there): the history and detail play lists call this
+        once per row, and a page of plays from one listening session mostly
+        shares a handful of contexts. Request-scoped rather than instance-wide
+        so a renamed playlist still shows up on the next page load, and so
+        background workers - which have no app context - keep reading through."""
         if not playlistUri:
             return None
         parsed = self._splitContextUri(playlistUri)
         if parsed is None:
             return None
         contextType, playlistId = parsed
-        return self.repo.getPlaylistName(playlistId, contextType)
+
+        from flask import has_app_context, g
+        cache = None
+        if has_app_context():
+            cache = g.setdefault("_playlistNameCache", {})
+            if playlistId in cache:
+                return cache[playlistId]
+
+        name = self.repo.getPlaylistName(playlistId, contextType)
+        if cache is not None:
+            cache[playlistId] = name
+        return name
 
     def updatePlaylists(self, playlist: str | None) -> None:
         if playlist is None:
@@ -1137,10 +1155,17 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         now_ts = now_ts or time.time()
 
         result = {"obsession": None, "rediscovery": None, "forgotten": None}
+        # getTrack is 3 queries; hydrating the three cards one at a time cost 9
+        # on an endpoint that returns at most 3 tracks (often the same one
+        # twice). getTracksByIds answers the whole set in 3, deduped.
+        songsById = self.repo.getTracksByIds([
+            item["track_id"] for item in
+            (raw.get("obsession"), raw.get("rediscovery"), raw.get("forgotten")) if item
+        ])
 
         if raw.get("obsession"):
             item = raw["obsession"]
-            song = self.repo.getTrack(item["track_id"])
+            song = songsById.get(item["track_id"])
             if song:
                 cnt = item["recent_count"]
                 song["trend_subtitle"] = f"{cnt} play{'s' if cnt != 1 else ''} in the past week"
@@ -1148,7 +1173,7 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
 
         if raw.get("rediscovery"):
             item = raw["rediscovery"]
-            song = self.repo.getTrack(item["track_id"])
+            song = songsById.get(item["track_id"])
             if song:
                 cnt = item["recent_count"]
                 max_old = item["max_old_played_at"]
@@ -1158,7 +1183,7 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
 
         if raw.get("forgotten"):
             item = raw["forgotten"]
-            song = self.repo.getTrack(item["track_id"])
+            song = songsById.get(item["track_id"])
             if song:
                 total = item["total_plays"]
                 last_played = item["last_played_at"]

@@ -13,7 +13,10 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+from flask import Flask
+
 from conftest import DatabaseTestCase, normalizeTrackForTest
+from _app_factory import AppTestCase
 import Database.utils as utilsModule
 from dashboard.view_models import ViewModelMixin
 from services.genre_gate import (
@@ -359,6 +362,76 @@ class OnThisDayQueryPlanTestCase(DatabaseTestCase):
         result = db.getOnThisDay(now=datetime.datetime(2024, 2, 29, 12, tzinfo=datetime.timezone.utc))
 
         self.assertEqual(result, [])
+
+
+class PerRequestMemoizationTestCase(AppTestCase):
+    """Context processors re-run on every render, and one request can render a
+    dozen templates - an un-memoized "cheap settings read" is really one
+    app_settings SELECT per setting per partial."""
+
+    def test_instance_wide_settings_are_read_once_per_request(self):
+        dash = self._makeApp()
+        client = dash.app.test_client()
+        settingReads = {
+            "tags_enabled": patch.object(dash.repo, "isTagsEnabled", wraps=dash.repo.isTagsEnabled),
+            "registration_enabled": patch.object(dash.repo, "isRegistrationEnabled",
+                                                  wraps=dash.repo.isRegistrationEnabled),
+        }
+        mocks = {name: patcher.start() for name, patcher in settingReads.items()}
+        for patcher in settingReads.values():
+            self.addCleanup(patcher.stop)
+
+        resp = client.get("/login")
+
+        self.assertEqual(resp.status_code, 200)
+        for name, mock in mocks.items():
+            with self.subTest(setting=name):
+                self.assertLessEqual(mock.call_count, 1)
+
+
+class PlaylistNameLookupTestCase(DatabaseTestCase):
+    """The history and detail play lists resolve a playlist name per row, and a
+    page of plays from one listening session mostly shares a few contexts."""
+
+    def test_repeated_lookups_within_one_request_hit_the_db_once(self):
+        db = self._makeDb({}, [])
+        db.repo.upsertPlaylistName("pl1", "playlist", "My Playlist")
+        app = Flask(__name__)
+
+        with patch.object(db.repo, "getPlaylistName", wraps=db.repo.getPlaylistName) as spy:
+            with app.test_request_context("/"):
+                names = [db.playlistName("playlist:pl1") for _ in range(10)]
+
+        self.assertEqual(names, ["My Playlist"] * 10)
+        self.assertEqual(spy.call_count, 1)
+
+    def test_lookups_outside_a_request_are_not_cached(self):
+        """Background workers have no app context - they must read through
+        rather than share a stale name across an entire process lifetime."""
+        db = self._makeDb({}, [])
+        db.repo.upsertPlaylistName("pl1", "playlist", "My Playlist")
+
+        with patch.object(db.repo, "getPlaylistName", wraps=db.repo.getPlaylistName) as spy:
+            db.playlistName("playlist:pl1")
+            db.playlistName("playlist:pl1")
+
+        self.assertEqual(spy.call_count, 2)
+
+
+class DashboardTrendsHydrationTestCase(DatabaseTestCase):
+    """The three trend cards were hydrated one getTrack at a time - 3 queries
+    each, 9 for an endpoint returning at most 3 tracks."""
+
+    def test_trend_tracks_are_hydrated_in_one_batch(self):
+        tracks = {"t1": normalizeTrackForTest({"id": "t1", "name": "Song", "artists": []})}
+        entries = [{"id": "t1", "playedAt": _ts(2026, 7, 1, 12) + n * 3600, "timePlayed": 60000}
+                   for n in range(5)]
+        db = self._makeDb(tracks, entries)
+
+        with patch.object(db.repo, "getTrack", wraps=db.repo.getTrack) as perItem:
+            db.getDashboardTrends(now_ts=_ts(2026, 7, 2, 12))
+
+        perItem.assert_not_called()
 
 
 if __name__ == "__main__":
