@@ -291,6 +291,49 @@ class TestDeleteFailedArtistImages(unittest.TestCase):
         self.assertEqual(self.repo.deleteFailedArtistImages(), 0)
 
 
+class TestDeleteFailedTrackImages(unittest.TestCase):
+    """Repository.deleteFailedTrackImages() is the one-time remediation
+    migrate1_40_0 runs to un-stick covers that failed against the malformed
+    https://i.scdn.co/image///i.scdn.co/image/<hash> URL - see
+    _imageUrlFromConnectMeta."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        from Database.repository import Repository
+        self.repo = Repository(Path(self._tmpdir.name) / "test.db")
+        self.addCleanup(self.repo.connectionManager.close)
+
+    def test_clears_failed_track_images_only(self):
+        self.repo.markImageStatus("trkBroken1", IMAGE_KIND_TRACK, IMAGE_STATUS_FAILED)
+        self.repo.markImageStatus("trkBroken2", IMAGE_KIND_TRACK, IMAGE_STATUS_FAILED)
+        self.repo.markImageStatus("trkOk", IMAGE_KIND_TRACK, IMAGE_STATUS_OK)
+        self.repo.markImageStatus("artBroken", IMAGE_KIND_ARTIST, IMAGE_STATUS_FAILED)
+
+        cleared = self.repo.deleteFailedTrackImages()
+
+        self.assertEqual(cleared, 2)
+        self.assertIsNone(self.repo.imageStatus("trkBroken1", IMAGE_KIND_TRACK))
+        self.assertIsNone(self.repo.imageStatus("trkBroken2", IMAGE_KIND_TRACK))
+        self.assertEqual(self.repo.imageStatus("trkOk", IMAGE_KIND_TRACK), IMAGE_STATUS_OK)
+        #< artist images go through a different fetch path, untouched by this bug
+        self.assertEqual(self.repo.imageStatus("artBroken", IMAGE_KIND_ARTIST), IMAGE_STATUS_FAILED)
+
+    def test_cleared_track_is_reclaimable(self):
+        """The point of deleting rather than re-marking: _saveImg's claim gate
+        is what blocks the retry, and only an absent row reads as
+        never-attempted."""
+        self.repo.markImageStatus("trkBroken", IMAGE_KIND_TRACK, IMAGE_STATUS_FAILED)
+
+        self.repo.deleteFailedTrackImages()
+
+        self.assertTrue(self.repo.tryClaimImageDownload("trkBroken", IMAGE_KIND_TRACK))
+
+    def test_no_failed_track_images_is_a_noop(self):
+        self.repo.markImageStatus("trkOk", IMAGE_KIND_TRACK, IMAGE_STATUS_OK)
+        self.assertEqual(self.repo.deleteFailedTrackImages(), 0)
+
+
 class TestDownloadImageTaskExtension(DatabaseTestCase):
     """The templates hardcode `<imgId>.jpeg`, so downloaded covers must always be
     saved as .jpeg regardless of the format the CDN returns - a PNG saved as

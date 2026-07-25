@@ -273,6 +273,35 @@ class TestConnectMetaHelpers(unittest.TestCase):
         self.assertIsNone(_imageUrlFromConnectMeta({"image_xlarge_url": "notauri"}))
         self.assertIsNone(_imageUrlFromConnectMeta({"image_xlarge_url": "spotify:image:"}))
 
+    def test_imageUrl_passes_absolute_cdn_url_through_unchanged(self):
+        """Regression (app.log 2026-07-23, 7 failed downloads): connect-state
+        sometimes carries an already-absolute CDN URL rather than a
+        spotify:image: URI. Splitting that on its last ':' splits the *scheme*,
+        so the CDN prefix used to be glued onto '//i.scdn.co/...', producing
+        https://i.scdn.co/image///i.scdn.co/image/<hash> - a URL that can never
+        resolve."""
+        absolute = "https://i.scdn.co/image/ab67616d00001e024de59a253139706418273fbf"
+        self.assertEqual(_imageUrlFromConnectMeta({"image_xlarge_url": absolute}), absolute)
+        self.assertEqual(_imageUrlFromConnectMeta({"image_url": absolute}), absolute)
+
+    def test_imageUrl_passes_plain_http_url_through_unchanged(self):
+        url = "http://i.scdn.co/image/abc123"
+        self.assertEqual(_imageUrlFromConnectMeta({"image_xlarge_url": url}), url)
+
+    def test_imageUrl_from_dataclass_with_absolute_url(self):
+        from types import SimpleNamespace
+        absolute = "https://i.scdn.co/image/xhash"
+        meta = SimpleNamespace(image_xlarge_url=absolute, image_url=None)
+        self.assertEqual(_imageUrlFromConnectMeta(meta), absolute)
+
+    def test_imageUrl_rejects_unrecognised_scheme_instead_of_mangling_it(self):
+        """Anything that is neither a spotify:image: URI nor an absolute http(s)
+        URL must come back None. Previously any value containing a ':' was
+        silently turned into a CDN URL, which is how the malformed URL above
+        reached the downloader in the first place."""
+        self.assertIsNone(_imageUrlFromConnectMeta({"image_xlarge_url": "spotify:album:abc"}))
+        self.assertIsNone(_imageUrlFromConnectMeta({"image_xlarge_url": "ftp://example.com/x"}))
+
 
 class TestNowPlayingRoute(AppTestCase):
     def _get(self, dash, db):

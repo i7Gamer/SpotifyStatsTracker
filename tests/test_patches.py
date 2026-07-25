@@ -849,6 +849,92 @@ class TestUpdateLoopShutdown(unittest.TestCase):
         self.assertEqual(manager._results, [])  #< loop survived past the failed reconnect
 
 
+class TestIncompleteTrackInfo(unittest.TestCase):
+    """spotapi's song_info can come back degraded in three different shapes, all
+    seen in Database/Data/app.log over 2026-07-16. Each one killed the whole
+    recently-played callback iteration, so the play was dropped entirely:
+
+      data=None                 -> TypeError: 'NoneType' object is not subscriptable
+      trackUnion without "uri"  -> KeyError: 'uri', raised deep inside
+                                   SpotipyFree/Formatter.py where the track id
+                                   is no longer in scope
+      spotapi's own SongError   -> re-raised (not classified as transient)
+
+    _get_track_info_with_retry now recognises the first two as one typed error
+    at our own seam, and Spotify.track() degrades to a fallback record so the
+    play survives."""
+
+    def _newSpotifyInstance(self):
+        import SpotipyFree
+        instance = SpotipyFree.Spotify.__new__(SpotipyFree.Spotify)
+        instance.getIsrc = False
+        return instance
+
+    @patch("spotapi.Public")
+    def test_none_data_raises_typed_error_naming_the_track(self, mock_public):
+        from Database.patches import _get_track_info_with_retry, IncompleteTrackInfoError
+
+        mock_public.song_info.return_value = {"data": None}
+
+        with self.assertRaises(IncompleteTrackInfoError) as ctx:
+            _get_track_info_with_retry("deadbeef")
+        self.assertIn("deadbeef", str(ctx.exception))
+
+    @patch("spotapi.Public")
+    def test_none_trackUnion_raises_typed_error(self, mock_public):
+        from Database.patches import _get_track_info_with_retry, IncompleteTrackInfoError
+
+        mock_public.song_info.return_value = {"data": {"trackUnion": None}}
+
+        with self.assertRaises(IncompleteTrackInfoError):
+            _get_track_info_with_retry("deadbeef")
+
+    @patch("spotapi.Public")
+    def test_trackUnion_without_uri_raises_typed_error(self, mock_public):
+        """The KeyError case: trackUnion IS a dict, so no null check catches it.
+        Only a shape check does."""
+        from Database.patches import _get_track_info_with_retry, IncompleteTrackInfoError
+
+        union = fakeTrackUnion("abc123")
+        del union["uri"]
+        mock_public.song_info.return_value = {"data": {"trackUnion": union}}
+
+        with self.assertRaises(IncompleteTrackInfoError):
+            _get_track_info_with_retry("abc123")
+
+    @patch("spotapi.Public")
+    def test_blank_uri_is_also_incomplete(self, mock_public):
+        from Database.patches import _get_track_info_with_retry, IncompleteTrackInfoError
+
+        union = fakeTrackUnion("abc123")
+        union["uri"] = ""
+        mock_public.song_info.return_value = {"data": {"trackUnion": union}}
+
+        with self.assertRaises(IncompleteTrackInfoError):
+            _get_track_info_with_retry("abc123")
+
+    @patch("spotapi.Public")
+    def test_complete_response_is_returned_unchanged(self, mock_public):
+        from Database.patches import _get_track_info_with_retry
+
+        union = fakeTrackUnion("abc123")
+        mock_public.song_info.return_value = {"data": {"trackUnion": union}}
+
+        self.assertIs(_get_track_info_with_retry("abc123"), union)
+
+    @patch("spotapi.Public")
+    def test_incomplete_info_is_not_retried(self, mock_public):
+        """A degraded response is a fact about the track, not a transient
+        failure - retrying it three times just delays the fallback."""
+        from Database.patches import _get_track_info_with_retry, IncompleteTrackInfoError
+
+        mock_public.song_info.return_value = {"data": None}
+
+        with self.assertRaises(IncompleteTrackInfoError):
+            _get_track_info_with_retry("abc123")
+        self.assertEqual(mock_public.song_info.call_count, 1)
+
+
 class TestSafeResponseHeaders(unittest.TestCase):
     """The spotapi.User diagnostics log response headers to identify rate
     limiting and Cloudflare blocks. Spotify's responses to those same calls

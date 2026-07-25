@@ -90,6 +90,27 @@ class PlayQueries:
         ).fetchone()
         return row is not None
 
+    def getRecentlyRecordedTrackIds(self, username: str, trackIds: list[str],
+                                    sinceSeconds: float) -> set[str]:
+        """Which of `trackIds` this user has any play for in the last
+        `sinceSeconds`.
+
+        Backs the listener's missed-play cross-check, so it answers "did we
+        record this at all", not "did we record this specific play" - is_skip
+        rows count, since a skip is still a play that was captured. Batched into
+        one query because the caller asks about a whole connect-state queue at
+        once, on a polling loop."""
+        if not trackIds:
+            return set()
+        conn = self._conn()
+        placeholders = ",".join("?" * len(trackIds))
+        rows = conn.execute(
+            f"SELECT DISTINCT track_id FROM plays "
+            f"WHERE username=? AND played_at >= ? AND track_id IN ({placeholders})",
+            (username, time.time() - sinceSeconds, *trackIds),
+        ).fetchall()
+        return {row["track_id"] for row in rows}
+
     def getPlaysNearTime(self, username: str, trackId: str, playedAt: float, toleranceSeconds: float) -> list[dict]:
         """Return all plays for this exact track already existing for this user
         within toleranceSeconds of playedAt (inclusive both directions).

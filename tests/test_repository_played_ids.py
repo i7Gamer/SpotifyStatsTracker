@@ -8,6 +8,7 @@ be genuinely played without ranking in anyone's top-N.
 import sys
 import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -121,6 +122,65 @@ class TestGetPlayedAlbumIds(TestPlayedIds):
 
     def test_empty_id_list_returns_empty_set(self):
         self.assertEqual(self.repo.getPlayedAlbumIds("alice", []), set())
+
+
+class TestGetRecentlyRecordedTrackIds(unittest.TestCase):
+    """Backs the listener's missed-play cross-check: unlike getPlayedTrackIds
+    this one is time-bounded, because "played once last year" is no evidence
+    that the play currently sitting in the connect-state queue was captured."""
+
+    HOUR = 3600
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        self.repo = Repository(Path(self._tmpdir.name) / "test.db")
+        self.addCleanup(self.repo.connectionManager.close)
+
+        self.repo.upsertUser("alice", "alice@example.com")
+        self.repo.upsertUser("bob", "bob@example.com")
+        for trackId in ("recent", "old", "skipped", "bobs"):
+            self.repo.upsertTrack(_track(trackId, ["a1"], "al1"))
+        self.repo.commit()
+
+        now = time.time()
+        self.repo.insertPlay("alice", "recent", now - self.HOUR, 60000)
+        self.repo.insertPlay("alice", "old", now - 48 * self.HOUR, 60000)
+        #< a skip is still a captured play - the question is "did we record it",
+        #  not "did they listen through"
+        self.repo.insertPlay("alice", "skipped", now - self.HOUR, 2000, is_skip=1)
+        self.repo.insertPlay("bob", "bobs", now - self.HOUR, 60000)
+        self.repo.commit()
+
+    def _lookup(self, trackIds, sinceSeconds=6 * 3600):
+        return self.repo.getRecentlyRecordedTrackIds("alice", trackIds, sinceSeconds)
+
+    def test_returns_tracks_played_inside_the_window(self):
+        self.assertEqual(self._lookup(["recent"]), {"recent"})
+
+    def test_excludes_tracks_last_played_before_the_window(self):
+        self.assertEqual(self._lookup(["old"]), set())
+
+    def test_a_wider_window_reaches_the_older_play(self):
+        self.assertEqual(self._lookup(["old"], sinceSeconds=72 * self.HOUR), {"old"})
+
+    def test_skips_count_as_recorded(self):
+        self.assertEqual(self._lookup(["skipped"]), {"skipped"})
+
+    def test_another_users_plays_do_not_count(self):
+        self.assertEqual(self._lookup(["bobs"]), set())
+
+    def test_unplayed_track_is_absent(self):
+        self.assertEqual(self._lookup(["never-seen"]), set())
+
+    def test_batches_a_mixed_list_in_one_call(self):
+        self.assertEqual(
+            self._lookup(["recent", "old", "skipped", "bobs", "never-seen"]),
+            {"recent", "skipped"},
+        )
+
+    def test_empty_id_list_returns_empty_set_without_querying(self):
+        self.assertEqual(self._lookup([]), set())
 
 
 if __name__ == "__main__":

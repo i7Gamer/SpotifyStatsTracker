@@ -213,7 +213,8 @@ class ListenerMixin:
                 cf, email=self.email, user=self.user,
                 get_credentials=self.getUserSpotifyCredentials,
                 get_backfill_enabled=self.repo.isSpotifyApiBackfillEnabled,
-                on_scope_status_change=self.setSpotifyNeedsReauth))
+                on_scope_status_change=self.setSpotifyNeedsReauth,
+                get_recorded_track_ids=self.getRecentlyRecordedTrackIds))
             if self._stopRequested():
                 # stop() gave up waiting on this lock while the (slow,
                 # uninterruptible) Listener login above was in flight - tear

@@ -214,6 +214,41 @@ import json
 import sys
 
 
+class IncompleteTrackInfoError(Exception):
+    """spotapi answered, but not with a usable track.
+
+    Three degraded shapes were seen in Database/Data/app.log on 2026-07-16, all
+    of which used to escape as raw TypeErrors/KeyErrors:
+
+      {"data": None}                     -> TypeError on ["trackUnion"]
+      {"data": {"trackUnion": None}}     -> TypeError downstream
+      a trackUnion dict with no "uri"    -> KeyError: 'uri', raised deep inside
+                                            SpotipyFree/Formatter.py, where the
+                                            track id is no longer in scope
+
+    Distinguishing this from a transport failure matters: the response arrived
+    intact and simply doesn't describe the track, so retrying is pointless and
+    the caller can degrade instead of losing the play."""
+
+
+def _extractTrackUnion(payload, trackId: str) -> dict:
+    """The trackUnion out of a song_info payload, or IncompleteTrackInfoError.
+
+    Validates the shape rather than just the nullness of each hop: a trackUnion
+    can be a perfectly good dict that happens to lack "uri", which no null check
+    catches and which SpotipyFree's formatter then dies on."""
+    data = payload.get("data") if isinstance(payload, dict) else None
+    trackUnion = data.get("trackUnion") if isinstance(data, dict) else None
+    if not isinstance(trackUnion, dict):
+        raise IncompleteTrackInfoError(
+            f"song_info returned no track data for {trackId} "
+            f"(data={type(data).__name__}, trackUnion={type(trackUnion).__name__})")
+    if not trackUnion.get("uri"):
+        raise IncompleteTrackInfoError(
+            f"song_info returned a track without a uri for {trackId}")
+    return trackUnion
+
+
 def _get_track_info_with_retry(trackId: str, max_retries: int = 3):
     """Fetch track info from spotapi with retry logic for transient failures.
 
@@ -222,14 +257,20 @@ def _get_track_info_with_retry(trackId: str, max_retries: int = 3):
         max_retries: Maximum number of retry attempts
 
     Returns:
-        Track info dict from spotapi.Public.song_info()["data"]["trackUnion"]
+        Validated trackUnion dict from spotapi.Public.song_info()["data"]["trackUnion"]
 
     Raises:
+        IncompleteTrackInfoError: If Spotify answered without a usable track
         Exception: If all retries fail
     """
     for attempt in range(max_retries):
         try:
-            return spotapi.Public.song_info(trackId)["data"]["trackUnion"]
+            return _extractTrackUnion(spotapi.Public.song_info(trackId), trackId)
+        except IncompleteTrackInfoError:
+            # Not transient - the response was well-formed and simply has no
+            # track in it. Re-asking three times only delays the caller's
+            # fallback by the backoff.
+            raise
         except Exception as e:
             error_str = str(e).lower()
             is_rate_limit = "429" in error_str or ("rate" in error_str and "limit" in error_str)

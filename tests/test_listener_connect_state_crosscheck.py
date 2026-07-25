@@ -25,12 +25,13 @@ if isinstance(sys.modules.get("Database.database"), MagicMock):
 from Database.Listeners.spotifyListener import Listener, CONNECT_STATE_MISSED_TRACK_CACHE_SIZE
 
 
-def _bareListener(recentlyPlayed=None):
+def _bareListener(recentlyPlayed=None, get_recorded_track_ids=None):
     listener = Listener.__new__(Listener)
     listener.run = True
     listener.sp = MagicMock()
     listener.recentlyPlayed_Z1 = recentlyPlayed if recentlyPlayed is not None else []
     listener._warnedMissingTrackUris = collections.OrderedDict()
+    listener.get_recorded_track_ids = get_recorded_track_ids
     return listener
 
 
@@ -204,6 +205,77 @@ class TestCheckConnectStateForMissedTracks(unittest.TestCase):
         listener._checkConnectStateForMissedTracks()
 
         self.assertLessEqual(len(listener._warnedMissingTrackUris), CONNECT_STATE_MISSED_TRACK_CACHE_SIZE)
+
+    def test_db_confirms_the_track_really_is_missing_before_warning(self):
+        """The in-memory recentlyPlayed_Z1 cache only covers the CURRENT listener
+        object's lifetime, and the listener is rebuilt on every reconnect (1,568
+        times over 11 days in app.log). A play recorded before the last
+        reconnect is therefore absent from the cache while sitting safely in the
+        database - which is why this warning fired 1,627 times without any of
+        them necessarily being real. The database is the source of truth."""
+        recorded = MagicMock(return_value={"bbb"})
+        listener = _bareListener(recentlyPlayed=[], get_recorded_track_ids=recorded)
+        _withConnectState(listener, [{"uri": "spotify:track:bbb"}])
+
+        listener._checkConnectStateForMissedTracks()
+
+        recorded.assert_called_once_with(["bbb"])
+        self.assertEqual(len(listener._warnedMissingTrackUris), 0)
+
+    def test_db_lookup_still_warns_for_a_genuinely_absent_play(self):
+        recorded = MagicMock(return_value=set())
+        listener = _bareListener(recentlyPlayed=[], get_recorded_track_ids=recorded)
+        _withConnectState(listener, [{"uri": "spotify:track:bbb"}])
+
+        with self.assertLogs("Database.Listeners.spotifyListener", level="WARNING") as cm:
+            listener._checkConnectStateForMissedTracks()
+
+        self.assertTrue(any("bbb" in message for message in cm.output))
+
+    def test_db_lookup_only_asked_about_cache_misses(self):
+        """The cheap in-memory check runs first - only what it can't vouch for
+        reaches the database, so the common all-recorded case costs no query."""
+        recorded = MagicMock(return_value=set())
+        listener = _bareListener(recentlyPlayed=[self._recordedItem("aaa")],
+                                 get_recorded_track_ids=recorded)
+        _withConnectState(listener, [{"uri": "spotify:track:aaa"}, {"uri": "spotify:track:bbb"}])
+
+        listener._checkConnectStateForMissedTracks()
+
+        recorded.assert_called_once_with(["bbb"])
+
+    def test_db_lookup_not_called_when_cache_vouches_for_everything(self):
+        recorded = MagicMock(return_value=set())
+        listener = _bareListener(recentlyPlayed=[self._recordedItem("aaa")],
+                                 get_recorded_track_ids=recorded)
+        _withConnectState(listener, [{"uri": "spotify:track:aaa"}])
+
+        listener._checkConnectStateForMissedTracks()
+
+        recorded.assert_not_called()
+
+    def test_db_lookup_failure_falls_back_to_warning(self):
+        """A broken lookup must not silence the diagnostic - degrade to the old
+        cache-only behavior rather than swallowing a possible missed play."""
+        recorded = MagicMock(side_effect=RuntimeError("db gone"))
+        listener = _bareListener(recentlyPlayed=[], get_recorded_track_ids=recorded)
+        _withConnectState(listener, [{"uri": "spotify:track:bbb"}])
+
+        with self.assertLogs("Database.Listeners.spotifyListener", level="WARNING") as cm:
+            listener._checkConnectStateForMissedTracks()
+
+        self.assertTrue(any("bbb" in message for message in cm.output))
+
+    def test_without_the_callback_behaviour_is_unchanged(self):
+        """Callers that don't supply the lookup (tests, anything constructed
+        before it existed) keep the cache-only behavior."""
+        listener = _bareListener(recentlyPlayed=[], get_recorded_track_ids=None)
+        _withConnectState(listener, [{"uri": "spotify:track:bbb"}])
+
+        with self.assertLogs("Database.Listeners.spotifyListener", level="WARNING") as cm:
+            listener._checkConnectStateForMissedTracks()
+
+        self.assertTrue(any("bbb" in message for message in cm.output))
 
     def test_dedup_cache_evicts_oldest_entry_first(self):
         """set.pop() would evict an arbitrary element; the OrderedDict-based

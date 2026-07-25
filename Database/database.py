@@ -17,7 +17,9 @@ try:
     from Database.Formatters.spotifyClient import Client
     from Database.Importers.StreamingHistoryImporter import Importer
     from Database.Importers.AutoImporter import AutoImporter
-    from Database.Listeners.spotifyListener import Listener
+    from Database.Listeners.spotifyListener import (
+        Listener, CONNECT_STATE_MISSED_TRACK_LOOKBACK_SECONDS,
+    )
     from Database.repository import (
         Repository, IMAGE_KIND_TRACK, IMAGE_KIND_ARTIST, IMAGE_STATUS_OK, IMAGE_STATUS_FAILED,
         SKIP_RATE_PRIOR_WEIGHT,
@@ -29,7 +31,9 @@ except ModuleNotFoundError:
     from Formatters.spotifyClient import Client
     from Importers.StreamingHistoryImporter import Importer
     from Importers.AutoImporter import AutoImporter
-    from Listeners.spotifyListener import Listener
+    from Listeners.spotifyListener import (
+        Listener, CONNECT_STATE_MISSED_TRACK_LOOKBACK_SECONDS,
+    )
     from repository import (
         Repository, IMAGE_KIND_TRACK, IMAGE_KIND_ARTIST, IMAGE_STATUS_OK, IMAGE_STATUS_FAILED,
         SKIP_RATE_PRIOR_WEIGHT,
@@ -74,6 +78,8 @@ ALBUM_BIO_FETCH_WORKERS = 2    #< separate pool from ARTIST_BIO_FETCH_WORKERS so
 MEDIA_DIR = Path(__file__).resolve().parent / "Data" / "Media"
 
 _SPOTIFY_IMAGE_CDN = "https://i.scdn.co/image/"
+_SPOTIFY_IMAGE_URI_PREFIX = "spotify:image:"
+_ABSOLUTE_URL_SCHEMES = ("https://", "http://")
 
 
 def _imageIdFromConnectMeta(meta) -> str | None:
@@ -96,18 +102,30 @@ def _imageUrlFromConnectMeta(meta) -> str | None:
     connect-state metadata dict or Metadata dataclass.  Returns None if
     unavailable.
 
-    The connect-state carries the image as 'spotify:image:<hash>'; the
-    CDN URL is https://i.scdn.co/image/<hash>."""
-    spotify_uri = (meta.get("image_xlarge_url") or meta.get("image_url")
-                   if isinstance(meta, dict)
-                   else getattr(meta, "image_xlarge_url", None)
-                        or getattr(meta, "image_url", None))
-    if not spotify_uri:
+    The connect-state usually carries the image as 'spotify:image:<hash>',
+    whose CDN URL is https://i.scdn.co/image/<hash> - but it sometimes carries
+    the absolute CDN URL directly, which must be passed through untouched.
+    Splitting that on its last ':' splits the SCHEME, so it used to come back
+    as https://i.scdn.co/image///i.scdn.co/image/<hash> and 404 forever (7 such
+    downloads failed on 2026-07-23). Worse than a transient miss: the failure
+    marks the image IMAGE_STATUS_FAILED and _saveImg's claim gate then refuses
+    to retry it, so that album's cover was permanently absent.
+
+    Anything that is neither shape returns None rather than being run through
+    the prefix on the off chance it works - guessing is what produced the bad
+    URL above."""
+    imageRef = (meta.get("image_xlarge_url") or meta.get("image_url")
+                if isinstance(meta, dict)
+                else getattr(meta, "image_xlarge_url", None)
+                     or getattr(meta, "image_url", None))
+    if not imageRef:
         return None
-    parts = spotify_uri.rsplit(":", 1)
-    if len(parts) != 2 or not parts[-1]:
+    if imageRef.startswith(_ABSOLUTE_URL_SCHEMES):
+        return imageRef
+    if not imageRef.startswith(_SPOTIFY_IMAGE_URI_PREFIX):
         return None
-    return _SPOTIFY_IMAGE_CDN + parts[-1]
+    imageHash = imageRef[len(_SPOTIFY_IMAGE_URI_PREFIX):]
+    return _SPOTIFY_IMAGE_CDN + imageHash if imageHash else None
 
 
 class _LastfmInvalidKeyError(Exception):
@@ -1779,6 +1797,14 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
 
     def setSpotifyNeedsReauth(self, needsReauth: bool) -> None:
         self.repo.setSpotifyNeedsReauth(self.user, needsReauth)
+
+    def getRecentlyRecordedTrackIds(self, trackIds: list[str]) -> set[str]:
+        """Which of these tracks this user already has a recent play for.
+        Bound to this user and handed to the Listener as a callback, so the
+        listener's missed-play cross-check can consult the database without
+        knowing anything about it (see _dropUrisAlreadyInDatabase)."""
+        return self.repo.getRecentlyRecordedTrackIds(
+            self.user, trackIds, CONNECT_STATE_MISSED_TRACK_LOOKBACK_SECONDS)
 
     def getUserLastfmApiKey(self) -> str | None:
         return self.repo.getUserLastfmApiKey(self.user)

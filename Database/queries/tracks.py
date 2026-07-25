@@ -350,6 +350,26 @@ class TrackQueries:
                 "DELETE FROM images WHERE kind=? AND status=?", (IMAGE_KIND_ARTIST, IMAGE_STATUS_FAILED))
             return cur.rowcount
 
+    def deleteFailedTrackImages(self) -> int:
+        """One-time remediation for migrate1_40_0: _imageUrlFromConnectMeta built
+        a malformed CDN URL (https://i.scdn.co/image///i.scdn.co/image/<hash>)
+        whenever the connect-state carried an absolute URL instead of a
+        spotify:image: URI, so those covers 404'd and were marked 'failed'.
+        A 'failed' row is permanent - _saveImg's tryClaimImageDownload gate
+        refuses to re-attempt it - so the covers would stay missing forever even
+        with the URL bug fixed.
+
+        Which rows were poisoned isn't recorded anywhere (the attempted URL
+        isn't stored), so every failed track image is cleared, exactly as
+        migrate1_20_0 did for artists. The cost of over-reaching is one retry
+        for a cover that genuinely 404s; the cost of under-reaching is a
+        permanently blank cover. Returns the number of rows cleared."""
+        conn = self._conn()
+        with conn:
+            cur = conn.execute(
+                "DELETE FROM images WHERE kind=? AND status=?", (IMAGE_KIND_TRACK, IMAGE_STATUS_FAILED))
+            return cur.rowcount
+
     def getAlbumsMissingMetadata(self, limit: int) -> list[str]:
         """Albums with incomplete metadata (missing release date or track count),
         excluding fabricated fallback albums (album_<id> never existed on Spotify).

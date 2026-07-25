@@ -64,6 +64,13 @@ RATE_LIMIT_ERROR_BACKOFF_SECONDS = 60  #< backoff for 429 rate limit errors from
 # history), so this is just a defensive cap, not a tuning knob.
 CONNECT_STATE_MISSED_TRACK_CACHE_SIZE = 50
 
+# How far back the missed-track cross-check looks for an existing play before
+# deciding one is really missing. prev_tracks is the local queue's rolling
+# history, so anything in it was played within the current listening session;
+# a window comfortably wider than a session avoids calling a genuine miss
+# "already recorded" just because the same track was played yesterday.
+CONNECT_STATE_MISSED_TRACK_LOOKBACK_SECONDS = 6 * 60 * 60
+
 SPOTIFY_TRACK_URI_PREFIX = "spotify:track:"  #< connect-state prev_tracks mixes real tracks with queue
                                               #  markers (spotify:delimiter, spotify:meta:*) - only URIs
                                               #  with this prefix are playable tracks
@@ -275,7 +282,8 @@ def _suppress_signal_in_thread():
 
 class Listener:
     def __init__(self, cookiesFile, refreshInterval=6, email=None, get_credentials=None,
-                 get_backfill_enabled=None, on_scope_status_change=None, user=None):
+                 get_backfill_enabled=None, on_scope_status_change=None, user=None,
+                 get_recorded_track_ids=None):
         self.run = False
         self._stop_event = threading.Event()
         self.email = email  #< store expected email for validation
@@ -302,6 +310,10 @@ class Listener:
         # knowing anything about the database. None (tests, callers that
         # don't care) means the status is simply not persisted anywhere.
         self.on_scope_status_change = on_scope_status_change
+        # Optional callback(trackIds) -> set of ids this user already has a
+        # recent play for; see _dropUrisAlreadyInDatabase. None means the
+        # missed-track cross-check judges on its in-memory cache alone.
+        self.get_recorded_track_ids = get_recorded_track_ids
         self._consecutiveScopeErrors = 0  #< see SCOPE_ERROR_CONFIRM_THRESHOLD
         self._lastWebApiPollTime = None  #< None means "never polled yet" - forces an immediate first poll
         with _suppress_signal_in_thread():
@@ -492,6 +504,36 @@ class Listener:
             if uri and uri.startswith(SPOTIFY_TRACK_URI_PREFIX)
         ]
 
+    def _dropUrisAlreadyInDatabase(self, missingUris: list[str]) -> list[str]:
+        """`missingUris` minus the ones the database already has a recent play
+        for.
+
+        recentlyPlayed_Z1 only covers the CURRENT listener object's lifetime,
+        and a listener is rebuilt on every reconnect - 1,568 times over 11 days
+        in app.log, against 1,627 of these warnings. Anything recorded before
+        the last reconnect is missing from that cache while sitting safely in
+        the database, so the cache alone can't tell "we lost this play" from
+        "we recorded it two reconnects ago". Asking the database can.
+
+        Kept as a callback rather than a repo handle so the listener still knows
+        nothing about the database (same contract as get_credentials /
+        on_scope_status_change); no callback means the previous cache-only
+        behavior. A failing lookup also degrades to warning: this exists to
+        surface possible data loss, and silence would be the wrong failure
+        mode."""
+        if not missingUris or not self.get_recorded_track_ids:
+            return missingUris
+        trackIds = [uri.removeprefix(SPOTIFY_TRACK_URI_PREFIX) for uri in missingUris]
+        try:
+            recorded = self.get_recorded_track_ids(trackIds)
+        except Exception as e:
+            logger.debug("Missed-track database cross-check failed, warning anyway: %s", parseError(e))
+            return missingUris
+        return [
+            uri for uri in missingUris
+            if uri.removeprefix(SPOTIFY_TRACK_URI_PREFIX) not in recorded
+        ]
+
     def _checkConnectStateForMissedTracks(self) -> None:
         """Diagnostic cross-check: warn if Spotify's Connect-state queue
         history (prev_tracks) contains a track we never recorded via
@@ -520,6 +562,8 @@ class Listener:
                 if trackId in recordedTrackIds or uri in self._warnedMissingTrackUris:
                     continue
                 missingUris.append(uri)
+
+            missingUris = self._dropUrisAlreadyInDatabase(missingUris)
 
             if missingUris:
                 logger.warning(
