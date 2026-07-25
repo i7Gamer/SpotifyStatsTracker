@@ -27,7 +27,6 @@ def register(app, dashboard):
     CHART_ARTIST_TREND_TOP_N = appmod.CHART_ARTIST_TREND_TOP_N
     CHART_TOP_GENRES_LIMIT = appmod.CHART_TOP_GENRES_LIMIT
     CHART_MOST_SKIPPED_LIMIT = appmod.CHART_MOST_SKIPPED_LIMIT
-    SKIP_STATS_MIN_ENCOUNTERS = appmod.SKIP_STATS_MIN_ENCOUNTERS
 
     def overviewPage():
         from datetime import datetime
@@ -684,11 +683,9 @@ def register(app, dashboard):
         # "How often do I skip" is the donut above; these answer "what do I
         # skip". Ranked by rate above a floor - see Repository.getMostSkippedTracks.
         mostSkippedSongs = db.getMostSkippedSongs(
-            startDate=startDate, endDate=endDate,
-            limit=CHART_MOST_SKIPPED_LIMIT, minEncounters=SKIP_STATS_MIN_ENCOUNTERS)
+            startDate=startDate, endDate=endDate, limit=CHART_MOST_SKIPPED_LIMIT)
         mostSkippedArtists = db.getMostSkippedArtists(
-            startDate=startDate, endDate=endDate,
-            limit=CHART_MOST_SKIPPED_LIMIT, minEncounters=SKIP_STATS_MIN_ENCOUNTERS)
+            startDate=startDate, endDate=endDate, limit=CHART_MOST_SKIPPED_LIMIT)
 
         genreCoverage = emptyGenreCoverage()
         genreUnlocked = False

@@ -20,6 +20,7 @@ try:
     from Database.Listeners.spotifyListener import Listener
     from Database.repository import (
         Repository, IMAGE_KIND_TRACK, IMAGE_KIND_ARTIST, IMAGE_STATUS_OK, IMAGE_STATUS_FAILED,
+        SKIP_RATE_PRIOR_WEIGHT,
     )
     from Database.db import BEHAVIORAL_COLUMNS, SKIP_THRESHOLD_MS
     from Database.utils import parseError, convertToDatetime, dateToString, startOfDay, startOfWeek, startOfMonth, timeToInt, getTimezone
@@ -29,7 +30,10 @@ except ModuleNotFoundError:
     from Importers.StreamingHistoryImporter import Importer
     from Importers.AutoImporter import AutoImporter
     from Listeners.spotifyListener import Listener
-    from repository import Repository, IMAGE_KIND_TRACK, IMAGE_KIND_ARTIST, IMAGE_STATUS_OK, IMAGE_STATUS_FAILED
+    from repository import (
+        Repository, IMAGE_KIND_TRACK, IMAGE_KIND_ARTIST, IMAGE_STATUS_OK, IMAGE_STATUS_FAILED,
+        SKIP_RATE_PRIOR_WEIGHT,
+    )
     from db import BEHAVIORAL_COLUMNS, SKIP_THRESHOLD_MS
     from utils import parseError, convertToDatetime, dateToString, startOfDay, startOfWeek, startOfMonth, timeToInt, getTimezone
     from lastfm import LastfmClient, filterTagsToGenres, cleanLookupName, OUTCOME_OK, OUTCOME_NOT_FOUND, OUTCOME_TRANSIENT, OUTCOME_INVALID_KEY
@@ -981,18 +985,17 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
     SKIP_SORT_BY = "skips"
 
     def _skipSortedPage(self, fetch, startDate, endDate, limit, offset):
-        """Shared plumbing for a skip-ordered Top page: raw count ordering, no
-        minimum-encounters floor.
+        """Shared plumbing for a skip-ranked Top page.
 
-        A floor is right for the Charts top-N (rate is meaningless at low
-        volume) but wrong here - this is a complete, paged list, and a
-        threshold would silently omit rows the pagination has already counted.
-        Ordering by raw count needs no floor: a count isn't distorted by low
-        volume the way a rate is."""
+        Same ranking as the Charts lists - skip rate, shrunk toward the
+        library average - so "most skipped" means the same thing everywhere.
+        Ranking by raw count would just list whatever is played most, and for
+        albums that is literally longest-first, since a longer record offers
+        more chances to skip."""
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
         return fetch(self.user, startTs, endTs,
                      limit=(limit if limit is not None else -1), offset=offset,
-                     minEncounters=0, orderBy="count")
+                     priorWeight=SKIP_RATE_PRIOR_WEIGHT)
 
     @staticmethod
     def _withSkipRate(row: dict) -> dict:
@@ -1000,12 +1003,13 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         return {**row, "skipPercent": round(row["skips"] / encounters * 100, 1) if encounters else 0.0}
 
     def getMostSkippedSongs(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None,
-                             limit: int = 10, minEncounters: int = 5) -> list[dict]:
+                             limit: int = 10, priorWeight: int = SKIP_RATE_PRIOR_WEIGHT) -> list[dict]:
         """Highest skip-rate songs, hydrated with track metadata - the Charts
-        page's "Most skipped" list. Ranked by rate above a minimum-encounters
-        floor (see Repository.getMostSkippedTracks)."""
+        page's "Most skipped" list. Ranked by shrunk rate (see
+        Repository.getMostSkippedTracks); the percentage reported per row is
+        the true one."""
         rows = self.repo.getMostSkippedTracks(self.user, *self._dateRangeToTimestamps(startDate, endDate),
-                                               limit=limit, minEncounters=minEncounters)
+                                               limit=limit, priorWeight=priorWeight)
         if not rows:
             return []
         tracksById = self.repo.getTracksByIds([row["track_id"] for row in rows])
@@ -1024,11 +1028,11 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         return skipped
 
     def getMostSkippedArtists(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None,
-                               limit: int = 10, minEncounters: int = 5) -> list[dict]:
+                               limit: int = 10, priorWeight: int = SKIP_RATE_PRIOR_WEIGHT) -> list[dict]:
         """Highest skip-rate artists - see getMostSkippedSongs. Names come from
         the aggregate itself, so no second hydration query is needed."""
         rows = self.repo.getMostSkippedArtists(self.user, *self._dateRangeToTimestamps(startDate, endDate),
-                                                limit=limit, minEncounters=minEncounters)
+                                                limit=limit, priorWeight=priorWeight)
         return [{
             "id": row["artist_id"],
             "name": row["name"],

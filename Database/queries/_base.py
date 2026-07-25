@@ -28,6 +28,16 @@ IMAGE_STATUS_PENDING = "pending"
 IMAGE_STATUS_OK = "ok"
 IMAGE_STATUS_FAILED = "failed"
 
+# Everything skip-ranked is ordered by skip RATE, but a raw rate is wild when
+# you've barely heard something - skipped once out of two encounters is not a
+# 50% habit. So each row is ranked as if it started with this many encounters
+# at the library's own average skip rate, exactly like judging a restaurant
+# with one 5-star review against one with 500: the barely-heard drift toward
+# normal, the heavily-played keep their real number. Replaces an earlier
+# minimum-encounters cutoff, which hid rows entirely instead of tempering them.
+# Higher = more sceptical of small samples.
+SKIP_RATE_PRIOR_WEIGHT = 10
+
 # How long the metadata backfiller waits before re-attempting an album it already
 # processed - covers restricted/blanked albums whose metadata Spotify may fill in
 # (or unblock) later, without hammering the API for permanently dateless albums.

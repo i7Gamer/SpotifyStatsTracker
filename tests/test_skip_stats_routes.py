@@ -82,8 +82,8 @@ class TestChartsPayload(SkipStatsRouteTestCase):
         self.assertIsNotNone(kwargs["startDate"])
         self.assertIsNotNone(kwargs["endDate"])
 
-    def test_the_floor_and_limit_come_from_config(self):
-        from config import CHART_MOST_SKIPPED_LIMIT, SKIP_STATS_MIN_ENCOUNTERS
+    def test_the_limit_comes_from_config(self):
+        from config import CHART_MOST_SKIPPED_LIMIT
 
         dash = self._makeApp()
         db = self._makeDb()
@@ -92,7 +92,6 @@ class TestChartsPayload(SkipStatsRouteTestCase):
 
         for call in (db.getMostSkippedSongs.call_args, db.getMostSkippedArtists.call_args):
             self.assertEqual(call.kwargs["limit"], CHART_MOST_SKIPPED_LIMIT)
-            self.assertEqual(call.kwargs["minEncounters"], SKIP_STATS_MIN_ENCOUNTERS)
 
     def test_the_shell_renders_the_section_canvases(self):
         dash = self._makeApp()

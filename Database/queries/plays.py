@@ -1165,56 +1165,71 @@ class PlayQueries:
         ).fetchone()
         return {"plays": row["plays"], "skips": row["skips"]}
 
-    #< ORDER BY fragments for the two skip surfaces. "rate" answers "what do I
-    #  almost always skip" (a curated top-N, needs a minEncounters floor to
-    #  mean anything); "count" answers "what do I skip most" (a complete paged
-    #  list, where a floor would silently omit rows).
-    _SKIP_ORDERINGS = {
-        "rate": "(CAST(skips AS REAL) / encounters) DESC, skips DESC",
-        "count": "skips DESC, (CAST(skips AS REAL) / encounters) DESC",
-    }
+    def _shrunkSkipRateSql(self) -> str:
+        """Ranking expression: the row's skip rate, pulled toward the library's
+        own average by SKIP_RATE_PRIOR_WEIGHT imaginary encounters.
 
-    def _skipOrdering(self, orderBy: str) -> str:
-        if orderBy not in self._SKIP_ORDERINGS:
-            raise ValueError(f"Unknown skip ordering: {orderBy!r}")
-        return self._SKIP_ORDERINGS[orderBy]
+        A raw rate is unusable for ranking at low volume - one skip out of two
+        encounters is not a 50% habit, it's barely evidence. The old fix was a
+        minimum-encounters cutoff, which hid those rows entirely; this tempers
+        them instead, so nothing is silently missing from a paged list while
+        heavily-played rows keep essentially their real number.
+
+        Note this is the ORDER BY only. The percentage SHOWN to the user stays
+        the true skips/encounters - a displayed number should be the real one."""
+        return "(skips + ? * (SELECT rate FROM lib)) / (encounters + ?)"
+
+    def _libraryRateCte(self, username: str, params: list, startTs, endTs) -> str:
+        """The user's overall skip rate in range - the average low-volume rows
+        are pulled toward. Appends its own bound params, so it must be built
+        before the main query's."""
+        params.append(username)
+        rangeClause = self._dateRangeClause(params, startTs, endTs, column="played_at")
+        return f"""lib AS (
+                SELECT COALESCE(
+                    CAST(SUM(CASE WHEN is_skip = 1 THEN 1 ELSE 0 END) AS REAL) / NULLIF(COUNT(*), 0), 0
+                ) AS rate
+                FROM plays WHERE username = ?{rangeClause}
+            )"""
 
     def getMostSkippedTracks(self, username: str, startTs: float | None = None,
                               endTs: float | None = None, limit: int = 10, offset: int = 0,
-                              minEncounters: int = 5, orderBy: str = "rate") -> list[dict]:
-        """Tracks this user skips, ordered by rate or by raw count.
+                              priorWeight: int = SKIP_RATE_PRIOR_WEIGHT) -> list[dict]:
+        """Tracks this user skips, ranked by shrunk skip rate (see
+        _shrunkSkipRateSql), highest first.
 
-        Ranking by raw count just resurfaces whatever is most played, so the
-        Charts top-N uses rate. But rate only means anything above a floor - one
-        skip and no plays is a 100% rate - so `minEncounters` (plays + skips)
-        gates entry there. The Top Songs list passes orderBy="count" and no
-        floor instead: it's a complete paged list, where dropping rows below a
-        threshold would silently hide them.
+        Rate rather than raw count: a count just resurfaces whatever is played
+        most, and for albums it would literally rank by track count, since a
+        longer record offers more chances to skip. A rate is per encounter, so
+        length cancels out of it.
 
         Carries the same per-row figures the aggregate pages show (plays, time,
-        first listen) so a skip-sorted page can render normal cards without
+        first listen) so a skip-ranked page can render normal cards without
         touching getSongsPage - see the note there on why that query's
         is_skip=0 is left alone. first_listened_at falls back to the first
-        ENCOUNTER for a track that was only ever skipped (it has no real
-        listen to report)."""
-        ordering = self._skipOrdering(orderBy)
-        conn = self._conn()
-        params: list = [username]
+        ENCOUNTER for a track that was only ever skipped."""
+        params: list = []
+        libCte = self._libraryRateCte(username, params, startTs, endTs)
+        params.append(username)
         rangeClause = self._dateRangeClause(params, startTs, endTs, column="played_at")
-        params += [minEncounters, limit, offset]
-        rows = conn.execute(
+        params += [priorWeight, priorWeight, limit, offset]
+        rows = self._conn().execute(
             f"""
-            SELECT track_id,
-                   SUM(CASE WHEN is_skip = 1 THEN 1 ELSE 0 END) AS skips,
-                   SUM(CASE WHEN is_skip = 0 THEN 1 ELSE 0 END) AS plays,
-                   COUNT(*) AS encounters,
-                   COALESCE(SUM(CASE WHEN is_skip = 0 THEN time_played ELSE 0 END), 0) AS total_time_listened,
-                   COALESCE(MIN(CASE WHEN is_skip = 0 THEN played_at END), MIN(played_at)) AS first_listened_at
-            FROM plays
-            WHERE username = ?{rangeClause}
-            GROUP BY track_id
-            HAVING encounters >= ? AND skips > 0
-            ORDER BY {ordering}, track_id ASC
+            WITH {libCte},
+            agg AS (
+                SELECT track_id,
+                       SUM(CASE WHEN is_skip = 1 THEN 1 ELSE 0 END) AS skips,
+                       SUM(CASE WHEN is_skip = 0 THEN 1 ELSE 0 END) AS plays,
+                       COUNT(*) AS encounters,
+                       COALESCE(SUM(CASE WHEN is_skip = 0 THEN time_played ELSE 0 END), 0) AS total_time_listened,
+                       COALESCE(MIN(CASE WHEN is_skip = 0 THEN played_at END), MIN(played_at)) AS first_listened_at
+                FROM plays
+                WHERE username = ?{rangeClause}
+                GROUP BY track_id
+                HAVING skips > 0
+            )
+            SELECT * FROM agg
+            ORDER BY {self._shrunkSkipRateSql()} DESC, skips DESC, track_id ASC
             LIMIT ? OFFSET ?
             """,
             params,
@@ -1222,21 +1237,20 @@ class PlayQueries:
         return [dict(row) for row in rows]
 
     def getSkippedTracksCount(self, username: str, startTs: float | None = None,
-                               endTs: float | None = None, minEncounters: int = 0) -> int:
-        """How many tracks would appear in a skip-ordered list - the paging
-        counterpart to getMostSkippedTracks."""
-        conn = self._conn()
+                               endTs: float | None = None) -> int:
+        """How many tracks appear in a skip-ranked list - the paging counterpart
+        to getMostSkippedTracks. Every track with at least one skip qualifies:
+        low-volume rows are tempered by the ranking rather than excluded, so the
+        count and the pages always agree."""
         params: list = [username]
         rangeClause = self._dateRangeClause(params, startTs, endTs, column="played_at")
-        params.append(minEncounters)
-        row = conn.execute(
+        row = self._conn().execute(
             f"""
             SELECT COUNT(*) AS c FROM (
-                SELECT track_id
-                FROM plays
+                SELECT track_id FROM plays
                 WHERE username = ?{rangeClause}
                 GROUP BY track_id
-                HAVING COUNT(*) >= ? AND SUM(CASE WHEN is_skip = 1 THEN 1 ELSE 0 END) > 0
+                HAVING SUM(CASE WHEN is_skip = 1 THEN 1 ELSE 0 END) > 0
             )
             """,
             params,
@@ -1245,32 +1259,35 @@ class PlayQueries:
 
     def getMostSkippedArtists(self, username: str, startTs: float | None = None,
                                endTs: float | None = None, limit: int = 10, offset: int = 0,
-                               minEncounters: int = 5, orderBy: str = "rate") -> list[dict]:
-        """Artists this user skips - see getMostSkippedTracks for the rate-vs-
-        count split and why the floor exists. A play of a track with several
-        credited artists counts toward each of them, matching how every other
-        artist aggregate here treats collaborations."""
-        ordering = self._skipOrdering(orderBy)
-        conn = self._conn()
-        params: list = [username]
+                               priorWeight: int = SKIP_RATE_PRIOR_WEIGHT) -> list[dict]:
+        """Artists this user skips, ranked like getMostSkippedTracks. A play of
+        a track with several credited artists counts toward each of them,
+        matching how every other artist aggregate here treats collaborations."""
+        params: list = []
+        libCte = self._libraryRateCte(username, params, startTs, endTs)
+        params.append(username)
         rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
-        params += [minEncounters, limit, offset]
-        rows = conn.execute(
+        params += [priorWeight, priorWeight, limit, offset]
+        rows = self._conn().execute(
             f"""
-            SELECT ar.id AS artist_id, ar.name AS name, ar.url AS url, ar.image_id AS image_id,
-                   SUM(CASE WHEN p.is_skip = 1 THEN 1 ELSE 0 END) AS skips,
-                   SUM(CASE WHEN p.is_skip = 0 THEN 1 ELSE 0 END) AS plays,
-                   COUNT(*) AS encounters,
-                   COALESCE(SUM(CASE WHEN p.is_skip = 0 THEN p.time_played ELSE 0 END), 0) AS total_time_listened,
-                   COALESCE(MIN(CASE WHEN p.is_skip = 0 THEN p.played_at END), MIN(p.played_at)) AS first_listened_at,
-                   COUNT(DISTINCT p.track_id) AS unique_song_count
-            FROM plays p
-            JOIN track_artists ta ON ta.track_id = p.track_id
-            JOIN artists ar ON ar.id = ta.artist_id
-            WHERE p.username = ?{rangeClause}
-            GROUP BY ar.id
-            HAVING encounters >= ? AND skips > 0
-            ORDER BY {ordering}, ar.id ASC
+            WITH {libCte},
+            agg AS (
+                SELECT ar.id AS artist_id, ar.name AS name, ar.url AS url, ar.image_id AS image_id,
+                       SUM(CASE WHEN p.is_skip = 1 THEN 1 ELSE 0 END) AS skips,
+                       SUM(CASE WHEN p.is_skip = 0 THEN 1 ELSE 0 END) AS plays,
+                       COUNT(*) AS encounters,
+                       COALESCE(SUM(CASE WHEN p.is_skip = 0 THEN p.time_played ELSE 0 END), 0) AS total_time_listened,
+                       COALESCE(MIN(CASE WHEN p.is_skip = 0 THEN p.played_at END), MIN(p.played_at)) AS first_listened_at,
+                       COUNT(DISTINCT p.track_id) AS unique_song_count
+                FROM plays p
+                JOIN track_artists ta ON ta.track_id = p.track_id
+                JOIN artists ar ON ar.id = ta.artist_id
+                WHERE p.username = ?{rangeClause}
+                GROUP BY ar.id
+                HAVING skips > 0
+            )
+            SELECT * FROM agg
+            ORDER BY {self._shrunkSkipRateSql()} DESC, skips DESC, artist_id ASC
             LIMIT ? OFFSET ?
             """,
             params,
@@ -1278,21 +1295,18 @@ class PlayQueries:
         return [dict(row) for row in rows]
 
     def getSkippedArtistsCount(self, username: str, startTs: float | None = None,
-                                endTs: float | None = None, minEncounters: int = 0) -> int:
+                                endTs: float | None = None) -> int:
         """Paging counterpart to getMostSkippedArtists."""
-        conn = self._conn()
         params: list = [username]
         rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
-        params.append(minEncounters)
-        row = conn.execute(
+        row = self._conn().execute(
             f"""
             SELECT COUNT(*) AS c FROM (
                 SELECT ta.artist_id
-                FROM plays p
-                JOIN track_artists ta ON ta.track_id = p.track_id
+                FROM plays p JOIN track_artists ta ON ta.track_id = p.track_id
                 WHERE p.username = ?{rangeClause}
                 GROUP BY ta.artist_id
-                HAVING COUNT(*) >= ? AND SUM(CASE WHEN p.is_skip = 1 THEN 1 ELSE 0 END) > 0
+                HAVING SUM(CASE WHEN p.is_skip = 1 THEN 1 ELSE 0 END) > 0
             )
             """,
             params,
@@ -1301,36 +1315,40 @@ class PlayQueries:
 
     def getMostSkippedAlbums(self, username: str, startTs: float | None = None,
                               endTs: float | None = None, limit: int = 10, offset: int = 0,
-                              minEncounters: int = 5, orderBy: str = "rate") -> list[dict]:
+                              priorWeight: int = SKIP_RATE_PRIOR_WEIGHT) -> list[dict]:
         """Albums this user skips, aggregated across every track on them.
 
-        NOTE the asymmetry with tracks and artists: an album's encounter count
-        scales with how many tracks it has, so a long album accumulates skips
-        (and rate denominators) faster than a single. See getMostSkippedTracks
-        for the rate-vs-count split."""
-        ordering = self._skipOrdering(orderBy)
-        conn = self._conn()
-        params: list = [username]
+        Ranking by rate matters most here: an album's raw skip COUNT scales
+        with how many tracks it has, so counting would put a 60-track
+        compilation above a single that gets skipped every time it comes on. A
+        rate is per encounter, so album length cancels out entirely."""
+        params: list = []
+        libCte = self._libraryRateCte(username, params, startTs, endTs)
+        params.append(username)
         rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
-        params += [minEncounters, limit, offset]
-        rows = conn.execute(
+        params += [priorWeight, priorWeight, limit, offset]
+        rows = self._conn().execute(
             f"""
-            SELECT al.id AS album_id, al.name AS name, al.url AS url, al.image_id AS image_id,
-                   al.image_url AS image_url, al.total_tracks AS total_tracks,
-                   al.release_date AS release_date,
-                   SUM(CASE WHEN p.is_skip = 1 THEN 1 ELSE 0 END) AS skips,
-                   SUM(CASE WHEN p.is_skip = 0 THEN 1 ELSE 0 END) AS plays,
-                   COUNT(*) AS encounters,
-                   COALESCE(SUM(CASE WHEN p.is_skip = 0 THEN p.time_played ELSE 0 END), 0) AS total_time_listened,
-                   COALESCE(MIN(CASE WHEN p.is_skip = 0 THEN p.played_at END), MIN(p.played_at)) AS first_listened_at,
-                   COUNT(DISTINCT p.track_id) AS unique_song_count
-            FROM plays p
-            JOIN tracks t ON t.id = p.track_id
-            JOIN albums al ON al.id = t.album_id
-            WHERE p.username = ?{rangeClause}
-            GROUP BY al.id
-            HAVING encounters >= ? AND skips > 0
-            ORDER BY {ordering}, al.id ASC
+            WITH {libCte},
+            agg AS (
+                SELECT al.id AS album_id, al.name AS name, al.url AS url, al.image_id AS image_id,
+                       al.image_url AS image_url, al.total_tracks AS total_tracks,
+                       al.release_date AS release_date,
+                       SUM(CASE WHEN p.is_skip = 1 THEN 1 ELSE 0 END) AS skips,
+                       SUM(CASE WHEN p.is_skip = 0 THEN 1 ELSE 0 END) AS plays,
+                       COUNT(*) AS encounters,
+                       COALESCE(SUM(CASE WHEN p.is_skip = 0 THEN p.time_played ELSE 0 END), 0) AS total_time_listened,
+                       COALESCE(MIN(CASE WHEN p.is_skip = 0 THEN p.played_at END), MIN(p.played_at)) AS first_listened_at,
+                       COUNT(DISTINCT p.track_id) AS unique_song_count
+                FROM plays p
+                JOIN tracks t ON t.id = p.track_id
+                JOIN albums al ON al.id = t.album_id
+                WHERE p.username = ?{rangeClause}
+                GROUP BY al.id
+                HAVING skips > 0
+            )
+            SELECT * FROM agg
+            ORDER BY {self._shrunkSkipRateSql()} DESC, skips DESC, album_id ASC
             LIMIT ? OFFSET ?
             """,
             params,
@@ -1338,21 +1356,18 @@ class PlayQueries:
         return [dict(row) for row in rows]
 
     def getSkippedAlbumsCount(self, username: str, startTs: float | None = None,
-                               endTs: float | None = None, minEncounters: int = 0) -> int:
+                               endTs: float | None = None) -> int:
         """Paging counterpart to getMostSkippedAlbums."""
-        conn = self._conn()
         params: list = [username]
         rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
-        params.append(minEncounters)
-        row = conn.execute(
+        row = self._conn().execute(
             f"""
             SELECT COUNT(*) AS c FROM (
                 SELECT t.album_id
-                FROM plays p
-                JOIN tracks t ON t.id = p.track_id
+                FROM plays p JOIN tracks t ON t.id = p.track_id
                 WHERE p.username = ?{rangeClause}
                 GROUP BY t.album_id
-                HAVING COUNT(*) >= ? AND SUM(CASE WHEN p.is_skip = 1 THEN 1 ELSE 0 END) > 0
+                HAVING SUM(CASE WHEN p.is_skip = 1 THEN 1 ELSE 0 END) > 0
             )
             """,
             params,

@@ -6,9 +6,10 @@ Two things matter here beyond "it sorts":
    getAlbumsPage. Their WHERE is_skip=0 is load-bearing for their query plans
    (an is_skip partial index was measured to regress top-songs 2x), which is
    why this is a separate query rather than a skips column on those.
-2. Ordering here is by raw COUNT with no minimum-encounters floor - the
-   opposite of the Charts top-N, which ranks by rate above a floor. A complete
-   paged list must not silently omit rows the pagination already counted.
+2. Ordering is the same shrunk skip RATE the Charts top-N uses, so "most
+   skipped" means one thing across the app. Nothing is filtered out: a paged
+   list must not silently omit rows the pagination already counted, which is
+   what shrinkage buys over the minimum-encounters floor it replaced.
 """
 import datetime
 import os
@@ -50,19 +51,21 @@ class SkipSortTestCase(DatabaseTestCase):
 
 
 class TestSongsSortedBySkips(SkipSortTestCase):
-    def test_orders_by_raw_count_not_by_rate(self):
-        """The inverse of the Charts ranking: `many` is skipped more often in
-        absolute terms even though `always` has the higher rate."""
-        self._seed("many", plays=50, skips=20)
-        self._seed("always", plays=0, skips=6)
+    def test_orders_by_rate_not_by_raw_count(self):
+        """`many` is skipped more times in absolute terms, but `always` is
+        skipped a far higher share of the times it comes up - and a share is
+        what "most skipped" should mean."""
+        self._seed("bulk", plays=200, skips=0)   #< the rest of the library, so the average is normal
+        self._seed("many", plays=50, skips=20)   #< 20 skips, 29%
+        self._seed("always", plays=2, skips=18)  #< 18 skips, 90%
 
         ranked = self.db.getTopSongs(by="skips", limit=10)
 
-        self.assertEqual([s["id"] for s in ranked], ["many", "always"])
+        self.assertEqual([s["id"] for s in ranked], ["always", "many"])
 
-    def test_no_minimum_encounters_floor_applies(self):
-        """A single skip is enough to appear - unlike the Charts list, this one
-        is complete, and a floor would hide rows the page count includes."""
+    def test_nothing_is_filtered_out_by_low_volume(self):
+        """A single skip is enough to appear. Shrinkage tempers where such a row
+        RANKS; it never hides one, because the page count includes it."""
         self._seed("barely", plays=0, skips=1)
 
         self.assertEqual([s["id"] for s in self.db.getTopSongs(by="skips", limit=10)], ["barely"])
@@ -159,7 +162,7 @@ class TestTheHotAggregateIsNotUsed(SkipSortTestCase):
 
 
 class TestArtistsAndAlbumsSortedBySkips(SkipSortTestCase):
-    def test_artists_order_by_skip_count(self):
+    def test_artists_order_by_skip_rate(self):
         self._seed("t1", plays=1, skips=5, artistId="skipped", artistName="Skipped")
         self._seed("t2", plays=20, skips=1, artistId="loved", artistName="Loved")
 
@@ -168,14 +171,18 @@ class TestArtistsAndAlbumsSortedBySkips(SkipSortTestCase):
         self.assertEqual([a["name"] for a in ranked], ["Skipped", "Loved"])
         self.assertEqual(ranked[0]["skips"], 5)
 
-    def test_albums_order_by_skip_count(self):
-        self._seed("t1", plays=1, skips=5, albumId="albA")
-        self._seed("t2", plays=9, skips=1, albumId="albB")
+    def test_albums_order_by_skip_rate_so_length_does_not_decide(self):
+        """The reason albums rank by rate: a long record collects more skips
+        just by having more tracks. `long` has 20 skips to `short`'s 8, but it
+        is skipped a quarter of the time against `short`'s four fifths."""
+        self._seed("t1", plays=30, skips=10, albumId="long")
+        self._seed("t2", plays=30, skips=10, albumId="long")
+        self._seed("t3", plays=2, skips=8, albumId="short")
 
         ranked = self.db.getTopAlbums(by="skips", limit=10)
 
-        self.assertEqual([a["id"] for a in ranked], ["albA", "albB"])
-        self.assertEqual(ranked[0]["skips"], 5)
+        self.assertEqual([a["id"] for a in ranked], ["short", "long"])
+        self.assertEqual(ranked[1]["skips"], 20)   #< the loser still has the bigger raw count
 
     def test_album_skips_aggregate_across_its_tracks(self):
         self._seed("t1", plays=1, skips=2, albumId="alb1")
@@ -200,16 +207,19 @@ class TestSortParamValidation(unittest.TestCase):
 
         self.assertIn("skips", VALID_SORT_BY)
 
-    def test_an_unknown_ordering_is_rejected_rather_than_interpolated(self):
-        """orderBy reaches an ORDER BY fragment, so it must be whitelisted."""
+    def test_the_ranking_weight_reaches_sql_as_a_bound_param(self):
+        """The predecessor took an `orderBy` string that was interpolated into
+        the ORDER BY and so had to be whitelisted. The ranking is now one fixed
+        expression and the only caller-supplied value is bound, so a hostile
+        priorWeight is data, never syntax."""
         from Database.repository import Repository
         from pathlib import Path
 
         repo = Repository(Path(":memory:"))
         self.addCleanup(repo.connectionManager.close)
 
-        with self.assertRaises(ValueError):
-            repo.getMostSkippedTracks("alice", orderBy="skips; DROP TABLE plays")
+        self.assertEqual(repo._shrunkSkipRateSql().count("?"), 2)
+        self.assertEqual(repo.getMostSkippedTracks("alice", priorWeight="1); DROP TABLE plays --"), [])
 
 
 if __name__ == "__main__":
