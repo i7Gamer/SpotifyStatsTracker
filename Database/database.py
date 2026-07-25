@@ -304,6 +304,7 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         # Raised by importHistoryBatch once a batch actually changed play
         # history; the periodic milestone pass consumes it to re-derive
         # milestone achieved_at dates (see consumeMilestoneRecalcFlag).
+        self._milestone_flag_lock = threading.Lock()
         self.milestonesRecalcPending = False
 
         self.refreshSettings()
@@ -377,13 +378,23 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         supports, right after detection has recorded any import-crossed rows.
         Deliberately in-memory only - a restart drops it, which self-heals for
         dates because the next pass that records a crossing also triggers a
-        re-derivation (pruning waits for the next import's flag). A plain
-        boolean flip either side (GIL-atomic), so no lock: worst case a
-        re-raised flag costs one extra idempotent recalculation a cycle
-        later."""
-        pending = self.milestonesRecalcPending
-        self.milestonesRecalcPending = False
+        re-derivation (pruning waits for the next import's flag).
+
+        The read and the clear are one step under a lock. They used to be two
+        statements, so an import raising the flag between them had its raise
+        erased - and that import's pruning of milestones its rewritten history
+        no longer supports never ran (the loss the old "worst case is one extra
+        recalculation" note missed: the risk is a DROPPED flag, not a duplicate
+        one)."""
+        with self._milestone_flag_lock:
+            pending = self.milestonesRecalcPending
+            self.milestonesRecalcPending = False
         return pending
+
+    def raiseMilestoneRecalcFlag(self) -> None:
+        """Mark that an import changed play history - see consumeMilestoneRecalcFlag."""
+        with self._milestone_flag_lock:
+            self.milestonesRecalcPending = True
 
     def refreshSettings(self) -> None:
         from zoneinfo import ZoneInfo
@@ -566,20 +577,23 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
     def getEntriesFromOld(self, count: int | None = None, startIndex: int = 0, fullPagination: bool = True,
                            startDate: datetime.datetime = None, endDate: datetime.datetime = None,
                            trackId: str | None = None, artistId: str | None = None,
-                           albumId: str | None = None, includeSkips: bool = False) -> list:
+                           albumId: str | None = None, includeSkips: bool = False,
+                           afterTs: float | None = None) -> list:
         """ Return the oldest `count` entries from history, sorted from oldest to newest. If count is None, return all entries.
-        startDate/endDate and trackId/artistId/albumId: see getEntriesFromNew's identical params."""
+        startDate/endDate and trackId/artistId/albumId: see getEntriesFromNew's identical params.
+        afterTs: see Repository.getPlaysOldestFirst."""
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
         entries = self.repo.getPlaysOldestFirst(self.user, count=count, startIndex=startIndex, startTs=startTs, endTs=endTs,
                                                  trackId=trackId, artistId=artistId, albumId=albumId,
-                                                 includeSkips=includeSkips)
+                                                 includeSkips=includeSkips, afterTs=afterTs)
         return self._paginateEntries(entries) if fullPagination else entries
 
-    def getSkipEntriesFromOld(self, count: int | None = None, startIndex: int = 0, fullPagination: bool = True) -> list:
+    def getSkipEntriesFromOld(self, count: int | None = None, startIndex: int = 0, fullPagination: bool = True,
+                               afterTs: float | None = None) -> list:
         """Skip events (plays.is_skip=1) oldest first, hydrated like plays - the
         JSON export's trailing section, so skips round-trip between
         instances (they re-import as sub-threshold entries)."""
-        entries = self.repo.getSkipsOldestFirst(self.user, count=count, startIndex=startIndex)
+        entries = self.repo.getSkipsOldestFirst(self.user, count=count, startIndex=startIndex, afterTs=afterTs)
         return self._paginateEntries(entries) if fullPagination else entries
 
     def searchEntries(self, query: str, count: int | None = None, startIndex: int = 0,

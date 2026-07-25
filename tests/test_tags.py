@@ -173,6 +173,55 @@ class TestTagQueries(unittest.TestCase):
         self.assertEqual(self.repo.getTagsForEntity("alice", "track", "t1"), [])
 
 
+class TestRenameTagConflictMerge(unittest.TestCase):
+    """renameTag is two statements - UPDATE OR IGNORE, then a sweep-DELETE for
+    the rows the unique key rejected. Every existing test renamed onto a FRESH
+    name, so the merge half never ran: simplifying it back to a plain UPDATE
+    would have passed the suite and then thrown a constraint error in
+    production the first time someone merged two tags."""
+
+    def setUp(self):
+        self.repo = Repository(Path(":memory:"))
+        self.repo.upsertUser("alice", "alice@example.com")
+        for trackId, albumId, artistId in (("t1", "alb1", "art1"), ("t2", "alb2", "art2")):
+            self.repo.upsertTrack(makeTrack(trackId=trackId, albumId=albumId, artistId=artistId))
+            self.repo.insertPlay("alice", trackId, 1000.0, 200000)
+        self.repo.commit()
+
+    def tearDown(self):
+        self.repo.connectionManager.close()
+
+    def test_renaming_onto_an_existing_tag_merges_instead_of_erroring(self):
+        self.repo.addTag("alice", "workout", "track", "t1")
+        self.repo.addTag("alice", "gym", "track", "t1")       #< the collision: both on t1
+
+        self.repo.renameTag("alice", "workout", "gym")
+
+        self.assertEqual(self.repo.getTagsForEntity("alice", "track", "t1"), ["gym"])
+        self.assertEqual([t["tag"] for t in self.repo.getUserTags("alice")], ["gym"])
+
+    def test_the_merge_keeps_rows_that_did_not_collide(self):
+        self.repo.addTag("alice", "workout", "track", "t1")
+        self.repo.addTag("alice", "gym", "track", "t1")
+        self.repo.addTag("alice", "workout", "track", "t2")   #< no gym on t2 - must survive as gym
+
+        self.repo.renameTag("alice", "workout", "gym")
+
+        self.assertEqual(self.repo.getTagsForEntity("alice", "track", "t1"), ["gym"])
+        self.assertEqual(self.repo.getTagsForEntity("alice", "track", "t2"), ["gym"])
+        self.assertEqual([t["count"] for t in self.repo.getUserTags("alice")], [2])
+
+    def test_no_duplicate_rows_survive_the_merge(self):
+        self.repo.addTag("alice", "workout", "track", "t1")
+        self.repo.addTag("alice", "gym", "track", "t1")
+
+        self.repo.renameTag("alice", "workout", "gym")
+
+        rows = self.repo._conn().execute(
+            "SELECT COUNT(*) FROM user_tags WHERE username='alice' AND entity_id='t1'").fetchone()
+        self.assertEqual(rows[0], 1)
+
+
 class TestTagsAreScopedPerUser(unittest.TestCase):
     """Every TagQueries method scopes by `username = ?`, but the rest of this
     file only ever seeds one user - so a dropped clause in a rewrite would leak

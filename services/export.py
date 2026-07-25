@@ -22,32 +22,53 @@ EXPORT_BOOL_EXTRAS = (("shuffle", "shuffle"), ("skipped", "skipped"),
                       ("offline", "offline"), ("incognito", "incognito_mode"))
 
 
+def _iterKeysetChunks(fetch):
+    """Stream every row `fetch(afterTs)` can return, oldest first, paging by
+    position in time instead of by OFFSET.
+
+    OFFSET pagination assumed the rows behind the cursor never move. Inserts
+    can't move them (a new play has the newest played_at), but DELETES can: an
+    overwrite import's covered-range wipe, or the listener's Web-API
+    reconciliation removing a play, shifts every later row left by one - and
+    the next OFFSET then steps straight over that many entries, silently
+    dropping them from the file the user downloads.
+
+    played_at is not unique on its own (two different tracks can carry the same
+    timestamp), so each chunk starts AT the last timestamp seen and the entries
+    already emitted at exactly that timestamp are filtered out."""
+    afterTs = None
+    emittedAtCursor = set()
+    while True:
+        entries = fetch(afterTs)
+        if not entries:
+            return
+        fresh = [e for e in entries if (e.get("id"), e.get("playedAt")) not in emittedAtCursor]
+        if not fresh:
+            # Only reachable if a whole chunk shares one timestamp, which would
+            # need EXPORT_CHUNK_SIZE distinct tracks played in the same second.
+            return
+        yield from fresh
+        afterTs = fresh[-1].get("playedAt")
+        emittedAtCursor = {(e.get("id"), e.get("playedAt")) for e in fresh
+                           if e.get("playedAt") == afterTs}
+        if len(entries) < EXPORT_CHUNK_SIZE:
+            return
+
+
 def iterExportEntries(db, includeSkips=False):
     """Every play (oldest first) with hydrated track metadata, fetched in
     EXPORT_CHUNK_SIZE batches so an export never holds the whole history
-    in memory. Plays recorded while the export streams have the newest
-    played_at, so they can only appear at the very end - earlier chunks
-    can't shift underneath the OFFSET pagination.
+    in memory.
 
     includeSkips: skip events (plays.is_skip=1) follow after every play (their
     sub-threshold ms_played re-imports as is_skip=1). JSON only - the CSV stays
     real-plays-only for spreadsheet use."""
-    startIndex = 0
-    while True:
-        entries = db.getEntriesFromOld(count=EXPORT_CHUNK_SIZE, startIndex=startIndex)
-        if not entries:
-            break
-        yield from entries
-        startIndex += EXPORT_CHUNK_SIZE
+    yield from _iterKeysetChunks(
+        lambda afterTs: db.getEntriesFromOld(count=EXPORT_CHUNK_SIZE, afterTs=afterTs))
     if not includeSkips:
         return
-    startIndex = 0
-    while True:
-        entries = db.getSkipEntriesFromOld(count=EXPORT_CHUNK_SIZE, startIndex=startIndex)
-        if not entries:
-            return
-        yield from entries
-        startIndex += EXPORT_CHUNK_SIZE
+    yield from _iterKeysetChunks(
+        lambda afterTs: db.getSkipEntriesFromOld(count=EXPORT_CHUNK_SIZE, afterTs=afterTs))
 
 
 # Spreadsheet apps (Excel, Sheets, LibreOffice) treat a cell whose text starts

@@ -6,14 +6,44 @@ import Database.database as _dbmod  # noqa: F401 - module-global names
 # working after this relocation.
 
 
+# Cover art from Spotify's CDN is tens of KB; this is a wide ceiling that only
+# a misbehaving or redirected endpoint would reach. Without it the whole body is
+# materialized in memory before PIL ever inspects it, so one bad response could
+# balloon a worker thread's footprint.
+MAX_IMAGE_BYTES = 12 * 1024 * 1024
+
+
 class MediaFetchMixin:
     """Album/artist image + Last.fm biography fetching and on-demand refresh, mixed into Database."""
 
+    @staticmethod
+    def _readCappedBody(response) -> bytes:
+        """The response body, refusing anything over MAX_IMAGE_BYTES.
+
+        Content-Length is only an early exit - a server may omit or understate
+        it - so the body is also accumulated with a hard stop. Streaming keeps
+        an oversized response from being materialized in full before PIL ever
+        looks at it."""
+        declared = response.headers.get("Content-Length") if getattr(response, "headers", None) else None
+        if declared is not None and str(declared).isdigit() and int(declared) > MAX_IMAGE_BYTES:
+            raise ValueError(f"image too large: {declared} bytes (max {MAX_IMAGE_BYTES})")
+
+        chunks, total = [], 0
+        for chunk in response.iter_content(chunk_size=64 * 1024):
+            if not chunk:
+                continue
+            total += len(chunk)
+            if total > MAX_IMAGE_BYTES:
+                raise ValueError(f"image exceeds {MAX_IMAGE_BYTES} bytes")
+            chunks.append(chunk)
+        return b"".join(chunks)
+
     def _downloadImageTask(self, path: Path, url: str, imgId: str, kind: str):
         try:
-            response = _dbmod.requests.get(url, timeout=10)
+            response = _dbmod.requests.get(url, timeout=10, stream=True)
             response.raise_for_status()
-            img = _dbmod.Image.open(_dbmod.BytesIO(response.content))
+            content = self._readCappedBody(response)
+            img = _dbmod.Image.open(_dbmod.BytesIO(content))
             # Always store as JPEG: the templates hardcode `<imgId>.jpeg`, so an
             # image saved under its source format (e.g. .png) would 404 forever.
             if img.mode not in ("RGB", "L"):

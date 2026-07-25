@@ -142,8 +142,8 @@ class TestProcessPlayCaching(unittest.TestCase):
 
         # The cached copies do not
         self.assertIn("track999", known)
-        self.assertIn("Metadata Only SongArtist Name", known)
-        for cached in (known["track999"], known["Metadata Only SongArtist Name"]):
+        self.assertIn("Metadata Only Song::Artist Name", known)   #< see _knownNameKey
+        for cached in (known["track999"], known["Metadata Only Song::Artist Name"]):
             self.assertNotIn("playedAt", cached)
             self.assertNotIn("timePlayed", cached)
             self.assertNotIn("playedFrom", cached)

@@ -1,4 +1,25 @@
+import hashlib
+
 from Database.utils import timeToInt, convertToDatetime
+
+# Prefix for ids fabricated when a response carries none, matching the
+# importer's synthetic-track convention (see StreamingHistoryImporter).
+SYNTHETIC_ID_PREFIX = "synth_"
+
+
+def _fallbackId(kind: str, name: str) -> str:
+    """A stable, obviously-fabricated id for an entity a response returned
+    without one.
+
+    The previous fallbacks were a real artist id and a real album id (plus a
+    literal 0 for imageId), so every id-less entity of a kind collapsed into
+    ONE catalog row - merging unrelated artists together - and linked out to a
+    stranger's Spotify page. Deriving from the name keeps distinct names
+    distinct, and the synth_ prefix keeps them recognizable as placeholders
+    the metadata backfiller can replace."""
+    digest = hashlib.sha1(f"{kind}:{name}".encode("utf-8")).hexdigest()[:16]
+    return f"{SYNTHETIC_ID_PREFIX}{kind}_{digest}"
+
 
 class Client:
     @staticmethod
@@ -6,13 +27,18 @@ class Client:
         artists = []
 
         for artist in (albumRaw.get("artists") or []):
+            name = artist.get("name", "")
+            artistId = artist.get("id") or _fallbackId("artist", name)
             artists.append(
                 {
-                    "name": artist.get("name", ""),
-                    "url": artist.get("external_urls", {}).get("spotify", "https://open.spotify.com/artist/6FXMGgJwohJLUSr5nVlf9X"),
+                    "name": name,
+                    # No url for a fabricated id: an "Open in Spotify" link
+                    # built from one would point at the wrong entity (the app's
+                    # convention is that fabricated ids carry an empty url).
+                    "url": artist.get("external_urls", {}).get("spotify", "") if artist.get("id") else "",
                     "imageUrl": "",
-                    "imageId": artist.get("id", 0),
-                    "id": artist.get("id", "6FXMGgJwohJLUSr5nVlf9X"),
+                    "imageId": artistId,
+                    "id": artistId,
                 }
             )
 
@@ -22,12 +48,14 @@ class Client:
     def _formatAlbum(albumRaw):
         images = albumRaw.get("images") or []
         firstImage = images[0] if images else {}
+        name = albumRaw.get("name", "Unknown album")
+        albumId = albumRaw.get("id") or _fallbackId("album", name)
 
         return {
-            "name": albumRaw.get("name", "Unknown album"),
-            "url": albumRaw.get("external_urls", {}).get("spotify", "https://open.spotify.com/album/49MNmJhZQewjt06rpwp6QR"),
-            "id": albumRaw.get("id", 0),
-            "imageId": albumRaw.get("id", 0),
+            "name": name,
+            "url": albumRaw.get("external_urls", {}).get("spotify", "") if albumRaw.get("id") else "",
+            "id": albumId,
+            "imageId": albumId,
             "imageUrl": firstImage.get("url", ""),
             "totalTracks": albumRaw.get("total_tracks", 0),
             "releaseDate": convertToDatetime(albumRaw.get("release_date", "NA")).timestamp(),

@@ -247,5 +247,63 @@ class TestAutoRecalcWiring(AppTestCase):
         mockRecalc.assert_not_called()
 
 
+class TestRecalcFlagIsAtomic(DatabaseTestCase):
+    """The read and the clear used to be two separate statements, so an import
+    raising the flag in between had its raise erased - and that import's pruning
+    of milestones its rewritten history no longer supports never ran."""
+
+    def test_a_raise_during_consume_is_not_swallowed(self):
+        import threading
+
+        db = self._makeDb({}, [])
+        db.raiseMilestoneRecalcFlag()
+        started = threading.Event()
+        release = threading.Event()
+
+        # Stand in for the window between the read and the clear: a concurrent
+        # import lands its raise while the consumer holds the lock.
+        original = db._milestone_flag_lock
+
+        class SlowLock:
+            def __enter__(self):
+                original.acquire()
+                started.set()
+                release.wait(5)
+                return self
+
+            def __exit__(self, *exc):
+                original.release()
+                return False
+
+        db._milestone_flag_lock = SlowLock()
+        result = {}
+
+        def consume():
+            result["pending"] = db.consumeMilestoneRecalcFlag()
+
+        consumer = threading.Thread(target=consume)
+        consumer.start()
+        self.assertTrue(started.wait(5))
+
+        raiser = threading.Thread(target=db.raiseMilestoneRecalcFlag)
+        raiser.start()
+        raiser.join(timeout=0.2)
+        self.assertTrue(raiser.is_alive(), "the raise slipped in mid-consume")
+
+        release.set()
+        consumer.join(timeout=5)
+        raiser.join(timeout=5)
+
+        self.assertTrue(result["pending"])                     #< the first import's flag was seen
+        self.assertTrue(db.milestonesRecalcPending)            #< and the second's survived
+
+    def test_consume_is_still_one_shot(self):
+        db = self._makeDb({}, [])
+        db.raiseMilestoneRecalcFlag()
+
+        self.assertTrue(db.consumeMilestoneRecalcFlag())
+        self.assertFalse(db.consumeMilestoneRecalcFlag())
+
+
 if __name__ == "__main__":
     unittest.main()

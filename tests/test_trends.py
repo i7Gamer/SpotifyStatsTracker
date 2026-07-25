@@ -156,3 +156,74 @@ class TestTrendQueries(unittest.TestCase):
         self.assertIsNotNone(trends["forgotten"])
         self.assertEqual(trends["forgotten"]["id"], "forgotten_track")
         self.assertIn("plays all-time", trends["forgotten"]["trend_subtitle"])
+
+
+class TestForgottenFavoriteFallback(unittest.TestCase):
+    """The primary query needs TREND_FORGOTTEN_MIN_HISTORICAL_PLAYS full plays;
+    the fallback exists so a lighter listener still gets the card. No fixture
+    ever landed between the two thresholds, so deleting the entire fallback
+    block broke no test."""
+
+    def setUp(self):
+        from Database.queries.trends import (
+            TREND_FORGOTTEN_MIN_HISTORICAL_PLAYS, TREND_FORGOTTEN_FALLBACK_MIN_PLAYS,
+        )
+
+        self.primaryMin = TREND_FORGOTTEN_MIN_HISTORICAL_PLAYS
+        self.fallbackMin = TREND_FORGOTTEN_FALLBACK_MIN_PLAYS
+        self.db = Database("alice", dbPath=Path(":memory:"))
+        self.repo = self.db.repo
+        self.repo.upsertUser("alice", "alice@example.com")
+        self.now_ts = 1000000.0
+        self.day = 86400
+
+    def tearDown(self):
+        self.repo.connectionManager.close()
+
+    def _seedOldFullPlays(self, trackId, count):
+        self.repo.upsertTrack(makeTrack(trackId=trackId, name=f"Song {trackId}"))
+        for i in range(count):
+            self.repo.insertPlay("alice", trackId, self.now_ts - (200 * self.day) - (i * 1000), 200000)
+        self.repo.commit()
+
+    def test_a_track_between_the_two_thresholds_still_wins_the_card(self):
+        """Below the primary minimum, at or above the fallback's."""
+        playCount = self.primaryMin - 1
+        self.assertGreaterEqual(playCount, self.fallbackMin)   #< the window exists at all
+        self._seedOldFullPlays("light_favorite", playCount)
+
+        raw = self.repo.getDashboardTrendsRaw("alice", now_ts=self.now_ts)
+
+        self.assertIsNotNone(raw["forgotten"])
+        self.assertEqual(raw["forgotten"]["track_id"], "light_favorite")
+        self.assertEqual(raw["forgotten"]["total_plays"], playCount)
+
+    def test_below_the_fallback_minimum_there_is_no_card(self):
+        self._seedOldFullPlays("barely_played", self.fallbackMin - 1)
+
+        raw = self.repo.getDashboardTrendsRaw("alice", now_ts=self.now_ts)
+
+        self.assertIsNone(raw["forgotten"])
+
+    def test_the_primary_query_still_wins_when_it_matches(self):
+        """A heavy favorite must not be displaced by the fallback's ordering."""
+        self._seedOldFullPlays("heavy_favorite", self.primaryMin + 5)
+        self._seedOldFullPlays("light_favorite", self.primaryMin - 1)
+
+        raw = self.repo.getDashboardTrendsRaw("alice", now_ts=self.now_ts)
+
+        self.assertEqual(raw["forgotten"]["track_id"], "heavy_favorite")
+
+    def test_a_recently_played_track_is_not_forgotten_even_via_the_fallback(self):
+        self.repo.upsertTrack(makeTrack(trackId="recent_favorite", name="Recent"))
+        for i in range(self.primaryMin - 1):
+            self.repo.insertPlay("alice", "recent_favorite", self.now_ts - (i * 1000), 200000)
+        self.repo.commit()
+
+        raw = self.repo.getDashboardTrendsRaw("alice", now_ts=self.now_ts)
+
+        self.assertIsNone(raw["forgotten"])
+
+
+if __name__ == "__main__":
+    unittest.main()

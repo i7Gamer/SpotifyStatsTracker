@@ -211,12 +211,19 @@ class PlayQueries:
     def getPlaysOldestFirst(self, username: str, count: int | None = None, startIndex: int = 0,
                              startTs: float | None = None, endTs: float | None = None,
                              trackId: str | None = None, artistId: str | None = None,
-                             albumId: str | None = None, includeSkips: bool = False) -> list[dict]:
+                             albumId: str | None = None, includeSkips: bool = False,
+                             afterTs: float | None = None) -> list[dict]:
+        """`afterTs` pages by position in time (played_at >= afterTs) rather than
+        by OFFSET - see iterExportEntries, which streams the whole history and
+        must not skip rows if a concurrent delete shifts every later row left."""
         conn = self._conn()
         limit = -1 if count is None else count
         params = [username]
         rangeClause = self._dateRangeClause(params, startTs, endTs)
         extraClauses = self._itemFilterClauses(params, trackId, artistId, albumId)
+        if afterTs is not None:
+            extraClauses += " AND played_at >= ?"
+            params.append(afterTs)
         params += [limit, startIndex]
         behavioralSelect = ", ".join(BEHAVIORAL_COLUMNS)
         skipClause = "" if includeSkips else " AND is_skip=0"
@@ -228,17 +235,21 @@ class PlayQueries:
         return [self._playRowToEntry(r) for r in rows]
 
 
-    def getSkipsOldestFirst(self, username: str, count: int | None = None, startIndex: int = 0) -> list[dict]:
+    def getSkipsOldestFirst(self, username: str, count: int | None = None, startIndex: int = 0,
+                             afterTs: float | None = None) -> list[dict]:
         """Skip events (is_skip=1) oldest-first, shaped like getPlaysOldestFirst
         entries (skips carry no played_from - it comes back None). Feeds the JSON
-        export so skips round-trip between instances."""
+        export so skips round-trip between instances. `afterTs`: see
+        getPlaysOldestFirst."""
         conn = self._conn()
         limit = -1 if count is None else count
         behavioralSelect = ", ".join(BEHAVIORAL_COLUMNS)
+        afterClause = "" if afterTs is None else " AND played_at >= ?"
+        params = [username] + ([] if afterTs is None else [afterTs]) + [limit, startIndex]
         rows = conn.execute(
             f"SELECT track_id, played_at, time_played, {behavioralSelect} FROM plays "
-            f"WHERE username=? AND is_skip=1 ORDER BY played_at ASC, id ASC LIMIT ? OFFSET ?",
-            (username, limit, startIndex),
+            f"WHERE username=? AND is_skip=1{afterClause} ORDER BY played_at ASC, id ASC LIMIT ? OFFSET ?",
+            params,
         ).fetchall()
         return [self._playRowToEntry(r) for r in rows]
 

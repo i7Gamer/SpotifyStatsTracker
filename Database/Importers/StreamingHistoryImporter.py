@@ -19,6 +19,14 @@ except ModuleNotFoundError:
     from utils import timeToInt, timeToIntUTC, parseError, convertToDatetime, getTimezone
 
 
+def _knownNameKey(name: str, artist: str) -> str:
+    """Cache key for the name+artist lookup index. The separator matters: bare
+    concatenation made ("Al", "Green") and ("A", "lGreen") the same key, so one
+    track could be silently matched to the other's catalog row. Mirrors
+    _createSyntheticTrack's own "name::artist" pairing."""
+    return f"{name}::{artist}"
+
+
 class Importer:
     # 1000 allows for frequent progress bar updates in the UI and batches API pre-fetches
     # to avoid rate limits/network blocking without long delays.
@@ -118,7 +126,7 @@ class Importer:
             index[item["id"]] = item
             if len(item["artists"]) == 0:
                 continue
-            index[item["name"]+item["artists"][0]["name"]] = item
+            index[_knownNameKey(item["name"], item["artists"][0]["name"])] = item
         return index
 
     def _parseHistory(self, dataFunction, history):
@@ -145,7 +153,7 @@ class Importer:
         cached under its name+artist) rather than being treated as unmatched. """
         if trackUri and trackUri in known:
             return trackUri
-        idKey = name + artist if name and artist else None
+        idKey = _knownNameKey(name, artist) if name and artist else None
         if idKey and idKey in known:
             return idKey
         return None
@@ -397,7 +405,7 @@ class Importer:
                 known[base["id"]] = base
                 if trackUri:
                     known[trackUri] = base
-                known[name + artist] = base
+                known[_knownNameKey(name, artist)] = base
                 # capAtDuration=False: see the known-track branch above - export
                 # ms_played is authoritative, fetched track may be a relinked version.
                 meta = Client.embedPlayInfo(base.copy(), startTimestamp, timePlayed, capAtDuration=False)

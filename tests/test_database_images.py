@@ -47,6 +47,15 @@ def _pngBytes():
     return buffer.getvalue()
 
 
+def _imageResponse(imageBytes):
+    """A stand-in requests response for the streaming image download: the task
+    reads the body through iter_content (capped), not .content."""
+    response = MagicMock()
+    response.content = imageBytes
+    response.headers = {"Content-Length": str(len(imageBytes))}
+    response.iter_content = lambda chunk_size=None: iter([imageBytes])
+    return response
+
 class TestLazyFetchArtistImage(unittest.TestCase):
     def test_returns_true_without_network_call_if_file_already_exists(self):
         db = _bareDatabase()
@@ -83,8 +92,7 @@ class TestLazyFetchArtistImage(unittest.TestCase):
             apiResponse = MagicMock()
             apiResponse.status_code = 200
             apiResponse.json.return_value = {"images": [{"url": "https://i.scdn.co/image/abc"}]}
-            imageResponse = MagicMock()
-            imageResponse.content = _pngBytes()
+            imageResponse = _imageResponse(_pngBytes())
 
             with patch("Database.Listeners.spotifyListener._refresh_spotify_access_token",
                        return_value="mock_token"), \
@@ -110,8 +118,7 @@ class TestLazyFetchArtistImage(unittest.TestCase):
 
             mock_sp = MagicMock()
             mock_sp.artist.return_value = {"images": [{"url": "https://i.scdn.co/image/xyz"}]}
-            imageResponse = MagicMock()
-            imageResponse.content = _pngBytes()
+            imageResponse = _imageResponse(_pngBytes())
 
             with patch("SpotipyFree.Spotify", return_value=mock_sp), \
                  patch("Database.database.requests.get", return_value=imageResponse) as mock_get:
@@ -135,8 +142,7 @@ class TestLazyFetchArtistImage(unittest.TestCase):
 
             apiResponse = MagicMock()
             apiResponse.status_code = 403
-            imageResponse = MagicMock()
-            imageResponse.content = _pngBytes()
+            imageResponse = _imageResponse(_pngBytes())
 
             mock_sp = MagicMock()
             mock_sp.artist.return_value = {"images": [{"url": "https://i.scdn.co/image/xyz"}]}
@@ -292,7 +298,7 @@ class TestDownloadImageTaskExtension(DatabaseTestCase):
 
     def _makeResponse(self, imageBytes):
         response = MagicMock()
-        response.content = imageBytes
+        response = _imageResponse(imageBytes)
         return response
 
     def _pngBytes(self, mode="RGBA"):
@@ -406,14 +412,62 @@ class TestDownloadImageTaskErrorLog(DatabaseTestCase):
         db = self._makeDb({}, [])
         with tempfile.TemporaryDirectory() as tmpdir:
             imgDir = Path(tmpdir)
-            bad_response = MagicMock()
-            bad_response.content = b"not-an-image"
+            bad_response = _imageResponse(b"not-an-image")
             with patch("Database.database.requests.get", return_value=bad_response), \
                  self.assertLogs("Database.database", level="ERROR") as logs:
                 db._downloadImageTask(imgDir, "https://img.example/x", "track-xyz", IMAGE_KIND_TRACK)
 
         self.assertIn("track-xyz", " ".join(logs.output))
         self.assertEqual(db.repo.imageStatus("track-xyz", IMAGE_KIND_TRACK), IMAGE_STATUS_FAILED)
+
+
+class TestImageDownloadSizeCap(DatabaseTestCase):
+    """The body used to be materialized in full before PIL ever inspected it, so
+    a misbehaving or redirected endpoint could balloon a worker thread's
+    memory. URLs only ever come from Spotify's own metadata, so this is a
+    ceiling, not a filter."""
+
+    def _oversizedResponse(self, declaredLength=None):
+        from Database.media_fetch import MAX_IMAGE_BYTES
+
+        chunk = b"x" * (1024 * 1024)
+        chunkCount = (MAX_IMAGE_BYTES // len(chunk)) + 2
+        response = MagicMock()
+        response.headers = {} if declaredLength is None else {"Content-Length": str(declaredLength)}
+        response.iter_content = lambda chunk_size=None: (chunk for _ in range(chunkCount))
+        return response
+
+    def test_an_oversized_body_is_refused_and_marked_failed(self):
+        db = self._makeDb({}, [])
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("Database.database.requests.get", return_value=self._oversizedResponse()),                  self.assertLogs("Database.database", level="ERROR"):
+                db._downloadImageTask(Path(tmpdir), "https://img.example/big", "track-big", IMAGE_KIND_TRACK)
+
+        self.assertEqual(db.repo.imageStatus("track-big", IMAGE_KIND_TRACK), IMAGE_STATUS_FAILED)
+
+    def test_an_oversized_content_length_short_circuits_before_reading(self):
+        from Database.media_fetch import MAX_IMAGE_BYTES
+
+        db = self._makeDb({}, [])
+        response = self._oversizedResponse(declaredLength=MAX_IMAGE_BYTES + 1)
+        read = []
+        response.iter_content = lambda chunk_size=None: read.append(1) or iter([])
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("Database.database.requests.get", return_value=response),                  self.assertLogs("Database.database", level="ERROR"):
+                db._downloadImageTask(Path(tmpdir), "https://img.example/big", "track-big2", IMAGE_KIND_TRACK)
+
+        self.assertEqual(read, [])   #< never started reading the body
+
+    def test_a_normal_image_is_unaffected(self):
+        db = self._makeDb({}, [])
+        with tempfile.TemporaryDirectory() as tmpdir:
+            imgDir = Path(tmpdir)
+            with patch("Database.database.requests.get", return_value=_imageResponse(_pngBytes())):
+                db._downloadImageTask(imgDir, "https://img.example/ok", "track-ok", IMAGE_KIND_TRACK)
+
+            self.assertTrue((imgDir / "track-ok.jpeg").exists())
+        self.assertEqual(db.repo.imageStatus("track-ok", IMAGE_KIND_TRACK), IMAGE_STATUS_OK)
 
 
 if __name__ == "__main__":

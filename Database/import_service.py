@@ -440,7 +440,7 @@ class ImportMixin:
             # batch just changed - raise the marker the periodic milestone pass
             # consumes to re-derive them (see Database.consumeMilestoneRecalcFlag).
             # All-skipped/all-failed batches changed nothing, so nothing is due.
-            self.milestonesRecalcPending = True
+            self.raiseMilestoneRecalcFlag()
         return outcomes
 
     def _importHistoryBatchLocked(self, fileContents: list[str]) -> list[str]:

@@ -6,7 +6,7 @@ import os
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from Database.Importers.StreamingHistoryImporter import Importer
+from Database.Importers.StreamingHistoryImporter import Importer, _knownNameKey
 from Database.db import SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON, SKIP_THRESHOLD_MS
 from Database.utils import convertToDatetime, getTimezone
 
@@ -568,15 +568,15 @@ class TestResolveKnownKey(unittest.TestCase):
 
     def test_prefers_trackUri_when_both_keys_are_known(self):
         importer = self._importer()
-        known = {"uri1": {"id": "uri1"}, "NameArtist": {"id": "other"}}
+        known = {"uri1": {"id": "uri1"}, "Name::Artist": {"id": "other"}}
         self.assertEqual(importer._resolveKnownKey("uri1", "Name", "Artist", known), "uri1")
 
     def test_falls_back_to_name_artist_key_when_trackUri_not_known(self):
         """A trackUri absent from the cache must not stop matching by name+artist -
         e.g. a reissue/remaster URI for a song already cached under its name+artist."""
         importer = self._importer()
-        known = {"NameArtist": {"id": "cached"}}
-        self.assertEqual(importer._resolveKnownKey("uriNotCached", "Name", "Artist", known), "NameArtist")
+        known = {"Name::Artist": {"id": "cached"}}
+        self.assertEqual(importer._resolveKnownKey("uriNotCached", "Name", "Artist", known), "Name::Artist")
 
     def test_returns_none_when_neither_key_is_known(self):
         importer = self._importer()
@@ -585,6 +585,16 @@ class TestResolveKnownKey(unittest.TestCase):
     def test_returns_none_without_trackUri_or_name_and_artist(self):
         importer = self._importer()
         self.assertIsNone(importer._resolveKnownKey(None, None, None, {"anything": {}}))
+
+    def test_name_and_artist_are_separated_so_split_points_cannot_collide(self):
+        """Bare concatenation made ("Al", "Green") and ("A", "lGreen") the same
+        key, so one track could be silently matched to the other's catalog row."""
+        importer = self._importer()
+        known = {}
+        known[_knownNameKey("Al", "Green")] = {"id": "alGreen"}
+
+        self.assertEqual(importer._resolveKnownKey(None, "Al", "Green", known), "Al::Green")
+        self.assertIsNone(importer._resolveKnownKey(None, "A", "lGreen", known))
 
 
 class TestFetchTrackMeta(unittest.TestCase):
@@ -829,7 +839,7 @@ class TestRestrictedTrackOverlay(unittest.TestCase):
 
         self.assertNotIn("t1", index)
         self.assertIn("t2", index)
-        self.assertIn("SongArtist", index)
+        self.assertIn("Song::Artist", index)
 
 
 class TestImportFallbackToSyntheticTrack(unittest.TestCase):
