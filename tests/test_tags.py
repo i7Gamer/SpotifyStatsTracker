@@ -173,5 +173,90 @@ class TestTagQueries(unittest.TestCase):
         self.assertEqual(self.repo.getTagsForEntity("alice", "track", "t1"), [])
 
 
+class TestTagsAreScopedPerUser(unittest.TestCase):
+    """Every TagQueries method scopes by `username = ?`, but the rest of this
+    file only ever seeds one user - so a dropped clause in a rewrite would leak
+    (or destroy) other people's tags on a real multi-user instance with nothing
+    failing. Two users tag the SAME tracks with the SAME labels here, so any
+    method that forgets its scope shows up immediately."""
+
+    def setUp(self):
+        self.repo = Repository(Path(":memory:"))
+        for username in ("alice", "bob"):
+            self.repo.upsertUser(username, f"{username}@example.com")
+        self.repo.upsertTrack(makeTrack(trackId="t1", albumId="alb1", artistId="art1"))
+        self.repo.upsertTrack(makeTrack(trackId="t2", albumId="alb2", artistId="art2"))
+        for username in ("alice", "bob"):
+            self.repo.insertPlay(username, "t1", 1000.0, 200000)
+            self.repo.insertPlay(username, "t2", 2000.0, 180000)
+        self.repo.commit()
+
+    def tearDown(self):
+        self.repo.connectionManager.close()
+
+    def test_one_users_tag_is_invisible_to_another(self):
+        self.repo.addTag("alice", "chill", "track", "t1")
+
+        self.assertEqual(self.repo.getTagsForEntity("alice", "track", "t1"), ["chill"])
+        self.assertEqual(self.repo.getTagsForEntity("bob", "track", "t1"), [])
+
+    def test_the_tag_list_is_per_user(self):
+        self.repo.addTag("alice", "chill", "track", "t1")
+        self.repo.addTag("bob", "workout", "track", "t1")
+
+        self.assertEqual([t["tag"] for t in self.repo.getUserTags("alice")], ["chill"])
+        self.assertEqual([t["tag"] for t in self.repo.getUserTags("bob")], ["workout"])
+
+    def test_identical_tags_on_the_same_track_stay_separate(self):
+        self.repo.addTag("alice", "chill", "track", "t1")
+        self.repo.addTag("bob", "chill", "track", "t1")
+
+        self.assertEqual([t["count"] for t in self.repo.getUserTags("alice")], [1])
+        self.assertEqual([t["count"] for t in self.repo.getUserTags("bob")], [1])
+
+    def test_removing_a_tag_leaves_the_other_users_copy(self):
+        self.repo.addTag("alice", "chill", "track", "t1")
+        self.repo.addTag("bob", "chill", "track", "t1")
+
+        self.repo.removeTag("alice", "chill", "track", "t1")
+
+        self.assertEqual(self.repo.getTagsForEntity("alice", "track", "t1"), [])
+        self.assertEqual(self.repo.getTagsForEntity("bob", "track", "t1"), ["chill"])
+
+    def test_deleting_a_tag_everywhere_only_touches_the_callers_rows(self):
+        self.repo.addTag("alice", "chill", "track", "t1")
+        self.repo.addTag("alice", "chill", "track", "t2")
+        self.repo.addTag("bob", "chill", "track", "t1")
+
+        deleted = self.repo.deleteTag("alice", "chill")
+
+        self.assertEqual(deleted, 2)
+        self.assertEqual(self.repo.getTagsForEntity("bob", "track", "t1"), ["chill"])
+
+    def test_renaming_a_tag_only_touches_the_callers_rows(self):
+        self.repo.addTag("alice", "chill", "track", "t1")
+        self.repo.addTag("bob", "chill", "track", "t1")
+
+        self.repo.renameTag("alice", "chill", "relaxed")
+
+        self.assertEqual(self.repo.getTagsForEntity("alice", "track", "t1"), ["relaxed"])
+        self.assertEqual(self.repo.getTagsForEntity("bob", "track", "t1"), ["chill"])
+
+    def test_tagged_id_lookups_are_per_user(self):
+        self.repo.addTag("alice", "chill", "track", "t1")
+        self.repo.addTag("bob", "chill", "track", "t2")
+        self.repo.addTag("alice", "chill", "artist", "art1")
+        self.repo.addTag("bob", "chill", "artist", "art2")
+        self.repo.addTag("alice", "chill", "album", "alb1")
+        self.repo.addTag("bob", "chill", "album", "alb2")
+
+        self.assertEqual(self.repo.getTaggedTrackIds("alice", ["chill"]), ["t1"])
+        self.assertEqual(self.repo.getTaggedTrackIds("bob", ["chill"]), ["t2"])
+        self.assertEqual(self.repo.getTaggedArtistIds("alice", ["chill"]), ["art1"])
+        self.assertEqual(self.repo.getTaggedArtistIds("bob", ["chill"]), ["art2"])
+        self.assertEqual(self.repo.getTaggedAlbumIds("alice", ["chill"]), ["alb1"])
+        self.assertEqual(self.repo.getTaggedAlbumIds("bob", ["chill"]), ["alb2"])
+
+
 if __name__ == "__main__":
     unittest.main()

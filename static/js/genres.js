@@ -167,7 +167,14 @@
     fetch(window.location.pathname + '?' + params.toString(), {
       headers: { 'X-Requested-With': 'XMLHttpRequest' }
     })
-      .then(function (resp) { return resp.ok ? resp.json() : null; })
+      .then(function (resp) {
+        //< a non-2xx used to resolve to null and be swallowed silently below,
+        //  leaving the server-rendered "Loading..." placeholders up forever
+        //  with no error and no retry. Throw so the catch shows the banner,
+        //  matching charts-page.js.
+        if (!resp.ok) throw new Error('genres data fetch failed: ' + resp.status);
+        return resp.json();
+      })
       .then(function (data) {
         if (token !== loadToken) return;   //< superseded by a newer load
         //< ok:false should not happen once the shell rendered unlocked (the

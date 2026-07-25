@@ -5,7 +5,60 @@
  * filter/sort/tag/page change, swapping it in place instead of a full reload
  * (the same pattern history.html / charts-page.js use). The filter functions
  * were inline in _page_card.html and did window.location full navigations. */
-(function () {
+
+// --- pure helpers -----------------------------------------------------------
+// Kept at module scope, DOM-free and exported, so the branchy parts (which
+// query params a filter change sets vs deletes, and whether a settled response
+// still belongs to the newest load) are unit-testable in plain node like the
+// sibling modules' logic is. The DOM wiring below reads the controls and hands
+// their values here.
+
+// True when a response that just settled still belongs to the newest load. A
+// fetch aborted mid-flight can still resolve, so without this a superseded
+// response could swap stale rows in over fresher ones.
+function isCurrentTopListLoad(activeLoad, controller) {
+  return !!activeLoad && activeLoad.controller === controller;
+}
+
+// `state`: {interval, sortBy, searchQuery, startDate, endDate, forceCustom}
+function applyTopListFilterParams(params, state) {
+  var useCustom = state.interval === 'custom' || state.forceCustom;
+  if (state.searchQuery && state.searchQuery.trim()) {
+    params.set('q', state.searchQuery);
+  } else {
+    params.delete('q');
+  }
+  params.set('sortBy', state.sortBy);
+  if (useCustom) {
+    params.set('interval', 'custom');
+    params.set('startDate', state.startDate);
+    params.set('endDate', state.endDate);
+  } else if (state.interval) {
+    params.set('interval', state.interval);
+    params.delete('startDate');
+    params.delete('endDate');
+  } else {
+    params.delete('interval');   //< empty value = All Time
+    params.delete('startDate');
+    params.delete('endDate');
+  }
+  params.delete('page');         //< any filter change returns to page 1
+  return params;
+}
+
+function applyTopListTagParam(params, tag) {
+  if (tag) { params.set('tag', tag); } else { params.delete('tag'); }
+  params.delete('page');
+  return params;
+}
+
+function applyTopListFullPlaysParam(params, fullPlaysOnly) {
+  params.set('fullOnly', fullPlaysOnly ? '1' : '0');
+  params.delete('page');
+  return params;
+}
+
+if (typeof window !== 'undefined') (function () {
   var FADE_MS = 200;
   var activeLoad = null;
 
@@ -34,7 +87,7 @@
       var data = results[0];
       //< a response that resolved before its abort can still land here - never
       //  swap stale data in over a newer load
-      if (!activeLoad || activeLoad.controller !== controller) return;
+      if (!isCurrentTopListLoad(activeLoad, controller)) return;
       el.innerHTML = data.resultsHtml;
       el.querySelectorAll('img.track-cover').forEach(function (img) {
         if (img.complete) img.classList.add('loaded');
@@ -83,22 +136,10 @@
       if (!startDate || !endDate) return;
     }
     replaceTopListUrl(function (params) {
-      if (searchQuery.trim()) { params.set('q', searchQuery); } else { params.delete('q'); }
-      params.set('sortBy', sortBy);
-      if (interval === 'custom' || forceCustom) {
-        params.set('interval', 'custom');
-        params.set('startDate', startDate);
-        params.set('endDate', endDate);
-      } else if (interval) {
-        params.set('interval', interval);
-        params.delete('startDate');
-        params.delete('endDate');
-      } else {
-        params.delete('interval');   //< empty value = All Time
-        params.delete('startDate');
-        params.delete('endDate');
-      }
-      params.delete('page');
+      applyTopListFilterParams(params, {
+        interval: interval, sortBy: sortBy, searchQuery: searchQuery,
+        startDate: startDate, endDate: endDate, forceCustom: !!forceCustom,
+      });
     });
     loadTopList();
   }
@@ -134,19 +175,13 @@
 
   window.updateTagFilter = function () {
     var tagFilter = document.getElementById('tagFilter');
-    replaceTopListUrl(function (params) {
-      if (tagFilter.value) { params.set('tag', tagFilter.value); } else { params.delete('tag'); }
-      params.delete('page');
-    });
+    replaceTopListUrl(function (params) { applyTopListTagParam(params, tagFilter.value); });
     loadTopList();
   };
 
   window.updateFullPlaysFilter = function () {
     var cb = document.getElementById('fullPlaysOnly');
-    replaceTopListUrl(function (params) {
-      params.set('fullOnly', cb.checked ? '1' : '0');
-      params.delete('page');
-    });
+    replaceTopListUrl(function (params) { applyTopListFullPlaysParam(params, cb.checked); });
     loadTopList();
   };
 
@@ -178,3 +213,12 @@
     init();
   }
 })();
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = {
+    isCurrentTopListLoad,
+    applyTopListFilterParams,
+    applyTopListTagParam,
+    applyTopListFullPlaysParam,
+  };
+}
