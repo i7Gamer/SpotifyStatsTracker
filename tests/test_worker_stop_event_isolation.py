@@ -20,7 +20,7 @@ from Database.backup import BackupWorker
 
 class MetadataBackfillerStopEventTestCase(DatabaseTestCase):
     def test_restart_uses_a_fresh_stop_event_so_a_lingering_thread_cannot_revive(self):
-        db = self._makeDb({}, [])   #< __init__ auto-starts the backfiller (startup-delay wait)
+        db = self._makeDb({}, [], startWorkers=True)   #< the worker under test
         self.assertTrue(db.backfiller_thread.is_alive())
         firstEvent = db.backfiller_stop_event
         db.stopMetadataBackfiller()
@@ -34,7 +34,7 @@ class MetadataBackfillerStopEventTestCase(DatabaseTestCase):
 
 class WrappedWorkerStopEventTestCase(DatabaseTestCase):
     def test_restart_uses_a_fresh_stop_event_so_a_lingering_thread_cannot_revive(self):
-        db = self._makeDb({}, [])   #< __init__ auto-starts the wrapped worker
+        db = self._makeDb({}, [], startWorkers=True)   #< the worker under test
         self.assertTrue(db.wrapped_thread.is_alive())
         firstEvent = db.wrapped_stop_event
         db.stopWrappedCalculationsWorker()

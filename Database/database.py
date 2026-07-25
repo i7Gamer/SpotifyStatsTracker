@@ -266,7 +266,17 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
             max_workers=repo.getAlbumBioFetchWorkers(ALBUM_BIO_FETCH_WORKERS))
 
     def __init__(self, user: str, cookiesFile: str | None = None, email: str | None = None, dbPath=None,
-                 shutdown_event: threading.Event | None = None):
+                 shutdown_event: threading.Event | None = None, startWorkers: bool = True):
+        """`startWorkers=False` builds a fully usable instance without spawning
+        the five always-on background threads (metadata backfiller, wrapped
+        calculations, and the three Last.fm backfillers).
+
+        Every attribute those workers use is still initialized, so the start*
+        methods work normally when a caller opts in later - this only skips the
+        automatic start. The test suite constructs ~117 Databases; each one
+        spawned five threads that immediately parked on a randomized startup
+        delay, then had to be signalled and joined at teardown, for work no
+        assertion depended on. Production always starts them."""
         if not user:
             raise ValueError("Database user must be specified and cannot be empty.")
         self.user = user
@@ -335,7 +345,8 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
 
         self.backfiller_thread = None
         self.backfiller_stop_event = threading.Event()
-        self.startMetadataBackfiller()
+        if startWorkers:
+            self.startMetadataBackfiller()
 
         self.wrapped_thread = None
         self.wrapped_stop_event = threading.Event()
@@ -344,7 +355,8 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         # never both run _calculateAndSaveWrapped for the same year at once.
         self._wrapped_recalc_locks_guard = threading.Lock()
         self._wrapped_recalc_locks: dict[int, threading.Lock] = {}
-        self.startWrappedCalculationsWorker()
+        if startWorkers:
+            self.startWrappedCalculationsWorker()
 
         # Serializes the Last.fm workers' start/stop pairs. Their
         # "already running?" check and the thread/event assignment that
@@ -359,15 +371,18 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         self.lastfm_stop_event = threading.Event()
         # No-op for users without a stored Last.fm key (no idle thread); the
         # profile page's key save re-invokes it once a key lands.
-        self.startLastfmGenreBackfiller()
+        if startWorkers:
+            self.startLastfmGenreBackfiller()
 
         self.lastfm_biography_thread = None
         self.lastfm_biography_stop_event = threading.Event()
-        self.startLastfmBiographyBackfiller()
+        if startWorkers:
+            self.startLastfmBiographyBackfiller()
 
         self.lastfm_album_biography_thread = None
         self.lastfm_album_biography_stop_event = threading.Event()
-        self.startLastfmAlbumBiographyBackfiller()
+        if startWorkers:
+            self.startLastfmAlbumBiographyBackfiller()
 
     def consumeMilestoneRecalcFlag(self) -> bool:
         """One-shot read of the "an import just changed play history" marker

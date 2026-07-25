@@ -133,17 +133,23 @@ def normalizeTrackForTest(track: dict) -> dict:
     return track
 
 
-def makeDatabaseWithData(dbPath: Path, tracks: dict, entries: list, username: str = "testuser"):
+def makeDatabaseWithData(dbPath: Path, tracks: dict, entries: list, username: str = "testuser",
+                         startWorkers: bool = False):
     """A Database instance backed by a fresh temp SQLite file, seeded with the
     given track catalog (dict of trackId -> Client.formatTrack-shaped dict, fields
     may be omitted - see normalizeTrackForTest) and play history (list of
     {id, playedAt, timePlayed, playedFrom} entries). The DB-backed replacement for
     the old in-memory tracksCache/entriesCache test fixture: every distinct track
     id referenced by `entries` gets at least a minimal placeholder row, since
-    plays.track_id is a foreign key into tracks.id."""
+    plays.track_id is a foreign key into tracks.id.
+
+    Background workers are OFF here (unlike production): they spawned five
+    threads per instance that parked on a randomized startup delay and then had
+    to be joined at teardown, for work no assertion depended on. A test that
+    actually exercises worker lifecycle passes startWorkers=True."""
     from Database.database import Database
 
-    db = Database(username, dbPath=dbPath)
+    db = Database(username, dbPath=dbPath, startWorkers=startWorkers)
 
     allTrackIds = set(tracks.keys()) | {e["id"] for e in entries}
     for trackId in allTrackIds:
@@ -165,14 +171,19 @@ class DatabaseTestCase(unittest.TestCase):
         self.addCleanup(self._tmpdir.cleanup)
         self._nextDbIndex = 0
 
-    def _makeDb(self, tracks, entries, username="testuser"):
+    def _makeDb(self, tracks, entries, username="testuser", startWorkers=False):
+        """`startWorkers=True` for tests that assert on the background workers
+        themselves (lifecycle, telemetry, stop events) - see
+        makeDatabaseWithData for why they're off by default."""
         from Database.database import Database
 
         self._nextDbIndex += 1
         dbPath = Path(self._tmpdir.name) / f"test{self._nextDbIndex}.db"
-        db = makeDatabaseWithData(dbPath, tracks, entries, username)
+        db = makeDatabaseWithData(dbPath, tracks, entries, username, startWorkers=startWorkers)
         self.addCleanup(db.repo.connectionManager.close)
-        # Only the 5 always-on background workers, not stop() as a whole:
+        # Only the 5 always-on background workers, not stop() as a whole. These
+        # are no-ops when startWorkers=False, but stay registered because a test
+        # can start a worker explicitly after construction:
         # Database.__init__ never auto-starts the listener/autoImporter watchdog
         # (those need an explicit startListener()/watchFolder() call a test opts
         # into), but some tests (e.g. test_now_playing.py) replace db.listener

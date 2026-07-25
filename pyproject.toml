@@ -1,0 +1,14 @@
+[tool.pytest.ini_options]
+# CI has run the suite under `-n auto` for a while, so parallel execution is
+# already proven safe here (every test gets its own temp dir, DB path, media
+# dir and encryption key via the autouse fixtures in tests/conftest.py). This
+# makes a bare `pytest` locally match that, so the pre-commit loop isn't
+# several times slower than the same run in CI.
+#
+# Run serially when a failure is easier to read that way (or when you want
+# print/-s output in order):
+#   pytest tests -n 0
+# Note: `-p no:xdist` does NOT work as an override - disabling the plugin makes
+# the -n below an unrecognized argument and pytest refuses to start.
+addopts = "-n auto"
+testpaths = ["tests"]
