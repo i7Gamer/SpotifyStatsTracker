@@ -7,7 +7,11 @@
  * server-rendered on every full load, so tab clicks only flip classes and
  * keep ?view= in sync via replaceState (see activateView). All in-page URL
  * updates replaceState rather than push, so Back returns to the previous page
- * instead of stepping back through sort/page/tab states. */
+ * instead of stepping back through sort/page/tab states.
+ *
+ * The markup this drives arrives with the page's deferred body, so the wiring
+ * lives in initDetailHistory() and detail-page.js calls it once the body is
+ * swapped in - at script-load time none of these elements exist yet. */
 (function () {
   var DETAIL_HISTORY_FADE_MS = 200;
   var SHOW_MORE_BATCH_SIZE = 50;
@@ -21,8 +25,9 @@
     return 'Show More Plays (' + size + ')';
   }
 
-  var filterButtons = document.querySelectorAll('.stats-filter-button');
-  var categoryDivs = document.querySelectorAll('[data-category]');
+  //< re-resolved by initDetailHistory on every body swap; empty until then
+  var filterButtons = [];
+  var categoryDivs = [];
 
   function activateView(view, pushUrl) {
     filterButtons.forEach(function (btn) { btn.classList.toggle('active', btn.dataset.filter === view); });
@@ -35,11 +40,7 @@
     }
   }
 
-  filterButtons.forEach(function (button) {
-    button.addEventListener('click', function () { activateView(button.dataset.filter, true); });
-  });
-
-  var container = document.getElementById('detailHistoryResults');
+  var container = null;
 
   //< the in-flight fetch ({controller}) - a newer sort/page change aborts it
   //  so a slow older response can't land after (and clobber) the newer one
@@ -103,9 +104,10 @@
       });
   }
 
-  if (container) {
-    // Delegated click listener covering pagination links, sort toggle, and skips toggle.
-    container.addEventListener('click', function (evt) {
+  // Delegated click handler covering pagination links, sort toggle, skips
+  // toggle and "Show more" - bound to the results container, which survives
+  // every in-place swap of its own innerHTML.
+  function onContainerClick(evt) {
       var link = evt.target.closest('.pagination-controls a, a.sort-toggle, a.skips-toggle');
       if (link) {
         if (evt.metaKey || evt.ctrlKey || evt.shiftKey || evt.altKey) return;
@@ -177,8 +179,22 @@
             showMoreBtn.textContent = formatShowMoreLabel(currentBatchSize);
           });
       }
+  }
+
+  // Called by detail-page.js after each body swap. Every element referenced
+  // here is replaced wholesale by that swap, so re-resolving them is also what
+  // keeps the listeners from stacking - the nodes they were bound to are gone.
+  function initDetailHistory() {
+    filterButtons = document.querySelectorAll('.stats-filter-button');
+    categoryDivs = document.querySelectorAll('[data-category]');
+    filterButtons.forEach(function (button) {
+      button.addEventListener('click', function () { activateView(button.dataset.filter, true); });
     });
 
+    container = document.getElementById('detailHistoryResults');
+    if (container) {
+      container.addEventListener('click', onContainerClick);
+    }
   }
 
   window.addEventListener('popstate', function () {
@@ -188,5 +204,9 @@
     }
     loadDetailHistory();
   });
+
+  if (typeof window !== 'undefined') {
+    window.initDetailHistory = initDetailHistory;
+  }
 })();
 

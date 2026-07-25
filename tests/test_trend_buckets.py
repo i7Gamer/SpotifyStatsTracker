@@ -21,6 +21,7 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from _app_factory import AppTestCase
+from _detail_client import DetailPageClientMixin
 from dashboard.date_ranges import DateRangeMixin
 from config import COMPARE_TREND_WEEK_SPAN_DAYS, COMPARE_TREND_MONTH_SPAN_DAYS
 from Database.repository import Repository
@@ -159,23 +160,7 @@ class TestPlayTimeRangeItemScope(unittest.TestCase):
         self.assertEqual(self.repo.getPlayTimeRange(self.USER, trackId="t2"), (200.0, 200.0))
 
 
-class _DetailAjaxTestBase(AppTestCase):
-    def _getPath(self, dash, db, path):
-        # The detail routes unconditionally fetch a page of play history (see
-        # _detailHistoryContext) - default it to "no history", same as
-        # test_detail_pages_route.py's _DetailRouteTestBase.
-        if not isinstance(db.getEntriesCount.return_value, int):
-            db.getEntriesCount.return_value = 0
-        if not isinstance(db.getEntriesFromNew.return_value, list):
-            db.getEntriesFromNew.return_value = []
-        client = dash.app.test_client()
-        with patch.object(dash, 'is_user_logged_in', return_value=True), \
-             patch.object(dash, 'get_username_for_email', return_value='alice'), \
-             patch.object(dash, 'get_user_db', return_value=db):
-            with client.session_transaction() as sess:
-                sess['email'] = 'alice@example.com'
-            return client.get(path)
-
+class _DetailAjaxTestBase(DetailPageClientMixin, AppTestCase):
     def _db(self):
         db = MagicMock()
         db.tz = UTC

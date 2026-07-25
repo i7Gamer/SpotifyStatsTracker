@@ -14,13 +14,18 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from _app_factory import AppTestCase
+from _detail_client import DetailPageClientMixin
 
 
 def _skipStats(plays=10, skips=2, percent=16.7):
     return {"plays": plays, "skips": skips, "skipPercent": percent}
 
 
-class SkipStatsRouteTestCase(AppTestCase):
+class SkipStatsRouteTestCase(DetailPageClientMixin, AppTestCase):
+    """`_getRaw` is one request (what the /charts payload tests want);
+    `_getPath` is the detail pages' shell plus its deferred body, which is
+    where the per-entity summary lives now - see _detail_client.py."""
+
     def _makeDb(self):
         db = MagicMock()
         db.repo.getUserSettings.return_value = {"default_dashboard_window": "month", "timezone": None}
@@ -37,13 +42,6 @@ class SkipStatsRouteTestCase(AppTestCase):
         db.getPlayBuckets.return_value = []
         return db
 
-    def _get(self, dash, db, path):
-        client = dash.app.test_client()
-        with patch.object(dash, "is_user_logged_in", return_value=True),              patch.object(dash, "get_username_for_email", return_value="alice"),              patch.object(dash, "get_user_db", return_value=db):
-            with client.session_transaction() as sess:
-                sess["email"] = "alice@example.com"
-            return client.get(path)
-
 
 class TestChartsPayload(SkipStatsRouteTestCase):
     def test_the_ajax_payload_carries_both_lists(self):
@@ -56,7 +54,7 @@ class TestChartsPayload(SkipStatsRouteTestCase):
             {"id": "a1", "name": "Skipped Artist", "skips": 9, "plays": 1,
              "encounters": 10, "skipPercent": 90.0}]
 
-        payload = self._get(dash, db, "/charts?ajax=true").get_json()
+        payload = self._getRaw(dash, db, "/charts?ajax=true").get_json()
 
         self.assertEqual(payload["mostSkippedSongs"][0]["name"], "Skipped Song")
         self.assertEqual(payload["mostSkippedSongs"][0]["skipPercent"], 80.0)
@@ -67,7 +65,7 @@ class TestChartsPayload(SkipStatsRouteTestCase):
         the previous range's bars on screen."""
         dash = self._makeApp()
 
-        payload = self._get(dash, self._makeDb(), "/charts?ajax=true").get_json()
+        payload = self._getRaw(dash, self._makeDb(), "/charts?ajax=true").get_json()
 
         self.assertEqual(payload["mostSkippedSongs"], [])
         self.assertEqual(payload["mostSkippedArtists"], [])
@@ -76,7 +74,7 @@ class TestChartsPayload(SkipStatsRouteTestCase):
         dash = self._makeApp()
         db = self._makeDb()
 
-        self._get(dash, db, "/charts?ajax=true&interval=week")
+        self._getRaw(dash, db, "/charts?ajax=true&interval=week")
 
         kwargs = db.getMostSkippedSongs.call_args.kwargs
         self.assertIsNotNone(kwargs["startDate"])
@@ -88,7 +86,7 @@ class TestChartsPayload(SkipStatsRouteTestCase):
         dash = self._makeApp()
         db = self._makeDb()
 
-        self._get(dash, db, "/charts?ajax=true")
+        self._getRaw(dash, db, "/charts?ajax=true")
 
         for call in (db.getMostSkippedSongs.call_args, db.getMostSkippedArtists.call_args):
             self.assertEqual(call.kwargs["limit"], CHART_MOST_SKIPPED_LIMIT)
@@ -96,7 +94,7 @@ class TestChartsPayload(SkipStatsRouteTestCase):
     def test_the_shell_renders_the_section_canvases(self):
         dash = self._makeApp()
 
-        body = self._get(dash, self._makeDb(), "/charts").data.decode()
+        body = self._getRaw(dash, self._makeDb(), "/charts").data.decode()
 
         self.assertIn('id="mostSkippedGrid"', body)
         self.assertIn('id="mostSkippedSongsChart"', body)
@@ -107,7 +105,7 @@ class TestChartsPayload(SkipStatsRouteTestCase):
         thought only in that order."""
         dash = self._makeApp()
 
-        body = self._get(dash, self._makeDb(), "/charts").data.decode()
+        body = self._getRaw(dash, self._makeDb(), "/charts").data.decode()
 
         self.assertLess(body.index('id="completionChart"'), body.index('id="mostSkippedGrid"'))
 
@@ -157,7 +155,7 @@ class TestDetailPageSkipStat(SkipStatsRouteTestCase):
         db = self._detailDb()
         db.getSkipStats.return_value = _skipStats(plays=54, skips=12, percent=18.2)
 
-        body = self._get(dash, db, "/song/t1").data.decode()
+        body = self._getPath(dash, db, "/song/t1").data.decode()
 
         self.assertIn("12 skips", body)
         self.assertIn("18.2% skipped", body)
@@ -170,7 +168,7 @@ class TestDetailPageSkipStat(SkipStatsRouteTestCase):
                 dash = self._makeApp()
                 db = self._detailDb()
 
-                self._get(dash, db, path)
+                self._getPath(dash, db, path)
 
                 self.assertEqual(db.getSkipStats.call_args.kwargs, {kwarg: value})
 
@@ -184,7 +182,7 @@ class TestDetailPageSkipStat(SkipStatsRouteTestCase):
                 db = self._detailDb()
                 db.getSkipStats.return_value = _skipStats(plays=54, skips=12, percent=18.2)
 
-                card = _heroCard(self._get(dash, db, path).data.decode())
+                card = _heroCard(self._getPath(dash, db, path).data.decode())
 
                 self.assertLess(card.index('class="track-meta small"'), card.index("detail-skip-stat"))
                 #< .track-attributes opens right after the last .track-meta block,
@@ -200,7 +198,7 @@ class TestDetailPageSkipStat(SkipStatsRouteTestCase):
                 db = self._detailDb()
                 db.getSkipStats.return_value = _skipStats(plays=54, skips=12, percent=18.2)
 
-                card = _heroCard(self._get(dash, db, path).data.decode())
+                card = _heroCard(self._getPath(dash, db, path).data.decode())
 
                 self.assertEqual(re.findall(r"\d+ plays", card), ["54 plays"])
 
@@ -218,7 +216,7 @@ class TestDetailPageSkipStat(SkipStatsRouteTestCase):
              "artists": [], "plays": 3, "totalTimeListened": 5000, "firstListenedAt": 0},
         ]
 
-        body = self._get(dash, db, "/artist/a1").data.decode()
+        body = self._getPath(dash, db, "/artist/a1").data.decode()
 
         self.assertEqual(body.count("detail-skip-stat"), 1)
 
@@ -227,7 +225,7 @@ class TestDetailPageSkipStat(SkipStatsRouteTestCase):
         db = self._detailDb()
         db.getSkipStats.return_value = _skipStats(plays=20, skips=0, percent=0.0)
 
-        body = self._get(dash, db, "/song/t1").data.decode()
+        body = self._getPath(dash, db, "/song/t1").data.decode()
 
         self.assertIn("Never skipped", body)
         self.assertNotIn("% skipped", body)
@@ -237,7 +235,7 @@ class TestDetailPageSkipStat(SkipStatsRouteTestCase):
         db = self._detailDb()
         db.getSkipStats.return_value = _skipStats(plays=0, skips=0, percent=0.0)
 
-        body = self._get(dash, db, "/song/t1").data.decode()
+        body = self._getPath(dash, db, "/song/t1").data.decode()
 
         self.assertNotIn("detail-skip-stat", body)
 
@@ -248,7 +246,7 @@ class TestDetailPageSkipStat(SkipStatsRouteTestCase):
         db = self._detailDb(plays=0)
         db.getSkipStats.return_value = _skipStats(plays=0, skips=4, percent=100.0)
 
-        card = _heroCard(self._get(dash, db, "/song/t1").data.decode())
+        card = _heroCard(self._getPath(dash, db, "/song/t1").data.decode())
 
         self.assertIn("4 skips", card)
         self.assertIn("100.0% skipped", card)
@@ -263,7 +261,7 @@ class TestDetailPageSkipStat(SkipStatsRouteTestCase):
         db.getSong.return_value = {**db.getSong.return_value, "skips": 4, "skipPercent": 100.0}
         db.getSkipStats.return_value = _skipStats(plays=0, skips=4, percent=100.0)
 
-        card = _heroCard(self._get(dash, db, "/song/t1").data.decode())
+        card = _heroCard(self._getPath(dash, db, "/song/t1").data.decode())
 
         self.assertNotIn("skip-label", card)
         self.assertEqual(card.count("4 skips"), 1)
@@ -273,7 +271,7 @@ class TestDetailPageSkipStat(SkipStatsRouteTestCase):
         db = self._detailDb(plays=1)
         db.getSkipStats.return_value = _skipStats(plays=1, skips=1, percent=50.0)
 
-        body = self._get(dash, db, "/song/t1").data.decode()
+        body = self._getPath(dash, db, "/song/t1").data.decode()
 
         self.assertIn(">1 skip</span>", body)
         self.assertNotIn("1 skips", body)

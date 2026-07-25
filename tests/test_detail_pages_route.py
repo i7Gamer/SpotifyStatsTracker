@@ -10,6 +10,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 # it only exercises the routes with a per-test mock db (via get_user_db).
 from app import SpotifyDashboardApp
 from _app_factory import AppTestCase
+from _detail_client import DetailPageClientMixin
 
 
 def _byId(entityId, genres):
@@ -18,25 +19,11 @@ def _byId(entityId, genres):
     return {entityId: genres}
 
 
-class _DetailRouteTestBase(AppTestCase):
-    def _getPath(self, dash, db, path):
-        # Every detail route now unconditionally fetches a page of the item's
-        # play history (see _detailHistoryContext) - default it to "no
-        # history" so tests that don't care about it need no stub of their
-        # own; a test's explicit stub (set before calling _getPath) wins.
-        if not isinstance(db.getEntriesCount.return_value, int):
-            db.getEntriesCount.return_value = 0
-        if not isinstance(db.getEntriesFromNew.return_value, list):
-            db.getEntriesFromNew.return_value = []
-        if not isinstance(db.getEntriesFromOld.return_value, list):
-            db.getEntriesFromOld.return_value = []
-        client = dash.app.test_client()
-        with patch.object(dash, 'is_user_logged_in', return_value=True), \
-             patch.object(dash, 'get_username_for_email', return_value='alice'), \
-             patch.object(dash, 'get_user_db', return_value=db):
-            with client.session_transaction() as sess:
-                sess['email'] = 'alice@example.com'
-            return client.get(path)
+class _DetailRouteTestBase(DetailPageClientMixin, AppTestCase):
+    """`self._getPath(...)` is the shell GET plus its deferred ?ajax=page body,
+    which is what a browser ends up showing - see _detail_client.py. Tests
+    about the split itself live in TestDetailPageDeferredBody below and drive
+    the two requests through `_getRaw` instead."""
 
     def _assertNoNavItemActive(self, body):
         """Detail subpages aren't the Top Songs/Artists/Albums list pages
@@ -1231,6 +1218,167 @@ class TestAlbumDetailRoute(_DetailRouteTestBase):
         db.getSongsStats.assert_not_called()
         db.lazyFetchAlbumBio.assert_not_called()
         db.getListeningTimeSeries.assert_not_called()
+
+
+class TestDetailPageDeferredBody(_DetailRouteTestBase):
+    """The two-phase split itself: the plain GET is a shell and everything
+    below the toolbar comes from ?ajax=page (see DETAIL_BODY_AJAX in
+    routes/charts.py and static/js/detail-page.js). These drive the two
+    requests through _getRaw rather than the composing _getPath the markup
+    tests use."""
+
+    #< every query the split moved off the first paint, per page
+    DEFERRED_LOOKUPS = {
+        "/song/t1": ("getListeningTimeSeries", "getHourOfDayHeatmap", "getPlayBuckets",
+                     "getSkipStats", "getEntriesCount", "getEntriesFromNew", "getGenresForTracks"),
+        "/artist/a1": ("getListeningTimeSeries", "getSkipStats", "getSongsStats",
+                       "getEntriesCount", "lazyFetchArtistBio"),
+        "/album/alb1": ("getListeningTimeSeries", "getSkipStats", "getSongsStats",
+                        "getEntriesCount", "lazyFetchAlbumBio"),
+    }
+
+    def _db(self):
+        db = MagicMock()
+        db.getSong.return_value = {
+            "id": "t1", "name": "Song One", "url": "http://example.com/t1", "imageId": "alb1",
+            "duration": 200000, "explicit": False, "isrc": "", "discNumber": 1, "trackNumber": 1,
+            "releaseDate": 0, "artists": [{"id": "a1", "name": "Artist A", "url": "u",
+                                            "imageUrl": "", "imageId": "a1"}],
+            "album": {"id": "alb1", "name": "Album One", "url": "u", "imageId": "alb1",
+                       "imageUrl": "", "totalTracks": 1, "releaseDate": 0},
+            "plays": 5, "totalTimeListened": 50000, "firstListenedAt": 100,
+        }
+        db.getArtist.return_value = {"id": "a1", "name": "Artist A", "url": "u", "imageId": "a1",
+                                      "imageUrl": "", "plays": 5, "totalTimeListened": 50000,
+                                      "firstListenedAt": 100, "uniqueSongCount": 1}
+        db.getAlbum.return_value = {"id": "alb1", "name": "Album One", "url": "u", "imageId": "alb1",
+                                     "imageUrl": "", "totalTracks": 1, "releaseDate": 0, "artists": [],
+                                     "plays": 5, "totalTimeListened": 50000, "firstListenedAt": 100,
+                                     "uniqueSongCount": 1}
+        db.getSongsStats.return_value = []
+        db.getListeningTimeSeries.return_value = []
+        db.getPlayBuckets.return_value = []
+        db.getHourOfDayHeatmap.return_value = [[{"totalTimeListened": 0, "plays": 0}
+                                                for _ in range(24)] for _ in range(7)]
+        db.getSkipStats.return_value = {"plays": 5, "skips": 1, "skipPercent": 16.7}
+        db.getArtistBio.return_value = None
+        db.getAlbumBio.return_value = None
+        return db
+
+    def test_the_shell_names_the_entity_and_holds_a_placeholder(self):
+        for path, name in (("/song/t1", "Song One"), ("/artist/a1", "Artist A"),
+                           ("/album/alb1", "Album One")):
+            with self.subTest(path=path):
+                dash = self._makeApp()
+
+                body = self._getRaw(dash, self._db(), path).data.decode()
+
+                self.assertIn(name, body)                    #< the hero identifies the page at once
+                self.assertIn('id="detailBody"', body)
+                self.assertIn('class="detail-skeleton"', body)
+                self.assertIn("js/detail-page.js", body)
+
+    def test_the_shell_leaves_every_heavy_lookup_to_the_deferred_load(self):
+        """The point of the split: none of these run before the first paint."""
+        for path, lookups in self.DEFERRED_LOOKUPS.items():
+            with self.subTest(path=path):
+                dash = self._makeApp()
+                db = self._db()
+
+                self._getRaw(dash, db, path)
+
+                for name in lookups:
+                    getattr(db, name).assert_not_called()
+
+    def test_the_shell_disables_the_bucket_select_until_the_body_lands(self):
+        """Its ?ajax=true refetch targets a chart that isn't on the page yet,
+        and its result would be overwritten by the body payload in flight."""
+        dash = self._makeApp()
+
+        body = self._getRaw(dash, self._db(), "/song/t1").data.decode()
+
+        selectTag = body[body.index('<select id="groupBy"'):]
+        self.assertIn("disabled", selectTag[:selectTag.index(">")])
+
+    def test_the_deferred_payload_carries_the_body_and_the_chart_data(self):
+        for path, key in (("/song/t1", "Song One"), ("/artist/a1", "Songs by Artist A"),
+                          ("/album/alb1", "Top Songs on Album One")):
+            with self.subTest(path=path):
+                dash = self._makeApp()
+
+                resp = self._getRaw(dash, self._db(), f"{path}?ajax=page")
+
+                self.assertEqual(resp.mimetype, "application/json")
+                payload = resp.get_json()
+                self.assertIn("track-card", payload["bodyHtml"])
+                self.assertIn(key, payload["bodyHtml"])
+                self.assertIn("timeSeries", payload)
+
+    def test_only_the_song_payload_carries_a_heatmap(self):
+        """Its "When You Listen" canvas is the only one on the three pages."""
+        dash = self._makeApp()
+
+        songPayload = self._getRaw(dash, self._db(), "/song/t1?ajax=page").get_json()
+        artistPayload = self._getRaw(dash, self._db(), "/artist/a1?ajax=page").get_json()
+
+        self.assertIn("heatmap", songPayload)
+        self.assertNotIn("heatmap", artistPayload)
+
+    def test_the_deferred_body_brings_the_play_log_with_it(self):
+        dash = self._makeApp()
+        db = self._db()
+        db.getEntriesCount.return_value = 1
+        db.getEntriesFromNew.return_value = [
+            {"id": "t1", "name": "Song One", "playedAtText": "20 Jul 2026, 15:30",
+             "timePlayedText": "3m 20s", "contextName": None, "artists": []}]
+
+        with patch.object(dash, "_embedSongsTextElements", side_effect=lambda songs: songs):
+            payload = self._getRaw(dash, db, "/song/t1?ajax=page").get_json()
+
+        self.assertIn("Play Timeline", payload["bodyHtml"])
+        self.assertIn("20 Jul 2026, 15:30", payload["bodyHtml"])
+
+    def test_the_narrower_modes_keep_their_own_branches(self):
+        """?ajax=true and ?ajax=list are partial refetches OF the body this
+        adds, so both must still answer with their own payload rather than
+        falling through to the shell or to the whole body."""
+        for path in ("/song/t1", "/artist/a1", "/album/alb1"):
+            with self.subTest(path=path):
+                dash = self._makeApp()
+
+                seriesPayload = self._getRaw(dash, self._db(), f"{path}?ajax=true").get_json()
+                listPayload = self._getRaw(dash, self._db(), f"{path}?ajax=list").get_json()
+
+                self.assertEqual(sorted(seriesPayload.keys()), ["groupBy", "timeSeries"])
+                self.assertIn("resultsHtml", listPayload)
+                self.assertNotIn("bodyHtml", listPayload)
+
+    def test_an_unrecognised_ajax_value_falls_back_to_the_shell(self):
+        """Only the three known markers branch; anything else is a page load,
+        so a stale or hand-edited value can't serve a JSON fragment as a page."""
+        dash = self._makeApp()
+        db = self._db()
+
+        resp = self._getRaw(dash, db, "/song/t1?ajax=nonsense")
+
+        self.assertEqual(resp.mimetype, "text/html")
+        self.assertIn('id="detailBody"', resp.data.decode())
+        db.getSkipStats.assert_not_called()
+
+    def test_an_unknown_entity_still_redirects_before_any_of_this(self):
+        for path, endpoint in (("/song/missing", "/top-songs"), ("/artist/missing", "/top-artists"),
+                               ("/album/missing", "/top-albums")):
+            with self.subTest(path=path):
+                dash = self._makeApp()
+                db = MagicMock()
+                db.getSong.return_value = None
+                db.getArtist.return_value = None
+                db.getAlbum.return_value = None
+
+                for suffix in ("", "?ajax=page"):
+                    resp = self._getRaw(dash, db, path + suffix)
+                    self.assertEqual(resp.status_code, 302)
+                    self.assertIn(endpoint, resp.headers["Location"])
 
 
 if __name__ == "__main__":

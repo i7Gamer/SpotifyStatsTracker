@@ -1,6 +1,12 @@
 {% extends "layout.html" %}
 {% from '_artist_links.html' import artistLinks with context %}
 {% block content %}
+  {# Two-phase load like /charts, /genres, /history and the Top pages: this GET
+     renders the hero, the toolbar and the tag panel - all off the one getSong
+     the route already does - and static/js/detail-page.js fetches everything
+     below via ?ajax=page right after first paint (see _song_detail_body.html).
+     The Trend-buckets select and the play log then keep their own narrower
+     refetches, ?ajax=true and ?ajax=list. #}
   <section class="hero">
     <div class="hero-content">
       <h1>{{ song.get('name', '') }}</h1>
@@ -25,7 +31,10 @@
       {% endif %}
       <div class="filter-group">
         <label for="groupBy">Trend buckets:</label>
-        <select id="groupBy" name="groupBy" onchange="updateDetailGroupByFilter()">
+        {# Disabled until the body arrives: the chart it re-fetches isn't on the
+           page yet, and a change made in that window would be overwritten by
+           the in-flight body payload. detail-page.js enables it. #}
+        <select id="groupBy" name="groupBy" onchange="updateDetailGroupByFilter()" disabled>
           <option value="" {% if not groupBy %}selected{% endif %}>Auto</option>
           <option value="day" {% if groupBy == 'day' %}selected{% endif %}>Day</option>
           <option value="week" {% if groupBy == 'week' %}selected{% endif %}>Week</option>
@@ -41,54 +50,15 @@
   {% include '_tag_widget.html' %}
   {% endif %}
 
-  <section id="track-list" class="track-list">
-    {% set track = song %}
-    {% set section = 'top_songs' %}
-    {% set item_number = '' %}
-    {% set playNowButton = true %}
-    {# The skip summary rides the hero card's stat line (see _skip_stat.html);
-       both flags must be reset below or the play log's cards inherit them. #}
-    {% set showSkipStats = true %}
-    {% include '_track_card.html' %}
-  </section>
-  {% set playNowButton = false %}
-  {% set showSkipStats = false %}
-
-  {% if song.get('url') %}
-  <section id="play-embed" class="play-embed" hidden>
-    <div id="play-embed-slot"></div>
-  </section>
-  {% endif %}
-
-  <section class="card chart-card">
-    {% if song.get('plays', 0) > 1 %}
-    <div class="chart-section">
-      <h2>Play History</h2>
-      <div class="chart-canvas-wrap">
-        <canvas id="timeSeriesChart" role="img" aria-label="Play history for this song over time"></canvas>
-      </div>
-    </div>
-    {% endif %}
-
-    <div class="chart-section">
-      <h2>When You Listen to This Song</h2>
-      <p class="chart-subtitle">Total listening time by day of week and hour of day.</p>
-      <div class="chart-canvas-wrap heatmap-wrap">
-        <canvas id="heatmapChart" role="img" aria-label="When this song is played, by day of week and hour"></canvas>
-      </div>
-    </div>
-  </section>
-
-  <div id="detailHistoryResults">
-    {% include '_play_log.html' %}
-  </div>
+  <div id="detailBody">{% include '_detail_skeleton.html' %}</div>
 
   <script src="{{ url_for('static', filename='js/back-button.js') }}"></script>
   <script>
-    window.__chartData = {
-      timeSeries: {{ timeSeries | tojson }},
-      heatmap: {{ heatmap | tojson }}
-    };
+    // Filled by detail-page.js once the deferred payload lands; charts.js is
+    // told to skip its own initial render until then (same contract /charts
+    // uses).
+    window.__chartData = {};
+    window.__deferInitialChartRender = true;
 
     initBackButton();
   </script>
@@ -99,4 +69,6 @@
   <script src="{{ url_for('static', filename='js/admin-refresh.js') }}"></script>
   <script src="{{ url_for('static', filename='js/play-embed.js') }}"></script>
   <script src="{{ url_for('static', filename='js/tags.js') }}"></script>
+  {# Last: it calls the init functions the scripts above define. #}
+  <script src="{{ url_for('static', filename='js/detail-page.js') }}"></script>
 {% endblock %}

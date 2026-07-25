@@ -3422,6 +3422,44 @@ html.theme-red {
   white-space: nowrap;
 }
 
+/* Placeholder for the detail pages' deferred body (templates/_detail_skeleton.html,
+   swapped out by static/js/detail-page.js). Heights approximate the card, chart
+   panel and list that replace them, so the page doesn't jump when they do. */
+.detail-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.detail-skeleton-block {
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.04);
+  animation: detail-skeleton-pulse 1.6s ease-in-out infinite;
+}
+
+.detail-skeleton-card {
+  height: 140px;
+}
+
+.detail-skeleton-chart {
+  height: 320px;
+}
+
+.detail-skeleton-list {
+  height: 220px;
+}
+
+@keyframes detail-skeleton-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .detail-skeleton-block {
+    animation: none;
+  }
+}
+
 .detail-skip-count {
   color: var(--text);
 }

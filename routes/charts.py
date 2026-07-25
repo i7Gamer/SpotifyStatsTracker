@@ -22,6 +22,12 @@ from services.milestones import buildNextMilestones, MS_PER_HOUR
 
 logger = logging.getLogger(__name__)
 
+#< The detail pages' third AJAX mode. ?ajax=true (re-fetch the time series for
+#  a new Trend bucket) and ?ajax=list (re-fetch the play log) are partial
+#  refetches OF the body this one delivers, so the routes test them first and
+#  this value is deliberately neither of theirs. See static/js/detail-page.js.
+DETAIL_BODY_AJAX = "page"
+
 
 def register(app, dashboard):
     PAGE_SIZE = appmod.PAGE_SIZE
@@ -790,10 +796,15 @@ def register(app, dashboard):
             return redirect(url_for("topSongsPage"))
 
         groupByParam = request.args.get("groupBy", "")   #< raw: the select keeps showing Auto
+        # Three AJAX modes share this route. They're tested most-specific first
+        # so the precedence can't drift: the two partial refetches claim their
+        # own value, the deferred whole-body load claims DETAIL_BODY_AJAX, and
+        # anything else (no ?ajax at all) is the shell.
+        ajax = request.args.get("ajax", "")
         # The bucket select re-fetches just the play-history series (see
         # static/js/detail-chart.js) - everything else on the page is
         # bucket-independent, so the full render below is skipped.
-        if request.args.get("ajax") == "true":
+        if ajax == "true":
             groupBy = dashboard._resolveGroupBy(
                 groupByParam, *dashboard._playRangeSpanDates(username, db.tz, trackId=track_id))
             timeSeries = dashboard._embedTimeSeriesTextElements(
@@ -801,12 +812,30 @@ def register(app, dashboard):
             )
             return jsonify(timeSeries=timeSeries, groupBy=groupBy)
 
+        # Lightweight shell, the same two-phase load /charts, /genres, /history
+        # and the three Top pages use: this GET renders the hero, the toolbar
+        # and the tag panel - all off the one getSong above - and
+        # static/js/detail-page.js fetches everything below them right after
+        # first paint. Every query past this point (the play log, the bucketed
+        # chart aggregates, the skip summary) is work the first paint no longer
+        # waits on.
+        if ajax not in ("list", DETAIL_BODY_AJAX):
+            return render_template(
+                "song_detail.html",
+                song=song,
+                username=username,
+                groupBy=groupByParam,
+                entity_tags=db.repo.getTagsForEntity(username, "track", track_id),
+                success=request.args.get("success"),
+                error=request.args.get("error"),
+            )
+
         listCtx = _detailHistoryContext(db, "songDetailPage", {"track_id": track_id},
                                         groupByParam=groupByParam, trackId=track_id,
                                         trackDurationMs=song.get("duration"))
         # The sort toggle / pagination links re-fetch just the play log (see
         # static/js/detail-history.js) - chart/heatmap work is skipped.
-        if request.args.get("ajax") == "list":
+        if ajax == "list":
             return jsonify(
                 resultsHtml=render_template("_play_log.html", username=username, **listCtx),
                 hasMore=listCtx.get("hasMore", False),
@@ -830,21 +859,18 @@ def register(app, dashboard):
         heatmap = dashboard._embedHeatmapTextElements(
             db.getHourOfDayHeatmap(trackId=track_id, bucketRows=bucketRows))
 
-        entity_tags = db.repo.getTagsForEntity(username, "track", track_id)
         skipStats = db.getSkipStats(trackId=track_id)
 
-        return render_template(
-            "song_detail.html",
-            song=song,
-            username=username,
-            groupBy=groupByParam,
+        return jsonify(
+            bodyHtml=render_template(
+                "_song_detail_body.html",
+                song=song,
+                username=username,
+                skipStats=skipStats,
+                **listCtx,
+            ),
             timeSeries=timeSeries,
             heatmap=heatmap,
-            entity_tags=entity_tags,
-            skipStats=skipStats,
-            success=request.args.get("success"),
-            error=request.args.get("error"),
-            **listCtx,
         )
     app.add_url_rule("/song/<track_id>", "songDetailPage", songDetailPage, methods=["GET"])
 
@@ -856,8 +882,9 @@ def register(app, dashboard):
             return redirect(url_for("topArtistsPage"))
 
         groupByParam = request.args.get("groupBy", "")   #< raw: the select keeps showing Auto
+        ajax = request.args.get("ajax", "")
         # Bucket-only AJAX refetch - see songDetailPage's identical branch.
-        if request.args.get("ajax") == "true":
+        if ajax == "true":
             groupBy = dashboard._resolveGroupBy(
                 groupByParam, *dashboard._playRangeSpanDates(username, db.tz, artistId=artist_id))
             timeSeries = dashboard._embedTimeSeriesTextElements(
@@ -865,11 +892,26 @@ def register(app, dashboard):
             )
             return jsonify(timeSeries=timeSeries, groupBy=groupBy)
 
+        # Deferred-body shell - see songDetailPage's identical branch. The
+        # artist page has the most to gain: the whole songs-by-this-artist
+        # aggregate and the Last.fm biography fetch below now happen after the
+        # page is already on screen.
+        if ajax not in ("list", DETAIL_BODY_AJAX):
+            return render_template(
+                "artist_detail.html",
+                artist=artist,
+                username=username,
+                groupBy=groupByParam,
+                entity_tags=db.repo.getTagsForEntity(username, "artist", artist_id),
+                success=request.args.get("success"),
+                error=request.args.get("error"),
+            )
+
         listCtx = _detailHistoryContext(db, "artistDetailPage", {"artist_id": artist_id, "view": "history"},
                                         groupByParam=groupByParam, artistId=artist_id)
         listCtx["plays"] = dashboard._attachGenres(db, listCtx["plays"], "track")
         # List-only AJAX refetch - see songDetailPage's identical branch.
-        if request.args.get("ajax") == "list":
+        if ajax == "list":
             return jsonify(resultsHtml=render_template(
                 "_detail_history_results.html", username=username,
                 itemName=artist.get("name", ""), **listCtx))
@@ -900,24 +942,21 @@ def register(app, dashboard):
         db.lazyFetchArtistBio(artist_id, artist.get("name", ""))
         artist["bio"] = db.getArtistBio(artist_id) if dashboard.repo.isArtistBioEnabled() else None
 
-        entity_tags = db.repo.getTagsForEntity(username, "artist", artist_id)
         skipStats = db.getSkipStats(artistId=artist_id)
 
-        return render_template(
-            "artist_detail.html",
-            artist=artist,
-            songs=songs,
-            firstSongName=firstSongName,
-            username=username,
-            groupBy=groupByParam,
+        return jsonify(
+            bodyHtml=render_template(
+                "_artist_detail_body.html",
+                artist=artist,
+                songs=songs,
+                firstSongName=firstSongName,
+                username=username,
+                skipStats=skipStats,
+                view=dashboard._getDetailViewParam(),
+                itemName=artist.get("name", ""),
+                **listCtx,
+            ),
             timeSeries=timeSeries,
-            entity_tags=entity_tags,
-            skipStats=skipStats,
-            success=request.args.get("success"),
-            error=request.args.get("error"),
-            view=dashboard._getDetailViewParam(),
-            itemName=artist.get("name", ""),
-            **listCtx,
         )
     app.add_url_rule("/artist/<artist_id>", "artistDetailPage", artistDetailPage, methods=["GET"])
 
@@ -929,8 +968,9 @@ def register(app, dashboard):
             return redirect(url_for("topAlbumsPage"))
 
         groupByParam = request.args.get("groupBy", "")   #< raw: the select keeps showing Auto
+        ajax = request.args.get("ajax", "")
         # Bucket-only AJAX refetch - see songDetailPage's identical branch.
-        if request.args.get("ajax") == "true":
+        if ajax == "true":
             groupBy = dashboard._resolveGroupBy(
                 groupByParam, *dashboard._playRangeSpanDates(username, db.tz, albumId=album_id))
             timeSeries = dashboard._embedTimeSeriesTextElements(
@@ -938,11 +978,23 @@ def register(app, dashboard):
             )
             return jsonify(timeSeries=timeSeries, groupBy=groupBy)
 
+        # Deferred-body shell - see songDetailPage's identical branch.
+        if ajax not in ("list", DETAIL_BODY_AJAX):
+            return render_template(
+                "album_detail.html",
+                album=album,
+                username=username,
+                groupBy=groupByParam,
+                entity_tags=db.repo.getTagsForEntity(username, "album", album_id),
+                success=request.args.get("success"),
+                error=request.args.get("error"),
+            )
+
         listCtx = _detailHistoryContext(db, "albumDetailPage", {"album_id": album_id, "view": "history"},
                                         groupByParam=groupByParam, albumId=album_id)
         listCtx["plays"] = dashboard._attachGenres(db, listCtx["plays"], "track")
         # List-only AJAX refetch - see songDetailPage's identical branch.
-        if request.args.get("ajax") == "list":
+        if ajax == "list":
             return jsonify(resultsHtml=render_template(
                 "_detail_history_results.html", username=username,
                 itemName=album.get("name", ""), **listCtx))
@@ -977,23 +1029,20 @@ def register(app, dashboard):
             db.lazyFetchAlbumBio(album_id, album.get("name", ""), primaryArtistName)
         album["bio"] = db.getAlbumBio(album_id) if dashboard.repo.isAlbumBioEnabled() else None
 
-        entity_tags = db.repo.getTagsForEntity(username, "album", album_id)
         skipStats = db.getSkipStats(albumId=album_id)
 
-        return render_template(
-            "album_detail.html",
-            album=album,
-            songs=songs,
-            firstSongName=firstSongName,
-            groupBy=groupByParam,
-            username=username,
+        return jsonify(
+            bodyHtml=render_template(
+                "_album_detail_body.html",
+                album=album,
+                songs=songs,
+                firstSongName=firstSongName,
+                username=username,
+                skipStats=skipStats,
+                view=dashboard._getDetailViewParam(),
+                itemName=album.get("name", ""),
+                **listCtx,
+            ),
             timeSeries=timeSeries,
-            entity_tags=entity_tags,
-            skipStats=skipStats,
-            success=request.args.get("success"),
-            error=request.args.get("error"),
-            view=dashboard._getDetailViewParam(),
-            itemName=album.get("name", ""),
-            **listCtx,
         )
     app.add_url_rule("/album/<album_id>", "albumDetailPage", albumDetailPage, methods=["GET"])

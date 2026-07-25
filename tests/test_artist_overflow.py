@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 from app import SpotifyDashboardApp, MAX_INLINE_ARTISTS, MIN_HIDDEN_ARTISTS
 from _app_factory import AppTestCase
+from _detail_client import DetailPageClientMixin
 
 _SECRET_KEY_PATCH = 'app.SpotifyDashboardApp._get_or_create_secret_key'
 
@@ -32,22 +33,10 @@ def _artists(count):
              "imageUrl": "", "imageId": f"a{i}"} for i in range(1, count + 1)]
 
 
-class _ArtistOverflowTestBase(AppTestCase):
-    def _getPath(self, dash, db, path):
-        # The detail routes unconditionally fetch a page of play history (see
-        # _detailHistoryContext) - default it to "no history", same as
-        # test_detail_pages_route.py's _DetailRouteTestBase.
-        if not isinstance(db.getEntriesCount.return_value, int):
-            db.getEntriesCount.return_value = 0
-        if not isinstance(db.getEntriesFromNew.return_value, list):
-            db.getEntriesFromNew.return_value = []
-        client = dash.app.test_client()
-        with patch.object(dash, 'is_user_logged_in', return_value=True), \
-             patch.object(dash, 'get_username_for_email', return_value='alice'), \
-             patch.object(dash, 'get_user_db', return_value=db):
-            with client.session_transaction() as sess:
-                sess['email'] = 'alice@example.com'
-            return client.get(path)
+class _ArtistOverflowTestBase(DetailPageClientMixin, AppTestCase):
+    """The hero renders one artist list and the deferred body another, so
+    `_getPath` (shell + ?ajax=page body - see _detail_client.py) is what puts
+    both in front of these assertions."""
 
 
 class TestSongPagesArtistOverflow(_ArtistOverflowTestBase):

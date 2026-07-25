@@ -1,0 +1,50 @@
+{# The song detail page's deferred body: everything below the toolbar, served
+   by songDetailPage's ?ajax=page branch and swapped into #detailBody by
+   static/js/detail-page.js. Split out of song_detail.html so the shell can
+   render off the single getSong the route already had to do, and every heavy
+   query (play log, bucketed chart aggregates, skip summary) lands after the
+   first paint instead of blocking it.
+
+   Rendered standalone, so it extends nothing - the surrounding page is the
+   shell that fetched it. #}
+<section id="track-list" class="track-list">
+  {% set track = song %}
+  {% set section = 'top_songs' %}
+  {% set item_number = '' %}
+  {% set playNowButton = true %}
+  {# The skip summary rides the hero card's stat line (see _skip_stat.html);
+     both flags must be reset below or the play log's cards inherit them. #}
+  {% set showSkipStats = true %}
+  {% include '_track_card.html' %}
+</section>
+{% set playNowButton = false %}
+{% set showSkipStats = false %}
+
+{% if song.get('url') %}
+<section id="play-embed" class="play-embed" hidden>
+  <div id="play-embed-slot"></div>
+</section>
+{% endif %}
+
+<section class="card chart-card">
+  {% if song.get('plays', 0) > 1 %}
+  <div class="chart-section">
+    <h2>Play History</h2>
+    <div class="chart-canvas-wrap">
+      <canvas id="timeSeriesChart" role="img" aria-label="Play history for this song over time"></canvas>
+    </div>
+  </div>
+  {% endif %}
+
+  <div class="chart-section">
+    <h2>When You Listen to This Song</h2>
+    <p class="chart-subtitle">Total listening time by day of week and hour of day.</p>
+    <div class="chart-canvas-wrap heatmap-wrap">
+      <canvas id="heatmapChart" role="img" aria-label="When this song is played, by day of week and hour"></canvas>
+    </div>
+  </div>
+</section>
+
+<div id="detailHistoryResults">
+  {% include '_play_log.html' %}
+</div>

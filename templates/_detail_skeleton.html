@@ -1,0 +1,13 @@
+{# Placeholder held in #detailBody until the deferred payload lands (see
+   static/js/detail-page.js). Three blocks roughly the height of what replaces
+   them - hero card, chart panel, list - so the page settles into its real
+   shape instead of snapping down from a bare "Loading…" line.
+
+   The blocks are decoration: they carry aria-hidden and the status role
+   announces the single word a screen reader actually needs. #}
+<div class="detail-skeleton" role="status" aria-live="polite">
+  <span class="visually-hidden">Loading…</span>
+  <div class="detail-skeleton-block detail-skeleton-card" aria-hidden="true"></div>
+  <div class="detail-skeleton-block detail-skeleton-chart" aria-hidden="true"></div>
+  <div class="detail-skeleton-block detail-skeleton-list" aria-hidden="true"></div>
+</div>
