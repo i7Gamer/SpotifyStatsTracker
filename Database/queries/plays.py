@@ -1179,18 +1179,22 @@ class PlayQueries:
         the true skips/encounters - a displayed number should be the real one."""
         return "(skips + ? * (SELECT rate FROM lib)) / (encounters + ?)"
 
-    def _libraryRateCte(self, username: str, params: list, startTs, endTs,
-                         fullPlaysOnly: bool = False) -> str:
+    def _libraryRateCte(self, username: str, params: list, startTs, endTs) -> str:
         """The user's overall skip rate in range - the average low-volume rows
         are pulled toward. Appends its own bound params, so it must be built
         before the main query's.
 
-        Deliberately NOT narrowed by the page's search/tag/entity filters: the
-        prior is "this listener's own norm", and shrinking a row toward the
-        average of whatever else matched the search box would make its rank
-        depend on its neighbours. `fullPlaysOnly` is the exception, because it
-        changes what counts as an encounter at all - the prior has to be
-        measured the same way as the rows compared against it.
+        Never narrowed by the page's filters, only by the date range. The prior
+        is "this listener's own norm", so shrinking a row toward the average of
+        whatever else matched the search box would make its rank depend on its
+        neighbours.
+
+        That once excluded partial listens too, when the Full-plays checkbox
+        was on, so the prior was measured the same way as the rows compared
+        against it. Dropped: it needed a tracks join for one scalar and doubled
+        the whole query (1.5s -> 3.1s on 400k plays) on the path that checkbox
+        defaults to, and it bought only a second-order shift in ordering. One
+        rule - the prior is whole-library, always - is also easier to keep.
 
         The 0.0 fallback is a real, not an integer: an all-integer numerator
         would make the ranking expression integer-divide and collapse every
@@ -1198,16 +1202,11 @@ class PlayQueries:
         same filter feeds both halves - this just doesn't depend on that.)"""
         params.append(username)
         rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
-        joins = ""
-        fullPlaysClause = ""
-        if fullPlaysOnly:
-            joins = " JOIN tracks t ON t.id = p.track_id"
-            fullPlaysClause = self._fullPlayOrSkipClause(params)
         return f"""lib AS (
                 SELECT COALESCE(
                     CAST(SUM(CASE WHEN p.is_skip = 1 THEN 1 ELSE 0 END) AS REAL) / NULLIF(COUNT(*), 0), 0.0
                 ) AS rate
-                FROM plays p{joins} WHERE p.username = ?{rangeClause}{fullPlaysClause}
+                FROM plays p WHERE p.username = ?{rangeClause}
             )"""
 
     def _fullPlayOrSkipClause(self, params: list) -> str:
@@ -1356,7 +1355,7 @@ class PlayQueries:
         The filter params mirror getSongsPage()'s and mean the same things
         there - see _skippedTrackFilters."""
         params: list = []
-        libCte = self._libraryRateCte(username, params, startTs, endTs, fullPlaysOnly)
+        libCte = self._libraryRateCte(username, params, startTs, endTs)
         params.append(username)
         rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
         joins, filterClause = self._skippedTrackFilters(
@@ -1427,7 +1426,7 @@ class PlayQueries:
         The filter params mirror getArtistAggregates()' - see
         _skippedArtistFilters."""
         params: list = []
-        libCte = self._libraryRateCte(username, params, startTs, endTs, fullPlaysOnly)
+        libCte = self._libraryRateCte(username, params, startTs, endTs)
         params.append(username)
         rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
         joins, filterClause = self._skippedArtistFilters(
@@ -1514,7 +1513,7 @@ class PlayQueries:
         sort is. The filter params mirror getAlbumsPage()' - see
         _skippedAlbumFilters."""
         params: list = []
-        libCte = self._libraryRateCte(username, params, startTs, endTs, fullPlaysOnly)
+        libCte = self._libraryRateCte(username, params, startTs, endTs)
         params.append(username)
         rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
         filterClause = self._skippedAlbumFilters(params, albumId, searchQuery, albumIds, fullPlaysOnly)
