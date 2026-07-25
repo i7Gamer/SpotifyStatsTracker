@@ -1153,17 +1153,26 @@ class PlayQueries:
                  "plays": r["plays"],
                  "totalTimeListened": r["total_time"]} for r in rows]
 
-    def getPlaysForMonthDays(self, username: str, monthDays: list[str]) -> list[dict]:
-        """Raw plays whose UTC calendar month-day is in `monthDays` (each a
-        "%m-%d" string), each with its track name and primary (position-0)
-        artist name. Deliberately over-selects a ±1-day UTC window: the caller
-        (Database.getOnThisDay) converts played_at to the user's local
-        timezone and does the exact local month/day + year grouping, and a
-        play's local date can differ from its UTC date by up to a day."""
-        if not monthDays:
+    def getPlaysInTimeWindows(self, username: str, windows: list[tuple[float, float]]) -> list[dict]:
+        """Raw plays falling in any of the given [startTs, endTs) windows, each
+        with its track name and primary (position-0) artist name.
+
+        The windows are half-open ranges on played_at, so idx_plays_user_time
+        drives one index range scan per window. The previous form matched on
+        strftime('%m-%d', played_at, 'unixepoch'), which no index can satisfy -
+        it re-derived a calendar date for every play the user has ever made,
+        on every dashboard render.
+
+        Callers deliberately over-select (Database.getOnThisDay asks for a
+        ±1-day window per year) and apply the exact local-date match in Python,
+        since a play's local date can differ from its UTC date by up to a day."""
+        if not windows:
             return []
         conn = self._conn()
-        placeholders = ",".join("?" for _ in monthDays)
+        rangeClauses = " OR ".join("(p.played_at >= ? AND p.played_at < ?)" for _ in windows)
+        params: list = [username]
+        for startTs, endTs in windows:
+            params.extend((startTs, endTs))
         rows = conn.execute(
             f"""
             SELECT p.played_at AS played_at, p.track_id AS track_id,
@@ -1172,10 +1181,9 @@ class PlayQueries:
             JOIN tracks t ON t.id = p.track_id
             LEFT JOIN track_artists ta ON ta.track_id = p.track_id AND ta.position = 0
             LEFT JOIN artists ar ON ar.id = ta.artist_id
-            WHERE p.username = ? AND p.is_skip=0
-              AND strftime('%m-%d', p.played_at, 'unixepoch') IN ({placeholders})
+            WHERE p.username = ? AND p.is_skip=0 AND ({rangeClauses})
             """,
-            [username, *monthDays],
+            params,
         ).fetchall()
         return [dict(r) for r in rows]
 

@@ -89,13 +89,15 @@ class ViewModelMixin:
     def _attachGenres(self, db, items: list[dict], kind: str) -> list[dict]:
         """Sets item['genres'] (a list of genre name strings, [] when none,
         capped to TRACK_CARD_GENRE_LIMIT) for _track_card.html's genre badge
-        - one indexed per-item lookup per item, cheap enough against the
-        local SQLite file that no batch query is warranted (see
-        resolveGenresForTrack/Album/Artist's degrade-to-[] contract, which
-        keeps this safe against stubbed test dbs too). Truncated here rather
-        than in the template so every caller (including detail pages, which
-        wrap a single item) gets the same cap without threading a constant
-        through every render_template() call.
+        - one batched lookup for the whole list (see
+        resolveGenresForTracks/Albums/Artists' degrade-to-{} contract, which
+        keeps this safe against stubbed test dbs too). It used to be two
+        queries per item (the genre rows, plus a fresh read of the
+        inherited-genres setting), which an artist detail page paid for every
+        song the artist has - hundreds of round trips on one render.
+        Truncated here rather than in the template so every caller (including
+        detail pages, which wrap a single item) gets the same cap without
+        threading a constant through every render_template() call.
 
         These per-item badges bypass the charts/wrapped/compare coverage-
         unlock gate by design (they show whatever's known regardless of
@@ -107,8 +109,10 @@ class ViewModelMixin:
                 item["genres"] = []
             return items
         resolver = self._GENRE_RESOLVERS[kind]
+        genresById = resolver(db, [item["id"] for item in items if item.get("id")])
         for item in items:
-            item["genres"] = resolver(db, item["id"])[:TRACK_CARD_GENRE_LIMIT] if item.get("id") else []
+            genres = genresById.get(item["id"], []) if item.get("id") else []
+            item["genres"] = genres[:TRACK_CARD_GENRE_LIMIT]
         return items
 
     def _getChangeText(self, currentValue, previousValue):

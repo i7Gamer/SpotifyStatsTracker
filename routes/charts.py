@@ -644,11 +644,17 @@ def register(app, dashboard):
 
         timeSeriesGroupBy = "hour" if isSingleDayView else groupBy
 
+        # The timeline and the heatmap are two different local-time views of
+        # the SAME pre-aggregated rows, so the aggregate runs once here rather
+        # than once inside each.
+        bucketRows = db.getPlayBuckets(startDate=startDate, endDate=endDate)
         timeSeries = dashboard._embedTimeSeriesTextElements(
-            db.getListeningTimeSeries(startDate=startDate, endDate=endDate, groupBy=timeSeriesGroupBy),
+            db.getListeningTimeSeries(startDate=startDate, endDate=endDate, groupBy=timeSeriesGroupBy,
+                                       bucketRows=bucketRows),
             groupBy=timeSeriesGroupBy,
         )
-        heatmap = dashboard._embedHeatmapTextElements(db.getHourOfDayHeatmap(startDate=startDate, endDate=endDate))
+        heatmap = dashboard._embedHeatmapTextElements(
+            db.getHourOfDayHeatmap(startDate=startDate, endDate=endDate, bucketRows=bucketRows))
         artistTrend = None if isSingleDayView else db.getArtistTrend(startDate=startDate, endDate=endDate, topN=CHART_ARTIST_TREND_TOP_N, groupBy=groupBy)
 
         explicitRatio = db.getExplicitRatio(startDate=startDate, endDate=endDate)
@@ -819,15 +825,18 @@ def register(app, dashboard):
 
         groupBy = dashboard._resolveGroupBy(
             groupByParam, *dashboard._playRangeSpanDates(username, db.tz, trackId=track_id))
+        # One aggregate, two local-time views - same as chartsPage below.
+        bucketRows = db.getPlayBuckets(trackId=track_id)
         timeSeries = dashboard._embedTimeSeriesTextElements(
-            db.getListeningTimeSeries(trackId=track_id, groupBy=groupBy)
+            db.getListeningTimeSeries(trackId=track_id, groupBy=groupBy, bucketRows=bucketRows)
         )
 
         song = dashboard._embedSongTextElements(song)
         song = dashboard._embedTopSongTextElements(song)
         song = dashboard._attachGenres(db, [song], "track")[0]
 
-        heatmap = dashboard._embedHeatmapTextElements(db.getHourOfDayHeatmap(trackId=track_id))
+        heatmap = dashboard._embedHeatmapTextElements(
+            db.getHourOfDayHeatmap(trackId=track_id, bucketRows=bucketRows))
 
         entity_tags = db.repo.getTagsForEntity(username, "track", track_id)
 

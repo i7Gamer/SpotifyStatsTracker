@@ -773,15 +773,24 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         plays -> {"buckets": [], "series": []}."""
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
         inherited = self._resolveIncludeInherited(includeInherited)
-        rows = self.repo.getGenrePlayRows(self.user, genres, inherited, startTs, endTs)
+        rows = self.repo.getBucketedGenrePlayCounts(self.user, genres, inherited, startTs, endTs)
 
         counts: dict = {}  # genre -> {bucket: count}
         bucketKeys: set = set()
+        # Many rows share the same 15-minute bucketStartTs (one per genre
+        # active in it), so the local-timezone conversion + bucket-key mapping
+        # is memoized per distinct bucket rather than recomputed per row -
+        # same cache getArtistTrend uses for the same reason.
+        bucketKeyCache: dict = {}
         for row in rows:
-            bucket = self._bucketKey(convertToDatetime(row["played_at"], tz=self.tz), groupBy)
+            bucketStartTs = row["bucketStartTs"]
+            bucket = bucketKeyCache.get(bucketStartTs)
+            if bucket is None:
+                bucket = self._bucketKey(convertToDatetime(bucketStartTs, tz=self.tz), groupBy)
+                bucketKeyCache[bucketStartTs] = bucket
             bucketKeys.add(bucket)
             genreBuckets = counts.setdefault(row["genre"], {})
-            genreBuckets[bucket] = genreBuckets.get(bucket, 0) + 1
+            genreBuckets[bucket] = genreBuckets.get(bucket, 0) + row["plays"]
 
         if not bucketKeys:
             return {"buckets": [], "series": []}
@@ -872,6 +881,26 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         """This artist's own genre names, position-ordered. Artists have no
         inherited concept (nothing to inherit FROM), so no toggle here."""
         return self.repo.getArtistGenres(artistId)
+
+    def getGenresForTracks(self, trackIds: list[str],
+                            includeInherited: bool | None = None) -> dict[str, list[str]]:
+        """Batched getGenresForTrack for a page of cards: {trackId: [genre, ...]}
+        in two queries total (the inherited-genre setting once, the genre rows
+        once) instead of two per card. Ids with no genres map to []."""
+        inherited = self._resolveIncludeInherited(includeInherited)
+        return {trackId: [row["genre"] for row in rows if inherited or not row["inherited"]]
+                for trackId, rows in self.repo.getTrackGenresForIds(trackIds).items()}
+
+    def getGenresForAlbums(self, albumIds: list[str],
+                            includeInherited: bool | None = None) -> dict[str, list[str]]:
+        """Batched getGenresForAlbum - see getGenresForTracks."""
+        inherited = self._resolveIncludeInherited(includeInherited)
+        return {albumId: [row["genre"] for row in rows if inherited or not row["inherited"]]
+                for albumId, rows in self.repo.getAlbumGenresForIds(albumIds).items()}
+
+    def getGenresForArtists(self, artistIds: list[str]) -> dict[str, list[str]]:
+        """Batched getGenresForArtist - one query, no inherited toggle."""
+        return self.repo.getArtistGenresForIds(artistIds)
 
     def getCompletionStats(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> dict:
         """Skip/complete/partial breakdown for the Charts pie chart and the
@@ -1033,20 +1062,39 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
             dayCounts[dateStr] = dayCounts.get(dateStr, 0) + row["plays"]
         return buildListeningCalendar(dayCounts, today, weeks=weeks)
 
+    def _onThisDayWindows(self, today: datetime.date) -> list[tuple[float, float]]:
+        """One [start, end) timestamp window per PRIOR year the user has plays
+        in, spanning today's date ±1 day in that year (local time). The padding
+        absorbs the UTC-vs-local date shift; getOnThisDay still does the exact
+        local month/day match. Feb 29 falls back to Feb 28 in non-leap years -
+        the window is only a pre-filter, so a slightly different anchor costs
+        nothing and the exact match still rejects everything."""
+        span = self.repo.getPlayTimeRange(self.user)
+        if span is None:
+            return []
+        firstYear = convertToDatetime(span[0], tz=self.tz).year
+        windows = []
+        for year in range(firstYear, today.year):
+            try:
+                anchor = datetime.date(year, today.month, today.day)
+            except ValueError:
+                anchor = datetime.date(year, today.month, today.day - 1)   #< Feb 29 -> Feb 28
+            start = datetime.datetime(anchor.year, anchor.month, anchor.day,
+                                      tzinfo=self.tz) - datetime.timedelta(days=1)
+            windows.append((start.timestamp(), (start + datetime.timedelta(days=3)).timestamp()))
+        return windows
+
     def getOnThisDay(self, now: datetime.datetime = None, limit: int | None = None) -> list[dict]:
         """"On this day" resurfacing: for each PRIOR year that has plays on
         today's local month/day, the track played most that day. Returns
         [{year, yearsAgo, trackId, trackName, artistName, playCount}], newest
         year first, capped at `limit` (None = uncapped). The repo over-selects
-        a ±1-day UTC window; the exact local month/day match is applied here so
-        it's correct across timezone offsets and DST."""
+        a ±1-day window around today's date in each prior year; the exact local
+        month/day match is applied here so it's correct across timezone offsets
+        and DST."""
         nowLocal = now.astimezone(self.tz) if now is not None else datetime.datetime.now(tz=self.tz)
         today = nowLocal.date()
-        monthDays = sorted({
-            (today + datetime.timedelta(days=offset)).strftime("%m-%d")
-            for offset in (-1, 0, 1)
-        })
-        rows = self.repo.getPlaysForMonthDays(self.user, monthDays)
+        rows = self.repo.getPlaysInTimeWindows(self.user, self._onThisDayWindows(today))
 
         perYearTrack: dict = {}
         for r in rows:
@@ -1348,9 +1396,21 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         else:
             return dateToString(startOfDay(date, tz=self.tz), tz=self.tz)
 
+    def getPlayBuckets(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None,
+                        trackId: str | None = None, artistId: str | None = None,
+                        albumId: str | None = None) -> list:
+        """The raw pre-aggregated bucket rows both getListeningTimeSeries and
+        getHourOfDayHeatmap map into local time. Exposed so a caller rendering
+        both from the SAME range (the /charts page) can run the aggregate once
+        and hand the rows to each, instead of paying for two byte-identical
+        queries per request."""
+        startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
+        return self.repo.getBucketedPlayTotals(self.user, startTs, endTs, trackId=trackId,
+                                                artistId=artistId, albumId=albumId)
+
     def getListeningTimeSeries(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None,
                                 groupBy: str = "day", trackId: str | None = None, artistId: str | None = None,
-                                albumId: str | None = None) -> list:
+                                albumId: str | None = None, bucketRows: list | None = None) -> list:
         """Total listening time and play count per day or week, gap-filled with
         zero-value buckets so a bar chart shows a continuous timeline.
         `trackId`/`artistId`/`albumId` narrow this to one item's plays only -
@@ -1360,10 +1420,11 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
 
         The per-play summing happens in SQL (see getBucketedPlayTotals);
         Python only re-buckets the pre-aggregated 15-minute rows into the
-        app's configurable IANA timezone, which SQLite can't express."""
-        startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
-        rows = self.repo.getBucketedPlayTotals(self.user, startTs, endTs, trackId=trackId, artistId=artistId,
-                                                albumId=albumId)
+        app's configurable IANA timezone, which SQLite can't express.
+        `bucketRows` lets a caller supply rows it already fetched for the same
+        range (see getPlayBuckets)."""
+        rows = bucketRows if bucketRows is not None else self.getPlayBuckets(
+            startDate, endDate, trackId=trackId, artistId=artistId, albumId=albumId)
 
         buckets = {}
         for row in rows:
@@ -1410,17 +1471,17 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
 
     def getHourOfDayHeatmap(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None,
                              trackId: str | None = None, artistId: str | None = None,
-                             albumId: str | None = None) -> list:
+                             albumId: str | None = None, bucketRows: list | None = None) -> list:
         """7x24 grid (rows Monday=0..Sunday=6, columns hour-of-day 0-23) of total
         listening time and play count, for a 'when do I listen' heatmap.
         `trackId`/`artistId`/`albumId` narrow this to one item's plays only -
         reused by the song detail page's 'when you listen to this song' heatmap,
         same as getListeningTimeSeries's item filters. Summing runs in SQL
         (getBucketedPlayTotals); Python maps each 15-minute bucket to its
-        local weekday/hour cell."""
-        startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
-        rows = self.repo.getBucketedPlayTotals(self.user, startTs, endTs, trackId=trackId, artistId=artistId,
-                                                albumId=albumId)
+        local weekday/hour cell. `bucketRows` lets a caller supply rows it
+        already fetched for the same range (see getPlayBuckets)."""
+        rows = bucketRows if bucketRows is not None else self.getPlayBuckets(
+            startDate, endDate, trackId=trackId, artistId=artistId, albumId=albumId)
         grid = [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
 
         for row in rows:

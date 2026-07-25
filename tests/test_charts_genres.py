@@ -11,6 +11,7 @@ from app import (
     SpotifyDashboardApp, sanitizeGenreCoverage, genreGatePasses, emptyGenreCoverage,
     GENRE_GATE_OVERALL_MIN_PERCENT, GENRE_GATE_CATEGORY_MIN_PERCENT, CHART_TOP_GENRES_LIMIT,
     resolveGenresForTrack, resolveGenresForAlbum, resolveGenresForArtist,
+    resolveGenresForTracks, resolveGenresForAlbums, resolveGenresForArtists,
 )
 from _app_factory import AppTestCase
 
@@ -106,6 +107,55 @@ class ResolveGenresForEntityTestCase(unittest.TestCase):
             with self.subTest(resolver=resolver.__name__):
                 db = MagicMock()
                 self.assertEqual(resolver(db, "id1"), [])
+
+
+class ResolveGenresForManyTestCase(unittest.TestCase):
+    """resolveGenresFor{Tracks,Albums,Artists} - the batched lookups the card
+    lists actually use. Same never-let-a-genre-lookup-break-a-page contract,
+    one level up: degrade to {} (callers read a missing id as "no genres")."""
+
+    def _cases(self):
+        return (
+            (resolveGenresForTracks, "getGenresForTracks"),
+            (resolveGenresForAlbums, "getGenresForAlbums"),
+            (resolveGenresForArtists, "getGenresForArtists"),
+        )
+
+    def test_well_formed_mapping_passes_through(self):
+        for resolver, dbMethod in self._cases():
+            with self.subTest(resolver=resolver.__name__):
+                db = MagicMock()
+                getattr(db, dbMethod).return_value = {"id1": ["rock"], "id2": []}
+                self.assertEqual(resolver(db, ["id1", "id2"]), {"id1": ["rock"], "id2": []})
+
+    def test_exception_degrades_to_empty_mapping(self):
+        for resolver, dbMethod in self._cases():
+            with self.subTest(resolver=resolver.__name__):
+                db = MagicMock()
+                getattr(db, dbMethod).side_effect = RuntimeError("boom")
+                self.assertEqual(resolver(db, ["id1"]), {})
+
+    def test_unstubbed_magicmock_return_degrades_to_empty_mapping(self):
+        for resolver, _ in self._cases():
+            with self.subTest(resolver=resolver.__name__):
+                db = MagicMock()
+                self.assertEqual(resolver(db, ["id1"]), {})
+
+    def test_non_list_values_are_dropped_not_rendered(self):
+        """A malformed value must never reach a card's genre badge, even if
+        the mapping itself is well formed."""
+        for resolver, dbMethod in self._cases():
+            with self.subTest(resolver=resolver.__name__):
+                db = MagicMock()
+                getattr(db, dbMethod).return_value = {"id1": ["rock"], "id2": "pop"}
+                self.assertEqual(resolver(db, ["id1", "id2"]), {"id1": ["rock"]})
+
+    def test_empty_id_list_never_touches_the_db(self):
+        for resolver, dbMethod in self._cases():
+            with self.subTest(resolver=resolver.__name__):
+                db = MagicMock()
+                self.assertEqual(resolver(db, []), {})
+                getattr(db, dbMethod).assert_not_called()
 
 
 class ChartsGenresTestCase(AppTestCase):

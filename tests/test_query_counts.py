@@ -1,0 +1,366 @@
+"""Query-count regression tests for the hot render paths.
+
+These pin the shape of the SQL a page issues, not its wall time: the failure
+mode they exist to catch is a per-item lookup creeping back into a loop that
+renders a whole list (the N+1 the batched genre/track lookups replaced). A
+plain unit test can't see that - the output is identical either way - so these
+count statements against a real connection instead.
+"""
+import datetime
+import sys
+import os
+from unittest.mock import patch
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+from conftest import DatabaseTestCase, normalizeTrackForTest
+import Database.utils as utilsModule
+from dashboard.view_models import ViewModelMixin
+from services.genre_gate import (
+    resolveGenresForTracks, resolveGenresForAlbums, resolveGenresForArtists,
+)
+
+
+def _ts(year, month=6, day=1, hour=12):
+    return int(datetime.datetime(year, month, day, hour, tzinfo=datetime.timezone.utc).timestamp())
+
+
+class _QueryCounter:
+    """Counts statements executed on a connection while active."""
+
+    def __init__(self, conn):
+        self.conn = conn
+        self.statements = []
+
+    def __enter__(self):
+        self.conn.set_trace_callback(self.statements.append)
+        return self
+
+    def __exit__(self, *exc):
+        self.conn.set_trace_callback(None)
+        return False
+
+    def matching(self, needle):
+        return [s for s in self.statements if needle.lower() in s.lower()]
+
+    def count(self, needle):
+        return len(self.matching(needle))
+
+
+class _Dashboard(ViewModelMixin):
+    """The genre-attachment half of SpotifyDashboardApp, without building the
+    whole app: _attachGenres only needs the repo and the resolver table."""
+
+    _GENRE_RESOLVERS = {
+        "track": resolveGenresForTracks,
+        "album": resolveGenresForAlbums,
+        "artist": resolveGenresForArtists,
+    }
+
+    def __init__(self, repo):
+        self.repo = repo
+
+
+class GenreBadgeQueryCountTestCase(DatabaseTestCase):
+    """One rendered list = one genre query, however many cards are in it."""
+
+    ITEM_COUNT = 25
+
+    def setUp(self):
+        super().setUp()
+        patcher = patch.object(utilsModule, "tz", datetime.timezone.utc)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _seed(self):
+        tracks, entries = {}, []
+        for index in range(self.ITEM_COUNT):
+            trackId = f"t{index}"
+            tracks[trackId] = normalizeTrackForTest({
+                "id": trackId, "name": f"Song {index}",
+                "artists": [{"id": f"ar{index}", "name": f"Artist {index}"}],
+                "imageId": f"al{index}",   #< doubles as the album id (see normalizeTrackForTest)
+            })
+            entries.append({"id": trackId, "playedAt": _ts(2026, 6, 1, 12), "timePlayed": 60000})
+        db = self._makeDb(tracks, entries)
+        for index in range(self.ITEM_COUNT):
+            db.repo.replaceTrackGenres(f"t{index}", ["rock", "pop"])
+            db.repo.replaceAlbumGenres(f"al{index}", ["rock"])
+            db.repo.replaceArtistGenres(f"ar{index}", ["rock"])
+        return db
+
+    def _attach(self, db, kind, idPrefix):
+        items = [{"id": f"{idPrefix}{index}"} for index in range(self.ITEM_COUNT)]
+        dashboard = _Dashboard(db.repo)
+        with _QueryCounter(db.repo._conn()) as counter:
+            attached = dashboard._attachGenres(db, items, kind)
+        return attached, counter
+
+    def test_track_badges_cost_one_genre_query_for_the_whole_list(self):
+        db = self._seed()
+
+        attached, counter = self._attach(db, "track", "t")
+
+        self.assertEqual(counter.count("FROM track_genres"), 1)
+        self.assertTrue(all(item["genres"] == ["rock", "pop"] for item in attached))
+
+    def test_album_badges_cost_one_genre_query_for_the_whole_list(self):
+        db = self._seed()
+
+        attached, counter = self._attach(db, "album", "al")
+
+        self.assertEqual(counter.count("FROM album_genres"), 1)
+        self.assertTrue(all(item["genres"] == ["rock"] for item in attached))
+
+    def test_artist_badges_cost_one_genre_query_for_the_whole_list(self):
+        db = self._seed()
+
+        attached, counter = self._attach(db, "artist", "ar")
+
+        self.assertEqual(counter.count("FROM artist_genres"), 1)
+        self.assertTrue(all(item["genres"] == ["rock"] for item in attached))
+
+    def test_total_query_count_does_not_grow_with_the_number_of_cards(self):
+        """The whole point: the per-item path cost 2 queries per card (the
+        genre rows plus a fresh read of the inherited-genres setting), so a
+        longer list meant proportionally more round trips."""
+        db = self._seed()
+        dashboard = _Dashboard(db.repo)
+
+        counts = []
+        for itemCount in (1, self.ITEM_COUNT):
+            items = [{"id": f"t{index}"} for index in range(itemCount)]
+            with _QueryCounter(db.repo._conn()) as counter:
+                dashboard._attachGenres(db, items, "track")
+            counts.append(len(counter.statements))
+
+        self.assertEqual(counts[0], counts[1], f"query count grew with list size: {counts}")
+
+    def test_batched_and_per_item_lookups_agree(self):
+        """The batch path must return exactly what the per-item one did,
+        including the inherited-genre filtering."""
+        db = self._seed()
+        db.repo.replaceTrackGenres("t0", ["rock"], inherited=True)
+
+        for includeInherited in (True, False):
+            with self.subTest(includeInherited=includeInherited):
+                batched = db.getGenresForTracks([f"t{i}" for i in range(self.ITEM_COUNT)],
+                                                 includeInherited=includeInherited)
+                perItem = {f"t{i}": db.getGenresForTrack(f"t{i}", includeInherited=includeInherited)
+                           for i in range(self.ITEM_COUNT)}
+                self.assertEqual(batched, perItem)
+
+    def test_ids_with_no_genres_map_to_empty_lists(self):
+        db = self._seed()
+
+        result = db.getGenresForTracks(["t0", "does-not-exist"])
+
+        self.assertEqual(result["does-not-exist"], [])
+        self.assertEqual(result["t0"], ["rock", "pop"])
+
+    def test_duplicate_ids_are_queried_once_and_still_resolve(self):
+        db = self._seed()
+
+        with _QueryCounter(db.repo._conn()) as counter:
+            result = db.getGenresForTracks(["t0", "t0", "t1"])
+
+        self.assertEqual(counter.count("FROM track_genres"), 1)
+        self.assertEqual(result["t0"], ["rock", "pop"])
+        self.assertEqual(result["t1"], ["rock", "pop"])
+
+    def test_empty_id_list_issues_no_query(self):
+        db = self._seed()
+
+        with _QueryCounter(db.repo._conn()) as counter:
+            result = db.getGenresForTracks([])
+
+        self.assertEqual(result, {})
+        self.assertEqual(counter.count("FROM track_genres"), 0)
+
+
+class BucketedAggregateReuseTestCase(DatabaseTestCase):
+    """The timeline and the listening-clock heatmap are two local-time views of
+    one pre-aggregated result set. Rendering both from the same range used to
+    run that aggregate twice per request, byte for byte identical."""
+
+    def setUp(self):
+        super().setUp()
+        patcher = patch.object(utilsModule, "tz", datetime.timezone.utc)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _db(self):
+        tracks = {"t1": normalizeTrackForTest({"id": "t1", "name": "Song", "artists": []})}
+        entries = [
+            {"id": "t1", "playedAt": _ts(2026, 7, 1, 9), "timePlayed": 1000},
+            {"id": "t1", "playedAt": _ts(2026, 7, 2, 20), "timePlayed": 2000},
+        ]
+        return self._makeDb(tracks, entries)
+
+    def test_shared_rows_produce_identical_output_to_fetching_twice(self):
+        db = self._db()
+        start = datetime.datetime(2026, 7, 1, tzinfo=datetime.timezone.utc)
+        end = datetime.datetime(2026, 7, 4, tzinfo=datetime.timezone.utc)
+
+        separateSeries = db.getListeningTimeSeries(startDate=start, endDate=end, groupBy="day")
+        separateHeatmap = db.getHourOfDayHeatmap(startDate=start, endDate=end)
+
+        rows = db.getPlayBuckets(startDate=start, endDate=end)
+        sharedSeries = db.getListeningTimeSeries(startDate=start, endDate=end, groupBy="day", bucketRows=rows)
+        sharedHeatmap = db.getHourOfDayHeatmap(startDate=start, endDate=end, bucketRows=rows)
+
+        self.assertEqual(sharedSeries, separateSeries)
+        self.assertEqual(sharedHeatmap, separateHeatmap)
+
+    def test_supplied_rows_skip_the_aggregate_entirely(self):
+        db = self._db()
+        rows = db.getPlayBuckets()
+
+        with _QueryCounter(db.repo._conn()) as counter:
+            db.getListeningTimeSeries(groupBy="day", bucketRows=rows)
+            db.getHourOfDayHeatmap(bucketRows=rows)
+
+        self.assertEqual(counter.count("FROM plays"), 0)
+
+    def test_empty_supplied_rows_are_honoured_not_refetched(self):
+        """[] is a real answer (no plays in range), not 'nothing supplied'."""
+        db = self._db()
+
+        with _QueryCounter(db.repo._conn()) as counter:
+            series = db.getListeningTimeSeries(groupBy="day", bucketRows=[])
+
+        self.assertEqual(series, [])
+        self.assertEqual(counter.count("FROM plays"), 0)
+
+    def test_without_supplied_rows_each_call_still_aggregates(self):
+        db = self._db()
+
+        with _QueryCounter(db.repo._conn()) as counter:
+            db.getListeningTimeSeries(groupBy="day")
+
+        self.assertEqual(counter.count("FROM plays"), 1)
+
+
+class GenreTrendTransferTestCase(DatabaseTestCase):
+    """The genre trend used to transfer one row per (play, genre): a play on a
+    track carrying five tags shipped five rows, all bucketed in Python. SQL
+    now pre-aggregates into 15-minute buckets like the artist trend does."""
+
+    def setUp(self):
+        super().setUp()
+        patcher = patch.object(utilsModule, "tz", datetime.timezone.utc)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _db(self, playCount=20):
+        tracks = {"t1": normalizeTrackForTest({"id": "t1", "name": "Song", "artists": []})}
+        entries = [{"id": "t1", "playedAt": _ts(2026, 7, 1, 12) + minute * 60, "timePlayed": 60000}
+                   for minute in range(playCount)]
+        db = self._makeDb(tracks, entries)
+        db.repo.replaceTrackGenres("t1", ["rock", "pop", "indie"])
+        return db
+
+    def test_rows_transferred_are_bucketed_not_one_per_play(self):
+        playCount = 20   #< 20 plays x 3 genres = 60 raw rows, all inside 2 buckets
+        db = self._db(playCount=playCount)
+
+        rows = db.repo.getBucketedGenrePlayCounts(db.user, ["rock", "pop", "indie"], 1, None, None)
+
+        self.assertLess(len(rows), playCount)
+        self.assertEqual(sum(row["plays"] for row in rows), playCount * 3)
+
+    def test_trend_counts_match_the_plays_that_produced_them(self):
+        db = self._db(playCount=20)
+
+        trend = db.getGenreTrends(["rock", "pop"], groupBy="day")
+
+        self.assertEqual(trend["buckets"], ["2026-07-01"])
+        for series in trend["series"]:
+            self.assertEqual(series["data"], [20])
+
+    def test_inherited_filter_still_applies(self):
+        db = self._db(playCount=5)
+        db.repo.replaceTrackGenres("t1", ["rock"], inherited=True)
+
+        withInherited = db.getGenreTrends(["rock"], groupBy="day", includeInherited=True)
+        withoutInherited = db.getGenreTrends(["rock"], groupBy="day", includeInherited=False)
+
+        self.assertEqual(withInherited["series"][0]["data"], [5])
+        self.assertEqual(withoutInherited, {"buckets": [], "series": []})
+
+
+class OnThisDayQueryPlanTestCase(DatabaseTestCase):
+    """getOnThisDay runs on every dashboard render. Matching on
+    strftime('%m-%d', played_at, 'unixepoch') meant re-deriving a calendar date
+    for every play the user had ever made - no index can serve that, so the
+    cost grew with total history. It now asks for one indexed range per prior
+    year."""
+
+    def setUp(self):
+        super().setUp()
+        patcher = patch.object(utilsModule, "tz", datetime.timezone.utc)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _db(self, years=(2023, 2024, 2025)):
+        tracks = {"t1": normalizeTrackForTest({"id": "t1", "name": "Song", "artists": []})}
+        entries = [{"id": "t1", "playedAt": _ts(year, 7, 1, 12), "timePlayed": 60000} for year in years]
+        # Unrelated history the old full-scan form still had to walk.
+        entries += [{"id": "t1", "playedAt": _ts(year, 3, 15, 12), "timePlayed": 60000} for year in years]
+        return self._makeDb(tracks, entries)
+
+    def _plan(self, db, sql, params):
+        return " ".join(row["detail"] for row in
+                        db.repo._conn().execute("EXPLAIN QUERY PLAN " + sql, params).fetchall())
+
+    def test_lookup_uses_the_play_time_index_instead_of_scanning(self):
+        db = self._db()
+        windows = db._onThisDayWindows(datetime.date(2026, 7, 1))
+        self.assertTrue(windows)
+        params = [db.user]
+        for startTs, endTs in windows:
+            params.extend((startTs, endTs))
+        rangeClauses = " OR ".join("(p.played_at >= ? AND p.played_at < ?)" for _ in windows)
+
+        plan = self._plan(db, f"SELECT p.played_at FROM plays p WHERE p.username = ? "
+                              f"AND p.is_skip=0 AND ({rangeClauses})", params)
+
+        self.assertIn("idx_plays_user_time", plan)
+        self.assertNotIn("SCAN p", plan)
+
+    def test_one_window_per_prior_year_with_data(self):
+        db = self._db(years=(2023, 2024, 2025))
+
+        windows = db._onThisDayWindows(datetime.date(2026, 7, 1))
+
+        self.assertEqual(len(windows), 3)   #< 2023, 2024, 2025 - not the current year
+
+    def test_no_history_asks_for_no_windows(self):
+        db = self._makeDb({}, [])
+
+        self.assertEqual(db._onThisDayWindows(datetime.date(2026, 7, 1)), [])
+
+    def test_leap_day_falls_back_to_feb_28_in_non_leap_years(self):
+        """datetime.date(2023, 2, 29) doesn't exist - building the window must
+        not raise on Feb 29."""
+        db = self._db(years=(2023,))
+
+        windows = db._onThisDayWindows(datetime.date(2024, 2, 29))
+
+        self.assertEqual(len(windows), 1)
+
+    def test_leap_day_reports_no_matches_for_non_leap_years(self):
+        """The exact local month/day match still rejects Feb 28 rows when the
+        user is looking at Feb 29."""
+        tracks = {"t1": normalizeTrackForTest({"id": "t1", "name": "Song", "artists": []})}
+        entries = [{"id": "t1", "playedAt": _ts(2023, 2, 28, 12), "timePlayed": 60000}]
+        db = self._makeDb(tracks, entries)
+
+        result = db.getOnThisDay(now=datetime.datetime(2024, 2, 29, 12, tzinfo=datetime.timezone.utc))
+
+        self.assertEqual(result, [])
+
+
+if __name__ == "__main__":
+    import unittest
+    unittest.main()

@@ -239,3 +239,33 @@ def resolveGenresForAlbum(db, albumId) -> list[str]:
 
 def resolveGenresForArtist(db, artistId) -> list[str]:
     return _resolveGenresFor(db, artistId, "getGenresForArtist")
+
+
+def _resolveGenresForMany(db, entityIds, dbMethodName: str) -> dict[str, list[str]]:
+    """Batched sibling of _resolveGenresFor, with the same degradation
+    contract one level up: a failure or a stubbed test db (whose batch method
+    returns a bare MagicMock) degrades to {}, and any individual value that
+    isn't a list is dropped rather than reaching a card's genre badge. Callers
+    treat a missing id as "no genres", so {} is always safe."""
+    if not entityIds:
+        return {}
+    try:
+        genresById = getattr(db, dbMethodName)(entityIds)
+    except Exception as e:
+        logger.warning("%s(%d ids) failed: %s", dbMethodName, len(entityIds), e)
+        return {}
+    if not isinstance(genresById, dict):
+        return {}
+    return {entityId: genres for entityId, genres in genresById.items() if isinstance(genres, list)}
+
+
+def resolveGenresForTracks(db, trackIds) -> dict[str, list[str]]:
+    return _resolveGenresForMany(db, trackIds, "getGenresForTracks")
+
+
+def resolveGenresForAlbums(db, albumIds) -> dict[str, list[str]]:
+    return _resolveGenresForMany(db, albumIds, "getGenresForAlbums")
+
+
+def resolveGenresForArtists(db, artistIds) -> dict[str, list[str]]:
+    return _resolveGenresForMany(db, artistIds, "getGenresForArtists")

@@ -66,6 +66,43 @@ class GenreQueries:
         ).fetchall()
         return [{"genre": r["genre"], "inherited": bool(r["inherited"])} for r in rows]
 
+    # ---- Batched per-id genre lookups (track/album/artist card badges) --------
+    # One query for a whole page of cards instead of one per card: a list page
+    # renders up to a few hundred, and an artist detail page renders every song
+    # the artist has (unbounded). Same rows, same position ordering, keyed by id.
+
+    def _genresByIdForIds(self, table: str, idColumn: str, ids: list[str],
+                          withInherited: bool) -> dict[str, list]:
+        if not ids:
+            return {}
+        uniqueIds = list(dict.fromkeys(ids))   #< preserves order, drops repeats
+        placeholders = ",".join("?" for _ in uniqueIds)
+        inheritedColumn = ", inherited" if withInherited else ""
+        rows = self._conn().execute(
+            f"SELECT {idColumn} AS entity_id, genre{inheritedColumn} FROM {table} "
+            f"WHERE {idColumn} IN ({placeholders}) ORDER BY {idColumn}, position",
+            uniqueIds,
+        ).fetchall()
+        result: dict[str, list] = {entityId: [] for entityId in uniqueIds}
+        for row in rows:
+            value = ({"genre": row["genre"], "inherited": bool(row["inherited"])}
+                     if withInherited else row["genre"])
+            result[row["entity_id"]].append(value)
+        return result
+
+    def getTrackGenresForIds(self, trackIds: list[str]) -> dict[str, list[dict]]:
+        """{trackId: [{genre, inherited}, ...]} for every requested id (ids with
+        no rows map to []), position-ordered like getTrackGenres."""
+        return self._genresByIdForIds("track_genres", "track_id", trackIds, withInherited=True)
+
+    def getAlbumGenresForIds(self, albumIds: list[str]) -> dict[str, list[dict]]:
+        """{albumId: [{genre, inherited}, ...]} - see getTrackGenresForIds."""
+        return self._genresByIdForIds("album_genres", "album_id", albumIds, withInherited=True)
+
+    def getArtistGenresForIds(self, artistIds: list[str]) -> dict[str, list[str]]:
+        """{artistId: [genre, ...]} - artists carry no inherited flag."""
+        return self._genresByIdForIds("artist_genres", "artist_id", artistIds, withInherited=False)
+
     def _markLastfmAttempted(self, table: str, ids: list[str]) -> None:
         """Stamp entities as processed so they leave the backfill queue -
         including empty/not-found lookups, which would otherwise be re-fetched
@@ -234,12 +271,19 @@ class GenreQueries:
 
     # ---- Genres page: trends, per-genre stats, per-genre top lists ----------
 
-    def getGenrePlayRows(self, username: str, genres: list[str], includeInherited: int,
-                         startTs: float | None, endTs: float | None) -> list[dict]:
-        """(played_at, genre) for every play on a track tagged with any of
-        `genres`, over track_genres (the finest granularity, matching
-        getGenreDistribution). The caller buckets played_at into local-time
-        months in Python. Empty `genres` -> []."""
+    def getBucketedGenrePlayCounts(self, username: str, genres: list[str], includeInherited: int,
+                                    startTs: float | None, endTs: float | None) -> list[dict]:
+        """Play counts per (fixed PLAY_BUCKET_SECONDS UTC bucket, genre) for
+        plays on tracks tagged with any of `genres`, over track_genres (the
+        finest granularity, matching getGenreDistribution) - the genre-scoped
+        analogue of getBucketedArtistPlayCounts.
+
+        Pre-aggregating in SQL replaces a row-per-(play, genre) transfer: a
+        play on a track carrying five tags used to ship five rows, and the
+        caller then bucketed each one in Python. The 15-minute bucket is finer
+        than any chart bucket (hour/day/week/month) and finer than any
+        real-world UTC offset granularity, so folding these up into local-time
+        buckets stays exact. Empty `genres` -> []."""
         if not genres:
             return []
         conn = self._conn()
@@ -248,15 +292,21 @@ class GenreQueries:
         rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
         rows = conn.execute(
             f"""
-            SELECT p.played_at AS played_at, g.genre AS genre
+            SELECT CAST(p.played_at / {PLAY_BUCKET_SECONDS} AS INTEGER) AS bucket,
+                   g.genre AS genre,
+                   COUNT(*) AS plays
             FROM plays p
             JOIN track_genres g ON g.track_id = p.track_id
             WHERE (? OR g.inherited = 0) AND g.genre IN ({genrePlaceholders})
               AND p.username = ? AND p.is_skip = 0{rangeClause}
+            GROUP BY bucket, g.genre
+            ORDER BY bucket
             """,
             params,
         ).fetchall()
-        return [dict(r) for r in rows]
+        return [{"bucketStartTs": r["bucket"] * PLAY_BUCKET_SECONDS,
+                 "genre": r["genre"],
+                 "plays": r["plays"]} for r in rows]
 
     def getGenreBucketedPlayTotals(self, username: str, genre: str, includeInherited: int,
                                    startTs: float | None = None, endTs: float | None = None) -> list[dict]:

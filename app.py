@@ -46,6 +46,7 @@ from services.genre_gate import (
     resolveGenreDistribution, genreGatePasses, emptyBiographyCoverage,
     sanitizeBiographyCoverage, resolveBiographyCoverage,
     resolveGenresForTrack, resolveGenresForAlbum, resolveGenresForArtist,
+    resolveGenresForTracks, resolveGenresForAlbums, resolveGenresForArtists,
     resolveGenreTrends, resolveGenreStats, resolveTopArtistsForGenre,
     resolveTopTracksForGenre, resolveGenreHeatmap, emptyHeatmapGrid,
     resolveGenreArtistCounts,
@@ -732,10 +733,12 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
 
             self._stop_event.wait(60 * 60)
 
+    # Batched per-kind genre lookups for _attachGenres - one query per rendered
+    # list, not per card (see resolveGenresForTracks' degrade-to-{} contract).
     _GENRE_RESOLVERS = {
-        "track": resolveGenresForTrack,
-        "album": resolveGenresForAlbum,
-        "artist": resolveGenresForArtist,
+        "track": resolveGenresForTracks,
+        "album": resolveGenresForAlbums,
+        "artist": resolveGenresForArtists,
     }
 
     # The three routes whose responses embed Spotify's iFrame API and therefore

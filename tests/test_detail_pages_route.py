@@ -12,6 +12,12 @@ from app import SpotifyDashboardApp
 from _app_factory import AppTestCase
 
 
+def _byId(entityId, genres):
+    """Return value shape of the batched genre lookups (getGenresForTracks and
+    friends): {id: [genre, ...]} for every requested id."""
+    return {entityId: genres}
+
+
 class _DetailRouteTestBase(AppTestCase):
     def _getPath(self, dash, db, path):
         # Every detail route now unconditionally fetches a page of the item's
@@ -145,13 +151,13 @@ class TestSongDetailRoute(_DetailRouteTestBase):
         db.getSong.return_value = self._song()
         db.getListeningTimeSeries.return_value = []
         db.getHourOfDayHeatmap.return_value = [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
-        db.getGenresForTrack.return_value = ["dream pop", "shoegaze"]
+        db.getGenresForTracks.return_value = _byId("t1", ["dream pop", "shoegaze"])
 
         resp = self._getPath(dash, db, "/song/t1")
 
         self.assertIn(b'<span class="track-label genre-label">dream pop</span>', resp.data)
         self.assertIn(b'<span class="track-label genre-label">shoegaze</span>', resp.data)
-        db.getGenresForTrack.assert_called_once_with("t1")
+        db.getGenresForTracks.assert_called_once_with(["t1"])
 
     def test_genre_badge_is_capped_at_track_card_genre_limit(self):
         dash = self._makeApp()
@@ -159,7 +165,7 @@ class TestSongDetailRoute(_DetailRouteTestBase):
         db.getSong.return_value = self._song()
         db.getListeningTimeSeries.return_value = []
         db.getHourOfDayHeatmap.return_value = [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
-        db.getGenresForTrack.return_value = ["one", "two", "three", "four"]
+        db.getGenresForTracks.return_value = _byId("t1", ["one", "two", "three", "four"])
 
         resp = self._getPath(dash, db, "/song/t1")
 
@@ -179,12 +185,12 @@ class TestSongDetailRoute(_DetailRouteTestBase):
         db.getSong.return_value = self._song()
         db.getListeningTimeSeries.return_value = []
         db.getHourOfDayHeatmap.return_value = [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
-        db.getGenresForTrack.return_value = ["dream pop", "shoegaze"]
+        db.getGenresForTracks.return_value = _byId("t1", ["dream pop", "shoegaze"])
 
         resp = self._getPath(dash, db, "/song/t1")
 
         self.assertNotIn(b"genre-label", resp.data)
-        db.getGenresForTrack.assert_not_called()
+        db.getGenresForTracks.assert_not_called()
 
     def test_genre_badge_absent_without_genre_data(self):
         dash = self._makeApp()
@@ -192,7 +198,7 @@ class TestSongDetailRoute(_DetailRouteTestBase):
         db.getSong.return_value = self._song()
         db.getListeningTimeSeries.return_value = []
         db.getHourOfDayHeatmap.return_value = [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
-        db.getGenresForTrack.return_value = []
+        db.getGenresForTracks.return_value = _byId("t1", [])
 
         resp = self._getPath(dash, db, "/song/t1")
 
@@ -210,7 +216,7 @@ class TestSongDetailRoute(_DetailRouteTestBase):
         db.getSong.return_value = self._song()
         db.getListeningTimeSeries.return_value = []
         db.getHourOfDayHeatmap.return_value = [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
-        db.getGenresForTrack.return_value = ["dream pop", "shoegaze"]
+        db.getGenresForTracks.return_value = _byId("t1", ["dream pop", "shoegaze"])
 
         resp = self._getPath(dash, db, "/song/t1")
         body = resp.data.decode()
@@ -229,7 +235,7 @@ class TestSongDetailRoute(_DetailRouteTestBase):
         db.getSong.return_value = self._song()
         db.getListeningTimeSeries.return_value = []
         db.getHourOfDayHeatmap.return_value = [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
-        db.getGenresForTrack.return_value = ["dream pop"]
+        db.getGenresForTracks.return_value = _byId("t1", ["dream pop"])
 
         resp = self._getPath(dash, db, "/song/t1")
         body = resp.data.decode()
@@ -335,7 +341,7 @@ class TestSongDetailRoute(_DetailRouteTestBase):
         db.getSong.return_value = self._song()
         db.getListeningTimeSeries.return_value = []
         db.getHourOfDayHeatmap.return_value = [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
-        db.getGenresForTrack.return_value = ["dream pop"]
+        db.getGenresForTracks.return_value = _byId("t1", ["dream pop"])
 
         resp = self._getPath(dash, db, "/song/t1")
 
@@ -347,7 +353,7 @@ class TestSongDetailRoute(_DetailRouteTestBase):
         db.getSong.return_value = self._song()
         db.getListeningTimeSeries.return_value = []
         db.getHourOfDayHeatmap.return_value = [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
-        db.getGenresForTrack.return_value = []
+        db.getGenresForTracks.return_value = _byId("t1", [])
 
         resp = self._getPath(dash, db, "/song/t1")
 
@@ -436,7 +442,7 @@ class TestSongDetailRoute(_DetailRouteTestBase):
         self.assertEqual(sorted(payload.keys()), ["groupBy", "timeSeries"])
         self.assertEqual(db.getListeningTimeSeries.call_args.kwargs.get("trackId"), "t1")
         db.getHourOfDayHeatmap.assert_not_called()
-        db.getGenresForTrack.assert_not_called()
+        db.getGenresForTracks.assert_not_called()
 
     def test_ajax_groupby_is_passed_through_and_echoed(self):
         dash = self._makeApp()
@@ -674,12 +680,12 @@ class TestArtistDetailRoute(_DetailRouteTestBase):
         db.getArtistBio.return_value = None
         db.getSongsStats.return_value = []
         db.getListeningTimeSeries.return_value = []
-        db.getGenresForArtist.return_value = ["indie rock"]
+        db.getGenresForArtists.return_value = _byId("a1", ["indie rock"])
 
         resp = self._getPath(dash, db, "/artist/a1")
 
         self.assertIn(b'<span class="track-label genre-label">indie rock</span>', resp.data)
-        db.getGenresForArtist.assert_called_once_with("a1")
+        db.getGenresForArtists.assert_called_once_with(["a1"])
 
     def test_biography_renders_when_present(self):
         dash = self._makeApp()
@@ -997,12 +1003,12 @@ class TestAlbumDetailRoute(_DetailRouteTestBase):
         db.getAlbum.return_value = self._album()
         db.getSongsStats.return_value = []
         db.getListeningTimeSeries.return_value = []
-        db.getGenresForAlbum.return_value = ["indie rock"]
+        db.getGenresForAlbums.return_value = _byId("alb1", ["indie rock"])
 
         resp = self._getPath(dash, db, "/album/alb1")
 
         self.assertIn(b'<span class="track-label genre-label">indie rock</span>', resp.data)
-        db.getGenresForAlbum.assert_called_once_with("alb1")
+        db.getGenresForAlbums.assert_called_once_with(["alb1"])
 
     def _albumWithArtist(self):
         album = self._album()

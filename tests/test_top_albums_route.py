@@ -108,13 +108,14 @@ class TestTopAlbumsRoute(AppTestCase):
             "imageUrl": "", "totalTracks": 2, "releaseDate": 0, "artists": [],
             "plays": 5, "totalTimeListened": 50000, "firstListenedAt": 100,
         }]
-        db.getGenresForAlbum.return_value = ["indie rock"]
+        db.getGenresForAlbums.return_value = {"alb1": ["indie rock"]}
 
         resp = self._getTopAlbums(dash, db)
 
         self.assertIn('<span class="track-label genre-label">indie rock</span>',
                       resp.get_json()["resultsHtml"])
-        db.getGenresForAlbum.assert_called_once_with("alb1")
+        # One batched lookup for the whole list, not one call per card.
+        db.getGenresForAlbums.assert_called_once_with(["alb1"])
 
     def test_totals_come_from_get_play_totals(self):
         dash = self._makeApp()
