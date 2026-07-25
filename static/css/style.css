@@ -3415,10 +3415,11 @@ html.theme-red {
 /* Skip summary under the hero card on the song/artist/album detail pages
    (templates/_skip_stat.html). Sits between the card and the charts as a quiet
    one-liner - it's context, not a headline. */
+/* The detail hero card's skip summary. It sits inside .track-meta.small now
+   rather than in a block of its own below the card, so it inherits that line's
+   size and colour and only needs to stay on the same line as the rest. */
 .detail-skip-stat {
-  margin: 10px 2px 0;
-  font-size: 0.85rem;
-  color: var(--muted);
+  white-space: nowrap;
 }
 
 .detail-skip-count {

@@ -45,11 +45,13 @@
     {% set section = 'top_artists' %}
     {% set item_number = '' %}
     {% set playNowButton = true %}
+    {# The skip summary rides the hero card's stat line (see _skip_stat.html);
+       both flags must be reset below or the song list inherits them. #}
+    {% set showSkipStats = true %}
     {% include '_track_card.html' %}
   </section>
   {% set playNowButton = false %}
-
-  {% include '_skip_stat.html' %}
+  {% set showSkipStats = false %}
 
   {% if artist.get('url') %}
   <section id="play-embed" class="play-embed" hidden>

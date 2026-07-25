@@ -1,23 +1,33 @@
-{# Skip summary for one entity, shared by the song/artist/album detail pages.
+{# Skip summary for one entity, rendered onto the hero card's `track-meta
+   small` line by the song/artist/album detail pages (see _track_card.html).
 
-   Deliberately NOT part of _track_card.html: that card renders everywhere
-   (top lists, Wrapped, Compare, the public share page) where these numbers
-   aren't loaded, so putting it there would mean either a per-card query or a
-   silently blank line on most surfaces.
+   Deliberately NOT rendered by every caller of that card: it renders on the
+   top lists, Wrapped, Compare and the public share page too, where these
+   numbers aren't loaded - so the card opts in via `showSkipStats` and this is
+   a no-op otherwise.
 
-   Both numbers are shown rather than just the percentage - a rate hides how
-   much listening it rests on, which is exactly why the Charts lists shrink
-   theirs toward the library average before ranking on it. `skipStats` is
-   {plays, skips, skipPercent} from Database.getSkipStats; absent or fully
-   empty renders nothing. #}
-{% if skipStats and (skipStats.plays or skipStats.skips) %}
-<p class="detail-skip-stat">
-  {% if skipStats.skips %}
-    <span class="detail-skip-count">{{ skipStats.skips }} skip{{ 's' if skipStats.skips != 1 else '' }}</span>
-    &middot; {{ skipStats.plays }} play{{ 's' if skipStats.plays != 1 else '' }}
-    &middot; {{ skipStats.skipPercent }}% skipped
-  {% else %}
-    Never skipped &middot; {{ skipStats.plays }} play{{ 's' if skipStats.plays != 1 else '' }}
-  {% endif %}
-</p>
-{% endif %}
+   The PLAYS count is deliberately absent. The line this joins already opens
+   with the card's own "N plays", and that is the same figure by a different
+   route (both count non-skip plays), so restating it read as two separate
+   statistics that happened to agree. What's left is the half the line didn't
+   have: how often the entity was skipped, and what share of encounters that
+   is - a rate alone hides how much listening it rests on, which is exactly
+   why the Charts lists shrink theirs toward the library average before
+   ranking on it.
+
+   `skipStats` is {plays, skips, skipPercent} from Database.getSkipStats;
+   absent or fully empty renders nothing. `leadIn` says whether the line
+   already has content in front of this, i.e. whether to open with a
+   separator - a skip-only entity's card shows no plays figure. #}
+{% macro skipSummary(skipStats, leadIn=false) -%}
+{%- if skipStats and (skipStats.plays or skipStats.skips) -%}
+{%- if leadIn %} · {% endif -%}
+<span class="detail-skip-stat">
+{%- if skipStats.skips -%}
+<span class="detail-skip-count">{{ skipStats.skips }} skip{{ 's' if skipStats.skips != 1 else '' }}</span> · {{ skipStats.skipPercent }}% skipped
+{%- else -%}
+Never skipped
+{%- endif -%}
+</span>
+{%- endif -%}
+{%- endmacro %}

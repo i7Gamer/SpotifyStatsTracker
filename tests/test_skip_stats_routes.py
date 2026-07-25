@@ -6,6 +6,7 @@ rankable at low volume) are pinned in test_skip_stats.py; these cover the
 wiring only.
 """
 import os
+import re
 import sys
 import unittest
 from unittest.mock import MagicMock, patch
@@ -38,9 +39,7 @@ class SkipStatsRouteTestCase(AppTestCase):
 
     def _get(self, dash, db, path):
         client = dash.app.test_client()
-        with patch.object(dash, "is_user_logged_in", return_value=True), \
-             patch.object(dash, "get_username_for_email", return_value="alice"), \
-             patch.object(dash, "get_user_db", return_value=db):
+        with patch.object(dash, "is_user_logged_in", return_value=True),              patch.object(dash, "get_username_for_email", return_value="alice"),              patch.object(dash, "get_user_db", return_value=db):
             with client.session_transaction() as sess:
                 sess["email"] = "alice@example.com"
             return client.get(path)
@@ -113,21 +112,37 @@ class TestChartsPayload(SkipStatsRouteTestCase):
         self.assertLess(body.index('id="completionChart"'), body.index('id="mostSkippedGrid"'))
 
 
+def _heroCard(body):
+    """The detail page's hero card markup.
+
+    `<section id="track-list">` wraps exactly the one card the page is about;
+    the artist/album pages' song lists sit in their own (id-less) sections
+    below, so slicing to the next </section> isolates the hero.
+    """
+    start = body.index('<section id="track-list"')
+    return body[start:body.index("</section>", start)]
+
+
 class TestDetailPageSkipStat(SkipStatsRouteTestCase):
-    def _detailDb(self):
+    # The card's own plays aggregate and getSkipStats' `plays` are the same
+    # figure computed two ways (both count non-skip plays), so the fixtures keep
+    # them equal - that equality is exactly why the summary must not restate it.
+    DEFAULT_PLAYS = 54
+
+    def _detailDb(self, plays=DEFAULT_PLAYS):
         db = self._makeDb()
         song = {"id": "t1", "name": "Song", "url": "u", "imageId": "i", "duration": 200000,
                 "explicit": False, "isrc": "", "discNumber": 1, "trackNumber": 1, "releaseDate": 0,
                 "album": {"id": "alb1", "name": "Album", "url": "u", "imageId": "i", "imageUrl": "",
                            "totalTracks": 1, "releaseDate": 0},
-                "artists": [], "plays": 10, "totalTimeListened": 5000, "firstListenedAt": 0}
+                "artists": [], "plays": plays, "totalTimeListened": 5000, "firstListenedAt": 0}
         db.getSong.return_value = song
         db.getArtist.return_value = {"id": "a1", "name": "Artist", "url": "u", "imageId": "i",
-                                      "imageUrl": "", "plays": 10, "totalTimeListened": 5000,
+                                      "imageUrl": "", "plays": plays, "totalTimeListened": 5000,
                                       "firstListenedAt": 0, "uniqueSongCount": 1}
         db.getAlbum.return_value = {"id": "alb1", "name": "Album", "url": "u", "imageId": "i",
                                      "imageUrl": "", "totalTracks": 1, "releaseDate": 0, "artists": [],
-                                     "plays": 10, "totalTimeListened": 5000, "firstListenedAt": 0,
+                                     "plays": plays, "totalTimeListened": 5000, "firstListenedAt": 0,
                                      "uniqueSongCount": 1}
         db.getSongsStats.return_value = []
         db.getAlbumsStats.return_value = []
@@ -145,7 +160,6 @@ class TestDetailPageSkipStat(SkipStatsRouteTestCase):
         body = self._get(dash, db, "/song/t1").data.decode()
 
         self.assertIn("12 skips", body)
-        self.assertIn("54 plays", body)
         self.assertIn("18.2% skipped", body)
 
     def test_each_detail_page_asks_for_its_own_entity(self):
@@ -159,6 +173,54 @@ class TestDetailPageSkipStat(SkipStatsRouteTestCase):
                 self._get(dash, db, path)
 
                 self.assertEqual(db.getSkipStats.call_args.kwargs, {kwarg: value})
+
+    def test_the_summary_joins_the_hero_cards_meta_line(self):
+        """It used to be a standalone <p> below the card. It belongs on the
+        stat line the card already has, so all of one entity's numbers read as
+        one sentence."""
+        for path in ("/song/t1", "/artist/a1", "/album/alb1"):
+            with self.subTest(path=path):
+                dash = self._makeApp()
+                db = self._detailDb()
+                db.getSkipStats.return_value = _skipStats(plays=54, skips=12, percent=18.2)
+
+                card = _heroCard(self._get(dash, db, path).data.decode())
+
+                self.assertLess(card.index('class="track-meta small"'), card.index("detail-skip-stat"))
+                #< .track-attributes opens right after the last .track-meta block,
+                #  so landing before it means the summary is inside the meta line
+                self.assertLess(card.index("detail-skip-stat"), card.index('class="track-attributes"'))
+
+    def test_the_plays_count_is_not_repeated(self):
+        """The meta line already opens with the entity's play count, so the
+        summary contributes only the half the line lacked."""
+        for path in ("/song/t1", "/artist/a1", "/album/alb1"):
+            with self.subTest(path=path):
+                dash = self._makeApp()
+                db = self._detailDb()
+                db.getSkipStats.return_value = _skipStats(plays=54, skips=12, percent=18.2)
+
+                card = _heroCard(self._get(dash, db, path).data.decode())
+
+                self.assertEqual(re.findall(r"\d+ plays", card), ["54 plays"])
+
+    def test_the_sub_lists_do_not_inherit_the_heros_summary(self):
+        """`skipStats` is a page-level variable, so every song card in the
+        artist page's list would otherwise restate the artist's own figures."""
+        dash = self._makeApp()
+        db = self._detailDb()
+        db.getSkipStats.return_value = _skipStats(plays=54, skips=12, percent=18.2)
+        db.getSongsStats.return_value = [
+            {"id": "t1", "name": "Song One", "url": "u", "imageId": "i", "duration": 200000,
+             "explicit": False, "isrc": "", "discNumber": 1, "trackNumber": 1, "releaseDate": 0,
+             "album": {"id": "alb1", "name": "Album", "url": "u", "imageId": "i", "imageUrl": "",
+                        "totalTracks": 1, "releaseDate": 0},
+             "artists": [], "plays": 3, "totalTimeListened": 5000, "firstListenedAt": 0},
+        ]
+
+        body = self._get(dash, db, "/artist/a1").data.decode()
+
+        self.assertEqual(body.count("detail-skip-stat"), 1)
 
     def test_a_never_skipped_entity_says_so(self):
         dash = self._makeApp()
@@ -179,16 +241,42 @@ class TestDetailPageSkipStat(SkipStatsRouteTestCase):
 
         self.assertNotIn("detail-skip-stat", body)
 
+    def test_a_skip_only_entity_shows_its_skips_without_a_stray_plays_figure(self):
+        """Every play was a skip (getSong's skip-sorted fallback): the card
+        reports no plays, so the line must carry the skips alone."""
+        dash = self._makeApp()
+        db = self._detailDb(plays=0)
+        db.getSkipStats.return_value = _skipStats(plays=0, skips=4, percent=100.0)
+
+        card = _heroCard(self._get(dash, db, "/song/t1").data.decode())
+
+        self.assertIn("4 skips", card)
+        self.assertIn("100.0% skipped", card)
+        self.assertEqual(re.findall(r"\d+ plays", card), [])
+
+    def test_the_skip_sorted_label_gives_way_to_the_summary(self):
+        """A skip-only song's card carries `skips` of its own (the fallback
+        query attaches it for the skip-ranked Top pages' label). With the
+        summary on the meta line that label would say the same thing twice."""
+        dash = self._makeApp()
+        db = self._detailDb(plays=0)
+        db.getSong.return_value = {**db.getSong.return_value, "skips": 4, "skipPercent": 100.0}
+        db.getSkipStats.return_value = _skipStats(plays=0, skips=4, percent=100.0)
+
+        card = _heroCard(self._get(dash, db, "/song/t1").data.decode())
+
+        self.assertNotIn("skip-label", card)
+        self.assertEqual(card.count("4 skips"), 1)
+
     def test_singular_wording_for_a_single_skip(self):
         dash = self._makeApp()
-        db = self._detailDb()
+        db = self._detailDb(plays=1)
         db.getSkipStats.return_value = _skipStats(plays=1, skips=1, percent=50.0)
 
         body = self._get(dash, db, "/song/t1").data.decode()
 
         self.assertIn(">1 skip</span>", body)
         self.assertNotIn("1 skips", body)
-        self.assertNotIn("1 plays", body)
 
 
 if __name__ == "__main__":

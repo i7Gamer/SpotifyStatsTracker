@@ -1,4 +1,21 @@
 {% from '_artist_links.html' import artistLinks with context %}
+{% from '_skip_stat.html' import skipSummary %}
+
+{# The card's stat line: plays, listening time, the share-of-total the current
+   sort is ranked on, and - detail heroes only - the skip summary. All three
+   Top sections rendered this identically three times over, which is how a
+   dangling leading separator survived on a card with no plays (a skip-only
+   entity, which the skip-ranked Top pages and the detail heroes both reach).
+   The running `sep` flag means every separator is emitted by the part that
+   follows it, so an absent part can never leave one behind. #}
+{% macro statLine(track, skipStats) -%}
+  {%- set ns = namespace(sep=false) -%}
+  {%- if track.get('plays') %}{{ track.get('plays') }} plays{% set ns.sep = true %}{% endif -%}
+  {%- if track.get('totalTimeListenedText') %}{% if ns.sep %} · {% endif %}{{ track.get('totalTimeListenedText') }}{% set ns.sep = true %}{% endif -%}
+  {%- if track.get('sortPercentText') %}{% if ns.sep %} · {% endif %}{{ track.get('sortPercentText') }}{% set ns.sep = true %}{% endif -%}
+  {{- skipSummary(skipStats, ns.sep) -}}
+{%- endmacro %}
+
 <article class="track-card{{ ' has-genres' if track.get('genres') else '' }}">
   {% set imgId = track.get('imageId', '') %}
   {% set item_number = item_number if item_number is defined else '' %}
@@ -22,6 +39,15 @@
   {% set compareWith = compareWith if compareWith is defined else '' %}
   {% set linkableId = track.get('id') if not suppressDetailLinks else none %}
   {% set externalUrl = track.get('url') if suppressDetailLinks and track.get('url') else none %}
+
+  {# The per-entity skip summary belongs to a detail page's HERO card only.
+     `skipStats` is a page-level variable there, so without an opt-in flag the
+     sub-lists further down the same page (Songs by X, the History tab) would
+     each restate the hero entity's figures on every row. The three detail
+     templates therefore set showSkipStats around the hero include and reset it
+     straight after - the same contract playNowButton uses below. #}
+  {% set showSkipStats = showSkipStats if showSkipStats is defined else false %}
+  {% set cardSkipStats = skipStats if (showSkipStats and skipStats) else none %}
 
   {% if section == 'top_artists' %}
     {% set detailUrl = url_for('artistDetailPage', artist_id=track.get('id')) if track.get('id') else '#' %}
@@ -66,14 +92,10 @@
         
         <!-- Stats based on section -->
         {% if section == 'top_artists' %}
-          {% if track.get('plays') or track.get('uniqueSongCount') %}
+          {% if track.get('plays') or track.get('uniqueSongCount') or cardSkipStats %}
           <div class="track-meta small">
-              {% if track.get('plays') %}
-              <div>
-                  {{ track.get('plays') }} plays
-                  {% if track.get('totalTimeListenedText') %} · {{ track.get('totalTimeListenedText') }}{% endif %}
-                  {% if track.get('sortPercentText') %} · {{ track.get('sortPercentText') }}{% endif %}
-              </div>
+              {% if track.get('plays') or cardSkipStats %}
+              <div>{{ statLine(track, cardSkipStats) }}</div>
               {% endif %}
 
               {# the versus block below already shows both users' song counts #}
@@ -83,14 +105,10 @@
           </div>
           {% endif %}
         {% elif section == 'top_albums' %}
-          {% if track.get('plays') or track.get('uniqueSongCount') %}
+          {% if track.get('plays') or track.get('uniqueSongCount') or cardSkipStats %}
           <div class="track-meta small">
-              {% if track.get('plays') %}
-              <div>
-                  {{ track.get('plays') }} plays
-                  {% if track.get('totalTimeListenedText') %} · {{ track.get('totalTimeListenedText') }}{% endif %}
-                  {% if track.get('sortPercentText') %} · {{ track.get('sortPercentText') }}{% endif %}
-              </div>
+              {% if track.get('plays') or cardSkipStats %}
+              <div>{{ statLine(track, cardSkipStats) }}</div>
               {% endif %}
 
               {# the versus block below already shows both users' song counts #}
@@ -100,13 +118,9 @@
           </div>
           {% endif %}
         {% elif section == 'top_songs' %}
-          <!-- Top Songs stats: plays, time -->
-          {% if track.get('plays') or track.get('totalTimeListenedText') %}
-          <div class="track-meta small">
-              {% if track.get('plays') %}{{ track.get('plays') }} plays{% endif %}
-              {% if track.get('totalTimeListenedText') %} · {{ track.get('totalTimeListenedText') }}{% endif %}
-              {% if track.get('sortPercentText') %} · {{ track.get('sortPercentText') }}{% endif %}
-          </div>
+          <!-- Top Songs stats: plays, time, and (detail hero only) skips -->
+          {% if track.get('plays') or track.get('totalTimeListenedText') or cardSkipStats %}
+          <div class="track-meta small">{{ statLine(track, cardSkipStats) }}</div>
           {% endif %}
         {% endif %}
         
@@ -202,8 +216,11 @@
           {% if track.get('totalTracks') %}<span class="track-label">{{ track.get('totalTracks') }} tracks</span>{% endif %}
         {% endif %}
         {# Only the skip-sorted Top pages attach these; every other surface
-           renders the card without them and shows no label. #}
-        {% if track.get('skips') %}
+           renders the card without them and shows no label. A detail hero
+           carries them too when the entity's plays are ALL skips (getSong's
+           skip-sorted fallback), but there the meta line above already says
+           it - so the summary wins and this label stands down. #}
+        {% if track.get('skips') and not cardSkipStats %}
           <span class="track-label skip-label">{{ track.get('skips') }} skip{{ 's' if track.get('skips') != 1 else '' }}{% if track.get('skipPercent') %} &middot; {{ track.get('skipPercent') }}%{% endif %}</span>
         {% endif %}
         {% if track.get('genres') %}
