@@ -12,6 +12,7 @@ import logging
 from flask import render_template, redirect, request, url_for, session, jsonify
 
 import app as appmod
+from routes._auth import makeRequiresUser
 from Database.utils import convertToDatetime, msToString
 from services.genre_gate import (
     emptyGenreCoverage, resolveGenreCoverage, genreGatePasses, resolveGenreDistribution,
@@ -34,6 +35,75 @@ def register(app, dashboard):
     # string - so every branch guarded on it silently took the other path and
     # the whole skip-count path went untested.
     SKIP_SORT_BY = appmod.Database.SKIP_SORT_BY
+    requiresUser = makeRequiresUser(dashboard)
+
+    # ---- Top Songs/Albums/Artists: the parts all three share -----------------
+    # The three pages differ in which aggregate they read and what they call
+    # the things they list. Everything else - parsing the filter card, the
+    # two-phase AJAX split, choosing between the dedicated and the unique
+    # count, building the pagination context - was written out three times,
+    # which is how the skip-sort filters got fixed in one and missed in the
+    # others.
+
+    def _topListFilters(db, username):
+        """The filter card's state, read identically by all three Top pages."""
+        # The tag filter is gated on the admin's instance-wide tags kill
+        # switch: with tags off we ignore a hand-crafted ?tag= (the dropdown is
+        # already hidden template-side) and skip the getUserTags query.
+        tagsOn = dashboard.repo.isTagsEnabled()
+        # fullOnly defaults to on (a favorite has to have actually been heard)
+        # - see templates/_page_card.html's checkbox. Explicit ?fullOnly=0 opts
+        # out. Both spellings are kept: the raw one rebuilds pagination links,
+        # the bool goes to the queries.
+        fullOnly = request.args.get("fullOnly", "1")
+        return {
+            "searchQuery": request.args.get("q", ""),
+            "sortBy": dashboard._getSortByParam(allowed=TOP_LIST_SORT_BY),
+            "interval": request.args.get("interval", ""),
+            "customStart": request.args.get("startDate", ""),
+            "customEnd": request.args.get("endDate", ""),
+            "tag": request.args.get("tag", "") if tagsOn else "",
+            "fullOnly": fullOnly,
+            "fullPlaysOnly": fullOnly != "0",
+            #< only offered to users who've actually tagged something - see
+            #  _page_card.html's {% if tags_enabled and user_tags %} guard
+            "userTags": db.repo.getUserTags(username) if tagsOn else [],
+        }
+
+    def _topListShell(section, template, username, filters):
+        """The plain GET half of the two-phase load: the filter card plus an
+        empty #topListResults placeholder. top-list.js then fetches the stat
+        header + list + pagination via ?ajax=true on first paint and on every
+        filter/sort/tag/page change."""
+        return render_template(
+            template, section=section, username=username,
+            sortBy=filters["sortBy"], interval=filters["interval"],
+            customStart=filters["customStart"], customEnd=filters["customEnd"],
+            tag=filters["tag"], user_tags=filters["userTags"],
+            fullPlaysOnly=filters["fullPlaysOnly"])
+
+    def _topListTotal(filters, countFn, uniqueCount, **idKwarg):
+        """How many rows the pager is sizing itself for.
+
+        The plain unique count already on the stat card is reused when nothing
+        narrows the list. A search or tag obviously changes it - and so does
+        the skip sort, whose page lists only entities that were actually
+        skipped, so its total is smaller than the unique count above it."""
+        if filters["sortBy"] == SKIP_SORT_BY or filters["searchQuery"] or filters["tag"]:
+            return countFn(searchQuery=filters["searchQuery"], fullPlaysOnly=filters["fullPlaysOnly"],
+                           sortBy=filters["sortBy"], **idKwarg)
+        return uniqueCount
+
+    def _topListResults(section, endpoint, username, filters, items, statCards,
+                         page, totalPages, totalCount, startIndex, emptyMessage):
+        pagination = dashboard._buildPaginationContext(
+            endpoint, page, totalPages, totalCount,
+            q=filters["searchQuery"], tag=filters["tag"], sortBy=filters["sortBy"],
+            interval=filters["interval"], startDate=filters["customStart"],
+            endDate=filters["customEnd"], fullOnly=filters["fullOnly"])
+        return jsonify(resultsHtml=render_template(
+            "_top_list_results.html", tracks=items, statCards=statCards, startIndex=startIndex,
+            section=section, username=username, emptyMessage=emptyMessage, **pagination))
 
     def overviewPage():
         from datetime import datetime
@@ -164,10 +234,8 @@ def register(app, dashboard):
         )
     app.add_url_rule("/overview", "overviewPage", overviewPage, methods=["GET"])
 
-    def dashboardIndex():
-        email, username, db = dashboard.get_current_user_or_redirect()
-        if not email:
-            return dashboard.unauthenticatedResponse()
+    @requiresUser
+    def dashboardIndex(username, db):
 
         settings = db.repo.getUserSettings(username)
         default_window = settings.get("default_dashboard_window", "day")
@@ -260,15 +328,13 @@ def register(app, dashboard):
         )
     app.add_url_rule("/", "dashboard", dashboardIndex, methods=["GET"])
 
-    def historyPage():
+    @requiresUser
+    def historyPage(username, db):
         """The searchable, paginated play-history list - split out of the
         dashboard so that page can stay a glanceable overview. Carries the same
         search + Time Period filter the dashboard used to host, and the same
         list-scoping rule: only an explicit custom range (a chart click-through)
         scopes the list; named intervals don't."""
-        email, username, db = dashboard.get_current_user_or_redirect()
-        if not email:
-            return dashboard.unauthenticatedResponse()
 
         customStart = request.args.get("startDate", "")
         customEnd = request.args.get("endDate", "")
@@ -358,14 +424,12 @@ def register(app, dashboard):
         })
     app.add_url_rule("/history", "history", historyPage, methods=["GET"])
 
-    def dashboardDiscover():
+    @requiresUser(api=True)
+    def dashboardDiscover(username, db):
         """JSON for the dashboard's Discover card, fetched by tracks.html's own
         JS after first paint (see dashboardIndex) rather than computed inline -
         the genre-coverage gate check and recommendation query are full-history
         scans that noticeably slowed the dashboard once added."""
-        email, username, db = dashboard.get_current_user_or_redirect()
-        if not email:
-            return jsonify({"error": "Not logged in"}), 401
 
         if not dashboard.repo.isLastfmGenreBackfillEnabled():
             return jsonify({"unlocked": False, "recommendations": []})
@@ -382,188 +446,109 @@ def register(app, dashboard):
         return jsonify({"unlocked": unlocked, "recommendations": recommendations})
     app.add_url_rule("/api/dashboard-discover", "dashboardDiscover", dashboardDiscover, methods=["GET"])
 
-    def dashboardTrends():
+    @requiresUser(api=True)
+    def dashboardTrends(username, db):
         """JSON/HTML for the dashboard's Obsession, Rediscovery, and Forgotten Favorite trend cards."""
-        email, username, db = dashboard.get_current_user_or_redirect()
-        if not email:
-            return jsonify({"error": "Not logged in"}), 401
 
         trends = db.getDashboardTrends()
         html = render_template("_dashboard_trends.html", username=username, trends=trends)
         return jsonify({"trendsHtml": html, "trends": trends})
     app.add_url_rule("/api/dashboard-trends", "dashboardTrends", dashboardTrends, methods=["GET"])
 
-    def topSongsPage():
-        email, username, db = dashboard.get_current_user_or_redirect()
-        if not email:
-            return dashboard.unauthenticatedResponse()
-
-        page = dashboard._getPageParam()
-        searchQuery = request.args.get("q", "")
-        sortBy = dashboard._getSortByParam(allowed=TOP_LIST_SORT_BY)
-        interval = request.args.get("interval", "")
-        customStart = request.args.get("startDate", "")
-        customEnd = request.args.get("endDate", "")
-        # The tag filter is gated on the admin's instance-wide tags kill
-        # switch: with tags off we ignore a hand-crafted ?tag= (the dropdown is
-        # already hidden template-side) and skip the getUserTags query.
-        tags_on = dashboard.repo.isTagsEnabled()
-        tag = request.args.get("tag", "") if tags_on else ""
-        # Defaults to on (a favorite has to have actually been heard) - see
-        # templates/_page_card.html's checkbox. Explicit ?fullOnly=0 opts out.
-        fullOnly = request.args.get("fullOnly", "1")
-        fullPlaysOnly = fullOnly != "0"
-        # Only offered to users who've actually tagged something - see
-        # templates/_page_card.html's {% if tags_enabled and user_tags %} guard.
-        user_tags = db.repo.getUserTags(username) if tags_on else []
-
-        # Two-phase load: the plain GET is just the filter card + an empty
-        # #topListResults placeholder; top-list.js fetches the stat header +
-        # list + pagination via ?ajax=true (see top_songs.html) on first paint
-        # and on every filter/sort/tag/page change.
+    @requiresUser
+    def topSongsPage(username, db):
+        filters = _topListFilters(db, username)
         if request.args.get("ajax") != "true":
-            return render_template(
-                "top_songs.html", section="top_songs", username=username,
-                sortBy=sortBy, interval=interval, customStart=customStart, customEnd=customEnd,
-                tag=tag, user_tags=user_tags, fullPlaysOnly=fullPlaysOnly)
+            return _topListShell("top_songs", "top_songs.html", username, filters)
 
+        tag = filters["tag"]
         trackIds = db.repo.getTaggedTrackIds(username, [tag]) if tag else None
-        startDate, endDate = dashboard._getDateRange(interval, customStart, customEnd, default="all time", tz=db.tz)
+        startDate, endDate = dashboard._getDateRange(
+            filters["interval"], filters["customStart"], filters["customEnd"],
+            default="all time", tz=db.tz)
+        fullPlaysOnly = filters["fullPlaysOnly"]
         # totalPlays/totalMs are a whole-range aggregate regardless of search -
         # a cheap dedicated query instead of summing every song's metadata.
         totalPlays, totalMs = db.getPlayTotals(startDate, endDate, fullPlaysOnly=fullPlaysOnly)
         uniqueSongs = db.getSongsCount(startDate, endDate, fullPlaysOnly=fullPlaysOnly)
 
+        totalCount = _topListTotal(
+            filters, lambda **kw: db.getSongsCount(startDate, endDate, **kw), uniqueSongs,
+            trackIds=trackIds)
+        page, totalPages, startIndex = dashboard._calculatePagination(totalCount)
         # Only materialize the page being shown - SQL-level LIMIT/OFFSET and
         # WHERE-clause matching (see Repository.getSongsPage) instead of
         # sorting+hydrating+filtering every song ever played in Python.
-        # A skip-ordered page lists only entities that were actually skipped,
-        # so its total differs from the unique-count stat card above.
-        if sortBy == SKIP_SORT_BY or searchQuery or tag:
-            totalCount = db.getSongsCount(startDate, endDate, searchQuery=searchQuery, trackIds=trackIds,
-                                           fullPlaysOnly=fullPlaysOnly, sortBy=sortBy)
-        else:
-            totalCount = uniqueSongs
-        page, totalPages, startIndex = dashboard._calculatePagination(totalCount)
-        tracks = db.getTopSongs(startDate=startDate, endDate=endDate, by=sortBy, limit=PAGE_SIZE,
-                                 offset=startIndex, searchQuery=searchQuery, trackIds=trackIds,
-                                 fullPlaysOnly=fullPlaysOnly)
-
-        pagination = dashboard._buildPaginationContext(
-            "topSongsPage", page, totalPages, totalCount,
-            q=searchQuery, tag=tag, sortBy=sortBy, interval=interval,
-            startDate=customStart, endDate=customEnd, fullOnly=fullOnly)
+        tracks = db.getTopSongs(startDate=startDate, endDate=endDate, by=filters["sortBy"],
+                                 limit=PAGE_SIZE, offset=startIndex, searchQuery=filters["searchQuery"],
+                                 trackIds=trackIds, fullPlaysOnly=fullPlaysOnly)
 
         tracks = dashboard._embedSongsTextElements(tracks)
-        tracks = dashboard._embedTopSongsTextElements(tracks, sortBy=sortBy, totalPlays=totalPlays, totalMs=totalMs)
+        tracks = dashboard._embedTopSongsTextElements(
+            tracks, sortBy=filters["sortBy"], totalPlays=totalPlays, totalMs=totalMs)
         tracks = dashboard._attachGenres(db, tracks, "track")
 
-        statCards = [
-            {"label": "Total Plays", "value": totalPlays},
-            {"label": "Time", "value": msToString(totalMs)},
-            {"label": "Unique Songs", "value": uniqueSongs},
-        ]
-        return jsonify(resultsHtml=render_template(
-            "_top_list_results.html", tracks=tracks, statCards=statCards, startIndex=startIndex,
-            section="top_songs", username=username,
-            emptyMessage="No top songs available. Import some listening history first.",
-            **pagination))
+        return _topListResults(
+            "top_songs", "topSongsPage", username, filters, tracks,
+            statCards=[
+                {"label": "Total Plays", "value": totalPlays},
+                {"label": "Time", "value": msToString(totalMs)},
+                {"label": "Unique Songs", "value": uniqueSongs},
+            ],
+            page=page, totalPages=totalPages, totalCount=totalCount, startIndex=startIndex,
+            emptyMessage="No top songs available. Import some listening history first.")
     app.add_url_rule("/top-songs", "topSongsPage", topSongsPage, methods=["GET"])
 
-    def topAlbumsPage():
-        email, username, db = dashboard.get_current_user_or_redirect()
-        if not email:
-            return dashboard.unauthenticatedResponse()
-
-        page = dashboard._getPageParam()
-        searchQuery = request.args.get("q", "")
-        sortBy = dashboard._getSortByParam(allowed=TOP_LIST_SORT_BY)
-        interval = request.args.get("interval", "")
-        customStart = request.args.get("startDate", "")
-        customEnd = request.args.get("endDate", "")
-        # Tag filter gated on the admin kill switch - see topSongsPage.
-        tags_on = dashboard.repo.isTagsEnabled()
-        tag = request.args.get("tag", "") if tags_on else ""
-        # Defaults to on - see topSongsPage's fullOnly comment.
-        fullOnly = request.args.get("fullOnly", "1")
-        fullPlaysOnly = fullOnly != "0"
-        user_tags = db.repo.getUserTags(username) if tags_on else []
-
-        # Two-phase load - see topSongsPage.
+    @requiresUser
+    def topAlbumsPage(username, db):
+        filters = _topListFilters(db, username)
         if request.args.get("ajax") != "true":
-            return render_template(
-                "top_albums.html", section="top_albums", username=username,
-                sortBy=sortBy, interval=interval, customStart=customStart, customEnd=customEnd,
-                tag=tag, user_tags=user_tags, fullPlaysOnly=fullPlaysOnly)
+            return _topListShell("top_albums", "top_albums.html", username, filters)
 
+        tag = filters["tag"]
         albumIds = db.repo.getTaggedAlbumIds(username, [tag]) if tag else None
-        startDate, endDate = dashboard._getDateRange(interval, customStart, customEnd, default="all time", tz=db.tz)
+        startDate, endDate = dashboard._getDateRange(
+            filters["interval"], filters["customStart"], filters["customEnd"],
+            default="all time", tz=db.tz)
+        fullPlaysOnly = filters["fullPlaysOnly"]
         totalPlays, totalMs = db.getPlayTotals(startDate, endDate, fullPlaysOnly=fullPlaysOnly)
         uniqueAlbums = db.getAlbumsCount(startDate, endDate, fullPlaysOnly=fullPlaysOnly)
 
-        # Only materialize the page being shown - SQL-level LIMIT/OFFSET and
-        # WHERE-clause matching (see Repository.getAlbumsPage) instead of
-        # sorting+hydrating+filtering every album ever played in Python.
-        # A skip-ordered page lists only entities that were actually skipped,
-        # so its total differs from the unique-count stat card above.
-        if sortBy == SKIP_SORT_BY or searchQuery or tag:
-            totalCount = db.getAlbumsCount(startDate, endDate, searchQuery=searchQuery, albumIds=albumIds,
-                                            fullPlaysOnly=fullPlaysOnly, sortBy=sortBy)
-        else:
-            totalCount = uniqueAlbums
+        totalCount = _topListTotal(
+            filters, lambda **kw: db.getAlbumsCount(startDate, endDate, **kw), uniqueAlbums,
+            albumIds=albumIds)
         page, totalPages, startIndex = dashboard._calculatePagination(totalCount)
-        albums = db.getTopAlbums(startDate=startDate, endDate=endDate, by=sortBy, limit=PAGE_SIZE,
-                                  offset=startIndex, searchQuery=searchQuery, albumIds=albumIds,
-                                  fullPlaysOnly=fullPlaysOnly)
+        albums = db.getTopAlbums(startDate=startDate, endDate=endDate, by=filters["sortBy"],
+                                  limit=PAGE_SIZE, offset=startIndex, searchQuery=filters["searchQuery"],
+                                  albumIds=albumIds, fullPlaysOnly=fullPlaysOnly)
 
-        pagination = dashboard._buildPaginationContext(
-            "topAlbumsPage", page, totalPages, totalCount,
-            q=searchQuery, tag=tag, sortBy=sortBy, interval=interval,
-            startDate=customStart, endDate=customEnd, fullOnly=fullOnly)
-
-        albums = dashboard._embedAlbumsTextElements(albums, sortBy=sortBy, totalPlays=totalPlays, totalMs=totalMs)
+        albums = dashboard._embedAlbumsTextElements(
+            albums, sortBy=filters["sortBy"], totalPlays=totalPlays, totalMs=totalMs)
         albums = dashboard._attachGenres(db, albums, "album")
 
-        statCards = [
-            {"label": "Total Plays (top list)", "value": totalPlays},
-            {"label": "Time", "value": msToString(totalMs)},
-            {"label": "Unique Albums", "value": uniqueAlbums},
-        ]
-        return jsonify(resultsHtml=render_template(
-            "_top_list_results.html", tracks=albums, statCards=statCards, startIndex=startIndex,
-            section="top_albums", username=username,
-            emptyMessage="No top albums available. Import some listening history first.",
-            **pagination))
+        return _topListResults(
+            "top_albums", "topAlbumsPage", username, filters, albums,
+            statCards=[
+                {"label": "Total Plays (top list)", "value": totalPlays},
+                {"label": "Time", "value": msToString(totalMs)},
+                {"label": "Unique Albums", "value": uniqueAlbums},
+            ],
+            page=page, totalPages=totalPages, totalCount=totalCount, startIndex=startIndex,
+            emptyMessage="No top albums available. Import some listening history first.")
     app.add_url_rule("/top-albums", "topAlbumsPage", topAlbumsPage, methods=["GET"])
 
-    def topArtistsPage():
-        email, username, db = dashboard.get_current_user_or_redirect()
-        if not email:
-            return dashboard.unauthenticatedResponse()
-
-        page = dashboard._getPageParam()
-        searchQuery = request.args.get("q", "")
-        sortBy = dashboard._getSortByParam(allowed=TOP_LIST_SORT_BY)
-        interval = request.args.get("interval", "")
-        customStart = request.args.get("startDate", "")
-        customEnd = request.args.get("endDate", "")
-        # Tag filter gated on the admin kill switch - see topSongsPage.
-        tags_on = dashboard.repo.isTagsEnabled()
-        tag = request.args.get("tag", "") if tags_on else ""
-        # Defaults to on - see topSongsPage's fullOnly comment.
-        fullOnly = request.args.get("fullOnly", "1")
-        fullPlaysOnly = fullOnly != "0"
-        user_tags = db.repo.getUserTags(username) if tags_on else []
-
-        # Two-phase load - see topSongsPage.
+    @requiresUser
+    def topArtistsPage(username, db):
+        filters = _topListFilters(db, username)
         if request.args.get("ajax") != "true":
-            return render_template(
-                "top_artists.html", section="top_artists", username=username,
-                sortBy=sortBy, interval=interval, customStart=customStart, customEnd=customEnd,
-                tag=tag, user_tags=user_tags, fullPlaysOnly=fullPlaysOnly)
+            return _topListShell("top_artists", "top_artists.html", username, filters)
 
+        tag = filters["tag"]
         artistIds = db.repo.getTaggedArtistIds(username, [tag]) if tag else None
-        startDate, endDate = dashboard._getDateRange(interval, customStart, customEnd, default="all time", tz=db.tz)
+        startDate, endDate = dashboard._getDateRange(
+            filters["interval"], filters["customStart"], filters["customEnd"],
+            default="all time", tz=db.tz)
+        fullPlaysOnly = filters["fullPlaysOnly"]
         # totalPlays/totalUnique/totalMs are the whole (date-range-scoped) top
         # list's totals regardless of search - mirrors getPlayTotals()'s role
         # for the songs/albums pages, computed via a dedicated SQL aggregate
@@ -571,43 +556,31 @@ def register(app, dashboard):
         totalPlays, totalUnique, totalMs = db.getArtistTotals(startDate, endDate, fullPlaysOnly=fullPlaysOnly)
         uniqueArtists = db.getArtistsCount(startDate, endDate, fullPlaysOnly=fullPlaysOnly)
 
-        # Only materialize the page being shown - SQL-level LIMIT/OFFSET
-        # instead of sorting+hydrating every artist ever played.
-        # A skip-ordered page lists only entities that were actually skipped,
-        # so its total differs from the unique-count stat card above.
-        if sortBy == SKIP_SORT_BY or searchQuery or tag:
-            totalCount = db.getArtistsCount(startDate, endDate, searchQuery=searchQuery, artistIds=artistIds,
-                                             fullPlaysOnly=fullPlaysOnly, sortBy=sortBy)
-        else:
-            totalCount = uniqueArtists
+        totalCount = _topListTotal(
+            filters, lambda **kw: db.getArtistsCount(startDate, endDate, **kw), uniqueArtists,
+            artistIds=artistIds)
         page, totalPages, startIndex = dashboard._calculatePagination(totalCount)
-        artists = db.getTopArtists(startDate=startDate, endDate=endDate, by=sortBy, limit=PAGE_SIZE,
-                                    offset=startIndex, searchQuery=searchQuery, artistIds=artistIds,
-                                    fullPlaysOnly=fullPlaysOnly)
+        artists = db.getTopArtists(startDate=startDate, endDate=endDate, by=filters["sortBy"],
+                                    limit=PAGE_SIZE, offset=startIndex, searchQuery=filters["searchQuery"],
+                                    artistIds=artistIds, fullPlaysOnly=fullPlaysOnly)
 
-        artists = dashboard._embedArtistsTextElements(artists, sortBy=sortBy, totalPlays=totalPlays, totalMs=totalMs)
+        artists = dashboard._embedArtistsTextElements(
+            artists, sortBy=filters["sortBy"], totalPlays=totalPlays, totalMs=totalMs)
         artists = dashboard._attachGenres(db, artists, "artist")
-        pagination = dashboard._buildPaginationContext(
-            "topArtistsPage", page, totalPages, totalCount,
-            q=searchQuery, tag=tag, sortBy=sortBy, interval=interval,
-            startDate=customStart, endDate=customEnd, fullOnly=fullOnly)
 
-        statCards = [
-            {"label": "Total Plays (top list)", "value": totalPlays},
-            {"label": "Unique Songs (top list)", "value": totalUnique},
-            {"label": "Unique Artists", "value": uniqueArtists},
-        ]
-        return jsonify(resultsHtml=render_template(
-            "_top_list_results.html", tracks=artists, statCards=statCards, startIndex=startIndex,
-            section="top_artists", username=username,
-            emptyMessage="No top artists available. Import some listening history first.",
-            **pagination))
+        return _topListResults(
+            "top_artists", "topArtistsPage", username, filters, artists,
+            statCards=[
+                {"label": "Total Plays (top list)", "value": totalPlays},
+                {"label": "Unique Songs (top list)", "value": totalUnique},
+                {"label": "Unique Artists", "value": uniqueArtists},
+            ],
+            page=page, totalPages=totalPages, totalCount=totalCount, startIndex=startIndex,
+            emptyMessage="No top artists available. Import some listening history first.")
     app.add_url_rule("/top-artists", "topArtistsPage", topArtistsPage, methods=["GET"])
 
-    def chartsPage():
-        email, username, db = dashboard.get_current_user_or_redirect()
-        if not email:
-            return dashboard.unauthenticatedResponse()
+    @requiresUser
+    def chartsPage(username, db):
 
         settings = db.repo.getUserSettings(username)
         defaultWindow = settings.get("default_dashboard_window", "day")
@@ -811,10 +784,8 @@ def register(app, dashboard):
             **dashboard._buildPaginationContext(endpoint, page, totalPages, totalCount, **sharedArgs),
         }
 
-    def songDetailPage(track_id):
-        email, username, db = dashboard.get_current_user_or_redirect()
-        if not email:
-            return dashboard.unauthenticatedResponse()
+    @requiresUser
+    def songDetailPage(username, db, track_id):
 
         song = db.getSong(track_id)
         if song is None:
@@ -879,10 +850,8 @@ def register(app, dashboard):
         )
     app.add_url_rule("/song/<track_id>", "songDetailPage", songDetailPage, methods=["GET"])
 
-    def artistDetailPage(artist_id):
-        email, username, db = dashboard.get_current_user_or_redirect()
-        if not email:
-            return dashboard.unauthenticatedResponse()
+    @requiresUser
+    def artistDetailPage(username, db, artist_id):
 
         artist = db.getArtist(artist_id)
         if artist is None:
@@ -954,10 +923,8 @@ def register(app, dashboard):
         )
     app.add_url_rule("/artist/<artist_id>", "artistDetailPage", artistDetailPage, methods=["GET"])
 
-    def albumDetailPage(album_id):
-        email, username, db = dashboard.get_current_user_or_redirect()
-        if not email:
-            return dashboard.unauthenticatedResponse()
+    @requiresUser
+    def albumDetailPage(username, db, album_id):
 
         album = db.getAlbum(album_id)
         if album is None:
