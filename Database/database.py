@@ -1043,12 +1043,19 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         - The streak stays "alive" (days > 0) if the most recent play was
           today OR yesterday - a day with no play yet doesn't break it until it
           ends. Two or more empty days since the last play -> days = 0.
-        Only scans the last CURRENT_STREAK_LOOKBACK_DAYS (any live streak is far
-        shorter, and this keeps the bucket query bounded)."""
+        Scans the last CURRENT_STREAK_LOOKBACK_DAYS, then extends the window if
+        the streak actually reaches back that far: the bound keeps the common
+        case cheap, but it must never cap the answer, or the longest streak
+        milestone becomes unreachable no matter how long the user listens."""
         nowLocal = now.astimezone(self.tz) if now is not None else datetime.datetime.now(tz=self.tz)
         today = nowLocal.date()
-        startTs = (nowLocal - datetime.timedelta(days=CURRENT_STREAK_LOOKBACK_DAYS)).timestamp()
+        lookbackDays = CURRENT_STREAK_LOOKBACK_DAYS
+        startTs = (nowLocal - datetime.timedelta(days=lookbackDays)).timestamp()
         play_dates = self._getPlayDateSet(startTs, None)
+        while self._streakFillsWindow(today, play_dates, lookbackDays):
+            lookbackDays *= 2
+            startTs = (nowLocal - datetime.timedelta(days=lookbackDays)).timestamp()
+            play_dates = self._getPlayDateSet(startTs, None)
 
         yesterday = today - datetime.timedelta(days=1)
         todayStr = today.strftime("%Y-%m-%d")
@@ -1065,6 +1072,19 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
             days += 1
             cursor -= datetime.timedelta(days=1)
         return {"days": days, "activeToday": activeToday}
+
+    @staticmethod
+    def _streakFillsWindow(today: datetime.date, playDates: set, lookbackDays: int) -> bool:
+        """True when an unbroken run of play days reaches the oldest day the
+        current window covers - i.e. the real streak may be longer than what
+        was fetched, so the caller must widen and re-ask."""
+        oldest = today - datetime.timedelta(days=lookbackDays)
+        cursor = today if today.strftime("%Y-%m-%d") in playDates else today - datetime.timedelta(days=1)
+        while cursor.strftime("%Y-%m-%d") in playDates:
+            if cursor <= oldest:
+                return True
+            cursor -= datetime.timedelta(days=1)
+        return False
 
     def getListeningCalendar(self, now: datetime.datetime = None,
                              weeks: int = CALENDAR_WEEKS) -> dict:

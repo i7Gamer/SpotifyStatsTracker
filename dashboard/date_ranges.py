@@ -67,7 +67,15 @@ class DateRangeMixin:
             #  day (with today's time-of-day) into a future bucket
             endDate = convertToDatetime(startOfDay(nowLocal + timedelta(days=1), tz=tz), tz=tz)
 
-            if customStart and customEnd:
+            if interval == "":
+                interval = default
+
+            # Custom dates apply ONLY to the custom interval. They used to win
+            # unconditionally, so a stale or hand-edited URL carrying both
+            # (?interval=week&startDate=2020-01-01&endDate=2020-01-02) rendered
+            # 2020's data under a "Last Week" label - the routes only guard the
+            # inverse case (custom with no dates).
+            if interval == "custom" and customStart and customEnd:
                 try:
                     startLocal = parseDateString(customStart, tz=tz)
                     endLocal = parseDateString(customEnd, tz=tz)
@@ -77,9 +85,11 @@ class DateRangeMixin:
                     startDate = startLocal
                     endDate = endLocal + timedelta(days=1)
                 except ValueError:
-                    pass
-            if interval == "":
-                interval = default
+                    # Unparseable dates used to fall through to the all-time
+                    # branch below, showing the user's ENTIRE history under a
+                    # "Custom range: x to y" label. Fall back to the default
+                    # interval instead; _getIntervalLabel does the same.
+                    interval = default
             if not startDate:
                 if interval == "today":
                     startDate = convertToDatetime(startOfDay(nowLocal, tz=tz), tz=tz)
@@ -122,7 +132,12 @@ class DateRangeMixin:
         }
 
         if interval == "custom" and customStart and customEnd:
-            return f"Custom range: {customStart} to {customEnd}"
+            # Only claim a custom range if those dates actually parsed -
+            # _getDateRange falls back to `default` when they didn't, and the
+            # label must not promise a range the data doesn't cover.
+            if parseDateString(customStart) is not None and parseDateString(customEnd) is not None:
+                return f"Custom range: {customStart} to {customEnd}"
+            return labels.get(default, "Yesterday")
 
         return labels.get(interval or "day", "Yesterday")
 

@@ -105,6 +105,27 @@ class PlayQueries:
         ).fetchall()
         return [dict(row) for row in rows]
 
+    def getSkipsNearTime(self, username: str, trackId: str, playedAt: float,
+                          toleranceSeconds: float) -> list[dict]:
+        """Skip rows (is_skip=1) for this track within toleranceSeconds of
+        playedAt - the skip-side counterpart to getPlaysNearTime.
+
+        Deliberately scoped to is_skip=1 in both directions: a skip must never
+        dedup against, claim or correct a real play row, and a real play must
+        never dedup against a skip (see hasPlayNearTime). This exists because
+        the live listener and a history import both record the same physical
+        sub-threshold event, and their played_at can differ by seconds
+        (Spotify's documented start-vs-end ambiguity), so plays' UNIQUE
+        constraint - which needs an exact timestamp match - let one skip land
+        twice and inflate skip counts."""
+        conn = self._conn()
+        rows = conn.execute(
+            "SELECT id, played_at FROM plays "
+            "WHERE username=? AND track_id=? AND played_at BETWEEN ? AND ? AND is_skip=1",
+            (username, trackId, playedAt - toleranceSeconds, playedAt + toleranceSeconds),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
     def deletePlaysInRange(self, username: str, startTs: float, endTs: float) -> int:
         """Delete every real play (is_skip=0) of this user whose played_at falls
         inside the closed [startTs, endTs] window - the overwrite-import wipe.

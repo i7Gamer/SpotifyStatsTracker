@@ -141,6 +141,66 @@ class TestImportSkipRouting(_ImportTestBase):
         self.assertIn("1 skips saved", message)
 
 
+class TestSkipNearTimeDedup(_ImportTestBase):
+    """The live listener records sub-threshold events too, and the two sources'
+    played_at for one physical skip can differ by seconds (Spotify's documented
+    start-vs-end ambiguity). plays' UNIQUE constraint needs an exact timestamp
+    match, so the same skip landed twice and inflated skip counts."""
+
+    def _seedListenerSkip(self, db, trackId, playedAt):
+        db.repo.upsertTrack(normalizeTrackForTest({"id": trackId, "name": "Song", "artists": []}))
+        db.repo.insertPlay(db.user, trackId, playedAt, 400, created_reason="listener", is_skip=1)
+        db.repo.commit()
+
+    def test_import_skip_near_a_listener_skip_is_not_recorded_twice(self):
+        db = self._makeDb({}, [])
+        self._seedListenerSkip(db, "track_x", 1000)
+
+        def gen():
+            yield _meta("track_x", 1004, timePlayed=400, isSkip=True)   #< same event, 4s apart
+
+        self._import(db, gen)
+
+        self.assertEqual(len(self._skipRows(db)), 1)
+
+    def test_a_skip_well_outside_the_window_is_still_recorded(self):
+        db = self._makeDb({}, [])
+        self._seedListenerSkip(db, "track_x", 1000)
+
+        def gen():
+            yield _meta("track_x", 1600, timePlayed=400, isSkip=True)   #< 10 minutes later
+
+        self._import(db, gen)
+
+        self.assertEqual(len(self._skipRows(db)), 2)
+
+    def test_two_skips_in_the_same_export_are_both_kept(self):
+        """Own-run writes are never dedup candidates: two genuinely distinct
+        skips of one track must not collapse into a single row."""
+        db = self._makeDb({}, [])
+
+        def gen():
+            yield _meta("track_x", 1000, timePlayed=400, isSkip=True)
+            yield _meta("track_x", 1003, timePlayed=400, isSkip=True)
+
+        self._import(db, gen)
+
+        self.assertEqual(len(self._skipRows(db)), 2)
+
+    def test_a_nearby_real_play_is_never_treated_as_the_same_event(self):
+        """Skips match only against skips - a real play must not suppress a
+        skip (nor be claimed by one)."""
+        db = self._makeDb({}, [{"id": "track_x", "playedAt": 1000, "timePlayed": 60000}])
+
+        def gen():
+            yield _meta("track_x", 1003, timePlayed=400, isSkip=True)
+
+        self._import(db, gen)
+
+        self.assertEqual(len(self._playRows(db)), 1)
+        self.assertEqual(len(self._skipRows(db)), 1)
+
+
 class TestImportEnrichment(_ImportTestBase):
     def test_correction_also_fills_behavioral_columns(self):
         db = self._makeDb({}, [{"id": "track_x", "playedAt": 100, "timePlayed": 5000}])

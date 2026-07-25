@@ -107,5 +107,59 @@ class TestLongestStreakStillWorks(DatabaseTestCase):
         self.assertEqual(streak, 3)
 
 
+class TestStreakLongerThanTheLookbackWindow(DatabaseTestCase):
+    """The scan was hard-bounded at CURRENT_STREAK_LOOKBACK_DAYS (400), so the
+    reported streak capped at ~401 - which made the 1000-day milestone
+    (MILESTONE_STREAK_DAY_THRESHOLDS' top entry) unreachable no matter how long
+    someone listened, and froze the dashboard's next-milestone bar at ~40%
+    forever. The window now widens when the streak reaches its edge."""
+
+    def _dbWithConsecutiveDays(self, dayCount, lastDay):
+        tracks = {"t1": {"id": "t1", "name": "Song 1", "artists": []}}
+        entries = []
+        for offset in range(dayCount):
+            day = lastDay - datetime.timedelta(days=offset)
+            entries.append({
+                "id": "t1",
+                "playedAt": datetime.datetime(day.year, day.month, day.day, 12,
+                                               tzinfo=datetime.timezone.utc).timestamp(),
+                "timePlayed": 1000,
+            })
+        db = self._makeDb(tracks, entries)
+        db.tz = datetime.timezone.utc
+        return db
+
+    def test_a_streak_past_the_initial_window_is_not_capped(self):
+        from Database.database import CURRENT_STREAK_LOOKBACK_DAYS
+
+        lastDay = datetime.date(2026, 1, 10)
+        dayCount = CURRENT_STREAK_LOOKBACK_DAYS + 50
+        db = self._dbWithConsecutiveDays(dayCount, lastDay)
+
+        result = db.getCurrentStreak(now=_now(2026, 1, 10))
+
+        self.assertEqual(result["days"], dayCount)
+
+    def test_a_streak_inside_the_window_still_stops_at_its_real_start(self):
+        lastDay = datetime.date(2026, 1, 10)
+        db = self._dbWithConsecutiveDays(5, lastDay)
+
+        result = db.getCurrentStreak(now=_now(2026, 1, 10))
+
+        self.assertEqual(result["days"], 5)
+
+    def test_the_top_streak_milestone_is_reachable(self):
+        """The threshold that was structurally unreachable."""
+        from services.milestones import MILESTONE_STREAK_DAY_THRESHOLDS
+
+        topThreshold = max(MILESTONE_STREAK_DAY_THRESHOLDS)
+        lastDay = datetime.date(2026, 1, 10)
+        db = self._dbWithConsecutiveDays(topThreshold, lastDay)
+
+        result = db.getCurrentStreak(now=_now(2026, 1, 10))
+
+        self.assertGreaterEqual(result["days"], topThreshold)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -15,6 +15,13 @@ import Database.database as _dbmod  # noqa: F401 - module-global names
 # would make overwrite import impossible for most real exports.
 RETRYABLE_DROP_STAT_KEYS = ("droppedTransient", "droppedUnexpected")
 
+# How far apart two skip rows for the same track may be and still be treated as
+# one physical event. Sized for the recording sources disagreeing about what
+# played_at means (start vs end of a sub-5s play) plus clock drift - NOT for the
+# real-play path's much wider "duration + 60s" window, which would swallow a
+# genuine second skip of the same track later in a session.
+SKIP_NEAR_TIME_TOLERANCE_SECONDS = 10
+
 
 class ImportMixin:
     """History import / reconciliation (append*, importHistory*, overwrite range), mixed into Database."""
@@ -219,15 +226,29 @@ class ImportMixin:
                 extras = entry.get("importExtras") or {}
                 extrasValues = [extras.get(column) for column in _dbmod.BEHAVIORAL_COLUMNS]
 
-                # Sub-5s events (entry["isSkip"], the fixed import floor) bypass
-                # near-time play matching entirely: they must never claim/correct
-                # a real play row, and their dedup is plays' UNIQUE constraint.
-                # They're always is_skip=1 (the stats threshold is >= 5s).
+                # Sub-5s events (entry["isSkip"], the fixed import floor) never
+                # claim or correct a real play row - they're always is_skip=1
+                # (the stats threshold is >= 5s) and match only against other
+                # skips. plays' UNIQUE constraint alone wasn't enough: the live
+                # listener records the same physical event, and the two sources'
+                # played_at can differ by seconds (Spotify's start-vs-end
+                # ambiguity), so one skip landed twice and inflated skip counts.
                 if entry.get("isSkip"):
+                    nearbySkips = [
+                        skip for skip in self.repo.getSkipsNearTime(
+                            self.user, track_id, played_at, SKIP_NEAR_TIME_TOLERANCE_SECONDS)
+                        # Rows this run wrote belong to other entries of the same
+                        # export - two genuinely distinct skips must not collapse
+                        # into one (same rule as the real-play path below).
+                        if not runState.isOwnWrite(track_id, skip)
+                    ]
+                    if nearbySkips:
+                        continue
                     if self.repo.insertPlay(self.user, track_id, played_at, time_played,
                                             created_reason=f"history_import (user: {self.user})",
                                             extras=entry.get("importExtras"), is_skip=1):
                         skipsSavedCount += 1
+                        runState.insertedPlayKeys.add((track_id, played_at))
                     continue
 
                 # Check if a play for this track already exists within (duration + 60s) tolerance,
