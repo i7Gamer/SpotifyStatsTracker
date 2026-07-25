@@ -1,0 +1,14 @@
+# Line endings: LF in the repository, native in the working tree.
+#
+# Windows checkouts still get CRLF working copies (core.autocrlf=true handles
+# that); this only pins what git STORES. Until now the convention held by habit
+# alone, which made it a trap: style.css happened to be stored with CRLF, so
+# editing it through a tool that writes LF - then a normal `git add`, which
+# normalizes - rewrote all 3800 lines and produced a whole-file diff for a
+# 78-line change (2026-07-25). With `text=auto` the stored form no longer
+# depends on which editor or script touched the file last.
+* text=auto
+
+# Never transform these bytes. PNG data can contain 0x0D0A sequences that mean
+# nothing about lines, and "normalizing" them would corrupt the image.
+*.png binary

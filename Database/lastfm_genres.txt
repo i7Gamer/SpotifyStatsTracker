@@ -2181,4 +2181,4 @@ film score
 game soundtrack
 darkwave
 vocaloid
-retrowave
+retrowave
