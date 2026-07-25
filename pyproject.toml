@@ -1,3 +1,31 @@
+[tool.ruff]
+# Deliberately a narrow rule set, not ruff's default. The point of a lint gate
+# is that going red MEANS something: a check that fails on 800 pre-existing
+# findings gets bypassed, then ignored, then deleted. So `select` below holds
+# only rules this codebase already passes, and widens on purpose - each step
+# landing with its violations fixed in the same commit.
+#
+# Deliberately NOT enabled, so nobody re-adds them expecting an easy win:
+#   BLE001 (blind except)  - this app catches broadly on purpose; the listener
+#                            and backfillers degrade rather than crash, so this
+#                            would be ~125 noqa comments that say nothing.
+#   I001   (import order)  - auto-fixable, but a 364-file diff for cosmetics.
+#   F401   (unused import) - ~80 of its hits are deliberate re-exports (app.py,
+#                            Database/database.py, Database/queries/_base.py),
+#                            so it needs per-file-ignores before it can be a
+#                            gate rather than noise.
+# The formatter is also unused on purpose: reformatting every file would
+# rewrite git blame across a codebase whose comments carry the reasoning.
+exclude = [".venv", ".claude", "__pycache__"]
+line-length = 120   #< advisory only; E501 is not selected
+
+[tool.ruff.lint]
+select = [
+    "E9",    # syntax errors and IO errors that stop the file parsing at all
+    "F63",   # broken comparisons/assertions - `assert (a, b)` is always true
+    "F7",    # misplaced statements - `break` outside a loop, etc.
+]
+
 [tool.pytest.ini_options]
 # CI has run the suite under `-n auto` for a while, so parallel execution is
 # already proven safe here (every test gets its own temp dir, DB path, media
