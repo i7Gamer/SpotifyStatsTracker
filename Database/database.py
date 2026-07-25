@@ -680,49 +680,13 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         return startTs, endTs
 
     def getExplicitRatio(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> dict:
-        startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
-        conn = self.repo._conn()
-        params = [self.user]
-        rangeClause = self.repo._dateRangeClause(params, startTs, endTs, column="p.played_at")
-        # Single aggregated row instead of GROUP BY t.explicit: NULL and 0
-        # both mean "not explicit" and must land in the same clean count.
-        query = f"""
-            SELECT
-                COALESCE(SUM(CASE WHEN t.explicit THEN 1 ELSE 0 END), 0) AS explicit_count,
-                COALESCE(SUM(CASE WHEN t.explicit THEN 0 ELSE 1 END), 0) AS clean_count
-            FROM plays p
-            JOIN tracks t ON p.track_id = t.id
-            WHERE p.username = ? AND p.is_skip = 0{rangeClause}
-        """
-        row = conn.execute(query, params).fetchone()
-        return {"explicit": row["explicit_count"], "clean": row["clean_count"]}
+        """{explicit, clean} play counts for the Charts explicit ratio."""
+        return self.repo.getExplicitCounts(self.user, *self._dateRangeToTimestamps(startDate, endDate))
 
     def getReleaseDecadeDistribution(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> dict:
-        startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
-        conn = self.repo._conn()
-        # Decades computed fully in SQL. Release dates are stored as
-        # midnight-UTC timestamps of a calendar date, so the year is read
-        # back in UTC too - applying the app timezone here (as the Python
-        # loop this replaced did) shifted every Jan 1 release into the
-        # previous year whenever the offset was negative. HAVING drops the
-        # NULL decade a timestamp outside strftime's supported year range
-        # would produce, matching the old loop's swallow-and-skip.
-        params = [self.user]
-        rangeClause = self.repo._dateRangeClause(params, startTs, endTs, column="p.played_at")
-        query = f"""
-            SELECT (CAST(strftime('%Y', al.release_date, 'unixepoch') AS INTEGER) / 10) * 10 AS decade,
-                   COUNT(*) AS count
-            FROM plays p
-            JOIN tracks t ON p.track_id = t.id
-            JOIN albums al ON t.album_id = al.id
-            WHERE p.username = ? AND p.is_skip = 0{rangeClause}
-              AND al.release_date IS NOT NULL
-              AND al.release_date != 0
-            GROUP BY decade
-            HAVING decade IS NOT NULL
-            ORDER BY decade
-        """
-        rows = conn.execute(query, params).fetchall()
+        """{"1990s": plays, ...} for the Charts release-era chart. The label
+        shape is this layer's business; the counting is the repository's."""
+        rows = self.repo.getReleaseDecadeCounts(self.user, *self._dateRangeToTimestamps(startDate, endDate))
         return {f"{row['decade']}s": row["count"] for row in rows}
 
     def _resolveIncludeInherited(self, includeInherited: bool | None) -> int:
@@ -748,47 +712,7 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         artists, which have no inherited concept)."""
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
         inherited = self._resolveIncludeInherited(includeInherited)
-        conn = self.repo._conn()
-        # Play-weighted coverage as set membership: materialize each "has a
-        # (filtered) genre" id set once, then probe this user's distinct played
-        # tracks against them. The previous form fired 5 correlated EXISTS
-        # subqueries per distinct track (~87k index probes on a large library);
-        # this scans the three small genre tables once and joins, ~48% faster
-        # for identical output. tracks is LEFT-joined so a play whose track row
-        # is missing still counts toward the denominator (it just can't be
-        # album/artist covered), matching the old plays-only outer scan.
-        params = [self.user]
-        rangeClause = self.repo._dateRangeClause(params, startTs, endTs, column="played_at")
-        params.extend([inherited, inherited])
-        query = f"""
-            WITH played AS (
-                SELECT track_id, COUNT(*) AS cnt
-                FROM plays
-                WHERE username = ? AND is_skip = 0{rangeClause}
-                GROUP BY track_id
-            ),
-            covered_tracks  AS (SELECT DISTINCT track_id  FROM track_genres WHERE (? OR inherited = 0)),
-            own_tracks      AS (SELECT DISTINCT track_id  FROM track_genres WHERE inherited = 0),
-            covered_albums  AS (SELECT DISTINCT album_id  FROM album_genres WHERE (? OR inherited = 0)),
-            own_albums      AS (SELECT DISTINCT album_id  FROM album_genres WHERE inherited = 0),
-            covered_artists AS (SELECT DISTINCT artist_id FROM artist_genres)
-            SELECT
-                COALESCE(SUM(p.cnt), 0) AS total,
-                COALESCE(SUM(CASE WHEN ct.track_id   IS NOT NULL THEN p.cnt ELSE 0 END), 0) AS song_covered,
-                COALESCE(SUM(CASE WHEN ca.album_id   IS NOT NULL THEN p.cnt ELSE 0 END), 0) AS album_covered,
-                COALESCE(SUM(CASE WHEN car.artist_id IS NOT NULL THEN p.cnt ELSE 0 END), 0) AS artist_covered,
-                COALESCE(SUM(CASE WHEN ot.track_id   IS NOT NULL THEN p.cnt ELSE 0 END), 0) AS song_own,
-                COALESCE(SUM(CASE WHEN oa.album_id   IS NOT NULL THEN p.cnt ELSE 0 END), 0) AS album_own
-            FROM played p
-            LEFT JOIN tracks t          ON t.id = p.track_id
-            LEFT JOIN track_artists ta  ON ta.track_id = p.track_id AND ta.position = 0
-            LEFT JOIN covered_tracks  ct  ON ct.track_id   = p.track_id
-            LEFT JOIN own_tracks      ot  ON ot.track_id   = p.track_id
-            LEFT JOIN covered_albums  ca  ON ca.album_id   = t.album_id
-            LEFT JOIN own_albums      oa  ON oa.album_id   = t.album_id
-            LEFT JOIN covered_artists car ON car.artist_id = ta.artist_id
-        """
-        row = conn.execute(query, params).fetchone()
+        row = self.repo.getGenreCoverageCounts(self.user, inherited, startTs, endTs)
         total = row["total"]
 
         def category(covered: int, ownCovered: int) -> dict:
@@ -816,23 +740,7 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         artist genres down to tag-less tracks when the toggle allows."""
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
         inherited = self._resolveIncludeInherited(includeInherited)
-        conn = self.repo._conn()
-        params = [inherited, self.user]
-        rangeClause = self.repo._dateRangeClause(params, startTs, endTs, column="p.played_at")
-        limitClause = ""
-        if limit is not None:
-            limitClause = " LIMIT ?"
-        query = f"""
-            SELECT g.genre AS genre, COUNT(*) AS plays
-            FROM plays p
-            JOIN track_genres g ON g.track_id = p.track_id
-            WHERE (? OR g.inherited = 0) AND p.username = ? AND p.is_skip = 0{rangeClause}
-            GROUP BY g.genre
-            ORDER BY plays DESC, g.genre ASC{limitClause}
-        """
-        if limit is not None:
-            params.append(limit)
-        rows = conn.execute(query, params).fetchall()
+        rows = self.repo.getGenrePlayCounts(self.user, inherited, startTs, endTs, limit=limit)
         return {row["genre"]: row["plays"] for row in rows}
 
     def getGenreTrends(self, genres: list[str], startDate: datetime.datetime = None,
@@ -1078,28 +986,7 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         (is_skip=0), a listen at/over the admin-set complete percent of the
         track's duration counts as complete (unknown <=0 durations count as
         complete since partial can't be told apart), else partial."""
-        startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
-        conn = self.repo._conn()
-        # Fully classified in SQL - one aggregate row instead of a row per
-        # distinct (time_played, duration) pair.
-        ratio = self.repo.getCompletionCompletePercent() / 100.0
-        params = [ratio, ratio, self.user]
-        rangeClause = self.repo._dateRangeClause(params, startTs, endTs, column="p.played_at")
-        query = f"""
-            SELECT
-                COALESCE(SUM(CASE WHEN p.is_skip = 1 THEN 1 ELSE 0 END), 0) AS skips,
-                COALESCE(SUM(CASE WHEN p.is_skip = 0
-                                   AND (t.duration_ms <= 0 OR p.time_played >= t.duration_ms * ?)
-                                  THEN 1 ELSE 0 END), 0) AS completes,
-                COALESCE(SUM(CASE WHEN p.is_skip = 0
-                                   AND t.duration_ms > 0 AND p.time_played < t.duration_ms * ?
-                                  THEN 1 ELSE 0 END), 0) AS partials
-            FROM plays p
-            JOIN tracks t ON p.track_id = t.id
-            WHERE p.username = ?{rangeClause}
-        """
-        row = conn.execute(query, params).fetchone()
-        return {"skips": row["skips"], "completes": row["completes"], "partials": row["partials"]}
+        return self.repo.getCompletionCounts(self.user, *self._dateRangeToTimestamps(startDate, endDate))
 
     def getSongsStats(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None,
                        sortBy: str = "plays", limit: int | None = None, offset: int = 0,

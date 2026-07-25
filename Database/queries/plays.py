@@ -576,19 +576,11 @@ class PlayQueries:
             # ar.id filter but prunes the aggregation to the one artist.
             aggFilter += " AND ta.artist_id = ?"
             params.append(artistId)
-        if artistIds is not None:
-            if artistIds:
-                placeholders = ",".join("?" for _ in artistIds)
-                aggFilter += f" AND ta.artist_id IN ({placeholders})"
-                params += artistIds
-            else:
-                aggFilter += " AND 0"   #< explicit empty set matches nothing
+        aggFilter += self._idSetClause(params, "ta.artist_id", artistIds)
         aggJoin = ""
         if fullPlaysOnly:
-            ratio = self.getCompletionCompletePercent() / 100.0
-            aggJoin = " JOIN tracks t ON t.id = p.track_id"
-            aggFilter += " AND (t.duration_ms <= 0 OR p.time_played >= t.duration_ms * ?)"
-            params.append(ratio)
+            aggJoin = self._tracksJoin()
+            aggFilter += self._fullPlaysClause(params)
         outerFilter = ""
         if searchQuery:
             # The name filter only selects WHICH artists to return; it never
@@ -642,19 +634,11 @@ class PlayQueries:
         if searchQuery:
             searchClause = " AND ar.name LIKE ? ESCAPE '\\'"
             params.append(self._likePattern(searchQuery))
-        if artistIds is not None:
-            if artistIds:
-                placeholders = ",".join("?" for _ in artistIds)
-                searchClause += f" AND ta.artist_id IN ({placeholders})"
-                params += artistIds
-            else:
-                searchClause += " AND 0"   #< explicit empty set matches nothing
+        searchClause += self._idSetClause(params, "ta.artist_id", artistIds)
         joinClause = ""
         if fullPlaysOnly:
-            ratio = self.getCompletionCompletePercent() / 100.0
-            joinClause = " JOIN tracks t ON t.id = p.track_id"
-            searchClause += " AND (t.duration_ms <= 0 OR p.time_played >= t.duration_ms * ?)"
-            params.append(ratio)
+            joinClause = self._tracksJoin()
+            searchClause += self._fullPlaysClause(params)
         row = conn.execute(
             f"""
             SELECT COUNT(*) AS c FROM (
@@ -685,10 +669,8 @@ class PlayQueries:
         joinClause = ""
         fullPlaysClause = ""
         if fullPlaysOnly:
-            ratio = self.getCompletionCompletePercent() / 100.0
-            joinClause = " JOIN tracks t ON t.id = p.track_id"
-            fullPlaysClause = " AND (t.duration_ms <= 0 OR p.time_played >= t.duration_ms * ?)"
-            params.append(ratio)
+            joinClause = self._tracksJoin()
+            fullPlaysClause = self._fullPlaysClause(params)
         row = conn.execute(
             f"""
             SELECT COALESCE(SUM(plays), 0) AS total_plays,
@@ -763,13 +745,7 @@ class PlayQueries:
         if albumId is not None:
             extraClauses += " AND al.id = ?"
             params.append(albumId)
-        if trackIds is not None:
-            if trackIds:
-                placeholders = ",".join("?" for _ in trackIds)
-                extraClauses += f" AND t.id IN ({placeholders})"
-                params += trackIds
-            else:
-                extraClauses += " AND 0"   #< explicit empty set matches nothing
+        extraClauses += self._idSetClause(params, "t.id", trackIds)
         if searchQuery:
             pattern = self._likePattern(searchQuery)
             extraClauses += """ AND (
@@ -782,9 +758,7 @@ class PlayQueries:
             )"""
             params += [pattern, pattern, pattern]
         if fullPlaysOnly:
-            ratio = self.getCompletionCompletePercent() / 100.0
-            extraClauses += " AND (t.duration_ms <= 0 OR p.time_played >= t.duration_ms * ?)"
-            params.append(ratio)
+            extraClauses += self._fullPlaysClause(params)
         params += [limitValue, offset]
 
         rows = conn.execute(
@@ -829,20 +803,12 @@ class PlayQueries:
             params = [username]
             rangeClause = self._dateRangeClause(params, startTs, endTs)
             trackIdsClause = ""
-            if trackIds is not None:
-                if trackIds:
-                    placeholders = ",".join("?" for _ in trackIds)
-                    trackIdsClause = f" AND track_id IN ({placeholders})"
-                    params += trackIds
-                else:
-                    trackIdsClause = " AND 0"   #< explicit empty set matches nothing
+            trackIdsClause = self._idSetClause(params, "track_id", trackIds)
             joinClause = ""
             fullPlaysClause = ""
             if fullPlaysOnly:
-                ratio = self.getCompletionCompletePercent() / 100.0
-                joinClause = " JOIN tracks t ON t.id = plays.track_id"
-                fullPlaysClause = " AND (t.duration_ms <= 0 OR plays.time_played >= t.duration_ms * ?)"
-                params.append(ratio)
+                joinClause = self._tracksJoin(playsAlias="plays")
+                fullPlaysClause = self._fullPlaysClause(params, playsAlias="plays")
             row = conn.execute(
                 f"""
                 SELECT COUNT(*) AS c FROM (
@@ -858,18 +824,10 @@ class PlayQueries:
         params = [username]
         rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
         trackIdsClause = ""
-        if trackIds is not None:
-            if trackIds:
-                placeholders = ",".join("?" for _ in trackIds)
-                trackIdsClause = f" AND p.track_id IN ({placeholders})"
-                params += trackIds
-            else:
-                trackIdsClause = " AND 0"   #< explicit empty set matches nothing
+        trackIdsClause = self._idSetClause(params, "p.track_id", trackIds)
         fullPlaysClause = ""
         if fullPlaysOnly:
-            ratio = self.getCompletionCompletePercent() / 100.0
-            fullPlaysClause = " AND (t.duration_ms <= 0 OR p.time_played >= t.duration_ms * ?)"
-            params.append(ratio)
+            fullPlaysClause = self._fullPlaysClause(params)
         params += [pattern, pattern, pattern]
         row = conn.execute(
             f"""
@@ -927,13 +885,7 @@ class PlayQueries:
         if albumId is not None:
             extraClauses += " AND al.id = ?"
             params.append(albumId)
-        if albumIds is not None:
-            if albumIds:
-                placeholders = ",".join("?" for _ in albumIds)
-                extraClauses += f" AND al.id IN ({placeholders})"
-                params += albumIds
-            else:
-                extraClauses += " AND 0"   #< explicit empty set matches nothing
+        extraClauses += self._idSetClause(params, "al.id", albumIds)
         if searchQuery:
             pattern = self._likePattern(searchQuery)
             extraClauses += """ AND (
@@ -947,9 +899,7 @@ class PlayQueries:
             )"""
             params += [pattern, pattern]
         if fullPlaysOnly:
-            ratio = self.getCompletionCompletePercent() / 100.0
-            extraClauses += " AND (t.duration_ms <= 0 OR p.time_played >= t.duration_ms * ?)"
-            params.append(ratio)
+            extraClauses += self._fullPlaysClause(params)
         params += [limitValue, offset]
 
         rows = conn.execute(
@@ -988,18 +938,10 @@ class PlayQueries:
             params = [username]
             rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
             albumIdsClause = ""
-            if albumIds is not None:
-                if albumIds:
-                    placeholders = ",".join("?" for _ in albumIds)
-                    albumIdsClause = f" AND t.album_id IN ({placeholders})"
-                    params += albumIds
-                else:
-                    albumIdsClause = " AND 0"   #< explicit empty set matches nothing
+            albumIdsClause = self._idSetClause(params, "t.album_id", albumIds)
             fullPlaysClause = ""
             if fullPlaysOnly:
-                ratio = self.getCompletionCompletePercent() / 100.0
-                fullPlaysClause = " AND (t.duration_ms <= 0 OR p.time_played >= t.duration_ms * ?)"
-                params.append(ratio)
+                fullPlaysClause = self._fullPlaysClause(params)
             row = conn.execute(
                 f"""
                 SELECT COUNT(*) AS c FROM (
@@ -1017,18 +959,10 @@ class PlayQueries:
         params = [username]
         rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
         albumIdsClause = ""
-        if albumIds is not None:
-            if albumIds:
-                placeholders = ",".join("?" for _ in albumIds)
-                albumIdsClause = f" AND t.album_id IN ({placeholders})"
-                params += albumIds
-            else:
-                albumIdsClause = " AND 0"   #< explicit empty set matches nothing
+        albumIdsClause = self._idSetClause(params, "t.album_id", albumIds)
         fullPlaysClause = ""
         if fullPlaysOnly:
-            ratio = self.getCompletionCompletePercent() / 100.0
-            fullPlaysClause = " AND (t.duration_ms <= 0 OR p.time_played >= t.duration_ms * ?)"
-            params.append(ratio)
+            fullPlaysClause = self._fullPlaysClause(params)
         params += [pattern, pattern]
         row = conn.execute(
             f"""
@@ -1155,6 +1089,92 @@ class PlayQueries:
             "availability_reason": row["availability_reason"],
         }
 
+    def getExplicitCounts(self, username: str, startTs: float | None = None,
+                           endTs: float | None = None) -> dict:
+        """{explicit, clean} play counts in range - the Charts explicit ratio."""
+        params = [username]
+        rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
+        # Single aggregated row instead of GROUP BY t.explicit: NULL and 0
+        # both mean "not explicit" and must land in the same clean count.
+        row = self._conn().execute(
+            f"""
+            SELECT
+                COALESCE(SUM(CASE WHEN t.explicit THEN 1 ELSE 0 END), 0) AS explicit_count,
+                COALESCE(SUM(CASE WHEN t.explicit THEN 0 ELSE 1 END), 0) AS clean_count
+            FROM plays p
+            JOIN tracks t ON p.track_id = t.id
+            WHERE p.username = ? AND p.is_skip = 0{rangeClause}
+            """,
+            params,
+        ).fetchone()
+        return {"explicit": row["explicit_count"], "clean": row["clean_count"]}
+
+    def getReleaseDecadeCounts(self, username: str, startTs: float | None = None,
+                                endTs: float | None = None) -> list[dict]:
+        """[{decade, count}] in range, oldest first - the Charts release-era bars.
+
+        Decades computed fully in SQL. Release dates are stored as midnight-UTC
+        timestamps of a calendar date, so the year is read back in UTC too -
+        applying the app timezone here (as the Python loop this replaced did)
+        shifted every Jan 1 release into the previous year whenever the offset
+        was negative. HAVING drops the NULL decade a timestamp outside
+        strftime's supported year range would produce, matching the old loop's
+        swallow-and-skip."""
+        params = [username]
+        rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
+        rows = self._conn().execute(
+            f"""
+            SELECT (CAST(strftime('%Y', al.release_date, 'unixepoch') AS INTEGER) / 10) * 10 AS decade,
+                   COUNT(*) AS count
+            FROM plays p
+            JOIN tracks t ON p.track_id = t.id
+            JOIN albums al ON t.album_id = al.id
+            WHERE p.username = ? AND p.is_skip = 0{rangeClause}
+              AND al.release_date IS NOT NULL
+              AND al.release_date != 0
+            GROUP BY decade
+            HAVING decade IS NOT NULL
+            ORDER BY decade
+            """,
+            params,
+        ).fetchall()
+        return [{"decade": row["decade"], "count": row["count"]} for row in rows]
+
+    def getCompletionCounts(self, username: str, startTs: float | None = None,
+                             endTs: float | None = None) -> dict:
+        """{skips, completes, partials} in range - the Charts completion pie.
+
+        Fully classified in SQL: one aggregate row instead of a row per distinct
+        (time_played, duration) pair. A skip is any is_skip=1 play. Among real
+        plays, one at/over the admin's complete percent counts as complete
+        (unknown <=0 durations count complete, since partial can't be told
+        apart), else partial - so the three always sum to the range's plays.
+
+        The completion test is spelled out rather than taken from
+        _fullPlaysClause: that builder emits a WHERE fragment, and this needs
+        the same boundary twice, inside a CASE pair, with the partial branch
+        being its inverse."""
+        ratio = self.getCompletionCompletePercent() / 100.0
+        params = [ratio, ratio, username]
+        rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
+        row = self._conn().execute(
+            f"""
+            SELECT
+                COALESCE(SUM(CASE WHEN p.is_skip = 1 THEN 1 ELSE 0 END), 0) AS skips,
+                COALESCE(SUM(CASE WHEN p.is_skip = 0
+                                   AND (t.duration_ms <= 0 OR p.time_played >= t.duration_ms * ?)
+                                  THEN 1 ELSE 0 END), 0) AS completes,
+                COALESCE(SUM(CASE WHEN p.is_skip = 0
+                                   AND t.duration_ms > 0 AND p.time_played < t.duration_ms * ?
+                                  THEN 1 ELSE 0 END), 0) AS partials
+            FROM plays p
+            JOIN tracks t ON p.track_id = t.id
+            WHERE p.username = ?{rangeClause}
+            """,
+            params,
+        ).fetchone()
+        return {"skips": row["skips"], "completes": row["completes"], "partials": row["partials"]}
+
     def getSkipStats(self, username: str, startTs: float | None = None, endTs: float | None = None,
                       trackId: str | None = None, artistId: str | None = None,
                       albumId: str | None = None) -> dict:
@@ -1239,9 +1259,7 @@ class PlayQueries:
         checkbox defaults to on. So skips are always kept and only the
         partial listens go, leaving "of the times this came up, how often did
         I skip it rather than hear it through"."""
-        ratio = self.getCompletionCompletePercent() / 100.0
-        params.append(ratio)
-        return " AND (p.is_skip = 1 OR t.duration_ms <= 0 OR p.time_played >= t.duration_ms * ?)"
+        return self._fullPlaysClause(params, keepSkips=True)
 
     def _skippedTrackFilters(self, params: list, trackId: str | None, artistId: str | None,
                               albumId: str | None, searchQuery: str | None,
@@ -1257,13 +1275,7 @@ class PlayQueries:
         if trackId is not None:
             where += " AND p.track_id = ?"
             params.append(trackId)
-        if trackIds is not None:
-            if trackIds:
-                placeholders = ",".join("?" for _ in trackIds)
-                where += f" AND p.track_id IN ({placeholders})"
-                params += trackIds
-            else:
-                where += " AND 0"   #< explicit empty set matches nothing
+        where += self._idSetClause(params, "p.track_id", trackIds)
         if artistId is not None:
             where += (" AND EXISTS (SELECT 1 FROM track_artists ta2"
                       " WHERE ta2.track_id = p.track_id AND ta2.artist_id = ?)")
@@ -1298,13 +1310,7 @@ class PlayQueries:
         if artistId is not None:
             where += " AND ta.artist_id = ?"
             params.append(artistId)
-        if artistIds is not None:
-            if artistIds:
-                placeholders = ",".join("?" for _ in artistIds)
-                where += f" AND ta.artist_id IN ({placeholders})"
-                params += artistIds
-            else:
-                where += " AND 0"   #< explicit empty set matches nothing
+        where += self._idSetClause(params, "ta.artist_id", artistIds)
         if searchQuery:
             # Name is the only field Top Artists' search ever matched - see
             # getArtistAggregates. It selects WHICH artists appear and never
@@ -1326,13 +1332,7 @@ class PlayQueries:
         if albumId is not None:
             where += " AND al.id = ?"
             params.append(albumId)
-        if albumIds is not None:
-            if albumIds:
-                placeholders = ",".join("?" for _ in albumIds)
-                where += f" AND al.id IN ({placeholders})"
-                params += albumIds
-            else:
-                where += " AND 0"   #< explicit empty set matches nothing
+        where += self._idSetClause(params, "al.id", albumIds)
         if searchQuery:
             # The artist check spans every track on the album rather than the
             # current row's own - see getAlbumsPage() on why.
@@ -1733,10 +1733,8 @@ class PlayQueries:
         joinClause = ""
         fullPlaysClause = ""
         if fullPlaysOnly:
-            ratio = self.getCompletionCompletePercent() / 100.0
-            joinClause = " JOIN tracks t ON t.id = plays.track_id"
-            fullPlaysClause = " AND (t.duration_ms <= 0 OR plays.time_played >= t.duration_ms * ?)"
-            params.append(ratio)
+            joinClause = self._tracksJoin(playsAlias="plays")
+            fullPlaysClause = self._fullPlaysClause(params, playsAlias="plays")
         row = conn.execute(
             f"SELECT COUNT(*) AS c, COALESCE(SUM(time_played), 0) AS total FROM plays{joinClause} "
             f"WHERE username = ? AND is_skip=0{rangeClause}{fullPlaysClause}",

@@ -20,7 +20,7 @@ from Database.queries.tags import TagQueries
 from Database.queries.trends import TrendQueries
 
 
-class Repository(TrackQueries, PlayQueries, UserQueries, ShareQueries, SchemaQueries, GenreQueries, BioQueries, SettingQueries, WrappedQueries, MilestoneQueries, TagQueries, TrendQueries):
+class Repository(SqlFragments, TrackQueries, PlayQueries, UserQueries, ShareQueries, SchemaQueries, GenreQueries, BioQueries, SettingQueries, WrappedQueries, MilestoneQueries, TagQueries, TrendQueries):
     """Data-access layer over the shared SQLite database.
 
     Catalog methods (tracks/artists/albums/playlists/images) operate on data

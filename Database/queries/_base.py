@@ -183,3 +183,67 @@ ARTIST_SORT_COLUMNS = {
     "totalTimeListened": "total_time_listened",
     "name": "name COLLATE NOCASE",
 }
+
+# The "this play actually finished" test, as a bare SQL fragment. Lives here as
+# a string because two kinds of caller need it: the clause builders below
+# (which splice it into a dynamically-assembled WHERE) and the handful of
+# static queries that interpolate it into an otherwise-fixed statement. Aliases
+# are formatted in so both spellings of the plays table (`p` and the unaliased
+# `plays`) can share one definition.
+FULL_PLAY_PREDICATE = "{track}.duration_ms <= 0 OR {plays}.time_played >= {track}.duration_ms * ?"
+
+
+class SqlFragments:
+    """WHERE/JOIN fragments shared by the query mixins.
+
+    Every builder appends its own bound values to `params` and returns the SQL
+    to splice in, so a caller must build its clauses in the order the
+    placeholders end up in the statement. That contract is the whole reason
+    these are worth sharing: each one used to be copy-pasted per query, and a
+    change to the filter meant finding every copy - the full-plays filter alone
+    had eleven, and adding it to the skip queries missed several.
+    """
+
+    @staticmethod
+    def _idSetClause(params: list, column: str, ids: list[str] | None) -> str:
+        """`AND <column> IN (...)` for an explicit set of ids - a tag filter, a
+        playlist export, a shared-with-me list.
+
+        None means "no filter". An EMPTY list is an explicit empty set and must
+        match nothing: `IN ()` isn't valid SQLite, so it becomes a bare `AND 0`.
+        Getting that backwards shows a whole library under a tag nobody has
+        used, which is why every caller routes through here."""
+        if ids is None:
+            return ""
+        if not ids:
+            return " AND 0"
+        params += ids
+        placeholders = ",".join("?" for _ in ids)
+        return f" AND {column} IN ({placeholders})"
+
+    @staticmethod
+    def _tracksJoin(playsAlias: str = "p", trackAlias: str = "t") -> str:
+        """The plays->tracks join the duration-based filters need. Emitted only
+        when one of them is active, so queries that scan plays alone stay that
+        way."""
+        return f" JOIN tracks {trackAlias} ON {trackAlias}.id = {playsAlias}.track_id"
+
+    def _fullPlaysClause(self, params: list, playsAlias: str = "p", trackAlias: str = "t",
+                          keepSkips: bool = False) -> str:
+        """The Top pages' "Full plays only" filter: keep only plays that reached
+        the admin's completion-complete percent of the track's duration.
+
+        A track whose duration is unknown (<= 0) is kept rather than dropped -
+        the filter can't judge it, and dropping it would silently hide every
+        play of a track whose metadata never arrived.
+
+        `keepSkips` is for the skip-ranked queries, where the filter applied
+        verbatim would drop every skip (they are the shortest plays there are)
+        and empty a page whose checkbox defaults to on. There, skips stay
+        encounters and only the partial listens go.
+
+        Requires `trackAlias` to be joined - see _tracksJoin."""
+        params.append(self.getCompletionCompletePercent() / 100.0)
+        predicate = FULL_PLAY_PREDICATE.format(plays=playsAlias, track=trackAlias)
+        skipEscape = f"{playsAlias}.is_skip = 1 OR " if keepSkips else ""
+        return f" AND ({skipEscape}{predicate})"
