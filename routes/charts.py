@@ -432,11 +432,9 @@ def register(app, dashboard):
         # sorting+hydrating+filtering every song ever played in Python.
         # A skip-ordered page lists only entities that were actually skipped,
         # so its total differs from the unique-count stat card above.
-        if sortBy == db.SKIP_SORT_BY:
-            totalCount = db.getSongsCount(startDate, endDate, sortBy=sortBy)
-        elif searchQuery or tag:
+        if sortBy == db.SKIP_SORT_BY or searchQuery or tag:
             totalCount = db.getSongsCount(startDate, endDate, searchQuery=searchQuery, trackIds=trackIds,
-                                           fullPlaysOnly=fullPlaysOnly)
+                                           fullPlaysOnly=fullPlaysOnly, sortBy=sortBy)
         else:
             totalCount = uniqueSongs
         page, totalPages, startIndex = dashboard._calculatePagination(totalCount)
@@ -501,11 +499,9 @@ def register(app, dashboard):
         # sorting+hydrating+filtering every album ever played in Python.
         # A skip-ordered page lists only entities that were actually skipped,
         # so its total differs from the unique-count stat card above.
-        if sortBy == db.SKIP_SORT_BY:
-            totalCount = db.getAlbumsCount(startDate, endDate, sortBy=sortBy)
-        elif searchQuery or tag:
+        if sortBy == db.SKIP_SORT_BY or searchQuery or tag:
             totalCount = db.getAlbumsCount(startDate, endDate, searchQuery=searchQuery, albumIds=albumIds,
-                                            fullPlaysOnly=fullPlaysOnly)
+                                            fullPlaysOnly=fullPlaysOnly, sortBy=sortBy)
         else:
             totalCount = uniqueAlbums
         page, totalPages, startIndex = dashboard._calculatePagination(totalCount)
@@ -572,11 +568,9 @@ def register(app, dashboard):
         # instead of sorting+hydrating every artist ever played.
         # A skip-ordered page lists only entities that were actually skipped,
         # so its total differs from the unique-count stat card above.
-        if sortBy == db.SKIP_SORT_BY:
-            totalCount = db.getArtistsCount(startDate, endDate, sortBy=sortBy)
-        elif searchQuery or tag:
+        if sortBy == db.SKIP_SORT_BY or searchQuery or tag:
             totalCount = db.getArtistsCount(startDate, endDate, searchQuery=searchQuery, artistIds=artistIds,
-                                             fullPlaysOnly=fullPlaysOnly)
+                                             fullPlaysOnly=fullPlaysOnly, sortBy=sortBy)
         else:
             totalCount = uniqueArtists
         page, totalPages, startIndex = dashboard._calculatePagination(totalCount)

@@ -1179,22 +1179,164 @@ class PlayQueries:
         the true skips/encounters - a displayed number should be the real one."""
         return "(skips + ? * (SELECT rate FROM lib)) / (encounters + ?)"
 
-    def _libraryRateCte(self, username: str, params: list, startTs, endTs) -> str:
+    def _libraryRateCte(self, username: str, params: list, startTs, endTs,
+                         fullPlaysOnly: bool = False) -> str:
         """The user's overall skip rate in range - the average low-volume rows
         are pulled toward. Appends its own bound params, so it must be built
-        before the main query's."""
+        before the main query's.
+
+        Deliberately NOT narrowed by the page's search/tag/entity filters: the
+        prior is "this listener's own norm", and shrinking a row toward the
+        average of whatever else matched the search box would make its rank
+        depend on its neighbours. `fullPlaysOnly` is the exception, because it
+        changes what counts as an encounter at all - the prior has to be
+        measured the same way as the rows compared against it.
+
+        The 0.0 fallback is a real, not an integer: an all-integer numerator
+        would make the ranking expression integer-divide and collapse every
+        row to 0. (An empty library can't reach the ORDER BY today, since the
+        same filter feeds both halves - this just doesn't depend on that.)"""
         params.append(username)
-        rangeClause = self._dateRangeClause(params, startTs, endTs, column="played_at")
+        rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
+        joins = ""
+        fullPlaysClause = ""
+        if fullPlaysOnly:
+            joins = " JOIN tracks t ON t.id = p.track_id"
+            fullPlaysClause = self._fullPlayOrSkipClause(params)
         return f"""lib AS (
                 SELECT COALESCE(
-                    CAST(SUM(CASE WHEN is_skip = 1 THEN 1 ELSE 0 END) AS REAL) / NULLIF(COUNT(*), 0), 0
+                    CAST(SUM(CASE WHEN p.is_skip = 1 THEN 1 ELSE 0 END) AS REAL) / NULLIF(COUNT(*), 0), 0.0
                 ) AS rate
-                FROM plays WHERE username = ?{rangeClause}
+                FROM plays p{joins} WHERE p.username = ?{rangeClause}{fullPlaysClause}
             )"""
+
+    def _fullPlayOrSkipClause(self, params: list) -> str:
+        """The Top pages' "Full plays only" checkbox, as the skip queries mean it.
+
+        Everywhere else that checkbox drops any play short of the admin's
+        completion percent. Applied verbatim here it would drop every SKIP too
+        - they're the shortest plays there are - and empty the page the
+        checkbox defaults to on. So skips are always kept and only the
+        partial listens go, leaving "of the times this came up, how often did
+        I skip it rather than hear it through"."""
+        ratio = self.getCompletionCompletePercent() / 100.0
+        params.append(ratio)
+        return " AND (p.is_skip = 1 OR t.duration_ms <= 0 OR p.time_played >= t.duration_ms * ?)"
+
+    def _skippedTrackFilters(self, params: list, trackId: str | None, artistId: str | None,
+                              albumId: str | None, searchQuery: str | None,
+                              trackIds: list[str] | None, fullPlaysOnly: bool) -> tuple[str, str]:
+        """(joins, WHERE) for the per-track skip scan - mirrors getSongsPage()'s
+        filters, and is shared by the list and its count so the pager can never
+        size itself for a different list than the one on screen.
+
+        Joins are added only when a filter needs them, so an unfiltered page
+        stays the plain plays scan it was."""
+        joins = ""
+        where = ""
+        if trackId is not None:
+            where += " AND p.track_id = ?"
+            params.append(trackId)
+        if trackIds is not None:
+            if trackIds:
+                placeholders = ",".join("?" for _ in trackIds)
+                where += f" AND p.track_id IN ({placeholders})"
+                params += trackIds
+            else:
+                where += " AND 0"   #< explicit empty set matches nothing
+        if artistId is not None:
+            where += (" AND EXISTS (SELECT 1 FROM track_artists ta2"
+                      " WHERE ta2.track_id = p.track_id AND ta2.artist_id = ?)")
+            params.append(artistId)
+        if albumId is not None or searchQuery or fullPlaysOnly:
+            joins += " JOIN tracks t ON t.id = p.track_id"
+        if albumId is not None:
+            where += " AND t.album_id = ?"
+            params.append(albumId)
+        if searchQuery:
+            joins += " LEFT JOIN albums al ON al.id = t.album_id"
+            where += """ AND (
+                t.name LIKE ? ESCAPE '\\'
+                OR al.name LIKE ? ESCAPE '\\'
+                OR EXISTS (
+                    SELECT 1 FROM track_artists ta3 JOIN artists ar3 ON ar3.id = ta3.artist_id
+                    WHERE ta3.track_id = p.track_id AND ar3.name LIKE ? ESCAPE '\\'
+                )
+            )"""
+            params += [self._likePattern(searchQuery)] * 3
+        if fullPlaysOnly:
+            where += self._fullPlayOrSkipClause(params)
+        return joins, where
+
+    def _skippedArtistFilters(self, params: list, artistId: str | None, searchQuery: str | None,
+                               artistIds: list[str] | None, fullPlaysOnly: bool) -> tuple[str, str]:
+        """(joins, WHERE) for the per-artist skip scan - see
+        _skippedTrackFilters. Assumes track_artists ta and artists ar are
+        already joined; only tracks is conditional."""
+        joins = ""
+        where = ""
+        if artistId is not None:
+            where += " AND ta.artist_id = ?"
+            params.append(artistId)
+        if artistIds is not None:
+            if artistIds:
+                placeholders = ",".join("?" for _ in artistIds)
+                where += f" AND ta.artist_id IN ({placeholders})"
+                params += artistIds
+            else:
+                where += " AND 0"   #< explicit empty set matches nothing
+        if searchQuery:
+            # Name is the only field Top Artists' search ever matched - see
+            # getArtistAggregates. It selects WHICH artists appear and never
+            # changes one's own totals, so it's the same before or after the
+            # GROUP BY.
+            where += " AND ar.name LIKE ? ESCAPE '\\'"
+            params.append(self._likePattern(searchQuery))
+        if fullPlaysOnly:
+            joins += " JOIN tracks t ON t.id = p.track_id"
+            where += self._fullPlayOrSkipClause(params)
+        return joins, where
+
+    def _skippedAlbumFilters(self, params: list, albumId: str | None, searchQuery: str | None,
+                              albumIds: list[str] | None, fullPlaysOnly: bool) -> str:
+        """WHERE for the per-album skip scan - see _skippedTrackFilters. Both
+        tracks t and albums al are already joined here, so nothing conditional
+        is needed."""
+        where = ""
+        if albumId is not None:
+            where += " AND al.id = ?"
+            params.append(albumId)
+        if albumIds is not None:
+            if albumIds:
+                placeholders = ",".join("?" for _ in albumIds)
+                where += f" AND al.id IN ({placeholders})"
+                params += albumIds
+            else:
+                where += " AND 0"   #< explicit empty set matches nothing
+        if searchQuery:
+            # The artist check spans every track on the album rather than the
+            # current row's own - see getAlbumsPage() on why.
+            where += """ AND (
+                al.name LIKE ? ESCAPE '\\'
+                OR EXISTS (
+                    SELECT 1 FROM tracks t2
+                    JOIN track_artists ta2 ON ta2.track_id = t2.id
+                    JOIN artists ar2 ON ar2.id = ta2.artist_id
+                    WHERE t2.album_id = al.id AND ar2.name LIKE ? ESCAPE '\\'
+                )
+            )"""
+            params += [self._likePattern(searchQuery)] * 2
+        if fullPlaysOnly:
+            where += self._fullPlayOrSkipClause(params)
+        return where
 
     def getMostSkippedTracks(self, username: str, startTs: float | None = None,
                               endTs: float | None = None, limit: int = 10, offset: int = 0,
-                              priorWeight: int = SKIP_RATE_PRIOR_WEIGHT) -> list[dict]:
+                              priorWeight: int = SKIP_RATE_PRIOR_WEIGHT,
+                              trackId: str | None = None, artistId: str | None = None,
+                              albumId: str | None = None, searchQuery: str | None = None,
+                              trackIds: list[str] | None = None,
+                              fullPlaysOnly: bool = False) -> list[dict]:
         """Tracks this user skips, ranked by shrunk skip rate (see
         _shrunkSkipRateSql), highest first.
 
@@ -1209,26 +1351,31 @@ class PlayQueries:
         is_skip=0 is left alone. A card can't tell which sort produced it, so
         anything getSongsPage returns has to be here too or the row renders
         with blanks. first_listened_at falls back to the first ENCOUNTER for a
-        track that was only ever skipped."""
+        track that was only ever skipped.
+
+        The filter params mirror getSongsPage()'s and mean the same things
+        there - see _skippedTrackFilters."""
         params: list = []
-        libCte = self._libraryRateCte(username, params, startTs, endTs)
+        libCte = self._libraryRateCte(username, params, startTs, endTs, fullPlaysOnly)
         params.append(username)
-        rangeClause = self._dateRangeClause(params, startTs, endTs, column="played_at")
+        rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
+        joins, filterClause = self._skippedTrackFilters(
+            params, trackId, artistId, albumId, searchQuery, trackIds, fullPlaysOnly)
         params += [priorWeight, priorWeight, limit, offset]
         rows = self._conn().execute(
             f"""
             WITH {libCte},
             agg AS (
-                SELECT track_id,
-                       SUM(CASE WHEN is_skip = 1 THEN 1 ELSE 0 END) AS skips,
-                       SUM(CASE WHEN is_skip = 0 THEN 1 ELSE 0 END) AS plays,
+                SELECT p.track_id AS track_id,
+                       SUM(CASE WHEN p.is_skip = 1 THEN 1 ELSE 0 END) AS skips,
+                       SUM(CASE WHEN p.is_skip = 0 THEN 1 ELSE 0 END) AS plays,
                        COUNT(*) AS encounters,
-                       COALESCE(SUM(CASE WHEN is_skip = 0 THEN time_played ELSE 0 END), 0) AS total_time_listened,
-                       COALESCE(MIN(CASE WHEN is_skip = 0 THEN played_at END), MIN(played_at)) AS first_listened_at,
-                       COALESCE(MAX(CASE WHEN is_skip = 0 THEN played_at END), MAX(played_at)) AS last_played_at
-                FROM plays
-                WHERE username = ?{rangeClause}
-                GROUP BY track_id
+                       COALESCE(SUM(CASE WHEN p.is_skip = 0 THEN p.time_played ELSE 0 END), 0) AS total_time_listened,
+                       COALESCE(MIN(CASE WHEN p.is_skip = 0 THEN p.played_at END), MIN(p.played_at)) AS first_listened_at,
+                       COALESCE(MAX(CASE WHEN p.is_skip = 0 THEN p.played_at END), MAX(p.played_at)) AS last_played_at
+                FROM plays p{joins}
+                WHERE p.username = ?{rangeClause}{filterClause}
+                GROUP BY p.track_id
                 HAVING skips > 0
             )
             SELECT * FROM agg
@@ -1240,20 +1387,23 @@ class PlayQueries:
         return [dict(row) for row in rows]
 
     def getSkippedTracksCount(self, username: str, startTs: float | None = None,
-                               endTs: float | None = None) -> int:
+                               endTs: float | None = None, searchQuery: str | None = None,
+                               trackIds: list[str] | None = None, fullPlaysOnly: bool = False) -> int:
         """How many tracks appear in a skip-ranked list - the paging counterpart
-        to getMostSkippedTracks. Every track with at least one skip qualifies:
-        low-volume rows are tempered by the ranking rather than excluded, so the
-        count and the pages always agree."""
+        to getMostSkippedTracks, filtered identically. Every track with at least
+        one skip qualifies: low-volume rows are tempered by the ranking rather
+        than excluded, so the count and the pages always agree."""
         params: list = [username]
-        rangeClause = self._dateRangeClause(params, startTs, endTs, column="played_at")
+        rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
+        joins, filterClause = self._skippedTrackFilters(
+            params, None, None, None, searchQuery, trackIds, fullPlaysOnly)
         row = self._conn().execute(
             f"""
             SELECT COUNT(*) AS c FROM (
-                SELECT track_id FROM plays
-                WHERE username = ?{rangeClause}
-                GROUP BY track_id
-                HAVING SUM(CASE WHEN is_skip = 1 THEN 1 ELSE 0 END) > 0
+                SELECT p.track_id FROM plays p{joins}
+                WHERE p.username = ?{rangeClause}{filterClause}
+                GROUP BY p.track_id
+                HAVING SUM(CASE WHEN p.is_skip = 1 THEN 1 ELSE 0 END) > 0
             )
             """,
             params,
@@ -1262,18 +1412,26 @@ class PlayQueries:
 
     def getMostSkippedArtists(self, username: str, startTs: float | None = None,
                                endTs: float | None = None, limit: int = 10, offset: int = 0,
-                               priorWeight: int = SKIP_RATE_PRIOR_WEIGHT) -> list[dict]:
+                               priorWeight: int = SKIP_RATE_PRIOR_WEIGHT,
+                               artistId: str | None = None, searchQuery: str | None = None,
+                               artistIds: list[str] | None = None,
+                               fullPlaysOnly: bool = False) -> list[dict]:
         """Artists this user skips, ranked like getMostSkippedTracks. A play of
         a track with several credited artists counts toward each of them,
         matching how every other artist aggregate here treats collaborations.
 
         Returns getArtistAggregates()' row shape plus skips/encounters: the
         Top Artists page renders these through the same card, so a key missing
-        here is a field that silently blanks out under one sort."""
+        here is a field that silently blanks out under one sort.
+
+        The filter params mirror getArtistAggregates()' - see
+        _skippedArtistFilters."""
         params: list = []
-        libCte = self._libraryRateCte(username, params, startTs, endTs)
+        libCte = self._libraryRateCte(username, params, startTs, endTs, fullPlaysOnly)
         params.append(username)
         rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
+        joins, filterClause = self._skippedArtistFilters(
+            params, artistId, searchQuery, artistIds, fullPlaysOnly)
         params += [priorWeight, priorWeight, limit, offset]
         rows = self._conn().execute(
             f"""
@@ -1288,8 +1446,8 @@ class PlayQueries:
                        COUNT(DISTINCT p.track_id) AS unique_song_count
                 FROM plays p
                 JOIN track_artists ta ON ta.track_id = p.track_id
-                JOIN artists ar ON ar.id = ta.artist_id
-                WHERE p.username = ?{rangeClause}
+                JOIN artists ar ON ar.id = ta.artist_id{joins}
+                WHERE p.username = ?{rangeClause}{filterClause}
                 GROUP BY ar.id
                 HAVING skips > 0
             )
@@ -1310,17 +1468,25 @@ class PlayQueries:
         ]
 
     def getSkippedArtistsCount(self, username: str, startTs: float | None = None,
-                                endTs: float | None = None) -> int:
-        """Paging counterpart to getMostSkippedArtists."""
+                                endTs: float | None = None, searchQuery: str | None = None,
+                                artistIds: list[str] | None = None, fullPlaysOnly: bool = False) -> int:
+        """Paging counterpart to getMostSkippedArtists, filtered identically.
+        Joins artists for the same reason the list does - a credit pointing at
+        an artist row that isn't there would otherwise be counted but never
+        shown."""
         params: list = [username]
         rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
+        joins, filterClause = self._skippedArtistFilters(
+            params, None, searchQuery, artistIds, fullPlaysOnly)
         row = self._conn().execute(
             f"""
             SELECT COUNT(*) AS c FROM (
-                SELECT ta.artist_id
-                FROM plays p JOIN track_artists ta ON ta.track_id = p.track_id
-                WHERE p.username = ?{rangeClause}
-                GROUP BY ta.artist_id
+                SELECT ar.id
+                FROM plays p
+                JOIN track_artists ta ON ta.track_id = p.track_id
+                JOIN artists ar ON ar.id = ta.artist_id{joins}
+                WHERE p.username = ?{rangeClause}{filterClause}
+                GROUP BY ar.id
                 HAVING SUM(CASE WHEN p.is_skip = 1 THEN 1 ELSE 0 END) > 0
             )
             """,
@@ -1330,7 +1496,10 @@ class PlayQueries:
 
     def getMostSkippedAlbums(self, username: str, startTs: float | None = None,
                               endTs: float | None = None, limit: int = 10, offset: int = 0,
-                              priorWeight: int = SKIP_RATE_PRIOR_WEIGHT) -> list[dict]:
+                              priorWeight: int = SKIP_RATE_PRIOR_WEIGHT,
+                              albumId: str | None = None, searchQuery: str | None = None,
+                              albumIds: list[str] | None = None,
+                              fullPlaysOnly: bool = False) -> list[dict]:
         """Albums this user skips, aggregated across every track on them.
 
         Ranking by rate matters most here: an album's raw skip COUNT scales
@@ -1340,11 +1509,13 @@ class PlayQueries:
 
         Returns getAlbumsPage()' row shape plus skips/encounters - including
         the second artists lookup, which the shared card renders whatever the
-        sort is."""
+        sort is. The filter params mirror getAlbumsPage()' - see
+        _skippedAlbumFilters."""
         params: list = []
-        libCte = self._libraryRateCte(username, params, startTs, endTs)
+        libCte = self._libraryRateCte(username, params, startTs, endTs, fullPlaysOnly)
         params.append(username)
         rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
+        filterClause = self._skippedAlbumFilters(params, albumId, searchQuery, albumIds, fullPlaysOnly)
         params += [priorWeight, priorWeight, limit, offset]
         rows = self._conn().execute(
             f"""
@@ -1362,7 +1533,7 @@ class PlayQueries:
                 FROM plays p
                 JOIN tracks t ON t.id = p.track_id
                 JOIN albums al ON al.id = t.album_id
-                WHERE p.username = ?{rangeClause}
+                WHERE p.username = ?{rangeClause}{filterClause}
                 GROUP BY al.id
                 HAVING skips > 0
             )
@@ -1382,17 +1553,24 @@ class PlayQueries:
         ]
 
     def getSkippedAlbumsCount(self, username: str, startTs: float | None = None,
-                               endTs: float | None = None) -> int:
-        """Paging counterpart to getMostSkippedAlbums."""
+                               endTs: float | None = None, searchQuery: str | None = None,
+                               albumIds: list[str] | None = None, fullPlaysOnly: bool = False) -> int:
+        """Paging counterpart to getMostSkippedAlbums, filtered identically.
+        Joins albums for the same reason the list does - grouping on
+        tracks.album_id alone also counts the album-less tracks the list can
+        never show, which is one phantom page at the end."""
         params: list = [username]
         rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
+        filterClause = self._skippedAlbumFilters(params, None, searchQuery, albumIds, fullPlaysOnly)
         row = self._conn().execute(
             f"""
             SELECT COUNT(*) AS c FROM (
-                SELECT t.album_id
-                FROM plays p JOIN tracks t ON t.id = p.track_id
-                WHERE p.username = ?{rangeClause}
-                GROUP BY t.album_id
+                SELECT al.id
+                FROM plays p
+                JOIN tracks t ON t.id = p.track_id
+                JOIN albums al ON al.id = t.album_id
+                WHERE p.username = ?{rangeClause}{filterClause}
+                GROUP BY al.id
                 HAVING SUM(CASE WHEN p.is_skip = 1 THEN 1 ELSE 0 END) > 0
             )
             """,

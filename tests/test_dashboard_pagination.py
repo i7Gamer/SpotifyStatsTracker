@@ -394,7 +394,8 @@ class TestTopSongsPagination(_ListRouteTestBase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(db.getSongsCount.call_count, 2)
         db.getSongsCount.assert_any_call(None, None, fullPlaysOnly=True)
-        db.getSongsCount.assert_any_call(None, None, searchQuery="foo", trackIds=None, fullPlaysOnly=True)
+        db.getSongsCount.assert_any_call(None, None, searchQuery="foo", trackIds=None, fullPlaysOnly=True,
+                                          sortBy=appModule.DEFAULT_SORT_BY)
         kwargs = db.getTopSongs.call_args.kwargs
         self.assertEqual(kwargs["limit"], appModule.PAGE_SIZE)
         self.assertEqual(kwargs["offset"], 0)
@@ -447,6 +448,44 @@ class TestTopSongsPagination(_ListRouteTestBase):
         kwargs = db.getTopSongs.call_args.kwargs
         self.assertEqual(kwargs["offset"], 2 * appModule.PAGE_SIZE)   #< last page (3) of 120/50
         self.assertIn(b"Page 3 of 3", resp.data)
+
+
+class TestSkipSortKeepsTheOtherFilters(_ListRouteTestBase):
+    """The sort control shares its card with the search box, the tag dropdown
+    and the full-plays checkbox. Picking Most Skipped changes the order of the
+    page, not which page it is - and the count has to be narrowed the same way
+    as the list, or the pager offers pages the list can't fill."""
+
+    def test_the_search_reaches_both_the_list_and_the_count(self):
+        dash = self._makeApp()
+        db = self._makeDb(entryCount=0)
+
+        self._getTopSongs(dash, db, query="?sortBy=skips&q=foo")
+
+        self.assertEqual(db.getTopSongs.call_args.kwargs["searchQuery"], "foo")
+        self.assertEqual(db.getSongsCount.call_args.kwargs["searchQuery"], "foo")
+        self.assertEqual(db.getSongsCount.call_args.kwargs["sortBy"], "skips")
+
+    def test_the_full_plays_checkbox_reaches_both(self):
+        dash = self._makeApp()
+        db = self._makeDb(entryCount=0)
+
+        self._getTopSongs(dash, db, query="?sortBy=skips&fullOnly=0")
+
+        self.assertIs(db.getTopSongs.call_args.kwargs["fullPlaysOnly"], False)
+        self.assertIs(db.getSongsCount.call_args.kwargs["fullPlaysOnly"], False)
+
+    def test_artists_and_albums_narrow_their_counts_too(self):
+        dash = self._makeApp()
+        db = self._makeDb(entryCount=0)
+        db.getAlbumsCount.return_value = 0
+        db.getTopAlbums.return_value = []
+
+        self._getTopArtists(dash, db, query="?sortBy=skips&q=foo")
+        self._getPath(dash, db, "/top-albums?sortBy=skips&q=foo&ajax=true")
+
+        self.assertEqual(db.getArtistsCount.call_args.kwargs["searchQuery"], "foo")
+        self.assertEqual(db.getAlbumsCount.call_args.kwargs["searchQuery"], "foo")
 
 
 class TestPageParamParsing(_ListRouteTestBase):

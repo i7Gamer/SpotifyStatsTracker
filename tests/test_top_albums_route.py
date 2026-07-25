@@ -94,7 +94,8 @@ class TestTopAlbumsRoute(AppTestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(db.getAlbumsCount.call_count, 2)
         db.getAlbumsCount.assert_any_call(None, None, fullPlaysOnly=True)
-        db.getAlbumsCount.assert_any_call(None, None, searchQuery="foo", albumIds=None, fullPlaysOnly=True)
+        db.getAlbumsCount.assert_any_call(None, None, searchQuery="foo", albumIds=None, fullPlaysOnly=True,
+                                           sortBy=appModule.DEFAULT_SORT_BY)
         kwargs = db.getTopAlbums.call_args.kwargs
         self.assertEqual(kwargs["limit"], appModule.PAGE_SIZE)
         self.assertEqual(kwargs["offset"], 0)

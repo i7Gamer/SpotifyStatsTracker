@@ -984,18 +984,22 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
     #  instead of the normal aggregates.
     SKIP_SORT_BY = "skips"
 
-    def _skipSortedPage(self, fetch, startDate, endDate, limit, offset):
+    def _skipSortedPage(self, fetch, startDate, endDate, limit, offset, **filters):
         """Shared plumbing for a skip-ranked Top page.
 
         Same ranking as the Charts lists - skip rate, shrunk toward the
         library average - so "most skipped" means the same thing everywhere.
         Ranking by raw count would just list whatever is played most, and for
         albums that is literally longest-first, since a longer record offers
-        more chances to skip."""
+        more chances to skip.
+
+        `filters` are the page's search/tag/entity/full-plays narrowing, passed
+        straight through: this is a different sort of the same page, not a
+        different page, so every filter beside the sort control still applies."""
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
         return fetch(self.user, startTs, endTs,
                      limit=(limit if limit is not None else -1), offset=offset,
-                     priorWeight=SKIP_RATE_PRIOR_WEIGHT)
+                     priorWeight=SKIP_RATE_PRIOR_WEIGHT, **filters)
 
     @staticmethod
     def _withSkipRate(row: dict) -> dict:
@@ -1094,7 +1098,10 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
             # is_skip partial index measured a 2x regression there), and
             # rewriting its aggregates as conditional sums to carry skips would
             # put that at risk for a number most of its callers never ask for.
-            rows = self._skipSortedPage(self.repo.getMostSkippedTracks, startDate, endDate, limit, offset)
+            rows = self._skipSortedPage(
+                self.repo.getMostSkippedTracks, startDate, endDate, limit, offset,
+                trackId=trackId, artistId=artistId, albumId=albumId, searchQuery=searchQuery,
+                trackIds=trackIds, fullPlaysOnly=fullPlaysOnly)
             tracksById = self.repo.getTracksByIds([row["track_id"] for row in rows])
             # Spelled out rather than spreading the aggregate row: the card
             # reads camelCase, and a bare spread would also leak the query's
@@ -1146,7 +1153,8 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         `fullPlaysOnly` mirrors the same param on getSongsStats()."""
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
         if sortBy == self.SKIP_SORT_BY:
-            return self.repo.getSkippedTracksCount(self.user, startTs, endTs)
+            return self.repo.getSkippedTracksCount(self.user, startTs, endTs, searchQuery=searchQuery,
+                                                    trackIds=trackIds, fullPlaysOnly=fullPlaysOnly)
         return self.repo.getSongsCount(self.user, startTs, endTs, searchQuery=searchQuery, trackIds=trackIds,
                                         fullPlaysOnly=fullPlaysOnly)
 
@@ -1429,7 +1437,9 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         name or artist(s) match. `fullPlaysOnly` mirrors getSongsStats()'s
         param of the same name."""
         if sortBy == self.SKIP_SORT_BY:
-            rows = self._skipSortedPage(self.repo.getMostSkippedAlbums, startDate, endDate, limit, offset)
+            rows = self._skipSortedPage(
+                self.repo.getMostSkippedAlbums, startDate, endDate, limit, offset,
+                albumId=albumId, searchQuery=searchQuery, albumIds=albumIds, fullPlaysOnly=fullPlaysOnly)
             return [self._withSkipRate(row) for row in rows]
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
         return self.repo.getAlbumsPage(self.user, startTs, endTs, sortBy=sortBy, limit=limit, offset=offset,
@@ -1461,7 +1471,8 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         `fullPlaysOnly` mirrors the same param on getAlbumsStats()."""
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
         if sortBy == self.SKIP_SORT_BY:
-            return self.repo.getSkippedAlbumsCount(self.user, startTs, endTs)
+            return self.repo.getSkippedAlbumsCount(self.user, startTs, endTs, searchQuery=searchQuery,
+                                                    albumIds=albumIds, fullPlaysOnly=fullPlaysOnly)
         return self.repo.getAlbumsCount(self.user, startTs, endTs, searchQuery=searchQuery, albumIds=albumIds,
                                          fullPlaysOnly=fullPlaysOnly)
 
@@ -1486,7 +1497,9 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         `searchQuery` narrows to artists whose name matches. `fullPlaysOnly`
         mirrors getSongsStats()'s param of the same name."""
         if sortBy == self.SKIP_SORT_BY:
-            rows = self._skipSortedPage(self.repo.getMostSkippedArtists, startDate, endDate, limit, offset)
+            rows = self._skipSortedPage(
+                self.repo.getMostSkippedArtists, startDate, endDate, limit, offset,
+                artistId=artistId, searchQuery=searchQuery, artistIds=artistIds, fullPlaysOnly=fullPlaysOnly)
             return [self._withSkipRate(row) for row in rows]
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
         return self.repo.getArtistAggregates(self.user, startTs, endTs, artistId=artistId, sortBy=sortBy,
@@ -1522,7 +1535,8 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         getArtistsStats()."""
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
         if sortBy == self.SKIP_SORT_BY:
-            return self.repo.getSkippedArtistsCount(self.user, startTs, endTs)
+            return self.repo.getSkippedArtistsCount(self.user, startTs, endTs, searchQuery=searchQuery,
+                                                     artistIds=artistIds, fullPlaysOnly=fullPlaysOnly)
         return self.repo.getArtistsCount(self.user, startTs, endTs, searchQuery=searchQuery, artistIds=artistIds,
                                           fullPlaysOnly=fullPlaysOnly)
 
