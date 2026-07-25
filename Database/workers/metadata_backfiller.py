@@ -12,43 +12,19 @@ class MetadataBackfillMixin:
     def getSpotifyApiWorkerStatus(self) -> dict:
         """Same shape as getLastfmWorkerStatus, for the Spotify API metadata
         backfiller worker thread."""
-        has_creds = bool(self.repo.getUserSpotifyCredentials(self.user))
-        running = hasattr(self, "backfiller_thread") and self.backfiller_thread is not None and self.backfiller_thread.is_alive()
-        return {
-            "configured": has_creds,
-            "running": running,
-            **self._getWorkerTelemetry("spotify_api"),
-        }
+        return self._workerStatus(
+            "backfiller_thread", "spotify_api",
+            configured=bool(self.repo.getUserSpotifyCredentials(self.user)))
 
     def startMetadataBackfiller(self) -> None:
         """Start the background thread to fill in missing album metadata."""
-        if not hasattr(self, "backfiller_thread") or not hasattr(self, "backfiller_stop_event"):
-            return
-        if self.backfiller_thread is not None and self.backfiller_thread.is_alive():
-            return
-        # A FRESH event per run (see startLastfmGenreBackfiller): stop() joins
-        # with a timeout, so a thread blocked in a slow fetch can outlive it -
-        # clearing a shared event here would revive that zombie alongside the
-        # new thread. With its own still-set event it exits on its own instead.
-        stop_event = _dbmod.threading.Event()
-        self.backfiller_stop_event = stop_event
-        self.backfiller_thread = _dbmod.threading.Thread(
-            target=self._metadataBackfillLoop,
-            args=(stop_event,),
-            name=f"metadata-backfiller-{self.user}",
-            daemon=True
-        )
-        self.backfiller_thread.start()
+        self._startPeriodicWorker("backfiller_thread", "backfiller_stop_event",
+                                   self._metadataBackfillLoop,
+                                   f"metadata-backfiller-{self.user}", logPrefix="MetadataBackfiller")
 
     def stopMetadataBackfiller(self) -> None:
         """Signal and wait for the background backfiller thread to stop."""
-        if not hasattr(self, "backfiller_thread") or not hasattr(self, "backfiller_stop_event"):
-            return
-        if self.backfiller_thread is None:
-            return
-        self.backfiller_stop_event.set()
-        self.backfiller_thread.join(timeout=3)
-        self.backfiller_thread = None
+        self._stopPeriodicWorker("backfiller_thread", "backfiller_stop_event")
 
     @staticmethod
     def _normalizeBackfillArtists(artistsRaw: list) -> list[dict]:

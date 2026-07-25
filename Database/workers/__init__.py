@@ -5,6 +5,7 @@ Last.fm backfillers) recomposed here so `from Database.workers import
 WorkerLifecycleMixin` (used by Database/database.py) is unchanged.
 """
 from Database.workers.listener import ListenerMixin
+from Database.workers.periodic import PeriodicWorkerMixin
 from Database.workers.wrapped_worker import WrappedWorkerMixin
 from Database.workers.metadata_backfiller import MetadataBackfillMixin
 from Database.workers.lastfm_backfillers import LastfmBackfillMixin
@@ -13,5 +14,8 @@ from Database.workers.telemetry import WorkerTelemetryMixin
 
 class WorkerLifecycleMixin(ListenerMixin, WrappedWorkerMixin,
                            MetadataBackfillMixin, LastfmBackfillMixin,
-                           WorkerTelemetryMixin):
-    """Composition of the background-worker sub-mixins, mixed into Database."""
+                           PeriodicWorkerMixin, WorkerTelemetryMixin):
+    """Composition of the background-worker sub-mixins, mixed into Database.
+
+    PeriodicWorkerMixin sits behind the workers that use it: they define the
+    named start/stop pairs, it defines the one lifecycle underneath."""

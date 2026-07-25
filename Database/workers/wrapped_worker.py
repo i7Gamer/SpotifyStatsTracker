@@ -10,41 +10,19 @@ class WrappedWorkerMixin:
     """The periodic Wrapped recalculation worker and its per-year cache invalidation."""
 
     def getWrappedWorkerStatus(self) -> dict:
-        """Same shape as getLastfmWorkerStatus, for the asynchronous Wrapped stats calculator."""
-        running = hasattr(self, "wrapped_thread") and self.wrapped_thread is not None and self.wrapped_thread.is_alive()
-        return {
-            "configured": True,
-            "running": running,
-            **self._getWorkerTelemetry("wrapped"),
-        }
+        """Same shape as getLastfmWorkerStatus, for the asynchronous Wrapped
+        stats calculator. Always "configured" - it needs no credentials."""
+        return self._workerStatus("wrapped_thread", "wrapped", configured=True)
 
     def startWrappedCalculationsWorker(self) -> None:
         """Start the background thread to precalculate wrapped data."""
-        if not hasattr(self, "wrapped_thread") or not hasattr(self, "wrapped_stop_event"):
-            return
-        if self.wrapped_thread is not None and self.wrapped_thread.is_alive():
-            return
-        # A FRESH event per run (see startLastfmGenreBackfiller): never revive
-        # a thread that outlived stop()'s join timeout by clearing its event.
-        stop_event = _dbmod.threading.Event()
-        self.wrapped_stop_event = stop_event
-        self.wrapped_thread = _dbmod.threading.Thread(
-            target=self._wrappedCalculationsLoop,
-            args=(stop_event,),
-            name=f"wrapped-worker-{self.user}",
-            daemon=True
-        )
-        self.wrapped_thread.start()
+        self._startPeriodicWorker("wrapped_thread", "wrapped_stop_event",
+                                   self._wrappedCalculationsLoop,
+                                   f"wrapped-worker-{self.user}", logPrefix="WrappedWorker")
 
     def stopWrappedCalculationsWorker(self) -> None:
         """Signal and wait for the background wrapped worker thread to stop."""
-        if not hasattr(self, "wrapped_thread") or not hasattr(self, "wrapped_stop_event"):
-            return
-        if self.wrapped_thread is None:
-            return
-        self.wrapped_stop_event.set()
-        self.wrapped_thread.join(timeout=3)
-        self.wrapped_thread = None
+        self._stopPeriodicWorker("wrapped_thread", "wrapped_stop_event")
 
     def _wrappedCalculationsLoop(self, stop_event: threading.Event | None = None) -> None:
         """Periodically checks if plays have changed and recalculates wrapped stats.

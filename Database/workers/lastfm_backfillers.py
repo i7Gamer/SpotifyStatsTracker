@@ -4,12 +4,12 @@ import Database.database as _dbmod  # noqa: F401 - module-global names
 # (LastfmClient, requests, Importer, logger, time, Path, ...) are reached through
 # the database module so the suite's patch("Database.database.X") targets keep
 # working after this relocation.
+from Database.workers.periodic import WORKER_STOP_JOIN_TIMEOUT_SECONDS
 
 
-# Bound on how long a stop waits for a worker to notice its event. A worker
-# blocked in a slow Last.fm call outlives this; it exits at its next loop check
-# (its event stays set - see _startLastfmWorker's fresh-event note).
-LASTFM_WORKER_STOP_JOIN_TIMEOUT_SECONDS = 3
+# Kept as an alias: the bound now lives with the shared lifecycle, but tests
+# and callers still import it from here.
+LASTFM_WORKER_STOP_JOIN_TIMEOUT_SECONDS = WORKER_STOP_JOIN_TIMEOUT_SECONDS
 
 
 class LastfmBackfillMixin:
@@ -19,28 +19,14 @@ class LastfmBackfillMixin:
                             logPrefix: str) -> None:
         """Shared start for the three Last.fm workers.
 
-        The "already running?" check and the thread/event assignment that
-        follows it run under _lastfm_worker_lock as one step. They used to be
-        separate, and the profile page's key save starts all three from a
-        request thread: two concurrent saves (a double-clicked form) could both
-        see no live thread, and the second's assignments would overwrite the
-        first's - orphaning a running thread on an Event no reference survives
-        for, so no stop path could ever reach it.
-
-        Each run gets a FRESH event, passed into the loop: stop joins with a
-        timeout, so a worker blocked in a slow HTTP call can outlive it.
-        Reusing (and clearing) the old event would revive that zombie thread
-        alongside the new one; with its own still-set event it exits at its
-        next loop check instead."""
-        if not all(hasattr(self, attr) for attr in (threadAttr, eventAttr, "_lastfm_worker_lock")):
-            return
-        import sqlite3
-        with self._lastfm_worker_lock:
-            existing = getattr(self, threadAttr)
-            if existing is not None and existing.is_alive():
-                return
+        Adds one thing to the standard lifecycle (PeriodicWorkerMixin, which
+        owns the locking and the fresh-event-per-run rules): a keyless user
+        gets no idle thread, so the API-key lookup vetoes the start."""
+        def hasApiKey() -> bool:
+            import sqlite3
             try:
-                hasApiKey = bool(self.repo.getUserLastfmApiKey(self.user))
+                #< keyless users get no idle thread
+                return bool(self.repo.getUserLastfmApiKey(self.user))
             except sqlite3.OperationalError as e:
                 # A Database constructed against a pre-1.19 file outside the
                 # app's migration path (standalone script/REPL) has no
@@ -48,54 +34,31 @@ class LastfmBackfillMixin:
                 # crashing __init__; it starts once the migration has run.
                 _dbmod.logger.warning("[%s-%s] Not starting - schema not migrated yet: %s",
                                        logPrefix, self.user, e)
-                return
-            if not hasApiKey:
-                return   #< keyless users get no idle thread
-            stop_event = _dbmod.threading.Event()
-            setattr(self, eventAttr, stop_event)
-            thread = _dbmod.threading.Thread(target=loop, args=(stop_event,), name=threadName, daemon=True)
-            setattr(self, threadAttr, thread)
-            thread.start()
+                return False
+
+        self._startPeriodicWorker(threadAttr, eventAttr, loop, threadName,
+                                   precondition=hasApiKey, logPrefix=logPrefix)
 
     def _stopLastfmWorker(self, threadAttr: str, eventAttr: str) -> None:
-        """Shared stop: signal under the lock so a concurrent start can't
-        interleave, then join outside it (a join can block for seconds, and
-        nothing else needs to wait on that)."""
-        if not all(hasattr(self, attr) for attr in (threadAttr, eventAttr, "_lastfm_worker_lock")):
-            return
-        with self._lastfm_worker_lock:
-            thread = getattr(self, threadAttr)
-            if thread is None:
-                return
-            getattr(self, eventAttr).set()
-            setattr(self, threadAttr, None)
-        thread.join(timeout=LASTFM_WORKER_STOP_JOIN_TIMEOUT_SECONDS)
+        """Shared stop for the three Last.fm workers - see PeriodicWorkerMixin."""
+        self._stopPeriodicWorker(threadAttr, eventAttr)
+
+    def _lastfmWorkerStatus(self, threadAttr: str, telemetryKey: str) -> dict:
+        """All three read the same key, so "configured" means the same thing."""
+        return self._workerStatus(threadAttr, telemetryKey,
+                                   configured=bool(self.repo.getUserLastfmApiKey(self.user)))
 
     def getLastfmWorkerStatus(self) -> dict:
-        return {
-            "configured": bool(self.repo.getUserLastfmApiKey(self.user)),
-            "running": self.lastfm_thread is not None and self.lastfm_thread.is_alive(),
-            **self._getWorkerTelemetry("lastfm_genre"),
-        }
+        return self._lastfmWorkerStatus("lastfm_thread", "lastfm_genre")
 
     def getLastfmBiographyWorkerStatus(self) -> dict:
-        """Same shape as getLastfmWorkerStatus, for the artist biography
-        backfiller - used by the Overview "Biography Backfill Progress"
-        widget's Artist row."""
-        return {
-            "configured": bool(self.repo.getUserLastfmApiKey(self.user)),
-            "running": self.lastfm_biography_thread is not None and self.lastfm_biography_thread.is_alive(),
-            **self._getWorkerTelemetry("lastfm_artist_bio"),
-        }
+        """The artist biography backfiller - used by the Overview "Biography
+        Backfill Progress" widget's Artist row."""
+        return self._lastfmWorkerStatus("lastfm_biography_thread", "lastfm_artist_bio")
 
     def getLastfmAlbumBiographyWorkerStatus(self) -> dict:
-        """Same shape as getLastfmWorkerStatus, for the album biography
-        backfiller - used by the Overview widget's Album row."""
-        return {
-            "configured": bool(self.repo.getUserLastfmApiKey(self.user)),
-            "running": self.lastfm_album_biography_thread is not None and self.lastfm_album_biography_thread.is_alive(),
-            **self._getWorkerTelemetry("lastfm_album_bio"),
-        }
+        """The album biography backfiller - the Overview widget's Album row."""
+        return self._lastfmWorkerStatus("lastfm_album_biography_thread", "lastfm_album_bio")
 
     def startLastfmGenreBackfiller(self) -> None:
         """Start the background thread that backfills genres from Last.fm.
