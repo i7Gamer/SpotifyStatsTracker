@@ -89,6 +89,28 @@
       </div>
     </div>
 
+    {# "Completion vs Skips" above answers how OFTEN you skip; these answer
+       WHAT you skip. Ranked by skip rate above a minimum-encounters floor, so
+       a track skipped once and never played can't sit at the top with a 100%
+       rate - see Repository.getMostSkippedTracks. Both lists are hidden when
+       nothing clears the floor, which is the normal state for a new library. #}
+    <div class="chart-section-grid" id="mostSkippedGrid"
+         style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 2rem; margin-top: 2rem;">
+      <div class="chart-section">
+        <h2>Most Skipped Songs</h2>
+        <div class="chart-canvas-wrap">
+          <canvas id="mostSkippedSongsChart" role="img" aria-label="Songs you skip most often, by share of encounters"></canvas>
+        </div>
+      </div>
+
+      <div class="chart-section">
+        <h2>Most Skipped Artists</h2>
+        <div class="chart-canvas-wrap">
+          <canvas id="mostSkippedArtistsChart" role="img" aria-label="Artists you skip most often, by share of encounters"></canvas>
+        </div>
+      </div>
+    </div>
+
     <div class="chart-section" style="margin-top: 2rem;">
       <h2>Release Era Distribution</h2>
       <div class="chart-canvas-wrap" style="height: 300px;">

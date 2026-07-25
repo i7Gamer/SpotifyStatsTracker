@@ -26,6 +26,8 @@ def register(app, dashboard):
     PAGE_SIZE = appmod.PAGE_SIZE
     CHART_ARTIST_TREND_TOP_N = appmod.CHART_ARTIST_TREND_TOP_N
     CHART_TOP_GENRES_LIMIT = appmod.CHART_TOP_GENRES_LIMIT
+    CHART_MOST_SKIPPED_LIMIT = appmod.CHART_MOST_SKIPPED_LIMIT
+    SKIP_STATS_MIN_ENCOUNTERS = appmod.SKIP_STATS_MIN_ENCOUNTERS
 
     def overviewPage():
         from datetime import datetime
@@ -667,6 +669,14 @@ def register(app, dashboard):
         # instead (see renderCategoryBarChart in charts.js).
         decadeDistribution = list(db.getReleaseDecadeDistribution(startDate=startDate, endDate=endDate).items())
         completionStats = db.getCompletionStats(startDate=startDate, endDate=endDate)
+        # "How often do I skip" is the donut above; these answer "what do I
+        # skip". Ranked by rate above a floor - see Repository.getMostSkippedTracks.
+        mostSkippedSongs = db.getMostSkippedSongs(
+            startDate=startDate, endDate=endDate,
+            limit=CHART_MOST_SKIPPED_LIMIT, minEncounters=SKIP_STATS_MIN_ENCOUNTERS)
+        mostSkippedArtists = db.getMostSkippedArtists(
+            startDate=startDate, endDate=endDate,
+            limit=CHART_MOST_SKIPPED_LIMIT, minEncounters=SKIP_STATS_MIN_ENCOUNTERS)
 
         genreCoverage = emptyGenreCoverage()
         genreUnlocked = False
@@ -701,6 +711,8 @@ def register(app, dashboard):
             explicitRatio=explicitRatio,
             decadeDistribution=decadeDistribution,
             completionStats=completionStats,
+            mostSkippedSongs=mostSkippedSongs,
+            mostSkippedArtists=mostSkippedArtists,
             genreDistribution=genreDistribution,
             genreUnlocked=genreUnlocked,
             genreSectionHtml=genreSectionHtml,
@@ -840,6 +852,7 @@ def register(app, dashboard):
             db.getHourOfDayHeatmap(trackId=track_id, bucketRows=bucketRows))
 
         entity_tags = db.repo.getTagsForEntity(username, "track", track_id)
+        skipStats = db.getSkipStats(trackId=track_id)
 
         return render_template(
             "song_detail.html",
@@ -849,6 +862,7 @@ def register(app, dashboard):
             timeSeries=timeSeries,
             heatmap=heatmap,
             entity_tags=entity_tags,
+            skipStats=skipStats,
             success=request.args.get("success"),
             error=request.args.get("error"),
             **listCtx,
@@ -910,6 +924,7 @@ def register(app, dashboard):
         artist["bio"] = db.getArtistBio(artist_id) if dashboard.repo.isArtistBioEnabled() else None
 
         entity_tags = db.repo.getTagsForEntity(username, "artist", artist_id)
+        skipStats = db.getSkipStats(artistId=artist_id)
 
         return render_template(
             "artist_detail.html",
@@ -920,6 +935,7 @@ def register(app, dashboard):
             groupBy=groupByParam,
             timeSeries=timeSeries,
             entity_tags=entity_tags,
+            skipStats=skipStats,
             success=request.args.get("success"),
             error=request.args.get("error"),
             view=dashboard._getDetailViewParam(),
@@ -987,6 +1003,7 @@ def register(app, dashboard):
         album["bio"] = db.getAlbumBio(album_id) if dashboard.repo.isAlbumBioEnabled() else None
 
         entity_tags = db.repo.getTagsForEntity(username, "album", album_id)
+        skipStats = db.getSkipStats(albumId=album_id)
 
         return render_template(
             "album_detail.html",
@@ -997,6 +1014,7 @@ def register(app, dashboard):
             username=username,
             timeSeries=timeSeries,
             entity_tags=entity_tags,
+            skipStats=skipStats,
             success=request.args.get("success"),
             error=request.args.get("error"),
             view=dashboard._getDetailViewParam(),

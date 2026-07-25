@@ -91,6 +91,8 @@
       explicitRatio: data.explicitRatio,
       decadeDistribution: data.decadeDistribution,
       completionStats: data.completionStats,
+      mostSkippedSongs: data.mostSkippedSongs,
+      mostSkippedArtists: data.mostSkippedArtists,
       genreDistribution: data.genreDistribution,
       groupBy: data.groupBy,
       interval: data.interval

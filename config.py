@@ -12,6 +12,13 @@ LOGIN_CACHE_TTL_SECONDS = 180  #< seconds to cache isListenerLoggedIn result per
 MEDIA_FOLDER_SIZE_CACHE_TTL_SECONDS = 300  #< seconds to cache the shared media cache folder's on-disk size (getGlobalDatabaseStats) - recomputing it walks/subprocess-scans the whole directory
 CHART_ARTIST_TREND_TOP_N = 5   #< how many top artists are plotted on the trend line chart
 CHART_TOP_GENRES_LIMIT = 10    #< bars on the Charts page's Top Genres chart
+CHART_MOST_SKIPPED_LIMIT = 10  #< rows in the Charts page's most-skipped songs/artists lists
+# Minimum encounters (plays + skips) before a song/artist can appear in the
+# most-skipped lists. Skip RATE is meaningless below this: something skipped
+# once and never played is a 100% skip rate, and without a floor the lists fill
+# with one-off noise instead of things you actually keep skipping. Same idea as
+# TREND_FORGOTTEN_MIN_HISTORICAL_PLAYS.
+SKIP_STATS_MIN_ENCOUNTERS = 5
 WRAPPED_TOP_GENRES_LIMIT = 5   #< genres listed on the Wrapped genre card
 COMPARE_TOP_GENRES_LIMIT = 10  #< per-side genres (and shared genres) shown on Compare
 COMPARE_GENRE_POOL_SIZE = 50   #< per-side genre pool the shared-genre intersection is computed over

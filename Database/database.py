@@ -958,6 +958,63 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         """Batched getGenresForArtist - one query, no inherited toggle."""
         return self.repo.getArtistGenresForIds(artistIds)
 
+    def getSkipStats(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None,
+                      trackId: str | None = None, artistId: str | None = None,
+                      albumId: str | None = None) -> dict:
+        """{plays, skips, skipPercent} for one entity (or everything) in range.
+
+        skipPercent is the share of ENCOUNTERS that were skips, not of plays:
+        "you skipped this 3 times out of 10 times it came up" is the question a
+        detail page is answering. 0 encounters -> 0.0 rather than a division
+        error."""
+        startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
+        stats = self.repo.getSkipStats(self.user, startTs, endTs,
+                                        trackId=trackId, artistId=artistId, albumId=albumId)
+        encounters = stats["plays"] + stats["skips"]
+        return {
+            **stats,
+            "skipPercent": round(stats["skips"] / encounters * 100, 1) if encounters else 0.0,
+        }
+
+    def getMostSkippedSongs(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None,
+                             limit: int = 10, minEncounters: int = 5) -> list[dict]:
+        """Highest skip-rate songs, hydrated with track metadata - the Charts
+        page's "Most skipped" list. Ranked by rate above a minimum-encounters
+        floor (see Repository.getMostSkippedTracks)."""
+        rows = self.repo.getMostSkippedTracks(self.user, *self._dateRangeToTimestamps(startDate, endDate),
+                                               limit=limit, minEncounters=minEncounters)
+        if not rows:
+            return []
+        tracksById = self.repo.getTracksByIds([row["track_id"] for row in rows])
+        skipped = []
+        for row in rows:
+            track = tracksById.get(row["track_id"])
+            if track is None:
+                continue   #< catalog row vanished (a purge between the two queries)
+            skipped.append({
+                **track,
+                "skips": row["skips"],
+                "plays": row["plays"],
+                "encounters": row["encounters"],
+                "skipPercent": round(row["skips"] / row["encounters"] * 100, 1),
+            })
+        return skipped
+
+    def getMostSkippedArtists(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None,
+                               limit: int = 10, minEncounters: int = 5) -> list[dict]:
+        """Highest skip-rate artists - see getMostSkippedSongs. Names come from
+        the aggregate itself, so no second hydration query is needed."""
+        rows = self.repo.getMostSkippedArtists(self.user, *self._dateRangeToTimestamps(startDate, endDate),
+                                                limit=limit, minEncounters=minEncounters)
+        return [{
+            "id": row["artist_id"],
+            "name": row["name"],
+            "skips": row["skips"],
+            "plays": row["plays"],
+            "encounters": row["encounters"],
+            "skipPercent": round(row["skips"] / row["encounters"] * 100, 1),
+        } for row in rows]
+
     def getCompletionStats(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> dict:
         """Skip/complete/partial breakdown for the Charts pie chart and the
         Compare page's Skip Rate. A skip is any play with is_skip=1 - the single

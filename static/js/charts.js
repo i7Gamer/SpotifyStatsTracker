@@ -419,6 +419,36 @@
       { emptyMessage: 'No genre data for the plays in this period.', valueSuffix: ' plays' });
   }
 
+  // Most-skipped songs/artists: the bar length is the skip RATE (share of
+  // encounters), and the raw count rides in the label so both numbers are
+  // visible - rate alone hides how much listening it is based on, count alone
+  // just resurfaces whatever is played most.
+  function skipPairs(entries) {
+    return (entries || []).map(function (entry) {
+      var count = entry.skips + (entry.skips === 1 ? ' skip' : ' skips');
+      return [entry.name + ' · ' + count, entry.skipPercent];
+    });
+  }
+
+  function renderMostSkippedCharts() {
+    var data = window.__chartData || {};
+    var songs = skipPairs(data.mostSkippedSongs);
+    var artists = skipPairs(data.mostSkippedArtists);
+
+    // Nothing clears the minimum-encounters floor yet (a new library, or a
+    // narrow range) - hide the whole row rather than show two empty frames.
+    var grid = document.getElementById('mostSkippedGrid');
+    if (grid) {
+      grid.style.display = (songs.length || artists.length) ? 'grid' : 'none';
+    }
+    if (!songs.length && !artists.length) return;
+
+    CU.renderHorizontalBars(document.getElementById('mostSkippedSongsChart'), songs,
+      { emptyMessage: 'No song skipped often enough to rank yet.', valueSuffix: '% of plays skipped' });
+    CU.renderHorizontalBars(document.getElementById('mostSkippedArtistsChart'), artists,
+      { emptyMessage: 'No artist skipped often enough to rank yet.', valueSuffix: '% of plays skipped' });
+  }
+
   function renderAllCharts() {
     CU.refreshPalette();
     renderTimeSeriesChart();
@@ -428,6 +458,7 @@
     renderExplicitChart();
     renderCompletionChart();
     renderDecadeChart();
+    renderMostSkippedCharts();
     renderGenreChart();
   }
 

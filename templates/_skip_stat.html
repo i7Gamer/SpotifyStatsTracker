@@ -1,0 +1,22 @@
+{# Skip summary for one entity, shared by the song/artist/album detail pages.
+
+   Deliberately NOT part of _track_card.html: that card renders everywhere
+   (top lists, Wrapped, Compare, the public share page) where these numbers
+   aren't loaded, so putting it there would mean either a per-card query or a
+   silently blank line on most surfaces.
+
+   Both numbers are shown rather than just the percentage - a rate hides how
+   much listening it rests on, which is exactly why the Charts lists need a
+   minimum-encounters floor. `skipStats` is {plays, skips, skipPercent} from
+   Database.getSkipStats; absent or fully empty renders nothing. #}
+{% if skipStats and (skipStats.plays or skipStats.skips) %}
+<p class="detail-skip-stat">
+  {% if skipStats.skips %}
+    <span class="detail-skip-count">{{ skipStats.skips }} skip{{ 's' if skipStats.skips != 1 else '' }}</span>
+    &middot; {{ skipStats.plays }} play{{ 's' if skipStats.plays != 1 else '' }}
+    &middot; {{ skipStats.skipPercent }}% skipped
+  {% else %}
+    Never skipped &middot; {{ skipStats.plays }} play{{ 's' if skipStats.plays != 1 else '' }}
+  {% endif %}
+</p>
+{% endif %}

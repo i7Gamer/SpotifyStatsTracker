@@ -3404,6 +3404,19 @@ html.theme-red {
   }
 }
 
+/* Skip summary under the hero card on the song/artist/album detail pages
+   (templates/_skip_stat.html). Sits between the card and the charts as a quiet
+   one-liner - it's context, not a headline. */
+.detail-skip-stat {
+  margin: 10px 2px 0;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.detail-skip-count {
+  color: var(--text);
+}
+
 /* Friends-listening strip: what the people you share with are playing right
    now, between the live cards row and the trends row.
 

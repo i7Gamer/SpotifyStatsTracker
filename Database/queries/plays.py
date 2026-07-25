@@ -1134,6 +1134,98 @@ class PlayQueries:
             "availability_reason": row["availability_reason"],
         }
 
+    def getSkipStats(self, username: str, startTs: float | None = None, endTs: float | None = None,
+                      trackId: str | None = None, artistId: str | None = None,
+                      albumId: str | None = None) -> dict:
+        """{plays, skips} for one entity (or the whole library) in range.
+
+        Counts both halves in a single pass so the two numbers always come from
+        the same scan - the detail pages show them as a pair ("12 skips, 54
+        plays") and a plays figure from one query with a skips figure from
+        another could disagree across a concurrent write.
+
+        Deliberately NOT folded into getSongsPage: that query has is_skip=0 in
+        its WHERE, which is load-bearing for its plan (an is_skip partial index
+        was already measured to regress it 2x), and rewriting its aggregates as
+        conditional sums to carry skips would put that at risk for a number
+        most of its callers don't want."""
+        conn = self._conn()
+        params: list = [username]
+        rangeClause = self._dateRangeClause(params, startTs, endTs, column="played_at")
+        extraClauses = self._itemFilterClauses(params, trackId, artistId, albumId)
+        row = conn.execute(
+            f"""
+            SELECT
+                COALESCE(SUM(CASE WHEN is_skip = 0 THEN 1 ELSE 0 END), 0) AS plays,
+                COALESCE(SUM(CASE WHEN is_skip = 1 THEN 1 ELSE 0 END), 0) AS skips
+            FROM plays
+            WHERE username = ?{rangeClause}{extraClauses}
+            """,
+            params,
+        ).fetchone()
+        return {"plays": row["plays"], "skips": row["skips"]}
+
+    def getMostSkippedTracks(self, username: str, startTs: float | None = None,
+                              endTs: float | None = None, limit: int = 10,
+                              minEncounters: int = 5) -> list[dict]:
+        """Tracks with the highest skip RATE, not the highest skip count.
+
+        Ranking by raw count just resurfaces whatever is most played; rate
+        answers "what do I almost always skip". That only means anything above a
+        floor though - one skip and no plays is a 100% rate - so
+        `minEncounters` (plays + skips) gates entry, and the count rides along
+        so the UI can show both."""
+        conn = self._conn()
+        params: list = [username]
+        rangeClause = self._dateRangeClause(params, startTs, endTs, column="played_at")
+        params += [minEncounters, limit]
+        rows = conn.execute(
+            f"""
+            SELECT track_id,
+                   SUM(CASE WHEN is_skip = 1 THEN 1 ELSE 0 END) AS skips,
+                   SUM(CASE WHEN is_skip = 0 THEN 1 ELSE 0 END) AS plays,
+                   COUNT(*) AS encounters
+            FROM plays
+            WHERE username = ?{rangeClause}
+            GROUP BY track_id
+            HAVING encounters >= ? AND skips > 0
+            ORDER BY (CAST(skips AS REAL) / encounters) DESC, skips DESC, track_id ASC
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def getMostSkippedArtists(self, username: str, startTs: float | None = None,
+                               endTs: float | None = None, limit: int = 10,
+                               minEncounters: int = 5) -> list[dict]:
+        """Artists with the highest skip rate - see getMostSkippedTracks for why
+        rate rather than count, and why the floor exists. A play of a track with
+        several credited artists counts toward each of them, matching how every
+        other artist aggregate here treats collaborations."""
+        conn = self._conn()
+        params: list = [username]
+        rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
+        params += [minEncounters, limit]
+        rows = conn.execute(
+            f"""
+            SELECT ar.id AS artist_id, ar.name AS name,
+                   SUM(CASE WHEN p.is_skip = 1 THEN 1 ELSE 0 END) AS skips,
+                   SUM(CASE WHEN p.is_skip = 0 THEN 1 ELSE 0 END) AS plays,
+                   COUNT(*) AS encounters
+            FROM plays p
+            JOIN track_artists ta ON ta.track_id = p.track_id
+            JOIN artists ar ON ar.id = ta.artist_id
+            WHERE p.username = ?{rangeClause}
+            GROUP BY ar.id
+            HAVING encounters >= ? AND skips > 0
+            ORDER BY (CAST(skips AS REAL) / encounters) DESC, skips DESC, ar.id ASC
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
+        return [dict(row) for row in rows]
+
     def _itemFilterClauses(self, params: list, trackId: str | None, artistId: str | None,
                             albumId: str | None) -> str:
         """The shared track/artist/album narrowing used by the play-scan

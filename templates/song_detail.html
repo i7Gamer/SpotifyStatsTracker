@@ -50,6 +50,8 @@
   </section>
   {% set playNowButton = false %}
 
+  {% include '_skip_stat.html' %}
+
   {% if song.get('url') %}
   <section id="play-embed" class="play-embed" hidden>
     <div id="play-embed-slot"></div>

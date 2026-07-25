@@ -273,6 +273,10 @@ class TestChartsAutoBuckets(AppTestCase):
         db.getExplicitRatio.return_value = {"explicit": 0, "clean": 0}
         db.getReleaseDecadeDistribution.return_value = {}
         db.getCompletionStats.return_value = {"skips": 0, "completes": 0, "partials": 0}
+        #< the Charts payload carries these too; an unstubbed MagicMock is not
+        #  JSON-serializable, so jsonify would 500 the whole route
+        db.getMostSkippedSongs.return_value = []
+        db.getMostSkippedArtists.return_value = []
         db.repo.getUserSettings.return_value = {"default_dashboard_window": "month", "timezone": None}
         return db
 
