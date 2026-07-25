@@ -536,7 +536,7 @@ def patch_spotapi_user() -> bool:
                     resp.status_code,
                     resp.error.string if hasattr(resp.error, "string") else None,
                     str(resp.response)[:RESPONSE_SNIPPET_MAX_LEN] if resp.response is not None else None,
-                    _safeResponseHeaders(getattr(resp.raw, "headers", None))
+                    _safeResponseHeaders(getattr(getattr(resp, "raw", None), "headers", None))
                 )
                 raise UserError("Could not get user info", error=resp.error.string)
 
@@ -546,7 +546,7 @@ def patch_spotapi_user() -> bool:
                     resp.status_code,
                     type(resp.response).__name__,
                     str(resp.response)[:RESPONSE_SNIPPET_MAX_LEN] if resp.response is not None else None,
-                    _safeResponseHeaders(getattr(resp.raw, "headers", None))
+                    _safeResponseHeaders(getattr(getattr(resp, "raw", None), "headers", None))
                 )
                 raise UserError(
                     f"Invalid JSON (Status: {resp.status_code}, Type: {type(resp.response).__name__}, "
@@ -566,7 +566,7 @@ def patch_spotapi_user() -> bool:
                     resp.status_code,
                     resp.error.string if hasattr(resp.error, "string") else None,
                     str(resp.response)[:RESPONSE_SNIPPET_MAX_LEN] if resp.response is not None else None,
-                    _safeResponseHeaders(getattr(resp.raw, "headers", None))
+                    _safeResponseHeaders(getattr(getattr(resp, "raw", None), "headers", None))
                 )
                 raise UserError("Could not get user plan info", error=resp.error.string)
 
@@ -576,7 +576,7 @@ def patch_spotapi_user() -> bool:
                     resp.status_code,
                     type(resp.response).__name__,
                     str(resp.response)[:RESPONSE_SNIPPET_MAX_LEN] if resp.response is not None else None,
-                    _safeResponseHeaders(getattr(resp.raw, "headers", None))
+                    _safeResponseHeaders(getattr(getattr(resp, "raw", None), "headers", None))
                 )
                 raise UserError(
                     f"Invalid JSON (Status: {resp.status_code}, Type: {type(resp.response).__name__}, "

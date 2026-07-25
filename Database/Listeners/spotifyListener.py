@@ -333,7 +333,7 @@ class Listener:
                 # listener.py) report this the same way it already does for
                 # contaminationDetected below.
                 self.loginFailed = True
-                logger.warning("Spotify login failed for user %s - stored cookies may be invalid or expired", email)
+                logger.warning("Spotify login failed for user %s - stored cookies may be invalid or expired", self.logUser)
 
         # Validate that this Spotify client is properly authenticated for the expected user
         try:
@@ -378,7 +378,7 @@ class Listener:
                                             #  different dict shape) so the two polling loops never
                                             #  stomp on each other's cache
         self._lastChangeTime = time.monotonic()
-        self._warnedMissingTrackUris = collections.OrderedDict()  #< dedupes _checkConnectStateForMissedTracks
+        self._settledMissingTrackUris = collections.OrderedDict()  #< dedupes _checkConnectStateForMissedTracks
                                                                    #  warnings; OrderedDict (not set) so
                                                                    #  eviction can target the oldest entry
         self._last_user_validation_time = None  #< None means "never validated yet" - forces an immediate first check
@@ -530,12 +530,32 @@ class Listener:
         try:
             recorded = self.get_recorded_track_ids(trackIds)
         except Exception as e:
+            # Deliberately not settled: a lookup that errored answered nothing,
+            # and suppressing on it would turn a transient database problem into
+            # permanent silence about a possibly-missed play.
             logger.debug("Missed-track database cross-check failed, warning anyway: %s", parseError(e))
             return missingUris
-        return [
-            uri for uri in missingUris
-            if uri.removeprefix(SPOTIFY_TRACK_URI_PREFIX) not in recorded
-        ]
+
+        stillMissing = []
+        for uri in missingUris:
+            if uri.removeprefix(SPOTIFY_TRACK_URI_PREFIX) in recorded:
+                # Settle it: the poll loop runs this every second, and a track
+                # the database vouches for is a permanent miss against the
+                # in-memory cache - re-asking would mean ~1,800 queries per
+                # listener per idle cycle, per user, all answering the same way.
+                self._settleMissingUri(uri)
+            else:
+                stillMissing.append(uri)
+        return stillMissing
+
+    def _settleMissingUri(self, uri: str) -> None:
+        """Record that `uri` needs no further attention this listener's lifetime -
+        either it was warned about, or the database confirmed it was recorded
+        after all. FIFO-bounded; an OrderedDict (not a set) so eviction can
+        target the oldest entry rather than an arbitrary one."""
+        if len(self._settledMissingTrackUris) >= CONNECT_STATE_MISSED_TRACK_CACHE_SIZE:
+            self._settledMissingTrackUris.popitem(last=False)
+        self._settledMissingTrackUris[uri] = None
 
     def _checkConnectStateForMissedTracks(self) -> None:
         """Diagnostic cross-check: warn if Spotify's Connect-state queue
@@ -562,7 +582,7 @@ class Listener:
             missingUris = []
             for uri in recentUris:
                 trackId = uri.removeprefix(SPOTIFY_TRACK_URI_PREFIX)
-                if trackId in recordedTrackIds or uri in self._warnedMissingTrackUris:
+                if trackId in recordedTrackIds or uri in self._settledMissingTrackUris:
                     continue
                 missingUris.append(uri)
 
@@ -577,11 +597,7 @@ class Listener:
                     ", ".join(missingUris),
                 )
                 for uri in missingUris:
-                    if len(self._warnedMissingTrackUris) >= CONNECT_STATE_MISSED_TRACK_CACHE_SIZE:
-                        self._warnedMissingTrackUris.popitem(last=False)  #< evict oldest (FIFO) -
-                                                                           #  set.pop() would remove
-                                                                           #  an arbitrary element
-                    self._warnedMissingTrackUris[uri] = None
+                    self._settleMissingUri(uri)
         except Exception as e:
             logger.debug("Connect-state cross-check failed (non-fatal): %s", parseError(e))
 

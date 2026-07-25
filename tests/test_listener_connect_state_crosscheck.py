@@ -30,7 +30,7 @@ def _bareListener(recentlyPlayed=None, get_recorded_track_ids=None):
     listener.run = True
     listener.sp = MagicMock()
     listener.recentlyPlayed_Z1 = recentlyPlayed if recentlyPlayed is not None else []
-    listener._warnedMissingTrackUris = collections.OrderedDict()
+    listener._settledMissingTrackUris = collections.OrderedDict()
     listener.get_recorded_track_ids = get_recorded_track_ids
     return listener
 
@@ -123,7 +123,7 @@ class TestCheckConnectStateForMissedTracks(unittest.TestCase):
         # assertNoLogs isn't available on all supported Python versions - assert
         # directly on the dedup cache instead, which only grows on a warning.
         listener._checkConnectStateForMissedTracks()
-        self.assertEqual(len(listener._warnedMissingTrackUris), 0)
+        self.assertEqual(len(listener._settledMissingTrackUris), 0)
 
     def test_does_not_warn_twice_for_the_same_missing_track(self):
         listener = _bareListener(recentlyPlayed=[])
@@ -174,7 +174,7 @@ class TestCheckConnectStateForMissedTracks(unittest.TestCase):
 
         listener._checkConnectStateForMissedTracks()  # must not raise
 
-        self.assertEqual(len(listener._warnedMissingTrackUris), 0)
+        self.assertEqual(len(listener._settledMissingTrackUris), 0)
 
     def test_no_connect_state_available_does_not_raise(self):
         listener = _bareListener(recentlyPlayed=[])
@@ -197,14 +197,61 @@ class TestCheckConnectStateForMissedTracks(unittest.TestCase):
 
     def test_dedup_cache_is_bounded(self):
         listener = _bareListener(recentlyPlayed=[])
-        listener._warnedMissingTrackUris = collections.OrderedDict.fromkeys(
+        listener._settledMissingTrackUris = collections.OrderedDict.fromkeys(
             f"spotify:track:{i}" for i in range(CONNECT_STATE_MISSED_TRACK_CACHE_SIZE)
         )
         _withConnectState(listener, [{"uri": "spotify:track:new"}])
 
         listener._checkConnectStateForMissedTracks()
 
-        self.assertLessEqual(len(listener._warnedMissingTrackUris), CONNECT_STATE_MISSED_TRACK_CACHE_SIZE)
+        self.assertLessEqual(len(listener._settledMissingTrackUris), CONNECT_STATE_MISSED_TRACK_CACHE_SIZE)
+
+    def test_db_is_asked_about_a_given_track_only_once(self):
+        """The poll loop calls this every second (_stop_event.wait(1)), and a
+        track the DB vouches for is a permanent miss against the in-memory
+        cache - so without recording the answer it would be re-queried ~1,800
+        times per listener per idle cycle, per user. The database answer has to
+        settle the URI just as a warning does."""
+        recorded = MagicMock(return_value={"bbb"})
+        listener = _bareListener(recentlyPlayed=[], get_recorded_track_ids=recorded)
+        _withConnectState(listener, [{"uri": "spotify:track:bbb"}])
+
+        for _ in range(5):
+            listener._checkConnectStateForMissedTracks()
+
+        recorded.assert_called_once_with(["bbb"])
+
+    def test_settled_cache_stays_bounded_for_db_confirmed_tracks(self):
+        """Same FIFO bound as the warned entries - a long queue of
+        already-recorded tracks must not grow the cache without limit."""
+        recorded = MagicMock(side_effect=lambda ids: set(ids))
+        listener = _bareListener(recentlyPlayed=[], get_recorded_track_ids=recorded)
+        _withConnectState(listener, [
+            {"uri": f"spotify:track:{i}"} for i in range(CONNECT_STATE_MISSED_TRACK_CACHE_SIZE + 10)
+        ])
+
+        listener._checkConnectStateForMissedTracks()
+
+        self.assertLessEqual(len(listener._settledMissingTrackUris),
+                             CONNECT_STATE_MISSED_TRACK_CACHE_SIZE)
+
+    def test_failed_db_lookup_does_not_settle_the_uri(self):
+        """A lookup that errored answered nothing - suppressing on it would
+        turn a transient database problem into permanent silence about a
+        possibly-missed play."""
+        recorded = MagicMock(side_effect=RuntimeError("db gone"))
+        listener = _bareListener(recentlyPlayed=[], get_recorded_track_ids=recorded)
+        _withConnectState(listener, [{"uri": "spotify:track:bbb"}])
+
+        with self.assertLogs("Database.Listeners.spotifyListener", level="WARNING"):
+            listener._checkConnectStateForMissedTracks()
+        # the warning itself settles it, but the lookup must be retried for a
+        # track that is still unaccounted for after the cache is cleared
+        listener._settledMissingTrackUris.clear()
+        with self.assertLogs("Database.Listeners.spotifyListener", level="WARNING"):
+            listener._checkConnectStateForMissedTracks()
+
+        self.assertEqual(recorded.call_count, 2)
 
     def test_db_confirms_the_track_really_is_missing_before_warning(self):
         """The in-memory recentlyPlayed_Z1 cache only covers the CURRENT listener
@@ -217,10 +264,12 @@ class TestCheckConnectStateForMissedTracks(unittest.TestCase):
         listener = _bareListener(recentlyPlayed=[], get_recorded_track_ids=recorded)
         _withConnectState(listener, [{"uri": "spotify:track:bbb"}])
 
-        listener._checkConnectStateForMissedTracks()
+        with self.assertNoLogs("Database.Listeners.spotifyListener", level="WARNING"):
+            listener._checkConnectStateForMissedTracks()
 
         recorded.assert_called_once_with(["bbb"])
-        self.assertEqual(len(listener._warnedMissingTrackUris), 0)
+        #< settled, not forgotten - see test_db_is_asked_about_a_given_track_only_once
+        self.assertIn("spotify:track:bbb", listener._settledMissingTrackUris)
 
     def test_db_lookup_still_warns_for_a_genuinely_absent_play(self):
         recorded = MagicMock(return_value=set())
@@ -282,17 +331,17 @@ class TestCheckConnectStateForMissedTracks(unittest.TestCase):
         cache must specifically evict the OLDEST entry (FIFO), so recently
         warned-about tracks are never forgotten ahead of older ones."""
         listener = _bareListener(recentlyPlayed=[])
-        listener._warnedMissingTrackUris = collections.OrderedDict.fromkeys(
+        listener._settledMissingTrackUris = collections.OrderedDict.fromkeys(
             f"spotify:track:{i}" for i in range(CONNECT_STATE_MISSED_TRACK_CACHE_SIZE)
         )
         _withConnectState(listener, [{"uri": "spotify:track:new"}])
 
         listener._checkConnectStateForMissedTracks()
 
-        self.assertNotIn("spotify:track:0", listener._warnedMissingTrackUris)
+        self.assertNotIn("spotify:track:0", listener._settledMissingTrackUris)
         for i in range(1, CONNECT_STATE_MISSED_TRACK_CACHE_SIZE):
-            self.assertIn(f"spotify:track:{i}", listener._warnedMissingTrackUris)
-        self.assertIn("spotify:track:new", listener._warnedMissingTrackUris)
+            self.assertIn(f"spotify:track:{i}", listener._settledMissingTrackUris)
+        self.assertIn("spotify:track:new", listener._settledMissingTrackUris)
 
 
 if __name__ == "__main__":
