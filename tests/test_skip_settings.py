@@ -88,6 +88,41 @@ class ComputeIsSkipTestCase(DatabaseTestCase):
         # Stored threshold is the default (5s), but an explicit override wins.
         self.assertEqual(db.repo.computeIsSkip(10_000, threshold=(SKIP_MODE_SECONDS, 30)), 1)
 
+    def test_seconds_mode_never_calls_a_completed_track_a_skip(self):
+        """A track SHORTER than the threshold can never reach it, so a duration-
+        blind comparison marks every play of it - including one that ran to the
+        last millisecond - as a skip, permanently and by construction. Real
+        case: "From Zero (Intro)" is 22.174s, and under a 30s threshold all 17
+        of its complete plays (Spotify's own export: reason_end=trackdone,
+        skipped=false) were reported as a 100% skip rate."""
+        db = self._makeDb({}, [])
+        db.repo.setSkipThreshold(SKIP_MODE_SECONDS, 30)
+        INTRO_MS = 22_174
+
+        self.assertEqual(db.repo.computeIsSkip(INTRO_MS, durationMs=INTRO_MS), 0)
+        # Partial listens of that same short track are still skips.
+        self.assertEqual(db.repo.computeIsSkip(INTRO_MS - 1, durationMs=INTRO_MS), 1)
+        self.assertEqual(db.repo.computeIsSkip(1_000, durationMs=INTRO_MS), 1)
+
+    def test_seconds_mode_unaffected_when_track_is_longer_than_threshold(self):
+        """The duration cap must only ever loosen the rule for short tracks -
+        a normal-length track keeps the plain threshold semantics."""
+        db = self._makeDb({}, [])
+        db.repo.setSkipThreshold(SKIP_MODE_SECONDS, 30)
+
+        self.assertEqual(db.repo.computeIsSkip(29_999, durationMs=200_000), 1)
+        self.assertEqual(db.repo.computeIsSkip(30_000, durationMs=200_000), 0)
+
+    def test_seconds_mode_without_duration_keeps_the_plain_threshold(self):
+        """Duration is optional at most call sites, so an unknown duration must
+        not change the existing answer."""
+        db = self._makeDb({}, [])
+        db.repo.setSkipThreshold(SKIP_MODE_SECONDS, 30)
+
+        self.assertEqual(db.repo.computeIsSkip(29_999), 1)
+        self.assertEqual(db.repo.computeIsSkip(29_999, durationMs=0), 1)
+        self.assertEqual(db.repo.computeIsSkip(29_999, durationMs=None), 1)
+
 
 class IntSettingTestCase(DatabaseTestCase):
     def test_default_when_unset(self):
@@ -132,6 +167,50 @@ class RecomputeSkipFlagsTestCase(DatabaseTestCase):
         processed = db.repo.recomputeSkipFlags()
         self.assertEqual(processed, 2)
         self.assertEqual(self._skipFlags(db), {"short": 1, "long": 0})
+
+    def test_seconds_mode_keeps_completed_short_tracks_out_of_the_skips(self):
+        """The bulk rewrite has its own SQL, so it needs the same duration cap
+        as computeIsSkip - otherwise raising the threshold above a short track's
+        length silently reclassifies its complete plays as skips. Mirrors the
+        real 22.174s intro that reported a 100% skip rate under a 30s
+        threshold."""
+        INTRO_MS = 22_174
+        tracks = {
+            "intro": {"id": "intro", "name": "Intro", "artists": [], "duration": INTRO_MS},
+            "long": {"id": "long", "name": "Long", "artists": [], "duration": 200_000},
+        }
+        entries = [
+            {"id": "intro", "playedAt": 1000.0, "timePlayed": INTRO_MS},    #< played to the end
+            {"id": "long", "playedAt": 2000.0, "timePlayed": 25_000},       #< 25s of 200s
+        ]
+        db = self._makeDb(tracks, entries)
+        db.repo.setSkipThreshold(SKIP_MODE_SECONDS, 30)
+        db.repo.recomputeSkipFlags()
+
+        # The intro finished, so it is a real play; the long track was abandoned
+        # before 30s, so it stays a skip.
+        self.assertEqual(self._skipFlags(db), {"intro": 0, "long": 1})
+
+    def test_seconds_mode_still_skips_a_partial_play_of_a_short_track(self):
+        INTRO_MS = 22_174
+        tracks = {"intro": {"id": "intro", "name": "Intro", "artists": [], "duration": INTRO_MS}}
+        entries = [{"id": "intro", "playedAt": 1000.0, "timePlayed": 5_000}]
+        db = self._makeDb(tracks, entries)
+        db.repo.setSkipThreshold(SKIP_MODE_SECONDS, 30)
+        db.repo.recomputeSkipFlags()
+
+        self.assertEqual(self._skipFlags(db)["intro"], 1)
+
+    def test_seconds_mode_unknown_duration_keeps_the_plain_threshold(self):
+        """A track with no usable duration must fall back to the raw threshold
+        rather than the COALESCE swallowing the row."""
+        tracks = {"t": {"id": "t", "name": "T", "artists": [], "duration": 0}}
+        entries = [{"id": "t", "playedAt": 1000.0, "timePlayed": 10_000}]
+        db = self._makeDb(tracks, entries)
+        db.repo.setSkipThreshold(SKIP_MODE_SECONDS, 30)
+        db.repo.recomputeSkipFlags()
+
+        self.assertEqual(self._skipFlags(db)["t"], 1)   #< 10s < 30s, duration unknown
 
     def test_percent_mode_reclassifies_with_duration(self):
         tracks = {"t": {"id": "t", "name": "T", "artists": [], "duration": 200_000}}

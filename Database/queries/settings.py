@@ -258,13 +258,23 @@ class SettingQueries:
         """1 if this play counts as a skip under the current (or supplied)
         threshold, else 0. Percent mode needs the track's duration; an unknown
         (<=0/None) duration falls back to the fixed sub-5s db.SKIP_THRESHOLD_MS
-        floor. Pass `threshold` to avoid a per-row settings read in bulk loops."""
+        floor. Pass `threshold` to avoid a per-row settings read in bulk loops.
+
+        Seconds mode caps the threshold at the track's own duration: a track
+        shorter than the threshold can never reach it, so comparing against the
+        raw value marked every play of it a skip - including plays that ran to
+        the last millisecond - with no listening behaviour able to change that.
+        The cap only ever loosens the rule, and only for tracks shorter than
+        the threshold; anything longer keeps the plain comparison."""
         mode, value = threshold if threshold is not None else self.getSkipThreshold()
         if mode == SKIP_MODE_PERCENT:
             if durationMs and durationMs > 0:
                 return 1 if timePlayed < durationMs * value / 100 else 0
             return 1 if timePlayed < db.SKIP_THRESHOLD_MS else 0
-        return 1 if timePlayed < value * 1000 else 0
+        thresholdMs = value * 1000
+        if durationMs and durationMs > 0:
+            thresholdMs = min(thresholdMs, durationMs)
+        return 1 if timePlayed < thresholdMs else 0
 
     def recomputeSkipFlags(self) -> int:
         """Rewrite plays.is_skip for every row under the current threshold - run
@@ -289,9 +299,22 @@ class SettingQueries:
                     (value, db.SKIP_THRESHOLD_MS, db.SKIP_THRESHOLD_MS),
                 )
             else:
+                # Same duration cap as computeIsSkip's seconds mode: a track
+                # shorter than the threshold is compared against its own length,
+                # so finishing it is never recorded as a skip. Tracks with an
+                # unknown duration (<=0/missing, or no tracks row) keep the
+                # plain threshold via COALESCE.
                 cur = conn.execute(
-                    "UPDATE plays SET is_skip = CASE WHEN time_played < ? THEN 1 ELSE 0 END",
-                    (value * 1000,),
+                    """
+                    UPDATE plays SET is_skip = CASE WHEN time_played < COALESCE(
+                        (SELECT CASE WHEN t.duration_ms > 0 AND t.duration_ms < ?
+                                     THEN t.duration_ms
+                                     ELSE ? END
+                         FROM tracks t WHERE t.id = plays.track_id),
+                        ?)
+                    THEN 1 ELSE 0 END
+                    """,
+                    (value * 1000, value * 1000, value * 1000),
                 )
             return cur.rowcount
 
