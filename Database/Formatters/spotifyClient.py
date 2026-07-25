@@ -17,8 +17,14 @@ def _fallbackId(kind: str, name: str) -> str:
     ONE catalog row - merging unrelated artists together - and linked out to a
     stranger's Spotify page. Deriving from the name keeps distinct names
     distinct, and the synth_ prefix keeps them recognizable as placeholders
-    the metadata backfiller can replace."""
-    digest = hashlib.sha1(f"{kind}:{name}".encode("utf-8")).hexdigest()[:16]
+    the metadata backfiller can replace.
+
+    usedforsecurity=False: this is a surrogate key, not a security primitive.
+    The flag leaves the digest untouched (the ids below are already persisted)
+    and keeps the call working on FIPS-mode hosts, matching the importer's md5
+    fallbacks in StreamingHistoryImporter."""
+    digest = hashlib.sha1(
+        f"{kind}:{name}".encode("utf-8"), usedforsecurity=False).hexdigest()[:16]
     return f"{SYNTHETIC_ID_PREFIX}{kind}_{digest}"
 
 

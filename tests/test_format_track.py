@@ -13,7 +13,7 @@ for m in ("Database.Formatters.spotifyClient", "Database.utils"):
     if isinstance(sys.modules.get(m), MagicMock):
         del sys.modules[m]
 
-from Database.Formatters.spotifyClient import Client
+from Database.Formatters.spotifyClient import Client, _fallbackId
 
 
 def _rawTrack():
@@ -100,6 +100,38 @@ class TestEmbedPlayInfoDurationCap(unittest.TestCase):
     def test_listener_format_track_still_caps(self):
         result = Client.formatTrack(_rawTrack(), self.PLAYED_AT, self.LONGER_THAN_DURATION_MS)
         self.assertEqual(result["timePlayed"], self.TRACK_DURATION_MS)
+
+
+class TestFallbackIdStability(unittest.TestCase):
+    """_fallbackId's digest is written into the catalog for every id-less
+    entity and referenced afterwards by plays, images and tags, so it is a
+    persisted data format rather than an implementation detail. Pinned here for
+    the same reason as the importer's md5 ids: changing the hashing call must
+    not silently re-key existing rows.
+
+    (sha1 is a deterministic id here, never a security primitive - hence
+    usedforsecurity=False, which does not alter the digest.)
+    """
+
+    def test_artist_fallback_id_digest_is_unchanged(self):
+        self.assertEqual(_fallbackId("artist", "Gone Artist"),
+                         "synth_artist_cd44d36b32346965")
+
+    def test_album_fallback_id_digest_is_unchanged(self):
+        self.assertEqual(_fallbackId("album", "Gone Album"),
+                         "synth_album_a71bfd913edca3fd")
+
+    def test_kind_is_part_of_the_digest(self):
+        """An artist and an album sharing a name must not collapse into one id."""
+        self.assertNotEqual(_fallbackId("artist", "Same Name"),
+                            _fallbackId("album", "Same Name"))
+
+    def test_distinct_names_stay_distinct(self):
+        self.assertNotEqual(_fallbackId("artist", "One"), _fallbackId("artist", "Two"))
+
+    def test_same_input_is_stable_across_calls(self):
+        self.assertEqual(_fallbackId("artist", "Gone Artist"),
+                         _fallbackId("artist", "Gone Artist"))
 
 
 if __name__ == "__main__":
