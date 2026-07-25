@@ -97,6 +97,54 @@ class TestLoginNextRedirect(AppTestCase):
         self.assertEqual(resp.status_code, 302)
         self.assertNotIn("evil.example.com", resp.headers["Location"])
 
+    def test_tab_in_next_is_rejected_as_an_open_redirect(self):
+        """The WHATWG URL parser removes every ASCII tab/newline from a URL
+        before resolving it, so "/\\t/evil.example.com" arrives at the browser
+        as "//evil.example.com" - protocol-relative, exactly what the "//"
+        guard exists to stop. Werkzeug only refuses CR/LF in a header value, so
+        a tab is the one control character that survives all the way out."""
+        dash = self._makeApp()
+        with patch.object(dash, '_verifyCookiesMatchEmail', return_value=True), \
+             patch.object(dash, 'get_or_create_user', return_value='alice'), \
+             patch.object(dash, 'get_user_db'), \
+             patch.object(dash.repo, 'setUserCookies'):
+            resp, client = self._postLogin(dash, next_url="/\t/evil.example.com/steal")
+
+        self.assertEqual(resp.status_code, 302)
+        self.assertNotIn("evil.example.com", resp.headers["Location"])
+
+    def test_control_characters_in_next_are_rejected(self):
+        """Anything in the C0/DEL range is meaningless in a legitimate `next`
+        and only ever shows up in normalization-bypass attempts, so the guard
+        rejects the whole class rather than blacklisting tab alone."""
+        dash = self._makeApp()
+        for raw in ("/\x00/evil.example.com", "/\x1f/evil.example.com",
+                    "/\x7f/evil.example.com", "/ok\tpath"):
+            with self.subTest(raw=raw):
+                with patch.object(dash, '_verifyCookiesMatchEmail', return_value=True), \
+                     patch.object(dash, 'get_or_create_user', return_value='alice'), \
+                     patch.object(dash, 'get_user_db'), \
+                     patch.object(dash.repo, 'setUserCookies'):
+                    resp, client = self._postLogin(dash, next_url=raw)
+
+                self.assertEqual(resp.status_code, 302)
+                self.assertTrue(resp.headers["Location"].endswith("/"))
+
+    def test_ordinary_next_paths_still_survive_the_control_char_guard(self):
+        """The control-character guard must not sweep up the query strings and
+        encoded values real `next` targets carry."""
+        dash = self._makeApp()
+        for raw in ("/charts?interval=week", "/top-songs", "/artist/abc%20def"):
+            with self.subTest(raw=raw):
+                with patch.object(dash, '_verifyCookiesMatchEmail', return_value=True), \
+                     patch.object(dash, 'get_or_create_user', return_value='alice'), \
+                     patch.object(dash, 'get_user_db'), \
+                     patch.object(dash.repo, 'setUserCookies'):
+                    resp, client = self._postLogin(dash, next_url=raw)
+
+                self.assertEqual(resp.status_code, 302)
+                self.assertTrue(resp.headers["Location"].endswith(raw))
+
     def test_next_survives_a_failed_submission(self):
         dash = self._makeApp()
         client = dash.app.test_client()

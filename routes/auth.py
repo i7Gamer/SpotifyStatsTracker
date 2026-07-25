@@ -37,8 +37,17 @@ def register(app, dashboard):
         value like `//evil.com`, `https://evil.com`, or `/\\evil.com`
         (browsers normalize a leading "/\\" to "//", making it protocol-
         relative too) would otherwise send a freshly authenticated session
-        to an attacker-controlled site."""
+        to an attacker-controlled site.
+
+        Control characters are rejected before the "//" check because they are
+        stripped during URL normalization rather than carried through: `/\\t//`
+        reaches the browser as `//`, sliding an attacker's host past a guard
+        that only ever inspects index 1. Werkzeug refuses CR/LF in a header
+        value on its own, but a tab survives all the way into `Location`, so
+        the whole C0/DEL class is refused here instead of relying on that."""
         if not nextUrl or nextUrl[0] != "/":
+            return None
+        if any(char < " " or char == "\x7f" for char in nextUrl):
             return None
         if len(nextUrl) >= 2 and nextUrl[1] in ("/", "\\"):
             return None
