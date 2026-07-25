@@ -3404,6 +3404,14 @@ html.theme-red {
   }
 }
 
+/* Skip count badge on cards in a skip-sorted Top list (see _track_card.html).
+   Tinted apart from the neutral labels beside it because it's the reason that
+   row is where it is in the ordering. */
+.track-label.skip-label {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
 /* Skip summary under the hero card on the song/artist/album detail pages
    (templates/_skip_stat.html). Sits between the card and the charts as a quiet
    one-liner - it's context, not a headline. */

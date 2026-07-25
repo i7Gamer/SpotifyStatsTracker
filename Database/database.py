@@ -976,6 +976,29 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
             "skipPercent": round(stats["skips"] / encounters * 100, 1) if encounters else 0.0,
         }
 
+    #< The Top pages' sortBy value that routes to the skip-ordered path below
+    #  instead of the normal aggregates.
+    SKIP_SORT_BY = "skips"
+
+    def _skipSortedPage(self, fetch, startDate, endDate, limit, offset):
+        """Shared plumbing for a skip-ordered Top page: raw count ordering, no
+        minimum-encounters floor.
+
+        A floor is right for the Charts top-N (rate is meaningless at low
+        volume) but wrong here - this is a complete, paged list, and a
+        threshold would silently omit rows the pagination has already counted.
+        Ordering by raw count needs no floor: a count isn't distorted by low
+        volume the way a rate is."""
+        startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
+        return fetch(self.user, startTs, endTs,
+                     limit=(limit if limit is not None else -1), offset=offset,
+                     minEncounters=0, orderBy="count")
+
+    @staticmethod
+    def _withSkipRate(row: dict) -> dict:
+        encounters = row.get("encounters") or 0
+        return {**row, "skipPercent": round(row["skips"] / encounters * 100, 1) if encounters else 0.0}
+
     def getMostSkippedSongs(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None,
                              limit: int = 10, minEncounters: int = 5) -> list[dict]:
         """Highest skip-rate songs, hydrated with track metadata - the Charts
@@ -1061,6 +1084,20 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         narrows to songs whose name, artist(s), or album match. `fullPlaysOnly`
         excludes plays that never reached the completion-complete percent of
         the track's duration - defaults False so only the Top Songs page opts in."""
+        if sortBy == self.SKIP_SORT_BY:
+            # Its own query rather than a skips column on getSongsPage: that
+            # query's is_skip=0 predicate is load-bearing for its plan (an
+            # is_skip partial index measured a 2x regression there), and
+            # rewriting its aggregates as conditional sums to carry skips would
+            # put that at risk for a number most of its callers never ask for.
+            rows = self._skipSortedPage(self.repo.getMostSkippedTracks, startDate, endDate, limit, offset)
+            tracksById = self.repo.getTracksByIds([row["track_id"] for row in rows])
+            return [
+                {**tracksById[row["track_id"]], **self._withSkipRate(row),
+                 "totalTimeListened": row["total_time_listened"],
+                 "firstListenedAt": row["first_listened_at"]}
+                for row in rows if row["track_id"] in tracksById
+            ]
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
         return self.repo.getSongsPage(self.user, startTs, endTs, sortBy=sortBy, limit=limit, offset=offset,
                                        trackId=trackId, artistId=artistId, albumId=albumId, searchQuery=searchQuery,
@@ -1091,12 +1128,14 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
 
     def getSongsCount(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None,
                        searchQuery: str | None = None, trackIds: list[str] | None = None,
-                       fullPlaysOnly: bool = False) -> int:
+                       fullPlaysOnly: bool = False, sortBy: str | None = None) -> int:
         """Number of distinct songs played in range - the paging counterpart to
         getSongsStats(), for computing total page count without fetching every
         song's metadata. `trackIds` mirrors the same param on getSongsStats().
         `fullPlaysOnly` mirrors the same param on getSongsStats()."""
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
+        if sortBy == self.SKIP_SORT_BY:
+            return self.repo.getSkippedTracksCount(self.user, startTs, endTs)
         return self.repo.getSongsCount(self.user, startTs, endTs, searchQuery=searchQuery, trackIds=trackIds,
                                         fullPlaysOnly=fullPlaysOnly)
 
@@ -1378,6 +1417,18 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         tag-filtered Top Albums page). `searchQuery` narrows to albums whose
         name or artist(s) match. `fullPlaysOnly` mirrors getSongsStats()'s
         param of the same name."""
+        if sortBy == self.SKIP_SORT_BY:
+            rows = self._skipSortedPage(self.repo.getMostSkippedAlbums, startDate, endDate, limit, offset)
+            return [{
+                "id": row["album_id"], "name": row["name"], "url": row["url"],
+                "imageId": row["image_id"], "imageUrl": row["image_url"],
+                "totalTracks": row["total_tracks"], "releaseDate": row["release_date"],
+                "artists": [], "plays": row["plays"],
+                "totalTimeListened": row["total_time_listened"],
+                "firstListenedAt": row["first_listened_at"],
+                "uniqueSongCount": row["unique_song_count"],
+                **self._withSkipRate(row),
+            } for row in rows]
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
         return self.repo.getAlbumsPage(self.user, startTs, endTs, sortBy=sortBy, limit=limit, offset=offset,
                                         albumId=albumId, searchQuery=searchQuery, albumIds=albumIds,
@@ -1401,12 +1452,14 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
 
     def getAlbumsCount(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None,
                         searchQuery: str | None = None, albumIds: list[str] | None = None,
-                        fullPlaysOnly: bool = False) -> int:
+                        fullPlaysOnly: bool = False, sortBy: str | None = None) -> int:
         """Number of distinct albums played in range - the paging counterpart to
         getAlbumsStats(), for computing total page count without fetching every
         album's metadata. `albumIds` mirrors the same param on getAlbumsStats().
         `fullPlaysOnly` mirrors the same param on getAlbumsStats()."""
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
+        if sortBy == self.SKIP_SORT_BY:
+            return self.repo.getSkippedAlbumsCount(self.user, startTs, endTs)
         return self.repo.getAlbumsCount(self.user, startTs, endTs, searchQuery=searchQuery, albumIds=albumIds,
                                          fullPlaysOnly=fullPlaysOnly)
 
@@ -1430,6 +1483,16 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         to an explicit set of artist ids (the tag-filtered Top Artists page);
         `searchQuery` narrows to artists whose name matches. `fullPlaysOnly`
         mirrors getSongsStats()'s param of the same name."""
+        if sortBy == self.SKIP_SORT_BY:
+            rows = self._skipSortedPage(self.repo.getMostSkippedArtists, startDate, endDate, limit, offset)
+            return [{
+                "id": row["artist_id"], "name": row["name"], "url": row["url"],
+                "imageId": row["image_id"], "imageUrl": "", "plays": row["plays"],
+                "totalTimeListened": row["total_time_listened"],
+                "firstListenedAt": row["first_listened_at"],
+                "uniqueSongCount": row["unique_song_count"],
+                **self._withSkipRate(row),
+            } for row in rows]
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
         return self.repo.getArtistAggregates(self.user, startTs, endTs, artistId=artistId, sortBy=sortBy,
                                               limit=limit, offset=offset, searchQuery=searchQuery,
@@ -1456,13 +1519,15 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
 
     def getArtistsCount(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None,
                          searchQuery: str | None = None, artistIds: list[str] | None = None,
-                         fullPlaysOnly: bool = False) -> int:
+                         fullPlaysOnly: bool = False, sortBy: str | None = None) -> int:
         """Number of distinct artists played in range - the paging counterpart
         to getArtistsStats(), for computing total page count without fetching
         every artist's metadata. `artistIds` mirrors the same param on
         getArtistsStats(). `fullPlaysOnly` mirrors the same param on
         getArtistsStats()."""
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
+        if sortBy == self.SKIP_SORT_BY:
+            return self.repo.getSkippedArtistsCount(self.user, startTs, endTs)
         return self.repo.getArtistsCount(self.user, startTs, endTs, searchQuery=searchQuery, artistIds=artistIds,
                                           fullPlaysOnly=fullPlaysOnly)
 

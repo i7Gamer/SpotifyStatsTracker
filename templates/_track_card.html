@@ -201,6 +201,11 @@
           {% if track.get('releaseDateText') %}<span class="track-label">Released: {{ track.get('releaseDateText') }}</span>{% endif %}
           {% if track.get('totalTracks') %}<span class="track-label">{{ track.get('totalTracks') }} tracks</span>{% endif %}
         {% endif %}
+        {# Only the skip-sorted Top pages attach these; every other surface
+           renders the card without them and shows no label. #}
+        {% if track.get('skips') %}
+          <span class="track-label skip-label">{{ track.get('skips') }} skip{{ 's' if track.get('skips') != 1 else '' }}{% if track.get('skipPercent') %} &middot; {{ track.get('skipPercent') }}%{% endif %}</span>
+        {% endif %}
         {% if track.get('genres') %}
         <div class="genre-badges-container">
           {% for genre in track.get('genres', []) %}

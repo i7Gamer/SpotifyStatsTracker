@@ -73,7 +73,10 @@ DEFAULT_SORT_BY = "totalTimeListened"
 # ARTIST_SORT_COLUMNS know how to handle - an unrecognized ?sortBy= would
 # otherwise reach a ValueError deep in the DB layer and 500 instead of just
 # falling back to the default.
-VALID_SORT_BY = {"totalTimeListened", "plays", "name"}
+# "skips" routes the Top pages to a skip-ordered query instead of the normal
+# aggregates (see Database.SKIP_SORT_BY) - ordered by raw count there, unlike
+# the Charts top-N's rate ranking.
+VALID_SORT_BY = {"totalTimeListened", "plays", "name", "skips"}
 TRUTHY_ENV_VALUES = {"1", "true", "yes", "on"}
 # The literal FLASK_SECRET_KEY shipped as a placeholder in docker-compose.yml.
 # Booting with it signs session cookies - and, when DATA_ENCRYPTION_KEY is unset,

@@ -431,7 +431,11 @@ def register(app, dashboard):
         # Only materialize the page being shown - SQL-level LIMIT/OFFSET and
         # WHERE-clause matching (see Repository.getSongsPage) instead of
         # sorting+hydrating+filtering every song ever played in Python.
-        if searchQuery or tag:
+        # A skip-ordered page lists only entities that were actually skipped,
+        # so its total differs from the unique-count stat card above.
+        if sortBy == db.SKIP_SORT_BY:
+            totalCount = db.getSongsCount(startDate, endDate, sortBy=sortBy)
+        elif searchQuery or tag:
             totalCount = db.getSongsCount(startDate, endDate, searchQuery=searchQuery, trackIds=trackIds,
                                            fullPlaysOnly=fullPlaysOnly)
         else:
@@ -496,7 +500,11 @@ def register(app, dashboard):
         # Only materialize the page being shown - SQL-level LIMIT/OFFSET and
         # WHERE-clause matching (see Repository.getAlbumsPage) instead of
         # sorting+hydrating+filtering every album ever played in Python.
-        if searchQuery or tag:
+        # A skip-ordered page lists only entities that were actually skipped,
+        # so its total differs from the unique-count stat card above.
+        if sortBy == db.SKIP_SORT_BY:
+            totalCount = db.getAlbumsCount(startDate, endDate, sortBy=sortBy)
+        elif searchQuery or tag:
             totalCount = db.getAlbumsCount(startDate, endDate, searchQuery=searchQuery, albumIds=albumIds,
                                             fullPlaysOnly=fullPlaysOnly)
         else:
@@ -563,7 +571,11 @@ def register(app, dashboard):
 
         # Only materialize the page being shown - SQL-level LIMIT/OFFSET
         # instead of sorting+hydrating every artist ever played.
-        if searchQuery or tag:
+        # A skip-ordered page lists only entities that were actually skipped,
+        # so its total differs from the unique-count stat card above.
+        if sortBy == db.SKIP_SORT_BY:
+            totalCount = db.getArtistsCount(startDate, endDate, sortBy=sortBy)
+        elif searchQuery or tag:
             totalCount = db.getArtistsCount(startDate, endDate, searchQuery=searchQuery, artistIds=artistIds,
                                              fullPlaysOnly=fullPlaysOnly)
         else:
