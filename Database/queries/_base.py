@@ -111,6 +111,8 @@ FRIENDS_NOW_PLAYING_SETTING_KEY = "friends_now_playing_enabled"
 # Materialized per row into plays.is_skip at write time and by recomputeSkipFlags()
 # whenever the threshold changes. Default seconds/5 matches the historical
 # SKIP_THRESHOLD_MS the merge migration seeds.
+MS_PER_SECOND = 1000
+PERCENT_DIVISOR = 100.0        #< int percent setting -> ratio of a duration
 SKIP_THRESHOLD_MODE_KEY = "skip_threshold_mode"
 SKIP_THRESHOLD_VALUE_KEY = "skip_threshold_value"
 SKIP_MODE_SECONDS = "seconds"

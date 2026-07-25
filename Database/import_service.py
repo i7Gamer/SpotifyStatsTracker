@@ -225,9 +225,10 @@ class ImportMixin:
             enrichedCount = 0
             skipsSavedCount = 0
             correctedYears = set()
-            # Fetch the skip threshold once for the whole batch so each row's
-            # is_skip is computed without a per-row settings read.
+            # Fetch both classifier settings once for the whole batch so each
+            # row's is_skip is computed without a per-row settings read.
             skipThreshold = self.repo.getSkipThreshold()
+            completionPercent = self.repo.getCompletionCompletePercent()
             for entry in stagedPlays:
                 track_id = entry["id"]
                 played_at = entry["playedAt"]
@@ -305,7 +306,8 @@ class ImportMixin:
                             # A corrected time_played can cross the skip threshold, so
                             # is_skip is recomputed alongside it.
                             corrected_is_skip = self.repo.computeIsSkip(
-                                time_played, track.get("duration") if track else None, threshold=skipThreshold)
+                                time_played, track.get("duration") if track else None,
+                                threshold=skipThreshold, completionPercent=completionPercent)
                             try:
                                 self.repo.correctPlay(existing_play["id"], played_at, time_played,
                                                        corrected_is_skip, extrasValues)
@@ -366,7 +368,8 @@ class ImportMixin:
                 # If no matches, proceed to insert as usual. is_skip uses the
                 # batch threshold + this track's duration (percent mode).
                 is_skip = self.repo.computeIsSkip(
-                    time_played, track.get("duration") if track else None, threshold=skipThreshold)
+                    time_played, track.get("duration") if track else None,
+                    threshold=skipThreshold, completionPercent=completionPercent)
                 if self.repo.insertPlay(self.user, track_id, played_at, time_played, played_from,
                                         created_reason=f"history_import (user: {self.user})",
                                         extras=entry.get("importExtras"), is_skip=is_skip):

@@ -254,67 +254,95 @@ class SettingQueries:
         return mode, value
 
     def computeIsSkip(self, timePlayed: int, durationMs: int | None = None,
-                      threshold: tuple[str, int] | None = None) -> int:
+                      threshold: tuple[str, int] | None = None,
+                      completionPercent: int | None = None) -> int:
         """1 if this play counts as a skip under the current (or supplied)
-        threshold, else 0. Percent mode needs the track's duration; an unknown
-        (<=0/None) duration falls back to the fixed sub-5s db.SKIP_THRESHOLD_MS
-        floor. Pass `threshold` to avoid a per-row settings read in bulk loops.
+        threshold, else 0. Pass `threshold`/`completionPercent` to avoid the
+        per-row settings reads in bulk loops.
 
-        Seconds mode caps the threshold at the track's own duration: a track
-        shorter than the threshold can never reach it, so comparing against the
-        raw value marked every play of it a skip - including plays that ran to
-        the last millisecond - with no listening behaviour able to change that.
-        The cap only ever loosens the rule, and only for tracks shorter than
-        the threshold; anything longer keeps the plain comparison."""
+        Whatever the threshold says, a play that reached the completion percent
+        of the track's duration (getCompletionCompletePercent) is never a skip.
+        The two settings are independent, so nothing stopped them contradicting
+        each other: the same play could be counted "complete" by the Charts
+        completion pie and "abandoned" by the skip rate, on the same page. The
+        classifier therefore caps its threshold at the completion boundary,
+        which is the widest cap that cannot turn a genuine skip into a play:
+          - seconds mode, on a track shorter than the threshold. The threshold
+            is unreachable there, so every play of it was a skip - including
+            ones that ran to the last millisecond, with no listening behaviour
+            able to change that. Real case: a 22.174s intro under a 30s
+            threshold reported a 100% skip rate while Spotify's own export
+            recorded every play as skipped=false / trackdone.
+          - percent mode, whenever the skip percent is set above the completion
+            percent (skip 90% vs complete 80% makes a play at 85% both).
+
+        A track whose duration is unknown (<=0/None) has no completion boundary
+        to respect, and keeps the documented fallbacks: the fixed sub-5s
+        db.SKIP_THRESHOLD_MS floor in percent mode (which needs a duration at
+        all), the plain threshold in seconds mode."""
         mode, value = threshold if threshold is not None else self.getSkipThreshold()
+        if not durationMs or durationMs <= 0:
+            floorMs = db.SKIP_THRESHOLD_MS if mode == SKIP_MODE_PERCENT else value * MS_PER_SECOND
+            return 1 if timePlayed < floorMs else 0
+
+        if completionPercent is None:
+            completionPercent = self.getCompletionCompletePercent()
         if mode == SKIP_MODE_PERCENT:
-            if durationMs and durationMs > 0:
-                return 1 if timePlayed < durationMs * value / 100 else 0
-            return 1 if timePlayed < db.SKIP_THRESHOLD_MS else 0
-        thresholdMs = value * 1000
-        if durationMs and durationMs > 0:
-            thresholdMs = min(thresholdMs, durationMs)
+            thresholdMs = durationMs * min(value, completionPercent) / PERCENT_DIVISOR
+        else:
+            thresholdMs = min(value * MS_PER_SECOND,
+                              durationMs * completionPercent / PERCENT_DIVISOR)
         return 1 if timePlayed < thresholdMs else 0
 
     def recomputeSkipFlags(self) -> int:
         """Rewrite plays.is_skip for every row under the current threshold - run
         after the admin changes it. Returns the number of rows processed.
-        Self-committing maintenance op (like setAppSetting)."""
+        Self-committing maintenance op (like setAppSetting).
+
+        The bulk rewrite classifies in SQL instead of calling computeIsSkip per
+        row, so the rule lives twice; both copies cap at the completion
+        boundary, and tests/test_skip_settings.py pins them against each other
+        row by row."""
         mode, value = self.getSkipThreshold()
+        completionPercent = self.getCompletionCompletePercent()
         conn = self._conn()
         with conn:
             if mode == SKIP_MODE_PERCENT:
                 # Per-row threshold: pct of the track's duration, or the fixed
                 # floor for tracks whose duration isn't known (<=0/missing).
+                # Capping the percent itself is enough here - both boundaries
+                # are the same fraction of the same duration.
                 cur = conn.execute(
-                    """
+                    f"""
                     UPDATE plays SET is_skip = CASE WHEN time_played < COALESCE(
                         (SELECT CASE WHEN t.duration_ms > 0
-                                     THEN t.duration_ms * ? / 100.0
+                                     THEN t.duration_ms * ? / {PERCENT_DIVISOR}
                                      ELSE ? END
                          FROM tracks t WHERE t.id = plays.track_id),
                         ?)
                     THEN 1 ELSE 0 END
                     """,
-                    (value, db.SKIP_THRESHOLD_MS, db.SKIP_THRESHOLD_MS),
+                    (min(value, completionPercent), db.SKIP_THRESHOLD_MS, db.SKIP_THRESHOLD_MS),
                 )
             else:
-                # Same duration cap as computeIsSkip's seconds mode: a track
-                # shorter than the threshold is compared against its own length,
-                # so finishing it is never recorded as a skip. Tracks with an
-                # unknown duration (<=0/missing, or no tracks row) keep the
-                # plain threshold via COALESCE.
+                # Same completion cap as computeIsSkip's seconds mode, per row:
+                # the threshold or the track's completion boundary, whichever
+                # comes first, so a play the completion pie calls complete is
+                # never stored as a skip. Tracks with an unknown duration
+                # (<=0/missing, or no tracks row) keep the plain threshold via
+                # COALESCE.
+                thresholdMs = value * MS_PER_SECOND
                 cur = conn.execute(
-                    """
+                    f"""
                     UPDATE plays SET is_skip = CASE WHEN time_played < COALESCE(
-                        (SELECT CASE WHEN t.duration_ms > 0 AND t.duration_ms < ?
-                                     THEN t.duration_ms
+                        (SELECT CASE WHEN t.duration_ms > 0
+                                     THEN MIN(?, t.duration_ms * ? / {PERCENT_DIVISOR})
                                      ELSE ? END
                          FROM tracks t WHERE t.id = plays.track_id),
                         ?)
                     THEN 1 ELSE 0 END
                     """,
-                    (value * 1000, value * 1000, value * 1000),
+                    (thresholdMs, completionPercent, thresholdMs, thresholdMs),
                 )
             return cur.rowcount
 
