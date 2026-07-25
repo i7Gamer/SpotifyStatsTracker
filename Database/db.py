@@ -189,7 +189,8 @@ CREATE TABLE IF NOT EXISTS users (
     timezone              TEXT,
     spotify_needs_reauth  INTEGER NOT NULL DEFAULT 0,
     milestones_baseline_at REAL,
-    hide_tags_panel       INTEGER NOT NULL DEFAULT 0
+    hide_tags_panel       INTEGER NOT NULL DEFAULT 0,
+    hide_now_playing      INTEGER NOT NULL DEFAULT 0
 );
 
 -- Per-user play history. This is the only high-cardinality, per-user table -

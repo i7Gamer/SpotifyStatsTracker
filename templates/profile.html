@@ -110,6 +110,21 @@
       </div>
       {% endif %}
 
+      {# Only meaningful when both the admin switch and data sharing are on -
+         with no shares there is nobody this could broadcast to. #}
+      {% if sharing_enabled and friends_now_playing_enabled %}
+      <div class="form-group">
+        <label class="setting-toggle">
+          <span class="setting-toggle-text">
+            Hide what you're playing
+            <small>Stops people you share with from seeing your current track on their dashboard. You can still see theirs.</small>
+          </span>
+          <input type="checkbox" name="hide_now_playing" value="1" {% if hide_now_playing %}checked{% endif %}>
+          <span class="setting-toggle-track" aria-hidden="true"></span>
+        </label>
+      </div>
+      {% endif %}
+
       <button type="submit" class="primary-button" style="width: 100%;">Save Preferences</button>
     </form>
 

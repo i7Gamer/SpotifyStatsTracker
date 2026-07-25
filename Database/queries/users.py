@@ -249,7 +249,7 @@ class UserQueries:
     def getUserSettings(self, username: str) -> dict:
         conn = self._conn()
         row = conn.execute(
-            "SELECT default_dashboard_window, timezone, hide_tags_panel FROM users WHERE username=?",
+            "SELECT default_dashboard_window, timezone, hide_tags_panel, hide_now_playing FROM users WHERE username=?",
             (username,),
         ).fetchone()
         if row:
@@ -257,16 +257,19 @@ class UserQueries:
                 "default_dashboard_window": row["default_dashboard_window"] or "day",
                 "timezone": row["timezone"],
                 "hide_tags_panel": bool(row["hide_tags_panel"]),
+                "hide_now_playing": bool(row["hide_now_playing"]),
             }
-        return {"default_dashboard_window": "day", "timezone": None, "hide_tags_panel": False}
+        return {"default_dashboard_window": "day", "timezone": None,
+                "hide_tags_panel": False, "hide_now_playing": False}
 
     def updateUserSettings(self, username: str, default_dashboard_window: str, timezone: str | None,
-                           hide_tags_panel: bool = False) -> None:
+                           hide_tags_panel: bool = False, hide_now_playing: bool = False) -> None:
         conn = self._conn()
         with conn:
             conn.execute(
-                "UPDATE users SET default_dashboard_window=?, timezone=?, hide_tags_panel=? WHERE username=?",
-                (default_dashboard_window, timezone, int(hide_tags_panel), username),
+                "UPDATE users SET default_dashboard_window=?, timezone=?, hide_tags_panel=?, "
+                "hide_now_playing=? WHERE username=?",
+                (default_dashboard_window, timezone, int(hide_tags_panel), int(hide_now_playing), username),
             )
 
     def getHideTagsPanel(self, username: str) -> bool:

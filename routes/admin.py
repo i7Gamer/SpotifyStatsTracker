@@ -322,6 +322,7 @@ def register(app, dashboard):
             completion_min=COMPLETION_COMPLETE_PERCENT_MIN, completion_max=COMPLETION_COMPLETE_PERCENT_MAX,
             email_verification_enabled=dashboard.repo.isEmailVerificationEnabled(),
             milestone_recalc_enabled=dashboard.repo.isMilestoneRecalcEnabled(),
+            friends_now_playing_enabled=dashboard.repo.isFriendsNowPlayingEnabled(),
             genre_backfill_retry_days=dashboard.repo.getGenreBackfillRetryDays(),
             bio_backfill_retry_days=dashboard.repo.getBioBackfillRetryDays(),
             backfill_retry_min=BACKFILL_RETRY_DAYS_MIN, backfill_retry_max=BACKFILL_RETRY_DAYS_MAX,
@@ -368,6 +369,7 @@ def register(app, dashboard):
         dashboard.repo.setMilestonesEnabled(request.form.get("milestones") == "1")
         dashboard.repo.setMilestoneRecalcEnabled(request.form.get("milestone_recalc") == "1")
         dashboard.repo.setTagsEnabled(request.form.get("tags") == "1")
+        dashboard.repo.setFriendsNowPlayingEnabled(request.form.get("friends_now_playing") == "1")
         return redirect(url_for("adminPage"))
     app.add_url_rule("/admin/user_settings", "adminUserSettings", adminUserSettings, methods=["POST"])
 

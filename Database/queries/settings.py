@@ -378,6 +378,18 @@ class SettingQueries:
     def setTagsEnabled(self, enabled: bool) -> None:
         self._setFeatureEnabled(TAGS_SETTING_KEY, enabled)
 
+    def isFriendsNowPlayingEnabled(self) -> bool:
+        """Whether the dashboard shows what people you share with are playing
+        right now (absent row = enabled). Deliberately separate from
+        isDataSharingEnabled: live presence is a stronger disclosure than the
+        aggregate comparison sharing already allows, so an admin can keep
+        Compare while turning this off. Both must be on for the strip to
+        appear."""
+        return self._isFeatureEnabled(FRIENDS_NOW_PLAYING_SETTING_KEY)
+
+    def setFriendsNowPlayingEnabled(self, enabled: bool) -> None:
+        self._setFeatureEnabled(FRIENDS_NOW_PLAYING_SETTING_KEY, enabled)
+
     def getRecentRegistrationCounts(self) -> dict:
         """How many accounts were created in the last 7/30 days - an admin
         activity signal with no per-user equivalent."""

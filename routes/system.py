@@ -149,10 +149,20 @@ def register(app, dashboard):
     app.add_url_rule("/api/listener-status", "listenerStatus", listenerStatus, methods=["GET"])
 
     def nowPlayingStatus():
-        """What the user is playing right now, from the listener's cached
-        connect state (no Spotify calls) - polled by the dashboard."""
+        """What the user - and the people they share with - are playing right
+        now, from each listener's cached connect state (no Spotify calls).
+
+        Polled by the dashboard every 15s. The friends list rides along on this
+        same request rather than getting an endpoint of its own, so the strip
+        costs no extra round trips; see SpotifyDashboardApp.getFriendsNowPlaying
+        for the toggles and the per-friend opt-out it honours."""
         email, username, db = dashboard.get_current_user_or_redirect()
         if not email:
             return jsonify({"error": "Not logged in"}), 401
-        return jsonify({"nowPlaying": db.getNowPlaying()})
+        friends = dashboard.getFriendsNowPlaying(username)
+        return jsonify({
+            "nowPlaying": db.getNowPlaying(),
+            "friends": friends["friends"],
+            "friendsMoreCount": friends["moreCount"],
+        })
     app.add_url_rule("/api/now-playing", "nowPlayingStatus", nowPlayingStatus, methods=["GET"])

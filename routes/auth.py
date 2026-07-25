@@ -275,8 +275,11 @@ def register(app, dashboard):
                     timezone = None
                 # Unchecked checkbox isn't submitted: absence means show the panel.
                 hide_tags_panel = request.form.get("hide_tags_panel") == "1"
+                # Same convention: absence means keep broadcasting.
+                hide_now_playing = request.form.get("hide_now_playing") == "1"
                 try:
-                    db.repo.updateUserSettings(username, default_window, timezone, hide_tags_panel)
+                    db.repo.updateUserSettings(username, default_window, timezone, hide_tags_panel,
+                                               hide_now_playing)
                     db.refreshSettings()
                     success = "Preferences saved successfully!"
                 except Exception as e:
@@ -368,6 +371,7 @@ def register(app, dashboard):
         settings = db.repo.getUserSettings(username)
         default_window = settings.get("default_dashboard_window", "day")
         user_timezone = settings.get("timezone") or ""
+        hide_now_playing = settings.get("hide_now_playing", False)
 
         # Reaching this render means the Active Shares list below is
         # about to show whatever the notification was about - clears the
@@ -432,6 +436,8 @@ def register(app, dashboard):
             feature_enabled=feature_enabled,
             default_window=default_window,
             user_timezone=user_timezone,
+            hide_now_playing=hide_now_playing,
+            friends_now_playing_enabled=dashboard.repo.isFriendsNowPlayingEnabled(),
             pendingIncoming=pendingIncoming,
             pendingOutgoing=pendingOutgoing,
             acceptedShares=acceptedShares,

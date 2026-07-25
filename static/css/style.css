@@ -3404,6 +3404,83 @@ html.theme-red {
   }
 }
 
+/* Friends-listening strip: what the people you share with are playing right
+   now, between the live cards row and the trends row.
+
+   Deliberately not built from .summary-card. Those are flex: 1 1 0, so with
+   two friends each item would stretch to roughly 590px - wider than the
+   viewer's own Now Playing card while holding less content. These chips never
+   grow (flex: 0 1 auto + max-width) and the row wraps, so it reads the same at
+   one friend as at six. The row is hidden entirely when nobody is playing (see
+   the poll in tracks.html), which is the common case. */
+.friends-listening {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  margin-top: 14px;
+}
+
+.friends-listening-label {
+  flex: 0 0 auto;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.friends-listening-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  min-width: 0;
+}
+
+.friends-listening-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  /* Never grow: a stretched chip is the failure mode this layout exists to
+     avoid. Shrinking is fine - that's what the ellipsis below is for. */
+  flex: 0 1 auto;
+  max-width: 230px;
+  min-width: 0;
+}
+
+.friends-listening-cover {
+  width: 30px;
+  height: 30px;
+  border-radius: 6px;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+
+.friends-listening-meta {
+  min-width: 0;
+}
+
+.friends-listening-track,
+.friends-listening-artist {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.friends-listening-track {
+  font-size: 0.85rem;
+  color: var(--text);
+}
+
+.friends-listening-artist {
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.friends-listening-more {
+  flex: 0 0 auto;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
 /* Streak calendar: a GitHub-style contribution grid of listening days. Columns
    are weeks, rows Mon..Sun; --weeks (set inline) is the column count so the
    month-label track lines up with the day grid. */
@@ -3806,4 +3883,4 @@ html.theme-red {
     transition-duration: 0.001ms !important;
     scroll-behavior: auto !important;
   }
-}
+}

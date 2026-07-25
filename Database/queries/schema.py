@@ -304,3 +304,15 @@ class SchemaQueries:
         if "hide_tags_panel" not in columns:
             with conn:
                 conn.execute("ALTER TABLE users ADD COLUMN hide_tags_panel INTEGER NOT NULL DEFAULT 0")
+
+    def addHideNowPlayingColumnIfMissing(self) -> None:
+        """Add users.hide_now_playing (migrate1_39_0) if missing - the per-user
+        opt-out (set on /profile) for broadcasting what you're currently
+        playing to people you share with, independent of the admin's
+        instance-wide isFriendsNowPlayingEnabled switch. Guarded so re-running
+        the migration doesn't fail."""
+        conn = self._conn()
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
+        if "hide_now_playing" not in columns:
+            with conn:
+                conn.execute("ALTER TABLE users ADD COLUMN hide_now_playing INTEGER NOT NULL DEFAULT 0")

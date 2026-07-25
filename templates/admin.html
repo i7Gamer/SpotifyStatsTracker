@@ -307,6 +307,10 @@
           <input type="checkbox" name="tags" value="1" {% if tags_enabled %}checked{% endif %}>
           Tags (tag panel on song/artist/album pages, tag filter on Top Songs/Artists/Albums, and the Playlists page)
         </label>
+        <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; margin-bottom: 1rem;">
+          <input type="checkbox" name="friends_now_playing" value="1" {% if friends_now_playing_enabled %}checked{% endif %}>
+          Friends' current track on the dashboard (only between accepted shares; each user can also opt out on their own Profile)
+        </label>
         <button type="submit" class="primary-button" style="padding: 4px 16px;">Save</button>
       </form>
     </div>

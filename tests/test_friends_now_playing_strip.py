@@ -1,0 +1,173 @@
+"""The dashboard markup for the friends-listening strip.
+
+The strip lives between the live cards row and the trends row, and is populated
+by the existing now-playing poll. What's pinned here is when the markup exists
+at all, and that it doesn't reuse .summary-card - those are flex: 1 1 0, so two
+friends would each stretch wider than the viewer's own Now Playing card while
+holding less content.
+"""
+import os
+import re
+import sys
+import unittest
+from unittest.mock import MagicMock, patch
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+from _app_factory import AppTestCase
+
+
+class FriendsStripTestCase(AppTestCase):
+    USERNAME = "alice"
+    EMAIL = "alice@example.com"
+
+    def setUp(self):
+        self.dash = self._makeApp()
+        self.dash.repo.upsertUser(self.USERNAME, self.EMAIL)
+
+    def _makeDb(self):
+        db = MagicMock()
+        db.repo.getUserSettings.return_value = {"default_dashboard_window": "day"}
+        db.getOverallStats.return_value = {
+            "currentTopSongs": [], "currentTopArtists": [],
+            "totalSongsPlayed": 0, "totalDurationMs": 0,
+            "previousSongsPlayed": 0, "previousDurationMs": 0,
+        }
+        db.getCurrentStreak.return_value = {"days": 0, "activeToday": False}
+        db.getOnThisDay.return_value = []
+        db.getPlayTotals.return_value = (0, 0)
+        db.getListeningCalendar.return_value = {
+            "weeks": [], "monthLabels": [], "maxCount": 0, "activeDays": 0, "totalPlays": 0}
+        return db
+
+    def _dashboardHtml(self, hasShares=True):
+        client = self.dash.app.test_client()
+        with patch.object(self.dash, "is_user_logged_in", return_value=True), \
+             patch.object(self.dash, "get_username_for_email", return_value=self.USERNAME), \
+             patch.object(self.dash, "get_user_db", return_value=self._makeDb()), \
+             patch.object(self.dash.repo, "hasAnyAcceptedShare", return_value=hasShares):
+            with client.session_transaction() as sess:
+                sess["email"] = self.EMAIL
+            return client.get("/").data.decode()
+
+
+class TestWhenTheStripIsRendered(FriendsStripTestCase):
+    def test_present_for_a_user_with_shares(self):
+        self.assertIn('id="friendsListening"', self._dashboardHtml())
+
+    def test_absent_for_a_user_with_no_shares(self):
+        """Not merely hidden - a solo user gets no markup for it at all."""
+        self.assertNotIn('id="friendsListening"', self._dashboardHtml(hasShares=False))
+
+    def test_absent_when_the_admin_switch_is_off(self):
+        self.dash.repo.setFriendsNowPlayingEnabled(False)
+
+        self.assertNotIn('id="friendsListening"', self._dashboardHtml())
+
+    def test_it_starts_hidden_so_an_empty_strip_costs_no_space(self):
+        """Nobody playing is the common case; the poll reveals the row."""
+        html = self._dashboardHtml()
+
+        match = re.search(r'<div class="friends-listening" id="friendsListening"([^>]*)>', html)
+        self.assertIsNotNone(match)
+        self.assertIn("display: none", match.group(1))
+
+
+class TestStripLayout(FriendsStripTestCase):
+    def test_it_sits_between_the_live_cards_and_the_trends_row(self):
+        html = self._dashboardHtml()
+
+        nowPlayingIdx = html.index('id="nowPlayingPanel"')
+        stripIdx = html.index('id="friendsListening"')
+        trendsIdx = html.index('id="dashboardTrendsContainer"')
+
+        self.assertLess(nowPlayingIdx, stripIdx)
+        self.assertLess(stripIdx, trendsIdx)
+
+    def test_it_is_inside_the_filter_independent_live_panel(self):
+        """Below the filter form it would read as filtered data, which it isn't."""
+        html = self._dashboardHtml()
+
+        self.assertLess(html.index('id="friendsListening"'), html.index('class="hero"'))
+
+    def test_chips_do_not_reuse_the_stretching_summary_card_class(self):
+        html = self._dashboardHtml()
+
+        # End the slice at the START of the trends div - its own
+        # class="dashboard-summary-cards" contains "summary-card" as a substring.
+        stripMarkup = html[
+            html.index('<div class="friends-listening"'):
+            html.index('<div class="dashboard-summary-cards" id="dashboardTrendsContainer"')
+        ]
+        self.assertNotIn("summary-card", stripMarkup)
+
+    def test_the_chip_container_and_overflow_count_exist_for_the_poll(self):
+        html = self._dashboardHtml()
+
+        self.assertIn('id="friendsListeningChips"', html)
+        self.assertIn('id="friendsListeningMore"', html)
+
+
+class TestStripPollIsNotCoupledToNowPlaying(unittest.TestCase):
+    """The strip and the Now Playing card share one poll (one request per 15s),
+    but they are independently absent: the strip isn't rendered without shares
+    or with the admin switch off, and the card could become conditional later.
+    Neither may gate the other's polling.
+
+    Asserted against the template source because the coupling is invisible from
+    the outside - the poll simply never starts, with no error and no missing
+    markup for a render test to catch."""
+
+    def setUp(self):
+        templatePath = os.path.join(os.path.dirname(__file__), "..", "templates", "tracks.html")
+        with open(templatePath, encoding="utf-8") as handle:
+            self.template = handle.read()
+
+    def test_the_poll_starts_when_either_half_is_present(self):
+        self.assertIn("if (!card && !friendsRow) return;", self.template)
+
+    def test_the_poll_does_not_bail_on_a_missing_now_playing_card(self):
+        """`if (!card) return;` at IIFE scope would kill the strip too."""
+        pollScope = self.template[self.template.index("var NOW_PLAYING_POLL_MS"):]
+        guard = pollScope[:pollScope.index("function render(")]
+
+        self.assertNotIn("if (!card) return;", guard)
+
+    def test_each_renderer_guards_its_own_element(self):
+        self.assertIn("function render(np) {\n        if (!card) return;", self.template)
+        self.assertIn("function renderFriends(friends, moreCount) {\n        if (!friendsRow) return;",
+                      self.template)
+
+
+class TestStripStyling(unittest.TestCase):
+    """The one rule the layout depends on, asserted against the stylesheet: a
+    chip that can grow reintroduces exactly the stretched-slab problem."""
+
+    def setUp(self):
+        cssPath = os.path.join(os.path.dirname(__file__), "..", "static", "css", "style.css")
+        with open(cssPath, encoding="utf-8") as handle:
+            self.css = handle.read()
+
+    def _block(self, selector):
+        match = re.search(re.escape(selector) + r"\s*\{([^}]*)\}", self.css)
+        self.assertIsNotNone(match, f"{selector} missing from style.css")
+        return match.group(1)
+
+    def test_a_chip_never_grows(self):
+        self.assertIn("flex: 0 1 auto", self._block(".friends-listening-chip"))
+
+    def test_a_chip_is_width_capped(self):
+        self.assertIn("max-width", self._block(".friends-listening-chip"))
+
+    def test_the_row_wraps_rather_than_scrolling(self):
+        block = self._block(".friends-listening")
+        self.assertIn("flex-wrap: wrap", block)
+        self.assertNotIn("overflow-x", block)
+
+    def test_long_names_ellipsise_instead_of_widening_the_chip(self):
+        block = self._block(".friends-listening-track,\n.friends-listening-artist")
+        self.assertIn("text-overflow: ellipsis", block)
+
+
+if __name__ == "__main__":
+    unittest.main()

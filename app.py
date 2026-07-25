@@ -478,6 +478,63 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
                 self._activatedUsers.add(username)
             return db
 
+    def getFriendsNowPlaying(self, username):
+        """What the people `username` has an accepted share with are playing
+        right now: {"friends": [...], "moreCount": int}.
+
+        Costs no network calls - getNowPlaying reads each listener's cached
+        connect state, and every cookie-holding user's listener is already
+        running in this process (see _ensureAllUsersLogin). A counterpart with
+        no live Database is simply skipped: constructing one here would start
+        ANOTHER user's listener from this request thread, which is exactly what
+        _getReadOnlyUserDb exists to avoid.
+
+        The payload is deliberately narrower than the viewer's own now-playing:
+        no position/duration (a progress bar is noise at chip size) and none of
+        the played/trackPlayed flags, which describe the friend's own history
+        and are nobody else's business."""
+        if not (self.repo.isDataSharingEnabled() and self.repo.isFriendsNowPlayingEnabled()):
+            return {"friends": [], "moreCount": 0}
+
+        #< alphabetical (getAcceptedShareUsernames orders by counterpart), so
+        #  chips don't reshuffle between polls
+        counterparts = [
+            name for name in self.repo.getAcceptedShareUsernames(username)
+            if not self.repo.getUserSettings(name).get("hide_now_playing")
+        ]
+        # Snapshot under the lock, then read each listener outside it - holding
+        # _db_lock across per-user work is the stall pattern this app has been
+        # bitten by before.
+        with self._db_lock:
+            liveDbs = [(name, self.user_databases.get(name)) for name in counterparts]
+
+        playing = []
+        for name, db in liveDbs:
+            if db is None:
+                continue   #< no active session in this process
+            try:
+                nowPlaying = db.getNowPlaying()
+            except Exception as e:
+                logger.warning("Now-playing lookup failed for %s: %s", name, e)
+                continue
+            # Paused counts as not listening here: a paused track would sit in
+            # the strip indefinitely, and chips appearing/vanishing on every
+            # pause is exactly the churn a glanceable row can't afford.
+            if not nowPlaying or nowPlaying.get("isPaused"):
+                continue
+            playing.append({
+                "username": name,
+                "trackId": nowPlaying.get("trackId"),
+                "name": nowPlaying.get("name"),
+                "artistsText": nowPlaying.get("artistsText"),
+                "imageId": nowPlaying.get("imageId"),
+            })
+
+        return {
+            "friends": playing[:FRIENDS_NOW_PLAYING_LIMIT],
+            "moreCount": max(0, len(playing) - FRIENDS_NOW_PLAYING_LIMIT),
+        }
+
     def _getReadOnlyUserDb(self, username):
         """A Database for `username` suitable for a public, unauthenticated
         share-link view - never starts the listener/auto-importer (no live

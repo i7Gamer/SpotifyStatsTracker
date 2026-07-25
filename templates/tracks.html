@@ -74,6 +74,24 @@
       {% endif %}
       </div>{# .dashboard-summary-cards #}
 
+      {# What the people you share with are playing right now. Rendered empty
+         and revealed by the now-playing poll (same pattern as the Now Playing
+         sub-panel above), and collapsed entirely whenever nobody is playing -
+         with a handful of shares that is the common case, and a permanent
+         "nobody is listening" line isn't worth the vertical space.
+         Deliberately NOT .summary-card: those are flex: 1 1 0, so two friends
+         would stretch to ~590px each - wider than your own card, holding less.
+         Fixed-width chips wrap instead. #}
+      {# hasAcceptedShares comes from _injectShareStatus - a viewer with no
+         shares gets no markup at all rather than a permanently hidden row. #}
+      {% if friends_now_playing_enabled and hasAcceptedShares %}
+      <div class="friends-listening" id="friendsListening" style="display: none;">
+        <span class="friends-listening-label">Friends listening</span>
+        <div class="friends-listening-chips" id="friendsListeningChips"></div>
+        <span class="friends-listening-more" id="friendsListeningMore" style="display: none;"></span>
+      </div>
+      {% endif %}
+
       {# Listening trends row: Obsession, Rediscovery, Forgotten Favorite #}
       <div class="dashboard-summary-cards" id="dashboardTrendsContainer">
         <div class="summary-card"><p class="dashboard-card-empty">Loading listening trends…</p></div>
@@ -316,9 +334,19 @@
       var USERNAME = {{ username | tojson }};
       var card = document.getElementById('nowPlayingCard');
       var panel = document.getElementById('nowPlayingPanel');
-      if (!card) return;
+      // Friends' current tracks ride along on this same poll (see
+      // routes/system.py) so the strip costs no extra requests. Looked up here,
+      // beside the now-playing elements, because the guard below has to know
+      // about BOTH: the two halves are independently absent (the strip isn't
+      // rendered without shares or with the admin switch off), so neither may
+      // gate the other's polling.
+      var friendsRow = document.getElementById('friendsListening');
+      var friendsChips = document.getElementById('friendsListeningChips');
+      var friendsMore = document.getElementById('friendsListeningMore');
+      if (!card && !friendsRow) return;   //< nothing on this page to poll for
 
       function render(np) {
+        if (!card) return;   //< now-playing card absent; the strip may still poll
         if (!np || !np.name) {
           card.style.display = 'none';
           if (panel) panel.classList.remove('has-now-playing');
@@ -404,10 +432,61 @@
         if (panel) panel.classList.add('has-now-playing');
       }
 
+      function renderFriends(friends, moreCount) {
+        if (!friendsRow) return;   //< admin switch off: the row isn't rendered
+        friends = friends || [];
+        if (!friends.length) {
+          friendsRow.style.display = 'none';
+          return;
+        }
+        friendsChips.textContent = '';
+        friends.forEach(function (friend) {
+          var chip = document.createElement('div');
+          chip.className = 'friends-listening-chip';
+
+          var cover = document.createElement('img');
+          cover.className = 'friends-listening-cover';
+          cover.alt = '';
+          //< catalog images are shared files; the <username> segment is only an
+          //  authorization check, so they resolve under the VIEWER's own name
+          cover.src = friend.imageId
+            ? '/img/' + encodeURIComponent(USERNAME) + '/tracks/' + encodeURIComponent(friend.imageId) + '.jpeg'
+            : window.PLACEHOLDER_IMG;
+          cover.onerror = function () { this.onerror = null; this.src = window.PLACEHOLDER_IMG; };
+          chip.appendChild(cover);
+
+          var meta = document.createElement('div');
+          meta.className = 'friends-listening-meta';
+          var title = document.createElement('div');
+          title.className = 'friends-listening-track';
+          //< textContent throughout: names are other users' data
+          title.textContent = friend.username + ' · ' + (friend.name || '');
+          var artist = document.createElement('div');
+          artist.className = 'friends-listening-artist';
+          artist.textContent = friend.artistsText || '';
+          meta.appendChild(title);
+          meta.appendChild(artist);
+          chip.appendChild(meta);
+          friendsChips.appendChild(chip);
+        });
+
+        if (moreCount > 0) {
+          friendsMore.textContent = '+' + moreCount + ' more';
+          friendsMore.style.display = '';
+        } else {
+          friendsMore.style.display = 'none';
+        }
+        friendsRow.style.display = '';
+      }
+
       function poll() {
         fetch('/api/now-playing')
           .then(function (resp) { return resp.ok ? resp.json() : null; })
-          .then(function (data) { if (data) render(data.nowPlaying); })
+          .then(function (data) {
+            if (!data) return;
+            render(data.nowPlaying);
+            renderFriends(data.friends, data.friendsMoreCount);
+          })
           .catch(function () { /* transient network error - keep last state */ });
       }
 

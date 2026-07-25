@@ -239,6 +239,7 @@ def register(app, dashboard):
             listeningCalendar=listeningCalendar,
             nextMilestones=nextMilestones,
             lastfmGenreEnabled=lastfmGenreEnabled,
+            friends_now_playing_enabled=dashboard.repo.isFriendsNowPlayingEnabled(),
             intervalLabel=intervalLabel,
             section="dashboard",
             interval=interval,
