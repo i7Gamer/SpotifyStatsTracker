@@ -108,6 +108,13 @@ class Client:
             "discNumber": track.get("disc_number", 0),
             "trackNumber": track.get("track_number", 0),
             "availability_reason": availabilityReason,
+            # Carried through rather than dropped: a source that already knows
+            # its record is a degraded stand-in (patches._fallbackTrackRecord)
+            # has no other way to say so, and upsertTrack's guard against a
+            # fallback clobbering real metadata keys off exactly this field.
+            # None for every ordinary track, which is what upsertTrack already
+            # expects when no caller sets it.
+            "created_reason": track.get("created_reason"),
         }
 
         if not embedPlaybackInfo:

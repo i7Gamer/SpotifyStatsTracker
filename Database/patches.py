@@ -214,6 +214,17 @@ import json
 import sys
 
 
+try:
+    from Database.db import RESTRICTED_FALLBACK_REASON
+except ModuleNotFoundError:
+    from db import RESTRICTED_FALLBACK_REASON
+
+# tracks.availability_reason value for a track Spotify wouldn't describe, sitting
+# alongside its own COUNTRY_RESTRICTED/PAYWALL_CONTENT reasons - so the UI's
+# "May be unavailable" badge covers this case with no template change.
+TRACK_INFO_UNAVAILABLE_REASON = "TRACK_INFO_UNAVAILABLE"
+
+
 class IncompleteTrackInfoError(Exception):
     """spotapi answered, but not with a usable track.
 
@@ -247,6 +258,39 @@ def _extractTrackUnion(payload, trackId: str) -> dict:
         raise IncompleteTrackInfoError(
             f"song_info returned a track without a uri for {trackId}")
     return trackUnion
+
+
+def _fallbackTrackRecord(trackId: str) -> dict:
+    """A minimal stand-in for a track Spotify wouldn't describe, in the shape
+    SpotifyFormatter.formatTrack would have produced.
+
+    Deliberately invents nothing: a made-up title or duration would read as real
+    metadata downstream and stop the row ever being repaired. The id IS real
+    though, so the Spotify link is real too - only fabricated ids carry an empty
+    url in this codebase.
+
+    The album is keyed per track (album_<trackId>, the same convention the
+    importer's fallbacks use) rather than one shared "Unknown album": a single
+    fabricated album id would collect every undescribable track from every user
+    into one page of unrelated songs."""
+    return {
+        "name": "",
+        "track_id": trackId,
+        "id": trackId,
+        "disc_number": 0,
+        "track_number": 0,
+        "duration_ms": 0,
+        "artists": [],
+        "album": {"id": f"album_{trackId}", "name": "", "images": [],
+                  "external_urls": {"spotify": ""}, "total_tracks": 0},
+        "explicit": False,
+        "external_urls": {"spotify": f"https://open.spotify.com/track/{trackId}"},
+        "popularity": 0,
+        "type": "track",
+        "external_ids": {"isrc": ""},
+        "playability": {"playable": False, "reason": TRACK_INFO_UNAVAILABLE_REASON},
+        "created_reason": RESTRICTED_FALLBACK_REASON,
+    }
 
 
 def _get_track_info_with_retry(trackId: str, max_retries: int = 3):
@@ -394,7 +438,19 @@ def patch_spotipy_free() -> bool:
             if self.isUrl(trackId):
                 trackId = self.urlToId(trackId)
 
-            raw = _get_track_info_with_retry(trackId)
+            try:
+                raw = _get_track_info_with_retry(trackId)
+            except IncompleteTrackInfoError as e:
+                # Raising here propagates through SpotipyFree's
+                # _addToRecentlyPlayed into the poll loop's catch-all, which
+                # drops the whole iteration - so a play that genuinely happened
+                # is lost because Spotify wouldn't describe the track (11 times
+                # over 11 days in app.log). A marked fallback keeps the play;
+                # the metadata is repaired the next time the same id is looked
+                # up successfully, since upsertTrack lets real metadata replace
+                # a fallback row and its marker.
+                logger.warning("No usable track info for %s, recording a fallback record: %s", trackId, e)
+                return _fallbackTrackRecord(trackId)
             try:
                 artists = raw["firstArtist"]["items"]
                 artists.extend(raw["otherArtists"]["items"])

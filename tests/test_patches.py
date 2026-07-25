@@ -935,6 +935,128 @@ class TestIncompleteTrackInfo(unittest.TestCase):
         self.assertEqual(mock_public.song_info.call_count, 1)
 
 
+class TestTrackFallbackOnIncompleteInfo(unittest.TestCase):
+    """Spotify.track() degrades to a minimal fallback record rather than raising
+    when Spotify can't describe a track. Raising propagates through
+    SpotipyFree's _addToRecentlyPlayed and kills the poll iteration, losing a
+    play that really happened - 11 plays went that way over 11 days.
+
+    The record is marked RESTRICTED_FALLBACK_REASON (not SYNTHETIC): the track
+    id is real, so the Spotify link is real too, and upsertTrack is explicitly
+    built never to let a fallback overwrite metadata that arrives later."""
+
+    def _newSpotifyInstance(self):
+        import SpotipyFree
+        instance = SpotipyFree.Spotify.__new__(SpotipyFree.Spotify)
+        instance.getIsrc = False
+        return instance
+
+    def _track(self, mock_public, payload, trackId="abc123"):
+        mock_public.song_info.return_value = payload
+        return self._newSpotifyInstance().track(trackId)
+
+    @patch("spotapi.Public")
+    def test_incomplete_track_returns_fallback_instead_of_raising(self, mock_public):
+        result = self._track(mock_public, {"data": None})
+
+        self.assertEqual(result["track_id"], "abc123")
+        self.assertEqual(result["id"], "abc123")
+
+    @patch("spotapi.Public")
+    def test_fallback_keeps_the_real_spotify_link(self, mock_public):
+        """The id is real even when the metadata isn't, so the link must work -
+        only fabricated ids get an empty url."""
+        result = self._track(mock_public, {"data": {"trackUnion": None}})
+
+        self.assertEqual(result["external_urls"]["spotify"],
+                         "https://open.spotify.com/track/abc123")
+
+    @patch("spotapi.Public")
+    def test_fallback_is_marked_as_a_fallback(self, mock_public):
+        """The marker is what stops the degraded row from being mistaken for
+        real metadata, both in the UI badge and in upsertTrack's overwrite
+        guard."""
+        from Database.db import RESTRICTED_FALLBACK_REASON
+
+        result = self._track(mock_public, {"data": {"trackUnion": None}})
+
+        self.assertEqual(result["created_reason"], RESTRICTED_FALLBACK_REASON)
+
+    @patch("spotapi.Public")
+    def test_fallback_records_why_it_is_unplayable(self, mock_public):
+        """playability is the field Client.formatTrack turns into
+        tracks.availability_reason, which is what the UI badges on."""
+        from Database.patches import TRACK_INFO_UNAVAILABLE_REASON
+
+        result = self._track(mock_public, {"data": None})
+
+        self.assertEqual(result["playability"]["playable"], False)
+        self.assertEqual(result["playability"]["reason"], TRACK_INFO_UNAVAILABLE_REASON)
+
+    @patch("spotapi.Public")
+    def test_fallback_carries_no_invented_metadata(self, mock_public):
+        """A fallback must not fabricate a name or duration: a made-up title
+        would look like real metadata and block the later repair."""
+        union = fakeTrackUnion("abc123")
+        del union["uri"]
+
+        result = self._track(mock_public, {"data": {"trackUnion": union}})
+
+        self.assertEqual(result["name"], "")
+        self.assertEqual(result["duration_ms"], 0)
+        self.assertEqual(result["artists"], [])
+
+    @patch("spotapi.Public")
+    def test_fallback_album_is_per_track_not_shared(self, mock_public):
+        """Two unrelated incomplete tracks must not be merged under one
+        "Unknown album" - a shared fabricated album id would link strangers'
+        tracks together on the album page."""
+        first = self._track(mock_public, {"data": None}, trackId="aaa")
+        second = self._track(mock_public, {"data": None}, trackId="bbb")
+
+        self.assertNotEqual(first["album"]["id"], second["album"]["id"])
+
+    @patch("spotapi.Public")
+    def test_fallback_survives_the_apps_own_formatter(self, mock_public):
+        """The record's whole purpose is to reach the database, and it gets
+        there through Client.formatTrack - which indexes track["id"] and
+        track["external_urls"]["spotify"] directly."""
+        from Database.Formatters.spotifyClient import Client
+        from Database.db import RESTRICTED_FALLBACK_REASON
+
+        raw = self._track(mock_public, {"data": None})
+        formatted = Client.formatTrack(raw, timestamp=1000, msPlayed=5000)
+
+        self.assertEqual(formatted["id"], "abc123")
+        self.assertEqual(formatted["url"], "https://open.spotify.com/track/abc123")
+        self.assertEqual(formatted["created_reason"], RESTRICTED_FALLBACK_REASON)
+        self.assertEqual(formatted["availability_reason"], "TRACK_INFO_UNAVAILABLE")
+
+    @patch("spotapi.Public")
+    def test_fallback_is_logged_with_the_track_id(self, mock_public):
+        with self.assertLogs("Database.patches", level="WARNING") as logCapture:
+            self._track(mock_public, {"data": None})
+
+        self.assertTrue(any("abc123" in m for m in logCapture.output))
+
+    @patch("spotapi.Public")
+    def test_real_transport_failures_still_raise(self, mock_public):
+        """Only an incomplete *response* degrades. A genuine exception out of
+        spotapi is still an error - recording a fallback for every network blip
+        would poison the catalog with rows that look definitively unavailable."""
+        mock_public.song_info.side_effect = RuntimeError("connection reset")
+
+        with self.assertRaises(RuntimeError):
+            self._newSpotifyInstance().track("abc123")
+
+    @patch("spotapi.Public")
+    def test_complete_track_is_unaffected(self, mock_public):
+        result = self._track(mock_public, {"data": {"trackUnion": fakeTrackUnion("abc123")}})
+
+        self.assertEqual(result["name"], "Song abc123")
+        self.assertIsNone(result.get("created_reason"))
+
+
 class TestSafeResponseHeaders(unittest.TestCase):
     """The spotapi.User diagnostics log response headers to identify rate
     limiting and Cloudflare blocks. Spotify's responses to those same calls
