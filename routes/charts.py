@@ -27,6 +27,8 @@ def register(app, dashboard):
     CHART_ARTIST_TREND_TOP_N = appmod.CHART_ARTIST_TREND_TOP_N
     CHART_TOP_GENRES_LIMIT = appmod.CHART_TOP_GENRES_LIMIT
     CHART_MOST_SKIPPED_LIMIT = appmod.CHART_MOST_SKIPPED_LIMIT
+    #< only the three Top pages can rank by skips - see config.TOP_LIST_SORT_BY
+    TOP_LIST_SORT_BY = appmod.TOP_LIST_SORT_BY
 
     def overviewPage():
         from datetime import datetime
@@ -393,7 +395,7 @@ def register(app, dashboard):
 
         page = dashboard._getPageParam()
         searchQuery = request.args.get("q", "")
-        sortBy = dashboard._getSortByParam()
+        sortBy = dashboard._getSortByParam(allowed=TOP_LIST_SORT_BY)
         interval = request.args.get("interval", "")
         customStart = request.args.get("startDate", "")
         customEnd = request.args.get("endDate", "")
@@ -470,7 +472,7 @@ def register(app, dashboard):
 
         page = dashboard._getPageParam()
         searchQuery = request.args.get("q", "")
-        sortBy = dashboard._getSortByParam()
+        sortBy = dashboard._getSortByParam(allowed=TOP_LIST_SORT_BY)
         interval = request.args.get("interval", "")
         customStart = request.args.get("startDate", "")
         customEnd = request.args.get("endDate", "")
@@ -536,7 +538,7 @@ def register(app, dashboard):
 
         page = dashboard._getPageParam()
         searchQuery = request.args.get("q", "")
-        sortBy = dashboard._getSortByParam()
+        sortBy = dashboard._getSortByParam(allowed=TOP_LIST_SORT_BY)
         interval = request.args.get("interval", "")
         customStart = request.args.get("startDate", "")
         customEnd = request.args.get("endDate", "")

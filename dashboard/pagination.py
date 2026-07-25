@@ -63,13 +63,17 @@ class PaginationMixin:
         except (TypeError, ValueError):
             return 1
 
-    def _getSortByParam(self, default=DEFAULT_SORT_BY):
+    def _getSortByParam(self, default=DEFAULT_SORT_BY, allowed=VALID_SORT_BY):
         """The current request's ?sortBy=..., falling back to `default` for any
         value the DB layer doesn't know how to sort by (see VALID_SORT_BY) -
         without this, an unrecognized value reaches a ValueError/KeyError deep
-        in Repository/Database and 500s instead of just using the default."""
+        in Repository/Database and 500s instead of just using the default.
+
+        `allowed` is per-page rather than global because not every page can
+        honour every value: the Top pages pass TOP_LIST_SORT_BY to opt into
+        skip ranking, and everything else stays on the shared set."""
         sortBy = request.args.get("sortBy", default)
-        return sortBy if sortBy in VALID_SORT_BY else default
+        return sortBy if sortBy in allowed else default
 
     def _getDetailViewParam(self, default="top-songs"):
         """Artist/album detail pages' ?view= tab (top-songs/history) - same

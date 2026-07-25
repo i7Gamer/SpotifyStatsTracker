@@ -67,10 +67,14 @@ DEFAULT_SORT_BY = "totalTimeListened"
 # ARTIST_SORT_COLUMNS know how to handle - an unrecognized ?sortBy= would
 # otherwise reach a ValueError deep in the DB layer and 500 instead of just
 # falling back to the default.
-# "skips" routes the Top pages to a skip-ordered query instead of the normal
-# aggregates (see Database.SKIP_SORT_BY) - ordered by raw count there, unlike
-# the Charts top-N's rate ranking.
-VALID_SORT_BY = {"totalTimeListened", "plays", "name", "skips"}
+VALID_SORT_BY = {"totalTimeListened", "plays", "name"}
+# The Top Songs/Albums/Artists pages additionally offer "skips", which routes
+# them to a skip-ranked query instead of the normal aggregates (see
+# Database.SKIP_SORT_BY). Deliberately not in the shared set: /compare and
+# /wrapped read the same ?sortBy= but have no skip-ranked path, so accepting it
+# there would hand them differently-shaped rows (Compare) or an in-Python
+# re-sort on a key those rows don't carry (Wrapped).
+TOP_LIST_SORT_BY = VALID_SORT_BY | {"skips"}
 TRUTHY_ENV_VALUES = {"1", "true", "yes", "on"}
 # The literal FLASK_SECRET_KEY shipped as a placeholder in docker-compose.yml.
 # Booting with it signs session cookies - and, when DATA_ENCRYPTION_KEY is unset,

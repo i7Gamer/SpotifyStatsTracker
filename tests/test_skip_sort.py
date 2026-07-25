@@ -371,10 +371,17 @@ class TestTheSkipPageRespectsTheFilters(SkipSortTestCase):
 
 
 class TestSortParamValidation(unittest.TestCase):
-    def test_skips_is_an_accepted_sort_value(self):
-        from config import VALID_SORT_BY
+    def test_skips_is_accepted_on_the_top_pages_only(self):
+        """Only the three Top pages offer it. Compare and Wrapped share the
+        sortBy param but not the skip-ranked query path: Compare would render
+        skip-ranked lists nobody asked for, and Wrapped's in-Python re-sort
+        would silently order by a key its rows don't carry. A whitelist that
+        accepts a value one page can't honour isn't a whitelist."""
+        from config import VALID_SORT_BY, TOP_LIST_SORT_BY
 
-        self.assertIn("skips", VALID_SORT_BY)
+        self.assertIn("skips", TOP_LIST_SORT_BY)
+        self.assertNotIn("skips", VALID_SORT_BY)
+        self.assertTrue(VALID_SORT_BY < TOP_LIST_SORT_BY)   #< the Top pages only ADD to the shared set
 
     def test_the_ranking_weight_reaches_sql_as_a_bound_param(self):
         """The predecessor took an `orderBy` string that was interpolated into

@@ -475,6 +475,17 @@ class TestSkipSortKeepsTheOtherFilters(_ListRouteTestBase):
         self.assertIs(db.getTopSongs.call_args.kwargs["fullPlaysOnly"], False)
         self.assertIs(db.getSongsCount.call_args.kwargs["fullPlaysOnly"], False)
 
+    def test_a_page_that_cannot_rank_by_skips_falls_back(self):
+        """/compare and /wrapped read the same ?sortBy= but have no skip-ranked
+        path, so the value has to be rejected there rather than quietly
+        producing a differently-shaped list."""
+        dash = self._makeApp()
+
+        with dash.app.test_request_context("/compare?sortBy=skips"):
+            self.assertEqual(dash._getSortByParam(default="plays"), "plays")
+        with dash.app.test_request_context("/top-songs?sortBy=skips"):
+            self.assertEqual(dash._getSortByParam(allowed=appModule.TOP_LIST_SORT_BY), "skips")
+
     def test_artists_and_albums_narrow_their_counts_too(self):
         dash = self._makeApp()
         db = self._makeDb(entryCount=0)
