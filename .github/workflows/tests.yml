@@ -6,33 +6,15 @@ name: Tests
   pull_request:
     branches: [main]
 
-# Lint and tests only read the checkout; nothing here comments on PRs or writes
-# back to the repository, so the token is pinned to the minimum rather than
-# inheriting the repository default, which can be write-all.
+# Tests only read the checkout; nothing here comments on PRs or writes back to
+# the repository, so the token is pinned to the minimum rather than inheriting
+# the repository default, which can be write-all.
 permissions:
   contents: read
 
+# Linting lives in its own workflow (lint.yml) so the README can carry a Lint
+# badge that reflects ruff alone - GitHub badges are per-workflow, not per-job.
 jobs:
-  lint:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-
-      # Pinned: a ruff upgrade can add checks to the selected rule groups, and
-      # this gate is only useful if going red means someone's change broke
-      # something - not that the tool learned a new opinion overnight. Bump it
-      # deliberately, with any new findings fixed in the same commit.
-      - name: Install ruff
-        run: pip install ruff==0.16.0
-
-      # Rule set and the reasoning behind it live in pyproject.toml.
-      - name: Lint
-        run: ruff check .
-
   test:
     runs-on: ubuntu-latest
     steps:

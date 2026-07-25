@@ -3,7 +3,7 @@
 <img width="1437" height="2373" alt="SpotifyTrackerGenres" src="https://github.com/user-attachments/assets/e34579e5-a397-43aa-97a0-102f4cb3974d" />
 <img width="1438" height="1744" alt="SpotifyTrackerWrappedV5" src="https://github.com/user-attachments/assets/be8526a3-efdf-4a48-8912-384c53439ee2" />
 
-## Spotify Stats Tracker - [![Tests](https://github.com/i7Gamer/SpotifyStatsTracker/actions/workflows/tests.yml/badge.svg)](https://github.com/i7Gamer/SpotifyStatsTracker/actions/workflows/tests.yml)
+## Spotify Stats Tracker - [![Tests](https://github.com/i7Gamer/SpotifyStatsTracker/actions/workflows/tests.yml/badge.svg)](https://github.com/i7Gamer/SpotifyStatsTracker/actions/workflows/tests.yml) [![Lint](https://github.com/i7Gamer/SpotifyStatsTracker/actions/workflows/lint.yml/badge.svg)](https://github.com/i7Gamer/SpotifyStatsTracker/actions/workflows/lint.yml) [![CodeQL](https://github.com/i7Gamer/SpotifyStatsTracker/actions/workflows/github-code-scanning/codeql/badge.svg)](https://github.com/i7Gamer/SpotifyStatsTracker/security/code-scanning)
 
 ### If you found [this repository](https://github.com/i7Gamer/SpotifyStatsTracker) useful, please give it a ⭐!
 A web application that allows users to track and analyze their Spotify listening habits and statistics **without Spotify Premium**.
