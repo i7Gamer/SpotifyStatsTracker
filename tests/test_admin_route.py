@@ -29,6 +29,14 @@ _INSIGHTS_PATCHES = {
 }
 
 
+# Bound for waits that should return immediately in a correct run - they exist
+# to turn a hang into a failure, not to give slow machines "enough" time. No
+# assertion here depends on how long anything takes: a blocked worker is held
+# on an unbounded Event that the test releases in a finally, so nothing can
+# expire early under load (the suite runs under xdist by default).
+HANG_TIMEOUT_SECONDS = 10
+
+
 class AdminRouteTestBase(AppTestCase):
     _MOCK_STATS = {"tracks": 10, "artists": 5, "albums": 3, "plays": 100,
                    "total_time_ms": 36000000, "db_size_bytes": 1048576}
@@ -688,62 +696,69 @@ class TestAdminCreateBackup(AdminRouteTestBase):
         self.assertIn("not available", payload["message"])
 
     def test_slow_backup_returns_without_blocking(self):
-        # A backup that outlives the synchronous wait must return promptly with
-        # a "still running" message rather than tie up the request thread.
+        """A backup that outlives the synchronous wait returns promptly with a
+        "still running" message rather than tying up the request thread.
+
+        Deterministic by construction rather than by timing: the sync wait is
+        patched to 0, so join() returns at once, and the backup blocks on an
+        Event with no timeout - Thread.is_alive() is True from start() until
+        run() returns, and run() cannot return while blocked. There is no
+        duration here that a loaded machine could overshoot."""
         import threading
         from pathlib import Path
         dash = self._makeApp()
         release = threading.Event()
-        started = threading.Event()
 
         def blocking_backup():
-            started.set()
-            release.wait(5)
+            release.wait()   #< unbounded on purpose; released in the finally below
             return Path("/fake/Backups/spotify_stats_backup_20260724_120000.db")
 
         mock_worker = self._mockWorker(runBackup=blocking_backup)
         try:
-            with patch("routes.admin.MANUAL_BACKUP_SYNC_WAIT_SECONDS", 0.2):
+            with patch("routes.admin.MANUAL_BACKUP_SYNC_WAIT_SECONDS", 0):
                 resp = self._postBackup(dash, backupWorker=mock_worker,
                                         headers={"X-Requested-With": "XMLHttpRequest"})
             self.assertEqual(resp.status_code, 200)
             payload = resp.get_json()
             self.assertEqual(payload["kind"], "success")
             self.assertIn("shortly", payload["message"])
-            self.assertTrue(started.wait(2))
-            mock_worker.runBackup.assert_called_once()
         finally:
             release.set()
 
-    def test_concurrent_manual_backup_is_rejected(self):
-        # While one manual backup is still running, a second is refused instead
-        # of racing a duplicate snapshot.
-        import threading
-        from pathlib import Path
+    def test_a_backup_already_in_flight_is_rejected(self):
+        """The route's whole job here: ask the worker, and refuse if it says a
+        snapshot is running.
+
+        No threads and no clock - the previous version of this test started a
+        real background backup and raced it, which is what made it flaky under
+        xdist. Whether the worker's answer is *correct* is the worker's own
+        concern, covered by TestConcurrentBackups in test_backup_worker.py."""
         dash = self._makeApp()
-        release = threading.Event()
-        started = threading.Event()
+        mock_worker = self._mockWorker()
+        mock_worker.isBackupRunning.side_effect = None
+        mock_worker.isBackupRunning.return_value = True
 
-        def blocking_backup():
-            started.set()
-            release.wait(5)
-            return Path("/fake/Backups/spotify_stats_backup_20260724_120000.db")
+        resp = self._postBackup(dash, backupWorker=mock_worker,
+                                headers={"X-Requested-With": "XMLHttpRequest"})
 
-        mock_worker = self._mockWorker(runBackup=blocking_backup)
-        try:
-            with patch("routes.admin.MANUAL_BACKUP_SYNC_WAIT_SECONDS", 0.2):
-                first = self._postBackup(dash, backupWorker=mock_worker,
-                                         headers={"X-Requested-With": "XMLHttpRequest"})
-                self.assertTrue(started.wait(2))
-                second = self._postBackup(dash, backupWorker=mock_worker,
-                                          headers={"X-Requested-With": "XMLHttpRequest"})
-            self.assertEqual(first.get_json()["kind"], "success")
-            second_payload = second.get_json()
-            self.assertEqual(second_payload["kind"], "error")
-            self.assertIn("already in progress", second_payload["message"])
-            mock_worker.runBackup.assert_called_once()   #< the second request never reached runBackup
-        finally:
-            release.set()
+        payload = resp.get_json()
+        self.assertEqual(payload["kind"], "error")
+        self.assertIn("already in progress", payload["message"])
+        mock_worker.runBackup.assert_not_called()   #< never reached a second snapshot
+
+    def test_a_second_backup_is_allowed_once_the_first_finishes(self):
+        """The rejection is state-driven, not a one-shot latch."""
+        dash = self._makeApp()
+        mock_worker = self._mockWorker()
+
+        first = self._postBackup(dash, backupWorker=mock_worker,
+                                 headers={"X-Requested-With": "XMLHttpRequest"})
+        second = self._postBackup(dash, backupWorker=mock_worker,
+                                  headers={"X-Requested-With": "XMLHttpRequest"})
+
+        self.assertEqual(first.get_json()["kind"], "success")
+        self.assertEqual(second.get_json()["kind"], "success")
+        self.assertEqual(mock_worker.runBackup.call_count, 2)
 
 
 

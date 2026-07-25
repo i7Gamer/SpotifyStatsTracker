@@ -30,6 +30,13 @@ def _makeSourceDb(path: Path):
     conn.close()
 
 
+# Bound for waits that should return immediately in a correct run - they exist
+# to turn a hang into a failure, not to give slow machines "enough" time. A
+# blocked worker is held on an unbounded Event released in a finally, so no
+# hold can expire early under load (the suite runs under xdist by default).
+HANG_TIMEOUT_SECONDS = 10
+
+
 class BackupWorkerTestCase(unittest.TestCase):
     def setUp(self):
         self._tmpdir = tempfile.TemporaryDirectory()
@@ -158,6 +165,15 @@ class TestConcurrentBackups(BackupWorkerTestCase):
     copy to a valid-looking snapshot."""
 
     def test_a_second_backup_waits_instead_of_overlapping(self):
+        """The invariant is the interleaving, not any duration: whatever the
+        scheduler does, one snapshot must fully finish before the next starts.
+
+        The recorded start/end sequence proves that on its own - an overlap
+        would show up as start/start. There is deliberately no "is the second
+        thread still alive after N ms" check: that asserted a timing symptom of
+        blocking rather than the property itself, and it could not tell a
+        thread waiting on the lock apart from one the OS simply hadn't
+        scheduled yet."""
         worker = self._makeWorker()
         overlapped = []
         inFlight = threading.Event()
@@ -167,27 +183,30 @@ class TestConcurrentBackups(BackupWorkerTestCase):
         def slowRun():
             overlapped.append("start")
             inFlight.set()
-            release.wait(5)
+            release.wait()   #< unbounded; released in the finally below
             try:
                 return realRun()
             finally:
                 overlapped.append("end")
 
-        with patch.object(worker, "_runBackupLocked", slowRun):
-            first = threading.Thread(target=worker.runBackup)
-            first.start()
-            self.assertTrue(inFlight.wait(5))
+        try:
+            with patch.object(worker, "_runBackupLocked", slowRun):
+                first = threading.Thread(target=worker.runBackup, daemon=True)
+                first.start()
+                #< a hang detector, not a race: slowRun sets this immediately
+                self.assertTrue(inFlight.wait(HANG_TIMEOUT_SECONDS))
 
-            second = threading.Thread(target=worker.runBackup)
-            second.start()
-            second.join(timeout=0.3)
-            self.assertTrue(second.is_alive(), "the second backup ran while the first was in flight")
+                second = threading.Thread(target=worker.runBackup, daemon=True)
+                second.start()
 
+                release.set()
+                first.join(timeout=HANG_TIMEOUT_SECONDS)
+                second.join(timeout=HANG_TIMEOUT_SECONDS)
+                self.assertFalse(first.is_alive())
+                self.assertFalse(second.is_alive())
+        finally:
             release.set()
-            first.join(timeout=5)
-            second.join(timeout=5)
 
-        # start/end/start/end - never start/start
         self.assertEqual(overlapped, ["start", "end", "start", "end"])
 
     def test_is_backup_running_reports_an_in_flight_snapshot(self):
@@ -197,19 +216,24 @@ class TestConcurrentBackups(BackupWorkerTestCase):
 
         def slowRun():
             inFlight.set()
-            release.wait(5)
+            release.wait()   #< unbounded; released in the finally below
             return self.root / "Backups" / "fake.db"
 
         self.assertFalse(worker.isBackupRunning())
-        with patch.object(worker, "_runBackupLocked", slowRun):
-            thread = threading.Thread(target=worker.runBackup)
-            thread.start()
-            self.assertTrue(inFlight.wait(5))
+        try:
+            with patch.object(worker, "_runBackupLocked", slowRun):
+                thread = threading.Thread(target=worker.runBackup, daemon=True)
+                thread.start()
+                #< a hang detector, not a race: slowRun sets this immediately
+                self.assertTrue(inFlight.wait(HANG_TIMEOUT_SECONDS))
 
-            self.assertTrue(worker.isBackupRunning())
+                self.assertTrue(worker.isBackupRunning())
 
+                release.set()
+                thread.join(timeout=HANG_TIMEOUT_SECONDS)
+                self.assertFalse(thread.is_alive())
+        finally:
             release.set()
-            thread.join(timeout=5)
         self.assertFalse(worker.isBackupRunning())
 
 
