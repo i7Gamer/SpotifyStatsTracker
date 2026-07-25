@@ -6,6 +6,12 @@ name: Tests
   pull_request:
     branches: [main]
 
+# Lint and tests only read the checkout; nothing here comments on PRs or writes
+# back to the repository, so the token is pinned to the minimum rather than
+# inheriting the repository default, which can be write-all.
+permissions:
+  contents: read
+
 jobs:
   lint:
     runs-on: ubuntu-latest

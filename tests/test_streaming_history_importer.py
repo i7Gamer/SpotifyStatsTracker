@@ -1009,6 +1009,51 @@ class TestSearchForSongEmptyResults(unittest.TestCase):
         self.assertEqual(tracks[0]["created_reason"], SYNTHETIC_FALLBACK_REASON)
 
 
+class TestSyntheticIdStability(unittest.TestCase):
+    """The md5 surrogate ids for URI-less tracks/artists are written into every
+    user's database and referenced by plays, images and tags, so the digest is
+    a persisted data format, not an implementation detail. These literals are
+    pinned so a change to the hashing call cannot silently orphan existing rows.
+
+    (md5 here is a deterministic id, never a security primitive - which is why
+    it is called with usedforsecurity=False, a flag that does not alter output.)
+    """
+
+    EXPECTED_TRACK_ID = "701912c183d094a2475e9146e1aa0d14"
+    EXPECTED_ARTIST_ID = "artist_c2b2c0916a08cba84e0bb1b95b3b54e0"
+
+    def test_synthetic_track_id_digest_is_unchanged(self):
+        importer = Importer()
+        track = importer._createSyntheticTrack(
+            "Gone Song", "Gone Artist", None, 10354)
+
+        self.assertEqual(track["id"], self.EXPECTED_TRACK_ID)
+        self.assertEqual(track["album"]["id"], f"album_{self.EXPECTED_TRACK_ID}")
+        # No real URI means the fabricated id points at nothing on Spotify.
+        self.assertEqual(track["url"], "")
+
+    def test_synthetic_track_id_with_a_uri_does_not_hash_at_all(self):
+        importer = Importer()
+        track = importer._createSyntheticTrack(
+            "Gone Song", "Gone Artist", "spotify:track:real123", 10354)
+
+        self.assertEqual(track["id"], "spotify:track:real123")
+
+    def test_fabricated_artist_id_digest_is_unchanged(self):
+        importer = Importer()
+        artist = importer._resolveExportArtist("Gone Artist")
+
+        self.assertEqual(artist["id"], self.EXPECTED_ARTIST_ID)
+        self.assertEqual(artist["imageId"], self.EXPECTED_ARTIST_ID)
+
+    def test_ids_are_stable_across_repeated_calls(self):
+        importer = Importer()
+        first = importer._createSyntheticTrack("A", "B", None, 1)["id"]
+        second = importer._createSyntheticTrack("A", "B", None, 999)["id"]
+
+        self.assertEqual(first, second)
+
+
 if __name__ == "__main__":
     unittest.main()
 

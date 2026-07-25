@@ -217,8 +217,13 @@ class Importer:
         if trackUri:
             track_id = trackUri
         else:
-            # Generate deterministic unique ID based on name and artist
-            track_id = hashlib.md5(f"{name}::{artist}".encode("utf-8")).hexdigest()
+            # Generate deterministic unique ID based on name and artist.
+            # usedforsecurity=False: this is a surrogate key, never a security
+            # primitive, and the flag keeps md5 callable on FIPS-mode hosts
+            # (where the default constructor raises) without altering the
+            # digest - the ids below are already persisted in user databases.
+            track_id = hashlib.md5(
+                f"{name}::{artist}".encode("utf-8"), usedforsecurity=False).hexdigest()
 
         album_id = f"album_{track_id}"
 
@@ -290,7 +295,9 @@ class Importer:
         catalogArtist = getattr(self, "_catalogArtistsByName", {}).get(artist.strip().lower())
         if catalogArtist:
             return dict(catalogArtist)
-        artist_id = f"artist_{hashlib.md5(artist.encode('utf-8')).hexdigest()}"
+        # usedforsecurity=False for the same reason as _createSyntheticTrack's
+        # id: a deterministic surrogate key, not a security primitive.
+        artist_id = f"artist_{hashlib.md5(artist.encode('utf-8'), usedforsecurity=False).hexdigest()}"
         return {
             "name": artist,
             "url": "",

@@ -8,6 +8,12 @@ on:
         required: true
         type: string
 
+# The image is pushed with Docker Hub credentials, so GITHUB_TOKEN only ever
+# needs to read the checkout - without this it inherits the repository default,
+# which can be write-all.
+permissions:
+  contents: read
+
 jobs:
   build-test-push:
     runs-on: ubuntu-latest

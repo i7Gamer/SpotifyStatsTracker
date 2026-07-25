@@ -596,8 +596,13 @@
         if (!cell) { hideTooltip(); return; }
         var count = cell.getAttribute('data-count');
         var tip = ensureTooltip();
-        tip.innerHTML = '<strong>' + formatDay(cell.getAttribute('data-date')) +
-          '</strong><br>' + count + ' play' + (count === '1' ? '' : 's');
+        // Built as nodes rather than an innerHTML concat: both values come off
+        // data-* attributes, and reinterpreting DOM text as HTML is the one
+        // step that would turn a future non-numeric count into markup.
+        var day = document.createElement('strong');
+        day.textContent = formatDay(cell.getAttribute('data-date'));
+        tip.replaceChildren(day, document.createElement('br'),
+          document.createTextNode(count + ' play' + (count === '1' ? '' : 's')));
         tip.style.left = (evt.clientX + 14) + 'px';
         tip.style.top = (evt.clientY + 14) + 'px';
         tip.style.display = 'block';
