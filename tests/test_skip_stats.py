@@ -154,6 +154,22 @@ class TestMostSkippedSongs(SkipStatsTestCase):
 
         self.assertEqual(ranked, ["proven", "noise"])
 
+    def test_low_volume_rows_drift_toward_the_library_average_not_toward_zero(self):
+        """Which way the shrinkage pulls, not just that it happens.
+
+        This library is skipped 43% of the time overall, so a thin row is not
+        assumed innocent - `thin` starts from that average and its own 100%
+        carries it past `steady`, which is skipped LESS than this user's norm.
+        Shrinking toward zero instead would order these the other way round."""
+        self._track("thin")
+        self._record("thin", plays=0, skips=1)                    #< 100% on 1 encounter
+        self._track("steady")
+        self._record("steady", plays=12, skips=8, startHour=20)   #< 40% on 20, just under the norm
+
+        ranked = [s["id"] for s in self.db.getMostSkippedSongs(limit=10)]
+
+        self.assertEqual(ranked, ["thin", "steady"])
+
     def test_the_displayed_percentage_stays_the_true_one(self):
         """Shrinkage decides the ORDER; the number shown is the real rate."""
         self._track("noise")
