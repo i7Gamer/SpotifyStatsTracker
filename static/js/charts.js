@@ -77,10 +77,17 @@
     var ctx = setup.ctx, width = setup.width, height = setup.height;
     ctx.clearRect(0, 0, width, height);
 
-    if (data.length === 0) {
+    // Skips carry no listening time, so they cannot share the millisecond axis
+    // - they get their own count scale and a second, narrower bar in each slot.
+    // Drawn only when skips actually exist, so a chart without any looks
+    // exactly as it did before. Without this a track whose plays are ALL skips
+    // renders every bar at zero height and reads as "nothing here".
+    if (CU.timeSeriesHasNothingToDraw(data)) {
       drawEmptyState(ctx, width, height, 'No listening data in this period yet.');
       return;
     }
+    var maxSkips = CU.maxSkipsIn(data);
+    var hasSkips = maxSkips > 0;
 
     var maxMs = Math.max(1, Math.max.apply(null, data.map(function (d) { return d.totalTimeListened; })));
     var paddingLeft = yAxisPaddingLeft(ctx, maxMs, msToShortLabel), paddingBottom = 26, paddingTop = 16, paddingRight = 16;
@@ -89,6 +96,8 @@
     var slotWidth = plotWidth / data.length;
     var barGap = 4;
     var barWidth = Math.max(2, slotWidth - barGap);
+    // Split the slot between the two series only when both are on show.
+    var playWidth = hasSkips ? Math.max(1, barWidth / 2) : barWidth;
 
     drawYAxisGrid(ctx, paddingLeft, paddingTop, plotWidth, plotHeight, maxMs, msToShortLabel);
 
@@ -97,7 +106,13 @@
       var barHeight = plotHeight * (d.totalTimeListened / maxMs);
       var y = paddingTop + plotHeight - barHeight;
       ctx.fillStyle = PALETTE[0];
-      ctx.fillRect(x, y, barWidth, barHeight);
+      ctx.fillRect(x, y, playWidth, barHeight);
+      if (hasSkips && (d.skips || 0) > 0) {
+        var skipHeight = plotHeight * (d.skips / maxSkips);
+        ctx.fillStyle = PALETTE[3];
+        ctx.fillRect(x + playWidth, paddingTop + plotHeight - skipHeight, playWidth, skipHeight);
+      }
+      // The hit box stays the full slot so both series share one tooltip.
       return { x: x, width: barWidth, d: d, hourIndex: i };
     });
 
@@ -125,7 +140,13 @@
       var hit = findBarAt(mx, my);
       if (hit) {
         var label = isLastDay ? hit.d.label.split(' ')[1] : hit.d.label;
-        showTooltip(evt, '<strong>' + label + '</strong><br>' + (hit.d.totalTimeListenedText || '0s') + ' &middot; ' + hit.d.plays + ' plays');
+        var body = (hit.d.totalTimeListenedText || '0s') + ' &middot; ' + hit.d.plays + ' plays';
+        // Only mentioned when there are some: the count is exact here, which
+        // matters because the skip bar is on its own scale, not the time axis.
+        if ((hit.d.skips || 0) > 0) {
+          body += ' &middot; ' + hit.d.skips + (hit.d.skips === 1 ? ' skip' : ' skips');
+        }
+        showTooltip(evt, '<strong>' + label + '</strong><br>' + body);
         // rangeStart is only stamped for buckets with a clean calendar-date
         // mapping (see app.py's _timeSeriesBucketRange) - the single-day
         // view's hourly buckets don't get one, so they stay un-clickable.

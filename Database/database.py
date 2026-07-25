@@ -1049,9 +1049,24 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
 
     def getSong(self, trackId: str) -> dict | None:
         """A single song's full metadata plus all-time listen totals - the
-        song-detail page's lookup."""
+        song-detail page's lookup.
+
+        getSongsPage filters is_skip=0, so a track whose plays are ALL skips has
+        no row there and this used to return None - which the detail route reads
+        as "no such song" and redirects away, even though the most-skipped list
+        links straight to it. The skip-sorted query already aggregates
+        skip-inclusive (it exists to rank by skips), so it serves as the
+        fallback and reports plays=0 with the real skips/encounters.
+
+        Deliberately a second query rather than relaxing getSongsPage: that
+        query's is_skip=0 predicate is load-bearing for its plan (see
+        getSongsStats), and this path only runs for a track with no real plays
+        at all."""
         results = self.getSongsStats(sortBy="plays", limit=1, trackId=trackId)
-        return results[0] if results else None
+        if results:
+            return results[0]
+        skipOnly = self.getSongsStats(sortBy=self.SKIP_SORT_BY, limit=1, trackId=trackId)
+        return skipOnly[0] if skipOnly else None
 
     def getPlayedTrackIds(self, trackIds: list[str]) -> set[str]:
         """The subset of `trackIds` this user has at least one play of - see
@@ -1558,9 +1573,10 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         for row in rows:
             date = convertToDatetime(row["bucketStartTs"], tz=self.tz)
             key = self._bucketKey(date, groupBy)
-            bucket = buckets.setdefault(key, {"label": key, "totalTimeListened": 0, "plays": 0})
+            bucket = buckets.setdefault(key, {"label": key, "totalTimeListened": 0, "plays": 0, "skips": 0})
             bucket["totalTimeListened"] += row["totalTimeListened"]
             bucket["plays"] += row["plays"]
+            bucket["skips"] += row.get("skips", 0)
 
         if startDate is not None and endDate is not None:
             rangeStart, rangeEnd = startDate, endDate
@@ -1593,7 +1609,7 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         result = []
         while cursor < rangeEnd:
             key = self._bucketKey(cursor, groupBy)
-            result.append(buckets.get(key, {"label": key, "totalTimeListened": 0, "plays": 0}))
+            result.append(buckets.get(key, {"label": key, "totalTimeListened": 0, "plays": 0, "skips": 0}))
             cursor = advance(cursor)
         return result
 

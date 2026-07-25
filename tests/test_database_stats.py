@@ -273,6 +273,36 @@ class TestDetailLookups(DatabaseTestCase):
         db = self._makeDb({}, [])
         self.assertIsNone(db.getSong("missing"))
 
+    def test_get_song_finds_a_track_that_was_only_ever_skipped(self):
+        """getSongsPage filters is_skip=0, so a track with nothing but skips
+        produced no row and the detail route redirected away - the song looked
+        like it did not exist even though the skip lists linked straight to it."""
+        tracks, entries = self._sampleData()
+        db = self._makeDb(tracks, entries)
+        db.repo._conn().execute("UPDATE plays SET is_skip = 1")
+        db.repo.commit()
+
+        song = db.getSong("t1")
+
+        self.assertIsNotNone(song)
+        self.assertEqual(song["id"], "t1")
+        self.assertEqual(song["plays"], 0)      #< no real listens...
+        self.assertEqual(song["skips"], 2)      #< ...but the skips are the story
+        self.assertEqual(song["encounters"], 2)
+
+    def test_get_song_still_reports_real_totals_when_some_plays_are_skips(self):
+        """The fallback must not take over as soon as a single skip exists -
+        a track with real plays keeps its normal, unskipped totals."""
+        tracks, entries = self._sampleData()
+        db = self._makeDb(tracks, entries)
+        db.repo._conn().execute(
+            "UPDATE plays SET is_skip = 1 WHERE played_at = 100")
+        db.repo.commit()
+
+        song = db.getSong("t1")
+
+        self.assertEqual(song["plays"], 1)
+
     def test_get_artist_returns_the_matching_artist(self):
         tracks, entries = self._sampleData()
         db = self._makeDb(tracks, entries)

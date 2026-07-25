@@ -1662,7 +1662,14 @@ class PlayQueries:
 
         `trackId`/`artistId`/`albumId` narrow this to one item's plays -
         reused by the song/artist/album detail pages' "play history over
-        time" chart and heatmap."""
+        time" chart and heatmap.
+
+        Skips are counted per bucket alongside real plays instead of being
+        filtered out in the WHERE. A track whose plays are ALL skips otherwise
+        produced no rows at all, so its detail page rendered a blank chart with
+        nothing to say why. `plays`/`totalTimeListened` still count only real
+        listens - the heatmap and streak stats read those from these same rows
+        and mean listening by them - so only the added `skips` key is new."""
         conn = self._conn()
         params = [username]
         rangeClause = self._dateRangeClause(params, startTs, endTs)
@@ -1671,9 +1678,10 @@ class PlayQueries:
         rows = conn.execute(
             f"""
             SELECT CAST(played_at / {PLAY_BUCKET_SECONDS} AS INTEGER) AS bucket,
-                   COUNT(*) AS plays,
-                   COALESCE(SUM(time_played), 0) AS total_time
-            FROM plays WHERE username = ? AND is_skip=0{rangeClause}{extraClauses}
+                   SUM(CASE WHEN is_skip = 0 THEN 1 ELSE 0 END) AS plays,
+                   SUM(CASE WHEN is_skip = 1 THEN 1 ELSE 0 END) AS skips,
+                   COALESCE(SUM(CASE WHEN is_skip = 0 THEN time_played ELSE 0 END), 0) AS total_time
+            FROM plays WHERE username = ?{rangeClause}{extraClauses}
             GROUP BY bucket
             ORDER BY bucket
             """,
@@ -1681,6 +1689,7 @@ class PlayQueries:
         ).fetchall()
         return [{"bucketStartTs": r["bucket"] * PLAY_BUCKET_SECONDS,
                  "plays": r["plays"],
+                 "skips": r["skips"],
                  "totalTimeListened": r["total_time"]} for r in rows]
 
     def getPlaysInTimeWindows(self, username: str, windows: list[tuple[float, float]]) -> list[dict]:

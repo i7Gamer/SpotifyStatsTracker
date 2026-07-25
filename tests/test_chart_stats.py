@@ -25,6 +25,95 @@ class ChartStatsTestCase(DatabaseTestCase):
         self.addCleanup(patcher.stop)
 
 
+class TestTimeSeriesSkipsSeries(ChartStatsTestCase):
+    """The detail pages' play-history chart carries a skips series alongside
+    plays, so a track that was skipped still has a visible timeline. Skips must
+    stay OUT of `plays`/`totalTimeListened` - the heatmap and streak stats read
+    those from the same bucket rows and mean real listens by them.
+    """
+
+    SHORT_MS = 4_000   #< under the default 5s threshold -> classified as a skip
+
+    def _makeDbWithSkips(self, entries):
+        """conftest's helper inserts every play with is_skip=0 (insertPlay never
+        classifies - its callers do), so the real classifier is run over the
+        seeded rows rather than setting the column by hand."""
+        db = self._makeDb({}, entries)
+        db.repo.recomputeSkipFlags()
+        return db
+
+    def _dbWithAMixOfPlaysAndSkips(self):
+        entries = [
+            {"id": "t1", "playedAt": _ts(2026, 7, 1, 9), "timePlayed": 60_000},
+            {"id": "t1", "playedAt": _ts(2026, 7, 1, 10), "timePlayed": self.SHORT_MS},
+            {"id": "t1", "playedAt": _ts(2026, 7, 2, 9), "timePlayed": self.SHORT_MS},
+        ]
+        return self._makeDbWithSkips(entries)
+
+    def _series(self, db):
+        result = db.getListeningTimeSeries(
+            startDate=datetime.datetime(2026, 7, 1, tzinfo=datetime.timezone.utc),
+            endDate=datetime.datetime(2026, 7, 3, tzinfo=datetime.timezone.utc),
+            groupBy="day",
+        )
+        return {b["label"]: b for b in result}
+
+    def test_skips_are_counted_per_bucket(self):
+        byLabel = self._series(self._dbWithAMixOfPlaysAndSkips())
+
+        self.assertEqual(byLabel["2026-07-01"]["skips"], 1)
+        self.assertEqual(byLabel["2026-07-02"]["skips"], 1)
+
+    def test_skips_do_not_leak_into_plays_or_listened_time(self):
+        byLabel = self._series(self._dbWithAMixOfPlaysAndSkips())
+
+        self.assertEqual(byLabel["2026-07-01"]["plays"], 1)
+        self.assertEqual(byLabel["2026-07-01"]["totalTimeListened"], 60_000)
+        # A day with nothing but skips is a real listening zero.
+        self.assertEqual(byLabel["2026-07-02"]["plays"], 0)
+        self.assertEqual(byLabel["2026-07-02"]["totalTimeListened"], 0)
+
+    def test_gap_filled_buckets_carry_a_zero_skips_key(self):
+        """Every bucket must expose the same keys or the chart's series goes
+        ragged where a day had no activity at all."""
+        entries = [{"id": "t1", "playedAt": _ts(2026, 7, 1, 9), "timePlayed": 60_000}]
+        db = self._makeDb({}, entries)
+
+        result = db.getListeningTimeSeries(
+            startDate=datetime.datetime(2026, 7, 1, tzinfo=datetime.timezone.utc),
+            endDate=datetime.datetime(2026, 7, 4, tzinfo=datetime.timezone.utc),
+            groupBy="day",
+        )
+
+        self.assertTrue(all("skips" in b for b in result))
+        self.assertEqual({b["label"]: b["skips"] for b in result}["2026-07-03"], 0)
+
+    def test_a_track_that_was_only_ever_skipped_still_has_a_timeline(self):
+        """The reported case: with no non-skip plays the chart used to come back
+        completely empty, so the detail page rendered blank."""
+        entries = [
+            {"id": "t1", "playedAt": _ts(2026, 7, 1, 9), "timePlayed": self.SHORT_MS},
+            {"id": "t1", "playedAt": _ts(2026, 7, 2, 9), "timePlayed": self.SHORT_MS},
+        ]
+        db = self._makeDbWithSkips(entries)
+
+        result = db.getListeningTimeSeries(trackId="t1", groupBy="day")
+
+        self.assertNotEqual(result, [])
+        self.assertEqual(sum(b["skips"] for b in result), 2)
+        self.assertEqual(sum(b["plays"] for b in result), 0)
+
+    def test_heatmap_still_ignores_skips(self):
+        """getHourOfDayHeatmap shares the same bucket rows - a skip must not
+        light up a cell as listening activity."""
+        db = self._dbWithAMixOfPlaysAndSkips()
+
+        grid = db.getHourOfDayHeatmap()
+
+        total = sum(cell["plays"] for row in grid for cell in row)
+        self.assertEqual(total, 1)   #< only the one real play
+
+
 class TestGetListeningTimeSeries(ChartStatsTestCase):
     def test_daily_grouping_aggregates_same_day_entries(self):
         entries = [

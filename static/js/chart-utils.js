@@ -564,8 +564,35 @@
     canvas.onmouseleave = hideTooltip;
   }
 
+  // --- time-series skip series ------------------------------------------
+  // Pure helpers so the two decisions the skips series turns on are testable
+  // without a canvas (renderTimeSeriesChart itself needs a real DOM).
+
+  function maxSkipsIn(data) {
+    /* Highest skip count across the buckets - the skip bars' own scale. Skips
+     * carry no listening time, so they cannot share the millisecond axis. */
+    return (data || []).reduce(function (max, d) {
+      return Math.max(max, (d && d.skips) || 0);
+    }, 0);
+  }
+
+  function timeSeriesHasNothingToDraw(data) {
+    /* True only when there is neither listening time nor a single skip. A
+     * track whose plays are ALL skips has zero listening time in every bucket,
+     * so a time-only emptiness check would show "no data" on a page whose
+     * whole point is the skips. */
+    if (!data || data.length === 0) {
+      return true;
+    }
+    return !data.some(function (d) {
+      return (d && d.totalTimeListened > 0) || ((d && d.skips) || 0) > 0;
+    });
+  }
+
   var ChartUtils = {
     PALETTE: PALETTE,
+    maxSkipsIn: maxSkipsIn,
+    timeSeriesHasNothingToDraw: timeSeriesHasNothingToDraw,
     refreshPalette: refreshPalette,
     getAccentColor: getAccentColor,
     parseHex: parseHex,
