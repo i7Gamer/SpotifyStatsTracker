@@ -1,8 +1,9 @@
 """Skip statistics as they reach the pages: the Charts payload's most-skipped
 lists, and the per-entity summary on the song/artist/album detail pages.
 
-The query semantics (rate-over-count, the minimum-encounters floor) are pinned
-in test_skip_stats.py; these cover the wiring only.
+The query semantics (rate-over-count, and the shrinkage that makes a rate
+rankable at low volume) are pinned in test_skip_stats.py; these cover the
+wiring only.
 """
 import os
 import sys

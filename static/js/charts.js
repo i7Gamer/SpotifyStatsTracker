@@ -435,18 +435,21 @@
     var songs = skipPairs(data.mostSkippedSongs);
     var artists = skipPairs(data.mostSkippedArtists);
 
-    // Nothing clears the minimum-encounters floor yet (a new library, or a
-    // narrow range) - hide the whole row rather than show two empty frames.
+    // Nothing skipped at all in this range (a new library, or a narrow one) -
+    // hide the whole row rather than show two empty frames.
     var grid = document.getElementById('mostSkippedGrid');
     if (grid) {
       grid.style.display = (songs.length || artists.length) ? 'grid' : 'none';
     }
     if (!songs.length && !artists.length) return;
 
+    // "% skipped", not "% of plays skipped": the denominator is every time it
+    // came up, skips included, so a song played 6 and skipped 4 reads 40% - as
+    // a share of PLAYS the same row would be 67%.
     CU.renderHorizontalBars(document.getElementById('mostSkippedSongsChart'), songs,
-      { emptyMessage: 'No song skipped often enough to rank yet.', valueSuffix: '% of plays skipped' });
+      { emptyMessage: 'Nothing skipped in this period yet.', valueSuffix: '% skipped' });
     CU.renderHorizontalBars(document.getElementById('mostSkippedArtistsChart'), artists,
-      { emptyMessage: 'No artist skipped often enough to rank yet.', valueSuffix: '% of plays skipped' });
+      { emptyMessage: 'Nothing skipped in this period yet.', valueSuffix: '% skipped' });
   }
 
   function renderAllCharts() {

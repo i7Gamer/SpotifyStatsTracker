@@ -677,7 +677,7 @@ def register(app, dashboard):
         decadeDistribution = list(db.getReleaseDecadeDistribution(startDate=startDate, endDate=endDate).items())
         completionStats = db.getCompletionStats(startDate=startDate, endDate=endDate)
         # "How often do I skip" is the donut above; these answer "what do I
-        # skip". Ranked by rate above a floor - see Repository.getMostSkippedTracks.
+        # skip". Ranked by shrunk rate - see Repository.getMostSkippedTracks.
         mostSkippedSongs = db.getMostSkippedSongs(
             startDate=startDate, endDate=endDate, limit=CHART_MOST_SKIPPED_LIMIT)
         mostSkippedArtists = db.getMostSkippedArtists(

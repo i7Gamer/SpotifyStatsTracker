@@ -90,10 +90,11 @@
     </div>
 
     {# "Completion vs Skips" above answers how OFTEN you skip; these answer
-       WHAT you skip. Ranked by skip rate above a minimum-encounters floor, so
-       a track skipped once and never played can't sit at the top with a 100%
-       rate - see Repository.getMostSkippedTracks. Both lists are hidden when
-       nothing clears the floor, which is the normal state for a new library. #}
+       WHAT you skip. Ranked by skip rate, shrunk toward this listener's own
+       average so a track skipped once and never played can't sit at the top
+       with a 100% rate - see Repository.getMostSkippedTracks. Both lists are
+       hidden when nothing was skipped at all, the normal state for a new
+       library. #}
     <div class="chart-section-grid" id="mostSkippedGrid"
          style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 2rem; margin-top: 2rem;">
       <div class="chart-section">

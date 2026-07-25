@@ -6,9 +6,10 @@
    silently blank line on most surfaces.
 
    Both numbers are shown rather than just the percentage - a rate hides how
-   much listening it rests on, which is exactly why the Charts lists need a
-   minimum-encounters floor. `skipStats` is {plays, skips, skipPercent} from
-   Database.getSkipStats; absent or fully empty renders nothing. #}
+   much listening it rests on, which is exactly why the Charts lists shrink
+   theirs toward the library average before ranking on it. `skipStats` is
+   {plays, skips, skipPercent} from Database.getSkipStats; absent or fully
+   empty renders nothing. #}
 {% if skipStats and (skipStats.plays or skipStats.skips) %}
 <p class="detail-skip-stat">
   {% if skipStats.skips %}
