@@ -186,17 +186,17 @@ class ApiBackfillTestCase(unittest.TestCase):
         mock_get.return_value = mock_response
 
         with self.assertLogs("Database.Listeners.spotifyListener", level="ERROR") as cm:
-            result = _get_current_user_from_web_api("token123", email="alice@example.com")
+            result = _get_current_user_from_web_api("token123", logUser="alice")
 
         self.assertIsNone(result)
-        self.assertTrue(any("alice@example.com" in m for m in cm.output))
+        self.assertTrue(any("alice" in m for m in cm.output))
 
     @patch("requests.get", side_effect=Exception("network down"))
     def test_get_current_user_exception_logs_the_account_it_belongs_to(self, mock_get):
         with self.assertLogs("Database.Listeners.spotifyListener", level="ERROR") as cm:
-            _get_current_user_from_web_api("token123", email="alice@example.com")
+            _get_current_user_from_web_api("token123", logUser="alice")
 
-        self.assertTrue(any("alice@example.com" in m for m in cm.output))
+        self.assertTrue(any("alice" in m for m in cm.output))
 
     @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value="token123")
     def test_check_web_api_backfill_validation_warning_identifies_the_account(self, mock_refresh):
@@ -220,7 +220,7 @@ class ApiBackfillTestCase(unittest.TestCase):
             listener._checkWebApiBackfill(MagicMock())
 
         self.assertTrue(any(
-            "Could not validate Web API user" in m and "alice@example.com" in m for m in cm.output))
+            "Could not validate Web API user" in m and "alice" in m for m in cm.output))
 
     @patch("Database.Listeners.spotifyListener._fetch_recently_played_from_web_api")
     @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token")
@@ -535,6 +535,7 @@ class ApiBackfillTestCase(unittest.TestCase):
             "client_id": "cid", "client_secret": "cs", "refresh_token": "rt"})
         listener.get_backfill_enabled = None
         listener.email = "alice@example.com"
+        listener.user = "alice"  #< matches Listener.__init__; self.logUser reads both
         listener._lastWebApiPollTime = 0
 
         with patch("Database.Listeners.spotifyListener.time.monotonic", return_value=_MONOTONIC_NOW), \
@@ -727,3 +728,70 @@ class ApiBackfillTestCase(unittest.TestCase):
 
         self.assertTrue(any("Running Spotify Web API recently-played backfill check" in m for m in cm.output))
         self.assertTrue(any("Web API returned 0 items for backfill check" in m for m in cm.output))
+
+
+class ListenerLogIdentityTestCase(unittest.TestCase):
+    """The listener's routine log lines identify the account by internal user
+    key, not email address. These lines are the highest-volume in app.log
+    (~3,000 email occurrences over 11 days, 1,568 from listener init alone);
+    the key identifies the account exactly as well without writing an address
+    to disk on every poll."""
+
+    def _makeListener(self, user="alice", email="alice@example.com"):
+        with patch("Database.Listeners.spotifyListener.Spotify") as mockSpotifyCls:
+            mockSp = MagicMock()
+            mockSp.current_user_recently_played.return_value = []
+            mockSp.current_user.return_value = {"id": "spotify-alice", "email": email}
+            mockSpotifyCls.return_value = mockSp
+            return Listener("dummy_cookie", email=email, user=user)
+
+    def test_logUser_prefers_the_internal_key(self):
+        self.assertEqual(self._makeListener().logUser, "alice")
+
+    def test_logUser_falls_back_to_email_when_no_key_given(self):
+        """Callers that predate the `user` kwarg (and tests) must still produce
+        an identifiable log line - an anonymous one would be worse than a
+        private one."""
+        self.assertEqual(self._makeListener(user=None).logUser, "alice@example.com")
+
+    def test_listener_init_logs_the_key_not_the_email(self):
+        with self.assertLogs("Database.Listeners.spotifyListener", level="INFO") as cm:
+            self._makeListener()
+
+        initLines = [m for m in cm.output if "Listener initialized" in m]
+        self.assertTrue(initLines, "expected an init line")
+        self.assertTrue(all("alice@example.com" not in m for m in initLines))
+        self.assertTrue(any("alice" in m for m in initLines))
+
+    def test_callback_line_logs_the_key_not_the_email(self):
+        listener = self._makeListener()
+        listener.sp.current_user_recently_played.return_value = [{"played_at": 1}]
+
+        with self.assertLogs("Database.Listeners.spotifyListener", level="INFO") as cm:
+            listener._checkOnce(MagicMock(), onStale=None)
+
+        callbackLines = [m for m in cm.output if "Listener callback" in m]
+        self.assertTrue(callbackLines, "expected a callback line")
+        self.assertTrue(all("alice@example.com" not in m for m in callbackLines))
+
+    def test_web_api_helpers_take_the_key_not_the_email(self):
+        """The three module-level helpers exist below the Listener and receive
+        the identifier explicitly - they must be handed the key too, or the
+        highest-volume error lines keep carrying addresses."""
+        listener = self._makeListener()
+        listener._lastWebApiPollTime = 0
+
+        with patch("Database.Listeners.spotifyListener.time.monotonic", return_value=_MONOTONIC_NOW), \
+             patch("Database.Listeners.spotifyListener._refresh_spotify_access_token",
+                   return_value="token123") as mockRefresh, \
+             patch("Database.Listeners.spotifyListener._get_current_user_from_web_api",
+                   return_value={"id": "spotify-alice", "email": "alice@example.com"}) as mockUser, \
+             patch("Database.Listeners.spotifyListener._fetch_recently_played_from_web_api",
+                   return_value=[]) as mockFetch:
+            listener.get_credentials = MagicMock(return_value={
+                "client_id": "cid", "client_secret": "cs", "refresh_token": "rt"})
+            listener._checkWebApiBackfill(MagicMock())
+
+        self.assertEqual(mockRefresh.call_args.kwargs["logUser"], "alice")
+        self.assertEqual(mockUser.call_args.kwargs["logUser"], "alice")
+        self.assertEqual(mockFetch.call_args.kwargs["logUser"], "alice")

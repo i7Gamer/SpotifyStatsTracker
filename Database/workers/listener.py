@@ -210,7 +210,8 @@ class ListenerMixin:
                 except Exception as e:
                     _dbmod.logger.error("Failed to stop existing listener for user %s: %s", self.user, _dbmod.parseError(e))
             newListener = self._withCookiesFile(lambda cf: _dbmod.Listener(
-                cf, email=self.email, get_credentials=self.getUserSpotifyCredentials,
+                cf, email=self.email, user=self.user,
+                get_credentials=self.getUserSpotifyCredentials,
                 get_backfill_enabled=self.repo.isSpotifyApiBackfillEnabled,
                 on_scope_status_change=self.setSpotifyNeedsReauth))
             if self._stopRequested():

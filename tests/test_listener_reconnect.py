@@ -45,6 +45,7 @@ def _bareListener(recentlyPlayed=None):
     listener._lastChangeTime = 0.0
     listener._authenticated_user_id = None
     listener.email = None
+    listener.user = None  #< matches Listener.__init__; self.logUser reads both
     listener._last_user_validation_time = None  #< matches Listener.__init__: never validated yet
     listener._last_user_validation_result = True
     return listener

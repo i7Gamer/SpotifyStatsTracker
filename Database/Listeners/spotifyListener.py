@@ -173,7 +173,12 @@ def _is_rate_limit_error(exc: Exception) -> bool:
 
 
 def _refresh_spotify_access_token(client_id: str, client_secret: str, refresh_token: str,
-                                   email: str | None = None) -> str | None:
+                                   logUser: str | None = None) -> str | None:
+    """`logUser` is the internal user key (e.g. "7kevinegger"), used only to
+    identify which account's worker a logged failure belongs to. It is
+    deliberately not the email: these lines are the highest-volume in the log
+    and the key identifies the account just as well without writing an address
+    to disk on every poll."""
     import base64
     import requests
     url = "https://accounts.spotify.com/api/token"
@@ -191,18 +196,19 @@ def _refresh_spotify_access_token(client_id: str, client_secret: str, refresh_to
         if resp.status_code == 200:
             return resp.json().get("access_token")
         else:
-            logger.error("Failed to refresh Spotify access token for user %s: %s %s", email, resp.status_code, resp.text)
+            logger.error("Failed to refresh Spotify access token for user %s: %s %s", logUser, resp.status_code, resp.text)
     except Exception as e:
-        logger.error("Error refreshing Spotify access token for user %s: %s", email, str(e))
+        logger.error("Error refreshing Spotify access token for user %s: %s", logUser, str(e))
     return None
 
 
-def _fetch_recently_played_from_web_api(access_token: str, email: str | None = None):
+def _fetch_recently_played_from_web_api(access_token: str, logUser: str | None = None):
     """Returns the list of recently-played items on success (possibly empty),
     the _SCOPE_ERROR sentinel when Spotify rejected the request because the
     refresh token lacks the user-read-recently-played scope, or None for any
-    other failure (network error, rate limit, etc). `email` is only used to
-    identify which account's worker a logged failure belongs to."""
+    other failure (network error, rate limit, etc). `logUser` is the internal
+    user key, only used to identify which account's worker a logged failure
+    belongs to (see _refresh_spotify_access_token)."""
     import requests
     url = "https://api.spotify.com/v1/me/player/recently-played?limit=50"
     headers = {
@@ -215,18 +221,18 @@ def _fetch_recently_played_from_web_api(access_token: str, email: str | None = N
         if resp.status_code == 403 and "insufficient" in resp.text.lower():
             logger.error(
                 "Spotify Web API rejected recently-played request for user %s: refresh token lacks "
-                "user-read-recently-played scope - re-authorization required: %s", email, resp.text)
+                "user-read-recently-played scope - re-authorization required: %s", logUser, resp.text)
             return _SCOPE_ERROR
-        logger.error("Failed to fetch recently played tracks from Web API for user %s: %s %s", email, resp.status_code, resp.text)
+        logger.error("Failed to fetch recently played tracks from Web API for user %s: %s %s", logUser, resp.status_code, resp.text)
     except Exception as e:
-        logger.error("Error fetching recently played tracks from Web API for user %s: %s", email, str(e))
+        logger.error("Error fetching recently played tracks from Web API for user %s: %s", logUser, str(e))
     return None
 
 
-def _get_current_user_from_web_api(access_token: str, email: str | None = None) -> dict | None:
+def _get_current_user_from_web_api(access_token: str, logUser: str | None = None) -> dict | None:
     """Fetch current user info from Web API to validate the access token belongs to the expected user.
-    `email` (the LISTENER's expected email, not the API's response) is only used to identify which
-    account's worker a logged failure belongs to."""
+    `logUser` is the internal user key, only used to identify which account's worker a logged
+    failure belongs to (see _refresh_spotify_access_token)."""
     import requests
     url = "https://api.spotify.com/v1/me"
     headers = {
@@ -237,9 +243,9 @@ def _get_current_user_from_web_api(access_token: str, email: str | None = None) 
         if resp.status_code == 200:
             return resp.json()
         else:
-            logger.error("Failed to fetch current user from Web API for user %s: %s %s", email, resp.status_code, resp.text)
+            logger.error("Failed to fetch current user from Web API for user %s: %s %s", logUser, resp.status_code, resp.text)
     except Exception as e:
-        logger.error("Error fetching current user from Web API for user %s: %s", email, str(e))
+        logger.error("Error fetching current user from Web API for user %s: %s", logUser, str(e))
     return None
 
 
@@ -269,10 +275,17 @@ def _suppress_signal_in_thread():
 
 class Listener:
     def __init__(self, cookiesFile, refreshInterval=6, email=None, get_credentials=None,
-                 get_backfill_enabled=None, on_scope_status_change=None):
+                 get_backfill_enabled=None, on_scope_status_change=None, user=None):
         self.run = False
         self._stop_event = threading.Event()
         self.email = email  #< store expected email for validation
+        # Internal user key (e.g. "7kevinegger"), used for log identification so
+        # the routine per-poll lines don't write an email address to disk
+        # thousands of times a day. The email stays authoritative for the
+        # identity checks below - only the LOG representation changes. Falls
+        # back to the email when no key was passed (older callers, tests), since
+        # an unidentifiable log line is worse than a private one.
+        self.user = user
         self._authenticated_user_id = None  #< cache spotify user id for validation
         self.contaminationDetected = False  #< True when the cookies authenticate as a DIFFERENT account than self.email
         self.loginFailed = False  #< True when the stored cookies didn't authenticate at all (see below)
@@ -335,7 +348,12 @@ class Listener:
                         email, authenticated_email, authenticated_email, email
                     )
 
-            logger.info("Listener initialized for user %s (Spotify ID: %s)", email, self._authenticated_user_id)
+            # The Spotify id used to be logged alongside this - but for these
+            # accounts Spotify returns the email AS the id, so the line printed
+            # the address twice. It stays available on self._authenticated_user_id
+            # and is reported by the contamination/validation errors, which are
+            # the only places it actually distinguishes anything.
+            logger.info("Listener initialized for user %s", self.logUser)
         except Exception as e:
             logger.warning("Could not verify authenticated user during listener init: %s", parseError(e))
 
@@ -350,6 +368,12 @@ class Listener:
                                                                    #  eviction can target the oldest entry
         self._last_user_validation_time = None  #< None means "never validated yet" - forces an immediate first check
         self._last_user_validation_result = True  #< cache validation result
+
+    @property
+    def logUser(self) -> str | None:
+        """How this listener identifies itself in log messages: the internal
+        user key when the caller supplied one, else the email as before."""
+        return self.user or self.email
 
     def isLoggedIn(self):
         # A contaminated session is technically logged in - as the WRONG
@@ -542,7 +566,7 @@ class Listener:
         if recentlyPlayed != self.recentlyPlayed_Z1:
             newItems = self.getNewItems(recentlyPlayed)
             if newItems:
-                logger.info("Listener callback: %d new items for user %s", len(newItems), self.email)
+                logger.info("Listener callback: %d new items for user %s", len(newItems), self.logUser)
             callback(newItems)
             self.recentlyPlayed_Z1 = recentlyPlayed
             self._lastChangeTime = time.monotonic()
@@ -573,7 +597,7 @@ class Listener:
             logger.error(
                 "Listener for %s not started: the stored cookies authenticate as a "
                 "different Spotify account. Re-login with matching cookies to resume tracking.",
-                self.email,
+                self.logUser,
             )
             self.run = False
             return
@@ -623,18 +647,18 @@ class Listener:
                 return
 
             if _flaskDebugEnabled():
-                logger.info("Running Spotify Web API recently-played backfill check... (user %s)", self.email)
+                logger.info("Running Spotify Web API recently-played backfill check... (user %s)", self.logUser)
             access_token = _refresh_spotify_access_token(
-                creds["client_id"], creds["client_secret"], creds["refresh_token"], email=self.email)
+                creds["client_id"], creds["client_secret"], creds["refresh_token"], logUser=self.logUser)
             if not access_token:
-                logger.warning("Could not obtain access token for Web API backfill for user %s.", self.email)
+                logger.warning("Could not obtain access token for Web API backfill for user %s.", self.logUser)
                 return
 
             # Validate that the access token belongs to the authenticated user,
             # not a different Spotify account (prevents cross-user contamination)
-            web_api_user = _get_current_user_from_web_api(access_token, email=self.email)
+            web_api_user = _get_current_user_from_web_api(access_token, logUser=self.logUser)
             if not web_api_user:
-                logger.warning("Could not validate Web API user, skipping backfill for user %s.", self.email)
+                logger.warning("Could not validate Web API user, skipping backfill for user %s.", self.logUser)
                 return
 
             web_api_user_id = web_api_user.get("id")
@@ -664,7 +688,7 @@ class Listener:
                 )
                 return
 
-            items = _fetch_recently_played_from_web_api(access_token, email=self.email)
+            items = _fetch_recently_played_from_web_api(access_token, logUser=self.logUser)
 
             if items is _SCOPE_ERROR:
                 self._consecutiveScopeErrors += 1
@@ -672,14 +696,14 @@ class Listener:
                     logger.warning(
                         "Spotify Web API reported insufficient scope for user %s (%d/%d consecutive) - "
                         "treating as a transient Spotify-side flake for now.",
-                        self.email, self._consecutiveScopeErrors, SCOPE_ERROR_CONFIRM_THRESHOLD,
+                        self.logUser, self._consecutiveScopeErrors, SCOPE_ERROR_CONFIRM_THRESHOLD,
                     )
                     return
                 if self.on_scope_status_change:
                     try:
                         self.on_scope_status_change(True)
                     except Exception as e:
-                        logger.error("Failed to record Spotify reauth-needed status for user %s: %s", self.email, parseError(e))
+                        logger.error("Failed to record Spotify reauth-needed status for user %s: %s", self.logUser, parseError(e))
                 return
 
             # A definitive (non-None, non-scope-error) response - even an empty
@@ -691,10 +715,10 @@ class Listener:
                     try:
                         self.on_scope_status_change(False)
                     except Exception as e:
-                        logger.error("Failed to clear Spotify reauth-needed status for user %s: %s", self.email, parseError(e))
+                        logger.error("Failed to clear Spotify reauth-needed status for user %s: %s", self.logUser, parseError(e))
 
             if _flaskDebugEnabled():
-                logger.info("Web API returned %d items for backfill check (user %s)", len(items) if items else 0, self.email)
+                logger.info("Web API returned %d items for backfill check (user %s)", len(items) if items else 0, self.logUser)
             if not items:
                 return
 
@@ -754,7 +778,7 @@ class Listener:
                     })
 
             if missed_items:
-                logger.info("Backfilling %d plays from Web API recently-played history for user %s", len(missed_items), self.email)
+                logger.info("Backfilling %d plays from Web API recently-played history for user %s", len(missed_items), self.logUser)
                 # Mark these as backfilled so the database can record the source
                 for missed_item in missed_items:
                     missed_item["_source"] = "web_api_backfill"
@@ -786,7 +810,7 @@ class Listener:
                 onWebApiSnapshot(items)
 
         except Exception as e:
-            logger.error("Error during Web API backfill for user %s: %s", self.email, parseError(e))
+            logger.error("Error during Web API backfill for user %s: %s", self.logUser, parseError(e))
 
     def startListener_thread(self, callback, onStale=None, onWebApiSnapshot=None):
         self._stop_event.clear()

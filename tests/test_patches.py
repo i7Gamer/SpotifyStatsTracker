@@ -849,6 +849,91 @@ class TestUpdateLoopShutdown(unittest.TestCase):
         self.assertEqual(manager._results, [])  #< loop survived past the failed reconnect
 
 
+class TestSafeResponseHeaders(unittest.TestCase):
+    """The spotapi.User diagnostics log response headers to identify rate
+    limiting and Cloudflare blocks. Spotify's responses to those same calls
+    carry live session credentials (__Host-sp_csrf_sid, x-csrf-token), so only
+    an explicit allowlist may reach the log."""
+
+    #< a realistic failing-response header set: the two credential headers seen
+    #  verbatim in Database/Data/app.log, plus the diagnostics worth keeping
+    SAMPLE_HEADERS = {
+        "Set-Cookie": "__Host-sp_csrf_sid=be483bc22ea1d2dc9b5d0ece1ed4cd0f; Path=/; HttpOnly; Secure",
+        "X-Csrf-Token": "013acda7194cb9484d5810d31fbe0b5d826f20a0683137",
+        "Content-Type": "text/html; charset=utf-8",
+        "Retry-After": "60",
+        "X-RateLimit-Remaining": "0",
+        "cf-ray": "9a1b2c3d4e5f6789-FRA",
+        "Authorization": "Bearer supersecret",
+    }
+
+    def test_drops_credential_bearing_headers(self):
+        from Database.patches import _safeResponseHeaders
+
+        safe = _safeResponseHeaders(self.SAMPLE_HEADERS)
+
+        self.assertNotIn("Set-Cookie", safe)
+        self.assertNotIn("X-Csrf-Token", safe)
+        self.assertNotIn("Authorization", safe)
+        self.assertNotIn("be483bc22ea1d2dc9b5d0ece1ed4cd0f", str(safe))
+        self.assertNotIn("013acda7194cb9484d5810d31fbe0b5d826f20a0683137", str(safe))
+
+    def test_keeps_diagnostic_headers(self):
+        """Whatever is dropped, the headers these log sites exist for must
+        survive - otherwise the diagnostics are gone along with the leak."""
+        from Database.patches import _safeResponseHeaders
+
+        safe = _safeResponseHeaders(self.SAMPLE_HEADERS)
+
+        self.assertEqual(safe["Content-Type"], "text/html; charset=utf-8")
+        self.assertEqual(safe["Retry-After"], "60")
+        self.assertEqual(safe["X-RateLimit-Remaining"], "0")
+        self.assertEqual(safe["cf-ray"], "9a1b2c3d4e5f6789-FRA")
+
+    def test_unknown_header_is_dropped_not_kept(self):
+        """Allowlist, not denylist: a header nobody anticipated must default to
+        dropped, so a future credential-bearing header can't leak before anyone
+        notices it exists."""
+        from Database.patches import _safeResponseHeaders
+
+        self.assertEqual(_safeResponseHeaders({"X-Some-Future-Token": "secret"}), {})
+
+    def test_tolerates_missing_or_unusable_headers(self):
+        """These call sites run on a failing response - header access must never
+        be the thing that raises inside an error path."""
+        from Database.patches import _safeResponseHeaders
+
+        self.assertEqual(_safeResponseHeaders(None), {})
+        self.assertEqual(_safeResponseHeaders(object()), {})
+
+    def test_get_user_info_failure_log_has_no_credentials(self):
+        """End-to-end over the real patched method: the credential values must
+        not appear anywhere in the emitted log record."""
+        import spotapi.user
+        from spotapi.exceptions import UserError
+
+        mock_login = MagicMock()
+        mock_login.logged_in = True
+        user_inst = spotapi.user.User(mock_login)
+
+        resp = MagicMock()
+        resp.status_code = 429
+        resp.fail = True
+        resp.error.string = "Too Many Requests"
+        resp.response = "Rate limit hit"
+        resp.raw.headers = dict(self.SAMPLE_HEADERS)
+        mock_login.client.get.return_value = resp
+
+        with self.assertLogs("Database.patches", level="WARNING") as logCapture:
+            with self.assertRaises(UserError):
+                user_inst.get_user_info()
+
+        emitted = "\n".join(logCapture.output)
+        self.assertNotIn("__Host-sp_csrf_sid", emitted)
+        self.assertNotIn("013acda7194cb9484d5810d31fbe0b5d826f20a0683137", emitted)
+        self.assertIn("Retry-After", emitted)  #< the diagnostic still lands
+
+
 if __name__ == "__main__":
     unittest.main()
 

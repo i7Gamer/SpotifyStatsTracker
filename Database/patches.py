@@ -378,6 +378,42 @@ def patch_spotipy_free() -> bool:
 RESPONSE_SNIPPET_MAX_LEN = 1000
 RESPONSE_ERROR_SNIPPET_MAX_LEN = 200
 
+# Response headers that may be written to the log. Spotify's replies to these
+# endpoints carry live session credentials - __Host-sp_csrf_sid (a one-hour
+# session cookie) and x-csrf-token - so the header dict must never be logged
+# wholesale. This is an allowlist rather than a denylist on purpose: a header
+# nobody anticipated defaults to dropped, so a credential-bearing header added
+# upstream can't leak in the window before anyone notices it exists.
+LOGGABLE_RESPONSE_HEADERS = frozenset({
+    "content-type", "content-length", "content-encoding",
+    "date", "server", "retry-after",
+    "cf-ray", "cf-cache-status",
+})
+# Prefix-matched alongside the exact names above - the rate-limit family varies
+# by endpoint (x-ratelimit-remaining / -limit / -reset) and all of it is useful.
+LOGGABLE_RESPONSE_HEADER_PREFIXES = ("x-ratelimit-",)
+
+
+def _safeResponseHeaders(headers) -> dict:
+    """The subset of `headers` that is safe to write to the log.
+
+    Takes the raw header mapping (or anything at all) and returns a plain dict
+    holding only allowlisted entries, preserving their original casing. Never
+    raises: every caller is already on an error path, where a failure to
+    format the diagnostic would replace a logged warning with an exception."""
+    try:
+        return {
+            name: value
+            for name, value in headers.items()
+            if (lowered := str(name).lower()) in LOGGABLE_RESPONSE_HEADERS
+            or lowered.startswith(LOGGABLE_RESPONSE_HEADER_PREFIXES)
+        }
+    except Exception:
+        # Not a mapping at all (None, a bare object, a test double whose
+        # .items() isn't iterable) - an unloggable header set is not a reason
+        # to lose the warning it was going to be attached to.
+        return {}
+
 
 def patch_spotapi_user() -> bool:
     """Patch spotapi.user.User methods to log detailed response information
@@ -403,7 +439,7 @@ def patch_spotapi_user() -> bool:
                     resp.status_code,
                     resp.error.string if hasattr(resp.error, "string") else None,
                     str(resp.response)[:RESPONSE_SNIPPET_MAX_LEN] if resp.response is not None else None,
-                    dict(resp.raw.headers) if hasattr(resp.raw, "headers") else {}
+                    _safeResponseHeaders(getattr(resp.raw, "headers", None))
                 )
                 raise UserError("Could not get user info", error=resp.error.string)
 
@@ -413,7 +449,7 @@ def patch_spotapi_user() -> bool:
                     resp.status_code,
                     type(resp.response).__name__,
                     str(resp.response)[:RESPONSE_SNIPPET_MAX_LEN] if resp.response is not None else None,
-                    dict(resp.raw.headers) if hasattr(resp.raw, "headers") else {}
+                    _safeResponseHeaders(getattr(resp.raw, "headers", None))
                 )
                 raise UserError(
                     f"Invalid JSON (Status: {resp.status_code}, Type: {type(resp.response).__name__}, "
@@ -433,7 +469,7 @@ def patch_spotapi_user() -> bool:
                     resp.status_code,
                     resp.error.string if hasattr(resp.error, "string") else None,
                     str(resp.response)[:RESPONSE_SNIPPET_MAX_LEN] if resp.response is not None else None,
-                    dict(resp.raw.headers) if hasattr(resp.raw, "headers") else {}
+                    _safeResponseHeaders(getattr(resp.raw, "headers", None))
                 )
                 raise UserError("Could not get user plan info", error=resp.error.string)
 
@@ -443,7 +479,7 @@ def patch_spotapi_user() -> bool:
                     resp.status_code,
                     type(resp.response).__name__,
                     str(resp.response)[:RESPONSE_SNIPPET_MAX_LEN] if resp.response is not None else None,
-                    dict(resp.raw.headers) if hasattr(resp.raw, "headers") else {}
+                    _safeResponseHeaders(getattr(resp.raw, "headers", None))
                 )
                 raise UserError(
                     f"Invalid JSON (Status: {resp.status_code}, Type: {type(resp.response).__name__}, "
