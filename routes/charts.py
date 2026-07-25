@@ -29,6 +29,11 @@ def register(app, dashboard):
     CHART_MOST_SKIPPED_LIMIT = appmod.CHART_MOST_SKIPPED_LIMIT
     #< only the three Top pages can rank by skips - see config.TOP_LIST_SORT_BY
     TOP_LIST_SORT_BY = appmod.TOP_LIST_SORT_BY
+    # Read off the class, not the per-request db instance. A route test's
+    # MagicMock db answers `db.SKIP_SORT_BY` with a Mock, which equals no
+    # string - so every branch guarded on it silently took the other path and
+    # the whole skip-count path went untested.
+    SKIP_SORT_BY = appmod.Database.SKIP_SORT_BY
 
     def overviewPage():
         from datetime import datetime
@@ -434,7 +439,7 @@ def register(app, dashboard):
         # sorting+hydrating+filtering every song ever played in Python.
         # A skip-ordered page lists only entities that were actually skipped,
         # so its total differs from the unique-count stat card above.
-        if sortBy == db.SKIP_SORT_BY or searchQuery or tag:
+        if sortBy == SKIP_SORT_BY or searchQuery or tag:
             totalCount = db.getSongsCount(startDate, endDate, searchQuery=searchQuery, trackIds=trackIds,
                                            fullPlaysOnly=fullPlaysOnly, sortBy=sortBy)
         else:
@@ -501,7 +506,7 @@ def register(app, dashboard):
         # sorting+hydrating+filtering every album ever played in Python.
         # A skip-ordered page lists only entities that were actually skipped,
         # so its total differs from the unique-count stat card above.
-        if sortBy == db.SKIP_SORT_BY or searchQuery or tag:
+        if sortBy == SKIP_SORT_BY or searchQuery or tag:
             totalCount = db.getAlbumsCount(startDate, endDate, searchQuery=searchQuery, albumIds=albumIds,
                                             fullPlaysOnly=fullPlaysOnly, sortBy=sortBy)
         else:
@@ -570,7 +575,7 @@ def register(app, dashboard):
         # instead of sorting+hydrating every artist ever played.
         # A skip-ordered page lists only entities that were actually skipped,
         # so its total differs from the unique-count stat card above.
-        if sortBy == db.SKIP_SORT_BY or searchQuery or tag:
+        if sortBy == SKIP_SORT_BY or searchQuery or tag:
             totalCount = db.getArtistsCount(startDate, endDate, searchQuery=searchQuery, artistIds=artistIds,
                                              fullPlaysOnly=fullPlaysOnly, sortBy=sortBy)
         else:

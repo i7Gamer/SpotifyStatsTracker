@@ -456,6 +456,18 @@ class TestSkipSortKeepsTheOtherFilters(_ListRouteTestBase):
     page, not which page it is - and the count has to be narrowed the same way
     as the list, or the pager offers pages the list can't fill."""
 
+    def test_the_skip_sort_asks_for_its_own_count(self):
+        """Without a search or tag there is nothing else to force the dedicated
+        count, so this is the only thing standing between Most Skipped and a
+        pager sized from every song ever played - pages 2..N mostly empty."""
+        dash = self._makeApp()
+        db = self._makeDb(entryCount=0)
+
+        self._getTopSongs(dash, db, query="?sortBy=skips")
+
+        counted = [c.kwargs for c in db.getSongsCount.call_args_list]
+        self.assertTrue(any(c.get("sortBy") == "skips" for c in counted), counted)
+
     def test_the_search_reaches_both_the_list_and_the_count(self):
         dash = self._makeApp()
         db = self._makeDb(entryCount=0)
@@ -472,8 +484,10 @@ class TestSkipSortKeepsTheOtherFilters(_ListRouteTestBase):
 
         self._getTopSongs(dash, db, query="?sortBy=skips&fullOnly=0")
 
+        skipCount = [c.kwargs for c in db.getSongsCount.call_args_list
+                     if c.kwargs.get("sortBy") == "skips"]
         self.assertIs(db.getTopSongs.call_args.kwargs["fullPlaysOnly"], False)
-        self.assertIs(db.getSongsCount.call_args.kwargs["fullPlaysOnly"], False)
+        self.assertIs(skipCount[-1]["fullPlaysOnly"], False)
 
     def test_a_page_that_cannot_rank_by_skips_falls_back(self):
         """/compare and /wrapped read the same ?sortBy= but have no skip-ranked
@@ -497,6 +511,19 @@ class TestSkipSortKeepsTheOtherFilters(_ListRouteTestBase):
 
         self.assertEqual(db.getArtistsCount.call_args.kwargs["searchQuery"], "foo")
         self.assertEqual(db.getAlbumsCount.call_args.kwargs["searchQuery"], "foo")
+
+    def test_artists_and_albums_ask_for_their_own_counts_too(self):
+        dash = self._makeApp()
+        db = self._makeDb(entryCount=0)
+        db.getAlbumsCount.return_value = 0
+        db.getTopAlbums.return_value = []
+
+        self._getTopArtists(dash, db, query="?sortBy=skips")
+        self._getPath(dash, db, "/top-albums?sortBy=skips&ajax=true")
+
+        for mock in (db.getArtistsCount, db.getAlbumsCount):
+            calls = [c.kwargs for c in mock.call_args_list]
+            self.assertTrue(any(c.get("sortBy") == "skips" for c in calls), calls)
 
 
 class TestPageParamParsing(_ListRouteTestBase):
