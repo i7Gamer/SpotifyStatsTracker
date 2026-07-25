@@ -201,6 +201,45 @@ class TestArtistsAndAlbumsSortedBySkips(SkipSortTestCase):
         self.assertEqual(self.db.getAlbumsCount(sortBy="skips"), 2)
 
 
+class TestTheSkipPageLooksLikeEveryOtherPage(SkipSortTestCase):
+    """A card doesn't know which sort produced it, so a skip-ranked row has to
+    carry the same keys a plays-ranked one does. Changing the sort should
+    reorder the page, never strip fields off it."""
+
+    def test_album_cards_keep_their_artists(self):
+        """_track_card.html renders artistLinks(album.artists) whatever the
+        sort is - an album that comes back artist-less renders a blank line."""
+        self._seed("t1", plays=1, skips=1, artistId="a1", artistName="Real Artist", albumId="alb1")
+
+        entry = self.db.getTopAlbums(by="skips", limit=10)[0]
+
+        self.assertEqual([a["name"] for a in entry["artists"]], ["Real Artist"])
+
+    def test_albums_carry_every_key_the_plays_sort_does(self):
+        self._seed("t1", plays=1, skips=1, albumId="alb1")
+
+        skipSorted = self.db.getTopAlbums(by="skips", limit=10)[0]
+        playsSorted = self.db.getTopAlbums(by="plays", limit=10)[0]
+
+        self.assertEqual(set(playsSorted) - set(skipSorted), set())
+
+    def test_artists_carry_every_key_the_plays_sort_does(self):
+        self._seed("t1", plays=1, skips=1, artistId="a1")
+
+        skipSorted = self.db.getTopArtists(by="skips", limit=10)[0]
+        playsSorted = self.db.getTopArtists(by="plays", limit=10)[0]
+
+        self.assertEqual(set(playsSorted) - set(skipSorted), set())
+
+    def test_songs_carry_every_key_the_plays_sort_does(self):
+        self._seed("t1", plays=1, skips=1)
+
+        skipSorted = self.db.getTopSongs(by="skips", limit=10)[0]
+        playsSorted = self.db.getTopSongs(by="plays", limit=10)[0]
+
+        self.assertEqual(set(playsSorted) - set(skipSorted), set())
+
+
 class TestSortParamValidation(unittest.TestCase):
     def test_skips_is_an_accepted_sort_value(self):
         from config import VALID_SORT_BY

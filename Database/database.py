@@ -1034,7 +1034,7 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         rows = self.repo.getMostSkippedArtists(self.user, *self._dateRangeToTimestamps(startDate, endDate),
                                                 limit=limit, priorWeight=priorWeight)
         return [{
-            "id": row["artist_id"],
+            "id": row["id"],
             "name": row["name"],
             "skips": row["skips"],
             "plays": row["plays"],
@@ -1096,10 +1096,17 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
             # put that at risk for a number most of its callers never ask for.
             rows = self._skipSortedPage(self.repo.getMostSkippedTracks, startDate, endDate, limit, offset)
             tracksById = self.repo.getTracksByIds([row["track_id"] for row in rows])
+            # Spelled out rather than spreading the aggregate row: the card
+            # reads camelCase, and a bare spread would also leak the query's
+            # snake_case aliases into the template context.
             return [
-                {**tracksById[row["track_id"]], **self._withSkipRate(row),
-                 "totalTimeListened": row["total_time_listened"],
-                 "firstListenedAt": row["first_listened_at"]}
+                self._withSkipRate({
+                    **tracksById[row["track_id"]],
+                    "plays": row["plays"], "skips": row["skips"], "encounters": row["encounters"],
+                    "totalTimeListened": row["total_time_listened"],
+                    "firstListenedAt": row["first_listened_at"],
+                    "lastPlayedAt": row["last_played_at"],
+                })
                 for row in rows if row["track_id"] in tracksById
             ]
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
@@ -1423,16 +1430,7 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         param of the same name."""
         if sortBy == self.SKIP_SORT_BY:
             rows = self._skipSortedPage(self.repo.getMostSkippedAlbums, startDate, endDate, limit, offset)
-            return [{
-                "id": row["album_id"], "name": row["name"], "url": row["url"],
-                "imageId": row["image_id"], "imageUrl": row["image_url"],
-                "totalTracks": row["total_tracks"], "releaseDate": row["release_date"],
-                "artists": [], "plays": row["plays"],
-                "totalTimeListened": row["total_time_listened"],
-                "firstListenedAt": row["first_listened_at"],
-                "uniqueSongCount": row["unique_song_count"],
-                **self._withSkipRate(row),
-            } for row in rows]
+            return [self._withSkipRate(row) for row in rows]
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
         return self.repo.getAlbumsPage(self.user, startTs, endTs, sortBy=sortBy, limit=limit, offset=offset,
                                         albumId=albumId, searchQuery=searchQuery, albumIds=albumIds,
@@ -1489,14 +1487,7 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         mirrors getSongsStats()'s param of the same name."""
         if sortBy == self.SKIP_SORT_BY:
             rows = self._skipSortedPage(self.repo.getMostSkippedArtists, startDate, endDate, limit, offset)
-            return [{
-                "id": row["artist_id"], "name": row["name"], "url": row["url"],
-                "imageId": row["image_id"], "imageUrl": "", "plays": row["plays"],
-                "totalTimeListened": row["total_time_listened"],
-                "firstListenedAt": row["first_listened_at"],
-                "uniqueSongCount": row["unique_song_count"],
-                **self._withSkipRate(row),
-            } for row in rows]
+            return [self._withSkipRate(row) for row in rows]
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
         return self.repo.getArtistAggregates(self.user, startTs, endTs, artistId=artistId, sortBy=sortBy,
                                               limit=limit, offset=offset, searchQuery=searchQuery,

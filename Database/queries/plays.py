@@ -1204,10 +1204,12 @@ class PlayQueries:
         length cancels out of it.
 
         Carries the same per-row figures the aggregate pages show (plays, time,
-        first listen) so a skip-ranked page can render normal cards without
-        touching getSongsPage - see the note there on why that query's
-        is_skip=0 is left alone. first_listened_at falls back to the first
-        ENCOUNTER for a track that was only ever skipped."""
+        first/last listen) so a skip-ranked page can render normal cards
+        without touching getSongsPage - see the note there on why that query's
+        is_skip=0 is left alone. A card can't tell which sort produced it, so
+        anything getSongsPage returns has to be here too or the row renders
+        with blanks. first_listened_at falls back to the first ENCOUNTER for a
+        track that was only ever skipped."""
         params: list = []
         libCte = self._libraryRateCte(username, params, startTs, endTs)
         params.append(username)
@@ -1222,7 +1224,8 @@ class PlayQueries:
                        SUM(CASE WHEN is_skip = 0 THEN 1 ELSE 0 END) AS plays,
                        COUNT(*) AS encounters,
                        COALESCE(SUM(CASE WHEN is_skip = 0 THEN time_played ELSE 0 END), 0) AS total_time_listened,
-                       COALESCE(MIN(CASE WHEN is_skip = 0 THEN played_at END), MIN(played_at)) AS first_listened_at
+                       COALESCE(MIN(CASE WHEN is_skip = 0 THEN played_at END), MIN(played_at)) AS first_listened_at,
+                       COALESCE(MAX(CASE WHEN is_skip = 0 THEN played_at END), MAX(played_at)) AS last_played_at
                 FROM plays
                 WHERE username = ?{rangeClause}
                 GROUP BY track_id
@@ -1262,7 +1265,11 @@ class PlayQueries:
                                priorWeight: int = SKIP_RATE_PRIOR_WEIGHT) -> list[dict]:
         """Artists this user skips, ranked like getMostSkippedTracks. A play of
         a track with several credited artists counts toward each of them,
-        matching how every other artist aggregate here treats collaborations."""
+        matching how every other artist aggregate here treats collaborations.
+
+        Returns getArtistAggregates()' row shape plus skips/encounters: the
+        Top Artists page renders these through the same card, so a key missing
+        here is a field that silently blanks out under one sort."""
         params: list = []
         libCte = self._libraryRateCte(username, params, startTs, endTs)
         params.append(username)
@@ -1292,7 +1299,15 @@ class PlayQueries:
             """,
             params,
         ).fetchall()
-        return [dict(row) for row in rows]
+        return [
+            {
+                "id": r["artist_id"], "name": r["name"], "url": r["url"], "imageUrl": "", "imageId": r["image_id"],
+                "plays": r["plays"], "totalTimeListened": r["total_time_listened"],
+                "uniqueSongCount": r["unique_song_count"], "firstListenedAt": r["first_listened_at"],
+                "skips": r["skips"], "encounters": r["encounters"],
+            }
+            for r in rows
+        ]
 
     def getSkippedArtistsCount(self, username: str, startTs: float | None = None,
                                 endTs: float | None = None) -> int:
@@ -1321,7 +1336,11 @@ class PlayQueries:
         Ranking by rate matters most here: an album's raw skip COUNT scales
         with how many tracks it has, so counting would put a 60-track
         compilation above a single that gets skipped every time it comes on. A
-        rate is per encounter, so album length cancels out entirely."""
+        rate is per encounter, so album length cancels out entirely.
+
+        Returns getAlbumsPage()' row shape plus skips/encounters - including
+        the second artists lookup, which the shared card renders whatever the
+        sort is."""
         params: list = []
         libCte = self._libraryRateCte(username, params, startTs, endTs)
         params.append(username)
@@ -1353,7 +1372,14 @@ class PlayQueries:
             """,
             params,
         ).fetchall()
-        return [dict(row) for row in rows]
+        artistsByAlbum = self._artistsForAlbums([row["album_id"] for row in rows])
+        return [
+            {
+                **self._albumStatsRowToDict(row, artistsByAlbum.get(row["album_id"], [])),
+                "skips": row["skips"], "encounters": row["encounters"],
+            }
+            for row in rows
+        ]
 
     def getSkippedAlbumsCount(self, username: str, startTs: float | None = None,
                                endTs: float | None = None) -> int:
