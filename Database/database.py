@@ -1021,7 +1021,13 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         for row in rows:
             track = tracksById.get(row["track_id"])
             if track is None:
-                continue   #< catalog row vanished (a purge between the two queries)
+                # Shouldn't happen: plays.track_id is NOT NULL REFERENCES
+                # tracks(id) and foreign_keys=ON, so a play whose track is gone
+                # can't be written. Kept only for rows predating that
+                # enforcement - dropping one shortens this list, which is
+                # harmless for a fixed top-N but silently shortens a PAGE on
+                # the paginated caller below, so it must stay unreachable.
+                continue
             skipped.append({
                 **track,
                 "skips": row["skips"],
@@ -1105,7 +1111,10 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
             tracksById = self.repo.getTracksByIds([row["track_id"] for row in rows])
             # Spelled out rather than spreading the aggregate row: the card
             # reads camelCase, and a bare spread would also leak the query's
-            # snake_case aliases into the template context.
+            # snake_case aliases into the template context. The `in tracksById`
+            # guard mirrors getMostSkippedSongs' - see the note there on why it
+            # is unreachable, and why it had better stay that way here: this
+            # list is a page, and getSkippedTracksCount already counted the row.
             return [
                 self._withSkipRate({
                     **tracksById[row["track_id"]],
