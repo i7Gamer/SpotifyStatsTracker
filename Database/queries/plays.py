@@ -1471,9 +1471,11 @@ class PlayQueries:
                                 endTs: float | None = None, searchQuery: str | None = None,
                                 artistIds: list[str] | None = None, fullPlaysOnly: bool = False) -> int:
         """Paging counterpart to getMostSkippedArtists, filtered identically.
-        Joins artists for the same reason the list does - a credit pointing at
-        an artist row that isn't there would otherwise be counted but never
-        shown."""
+
+        Joins artists because the name search is written against ar.name, and
+        grouping on ar.id keeps this structurally identical to the list. Same
+        as the albums count: track_artists.artist_id is NOT NULL REFERENCES
+        artists(id), so the join can't drop a credit."""
         params: list = [username]
         rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
         joins, filterClause = self._skippedArtistFilters(
@@ -1556,9 +1558,12 @@ class PlayQueries:
                                endTs: float | None = None, searchQuery: str | None = None,
                                albumIds: list[str] | None = None, fullPlaysOnly: bool = False) -> int:
         """Paging counterpart to getMostSkippedAlbums, filtered identically.
-        Joins albums for the same reason the list does - grouping on
-        tracks.album_id alone also counts the album-less tracks the list can
-        never show, which is one phantom page at the end."""
+
+        Joins albums because the shared filter clauses are written against
+        al.*, and grouping on al.id keeps this structurally identical to the
+        list. It can't change the count: tracks.album_id is NOT NULL
+        REFERENCES albums(id) with foreign_keys=ON, so every played track has
+        exactly one album row to join to."""
         params: list = [username]
         rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
         filterClause = self._skippedAlbumFilters(params, None, searchQuery, albumIds, fullPlaysOnly)
