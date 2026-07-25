@@ -1,6 +1,7 @@
 import hashlib
 
 from Database.utils import timeToInt, convertToDatetime
+from Database.db import UNKNOWN_TRACK_NAME
 
 # Prefix for ids fabricated when a response carries none, matching the
 # importer's synthetic-track convention (see StreamingHistoryImporter).
@@ -94,7 +95,7 @@ class Client:
         availabilityReason = playability.get("reason") if playability.get("playable") is False else None
 
         track = {
-            "name": track.get("name", "Unknown Track"),
+            "name": track.get("name", UNKNOWN_TRACK_NAME),
             "releaseDate": album["releaseDate"],
             "id": track["id"],
             "url": track["external_urls"]["spotify"],

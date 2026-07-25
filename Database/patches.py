@@ -215,9 +215,9 @@ import sys
 
 
 try:
-    from Database.db import RESTRICTED_FALLBACK_REASON
+    from Database.db import RESTRICTED_FALLBACK_REASON, UNKNOWN_TRACK_NAME
 except ModuleNotFoundError:
-    from db import RESTRICTED_FALLBACK_REASON
+    from db import RESTRICTED_FALLBACK_REASON, UNKNOWN_TRACK_NAME
 
 # tracks.availability_reason value for a track Spotify wouldn't describe, sitting
 # alongside its own COUNTRY_RESTRICTED/PAYWALL_CONTENT reasons - so the UI's
@@ -264,17 +264,22 @@ def _fallbackTrackRecord(trackId: str) -> dict:
     """A minimal stand-in for a track Spotify wouldn't describe, in the shape
     SpotifyFormatter.formatTrack would have produced.
 
-    Deliberately invents nothing: a made-up title or duration would read as real
-    metadata downstream and stop the row ever being repaired. The id IS real
-    though, so the Spotify link is real too - only fabricated ids carry an empty
-    url in this codebase.
+    Invents no *facts*: the duration stays 0 and no artists are claimed, because
+    a made-up number would read as real metadata downstream. The title is the
+    shared UNKNOWN_TRACK_NAME placeholder rather than "" - a blank name rendered
+    as an empty row in every list the track appeared in, and it costs nothing,
+    since upsertTrack replaces a fallback row's name unconditionally once real
+    metadata arrives.
+
+    The id IS real, so the Spotify link is real too - only fabricated ids carry
+    an empty url in this codebase.
 
     The album is keyed per track (album_<trackId>, the same convention the
     importer's fallbacks use) rather than one shared "Unknown album": a single
     fabricated album id would collect every undescribable track from every user
     into one page of unrelated songs."""
     return {
-        "name": "",
+        "name": UNKNOWN_TRACK_NAME,
         "track_id": trackId,
         "id": trackId,
         "disc_number": 0,

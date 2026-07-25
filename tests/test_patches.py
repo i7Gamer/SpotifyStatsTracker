@@ -994,17 +994,32 @@ class TestTrackFallbackOnIncompleteInfo(unittest.TestCase):
         self.assertEqual(result["playability"]["reason"], TRACK_INFO_UNAVAILABLE_REASON)
 
     @patch("spotapi.Public")
-    def test_fallback_carries_no_invented_metadata(self, mock_public):
-        """A fallback must not fabricate a name or duration: a made-up title
-        would look like real metadata and block the later repair."""
+    def test_fallback_invents_no_facts(self, mock_public):
+        """No fabricated duration or artists - a made-up number reads as real
+        metadata downstream."""
         union = fakeTrackUnion("abc123")
         del union["uri"]
 
         result = self._track(mock_public, {"data": {"trackUnion": union}})
 
-        self.assertEqual(result["name"], "")
         self.assertEqual(result["duration_ms"], 0)
         self.assertEqual(result["artists"], [])
+
+    @patch("spotapi.Public")
+    def test_fallback_title_is_the_shared_placeholder_not_blank(self, mock_public):
+        """A blank name rendered as an empty row in every list the track
+        appeared in. The placeholder is safe because upsertTrack replaces a
+        fallback row's name unconditionally once real metadata arrives, so it
+        never blocks the repair - and it's the same constant Client.formatTrack
+        defaults to, so the two can't drift."""
+        from Database.db import UNKNOWN_TRACK_NAME
+        from Database.Formatters.spotifyClient import Client
+
+        result = self._track(mock_public, {"data": None})
+
+        self.assertEqual(result["name"], UNKNOWN_TRACK_NAME)
+        formatted = Client.formatTrack(result, timestamp=1000, msPlayed=5000)
+        self.assertEqual(formatted["name"], UNKNOWN_TRACK_NAME)
 
     @patch("spotapi.Public")
     def test_fallback_album_is_per_track_not_shared(self, mock_public):

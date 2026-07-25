@@ -19,6 +19,15 @@ SYNTHETIC_FALLBACK_REASON = "synthetic_fallback"
 # real metadata arriving later overwrites the marker.
 RESTRICTED_FALLBACK_REASON = "restricted_fallback"
 
+# Display name for a track whose real title isn't known - Client.formatTrack's
+# default, and what patches._fallbackTrackRecord stores when Spotify won't
+# describe a track at all. Shared so the two can't drift: a fallback row that
+# said "" rendered as a blank title in every list it appeared in, and one that
+# invented a title would be indistinguishable from real metadata. Safe to store
+# because upsertTrack replaces a fallback row's name unconditionally once real
+# metadata arrives - the placeholder never blocks the repair.
+UNKNOWN_TRACK_NAME = "Unknown Track"
+
 # The fixed lower floor (5s) below which an imported/listened event is treated
 # as a non-play for DEDUP purposes only: such events bypass the importer's
 # near-time play-matching (they must never claim/correct a real play row). This
