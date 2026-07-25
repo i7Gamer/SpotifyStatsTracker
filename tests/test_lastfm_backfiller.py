@@ -87,6 +87,55 @@ class WorkerLifecycleTestCase(LastfmWorkerBase):
         self.assertIs(db.lastfm_thread, firstThread)
         db.stopLastfmGenreBackfiller()
 
+    def test_concurrent_starts_never_orphan_a_running_thread(self):
+        """The running-check and the thread/event assignment must happen as one
+        step. Two concurrent starts (the profile page's key save, double-
+        submitted) could both see no live thread; the second's assignments then
+        overwrote the first's, orphaning a running thread on an Event no
+        reference survived for - so no stop path could ever reach it, and it
+        duplicated Last.fm traffic until the process exited."""
+        import threading as threadingModule
+
+        db = self._makeDbWithPlays()
+        db.repo.updateUserLastfmApiKey("user1", "key123")
+        started = []
+
+        def stubLoop(stop_event):
+            # Stands in for the real loop: parks on the event this run was
+            # handed, so "did stop reach every started thread?" is the only
+            # thing under test (no Last.fm calls, no DB work).
+            started.append(stop_event)
+            stop_event.wait(10)
+
+        barrier = threadingModule.Barrier(2)
+
+        def start():
+            barrier.wait()   #< maximize the overlap on the check-then-assign
+            try:
+                db.startLastfmGenreBackfiller()
+            finally:
+                # Connections are thread-local; the api-key read above opened
+                # one on this racer thread, and only its own thread can close
+                # it (an open handle keeps the temp db file locked on Windows).
+                db.repo.connectionManager.close()
+
+        with patch.object(db, "_lastfmGenreBackfillLoop", stubLoop):
+            racers = [threadingModule.Thread(target=start) for _ in range(2)]
+            for racer in racers:
+                racer.start()
+            for racer in racers:
+                racer.join(timeout=5)
+
+            self.assertEqual(len(started), 1, "a second worker thread was started for the same user")
+            liveThread = db.lastfm_thread
+
+            db.stopLastfmGenreBackfiller()
+
+            for stopEvent in started:
+                self.assertTrue(stopEvent.is_set(), "a started worker was orphaned - stop never reached it")
+            liveThread.join(timeout=5)
+            self.assertFalse(liveThread.is_alive())
+
     def test_restart_uses_a_fresh_stop_event_so_a_lingering_thread_cannot_revive(self):
         """stop() joins with a timeout - a worker blocked in a slow HTTP call
         can outlive it. A restart must NOT clear the event that zombie still

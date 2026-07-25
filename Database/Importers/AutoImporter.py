@@ -72,12 +72,12 @@ class Watchdog:
         except FileNotFoundError:
             logger.error(f"Error: The directory {pathToWatch} does not exist.")
             return
-        try:
-            pendingSizes = {}   #< name -> size at last poll, for files waiting to stabilize
-            while self.run and not self._stop_event.is_set():
-                self._stop_event.wait(checkInterval)
-                if not self.run or self._stop_event.is_set():
-                    break
+        pendingSizes = {}   #< name -> size at last poll, for files waiting to stabilize
+        while self.run and not self._stop_event.is_set():
+            self._stop_event.wait(checkInterval)
+            if not self.run or self._stop_event.is_set():
+                break
+            try:
                 currentFiles = {f for f in os.listdir(pathToWatch) if os.path.isfile(os.path.join(pathToWatch, f))}
                 knownFiles &= currentFiles   #< forget deleted files so a later re-drop counts as new
 
@@ -111,10 +111,17 @@ class Watchdog:
                     for fullPath in readyPaths:
                         logger.info(f"New file created: {fullPath}")
                     callback(readyPaths)
-            logger.info("Watchdog stopped peacefully")
-
-        except Exception as e:
-            logger.error(f"Stopping monitor... {parseError(e)}")
+            except Exception as e:
+                # Per-iteration, deliberately: this used to wrap the whole
+                # loop, so one transient failure (an os.listdir denied while
+                # an antivirus scanner or backup tool held the folder, a
+                # network path blipping) killed the watcher for the rest of
+                # the process's life. Nothing restarts it - startAutoImporter
+                # runs once per activation, and the periodic login pass only
+                # restarts listeners - so drop-folder imports stayed silently
+                # dead until the app was restarted. Log and poll again.
+                logger.error(f"Watchdog poll failed, continuing to watch: {parseError(e)}")
+        logger.info("Watchdog stopped peacefully")
 
     def watchFolder(self, pathToWatch, callback, checkInterval=5, startupDelaySeconds=0):
         self._stop_event.clear()

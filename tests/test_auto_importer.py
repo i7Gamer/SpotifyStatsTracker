@@ -197,6 +197,62 @@ class TestAutoImporterBatching(unittest.TestCase):
         self.assertEqual(calls, [])
 
 
+class TestWatchdogSurvivesTransientPollFailures(unittest.TestCase):
+    """The poll loop used to sit inside one try/except, so a single transient
+    failure ended the thread. Nothing restarts it (startAutoImporter runs once
+    per activation; the periodic login pass only restarts listeners), so
+    drop-folder imports stayed silently dead until the app was restarted."""
+
+    @patch("Database.Importers.AutoImporter.os.path.getsize")
+    @patch("Database.Importers.AutoImporter.os.path.exists")
+    @patch("Database.Importers.AutoImporter.os.makedirs")
+    @patch("Database.Importers.AutoImporter.os.listdir")
+    def test_a_failed_poll_does_not_end_the_watcher(self, mock_listdir, mock_makedirs, mock_exists, mock_getsize):
+        mock_exists.return_value = True
+        mock_getsize.return_value = 100
+        mock_listdir.side_effect = [
+            [],                                        #< initial scan
+            OSError("folder locked by another process"),   #< transient failure
+            ["a.json"], ["a.json"],                    #< recovers, file stabilizes
+        ]
+
+        wd = Watchdog()
+        calls = []
+
+        def callback(paths):
+            calls.append(paths)
+            wd.run = False
+
+        with patch("Database.Importers.AutoImporter.os.path.isfile", return_value=True):
+            wd.watchFolder_blocking("/dummy/path", callback, checkInterval=0.01, callbackInitialFiles=True)
+
+        self.assertEqual(calls, [[os.path.join("/dummy/path", "a.json")]])
+
+    @patch("Database.Importers.AutoImporter.os.path.exists")
+    @patch("Database.Importers.AutoImporter.os.makedirs")
+    @patch("Database.Importers.AutoImporter.os.listdir")
+    def test_stop_still_ends_the_loop_after_a_failed_poll(self, mock_listdir, mock_makedirs, mock_exists):
+        """Retrying must not outlive a stop request."""
+        mock_exists.return_value = True
+        wd = Watchdog()
+        polls = []
+
+        def listdir(_path):
+            if not polls:          #< initial scan succeeds
+                polls.append("initial")
+                return []
+            polls.append("poll")
+            wd.signalStop()        #< stop arrives while the poll is failing
+            raise OSError("still broken")
+
+        mock_listdir.side_effect = listdir
+
+        with patch("Database.Importers.AutoImporter.os.path.isfile", return_value=True):
+            wd.watchFolder_blocking("/dummy/path", lambda paths: None, checkInterval=0.01)
+
+        self.assertEqual(polls.count("poll"), 1)   #< did not keep retrying after the stop
+
+
 class TestAutoImporterOutcomeRouting(unittest.TestCase):
     """_handleImport routes each file by the outcome importHistoryBatch
     reports for it: imported/skipped files go to DONE/, failed files go to

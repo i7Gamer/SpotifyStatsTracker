@@ -46,6 +46,35 @@ class WrappedWorkerStopEventTestCase(DatabaseTestCase):
         db.stopWrappedCalculationsWorker()
 
 
+class DeclaredWorkerStopEventsTestCase(DatabaseTestCase):
+    """Database.WORKER_STOP_EVENT_NAMES drives shutdown's signal-everything
+    phase. A name that isn't a real event on a constructed Database would
+    silently signal nothing - which is how the album-biography worker came to
+    keep running through shutdown."""
+
+    def test_every_declared_name_is_a_real_event_on_a_constructed_database(self):
+        import threading as threadingModule
+        from Database.database import Database
+
+        db = self._makeDb({}, [])
+
+        for name in Database.WORKER_STOP_EVENT_NAMES:
+            with self.subTest(event=name):
+                event = getattr(db, name, None)
+                self.assertIsInstance(event, threadingModule.Event().__class__)
+
+    def test_signal_stop_sets_all_of_them(self):
+        from Database.database import Database
+
+        db = self._makeDb({}, [])
+
+        db.signalStop()
+
+        for name in Database.WORKER_STOP_EVENT_NAMES:
+            with self.subTest(event=name):
+                self.assertTrue(getattr(db, name).is_set())
+
+
 class BackupWorkerStopEventTestCase(unittest.TestCase):
     def test_restart_uses_a_fresh_stop_event_so_a_lingering_thread_cannot_revive(self):
         with tempfile.TemporaryDirectory() as tmpdir:

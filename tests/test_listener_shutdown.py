@@ -211,6 +211,28 @@ class TestDatabaseSignalStop(unittest.TestCase):
 
         self.assertTrue(db._stopping)
 
+    def test_every_worker_stop_event_is_signalled(self):
+        """The album-biography worker was once missing from the hand-written
+        tuple here, so it kept running full Last.fm batches (up to 20
+        rate-limited lookups plus DB writes) while other users' threads were
+        being joined. This walks the declared list so a new worker that
+        forgets to register still fails loudly - and pins that every declared
+        name is a real attribute on a constructed Database."""
+        from Database.database import Database
+
+        db = _bareDatabase()
+        events = {}
+        for name in Database.WORKER_STOP_EVENT_NAMES:
+            events[name] = threading.Event()
+            setattr(db, name, events[name])
+
+        db.signalStop()
+
+        for name, event in events.items():
+            with self.subTest(event=name):
+                self.assertTrue(event.is_set())
+
+
 
 class TestStartListenerShutdownGate(unittest.TestCase):
     """startListener must refuse to (re)connect once stop was requested, and

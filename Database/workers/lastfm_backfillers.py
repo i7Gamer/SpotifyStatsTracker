@@ -6,8 +6,70 @@ import Database.database as _dbmod  # noqa: F401 - module-global names
 # working after this relocation.
 
 
+# Bound on how long a stop waits for a worker to notice its event. A worker
+# blocked in a slow Last.fm call outlives this; it exits at its next loop check
+# (its event stays set - see _startLastfmWorker's fresh-event note).
+LASTFM_WORKER_STOP_JOIN_TIMEOUT_SECONDS = 3
+
+
 class LastfmBackfillMixin:
     """The three Last.fm backfillers - genre tags, artist biographies, album biographies - and their shared claim/lookup/inheritance helpers."""
+
+    def _startLastfmWorker(self, threadAttr: str, eventAttr: str, loop, threadName: str,
+                            logPrefix: str) -> None:
+        """Shared start for the three Last.fm workers.
+
+        The "already running?" check and the thread/event assignment that
+        follows it run under _lastfm_worker_lock as one step. They used to be
+        separate, and the profile page's key save starts all three from a
+        request thread: two concurrent saves (a double-clicked form) could both
+        see no live thread, and the second's assignments would overwrite the
+        first's - orphaning a running thread on an Event no reference survives
+        for, so no stop path could ever reach it.
+
+        Each run gets a FRESH event, passed into the loop: stop joins with a
+        timeout, so a worker blocked in a slow HTTP call can outlive it.
+        Reusing (and clearing) the old event would revive that zombie thread
+        alongside the new one; with its own still-set event it exits at its
+        next loop check instead."""
+        if not all(hasattr(self, attr) for attr in (threadAttr, eventAttr, "_lastfm_worker_lock")):
+            return
+        import sqlite3
+        with self._lastfm_worker_lock:
+            existing = getattr(self, threadAttr)
+            if existing is not None and existing.is_alive():
+                return
+            try:
+                hasApiKey = bool(self.repo.getUserLastfmApiKey(self.user))
+            except sqlite3.OperationalError as e:
+                # A Database constructed against a pre-1.19 file outside the
+                # app's migration path (standalone script/REPL) has no
+                # users.lastfm_api_key column yet - skip the worker instead of
+                # crashing __init__; it starts once the migration has run.
+                _dbmod.logger.warning("[%s-%s] Not starting - schema not migrated yet: %s",
+                                       logPrefix, self.user, e)
+                return
+            if not hasApiKey:
+                return   #< keyless users get no idle thread
+            stop_event = _dbmod.threading.Event()
+            setattr(self, eventAttr, stop_event)
+            thread = _dbmod.threading.Thread(target=loop, args=(stop_event,), name=threadName, daemon=True)
+            setattr(self, threadAttr, thread)
+            thread.start()
+
+    def _stopLastfmWorker(self, threadAttr: str, eventAttr: str) -> None:
+        """Shared stop: signal under the lock so a concurrent start can't
+        interleave, then join outside it (a join can block for seconds, and
+        nothing else needs to wait on that)."""
+        if not all(hasattr(self, attr) for attr in (threadAttr, eventAttr, "_lastfm_worker_lock")):
+            return
+        with self._lastfm_worker_lock:
+            thread = getattr(self, threadAttr)
+            if thread is None:
+                return
+            getattr(self, eventAttr).set()
+            setattr(self, threadAttr, None)
+        thread.join(timeout=LASTFM_WORKER_STOP_JOIN_TIMEOUT_SECONDS)
 
     def getLastfmWorkerStatus(self) -> dict:
         return {
@@ -39,48 +101,13 @@ class LastfmBackfillMixin:
         """Start the background thread that backfills genres from Last.fm.
         No-op without a stored API key - keyless users get no idle thread,
         and the profile page's key save calls this again once a key exists."""
-        if not hasattr(self, "lastfm_thread") or not hasattr(self, "lastfm_stop_event"):
-            return
-        if self.lastfm_thread is not None and self.lastfm_thread.is_alive():
-            return
-        import sqlite3
-        try:
-            hasApiKey = bool(self.repo.getUserLastfmApiKey(self.user))
-        except sqlite3.OperationalError as e:
-            # A Database constructed against a pre-1.19 file outside the
-            # app's migration path (standalone script/REPL) has no
-            # users.lastfm_api_key column yet - skip the worker instead of
-            # crashing __init__; it starts once the migration has run.
-            _dbmod.logger.warning("[LastfmWorker-%s] Not starting - schema not migrated yet: %s",
-                           self.user, e)
-            return
-        if not hasApiKey:
-            return
-        # A FRESH event per run, passed into the loop: stop() joins with a
-        # timeout, so a worker blocked in a slow HTTP call can outlive it -
-        # reusing (and clearing) the old event here would revive that zombie
-        # thread alongside the new one. With its own still-set event it exits
-        # at its next loop check instead (it may finish its current batch
-        # first - bounded, since per-row aborts read self.lastfm_stop_event).
-        stop_event = _dbmod.threading.Event()
-        self.lastfm_stop_event = stop_event
-        self.lastfm_thread = _dbmod.threading.Thread(
-            target=self._lastfmGenreBackfillLoop,
-            args=(stop_event,),
-            name=f"lastfm-genres-{self.user}",
-            daemon=True
-        )
-        self.lastfm_thread.start()
+        self._startLastfmWorker("lastfm_thread", "lastfm_stop_event",
+                                 self._lastfmGenreBackfillLoop,
+                                 f"lastfm-genres-{self.user}", "LastfmWorker")
 
     def stopLastfmGenreBackfiller(self) -> None:
         """Signal and wait for the background genre backfiller to stop."""
-        if not hasattr(self, "lastfm_thread") or not hasattr(self, "lastfm_stop_event"):
-            return
-        if self.lastfm_thread is None:
-            return
-        self.lastfm_stop_event.set()
-        self.lastfm_thread.join(timeout=3)
-        self.lastfm_thread = None
+        self._stopLastfmWorker("lastfm_thread", "lastfm_stop_event")
 
     def _lastfmGenreBackfillLoop(self, stop_event: threading.Event | None = None) -> None:
         """Fetches Last.fm genre tags for this user's played artists, albums
@@ -166,42 +193,13 @@ class LastfmBackfillMixin:
         not sequentially after it. No-op without a stored API key - keyless
         users get no idle thread, and the profile page's key save calls this
         again once a key exists."""
-        if not hasattr(self, "lastfm_biography_thread") or not hasattr(self, "lastfm_biography_stop_event"):
-            return
-        if self.lastfm_biography_thread is not None and self.lastfm_biography_thread.is_alive():
-            return
-        import sqlite3
-        try:
-            hasApiKey = bool(self.repo.getUserLastfmApiKey(self.user))
-        except sqlite3.OperationalError as e:
-            # Same pre-migration guard as startLastfmGenreBackfiller: a
-            # Database constructed against a pre-1.19 file outside the app's
-            # migration path has no users.lastfm_api_key column yet.
-            _dbmod.logger.warning("[LastfmBioWorker-%s] Not starting - schema not migrated yet: %s",
-                           self.user, e)
-            return
-        if not hasApiKey:
-            return
-        # A FRESH event per run (see startLastfmGenreBackfiller's note on why
-        # a lingering thread's event must never be revived).
-        stop_event = _dbmod.threading.Event()
-        self.lastfm_biography_stop_event = stop_event
-        self.lastfm_biography_thread = _dbmod.threading.Thread(
-            target=self._lastfmBiographyBackfillLoop,
-            args=(stop_event,),
-            name=f"lastfm-bios-{self.user}",
-            daemon=True
-        )
-        self.lastfm_biography_thread.start()
+        self._startLastfmWorker("lastfm_biography_thread", "lastfm_biography_stop_event",
+                                 self._lastfmBiographyBackfillLoop,
+                                 f"lastfm-bios-{self.user}", "LastfmBioWorker")
 
     def stopLastfmBiographyBackfiller(self) -> None:
         """Signal and wait for the background biography backfiller to stop."""
-        if not hasattr(self, "lastfm_biography_thread") or not hasattr(self, "lastfm_biography_stop_event"):
-            return
-        if self.lastfm_biography_thread is None:
-            return
-        self.lastfm_biography_stop_event.set()
-        self.lastfm_biography_thread.join(timeout=3)
+        self._stopLastfmWorker("lastfm_biography_thread", "lastfm_biography_stop_event")
         self.lastfm_biography_thread = None
 
     def _lastfmBiographyBackfillLoop(self, stop_event: threading.Event | None = None) -> None:
@@ -302,43 +300,13 @@ class LastfmBackfillMixin:
         No-op without a stored API key - keyless users get no idle thread,
         and the profile page's key save calls this again once a key
         exists."""
-        if not hasattr(self, "lastfm_album_biography_thread") or not hasattr(self, "lastfm_album_biography_stop_event"):
-            return
-        if self.lastfm_album_biography_thread is not None and self.lastfm_album_biography_thread.is_alive():
-            return
-        import sqlite3
-        try:
-            hasApiKey = bool(self.repo.getUserLastfmApiKey(self.user))
-        except sqlite3.OperationalError as e:
-            # Same pre-migration guard as startLastfmBiographyBackfiller: a
-            # Database constructed against a pre-1.19 file outside the app's
-            # migration path has no users.lastfm_api_key column yet.
-            _dbmod.logger.warning("[LastfmAlbumBioWorker-%s] Not starting - schema not migrated yet: %s",
-                           self.user, e)
-            return
-        if not hasApiKey:
-            return
-        # A FRESH event per run (see startLastfmGenreBackfiller's note on why
-        # a lingering thread's event must never be revived).
-        stop_event = _dbmod.threading.Event()
-        self.lastfm_album_biography_stop_event = stop_event
-        self.lastfm_album_biography_thread = _dbmod.threading.Thread(
-            target=self._lastfmAlbumBiographyBackfillLoop,
-            args=(stop_event,),
-            name=f"lastfm-album-bios-{self.user}",
-            daemon=True
-        )
-        self.lastfm_album_biography_thread.start()
+        self._startLastfmWorker("lastfm_album_biography_thread", "lastfm_album_biography_stop_event",
+                                 self._lastfmAlbumBiographyBackfillLoop,
+                                 f"lastfm-album-bios-{self.user}", "LastfmAlbumBioWorker")
 
     def stopLastfmAlbumBiographyBackfiller(self) -> None:
         """Signal and wait for the background album biography backfiller to stop."""
-        if not hasattr(self, "lastfm_album_biography_thread") or not hasattr(self, "lastfm_album_biography_stop_event"):
-            return
-        if self.lastfm_album_biography_thread is None:
-            return
-        self.lastfm_album_biography_stop_event.set()
-        self.lastfm_album_biography_thread.join(timeout=3)
-        self.lastfm_album_biography_thread = None
+        self._stopLastfmWorker("lastfm_album_biography_thread", "lastfm_album_biography_stop_event")
 
     def _lastfmAlbumBiographyBackfillLoop(self, stop_event: threading.Event | None = None) -> None:
         """Fetches Last.fm biographies for this user's played albums (most-

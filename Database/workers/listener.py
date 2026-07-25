@@ -526,6 +526,18 @@ class ListenerMixin:
                 "seconds_since_last_poll": seconds_since_last_poll,
             }
 
+    # Every per-user background worker's stop event, in one place: shutdown
+    # phase 1 sets all of them. The album-biography worker was once missing
+    # from the literal tuple this replaced, so it kept running full Last.fm
+    # batches while the other users' threads were being joined.
+    WORKER_STOP_EVENT_NAMES = (
+        "backfiller_stop_event",
+        "wrapped_stop_event",
+        "lastfm_stop_event",
+        "lastfm_biography_stop_event",
+        "lastfm_album_biography_stop_event",
+    )
+
     def signalStop(self) -> None:
         """Phase 1 of shutdown: flip every stop flag/event for this user
         WITHOUT joining or closing anything. shutdown() calls this for every
@@ -543,8 +555,7 @@ class ListenerMixin:
         wd = getattr(self.autoImporter, "wd", None)
         if wd is not None:
             wd.signalStop()
-        for eventName in ("backfiller_stop_event", "wrapped_stop_event", "lastfm_stop_event",
-                         "lastfm_biography_stop_event"):
+        for eventName in self.WORKER_STOP_EVENT_NAMES:
             event = getattr(self, eventName, None)
             if event is not None:
                 event.set()

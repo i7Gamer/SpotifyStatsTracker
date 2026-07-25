@@ -345,6 +345,15 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         self._wrapped_recalc_locks: dict[int, threading.Lock] = {}
         self.startWrappedCalculationsWorker()
 
+        # Serializes the Last.fm workers' start/stop pairs. Their
+        # "already running?" check and the thread/event assignment that
+        # follows it are not atomic on their own, and the profile page's key
+        # save starts all three from a request thread: two concurrent saves
+        # (a double-clicked form) could both pass the check, and the second's
+        # assignments would orphan the first's thread on an event nothing
+        # holds a reference to any more - unstoppable until process exit.
+        self._lastfm_worker_lock = threading.Lock()
+
         self.lastfm_thread = None
         self.lastfm_stop_event = threading.Event()
         # No-op for users without a stored Last.fm key (no idle thread); the
