@@ -86,7 +86,14 @@ function loadCompareData({ sortByOnly = false, initial = false } = {}) {
   }
   const delay = new Promise(resolve => setTimeout(resolve, COMPARE_FADE_MS));
   const fetched = fetch(window.location.pathname + '?' + params.toString(), { signal: controller.signal })
-    .then(response => response.json());
+    .then(response => {
+      //< an expired session: go to the login page instead of parsing its
+      //  HTML as JSON and dead-ending on a Retry that can never succeed
+      if (window.AjaxStatus && window.AjaxStatus.redirectIfUnauthorized(resp)) {
+        throw new Error(window.AjaxStatus.UNAUTHORIZED_ERROR);
+      }
+      return response.json();
+    });
 
   Promise.all([fetched, delay])
     .then(([data]) => {
@@ -137,6 +144,8 @@ function loadCompareData({ sortByOnly = false, initial = false } = {}) {
       if (window.AjaxStatus) window.AjaxStatus.clearBanner();
     })
     .catch(err => {
+      //< navigating to /login - not a load failure to report
+      if (window.AjaxStatus && window.AjaxStatus.isUnauthorizedError(err)) return;
       //< an abort is the expected fate of a superseded load, not an error
       if (err.name !== 'AbortError') {
         console.error(err);

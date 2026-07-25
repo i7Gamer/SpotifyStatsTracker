@@ -119,13 +119,41 @@ class TestTagsRoutes(AppTestCase):
         self.assertIn("<location>spotify:track:t1</location>", resp.get_data(as_text=True))
 
     def test_playlist_export_sort_by_recent(self):
+        """Two tagged tracks with different last-played times, so the ordering
+        is actually observable - with one track this passed even if sorting was
+        deleted entirely."""
         self._login()
-        self.client.post("/api/tags", json={"entity_type": "track", "entity_id": "t1", "tag": "workout"})
+        self.dash.repo.upsertTrack(makeTrack(trackId="t2", name="Newer Song", albumId="alb2", artistId="art2"))
+        self.dash.repo.insertPlay(self.username, "t2", 9000.0, 200000)   #< played after t1
+        self.dash.repo.commit()
+        for trackId in ("t1", "t2"):
+            self.client.post("/api/tags",
+                             json={"entity_type": "track", "entity_id": trackId, "tag": "workout"})
 
         resp = self.client.get("/playlist/export?tags=workout&format=csv&sort=recent")
 
         self.assertEqual(resp.status_code, 200)
-        self.assertIn("Rock Song", resp.get_data(as_text=True))
+        body = resp.get_data(as_text=True)
+        self.assertLess(body.index("Newer Song"), body.index("Rock Song"))
+
+    def test_playlist_export_sort_by_plays_differs_from_recent(self):
+        """The two sort modes must actually produce different orders here, so
+        neither test can pass on a hardcoded ordering."""
+        self._login()
+        self.dash.repo.upsertTrack(makeTrack(trackId="t2", name="Newer Song", albumId="alb2", artistId="art2"))
+        self.dash.repo.insertPlay(self.username, "t2", 9000.0, 200000)
+        for extraPlay in (2000.0, 3000.0):        #< t1 has more plays, t2 is more recent
+            self.dash.repo.insertPlay(self.username, "t1", extraPlay, 200000)
+        self.dash.repo.commit()
+        for trackId in ("t1", "t2"):
+            self.client.post("/api/tags",
+                             json={"entity_type": "track", "entity_id": trackId, "tag": "workout"})
+
+        byPlays = self.client.get("/playlist/export?tags=workout&format=csv&sort=plays").get_data(as_text=True)
+        byRecent = self.client.get("/playlist/export?tags=workout&format=csv&sort=recent").get_data(as_text=True)
+
+        self.assertLess(byPlays.index("Rock Song"), byPlays.index("Newer Song"))
+        self.assertLess(byRecent.index("Newer Song"), byRecent.index("Rock Song"))
 
     def test_playlist_export_filename_is_header_safe(self):
         self._login()
@@ -136,7 +164,11 @@ class TestTagsRoutes(AppTestCase):
 
         self.assertEqual(resp.status_code, 200)
         cd = resp.headers["Content-Disposition"]
-        self.assertNotIn('"out', cd)
+        # The quote must not survive into the header at all: an unescaped one
+        # would close filename="..." early and let the rest be read as further
+        # header parameters. (The previous assertion looked for '"out', a
+        # substring the input could never produce either way.)
+        self.assertEqual(cd.count('"'), 2)   #< exactly the pair around the filename
         self.assertNotIn("中", cd)
         self.assertTrue(cd.startswith('attachment; filename="playlist_chill'))
         cd.encode("latin-1")   # must not raise - header would otherwise 500
@@ -223,6 +255,81 @@ class TestTagsFeatureDisabled(AppTestCase):
         self._login()
         resp = self.client.get("/playlist/export?year=1900&format=csv")
         self.assertEqual(resp.status_code, 400)
+
+
+class TestTagMutationRoutes(TestTagsRoutes):
+    """Rename and delete only had coverage of their feature-disabled 404s - the
+    success paths (param names, URL encoding, what actually changed in the DB)
+    were never driven through the routes."""
+
+    def _tag(self, trackId, tag):
+        resp = self.client.post("/api/tags",
+                                json={"entity_type": "track", "entity_id": trackId, "tag": tag})
+        self.assertEqual(resp.status_code, 200)
+
+    def test_rename_updates_the_stored_tag(self):
+        self._login()
+        self._tag("t1", "workout")
+
+        resp = self.client.post("/api/tags/rename", json={"old_tag": "workout", "new_tag": "gym"})
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.get_json()["success"])
+        self.assertEqual(self.dash.repo.getTagsForEntity(self.username, "track", "t1"), ["gym"])
+
+    def test_rename_onto_an_existing_tag_merges_them(self):
+        """The conflict branch: UPDATE OR IGNORE then a sweep-DELETE, so the
+        rows that would violate the unique key are folded into the target
+        instead of erroring."""
+        self._login()
+        self.dash.repo.upsertTrack(makeTrack(trackId="t2", name="Other Song", albumId="alb2", artistId="art2"))
+        self.dash.repo.insertPlay(self.username, "t2", 2000.0, 200000)
+        self.dash.repo.commit()
+        self._tag("t1", "workout")
+        self._tag("t1", "gym")
+        self._tag("t2", "workout")
+
+        resp = self.client.post("/api/tags/rename", json={"old_tag": "workout", "new_tag": "gym"})
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(self.dash.repo.getTagsForEntity(self.username, "track", "t1"), ["gym"])
+        self.assertEqual(self.dash.repo.getTagsForEntity(self.username, "track", "t2"), ["gym"])
+        self.assertEqual([t["tag"] for t in self.dash.repo.getUserTags(self.username)], ["gym"])
+
+    def test_delete_removes_the_tag_everywhere(self):
+        self._login()
+        self._tag("t1", "workout")
+
+        resp = self.client.delete("/api/tags/workout")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_json()["count"], 1)
+        self.assertEqual(self.dash.repo.getTagsForEntity(self.username, "track", "t1"), [])
+
+    def test_a_tag_containing_a_slash_can_be_deleted(self):
+        """normalizeTag allows slashes, so such a tag could be created - but the
+        default URL converter rejects them, so %2F decoded back to a slash and
+        matched no rule: Delete silently 404'd and the tag was permanent."""
+        self._login()
+        self._tag("t1", "rock/metal")
+        self.assertEqual(self.dash.repo.getTagsForEntity(self.username, "track", "t1"), ["rock/metal"])
+
+        resp = self.client.delete("/api/tags/rock%2Fmetal")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(self.dash.repo.getTagsForEntity(self.username, "track", "t1"), [])
+
+    def test_a_tag_that_normalizes_to_nothing_is_rejected(self):
+        """'#' alone is truthy, so the route accepted it, stored nothing, and
+        answered {"success": true, "tag": null} - telling the client a tag
+        existed that never did."""
+        self._login()
+
+        resp = self.client.post("/api/tags",
+                                json={"entity_type": "track", "entity_id": "t1", "tag": "#"})
+
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(self.dash.repo.getTagsForEntity(self.username, "track", "t1"), [])
 
 
 if __name__ == "__main__":

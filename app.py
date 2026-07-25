@@ -575,6 +575,18 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
             self._login_cache[email] = (result, now_ts + LOGIN_CACHE_TTL_SECONDS)
         return result
 
+    def unauthenticatedResponse(self, nextPath: str | None = None):
+        """The "no live session" response for a route. An ajax request gets a
+        401 JSON body: a redirect would be followed transparently by fetch(),
+        and the page would then try to parse the login HTML as JSON and show a
+        generic "couldn't load" with a Retry that fails identically forever.
+        The client turns the 401 into a real navigation (see
+        AjaxStatus.redirectIfUnauthorized). Everything else keeps the redirect."""
+        target = nextPath or request.path
+        if request.args.get("ajax"):
+            return jsonify(error="Not logged in", loginUrl=url_for("login", next=target)), 401
+        return redirect(url_for("login", next=target))
+
     def get_current_user_or_redirect(self):
         """The (email, username, db) triple for the authenticated session, or
         (None, None, None) when no live session exists - route handlers redirect

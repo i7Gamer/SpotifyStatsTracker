@@ -32,7 +32,7 @@ def register(app, dashboard):
             abort(404)
         email, username, db = dashboard.get_current_user_or_redirect()
         if not email:
-            return redirect(url_for("login", next=request.path))
+            return dashboard.unauthenticatedResponse()
 
         # Mirrors /overview's cookies_json guard: get_user_db starts a
         # live listener, which needs stored cookies - a share counterpart

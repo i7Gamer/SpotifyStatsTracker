@@ -164,12 +164,20 @@ def generatePlaylistCsv(tracks: list[dict]):
     yield buffer.getvalue()
 
 
+def _m3uSafeText(value: str) -> str:
+    """M3U is line-oriented: a CR/LF inside a track or artist name would end the
+    #EXTINF line early and let the rest be read as further playlist entries
+    (an arbitrary extra URI). The CSV and XSPF exports escape their formats'
+    metacharacters; this is the M3U equivalent."""
+    return (value or "").replace("\r", " ").replace("\n", " ")
+
+
 def generatePlaylistM3u(tracks: list[dict]):
     yield "#EXTM3U\n"
     for track in tracks:
         artists = track.get("artists") or []
-        artist_names = ", ".join(a.get("name", "") for a in artists)
-        title = track.get("name", "")
+        artist_names = _m3uSafeText(", ".join(a.get("name", "") for a in artists))
+        title = _m3uSafeText(track.get("name", ""))
         spotify_uri = f"spotify:track:{track['id']}"
         yield f"#EXTINF:-1,{artist_names} - {title}\n{spotify_uri}\n"
 

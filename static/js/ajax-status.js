@@ -62,10 +62,35 @@
     }
   }
 
+  // An expired session used to leave these pages dead-ended: the route sent a
+  // 302 to /login, fetch followed it transparently, and the page tried to parse
+  // the login HTML as JSON - so the user got "couldn't load / Retry", and Retry
+  // failed the same way forever. The routes now answer an ajax request with a
+  // 401, and every loader routes it here to send the user to log in (coming
+  // back to the page they were on).
+  function redirectIfUnauthorized(resp) {
+    if (!resp || resp.status !== 401) return false;
+    var next = window.location.pathname + window.location.search;
+    window.location.href = '/login?next=' + encodeURIComponent(next);
+    return true;
+  }
+
+  // Thrown by a loader after redirectIfUnauthorized() has started navigating,
+  // so its catch can tell "we're leaving the page" apart from a real failure
+  // and skip the error banner.
+  var UNAUTHORIZED_ERROR = 'ajax-unauthorized';
+
+  function isUnauthorizedError(err) {
+    return !!err && err.message === UNAUTHORIZED_ERROR;
+  }
+
   var AjaxStatus = {
     renderInto: renderInto,
     showBanner: showBanner,
     clearBanner: clearBanner,
+    redirectIfUnauthorized: redirectIfUnauthorized,
+    isUnauthorizedError: isUnauthorizedError,
+    UNAUTHORIZED_ERROR: UNAUTHORIZED_ERROR,
     DEFAULT_MESSAGE: DEFAULT_MESSAGE,
   };
 

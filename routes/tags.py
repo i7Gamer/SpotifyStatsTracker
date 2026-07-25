@@ -36,6 +36,11 @@ def register(app, dashboard):
 
         try:
             norm = db.repo.addTag(username, tag, entity_type, entity_id)
+            if norm is None:
+                # addTag normalizes away leading '#' and whitespace, so input
+                # like "#" or "  " stores nothing - reporting success (with a
+                # null tag) told the client a tag existed that never did.
+                return jsonify({"error": "Tag is empty after normalization"}), 400
             db.repo.commit()
             tags = db.repo.getTagsForEntity(username, entity_type, entity_id)
             return jsonify({"success": True, "tag": norm, "tags": tags})
@@ -116,7 +121,11 @@ def register(app, dashboard):
         db.repo.commit()
         return jsonify({"success": True, "count": cnt})
 
-    app.add_url_rule("/api/tags/<tag>", "deleteTagApi", deleteTagApi, methods=["DELETE"])
+    # <path:tag> rather than the default string converter, which rejects
+    # slashes: normalizeTag allows them, so a tag like "rock/metal" could be
+    # created but never deleted - the client's %2F decodes back to a slash
+    # before routing and no rule matched, so Delete silently 404'd.
+    app.add_url_rule("/api/tags/<path:tag>", "deleteTagApi", deleteTagApi, methods=["DELETE"])
 
     def playlistsPage():
         email, username, db = dashboard.get_current_user_or_redirect()

@@ -82,5 +82,39 @@ class TestPlaylistExport(unittest.TestCase):
         self.assertIn('Song 1 &lt;Rock&gt;', content)
 
 
+class TestM3uIsLineSafe(unittest.TestCase):
+    """M3U is line-oriented, so a CR/LF in a track or artist name would end the
+    #EXTINF line early and let the rest be read as further playlist entries -
+    an arbitrary extra URI in the file the user opens. The CSV and XSPF
+    generators escape their own metacharacters; this is the M3U equivalent."""
+
+    def _m3u(self, name, artist="Artist"):
+        return "".join(generatePlaylistM3u([{
+            "id": "t1", "name": name, "artists": [{"name": artist}],
+            "album": {"name": "Album"}, "isrc": "", "url": "",
+        }]))
+
+    def test_a_newline_in_a_title_cannot_inject_a_line(self):
+        content = self._m3u("Song\n#EXTINF:-1,Injected\nspotify:track:evil")
+
+        lines = [line for line in content.splitlines() if line]
+        # The injected text survives as inert characters inside the #EXTINF
+        # line; what matters is that it never becomes a line of its own, which
+        # is the only way a player would read it as another entry.
+        self.assertEqual(lines, ["#EXTM3U",
+                                 "#EXTINF:-1,Artist - Song #EXTINF:-1,Injected spotify:track:evil",
+                                 "spotify:track:t1"])
+
+    def test_a_carriage_return_in_an_artist_name_is_neutralized(self):
+        content = self._m3u("Song", artist="Artist\rInjected")
+
+        self.assertEqual(len([line for line in content.splitlines() if line]), 3)
+
+    def test_ordinary_names_are_untouched(self):
+        content = self._m3u("Song 1 <Rock>", artist="Artist & Co")
+
+        self.assertIn("#EXTINF:-1,Artist & Co - Song 1 <Rock>", content)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -159,7 +159,7 @@ def register(app, dashboard):
     def dashboardIndex():
         email, username, db = dashboard.get_current_user_or_redirect()
         if not email:
-            return redirect(url_for("login", next=request.path))
+            return dashboard.unauthenticatedResponse()
 
         settings = db.repo.getUserSettings(username)
         default_window = settings.get("default_dashboard_window", "day")
@@ -259,7 +259,7 @@ def register(app, dashboard):
         scopes the list; named intervals don't."""
         email, username, db = dashboard.get_current_user_or_redirect()
         if not email:
-            return redirect(url_for("login", next=request.path))
+            return dashboard.unauthenticatedResponse()
 
         customStart = request.args.get("startDate", "")
         customEnd = request.args.get("endDate", "")
@@ -387,7 +387,7 @@ def register(app, dashboard):
     def topSongsPage():
         email, username, db = dashboard.get_current_user_or_redirect()
         if not email:
-            return redirect(url_for("login", next=request.path))
+            return dashboard.unauthenticatedResponse()
 
         page = dashboard._getPageParam()
         searchQuery = request.args.get("q", "")
@@ -462,7 +462,7 @@ def register(app, dashboard):
     def topAlbumsPage():
         email, username, db = dashboard.get_current_user_or_redirect()
         if not email:
-            return redirect(url_for("login", next=request.path))
+            return dashboard.unauthenticatedResponse()
 
         page = dashboard._getPageParam()
         searchQuery = request.args.get("q", "")
@@ -526,7 +526,7 @@ def register(app, dashboard):
     def topArtistsPage():
         email, username, db = dashboard.get_current_user_or_redirect()
         if not email:
-            return redirect(url_for("login", next=request.path))
+            return dashboard.unauthenticatedResponse()
 
         page = dashboard._getPageParam()
         searchQuery = request.args.get("q", "")
@@ -592,7 +592,7 @@ def register(app, dashboard):
     def chartsPage():
         email, username, db = dashboard.get_current_user_or_redirect()
         if not email:
-            return redirect(url_for("login", next=request.path))
+            return dashboard.unauthenticatedResponse()
 
         settings = db.repo.getUserSettings(username)
         defaultWindow = settings.get("default_dashboard_window", "day")
@@ -791,7 +791,7 @@ def register(app, dashboard):
     def songDetailPage(track_id):
         email, username, db = dashboard.get_current_user_or_redirect()
         if not email:
-            return redirect(url_for("login", next=request.path))
+            return dashboard.unauthenticatedResponse()
 
         song = db.getSong(track_id)
         if song is None:
@@ -857,7 +857,7 @@ def register(app, dashboard):
     def artistDetailPage(artist_id):
         email, username, db = dashboard.get_current_user_or_redirect()
         if not email:
-            return redirect(url_for("login", next=request.path))
+            return dashboard.unauthenticatedResponse()
 
         artist = db.getArtist(artist_id)
         if artist is None:
@@ -930,7 +930,7 @@ def register(app, dashboard):
     def albumDetailPage(album_id):
         email, username, db = dashboard.get_current_user_or_redirect()
         if not email:
-            return redirect(url_for("login", next=request.path))
+            return dashboard.unauthenticatedResponse()
 
         album = db.getAlbum(album_id)
         if album is None:

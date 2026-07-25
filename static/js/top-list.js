@@ -81,7 +81,14 @@ if (typeof window !== 'undefined') (function () {
     params.set('ajax', 'true');
     var delay = new Promise(function (resolve) { setTimeout(resolve, initial ? 0 : FADE_MS); });
     var fetched = fetch(window.location.pathname + '?' + params.toString(), { signal: controller.signal })
-      .then(function (r) { return r.json(); });
+      .then(function (resp) {
+        //< an expired session: go to the login page instead of parsing its
+        //  HTML as JSON and dead-ending on a Retry that can never succeed
+        if (window.AjaxStatus && window.AjaxStatus.redirectIfUnauthorized(resp)) {
+          throw new Error(window.AjaxStatus.UNAUTHORIZED_ERROR);
+        }
+        return resp.json();
+      });
 
     Promise.all([fetched, delay]).then(function (results) {
       var data = results[0];
@@ -94,6 +101,8 @@ if (typeof window !== 'undefined') (function () {
         else img.addEventListener('load', function () { img.classList.add('loaded'); });
       });
     }).catch(function (err) {
+      //< navigating to /login - not a load failure to report
+      if (window.AjaxStatus && window.AjaxStatus.isUnauthorizedError(err)) return;
       if (err.name !== 'AbortError') {
         console.error(err);
         if ((!activeLoad || activeLoad.controller === controller) && window.AjaxStatus) {

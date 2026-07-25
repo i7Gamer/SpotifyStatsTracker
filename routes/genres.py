@@ -78,7 +78,7 @@ def register(app, dashboard):
     def genresPage():
         email, username, db = dashboard.get_current_user_or_redirect()
         if not email:
-            return redirect(url_for("login", next=request.path))
+            return dashboard.unauthenticatedResponse()
 
         settings = db.repo.getUserSettings(username)
         defaultWindow = settings.get("default_dashboard_window", "day")
