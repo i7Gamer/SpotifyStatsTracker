@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import logging
+
 from Database.queries._base import *  # noqa: F401,F403 - shared constants/db helpers
 from config import MEDIA_FOLDER_SIZE_CACHE_TTL_SECONDS
+
+logger = logging.getLogger(__name__)
 
 # The media cache directory is shared across every user (Database/db.py's
 # `images` table dedups downloads instance-wide), so its on-disk size is
@@ -75,8 +79,8 @@ class SettingQueries:
                 )
                 if result.stdout.strip():
                     return int(result.stdout.strip())
-        except Exception:
-            pass
+        except Exception:  # noqa: S110 - the platform scan is the fast path only; the Python
+            pass           #  walk below is the answer, and it logs if IT fails
 
         # Fallback to Python recursive method (slow but always works)
         total_size = 0
@@ -84,8 +88,12 @@ class SettingQueries:
             for file in folder_path.rglob("*"):
                 if file.is_file():
                     total_size += file.stat().st_size
-        except Exception:
-            pass
+        except Exception as e:
+            # Returning the partial total is right - a half-walked directory is
+            # a better answer than none for a display figure - but silently
+            # reporting a wrong media size on /overview gave no way to tell
+            # that from a genuinely small cache.
+            logger.debug("Media folder size scan failed for %s, reporting partial total: %s", folder_path, e)
         return total_size
 
     def getGlobalDatabaseStats(self) -> dict:

@@ -168,8 +168,8 @@ def register(app, dashboard):
             if created_at_val:
                 try:
                     created_date_str = convertToDatetime(created_at_val, tz=db.tz).strftime("%Y-%m-%d %H:%M:%S")
-                except Exception:
-                    pass
+                except Exception:  # noqa: S110 - an unformattable created_at renders as a blank
+                    pass           #  cell rather than 500-ing the whole admin table
 
             users_list.append({
                 "username": u_username,

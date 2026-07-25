@@ -37,8 +37,8 @@ def player_status_reconnect(self):
     try:
         if hasattr(self, "ws") and self.ws:
             self.ws.close()
-    except Exception:
-        pass
+    except Exception:  # noqa: S110 - the old socket is being replaced; a failure to close
+        pass           #  one that is already dead must not block the reconnect
 
     # Renew session and client token
     try:
@@ -553,8 +553,6 @@ def patch_spotapi_user() -> bool:
         from collections.abc import Mapping
         from typing import Any
 
-        original_get_user_info = spotapi.user.User.get_user_info
-        original_get_plan_info = spotapi.user.User.get_plan_info
 
         def patched_get_user_info(self) -> Mapping[str, Any]:
             url = "https://www.spotify.com/api/account-settings/v1/profile"

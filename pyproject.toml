@@ -24,6 +24,12 @@ select = [
     "E9",    # syntax errors and IO errors that stop the file parsing at all
     "F63",   # broken comparisons/assertions - `assert (a, b)` is always true
     "F7",    # misplaced statements - `break` outside a loop, etc.
+    "F811",  # a name redefined before it was ever used - usually a lost edit
+    "F841",  # a local assigned and never read
+    "B006",  # mutable default argument, shared across every call
+    "B008",  # function call in a default argument, evaluated once at import
+    "B017",  # assertRaises(Exception) - also passes when the SETUP is what broke
+    "S110",  # try/except/pass, which swallows the error and the evidence
 ]
 
 [tool.pytest.ini_options]

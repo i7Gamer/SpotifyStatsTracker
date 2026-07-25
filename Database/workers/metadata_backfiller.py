@@ -240,8 +240,13 @@ class MetadataBackfillMixin:
                         with _dbmod.Database._backfill_lock:
                             for album_id in target_ids:
                                 _dbmod.Database._active_backfills.discard(album_id)
-                    except Exception:
-                        pass
+                    except Exception as cleanupError:
+                        # Losing this cleanup leaks the ids in _active_backfills
+                        # for the life of the process, and every later cycle
+                        # skips those albums as "already in flight" - a backfill
+                        # that quietly stops making progress on them.
+                        _dbmod.logger.warning("[Backfiller-%s] Failed to release %d in-flight album ids: %s",
+                                               self.user, len(target_ids), cleanupError)
                 else:
                     self._recordWorkerCycle("spotify_api", success=True)
 

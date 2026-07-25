@@ -101,7 +101,7 @@ class TestMusicoletImport(unittest.TestCase):
             return item
             
         # Run import generator to trigger pre-fetch and yielding
-        tracks = list(importer._import(dummyDataFunction, history, known=[], progressCallback=progressCallback))
+        list(importer._import(dummyDataFunction, history, known=[], progressCallback=progressCallback))
         
         # Filter progress calls that are pre-fetching
         prefetchCalls = [c for c in progressCalls if "Pre-fetching" in c[3]]
@@ -255,7 +255,7 @@ class TestSkipThresholdRouting(unittest.TestCase):
         
         # Process a play with 240s duration
         item = ("Song X", "Artist X", 1000, 240000, "track_x", "Album X")
-        meta = importer._processPlay(item, known)
+        importer._processPlay(item, known)
         
         # Verify the cached track duration was updated in place
         self.assertEqual(known["track_x"]["duration"], 240000)

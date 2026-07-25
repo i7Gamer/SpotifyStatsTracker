@@ -100,8 +100,8 @@ class Importer:
                 return export, "spotifyAcountExport"
             if "ts" in export[0]:         #< Extended export
                 return export, "spotifyExtendedExport"
-        except Exception:
-            pass  #< corrupt JSON / non-dict entries - fall through to "None"
+        except Exception:  # noqa: S110 - the "None" classification below IS the error report;
+            pass           #  the caller surfaces it to the user as an unreadable-export message
         return [], "None"
     
     def importHistory(self, parsedHistory, known, exportType, progressCallback=None, stats=None):
@@ -592,7 +592,7 @@ class Importer:
                     ))
                     trackTime += datetime.timedelta(milliseconds=timePlayed)
 
-            except (IndexError, ValueError) as e:
+            except (IndexError, ValueError):
                 continue
 
         return formatedData

@@ -207,8 +207,8 @@ class WrappedBuilderMixin:
                 res = db.repo.getCachedWrapped(db.user, year)
                 if res and not isinstance(res, MagicMock):
                     cached = res
-            except Exception:
-                pass
+            except Exception:  # noqa: S110 - probing whether a mock db has a real cache;
+                pass           #  any failure just means "no cached wrapped"
 
         if cached is not None:
             # If still empty defaults needed

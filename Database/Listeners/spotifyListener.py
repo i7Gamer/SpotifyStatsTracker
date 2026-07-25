@@ -928,8 +928,8 @@ class Listener:
                 if ws is not None:
                     try:
                         ws.close()
-                    except Exception:
-                        pass  # Connection may already be closed
+                    except Exception:  # noqa: S110 - closing an already-closed socket during
+                        pass           #  shutdown; there is nothing left to act on
 
             # Give the keep_alive thread a moment to detect the closed connection
             # and exit gracefully before we join it

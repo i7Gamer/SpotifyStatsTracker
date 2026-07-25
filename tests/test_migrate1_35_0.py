@@ -117,7 +117,7 @@ class TestMigrate1_35_0(unittest.TestCase):
 
     def test_rejects_a_database_not_on_the_from_version(self):
         self._seedDatabaseAt("1.34.0")   #< not 1.35.0
-        with self.assertRaises(Exception):
+        with self.assertRaisesRegex(Exception, "does not match migrator's expected from-version"):
             migrateModule.Migrator("1.35.0", "1.36.0").migrate()
 
     def test_migration_is_idempotent_on_retry(self):

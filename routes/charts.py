@@ -142,7 +142,6 @@ def register(app, dashboard):
         album_bio_enabled = dashboard.repo.isAlbumBioEnabled()
 
         # Get current user's timezone for consistent date display
-        current_user_tz = None
         current_username = None
         genre_coverage = emptyGenreCoverage()
         genre_unlocked = False
@@ -153,7 +152,6 @@ def register(app, dashboard):
         if is_logged_in:
             current_username = dashboard.get_username_for_email(email) or dashboard.get_or_create_user(email)
             current_db = dashboard.get_user_db(current_username, email)
-            current_user_tz = current_db.tz if current_db else None
             if current_db is not None and lastfm_enabled:
                 # All-time coverage: the progress card tracks the whole
                 # library, unlike the range-scoped gates on charts/wrapped.

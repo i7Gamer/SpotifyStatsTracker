@@ -141,8 +141,11 @@ def resolveUserTimezone(repo, username):
         tzName = repo.getUserSettings(username).get("timezone")
         if tzName:
             return ZoneInfo(tzName)
-    except Exception:
-        pass
+    except Exception as e:
+        # Falling back to the app default is right, but doing it silently means
+        # a user with an unrecognised timezone gets streak dates computed on
+        # the wrong day boundaries with nothing anywhere to say why.
+        logger.debug("Timezone lookup failed for %s, using the app default: %s", username, e)
     return getTimezone()
 
 

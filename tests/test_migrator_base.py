@@ -59,12 +59,12 @@ class TestCheckPreconditions(MigratorBaseTestCase):
 
     def test_raises_when_db_does_not_match_migrator_from_version(self):
         self._writeVersions(appVersion="1.9.0", databaseVersion="1.6.0")
-        with self.assertRaises(Exception):
+        with self.assertRaisesRegex(Exception, "does not match migrator's expected from-version"):
             BaseMigrator("1.7.0", "1.8.0").checkPreconditions()
 
     def test_raises_when_major_differs_from_expected(self):
         self._writeVersions(appVersion="2.8.0", databaseVersion="2.7.0")
-        with self.assertRaises(Exception):
+        with self.assertRaisesRegex(Exception, "does not match migrator's expected from-version"):
             BaseMigrator("1.7.0", "1.8.0").checkPreconditions()
 
     def test_allows_large_version_jumps_when_migrator_chain_runs(self):

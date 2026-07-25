@@ -158,7 +158,7 @@ class TestWrappedYearSelection(_WrappedRouteTestBase):
         dash = self._makeApp()
         db = self._makeDb(earliestPlayedAt=_ts(2023))
 
-        resp = self._getWrapped(dash, db, query="?year=2024")
+        self._getWrapped(dash, db, query="?year=2024")
 
         kwargs = db.getTopSongs.call_args.kwargs
         self.assertEqual(kwargs["startDate"].year, 2024)
