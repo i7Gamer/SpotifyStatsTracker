@@ -338,6 +338,96 @@ class TestBucketedTimezoneCorrectness(ChartStatsTestCase):
         self.assertEqual(grid[0][23]["plays"], 0)   #< NOT the UTC cell
 
 
+class TestUserTimezoneBucketing(ChartStatsTestCase):
+    """A user's profile timezone (users.timezone -> Database.tz) can differ from
+    the app-global TZ the server runs in. Every chart bucket must follow the
+    USER's timezone - the hour/month keys always did (plain strftime on the
+    already-user-local datetime), but day/week keys used to be re-converted to
+    the server timezone, shifting midnight-adjacent plays into the wrong bar and
+    disagreeing with the streak calendar, which was user-local all along."""
+
+    #< server stays on UTC (ChartStatsTestCase), the user is +9 - a play between
+    #  15:00 and 24:00 UTC is already "tomorrow" for them
+    USER_TZ_NAME = "Asia/Tokyo"
+
+    def _makeDbInUserTz(self, tracks, entries, username="testuser"):
+        db = self._makeDb(tracks, entries, username=username)
+        db.repo.updateUserSettings(username, "day", self.USER_TZ_NAME)
+        db.refreshSettings()
+        return db
+
+    def test_day_buckets_follow_the_users_timezone_not_the_servers(self):
+        #< 20:00 UTC July 1 = 05:00 July 2 in Tokyo
+        entries = [{"id": "t1", "playedAt": _ts(2026, 7, 1, 20), "timePlayed": 1000}]
+        db = self._makeDbInUserTz({}, entries)
+
+        result = db.getListeningTimeSeries(groupBy="day")
+
+        self.assertEqual([b["label"] for b in result], ["2026-07-02"])
+
+    def test_week_buckets_follow_the_users_timezone_not_the_servers(self):
+        #< Sunday 20:00 UTC = Monday 05:00 in Tokyo, i.e. the NEXT chart week
+        entries = [{"id": "t1", "playedAt": _ts(2026, 7, 5, 20), "timePlayed": 1000}]
+        db = self._makeDbInUserTz({}, entries)
+
+        result = db.getListeningTimeSeries(groupBy="week")
+
+        self.assertEqual([b["label"] for b in result], ["2026-07-06"])
+
+    def test_day_buckets_agree_with_the_listening_calendar(self):
+        """The calendar/streak grid has always bucketed by the user's local day;
+        a time-series day bar for the same play must land on the same date."""
+        entries = [{"id": "t1", "playedAt": _ts(2026, 7, 1, 20), "timePlayed": 1000}]
+        db = self._makeDbInUserTz({}, entries)
+
+        seriesLabels = [b["label"] for b in db.getListeningTimeSeries(groupBy="day")]
+        calendar = db.getListeningCalendar(
+            now=datetime.datetime(2026, 7, 8, 12, tzinfo=datetime.timezone.utc))
+        calendarDays = [day for week in calendar["weeks"] for day in week if day and day["count"]]
+
+        self.assertEqual(seriesLabels, ["2026-07-02"])
+        self.assertEqual([day["date"] for day in calendarDays], ["2026-07-02"])
+
+    def test_artist_trend_buckets_follow_the_users_timezone(self):
+        """getArtistTrend shares _bucketKey through its per-bucket memo cache."""
+        tracks = {"song1": {"id": "song1", "name": "Song 1", "artists": [{"name": "Artist A", "id": "a1"}]}}
+        entries = [{"id": "song1", "playedAt": _ts(2026, 7, 5, 20), "timePlayed": 1000}]
+        db = self._makeDbInUserTz(tracks, entries)
+
+        result = db.getArtistTrend(topN=1, groupBy="week")
+
+        self.assertEqual(result["buckets"], ["2026-07-06"])
+
+    def test_gap_filled_range_labels_stay_in_the_users_timezone(self):
+        """The gap-fill cursor walks whole local days from the requested range;
+        its labels must be the same keys the play buckets produced, or a play
+        lands in a bucket the timeline never emits (and shows up as zero)."""
+        entries = [{"id": "t1", "playedAt": _ts(2026, 7, 1, 20), "timePlayed": 1000}]
+        db = self._makeDbInUserTz({}, entries)
+        userTz = db.tz
+
+        result = db.getListeningTimeSeries(
+            startDate=datetime.datetime(2026, 7, 1, tzinfo=userTz),
+            endDate=datetime.datetime(2026, 7, 4, tzinfo=userTz),
+            groupBy="day",
+        )
+
+        self.assertEqual([b["label"] for b in result], ["2026-07-01", "2026-07-02", "2026-07-03"])
+        byLabel = {b["label"]: b for b in result}
+        self.assertEqual(byLabel["2026-07-02"]["plays"], 1)
+
+    def test_hour_and_month_buckets_stay_user_local(self):
+        """Regression guard for the two branches that were already correct."""
+        entries = [{"id": "t1", "playedAt": _ts(2026, 7, 1, 20), "timePlayed": 1000}]
+        db = self._makeDbInUserTz({}, entries)
+
+        hourly = db.getListeningTimeSeries(groupBy="hour")
+        monthly = db.getListeningTimeSeries(groupBy="month")
+
+        self.assertEqual([b["label"] for b in hourly], ["2026-07-02 05:00"])
+        self.assertEqual([b["label"] for b in monthly], ["2026-07"])
+
+
 class TestGetArtistTrend(ChartStatsTestCase):
     def _sampleData(self):
         artistA = {"name": "Artist A", "id": "a1"}

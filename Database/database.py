@@ -1334,14 +1334,19 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
                                      artistIds=artistIds, fullPlaysOnly=fullPlaysOnly)
 
     def _bucketKey(self, date: datetime.datetime, groupBy: str) -> str:
+        """`date` is already in this user's timezone, so every helper here has to
+        be told that timezone explicitly: startOfDay/startOfWeek/dateToString
+        default to the app-global TZ, which would re-base the datetime onto the
+        server's calendar and shift midnight-adjacent plays into the wrong
+        day/week for any user whose profile timezone differs from it."""
         if groupBy == "week":
-            return dateToString(startOfWeek(date))
+            return dateToString(startOfWeek(date, tz=self.tz), tz=self.tz)
         elif groupBy == "hour":
             return date.strftime("%Y-%m-%d %H:00")
         elif groupBy == "month":
             return date.strftime("%Y-%m")
         else:
-            return dateToString(startOfDay(date))
+            return dateToString(startOfDay(date, tz=self.tz), tz=self.tz)
 
     def getListeningTimeSeries(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None,
                                 groupBy: str = "day", trackId: str | None = None, artistId: str | None = None,
@@ -1378,8 +1383,11 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         else:
             return []
 
+        # The cursor walks the same local calendar _bucketKey labels by, so it
+        # takes the user's timezone too - otherwise the gap-filled timeline
+        # emits server-local bucket labels a play bucket can never match.
         if groupBy == "week":
-            cursor = startOfWeek(rangeStart)
+            cursor = startOfWeek(rangeStart, tz=self.tz)
             advance = lambda d: d + datetime.timedelta(days=7)
         elif groupBy == "hour":
             cursor = rangeStart.replace(minute=0, second=0, microsecond=0)
@@ -1387,10 +1395,10 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         elif groupBy == "month":
             # A fixed timedelta step doesn't work here since months vary in
             # length - advance to the 1st of the next calendar month instead.
-            cursor = startOfMonth(rangeStart)
+            cursor = startOfMonth(rangeStart, tz=self.tz)
             advance = lambda d: d.replace(year=d.year + 1, month=1) if d.month == 12 else d.replace(month=d.month + 1)
         else:
-            cursor = startOfDay(rangeStart)
+            cursor = startOfDay(rangeStart, tz=self.tz)
             advance = lambda d: d + datetime.timedelta(days=1)
 
         result = []
