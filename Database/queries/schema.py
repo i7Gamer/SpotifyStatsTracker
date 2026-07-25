@@ -10,6 +10,44 @@ logger = logging.getLogger(__name__)
 class SchemaQueries:
     """SchemaQueries: schema data-access methods, mixed into Repository."""
 
+    def checkIntegrity(self) -> dict:
+        """Probe the database file for damage and dangling references.
+
+        Returns {"ok": bool, "corruption": [...], "foreignKeyViolations":
+        {table: count}}. Never raises - this runs at startup, before anything
+        else could report a problem, so a database too broken to query must
+        come back as a finding rather than as a traceback that stops the app.
+
+        Corruption and FK violations are reported separately because they mean
+        different things and warrant different reactions: a damaged file is an
+        emergency, while a dangling track_id is invisible to normal queries
+        (JOINs drop the row) and can sit there for months. Conflating them would
+        either cry corruption over legacy orphans or bury a broken file behind
+        them.
+
+        quick_check, not integrity_check: on a 105 MB production database
+        quick_check takes ~130 ms against integrity_check's ~970 ms, and the
+        extra work integrity_check does is index-vs-table cross-validation -
+        worth having on demand, not on every boot."""
+        corruption: list = []
+        violations: dict[str, int] = {}
+        try:
+            conn = self._conn()
+            # quick_check reports damage as result ROWS (the single row "ok"
+            # when healthy) and only raises when the file can't be read at all,
+            # so the rows must be fetched to mean anything.
+            rows = conn.execute("PRAGMA quick_check").fetchall()
+            corruption = [row[0] for row in rows if row[0] != "ok"]
+            for row in conn.execute("PRAGMA foreign_key_check").fetchall():
+                violations[row[0]] = violations.get(row[0], 0) + 1
+        except Exception as e:
+            corruption.append(f"integrity probe failed: {e}")
+        return {
+            "ok": not corruption and not violations,
+            "corruption": corruption,
+            "foreignKeyViolations": violations,
+        }
+
     def addUserIsAdminColumnIfMissing(self) -> None:
         """SCHEMA's CREATE TABLE IF NOT EXISTS only shapes brand-new databases -
         a users table that already existed before is_admin was added needs an

@@ -365,7 +365,10 @@ class Listener:
             # the address twice. It stays available on self._authenticated_user_id
             # and is reported by the contamination/validation errors, which are
             # the only places it actually distinguishes anything.
-            logger.info("Listener initialized for user %s", self.logUser)
+            # DEBUG: a Listener is rebuilt on every stale-feed reconnect, so
+            # this fired 1,568 times in 11 days for 3 users. The worker's own
+            # start/stop lines cover the lifecycle events worth seeing.
+            logger.debug("Listener initialized for user %s", self.logUser)
         except Exception as e:
             logger.warning("Could not verify authenticated user during listener init: %s", parseError(e))
 
@@ -624,7 +627,11 @@ class Listener:
         if elapsed <= LISTENER_STALE_TIMEOUT_SECONDS:
             return True
 
-        logger.warning(
+        # DEBUG, not WARNING: for anyone not currently listening this is the
+        # expected 30-minute heartbeat, not a fault - it fired 1,270 times in 11
+        # days. The reconnect it triggers reports its own outcome, and only an
+        # unsuccessful one is worth the default level.
+        logger.debug(
             "Recently-played feed unchanged for over %ss, assuming the underlying "
             "session/websocket died silently - reconnecting", LISTENER_STALE_TIMEOUT_SECONDS,
         )

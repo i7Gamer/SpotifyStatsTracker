@@ -133,5 +133,67 @@ class TestReconnectShutdownGate(unittest.TestCase):
         mockSleep.assert_not_called()                # ...never via a blind sleep
 
 
+class TestReconnectLogVolume(unittest.TestCase):
+    """A user who simply isn't listening triggers a full reconnect cycle every
+    30 minutes by design (the stale-feed timeout). Across 3 users and 11 days
+    that produced ~4,200 INFO/WARNING lines in app.log - "Recently-played feed
+    unchanged", "Attempting to reconnect", "Listener initialized",
+    "Reconnection succeeded" - all describing the system working correctly,
+    while burying the failures worth reading.
+
+    A clean reconnect is therefore silent at INFO. Anything that needed retries,
+    or failed, still speaks up."""
+
+    def _makeTestDb(self):
+        with patch('Database.database.Repository'), \
+             patch('Database.database.AutoImporter'), \
+             patch('Database.database.Path.exists', return_value=False), \
+             patch.dict(os.environ, {}, clear=False):
+            db = Database(user="TestUser", email="test@example.com")
+        self.addCleanup(db.stop)
+        return db
+
+    def test_clean_first_attempt_reconnect_logs_nothing_at_info(self):
+        db = self._makeTestDb()
+
+        with patch.object(db, "startListener", return_value=True):
+            with self.assertNoLogs("Database.database", level="INFO"):
+                db._makeOnStaleCallback()()
+
+    def test_reconnect_that_needed_retries_is_reported_at_info(self):
+        """The one line worth keeping: a reconnect that didn't work first time
+        says so, so a degrading session is still visible without DEBUG."""
+        db = self._makeTestDb()
+        db.shutdown_event = MagicMock()
+        db.shutdown_event.is_set.return_value = False
+        db.shutdown_event.wait.return_value = False  #< backoff elapses normally
+
+        attempts = [RuntimeError("still down"), True]
+
+        def flakyStart(*args, **kwargs):
+            result = attempts.pop(0)
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+        with patch.object(db, "startListener", side_effect=flakyStart):
+            with self.assertLogs("Database.database", level="INFO") as cm:
+                db._makeOnStaleCallback()()
+
+        self.assertTrue(any("Reconnection succeeded on attempt 2" in m for m in cm.output))
+
+    def test_total_reconnect_failure_still_reaches_error(self):
+        db = self._makeTestDb()
+        db.shutdown_event = MagicMock()
+        db.shutdown_event.is_set.return_value = False
+        db.shutdown_event.wait.return_value = False
+
+        with patch.object(db, "startListener", side_effect=RuntimeError("down")):
+            with self.assertLogs("Database.database", level="ERROR") as cm:
+                db._makeOnStaleCallback()()
+
+        self.assertTrue(any("Reconnection failed after" in m for m in cm.output))
+
+
 if __name__ == "__main__":
     unittest.main()

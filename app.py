@@ -223,6 +223,7 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
         staleImageClaims = self.repo.deleteStalePendingImages()
         if staleImageClaims:
             logger.info("Cleared %d stale pending image download claim(s) from a previous run", staleImageClaims)
+        self._logIntegrityProbe()
         self._ensureAdminExists()
 
         self.user_databases = {}
@@ -320,6 +321,39 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
         keyFile.parent.mkdir(parents=True, exist_ok=True)
         keyFile.write_text(newKey, encoding="utf-8")
         return newKey
+
+    def _logIntegrityProbe(self):
+        """Say plainly, once per start, whether the database is intact.
+
+        On 2026-07-15 a corrupt database announced itself as 16 "disk image is
+        malformed" errors and 22 UNIQUE-constraint failures on track_artists,
+        spread across three modules inside one minute - and the constraint
+        failures looked enough like a write race to be misdiagnosed as one.
+        A single named line at boot is what that morning was missing.
+
+        Findings are reported, never acted on: the orphan cleanup that would
+        delete dangling rows was deliberately removed (commit ad9a804) because
+        it destroyed catalog metadata, so this must not quietly reintroduce it.
+        Costs ~240 ms on a 105 MB database."""
+        integrity = self.repo.checkIntegrity()
+        if integrity["corruption"]:
+            logger.error(
+                "DATABASE INTEGRITY CHECK FAILED - the database file is damaged. "
+                "Restore from a backup before trusting anything this process records. Details: %s",
+                integrity["corruption"][:5],
+            )
+        if integrity["foreignKeyViolations"]:
+            # Not an error: a dangling reference is invisible to normal queries
+            # (JOINs drop the row), so this is a "known, tolerated" signal whose
+            # value is in noticing when the number CHANGES.
+            logger.warning(
+                "Database has %d dangling foreign-key row(s): %s. These are inert (JOINs drop them) "
+                "but a rising count points at a write path bypassing foreign_keys=ON.",
+                sum(integrity["foreignKeyViolations"].values()),
+                integrity["foreignKeyViolations"],
+            )
+        if integrity["ok"]:
+            logger.info("Database integrity check passed")
 
     def _ensureAdminExists(self):
         """Admin bootstrap, run at every startup. ADMIN_EMAIL (when set) is

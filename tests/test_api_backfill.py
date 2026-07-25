@@ -755,7 +755,9 @@ class ListenerLogIdentityTestCase(unittest.TestCase):
         self.assertEqual(self._makeListener(user=None).logUser, "alice@example.com")
 
     def test_listener_init_logs_the_key_not_the_email(self):
-        with self.assertLogs("Database.Listeners.spotifyListener", level="INFO") as cm:
+        #< DEBUG: the line itself was demoted with the rest of the reconnect
+        #  cycle, but what it prints when it does fire still must not be an email
+        with self.assertLogs("Database.Listeners.spotifyListener", level="DEBUG") as cm:
             self._makeListener()
 
         initLines = [m for m in cm.output if "Listener initialized" in m]

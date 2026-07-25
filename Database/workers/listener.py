@@ -160,11 +160,20 @@ class ListenerMixin:
                     return
 
                 try:
-                    _dbmod.logger.info("Attempting to reconnect (attempt %d/%d)", attempt + 1, self.RECONNECT_MAX_RETRIES)
+                    # DEBUG, not INFO: an idle user's feed goes stale every 30
+                    # minutes by design, so this fires ~4 times an hour per user
+                    # while describing the system working exactly as intended.
+                    _dbmod.logger.debug("Attempting to reconnect (attempt %d/%d)", attempt + 1, self.RECONNECT_MAX_RETRIES)
                     if self.startListener(email=self.email) is False:
                         _dbmod.logger.info("Reconnection abandoned for user %s: stop requested", self.user)
                         return
-                    _dbmod.logger.info("Reconnection succeeded on attempt %d", attempt + 1)
+                    if attempt == 0:
+                        _dbmod.logger.debug("Reconnection succeeded on attempt 1")
+                    else:
+                        # Anything that didn't work first time is worth reading
+                        # at the default level - a session degrading toward
+                        # failure shows up here before it reaches the ERROR.
+                        _dbmod.logger.info("Reconnection succeeded on attempt %d", attempt + 1)
                     return
                 except Exception as e:
                     _dbmod.logger.warning("Reconnection attempt %d failed: %s", attempt + 1, _dbmod.parseError(e))
@@ -203,8 +212,11 @@ class ListenerMixin:
                         self.user, self.email, email
                     )
                 self.email = email
-            if self.listener is not None:
-                _dbmod.logger.info("Stopping existing listener for user %s before re-starting", self.user)
+            isReconnect = self.listener is not None
+            if isReconnect:
+                # Same 30-minute heartbeat as the rest of the cycle (1,354 lines
+                # in 11 days) - the genuine start below is the one worth an INFO.
+                _dbmod.logger.debug("Stopping existing listener for user %s before re-starting", self.user)
                 try:
                     self.listener.stop()
                 except Exception as e:
@@ -257,6 +269,11 @@ class ListenerMixin:
             with self._health_lock:
                 self.listener_health = "HEALTHY"
                 self.listener_error_count = 0
+            if not isReconnect:
+                # The one lifecycle line the demotions above must not cost us:
+                # a listener coming up for the first time this process is a real
+                # event, unlike the reconnect churn that surrounds it.
+                _dbmod.logger.info("Listener started for user %s", self.user)
             self.listener.startListener_thread(
                 callback=self._addToDatabaseFromListener,
                 onStale=self._makeOnStaleCallback(),
