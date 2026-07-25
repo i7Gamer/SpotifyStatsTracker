@@ -1,5 +1,14 @@
 from __future__ import annotations
 
+# Imported for the type hints below. Everything used at RUNTIME still goes
+# through _dbmod, so the suite's patch("Database.database.X") targets are
+# unaffected - these names were simply never defined here, leaving the hints
+# unresolvable for tooling and for typing.get_type_hints(). All leaf modules
+# (stdlib, or Database/lastfm.py, which imports nothing of ours), so a real
+# import costs nothing and cannot cycle.
+import threading
+from Database.lastfm import LastfmClient
+
 import Database.database as _dbmod  # noqa: F401 - module-global names
 # (LastfmClient, requests, Importer, logger, time, Path, ...) are reached through
 # the database module so the suite's patch("Database.database.X") targets keep

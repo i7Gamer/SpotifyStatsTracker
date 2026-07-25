@@ -48,6 +48,7 @@ class Migrator(BaseMigrator):
 if __name__ == "__main__":
     migrator = Migrator("1.3.0", "1.4.0")
     migrator.migrate()
-    print("Migration complete. "
-        f"{result['tracks']} unique tracks."
-    )
+    #< migrate() returns nothing, so the per-entity counts this used to print
+    #  were read off an undefined `result` - running this file directly raised
+    #  NameError after the migration had already been applied.
+    print("Migration complete.")

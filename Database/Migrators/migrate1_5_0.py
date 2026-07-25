@@ -81,8 +81,7 @@ if __name__ == "__main__":
     migrator = Migrator("1.5.0", "1.6.0")
     migrator.migrate()
 
-    print(
-        f"Migration complete. "
-        f"Created {result['entries']} entries and "
-        f"{result['tracks']} unique tracks."
-    )
+    #< migrate() returns nothing, so the counts this used to print were read
+    #  off an undefined `result` - running this file directly raised NameError
+    #  after the migration had already been applied.
+    print("Migration complete.")

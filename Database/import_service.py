@@ -1,5 +1,16 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+# _ImportRunState is used in the hints below and constructed at runtime via
+# _dbmod. Unlike this package's other annotation-only names, it cannot become a
+# real import: it lives in Database.database, which imports the mixin defined
+# here, so a top-level import would cycle. That means static tooling resolves
+# the hint but typing.get_type_hints() still cannot - the accepted cost of
+# TYPE_CHECKING, and the reason the leaf names elsewhere are imported normally.
+if TYPE_CHECKING:   # pragma: no cover
+    from Database.database import _ImportRunState
+
 import sqlite3
 
 import Database.database as _dbmod  # noqa: F401 - module-global names
@@ -214,7 +225,6 @@ class ImportMixin:
             enrichedCount = 0
             skipsSavedCount = 0
             correctedYears = set()
-            behavioralSetSql = ", ".join(f"{column} = COALESCE(?, {column})" for column in _dbmod.BEHAVIORAL_COLUMNS)
             # Fetch the skip threshold once for the whole batch so each row's
             # is_skip is computed without a per-row settings read.
             skipThreshold = self.repo.getSkipThreshold()
@@ -294,14 +304,11 @@ class ImportMixin:
                             # Update both fields with imported data (more accurate source).
                             # A corrected time_played can cross the skip threshold, so
                             # is_skip is recomputed alongside it.
-                            conn = self.repo._conn()
                             corrected_is_skip = self.repo.computeIsSkip(
                                 time_played, track.get("duration") if track else None, threshold=skipThreshold)
                             try:
-                                conn.execute(
-                                    f"UPDATE plays SET played_at = ?, time_played = ?, is_skip = ?, {behavioralSetSql} WHERE id = ?",
-                                    (played_at, time_played, corrected_is_skip, *extrasValues, existing_play["id"])
-                                )
+                                self.repo.correctPlay(existing_play["id"], played_at, time_played,
+                                                       corrected_is_skip, extrasValues)
                             except sqlite3.IntegrityError:
                                 # Correcting played_at would collide with an existing
                                 # (username, track_id, played_at) row the near-time
@@ -335,11 +342,7 @@ class ImportMixin:
                         elif extras_differ:
                             # Same play, but this import carries behavioral
                             # metadata the row lacks - backfill it in place.
-                            conn = self.repo._conn()
-                            conn.execute(
-                                f"UPDATE plays SET {behavioralSetSql} WHERE id = ?",
-                                (*extrasValues, existing_play["id"])
-                            )
+                            self.repo.enrichPlayBehavioralColumns(existing_play["id"], extrasValues)
                             enrichedCount += 1
                             continue
                         else:
