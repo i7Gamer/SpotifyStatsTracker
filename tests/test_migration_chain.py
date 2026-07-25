@@ -119,33 +119,33 @@ class MigrationChainTestCase(unittest.TestCase):
 
 class TestFullChain(MigrationChainTestCase):
     def test_a_db_era_database_migrates_all_the_way_to_the_current_version(self):
+        """One scenario, three independent postconditions.
+
+        These were three test methods that each re-ran the identical
+        seed-then-migrate scenario - ~330 ms of real chain work per run, for
+        assertions that all describe the same outcome. subTest (used elsewhere
+        in this file) keeps them reporting and failing independently while the
+        chain runs once."""
         self._seedDatabase()
 
         self._runChain()
 
-        self.assertEqual(dbversion.readDbVersion(self.dbPath), APP_VERSION)
+        with self.subTest("the database's own version marker is current"):
+            self.assertEqual(dbversion.readDbVersion(self.dbPath), APP_VERSION)
 
-    def test_the_sibling_version_file_ends_up_in_step_with_the_database(self):
-        self._seedDatabase()
+        with self.subTest("the sibling VERSION file ends up in step"):
+            self.assertEqual((self.runtimeDir / "VERSION").read_text().strip(), APP_VERSION)
 
-        self._runChain()
-
-        self.assertEqual((self.runtimeDir / "VERSION").read_text().strip(), APP_VERSION)
-
-    def test_existing_data_survives_the_whole_chain(self):
-        self._seedDatabase()
-
-        self._runChain()
-
-        self.assertEqual(self._playCount(), 1)
-        conn = sqlite3.connect(self.dbPath)
-        try:
-            self.assertIsNotNone(
-                conn.execute("SELECT 1 FROM users WHERE username='alice'").fetchone())
-            self.assertIsNotNone(
-                conn.execute("SELECT 1 FROM tracks WHERE id='t1'").fetchone())
-        finally:
-            conn.close()
+        with self.subTest("existing data survives the whole chain"):
+            self.assertEqual(self._playCount(), 1)
+            conn = sqlite3.connect(self.dbPath)
+            try:
+                self.assertIsNotNone(
+                    conn.execute("SELECT 1 FROM users WHERE username='alice'").fetchone())
+                self.assertIsNotNone(
+                    conn.execute("SELECT 1 FROM tracks WHERE id='t1'").fetchone())
+            finally:
+                conn.close()
 
     def test_a_column_a_migrator_adds_is_present_afterwards(self):
         """Proves the ALTER path actually ran rather than every step no-opping:
