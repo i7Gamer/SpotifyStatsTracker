@@ -8,6 +8,35 @@ class PlayQueries:
 
     # ---- Per-user: plays (play history) -----------------------------------------
 
+    @staticmethod
+    def _behavioralSetSql() -> str:
+        """`col = COALESCE(?, col)` for every behavioral column: a None in the
+        incoming row never clobbers a stored value, so a thinner export can
+        only ever add detail."""
+        return ", ".join(f"{column} = COALESCE(?, {column})" for column in BEHAVIORAL_COLUMNS)
+
+    def correctPlay(self, playId: int, playedAt: float, timePlayed: int, isSkip: int,
+                     extrasValues: tuple) -> None:
+        """Rewrite one play from a more accurate import row.
+
+        Raises sqlite3.IntegrityError when moving played_at would collide with
+        an existing (username, track_id, played_at) row - the caller decides
+        whether to leave the row uncorrected, since that is an import-policy
+        question, not a storage one."""
+        self._conn().execute(
+            f"UPDATE plays SET played_at = ?, time_played = ?, is_skip = ?, {self._behavioralSetSql()}"
+            " WHERE id = ?",
+            (playedAt, timePlayed, isSkip, *extrasValues, playId),
+        )
+
+    def enrichPlayBehavioralColumns(self, playId: int, extrasValues: tuple) -> None:
+        """Backfill one play's behavioral columns from an import that carries
+        metadata the stored row lacks. The play itself is unchanged."""
+        self._conn().execute(
+            f"UPDATE plays SET {self._behavioralSetSql()} WHERE id = ?",
+            (*extrasValues, playId),
+        )
+
     def insertPlay(self, username: str, trackId: str, playedAt: float, timePlayed: int,
                    playedFrom: str | None = None, created_reason: str | None = None,
                    extras: dict | None = None, is_skip: int = 0) -> bool:

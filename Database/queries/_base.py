@@ -5,6 +5,23 @@ from __future__ import annotations
 Split out of Database/repository.py so every Database/queries/*.py mixin and
 the composed Repository can pull the same catalog/plays/settings constants and
 db-layer helpers from one place (`from Database.queries._base import *`).
+
+WHICH CONSTANTS LIVE HERE, AND WHICH IN config.py
+
+Both are fine to import from; the direction is what matters. config.py imports
+nothing from the app or from Database (see its own docstring), so anything may
+import it and no cycle is possible - Database/queries/settings.py and trends.py
+do exactly that. There is no rule against it, and reading one into existence
+costs a round trip: a constant put in config.py but used from Database/
+database.py, which happens not to import config, fails with a NameError that
+looks architectural and isn't.
+
+The split that IS real is about audience. A value the SQL itself needs -
+ranking weights, retry windows, queue bounds, app_settings keys - belongs here,
+next to the queries that read it. A value the pages need - page size, chart
+limits, sort whitelists - belongs in config.py, where the app layer already
+looks. When a constant is genuinely for both, config.py is the better home: the
+data layer can reach it, and app.py re-exports it for free.
 """
 import datetime
 import json
