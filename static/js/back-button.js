@@ -3,6 +3,13 @@
 // document.referrer) and, whenever that referrer is same-origin, navigates
 // with history.back() instead of a fresh link so filters/pagination/scroll
 // position on the previous page are preserved.
+//
+// When the page was opened in a *new* tab there is an in-app referrer but no
+// history entry behind it, so history.back() would silently do nothing - the
+// button is hidden in that case rather than left dead.
+
+// A tab that has only ever shown this one page has a history length of 1.
+const MIN_HISTORY_LENGTH_WITH_BACK_ENTRY = 1;
 
 const BACK_BUTTON_PATH_LABELS = [
   { test: (pathname) => pathname === '/', label: 'Dashboard' },
@@ -18,12 +25,23 @@ const BACK_BUTTON_PATH_LABELS = [
   { test: (pathname) => pathname.startsWith('/artist/'), label: 'Artist' },
 ];
 
-// Pure decision function: given the referrer and the current page's origin,
-// decide whether we can reliably navigate back and what to call it.
-// Returns null when there is no usable in-app referrer (direct link, new
-// tab, external site) - callers should keep the server-rendered default
-// href/label in that case.
-function resolveBackTarget(referrer, currentOrigin) {
+// Does this tab have an entry to go back to? Chrome's Navigation API answers
+// it exactly; everywhere else a history length of 1 means this page is the
+// tab's only entry (opened in a new tab, bookmark, pasted URL).
+function hasEarlierHistoryEntry(navigationApi, historyLength) {
+  if (navigationApi && typeof navigationApi.canGoBack === 'boolean') {
+    return navigationApi.canGoBack;
+  }
+  return historyLength > MIN_HISTORY_LENGTH_WITH_BACK_ENTRY;
+}
+
+// Pure decision function: given the referrer, the current page's origin and
+// whether the tab can go back at all, decide what to do with the button.
+// Returns null when there is no usable in-app referrer (direct link,
+// external site) - callers should keep the server-rendered default
+// href/label in that case - { hide: true } when the referrer is in-app but
+// unreachable via history.back(), and { hide: false, label } otherwise.
+function resolveBackTarget(referrer, currentOrigin, canGoBack) {
   if (!referrer) {
     return null;
   }
@@ -39,8 +57,12 @@ function resolveBackTarget(referrer, currentOrigin) {
     return null;
   }
 
+  if (!canGoBack) {
+    return { hide: true };
+  }
+
   const match = BACK_BUTTON_PATH_LABELS.find((entry) => entry.test(referrerUrl.pathname));
-  return { label: match ? `← Back to ${match.label}` : null };
+  return { hide: false, label: match ? `← Back to ${match.label}` : null };
 }
 
 function initBackButton() {
@@ -49,8 +71,14 @@ function initBackButton() {
     return;
   }
 
-  const target = resolveBackTarget(document.referrer, window.location.origin);
+  const canGoBack = hasEarlierHistoryEntry(window.navigation, window.history.length);
+  const target = resolveBackTarget(document.referrer, window.location.origin, canGoBack);
   if (!target) {
+    return;
+  }
+
+  if (target.hide) {
+    backButton.hidden = true;
     return;
   }
 
@@ -65,5 +93,5 @@ function initBackButton() {
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { resolveBackTarget, BACK_BUTTON_PATH_LABELS };
+  module.exports = { resolveBackTarget, hasEarlierHistoryEntry, BACK_BUTTON_PATH_LABELS };
 }

@@ -2,9 +2,13 @@
 // (static/js/back-button.js). No test framework/dependency - run with:
 //   node tests/test_back_button.js
 const assert = require('assert');
-const { resolveBackTarget } = require('../static/js/back-button.js');
+const { resolveBackTarget, hasEarlierHistoryEntry } = require('../static/js/back-button.js');
 
 const ORIGIN = 'http://localhost:5000';
+// Third argument of resolveBackTarget: whether this tab has an entry to go
+// back to at all. False is the "opened in a new tab" case.
+const CAN_GO_BACK = true;
+const FRESH_TAB = false;
 
 function run(name, fn) {
   try {
@@ -16,85 +20,123 @@ function run(name, fn) {
   }
 }
 
+function backTo(label) {
+  return { hide: false, label };
+}
+
 run('empty referrer keeps server-rendered default', () => {
-  assert.strictEqual(resolveBackTarget('', ORIGIN), null);
+  assert.strictEqual(resolveBackTarget('', ORIGIN, CAN_GO_BACK), null);
 });
 
 run('cross-origin referrer keeps server-rendered default', () => {
-  assert.strictEqual(resolveBackTarget('https://google.com/search?q=x', ORIGIN), null);
+  assert.strictEqual(resolveBackTarget('https://google.com/search?q=x', ORIGIN, CAN_GO_BACK), null);
 });
 
 run('unparseable referrer keeps server-rendered default', () => {
-  assert.strictEqual(resolveBackTarget('not a url', ORIGIN), null);
+  assert.strictEqual(resolveBackTarget('not a url', ORIGIN, CAN_GO_BACK), null);
 });
 
 run('dashboard root referrer', () => {
-  assert.deepStrictEqual(resolveBackTarget(`${ORIGIN}/`, ORIGIN), { label: '← Back to Dashboard' });
+  assert.deepStrictEqual(resolveBackTarget(`${ORIGIN}/`, ORIGIN, CAN_GO_BACK), backTo('← Back to Dashboard'));
 });
 
 run('history referrer', () => {
-  assert.deepStrictEqual(resolveBackTarget(`${ORIGIN}/history`, ORIGIN), { label: '← Back to History' });
+  assert.deepStrictEqual(resolveBackTarget(`${ORIGIN}/history`, ORIGIN, CAN_GO_BACK), backTo('← Back to History'));
 });
 
 run('history referrer with search + pagination keeps its label', () => {
   assert.deepStrictEqual(
-    resolveBackTarget(`${ORIGIN}/history?q=daft&interval=year&page=2`, ORIGIN),
-    { label: '← Back to History' });
+    resolveBackTarget(`${ORIGIN}/history?q=daft&interval=year&page=2`, ORIGIN, CAN_GO_BACK),
+    backTo('← Back to History'));
 });
 
 run('wrapped referrer', () => {
-  assert.deepStrictEqual(resolveBackTarget(`${ORIGIN}/wrapped`, ORIGIN), { label: '← Back to Wrapped' });
+  assert.deepStrictEqual(resolveBackTarget(`${ORIGIN}/wrapped`, ORIGIN, CAN_GO_BACK), backTo('← Back to Wrapped'));
 });
 
 run('compare referrer', () => {
-  assert.deepStrictEqual(resolveBackTarget(`${ORIGIN}/compare`, ORIGIN), { label: '← Back to Compare' });
+  assert.deepStrictEqual(resolveBackTarget(`${ORIGIN}/compare`, ORIGIN, CAN_GO_BACK), backTo('← Back to Compare'));
 });
 
 run('genres referrer', () => {
-  assert.deepStrictEqual(resolveBackTarget(`${ORIGIN}/genres`, ORIGIN), { label: '← Back to Genres' });
+  assert.deepStrictEqual(resolveBackTarget(`${ORIGIN}/genres`, ORIGIN, CAN_GO_BACK), backTo('← Back to Genres'));
 });
 
 run('genres referrer with a selected genre keeps its label', () => {
-  assert.deepStrictEqual(resolveBackTarget(`${ORIGIN}/genres?genre=rock`, ORIGIN), { label: '← Back to Genres' });
+  assert.deepStrictEqual(resolveBackTarget(`${ORIGIN}/genres?genre=rock`, ORIGIN, CAN_GO_BACK), backTo('← Back to Genres'));
 });
 
 run('compare referrer with filters keeps its label', () => {
   assert.deepStrictEqual(
-    resolveBackTarget(`${ORIGIN}/compare?with=bob&interval=year&limit=25`, ORIGIN),
-    { label: '← Back to Compare' });
+    resolveBackTarget(`${ORIGIN}/compare?with=bob&interval=year&limit=25`, ORIGIN, CAN_GO_BACK),
+    backTo('← Back to Compare'));
 });
 
 run('top-songs referrer', () => {
-  assert.deepStrictEqual(resolveBackTarget(`${ORIGIN}/top-songs`, ORIGIN), { label: '← Back to Top Songs' });
+  assert.deepStrictEqual(resolveBackTarget(`${ORIGIN}/top-songs`, ORIGIN, CAN_GO_BACK), backTo('← Back to Top Songs'));
 });
 
 run('top-albums referrer', () => {
-  assert.deepStrictEqual(resolveBackTarget(`${ORIGIN}/top-albums`, ORIGIN), { label: '← Back to Top Albums' });
+  assert.deepStrictEqual(resolveBackTarget(`${ORIGIN}/top-albums`, ORIGIN, CAN_GO_BACK), backTo('← Back to Top Albums'));
 });
 
 run('top-artists referrer', () => {
-  assert.deepStrictEqual(resolveBackTarget(`${ORIGIN}/top-artists`, ORIGIN), { label: '← Back to Top Artists' });
+  assert.deepStrictEqual(resolveBackTarget(`${ORIGIN}/top-artists`, ORIGIN, CAN_GO_BACK), backTo('← Back to Top Artists'));
 });
 
 run('song detail referrer', () => {
-  assert.deepStrictEqual(resolveBackTarget(`${ORIGIN}/song/abc123`, ORIGIN), { label: '← Back to Song' });
+  assert.deepStrictEqual(resolveBackTarget(`${ORIGIN}/song/abc123`, ORIGIN, CAN_GO_BACK), backTo('← Back to Song'));
 });
 
 run('album detail referrer', () => {
-  assert.deepStrictEqual(resolveBackTarget(`${ORIGIN}/album/abc123`, ORIGIN), { label: '← Back to Album' });
+  assert.deepStrictEqual(resolveBackTarget(`${ORIGIN}/album/abc123`, ORIGIN, CAN_GO_BACK), backTo('← Back to Album'));
 });
 
 run('artist detail referrer', () => {
-  assert.deepStrictEqual(resolveBackTarget(`${ORIGIN}/artist/abc123`, ORIGIN), { label: '← Back to Artist' });
+  assert.deepStrictEqual(resolveBackTarget(`${ORIGIN}/artist/abc123`, ORIGIN, CAN_GO_BACK), backTo('← Back to Artist'));
 });
 
 run('unrecognized same-origin path still allows history.back(), but keeps default label', () => {
-  assert.deepStrictEqual(resolveBackTarget(`${ORIGIN}/charts`, ORIGIN), { label: null });
+  assert.deepStrictEqual(resolveBackTarget(`${ORIGIN}/charts`, ORIGIN, CAN_GO_BACK), backTo(null));
 });
 
 run('regression: dashboard search query containing a reserved word is not misread as that page', () => {
-  assert.deepStrictEqual(resolveBackTarget(`${ORIGIN}/?q=wrapped`, ORIGIN), { label: '← Back to Dashboard' });
-  assert.deepStrictEqual(resolveBackTarget(`${ORIGIN}/?q=top-albums&page=2`, ORIGIN), { label: '← Back to Dashboard' });
+  assert.deepStrictEqual(resolveBackTarget(`${ORIGIN}/?q=wrapped`, ORIGIN, CAN_GO_BACK), backTo('← Back to Dashboard'));
+  assert.deepStrictEqual(resolveBackTarget(`${ORIGIN}/?q=top-albums&page=2`, ORIGIN, CAN_GO_BACK), backTo('← Back to Dashboard'));
+});
+
+// "Open in new tab": the referrer is a real in-app page, but the new tab has
+// no entry behind it, so history.back() would do nothing - hide the button
+// rather than show a dead one.
+run('in-app referrer in a tab with no earlier entry hides the button', () => {
+  assert.deepStrictEqual(resolveBackTarget(`${ORIGIN}/top-songs`, ORIGIN, FRESH_TAB), { hide: true });
+});
+
+run('unrecognized in-app referrer in a tab with no earlier entry hides the button', () => {
+  assert.deepStrictEqual(resolveBackTarget(`${ORIGIN}/charts`, ORIGIN, FRESH_TAB), { hide: true });
+});
+
+run('direct visit with no earlier entry keeps the server-rendered default', () => {
+  assert.strictEqual(resolveBackTarget('', ORIGIN, FRESH_TAB), null);
+});
+
+run('cross-origin referrer with no earlier entry keeps the server-rendered default', () => {
+  assert.strictEqual(resolveBackTarget('https://google.com/', ORIGIN, FRESH_TAB), null);
+});
+
+run('Navigation API answer wins over history length when present', () => {
+  assert.strictEqual(hasEarlierHistoryEntry({ canGoBack: false }, 5), false);
+  assert.strictEqual(hasEarlierHistoryEntry({ canGoBack: true }, 1), true);
+});
+
+run('history length is the fallback when the Navigation API is unavailable', () => {
+  assert.strictEqual(hasEarlierHistoryEntry(undefined, 1), false);
+  assert.strictEqual(hasEarlierHistoryEntry(undefined, 2), true);
+});
+
+run('a Navigation object without canGoBack falls back to history length', () => {
+  assert.strictEqual(hasEarlierHistoryEntry({}, 1), false);
+  assert.strictEqual(hasEarlierHistoryEntry({}, 3), true);
 });
 
 console.log('All back-button tests passed.');

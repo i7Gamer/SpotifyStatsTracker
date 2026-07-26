@@ -2348,6 +2348,12 @@ progress::-moz-progress-bar {
   min-height: 44px;
 }
 
+/* .button's display would otherwise override the hidden attribute's own
+   display: none (see back-button.js hiding the detail-page back button). */
+.button[hidden] {
+  display: none;
+}
+
 .button:hover {
   background: var(--accent);
   color: white;
