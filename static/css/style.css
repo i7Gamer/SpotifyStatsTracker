@@ -3459,10 +3459,9 @@ html.theme-red {
 }
 
 /* Skip count badge on cards in a skip-sorted Top list (see _track_card.html).
-   Tinted apart from the neutral labels beside it because it's the reason that
-   row is where it is in the ordering. */
+   Colour matches the rest of the track-meta line; only the pill background/
+   border set it apart. */
 .track-label.skip-label {
-  color: var(--accent);
   border-color: var(--accent);
 }
 
