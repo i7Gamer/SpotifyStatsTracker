@@ -1930,10 +1930,13 @@ progress::-moz-progress-bar {
    longest option ("CSV (Spotify URIs, ISRCs & Track Info - …)") and, as a flex
    item defaulting to min-width:auto, refuses to shrink - so all three spilled
    over their columns and overlapped. Stack label above control and cap the
-   control at the column width instead. */
+   control at the column width instead - and cap the grid itself at two
+   columns, because capped to a third of the row every one of the three was too
+   narrow to read. min() so a viewport narrower than one column still collapses
+   to one rather than overflowing. */
 .playlist-filters {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
   gap: 1rem;
   margin-top: 1.5rem;
 }
@@ -1943,6 +1946,13 @@ progress::-moz-progress-bar {
   align-items: stretch;
   gap: 8px;
   min-width: 0;
+}
+
+/* File Format: its option labels ("CSV (Spotify URIs, ISRCs & Track Info -
+   Soundiiz/TuneMyMusic)") dwarf the other two controls', so it takes the whole
+   row below them rather than a share of theirs. */
+.playlist-filters .filter-group-wide {
+  grid-column: 1 / -1;
 }
 
 .playlist-filters .filter-group select {

@@ -42,6 +42,24 @@ class TestPlaylistFilterLayout(unittest.TestCase):
         self.assertIn("min-width: 0", rules)
         self.assertIn("max-width: 100%", rules)
 
+    def test_the_file_format_group_gets_a_row_of_its_own(self):
+        # Its option labels are several times longer than the other two
+        # controls', so sharing their row truncated all three to unreadable.
+        formatGroup = self._groupFor("exportFormat")
+        self.assertIn("filter-group-wide", formatGroup)
+        self.assertIn("grid-column: 1 / -1", self._ruleFor(".playlist-filters .filter-group-wide"))
+
+    def test_the_other_two_groups_share_the_row_above_it(self):
+        for controlId in ("matchMode", "sortBy"):
+            with self.subTest(control=controlId):
+                self.assertNotIn("filter-group-wide", self._groupFor(controlId))
+
+    def _groupFor(self, controlId):
+        """The `.filter-group` div wrapping the select with this id."""
+        selectAt = self.template.index('id="%s"' % controlId)
+        groupAt = self.template.rindex('class="filter-group', 0, selectAt)
+        return self.template[groupAt:selectAt]
+
     def _ruleFor(self, selector):
         match = re.search(re.escape(selector) + r"\s*\{([^}]*)\}", self.css)
         self.assertIsNotNone(match, "missing CSS rule for " + selector)

@@ -36,7 +36,10 @@
         </select>
       </div>
 
-      <div class="filter-group">
+      {# A row of its own: the format options run several times longer than the
+         other two controls', so sharing their row squeezed all three narrow
+         enough to truncate every option. #}
+      <div class="filter-group filter-group-wide">
         <label for="exportFormat">File Format:</label>
         <select id="exportFormat" class="form-control">
           <option value="csv">CSV (Spotify URIs, ISRCs & Track Info - Soundiiz/TuneMyMusic)</option>
