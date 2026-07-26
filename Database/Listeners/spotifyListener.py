@@ -856,7 +856,12 @@ class Listener:
                     })
 
             if missed_items:
-                logger.info("Backfilling %d plays from Web API recently-played history for user %s", len(missed_items), self.logUser)
+                # Routine progress, like the two lines above: the plays this
+                # announces are written to the database with their
+                # web_api_backfill source, so the record survives without it.
+                if _flaskDebugEnabled():
+                    logger.info("Backfilling %d plays from Web API recently-played history for user %s",
+                                len(missed_items), self.logUser)
                 # Mark these as backfilled so the database can record the source
                 for missed_item in missed_items:
                     missed_item["_source"] = "web_api_backfill"

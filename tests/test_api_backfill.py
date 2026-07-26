@@ -729,6 +729,50 @@ class ApiBackfillTestCase(unittest.TestCase):
         self.assertTrue(any("Running Spotify Web API recently-played backfill check" in m for m in cm.output))
         self.assertTrue(any("Web API returned 0 items for backfill check" in m for m in cm.output))
 
+    _MISSED_ITEMS = [
+        {"track": {"id": "track1", "duration_ms": 200000}, "played_at": "2026-07-26T14:30:00Z"},
+        {"track": {"id": "track2", "duration_ms": 180000}, "played_at": "2026-07-26T14:20:00Z"},
+    ]
+
+    def _runBackfillWithMissedPlays(self):
+        """Backfill over two plays neither cache knows about, so the
+        'Backfilling N plays' line is reached and the callback runs."""
+        listener = self._makeQuietBackfillListener()
+        callback = MagicMock()
+        with patch("Database.Listeners.spotifyListener._fetch_recently_played_from_web_api",
+                   return_value=list(self._MISSED_ITEMS)):
+            with patch("Database.Listeners.spotifyListener._refresh_spotify_access_token",
+                       return_value="token123"):
+                with patch("Database.Listeners.spotifyListener.time.monotonic", return_value=_MONOTONIC_NOW):
+                    listener._checkWebApiBackfill(callback)
+        return callback
+
+    def test_backfilling_line_hidden_without_flask_debug(self):
+        """The per-poll 'Backfilling N plays' line is routine progress, and the
+        plays it announces are already recorded in the database with their
+        web_api_backfill source - so it stays behind FLASK_DEBUG like the other
+        backfill progress lines."""
+        envWithoutDebug = {k: v for k, v in os.environ.items() if k != "FLASK_DEBUG"}
+        with patch.dict(os.environ, envWithoutDebug, clear=True):
+            with self.assertNoLogs("Database.Listeners.spotifyListener", level="INFO"):
+                callback = self._runBackfillWithMissedPlays()
+
+        # Quieter logging must not mean less backfilling.
+        callback.assert_called_once()
+        self.assertEqual(len(callback.call_args[0][0]), len(self._MISSED_ITEMS))
+
+    def test_backfilling_line_hidden_with_falsy_flask_debug(self):
+        with patch.dict(os.environ, {"FLASK_DEBUG": "0"}):
+            with self.assertNoLogs("Database.Listeners.spotifyListener", level="INFO"):
+                self._runBackfillWithMissedPlays()
+
+    def test_backfilling_line_shown_with_flask_debug(self):
+        with patch.dict(os.environ, {"FLASK_DEBUG": "1"}):
+            with self.assertLogs("Database.Listeners.spotifyListener", level="INFO") as cm:
+                self._runBackfillWithMissedPlays()
+
+        self.assertTrue(any("Backfilling 2 plays from Web API" in m for m in cm.output))
+
 
 class ListenerLogIdentityTestCase(unittest.TestCase):
     """The listener's routine log lines identify the account by internal user
