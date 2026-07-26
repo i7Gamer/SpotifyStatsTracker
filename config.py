@@ -23,7 +23,7 @@ ON_THIS_DAY_YEARS_LIMIT = 5    #< max prior years surfaced in the dashboard "On 
 # is driven by other people's listening rather than anything the viewer
 # controls - uncapped, a busy evening would push the trends row off-screen.
 FRIENDS_NOW_PLAYING_LIMIT = 6
-LISTEN_TIME_HIDE_SECONDS_ABOVE_HOURS = 10   #< dashboard "Total listen time" drops the seconds component once the total reaches this many hours
+LISTEN_TIME_HIDE_SECONDS_ABOVE_HOURS = 10   #< the listen-time totals (dashboard "Total listen time", /genres stat strip) drop the seconds component once the total reaches this many hours
 RECOMMENDATION_ARTIST_LIMIT = 5    #< artists shown in the dashboard "Discover" recommendations card
 RECOMMENDATION_GENRE_POOL = 15     #< how many of the user's top genres candidate artists are matched against
 RECOMMENDATION_EXCLUDE_TOP_N = 25  #< user's most-played artists excluded from recommendations (already well-known to them)

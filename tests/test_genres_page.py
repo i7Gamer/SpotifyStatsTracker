@@ -245,6 +245,27 @@ class GenresPageTestCase(AppTestCase):
         mixCall = db.getGenreTrends.call_args_list[0]
         self.assertLessEqual(len(mixCall.args[0]), GENRE_MIX_TREND_TOP_N)
 
+    def test_detail_listen_time_drops_seconds_above_the_threshold(self):
+        """The stat strip's Listen time follows the dashboard's Total listen
+        time: past LISTEN_TIME_HIDE_SECONDS_ABOVE_HOURS the seconds are noise."""
+        dash = self._makeApp()
+        db = self._makeDb(coverage=coverageDict(80, 60, 90), distribution={"rock": 120})
+        longMs = (12 * 3600 + 3 * 60 + 41) * 1000
+        db.getGenreStats.return_value = {"plays": 10, "listenMs": longMs,
+                                         "firstPlayedTs": None, "sharePercent": 25.0}
+        detailHtml = self._getData(dash, db).get_json()["detailHtml"]
+        self.assertIn("12h 3m", detailHtml)
+        self.assertNotIn("12h 3m 41s", detailHtml)
+
+    def test_detail_listen_time_keeps_seconds_below_the_threshold(self):
+        dash = self._makeApp()
+        db = self._makeDb(coverage=coverageDict(80, 60, 90), distribution={"rock": 120})
+        shortMs = (9 * 3600 + 59 * 60 + 59) * 1000
+        db.getGenreStats.return_value = {"plays": 10, "listenMs": shortMs,
+                                         "firstPlayedTs": None, "sharePercent": 25.0}
+        detailHtml = self._getData(dash, db).get_json()["detailHtml"]
+        self.assertIn("9h 59m 59s", detailHtml)
+
     def test_nav_link_present_when_enabled(self):
         dash = self._makeApp()
         db = self._makeDb(coverage=coverageDict(80, 60, 90), distribution={"rock": 1})

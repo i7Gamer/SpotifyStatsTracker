@@ -40,6 +40,7 @@ def register(app, dashboard):
     GENRE_MIX_TREND_TOP_N = appmod.GENRE_MIX_TREND_TOP_N
     GENRE_PAGE_TOP_ARTISTS_LIMIT = appmod.GENRE_PAGE_TOP_ARTISTS_LIMIT
     GENRE_PAGE_TOP_TRACKS_LIMIT = appmod.GENRE_PAGE_TOP_TRACKS_LIMIT
+    LISTEN_TIME_HIDE_SECONDS_ABOVE_HOURS = appmod.LISTEN_TIME_HIDE_SECONDS_ABOVE_HOURS
 
     def _buildGenreDetail(db, username, selectedGenre, startDate, endDate, intervalLabel, trendGroupBy):
         """The per-genre drill-down context (stat strip + top lists) plus its
@@ -56,7 +57,8 @@ def register(app, dashboard):
         firstTs = stats.get("firstPlayedTs")
         genreStatsView = {
             "plays": stats.get("plays", 0),
-            "listenText": msToString(stats.get("listenMs", 0)),
+            "listenText": msToString(stats.get("listenMs", 0),
+                                     hideSecondsAboveHours=LISTEN_TIME_HIDE_SECONDS_ABOVE_HOURS),
             "sharePercent": stats.get("sharePercent", 0.0),
             "firstPlayedText": convertToDatetime(firstTs, tz=db.tz).strftime("%b %Y") if firstTs else "—",
         }
