@@ -5,11 +5,12 @@ call per entry - the old per-entry loop cost 3 queries per play, which meant
 """
 import sys
 import os
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from conftest import DatabaseTestCase, normalizeTrackForTest
+import Database.database as databaseModule
 
 
 class TestPaginateEntriesBatching(DatabaseTestCase):
@@ -58,30 +59,47 @@ class TestPaginateEntriesBatching(DatabaseTestCase):
         self.assertEqual(result[0]["name"], "Song One")
         self.assertEqual(result[1]["name"], "Song Two")
 
-    def test_track_missing_from_catalog_falls_back_to_single_lookup_and_is_dropped_without_a_listener(self):
-        """A play whose track isn't in the catalog (rare - e.g. a partially
-        failed import) must still be handled via the existing single-track
-        fallback path (which would normally re-fetch it live from the
-        listener), not silently corrupt the batched result. plays.track_id has
-        a foreign key into tracks.id, so this is exercised by calling
-        _paginateEntries() directly with a synthetic entry rather than trying
-        to get such a row into the real plays table."""
+    def test_a_track_missing_from_the_catalog_is_dropped_without_any_live_fetch(self):
+        """plays.track_id has an enforced foreign key into tracks.id, so a play
+        can never be written without its track: a missing one means the track
+        row was deleted afterwards, i.e. the dangling-row corruption the boot
+        probe reports and migrate1_43_0 repairs.
+
+        Rendering is not the place to fix that. This path used to call the
+        listener live - a Spotify round-trip with up to five seconds of
+        time.sleep in its retry ladders, plus an upsertTrack and a commit, on
+        the request thread, as a side effect of a GET - and it repeated on every
+        render because a failure isn't cached. It now drops the entry, which is
+        what the failing fetch did anyway.
+
+        Exercised by calling _paginateEntries() directly, since the foreign key
+        makes such a row impossible to insert normally."""
         tracks, _ = self._sampleData()
         db = self._makeDb(tracks, [])
+        db.listener = MagicMock()   #< a live listener is available and must still not be used
 
         entries = [
             {"id": "t1", "playedAt": 100, "timePlayed": 1000},
             {"id": "missing-track", "playedAt": 200, "timePlayed": 1000},
         ]
 
-        with patch.object(db, "_ensureTrackMetadata", wraps=db._ensureTrackMetadata) as fallbackSpy:
+        with self.assertLogs("Database.database", level="WARNING") as logs:
             result = db._paginateEntries(entries)
 
-        fallbackSpy.assert_called_once_with("missing-track")
-        # db.listener is None in this test, so the fallback can't actually
-        # fetch it live - that entry is dropped, the other is unaffected.
-        self.assertEqual(len(result), 1)
-        self.assertEqual(result[0]["id"], "t1")
+        db.listener.track.assert_not_called()
+        self.assertEqual([e["id"] for e in result], ["t1"])
+        self.assertIn("missing-track", "".join(logs.output))
+
+    def test_a_fully_hydrated_page_logs_nothing(self):
+        """The warning above names real corruption - it must not fire on the
+        ordinary path, or it becomes noise nobody reads."""
+        tracks, _ = self._sampleData()
+        db = self._makeDb(tracks, [])
+
+        with patch.object(databaseModule.logger, "warning") as warned:
+            db._paginateEntries([{"id": "t1", "playedAt": 100, "timePlayed": 1000}])
+
+        warned.assert_not_called()
 
 
 class TestSearchEntries(DatabaseTestCase):

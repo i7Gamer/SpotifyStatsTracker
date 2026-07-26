@@ -98,31 +98,15 @@ class ListenerMixin:
                     self.listener_health = "HEALTHY"
                     _dbmod.logger.info("Listener recovered to HEALTHY state")
 
-    # ---- catalog / track metadata --------------------------------------------------
-
-    def _fetchTrackFromListener(self, trackId: str) -> dict | None:
-        """Fetch and cache full metadata for a track we don't have yet, via the
-        live listener client. Returns None (and logs) if the fetch fails - a play
-        for an unknown track can't be recorded without its metadata, since plays
-        has a foreign key to tracks."""
-        if self.listener is None:
-            return None
-        try:
-            track = _dbmod.Client.formatTrack(self.listener.track(trackId), embedPlaybackInfo=False)
-            self.repo.upsertTrack(track, created_reason=f"listener_fetch (user: {self.user})")
-            self.repo.commit()
-            _dbmod.logger.info("Created track %s (%s) via listener fetch", trackId, track.get("name", "unknown"))
-            return track
-        except Exception:
-            _dbmod.logger.error("Failed to download track %s", trackId)
-            return None
-
-    def _ensureTrackMetadata(self, trackId: str) -> dict | None:
-        track = self.repo.getTrack(trackId)
-        if track is not None:
-            return track
-        _dbmod.logger.info("Missing track metadata for %s, downloading it", trackId)
-        return self._fetchTrackFromListener(trackId)
+    # _fetchTrackFromListener/_ensureTrackMetadata used to live here. Their only
+    # caller was _paginateEntries, hydrating a page of play history: on a play
+    # whose track row was missing they fetched it live from Spotify and wrote it,
+    # from the request thread, during a GET. plays.track_id is an enforced
+    # foreign key, so a play cannot exist without its track - the only way to
+    # reach that code was dangling-row corruption, which is now repaired by
+    # migrate1_43_0 and reported by the startup probe rather than papered over
+    # one render at a time. Nothing else fetched a track by id; the listener
+    # writes its own catalog rows as it records plays.
 
     def _stopRequested(self) -> bool:
         """True once this instance is being stopped or the whole app is

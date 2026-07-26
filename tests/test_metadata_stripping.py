@@ -1,15 +1,11 @@
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock
 import sys
 import os
-import threading
-from pathlib import Path
-import tempfile
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from conftest import DatabaseTestCase
-from Database.database import Database
 from Database.Formatters.spotifyClient import Client
 from Database.Importers.StreamingHistoryImporter import Importer
 
@@ -34,25 +30,12 @@ FAKE_TRACK_METADATA = {
 }
 
 class TestMetadataStripping(DatabaseTestCase):
-    def test_fetch_track_from_listener_strips_play_fields(self):
-        db = self._makeDb({}, [])
-        db.listener = MagicMock()
-        db.listener.track.return_value = FAKE_TRACK_METADATA
-
-        fetched = db._fetchTrackFromListener("track999")
-
-        # Verify play-specific fields are NOT present
-        self.assertNotIn("playedAt", fetched)
-        self.assertNotIn("timePlayed", fetched)
-        self.assertNotIn("playedFrom", fetched)
-        self.assertEqual(fetched["id"], "track999")
-
-        # ... and that it was actually cached in the shared catalog, not just
-        # returned - a later _ensureTrackMetadata() call must not need the
-        # listener again.
-        stored = db.repo.getTrack("track999")
-        self.assertIsNotNone(stored)
-        self.assertNotIn("playedAt", stored)
+    # The _fetchTrackFromListener case that used to head this class is gone with
+    # the method: its only caller hydrated a page of play history, and fetching
+    # a track live (and writing it) from a render is not something this codebase
+    # does any more - see Database._paginateEntries. Client.formatTrack's own
+    # embedPlaybackInfo=False contract, which is what that test really pinned,
+    # is covered directly by TestFormatTrackEmbedPlaybackInfo below.
 
     def test_prefetch_missing_tracks_strips_play_fields(self):
         importer = Importer()

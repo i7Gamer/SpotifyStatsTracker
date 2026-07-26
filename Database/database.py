@@ -505,20 +505,40 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         """Merge each play entry with its track's catalog metadata. Track
         metadata for every distinct id in `entries` is fetched in one batched
         round-trip (Repository.getTracksByIds) rather than once per entry -
-        hydrating a page of history used to cost 3 queries per play. A track
-        id that isn't in the catalog yet (rare) falls back to the single-track
-        path, which also handles fetching it live from the listener."""
+        hydrating a page of history used to cost 3 queries per play.
+
+        A play whose track is missing is dropped and reported. plays.track_id
+        has an enforced foreign key into tracks.id, so a play can never be
+        written without its track: a missing one means the track row was
+        deleted afterwards - the dangling-row corruption the startup probe
+        counts and migrate1_43_0 repairs.
+
+        Rendering is not the place to fix that. This used to call the listener
+        live, which meant a Spotify round-trip with up to five seconds of
+        time.sleep in its retry ladders, plus an upsertTrack and a commit, on
+        the request thread as a side effect of a GET - and it repeated on every
+        render, since nothing caches the failure. It also usually failed, and
+        the entry was dropped anyway."""
         trackIds = list({entry["id"] for entry in entries})
         tracksById = self.repo.getTracksByIds(trackIds)
 
         result = []
+        missingTrackIds = []
         for entry in entries:
             track = tracksById.get(entry["id"])
             if track is None:
-                track = self._ensureTrackMetadata(entry["id"])
-            if track is None:
+                missingTrackIds.append(entry["id"])
                 continue
             result.append(self._mergeEntryWithTrack(entry, track))
+        if missingTrackIds:
+            # Once per page rather than per row: a corrupt track id usually has
+            # several plays, and the count is the interesting part.
+            logger.warning(
+                "Dropped %d play(s) from this page: no catalog row for track id(s) %s. "
+                "Run the migration/integrity probe - plays.track_id is a foreign key, so these "
+                "are dangling rows, not a missing fetch.",
+                len(missingTrackIds), ", ".join(sorted(set(missingTrackIds))),
+            )
         return result
 
     @staticmethod
