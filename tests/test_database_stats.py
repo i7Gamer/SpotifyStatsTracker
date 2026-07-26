@@ -226,6 +226,123 @@ class TestGetAlbumsStats(DatabaseTestCase):
 
         self.assertEqual(db.getAlbumsCount(), 2)
 
+    def test_narrowing_to_one_album_matches_that_albums_row_in_the_full_list(self):
+        """The album-detail page narrows this query to a single id, and that
+        path carries an extra track-set predicate so SQLite can seek the plays
+        by track instead of scanning the user's whole history (it was reading
+        every play row and filtering afterwards - ~60ms for one album on a real
+        library). The predicate is redundant by construction, so the narrowed
+        row has to stay byte-identical to the same album's row in the full
+        list."""
+        tracks, entries = self._sampleData()
+        db = self._makeDb(tracks, entries)
+
+        full = {a["id"]: a for a in db.getAlbumsStats()}
+        for albumId in ("alb1", "alb2"):
+            with self.subTest(albumId=albumId):
+                narrowed = db.getAlbumsStats(albumId=albumId)
+
+                self.assertEqual(len(narrowed), 1)
+                self.assertEqual(narrowed[0], full[albumId])
+
+    def test_narrowing_to_one_album_excludes_other_albums_plays(self):
+        """The pushdown must not widen the aggregate: alb1's totals come only
+        from tracks that are actually on alb1."""
+        tracks, entries = self._sampleData()
+        db = self._makeDb(tracks, entries)
+
+        alb1 = db.getAlbumsStats(albumId="alb1")[0]
+
+        self.assertEqual(alb1["plays"], 2)              #< t1 twice, not t2's play
+        self.assertEqual(alb1["totalTimeListened"], 6000)
+        self.assertEqual(alb1["uniqueSongCount"], 1)
+
+    def test_narrowing_to_an_album_with_no_plays_returns_nothing(self):
+        tracks, entries = self._sampleData()
+        db = self._makeDb(tracks, entries)
+
+        self.assertEqual(db.getAlbumsStats(albumId="nope"), [])
+
+
+class TestNarrowedSongListsMatchTheFullList(DatabaseTestCase):
+    """The album/artist detail pages narrow getSongsPage to one album's or one
+    artist's songs. Both paths carry an extra track-set predicate so SQLite can
+    seek the plays by track id rather than reading the user's whole history and
+    filtering afterwards (the artist list measured ~985ms on a real library).
+    Each predicate is redundant by construction, so narrowing must return
+    exactly the rows the unnarrowed list already contains for that entity.
+    """
+
+    def _sampleData(self):
+        def track(trackId, albumId, artistId, artistName):
+            return {"id": trackId, "name": f"Song {trackId}",
+                    "artists": [{"id": artistId, "name": artistName}],
+                    "imageId": albumId,
+                    "album": {"id": albumId, "name": f"Album {albumId}", "url": "u",
+                              "imageId": albumId, "imageUrl": "", "totalTracks": 2,
+                              "releaseDate": 0}}
+        tracks = {
+            "t1": track("t1", "alb1", "a1", "Artist A"),
+            "t2": track("t2", "alb1", "a1", "Artist A"),
+            "t3": track("t3", "alb2", "a2", "Artist B"),
+        }
+        entries = [
+            {"id": "t1", "playedAt": 100, "timePlayed": 3000},
+            {"id": "t1", "playedAt": 150, "timePlayed": 3000},
+            {"id": "t2", "playedAt": 200, "timePlayed": 2000},
+            {"id": "t3", "playedAt": 300, "timePlayed": 1000},
+        ]
+        return tracks, entries
+
+    def test_album_narrowing_matches_the_full_list(self):
+        tracks, entries = self._sampleData()
+        db = self._makeDb(tracks, entries)
+        full = {s["id"]: s for s in db.getSongsStats()}
+
+        songs = db.getSongsStats(albumId="alb1")
+
+        self.assertEqual({s["id"] for s in songs}, {"t1", "t2"})
+        for song in songs:
+            self.assertEqual(song, full[song["id"]])
+
+    def test_artist_narrowing_matches_the_full_list(self):
+        tracks, entries = self._sampleData()
+        db = self._makeDb(tracks, entries)
+        full = {s["id"]: s for s in db.getSongsStats()}
+
+        songs = db.getSongsStats(artistId="a1")
+
+        self.assertEqual({s["id"] for s in songs}, {"t1", "t2"})
+        for song in songs:
+            self.assertEqual(song, full[song["id"]])
+
+    def test_narrowing_excludes_other_entities_songs(self):
+        tracks, entries = self._sampleData()
+        db = self._makeDb(tracks, entries)
+
+        self.assertEqual({s["id"] for s in db.getSongsStats(albumId="alb2")}, {"t3"})
+        self.assertEqual({s["id"] for s in db.getSongsStats(artistId="a2")}, {"t3"})
+
+    def test_a_track_played_but_credited_to_a_second_artist_still_appears(self):
+        """The artist predicate matches the track_artists rows, so a
+        multi-artist track has to surface for every artist on it - one row per
+        track, not one per credit."""
+        tracks, entries = self._sampleData()
+        tracks["t1"]["artists"].append({"id": "a2", "name": "Artist B"})
+        db = self._makeDb(tracks, entries)
+
+        songs = db.getSongsStats(artistId="a2")
+
+        self.assertEqual(sorted(s["id"] for s in songs), ["t1", "t3"])
+        self.assertEqual(len([s for s in songs if s["id"] == "t1"]), 1)
+
+    def test_unknown_ids_return_nothing(self):
+        tracks, entries = self._sampleData()
+        db = self._makeDb(tracks, entries)
+
+        self.assertEqual(db.getSongsStats(albumId="nope"), [])
+        self.assertEqual(db.getSongsStats(artistId="nope"), [])
+
     def test_get_top_albums_sorted_by_plays(self):
         tracks, entries = self._sampleData()
         db = self._makeDb(tracks, entries)

@@ -769,11 +769,21 @@ class PlayQueries:
             extraClauses += " AND t.id = ?"
             params.append(trackId)
         if artistId is not None:
-            extraClauses += " AND EXISTS (SELECT 1 FROM track_artists ta2 WHERE ta2.track_id = t.id AND ta2.artist_id = ?)"
-            params.append(artistId)
+            # The EXISTS decides membership; the IN names the same track set in
+            # a form SQLite can seek. Without it the plan drove off
+            # idx_plays_user_time and read EVERY play this user has, testing the
+            # EXISTS per row - ~985ms for a well-played artist on a real
+            # library, on the artist detail page's own song list. With it, it
+            # seeks the artist's tracks and then idx_plays_user_track per track.
+            extraClauses += (" AND EXISTS (SELECT 1 FROM track_artists ta2 WHERE ta2.track_id = t.id AND ta2.artist_id = ?)"
+                             " AND p.track_id IN (SELECT track_id FROM track_artists WHERE artist_id = ?)")
+            params += [artistId, artistId]
         if albumId is not None:
-            extraClauses += " AND al.id = ?"
-            params.append(albumId)
+            # Same rewrite, same reason (~57ms -> ~0.3ms): al.id = t.album_id
+            # makes the second predicate redundant by construction, and it is
+            # the one the planner can actually use.
+            extraClauses += " AND al.id = ? AND p.track_id IN (SELECT id FROM tracks WHERE album_id = ?)"
+            params += [albumId, albumId]
         extraClauses += self._idSetClause(params, "t.id", trackIds)
         if searchQuery:
             pattern = self._likePattern(searchQuery)
@@ -912,8 +922,13 @@ class PlayQueries:
         rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
         extraClauses = ""
         if albumId is not None:
-            extraClauses += " AND al.id = ?"
-            params.append(albumId)
+            # Redundant against al.id (= t.album_id) and present only so the
+            # planner has a seekable track set - see the same rewrite in
+            # getSongsPage. Narrowing to one album read the user's entire play
+            # history before this (~60ms), and the album detail page pays it on
+            # both the shell and the deferred body.
+            extraClauses += " AND al.id = ? AND p.track_id IN (SELECT id FROM tracks WHERE album_id = ?)"
+            params += [albumId, albumId]
         extraClauses += self._idSetClause(params, "al.id", albumIds)
         if searchQuery:
             pattern = self._likePattern(searchQuery)
