@@ -77,7 +77,9 @@
           <td style="padding: 8px;">{{ t.count }}</td>
           <td style="padding: 8px; text-align: right; display: flex; gap: 8px; justify-content: flex-end;">
             <button type="button" class="button button-small btn-rename-tag" data-tag="{{ t.tag }}" style="padding: 2px 8px; font-size: 0.8rem;">Rename</button>
-            <button type="button" class="button button-small btn-delete-tag" data-tag="{{ t.tag }}" style="padding: 2px 8px; font-size: 0.8rem; background: #500505; color: #ff4a4a;">Delete</button>
+            {# Danger tint lives in style.css, not inline: an inline background
+               beats .btn-delete-tag:hover and left the button looking dead. #}
+            <button type="button" class="button button-small btn-delete-tag" data-tag="{{ t.tag }}" style="padding: 2px 8px; font-size: 0.8rem;">Delete</button>
           </td>
         </tr>
         {% endfor %}

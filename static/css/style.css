@@ -2446,6 +2446,31 @@ progress::-moz-progress-bar {
   color: white;
 }
 
+/* The playlist page's two .button-based tag controls. Both live AFTER .button
+   on purpose: they override its resting fill at the same specificity, so the
+   cascade decides on source order alone.
+
+   Each also carries an inline style (playlists.js toggles the chips' own
+   background), and inline beats any :hover fill - hence the box-shadow glow,
+   the same one the "Play now" and Spotify-link pills use, which nothing inline
+   overrides. The Delete button's tint used to be inline too, so hovering it
+   changed nothing at all. */
+.playlist-tag-chip:hover {
+  box-shadow: 0 0 8px var(--accent-glow);
+}
+
+.btn-delete-tag {
+  background: #500505;
+  color: #ff4a4a;
+  border-color: #ff4a4a;
+}
+
+.btn-delete-tag:hover {
+  background: #ff4a4a;
+  color: #fff;
+  box-shadow: 0 0 8px rgba(255, 74, 74, 0.5);
+}
+
 .wrapped-year-badges {
   display: flex;
   flex-wrap: wrap;
