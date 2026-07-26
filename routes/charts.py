@@ -473,8 +473,13 @@ def register(app, dashboard):
         fullPlaysOnly = filters["fullPlaysOnly"]
         # totalPlays/totalMs are a whole-range aggregate regardless of search -
         # a cheap dedicated query instead of summing every song's metadata.
-        totalPlays, totalMs = db.getPlayTotals(startDate, endDate, fullPlaysOnly=fullPlaysOnly)
-        uniqueSongs = db.getSongsCount(startDate, endDate, fullPlaysOnly=fullPlaysOnly)
+        # The TAG filter does scope them (unlike search): a tag narrows what
+        # the page is about, so cards reading whole-library numbers above a
+        # tag-filtered list contradicted the pager right below them.
+        totalPlays, totalMs = db.getPlayTotals(startDate, endDate, fullPlaysOnly=fullPlaysOnly,
+                                               trackIds=trackIds)
+        uniqueSongs = db.getSongsCount(startDate, endDate, fullPlaysOnly=fullPlaysOnly,
+                                       trackIds=trackIds)
 
         totalCount = _topListTotal(
             filters, lambda **kw: db.getSongsCount(startDate, endDate, **kw), uniqueSongs,
@@ -515,8 +520,11 @@ def register(app, dashboard):
             filters["interval"], filters["customStart"], filters["customEnd"],
             default="all time", tz=db.tz)
         fullPlaysOnly = filters["fullPlaysOnly"]
-        totalPlays, totalMs = db.getPlayTotals(startDate, endDate, fullPlaysOnly=fullPlaysOnly)
-        uniqueAlbums = db.getAlbumsCount(startDate, endDate, fullPlaysOnly=fullPlaysOnly)
+        #< albumIds: the tag filter scopes the header cards too - see topSongsPage
+        totalPlays, totalMs = db.getPlayTotals(startDate, endDate, fullPlaysOnly=fullPlaysOnly,
+                                               albumIds=albumIds)
+        uniqueAlbums = db.getAlbumsCount(startDate, endDate, fullPlaysOnly=fullPlaysOnly,
+                                         albumIds=albumIds)
 
         totalCount = _topListTotal(
             filters, lambda **kw: db.getAlbumsCount(startDate, endDate, **kw), uniqueAlbums,
@@ -556,9 +564,13 @@ def register(app, dashboard):
         # totalPlays/totalUnique/totalMs are the whole (date-range-scoped) top
         # list's totals regardless of search - mirrors getPlayTotals()'s role
         # for the songs/albums pages, computed via a dedicated SQL aggregate
-        # instead of fetching every artist and summing in Python.
-        totalPlays, totalUnique, totalMs = db.getArtistTotals(startDate, endDate, fullPlaysOnly=fullPlaysOnly)
-        uniqueArtists = db.getArtistsCount(startDate, endDate, fullPlaysOnly=fullPlaysOnly)
+        # instead of fetching every artist and summing in Python. The tag
+        # filter scopes them, like the songs/albums headers - see topSongsPage.
+        totalPlays, totalUnique, totalMs = db.getArtistTotals(startDate, endDate,
+                                                              fullPlaysOnly=fullPlaysOnly,
+                                                              artistIds=artistIds)
+        uniqueArtists = db.getArtistsCount(startDate, endDate, fullPlaysOnly=fullPlaysOnly,
+                                           artistIds=artistIds)
 
         totalCount = _topListTotal(
             filters, lambda **kw: db.getArtistsCount(startDate, endDate, **kw), uniqueArtists,

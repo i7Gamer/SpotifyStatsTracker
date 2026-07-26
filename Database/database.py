@@ -1158,14 +1158,18 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
                                         fullPlaysOnly=fullPlaysOnly)
 
     def getPlayTotals(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None,
-                       fullPlaysOnly: bool = False) -> tuple[int, int]:
+                       fullPlaysOnly: bool = False, trackIds: list[str] | None = None,
+                       albumIds: list[str] | None = None) -> tuple[int, int]:
         """(play count, total time listened) across the whole range - cheap
         aggregate that doesn't require fetching per-song metadata.
         `fullPlaysOnly` mirrors getSongsStats()'s param of the same name -
         defaults False for every existing caller (milestones, Wrapped, Compare,
-        dashboard); only the Top Songs/Albums page header opts in."""
+        dashboard); only the Top Songs/Albums page header opts in. So do
+        `trackIds`/`albumIds` (that header's tag filter - see
+        Repository.getPlayTotals)."""
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
-        return self.repo.getPlayTotals(self.user, startTs, endTs, fullPlaysOnly=fullPlaysOnly)
+        return self.repo.getPlayTotals(self.user, startTs, endTs, fullPlaysOnly=fullPlaysOnly,
+                                        trackIds=trackIds, albumIds=albumIds)
 
     def _getPlayDateSet(self, startTs: float | None, endTs: float | None) -> set[str]:
         """Distinct local ("%Y-%m-%d") dates on which this user actually
@@ -1548,14 +1552,17 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
                                           fullPlaysOnly=fullPlaysOnly)
 
     def getArtistTotals(self, startDate: datetime.datetime = None,
-                         endDate: datetime.datetime = None, fullPlaysOnly: bool = False) -> tuple[int, int, int]:
+                         endDate: datetime.datetime = None, fullPlaysOnly: bool = False,
+                         artistIds: list[str] | None = None) -> tuple[int, int, int]:
         """(total plays, total unique songs, total time listened) summed across
         every artist in range - the Top Artists page's "(top list)" totals,
         computed directly in SQL instead of fetching every artist and summing
         in Python. `fullPlaysOnly` mirrors getArtistsStats()'s param of the
-        same name, keeping this header total consistent with the filtered list."""
+        same name, keeping this header total consistent with the filtered list;
+        so does `artistIds` (the page's tag filter)."""
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
-        return self.repo.getArtistTotals(self.user, startTs, endTs, fullPlaysOnly=fullPlaysOnly)
+        return self.repo.getArtistTotals(self.user, startTs, endTs, fullPlaysOnly=fullPlaysOnly,
+                                          artistIds=artistIds)
 
     def getOverallStats(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> list:
         """Return songs sorted by play count with full song metadata and listen totals."""

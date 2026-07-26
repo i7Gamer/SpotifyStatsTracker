@@ -93,7 +93,7 @@ class TestTopAlbumsRoute(AppTestCase):
 
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(db.getAlbumsCount.call_count, 2)
-        db.getAlbumsCount.assert_any_call(None, None, fullPlaysOnly=True)
+        db.getAlbumsCount.assert_any_call(None, None, fullPlaysOnly=True, albumIds=None)
         db.getAlbumsCount.assert_any_call(None, None, searchQuery="foo", albumIds=None, fullPlaysOnly=True,
                                            sortBy=appModule.DEFAULT_SORT_BY)
         kwargs = db.getTopAlbums.call_args.kwargs
@@ -139,8 +139,8 @@ class TestTopAlbumsRoute(AppTestCase):
         shell = self._getTopAlbums(dash, db, ajax=False)       #< shell: the checkbox
 
         self.assertEqual(resp.status_code, 200)
-        db.getPlayTotals.assert_called_once_with(None, None, fullPlaysOnly=True)
-        db.getAlbumsCount.assert_called_once_with(None, None, fullPlaysOnly=True)
+        db.getPlayTotals.assert_called_once_with(None, None, fullPlaysOnly=True, albumIds=None)
+        db.getAlbumsCount.assert_called_once_with(None, None, fullPlaysOnly=True, albumIds=None)
         self.assertEqual(db.getTopAlbums.call_args.kwargs["fullPlaysOnly"], True)
         self.assertIn(b'id="fullPlaysOnly"', shell.data)
         self.assertIn(b'checked', shell.data)
@@ -152,8 +152,8 @@ class TestTopAlbumsRoute(AppTestCase):
         resp = self._getTopAlbums(dash, db, query="?fullOnly=0")
 
         self.assertEqual(resp.status_code, 200)
-        db.getPlayTotals.assert_called_once_with(None, None, fullPlaysOnly=False)
-        db.getAlbumsCount.assert_called_once_with(None, None, fullPlaysOnly=False)
+        db.getPlayTotals.assert_called_once_with(None, None, fullPlaysOnly=False, albumIds=None)
+        db.getAlbumsCount.assert_called_once_with(None, None, fullPlaysOnly=False, albumIds=None)
         self.assertEqual(db.getTopAlbums.call_args.kwargs["fullPlaysOnly"], False)
 
     def test_page_survives_non_numeric_page(self):

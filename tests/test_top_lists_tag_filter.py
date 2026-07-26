@@ -159,6 +159,78 @@ class TestTopListsTagFilter(AppTestCase):
         self.assertNotIn("Tagged Song", body)
         self.assertNotIn("Other Song", body)
 
+    def _resultsHtml(self, path):
+        resp = self.client.get(path)
+        self.assertEqual(resp.status_code, 200)
+        return resp.get_json()["resultsHtml"]
+
+    def test_top_songs_stat_cards_respect_the_tag_filter(self):
+        """The header cards (Total Plays / Time / Unique Songs) used to be
+        computed WITHOUT the tag filter, so a tagged view read e.g. 'Unique
+        Songs 2' directly above a one-song list ('Showing 1-1 of 1'). The
+        seeded library is 2 plays / 6m 40s / 2 songs; the tagged slice is 1 /
+        3m 20s / 1."""
+        self._login()
+        self.dash.repo.addTag(self.username, "roadtrip", "track", "t1")
+        self.dash.repo.commit()
+
+        html = self._resultsHtml("/top-songs?tag=roadtrip&ajax=true")
+
+        self.assertIn('<p class="summary-value">1</p>', html)
+        self.assertNotIn('<p class="summary-value">2</p>', html)
+        self.assertIn('<p class="summary-value">3m 20s</p>', html)
+        self.assertNotIn('<p class="summary-value">6m 40s</p>', html)
+
+    def test_top_artists_stat_cards_respect_the_tag_filter(self):
+        self._login()
+        self.dash.repo.addTag(self.username, "favorites", "artist", "art1")
+        self.dash.repo.commit()
+
+        html = self._resultsHtml("/top-artists?tag=favorites&ajax=true")
+
+        #< Total Plays (top list) / Unique Songs (top list) / Unique Artists,
+        #  all 1 for the tagged slice - the whole library would read 2/2/2
+        self.assertIn('<p class="summary-value">1</p>', html)
+        self.assertNotIn('<p class="summary-value">2</p>', html)
+
+    def test_top_albums_stat_cards_respect_the_tag_filter(self):
+        self._login()
+        self.dash.repo.addTag(self.username, "favorites", "album", "alb1")
+        self.dash.repo.commit()
+
+        html = self._resultsHtml("/top-albums?tag=favorites&ajax=true")
+
+        self.assertIn('<p class="summary-value">1</p>', html)
+        self.assertNotIn('<p class="summary-value">2</p>', html)
+        self.assertIn('<p class="summary-value">3m 20s</p>', html)
+        self.assertNotIn('<p class="summary-value">6m 40s</p>', html)
+
+    def test_unknown_tag_zeroes_the_stat_cards(self):
+        self._login()
+        self.dash.repo.addTag(self.username, "roadtrip", "track", "t1")
+        self.dash.repo.commit()
+
+        html = self._resultsHtml("/top-songs?tag=nonexistent&ajax=true")
+
+        #< an unknown tag matches nothing - the cards must agree with the
+        #  empty list, not fall back to whole-library numbers
+        self.assertIn('<p class="summary-value">0</p>', html)
+        self.assertNotIn('<p class="summary-value">2</p>', html)
+
+    def test_totals_queries_honour_the_empty_id_set_contract(self):
+        """The repo layer directly: None = no filter, [] = match nothing
+        (_idSetClause's contract), an id set narrows. The albumIds empty-set
+        case is the subtle one - it filters through a subquery, which alone
+        would silently emit no clause for []."""
+        repo = self.dash.repo
+        self.assertEqual(repo.getPlayTotals(self.username), (2, 400000))
+        self.assertEqual(repo.getPlayTotals(self.username, trackIds=["t1"]), (1, 200000))
+        self.assertEqual(repo.getPlayTotals(self.username, trackIds=[]), (0, 0))
+        self.assertEqual(repo.getPlayTotals(self.username, albumIds=["alb2"]), (1, 200000))
+        self.assertEqual(repo.getPlayTotals(self.username, albumIds=[]), (0, 0))
+        self.assertEqual(repo.getArtistTotals(self.username, artistIds=["art1"]), (1, 1, 200000))
+        self.assertEqual(repo.getArtistTotals(self.username, artistIds=[]), (0, 0, 0))
+
     def test_tag_filter_persists_across_sort_change(self):
         """The tag select must survive an unrelated filter change - see
         _page_card.html's updateFilters()/updateTagFilter() convention: every

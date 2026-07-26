@@ -708,7 +708,8 @@ class PlayQueries:
         return row["c"]
 
     def getArtistTotals(self, username: str, startTs: float | None = None,
-                         endTs: float | None = None, fullPlaysOnly: bool = False) -> tuple[int, int, int]:
+                         endTs: float | None = None, fullPlaysOnly: bool = False,
+                         artistIds: list[str] | None = None) -> tuple[int, int, int]:
         """(total plays, total unique songs, total time listened) summed across
         every artist in range - the Top Artists page's "(top list)" totals.
         Deliberately a sum of each artist's own aggregate (an artist with N
@@ -716,10 +717,14 @@ class PlayQueries:
         artist on it), not the same number as getPlayTotals()'s track-level
         total - matches the totals the old fetch-everything-then-sum-in-Python
         code computed, just without hydrating every artist's name/url first.
-        `fullPlaysOnly` mirrors getArtistAggregates()'s param of the same name."""
+        `fullPlaysOnly` mirrors getArtistAggregates()'s param of the same name;
+        so does `artistIds` (the page's tag filter), which keeps this header
+        total consistent with the tag-filtered list below it."""
         conn = self._conn()
         params = [username]
         rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
+        artistFilter = self._idSetClause(params, "ta.artist_id", artistIds)
+        artistFilter += self._trackSetClause(params, self.ARTIST_TRACKS_SUBQUERY, artistIds)
         joinClause = ""
         fullPlaysClause = ""
         if fullPlaysOnly:
@@ -735,7 +740,7 @@ class PlayQueries:
                        SUM(p.time_played) AS total_time_listened
                 FROM plays p
                 JOIN track_artists ta ON ta.track_id = p.track_id{joinClause}
-                WHERE p.username = ? AND p.is_skip=0{rangeClause}{fullPlaysClause}
+                WHERE p.username = ? AND p.is_skip=0{rangeClause}{artistFilter}{fullPlaysClause}
                 GROUP BY ta.artist_id
             )
             """,
@@ -1836,14 +1841,29 @@ class PlayQueries:
                  "plays": r["plays"]} for r in rows]
 
     def getPlayTotals(self, username: str, startTs: float | None = None,
-                       endTs: float | None = None, fullPlaysOnly: bool = False) -> tuple[int, int]:
+                       endTs: float | None = None, fullPlaysOnly: bool = False,
+                       trackIds: list[str] | None = None,
+                       albumIds: list[str] | None = None) -> tuple[int, int]:
         """`fullPlaysOnly` mirrors getSongsPage()'s param of the same name -
         defaults False (unfiltered) for every existing caller (milestones,
         Wrapped, Compare, dashboard); only the Top Songs/Albums header totals
-        opt in, to stay consistent with their own fullPlaysOnly-filtered list."""
+        opt in, to stay consistent with their own fullPlaysOnly-filtered list.
+        `trackIds`/`albumIds` narrow the totals to an explicit id set (those
+        same headers' tag filter) so the cards can't contradict the
+        tag-filtered list right below them. None means no filter; an empty
+        list matches nothing (see _idSetClause)."""
         conn = self._conn()
         params = [username]
         rangeClause = self._dateRangeClause(params, startTs, endTs)
+        idClause = self._idSetClause(params, "track_id", trackIds)
+        if albumIds is not None and not albumIds:
+            #< explicit empty set: _trackSetClause alone emits nothing for []
+            #  (its callers normally pair it with an _idSetClause on the joined
+            #  table, which is what carries the `AND 0` - there's no join here)
+            idClause += " AND 0"
+        else:
+            idClause += self._trackSetClause(params, self.ALBUM_TRACKS_SUBQUERY, albumIds,
+                                             playsColumn="track_id")
         joinClause = ""
         fullPlaysClause = ""
         if fullPlaysOnly:
@@ -1851,7 +1871,7 @@ class PlayQueries:
             fullPlaysClause = self._fullPlaysClause(params, playsAlias="plays")
         row = conn.execute(
             f"SELECT COUNT(*) AS c, COALESCE(SUM(time_played), 0) AS total FROM plays{joinClause} "
-            f"WHERE username = ? AND is_skip=0{rangeClause}{fullPlaysClause}",
+            f"WHERE username = ? AND is_skip=0{rangeClause}{idClause}{fullPlaysClause}",
             params,
         ).fetchone()
         return row["c"], row["total"]

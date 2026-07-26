@@ -394,7 +394,7 @@ class TestTopSongsPagination(_ListRouteTestBase):
 
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(db.getSongsCount.call_count, 2)
-        db.getSongsCount.assert_any_call(None, None, fullPlaysOnly=True)
+        db.getSongsCount.assert_any_call(None, None, fullPlaysOnly=True, trackIds=None)
         db.getSongsCount.assert_any_call(None, None, searchQuery="foo", trackIds=None, fullPlaysOnly=True,
                                           sortBy=appModule.DEFAULT_SORT_BY)
         kwargs = db.getTopSongs.call_args.kwargs
