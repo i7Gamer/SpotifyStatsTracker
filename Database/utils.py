@@ -1,10 +1,59 @@
 import os
 import sys
+import time as _time
 import traceback
 import datetime
 from zoneinfo import ZoneInfo
 
 DATE_FORMATS = ("%Y-%m-%d", "%Y-%m", "%Y")
+
+
+class _SystemLocalTimezone(datetime.tzinfo):
+    """The host's local zone, answered per instant instead of frozen.
+
+    The TZ-unset fallback used to be `datetime.now().astimezone().tzinfo`, which
+    returns a plain FIXED offset - whatever the offset happened to be at import,
+    for the life of the process. Every day boundary, year boundary, streak day
+    and calendar cell for a user with no profile timezone was then an hour out
+    from the next DST transition until someone restarted the app, silently. Plays
+    between 23:00 and 00:00 on Dec 31 land in the wrong year the same way.
+
+    This asks the platform for the offset that applied AT the datetime being
+    converted (the recipe from the datetime docs): time.timezone/time.altzone
+    give the zone's standard and DST offsets, and time.localtime decides which
+    was in force. A zone with no DST answers one offset all year, so the object
+    is a no-op there.
+
+    A real IANA zone via TZ (below) is still better - it also gets historical
+    rule changes right, which Windows does not - which is why the warning stays.
+    """
+
+    _DST_UNKNOWN = -1   #< tm_isdst's "let the platform decide" sentinel
+
+    def _isDst(self, dt):
+        if dt is None:
+            return False
+        try:
+            stamp = _time.mktime((dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second,
+                                  dt.weekday(), 0, self._DST_UNKNOWN))
+            return _time.localtime(stamp).tm_isdst > 0
+        except (OverflowError, OSError, ValueError):
+            # Outside the platform's representable range (the year-1 and
+            # far-future sentinels this codebase converts). Standard time is the
+            # honest answer; raising here would break every such conversion.
+            return False
+
+    def utcoffset(self, dt):
+        return datetime.timedelta(seconds=-(_time.altzone if self._isDst(dt) else _time.timezone))
+
+    def dst(self, dt):
+        if not self._isDst(dt):
+            return datetime.timedelta(0)
+        return datetime.timedelta(seconds=_time.timezone - _time.altzone)
+
+    def tzname(self, dt):
+        return _time.tzname[1 if self._isDst(dt) else 0]
+
 
 ## TIMEZONE SETUP
 tzName = os.environ.get("TZ")
@@ -12,9 +61,10 @@ tz = None
 
 if not tzName:
     print("WARNING: TZ environment variable not set! Using system timezone.")
-    print("         In Docker/containers, this is usually UTC. Set TZ explicitly.")
+    print("         In Docker/containers, this is usually UTC. Set TZ explicitly -")
+    print("         without it, historical daylight-saving rule changes can't be applied.")
     try:
-        tz = datetime.datetime.now().astimezone().tzinfo
+        tz = _SystemLocalTimezone()
     except Exception:
         tz = datetime.timezone.utc
 else:

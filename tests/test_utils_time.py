@@ -1,4 +1,6 @@
+import contextlib
 import datetime
+import time
 import unittest
 from unittest.mock import MagicMock, patch
 import sys
@@ -47,6 +49,102 @@ class TestStartOfWeek(unittest.TestCase):
         with patch.object(utilsModule, "now", return_value=fixedNow):
             result = utilsModule.startOfWeek()
         self.assertEqual(result, datetime.datetime(2026, 7, 6, 0, 0, tzinfo=datetime.timezone.utc))
+
+
+class TestSystemLocalTimezoneTracksDst(unittest.TestCase):
+    """With TZ unset, the app default used to be
+    `datetime.now().astimezone().tzinfo` - which yields a FIXED offset for
+    whatever the offset happened to be at import, frozen for the process's
+    lifetime. Every day boundary, year boundary, streak day and calendar cell
+    for a user with no profile timezone was therefore an hour out from the next
+    DST transition until someone restarted the app. The live instance runs on
+    Windows with TZ unset, so this was the live path.
+
+    Simulated rather than relying on the host's own zone: CI runs on UTC, which
+    has no DST, so a real-clock test would pass while proving nothing. `time`'s
+    standard/DST offsets and its per-instant isdst answer are exactly what the
+    replacement consults.
+    """
+
+    WINTER = datetime.datetime(2026, 1, 15, 12, 0)
+    SUMMER = datetime.datetime(2026, 7, 15, 12, 0)
+
+    def _zoneObservingDst(self):
+        """A CET/CEST-like zone: UTC+1 standard, UTC+2 in summer."""
+        realLocaltime = time.localtime
+
+        def localtime(stamp=None):
+            parts = realLocaltime(stamp)
+            isDst = 1 if 3 < parts.tm_mon < 11 else 0
+            return time.struct_time(tuple(parts)[:8] + (isDst,))
+
+        return [
+            patch.object(time, "timezone", -3600),    #< seconds WEST of UTC, so UTC+1
+            patch.object(time, "altzone", -7200),     #< UTC+2 while DST is in effect
+            patch.object(time, "daylight", 1),
+            patch.object(time, "localtime", localtime),
+        ]
+
+    def _offsets(self):
+        zone = utilsModule._SystemLocalTimezone()
+        return zone.utcoffset(self.WINTER), zone.utcoffset(self.SUMMER)
+
+    def test_the_offset_follows_the_season(self):
+        with contextlib.ExitStack() as stack:
+            for patcher in self._zoneObservingDst():
+                stack.enter_context(patcher)
+
+            winter, summer = self._offsets()
+
+        self.assertEqual(winter, datetime.timedelta(hours=1))
+        self.assertEqual(summer, datetime.timedelta(hours=2))
+
+    def test_it_is_not_a_fixed_offset(self):
+        """The whole defect in one assertion."""
+        with contextlib.ExitStack() as stack:
+            for patcher in self._zoneObservingDst():
+                stack.enter_context(patcher)
+
+            winter, summer = self._offsets()
+
+        self.assertNotEqual(winter, summer)
+
+    def test_dst_reports_the_extra_hour_only_in_summer(self):
+        with contextlib.ExitStack() as stack:
+            for patcher in self._zoneObservingDst():
+                stack.enter_context(patcher)
+            zone = utilsModule._SystemLocalTimezone()
+
+            self.assertEqual(zone.dst(self.WINTER), datetime.timedelta(0))
+            self.assertEqual(zone.dst(self.SUMMER), datetime.timedelta(hours=1))
+
+    def test_a_zone_without_dst_reports_one_offset_all_year(self):
+        with patch.object(time, "timezone", 0), patch.object(time, "altzone", 0), \
+             patch.object(time, "daylight", 0):
+            winter, summer = self._offsets()
+
+        self.assertEqual(winter, datetime.timedelta(0))
+        self.assertEqual(summer, datetime.timedelta(0))
+
+    def test_an_out_of_range_date_degrades_instead_of_raising(self):
+        """time.mktime rejects dates outside the platform's range, and this
+        object is handed everything the app converts - including the epoch
+        fallbacks and year-1 sentinels."""
+        zone = utilsModule._SystemLocalTimezone()
+
+        for extreme in (datetime.datetime(1, 1, 1), datetime.datetime(9999, 12, 31)):
+            with self.subTest(extreme=extreme):
+                self.assertIsInstance(zone.utcoffset(extreme), datetime.timedelta)
+
+    def test_it_round_trips_a_timestamp(self):
+        """Used as a real tzinfo: fromtimestamp then .timestamp() must return
+        the value it started from, or every stored played_at shifts."""
+        zone = utilsModule._SystemLocalTimezone()
+        stamp = 1784694565.0
+
+        restored = datetime.datetime.fromtimestamp(stamp, tz=zone).timestamp()
+
+        self.assertEqual(restored, stamp)
 
 
 class TestTimeToIntUTC(unittest.TestCase):
