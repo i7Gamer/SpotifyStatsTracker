@@ -242,7 +242,7 @@ class ImportMixin:
         deferCommit overwrite batch, the covered-range delete sharing that
         transaction - is held only as long as the local writes take. The caller
         must invoke this only after Phase 1 staging has completed."""
-        index = 0
+        index = 0   #< advanced per applied play below, so the failure path can say how far it got
         # Rolled-back writes must not stay claimed in a batch-shared run state
         claimedRowIdsBefore = set(runState.claimedRowIds)
         insertedPlayKeysBefore = set(runState.insertedPlayKeys)
@@ -259,7 +259,7 @@ class ImportMixin:
             # row's is_skip is computed without a per-row settings read.
             skipThreshold = self.repo.getSkipThreshold()
             completionPercent = self.repo.getCompletionCompletePercent()
-            for entry in stagedPlays:
+            for index, entry in enumerate(stagedPlays, start=1):
                 track_id = entry["id"]
                 played_at = entry["playedAt"]
                 time_played = entry["timePlayed"]

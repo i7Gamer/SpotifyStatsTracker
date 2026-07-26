@@ -66,6 +66,34 @@ class TestImportHistoryCommit(DatabaseTestCase):
         self.assertIsNone(self.db.repo.getTrack("i1"), "a failed import must not persist anything")
         self.assertEqual(self.db.readProgress()["status"], "failed")
 
+    def test_a_mid_apply_failure_reports_how_far_it_got(self):
+        """The apply-phase failure path's writeProgress reported current=0 no
+        matter where the play loop died - `index` was initialized for exactly
+        this line and then never advanced."""
+        def gen():
+            yield _meta("i1", 200)
+            yield _meta("i2", 400)
+            yield _meta("i3", 600)
+
+        realInsert = self.db.repo.insertPlay
+        insertCalls = {"n": 0}
+
+        def failingInsert(*args, **kwargs):
+            insertCalls["n"] += 1
+            if insertCalls["n"] >= 2:
+                raise RuntimeError("disk died mid-apply")
+            return realInsert(*args, **kwargs)
+
+        with patch("Database.database.Importer", return_value=self._mockImporter(gen, parsedCount=3)), \
+             patch.object(self.db.repo, "insertPlay", side_effect=failingInsert):
+            with self.assertRaises(RuntimeError):
+                self.db.importHistory("raw export")
+
+        progress = self.db.readProgress()
+        self.assertEqual(progress["status"], "failed")
+        self.assertEqual(progress["total"], 3)
+        self.assertEqual(progress["current"], 2)   #< died applying the 2nd of 3 staged plays
+
     def test_listener_entries_recorded_during_import_are_kept(self):
         # Seed the track the "listener" play references, same as a real concurrent
         # appendMetadata() call would (it always upserts the track before the play).
