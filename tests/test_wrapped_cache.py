@@ -169,6 +169,73 @@ class TestTimezoneChangeInvalidatesTheCache(DatabaseTestCase):
         self.assertEqual({r["username"] for r in rows}, {"someone_else"})
 
 
+class TestAYearWithNoPlays(DatabaseTestCase):
+    """_computeAvailableYears offers a CONTIGUOUS range, so a year the user
+    simply didn't listen in is selectable. For such a year the cache read misses,
+    recalculateWrappedForYear returns immediately (no max played_at) and deletes
+    the row, and the second read misses too - so `cached` stayed None and
+    execution fell through to the branch commented "dynamic calculations for
+    mocks (unit tests compatibility)".
+
+    On a real database that branch runs ten unbounded queries per request -
+    getSongsStats/getArtistsStats/getAlbumsStats carry no date range at all - and
+    the worker deletes the row again on its next pass, so it can never be cached
+    away. An empty year has to render as the zeros the empty-state block right
+    below already produces."""
+
+    USER = "testuser"
+
+    def _dbWithAGapYear(self):
+        """Plays in 2024 and 2026; 2025 is the gap."""
+        tracks = {"t1": {"id": "t1", "name": "Song 1", "artists": []}}
+        entries = [
+            {"id": "t1", "playedAt": datetime.datetime(2024, 6, 1, tzinfo=datetime.timezone.utc).timestamp(),
+             "timePlayed": 60000},
+            {"id": "t1", "playedAt": datetime.datetime(2026, 6, 1, tzinfo=datetime.timezone.utc).timestamp(),
+             "timePlayed": 60000},
+        ]
+        db = self._makeDb(tracks, entries, username=self.USER)
+        db.tz = datetime.timezone.utc
+        return db
+
+    def _context(self, db, year):
+        from _app_factory import makeApp
+        dash = makeApp()
+        #< the hydration helpers memoize per request (playlistName and the
+        #  settings context processors both stash on `g`)
+        with dash.app.test_request_context("/wrapped"):
+            return dash._buildWrappedContext(db, year, groupBy="month", limit=10,
+                                             sortBy="plays", includeGenres=False)
+
+    def test_an_empty_year_renders_zeros(self):
+        db = self._dbWithAGapYear()
+
+        context = self._context(db, 2025)
+
+        self.assertEqual(context["totalPlays"], 0)
+        self.assertEqual(context["topSongs"], [])
+        self.assertEqual(context["longestStreak"], 0)
+
+    def test_an_empty_year_runs_no_unbounded_queries(self):
+        db = self._dbWithAGapYear()
+
+        with patch.object(db, "getSongsStats", wraps=db.getSongsStats) as songsStats, \
+             patch.object(db, "getArtistsStats", wraps=db.getArtistsStats) as artistsStats, \
+             patch.object(db, "getAlbumsStats", wraps=db.getAlbumsStats) as albumsStats:
+            self._context(db, 2025)
+
+        songsStats.assert_not_called()
+        artistsStats.assert_not_called()
+        albumsStats.assert_not_called()
+
+    def test_a_year_with_plays_still_renders_its_data(self):
+        db = self._dbWithAGapYear()
+
+        context = self._context(db, 2026)
+
+        self.assertEqual(context["totalPlays"], 1)
+
+
 class TestWrappedBackgroundWorker(DatabaseTestCase):
     def test_worker_triggers_recalculation(self):
         db = self._makeDb({}, [])

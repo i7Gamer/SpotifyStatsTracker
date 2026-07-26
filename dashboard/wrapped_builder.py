@@ -201,6 +201,17 @@ class WrappedBuilderMixin:
                 # Cache miss: recalculate and cache on the fly
                 db.recalculateWrappedForYear(year)
                 cached = db.repo.getCachedWrapped(db.user, year)
+            if cached is None:
+                # Still nothing after a recalculation means the year holds no
+                # plays at all - recalculateWrappedForYear returns early and
+                # removes the row for those. The year is still SELECTABLE
+                # (_computeAvailableYears offers a contiguous range), so leaving
+                # this None dropped a real database into the mocks-only branch
+                # below: ten unbounded queries per request, three of them with
+                # no date range whatsoever, and never cacheable because the
+                # worker deletes the row again on its next pass. An empty dict
+                # takes the empty-state defaults directly beneath instead.
+                cached = {}
         else:
             # If db/repo is mock, check if getCachedWrapped was explicitly mocked to return a non-mock dict
             try:
