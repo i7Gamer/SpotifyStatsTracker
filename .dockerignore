@@ -15,7 +15,11 @@ venv
 *.log
 *.md
 README.md
-LICENSE
+# COPYING, LICENSE.MIT and NOTICE are deliberately NOT excluded: the image
+# bundles GPL-licensed spotapi alongside this AGPL-licensed code, and both
+# licenses require a copy of the license text to travel with the work
+# (AGPL-3.0 / GPL-3.0 section 4). This line used to read "LICENSE", which never
+# matched the file anyway - it was spelled "LICENCE" until the AGPL move.
 .vscode
 .idea
 .pytest_cache

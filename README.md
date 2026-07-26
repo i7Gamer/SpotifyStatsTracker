@@ -157,7 +157,16 @@ Songs or albums Last.fm has no tags for inherit their artist's genres; the insta
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+This project is licensed under the **GNU Affero General Public License v3.0 or later** - see the [COPYING](COPYING) file for the full text.
+
+In short: you may use, study, modify and redistribute it, but derivative works must stay under the AGPL, and **if you run a modified version as a network service, you must offer its source to that service's users** (AGPL-3.0 section 13).
+
+Two things worth knowing:
+
+- This project is a fork of [TzurSoffer/SpotifyStatsTracker](https://github.com/TzurSoffer/SpotifyStatsTracker) and was itself MIT-licensed through version 1.45.0. Anything obtained at or before that point stays MIT - that grant cannot be withdrawn. Portions of the code are still copyright Tzur Soffer under the MIT License, whose notice is preserved in [LICENSE.MIT](LICENSE.MIT).
+- The switch away from MIT was not purely a preference. `spotapi`, a required runtime dependency that `Database/patches.py` imports and patches, is licensed under the GPL-3.0, and the Docker image bundles it. A copyleft license for the project as a whole is what that dependency requires.
+
+See [NOTICE](NOTICE) for the relicensing history and third-party component details.
 
 ## Support
 
