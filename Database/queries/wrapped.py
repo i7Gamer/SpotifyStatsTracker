@@ -28,6 +28,17 @@ class WrappedQueries:
                 (username, year)
             )
 
+    def deleteAllUserWrapped(self, username: str) -> int:
+        """Drop every cached year for one user, for a change that invalidates
+        all of them at once rather than year by year - a timezone change, which
+        moves every bucket boundary, weekday name and streak day. Returns how
+        many rows went, so the caller can say whether anything was cached."""
+        conn = self._conn()
+        with conn:
+            return conn.execute(
+                "DELETE FROM user_wrapped WHERE username = ?", (username,)
+            ).rowcount
+
     def getCachedWrapped(self, username: str, year: int) -> dict | None:
         row = self._conn().execute(
             "SELECT * FROM user_wrapped WHERE username = ? AND year = ?",

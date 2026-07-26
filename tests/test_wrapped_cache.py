@@ -87,6 +87,88 @@ class TestWrappedCacheRepository(DatabaseTestCase):
         self.assertIsNone(repo.getCachedWrapped(username, year))
 
 
+def _wrappedRow():
+    """The minimum saveCachedWrapped accepts - these tests care only about a
+    row's existence, not its contents."""
+    return {
+        "calculated_at": time.time(), "max_played_at": 1775000000,
+        "total_plays": 2, "total_ms": 60000, "longest_streak": 1,
+        "peak_day": "Monday", "peak_plays": 1,
+        "unique_songs": 1, "unique_artists": 1,
+        "discovered_songs": 1, "discovered_artists": 1,
+        "time_series_day": "[]", "time_series_week": "[]", "time_series_month": "[]",
+        "top_songs": "[]", "top_artists": "[]", "top_albums": "[]",
+        "discovered_songs_list": "[]", "discovered_artists_list": "[]",
+        "discovered_albums_list": "[]",
+    }
+
+
+class TestTimezoneChangeInvalidatesTheCache(DatabaseTestCase):
+    """Everything cached in user_wrapped that is timezone-derived - the day/week
+    /month series labels, peak_day (a weekday NAME), longest_streak, and the
+    year's own [start, end) boundaries - is invisible to the staleness check,
+    which compares only max_played_at and the play count. Changing your profile
+    timezone changes all of it and neither of those, so /wrapped kept serving
+    figures bucketed in the old zone indefinitely: recalculation is reached only
+    on a total cache MISS, so loading the page didn't fix it either, and the
+    public share link served the same stale blob.
+
+    Invalidated in updateUserSettings rather than in the profile route: that is
+    the single writer of users.timezone, so any future caller inherits this
+    instead of having to remember it."""
+
+    USER = "testuser"
+
+    def _dbWithCachedWrapped(self, years=(2025, 2026)):
+        db = self._makeDb({}, [])
+        for year in years:
+            db.repo.saveCachedWrapped(self.USER, year, _wrappedRow())
+        return db
+
+    def _cachedYears(self, db):
+        rows = db.repo._conn().execute(
+            "SELECT year FROM user_wrapped WHERE username=?", (self.USER,)).fetchall()
+        return {r["year"] for r in rows}
+
+    def test_changing_the_timezone_drops_every_cached_year(self):
+        db = self._dbWithCachedWrapped()
+
+        db.repo.updateUserSettings(self.USER, "day", "Europe/Berlin")
+
+        self.assertEqual(self._cachedYears(db), set())
+
+    def test_saving_the_same_timezone_keeps_the_cache(self):
+        """A preferences save that doesn't touch the timezone must not throw
+        away a recalculation that costs a full year scan per year."""
+        db = self._dbWithCachedWrapped()
+        db.repo.updateUserSettings(self.USER, "day", "Europe/Berlin")
+        db.repo.saveCachedWrapped(self.USER, 2026, _wrappedRow())
+
+        db.repo.updateUserSettings(self.USER, "week", "Europe/Berlin", hide_tags_panel=True)
+
+        self.assertEqual(self._cachedYears(db), {2026})
+
+    def test_clearing_the_timezone_back_to_the_default_also_invalidates(self):
+        db = self._dbWithCachedWrapped()
+        db.repo.updateUserSettings(self.USER, "day", "Europe/Berlin")
+        db.repo.saveCachedWrapped(self.USER, 2026, _wrappedRow())
+
+        db.repo.updateUserSettings(self.USER, "day", None)   #< back to the app default
+
+        self.assertEqual(self._cachedYears(db), set())
+
+    def test_another_users_cache_is_untouched(self):
+        db = self._dbWithCachedWrapped()
+        db.repo.upsertUser("someone_else", "else@example.com")   #< user_wrapped.username is a foreign key
+        db.repo.saveCachedWrapped("someone_else", 2026, _wrappedRow())
+
+        db.repo.updateUserSettings(self.USER, "day", "Europe/Berlin")
+
+        rows = db.repo._conn().execute(
+            "SELECT username FROM user_wrapped").fetchall()
+        self.assertEqual({r["username"] for r in rows}, {"someone_else"})
+
+
 class TestWrappedBackgroundWorker(DatabaseTestCase):
     def test_worker_triggers_recalculation(self):
         db = self._makeDb({}, [])

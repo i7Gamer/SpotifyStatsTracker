@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import logging
+
 from Database.queries._base import *  # noqa: F401,F403 - shared constants/db helpers
+
+logger = logging.getLogger(__name__)
 
 
 class UserQueries:
@@ -265,12 +269,28 @@ class UserQueries:
     def updateUserSettings(self, username: str, default_dashboard_window: str, timezone: str | None,
                            hide_tags_panel: bool = False, hide_now_playing: bool = False) -> None:
         conn = self._conn()
+        previousTimezone = self.getUserSettings(username)["timezone"]
         with conn:
             conn.execute(
                 "UPDATE users SET default_dashboard_window=?, timezone=?, hide_tags_panel=?, "
                 "hide_now_playing=? WHERE username=?",
                 (default_dashboard_window, timezone, int(hide_tags_panel), int(hide_now_playing), username),
             )
+        # A timezone change moves every bucket boundary, weekday name and streak
+        # day - so everything timezone-derived in a cached Wrapped year (the
+        # day/week/month series, peak_day, longest_streak, and the year's own
+        # start/end) is wrong, while the two signals staleness is judged on
+        # (max_played_at and the play count) are untouched. The page recalculates
+        # only on a cache MISS, so without this the old zone's figures were
+        # served indefinitely, share links included.
+        #
+        # Here rather than in the profile route because this is the single
+        # writer of users.timezone: any future caller inherits it.
+        if timezone != previousTimezone:
+            dropped = self.deleteAllUserWrapped(username)
+            if dropped:
+                logger.info("Timezone changed for %s - dropped %d cached Wrapped year(s) to rebuild",
+                            username, dropped)
 
     def getHideTagsPanel(self, username: str) -> bool:
         """Cheap standalone read of the per-user "hide the tag panel"
