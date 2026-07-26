@@ -71,7 +71,11 @@ class TestHideTagsPanelCheckbox(ProfilePreferencesTestCase):
 
     def test_unchecking_clears_the_preference(self):
         """An unchecked checkbox isn't submitted at all - absence must clear
-        a previously-saved True, not leave it untouched."""
+        a previously-saved True, not leave it untouched.
+
+        The rendered form carries hide_tags_panel_present alongside the box,
+        which is how the handler tells "unchecked" from "the control was never
+        offered" (it is gated on the admin tagging switch)."""
         client = self._loginAs("alice", "alice@example.com")
         client.post("/profile", data={
             "action": "save_preferences",
@@ -85,6 +89,7 @@ class TestHideTagsPanelCheckbox(ProfilePreferencesTestCase):
             "action": "save_preferences",
             "default_dashboard_window": "week",
             "timezone": "",
+            "hide_tags_panel_present": "1",
         })
 
         self.assertFalse(self.dash.repo.getHideTagsPanel("alice"))

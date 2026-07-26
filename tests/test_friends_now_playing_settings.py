@@ -121,14 +121,61 @@ class TestProfileCheckbox(FriendsNowPlayingRouteTestCase):
 
     def test_an_absent_checkbox_clears_the_opt_out(self):
         """Unchecked boxes aren't submitted at all - absence must mean
-        "keep broadcasting", not "leave whatever was there"."""
+        "keep broadcasting", not "leave whatever was there". The rendered form
+        says so by carrying the _present companion field next to the box."""
         self.dash.repo.updateUserSettings(self.USERNAME, "day", None, hide_now_playing=True)
         client = self._client()
 
         client.post("/profile", data={"action": "save_preferences",
-                                      "default_dashboard_window": "day", "timezone": ""})
+                                      "default_dashboard_window": "day", "timezone": "",
+                                      "hide_now_playing_present": "1"})
 
         self.assertFalse(self.dash.repo.getUserSettings(self.USERNAME)["hide_now_playing"])
+
+    def test_a_save_while_the_control_is_hidden_keeps_the_opt_out(self):
+        """The control renders only while both switches are on, but the handler
+        applied absent-means-false unconditionally. So an admin turning the
+        feature off, the user saving any unrelated preference, and the admin
+        turning it back on silently reverted that user to broadcasting - a
+        privacy setting changed by someone who never touched it.
+
+        The form that HAS the control announces it; a form without it must leave
+        the stored value alone."""
+        self.dash.repo.updateUserSettings(self.USERNAME, "day", None, hide_now_playing=True)
+        self.dash.repo.setFriendsNowPlayingEnabled(False)
+        client = self._client()
+
+        client.post("/profile", data={"action": "save_preferences",
+                                      "default_dashboard_window": "week", "timezone": ""})
+
+        settings = self.dash.repo.getUserSettings(self.USERNAME)
+        self.assertTrue(settings["hide_now_playing"],
+                        "a form that never showed the control must not clear it")
+        self.assertEqual(settings["default_dashboard_window"], "week")   #< the save still applied
+
+    def test_a_save_while_the_tag_panel_control_is_hidden_keeps_that_preference(self):
+        """Same shape, same fix - cosmetic rather than a disclosure, but a
+        preference the user never touched still must not move."""
+        self.dash.repo.updateUserSettings(self.USERNAME, "day", None, hide_tags_panel=True)
+        self.dash.repo.setTagsEnabled(False)
+        client = self._client()
+
+        client.post("/profile", data={"action": "save_preferences",
+                                      "default_dashboard_window": "day", "timezone": "",
+                                      "hide_now_playing_present": "1"})
+
+        self.assertTrue(self.dash.repo.getUserSettings(self.USERNAME)["hide_tags_panel"])
+
+    def test_the_rendered_form_carries_the_present_markers(self):
+        """The fix is only sound while the form actually announces the controls
+        it rendered - if this marker goes missing, unchecking silently stops
+        working instead of failing."""
+        client = self._client()
+
+        body = client.get("/profile").data.decode()
+
+        self.assertIn('name="hide_now_playing_present"', body)
+        self.assertIn('name="hide_tags_panel_present"', body)
 
     def test_saving_does_not_disturb_the_tag_panel_preference(self):
         self.dash.repo.updateUserSettings(self.USERNAME, "day", None, hide_tags_panel=True)

@@ -108,6 +108,9 @@
           <span class="setting-toggle-track" aria-hidden="true"></span>
         </label>
       </div>
+      {# Same reasoning as hide_now_playing_present below: this control is gated
+         on the admin tagging switch, so its absence must not be read as "off". #}
+      <input type="hidden" name="hide_tags_panel_present" value="1">
       {% endif %}
 
       {# Only meaningful when both the admin switch and data sharing are on -
@@ -123,6 +126,11 @@
           <span class="setting-toggle-track" aria-hidden="true"></span>
         </label>
       </div>
+      {# An unchecked box submits nothing, so the handler has to read absence as
+         "off" - but this control only renders while both switches are on, and
+         without this marker a save from a form that never showed it cleared the
+         user's stored opt-out. See routes/auth.py's save_preferences. #}
+      <input type="hidden" name="hide_now_playing_present" value="1">
       {% endif %}
 
       <button type="submit" class="primary-button" style="width: 100%;">Save Preferences</button>

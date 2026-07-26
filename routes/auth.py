@@ -282,10 +282,29 @@ def register(app, dashboard):
                 timezone = request.form.get("timezone")
                 if timezone == "":
                     timezone = None
-                # Unchecked checkbox isn't submitted: absence means show the panel.
-                hide_tags_panel = request.form.get("hide_tags_panel") == "1"
-                # Same convention: absence means keep broadcasting.
-                hide_now_playing = request.form.get("hide_now_playing") == "1"
+                # An unchecked checkbox isn't submitted, so absence has to mean
+                # "off" - but both of these controls are gated on an admin
+                # switch (see profile.html), and reading absence as "off"
+                # unconditionally let a save from a form that never SHOWED the
+                # control clear what the user had stored. For hide_now_playing
+                # that silently reverted them to broadcasting their current
+                # track. Each control ships a hidden _present marker, so the
+                # form says which switches it was actually able to offer;
+                # without the marker the stored value is left alone.
+                current = db.repo.getUserSettings(username)
+
+                def _checkboxValue(field):
+                    #< a submitted value is unambiguous with or without the
+                    #  marker; only ABSENCE needs to know whether the control
+                    #  was on the page at all
+                    if request.form.get(field) == "1":
+                        return True
+                    if request.form.get(f"{field}_present") != "1":
+                        return bool(current.get(field))
+                    return False
+
+                hide_tags_panel = _checkboxValue("hide_tags_panel")
+                hide_now_playing = _checkboxValue("hide_now_playing")
                 try:
                     db.repo.updateUserSettings(username, default_window, timezone, hide_tags_panel,
                                                hide_now_playing)
