@@ -260,7 +260,9 @@
        the row) and only interesting when the number moves. #}
     <p style="font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin: 1.25rem 0 0.5rem;">Database Integrity</p>
     <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center;">
-      {% if database_integrity.corruption %}
+      {% if database_integrity.probeError %}
+        <span class="badge badge-secondary">NOT CHECKED</span>
+      {% elif database_integrity.corruption %}
         <span class="badge badge-danger">DAMAGED</span>
       {% elif dangling_row_total %}
         <span class="badge badge-warning">{{ dangling_row_total }} DANGLING ROW{{ 'S' if dangling_row_total != 1 else '' }}</span>
@@ -268,7 +270,15 @@
         <span class="badge badge-success">OK</span>
       {% endif %}
     </div>
-    {% if database_integrity.corruption %}
+    {% if database_integrity.probeError %}
+      <p style="color: var(--muted); font-size: 0.85rem; margin: 0.5rem 0 0;">
+        The check could not run, which says nothing about the database's health - most likely the
+        file was locked by other work. Reload to try again.
+      </p>
+      <ul style="margin: 0.35rem 0 0; padding-left: 1.1rem; color: var(--muted); font-size: 0.8rem;">
+        <li>{{ database_integrity.probeError }}</li>
+      </ul>
+    {% elif database_integrity.corruption %}
       <p style="color: var(--muted); font-size: 0.85rem; margin: 0.5rem 0 0;">
         Restore from a backup before trusting anything this process records.
       </p>

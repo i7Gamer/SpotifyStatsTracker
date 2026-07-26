@@ -111,6 +111,21 @@ class TestUnparseableCustomDates(unittest.TestCase):
 
         self.assertEqual(label, "Last Week")
 
+    def test_an_empty_interval_labels_as_the_default_not_yesterday(self):
+        """_getDateRange maps "" to `default`; the label mapped it to "day" and
+        rendered "Yesterday". "" is deliberately a valid interval, so a
+        hand-edited or bookmarked ?interval= reached both - all-time data under
+        a "Yesterday" heading."""
+        dash = makeApp()
+
+        self.assertEqual(dash._getIntervalLabel("", default="all time"), "All Time")
+        self.assertEqual(dash._getIntervalLabel("", default="month"), "Last Month")
+
+    def test_an_absent_interval_still_labels_as_the_default(self):
+        dash = makeApp()
+
+        self.assertEqual(dash._getIntervalLabel(None, default="week"), "Last Week")
+
     def test_valid_custom_dates_still_label_as_a_custom_range(self):
         dash = makeApp()
 

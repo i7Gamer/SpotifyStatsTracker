@@ -139,7 +139,10 @@ class DateRangeMixin:
                 return f"Custom range: {customStart} to {customEnd}"
             return labels.get(default, "Yesterday")
 
-        return labels.get(interval or "day", "Yesterday")
+        # `or default`, not `or "day"`: "" is a valid interval and _getDateRange
+        # resolves it to `default`, so mapping it to "day" here labelled all-time
+        # (or last-month, or whatever the user's default is) data as "Yesterday".
+        return labels.get(interval or default, "Yesterday")
 
     def _embedTimeSeriesTextElements(self, timeSeries: list, groupBy: str | None = None) -> list:
         """groupBy: when given (Charts page only - see chartsPage()'s call

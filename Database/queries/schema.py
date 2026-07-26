@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 import logging
+import sqlite3
 
 from Database.queries._base import *  # noqa: F401,F403 - shared constants/db helpers
 
 logger = logging.getLogger(__name__)
+
+# A probe that couldn't run says nothing about the database's health. These are
+# the only failures read that way (see checkIntegrity) - everything else is
+# treated as evidence of damage, including the DatabaseError a malformed file
+# raises.
+PROBE_UNAVAILABLE_ERROR_MARKERS = ("database is locked", "database table is locked", "busy")
 
 
 class SchemaQueries:
@@ -14,9 +21,11 @@ class SchemaQueries:
         """Probe the database file for damage and dangling references.
 
         Returns {"ok": bool, "corruption": [...], "foreignKeyViolations":
-        {table: count}}. Never raises - this runs at startup, before anything
-        else could report a problem, so a database too broken to query must
-        come back as a finding rather than as a traceback that stops the app.
+        {table: count}, "probeError": str | None}. Never raises - this runs at
+        startup, before anything else could report a problem, so a database too
+        broken to query must come back as a finding rather than as a traceback
+        that stops the app. A probe that could not run at all is `probeError`,
+        NOT a corruption finding: the two want opposite reactions.
 
         Corruption and FK violations are reported separately because they mean
         different things and warrant different reactions: a damaged file is an
@@ -31,6 +40,7 @@ class SchemaQueries:
         worth having on demand, not on every boot."""
         corruption: list = []
         violations: dict[str, int] = {}
+        probeError: str | None = None
         try:
             conn = self._conn()
             # quick_check reports damage as result ROWS (the single row "ok"
@@ -41,11 +51,27 @@ class SchemaQueries:
             for row in conn.execute("PRAGMA foreign_key_check").fetchall():
                 violations[row[0]] = violations.get(row[0], 0) + 1
         except Exception as e:
-            corruption.append(f"integrity probe failed: {e}")
+            # Split, not folded together: "the probe could not run" and "the
+            # file is damaged" call for opposite reactions, and a lock timeout
+            # under a heavy import would otherwise tell an admin their database
+            # is destroyed and to restore a backup.
+            #
+            # Narrow on purpose. A genuinely damaged file raises too - that is
+            # how "database disk image is malformed" surfaces - and that IS
+            # corruption evidence, so only a contended lock counts as "couldn't
+            # run". Anything unrecognised stays corruption: erring toward the
+            # loud answer is right when the alternative is trusting a bad file.
+            if isinstance(e, sqlite3.OperationalError) and any(
+                marker in str(e).lower() for marker in PROBE_UNAVAILABLE_ERROR_MARKERS
+            ):
+                probeError = str(e)
+            else:
+                corruption.append(f"integrity probe failed: {e}")
         return {
-            "ok": not corruption and not violations,
+            "ok": not corruption and not violations and probeError is None,
             "corruption": corruption,
             "foreignKeyViolations": violations,
+            "probeError": probeError,
         }
 
     def addUserIsAdminColumnIfMissing(self) -> None:

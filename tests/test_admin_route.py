@@ -525,6 +525,24 @@ class TestDatabaseIntegrityPanel(AdminRouteTestBase):
         self.assertIn("track_artists", body)
         self.assertIn("plays", body)
 
+    def test_a_probe_that_could_not_run_is_not_reported_as_damage(self):
+        """checkIntegrity funnels ANY exception into `corruption`, which is the
+        right shape for a log line and the wrong one for a verdict: a lock
+        timeout under a heavy import would tell an admin their database is
+        destroyed and to restore from a backup."""
+        dash = self._makeApp()
+        patches = self._patches(dash, isAdmin=True)
+        patches.append(patch.object(dash.repo, "checkIntegrity", return_value={
+            "ok": False, "corruption": [], "foreignKeyViolations": {},
+            "probeError": "database is locked",
+        }))
+
+        body = self._getAdmin(dash, patches=patches).data.decode()
+
+        self.assertNotIn("Restore from a backup", body)
+        self.assertNotIn("DAMAGED", body)
+        self.assertIn("could not run", body.lower())
+
     def test_corruption_is_reported_separately_from_dangling_rows(self):
         """They warrant different reactions - a damaged file is an emergency,
         a dangling track_id is inert - so the panel must not conflate them."""

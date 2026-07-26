@@ -336,6 +336,12 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
         it destroyed catalog metadata, so this must not quietly reintroduce it.
         Costs ~240 ms on a 105 MB database."""
         integrity = self.repo.checkIntegrity()
+        if integrity.get("probeError"):
+            logger.warning(
+                "Database integrity check could not run: %s. This says nothing about the "
+                "database's health - it means the probe itself failed (a lock, most likely).",
+                integrity["probeError"],
+            )
         if integrity["corruption"]:
             logger.error(
                 "DATABASE INTEGRITY CHECK FAILED - the database file is damaged. "

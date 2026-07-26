@@ -603,7 +603,10 @@ def register(app, dashboard):
         if spanStart is None or spanEnd is None:
             spanStart, spanEnd = dashboard._playRangeSpanDates(username, db.tz)   #< "All Time" has no explicit range
         groupBy = dashboard._resolveGroupBy(groupByParam, spanStart, spanEnd)
-        intervalLabel = dashboard._getIntervalLabel(interval, customStart, customEnd)
+        #< same default as the _getDateRange call above, or the heading can
+        #  name a different window than the data covers
+        intervalLabel = dashboard._getIntervalLabel(interval, customStart, customEnd,
+                                                    default=defaultWindow)
 
         isSingleDayView = interval in ("day", "today")
         lastDayDate = startDate.strftime("%Y-%m-%d") if isSingleDayView and startDate else None

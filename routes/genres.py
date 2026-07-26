@@ -89,7 +89,9 @@ def register(app, dashboard):
         if interval == "custom" and not (customStart and customEnd):
             interval = defaultWindow
         startDate, endDate = dashboard._getDateRange(interval, customStart, customEnd, default=defaultWindow, tz=db.tz)
-        intervalLabel = dashboard._getIntervalLabel(interval, customStart, customEnd)
+        #< same default as _getDateRange above (see charts.py)
+        intervalLabel = dashboard._getIntervalLabel(interval, customStart, customEnd,
+                                                    default=defaultWindow)
 
         #< the raw param, not the resolved bucketing - the template's select
         #  must keep showing Auto rather than pinning the derived value

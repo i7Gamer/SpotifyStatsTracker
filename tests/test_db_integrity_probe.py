@@ -15,6 +15,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -100,6 +101,44 @@ class TestCheckIntegrityFindsForeignKeyViolations(IntegrityProbeTestCase):
         result = self.repo.checkIntegrity()
 
         self.assertEqual(result["foreignKeyViolations"], {"track_artists": 2})
+
+
+class TestAProbeThatCannotRunIsNotDamage(IntegrityProbeTestCase):
+    """Every exception used to land in `corruption`, which reads as a verdict
+    ("the file is damaged, restore a backup") when the honest answer is "the
+    check didn't happen". A contended lock under a heavy import is the realistic
+    way to hit that.
+
+    The split is deliberately narrow: a genuinely damaged file raises too - that
+    is how "database disk image is malformed" surfaces - and that stays
+    corruption, so an unrecognised failure errs toward the loud answer."""
+
+    def _probeRaising(self, error):
+        with patch.object(self.repo, "_conn") as conn:
+            conn.return_value.execute.side_effect = error
+            return self.repo.checkIntegrity()
+
+    def test_a_locked_database_reports_a_probe_error_not_corruption(self):
+        result = self._probeRaising(sqlite3.OperationalError("database is locked"))
+
+        self.assertEqual(result["corruption"], [])
+        self.assertIn("locked", result["probeError"])
+        self.assertFalse(result["ok"])   #< still not "all clear" - it wasn't checked
+
+    def test_a_malformed_file_is_still_corruption(self):
+        result = self._probeRaising(sqlite3.DatabaseError("database disk image is malformed"))
+
+        self.assertIsNone(result["probeError"])
+        self.assertTrue(any("malformed" in entry for entry in result["corruption"]))
+
+    def test_an_unrecognised_failure_errs_toward_corruption(self):
+        result = self._probeRaising(sqlite3.OperationalError("no such table: plays"))
+
+        self.assertIsNone(result["probeError"])
+        self.assertTrue(result["corruption"])
+
+    def test_a_healthy_probe_reports_no_error(self):
+        self.assertIsNone(self.repo.checkIntegrity()["probeError"])
 
 
 class TestCheckIntegrityFindsCorruption(unittest.TestCase):
