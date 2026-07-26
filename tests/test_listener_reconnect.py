@@ -22,6 +22,7 @@ if isinstance(sys.modules.get("Database.database"), MagicMock):
 from Database.Listeners.spotifyListener import (
     Listener,
     LISTENER_STALE_TIMEOUT_SECONDS,
+    RATE_LIMIT_ERROR_BACKOFF_SECONDS,
     USER_VALIDATION_CACHE_SECONDS,
     _is_auth_error,
     _is_rate_limit_error,
@@ -296,6 +297,48 @@ class TestValidateCurrentUser(unittest.TestCase):
             listener._validateCurrentUser()
 
         listener.sp.current_user.assert_called_once()
+
+
+class TestRateLimitBackoffLogging(unittest.TestCase):
+    """The routine rate-limit backoff is one line. The exception that caused it
+    was already logged by the path that raised it (e.g. _validateCurrentUser's
+    transient branch), and Spotify's rate-limit reply is an HTML fallback page,
+    so repeating it here only doubled the noise. FLASK_DEBUG brings it back for
+    the paths that raise without logging first."""
+
+    _LOGGER = "Database.Listeners.spotifyListener"
+    _ERROR_TEXT = "Invalid JSON (Status: 200, Type: str)"
+
+    def _runOneRateLimitedIteration(self):
+        listener = _bareListener()
+        listener.contaminationDetected = False
+        listener._stop_event = MagicMock()
+        listener._stop_event.is_set.side_effect = [False, True]  #< one iteration, then stop
+        listener._checkOnce = MagicMock(side_effect=Exception(self._ERROR_TEXT))
+
+        with self.assertLogs(self._LOGGER, level="WARNING") as logCapture:
+            listener.startListener(MagicMock())
+        return listener, logCapture
+
+    def test_routine_backoff_logs_one_line_without_the_exception(self):
+        with patch("Database.Listeners.spotifyListener._flaskDebugEnabled", return_value=False):
+            listener, logCapture = self._runOneRateLimitedIteration()
+
+        self.assertEqual(len(logCapture.output), 1)
+        emitted = logCapture.output[0]
+        self.assertIn("Rate limit error detected", emitted)
+        self.assertIn(str(RATE_LIMIT_ERROR_BACKOFF_SECONDS), emitted)
+        self.assertNotIn("Invalid JSON", emitted)
+        # The backoff itself is unchanged - only the logging got quieter.
+        listener._stop_event.wait.assert_any_call(RATE_LIMIT_ERROR_BACKOFF_SECONDS)
+
+    def test_flask_debug_restores_the_exception_detail(self):
+        with patch("Database.Listeners.spotifyListener._flaskDebugEnabled", return_value=True):
+            _, logCapture = self._runOneRateLimitedIteration()
+
+        emitted = "\n".join(logCapture.output)
+        self.assertIn("Rate limit error detected", emitted)
+        self.assertIn(self._ERROR_TEXT, emitted)
 
 
 if __name__ == "__main__":

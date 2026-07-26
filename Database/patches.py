@@ -1,5 +1,7 @@
 import copy
 import logging
+import os
+import re
 import signal
 import threading
 import time
@@ -518,6 +520,60 @@ def patch_spotipy_free() -> bool:
 RESPONSE_SNIPPET_MAX_LEN = 1000
 RESPONSE_ERROR_SNIPPET_MAX_LEN = 200
 
+# How much of a response body survives into a log line / error message while
+# FLASK_DEBUG is off: enough to read a short API error verbatim, far too little
+# to bury the line under a page of markup.
+RESPONSE_SUMMARY_MAX_LEN = 120
+HTML_SNIFF_LEN = 200      #< leading chars examined to decide "web page, not an API reply"
+HTML_TITLE_MAX_LEN = 60   #< the page's <title>, kept as its identity
+
+TRUTHY_DEBUG_VALUES = {"1", "true"}  #< FLASK_DEBUG values that enable verbose diagnostics (mirrors Database.database)
+
+HTML_BODY_MARKERS = ("<!doctype", "<html")
+_HTML_TITLE_PATTERN = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
+
+
+def _flaskDebugEnabled() -> bool:
+    return os.environ.get("FLASK_DEBUG", "").lower() in TRUTHY_DEBUG_VALUES
+
+
+def _looksLikeHtml(text: str) -> bool:
+    return text.lstrip()[:HTML_SNIFF_LEN].lower().startswith(HTML_BODY_MARKERS)
+
+
+def _htmlTitle(text: str) -> str | None:
+    match = _HTML_TITLE_PATTERN.search(text)
+    if match is None:
+        return None
+    return " ".join(match.group(1).split())[:HTML_TITLE_MAX_LEN] or None
+
+
+def _describeResponseBody(response, maxLen: int) -> str | None:
+    """What of a response body may be written to a log line or error message.
+
+    Spotify answers a rate-limited or bot-checked request to these endpoints
+    with its full HTML fallback page, so logging the body verbatim wrote a
+    kilobyte of markup and CSS per occurrence - and three times per flake, once
+    here and twice more when the listener re-logged the exception carrying it.
+    With FLASK_DEBUG off a page collapses to its size and <title> (the part
+    that tells a Spotify fallback apart from a Cloudflare challenge, which is
+    what these diagnostics exist to identify), while short plain-text bodies -
+    the case where the body IS the diagnostic - are kept verbatim. Turn
+    FLASK_DEBUG on to get the raw snippet back for a bug report."""
+    if response is None:
+        return None
+    text = str(response)
+    if _flaskDebugEnabled():
+        return text[:maxLen]
+    if _looksLikeHtml(text):
+        title = _htmlTitle(text)
+        titlePart = f", title={title!r}" if title else ""
+        return f"<html page, {len(text)} chars{titlePart}>"
+    if len(text) <= RESPONSE_SUMMARY_MAX_LEN:
+        return text
+    return f"{text[:RESPONSE_SUMMARY_MAX_LEN]}... ({len(text)} chars total)"
+
+
 # Response headers that may be written to the log. Spotify's replies to these
 # endpoints carry live session credentials - __Host-sp_csrf_sid (a one-hour
 # session cookie) and x-csrf-token - so the header dict must never be logged
@@ -576,7 +632,7 @@ def patch_spotapi_user() -> bool:
                     "spotapi.User.get_user_info HTTP request failed: status=%s, error=%s, response=%s, headers=%s",
                     resp.status_code,
                     resp.error.string if hasattr(resp.error, "string") else None,
-                    str(resp.response)[:RESPONSE_SNIPPET_MAX_LEN] if resp.response is not None else None,
+                    _describeResponseBody(resp.response, RESPONSE_SNIPPET_MAX_LEN),
                     _safeResponseHeaders(getattr(getattr(resp, "raw", None), "headers", None))
                 )
                 raise UserError("Could not get user info", error=resp.error.string)
@@ -586,12 +642,12 @@ def patch_spotapi_user() -> bool:
                     "spotapi.User.get_user_info returned non-Mapping response: status=%s, type=%s, response=%s, headers=%s",
                     resp.status_code,
                     type(resp.response).__name__,
-                    str(resp.response)[:RESPONSE_SNIPPET_MAX_LEN] if resp.response is not None else None,
+                    _describeResponseBody(resp.response, RESPONSE_SNIPPET_MAX_LEN),
                     _safeResponseHeaders(getattr(getattr(resp, "raw", None), "headers", None))
                 )
                 raise UserError(
                     f"Invalid JSON (Status: {resp.status_code}, Type: {type(resp.response).__name__}, "
-                    f"Response: {str(resp.response)[:RESPONSE_ERROR_SNIPPET_MAX_LEN]})"
+                    f"Response: {_describeResponseBody(resp.response, RESPONSE_ERROR_SNIPPET_MAX_LEN)})"
                 )
 
             self.csrf_token = resp.raw.headers.get("X-Csrf-Token")
@@ -606,7 +662,7 @@ def patch_spotapi_user() -> bool:
                     "spotapi.User.get_plan_info HTTP request failed: status=%s, error=%s, response=%s, headers=%s",
                     resp.status_code,
                     resp.error.string if hasattr(resp.error, "string") else None,
-                    str(resp.response)[:RESPONSE_SNIPPET_MAX_LEN] if resp.response is not None else None,
+                    _describeResponseBody(resp.response, RESPONSE_SNIPPET_MAX_LEN),
                     _safeResponseHeaders(getattr(getattr(resp, "raw", None), "headers", None))
                 )
                 raise UserError("Could not get user plan info", error=resp.error.string)
@@ -616,12 +672,12 @@ def patch_spotapi_user() -> bool:
                     "spotapi.User.get_plan_info returned non-Mapping response: status=%s, type=%s, response=%s, headers=%s",
                     resp.status_code,
                     type(resp.response).__name__,
-                    str(resp.response)[:RESPONSE_SNIPPET_MAX_LEN] if resp.response is not None else None,
+                    _describeResponseBody(resp.response, RESPONSE_SNIPPET_MAX_LEN),
                     _safeResponseHeaders(getattr(getattr(resp, "raw", None), "headers", None))
                 )
                 raise UserError(
                     f"Invalid JSON (Status: {resp.status_code}, Type: {type(resp.response).__name__}, "
-                    f"Response: {str(resp.response)[:RESPONSE_ERROR_SNIPPET_MAX_LEN]})"
+                    f"Response: {_describeResponseBody(resp.response, RESPONSE_ERROR_SNIPPET_MAX_LEN)})"
                 )
 
             return resp.response

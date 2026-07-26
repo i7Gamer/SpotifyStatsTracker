@@ -688,7 +688,18 @@ class Listener:
                     self.run = False
                     return
                 elif _is_rate_limit_error(e):
-                    logger.warning("Rate limit error detected, backing off for %d seconds: %s", RATE_LIMIT_ERROR_BACKOFF_SECONDS, parseError(e))
+                    # One line for a routine backoff: the path that raised has
+                    # normally already logged the exception (see
+                    # _validateCurrentUser's transient branch), so repeating it
+                    # here just doubled the noise - and Spotify's rate-limit
+                    # reply is a whole HTML fallback page. FLASK_DEBUG brings
+                    # the detail back for the paths that raise without logging.
+                    if _flaskDebugEnabled():
+                        logger.warning("Rate limit error detected, backing off for %d seconds: %s",
+                                       RATE_LIMIT_ERROR_BACKOFF_SECONDS, parseError(e))
+                    else:
+                        logger.warning("Rate limit error detected, backing off for %d seconds",
+                                       RATE_LIMIT_ERROR_BACKOFF_SECONDS)
                     self._stop_event.wait(RATE_LIMIT_ERROR_BACKOFF_SECONDS)
                 else:
                     logger.error("Error in listener: %s", parseError(e))

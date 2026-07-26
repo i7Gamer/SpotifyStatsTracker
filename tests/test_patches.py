@@ -1291,6 +1291,188 @@ class TestSafeResponseHeaders(unittest.TestCase):
         self.assertIn("Retry-After", emitted)  #< the diagnostic still lands
 
 
+class TestResponseBodyLogging(unittest.TestCase):
+    """Spotify answers a rate-limited/bot-checked request to these endpoints
+    with its full HTML fallback page, so the verbatim body used to put a
+    kilobyte of markup and CSS into the log - three times per flake, once here
+    and twice more when the listener re-logged the exception carrying it.
+    Routine operation gets a description of the page; FLASK_DEBUG brings the
+    raw snippet back."""
+
+    _LOGGER = "Database.patches"
+
+    #< the real fallback page from Database/Data/app.log, shortened but same shape
+    FALLBACK_PAGE = (
+        '<!DOCTYPE html><html><head><meta charSet="utf-8" data-next-head=""/>'
+        '<title data-next-head="">Oh nein!</title>'
+        '<style data-next-head="">body { background-color: #ff4834; }</style>'
+        + ("<p>x</p>" * 300) + "</head></html>"
+    )
+
+    def _describe(self, response, maxLen=None):
+        from Database.patches import _describeResponseBody, RESPONSE_SNIPPET_MAX_LEN
+        return _describeResponseBody(response, RESPONSE_SNIPPET_MAX_LEN if maxLen is None else maxLen)
+
+    def _userInstance(self, response, status=200, fail=False):
+        import spotapi.user
+        mockLogin = MagicMock()
+        mockLogin.logged_in = True
+        resp = MagicMock()
+        resp.status_code = status
+        resp.fail = fail
+        resp.response = response
+        resp.raw.headers = {}
+        mockLogin.client.get.return_value = resp
+        return spotapi.user.User(mockLogin)
+
+    def test_missing_body_stays_missing(self):
+        self.assertIsNone(self._describe(None))
+
+    def test_html_page_collapses_to_type_size_and_title(self):
+        """The <title> is what distinguishes Spotify's own fallback page from a
+        Cloudflare challenge - the reason these log sites exist - so it is the
+        one part of the markup worth keeping."""
+        described = self._describe(self.FALLBACK_PAGE)
+
+        self.assertNotIn("<!DOCTYPE", described)
+        self.assertNotIn("background-color", described)
+        self.assertIn("html page", described)
+        self.assertIn(str(len(self.FALLBACK_PAGE)), described)
+        self.assertIn("Oh nein!", described)
+
+    def test_short_plain_body_is_kept_verbatim(self):
+        """The useful case: a short API error message is the diagnostic itself."""
+        self.assertEqual(self._describe("Rate limit hit"), "Rate limit hit")
+
+    def test_long_plain_body_is_truncated_with_its_length(self):
+        from Database.patches import RESPONSE_SUMMARY_MAX_LEN
+
+        body = "e" * (RESPONSE_SUMMARY_MAX_LEN + 500)
+        described = self._describe(body)
+
+        self.assertLess(len(described), len(body))
+        self.assertTrue(described.startswith("e" * RESPONSE_SUMMARY_MAX_LEN))
+        self.assertIn(str(len(body)), described)
+
+    def test_flask_debug_returns_the_raw_snippet(self):
+        with patch("Database.patches._flaskDebugEnabled", return_value=True):
+            described = self._describe(self.FALLBACK_PAGE)
+
+        self.assertTrue(described.startswith("<!DOCTYPE"))
+
+    def test_flask_debug_snippet_still_respects_the_length_cap(self):
+        with patch("Database.patches._flaskDebugEnabled", return_value=True):
+            described = self._describe(self.FALLBACK_PAGE, maxLen=50)
+
+        self.assertEqual(described, self.FALLBACK_PAGE[:50])
+
+    def test_get_user_info_keeps_markup_out_of_log_and_error(self):
+        from spotapi.exceptions import UserError
+
+        userInst = self._userInstance(self.FALLBACK_PAGE)
+
+        with patch("Database.patches._flaskDebugEnabled", return_value=False):
+            with self.assertLogs(self._LOGGER, level="WARNING") as logCapture:
+                with self.assertRaises(UserError) as errCtx:
+                    userInst.get_user_info()
+
+        emitted = "\n".join(logCapture.output)
+        self.assertNotIn("<!DOCTYPE", emitted)
+        self.assertNotIn("background-color", emitted)
+        self.assertIn("non-Mapping response", emitted)
+        self.assertIn("html page", emitted)          #< the flake is still reported...
+        self.assertIn("status=200", emitted)         #< ...with the diagnostics that identify it
+
+        message = str(errCtx.exception)
+        self.assertNotIn("<!DOCTYPE", message)
+        self.assertIn("Invalid JSON", message)
+        self.assertIn("Status: 200", message)
+        self.assertIn("Type: str", message)
+
+    def test_get_user_info_error_still_classifies_as_transient(self):
+        """The listener buckets this exception by substring ("json"), and that
+        bucket is what triggers the rate-limit backoff instead of a reconnect -
+        shortening the message must not change the classification."""
+        from spotapi.exceptions import UserError
+        from Database.Listeners.spotifyListener import _is_rate_limit_error, _is_auth_error
+
+        userInst = self._userInstance(self.FALLBACK_PAGE)
+
+        with patch("Database.patches._flaskDebugEnabled", return_value=False):
+            with self.assertLogs(self._LOGGER, level="WARNING"):
+                with self.assertRaises(UserError) as errCtx:
+                    userInst.get_user_info()
+
+        self.assertTrue(_is_rate_limit_error(errCtx.exception))
+        self.assertFalse(_is_auth_error(errCtx.exception))
+
+    def test_get_user_info_with_flask_debug_logs_the_body(self):
+        from spotapi.exceptions import UserError
+
+        userInst = self._userInstance(self.FALLBACK_PAGE)
+
+        with patch("Database.patches._flaskDebugEnabled", return_value=True):
+            with self.assertLogs(self._LOGGER, level="WARNING") as logCapture:
+                with self.assertRaises(UserError):
+                    userInst.get_user_info()
+
+        self.assertIn("<!DOCTYPE", "\n".join(logCapture.output))
+
+    def test_failed_request_log_omits_markup_too(self):
+        """The resp.fail path dumps the same body from the same endpoint."""
+        from spotapi.exceptions import UserError
+
+        userInst = self._userInstance(self.FALLBACK_PAGE, status=429, fail=True)
+
+        with patch("Database.patches._flaskDebugEnabled", return_value=False):
+            with self.assertLogs(self._LOGGER, level="WARNING") as logCapture:
+                with self.assertRaises(UserError):
+                    userInst.get_user_info()
+
+        emitted = "\n".join(logCapture.output)
+        self.assertNotIn("<!DOCTYPE", emitted)
+        self.assertIn("HTTP request failed", emitted)
+
+    def test_get_plan_info_keeps_markup_out_of_log_and_error(self):
+        from spotapi.exceptions import UserError
+
+        userInst = self._userInstance(self.FALLBACK_PAGE)
+
+        with patch("Database.patches._flaskDebugEnabled", return_value=False):
+            with self.assertLogs(self._LOGGER, level="WARNING") as logCapture:
+                with self.assertRaises(UserError) as errCtx:
+                    userInst.get_plan_info()
+
+        self.assertNotIn("<!DOCTYPE", "\n".join(logCapture.output))
+        self.assertNotIn("<!DOCTYPE", str(errCtx.exception))
+        self.assertIn("Invalid JSON", str(errCtx.exception))
+
+
+class TestFlaskDebugEnabled(unittest.TestCase):
+    """Same switch (and same accepted values) as the rest of the app's verbose
+    diagnostics - a body dump must not turn on for FLASK_DEBUG=0."""
+
+    def _enabled(self, value):
+        import os
+        from Database.patches import _flaskDebugEnabled
+        if value is None:
+            env = {k: v for k, v in os.environ.items() if k != "FLASK_DEBUG"}
+            with patch.dict(os.environ, env, clear=True):
+                return _flaskDebugEnabled()
+        with patch.dict(os.environ, {"FLASK_DEBUG": value}):
+            return _flaskDebugEnabled()
+
+    def test_truthy_values_enable(self):
+        self.assertTrue(self._enabled("1"))
+        self.assertTrue(self._enabled("true"))
+        self.assertTrue(self._enabled("TRUE"))
+
+    def test_falsy_and_unset_values_disable(self):
+        self.assertFalse(self._enabled("0"))
+        self.assertFalse(self._enabled(""))
+        self.assertFalse(self._enabled(None))
+
+
 if __name__ == "__main__":
     unittest.main()
 
