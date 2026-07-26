@@ -187,7 +187,7 @@
 
     if (!data.buckets.length || !data.series.length) {
       drawEmptyState(ctx, width, height, emptyMessage);
-      if (legendEl) legendEl.innerHTML = '';
+      renderLegend(legendEl, []);
       return;
     }
 
@@ -255,11 +255,7 @@
       if (closest && closest.id) opts.onClickId(closest.id);
     };
 
-    if (legendEl) {
-      legendEl.innerHTML = lines.map(function (l) {
-        return '<span class="chart-legend-item"><span class="chart-legend-swatch" style="background:' + l.color + '"></span>' + escapeHtml(l.name) + '</span>';
-      }).join('');
-    }
+    renderLegend(legendEl, lines);
   }
 
   /* Vertical bar chart from [label, value] pairs. opts.emptyMessage,
@@ -585,6 +581,52 @@
     }, 0);
   }
 
+  // Which PALETTE entry each of the time-series chart's two bars is drawn in.
+  // Shared with charts.js's renderTimeSeriesChart so the swatch in the legend
+  // and the bar on the canvas can never name different colours.
+  var TIME_SERIES_PLAY_COLOR_INDEX = 0;
+  var TIME_SERIES_SKIP_COLOR_INDEX = 3;
+
+  function timeSeriesLegendItems(hasSkips) {
+    /* The time-series chart's key, or [] when there is nothing to key.
+     *
+     * Only the detail pages draw the skips series, and only where the range
+     * actually holds skips - everywhere else the chart is one series against
+     * one axis and a legend would be noise. Where it IS drawn the key is not
+     * optional: two differently coloured bars shared each bucket with a single
+     * millisecond axis and nothing naming either of them, so the narrower bar
+     * read as some second measure of listening. It is a count, on its own
+     * scale (see maxSkipsIn) - hence the axis note on one and the scale note on
+     * the other. */
+    if (!hasSkips) {
+      return [];
+    }
+    return [
+      { name: 'Listening time (left axis)', color: PALETTE[TIME_SERIES_PLAY_COLOR_INDEX] },
+      { name: 'Skips (own scale)', color: PALETTE[TIME_SERIES_SKIP_COLOR_INDEX] },
+    ];
+  }
+
+  function legendHtml(items) {
+    /* Swatch + name markup for a list of {name, color}, styled by .chart-legend
+     * in style.css. Names are escaped: renderMultiLineChart feeds artist names
+     * through here. */
+    return (items || []).map(function (item) {
+      return '<span class="chart-legend-item"><span class="chart-legend-swatch" style="background:' +
+        item.color + '"></span>' + escapeHtml(item.name) + '</span>';
+    }).join('');
+  }
+
+  function renderLegend(legendEl, items) {
+    /* Fills `legendEl` with `items`' key, emptying it when there is none - a
+     * chart that redraws (the detail pages' bucket select) must not leave the
+     * previous render's legend behind. No-op without the element, so a page
+     * that doesn't have one just gets no legend. */
+    if (legendEl) {
+      legendEl.innerHTML = legendHtml(items);
+    }
+  }
+
   function timeSeriesHasNothingToDraw(data, showSkips) {
     /* True only when there is nothing the chart would actually draw, which
      * depends on whether the caller draws the skips series (see
@@ -604,7 +646,12 @@
 
   var ChartUtils = {
     PALETTE: PALETTE,
+    TIME_SERIES_PLAY_COLOR_INDEX: TIME_SERIES_PLAY_COLOR_INDEX,
+    TIME_SERIES_SKIP_COLOR_INDEX: TIME_SERIES_SKIP_COLOR_INDEX,
     maxSkipsIn: maxSkipsIn,
+    timeSeriesLegendItems: timeSeriesLegendItems,
+    legendHtml: legendHtml,
+    renderLegend: renderLegend,
     timeSeriesHasNothingToDraw: timeSeriesHasNothingToDraw,
     bucketDrilldownUrl: bucketDrilldownUrl,
     refreshPalette: refreshPalette,

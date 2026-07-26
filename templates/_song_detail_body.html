@@ -47,6 +47,11 @@
     <div class="chart-canvas-wrap">
       <canvas id="timeSeriesChart" role="img" aria-label="Play history for this song over time"></canvas>
     </div>
+    {# Filled by charts.js only where the skips series is actually drawn - see
+       renderTimeSeriesChart. The detail pages give each bucket two bars, and
+       the skips one is a count on its own scale rather than the millisecond
+       axis, so it needs naming. #}
+    <div class="chart-legend" id="timeSeriesLegend"></div>
   </div>
   {% endif %}
 

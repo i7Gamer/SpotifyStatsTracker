@@ -2225,6 +2225,13 @@ progress::-moz-progress-bar {
   margin-top: 14px;
 }
 
+/* Every legend ships empty and is filled by its chart's render (and the detail
+   pages' one stays empty unless the range has skips to name), so the margin
+   above would otherwise be dead space under a chart with no key. */
+.chart-legend:empty {
+  display: none;
+}
+
 .chart-legend-item {
   display: inline-flex;
   align-items: center;

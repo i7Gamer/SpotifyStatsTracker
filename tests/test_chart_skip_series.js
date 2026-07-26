@@ -3,7 +3,10 @@
 // so the two decisions the series turns on are extracted as pure functions and
 // pinned here. No test framework - run with: node tests/test_chart_skip_series.js
 const assert = require('assert');
-const { maxSkipsIn, timeSeriesHasNothingToDraw } = require('../static/js/chart-utils.js');
+const {
+  maxSkipsIn, timeSeriesHasNothingToDraw, timeSeriesLegendItems, legendHtml,
+  PALETTE, TIME_SERIES_PLAY_COLOR_INDEX, TIME_SERIES_SKIP_COLOR_INDEX,
+} = require('../static/js/chart-utils.js');
 
 function run(name, fn) {
   try {
@@ -70,6 +73,42 @@ run('genuinely empty buckets still report empty', () => {
 run('a bucket list with no skips key behaves as before', () => {
   assert.strictEqual(timeSeriesHasNothingToDraw([{ totalTimeListened: 0, plays: 0 }], true), true);
   assert.strictEqual(timeSeriesHasNothingToDraw([{ totalTimeListened: 5, plays: 1 }], true), false);
+});
+
+// --- legend ----------------------------------------------------------------
+// The skip bars are a second, narrower bar drawn on their own count scale, and
+// nothing on screen said so: the detail pages showed two differently coloured
+// bars per bucket with one axis and no key at all.
+
+run('a chart with skip bars names both series', () => {
+  const items = timeSeriesLegendItems(true);
+  assert.strictEqual(items.length, 2);
+  assert.strictEqual(items[0].name, 'Listening time (left axis)');
+  assert.strictEqual(items[1].name, 'Skips (own scale)');
+});
+
+run('the legend swatches are the colours the bars are actually drawn in', () => {
+  // Bar colour and swatch colour must come from one place, or a palette change
+  // silently relabels the chart.
+  const items = timeSeriesLegendItems(true);
+  assert.strictEqual(items[0].color, PALETTE[TIME_SERIES_PLAY_COLOR_INDEX]);
+  assert.strictEqual(items[1].color, PALETTE[TIME_SERIES_SKIP_COLOR_INDEX]);
+  assert.notStrictEqual(items[0].color, items[1].color);
+});
+
+run('no skip bars drawn means no legend', () => {
+  // A single-series chart needs no key, and claiming a skips series that is not
+  // on screen (the aggregate pages, or a range with no skips in it) would be
+  // worse than none. Empty list, so the caller renders nothing.
+  assert.deepStrictEqual(timeSeriesLegendItems(false), []);
+  assert.deepStrictEqual(timeSeriesLegendItems(), []);
+});
+
+run('an empty item list renders no legend markup', () => {
+  // legendHtml escapes names via ChartUtils.escapeHtml, which needs a real DOM,
+  // so only the no-items path (which never reaches it) is exercisable here.
+  assert.strictEqual(legendHtml([]), '');
+  assert.strictEqual(legendHtml(null), '');
 });
 
 console.log('All chart skip-series tests passed.');

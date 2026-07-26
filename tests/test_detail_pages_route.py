@@ -1544,5 +1544,97 @@ class TestDetailHeroSpacingCss(unittest.TestCase):
                       "the detail pages' hero list lives inside #detailBody and is missed")
 
 
+class TestPlayHistoryChartLegend(_DetailRouteTestBase):
+    """The Play History chart's key.
+
+    Only the detail pages draw the skips series, as a second, narrower bar per
+    bucket on its own count scale (skips carry no listening time, so they can't
+    share the millisecond axis - see charts.js's renderTimeSeriesChart). Two
+    differently coloured bars shared each slot under a single axis with nothing
+    naming either one, so the skip bar read as a second measure of listening
+    against a scale it isn't drawn to. charts.js fills this slot in; without it
+    in the markup there is nowhere for the key to land."""
+
+    LEGEND_SLOT = b'id="timeSeriesLegend"'
+
+    def _assertChartIsKeyed(self, body):
+        self.assertIn(b'id="timeSeriesChart"', body)
+        self.assertIn(self.LEGEND_SLOT, body)
+
+    def test_song_page_carries_the_legend_slot(self):
+        dash = self._makeApp()
+        db = MagicMock()
+        db.getSong.return_value = {
+            "id": "t1", "name": "Song One", "url": "u", "imageId": "alb1", "duration": 200000,
+            "explicit": False, "isrc": "", "discNumber": 1, "trackNumber": 1, "releaseDate": 0,
+            "album": None, "artists": [],
+            "plays": 5, "totalTimeListened": 50000, "firstListenedAt": 100,
+        }
+        db.getListeningTimeSeries.return_value = []
+        db.getHourOfDayHeatmap.return_value = [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
+        db.getSkipStats.return_value = {"plays": 5, "skips": 2, "skipPercent": 28.6}
+
+        resp = self._getPath(dash, db, "/song/t1")
+
+        self._assertChartIsKeyed(resp.data)
+
+    def test_artist_page_carries_the_legend_slot(self):
+        dash = self._makeApp()
+        db = MagicMock()
+        db.getArtist.return_value = {"id": "a1", "name": "Artist A", "url": "u", "imageUrl": "",
+                                     "imageId": "a1", "plays": 5, "totalTimeListened": 50000,
+                                     "uniqueSongCount": 2, "firstListenedAt": 100}
+        db.getArtistBio.return_value = None
+        db.getSongsStats.return_value = []
+        db.getListeningTimeSeries.return_value = []
+
+        resp = self._getPath(dash, db, "/artist/a1")
+
+        self._assertChartIsKeyed(resp.data)
+
+    def test_album_page_carries_the_legend_slot(self):
+        dash = self._makeApp()
+        db = MagicMock()
+        db.getAlbum.return_value = {"id": "alb1", "name": "Album One", "url": "u", "imageId": "alb1",
+                                    "imageUrl": "", "totalTracks": 2, "releaseDate": 0, "artists": [],
+                                    "plays": 5, "totalTimeListened": 50000, "uniqueSongCount": 2,
+                                    "firstListenedAt": 100}
+        db.getSongsStats.return_value = []
+        db.getListeningTimeSeries.return_value = []
+
+        resp = self._getPath(dash, db, "/album/alb1")
+
+        self._assertChartIsKeyed(resp.data)
+
+    def test_an_unfilled_legend_takes_up_no_room(self):
+        """The slot ships on every detail page but is filled only where there
+        are skip bars to name, and .chart-legend carries a top margin - so
+        without this the majority of pages (and every legend that renders after
+        its data lands) pay 14px of dead space under the chart."""
+        import os
+        import re
+        cssPath = os.path.join(os.path.dirname(__file__), "..", "static", "css", "style.css")
+        with open(cssPath, encoding="utf-8") as handle:
+            css = handle.read()
+
+        rules = re.findall(r"([^{}]*)\{([^{}]*)\}", css)
+        hidden = [selector.strip() for selector, block in rules
+                  if ".chart-legend:empty" in selector and "display: none" in block]
+
+        self.assertTrue(hidden, "an empty .chart-legend still reserves its margin")
+
+    def test_the_aggregate_pages_have_no_legend_slot(self):
+        """/charts and /wrapped leave the skips series off, so their chart is
+        one series against one axis - a key there would be noise. charts.js
+        no-ops without the element, which is what keeps them unchanged."""
+        import os
+        for name in ("charts.html", "wrapped.html"):
+            path = os.path.join(os.path.dirname(__file__), "..", "templates", name)
+            with open(path, encoding="utf-8") as handle:
+                markup = handle.read()
+            self.assertIn('id="timeSeriesChart"', markup)
+            self.assertNotIn('id="timeSeriesLegend"', markup, f"{name} should not be keyed")
+
+
 if __name__ == "__main__":
     unittest.main()

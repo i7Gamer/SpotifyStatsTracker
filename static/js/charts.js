@@ -88,12 +88,21 @@
     // with 26 skips out-towered its own 128 plays and, against the only axis on
     // screen, appeared to claim 9 hours.
     var showSkips = !!(window.__chartData && window.__chartData.showSkips);
+    // Present on the detail pages only, and filled in below - the second bar is
+    // meaningless without a key naming it and saying it isn't on the axis.
+    var legendEl = document.getElementById('timeSeriesLegend');
     if (CU.timeSeriesHasNothingToDraw(data, showSkips)) {
       drawEmptyState(ctx, width, height, 'No listening data in this period yet.');
+      CU.renderLegend(legendEl, []);
       return;
     }
     var maxSkips = showSkips ? CU.maxSkipsIn(data) : 0;
     var hasSkips = maxSkips > 0;
+    // Keyed off what was actually drawn, not off showSkips: a range with no
+    // skips in it draws one series, and a key naming a bar that isn't there
+    // reads as "you have skips somewhere on this chart". Re-rendered on every
+    // redraw so the bucket select can add and remove it (see detail-chart.js).
+    CU.renderLegend(legendEl, CU.timeSeriesLegendItems(hasSkips));
 
     var maxMs = Math.max(1, Math.max.apply(null, data.map(function (d) { return d.totalTimeListened; })));
     var paddingLeft = yAxisPaddingLeft(ctx, maxMs, msToShortLabel), paddingBottom = 26, paddingTop = 16, paddingRight = 16;
@@ -111,11 +120,11 @@
       var x = paddingLeft + i * slotWidth + barGap / 2;
       var barHeight = plotHeight * (d.totalTimeListened / maxMs);
       var y = paddingTop + plotHeight - barHeight;
-      ctx.fillStyle = PALETTE[0];
+      ctx.fillStyle = PALETTE[CU.TIME_SERIES_PLAY_COLOR_INDEX];
       ctx.fillRect(x, y, playWidth, barHeight);
       if (hasSkips && (d.skips || 0) > 0) {
         var skipHeight = plotHeight * (d.skips / maxSkips);
-        ctx.fillStyle = PALETTE[3];
+        ctx.fillStyle = PALETTE[CU.TIME_SERIES_SKIP_COLOR_INDEX];
         ctx.fillRect(x + playWidth, paddingTop + plotHeight - skipHeight, playWidth, skipHeight);
       }
       // The hit box stays the full slot so both series share one tooltip.
