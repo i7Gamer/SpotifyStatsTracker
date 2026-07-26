@@ -563,6 +563,28 @@ class TestSongDetailRoute(_DetailRouteTestBase):
         self.assertIn(b"19 Jul 2026, 09:12", resp.data)
         self.assertIn(b"Time Played: 3m 20s", resp.data)
 
+    def test_play_log_labels_a_skip_skipped_not_partial(self):
+        """The badge comes from the play's own is_skip flag - what the current
+        skip threshold classified it as (recomputeSkipFlags rewrites every row
+        when an admin changes the setting). A skip that ran far enough to look
+        like a plausible partial must still read "Skipped", so the timeline
+        agrees with the skip counts everywhere else on the page."""
+        dash = self._makeApp()
+        db = MagicMock()
+        db.getSong.return_value = self._song()   #< 200s track
+        db.getListeningTimeSeries.return_value = []
+        db.getHourOfDayHeatmap.return_value = [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
+        skip = self._playEntry()
+        skip.update(playedAt=1784560000, timePlayed=100000, isSkip=True)   #< 50%: "Partial" on the raw percentage alone
+        db.getEntriesCount.return_value = 1
+        db.getEntriesFromNew.return_value = [skip]
+
+        with patch.object(dash, "_embedSongsTextElements", side_effect=lambda songs: songs):
+            resp = self._getPath(dash, db, "/song/t1")
+
+        self.assertIn(b"Skipped", resp.data)
+        self.assertNotIn(b"Partial", resp.data)
+
     def test_play_log_scoped_to_track_id(self):
         dash = self._makeApp()
         db = MagicMock()

@@ -146,6 +146,58 @@ class TestSearchEntries(DatabaseTestCase):
         self.assertEqual([e["playedAt"] for e in page], [3, 2])
 
 
+class TestPaginateEntriesKeepsSkipFlag(DatabaseTestCase):
+    """Hydration must carry the read's is_skip flag onto the merged entry.
+
+    The song detail timeline labels each play Full/Partial/Skipped off
+    entry["isSkip"] (see DashboardViewModels._enrichSongTimelineEntries), and
+    getPlaysNewestFirst/getPlaysOldestFirst both SELECT is_skip for it. But
+    _mergeEntryWithTrack rebuilds the entry from the track row and used to copy
+    only playedAt/timePlayed/playedFrom/extras across, so the flag never
+    survived hydration: every skip reached the template with isSkip absent and
+    rendered as "Partial - N%" instead of "Skipped"."""
+
+    PLAY_MS = 190000
+    SKIP_MS = 3000
+
+    def _dbWithASkip(self):
+        tracks = {"t1": normalizeTrackForTest({"id": "t1", "name": "Song One", "artists": []})}
+        db = self._makeDb(tracks, [])
+        db.repo.insertPlay(db.user, "t1", 100.0, self.PLAY_MS, is_skip=0)
+        db.repo.insertPlay(db.user, "t1", 200.0, self.SKIP_MS, is_skip=1)
+        db.repo.commit()
+        return db
+
+    def test_newest_first_entries_carry_is_skip(self):
+        db = self._dbWithASkip()
+
+        entries = db.getEntriesFromNew(trackId="t1", includeSkips=True)
+
+        self.assertEqual([e["playedAt"] for e in entries], [200.0, 100.0])
+        self.assertTrue(entries[0]["isSkip"])
+        self.assertFalse(entries[1]["isSkip"])
+
+    def test_oldest_first_entries_carry_is_skip(self):
+        db = self._dbWithASkip()
+
+        entries = db.getEntriesFromOld(trackId="t1", includeSkips=True)
+
+        self.assertEqual([e["playedAt"] for e in entries], [100.0, 200.0])
+        self.assertFalse(entries[0]["isSkip"])
+        self.assertTrue(entries[1]["isSkip"])
+
+    def test_skip_only_read_reports_its_rows_as_skips(self):
+        """getSkipEntriesFromOld returns is_skip=1 rows by definition, but its
+        SELECT omitted the column, so _playRowToEntry fell back to False and
+        every one of them described itself as a real play."""
+        db = self._dbWithASkip()
+
+        entries = db.getSkipEntriesFromOld()
+
+        self.assertEqual([e["playedAt"] for e in entries], [200.0])
+        self.assertTrue(entries[0]["isSkip"])
+
+
 if __name__ == "__main__":
     import unittest
     unittest.main()

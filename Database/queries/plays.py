@@ -315,7 +315,7 @@ class PlayQueries:
         afterClause = "" if afterTs is None else " AND played_at >= ?"
         params = [username] + ([] if afterTs is None else [afterTs]) + [limit, startIndex]
         rows = conn.execute(
-            f"SELECT track_id, played_at, time_played, {behavioralSelect} FROM plays "
+            f"SELECT track_id, played_at, time_played, is_skip, {behavioralSelect} FROM plays "
             f"WHERE username=? AND is_skip=1{afterClause} ORDER BY played_at ASC, id ASC LIMIT ? OFFSET ?",
             params,
         ).fetchall()

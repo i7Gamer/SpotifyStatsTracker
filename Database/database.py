@@ -499,6 +499,12 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         meta["timePlayed"] = entry["timePlayed"]
         meta["playedFrom"] = entry.get("playedFrom")
         meta["extras"] = entry.get("extras")   #< behavioral columns, when the read carried them
+        # The play's own classification, not the track's: the song detail
+        # timeline labels each entry Full/Partial/Skipped from this (see
+        # DashboardViewModels._enrichSongTimelineEntries). Dropping it here made
+        # every skip on the timeline read as "Partial - N%", because the
+        # fallback for a missing flag is "not a skip".
+        meta["isSkip"] = entry.get("isSkip", False)
         return meta
 
     def _paginateEntries(self, entries: list) -> list:
