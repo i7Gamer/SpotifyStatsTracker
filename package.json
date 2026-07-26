@@ -8,5 +8,8 @@
   "devDependencies": {
     "eslint": "9.39.0",
     "globals": "14.0.0"
+  },
+  "overrides": {
+    "brace-expansion": "5.0.8"
   }
 }
