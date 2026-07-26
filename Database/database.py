@@ -547,6 +547,14 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
             )
         return result
 
+    def hydrateEntries(self, entries: list) -> list:
+        """Merge raw play rows with their tracks' catalog metadata - the public
+        name for _paginateEntries, for callers that must fetch raw rows first
+        and hydrate separately. The streaming export needs the split so its
+        keyset pager can measure chunks off the raw rows: a dangling play this
+        drops must lose only itself, never mark a chunk as the last one."""
+        return self._paginateEntries(entries)
+
     @staticmethod
     def _splitContextUri(contextUri: str) -> tuple[str, str] | None:
         """('type', 'id') from a playedFrom value like "playlist:xyz"/"album:xyz",

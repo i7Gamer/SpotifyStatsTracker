@@ -22,8 +22,8 @@ EXPORT_BOOL_EXTRAS = (("shuffle", "shuffle"), ("skipped", "skipped"),
                       ("offline", "offline"), ("incognito", "incognito_mode"))
 
 
-def _iterKeysetChunks(fetch):
-    """Stream every row `fetch(afterTs)` can return, oldest first, paging by
+def _iterKeysetChunks(fetchRaw, hydrate):
+    """Stream every row `fetchRaw(afterTs)` can return, oldest first, paging by
     position in time instead of by OFFSET.
 
     OFFSET pagination assumed the rows behind the cursor never move. Inserts
@@ -33,42 +33,55 @@ def _iterKeysetChunks(fetch):
     the next OFFSET then steps straight over that many entries, silently
     dropping them from the file the user downloads.
 
+    `fetchRaw` returns RAW play rows (no track hydration); `hydrate` maps a
+    chunk of them to exportable entries and may DROP rows it cannot hydrate
+    (a dangling play whose catalog row is gone - Database._paginateEntries'
+    contract). The cursor and the exhaustion test both run on the raw rows,
+    so a dropped row only ever loses itself: measuring either on the hydrated
+    output made every dropped row shorten its chunk below EXPORT_CHUNK_SIZE,
+    which read as "last chunk" and silently truncated the export there.
+
     played_at is not unique on its own (two different tracks can carry the same
-    timestamp), so each chunk starts AT the last timestamp seen and the entries
-    already emitted at exactly that timestamp are filtered out."""
+    timestamp), so each chunk starts AT the last timestamp seen and the rows
+    already seen at exactly that timestamp are filtered out."""
     afterTs = None
-    emittedAtCursor = set()
+    seenAtCursor = set()
     while True:
-        entries = fetch(afterTs)
-        if not entries:
+        rawEntries = fetchRaw(afterTs)
+        if not rawEntries:
             return
-        fresh = [e for e in entries if (e.get("id"), e.get("playedAt")) not in emittedAtCursor]
+        fresh = [e for e in rawEntries if (e.get("id"), e.get("playedAt")) not in seenAtCursor]
         if not fresh:
             # Only reachable if a whole chunk shares one timestamp, which would
             # need EXPORT_CHUNK_SIZE distinct tracks played in the same second.
             return
-        yield from fresh
+        yield from hydrate(fresh)
         afterTs = fresh[-1].get("playedAt")
-        emittedAtCursor = {(e.get("id"), e.get("playedAt")) for e in fresh
-                           if e.get("playedAt") == afterTs}
-        if len(entries) < EXPORT_CHUNK_SIZE:
+        seenAtCursor = {(e.get("id"), e.get("playedAt")) for e in fresh
+                        if e.get("playedAt") == afterTs}
+        if len(rawEntries) < EXPORT_CHUNK_SIZE:
             return
 
 
 def iterExportEntries(db, includeSkips=False):
     """Every play (oldest first) with hydrated track metadata, fetched in
     EXPORT_CHUNK_SIZE batches so an export never holds the whole history
-    in memory.
+    in memory. Fetched raw and hydrated per chunk - see _iterKeysetChunks
+    for why the pager must never page on the hydrated entries.
 
     includeSkips: skip events (plays.is_skip=1) follow after every play (their
     sub-threshold ms_played re-imports as is_skip=1). JSON only - the CSV stays
     real-plays-only for spreadsheet use."""
     yield from _iterKeysetChunks(
-        lambda afterTs: db.getEntriesFromOld(count=EXPORT_CHUNK_SIZE, afterTs=afterTs))
+        lambda afterTs: db.getEntriesFromOld(count=EXPORT_CHUNK_SIZE, afterTs=afterTs,
+                                             fullPagination=False),
+        db.hydrateEntries)
     if not includeSkips:
         return
     yield from _iterKeysetChunks(
-        lambda afterTs: db.getSkipEntriesFromOld(count=EXPORT_CHUNK_SIZE, afterTs=afterTs))
+        lambda afterTs: db.getSkipEntriesFromOld(count=EXPORT_CHUNK_SIZE, afterTs=afterTs,
+                                                 fullPagination=False),
+        db.hydrateEntries)
 
 
 # Spreadsheet apps (Excel, Sheets, LibreOffice) treat a cell whose text starts

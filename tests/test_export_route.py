@@ -252,6 +252,63 @@ class TestExportBehavioralFields(DatabaseTestCase, _AppTestBase):
         self.assertEqual(len(rows), 3)   #< header + the 2 plays, no skip row
 
 
+class TestExportSurvivesDanglingPlays(DatabaseTestCase):
+    """A play whose catalog row is gone (a dangling FK row - the corruption the
+    startup probe counts and migrate1_43_0 repairs) is dropped from the export,
+    but must not TRUNCATE it: the keyset pager used to measure chunk exhaustion
+    from the HYDRATED entries, so every dropped row made a full chunk look like
+    the last one and everything after it was silently lost (12 plays in, 4
+    exported, no error anywhere)."""
+
+    _CHUNK = 5     #< small enough that a 12-play history spans several chunks
+    _PLAYS = 12
+
+    def _makeDbWithDanglingTrack(self, danglingId, skipTimes=()):
+        tracks = {f"t{i}": {"id": f"t{i}", "name": f"Song {i}", "artists": []}
+                  for i in range(self._PLAYS)}
+        entries = [{"id": f"t{i}", "playedAt": 1700000000 + i * 100, "timePlayed": 200000}
+                   for i in range(self._PLAYS)]
+        db = self._makeDb(tracks, entries)
+        for ts in skipTimes:
+            db.repo.insertPlay("testuser", danglingId, ts, 400, is_skip=1)
+        db.repo.commit()
+        # Delete the catalog row out from under its play - only possible with
+        # the FK enforcement off, which is exactly how the real dangling rows
+        # predating that enforcement came to exist.
+        conn = db.repo.connection()
+        conn.execute("PRAGMA foreign_keys=OFF")
+        conn.execute("DELETE FROM tracks WHERE id=?", (danglingId,))
+        conn.commit()
+        conn.execute("PRAGMA foreign_keys=ON")
+        return db
+
+    def _exportedTrackIds(self, db):
+        import services.export as exportModule
+        with patch.object(exportModule, "EXPORT_CHUNK_SIZE", self._CHUNK):
+            items = json.loads("".join(exportModule.generateJsonExport(db)))
+        return [item["spotify_track_uri"].removeprefix("spotify:track:") for item in items]
+
+    def test_a_dangling_play_mid_chunk_does_not_truncate_the_export(self):
+        db = self._makeDbWithDanglingTrack("t2")
+        self.assertEqual(self._exportedTrackIds(db),
+                         [f"t{i}" for i in range(self._PLAYS) if i != 2])
+
+    def test_a_dangling_play_at_a_chunk_boundary_does_not_truncate_or_loop(self):
+        #< t4 is the last row of the first chunk, so the keyset cursor itself
+        #  must advance off the raw rows, not the hydrated ones
+        db = self._makeDbWithDanglingTrack("t4")
+        self.assertEqual(self._exportedTrackIds(db),
+                         [f"t{i}" for i in range(self._PLAYS) if i != 4])
+
+    def test_a_dangling_skip_does_not_truncate_the_skip_section(self):
+        skipTimes = [1700100000 + i * 100 for i in range(7)]
+        db = self._makeDbWithDanglingTrack("t3", skipTimes=skipTimes)
+        exported = self._exportedTrackIds(db)
+        # The plays section loses only t3's play; the skip section (all seven
+        # skips are of the deleted track) empties without ending the export.
+        self.assertEqual(exported, [f"t{i}" for i in range(self._PLAYS) if i != 3])
+
+
 class TestSkipAndOfflineRoundTrip(DatabaseTestCase, _AppTestBase):
     def test_offline_play_and_skip_survive_a_reimport(self):
         sourceDb = self._makeDb(_TRACKS, [], username="alice")
