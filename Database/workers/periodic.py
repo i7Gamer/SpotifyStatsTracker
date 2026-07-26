@@ -57,6 +57,19 @@ class PeriodicWorkerMixin:
         with self._worker_lock:
             if self._workerRunning(threadAttr):
                 return
+            # Refuse once a stop has been requested, exactly as startListener
+            # does ("a signaled instance never starts a listener again"), and
+            # under the same lock as the check-and-assign so a signalStop can't
+            # slip between them. Shutdown signals then joins a SNAPSHOT of
+            # user_databases: a start landing after phase 1 - a /profile key
+            # save, or _checkLoginLoop constructing a new Database after the
+            # snapshot - would otherwise create its worker on a fresh, unset
+            # event that nothing sets and nothing joins, leaving Last.fm HTTP
+            # and SQLite writes running through teardown.
+            if getattr(self, "_stopRequested", None) is not None and self._stopRequested():
+                _dbmod.logger.debug("[%s-%s] not starting: this instance is stopping",
+                                    logPrefix, getattr(self, "user", "?"))
+                return
             if precondition is not None and not precondition():
                 return
             stopEvent = _dbmod.threading.Event()

@@ -170,9 +170,15 @@ class LastfmBackfillMixin:
                                  f"lastfm-bios-{self.user}", "LastfmBioWorker")
 
     def stopLastfmBiographyBackfiller(self) -> None:
-        """Signal and wait for the background biography backfiller to stop."""
+        """Signal and wait for the background biography backfiller to stop.
+
+        Deliberately nothing after the shared helper: it nulls the thread
+        attribute INSIDE the lock and only then joins, outside it. A trailing
+        `self.lastfm_biography_thread = None` here (left over from the
+        hand-rolled body this replaced) ran unlocked once the join returned, so
+        it discarded the reference of any start that arrived during that join -
+        leaving a live worker no stop path could reach."""
         self._stopLastfmWorker("lastfm_biography_thread", "lastfm_biography_stop_event")
-        self.lastfm_biography_thread = None
 
     def _lastfmBiographyBackfillLoop(self, stop_event: threading.Event | None = None) -> None:
         """Fetches Last.fm biographies for this user's played artists (most-

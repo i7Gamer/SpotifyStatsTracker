@@ -153,6 +153,57 @@ class WorkerLifecycleTestCase(LastfmWorkerBase):
         self.assertFalse(db.lastfm_stop_event.is_set())
         db.stopLastfmGenreBackfiller()
 
+    def test_a_start_during_a_stops_join_keeps_its_thread_reference(self):
+        """stopLastfmBiographyBackfiller kept a `self.lastfm_biography_thread =
+        None` left over from its hand-rolled body, AFTER the shared helper had
+        already nulled the attribute under the lock and then joined outside it.
+        That trailing assignment ran unlocked, once the join returned - so it
+        clobbered whatever a start arriving during the join (the profile page's
+        remove-key then save-key) had assigned.
+
+        The result was strictly worse than a duplicate thread: status reported
+        `running: False`, _stopPeriodicWorker's `thread is None` branch then
+        returned WITHOUT setting the stop event, and the next start overwrote the
+        event too - a live worker doing Last.fm batches that no stop path could
+        ever reach again.
+
+        The interleaving is forced at the join rather than raced for: a test that
+        waits on a clock to catch this catches it sometimes.
+        """
+        db = self._makeDbWithPlays()
+        db.repo.updateUserLastfmApiKey("user1", "key123")
+
+        def stubLoop(stop_event):
+            stop_event.wait(10)
+
+        with patch.object(db, "_lastfmBiographyBackfillLoop", stubLoop):
+            db.startLastfmBiographyBackfiller()
+            firstThread = db.lastfm_biography_thread
+            self.assertIsNotNone(firstThread)
+
+            realJoin = firstThread.join
+
+            def joinWithAStartInFlight(timeout=None):
+                # Stands in for a second request arriving while this stop is
+                # blocked in its (bounded) join.
+                db.startLastfmBiographyBackfiller()
+                return realJoin(timeout=timeout)
+
+            with patch.object(firstThread, "join", joinWithAStartInFlight):
+                db.stopLastfmBiographyBackfiller()
+
+            secondThread = db.lastfm_biography_thread
+            self.assertIsNotNone(secondThread, "the concurrent start's thread reference was discarded")
+            self.assertIsNot(secondThread, firstThread)
+            self.assertTrue(db.getLastfmBiographyWorkerStatus()["running"])
+
+            # And it must still be stoppable - the whole point of keeping the
+            # reference.
+            db.stopLastfmBiographyBackfiller()
+            secondThread.join(timeout=5)
+            self.assertFalse(secondThread.is_alive())
+            self.assertIsNone(db.lastfm_biography_thread)
+
     def test_autostart_survives_a_pre_migration_schema(self):
         """Database() constructed against a pre-1.19 file outside the app's
         migration path (standalone script/REPL) must not crash in __init__

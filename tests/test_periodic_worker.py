@@ -29,6 +29,59 @@ class PeriodicWorkerTestCase(DatabaseTestCase):
         stopEvent.wait(30)
 
 
+class TestAStoppingInstanceStartsNothing(PeriodicWorkerTestCase):
+    """startListener refuses permanently once signalStop has run ("a signaled
+    instance never starts a listener again"), but the periodic lifecycle checked
+    neither flag. Shutdown is two phases over a snapshot of user_databases:
+    signal every user, then join every user. A start landing after phase 1 -
+    a /profile key save, or _checkLoginLoop constructing a whole new Database
+    after the snapshot was taken - created its worker on a FRESH, unset event,
+    which nothing would ever set and nothing would ever join. The result is
+    Last.fm HTTP and SQLite writes continuing from daemon threads through
+    container teardown, which is the neighbourhood of the 2026-07-17 hang."""
+
+    def test_a_start_after_signal_stop_is_a_noop(self):
+        self.db.signalStop()
+
+        self.db._startPeriodicWorker("wrapped_thread", "wrapped_stop_event",
+                                      self._idleLoop, "test-worker")
+
+        self.assertIsNone(self.db.wrapped_thread)
+
+    def test_a_start_after_the_app_wide_shutdown_event_is_a_noop(self):
+        """The other half of _stopRequested: this instance was never stopped
+        itself, but the app is going down."""
+        self.db.shutdown_event.set()
+
+        self.db._startPeriodicWorker("wrapped_thread", "wrapped_stop_event",
+                                      self._idleLoop, "test-worker")
+
+        self.assertIsNone(self.db.wrapped_thread)
+
+    def test_a_normal_start_still_works(self):
+        self.db._startPeriodicWorker("wrapped_thread", "wrapped_stop_event",
+                                      self._idleLoop, "test-worker")
+        self.addCleanup(self.db._stopPeriodicWorker, "wrapped_thread", "wrapped_stop_event")
+
+        self.assertIsNotNone(self.db.wrapped_thread)
+
+    def test_the_named_worker_starts_are_gated_too(self):
+        """The gate belongs in the shared helper, not in each of the five
+        callers - this pins that they all inherit it."""
+        self.db.repo.updateUserLastfmApiKey(self.db.user, "key123")
+        self.db.signalStop()
+
+        self.db.startLastfmGenreBackfiller()
+        self.db.startLastfmBiographyBackfiller()
+        self.db.startLastfmAlbumBiographyBackfiller()
+        self.db.startWrappedCalculationsWorker()
+        self.db.startMetadataBackfiller()
+
+        for attr in ("lastfm_thread", "lastfm_biography_thread",
+                     "lastfm_album_biography_thread", "wrapped_thread", "backfiller_thread"):
+            self.assertIsNone(getattr(self.db, attr), f"{attr} was started during shutdown")
+
+
 class TestTheLockCoversCheckAndAssign(PeriodicWorkerTestCase):
     """The race the Last.fm workers were fixed for, now covering all of them:
     two concurrent starts could both see no live thread, and the second's
