@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from app import SpotifyDashboardApp
 from _app_factory import AppTestCase
 from _detail_client import DetailPageClientMixin
+from routes.charts import DETAIL_BODY_AJAX
 
 
 def _byId(entityId, genres):
@@ -1383,6 +1384,21 @@ class TestDetailPageDeferredBody(_DetailRouteTestBase):
                 for name in lookups:
                     getattr(db, name).assert_not_called()
 
+    def test_the_body_opens_with_the_hero_as_detailBodys_own_child(self):
+        """The hero .track-list is the payload's first element, so once
+        detail-page.js swaps the body in it is a DIRECT child of #detailBody -
+        which is what the spacing rule keyed on in TestDetailHeroSpacingCss
+        below matches. Nesting it any deeper drops the gap between the hero
+        card and whatever follows it."""
+        for path in self.DEFERRED_LOOKUPS:
+            with self.subTest(path=path):
+                dash = self._makeApp()
+
+                payload = self._getRaw(dash, self._db(), f"{path}?ajax={DETAIL_BODY_AJAX}").get_json()
+
+                self.assertTrue(payload["bodyHtml"].strip().startswith(
+                    '<section id="track-list" class="track-list">'), payload["bodyHtml"][:120])
+
     def test_the_shell_disables_the_bucket_select_until_the_body_lands(self):
         """Its ?ajax=true refetch targets a chart that isn't on the page yet,
         and its result would be overwritten by the body payload in flight."""
@@ -1472,6 +1488,38 @@ class TestDetailPageDeferredBody(_DetailRouteTestBase):
                     resp = self._getRaw(dash, db, path + suffix)
                     self.assertEqual(resp.status_code, 302)
                     self.assertIn(endpoint, resp.headers["Location"])
+
+
+class TestDetailHeroSpacingCss(unittest.TestCase):
+    """The stylesheet half of the gap under a detail page's hero card.
+
+    `.page > .track-list` gave that card its 24px, and the two-phase split
+    moved the list out of main.page and into #detailBody - a direct-child
+    selector the wrapper silently broke. It went unnoticed because the Spotify
+    embed sits in that gap and carries a margin of its own, so the hero only
+    collapses onto the card below it while the player is closed, which is
+    every page load."""
+
+    def setUp(self):
+        cssPath = os.path.join(os.path.dirname(__file__), "..", "static", "css", "style.css")
+        with open(cssPath, encoding="utf-8") as handle:
+            self.css = handle.read()
+
+    def _selectorsGivingATrackListItsGapBelow(self):
+        import re
+        rules = re.findall(r"([^{}]*)\{([^{}]*)\}", self.css)
+        return [selector.strip() for selector, block in rules
+                if ".track-list" in selector and "margin-bottom" in block]
+
+    def test_a_track_list_sitting_on_the_page_gets_a_gap_below_it(self):
+        self.assertTrue(self._selectorsGivingATrackListItsGapBelow(),
+                        "no rule gives a .track-list a bottom margin")
+
+    def test_the_deferred_detail_body_counts_as_sitting_on_the_page(self):
+        selectors = " ".join(self._selectorsGivingATrackListItsGapBelow())
+
+        self.assertIn("#detailBody", selectors,
+                      "the detail pages' hero list lives inside #detailBody and is missed")
 
 
 if __name__ == "__main__":

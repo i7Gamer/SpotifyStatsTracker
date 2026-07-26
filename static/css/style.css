@@ -791,7 +791,14 @@ progress::-moz-progress-bar {
   padding-right: 4px;
 }
 
-.page > .track-list {
+/* A track list sitting on the page background, rather than inside a card,
+   keeps a gap below it. #detailBody is the song/artist/album pages' deferred
+   body container (see _detail_skeleton.html): their hero card is a direct
+   child of THAT, not of .page, so the child combinator needs saying twice or
+   the hero collapses onto whatever follows it. It only shows when the Spotify
+   embed between them is closed - open, that carries a margin of its own. */
+.page > .track-list,
+.page > #detailBody > .track-list {
   margin-bottom: 24px;
 }
 
