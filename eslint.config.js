@@ -23,7 +23,12 @@ const globals = require("globals");
 
 module.exports = [
   {
-    files: ["static/js/**/*.js", "tests/test_*.js"],
+    // Browser scripts get BROWSER globals only. Spreading node's in here too
+    // (they were in one block at first, for the test files below) quietly
+    // excused `module`, `require`, `process` and `global` in static/js - real
+    // copy-paste hazards in a tree where chart-utils.js is dual-use CJS, and
+    // exactly the class of typo no-undef is here to catch.
+    files: ["static/js/**/*.js"],
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: "script",
@@ -39,9 +44,13 @@ module.exports = [
         // changed. Every other window.X export is only ever read qualified, or
         // from an inline on*= attribute in templates/.
         renderTimeSeriesChart: "readonly",
-        // tests/test_*.js run under plain node, not a browser (see
-        // tests/test_js_test_suite.py), and stub browser APIs onto `global`.
-        ...globals.node,
+        // Only `module`, not node's whole set. Several of these scripts end with
+        // `if (typeof module !== 'undefined' && module.exports) { … }` so their
+        // pure logic can be required by the node unit tests - a deliberate
+        // feature detection, not a stray global. Declaring the rest of node
+        // would excuse `require`, `process`, `global` and `Buffer`, which in a
+        // browser script are exactly the copy-paste slips no-undef exists for.
+        module: "readonly",
       },
     },
     linterOptions: {
@@ -56,6 +65,35 @@ module.exports = [
       "no-duplicate-case": "error",   //< an unreachable switch branch
       "no-unreachable": "error",
       "no-cond-assign": "error",      //< `if (a = b)` - almost always a typo'd ==
+      "no-self-assign": "error",
+      "no-self-compare": "error",
+      "no-constant-condition": "error",
+      "no-func-assign": "error",
+      "no-obj-calls": "error",
+      "no-sparse-arrays": "error",
+      "no-unsafe-negation": "error",
+      "use-isnan": "error",
+      "valid-typeof": "error",
+    },
+  },
+  {
+    // The JS unit tests run under plain node (see tests/test_js_test_suite.py)
+    // and stub browser APIs onto `global`, so they need node's globals - and
+    // browser's too, since what they exercise is browser code.
+    files: ["tests/test_*.js"],
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: "script",
+      globals: { ...globals.browser, ...globals.node },
+    },
+    linterOptions: { reportUnusedDisableDirectives: "error" },
+    rules: {
+      "no-undef": "error",
+      "no-dupe-keys": "error",
+      "no-dupe-args": "error",
+      "no-duplicate-case": "error",
+      "no-unreachable": "error",
+      "no-cond-assign": "error",
       "no-self-assign": "error",
       "no-self-compare": "error",
       "no-constant-condition": "error",

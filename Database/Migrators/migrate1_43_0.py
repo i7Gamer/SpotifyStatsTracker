@@ -1,13 +1,25 @@
 try:
     from Database.Migrators.base import BaseMigrator, resolveRuntimeDir
     from Database.repository import Repository
-    from Database.db import RESTRICTED_FALLBACK_REASON, UNKNOWN_TRACK_NAME, UNKNOWN_ALBUM_NAME
+    from Database.db import (RESTRICTED_FALLBACK_REASON, SYNTHETIC_FALLBACK_REASON,
+                             UNKNOWN_TRACK_NAME, UNKNOWN_ALBUM_NAME)
 except ModuleNotFoundError:
     from Migrators.base import BaseMigrator, resolveRuntimeDir
     from repository import Repository
-    from db import RESTRICTED_FALLBACK_REASON, UNKNOWN_TRACK_NAME, UNKNOWN_ALBUM_NAME
+    from db import (RESTRICTED_FALLBACK_REASON, SYNTHETIC_FALLBACK_REASON,
+                    UNKNOWN_TRACK_NAME, UNKNOWN_ALBUM_NAME)
 
 SPOTIFY_TRACK_URL_PREFIX = "https://open.spotify.com/track/"
+
+# A real Spotify track id is 22 base62 characters. The importer's surrogate for a
+# track it could not resolve is a bare 32-character md5 hex digest
+# (StreamingHistoryImporter._createSyntheticTrack) - no prefix to test, so the
+# shapes are the discriminator, and they are disjoint by length alone.
+SPOTIFY_TRACK_ID_LENGTH = 22
+
+
+def _looksLikeARealSpotifyId(trackId: str) -> bool:
+    return len(trackId) == SPOTIFY_TRACK_ID_LENGTH and trackId.isalnum()
 
 
 class Migrator(BaseMigrator):
@@ -23,10 +35,12 @@ class Migrator(BaseMigrator):
     rows and every track-joined query drops them, so per-page totals disagree
     with each other for no visible reason. Deleting them would destroy the only
     record that the listening happened, so each gets a placeholder track
-    instead: the id IS real, so the Spotify link works, and the row is marked
-    RESTRICTED_FALLBACK_REASON, which upsertTrack is explicitly built to let
-    real metadata replace later (see its guard, and _fallbackTrackRecord in
-    Database/patches.py, whose shape this mirrors).
+    instead, marked so upsertTrack will let real metadata replace it later (see
+    its guard, and _fallbackTrackRecord in Database/patches.py, whose shape this
+    mirrors). A real 22-character Spotify id keeps a working link and the
+    RESTRICTED marker; the importer's 32-character md5 surrogate for a track it
+    could never resolve gets an empty url and SYNTHETIC, since no later lookup
+    can repair it and a link would 404.
 
     track_artists -> tracks (195 rows live, across 133 track ids) is an artist
     credit for a track that no longer exists. Nothing can render it and nothing
@@ -59,6 +73,14 @@ class Migrator(BaseMigrator):
                 ).fetchall()
             ]
             for trackId in orphanedPlayTrackIds:
+                # Only a real id gets a link. The importer's surrogate for an
+                # unresolvable track is a bare md5 digest, and pointing
+                # open.spotify.com at one produces a 404 - "only fabricated ids
+                # carry an empty url" is the rule everywhere else in this
+                # codebase, and it decides the marker too: a fabricated id can
+                # never be repaired by a later lookup, which is what
+                # SYNTHETIC_FALLBACK_REASON means as against RESTRICTED.
+                isRealId = _looksLikeARealSpotifyId(trackId)
                 repo.upsertTrack({
                     "id": trackId,
                     # Invents no facts: no duration, no artists, no album name.
@@ -66,7 +88,7 @@ class Migrator(BaseMigrator):
                     # the row doesn't render as a blank line in every list it
                     # appears in.
                     "name": UNKNOWN_TRACK_NAME,
-                    "url": f"{SPOTIFY_TRACK_URL_PREFIX}{trackId}",
+                    "url": f"{SPOTIFY_TRACK_URL_PREFIX}{trackId}" if isRealId else "",
                     "duration": 0,
                     "explicit": False,
                     "isrc": "",
@@ -92,12 +114,18 @@ class Migrator(BaseMigrator):
                         "releaseDate": 0.0,
                         "imageUrl": "",
                     },
-                    "created_reason": RESTRICTED_FALLBACK_REASON,
+                    "created_reason": RESTRICTED_FALLBACK_REASON if isRealId else SYNTHETIC_FALLBACK_REASON,
                 })
             # Whatever is still orphaned now belongs to a track with no plays.
             sweptCredits = conn.execute(
+                # NOT EXISTS, not NOT IN: tracks.id is a TEXT PRIMARY KEY,
+                # which SQLite permits to be NULL, and a single NULL would make
+                # NOT IN evaluate to NULL for every row - deleting nothing while
+                # still reporting success.
                 """DELETE FROM track_artists
-                   WHERE track_id NOT IN (SELECT id FROM tracks)"""
+                   WHERE NOT EXISTS (
+                       SELECT 1 FROM tracks t WHERE t.id = track_artists.track_id
+                   )"""
             ).rowcount
             repo.commit()
         finally:

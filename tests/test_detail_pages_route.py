@@ -388,6 +388,9 @@ class TestSongDetailRoute(_DetailRouteTestBase):
         song["plays"] = 0        #< the skip-sorted fallback's shape
         song["skips"] = 3
         db.getSong.return_value = song
+        #< the route always computes this alongside the song; it is where the
+        #  gate reads the skip count from, since getSongsPage has no skips column
+        db.getSkipStats.return_value = {"plays": 0, "skips": 3, "skipPercent": 100.0}
         db.getListeningTimeSeries.return_value = []
         db.getHourOfDayHeatmap.return_value = [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
 
@@ -395,6 +398,60 @@ class TestSongDetailRoute(_DetailRouteTestBase):
 
         self.assertIn(b"Play History", resp.data)
         self.assertIn(b'id="timeSeriesChart"', resp.data)
+
+    def test_play_history_panel_shown_for_a_much_skipped_song_with_one_play(self):
+        """The rule is "is there a history worth plotting", and the skips series
+        is on the timeline either way - so 1 play + 40 skips must chart, exactly
+        as 0 plays + 2 skips does.
+
+        The count has to come from skipStats: getSongsPage's SELECT has no skips
+        column, so song['skips'] exists ONLY on getSong's skip-only fallback
+        (plays=0). Reading it off the song made the gate a no-op for every track
+        that has any real play at all."""
+        dash = self._makeApp()
+        db = MagicMock()
+        song = self._song()
+        song["plays"] = 1
+        db.getSong.return_value = song
+        db.getSkipStats.return_value = {"plays": 1, "skips": 40, "skipPercent": 97.6}
+        db.getListeningTimeSeries.return_value = []
+        db.getHourOfDayHeatmap.return_value = [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
+
+        resp = self._getPath(dash, db, "/song/t1")
+
+        self.assertIn(b"Play History", resp.data)
+        self.assertIn(b'id="timeSeriesChart"', resp.data)
+
+    def test_one_play_and_no_skips_is_still_too_little_to_chart(self):
+        dash = self._makeApp()
+        db = MagicMock()
+        song = self._song()
+        song["plays"] = 1
+        db.getSong.return_value = song
+        db.getSkipStats.return_value = {"plays": 1, "skips": 0, "skipPercent": 0.0}
+        db.getListeningTimeSeries.return_value = []
+        db.getHourOfDayHeatmap.return_value = [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
+
+        resp = self._getPath(dash, db, "/song/t1")
+
+        self.assertNotIn(b'id="timeSeriesChart"', resp.data)
+
+    def test_a_stubbed_skip_summary_cannot_500_the_page(self):
+        """Most route tests hand the page a bare MagicMock db, so skipStats is a
+        Mock rather than a dict - arithmetic on it would raise inside the
+        template. The gate must degrade, not explode."""
+        dash = self._makeApp()
+        db = MagicMock()
+        song = self._song()
+        song["plays"] = 4
+        db.getSong.return_value = song
+        db.getListeningTimeSeries.return_value = []
+        db.getHourOfDayHeatmap.return_value = [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
+
+        resp = self._getPath(dash, db, "/song/t1")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn(b'id="timeSeriesChart"', resp.data)   #< 4 plays alone clears the bar
 
     def test_a_single_skip_is_still_too_little_to_chart(self):
         """Same rule as a single play: one point is not a history."""
@@ -404,6 +461,7 @@ class TestSongDetailRoute(_DetailRouteTestBase):
         song["plays"] = 0
         song["skips"] = 1
         db.getSong.return_value = song
+        db.getSkipStats.return_value = {"plays": 0, "skips": 1, "skipPercent": 100.0}
         db.getListeningTimeSeries.return_value = []
         db.getHourOfDayHeatmap.return_value = [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
 

@@ -32,7 +32,8 @@ import Database.Migrators.base as baseModule
 import Database.Migrators.migrate1_43_0 as migrateModule
 from Database.Migrators import dbversion
 from Database.repository import Repository
-from Database.db import RESTRICTED_FALLBACK_REASON, UNKNOWN_TRACK_NAME, UNKNOWN_ALBUM_NAME
+from Database.db import (RESTRICTED_FALLBACK_REASON, SYNTHETIC_FALLBACK_REASON,
+                         UNKNOWN_TRACK_NAME, UNKNOWN_ALBUM_NAME)
 
 
 def _track(trackId):
@@ -53,9 +54,13 @@ def _track(trackId):
 
 class TestMigrate1_43_0(unittest.TestCase):
     USER = "someone"
-    KEPT = "keptTrack"          #< a healthy track, must be left alone
-    ORPHANED_WITH_PLAYS = "orphanPlayed"
-    ORPHANED_UNREFERENCED = "orphanDead"
+    # Real 22-character Spotify ids, not readable stand-ins: the migration reads
+    # the id's SHAPE to decide whether a placeholder gets a working Spotify link
+    # (see _looksLikeARealSpotifyId), so a short fixture id would silently
+    # exercise the fabricated-id branch instead.
+    KEPT = "4cOdK2wGLETKBW3PvgPWqT"                    #< healthy, must be left alone
+    ORPHANED_WITH_PLAYS = "02fKZbUiVfqrRl4Eg1YIUz"
+    ORPHANED_UNREFERENCED = "6f1oG9hTx3NETgV6q4rkw5"
 
     def setUp(self):
         self._tmpdir = tempfile.TemporaryDirectory()
@@ -142,6 +147,32 @@ class TestMigrate1_43_0(unittest.TestCase):
         self.assertEqual(row["name"], UNKNOWN_TRACK_NAME)
         #< the id is real, so the Spotify link is real - only fabricated ids carry an empty url
         self.assertIn(self.ORPHANED_WITH_PLAYS, row["url"])
+
+    def test_a_fabricated_track_id_gets_no_link_and_the_synthetic_marker(self):
+        """The importer's surrogate for a track it could not resolve is a bare
+        md5 digest, not a Spotify id - pointing open.spotify.com at one gives a
+        404. "Only fabricated ids carry an empty url" is the rule everywhere
+        else here, and it decides the marker too: nothing can ever repair a
+        fabricated id, which is what SYNTHETIC means as against RESTRICTED."""
+        fabricated = "0123456789abcdef0123456789abcdef"   #< 32-char md5, as _createSyntheticTrack emits
+        repo = Repository(self.dbPath)
+        repo.upsertUser(self.USER, "someone@example.com", createdAt=100.0)
+        repo.upsertTrack(_track(fabricated))
+        repo.insertPlay(self.USER, fabricated, 1000.0, 120_000)
+        repo.commit()
+        conn = repo._conn()
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.execute("DELETE FROM tracks WHERE id = ?", (fabricated,))
+        repo.commit()
+        repo.connectionManager.close()
+        dbversion.writeDbVersion(self.dbPath, "1.43.0")
+
+        self._migrate()
+
+        row = self._repo()._conn().execute(
+            "SELECT url, created_reason FROM tracks WHERE id = ?", (fabricated,)).fetchone()
+        self.assertEqual(row["url"], "")
+        self.assertEqual(row["created_reason"], SYNTHETIC_FALLBACK_REASON)
 
     def test_the_placeholders_album_is_named_as_an_album(self):
         """upsertTrack synthesizes a per-track album when none is supplied and
