@@ -160,17 +160,16 @@
       hideTooltip();
       canvas.style.cursor = 'crosshair';
     };
-    // Clicking a bar scopes the Dashboard's stats and play list to that
-    // exact bucket's date range - see app.py's dashboard() route, which
-    // only applies list-filtering for an explicit interval=custom range
+    // Clicking a bar opens the play history scoped to that exact bucket's date
+    // range - see routes/charts.py's historyPage, which owns the play list now
+    // and only applies list-filtering for an explicit interval=custom range
     // (not the named day/week/month intervals).
     canvas.onclick = function (evt) {
       var rect = canvas.getBoundingClientRect();
       var mx = evt.clientX - rect.left, my = evt.clientY - rect.top;
       var hit = findBarAt(mx, my);
       if (hit && hit.d.rangeStart && hit.d.rangeEnd) {
-        window.location.href = '/?interval=custom&startDate=' + encodeURIComponent(hit.d.rangeStart) +
-          '&endDate=' + encodeURIComponent(hit.d.rangeEnd);
+        window.location.href = CU.bucketDrilldownUrl(hit.d.rangeStart, hit.d.rangeEnd);
       }
     };
   }

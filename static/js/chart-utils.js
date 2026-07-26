@@ -39,6 +39,15 @@
     refreshPalette();
   }
 
+  // Where clicking a time-series bucket takes the user: the play-history list,
+  // scoped to that bucket's exact date range. It has to be /history (not '/'),
+  // because the list moved off the dashboard - and an explicit custom range is
+  // the only interval historyPage scopes the list by (named ones don't).
+  function bucketDrilldownUrl(rangeStart, rangeEnd) {
+    return '/history?interval=custom&startDate=' + encodeURIComponent(rangeStart) +
+      '&endDate=' + encodeURIComponent(rangeEnd);
+  }
+
   function getAccentColor() {
     var accent = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim();
     return accent || PALETTE[0];
@@ -593,6 +602,7 @@
     PALETTE: PALETTE,
     maxSkipsIn: maxSkipsIn,
     timeSeriesHasNothingToDraw: timeSeriesHasNothingToDraw,
+    bucketDrilldownUrl: bucketDrilldownUrl,
     refreshPalette: refreshPalette,
     getAccentColor: getAccentColor,
     parseHex: parseHex,
