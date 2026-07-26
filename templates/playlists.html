@@ -9,7 +9,7 @@
 
   {% if user_tags %}
   <div style="margin-bottom: 2.5rem; padding-bottom: 2rem; border-bottom: 1px solid var(--border-color, #2d2d2d);">
-    <h2>1. Select Tags to Filter</h2>
+    <h2>Select Tags to Filter</h2>
     <div id="playlist-tag-chips" style="display: flex; gap: 8px; flex-wrap: wrap; margin: 1rem 0;">
       {% for t in user_tags %}
       <button type="button" class="playlist-tag-chip button" data-tag="{{ t.tag }}" style="padding: 6px 14px; border-radius: 20px; font-size: 0.9rem; background: rgba(255,255,255,0.05); border: 1px solid var(--border-color, #444);">
@@ -59,7 +59,7 @@
   </div>
 
   <div style="margin-top: 2rem;">
-    <h2>2. Manage Your Tags</h2>
+    <h2>Manage Your Tags</h2>
     <p style="font-size: 0.9rem; color: var(--text-muted, #aaa); margin-bottom: 1rem;">Rename or delete tags across your library.</p>
     
     <table style="width: 100%; border-collapse: collapse;">
