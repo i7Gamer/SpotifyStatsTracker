@@ -383,15 +383,17 @@ class PlayQueries:
         if not artistIds:
             return set()
         conn = self._conn()
-        placeholders = ",".join("?" for _ in artistIds)
+        params: list = [username]
+        idSet = self._idSetClause(params, "ta.artist_id", artistIds)
+        trackSet = self._trackSetClause(params, self.ARTIST_TRACKS_SUBQUERY, artistIds)
         rows = conn.execute(
             f"""
             SELECT DISTINCT ta.artist_id AS artist_id
             FROM plays p
             JOIN track_artists ta ON ta.track_id = p.track_id
-            WHERE p.username=? AND p.is_skip=0 AND ta.artist_id IN ({placeholders})
+            WHERE p.username=? AND p.is_skip=0{idSet}{trackSet}
             """,
-            [username, *artistIds],
+            params,
         ).fetchall()
         return {r["artist_id"] for r in rows}
 
@@ -402,15 +404,17 @@ class PlayQueries:
         if not albumIds:
             return set()
         conn = self._conn()
-        placeholders = ",".join("?" for _ in albumIds)
+        params: list = [username]
+        idSet = self._idSetClause(params, "t.album_id", albumIds)
+        trackSet = self._trackSetClause(params, self.ALBUM_TRACKS_SUBQUERY, albumIds)
         rows = conn.execute(
             f"""
             SELECT DISTINCT t.album_id AS album_id
             FROM plays p
             JOIN tracks t ON t.id = p.track_id
-            WHERE p.username=? AND p.is_skip=0 AND t.album_id IN ({placeholders})
+            WHERE p.username=? AND p.is_skip=0{idSet}{trackSet}
             """,
-            [username, *albumIds],
+            params,
         ).fetchall()
         return {r["album_id"] for r in rows}
 

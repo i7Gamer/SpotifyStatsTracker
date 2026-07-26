@@ -206,6 +206,37 @@ class NarrowedQueryEquivalenceTestCase(DatabaseTestCase):
         self.assertEqual(db.getAlbumsStats(albumIds=["nope", "also-nope"]), [])
         self.assertEqual(db.getArtistsStats(artistIds=["nope"]), [])
 
+    def test_played_id_lookups_report_exactly_the_entities_with_real_plays(self):
+        """getPlayed*Ids are membership checks (Compare's "does the viewer have
+        their own data" test, and the shared-artist-image gate). They filtered
+        on the joined table, so a one-id check still read the whole play
+        history - ~100ms per call, and the image route makes one per request."""
+        db = self._db()
+
+        self.assertEqual(db.repo.getPlayedArtistIds(db.user, [ARTIST_A, ARTIST_B, "nope"]),
+                         {ARTIST_A, ARTIST_B})
+        self.assertEqual(db.repo.getPlayedAlbumIds(db.user, [ALBUM_1, ALBUM_2, "nope"]),
+                         {ALBUM_1, ALBUM_2})
+        self.assertEqual(db.repo.getPlayedTrackIds(db.user, ["t1", "nope"]), {"t1"})
+
+    def test_played_id_lookups_ignore_entities_whose_only_plays_are_skips(self):
+        """These gate on real plays (is_skip=0), so an entity heard only as a
+        skip must not count - the pushdown must not widen that."""
+        db = self._db()
+        # Leave t3/t4 (ARTIST_B, ALBUM_2) with nothing but skips.
+        db.repo._conn().execute(
+            "UPDATE plays SET is_skip = 1 WHERE track_id IN ('t3', 't4')")
+        db.repo.commit()
+
+        self.assertEqual(db.repo.getPlayedArtistIds(db.user, [ARTIST_A, ARTIST_B]), {ARTIST_A})
+        self.assertEqual(db.repo.getPlayedAlbumIds(db.user, [ALBUM_1, ALBUM_2]), {ALBUM_1})
+
+    def test_played_id_lookups_handle_the_empty_set(self):
+        db = self._db()
+
+        self.assertEqual(db.repo.getPlayedArtistIds(db.user, []), set())
+        self.assertEqual(db.repo.getPlayedAlbumIds(db.user, []), set())
+
     def test_narrowing_by_track_is_unaffected(self):
         """The track clause filters plays.track_id directly and was never part
         of the problem - pinned so a rewrite of the helper leaves it alone."""
