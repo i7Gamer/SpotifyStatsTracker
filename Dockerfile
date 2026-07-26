@@ -5,11 +5,13 @@ WORKDIR /app
 # Copy requirements FIRST so the RUN command can use it
 COPY requirements.txt .
 
-# Install system dependencies, install python dependencies, install custom SpotAPI, then remove bloat
+# Install system dependencies, install python dependencies, then remove bloat.
+# git is needed only because requirements.txt pins spotapi to a commit of
+# TzurSoffer's fork (see the note there) - it used to be uninstalled and
+# reinstalled from the fork's unpinned HEAD right here, which made every build
+# non-reproducible and meant CI never tested what this image actually runs.
 RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends gcc git \
     && pip install --no-cache-dir -r requirements.txt \
-    && pip uninstall spotAPI -y \
-    && pip install git+https://github.com/TzurSoffer/SpotAPI \
     && apt-get purge -y git gcc \
     && apt-get autoremove --purge -y \
     && rm -rf /var/lib/apt/lists/*
