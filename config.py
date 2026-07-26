@@ -58,6 +58,24 @@ COMPARE_OVERLAP_POOL_SIZE = 100           #< how deep each side's top songs/arti
 COMPARE_SHARED_POOL_SIZE = 200
 COMPARE_TREND_WEEK_SPAN_DAYS = 120        #< comparison trends spanning more days than this auto-bucket by week...
 COMPARE_TREND_MONTH_SPAN_DAYS = 730       #< ...and more than this by month (day buckets over years are sub-pixel)
+# Sanity window for the hand-editable ?startDate=/&endDate= custom range.
+# Dates outside it are treated exactly like unparseable ones (the route's
+# default window takes over - see DateRangeMixin._parseCustomRangeDate): no
+# play can predate the Unix epoch (broken import timestamps clamp to 0 =
+# 1970), and past-2100 dates fed datetime-limit arithmetic that raised
+# OverflowError (the custom end's own +1 day, getOverallStats' previous-period
+# mirror subtracting a centuries-long duration) or gap-filled one chart bucket
+# per day across those centuries (~740k buckets, ~9s of CPU and a >100MB
+# payload per request for ?startDate=0001-01-01).
+CUSTOM_RANGE_MIN_YEAR = 1970
+CUSTOM_RANGE_MAX_YEAR = 2100
+# Ceiling on the bucket count an EXPLICIT Trend-buckets choice may imply
+# before Auto's span-derived size takes over instead (see _resolveGroupBy):
+# ~27 years of day buckets - beyond any real listening history, so every
+# legitimate explicit choice is untouched - while "day buckets across
+# centuries" from a hand-edited URL can no longer reach the gap-fill.
+# Database.MAX_TIME_SERIES_BUCKETS backstops the same limit at the query layer.
+MAX_TREND_BUCKETS = 10_000
 WEEKDAY_NAMES = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
 MAX_INLINE_ARTISTS = 5   #< artist lists longer than this collapse behind a "+N more" toggle (_artist_links.html)...
 MIN_HIDDEN_ARTISTS = 2   #< ...but only when at least this many names would be hidden - "+1 more" saves no space

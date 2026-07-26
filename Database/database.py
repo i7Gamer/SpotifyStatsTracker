@@ -56,6 +56,20 @@ GENRE_COVERAGE_CATEGORIES = ("song", "album", "artist")
 # walks the whole history to compute a number that can't exceed this anyway.
 CURRENT_STREAK_LOOKBACK_DAYS = 400
 
+# Hard ceiling on gap-filled time-series buckets (see the clamp in
+# getListeningTimeSeries): a caller passing unvalidated dates used to emit one
+# zero bucket per day across centuries (~740k dicts, seconds of CPU and a
+# >100MB payload per request). Sits above dashboard/date_ranges'
+# MAX_TREND_BUCKETS so the route-level guards decide first and this stays a
+# pure backstop - real listening histories never come near either (this is
+# ~33 years of day buckets).
+MAX_TIME_SERIES_BUCKETS = 12_000
+
+# Conservative days-per-bucket floors for that clamp's span estimate - month
+# uses 28 (its shortest possible length) so the clamp can never cut the
+# emitted count below MAX_TIME_SERIES_BUCKETS.
+TIME_SERIES_MIN_BUCKET_DAYS = {"hour": 1 / 24, "day": 1, "week": 7, "month": 28}
+
 IMAGE_DOWNLOAD_WORKERS = 5   #< bounds total concurrent image downloads for the whole process, not per user
 
 ARTIST_BIO_FETCH_WORKERS = 2   #< bounds concurrent artist-bio fetches for the whole process; each is one
@@ -1652,23 +1666,46 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         else:
             return []
 
-        # The cursor walks the same local calendar _bucketKey labels by, so it
+        # The aligner walks the same local calendar _bucketKey labels by, so it
         # takes the user's timezone too - otherwise the gap-filled timeline
         # emits server-local bucket labels a play bucket can never match.
         if groupBy == "week":
-            cursor = startOfWeek(rangeStart, tz=self.tz)
+            align = lambda d: startOfWeek(d, tz=self.tz)
             advance = lambda d: d + datetime.timedelta(days=7)
+            minBucketDays = TIME_SERIES_MIN_BUCKET_DAYS["week"]
         elif groupBy == "hour":
-            cursor = rangeStart.replace(minute=0, second=0, microsecond=0)
+            align = lambda d: d.replace(minute=0, second=0, microsecond=0)
             advance = lambda d: d + datetime.timedelta(hours=1)
+            minBucketDays = TIME_SERIES_MIN_BUCKET_DAYS["hour"]
         elif groupBy == "month":
             # A fixed timedelta step doesn't work here since months vary in
             # length - advance to the 1st of the next calendar month instead.
-            cursor = startOfMonth(rangeStart, tz=self.tz)
+            align = lambda d: startOfMonth(d, tz=self.tz)
             advance = lambda d: d.replace(year=d.year + 1, month=1) if d.month == 12 else d.replace(month=d.month + 1)
+            minBucketDays = TIME_SERIES_MIN_BUCKET_DAYS["month"]
         else:
-            cursor = startOfDay(rangeStart, tz=self.tz)
+            align = lambda d: startOfDay(d, tz=self.tz)
             advance = lambda d: d + datetime.timedelta(days=1)
+            minBucketDays = TIME_SERIES_MIN_BUCKET_DAYS["day"]
+        cursor = align(rangeStart)
+
+        # Backstop bound on the gap-fill (see MAX_TIME_SERIES_BUCKETS): when
+        # the requested range implies more buckets than the cap, the START is
+        # clamped up - the newest buckets are what a chart is about - and
+        # re-aligned onto the same bucket grid. The route layer's own guards
+        # (_resolveGroupBy's explicit-choice cap, the custom-range year
+        # bounds) keep every real request far below this; only a caller
+        # passing unvalidated dates straight in can trip it.
+        try:
+            earliestStart = rangeEnd - datetime.timedelta(days=MAX_TIME_SERIES_BUCKETS * minBucketDays)
+        except OverflowError:
+            earliestStart = None   #< rangeEnd within the cap of datetime.min - the range itself is small
+        if earliestStart is not None and cursor < earliestStart:
+            logger.warning(
+                "Time-series range %s..%s implies more than %d %s buckets - clamping the range start",
+                rangeStart, rangeEnd, MAX_TIME_SERIES_BUCKETS, groupBy,
+            )
+            cursor = align(earliestStart)
 
         result = []
         while cursor < rangeEnd:

@@ -134,5 +134,51 @@ class TestUnparseableCustomDates(unittest.TestCase):
         self.assertEqual(label, "Custom range: 2020-01-01 to 2020-01-02")
 
 
+class TestOutOfBoundsCustomDates(unittest.TestCase):
+    """Custom dates outside CUSTOM_RANGE_MIN_YEAR..CUSTOM_RANGE_MAX_YEAR are
+    treated exactly like unparseable ones (fall back to the default window,
+    never label the range as custom). No play can predate the Unix epoch
+    (broken import timestamps clamp to 0 = 1970); before the bounds,
+    ?startDate=0001-01-01 gap-filled one chart bucket per day across twenty
+    centuries (~740k buckets, ~9s and a >100MB payload per request) and
+    crashed getOverallStats' previous-period mirror with an OverflowError,
+    while ?endDate=9999-12-31 OverflowError'd right in _getDateRange
+    (endLocal + 1 day is past datetime.max)."""
+
+    def _assertFallsBackToDefault(self, customStart, customEnd):
+        dash = makeApp()
+        with _frozenNow():
+            got = dash._getDateRange("custom", customStart=customStart, customEnd=customEnd,
+                                     default="week", tz=timezone.utc)
+            expected = dash._getDateRange("week", default="week", tz=timezone.utc)
+        self.assertEqual(got, expected)
+
+    def test_a_pre_epoch_start_falls_back_to_the_default_window(self):
+        self._assertFallsBackToDefault("0001-01-01", "2026-12-31")
+
+    def test_a_far_future_end_no_longer_overflows(self):
+        #< 9999-12-31 + 1 day is past datetime.max - this line CRASHED before
+        self._assertFallsBackToDefault("2020-01-01", "9999-12-31")
+
+    def test_the_label_never_claims_an_out_of_bounds_custom_range(self):
+        dash = makeApp()
+        for start, end in (("0001-01-01", "2026-12-31"), ("2020-01-01", "9999-12-31")):
+            label = dash._getIntervalLabel("custom", customStart=start, customEnd=end,
+                                           default="week")
+            self.assertEqual(label, "Last Week")
+
+    def test_the_boundary_years_are_still_valid(self):
+        dash = makeApp()
+        with _frozenNow():
+            start, end = dash._getDateRange("custom", customStart="1970-01-01",
+                                            customEnd="2100-12-31", default="week",
+                                            tz=timezone.utc)
+        self.assertEqual(start.year, 1970)
+        self.assertEqual(end.year, 2101)   #< the +1-day half-open end
+        label = dash._getIntervalLabel("custom", customStart="1970-01-01",
+                                       customEnd="2100-12-31")
+        self.assertEqual(label, "Custom range: 1970-01-01 to 2100-12-31")
+
+
 if __name__ == "__main__":
     unittest.main()

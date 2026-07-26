@@ -301,6 +301,55 @@ class TestGetListeningTimeSeries(ChartStatsTestCase):
         self.assertEqual(result[0]["totalTimeListened"], 1000)
 
 
+class TestTimeSeriesGapFillBackstop(ChartStatsTestCase):
+    """The gap-fill's hard ceiling (MAX_TIME_SERIES_BUCKETS): a caller passing
+    unvalidated dates used to emit one zero bucket per day across centuries
+    (~740k dicts, seconds of CPU, a >100MB payload). Past the cap the range
+    START is clamped up - the newest buckets are what a chart is about - so
+    the seeded (recent) plays always survive. The route layer's own guards
+    (_resolveGroupBy / the custom-range year bounds) normally keep every
+    request far below this; the clamp is the query-layer backstop."""
+
+    _PLAY_TS = _ts(2023, 11, 14)
+
+    def _makeSinglePlayDb(self):
+        return self._makeDb({}, [{"id": "t1", "playedAt": self._PLAY_TS, "timePlayed": 1000}])
+
+    def test_a_centuries_long_day_range_is_clamped_not_gap_filled(self):
+        from Database.database import MAX_TIME_SERIES_BUCKETS
+        db = self._makeSinglePlayDb()
+        series = db.getListeningTimeSeries(
+            startDate=datetime.datetime(1200, 1, 1, tzinfo=datetime.timezone.utc),
+            endDate=datetime.datetime(2024, 1, 1, tzinfo=datetime.timezone.utc),
+            groupBy="day",
+        )
+        #< +1: clamping re-aligns onto the bucket grid, which can add one bucket
+        self.assertLessEqual(len(series), MAX_TIME_SERIES_BUCKETS + 1)
+        self.assertEqual(sum(b["plays"] for b in series), 1)   #< the newest end is kept
+        self.assertEqual(series[-1]["label"], "2023-12-31")
+
+    def test_a_centuries_long_month_range_is_clamped_too(self):
+        from Database.database import MAX_TIME_SERIES_BUCKETS
+        db = self._makeSinglePlayDb()
+        series = db.getListeningTimeSeries(
+            startDate=datetime.datetime(1, 1, 1, tzinfo=datetime.timezone.utc),
+            endDate=datetime.datetime(2024, 1, 1, tzinfo=datetime.timezone.utc),
+            groupBy="month",
+        )
+        self.assertLessEqual(len(series), MAX_TIME_SERIES_BUCKETS + 1)
+        self.assertEqual(sum(b["plays"] for b in series), 1)
+        self.assertEqual(series[-1]["label"], "2023-12")
+
+    def test_a_normal_range_is_not_clamped(self):
+        db = self._makeSinglePlayDb()
+        series = db.getListeningTimeSeries(
+            startDate=datetime.datetime(2023, 11, 1, tzinfo=datetime.timezone.utc),
+            endDate=datetime.datetime(2023, 12, 1, tzinfo=datetime.timezone.utc),
+            groupBy="day",
+        )
+        self.assertEqual(len(series), 30)   #< the full requested November, untouched
+
+
 class TestGetHourOfDayHeatmap(ChartStatsTestCase):
     def test_buckets_by_weekday_and_hour(self):
         entries = [

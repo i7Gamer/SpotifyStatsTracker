@@ -68,6 +68,23 @@ class TestResolveGroupBy(unittest.TestCase):
         self.assertEqual(self.dash._resolveGroupBy(""), "day")
         self.assertEqual(self.dash._resolveGroupBy("", _spanDates(10)[0], None), "day")
 
+    def test_explicit_choice_over_an_absurd_span_falls_back_to_derived(self):
+        """A hand-edited custom range (?startDate=0001-01-01) with an explicit
+        'day' choice used to be honored into a ~740k-bucket gap-fill (~9s of
+        CPU and a >100MB payload per request). Past MAX_TREND_BUCKETS the
+        span-derived size takes over instead."""
+        start = datetime.datetime(1, 1, 1, tzinfo=UTC)
+        end = datetime.datetime(2026, 12, 31, tzinfo=UTC)
+        for choice in ("day", "week", "month"):
+            self.assertEqual(self.dash._resolveGroupBy(choice, start, end), "month")
+
+    def test_explicit_day_at_the_bucket_ceiling_is_still_honored(self):
+        from config import MAX_TREND_BUCKETS
+        start, end = _spanDates(MAX_TREND_BUCKETS)          #< exactly at the cap
+        self.assertEqual(self.dash._resolveGroupBy("day", start, end), "day")
+        start, end = _spanDates(MAX_TREND_BUCKETS + 1)      #< one past it
+        self.assertEqual(self.dash._resolveGroupBy("day", start, end), "month")
+
 
 class TestGetDateRangeEndDateDoesNotSpillIntoTomorrow(unittest.TestCase):
     """week/month/year/5years all fall through to _getDateRange's default

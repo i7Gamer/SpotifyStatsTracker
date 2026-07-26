@@ -2,7 +2,15 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 from Database.utils import convertToDatetime, msToString, now, parseDateString, startOfDay
-from config import COMPARE_TREND_WEEK_SPAN_DAYS, COMPARE_TREND_MONTH_SPAN_DAYS
+from config import (
+    COMPARE_TREND_WEEK_SPAN_DAYS, COMPARE_TREND_MONTH_SPAN_DAYS,
+    CUSTOM_RANGE_MIN_YEAR, CUSTOM_RANGE_MAX_YEAR, MAX_TREND_BUCKETS,
+)
+
+# Approximate days per bucket, for _resolveGroupBy's explicit-choice guard.
+# An ESTIMATE only - month uses its 28-day floor so the guard can never
+# underestimate how many buckets a choice implies.
+GROUP_BY_APPROX_BUCKET_DAYS = {"day": 1, "week": 7, "month": 28}
 
 
 class DateRangeMixin:
@@ -19,16 +27,21 @@ class DateRangeMixin:
 
     def _resolveGroupBy(self, groupByParam, startDate=None, endDate=None):
         """The trend-bucket size for a time-series chart: an explicit valid
-        choice wins; anything else (the "Auto" option's empty value, or junk)
+        choice wins - unless it would slice the span into more than
+        MAX_TREND_BUCKETS buckets (see its comment in config.py; the cap sits
+        far beyond any real listening history, so only a hand-edited
+        centuries-long custom range ever trips it) - and anything else (the
+        "Auto" option's empty value, junk, or an over-cap explicit choice)
         derives day/week/month from the range span so the trend stays
         readable at any range - day buckets across a multi-year span are
         sub-pixel. Same thresholds Compare's trend has always auto-bucketed
         with; callers with an open-ended range (all time, a detail page's
         whole item history) pass play-range-derived dates, and no dates at
         all fall back to day."""
-        if groupByParam in ("day", "week", "month"):
-            return groupByParam
         spanDays = (endDate - startDate).days if startDate and endDate else 0
+        if (groupByParam in GROUP_BY_APPROX_BUCKET_DAYS
+                and spanDays <= MAX_TREND_BUCKETS * GROUP_BY_APPROX_BUCKET_DAYS[groupByParam]):
+            return groupByParam
         if spanDays > COMPARE_TREND_MONTH_SPAN_DAYS:
             return "month"
         if spanDays > COMPARE_TREND_WEEK_SPAN_DAYS:
@@ -77,8 +90,8 @@ class DateRangeMixin:
             # inverse case (custom with no dates).
             if interval == "custom" and customStart and customEnd:
                 try:
-                    startLocal = parseDateString(customStart, tz=tz)
-                    endLocal = parseDateString(customEnd, tz=tz)
+                    startLocal = self._parseCustomRangeDate(customStart, tz=tz)
+                    endLocal = self._parseCustomRangeDate(customEnd, tz=tz)
                     if startLocal is None or endLocal is None:
                         raise ValueError("Invalid custom date")
 
@@ -116,6 +129,20 @@ class DateRangeMixin:
 
             return startDate, endDate
 
+    @staticmethod
+    def _parseCustomRangeDate(dateText, tz=None):
+        """parseDateString, plus the CUSTOM_RANGE_MIN_YEAR..MAX_YEAR sanity
+        window (see config.py for why those bounds): a custom date outside it
+        is treated exactly like an unparseable one - None - so _getDateRange
+        falls back to the default interval and _getIntervalLabel never claims
+        a custom range the data isn't actually using. Both MUST resolve
+        custom dates through this one helper, or the label and the data can
+        disagree about whether a range was accepted."""
+        parsed = parseDateString(dateText, tz=tz)
+        if parsed is None or not (CUSTOM_RANGE_MIN_YEAR <= parsed.year <= CUSTOM_RANGE_MAX_YEAR):
+            return None
+        return parsed
+
     def _getIntervalLabel(self, interval: str = None, customStart: str = None, customEnd: str = None, default: str = "day"):
         # Match _getDateRange: an unrecognized interval takes `default`, so the
         # label can't disagree with the data (junk no longer reads "Yesterday"
@@ -132,10 +159,12 @@ class DateRangeMixin:
         }
 
         if interval == "custom" and customStart and customEnd:
-            # Only claim a custom range if those dates actually parsed -
-            # _getDateRange falls back to `default` when they didn't, and the
-            # label must not promise a range the data doesn't cover.
-            if parseDateString(customStart) is not None and parseDateString(customEnd) is not None:
+            # Only claim a custom range if those dates actually parsed AND fell
+            # inside the sanity window - _getDateRange falls back to `default`
+            # otherwise (same _parseCustomRangeDate), and the label must not
+            # promise a range the data doesn't cover.
+            if (self._parseCustomRangeDate(customStart) is not None
+                    and self._parseCustomRangeDate(customEnd) is not None):
                 return f"Custom range: {customStart} to {customEnd}"
             return labels.get(default, "Yesterday")
 
