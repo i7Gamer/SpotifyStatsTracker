@@ -112,6 +112,41 @@ class TestTrendQueries(unittest.TestCase):
         self.assertEqual(raw["obsession"]["track_id"], "obsession_track")
         self.assertEqual(raw["obsession"]["recent_count"], 6)
 
+    def test_rediscovery_requires_a_recent_real_play(self):
+        """A track with a big old history and NO recent play is not a
+        rediscovery - nothing has been rediscovered.
+
+        The query leans on this: it only aggregates tracks that have a recent
+        non-skip play, because the HAVING already demands one. Without that
+        narrowing it grouped the user's entire history (~180ms on a real
+        library, on the landing page). If this invariant ever stops holding,
+        the narrowing silently starts hiding qualifying tracks."""
+        self.repo.upsertTrack(makeTrack(trackId="stale_track", name="Stale"))
+        for i in range(50):   #< far more old plays than rediscovery_track has
+            self.repo.insertPlay("alice", "stale_track",
+                                 self.now_ts - (200 * self.day) - (i * 100), 200000)
+        self.repo.commit()
+
+        raw = self.repo.getDashboardTrendsRaw("alice", now_ts=self.now_ts)
+
+        self.assertEqual(raw["rediscovery"]["track_id"], "rediscovery_track")
+
+    def test_rediscovery_still_found_when_it_is_the_only_candidate(self):
+        """Guards the narrowing from the other side: the one track with a
+        recent play must still be reachable once the obvious winner is gone."""
+        self.repo.connection().execute("DELETE FROM plays WHERE track_id = 'rediscovery_track'")
+        self.repo.commit()
+        self.repo.upsertTrack(makeTrack(trackId="lone_redisc", name="Lone"))
+        for i in range(5):
+            self.repo.insertPlay("alice", "lone_redisc",
+                                 self.now_ts - (200 * self.day) - (i * 100), 200000)
+        self.repo.insertPlay("alice", "lone_redisc", self.now_ts - 500, 200000)
+        self.repo.commit()
+
+        raw = self.repo.getDashboardTrendsRaw("alice", now_ts=self.now_ts)
+
+        self.assertEqual(raw["rediscovery"]["track_id"], "lone_redisc")
+
     def test_rediscovery_excludes_skips(self):
         # A track whose only recent plays are skips has not been "rediscovered".
         # skip_redisc_track has more real old plays (6) than rediscovery_track (5)

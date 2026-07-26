@@ -72,6 +72,19 @@ class TrendQueries:
                    MAX(CASE WHEN played_at < ? THEN played_at END) as max_old_played_at
             FROM plays
             WHERE username = ? AND is_skip = 0
+              -- Only tracks with a recent real play can survive the
+              -- `recent_count >= 1` below, so aggregating any others is wasted
+              -- work. Restricting the candidates first turns a GROUP BY over
+              -- the user's whole history into one over the handful of tracks
+              -- they have actually played lately (~180ms -> ~0.5ms on a real
+              -- library, on the landing page). The subquery repeats the
+              -- is_skip = 0 filter deliberately: a track whose only recent
+              -- plays are skips has recent_count 0 and must stay excluded, the
+              -- same as before (see test_rediscovery_excludes_skips).
+              AND track_id IN (
+                  SELECT track_id FROM plays
+                  WHERE username = ? AND is_skip = 0 AND played_at >= ?
+              )
             GROUP BY track_id
             HAVING recent_count >= 1
                AND old_count >= ?
@@ -85,6 +98,8 @@ class TrendQueries:
                 rediscovery_recent_cutoff,
                 rediscovery_recent_cutoff,
                 username,
+                username,
+                rediscovery_recent_cutoff,
                 TREND_REDISCOVERY_MIN_HISTORICAL_PLAYS,
                 rediscovery_gap_cutoff,
             ),
