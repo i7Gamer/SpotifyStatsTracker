@@ -23,10 +23,10 @@
   var drawYAxisGrid = CU.drawYAxisGrid;
   var drawSparseXLabels = CU.drawSparseXLabels;
 
-  // Consts still needed by the charts-only helpers (yAxisPaddingLeft, the
+  // Consts still needed by the charts-only helpers (valueAxisPadding, the
   // time-series/mirror label spacing). They mirror the same-named constants in
   // chart-utils.js - GRID_LINE_COUNT in particular must match the grid drawn by
-  // ChartUtils.drawYAxisGrid so yAxisPaddingLeft sizes for the labels actually rendered.
+  // ChartUtils.drawYAxisGrid so valueAxisPadding sizes for the labels actually rendered.
   var GRID_LINE_COUNT = 4;
   var MIN_AXIS_LABEL_SPACING_PX = 70;
   var Y_AXIS_LABEL_FONT = '11px sans-serif';
@@ -46,12 +46,19 @@
     return minutes + 'm';
   }
 
-  // A fixed left padding either wastes space (short labels like "45m") or
-  // clips the widest one off the left edge (long ones like "150h30m" - the
-  // longer the time-listened axis's labels, the more room they need). Size
-  // it to what the grid's own labels will actually render as, sampling the
-  // same GRID_LINE_COUNT fractions drawYAxisGrid draws.
-  function yAxisPaddingLeft(ctx, maxValue, formatLabel) {
+  // Skip-axis labels are whole play counts. skipAxisMax keeps every grid line
+  // on a whole number, so this only has to drop the float division's dust.
+  function skipCountLabel(count) {
+    return String(Math.round(count));
+  }
+
+  // A fixed padding either wastes space (short labels like "45m") or clips the
+  // widest one off the edge (long ones like "150h30m" - the longer a value
+  // axis's labels, the more room they need). Size it to what the grid's own
+  // labels will actually render as, sampling the same GRID_LINE_COUNT
+  // fractions drawYAxisGrid draws. Used for both sides of the time-series
+  // chart, which carries a second axis for the skips series.
+  function valueAxisPadding(ctx, maxValue, formatLabel) {
     var prevFont = ctx.font;
     ctx.font = Y_AXIS_LABEL_FONT;
     var maxWidth = 0;
@@ -63,6 +70,20 @@
     }
     ctx.font = prevFont;
     return Math.max(Y_AXIS_MIN_PADDING_PX, maxWidth + Y_AXIS_LABEL_GAP_PX * 2);
+  }
+
+  // The skips series' own axis, labelled down the right-hand edge against the
+  // grid drawYAxisGrid already drew for the left one. Labels only - a second
+  // set of grid lines at different heights would just be noise over the bars.
+  function drawRightAxisLabels(ctx, axisX, paddingTop, plotHeight, maxValue, formatLabel) {
+    ctx.fillStyle = '#b0b0b0';
+    ctx.font = Y_AXIS_LABEL_FONT;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    for (var i = 0; i <= GRID_LINE_COUNT; i++) {
+      var y = paddingTop + plotHeight - (plotHeight * i / GRID_LINE_COUNT);
+      ctx.fillText(formatLabel(maxValue * i / GRID_LINE_COUNT), axisX + Y_AXIS_LABEL_GAP_PX, y);
+    }
   }
 
   function renderTimeSeriesChart() {
@@ -78,7 +99,8 @@
     ctx.clearRect(0, 0, width, height);
 
     // Skips carry no listening time, so they cannot share the millisecond axis
-    // - they get their own count scale and a second, narrower bar in each slot.
+    // - they get their own count axis down the right-hand edge and a second,
+    // narrower bar in each slot.
     // Only the detail pages ask for that (showSkips, set in detail-page.js):
     // there the series answers "does this one item get skipped", and without it
     // a track whose plays are ALL skips renders every bar at zero height and
@@ -89,7 +111,7 @@
     // screen, appeared to claim 9 hours.
     var showSkips = !!(window.__chartData && window.__chartData.showSkips);
     // Present on the detail pages only, and filled in below - the second bar is
-    // meaningless without a key naming it and saying it isn't on the axis.
+    // meaningless without a key naming it and the axis it is read against.
     var legendEl = document.getElementById('timeSeriesLegend');
     if (CU.timeSeriesHasNothingToDraw(data, showSkips)) {
       drawEmptyState(ctx, width, height, 'No listening data in this period yet.');
@@ -104,8 +126,14 @@
     // redraw so the bucket select can add and remove it (see detail-chart.js).
     CU.renderLegend(legendEl, CU.timeSeriesLegendItems(hasSkips));
 
+    // Rounded up off maxSkips so the right axis's labels are whole plays; the
+    // bars scale against it too, or the labels would not describe them.
+    var skipAxisTop = CU.skipAxisMax(maxSkips, GRID_LINE_COUNT);
+
     var maxMs = Math.max(1, Math.max.apply(null, data.map(function (d) { return d.totalTimeListened; })));
-    var paddingLeft = yAxisPaddingLeft(ctx, maxMs, msToShortLabel), paddingBottom = 26, paddingTop = 16, paddingRight = 16;
+    var paddingLeft = valueAxisPadding(ctx, maxMs, msToShortLabel), paddingBottom = 26, paddingTop = 16;
+    // Room for the skip axis's labels only where that axis is drawn.
+    var paddingRight = hasSkips ? valueAxisPadding(ctx, skipAxisTop, skipCountLabel) : 16;
     var plotWidth = width - paddingLeft - paddingRight;
     var plotHeight = height - paddingTop - paddingBottom;
     var slotWidth = plotWidth / data.length;
@@ -115,6 +143,9 @@
     var playWidth = hasSkips ? Math.max(1, barWidth / 2) : barWidth;
 
     drawYAxisGrid(ctx, paddingLeft, paddingTop, plotWidth, plotHeight, maxMs, msToShortLabel);
+    if (hasSkips) {
+      drawRightAxisLabels(ctx, paddingLeft + plotWidth, paddingTop, plotHeight, skipAxisTop, skipCountLabel);
+    }
 
     var bars = data.map(function (d, i) {
       var x = paddingLeft + i * slotWidth + barGap / 2;
@@ -123,7 +154,7 @@
       ctx.fillStyle = PALETTE[CU.TIME_SERIES_PLAY_COLOR_INDEX];
       ctx.fillRect(x, y, playWidth, barHeight);
       if (hasSkips && (d.skips || 0) > 0) {
-        var skipHeight = plotHeight * (d.skips / maxSkips);
+        var skipHeight = plotHeight * (d.skips / skipAxisTop);
         ctx.fillStyle = PALETTE[CU.TIME_SERIES_SKIP_COLOR_INDEX];
         ctx.fillRect(x + playWidth, paddingTop + plotHeight - skipHeight, playWidth, skipHeight);
       }
@@ -157,8 +188,7 @@
         var label = isLastDay ? hit.d.label.split(' ')[1] : hit.d.label;
         var body = (hit.d.totalTimeListenedText || '0s') + ' &middot; ' + hit.d.plays + ' plays';
         // Only mentioned where the series is drawn and there are some: the
-        // count is exact here, which matters because the skip bar is on its own
-        // scale, not the time axis.
+        // count is exact here, where the right axis only labels the grid.
         if (hasSkips && (hit.d.skips || 0) > 0) {
           body += ' &middot; ' + hit.d.skips + (hit.d.skips === 1 ? ' skip' : ' skips');
         }
@@ -255,7 +285,7 @@
     data.series.forEach(function (s) {
       maxMs = Math.max(maxMs, Math.max.apply(null, s.data));
     });
-    var paddingLeft = yAxisPaddingLeft(ctx, maxMs, msToShortLabel), paddingBottom = 26, paddingTop = 16, paddingRight = 16;
+    var paddingLeft = valueAxisPadding(ctx, maxMs, msToShortLabel), paddingBottom = 26, paddingTop = 16, paddingRight = 16;
     var plotWidth = width - paddingLeft - paddingRight;
     var plotHeight = height - paddingTop - paddingBottom;
     var half = plotHeight / 2;

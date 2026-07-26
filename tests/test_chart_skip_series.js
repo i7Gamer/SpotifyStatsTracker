@@ -4,9 +4,12 @@
 // pinned here. No test framework - run with: node tests/test_chart_skip_series.js
 const assert = require('assert');
 const {
-  maxSkipsIn, timeSeriesHasNothingToDraw, timeSeriesLegendItems, legendHtml,
+  maxSkipsIn, skipAxisMax, timeSeriesHasNothingToDraw, timeSeriesLegendItems, legendHtml,
   escapeHtml, PALETTE, TIME_SERIES_PLAY_COLOR_INDEX, TIME_SERIES_SKIP_COLOR_INDEX,
 } = require('../static/js/chart-utils.js');
+
+// Same grid the chart draws (charts.js's GRID_LINE_COUNT).
+const GRID_LINES = 4;
 
 function run(name, fn) {
   try {
@@ -36,6 +39,45 @@ run('maxSkipsIn tolerates buckets predating the skips key', () => {
   assert.strictEqual(maxSkipsIn([{ totalTimeListened: 10, plays: 1 }]), 0);
   assert.strictEqual(maxSkipsIn([]), 0);
   assert.strictEqual(maxSkipsIn(null), 0);
+});
+
+// --- skip axis scale -------------------------------------------------------
+// The skip bars get their own labelled axis on the right. Its top has to be a
+// clean multiple of the grid line count or the labels repeat: 3 skips split
+// into 4 steps reads 0 / 1 / 2 / 2 / 3 once each line is rounded to whole plays.
+
+run('the skip axis tops out at the next whole multiple of the grid', () => {
+  assert.strictEqual(skipAxisMax(1, GRID_LINES), 4);
+  assert.strictEqual(skipAxisMax(3, GRID_LINES), 4);
+  assert.strictEqual(skipAxisMax(4, GRID_LINES), 4);
+  assert.strictEqual(skipAxisMax(5, GRID_LINES), 8);
+  assert.strictEqual(skipAxisMax(26, GRID_LINES), 28);
+});
+
+run('every grid line of the skip axis lands on a whole skip count', () => {
+  [1, 2, 3, 7, 13, 26, 99].forEach((maxSkips) => {
+    const axisMax = skipAxisMax(maxSkips, GRID_LINES);
+    for (let i = 0; i <= GRID_LINES; i++) {
+      const value = axisMax * i / GRID_LINES;
+      assert.strictEqual(value, Math.round(value), `line ${i} of max ${maxSkips} is ${value}`);
+    }
+  });
+});
+
+run('the skip axis always reaches the tallest bar', () => {
+  // Bars are scaled against this max, so a max below the tallest count would
+  // draw it past the top of the plot.
+  [1, 2, 3, 5, 26, 100].forEach((maxSkips) => {
+    assert.ok(skipAxisMax(maxSkips, GRID_LINES) >= maxSkips, `max ${maxSkips}`);
+  });
+});
+
+run('no skips means no axis to scale', () => {
+  // Guarded by hasSkips at the call site; must not invent a 0..4 axis for a
+  // series that is never drawn - and must never return 0 as a divisor when it is.
+  assert.strictEqual(skipAxisMax(0, GRID_LINES), 0);
+  assert.strictEqual(skipAxisMax(null, GRID_LINES), 0);
+  assert.strictEqual(skipAxisMax(undefined, GRID_LINES), 0);
 });
 
 run('a skip-only track is NOT treated as empty where skips are drawn', () => {
@@ -80,11 +122,13 @@ run('a bucket list with no skips key behaves as before', () => {
 // nothing on screen said so: the detail pages showed two differently coloured
 // bars per bucket with one axis and no key at all.
 
-run('a chart with skip bars names both series', () => {
+run('a chart with skip bars names both series and the axis each is read against', () => {
   const items = timeSeriesLegendItems(true);
   assert.strictEqual(items.length, 2);
   assert.strictEqual(items[0].name, 'Listening time (left axis)');
-  assert.strictEqual(items[1].name, 'Skips (own scale)');
+  // Was "(own scale)" while the skip counts had no labels of their own; they
+  // are now drawn against a labelled right-hand axis, so the key points at it.
+  assert.strictEqual(items[1].name, 'Skips (right axis)');
 });
 
 run('the legend swatches are the colours the bars are actually drawn in', () => {

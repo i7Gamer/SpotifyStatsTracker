@@ -587,6 +587,19 @@
     }, 0);
   }
 
+  function skipAxisMax(maxSkips, gridLineCount) {
+    /* Top of the skip bars' right-hand axis: the tallest bar rounded up to a
+     * whole multiple of the grid, so every grid line lands on a whole skip
+     * count. Labelling the raw maximum repeats itself - 3 skips across 4 lines
+     * reads 0 / 1 / 2 / 2 / 3 once each is rounded to a play count. 0 when
+     * nothing was skipped, where the series isn't drawn at all (see
+     * renderTimeSeriesChart's hasSkips) and there is no axis to label. */
+    if (!maxSkips) {
+      return 0;
+    }
+    return Math.ceil(maxSkips / gridLineCount) * gridLineCount;
+  }
+
   // Which PALETTE entry each of the time-series chart's two bars is drawn in.
   // Shared with charts.js's renderTimeSeriesChart so the swatch in the legend
   // and the bar on the canvas can never name different colours.
@@ -601,15 +614,15 @@
      * one axis and a legend would be noise. Where it IS drawn the key is not
      * optional: two differently coloured bars shared each bucket with a single
      * millisecond axis and nothing naming either of them, so the narrower bar
-     * read as some second measure of listening. It is a count, on its own
-     * scale (see maxSkipsIn) - hence the axis note on one and the scale note on
-     * the other. */
+     * read as some second measure of listening. It is a count, read against
+     * its own axis on the right (see skipAxisMax) - hence the axis note on
+     * each. */
     if (!hasSkips) {
       return [];
     }
     return [
       { name: 'Listening time (left axis)', color: PALETTE[TIME_SERIES_PLAY_COLOR_INDEX] },
-      { name: 'Skips (own scale)', color: PALETTE[TIME_SERIES_SKIP_COLOR_INDEX] },
+      { name: 'Skips (right axis)', color: PALETTE[TIME_SERIES_SKIP_COLOR_INDEX] },
     ];
   }
 
@@ -655,6 +668,7 @@
     TIME_SERIES_PLAY_COLOR_INDEX: TIME_SERIES_PLAY_COLOR_INDEX,
     TIME_SERIES_SKIP_COLOR_INDEX: TIME_SERIES_SKIP_COLOR_INDEX,
     maxSkipsIn: maxSkipsIn,
+    skipAxisMax: skipAxisMax,
     timeSeriesLegendItems: timeSeriesLegendItems,
     legendHtml: legendHtml,
     renderLegend: renderLegend,
