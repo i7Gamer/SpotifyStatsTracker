@@ -1,11 +1,11 @@
 try:
     from Database.Migrators.base import BaseMigrator, resolveRuntimeDir
     from Database.repository import Repository
-    from Database.db import RESTRICTED_FALLBACK_REASON, UNKNOWN_TRACK_NAME
+    from Database.db import RESTRICTED_FALLBACK_REASON, UNKNOWN_TRACK_NAME, UNKNOWN_ALBUM_NAME
 except ModuleNotFoundError:
     from Migrators.base import BaseMigrator, resolveRuntimeDir
     from repository import Repository
-    from db import RESTRICTED_FALLBACK_REASON, UNKNOWN_TRACK_NAME
+    from db import RESTRICTED_FALLBACK_REASON, UNKNOWN_TRACK_NAME, UNKNOWN_ALBUM_NAME
 
 SPOTIFY_TRACK_URL_PREFIX = "https://open.spotify.com/track/"
 
@@ -75,9 +75,23 @@ class Migrator(BaseMigrator):
                     "releaseDate": 0.0,
                     "imageUrl": "",
                     #< no cover art is known; the per-track fallback album
-                    #  upsertTrack synthesizes carries the same empty image
+                    #  carries the same empty image
                     "imageId": "",
                     "artists": [],
+                    # Supplied rather than left to upsertTrack, which would
+                    # synthesize this album and name it after the TRACK - so
+                    # every one of these placeholders had an album called
+                    # "Unknown Track". The album_ prefix is the convention for a
+                    # fabricated album and is what keeps it out of the album
+                    # backfill queue, since it never existed on Spotify.
+                    "album": {
+                        "id": f"album_{trackId}",
+                        "name": UNKNOWN_ALBUM_NAME,
+                        "url": "",
+                        "totalTracks": 1,
+                        "releaseDate": 0.0,
+                        "imageUrl": "",
+                    },
                     "created_reason": RESTRICTED_FALLBACK_REASON,
                 })
             # Whatever is still orphaned now belongs to a track with no plays.

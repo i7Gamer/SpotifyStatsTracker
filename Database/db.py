@@ -28,6 +28,14 @@ RESTRICTED_FALLBACK_REASON = "restricted_fallback"
 # metadata arrives - the placeholder never blocks the repair.
 UNKNOWN_TRACK_NAME = "Unknown Track"
 
+# Companion for the per-track album a fallback record has to invent, because the
+# real one is exactly what isn't known. upsertTrack synthesizes that album when
+# a caller supplies none and names it after the TRACK - which is right for an
+# ordinary track (a single's album shares its title) and wrong for a placeholder,
+# where it produced an album literally called "Unknown Track" on the detail page
+# and in every album link.
+UNKNOWN_ALBUM_NAME = "Unknown Album"
+
 # The fixed lower floor (5s) below which an imported/listened event is treated
 # as a non-play for DEDUP purposes only: such events bypass the importer's
 # near-time play-matching (they must never claim/correct a real play row). This

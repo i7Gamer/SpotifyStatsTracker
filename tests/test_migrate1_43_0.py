@@ -32,7 +32,7 @@ import Database.Migrators.base as baseModule
 import Database.Migrators.migrate1_43_0 as migrateModule
 from Database.Migrators import dbversion
 from Database.repository import Repository
-from Database.db import RESTRICTED_FALLBACK_REASON, UNKNOWN_TRACK_NAME
+from Database.db import RESTRICTED_FALLBACK_REASON, UNKNOWN_TRACK_NAME, UNKNOWN_ALBUM_NAME
 
 
 def _track(trackId):
@@ -142,6 +142,33 @@ class TestMigrate1_43_0(unittest.TestCase):
         self.assertEqual(row["name"], UNKNOWN_TRACK_NAME)
         #< the id is real, so the Spotify link is real - only fabricated ids carry an empty url
         self.assertIn(self.ORPHANED_WITH_PLAYS, row["url"])
+
+    def test_the_placeholders_album_is_named_as_an_album(self):
+        """upsertTrack synthesizes a per-track album when none is supplied and
+        names it after the TRACK, so the placeholder's album read "Unknown
+        Track" on the detail page and in every album link. Verified against a
+        copy of the real database, where all five revived tracks came back with
+        an album called "Unknown Track"."""
+        self._seedDatabaseAt("1.43.0")
+
+        self._migrate()
+
+        albumName = self._repo()._conn().execute(
+            "SELECT al.name FROM tracks t JOIN albums al ON al.id = t.album_id WHERE t.id = ?",
+            (self.ORPHANED_WITH_PLAYS,)).fetchone()["name"]
+        self.assertEqual(albumName, UNKNOWN_ALBUM_NAME)
+
+    def test_the_placeholders_album_id_stays_out_of_the_backfill_queue(self):
+        """The `album_` prefix is what getAlbumsMissingMetadata excludes - this
+        album never existed on Spotify, so asking for it would 404 every cycle
+        forever."""
+        self._seedDatabaseAt("1.43.0")
+
+        self._migrate()
+
+        albumId = self._repo()._conn().execute(
+            "SELECT album_id FROM tracks WHERE id = ?", (self.ORPHANED_WITH_PLAYS,)).fetchone()["album_id"]
+        self.assertTrue(albumId.startswith("album_"), albumId)
 
     def test_a_revived_tracks_artist_credits_are_kept_not_swept(self):
         """Those credits point at artists that still exist, so reviving the
