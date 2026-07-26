@@ -17,6 +17,7 @@ from Database.Listeners.spotifyListener import (
     _get_current_user_from_web_api,
     _SCOPE_ERROR,
 )
+from Database.utils import timeToInt
 
 # Comfortably past WEB_API_POLL_INTERVAL_SECONDS so _checkWebApiBackfill's
 # poll-interval guard is deterministically bypassed, regardless of how large
@@ -772,6 +773,109 @@ class ApiBackfillTestCase(unittest.TestCase):
                 self._runBackfillWithMissedPlays()
 
         self.assertTrue(any("Backfilling 2 plays from Web API" in m for m in cm.output))
+
+
+class BackfillDatabaseDedupTestCase(unittest.TestCase):
+    """The backfill's "is this play already recorded" test used to consult only
+    two in-memory caches, both of which live and die with the Listener object -
+    and a listener is rebuilt on every stale-feed reconnect (1,568 times over 11
+    days for 3 users in app.log). So the first poll after every rebuild declared
+    the whole 50-item page missing: 74,579 plays announced, 201 actually new.
+    The database is what can tell a genuine gap from an empty cache."""
+
+    #< played_at values two minutes apart, and a 3-minute track: long enough
+    #  that an end-time interpretation lands well outside the 2s tolerance
+    FIRST_PLAYED_AT = "2026-07-26T14:20:00Z"
+    SECOND_PLAYED_AT = "2026-07-26T14:22:00Z"
+    DURATION_MS = 180000
+
+    def _items(self):
+        return [
+            {"track": {"id": "track1", "duration_ms": self.DURATION_MS}, "played_at": self.SECOND_PLAYED_AT},
+            {"track": {"id": "track2", "duration_ms": self.DURATION_MS}, "played_at": self.FIRST_PLAYED_AT},
+        ]
+
+    def _runBackfill(self, getRecordedPlayTimes):
+        getCredentials = MagicMock(return_value={
+            "client_id": "cid", "client_secret": "cs", "refresh_token": "rt",
+        })
+        with patch("Database.Listeners.spotifyListener.Spotify") as mockSpotifyCls:
+            mockSp = MagicMock()
+            mockSp.current_user_recently_played.return_value = []
+            mockSpotifyCls.return_value = mockSp
+            listener = Listener("dummy_cookie", email="alice@example.com",
+                                get_credentials=getCredentials,
+                                get_recorded_play_times=getRecordedPlayTimes)
+        listener._lastWebApiPollTime = 0
+        callback = MagicMock()
+        with patch("Database.Listeners.spotifyListener._get_current_user_from_web_api",
+                   return_value={"id": "alice", "display_name": "Alice", "email": "alice@example.com"}):
+            with patch("Database.Listeners.spotifyListener._fetch_recently_played_from_web_api",
+                       return_value=self._items()):
+                with patch("Database.Listeners.spotifyListener._refresh_spotify_access_token",
+                           return_value="token123"):
+                    with patch("Database.Listeners.spotifyListener.time.monotonic", return_value=_MONOTONIC_NOW):
+                        listener._checkWebApiBackfill(callback)
+        return callback
+
+    def _backfilledTrackIds(self, callback):
+        if not callback.call_args_list:
+            return []
+        return [item["track"]["id"] for item in callback.call_args[0][0]]
+
+    def test_plays_already_in_the_database_are_not_backfilled(self):
+        recorded = [timeToInt(self.FIRST_PLAYED_AT), timeToInt(self.SECOND_PLAYED_AT)]
+
+        callback = self._runBackfill(MagicMock(return_value=recorded))
+
+        callback.assert_not_called()
+
+    def test_only_the_genuinely_missing_play_is_backfilled(self):
+        """The case the feature exists for: one of the two plays was never
+        recorded, and it must still come through."""
+        callback = self._runBackfill(MagicMock(return_value=[timeToInt(self.FIRST_PLAYED_AT)]))
+
+        self.assertEqual(self._backfilledTrackIds(callback), ["track1"])
+
+    def test_a_recorded_play_stored_at_the_start_time_still_counts(self):
+        """Spotify's played_at may be the END of a play, in which case the
+        stored row sits one track-length earlier - the same both-interpretations
+        test the in-memory dedup already applies."""
+        recorded = [
+            timeToInt(self.FIRST_PLAYED_AT) - self.DURATION_MS // 1000,
+            timeToInt(self.SECOND_PLAYED_AT) - self.DURATION_MS // 1000,
+        ]
+
+        callback = self._runBackfill(MagicMock(return_value=recorded))
+
+        callback.assert_not_called()
+
+    def test_lookup_window_covers_the_whole_page_plus_a_track_length(self):
+        """A too-narrow window would silently miss the rows it went looking for,
+        which reads exactly like "nothing was recorded"."""
+        lookup = MagicMock(return_value=[])
+
+        self._runBackfill(lookup)
+
+        startTs, endTs = lookup.call_args[0]
+        durationSeconds = self.DURATION_MS // 1000
+        self.assertLessEqual(startTs, timeToInt(self.FIRST_PLAYED_AT) - durationSeconds)
+        self.assertGreaterEqual(endTs, timeToInt(self.SECOND_PLAYED_AT))
+
+    def test_a_failing_lookup_falls_back_to_the_previous_behaviour(self):
+        """A database problem must not silence the backfill: announcing an
+        already-recorded play is harmless (appendTrackData's own guard drops
+        it), losing a genuinely missing one is not."""
+        callback = self._runBackfill(MagicMock(side_effect=RuntimeError("database is locked")))
+
+        self.assertEqual(sorted(self._backfilledTrackIds(callback)), ["track1", "track2"])
+
+    def test_without_the_callback_behaviour_is_unchanged(self):
+        """Callers that don't pass the callback (older tests, any embedder) keep
+        the in-memory-cache-only behaviour."""
+        callback = self._runBackfill(None)
+
+        self.assertEqual(sorted(self._backfilledTrackIds(callback)), ["track1", "track2"])
 
 
 class ListenerLogIdentityTestCase(unittest.TestCase):

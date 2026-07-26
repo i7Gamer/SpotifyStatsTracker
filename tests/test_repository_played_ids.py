@@ -183,5 +183,58 @@ class TestGetRecentlyRecordedTrackIds(unittest.TestCase):
         self.assertEqual(self._lookup([]), set())
 
 
+class TestGetPlayTimesInRange(unittest.TestCase):
+    """Backs the Web API backfill's dedup: the listener's in-memory caches only
+    cover the current listener object's lifetime, so after a reconnect the
+    database is the only thing that knows which of the last 50 Web API plays
+    were already recorded."""
+
+    HOUR = 3600
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        self.repo = Repository(Path(self._tmpdir.name) / "test.db")
+        self.addCleanup(self.repo.connectionManager.close)
+
+        self.repo.upsertUser("alice", "alice@example.com")
+        self.repo.upsertUser("bob", "bob@example.com")
+        for trackId in ("t1", "t2", "t3", "t4"):
+            self.repo.upsertTrack(_track(trackId, ["a1"], "al1"))
+        self.repo.commit()
+
+        self.base = 1_700_000_000.0
+        self.repo.insertPlay("alice", "t1", self.base, 60000)
+        self.repo.insertPlay("alice", "t2", self.base + 600, 2000, is_skip=1)  #< a skip is still recorded
+        self.repo.insertPlay("alice", "t3", self.base + 10 * self.HOUR, 60000)  #< outside the window
+        self.repo.insertPlay("bob", "t4", self.base + 60, 60000)
+        self.repo.commit()
+
+    def _lookup(self, startTs, endTs):
+        return sorted(self.repo.getPlayTimesInRange("alice", startTs, endTs))
+
+    def test_returns_played_at_values_inside_the_window(self):
+        self.assertEqual(self._lookup(self.base - 10, self.base + 1200), [self.base, self.base + 600])
+
+    def test_bounds_are_inclusive(self):
+        """The caller pads the window by exactly the dedup tolerance, so an
+        exclusive bound would drop the play sitting on the edge."""
+        self.assertEqual(self._lookup(self.base, self.base), [self.base])
+
+    def test_skips_count_as_recorded(self):
+        self.assertEqual(self._lookup(self.base + 600, self.base + 600), [self.base + 600])
+
+    def test_plays_outside_the_window_are_excluded(self):
+        self.assertEqual(self._lookup(self.base - 10, self.base + 60), [self.base])
+
+    def test_another_users_plays_do_not_count(self):
+        """bob's play sits inside the window - scoping it to alice is what keeps
+        one account's history from suppressing another's backfill."""
+        self.assertNotIn(self.base + 60, self._lookup(self.base - 10, self.base + 1200))
+
+    def test_empty_window_returns_nothing(self):
+        self.assertEqual(self._lookup(self.base + 2 * self.HOUR, self.base + 3 * self.HOUR), [])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -283,7 +283,7 @@ def _suppress_signal_in_thread():
 class Listener:
     def __init__(self, cookiesFile, refreshInterval=6, email=None, get_credentials=None,
                  get_backfill_enabled=None, on_scope_status_change=None, user=None,
-                 get_recorded_track_ids=None):
+                 get_recorded_track_ids=None, get_recorded_play_times=None):
         self.run = False
         self._stop_event = threading.Event()
         self.email = email  #< store expected email for validation
@@ -314,6 +314,10 @@ class Listener:
         # recent play for; see _dropUrisAlreadyInDatabase. None means the
         # missed-track cross-check judges on its in-memory cache alone.
         self.get_recorded_track_ids = get_recorded_track_ids
+        # Optional callback(startTs, endTs) -> the played_at values this user
+        # already has in that window; see _recordedPlayTimesFromDatabase. None
+        # means the Web API backfill judges on its in-memory caches alone.
+        self.get_recorded_play_times = get_recorded_play_times
         self._consecutiveScopeErrors = 0  #< see SCOPE_ERROR_CONFIRM_THRESHOLD
         self._lastWebApiPollTime = None  #< None means "never polled yet" - forces an immediate first poll
         with _suppress_signal_in_thread():
@@ -705,6 +709,39 @@ class Listener:
                     logger.error("Error in listener: %s", parseError(e))
                     self._stop_event.wait(30)
 
+    def _recordedPlayTimesFromDatabase(self, items: list) -> set:
+        """The played_at values the database already holds across the window
+        `items` spans - the half of the backfill's dedup set that survives a
+        listener rebuild.
+
+        Kept as a callback rather than a repo handle so the listener still knows
+        nothing about the database (same contract as get_credentials /
+        get_recorded_track_ids). No callback, no usable timestamps, or a failing
+        lookup all degrade to the in-memory caches alone: announcing an
+        already-recorded play is harmless (appendTrackData's guard drops it),
+        whereas suppressing a genuinely missing one would lose it for good."""
+        if not self.get_recorded_play_times or not items:
+            return set()
+
+        timestamps = [ts for ts in (timeToInt(item.get("played_at")) for item in items) if ts > 0]
+        if not timestamps:
+            return set()
+
+        # played_at may be the END of a play (see the dedup comment below), in
+        # which case the recorded row sits up to one track-length earlier - so
+        # the window has to reach back that far to find it.
+        longestTrackSeconds = max(
+            ((item.get("track") or {}).get("duration_ms", 0) or 0) // 1000 for item in items
+        )
+        startTs = min(timestamps) - longestTrackSeconds - WEB_API_BACKFILL_DEDUP_TOLERANCE_SECONDS
+        endTs = max(timestamps) + WEB_API_BACKFILL_DEDUP_TOLERANCE_SECONDS
+        try:
+            return {float(playedAt) for playedAt in self.get_recorded_play_times(startTs, endTs)}
+        except Exception as e:
+            logger.debug("Backfill dedup database lookup failed, judging on the in-memory caches alone: %s",
+                         parseError(e))
+            return set()
+
     def _checkWebApiBackfill(self, callback, onWebApiSnapshot=None) -> None:
         if not self.get_credentials:
             return
@@ -810,6 +847,18 @@ class Listener:
                 for item in self.recentlyPlayed_Z1 + self.webApiRecentlyPlayed_Z1
                 if item.get("played_at")
             }
+            # Both caches above live and die with this listener object, and a
+            # listener is rebuilt on every stale-feed reconnect (1,568 times in
+            # 11 days for 3 users) - webApiRecentlyPlayed_Z1 starts empty, and
+            # so does recentlyPlayed_Z1, since SpotipyFree's deque only fills
+            # from track changes its websocket observes after start. So the
+            # first poll after every rebuild saw the whole page as missing:
+            # 74,579 plays announced over those 11 days, of which 201 were
+            # genuinely new - the rest were dropped one at a time by
+            # appendTrackData's own duplicate guard, long after the log had
+            # claimed them. The database is what tells a real gap from a cold
+            # cache.
+            recorded_timestamps |= self._recordedPlayTimesFromDatabase(items)
 
             # Built directly from `items` in one pass so each missed item stays
             # tied to its OWN source API item's played_at - no post-hoc

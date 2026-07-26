@@ -140,6 +140,24 @@ class PlayQueries:
         ).fetchall()
         return {row["track_id"] for row in rows}
 
+    def getPlayTimesInRange(self, username: str, startTs: float, endTs: float) -> list[float]:
+        """Every played_at this user has in the closed [startTs, endTs] window.
+
+        Backs the Web API backfill's duplicate check (see _checkWebApiBackfill):
+        the listener's in-memory caches only cover the current listener object's
+        lifetime, so after a reconnect the database is the only thing that knows
+        which of the last 50 Web API plays were already recorded. Like
+        getRecentlyRecordedTrackIds it answers "did we record this at all", so
+        is_skip rows count - re-announcing a recorded skip as missing is the
+        same false positive. One range query per poll, rather than the
+        page-sized set of point lookups the insert guard answers one by one."""
+        conn = self._conn()
+        rows = conn.execute(
+            "SELECT played_at FROM plays WHERE username=? AND played_at BETWEEN ? AND ?",
+            (username, startTs, endTs),
+        ).fetchall()
+        return [row["played_at"] for row in rows]
+
     def getPlaysNearTime(self, username: str, trackId: str, playedAt: float, toleranceSeconds: float) -> list[dict]:
         """Return all plays for this exact track already existing for this user
         within toleranceSeconds of playedAt (inclusive both directions).

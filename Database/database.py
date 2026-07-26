@@ -1737,6 +1737,14 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         return self.repo.getRecentlyRecordedTrackIds(
             self.user, trackIds, CONNECT_STATE_MISSED_TRACK_LOOKBACK_SECONDS)
 
+    def getRecordedPlayTimes(self, startTs: float, endTs: float) -> list[float]:
+        """The played_at values this user already has in a time window. Bound to
+        this user and handed to the Listener as a callback (like
+        getRecentlyRecordedTrackIds above), so the Web API backfill can tell a
+        genuine gap from an empty in-memory cache without the listener knowing
+        anything about the database."""
+        return self.repo.getPlayTimesInRange(self.user, startTs, endTs)
+
     def getUserLastfmApiKey(self) -> str | None:
         return self.repo.getUserLastfmApiKey(self.user)
 
