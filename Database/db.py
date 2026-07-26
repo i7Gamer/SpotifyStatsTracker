@@ -36,6 +36,22 @@ UNKNOWN_TRACK_NAME = "Unknown Track"
 # and in every album link.
 UNKNOWN_ALBUM_NAME = "Unknown Album"
 
+# A real Spotify track id is 22 base62 characters. When a track cannot be
+# resolved against Spotify at all, the importer stores a surrogate instead - a
+# bare 32-character md5 digest of "name::artist"
+# (StreamingHistoryImporter._createSyntheticTrack), with no prefix to test for,
+# so the two are told apart by shape and they are disjoint by length alone.
+#
+# Shared because getting it wrong is silent both ways: asking Spotify for a
+# surrogate id 404s forever (and the importer's guard used to test a "synth_"
+# prefix that no track id has ever carried, so it never fired), while treating a
+# real id as fabricated costs a repair that would have worked.
+SPOTIFY_TRACK_ID_LENGTH = 22
+
+
+def looksLikeSpotifyTrackId(trackId) -> bool:
+    return bool(trackId) and len(trackId) == SPOTIFY_TRACK_ID_LENGTH and trackId.isalnum()
+
 # The fixed lower floor (5s) below which an imported/listened event is treated
 # as a non-play for DEDUP purposes only: such events bypass the importer's
 # near-time play-matching (they must never claim/correct a real play row). This

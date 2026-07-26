@@ -11,11 +11,13 @@ logger = logging.getLogger(__name__)
 
 try:
     from Database.Formatters.spotifyClient import Client
-    from Database.db import SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON, SKIP_THRESHOLD_MS
+    from Database.db import (SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON, SKIP_THRESHOLD_MS,
+                             looksLikeSpotifyTrackId)
     from Database.utils import timeToInt, timeToIntUTC, parseError, convertToDatetime, getTimezone
 except ModuleNotFoundError:
     from Formatters.spotifyClient import Client
-    from db import SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON, SKIP_THRESHOLD_MS
+    from db import (SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON, SKIP_THRESHOLD_MS,
+                    looksLikeSpotifyTrackId)
     from utils import timeToInt, timeToIntUTC, parseError, convertToDatetime, getTimezone
 
 
@@ -211,7 +213,11 @@ class Importer:
             if trackUri:
                 missingTracks[trackUri] = (name, artist, trackUri, albumName)
             elif name and artist:
-                missingTracks[name + artist] = (name, artist, None, albumName)
+                # _knownNameKey, not concatenation: this key is what the
+                # prefetch stores its result under, and _resolveKnownKey is what
+                # looks it up - built two different ways, nothing was ever found
+                # and every URI-less entry got fetched twice.
+                missingTracks[_knownNameKey(name, artist)] = (name, artist, None, albumName)
         return missingTracks
 
     def _prefetchMissingTracks(self, missingTracks, chunkStart, totalItems, known, progressCallback):
@@ -249,8 +255,7 @@ class Importer:
                         if key != formatted["id"]:
                             known[key] = formatted
                         if len(formatted["artists"]) > 0:
-                            nameArtistKey = formatted["name"] + formatted["artists"][0]["name"]
-                            known[nameArtistKey] = formatted
+                            known[_knownNameKey(formatted["name"], formatted["artists"][0]["name"])] = formatted
                 except Exception as e:
                     logger.error("Error saving pre-fetched track: %s", parseError(e))
 
@@ -392,7 +397,12 @@ class Importer:
                 if base.get("album") is None:
                     repaired = False
                     track_id = base.get("id")
-                    if track_id and not track_id.startswith("synth_"):
+                    # Shape, not a prefix: this guard used to test
+                    # startswith("synth_"), which no TRACK id carries -
+                    # _createSyntheticTrack emits a bare md5 digest - so it
+                    # never fired, and a surrogate id was asked of Spotify
+                    # for every play of that track, failing every time.
+                    if looksLikeSpotifyTrackId(track_id):
                         try:
                             logger.info("Track %s (%s) is missing its album in DB. Querying Spotify API...", base.get("name"), track_id)
                             track_meta = self.sp.track(track_id)

@@ -317,7 +317,13 @@ class ListenerMixin:
         apiTimes = [
             _dbmod.timeToInt(item["played_at"])
             for item in apiItems
-            if item.get("track", {}).get("id") and item.get("played_at")
+            #< (item.get("track") or {}), not .get("track", {}): Spotify sends
+            #  the key present-and-NULL, where the default never applies and
+            #  None.get raises. The AttributeError escaped into
+            #  _checkWebApiBackfill's catch-all AFTER its inserts had landed, so
+            #  the duplicate cleanup those inserts need never ran. Same guard the
+            #  listener's own snapshot builder uses.
+            if (item.get("track") or {}).get("id") and item.get("played_at")
         ]
         if not apiTimes:
             _dbmod.logger.debug("Reconciliation skipped: no API items with both track id and played_at")

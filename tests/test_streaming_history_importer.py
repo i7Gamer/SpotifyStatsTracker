@@ -1,4 +1,5 @@
 import datetime
+import hashlib
 import unittest
 from unittest.mock import patch, MagicMock
 import sys
@@ -261,11 +262,14 @@ class TestSkipThresholdRouting(unittest.TestCase):
         self.assertEqual(known["track_x"]["duration"], 240000)
 
     def test_process_play_repairs_missing_album_from_spotify_or_import_data(self):
+        """The id here is a real 22-character Spotify id on purpose: the API
+        repair below is gated on the id looking like one, since asking Spotify
+        for the importer's md5 surrogate 404s every time."""
         importer = self._importer()
         
         known = {
-            "track_real": {
-                "id": "track_real",
+            "4cOdK2wGLETKBW3PvgPWqT": {
+                "id": "4cOdK2wGLETKBW3PvgPWqT",
                 "name": "Song Real",
                 "artists": [{"id": "artist_real", "name": "Artist Real"}],
                 "duration": 240000,
@@ -276,7 +280,7 @@ class TestSkipThresholdRouting(unittest.TestCase):
         # 1. Test repairing via Spotify API (mocked)
         with patch.object(importer.sp, "track") as mock_track:
             mock_track.return_value = {
-                "id": "track_real",
+                "id": "4cOdK2wGLETKBW3PvgPWqT",
                 "name": "Song Real",
                 "duration_ms": 240000,
                 "external_urls": {"spotify": "https://open.spotify.com/track/track_real"},
@@ -291,22 +295,22 @@ class TestSkipThresholdRouting(unittest.TestCase):
                 "artists": [{"id": "artist_real", "name": "Artist Real"}]
             }
             
-            item = ("Song Real", "Artist Real", 1000, 240000, "track_real", "Album Real Exported")
+            item = ("Song Real", "Artist Real", 1000, 240000, "4cOdK2wGLETKBW3PvgPWqT", "Album Real Exported")
             importer._processPlay(item, known)
             
-            self.assertIsNotNone(known["track_real"]["album"])
-            self.assertEqual(known["track_real"]["album"]["name"], "Album Real Refetched")
-            self.assertEqual(known["track_real"]["album"]["id"], "album_real")
+            self.assertIsNotNone(known["4cOdK2wGLETKBW3PvgPWqT"]["album"])
+            self.assertEqual(known["4cOdK2wGLETKBW3PvgPWqT"]["album"]["name"], "Album Real Refetched")
+            self.assertEqual(known["4cOdK2wGLETKBW3PvgPWqT"]["album"]["id"], "album_real")
             
         # 2. Test repairing via export data fallback when Spotify API fails
-        known["track_real"]["album"] = None  # reset
+        known["4cOdK2wGLETKBW3PvgPWqT"]["album"] = None  # reset
         with patch.object(importer.sp, "track", side_effect=Exception("API failure")):
-            item = ("Song Real", "Artist Real", 1000, 240000, "track_real", "Album Real Exported")
+            item = ("Song Real", "Artist Real", 1000, 240000, "4cOdK2wGLETKBW3PvgPWqT", "Album Real Exported")
             importer._processPlay(item, known)
             
-            self.assertIsNotNone(known["track_real"]["album"])
-            self.assertEqual(known["track_real"]["album"]["name"], "Album Real Exported")
-            self.assertTrue(known["track_real"]["album"]["id"].startswith("album_"))
+            self.assertIsNotNone(known["4cOdK2wGLETKBW3PvgPWqT"]["album"])
+            self.assertEqual(known["4cOdK2wGLETKBW3PvgPWqT"]["album"]["name"], "Album Real Exported")
+            self.assertTrue(known["4cOdK2wGLETKBW3PvgPWqT"]["album"]["id"].startswith("album_"))
 
 
 class TestOfflineTimestampCorrection(unittest.TestCase):
@@ -598,6 +602,99 @@ class TestVideoExportRows(unittest.TestCase):
             known=[], progressCallback=None, stats=stats))
 
         self.assertEqual(stats.get("droppedMalformed"), 1)
+
+    def test_a_uri_less_track_is_fetched_once_not_re_fetched_per_play(self):
+        """The concurrent prefetch stored its results under a bare
+        name+artist concatenation while _resolveKnownKey looks them up under
+        _knownNameKey's "name::artist" - so nothing ever found them. Every entry
+        without a track URI (account exports and Musicolet backups carry none at
+        all) was fetched by the 14-worker prefetch AND then again, serially, by
+        _processPlay. Double the Spotify search volume, the second half
+        serialized, which feeds droppedTransient - and droppedTransient aborts
+        an overwrite import."""
+        importer = Importer()
+        importer.sp = MagicMock()
+        importer._fetchTrackMeta = MagicMock(return_value={
+            "id": "track123", "name": "Song One", "duration_ms": 200000,
+            "external_urls": {"spotify": "https://open.spotify.com/track/track123"},
+            "album": {"id": "alb1", "name": "Album", "external_urls": {"spotify": ""},
+                      "images": [], "total_tracks": 1, "release_date": "2020-01-01",
+                      "artists": [{"id": "art1", "name": "Artist One", "external_urls": {"spotify": ""}}]},
+        })
+        plays = [
+            {"endTime": "2023-05-01 10:00", "msPlayed": 150000,
+             "trackName": "Song One", "artistName": "Artist One"},
+            {"endTime": "2023-05-01 11:00", "msPlayed": 150000,
+             "trackName": "Song One", "artistName": "Artist One"},
+        ]
+
+        metas = list(importer.importAcountHistory(plays, known=[], progressCallback=None))
+
+        self.assertEqual(len(metas), 2)
+        self.assertEqual(importer._fetchTrackMeta.call_count, 1)
+
+    def test_a_fabricated_track_id_is_not_asked_of_spotify(self):
+        """The guard here tested `startswith("synth_")`, but no TRACK id in this
+        codebase carries that prefix - _createSyntheticTrack emits a bare md5
+        digest, and SYNTHETIC_ID_PREFIX is only ever applied to artist and album
+        ids. So a cached synthetic track with no album asked Spotify for a
+        32-hex id that cannot exist, failed, and - when the export carries no
+        album name either, as account and Musicolet exports don't - repeated it
+        with a logged warning for every single play of that track."""
+        importer = Importer()
+        importer.sp = MagicMock()
+        fabricated = hashlib.md5(b"Song One::Artist One", usedforsecurity=False).hexdigest()
+        cached = {
+            "id": fabricated, "name": "Song One", "url": "", "album": None,
+            "artists": [{"id": "art1", "name": "Artist One", "url": "", "imageUrl": "", "imageId": "art1"}],
+            "duration": 200000, "imageId": "", "imageUrl": "", "explicit": False,
+            "isrc": "", "discNumber": 1, "trackNumber": 1, "releaseDate": 0,
+        }
+        item = ("Song One", "Artist One", 1000, 150000, None, None, None)
+
+        importer._processPlay(item, {_knownNameKey("Song One", "Artist One"): cached})
+
+        importer.sp.track.assert_not_called()
+
+    def test_a_real_spotify_id_is_still_repaired_from_the_api(self):
+        """The guard must stay narrow - a genuine id with a missing album is
+        exactly what that lookup is for."""
+        importer = Importer()
+        importer.sp = MagicMock()
+        importer.sp.track.return_value = {
+            "id": "4cOdK2wGLETKBW3PvgPWqT", "name": "Song One", "duration_ms": 200000,
+            "external_urls": {"spotify": ""},
+            "album": {"id": "alb1", "name": "Real Album", "external_urls": {"spotify": ""},
+                      "images": [], "total_tracks": 1, "release_date": "2020-01-01",
+                      "artists": [{"id": "art1", "name": "Artist One", "external_urls": {"spotify": ""}}]},
+        }
+        cached = {
+            "id": "4cOdK2wGLETKBW3PvgPWqT", "name": "Song One", "url": "", "album": None,
+            "artists": [{"id": "art1", "name": "Artist One", "url": "", "imageUrl": "", "imageId": "art1"}],
+            "duration": 200000, "imageId": "", "imageUrl": "", "explicit": False,
+            "isrc": "", "discNumber": 1, "trackNumber": 1, "releaseDate": 0,
+        }
+        item = ("Song One", "Artist One", 1000, 150000, None, None, None)
+
+        importer._processPlay(item, {_knownNameKey("Song One", "Artist One"): cached})
+
+        importer.sp.track.assert_called_once_with("4cOdK2wGLETKBW3PvgPWqT")
+
+    def test_the_prefetch_cache_key_cannot_collide(self):
+        """The separator _knownNameKey exists for: bare concatenation made
+        ("Al", "Green") and ("A", "lGreen") the same key, so one track could be
+        served another's catalog row. Two sites in the prefetch still built the
+        key by hand."""
+        importer = Importer()
+        importer.sp = MagicMock()
+        chunk = [
+            ("Al", "Green", 1, 1000, None, None, None),
+            ("A", "lGreen", 2, 1000, None, None, None),
+        ]
+
+        missing = importer._identifyMissingTracks(chunk, {})
+
+        self.assertEqual(len(missing), 2, "two different tracks collapsed onto one prefetch key")
 
     def test_transient_lookup_failure_is_dropped_and_counted(self):
         """A rate-limited/timed-out lookup drops the play rather than freezing a

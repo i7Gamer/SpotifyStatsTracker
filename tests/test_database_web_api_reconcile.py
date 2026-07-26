@@ -102,6 +102,33 @@ class TestReconcileWithWebApiHistory(unittest.TestCase):
 
         db.repo.getPlaysWithSourceInRange.assert_not_called()
 
+    def test_a_null_track_is_skipped_rather_than_crashing(self):
+        """`.get("track", {})` returns the default only when the KEY is absent -
+        Spotify sends it present-and-null, and `None.get` is an AttributeError.
+        It escaped into _checkWebApiBackfill's catch-all, which had already
+        inserted the backfill rows by then, so the run looked like a generic
+        "Error during Web API backfill" while reconciliation - the step that
+        removes the cross-source duplicates those inserts create - never ran, for
+        as long as a null-track item sat in the last-50 window. The listener's
+        own snapshot builder guards this exact shape one file over."""
+        db = _bareDatabase()
+        db.repo.getPlaysWithSourceInRange.return_value = []
+
+        db._reconcileWithWebApiHistory([
+            {"track": None, "played_at": API_PLAYED_AT},
+            {"track": {"id": "t1"}, "played_at": API_PLAYED_AT},
+        ])
+
+        #< the good item still drove the query; the null one was simply skipped
+        db.repo.getPlaysWithSourceInRange.assert_called_once()
+
+    def test_every_item_null_is_a_noop(self):
+        db = _bareDatabase()
+
+        db._reconcileWithWebApiHistory([{"track": None, "played_at": API_PLAYED_AT}])
+
+        db.repo.getPlaysWithSourceInRange.assert_not_called()
+
     def test_no_local_plays_in_window_is_noop(self):
         db = _bareDatabase()
         db.repo.getPlaysWithSourceInRange.return_value = []

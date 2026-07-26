@@ -2,24 +2,14 @@ try:
     from Database.Migrators.base import BaseMigrator, resolveRuntimeDir
     from Database.repository import Repository
     from Database.db import (RESTRICTED_FALLBACK_REASON, SYNTHETIC_FALLBACK_REASON,
-                             UNKNOWN_TRACK_NAME, UNKNOWN_ALBUM_NAME)
+                             UNKNOWN_TRACK_NAME, UNKNOWN_ALBUM_NAME, looksLikeSpotifyTrackId)
 except ModuleNotFoundError:
     from Migrators.base import BaseMigrator, resolveRuntimeDir
     from repository import Repository
     from db import (RESTRICTED_FALLBACK_REASON, SYNTHETIC_FALLBACK_REASON,
-                    UNKNOWN_TRACK_NAME, UNKNOWN_ALBUM_NAME)
+                    UNKNOWN_TRACK_NAME, UNKNOWN_ALBUM_NAME, looksLikeSpotifyTrackId)
 
 SPOTIFY_TRACK_URL_PREFIX = "https://open.spotify.com/track/"
-
-# A real Spotify track id is 22 base62 characters. The importer's surrogate for a
-# track it could not resolve is a bare 32-character md5 hex digest
-# (StreamingHistoryImporter._createSyntheticTrack) - no prefix to test, so the
-# shapes are the discriminator, and they are disjoint by length alone.
-SPOTIFY_TRACK_ID_LENGTH = 22
-
-
-def _looksLikeARealSpotifyId(trackId: str) -> bool:
-    return len(trackId) == SPOTIFY_TRACK_ID_LENGTH and trackId.isalnum()
 
 
 class Migrator(BaseMigrator):
@@ -80,7 +70,7 @@ class Migrator(BaseMigrator):
                 # codebase, and it decides the marker too: a fabricated id can
                 # never be repaired by a later lookup, which is what
                 # SYNTHETIC_FALLBACK_REASON means as against RESTRICTED.
-                isRealId = _looksLikeARealSpotifyId(trackId)
+                isRealId = looksLikeSpotifyTrackId(trackId)
                 repo.upsertTrack({
                     "id": trackId,
                     # Invents no facts: no duration, no artists, no album name.
