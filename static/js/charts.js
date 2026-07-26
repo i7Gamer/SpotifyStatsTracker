@@ -79,14 +79,20 @@
 
     // Skips carry no listening time, so they cannot share the millisecond axis
     // - they get their own count scale and a second, narrower bar in each slot.
-    // Drawn only when skips actually exist, so a chart without any looks
-    // exactly as it did before. Without this a track whose plays are ALL skips
-    // renders every bar at zero height and reads as "nothing here".
-    if (CU.timeSeriesHasNothingToDraw(data)) {
+    // Only the detail pages ask for that (showSkips, set in detail-page.js):
+    // there the series answers "does this one item get skipped", and without it
+    // a track whose plays are ALL skips renders every bar at zero height and
+    // reads as "nothing here". The aggregate pages (/charts, /wrapped) leave it
+    // off. Two units on one axis is unreadable once the buckets hold real
+    // volume: the tallest skip count is always drawn at full height, so a week
+    // with 26 skips out-towered its own 128 plays and, against the only axis on
+    // screen, appeared to claim 9 hours.
+    var showSkips = !!(window.__chartData && window.__chartData.showSkips);
+    if (CU.timeSeriesHasNothingToDraw(data, showSkips)) {
       drawEmptyState(ctx, width, height, 'No listening data in this period yet.');
       return;
     }
-    var maxSkips = CU.maxSkipsIn(data);
+    var maxSkips = showSkips ? CU.maxSkipsIn(data) : 0;
     var hasSkips = maxSkips > 0;
 
     var maxMs = Math.max(1, Math.max.apply(null, data.map(function (d) { return d.totalTimeListened; })));
@@ -141,9 +147,10 @@
       if (hit) {
         var label = isLastDay ? hit.d.label.split(' ')[1] : hit.d.label;
         var body = (hit.d.totalTimeListenedText || '0s') + ' &middot; ' + hit.d.plays + ' plays';
-        // Only mentioned when there are some: the count is exact here, which
-        // matters because the skip bar is on its own scale, not the time axis.
-        if ((hit.d.skips || 0) > 0) {
+        // Only mentioned where the series is drawn and there are some: the
+        // count is exact here, which matters because the skip bar is on its own
+        // scale, not the time axis.
+        if (hasSkips && (hit.d.skips || 0) > 0) {
           body += ' &middot; ' + hit.d.skips + (hit.d.skips === 1 ? ' skip' : ' skips');
         }
         showTooltip(evt, '<strong>' + label + '</strong><br>' + body);

@@ -33,6 +33,18 @@ function detailBodyUrl(pathname, search) {
   return pathname + '?' + params.toString();
 }
 
+// window.__chartData for one item's page. showSkips is what turns the play
+// history chart's second (skip-count) series on, and these pages are the only
+// ones that set it: a skip is a per-item behaviour signal here, and a track
+// whose plays are ALL skips has to render at all. The aggregate pages leave it
+// off - see renderTimeSeriesChart for why it does not survive contact with
+// buckets holding real listening volume. heatmap is absent on artist/album,
+// whose payload has no such chart; renderAllCharts skips a canvas that isn't
+// there, so it stays undefined rather than becoming an empty series.
+function detailChartData(data) {
+  return { timeSeries: data.timeSeries, heatmap: data.heatmap, showSkips: true };
+}
+
 if (typeof window !== 'undefined') (function () {
   function target() { return document.getElementById('detailBody'); }
 
@@ -50,9 +62,8 @@ if (typeof window !== 'undefined') (function () {
     el.innerHTML = data.bodyHtml;
     // The canvases only exist now, so charts.js was told to skip its initial
     // render (window.__deferInitialChartRender in the shell) and is driven
-    // from here instead. heatmap is absent on artist/album, whose payload has
-    // no such chart - renderAllCharts skips a canvas that isn't there.
-    window.__chartData = { timeSeries: data.timeSeries, heatmap: data.heatmap };
+    // from here instead.
+    window.__chartData = detailChartData(data);
     if (window.renderAllCharts) window.renderAllCharts();
     //< both bind to elements that arrived with the body above
     if (window.initDetailHistory) window.initDetailHistory();
@@ -101,5 +112,5 @@ if (typeof window !== 'undefined') (function () {
 })();
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { detailBodyUrl, DETAIL_BODY_AJAX };
+  module.exports = { detailBodyUrl, detailChartData, DETAIL_BODY_AJAX };
 }

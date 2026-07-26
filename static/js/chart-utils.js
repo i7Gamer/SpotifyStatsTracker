@@ -585,16 +585,20 @@
     }, 0);
   }
 
-  function timeSeriesHasNothingToDraw(data) {
-    /* True only when there is neither listening time nor a single skip. A
-     * track whose plays are ALL skips has zero listening time in every bucket,
-     * so a time-only emptiness check would show "no data" on a page whose
-     * whole point is the skips. */
+  function timeSeriesHasNothingToDraw(data, showSkips) {
+    /* True only when there is nothing the chart would actually draw, which
+     * depends on whether the caller draws the skips series (see
+     * renderTimeSeriesChart). With it on, a bucket holding only skips counts:
+     * a track whose plays are ALL skips has zero listening time everywhere, so
+     * a time-only check would show "no data" on a page whose whole point is
+     * the skips. With it off - the default, and what every aggregate page
+     * gets - skips are not drawn, so such a range genuinely has nothing to
+     * show and the empty state says more than a row of zero-height bars. */
     if (!data || data.length === 0) {
       return true;
     }
     return !data.some(function (d) {
-      return (d && d.totalTimeListened > 0) || ((d && d.skips) || 0) > 0;
+      return (d && d.totalTimeListened > 0) || (showSkips && ((d && d.skips) || 0) > 0);
     });
   }
 
