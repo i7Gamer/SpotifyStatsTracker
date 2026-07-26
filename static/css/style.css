@@ -1896,6 +1896,33 @@ progress::-moz-progress-bar {
   flex-wrap: wrap;
 }
 
+/* Playlist exporter's Match Mode / Sort Order / File Format row. .filter-group
+   is a horizontal label+control pair built for the wrapping .filter-section
+   bars; in a fixed grid column each select keeps the intrinsic width of its
+   longest option ("CSV (Spotify URIs, ISRCs & Track Info - …)") and, as a flex
+   item defaulting to min-width:auto, refuses to shrink - so all three spilled
+   over their columns and overlapped. Stack label above control and cap the
+   control at the column width instead. */
+.playlist-filters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1rem;
+  margin-top: 1.5rem;
+}
+
+.playlist-filters .filter-group {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  min-width: 0;
+}
+
+.playlist-filters .filter-group select {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+
 .nav-toggle {
   display: none;
   background: none;
