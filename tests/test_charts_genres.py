@@ -293,6 +293,34 @@ class ChartsGenresTestCase(AppTestCase):
         labels = [pair[0] for pair in resp.get_json()["genreDistribution"]]
         self.assertEqual(labels, ["jazz", "indie rock", "rock"])
 
+    #< the markup of one progress bar's track; counting it counts the bars
+    _PROGRESS_BAR_TRACK = "background: rgba(255, 255, 255, 0.08); border-radius: 4px; height: 10px"
+
+    def test_overall_is_text_on_the_own_tags_line_not_a_fourth_bar(self):
+        """Overall coverage rides at the end of the own-tags sentence; only the
+        three categories get a bar of their own."""
+        dash = self._makeApp()
+        coverage = coverageDict(29, 90, 45)
+        coverage["song"]["ownPercent"] = 12.0
+        coverage["album"]["ownPercent"] = 34.0
+        html = self._getData(dash, self._makeDb(coverage=coverage)).get_json()["genreSectionHtml"]
+
+        self.assertEqual(html.count(self._PROGRESS_BAR_TRACK), 3)
+        self.assertIn("Overall: <strong>{}%</strong>".format(coverage["overall"]["percent"]), html)
+        self.assertLess(html.index("Counting only own"), html.index("Overall:"))
+        #< same paragraph: no tag closes between the sentence and the appended text
+        self.assertNotIn("</p>", html[html.index("Counting only own"):html.index("Overall:")])
+
+    def test_overall_still_shows_when_the_own_tags_line_is_hidden(self):
+        """Without ownPercent there is no own-tags sentence to append to, but
+        the overall percentage must not vanish with it."""
+        dash = self._makeApp()
+        coverage = coverageDict(29, 90, 45)   #< no ownPercent anywhere
+        html = self._getData(dash, self._makeDb(coverage=coverage)).get_json()["genreSectionHtml"]
+
+        self.assertNotIn("Counting only own", html)
+        self.assertIn("Overall: <strong>{}%</strong>".format(coverage["overall"]["percent"]), html)
+
     def test_coverage_errors_degrade_to_the_locked_state(self):
         dash = self._makeApp()
         db = self._makeDb()
