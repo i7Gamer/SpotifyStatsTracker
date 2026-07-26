@@ -21,8 +21,9 @@ EXTRAS_FULL = {
 }
 
 
-def _meta(trackId, playedAt, timePlayed=60000, isSkip=False, extras=None):
-    track = normalizeTrackForTest({"id": trackId, "name": f"Song {trackId}", "artists": []})
+def _meta(trackId, playedAt, timePlayed=60000, isSkip=False, extras=None, duration=0):
+    track = normalizeTrackForTest({"id": trackId, "name": f"Song {trackId}", "artists": [],
+                                   "duration": duration})
     track["playedAt"] = playedAt
     track["timePlayed"] = timePlayed
     track["playedFrom"] = None
@@ -198,6 +199,90 @@ class TestSkipNearTimeDedup(_ImportTestBase):
         self._import(db, gen)
 
         self.assertEqual(len(self._playRows(db)), 1)
+        self.assertEqual(len(self._skipRows(db)), 1)
+
+
+class TestShortTracksAreNotSkipsJustForBeingShort(_ImportTestBase):
+    """The importer's isSkip tag is a fixed 5s floor in one place
+    (StreamingHistoryImporter's SKIP_THRESHOLD_MS). Since 73e1a2c that is no
+    longer the same question as "is this a skip": computeIsSkip caps its
+    threshold at the completion boundary, so a play UNDER 5s is a complete play
+    whenever duration x completion% < 5000ms - i.e. any track shorter than
+    6.25s at the default 80%.
+
+    Routing on the tag alone therefore stored is_skip=1 for a 3s interlude
+    played to its end, disagreeing with the classifier (so the next
+    recomputeSkipFlags flipped it), AND sent it down the skip-only dedup path,
+    where the listener's correctly-classified row for the same physical event is
+    invisible - so one event became two real plays after that recompute.
+    """
+
+    SHORT_MS = 3_000   #< a 3s track: complete at 3s, since 3000 >= 3000*0.8
+
+    def test_a_short_track_played_to_the_end_is_stored_as_a_real_play(self):
+        db = self._makeDb({}, [])
+
+        def gen():
+            yield _meta("track_tiny", 1000, timePlayed=self.SHORT_MS, isSkip=True,
+                        duration=self.SHORT_MS, extras=EXTRAS_FULL)
+
+        self._import(db, gen)
+
+        self.assertEqual(self._skipRows(db), [])
+        plays = self._playRows(db)
+        self.assertEqual(len(plays), 1)
+        self.assertEqual(plays[0]["time_played"], self.SHORT_MS)
+        # The stored flag must be whatever the classifier says, always.
+        self.assertEqual(plays[0]["is_skip"],
+                         db.repo.computeIsSkip(self.SHORT_MS, self.SHORT_MS))
+
+    def test_a_recompute_does_not_change_what_the_import_stored(self):
+        """The disagreement is what made this a double-count: the import row
+        flipped to is_skip=0 later, after the dedup had already let it in."""
+        db = self._makeDb({}, [])
+
+        def gen():
+            yield _meta("track_tiny", 1000, timePlayed=self.SHORT_MS, isSkip=True,
+                        duration=self.SHORT_MS)
+
+        self._import(db, gen)
+        before = self._playRows(db) + self._skipRows(db)
+        db.repo.recomputeSkipFlags()
+        after = self._playRows(db) + self._skipRows(db)
+
+        self.assertEqual([r["is_skip"] for r in before], [r["is_skip"] for r in after])
+
+    def test_it_dedups_against_the_listeners_row_for_the_same_event(self):
+        """The listener classified the same 3s play correctly (is_skip=0), so it
+        is only reachable through the real-play matcher - the skip-only path
+        filters is_skip=1 and would have inserted a second row."""
+        db = self._makeDb({}, [])
+        db.repo.upsertTrack(normalizeTrackForTest(
+            {"id": "track_tiny", "name": "Song", "artists": [], "duration": self.SHORT_MS}))
+        db.repo.insertPlay(db.user, "track_tiny", 1000, self.SHORT_MS,
+                           created_reason="listener", is_skip=0)
+        db.repo.commit()
+
+        def gen():
+            yield _meta("track_tiny", 1004, timePlayed=self.SHORT_MS, isSkip=True,
+                        duration=self.SHORT_MS)   #< same event, 4s apart
+
+        self._import(db, gen)
+
+        self.assertEqual(len(self._playRows(db)) + len(self._skipRows(db)), 1)
+
+    def test_a_genuinely_abandoned_short_play_is_still_a_skip(self):
+        """The narrowing must not go the other way: barely-started is still a
+        skip on a short track (0.5s of a 3s track is under the 2.4s boundary)."""
+        db = self._makeDb({}, [])
+
+        def gen():
+            yield _meta("track_tiny", 1000, timePlayed=500, isSkip=True,
+                        duration=self.SHORT_MS)
+
+        self._import(db, gen)
+
+        self.assertEqual(self._playRows(db), [])
         self.assertEqual(len(self._skipRows(db)), 1)
 
 

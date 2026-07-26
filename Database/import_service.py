@@ -237,14 +237,39 @@ class ImportMixin:
                 extras = entry.get("importExtras") or {}
                 extrasValues = [extras.get(column) for column in _dbmod.BEHAVIORAL_COLUMNS]
 
+                track = stagedTracks.get(track_id)
+                #< staged tracks carry Client.formatTrack's "duration" key (ms)
+                trackDurationMs = track.get("duration") if track else None
+                isSkip = self.repo.computeIsSkip(
+                    time_played, trackDurationMs,
+                    threshold=skipThreshold, completionPercent=completionPercent)
+
                 # Sub-5s events (entry["isSkip"], the fixed import floor) never
-                # claim or correct a real play row - they're always is_skip=1
-                # (the stats threshold is >= 5s) and match only against other
-                # skips. plays' UNIQUE constraint alone wasn't enough: the live
-                # listener records the same physical event, and the two sources'
-                # played_at can differ by seconds (Spotify's start-vs-end
-                # ambiguity), so one skip landed twice and inflated skip counts.
-                if entry.get("isSkip"):
+                # claim or correct a real play row - they match only against
+                # other skips. plays' UNIQUE constraint alone wasn't enough: the
+                # live listener records the same physical event, and the two
+                # sources' played_at can differ by seconds (Spotify's
+                # start-vs-end ambiguity), so one skip landed twice and inflated
+                # skip counts.
+                #
+                # The classifier has to agree, not just the floor. Since 73e1a2c
+                # computeIsSkip caps its threshold at the completion boundary, so
+                # a play under 5s is a COMPLETE play whenever duration x
+                # completion% < 5000ms - any track shorter than 6.25s at the
+                # default 80%. A 3s interlude played to its end used to be stored
+                # is_skip=1 here, which both disagreed with the classifier (the
+                # next recomputeSkipFlags flipped it) and hid the listener's
+                # correctly-classified is_skip=0 row for the same event from the
+                # dedup, so that recompute turned one event into two real plays.
+                # Those fall through to the real-play path below instead, which
+                # is the matcher that can see the row they need to dedup against.
+                #
+                # The converse is deliberately NOT routed here: an event ABOVE
+                # the floor that the classifier calls a skip (a high admin
+                # threshold) still goes to the real-play path, because it may
+                # legitimately be a correction of an existing longer play, and
+                # this path cannot correct.
+                if entry.get("isSkip") and isSkip:
                     nearbySkips = [
                         skip for skip in self.repo.getSkipsNearTime(
                             self.user, track_id, played_at, SKIP_NEAR_TIME_TOLERANCE_SECONDS)
@@ -265,9 +290,7 @@ class ImportMixin:
                 # Check if a play for this track already exists within (duration + 60s) tolerance,
                 # same logic as API backfill to handle potential overlap with backfilled data
                 # where Spotify's played_at can be ambiguous (start or end time).
-                track = stagedTracks.get(track_id)
-                #< staged tracks carry Client.formatTrack's "duration" key (ms)
-                durationSeconds = (track.get("duration", 0) or 0) // 1000 if track else 0
+                durationSeconds = (trackDurationMs or 0) // 1000
                 tolerance = durationSeconds + self.BACKFILL_INSERT_GUARD_EXTRA_SECONDS
                 raw_matches = self.repo.getPlaysNearTime(self.user, track_id, played_at, tolerance)
                 matches = []
@@ -305,9 +328,7 @@ class ImportMixin:
                             # Update both fields with imported data (more accurate source).
                             # A corrected time_played can cross the skip threshold, so
                             # is_skip is recomputed alongside it.
-                            corrected_is_skip = self.repo.computeIsSkip(
-                                time_played, track.get("duration") if track else None,
-                                threshold=skipThreshold, completionPercent=completionPercent)
+                            corrected_is_skip = isSkip
                             try:
                                 self.repo.correctPlay(existing_play["id"], played_at, time_played,
                                                        corrected_is_skip, extrasValues)
@@ -365,14 +386,11 @@ class ImportMixin:
                             )
                         continue
 
-                # If no matches, proceed to insert as usual. is_skip uses the
-                # batch threshold + this track's duration (percent mode).
-                is_skip = self.repo.computeIsSkip(
-                    time_played, track.get("duration") if track else None,
-                    threshold=skipThreshold, completionPercent=completionPercent)
+                # If no matches, proceed to insert as usual, with the is_skip
+                # computed above from the batch threshold + this track's duration.
                 if self.repo.insertPlay(self.user, track_id, played_at, time_played, played_from,
                                         created_reason=f"history_import (user: {self.user})",
-                                        extras=entry.get("importExtras"), is_skip=is_skip):
+                                        extras=entry.get("importExtras"), is_skip=isSkip):
                     insertedCount += 1
                 runState.insertedPlayKeys.add((track_id, played_at))
 

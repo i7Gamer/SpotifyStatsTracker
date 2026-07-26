@@ -470,10 +470,14 @@ def register(app, dashboard):
             value = int(request.form.get("skip_value", ""))
         except (TypeError, ValueError):
             return redirect(url_for("adminPage", error="Skip threshold must be a whole number."))
+        # Both settings are stored BEFORE the recompute, because both are inputs
+        # to it: computeIsSkip caps its threshold at the completion boundary
+        # (73e1a2c), so recomputing first would classify every row under the old
+        # completion percent and leave the flag on disk disagreeing with the
+        # classifier - the same "complete and abandoned at once" contradiction
+        # that cap was added to remove - until someone saved this form twice.
+        # Lenient on a blank/bad completion value, as before.
         dashboard.repo.setSkipThreshold(mode, value)   #< clamps to the mode's bounds
-        dashboard.repo.recomputeSkipFlags()             #< self-commits; reclassifies every play
-        # Completion complete-percent (live; no recompute needed) - the second
-        # half of the completion pie. Lenient on a blank/bad value.
         raw = request.form.get("completion_complete_percent")
         if raw:
             try:
@@ -481,6 +485,7 @@ def register(app, dashboard):
                                              COMPLETION_COMPLETE_PERCENT_MIN, COMPLETION_COMPLETE_PERCENT_MAX)
             except (TypeError, ValueError):
                 pass
+        dashboard.repo.recomputeSkipFlags()             #< self-commits; reclassifies every play
         return redirect(url_for("adminPage"))
     app.add_url_rule("/admin/skip_settings", "adminSkipSettings", adminSkipSettings, methods=["POST"])
 

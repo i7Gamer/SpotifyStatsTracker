@@ -462,6 +462,39 @@ class TestAdminSkipSettings(AdminRouteTestBase):
                    data={"skip_mode": "seconds", "skip_value": "5", "completion_complete_percent": "70"})
         self.assertEqual(dash.repo.getCompletionCompletePercent(), 70)
 
+    def test_a_new_completion_percent_is_applied_before_the_recompute(self):
+        """Both values live in one form, and since 73e1a2c the completion percent
+        is an INPUT to plays.is_skip (computeIsSkip caps its threshold at the
+        completion boundary) - not just a display setting. Recomputing before
+        storing it left every row classified under the old percent, so the flag
+        on disk disagreed with the classifier until someone saved the form a
+        second time: exactly the "complete and abandoned at once" contradiction
+        73e1a2c removed.
+
+        20s track, 12s played. At the default 80% the boundary is 16s, so it is
+        a skip; at the 50% being saved here it is 10s, so it is not."""
+        dash = self._makeApp()
+        dash.repo.upsertUser("alice", "alice@example.com")
+        dash.repo.upsertTrack({
+            "id": "t1", "name": "Short One", "url": "", "artists": [],
+            "album": {"id": "al1", "name": "Album", "url": "", "imageId": "al1",
+                      "imageUrl": "", "totalTracks": 1, "releaseDate": 0.0},
+            "imageUrl": "", "imageId": "al1", "duration": 20_000, "explicit": False,
+            "isrc": "", "discNumber": 1, "trackNumber": 1, "releaseDate": 0.0,
+        })
+        dash.repo.insertPlay("alice", "t1", 1_700_000_000.0, 12_000, is_skip=1)
+
+        self._post(dash, "/admin/skip_settings", isAdmin=True,
+                   data={"skip_mode": "seconds", "skip_value": "30",
+                         "completion_complete_percent": "50"})
+
+        stored = dash.repo._conn().execute(
+            "SELECT is_skip FROM plays WHERE track_id = 't1'").fetchone()["is_skip"]
+        self.assertEqual(dash.repo.getCompletionCompletePercent(), 50)
+        self.assertEqual(stored, dash.repo.computeIsSkip(12_000, 20_000),
+                         "the stored flag must agree with the classifier the save left behind")
+        self.assertEqual(stored, 0)
+
 
 class TestAdminTuningSettings(AdminRouteTestBase):
     def test_non_admin_post_is_forbidden(self):
