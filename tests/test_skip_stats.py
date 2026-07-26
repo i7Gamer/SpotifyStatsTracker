@@ -138,21 +138,37 @@ class TestMostSkippedSongs(SkipStatsTestCase):
         self.assertEqual(entry["encounters"], 10)
         self.assertEqual(entry["skipPercent"], 40.0)
 
-    def test_a_barely_heard_track_is_listed_but_not_ranked_top(self):
-        """A track skipped once and never played is a raw 100% rate. It used to
-        be hidden by a minimum-encounters cutoff; now it appears (nothing is
-        silently missing from a paged list) but is pulled toward the library
-        average, so a genuinely-skipped track with real volume outranks it."""
+    def test_the_list_is_ordered_by_the_percentage_it_plots(self):
+        """The bar a reader sees is the true rate, so the list has to descend by
+        that and nothing else. Ordering by the shrunk rate instead drew bars
+        running 100%, 75%, 90% - correct per-row numbers in an order with no
+        visible logic, which just reads as unsorted."""
         self._track("bulk")
         self._record("bulk", plays=100, skips=0)   #< the rest of the library, so the average is a normal ~22%
         self._track("noise")
-        self._record("noise", plays=0, skips=1, startHour=110)      #< raw 100%, one encounter
+        self._record("noise", plays=0, skips=1, startHour=110)      #< 100%, one encounter
         self._track("proven")
-        self._record("proven", plays=10, skips=30, startHour=120)   #< raw 75%, 40 encounters
+        self._record("proven", plays=10, skips=30, startHour=120)   #< 75%, 40 encounters
 
-        ranked = [s["id"] for s in self.db.getMostSkippedSongs(limit=10)]
+        ranked = self.db.getMostSkippedSongs(limit=10)
 
-        self.assertEqual(ranked, ["proven", "noise"])
+        self.assertEqual([s["id"] for s in ranked], ["noise", "proven"])
+        self.assertEqual([s["skipPercent"] for s in ranked], [100.0, 75.0])
+
+    def test_shrinkage_still_decides_who_makes_the_cut(self):
+        """Sorting by the displayed percentage is a reordering of the top-N, not
+        a replacement for choosing it. Selection stays on the shrunk rate, so a
+        single skip and no plays cannot take a slot from a track with 40
+        encounters behind it - it just no longer sits below it once both are
+        on screen."""
+        self._track("bulk")
+        self._record("bulk", plays=100, skips=0)
+        self._track("noise")
+        self._record("noise", plays=0, skips=1, startHour=110)      #< 100%, one encounter
+        self._track("proven")
+        self._record("proven", plays=10, skips=30, startHour=120)   #< 75%, 40 encounters
+
+        self.assertEqual([s["id"] for s in self.db.getMostSkippedSongs(limit=1)], ["proven"])
 
     def test_low_volume_rows_drift_toward_the_library_average_not_toward_zero(self):
         """Which way the shrinkage pulls, not just that it happens.
@@ -160,25 +176,29 @@ class TestMostSkippedSongs(SkipStatsTestCase):
         This library is skipped 43% of the time overall, so a thin row is not
         assumed innocent - `thin` starts from that average and its own 100%
         carries it past `steady`, which is skipped LESS than this user's norm.
-        Shrinking toward zero instead would order these the other way round."""
+        Shrinking toward zero instead would order these the other way round.
+
+        Asserted through the limit, since that is where the shrunk rate is
+        still observable: with both rows on screen the display sort decides,
+        and 100% beats 40% either way."""
         self._track("thin")
         self._record("thin", plays=0, skips=1)                    #< 100% on 1 encounter
         self._track("steady")
         self._record("steady", plays=12, skips=8, startHour=20)   #< 40% on 20, just under the norm
 
-        ranked = [s["id"] for s in self.db.getMostSkippedSongs(limit=10)]
-
-        self.assertEqual(ranked, ["thin", "steady"])
+        self.assertEqual([s["id"] for s in self.db.getMostSkippedSongs(limit=1)], ["thin"])
 
     def test_the_displayed_percentage_stays_the_true_one(self):
-        """Shrinkage decides the ORDER; the number shown is the real rate."""
+        """The shrunk rate never reaches the card; the number shown is real."""
         self._track("noise")
         self._record("noise", plays=0, skips=1)
 
         self.assertEqual(self.db.getMostSkippedSongs(limit=10)[0]["skipPercent"], 100.0)
 
     def test_volume_breaks_the_tie_between_equal_rates(self):
-        """Same raw rate, different evidence - the better-evidenced one wins."""
+        """Same displayed rate, different evidence - the better-evidenced one
+        wins. Nothing to separate these two bars visually, so the display sort
+        has to leave the shrunk order alone rather than shuffle equal keys."""
         self._track("thin")
         self._record("thin", plays=1, skips=1)              #< 50% on 2 encounters
         self._track("thick")
@@ -258,19 +278,33 @@ class TestMostSkippedArtists(SkipStatsTestCase):
         self.assertEqual(ranked["artA"]["skips"], 6)
         self.assertEqual(ranked["artB"]["skips"], 6)
 
-    def test_a_barely_heard_artist_is_listed_but_ranked_below_a_proven_one(self):
-        """Same shrinkage as the song list - see
-        TestMostSkippedSongs.test_a_barely_heard_track_is_listed_but_not_ranked_top."""
+    def test_the_list_is_ordered_by_the_percentage_it_plots(self):
+        """Same rule as the song list - see
+        TestMostSkippedSongs.test_the_list_is_ordered_by_the_percentage_it_plots.
+        Both charts sit side by side, so a reader can't have one descending and
+        the other not."""
         self._track("bulk", artistId="bulk")
         self._record("bulk", plays=100, skips=0)
         self._track("t1", artistId="rare")
-        self._record("t1", plays=0, skips=2, startHour=110)          #< raw 100%, 2 encounters
+        self._record("t1", plays=0, skips=2, startHour=110)          #< 100%, 2 encounters
         self._track("t2", artistId="proven")
-        self._record("t2", plays=10, skips=30, startHour=120)        #< raw 75%, 40 encounters
+        self._record("t2", plays=10, skips=30, startHour=120)        #< 75%, 40 encounters
 
-        ranked = [a["id"] for a in self.db.getMostSkippedArtists(limit=10)]
+        ranked = self.db.getMostSkippedArtists(limit=10)
 
-        self.assertEqual(ranked, ["proven", "rare"])
+        self.assertEqual([a["id"] for a in ranked], ["rare", "proven"])
+        self.assertEqual([a["skipPercent"] for a in ranked], [100.0, 75.0])
+
+    def test_shrinkage_still_decides_who_makes_the_cut(self):
+        """Selection stays on the shrunk rate - see the song list's twin."""
+        self._track("bulk", artistId="bulk")
+        self._record("bulk", plays=100, skips=0)
+        self._track("t1", artistId="rare")
+        self._record("t1", plays=0, skips=2, startHour=110)
+        self._track("t2", artistId="proven")
+        self._record("t2", plays=10, skips=30, startHour=120)
+
+        self.assertEqual([a["id"] for a in self.db.getMostSkippedArtists(limit=1)], ["proven"])
 
     def test_carries_the_id_for_click_through(self):
         self._track("t1", artistId="art1", artistName="Artist One")

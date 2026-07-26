@@ -450,7 +450,8 @@
   // Most-skipped songs/artists: the bar length is the skip RATE (share of
   // encounters), and the raw count rides in the label so both numbers are
   // visible - rate alone hides how much listening it is based on, count alone
-  // just resurfaces whatever is played most.
+  // just resurfaces whatever is played most. Both lists arrive sorted by that
+  // rate (Database._byDisplayedSkipRate) and are drawn in payload order.
   function skipPairs(entries) {
     return (entries || []).map(function (entry) {
       var count = entry.skips + (entry.skips === 1 ? ' skip' : ' skips');

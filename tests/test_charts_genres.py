@@ -278,11 +278,11 @@ class ChartsGenresTestCase(AppTestCase):
         resp = self._getData(dash, db)
         self.assertIn("Last.fm", resp.get_json()["genreSectionHtml"])
 
-    def test_unlocked_chart_displays_genres_in_ascending_play_count_order(self):
-        """getGenreDistribution still returns most-played-first (unchanged
-        query/selection - Wrapped and Compare both rely on that order) but
-        chartsPage() reverses its own copy so the bar chart reads smallest
-        first."""
+    def test_unlocked_chart_leads_with_the_top_genre(self):
+        """The chart is called Top Genres, so the top one is the first thing
+        read. It used to be reversed to climb toward the biggest bar, which put
+        the answer at the bottom; the payload now keeps getGenreDistribution's
+        own most-played-first order, the same one Wrapped and Compare render."""
         dash = self._makeApp()
         db = self._makeDb(coverage=coverageDict(80, 60, 90),
                           distribution={"rock": 120, "indie rock": 80, "jazz": 40})
@@ -291,7 +291,7 @@ class ChartsGenresTestCase(AppTestCase):
 
         self.assertEqual(resp.status_code, 200)
         labels = [pair[0] for pair in resp.get_json()["genreDistribution"]]
-        self.assertEqual(labels, ["jazz", "indie rock", "rock"])
+        self.assertEqual(labels, ["rock", "indie rock", "jazz"])
 
     #< the markup of one progress bar's track; counting it counts the bars
     _PROGRESS_BAR_TRACK = "background: rgba(255, 255, 255, 0.08); border-radius: 4px; height: 10px"

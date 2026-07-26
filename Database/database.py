@@ -952,12 +952,34 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         encounters = row.get("encounters") or 0
         return {**row, "skipPercent": round(row["skips"] / encounters * 100, 1) if encounters else 0.0}
 
+    @staticmethod
+    def _byDisplayedSkipRate(rows: list[dict]) -> list[dict]:
+        """Order a Charts skip list by the number it actually plots.
+
+        The rows arrive ranked by the shrunk rate, which is what should decide
+        WHICH of them make the top-N cut - but the bar drawn for each is the
+        true percentage, and a chart whose bars ran 100%, 75%, 90% reads as
+        unsorted however defensible the underlying ranking is. Reordering the
+        selected rows costs nothing (a top-N list, already in memory) and does
+        not touch the selection.
+
+        Only the fixed top-N Charts lists do this. The paginated Top pages keep
+        the shrunk order end to end: their sort has to agree with the offsets
+        it is paged by, and re-sorting one page of it would reorder rows within
+        a page while the page boundaries stayed where the other ranking put
+        them.
+
+        sorted() is stable, so rows showing the same percentage keep the
+        shrunk-rate order that selected them - the tiebreak stays with the
+        better-evidenced row rather than becoming arbitrary."""
+        return sorted(rows, key=lambda row: row["skipPercent"], reverse=True)
+
     def getMostSkippedSongs(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None,
                              limit: int = 10, priorWeight: int = SKIP_RATE_PRIOR_WEIGHT) -> list[dict]:
         """Highest skip-rate songs, hydrated with track metadata - the Charts
-        page's "Most skipped" list. Ranked by shrunk rate (see
-        Repository.getMostSkippedTracks); the percentage reported per row is
-        the true one."""
+        page's "Most skipped" list. Selected by shrunk rate (see
+        Repository.getMostSkippedTracks), then returned in descending order of
+        the true percentage each row reports - see _byDisplayedSkipRate."""
         rows = self.repo.getMostSkippedTracks(self.user, *self._dateRangeToTimestamps(startDate, endDate),
                                                limit=limit, priorWeight=priorWeight)
         if not rows:
@@ -981,7 +1003,7 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
                 "encounters": row["encounters"],
                 "skipPercent": round(row["skips"] / row["encounters"] * 100, 1),
             })
-        return skipped
+        return self._byDisplayedSkipRate(skipped)
 
     def getMostSkippedArtists(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None,
                                limit: int = 10, priorWeight: int = SKIP_RATE_PRIOR_WEIGHT) -> list[dict]:
@@ -989,14 +1011,14 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         the aggregate itself, so no second hydration query is needed."""
         rows = self.repo.getMostSkippedArtists(self.user, *self._dateRangeToTimestamps(startDate, endDate),
                                                 limit=limit, priorWeight=priorWeight)
-        return [{
+        return self._byDisplayedSkipRate([{
             "id": row["id"],
             "name": row["name"],
             "skips": row["skips"],
             "plays": row["plays"],
             "encounters": row["encounters"],
             "skipPercent": round(row["skips"] / row["encounters"] * 100, 1),
-        } for row in rows]
+        } for row in rows])
 
     def getCompletionStats(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> dict:
         """Skip/complete/partial breakdown for the Charts pie chart and the

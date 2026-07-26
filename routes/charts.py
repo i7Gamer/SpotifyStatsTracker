@@ -677,10 +677,11 @@ def register(app, dashboard):
             if genreUnlocked:
                 distribution = resolveGenreDistribution(db, startDate, endDate,
                                                         CHART_TOP_GENRES_LIMIT)
-                # Selection stays the same top-N by plays as every other
-                # genre surface (Wrapped/Compare keep descending) - only this
-                # bar chart's own display order is reversed to read ascending.
-                genreDistribution = list(reversed(distribution.items()))
+                # Most-played first, like every other genre surface
+                # (Wrapped/Compare): the section is called Top Genres, so the
+                # top one belongs in the first row rather than at the bottom of
+                # a chart that climbs toward it.
+                genreDistribution = list(distribution.items())
 
         # The Top Genres section's locked/unlocked structure is range-scoped
         # (coverage over the selected window), so it's shipped as pre-rendered
