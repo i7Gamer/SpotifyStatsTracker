@@ -5,7 +5,7 @@
 const assert = require('assert');
 const {
   maxSkipsIn, timeSeriesHasNothingToDraw, timeSeriesLegendItems, legendHtml,
-  PALETTE, TIME_SERIES_PLAY_COLOR_INDEX, TIME_SERIES_SKIP_COLOR_INDEX,
+  escapeHtml, PALETTE, TIME_SERIES_PLAY_COLOR_INDEX, TIME_SERIES_SKIP_COLOR_INDEX,
 } = require('../static/js/chart-utils.js');
 
 function run(name, fn) {
@@ -105,10 +105,54 @@ run('no skip bars drawn means no legend', () => {
 });
 
 run('an empty item list renders no legend markup', () => {
-  // legendHtml escapes names via ChartUtils.escapeHtml, which needs a real DOM,
-  // so only the no-items path (which never reaches it) is exercisable here.
   assert.strictEqual(legendHtml([]), '');
   assert.strictEqual(legendHtml(null), '');
+});
+
+run('legendHtml renders a swatch and a name per item', () => {
+  const html = legendHtml([{ name: 'Skips (own scale)', color: '#ABCDEF' }]);
+  assert.ok(html.includes('chart-legend-swatch'));
+  assert.ok(html.includes('background:#ABCDEF'));
+  assert.ok(html.includes('Skips (own scale)'));
+});
+
+run('legendHtml escapes the series name', () => {
+  // Series names reach this from user-visible data (renderMultiLineChart passes
+  // artist names straight through), so the shared builder must escape.
+  const html = legendHtml([{ name: '<img src=x onerror=1>', color: '#000000' }]);
+  assert.ok(!html.includes('<img'));
+  assert.ok(html.includes('&lt;img'));
+});
+
+// --- escapeHtml ------------------------------------------------------------
+// Was a DOM textContent/innerHTML round-trip, which made everything built on
+// it (legendHtml above, the tooltip bodies) untestable under plain node.
+
+run('escapeHtml neutralises markup-significant characters', () => {
+  assert.strictEqual(escapeHtml('<b>'), '&lt;b&gt;');
+  assert.strictEqual(escapeHtml('Simon & Garfunkel'), 'Simon &amp; Garfunkel');
+  assert.strictEqual(escapeHtml('say "hi"'), 'say &quot;hi&quot;');
+  assert.strictEqual(escapeHtml("it's"), 'it&#39;s');
+});
+
+run('escapeHtml escapes the ampersand first, not what it just produced', () => {
+  // A naive sequential replace turns "<" into "&lt;" and then mangles its "&".
+  assert.strictEqual(escapeHtml('&lt;'), '&amp;lt;');
+});
+
+run('escapeHtml leaves plain text alone', () => {
+  assert.strictEqual(escapeHtml('Bohemian Rhapsody'), 'Bohemian Rhapsody');
+});
+
+run('escapeHtml of nothing is an empty string', () => {
+  // The DOM version rendered null/undefined as '' - callers rely on that.
+  assert.strictEqual(escapeHtml(null), '');
+  assert.strictEqual(escapeHtml(undefined), '');
+  assert.strictEqual(escapeHtml(''), '');
+});
+
+run('escapeHtml coerces non-strings like textContent did', () => {
+  assert.strictEqual(escapeHtml(42), '42');
 });
 
 console.log('All chart skip-series tests passed.');

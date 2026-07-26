@@ -55,10 +55,16 @@
 
   // Genre/artist/track names come from the user's own imported data and aren't
   // guaranteed HTML-safe - escape before splicing into an innerHTML string.
+  // Escaped in one pass so the "&" of an entity this just produced is never
+  // re-escaped. Plain string work, not the old textContent/innerHTML
+  // round-trip, so everything built on it (legendHtml, the tooltip bodies)
+  // runs under plain node - see tests/test_chart_skip_series.js.
+  var HTML_ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+
   function escapeHtml(str) {
-    var div = document.createElement('div');
-    div.textContent = str == null ? '' : str;
-    return div.innerHTML;
+    return String(str == null ? '' : str).replace(/[&<>"']/g, function (ch) {
+      return HTML_ESCAPES[ch];
+    });
   }
 
   function parseHex(hex) {
