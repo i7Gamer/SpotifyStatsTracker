@@ -1321,14 +1321,19 @@ class PlayQueries:
             params.append(trackId)
         where += self._idSetClause(params, "p.track_id", trackIds)
         if artistId is not None:
-            where += (" AND EXISTS (SELECT 1 FROM track_artists ta2"
-                      " WHERE ta2.track_id = p.track_id AND ta2.artist_id = ?)")
+            # IN, not a correlated EXISTS, for the reason spelled out on
+            # _itemFilterClauses: the EXISTS form is only checkable per row, so
+            # the plan read every play this user has (~1.2s here). Still a
+            # membership test, so a multi-artist track stays one row per play.
+            where += " AND p.track_id IN (SELECT ta2.track_id FROM track_artists ta2 WHERE ta2.artist_id = ?)"
             params.append(artistId)
         if albumId is not None or searchQuery or fullPlaysOnly:
             joins += " JOIN tracks t ON t.id = p.track_id"
         if albumId is not None:
-            where += " AND t.album_id = ?"
-            params.append(albumId)
+            # t.album_id decides membership; the redundant IN is what the
+            # planner can seek (the join alone leaves it scanning plays).
+            where += " AND t.album_id = ? AND p.track_id IN (SELECT id FROM tracks WHERE album_id = ?)"
+            params += [albumId, albumId]
         if searchQuery:
             joins += " LEFT JOIN albums al ON al.id = t.album_id"
             where += """ AND (
@@ -1650,16 +1655,30 @@ class PlayQueries:
     def _itemFilterClauses(self, params: list, trackId: str | None, artistId: str | None,
                             albumId: str | None) -> str:
         """The shared track/artist/album narrowing used by the play-scan
-        queries; appends the bound values to `params` in clause order."""
+        queries; appends the bound values to `params` in clause order.
+
+        The artist/album clauses name the entity's track set as an IN subquery
+        rather than a correlated EXISTS. Both express the same set, but the
+        EXISTS form is only checkable per row, so the planner drove off
+        idx_plays_user_time and tested EVERY play this user has - ~1.2s for a
+        well-played artist on a real library, paid several times over on one
+        artist detail page (chart, heatmap, skip summary, play range, play
+        log). The IN form is seekable: it resolves the track set once, then
+        seeks idx_plays_user_track per track (~5ms).
+
+        Still one row per PLAY, not per credit - the subquery is a membership
+        test, so a track credited to several artists is not duplicated the way
+        a join would duplicate it. tests/test_narrowed_query_equivalence.py
+        pins that, and that the two forms select the same plays."""
         extraClauses = ""
         if trackId is not None:
             extraClauses += " AND track_id = ?"
             params.append(trackId)
         if artistId is not None:
-            extraClauses += " AND EXISTS (SELECT 1 FROM track_artists ta WHERE ta.track_id = plays.track_id AND ta.artist_id = ?)"
+            extraClauses += " AND plays.track_id IN (SELECT ta.track_id FROM track_artists ta WHERE ta.artist_id = ?)"
             params.append(artistId)
         if albumId is not None:
-            extraClauses += " AND EXISTS (SELECT 1 FROM tracks t WHERE t.id = plays.track_id AND t.album_id = ?)"
+            extraClauses += " AND plays.track_id IN (SELECT t.id FROM tracks t WHERE t.album_id = ?)"
             params.append(albumId)
         return extraClauses
 
