@@ -23,6 +23,7 @@ from app import SpotifyDashboardApp
 from _app_factory import AppTestCase
 from Database.Importers.StreamingHistoryImporter import Importer
 from Database.utils import timeToInt
+from services.export import isoUtc
 
 _SECRET_KEY_PATCH = 'app.SpotifyDashboardApp._get_or_create_secret_key'
 
@@ -45,6 +46,80 @@ class _AppTestBase(AppTestCase):
             with client.session_transaction() as sess:
                 sess['email'] = 'alice@example.com'
             return client.get(path)
+
+
+class TestPlayedFromRoundTrips(unittest.TestCase):
+    """The JSON export's whole purpose is that it re-imports (its docstring says
+    so), but played_from - the playlist/album a play came from - was emitted and
+    then dropped: _extendedEntryTuple never carried it, so the column came back
+    NULL. 646 live rows carry a context, and it is the only source for the
+    listening-source breakdown.
+
+    Spotify's own exports have no played_from field at all, so importing one is
+    unaffected."""
+
+    def _importer(self):
+        importer = Importer()
+        importer.sp = MagicMock()
+        return importer
+
+    def _entry(self, playedFrom):
+        entry = {
+            "ts": "2023-05-01T10:00:00Z", "ms_played": 150000,
+            "master_metadata_track_name": "Song One",
+            "master_metadata_album_artist_name": "Artist One",
+            "spotify_track_uri": "spotify:track:track123",
+        }
+        if playedFrom is not None:
+            entry["played_from"] = playedFrom
+        return entry
+
+    def test_the_context_survives_the_round_trip(self):
+        metas = list(self._importer().importExtendedHistory(
+            [self._entry("playlist:37i9dQZF1DXcBWIGoYBM5M")], known=[], progressCallback=None))
+
+        self.assertEqual(metas[0]["playedFrom"], "playlist:37i9dQZF1DXcBWIGoYBM5M")
+
+    def test_an_entry_without_a_context_carries_none(self):
+        """A genuine Spotify export - no played_from key anywhere."""
+        metas = list(self._importer().importExtendedHistory(
+            [self._entry(None)], known=[], progressCallback=None))
+
+        self.assertIsNone(metas[0]["playedFrom"])
+
+    def test_a_non_string_context_is_ignored_rather_than_stored(self):
+        """The field is our own extension, so an edited file can carry anything;
+        played_from is later split on ':' to resolve a playlist name."""
+        metas = list(self._importer().importExtendedHistory(
+            [self._entry({"not": "a string"})], known=[], progressCallback=None))
+
+        self.assertIsNone(metas[0]["playedFrom"])
+
+
+class TestSubSecondTimestampsSurvive(unittest.TestCase):
+    """plays.played_at is REAL, so a fractional timestamp is storable, and
+    isoUtc floored it away - a play at ...565.7 would export as ...565 and
+    re-import 0.7s from the original, which UNIQUE (username, track_id,
+    played_at) does not catch, so the round trip would ADD a row.
+
+    Not reachable today: every write path floors through
+    Client.embedPlayInfo -> timeToInt, so no fractional played_at exists (0 rows
+    on the live database). This closes the export half only - the import half
+    would mean changing timeToInt's int contract across every caller to serve a
+    value nothing produces, which is not a trade worth making. If a fractional
+    played_at ever becomes writable, the importer is where to look next."""
+
+    def test_a_whole_second_timestamp_is_formatted_exactly_as_before(self):
+        """The case that actually occurs. Spotify's own format has no fractional
+        part, so this must stay byte-identical or third-party consumers of the
+        file see a format change for nothing."""
+        self.assertEqual(isoUtc(1700000000), "2023-11-14T22:13:20Z")
+
+    def test_a_whole_second_timestamp_round_trips_exactly(self):
+        self.assertEqual(timeToInt(isoUtc(1700000000)), 1700000000)
+
+    def test_a_fractional_timestamp_is_no_longer_thrown_away_on_the_way_out(self):
+        self.assertEqual(isoUtc(1700000000.75), "2023-11-14T22:13:20.750000Z")
 
 
 class TestExportRoute(DatabaseTestCase, _AppTestBase):

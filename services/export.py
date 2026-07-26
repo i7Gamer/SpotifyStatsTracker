@@ -89,7 +89,20 @@ def _csvSafeCell(value) -> str:
 
 
 def isoUtc(timestamp: float) -> str:
-    return datetime.fromtimestamp(timestamp, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    """Spotify's `ts` shape, keeping any sub-second part.
+
+    Flooring to whole seconds meant a play stored at ...565.7 exported as
+    ...565 and re-imported 0.7s away from the original - which
+    UNIQUE (username, track_id, played_at) does not catch, so the round trip
+    ADDED a row instead of being a no-op.
+
+    The fractional part is emitted only when there is one, so the ordinary
+    whole-second case stays byte-identical to what Spotify itself writes and
+    third-party consumers of this file see no change."""
+    moment = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+    if moment.microsecond:
+        return moment.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def exportEntryToDict(entry) -> dict:

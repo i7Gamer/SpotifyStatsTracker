@@ -175,10 +175,11 @@ class Importer:
                 name, artist, startTimestamp, timePlayed, trackUri = parsed[:5]
                 albumName = parsed[5] if len(parsed) > 5 else None
                 extras = parsed[6] if len(parsed) > 6 else None
+                playedFrom = parsed[7] if len(parsed) > 7 else None   #< extended export only
                 if timePlayed < 0:
                     self._bumpStat(stats, "droppedNegativeTime")
                     continue
-                parsedItems.append((name, artist, startTimestamp, timePlayed, trackUri, albumName, extras))
+                parsedItems.append((name, artist, startTimestamp, timePlayed, trackUri, albumName, extras, playedFrom))
             except Exception as e:
                 self._bumpStat(stats, "droppedMalformed")
                 # Capped: a misclassified file makes EVERY entry fail, and one
@@ -389,6 +390,7 @@ class Importer:
     def _processPlay(self, item, known, stats=None):
         name, artist, startTimestamp, timePlayed, trackUri, albumName = item[:6]
         extras = item[6] if len(item) > 6 else None
+        playedFrom = item[7] if len(item) > 7 else None
         try:
             matchedId = self._resolveKnownKey(trackUri, name, artist, known)
 
@@ -471,6 +473,11 @@ class Importer:
                 meta = Client.embedPlayInfo(base.copy(), startTimestamp, timePlayed, capAtDuration=False)
 
             meta["isSkip"] = timePlayed < SKIP_THRESHOLD_MS
+            # The play's context (playlist/album). The DB writer already reads
+            # entry["playedFrom"] - it was simply never populated from an
+            # export, so re-importing your own history dropped the column that
+            # the listening-source breakdown is built on.
+            meta["playedFrom"] = playedFrom
             if extras:
                 meta["importExtras"] = extras
             return meta
@@ -571,7 +578,15 @@ class Importer:
         albumName = item.get("master_metadata_album_album_name")
         uri = item.get("spotify_track_uri")
         trackUri = uri.split(":")[-1] if uri else None
-        return name, artist, startTimestamp, timePlayed, trackUri, albumName, self._extractExtras(item)
+        # played_from is this app's own addition to the format (Spotify's exports
+        # have no such field), so a genuine Spotify export simply yields None.
+        # Only a string is accepted: the value is later split on ':' to resolve a
+        # playlist name, and an edited file could carry anything.
+        playedFrom = item.get("played_from")
+        if not isinstance(playedFrom, str):
+            playedFrom = None
+        return (name, artist, startTimestamp, timePlayed, trackUri, albumName,
+                self._extractExtras(item), playedFrom)
 
     def importExtendedHistory(self, history, known=None, progressCallback=None, stats=None):
         yield from self._import(self._extendedEntryTuple, history, known, progressCallback, stats=stats)
