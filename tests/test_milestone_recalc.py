@@ -234,6 +234,19 @@ class TestRecalculateStreak(_RecalcTestCase):
         self.assertEqual(recalculateMilestoneDates(self.repo, self.USER, UTC), 0)
         self.assertEqual(self._achievedAt(milestoneId), SEEDED_AT)
 
+    def test_a_skip_only_day_does_not_bridge_a_run(self):
+        """_dayFirstPlayTimestamps reads getBucketedPlayTotals, which stopped
+        filtering is_skip=0 in the WHERE - so a bucket holding nothing but skips
+        started looking like a day of listening, and dated a streak milestone off
+        a run that never happened. Days 30 and 32 are real; day 31 is a skip."""
+        self._dayPlay(30)
+        self._play(float(31 * DAY_SECONDS + 3600), isSkip=1)
+        self._dayPlay(32)
+        milestoneId = self._milestone(MILESTONE_KIND_STREAK, 3)
+
+        self.assertEqual(recalculateMilestoneDates(self.repo, self.USER, UTC), 0)
+        self.assertEqual(self._achievedAt(milestoneId), SEEDED_AT)
+
     def test_day_boundaries_follow_the_user_timezone(self):
         # Both plays fall on UTC day 100, but at UTC+2 the 23:30 play belongs
         # to the next local day - so the 2-day streak only exists there.

@@ -119,6 +119,47 @@ class TestPeakListeningTime(DatabaseTestCase):
 
         self.assertIsNone(result)
 
+    def test_a_range_of_nothing_but_skips_returns_none(self):
+        """getBucketedPlayTotals stopped filtering is_skip=0 in the WHERE, so
+        `if not rows` is no longer the same test as "no plays in range" - a
+        skip-only range came back with an arbitrary weekday and 0 plays."""
+        tracks = {"t1": {"id": "t1", "name": "Song 1", "artists": []}}
+        entries = [
+            #< 4s: under the default 5s threshold -> classified as a skip
+            {"id": "t1", "playedAt": _ts(2026, 1, 7, 10), "timePlayed": 4_000},
+            {"id": "t1", "playedAt": _ts(2026, 1, 8, 10), "timePlayed": 4_000},
+        ]
+        db = self._makeDb(tracks, entries)
+        db.repo.recomputeSkipFlags()
+
+        result = db.getPeakListeningTime(
+            startDate=datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc),
+            endDate=datetime.datetime(2026, 2, 1, tzinfo=datetime.timezone.utc),
+        )
+
+        self.assertIsNone(result)
+
+    def test_a_skip_only_day_does_not_win_the_peak(self):
+        tracks = {"t1": {"id": "t1", "name": "Song 1", "artists": []}}
+        entries = [
+            # Wednesday 2026-01-07: three skips and nothing else.
+            {"id": "t1", "playedAt": _ts(2026, 1, 7, 10), "timePlayed": 4_000},
+            {"id": "t1", "playedAt": _ts(2026, 1, 7, 11), "timePlayed": 4_000},
+            {"id": "t1", "playedAt": _ts(2026, 1, 7, 12), "timePlayed": 4_000},
+            # Thursday 2026-01-08: one real listen.
+            {"id": "t1", "playedAt": _ts(2026, 1, 8, 10), "timePlayed": 60_000},
+        ]
+        db = self._makeDb(tracks, entries)
+        db.repo.recomputeSkipFlags()
+
+        day_name, play_count = db.getPeakListeningTime(
+            startDate=datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc),
+            endDate=datetime.datetime(2026, 2, 1, tzinfo=datetime.timezone.utc),
+        )
+
+        self.assertEqual(day_name, "Thursday")
+        self.assertEqual(play_count, 1)
+
 
 class TestDiscoveredCounts(DatabaseTestCase):
     def test_discovered_songs_count_in_year(self):

@@ -107,6 +107,92 @@ class TestLongestStreakStillWorks(DatabaseTestCase):
         self.assertEqual(streak, 3)
 
 
+class TestSkipOnlyDaysAreNotListeningDays(DatabaseTestCase):
+    """A day whose only activity was a skip is not a listening day.
+
+    getBucketedPlayTotals stopped filtering is_skip=0 in the WHERE (so a
+    skip-only track's detail chart could render), and _getPlayDateSet derived
+    its date set from the mere EXISTENCE of a bucket row - so a bucket holding
+    nothing but skips started counting as a day of listening. The streak card
+    then disagreed with the contribution calendar rendered directly beside it,
+    which counts a day only when plays > 0.
+    """
+
+    SHORT_MS = 4_000   #< under the default 5s threshold -> classified as a skip
+
+    def _db(self, entries):
+        # conftest's helper inserts every play with is_skip=0 (insertPlay never
+        # classifies - its callers do), so run the real classifier over the
+        # seeded rows rather than setting the column by hand.
+        db = self._makeDb({"t1": {"id": "t1", "name": "Song 1", "artists": []}}, entries)
+        db.repo.recomputeSkipFlags()
+        db.tz = datetime.timezone.utc
+        return db
+
+    def _play(self, year, month, day, ms):
+        return {"id": "t1", "playedAt": _ts(year, month, day, 9), "timePlayed": ms}
+
+    def test_a_skip_today_does_not_make_today_active(self):
+        db = self._db([
+            self._play(2026, 1, 8, 60_000),
+            self._play(2026, 1, 9, 60_000),
+            self._play(2026, 1, 10, self.SHORT_MS),   #< today: skipped, nothing else
+        ])
+
+        result = db.getCurrentStreak(now=_now(2026, 1, 10))
+
+        # The run ending yesterday is still alive, but today is not active and
+        # must not count as its third day.
+        self.assertEqual(result, {"days": 2, "activeToday": False})
+
+    def test_a_skip_only_day_does_not_bridge_a_broken_streak(self):
+        db = self._db([
+            self._play(2026, 1, 8, 60_000),
+            self._play(2026, 1, 9, self.SHORT_MS),   #< skip-only day between two runs
+            self._play(2026, 1, 10, 60_000),
+        ])
+
+        result = db.getCurrentStreak(now=_now(2026, 1, 10))
+
+        self.assertEqual(result, {"days": 1, "activeToday": True})
+
+    def test_a_history_of_nothing_but_skips_is_no_streak(self):
+        db = self._db([
+            self._play(2026, 1, 9, self.SHORT_MS),
+            self._play(2026, 1, 10, self.SHORT_MS),
+        ])
+
+        result = db.getCurrentStreak(now=_now(2026, 1, 10))
+
+        self.assertEqual(result, {"days": 0, "activeToday": False})
+
+    def test_longest_streak_is_not_bridged_by_a_skip_only_day(self):
+        db = self._db([
+            self._play(2026, 1, 5, 60_000),
+            self._play(2026, 1, 6, self.SHORT_MS),   #< skip-only
+            self._play(2026, 1, 7, 60_000),
+        ])
+
+        streak = db.getLongestStreak(
+            startDate=datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc),
+            endDate=datetime.datetime(2026, 2, 1, tzinfo=datetime.timezone.utc),
+        )
+
+        self.assertEqual(streak, 1)
+
+    def test_a_day_with_both_a_play_and_a_skip_still_counts(self):
+        """The narrowing must not go the other way: a real listen on a day that
+        also had a skip is still a listening day."""
+        db = self._db([
+            {"id": "t1", "playedAt": _ts(2026, 1, 10, 9), "timePlayed": self.SHORT_MS},
+            {"id": "t1", "playedAt": _ts(2026, 1, 10, 10), "timePlayed": 60_000},
+        ])
+
+        result = db.getCurrentStreak(now=_now(2026, 1, 10))
+
+        self.assertEqual(result, {"days": 1, "activeToday": True})
+
+
 class TestStreakLongerThanTheLookbackWindow(DatabaseTestCase):
     """The scan was hard-bounded at CURRENT_STREAK_LOOKBACK_DAYS (400), so the
     reported streak capped at ~401 - which made the 1000-day milestone

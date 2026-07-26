@@ -21,7 +21,7 @@ import logging
 import time
 from zoneinfo import ZoneInfo
 
-from Database.utils import convertToDatetime, getTimezone
+from Database.utils import convertToDatetime, getTimezone, listeningBuckets
 
 logger = logging.getLogger(__name__)
 
@@ -153,9 +153,13 @@ def _dayFirstPlayTimestamps(repo, username, tz) -> dict:
     """{"%Y-%m-%d" local date: earliest 15-minute bucket start that day}
     across the user's whole history - the same bucket->local-date mapping
     _getPlayDateSet/getListeningCalendar use, so streak dates recalculated
-    from it agree with the streak features."""
+    from it agree with the streak features.
+
+    That includes agreeing on which buckets count: listeningBuckets drops the
+    skip-only ones, without which a day holding a single skip bridged two runs
+    into one and dated a streak milestone the user never reached."""
     dayFirst: dict = {}
-    for row in repo.getBucketedPlayTotals(username):
+    for row in listeningBuckets(repo.getBucketedPlayTotals(username)):
         dateStr = convertToDatetime(row["bucketStartTs"], tz=tz).strftime("%Y-%m-%d")
         if dateStr not in dayFirst or row["bucketStartTs"] < dayFirst[dateStr]:
             dayFirst[dateStr] = row["bucketStartTs"]

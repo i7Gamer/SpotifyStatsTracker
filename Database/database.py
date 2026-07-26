@@ -25,7 +25,7 @@ try:
         SKIP_RATE_PRIOR_WEIGHT,
     )
     from Database.db import BEHAVIORAL_COLUMNS, SKIP_THRESHOLD_MS
-    from Database.utils import parseError, convertToDatetime, dateToString, startOfDay, startOfWeek, startOfMonth, timeToInt, getTimezone
+    from Database.utils import parseError, convertToDatetime, dateToString, startOfDay, startOfWeek, startOfMonth, timeToInt, getTimezone, listeningBuckets
     from Database.lastfm import LastfmClient, filterTagsToGenres, cleanLookupName, OUTCOME_OK, OUTCOME_NOT_FOUND, OUTCOME_TRANSIENT, OUTCOME_INVALID_KEY
 except ModuleNotFoundError:
     from Formatters.spotifyClient import Client
@@ -39,7 +39,7 @@ except ModuleNotFoundError:
         SKIP_RATE_PRIOR_WEIGHT,
     )
     from db import BEHAVIORAL_COLUMNS, SKIP_THRESHOLD_MS
-    from utils import parseError, convertToDatetime, dateToString, startOfDay, startOfWeek, startOfMonth, timeToInt, getTimezone
+    from utils import parseError, convertToDatetime, dateToString, startOfDay, startOfWeek, startOfMonth, timeToInt, getTimezone, listeningBuckets
     from lastfm import LastfmClient, filterTagsToGenres, cleanLookupName, OUTCOME_OK, OUTCOME_NOT_FOUND, OUTCOME_TRANSIENT, OUTCOME_INVALID_KEY
 
 logger = logging.getLogger(__name__)
@@ -1098,12 +1098,15 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         return self.repo.getPlayTotals(self.user, startTs, endTs, fullPlaysOnly=fullPlaysOnly)
 
     def _getPlayDateSet(self, startTs: float | None, endTs: float | None) -> set[str]:
-        """Distinct local ("%Y-%m-%d") dates on which this user has any play in
-        [startTs, endTs). Works off SQL-side buckets (getBucketedPlayTotals) -
-        a bucket's start shares its local date with every play inside it, so the
-        set is identical to a per-play scan's. Shared by the longest-streak and
-        current-streak calculations."""
-        rows = self.repo.getBucketedPlayTotals(self.user, startTs, endTs)
+        """Distinct local ("%Y-%m-%d") dates on which this user actually
+        listened in [startTs, endTs). Works off SQL-side buckets
+        (getBucketedPlayTotals) - a bucket's start shares its local date with
+        every play inside it, so the set is identical to a per-play scan's.
+        Shared by the longest-streak and current-streak calculations.
+
+        listeningBuckets, not the raw rows: those rows include skip-only
+        buckets (plays=0), which are not listening - see its docstring."""
+        rows = listeningBuckets(self.repo.getBucketedPlayTotals(self.user, startTs, endTs))
         return {
             convertToDatetime(r["bucketStartTs"], tz=self.tz).strftime("%Y-%m-%d")
             for r in rows
@@ -1327,9 +1330,14 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
     def getPeakListeningTime(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> tuple[str, int] | None:
         """(day_of_week_name, play_count) for the day with most plays, or None.
         Counting runs in SQL (getBucketedPlayTotals); Python maps each bucket
-        to its local weekday."""
+        to its local weekday.
+
+        listeningBuckets first: with skip-only buckets in the rows, `if not
+        rows` was no longer the same test as "no plays in range", so a range
+        whose only activity was skips returned an arbitrary weekday with a count
+        of 0 instead of nothing."""
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
-        rows = self.repo.getBucketedPlayTotals(self.user, startTs, endTs)
+        rows = listeningBuckets(self.repo.getBucketedPlayTotals(self.user, startTs, endTs))
         if not rows:
             return None
 

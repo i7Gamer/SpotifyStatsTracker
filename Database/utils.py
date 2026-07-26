@@ -165,6 +165,24 @@ def dateToString(timestamp, tz=None):
     timestamp = toTimezone(timestamp, tz=tz)
     return timestamp.strftime("%Y-%m-%d")
 
+def listeningBuckets(rows):
+    """The getBucketedPlayTotals rows that represent actual listening.
+
+    Those rows stopped filtering is_skip=0 in the WHERE so a skip-only track's
+    detail chart could render a timeline; a bucket whose plays were ALL skips
+    now comes back with plays=0 instead of not coming back at all. Every caller
+    that means "did this person listen" has to say so, because the mere
+    EXISTENCE of a row no longer answers it - which is how a day holding one
+    4-second skip started extending listening streaks and dating streak
+    milestones, while the contribution calendar beside them (which has always
+    tested count > 0) rendered that same day blank.
+
+    Shared rather than retyped at each site: it is a one-line filter whose
+    reasoning is the entire point, and there are three consumers in two modules
+    (Database.database's streak/peak stats and services.milestones' date
+    recalculation)."""
+    return [row for row in rows if row["plays"]]
+
 def timeToInt(timestampOrStr):
     """
     Converts datetime or string to integer timestamp.
