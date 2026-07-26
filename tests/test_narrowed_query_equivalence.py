@@ -164,6 +164,48 @@ class NarrowedQueryEquivalenceTestCase(DatabaseTestCase):
         self.assertEqual(db.repo.getPlaysCount(db.user, albumId="nope"), 0)
         self.assertEqual(db.repo.getBucketedPlayTotals(db.user, artistId="nope"), [])
 
+    def test_album_id_set_matches_narrowing_to_each_album(self):
+        """The tag-filtered Top pages pass an explicit id SET rather than one
+        id. It carries the same track-set pushdown, so the set result has to be
+        the union of the single-id results."""
+        db = self._db()
+
+        both = {a["id"]: a for a in db.getAlbumsStats(albumIds=[ALBUM_1, ALBUM_2])}
+        one = {a["id"]: a for a in db.getAlbumsStats(albumId=ALBUM_1)}
+
+        self.assertEqual(set(both), {ALBUM_1, ALBUM_2})
+        self.assertEqual(both[ALBUM_1], one[ALBUM_1])
+
+    def test_artist_id_set_matches_narrowing_to_each_artist(self):
+        db = self._db()
+
+        both = {a["id"]: a for a in db.getArtistsStats(artistIds=[ARTIST_A, ARTIST_B])}
+        one = {a["id"]: a for a in db.getArtistsStats(artistId=ARTIST_A)}
+
+        self.assertEqual(set(both), {ARTIST_A, ARTIST_B})
+        self.assertEqual(both[ARTIST_A], one[ARTIST_A])
+
+    def test_a_single_element_id_set_matches_the_single_id_filter(self):
+        db = self._db()
+
+        self.assertEqual(db.getAlbumsStats(albumIds=[ALBUM_2]), db.getAlbumsStats(albumId=ALBUM_2))
+        self.assertEqual(db.getArtistsStats(artistIds=[ARTIST_B]), db.getArtistsStats(artistId=ARTIST_B))
+
+    def test_an_empty_id_set_still_matches_nothing(self):
+        """_idSetClause turns an empty list into `AND 0`; the pushdown must not
+        accidentally turn it back into "no filter" and show the whole library."""
+        db = self._db()
+
+        self.assertEqual(db.getAlbumsStats(albumIds=[]), [])
+        self.assertEqual(db.getArtistsStats(artistIds=[]), [])
+        self.assertEqual(db.getSongsStats(trackIds=[]), [])
+
+    def test_an_id_set_of_unknown_ids_matches_nothing(self):
+        db = self._db()
+
+        self.assertEqual(db.getAlbumsStats(albumIds=["nope", "also-nope"]), [])
+        self.assertEqual(db.getArtistsStats(artistIds=["nope"]), [])
+
     def test_narrowing_by_track_is_unaffected(self):
         """The track clause filters plays.track_id directly and was never part
         of the problem - pinned so a rewrite of the helper leaves it alone."""

@@ -606,6 +606,8 @@ class PlayQueries:
             aggFilter += " AND ta.artist_id = ?"
             params.append(artistId)
         aggFilter += self._idSetClause(params, "ta.artist_id", artistIds)
+        aggFilter += self._trackSetClause(params, self.ARTIST_TRACKS_SUBQUERY,
+                                          [artistId] if artistId is not None else artistIds)
         aggJoin = ""
         if fullPlaysOnly:
             aggJoin = self._tracksJoin()
@@ -664,6 +666,7 @@ class PlayQueries:
             searchClause = " AND ar.name LIKE ? ESCAPE '\\'"
             params.append(self._likePattern(searchQuery))
         searchClause += self._idSetClause(params, "ta.artist_id", artistIds)
+        searchClause += self._trackSetClause(params, self.ARTIST_TRACKS_SUBQUERY, artistIds)
         joinClause = ""
         if fullPlaysOnly:
             joinClause = self._tracksJoin()
@@ -769,21 +772,18 @@ class PlayQueries:
             extraClauses += " AND t.id = ?"
             params.append(trackId)
         if artistId is not None:
-            # The EXISTS decides membership; the IN names the same track set in
-            # a form SQLite can seek. Without it the plan drove off
-            # idx_plays_user_time and read EVERY play this user has, testing the
-            # EXISTS per row - ~985ms for a well-played artist on a real
-            # library, on the artist detail page's own song list. With it, it
-            # seeks the artist's tracks and then idx_plays_user_track per track.
-            extraClauses += (" AND EXISTS (SELECT 1 FROM track_artists ta2 WHERE ta2.track_id = t.id AND ta2.artist_id = ?)"
-                             " AND p.track_id IN (SELECT track_id FROM track_artists WHERE artist_id = ?)")
-            params += [artistId, artistId]
+            # The EXISTS decides membership; _trackSetClause below adds the
+            # seekable twin (see its docstring - this one measured ~985ms
+            # without it, on the artist detail page's own song list).
+            extraClauses += " AND EXISTS (SELECT 1 FROM track_artists ta2 WHERE ta2.track_id = t.id AND ta2.artist_id = ?)"
+            params.append(artistId)
         if albumId is not None:
-            # Same rewrite, same reason (~57ms -> ~0.3ms): al.id = t.album_id
-            # makes the second predicate redundant by construction, and it is
-            # the one the planner can actually use.
-            extraClauses += " AND al.id = ? AND p.track_id IN (SELECT id FROM tracks WHERE album_id = ?)"
-            params += [albumId, albumId]
+            extraClauses += " AND al.id = ?"
+            params.append(albumId)
+        extraClauses += self._trackSetClause(params, self.ARTIST_TRACKS_SUBQUERY,
+                                             [artistId] if artistId is not None else None)
+        extraClauses += self._trackSetClause(params, self.ALBUM_TRACKS_SUBQUERY,
+                                             [albumId] if albumId is not None else None)
         extraClauses += self._idSetClause(params, "t.id", trackIds)
         if searchQuery:
             pattern = self._likePattern(searchQuery)
@@ -927,9 +927,11 @@ class PlayQueries:
             # getSongsPage. Narrowing to one album read the user's entire play
             # history before this (~60ms), and the album detail page pays it on
             # both the shell and the deferred body.
-            extraClauses += " AND al.id = ? AND p.track_id IN (SELECT id FROM tracks WHERE album_id = ?)"
-            params += [albumId, albumId]
+            extraClauses += " AND al.id = ?"
+            params.append(albumId)
         extraClauses += self._idSetClause(params, "al.id", albumIds)
+        extraClauses += self._trackSetClause(params, self.ALBUM_TRACKS_SUBQUERY,
+                                             [albumId] if albumId is not None else albumIds)
         if searchQuery:
             pattern = self._likePattern(searchQuery)
             extraClauses += """ AND (
@@ -1320,20 +1322,19 @@ class PlayQueries:
             where += " AND p.track_id = ?"
             params.append(trackId)
         where += self._idSetClause(params, "p.track_id", trackIds)
-        if artistId is not None:
-            # IN, not a correlated EXISTS, for the reason spelled out on
-            # _itemFilterClauses: the EXISTS form is only checkable per row, so
-            # the plan read every play this user has (~1.2s here). Still a
-            # membership test, so a multi-artist track stays one row per play.
-            where += " AND p.track_id IN (SELECT ta2.track_id FROM track_artists ta2 WHERE ta2.artist_id = ?)"
-            params.append(artistId)
+        # The artist filter is the track-set clause outright (there is no other
+        # artist predicate here to decide membership); the album one still
+        # filters t.album_id and only gains the seekable twin. See
+        # _trackSetClause - this scan measured ~1.2s for a well-played artist.
+        where += self._trackSetClause(params, self.ARTIST_TRACKS_SUBQUERY,
+                                      [artistId] if artistId is not None else None)
         if albumId is not None or searchQuery or fullPlaysOnly:
             joins += " JOIN tracks t ON t.id = p.track_id"
         if albumId is not None:
-            # t.album_id decides membership; the redundant IN is what the
-            # planner can seek (the join alone leaves it scanning plays).
-            where += " AND t.album_id = ? AND p.track_id IN (SELECT id FROM tracks WHERE album_id = ?)"
-            params += [albumId, albumId]
+            where += " AND t.album_id = ?"
+            params.append(albumId)
+        where += self._trackSetClause(params, self.ALBUM_TRACKS_SUBQUERY,
+                                      [albumId] if albumId is not None else None)
         if searchQuery:
             joins += " LEFT JOIN albums al ON al.id = t.album_id"
             where += """ AND (
@@ -1360,6 +1361,8 @@ class PlayQueries:
             where += " AND ta.artist_id = ?"
             params.append(artistId)
         where += self._idSetClause(params, "ta.artist_id", artistIds)
+        where += self._trackSetClause(params, self.ARTIST_TRACKS_SUBQUERY,
+                                      [artistId] if artistId is not None else artistIds)
         if searchQuery:
             # Name is the only field Top Artists' search ever matched - see
             # getArtistAggregates. It selects WHICH artists appear and never
@@ -1382,6 +1385,8 @@ class PlayQueries:
             where += " AND al.id = ?"
             params.append(albumId)
         where += self._idSetClause(params, "al.id", albumIds)
+        where += self._trackSetClause(params, self.ALBUM_TRACKS_SUBQUERY,
+                                      [albumId] if albumId is not None else albumIds)
         if searchQuery:
             # The artist check spans every track on the album rather than the
             # current row's own - see getAlbumsPage() on why.

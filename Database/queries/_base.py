@@ -240,6 +240,41 @@ class SqlFragments:
         placeholders = ",".join("?" for _ in ids)
         return f" AND {column} IN ({placeholders})"
 
+    # The track set behind an artist / album filter. Formatted with the bound
+    # placeholders by _trackSetClause below.
+    ARTIST_TRACKS_SUBQUERY = "SELECT ta_ts.track_id FROM track_artists ta_ts WHERE ta_ts.artist_id IN ({placeholders})"
+    ALBUM_TRACKS_SUBQUERY = "SELECT t_ts.id FROM tracks t_ts WHERE t_ts.album_id IN ({placeholders})"
+
+    @staticmethod
+    def _trackSetClause(params: list, subquery: str, ids: list[str] | None,
+                        playsColumn: str = "p.track_id") -> str:
+        """The seekable companion to an artist/album filter on a plays query.
+
+        A filter written against the JOINED table - `al.id = ?`, or an EXISTS
+        over track_artists - gives SQLite nothing to seek on `plays`, so it
+        drives off idx_plays_user_time, reads EVERY play the user has, and
+        discards all but the entity's. That was ~1.2s for a well-played artist
+        on a real library, on queries a single detail page runs several of.
+
+        Naming the same tracks as `AND <playsColumn> IN (<subquery>)` lets it
+        resolve the set once and seek idx_plays_user_track per track. It is
+        redundant by construction: the caller's own filter still decides
+        membership, so this can only ever change the PLAN, not the rows. It is
+        also a membership test rather than a join, so a track credited to
+        several artists still yields one row per play, not one per credit.
+
+        Mirrors _idSetClause's contract: None means "no filter", and an empty
+        list adds nothing because _idSetClause has already emitted `AND 0`.
+        Pass a single id as a one-element list.
+
+        tests/test_narrowed_query_equivalence.py pins that narrowed results
+        match the same figures derived from the unnarrowed query."""
+        if not ids:
+            return ""
+        params += ids
+        placeholders = ",".join("?" for _ in ids)
+        return f" AND {playsColumn} IN ({subquery.format(placeholders=placeholders)})"
+
     @staticmethod
     def _tracksJoin(playsAlias: str = "p", trackAlias: str = "t") -> str:
         """The plays->tracks join the duration-based filters need. Emitted only
