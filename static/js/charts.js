@@ -247,9 +247,7 @@
 
     if (!data.buckets.length || data.series.length < 2) {
       drawEmptyState(ctx, width, height, 'No listening data in this period yet.');
-      if (legendEl) {
-        legendEl.innerHTML = '';
-      }
+      CU.renderLegend(legendEl, []);
       return;
     }
 
@@ -400,11 +398,9 @@
       hideTooltip();
     };
 
-    if (legendEl) {
-      legendEl.innerHTML = data.series.slice(0, 2).map(function (series, si) {
-        return '<span class="chart-legend-item"><span class="chart-legend-swatch" style="background:' + colors[si] + '"></span>' + escapeHtml(series.name) + '</span>';
-      }).join('');
-    }
+    CU.renderLegend(legendEl, data.series.slice(0, 2).map(function (series, si) {
+      return { name: series.name, color: colors[si] };
+    }));
   }
 
   function renderExplicitChart() {
