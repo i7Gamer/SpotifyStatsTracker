@@ -1782,6 +1782,34 @@ progress::-moz-progress-bar {
   flex-wrap: wrap;
   margin-bottom: 16px;
 }
+
+/* The Refresh-Last.fm/Trend-buckets group. space-between alone puts the last
+   remaining child on the LEFT, and back-button.js hides the back button on any
+   page opened in a new tab - so the group pins itself right instead of relying
+   on having a sibling to be spread apart from. */
+.detail-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-left: auto;
+}
+
+/* The admin refresh result, inline in the toolbar rather than a block above it
+   (which pushed the page down by its own height). Sized by its text, and
+   allowed to wrap onto its own toolbar line when the message is a long one. */
+#detail-flash {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+#detail-flash:empty {
+  display: none;
+}
+
+#detail-flash p {
+  margin: 0;
+}
+
 .filter-group select option {
   background-color: color-mix(in srgb, var(--surface), #fff 5%);
   color: var(--text);

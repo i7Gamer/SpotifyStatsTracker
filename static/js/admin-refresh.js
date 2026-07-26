@@ -2,7 +2,9 @@
  * a refresh doesn't navigate away and reset the tab/sort/page state - the
  * route answers XHR posts with {kind, message} JSON instead of redirecting
  * (see adminRefreshLastfmEntity), shown in the #detail-flash slot the
- * redirect fallback also renders into. No-ops for non-admins (no form). */
+ * redirect fallback also renders into - inline in the toolbar next to the back
+ * button, so the message carries no margin of its own. No-ops for non-admins
+ * (no form). */
 (function () {
   var form = document.querySelector('form[action*="/admin/lastfm/refresh/"]');
   if (!form) {
@@ -20,7 +22,6 @@
     var p = document.createElement('p');
     p.className = kind;
     p.style.color = FLASH_COLORS[kind] || FLASH_COLORS.error;
-    p.style.marginBottom = '1rem';
     p.textContent = message;
     flash.appendChild(p);
   }

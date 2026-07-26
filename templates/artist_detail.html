@@ -9,14 +9,14 @@
     </div>
   </section>
 
-  <div id="detail-flash">
-    {% if error %}<p class="error" style="color: #ff4a4a; margin-bottom: 1rem;">{{ error }}</p>{% endif %}
-    {% if success %}<p class="success" style="color: #4aff4a; margin-bottom: 1rem;">{{ success }}</p>{% endif %}
-  </div>
-
   <div class="detail-toolbar">
     <a id="back-button" class="button" href="{{ url_for('topArtistsPage') }}">&larr; Back to Top Artists</a>
-    <div style="display: flex; align-items: center; gap: 12px;">
+    {# Inline, between the back button and the controls: the admin refresh
+       result used to render as a block above the whole toolbar and push every
+       section below it down by its own height. Whitespace-free so :empty
+       hides it when there is no message. #}
+    <div id="detail-flash">{% if error %}<p class="error" style="color: #ff4a4a;">{{ error }}</p>{% endif %}{% if success %}<p class="success" style="color: #4aff4a;">{{ success }}</p>{% endif %}</div>
+    <div class="detail-toolbar-actions">
       {% if isAdmin %}
       <form method="post" action="{{ url_for('adminRefreshLastfmEntity', kind='artist', entity_id=artist.get('id')) }}">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
