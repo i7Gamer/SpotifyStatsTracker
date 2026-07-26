@@ -636,41 +636,46 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
 
     def getEntriesCount(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None,
                          trackId: str | None = None, artistId: str | None = None,
-                         albumId: str | None = None, includeSkips: bool = False) -> int:
+                         albumId: str | None = None, includeSkips: bool = False,
+                         trackIds: list[str] | None = None) -> int:
         """Return total number of entries in the database, optionally scoped
         to [startDate, endDate) - see getEntriesFromNew's identical params."""
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
         return self.repo.getPlaysCount(self.user, startTs=startTs, endTs=endTs,
                                         trackId=trackId, artistId=artistId, albumId=albumId,
-                                        includeSkips=includeSkips)
+                                        includeSkips=includeSkips, trackIds=trackIds)
 
     def getEntriesFromNew(self, count: int | None = None, startIndex: int = 0, fullPagination: bool = True,
                            startDate: datetime.datetime = None, endDate: datetime.datetime = None,
                            trackId: str | None = None, artistId: str | None = None,
-                           albumId: str | None = None, includeSkips: bool = False) -> list:
+                           albumId: str | None = None, includeSkips: bool = False,
+                           trackIds: list[str] | None = None) -> list:
         """ Return the latest `count` entries from history, sorted from newest to oldest. If count is None, return all entries.
         startDate/endDate optionally scope this to a half-open [startDate, endDate) range - used by the Dashboard's
         chart click-through (see app.py's dashboard()), not by its default unscoped view.
         `trackId`/`artistId`/`albumId` narrow this to one item's plays - the
-        detail pages' play-history lists, same filters as getListeningTimeSeries."""
+        detail pages' play-history lists, same filters as getListeningTimeSeries.
+        `trackIds` narrows to an explicit set of track ids - the /history page's
+        tag filter (see routes/charts.py's historyPage), mirrors getSongsPage's
+        identical param."""
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
         entries = self.repo.getPlaysNewestFirst(self.user, count=count, startIndex=startIndex, startTs=startTs, endTs=endTs,
                                                  trackId=trackId, artistId=artistId, albumId=albumId,
-                                                 includeSkips=includeSkips)
+                                                 includeSkips=includeSkips, trackIds=trackIds)
         return self._paginateEntries(entries) if fullPagination else entries
 
     def getEntriesFromOld(self, count: int | None = None, startIndex: int = 0, fullPagination: bool = True,
                            startDate: datetime.datetime = None, endDate: datetime.datetime = None,
                            trackId: str | None = None, artistId: str | None = None,
                            albumId: str | None = None, includeSkips: bool = False,
-                           afterTs: float | None = None) -> list:
+                           afterTs: float | None = None, trackIds: list[str] | None = None) -> list:
         """ Return the oldest `count` entries from history, sorted from oldest to newest. If count is None, return all entries.
         startDate/endDate and trackId/artistId/albumId: see getEntriesFromNew's identical params.
-        afterTs: see Repository.getPlaysOldestFirst."""
+        afterTs: see Repository.getPlaysOldestFirst. trackIds: see getEntriesFromNew's identical param."""
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
         entries = self.repo.getPlaysOldestFirst(self.user, count=count, startIndex=startIndex, startTs=startTs, endTs=endTs,
                                                  trackId=trackId, artistId=artistId, albumId=albumId,
-                                                 includeSkips=includeSkips, afterTs=afterTs)
+                                                 includeSkips=includeSkips, afterTs=afterTs, trackIds=trackIds)
         return self._paginateEntries(entries) if fullPagination else entries
 
     def getSkipEntriesFromOld(self, count: int | None = None, startIndex: int = 0, fullPagination: bool = True,
@@ -683,21 +688,24 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
 
     def searchEntries(self, query: str, count: int | None = None, startIndex: int = 0,
                        startDate: datetime.datetime = None, endDate: datetime.datetime = None,
-                       oldestFirst: bool = False) -> list:
+                       oldestFirst: bool = False, trackIds: list[str] | None = None) -> list:
         """Entries (newest first, or oldest first with `oldestFirst`) whose
         track/artist/album/playlist matches `query`, paginated in SQL
         (Repository.searchPlays) rather than filtering the whole history in
-        Python. startDate/endDate: see getEntriesFromNew's identical param."""
+        Python. startDate/endDate: see getEntriesFromNew's identical param.
+        trackIds: see getEntriesFromNew's identical param."""
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
         entries = self.repo.searchPlays(self.user, query, limit=count, offset=startIndex, startTs=startTs, endTs=endTs,
-                                         oldestFirst=oldestFirst)
+                                         oldestFirst=oldestFirst, trackIds=trackIds)
         return self._paginateEntries(entries)
 
-    def searchEntriesCount(self, query: str, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> int:
+    def searchEntriesCount(self, query: str, startDate: datetime.datetime = None, endDate: datetime.datetime = None,
+                            trackIds: list[str] | None = None) -> int:
         """The paging counterpart to searchEntries() - total matching entries,
-        for computing total page count without fetching every match."""
+        for computing total page count without fetching every match. trackIds:
+        see getEntriesFromNew's identical param."""
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
-        return self.repo.searchPlaysCount(self.user, query, startTs=startTs, endTs=endTs)
+        return self.repo.searchPlaysCount(self.user, query, startTs=startTs, endTs=endTs, trackIds=trackIds)
 
     def writeProgress(self, status: str, current: int = 0, total: int = 0, message: str = "", error: bool = False):
         self.repo.writeProgress(self.user, status, current, total, message, error)

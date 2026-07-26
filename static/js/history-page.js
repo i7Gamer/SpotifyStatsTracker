@@ -70,6 +70,15 @@ function loadHistoryResults(opts) {
     });
 }
 
+// Pure helper (unit-tested in tests/test_history_page.js): which query params
+// a tag filter change sets vs deletes. Mirrors applyTopListTagParam in
+// static/js/top-list.js - the Top pages' tag dropdown this one was copied from.
+function applyHistoryTagParam(params, tag) {
+  if (tag) { params.set('tag', tag); } else { params.delete('tag'); }
+  params.delete('page');
+  return params;
+}
+
 // Update the URL in place (replaceState, not push) so a filter/sort/page
 // change stays shareable/refreshable without stacking a history entry - Back
 // then returns to the previous page instead of stepping back through it.
@@ -173,6 +182,16 @@ function updateHistorySortLabel(sort) {
   document.getElementById('historySort').textContent = sort === 'oldest' ? 'Date ↑' : 'Date ↓';
 }
 
+// The Tag filter (only rendered when the user has tagged something - see
+// history.html's {% if tags_enabled and user_tags %} guard), same
+// replace-and-reload pattern as every other filter here.
+function updateHistoryTagFilter() {
+  var tagFilter = document.getElementById('tagFilter');
+  if (!tagFilter) return;
+  replaceHistoryUrl(function (params) { applyHistoryTagParam(params, tagFilter.value); });
+  loadHistoryResults();
+}
+
 // Pagination: Previous/Next + page-number links, and the "Go to page"
 // input (_pagination.html) - all navigate within #historyResults via
 // ajax instead of a full reload.
@@ -184,33 +203,45 @@ function goToHistoryPage(page) {
 // _pagination.html's jump-to-page input calls the shared
 // handleJumpToPageKeydown (layout.html), which defers to this hook when
 // present instead of navigating - see layout.html for the fallback.
-window.__paginationAjaxHandler = goToHistoryPage;
+//
+// Everything below only runs in a browser (guarded on `document`, like
+// static/js/top-list.js's init) so this module can still be `require()`d from
+// a plain-node unit test (tests/test_history_page.js) for its pure helpers.
+if (typeof document !== 'undefined') {
+  window.__paginationAjaxHandler = goToHistoryPage;
 
-// The results container persists across ajax swaps (only its innerHTML is
-// replaced), so this delegated listener survives every refresh.
-document.getElementById('historyResults').addEventListener('click', function (evt) {
-  const link = evt.target.closest('.pagination-controls a');
-  if (!link) return;
-  // Let modified clicks (new tab, etc.) behave normally.
-  if (evt.metaKey || evt.ctrlKey || evt.shiftKey || evt.altKey) return;
-  evt.preventDefault();
-  const page = new URL(link.href).searchParams.get('page') || '1';
-  goToHistoryPage(page);
-});
+  // The results container persists across ajax swaps (only its innerHTML is
+  // replaced), so this delegated listener survives every refresh.
+  document.getElementById('historyResults').addEventListener('click', function (evt) {
+    const link = evt.target.closest('.pagination-controls a');
+    if (!link) return;
+    // Let modified clicks (new tab, etc.) behave normally.
+    if (evt.metaKey || evt.ctrlKey || evt.shiftKey || evt.altKey) return;
+    evt.preventDefault();
+    const page = new URL(link.href).searchParams.get('page') || '1';
+    goToHistoryPage(page);
+  });
 
-// Back/forward: reconcile the filter controls with the URL, then re-fetch.
-window.addEventListener('popstate', function () {
-  const params = new URLSearchParams(window.location.search);
-  const hasCustom = params.get('startDate') && params.get('endDate');
-  const interval = hasCustom ? 'custom' : (params.get('interval') || HISTORY_DEFAULT_WINDOW);
-  document.getElementById('interval').value = interval;
-  document.getElementById('startDate').value = params.get('startDate') || '';
-  document.getElementById('endDate').value = params.get('endDate') || '';
-  document.getElementById('historyCustomDates').style.display = hasCustom ? 'flex' : 'none';
-  const searchInput = document.getElementById('historySearch');
-  if (searchInput) searchInput.value = params.get('q') || '';
-  updateHistorySortLabel(params.get('sort') === 'oldest' ? 'oldest' : 'newest');
-  loadHistoryResults();
-});
+  // Back/forward: reconcile the filter controls with the URL, then re-fetch.
+  window.addEventListener('popstate', function () {
+    const params = new URLSearchParams(window.location.search);
+    const hasCustom = params.get('startDate') && params.get('endDate');
+    const interval = hasCustom ? 'custom' : (params.get('interval') || HISTORY_DEFAULT_WINDOW);
+    document.getElementById('interval').value = interval;
+    document.getElementById('startDate').value = params.get('startDate') || '';
+    document.getElementById('endDate').value = params.get('endDate') || '';
+    document.getElementById('historyCustomDates').style.display = hasCustom ? 'flex' : 'none';
+    const searchInput = document.getElementById('historySearch');
+    if (searchInput) searchInput.value = params.get('q') || '';
+    const tagFilter = document.getElementById('tagFilter');
+    if (tagFilter) tagFilter.value = params.get('tag') || '';
+    updateHistorySortLabel(params.get('sort') === 'oldest' ? 'oldest' : 'newest');
+    loadHistoryResults();
+  });
 
-loadHistoryResults({ initial: true });
+  loadHistoryResults({ initial: true });
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { applyHistoryTagParam };
+}

@@ -352,6 +352,14 @@ def register(app, dashboard):
         sortOrder = dashboard._getHistorySortParam()
         oldestFirst = sortOrder == "oldest"
 
+        # The tag filter mirrors the Top pages' (see _topListFilters): gated on
+        # the admin's instance-wide tags kill switch, so a hand-crafted ?tag=
+        # is ignored (the dropdown is already hidden template-side) and the
+        # getUserTags query is skipped when tags are off.
+        tagsOn = dashboard.repo.isTagsEnabled()
+        tag = request.args.get("tag", "") if tagsOn else ""
+        userTags = db.repo.getUserTags(username) if tagsOn else []
+
         # Lightweight shell, same two-phase load as /compare, /charts, /genres:
         # the initial GET renders just the filter controls + an empty results
         # placeholder, and history.html's own JS fetches the real list (and
@@ -367,6 +375,8 @@ def register(app, dashboard):
                 customEnd=customEnd,
                 defaultWindow="all time",
                 sort=sortOrder,
+                tag=tag,
+                user_tags=userTags,
             )
 
         page = dashboard._getPageParam()
@@ -380,23 +390,28 @@ def register(app, dashboard):
         listStartDate = startDate
         listEndDate = endDate
 
+        # Same expand-outward semantics as the Top Songs tag filter
+        # (getTaggedTrackIds also matches a track via its tagged album/artist).
+        trackIds = db.repo.getTaggedTrackIds(username, [tag]) if tag else None
+
         if searchQuery:
             # Matching and pagination both happen in SQL (Repository.searchPlays)
             # instead of fetching every play ever recorded and filtering in Python.
-            totalCount = db.searchEntriesCount(searchQuery, startDate=listStartDate, endDate=listEndDate)
+            totalCount = db.searchEntriesCount(searchQuery, startDate=listStartDate, endDate=listEndDate,
+                                               trackIds=trackIds)
             page, totalPages, startIndex = dashboard._calculatePagination(totalCount)
             tracks = db.searchEntries(searchQuery, count=PAGE_SIZE, startIndex=startIndex,
                                       startDate=listStartDate, endDate=listEndDate,
-                                      oldestFirst=oldestFirst)
+                                      oldestFirst=oldestFirst, trackIds=trackIds)
         else:
             # Only materialize the page being shown - joining full track
             # metadata onto every entry ever recorded on every request gets
             # slow once the history grows large.
-            totalCount = db.getEntriesCount(startDate=listStartDate, endDate=listEndDate)
+            totalCount = db.getEntriesCount(startDate=listStartDate, endDate=listEndDate, trackIds=trackIds)
             page, totalPages, startIndex = dashboard._calculatePagination(totalCount)
             fetchEntries = db.getEntriesFromOld if oldestFirst else db.getEntriesFromNew
             tracks = fetchEntries(count=PAGE_SIZE, startIndex=startIndex,
-                                  startDate=listStartDate, endDate=listEndDate)
+                                  startDate=listStartDate, endDate=listEndDate, trackIds=trackIds)
         tracks = dashboard._embedSongsTextElements(tracks)
         tracks = dashboard._attachGenres(db, tracks, "track")
 
@@ -410,6 +425,7 @@ def register(app, dashboard):
             startDate=customStart,
             endDate=customEnd,
             sort=sortOrder if oldestFirst else None,
+            tag=tag,
         )
 
         creds = db.getUserSpotifyCredentials() or {}

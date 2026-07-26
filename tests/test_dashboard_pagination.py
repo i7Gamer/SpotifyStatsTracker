@@ -119,7 +119,7 @@ class TestHistoryPagination(_ListRouteTestBase):
         resp, resultsHtml = self._getHistoryAjax(dash, db)
 
         self.assertEqual(resp.status_code, 200)
-        db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=0, startDate=None, endDate=None)
+        db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=0, startDate=None, endDate=None, trackIds=None)
         self.assertIn("Page 1 of 3", resultsHtml)
 
     def test_without_search_requests_correct_offset_for_page(self):
@@ -128,7 +128,7 @@ class TestHistoryPagination(_ListRouteTestBase):
 
         resp, resultsHtml = self._getHistoryAjax(dash, db, query="?page=2")
 
-        db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=appModule.PAGE_SIZE, startDate=None, endDate=None)
+        db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=appModule.PAGE_SIZE, startDate=None, endDate=None, trackIds=None)
         self.assertIn("Page 2 of 3", resultsHtml)
 
     def test_without_search_clamps_page_beyond_range(self):
@@ -137,7 +137,7 @@ class TestHistoryPagination(_ListRouteTestBase):
 
         resp, resultsHtml = self._getHistoryAjax(dash, db, query="?page=99")
 
-        db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=2 * appModule.PAGE_SIZE, startDate=None, endDate=None)
+        db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=2 * appModule.PAGE_SIZE, startDate=None, endDate=None, trackIds=None)
         self.assertIn("Page 3 of 3", resultsHtml)
 
     def test_without_search_handles_empty_database(self):
@@ -147,7 +147,7 @@ class TestHistoryPagination(_ListRouteTestBase):
         resp, resultsHtml = self._getHistoryAjax(dash, db)
 
         self.assertEqual(resp.status_code, 200)
-        db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=0, startDate=None, endDate=None)
+        db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=0, startDate=None, endDate=None, trackIds=None)
         self.assertIn("Page 1 of 1", resultsHtml)
 
     def test_with_search_paginates_and_matches_in_sql(self):
@@ -161,9 +161,9 @@ class TestHistoryPagination(_ListRouteTestBase):
         resp, _ = self._getHistoryAjax(dash, db, query="?q=foo")
 
         self.assertEqual(resp.status_code, 200)
-        db.searchEntriesCount.assert_called_once_with("foo", startDate=None, endDate=None)
+        db.searchEntriesCount.assert_called_once_with("foo", startDate=None, endDate=None, trackIds=None)
         db.searchEntries.assert_called_once_with("foo", count=appModule.PAGE_SIZE, startIndex=0, startDate=None, endDate=None,
-                                                 oldestFirst=False)
+                                                 oldestFirst=False, trackIds=None)
         db.getEntriesFromNew.assert_not_called()
         db.getEntriesCount.assert_not_called()
 
@@ -176,7 +176,7 @@ class TestHistoryPagination(_ListRouteTestBase):
 
         self.assertEqual(resp.status_code, 200)
         db.searchEntries.assert_called_once_with("foo", count=appModule.PAGE_SIZE, startIndex=2 * appModule.PAGE_SIZE, startDate=None, endDate=None,
-                                                 oldestFirst=False)
+                                                 oldestFirst=False, trackIds=None)
         self.assertIn("Page 3 of 3", resultsHtml)
 
     def test_sort_oldest_fetches_entries_from_old(self):
@@ -186,7 +186,7 @@ class TestHistoryPagination(_ListRouteTestBase):
         resp, _ = self._getHistoryAjax(dash, db, query="?sort=oldest")
 
         self.assertEqual(resp.status_code, 200)
-        db.getEntriesFromOld.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=0, startDate=None, endDate=None)
+        db.getEntriesFromOld.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=0, startDate=None, endDate=None, trackIds=None)
         db.getEntriesFromNew.assert_not_called()
 
     def test_sort_junk_falls_back_to_newest(self):
@@ -318,7 +318,7 @@ class TestHistoryCustomRangeListScoping(_ListRouteTestBase):
         resp, _ = self._getHistoryAjax(dash, db)
 
         self.assertEqual(resp.status_code, 200)
-        db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=0, startDate=None, endDate=None)
+        db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=0, startDate=None, endDate=None, trackIds=None)
 
     def test_custom_without_valid_dates_falls_back_and_does_not_scope_the_list(self):
         """interval=custom with no/invalid startDate+endDate falls back to
@@ -329,7 +329,7 @@ class TestHistoryCustomRangeListScoping(_ListRouteTestBase):
         resp, _ = self._getHistoryAjax(dash, db, query="?interval=custom")
 
         self.assertEqual(resp.status_code, 200)
-        db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=0, startDate=None, endDate=None)
+        db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=0, startDate=None, endDate=None, trackIds=None)
 
 
 class TestTopSongsPagination(_ListRouteTestBase):
@@ -537,7 +537,7 @@ class TestPageParamParsing(_ListRouteTestBase):
         resp, resultsHtml = self._getHistoryAjax(dash, db, query="?page=abc")
 
         self.assertEqual(resp.status_code, 200)
-        db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=0, startDate=None, endDate=None)
+        db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=0, startDate=None, endDate=None, trackIds=None)
         self.assertIn("Page 1 of 3", resultsHtml)
 
     def test_dashboard_clamps_negative_page(self):
@@ -547,7 +547,7 @@ class TestPageParamParsing(_ListRouteTestBase):
         resp, _ = self._getHistoryAjax(dash, db, query="?page=-5")
 
         self.assertEqual(resp.status_code, 200)
-        db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=0, startDate=None, endDate=None)
+        db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=0, startDate=None, endDate=None, trackIds=None)
 
     def test_top_songs_survives_non_numeric_page(self):
         dash = self._makeApp()

@@ -246,11 +246,13 @@ class PlayQueries:
 
     def getPlaysCount(self, username: str, startTs: float | None = None, endTs: float | None = None,
                        trackId: str | None = None, artistId: str | None = None,
-                       albumId: str | None = None, includeSkips: bool = False) -> int:
+                       albumId: str | None = None, includeSkips: bool = False,
+                       trackIds: list[str] | None = None) -> int:
         conn = self._conn()
         params = [username]
         rangeClause = self._dateRangeClause(params, startTs, endTs)
         extraClauses = self._itemFilterClauses(params, trackId, artistId, albumId)
+        extraClauses += self._idSetClause(params, "track_id", trackIds)
         skipClause = "" if includeSkips else " AND is_skip=0"
         row = conn.execute(
             f"SELECT COUNT(*) AS c FROM plays WHERE username=?{skipClause}{rangeClause}{extraClauses}",
@@ -261,12 +263,14 @@ class PlayQueries:
     def getPlaysNewestFirst(self, username: str, count: int | None = None, startIndex: int = 0,
                              startTs: float | None = None, endTs: float | None = None,
                              trackId: str | None = None, artistId: str | None = None,
-                             albumId: str | None = None, includeSkips: bool = False) -> list[dict]:
+                             albumId: str | None = None, includeSkips: bool = False,
+                             trackIds: list[str] | None = None) -> list[dict]:
         conn = self._conn()
         limit = -1 if count is None else count
         params = [username]
         rangeClause = self._dateRangeClause(params, startTs, endTs)
         extraClauses = self._itemFilterClauses(params, trackId, artistId, albumId)
+        extraClauses += self._idSetClause(params, "track_id", trackIds)
         params += [limit, startIndex]
         skipClause = "" if includeSkips else " AND is_skip=0"
         rows = conn.execute(
@@ -280,7 +284,8 @@ class PlayQueries:
                              startTs: float | None = None, endTs: float | None = None,
                              trackId: str | None = None, artistId: str | None = None,
                              albumId: str | None = None, includeSkips: bool = False,
-                             afterTs: float | None = None) -> list[dict]:
+                             afterTs: float | None = None,
+                             trackIds: list[str] | None = None) -> list[dict]:
         """`afterTs` pages by position in time (played_at >= afterTs) rather than
         by OFFSET - see iterExportEntries, which streams the whole history and
         must not skip rows if a concurrent delete shifts every later row left."""
@@ -289,6 +294,7 @@ class PlayQueries:
         params = [username]
         rangeClause = self._dateRangeClause(params, startTs, endTs)
         extraClauses = self._itemFilterClauses(params, trackId, artistId, albumId)
+        extraClauses += self._idSetClause(params, "track_id", trackIds)
         if afterTs is not None:
             extraClauses += " AND played_at >= ?"
             params.append(afterTs)
@@ -491,16 +497,18 @@ class PlayQueries:
 
     def searchPlays(self, username: str, query: str, limit: int | None = None, offset: int = 0,
                      startTs: float | None = None, endTs: float | None = None,
-                     oldestFirst: bool = False) -> list[dict]:
+                     oldestFirst: bool = False, trackIds: list[str] | None = None) -> list[dict]:
         """Plays (newest first, or oldest first with `oldestFirst`) whose track
         name, artist(s), album, or source playlist/album match `query` - the
         SQL-pushed-down, paginated replacement for fetching every play and
-        filtering in Python."""
+        filtering in Python. `trackIds` narrows to an explicit set of track ids
+        (the history page's tag filter) - see getSongsPage's identical param."""
         conn = self._conn()
         limitValue = -1 if limit is None else limit
         pattern = self._likePattern(query)
         params = [username, pattern, pattern, pattern, pattern]
         rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
+        trackIdsClause = self._idSetClause(params, "p.track_id", trackIds)
         params += [limitValue, offset]
         direction = "ASC" if oldestFirst else "DESC"
         rows = conn.execute(
@@ -509,7 +517,7 @@ class PlayQueries:
                    p.time_played AS time_played, p.played_from AS played_from
             FROM plays p
             {self._SEARCH_JOIN_CLAUSE}
-            WHERE p.username = ? AND p.is_skip=0 {self._SEARCH_MATCH_CLAUSE}{rangeClause}
+            WHERE p.username = ? AND p.is_skip=0 {self._SEARCH_MATCH_CLAUSE}{rangeClause}{trackIdsClause}
             ORDER BY p.played_at {direction}, p.id {direction}
             LIMIT ? OFFSET ?
             """,
@@ -518,19 +526,22 @@ class PlayQueries:
         return [self._playRowToEntry(r) for r in rows]
 
     def searchPlaysCount(self, username: str, query: str,
-                          startTs: float | None = None, endTs: float | None = None) -> int:
+                          startTs: float | None = None, endTs: float | None = None,
+                          trackIds: list[str] | None = None) -> int:
         """The paging counterpart to searchPlays() - total matching plays,
-        for computing total page count without fetching every match."""
+        for computing total page count without fetching every match.
+        `trackIds` mirrors the same param on searchPlays()."""
         conn = self._conn()
         pattern = self._likePattern(query)
         params = [username, pattern, pattern, pattern, pattern]
         rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
+        trackIdsClause = self._idSetClause(params, "p.track_id", trackIds)
         row = conn.execute(
             f"""
             SELECT COUNT(*) AS c
             FROM plays p
             {self._SEARCH_JOIN_CLAUSE}
-            WHERE p.username = ? AND p.is_skip=0 {self._SEARCH_MATCH_CLAUSE}{rangeClause}
+            WHERE p.username = ? AND p.is_skip=0 {self._SEARCH_MATCH_CLAUSE}{rangeClause}{trackIdsClause}
             """,
             params,
         ).fetchone()

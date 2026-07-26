@@ -55,6 +55,18 @@
                   aria-label="Toggle date sort order">Date {{ '↑' if sort == 'oldest' else '↓' }}</button>
         </div>
 
+        {% if tags_enabled and user_tags %}
+        <div class="filter-group">
+          <label for="tagFilter">Tag:</label>
+          <select id="tagFilter" name="tag" onchange="updateHistoryTagFilter()">
+            <option value="">All Tags</option>
+            {% for t in user_tags %}
+            <option value="{{ t.tag }}" {% if tag == t.tag %}selected{% endif %}>#{{ t.tag }} ({{ t.count }})</option>
+            {% endfor %}
+          </select>
+        </div>
+        {% endif %}
+
         <noscript>
           <button class="primary-button" type="submit">Apply</button>
         </noscript>
