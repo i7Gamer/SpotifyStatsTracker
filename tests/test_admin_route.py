@@ -606,6 +606,7 @@ class TestAdminRestart(AdminRouteTestBase):
             resp = self._post(dash, "/admin/restart", isAdmin=True, data={})
         self.assertEqual(resp.status_code, 302)
         self.assertIn("error=", resp.headers["Location"])
+        self.assertNotIn("message=", resp.headers["Location"])
         timer.assert_not_called()
 
     def test_enabled_schedules_graceful_exit(self):
@@ -617,6 +618,17 @@ class TestAdminRestart(AdminRouteTestBase):
             resp = self._post(dash, "/admin/restart", isAdmin=True, data={})
         self.assertEqual(resp.status_code, 302)
         timer.assert_called_once()
+
+    def test_enabled_reports_progress_as_a_message_not_an_error(self):
+        # A successfully scheduled restart is informational - it must land in
+        # /admin's green `message` banner, not the red `error` one.
+        dash = self._makeApp()
+        with patch("threading.Timer"), \
+             patch.dict(os.environ, {"ALLOW_INSTANCE_RESTART": "1"}):
+            resp = self._post(dash, "/admin/restart", isAdmin=True, data={})
+        location = resp.headers["Location"]
+        self.assertIn("message=", location)
+        self.assertNotIn("error=", location)
 
 
 class TestAdminLastfmSettings(AdminRouteTestBase):

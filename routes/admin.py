@@ -639,8 +639,10 @@ def register(app, dashboard):
             finally:
                 os._exit(0)
         threading.Timer(INSTANCE_RESTART_DELAY_SECONDS, _gracefulExit).start()
+        # `message`, not `error`: the restart was accepted, so /admin should
+        # show it in the informational banner rather than the red error one.
         return redirect(url_for("adminPage",
-            error="Restarting now - the app will be back in a few seconds if the process is supervised."))
+            message="Restarting now - the app will be back in a few seconds if the process is supervised."))
     app.add_url_rule("/admin/restart", "adminRestart", adminRestart, methods=["POST"])
 
     def adminSetUserAdmin(username):
