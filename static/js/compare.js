@@ -24,7 +24,7 @@ window.__deferInitialChartRender = true;
 const COMPARE_FADE_MS = 200;
 
 // The six individual my/their Top lists are the ONLY regions whose
-// content reads ?sortBy= (see app.py's compare route comment) - the
+// content reads ?sortBy= (see routes/compare.py's own comment) - the
 // stats table, chart, taste match, similarities, genres and Top Common
 // lists render byte-identical under any sortBy, so a sort change fades
 // and swaps just these and leaves the rest untouched. One map drives

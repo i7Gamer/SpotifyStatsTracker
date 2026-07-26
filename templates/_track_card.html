@@ -23,7 +23,7 @@
   {# Public Wrapped share links serve images through a token-keyed route
      instead of the session-authorized /img/<username>/... one, since an
      anonymous viewer has no session to authorize against - see
-     sharedWrappedPage() in app.py. #}
+     sharedWrappedPage() in routes/wrapped.py. #}
   {% set imageBase = imageBase if imageBase is defined else '/img/' + username %}
   {# Detail pages always resolve against the viewing session's own data, so a
      caller rendering ANOTHER user's items (the Compare page's counterpart
@@ -32,7 +32,8 @@
      only when a real URL exists (fabricated ids carry an empty url).
      track['linkExternally'], when present, overrides the call-site default
      per item: the Compare page's counterpart lists set it individually (see
-     app.py's _markLinkExternally) so an item the viewer HAS played (even if
+     services/taste_match.py's _markLinkExternally) so an item the viewer HAS
+     played (even if
      it's not one of the viewer's own top items) still links to their own
      detail page instead of always going external. #}
   {% set suppressDetailLinks = track.get('linkExternally', suppressDetailLinks if suppressDetailLinks is defined else false) %}
@@ -156,7 +157,8 @@
 
         {# Compare page's Top Common Songs/Artists/Albums cards: both users'
            stats - led by each side's own plays-rank, the thing the list is
-           actually ordered by (see app.py's _sharedRankScore) - plus a
+           actually ordered by (see services/taste_match.py's
+           _sharedRankScore) - plus a
            split bar proportioned by each side's share of the combined
            listening time. Colors mirror the trend chart's two series. #}
         {% if track.get('compareData') %}

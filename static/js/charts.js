@@ -155,8 +155,9 @@
         }
         showTooltip(evt, '<strong>' + label + '</strong><br>' + body);
         // rangeStart is only stamped for buckets with a clean calendar-date
-        // mapping (see app.py's _timeSeriesBucketRange) - the single-day
-        // view's hourly buckets don't get one, so they stay un-clickable.
+        // mapping (see dashboard/date_ranges.py's _timeSeriesBucketRange) - the
+        // single-day view's hourly buckets don't get one, so they stay
+        // un-clickable.
         canvas.style.cursor = hit.d.rangeStart ? 'pointer' : 'crosshair';
       } else {
         hideTooltip();
@@ -196,8 +197,8 @@
         emptyMessage: 'Not enough data yet to show an artist trend.',
         formatValue: function (v) { return Math.round(v) + ' plays'; },
         // Clicking a line/point navigates to that artist's detail page - see
-        // app.py's getArtistTrend, which picks a representative id for
-        // same-named artists sharing one merged line.
+        // Database/database.py's getArtistTrend, which picks a representative
+        // id for same-named artists sharing one merged line.
         onClickId: function (id) { window.location.href = '/artist/' + encodeURIComponent(id); }
       }
     );

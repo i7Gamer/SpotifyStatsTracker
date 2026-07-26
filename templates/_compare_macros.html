@@ -17,7 +17,8 @@
 {%- endmacro %}
 
 {# A counterpart item's cell: Spotify only when item.linkExternally (set by
-   app.py's _markLinkExternally - true when the viewer has NO plays of it),
+   services/taste_match.py's _markLinkExternally - true when the viewer has NO
+   plays of it),
    otherwise the viewer genuinely has their own data for it, so it links to
    their own detail page exactly like an own item would. #}
 {% macro theirCell(item, endpoint, idKey) -%}
