@@ -1767,6 +1767,13 @@ progress::-moz-progress-bar {
   color: var(--text);
 }
 
+/* When the filter form is the last thing in a hero (/history), its bottom
+   margin only doubles up on the hero's own padding - the dashboard keeps the
+   margin because its summary cards follow the form. */
+.hero-content > .filter-section:last-child {
+  margin-bottom: 0;
+}
+
 .detail-toolbar {
   display: flex;
   align-items: center;
