@@ -858,12 +858,16 @@ class TestIncompleteTrackInfo(unittest.TestCase):
       trackUnion without "uri"  -> KeyError: 'uri', raised deep inside
                                    SpotipyFree/Formatter.py where the track id
                                    is no longer in scope
-      spotapi's own SongError   -> re-raised (not classified as transient)
+      spotapi's own SongError   -> raised on the FIRST attempt, because the
+                                   substring classifier saw neither "rate
+                                   limit" nor "session" in it
 
     _get_track_info_with_retry now recognises the first two as one typed error
     at our own seam, retries it a bounded number of times, and Spotify.track()
     degrades to a fallback record only once those are exhausted - so the play
-    survives either way."""
+    survives either way. The third is a failed HTTP request (spotapi raises it
+    only from `if resp.fail`), so it goes to the transient ladder that already
+    existed for exactly that, matched by type rather than by message."""
 
     def setUp(self):
         """The incomplete-response retry sleeps between attempts; patch it away
@@ -999,6 +1003,52 @@ class TestIncompleteTrackInfo(unittest.TestCase):
         ]
 
         self.assertIs(_get_track_info_with_retry("abc123"), union)
+
+    @patch("spotapi.Public")
+    def test_a_failed_request_is_retried_like_any_other_transport_blip(self, mock_public):
+        """The third shape in this class's docstring. spotapi raises
+        SongError("Could not get song info", error=...) from exactly one place:
+        `if resp.fail` in Song.get_track_info - i.e. the HTTP request failed. It
+        is a transport failure, but the substring classifier matched neither
+        "rate limit" nor "session" on it, so it was re-raised on the FIRST
+        attempt, propagated through _addToRecentlyPlayed, and killed the whole
+        poll iteration. Five plays went that way in the audited window, and the
+        retry ladder that exists for precisely this never ran."""
+        from spotapi.exceptions import SongError
+        from Database.patches import _get_track_info_with_retry
+
+        union = fakeTrackUnion("abc123")
+        mock_public.song_info.side_effect = [
+            SongError("Could not get song info", error="502 Bad Gateway"),
+            {"data": {"trackUnion": union}},
+        ]
+
+        self.assertIs(_get_track_info_with_retry("abc123"), union)
+
+    @patch("spotapi.Public")
+    def test_a_request_that_keeps_failing_still_raises(self, mock_public):
+        """Retrying is the fix, not swallowing: a genuine, persistent failure
+        must still reach the caller rather than silently becoming a fallback
+        record that claims the track is undescribable."""
+        from spotapi.exceptions import SongError
+        from Database.patches import _get_track_info_with_retry
+
+        mock_public.song_info.side_effect = SongError("Could not get song info", error="502")
+
+        with self.assertRaises(SongError):
+            _get_track_info_with_retry("abc123")
+
+    @patch("spotapi.Public")
+    def test_a_non_transport_spotapi_error_is_not_retried(self, mock_public):
+        """The classification stays narrow - an unrecognised error is still a
+        fact about the request, raised on the first attempt."""
+        from Database.patches import _get_track_info_with_retry
+
+        mock_public.song_info.side_effect = ValueError("something else entirely")
+
+        with self.assertRaises(ValueError):
+            _get_track_info_with_retry("abc123")
+        self.assertEqual(mock_public.song_info.call_count, 1)
 
     @patch("spotapi.Public")
     def test_exhausted_incomplete_retries_still_reach_the_fallback(self, mock_public):

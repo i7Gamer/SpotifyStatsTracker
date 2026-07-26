@@ -27,7 +27,13 @@
 {% endif %}
 
 <section class="card chart-card">
-  {% if song.get('plays', 0) > 1 %}
+  {# Skips count toward "is there a history worth plotting", not just plays:
+     getSong falls back to the skip-sorted query for a track with no real plays
+     at all and reports plays=0 there (with the real skips), and the timeline
+     carries a skips series for exactly that case - gating on plays alone left
+     that page, the one the Most Skipped lists link to, with no chart. One
+     event is still not a history, same rule as a single play. #}
+  {% if song.get('plays', 0) + song.get('skips', 0) > 1 %}
   <div class="chart-section">
     <h2>Play History</h2>
     <div class="chart-canvas-wrap">

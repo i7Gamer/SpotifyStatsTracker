@@ -5,6 +5,7 @@ import threading
 import time
 import websockets.sync.client
 import websockets.exceptions
+import spotapi.exceptions
 import spotapi.status
 import spotapi.websocket
 
@@ -348,9 +349,21 @@ def _get_track_info_with_retry(trackId: str, max_retries: int = 3):
             error_str = str(e).lower()
             is_rate_limit = "429" in error_str or ("rate" in error_str and "limit" in error_str)
             is_session_error = "could not get session" in error_str or "session" in error_str
+            # spotapi raises SongError from exactly one place in
+            # Song.get_track_info: `if resp.fail`, i.e. the HTTP request itself
+            # failed. That is a transport blip - the class this ladder exists
+            # for - but it says neither "rate limit" nor "session", so the
+            # substring tests above missed it and it was re-raised on the FIRST
+            # attempt. That propagates through SpotipyFree's
+            # _addToRecentlyPlayed into the poll loop's catch-all and drops the
+            # whole iteration, losing a play that really happened (5 of the 11
+            # such losses in 11 days of app.log). Matched by type, not by
+            # message: the message is spotapi's to change.
+            is_failed_request = isinstance(e, spotapi.exceptions.SongError)
 
-            # Only retry on transient errors (rate limit, session issues), not on real 404s
-            if not (is_rate_limit or is_session_error):
+            # Only retry on transient errors (rate limit, session issues, a
+            # failed request), not on real 404s
+            if not (is_rate_limit or is_session_error or is_failed_request):
                 raise
 
             if attempt < max_retries - 1:

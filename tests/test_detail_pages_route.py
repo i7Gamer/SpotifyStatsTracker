@@ -376,6 +376,41 @@ class TestSongDetailRoute(_DetailRouteTestBase):
         self.assertIn(b"Play History", resp.data)
         self.assertIn(b'id="timeSeriesChart"', resp.data)
 
+    def test_play_history_panel_shown_for_a_song_that_was_only_ever_skipped(self):
+        """2e4f9e3 made a skip-only song's page render, and gave the timeline a
+        skips series so it would have something to show - but the canvas that
+        series lands on was gated on plays > 1, and getSong's skip-only fallback
+        reports plays=0 by design. So the one page the series was built for
+        rendered no chart at all. The Most Skipped lists link straight here."""
+        dash = self._makeApp()
+        db = MagicMock()
+        song = self._song()
+        song["plays"] = 0        #< the skip-sorted fallback's shape
+        song["skips"] = 3
+        db.getSong.return_value = song
+        db.getListeningTimeSeries.return_value = []
+        db.getHourOfDayHeatmap.return_value = [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
+
+        resp = self._getPath(dash, db, "/song/t1")
+
+        self.assertIn(b"Play History", resp.data)
+        self.assertIn(b'id="timeSeriesChart"', resp.data)
+
+    def test_a_single_skip_is_still_too_little_to_chart(self):
+        """Same rule as a single play: one point is not a history."""
+        dash = self._makeApp()
+        db = MagicMock()
+        song = self._song()
+        song["plays"] = 0
+        song["skips"] = 1
+        db.getSong.return_value = song
+        db.getListeningTimeSeries.return_value = []
+        db.getHourOfDayHeatmap.return_value = [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
+
+        resp = self._getPath(dash, db, "/song/t1")
+
+        self.assertNotIn(b'id="timeSeriesChart"', resp.data)
+
     def test_unknown_song_redirects_to_top_songs(self):
         dash = self._makeApp()
         db = MagicMock()
