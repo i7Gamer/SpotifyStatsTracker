@@ -30,5 +30,21 @@ jobs:
         run: pip install ruff==0.16.0
 
       # Rule set and the reasoning behind it live in pyproject.toml.
-      - name: Lint
+      - name: Lint Python
         run: ruff check .
+
+      # The browser scripts in static/js never run under pytest, so a plain
+      # ReferenceError in one of them could only be found by loading the page -
+      # and one shipped in a release (see eslint.config.js). Same version-pinning
+      # reasoning as ruff above.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install eslint
+        run: npm ci
+
+      # Rule set and the reasoning behind it live in eslint.config.js.
+      - name: Lint JavaScript
+        run: npm run lint

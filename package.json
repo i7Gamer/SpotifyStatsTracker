@@ -1,0 +1,12 @@
+{
+  "name": "spotify-stats-tracker-lint",
+  "private": true,
+  "description": "Dev-only manifest: the app ships no JS bundle and has no runtime node dependency. This exists so the browser scripts in static/js can be linted (see eslint.config.js) - nothing here is installed into the Docker image, which is why .dockerignore excludes it.",
+  "scripts": {
+    "lint": "eslint static/js tests"
+  },
+  "devDependencies": {
+    "eslint": "9.39.0",
+    "globals": "14.0.0"
+  }
+}

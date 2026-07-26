@@ -35,3 +35,8 @@ tests/
 docker-compose.yml
 dev.py
 *.ps1
+# Lint-only, dev-only: the image ships no JS bundle and needs no node runtime.
+node_modules/
+package.json
+package-lock.json
+eslint.config.js
