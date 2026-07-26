@@ -371,6 +371,42 @@ class TestOverwriteAbortsOnRetryableDrops(_OverwriteTestBase):
         self.assertIn("nothing was deleted", message)
         self.assertIn("try", message.lower())
 
+    def test_an_unreadable_entry_aborts_before_anything_is_deleted(self):
+        """The gap this guard was missing entirely. An entry that never parsed
+        yields no play, but the covered range is computed from the same file and
+        the OTHER entries still mark its year covered - so the delete would take
+        out a play (recorded earlier by the listener, or by a previous import)
+        that nothing re-inserts. It bumped no counter, so nothing noticed."""
+        db = self._seededDb()
+
+        outcomes = self._runBatchWithStats(db, self._fileSpecs(), {"droppedMalformed": 1})
+
+        self.assertEqual(outcomes, ["failed"])
+        self.assertEqual(self._playedAts(db), [_ts(2019)])   #< original play intact
+        self.assertEqual(db.readProgress()["status"], "failed")
+
+    def test_the_unreadable_entry_message_does_not_tell_the_user_to_retry(self):
+        """Different advice from the retryable guard: re-running changes
+        nothing, because the file itself is what could not be read."""
+        db = self._seededDb()
+
+        self._runBatchWithStats(db, self._fileSpecs(), {"droppedMalformed": 4})
+
+        message = db.readProgress()["message"]
+        self.assertIn("4", message)
+        self.assertIn("nothing was deleted", message)
+        self.assertNotIn("try the import again", message)
+
+    def test_a_negative_play_time_does_not_abort(self):
+        """A pre-existing deliberate filter, counted only for visibility -
+        aborting on it would block exports that have always been importable."""
+        db = self._seededDb()
+
+        outcomes = self._runBatchWithStats(db, self._fileSpecs(), {"droppedNegativeTime": 3})
+
+        self.assertEqual(outcomes, ["imported"])
+        self.assertEqual(self._playedAts(db), [_ts(2019, 3)])
+
     def test_permanent_no_track_drops_do_not_abort(self):
         """Podcast/audiobook rows can never resolve - aborting on them would
         make overwrite import impossible for most real exports."""

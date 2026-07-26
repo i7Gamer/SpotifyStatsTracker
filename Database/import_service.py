@@ -26,6 +26,16 @@ import Database.database as _dbmod  # noqa: F401 - module-global names
 # would make overwrite import impossible for most real exports.
 RETRYABLE_DROP_STAT_KEYS = ("droppedTransient", "droppedUnexpected")
 
+# Entries that could not be READ (see StreamingHistoryImporter._parseHistory).
+# They abort an overwrite for the same reason as the keys above - the covered
+# range is computed from the same parse, so the OTHER entries still mark the
+# year covered and the delete would take out a play nothing re-inserts - but the
+# advice differs: re-running changes nothing, the file itself is unreadable.
+# "droppedNegativeTime" is deliberately absent, matching "droppedNoTrack": it is
+# a long-standing sanity filter, and aborting on it would block exports that
+# have always been importable.
+UNREADABLE_DROP_STAT_KEYS = ("droppedMalformed",)
+
 # How far apart two skip rows for the same track may be and still be treated as
 # one physical event. Sized for the recording sources disagreeing about what
 # played_at means (start vs end of a sub-5s play) plus clock drift - NOT for the
@@ -201,6 +211,26 @@ class ImportMixin:
 
             if index % self.PROGRESS_UPDATE_INTERVAL == 0 or index == total:
                 reportProgress("running", index, total, f"{progressPrefix}Imported {index} of {total}")
+
+        # A file nothing could be read from fails as loudly as an unrecognized
+        # one, and for the same reason. _convertToList types a file from its
+        # FIRST row alone, so a JSON list whose rows carry `ts` but not the
+        # master_metadata_* keys is typed as an extended export and then fails
+        # on every row - which used to import as a silent success ("0 tracks
+        # imported", progress complete, AutoImporter filing it under DONE/).
+        #
+        # Only when EVERY entry was unreadable: a file that is partly readable
+        # imports what it can, and the droppedMalformed counter is what stops an
+        # overwrite from deleting the rest (see UNREADABLE_DROP_STAT_KEYS).
+        # Podcast-only files are unaffected - episode rows parse, and are
+        # dropped a layer lower as droppedNoTrack.
+        entriesSeen = importStats.get("entriesSeen", 0)
+        if entriesSeen and importStats.get("droppedMalformed", 0) == entriesSeen:
+            raise ValueError(
+                f"None of the {entriesSeen} entries in this file could be read - it looks like a "
+                "Spotify export but carries none of the expected fields. Re-download the export "
+                "from Spotify (check you uploaded the streaming-history file, not another one)."
+            )
 
         return stagedTracks, stagedPlays, total, importStats
 
@@ -589,6 +619,16 @@ class ImportMixin:
                                f"Overwrite import aborted: {retryableDropped} play(s) could not be looked up "
                                "(Spotify rate limit or outage) - nothing was deleted, your data is unchanged. "
                                "Please try the import again.",
+                               error=True)
+            return ["failed"] * total
+
+        unreadableDropped = sum(droppedStats.get(key, 0) for key in UNREADABLE_DROP_STAT_KEYS)
+        if unreadableDropped:
+            self.writeProgress("failed", 0, total,
+                               f"Overwrite import aborted: {unreadableDropped} entr(y/ies) in the uploaded file(s) "
+                               "could not be read, so the plays they describe cannot be restored - nothing was "
+                               "deleted, your data is unchanged. Re-download the export from Spotify, or import "
+                               "without the overwrite option to add what is readable.",
                                error=True)
             return ["failed"] * total
 

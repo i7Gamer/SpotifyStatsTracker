@@ -516,6 +516,89 @@ class TestVideoExportRows(unittest.TestCase):
         self.assertEqual(stats.get("droppedNoTrack"), 1)
 
 
+    def test_an_unreadable_entry_is_counted_not_silently_skipped(self):
+        """_parseHistory sat one layer above every counted drop and swallowed
+        its own failures with a bare `continue` - no counter, no log, and no
+        `stats` parameter to bump. That is the "uncounted drop" this codebase
+        treats as data loss: the overwrite import decides whether it may delete
+        a covered range by asking whether every parsed play survived, and an
+        entry that never parsed is invisible to that question."""
+        importer = Importer()
+        importer.sp = MagicMock()
+        good = {
+            "ts": "2023-05-01T10:00:00Z", "ms_played": 150000,
+            "master_metadata_track_name": "Song One",
+            "master_metadata_album_artist_name": "Artist One",
+            "spotify_track_uri": "spotify:track:track123",
+        }
+        missingMetadataKeys = {"ts": "2023-05-01T11:00:00Z", "ms_played": 150000}
+        nullMsPlayed = {
+            "ts": "2023-05-01T12:00:00Z", "ms_played": None,
+            "master_metadata_track_name": "Song Two",
+            "master_metadata_album_artist_name": "Artist Two",
+        }
+        stats = {}
+
+        metas = list(importer.importExtendedHistory(
+            [good, missingMetadataKeys, nullMsPlayed], known=[], progressCallback=None, stats=stats))
+
+        self.assertEqual(len(metas), 1)          #< the good one still imports
+        self.assertEqual(stats.get("droppedMalformed"), 2)
+
+    def test_a_podcast_row_is_not_counted_as_malformed(self):
+        """The distinction the overwrite guard rests on. An episode row PARSES
+        (Spotify sends master_metadata_track_name as null, not absent) and is
+        dropped later as droppedNoTrack, which is deliberately not a reason to
+        abort - most real exports contain episodes. Only an entry that could not
+        be read at all is malformed."""
+        importer = Importer()
+        importer.sp = MagicMock()
+        entry = {
+            "ts": "2023-05-01T10:00:00Z", "ms_played": 1500000,
+            "master_metadata_track_name": None,
+            "master_metadata_album_artist_name": None,
+            "spotify_track_uri": None,
+            "episode_name": "Some Podcast Episode", "episode_show_name": "Some Show",
+        }
+        stats = {}
+
+        list(importer.importExtendedHistory([entry], known=[], progressCallback=None, stats=stats))
+
+        self.assertEqual(stats.get("droppedNoTrack"), 1)
+        self.assertIsNone(stats.get("droppedMalformed"))
+
+    def test_a_negative_play_time_is_counted_under_its_own_key(self):
+        """Kept apart from droppedMalformed on purpose: this is a pre-existing
+        deliberate filter, and folding it in would newly abort overwrite imports
+        for exports that have always been importable."""
+        importer = Importer()
+        importer.sp = MagicMock()
+        entry = {
+            "ts": "2023-05-01T10:00:00Z", "ms_played": -5000,
+            "master_metadata_track_name": "Song One",
+            "master_metadata_album_artist_name": "Artist One",
+            "spotify_track_uri": "spotify:track:track123",
+        }
+        stats = {}
+
+        metas = list(importer.importExtendedHistory([entry], known=[], progressCallback=None, stats=stats))
+
+        self.assertEqual(metas, [])
+        self.assertEqual(stats.get("droppedNegativeTime"), 1)
+        self.assertIsNone(stats.get("droppedMalformed"))
+
+    def test_account_export_entries_are_counted_too(self):
+        """_parseHistory is shared by all three export formats."""
+        importer = Importer()
+        importer.sp = MagicMock()
+        stats = {}
+
+        list(importer.importAcountHistory(
+            [{"endTime": "2023-05-01 10:00", "msPlayed": 150000}],   #< no trackName/artistName
+            known=[], progressCallback=None, stats=stats))
+
+        self.assertEqual(stats.get("droppedMalformed"), 1)
+
     def test_transient_lookup_failure_is_dropped_and_counted(self):
         """A rate-limited/timed-out lookup drops the play rather than freezing a
         synthetic record into the catalog. An overwrite import has to be able to

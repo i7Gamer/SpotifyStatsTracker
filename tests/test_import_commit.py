@@ -107,6 +107,46 @@ class TestImportHistoryCommit(DatabaseTestCase):
         self.assertEqual(progress["status"], "failed")
         self.assertTrue(progress["error"])
 
+    def test_a_file_whose_every_entry_is_unreadable_fails_loudly(self):
+        """Sibling of the case above, through the REAL importer. _convertToList
+        types a file from its first row alone, so a JSON list whose rows carry
+        `ts` but not the master_metadata_* keys is typed as an extended export
+        and then fails on every single row. That used to import as a silent
+        success - "0 tracks imported", progress complete, and AutoImporter
+        moving the file to DONE/ - with nothing anywhere saying a row was lost."""
+        import json
+        unreadable = json.dumps([
+            {"ts": "2023-05-01T10:00:00Z", "ms_played": 150000},
+            {"ts": "2023-05-01T11:00:00Z", "ms_played": 120000},
+        ])
+
+        with self.assertRaises(ValueError) as ctx:
+            self.db.importHistory(unreadable)
+
+        self.assertIn("2", str(ctx.exception))
+        self.assertEqual(len(self._playedAts()), 2)   #< nothing written
+        progress = self.db.readProgress()
+        self.assertEqual(progress["status"], "failed")
+        self.assertTrue(progress["error"])
+
+    def test_a_file_that_is_only_partly_unreadable_still_imports_the_rest(self):
+        """The loud failure is for a file nothing could be read from. One bad
+        row among good ones must not throw the good ones away - they import,
+        and the count is what the overwrite guard reads."""
+        import json
+        mixed = json.dumps([
+            {"ts": "2023-05-01T10:00:00Z", "ms_played": 150000,
+             "master_metadata_track_name": "Song One",
+             "master_metadata_album_artist_name": "Artist One",
+             "spotify_track_uri": "spotify:track:track123"},
+            {"ts": "2023-05-01T11:00:00Z", "ms_played": 120000},   #< unreadable
+        ])
+
+        self.db.importHistory(mixed)
+
+        self.assertEqual(self.db.readProgress()["status"], "complete")
+        self.assertEqual(len(self._playedAts()), 3)   #< the two seeded plus the readable one
+
     def test_recognized_but_empty_export_is_a_noop(self):
         """An empty-but-valid export (e.g. a JSON []) has nothing to import,
         which is not an error."""

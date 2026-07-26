@@ -32,6 +32,10 @@ class Importer:
     # to avoid rate limits/network blocking without long delays.
     CHUNK_SIZE = 1000
     MAX_PREFETCH_WORKERS = 14
+    # A file the format sniffer typed wrongly makes EVERY entry unreadable, so
+    # the per-entry warning is capped and the droppedMalformed counter carries
+    # the total (see _parseHistory).
+    MAX_MALFORMED_ENTRY_LOG_LINES = 5
     # Entries shorter than this fixed floor are yielded tagged isSkip=True - the
     # DB writer records them into plays as is_skip=1 and has them bypass near-time
     # play matching. This is the fixed import-dedup floor, not the admin-tunable
@@ -129,9 +133,39 @@ class Importer:
             index[_knownNameKey(item["name"], item["artists"][0]["name"])] = item
         return index
 
-    def _parseHistory(self, dataFunction, history):
+    def _parseHistory(self, dataFunction, history, stats=None):
+        """Turn raw export entries into the tuples the rest of the import works
+        on, counting the ones that can't be turned into anything.
+
+        Every drop below this layer is counted (droppedNoTrack /
+        droppedTransient / droppedUnexpected); this one used to `continue` with
+        no counter, no log and no `stats` parameter to bump. That is the
+        uncounted drop this codebase treats as data loss: the overwrite import
+        decides whether it may delete a covered range by asking whether every
+        parsed play survived staging, and an entry that never parsed is
+        invisible to that question - so its play could be deleted and never
+        rebuilt, under a "complete" message.
+
+        The two failure kinds are counted apart because they mean different
+        things to that decision:
+
+        droppedMalformed - the entry raised. A key the format guarantees is
+            absent, a null where a number belongs. Rare and exceptional: a
+            podcast row PARSES (Spotify sends master_metadata_track_name as
+            null, not missing) and is dropped later as droppedNoTrack, so
+            treating malformed as a reason to abort does not penalise the
+            episodes most real exports contain.
+        droppedNegativeTime - a pre-existing, deliberate sanity filter. Counted
+            for visibility only; folding it into the above would newly abort
+            overwrite imports for exports that have always been importable."""
         parsedItems = []
-        for item in history:
+        loggedMalformed = 0
+        for index, item in enumerate(history):
+            # Counted here rather than derived from len(history) by the caller:
+            # the Musicolet path expands its CSV rows into many entries before
+            # this loop, so the caller's row count is not the entry count, and
+            # "was NOTHING readable?" needs the two compared exactly.
+            self._bumpStat(stats, "entriesSeen")
             try:
                 parsed = dataFunction(item)
                 # albumName (6th) and extras (7th) are optional - account
@@ -140,10 +174,19 @@ class Importer:
                 albumName = parsed[5] if len(parsed) > 5 else None
                 extras = parsed[6] if len(parsed) > 6 else None
                 if timePlayed < 0:
+                    self._bumpStat(stats, "droppedNegativeTime")
                     continue
                 parsedItems.append((name, artist, startTimestamp, timePlayed, trackUri, albumName, extras))
-            except Exception:
-                continue
+            except Exception as e:
+                self._bumpStat(stats, "droppedMalformed")
+                # Capped: a misclassified file makes EVERY entry fail, and one
+                # log line per entry would bury the rest of the import. The
+                # counter carries the total. Position and error only - export
+                # rows are the user's listening history.
+                if loggedMalformed < self.MAX_MALFORMED_ENTRY_LOG_LINES:
+                    loggedMalformed += 1
+                    logger.warning("Skipping unreadable export entry at position %d: %s",
+                                   index, parseError(e))
         return parsedItems
 
     def _resolveKnownKey(self, trackUri, name, artist, known):
@@ -434,7 +477,7 @@ class Importer:
         known = self.buildKnownIndex(known or [])
         self._catalogArtistsByName = self._buildCatalogArtistsByName(known)
 
-        parsedItems = self._parseHistory(dataFunction, history)
+        parsedItems = self._parseHistory(dataFunction, history, stats=stats)
         totalItems = len(parsedItems)
         if totalItems == 0:
             return
