@@ -144,9 +144,11 @@ class ListenerMixin:
                     return
 
                 try:
-                    # DEBUG, not INFO: an idle user's feed goes stale every 30
-                    # minutes by design, so this fires ~4 times an hour per user
-                    # while describing the system working exactly as intended.
+                    # DEBUG, not INFO: a reconnect describes the system working
+                    # as intended, not a fault. It used to fire ~2 times an hour
+                    # per user because an idle feed counted as a dead one; the
+                    # stale check now needs evidence of unrecorded playback
+                    # (see _staleFeedIsBroken), but the level still fits.
                     _dbmod.logger.debug("Attempting to reconnect (attempt %d/%d)", attempt + 1, self.RECONNECT_MAX_RETRIES)
                     if self.startListener(email=self.email) is False:
                         _dbmod.logger.info("Reconnection abandoned for user %s: stop requested", self.user)
@@ -198,8 +200,10 @@ class ListenerMixin:
                 self.email = email
             isReconnect = self.listener is not None
             if isReconnect:
-                # Same 30-minute heartbeat as the rest of the cycle (1,354 lines
-                # in 11 days) - the genuine start below is the one worth an INFO.
+                # Part of the same reconnect cycle as the line above (1,354 of
+                # these in the 11 days when an idle feed still forced a rebuild
+                # every 30 minutes) - the genuine start below is the one worth
+                # an INFO.
                 _dbmod.logger.debug("Stopping existing listener for user %s before re-starting", self.user)
                 try:
                     self.listener.stop()

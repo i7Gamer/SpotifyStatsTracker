@@ -22,6 +22,7 @@ if isinstance(sys.modules.get("Database.database"), MagicMock):
 from Database.Listeners.spotifyListener import (
     Listener,
     LISTENER_STALE_TIMEOUT_SECONDS,
+    LISTENER_STALE_HARD_TIMEOUT_SECONDS,
     RATE_LIMIT_ERROR_BACKOFF_SECONDS,
     USER_VALIDATION_CACHE_SECONDS,
     _is_auth_error,
@@ -43,6 +44,12 @@ def _bareListener(recentlyPlayed=None):
     listener.sp = MagicMock()
     listener.recentlyPlayed_Z1 = recentlyPlayed if recentlyPlayed is not None else []
     listener.sp.current_user_recently_played.return_value = listener.recentlyPlayed_Z1
+    # No connect state captured (what a listener whose websocket tick never ran
+    # or keeps erroring looks like) - the stale check reads this to tell a dead
+    # session from an idle account, and "no evidence" means dead.
+    listener.sp.lastPlayedManager.manager._state = None
+    listener._lastPlayingUri = None      #< matches Listener.__init__
+    listener._lastPlayingChangeTime = 0.0
     listener._lastChangeTime = 0.0
     listener._authenticated_user_id = None
     listener.email = None
@@ -118,6 +125,163 @@ class TestCheckOnceStaleness(unittest.TestCase):
 
         self.assertFalse(stillRunning)
         onStale.assert_called_once()
+
+
+def _playingState(trackUri, isPaused=False):
+    return {"is_playing": True, "is_paused": isPaused, "track": {"uri": trackUri}}
+
+
+class TestStaleFeedIdleDetection(unittest.TestCase):
+    """A quiet recently-played feed used to mean "the session died", so a
+    listener was rebuilt every 30 minutes whether or not anyone was listening -
+    1,270 stale reconnects over 11 days, spread evenly across all 24 hours
+    while actual plays vary 100x between night and day. The feed only changes
+    when a track finishes, so silence is the normal state of an idle account.
+    What separates the two is the connect state: it says whether anything is
+    playing at all, and whether a track change happened that the feed then
+    failed to record."""
+
+    TRACK_A = "spotify:track:aaaaaaaaaaaaaaaaaaaaaa"
+    TRACK_B = "spotify:track:bbbbbbbbbbbbbbbbbbbbbb"
+
+    def _poll(self, listener, now, state, onStale):
+        listener.sp.lastPlayedManager.manager._state = state
+        with patch("Database.Listeners.spotifyListener.time.monotonic", return_value=now):
+            return listener._checkOnce(MagicMock(), onStale=onStale)
+
+    def _listener(self):
+        listener = _bareListener(recentlyPlayed=[{"played_at": 1}])
+        listener._lastChangeTime = 100.0
+        return listener
+
+    def _pastTimeout(self, extra=1):
+        return 100.0 + LISTENER_STALE_TIMEOUT_SECONDS + extra
+
+    def test_nothing_playing_is_idle_not_stale(self):
+        listener, onStale = self._listener(), MagicMock()
+
+        stillRunning = self._poll(listener, self._pastTimeout(), {"is_playing": False}, onStale)
+
+        self.assertTrue(stillRunning)
+        onStale.assert_not_called()
+
+    def test_paused_playback_is_idle_not_stale(self):
+        listener, onStale = self._listener(), MagicMock()
+
+        stillRunning = self._poll(listener, self._pastTimeout(),
+                                  _playingState(self.TRACK_A, isPaused=True), onStale)
+
+        self.assertTrue(stillRunning)
+        onStale.assert_not_called()
+
+    def test_one_long_track_playing_throughout_is_not_stale(self):
+        """The feed only gains an entry when a track ENDS, so a 40-minute mix
+        legitimately produces nothing for the whole window."""
+        listener, onStale = self._listener(), MagicMock()
+
+        self._poll(listener, 200.0, _playingState(self.TRACK_A), onStale)
+        stillRunning = self._poll(listener, self._pastTimeout(), _playingState(self.TRACK_A), onStale)
+
+        self.assertTrue(stillRunning)
+        onStale.assert_not_called()
+
+    def test_a_track_change_the_feed_never_recorded_is_stale(self):
+        """The genuine failure this watchdog exists for: playback moved on, so
+        the finished track should have reached the feed - and didn't."""
+        listener, onStale = self._listener(), MagicMock()
+
+        self._poll(listener, 200.0, _playingState(self.TRACK_A), onStale)
+        self._poll(listener, 300.0, _playingState(self.TRACK_B), onStale)
+        stillRunning = self._poll(listener, self._pastTimeout(), _playingState(self.TRACK_B), onStale)
+
+        self.assertFalse(stillRunning)
+        onStale.assert_called_once()
+
+    def test_first_sighting_of_a_track_is_not_a_change(self):
+        """A listener rebuilt mid-track sees that track for the first time -
+        that is not evidence anything was missed, or every rebuild would
+        immediately justify the next one."""
+        listener, onStale = self._listener(), MagicMock()
+
+        stillRunning = self._poll(listener, self._pastTimeout(), _playingState(self.TRACK_A), onStale)
+
+        self.assertTrue(stillRunning)
+        onStale.assert_not_called()
+
+    def test_non_track_playback_is_not_a_track_change(self):
+        """Ads and podcast episodes never reach the recently-played feed, so
+        moving between them proves nothing about the feed's health."""
+        listener, onStale = self._listener(), MagicMock()
+
+        self._poll(listener, 200.0, _playingState("spotify:episode:aaaaaaaaaaaaaaaaaaaaaa"), onStale)
+        stillRunning = self._poll(listener, self._pastTimeout(),
+                                  _playingState("spotify:ad:bbbbbbbbbbbbbbbbbbbbbb"), onStale)
+
+        self.assertTrue(stillRunning)
+        onStale.assert_not_called()
+
+    def test_track_change_already_reflected_in_the_feed_is_not_stale(self):
+        """The change was observed BEFORE the feed's last update, i.e. the feed
+        did record it - only a change the feed never caught up with counts."""
+        listener, onStale = self._listener(), MagicMock()
+        listener._lastPlayingUri = self.TRACK_A
+        listener._lastPlayingChangeTime = 50.0  #< before _lastChangeTime (100.0)
+
+        stillRunning = self._poll(listener, self._pastTimeout(), _playingState(self.TRACK_A), onStale)
+
+        self.assertTrue(stillRunning)
+        onStale.assert_not_called()
+
+    def test_missing_connect_state_still_rebuilds(self):
+        """No connect state at all means the websocket tick that feeds it isn't
+        running either - no evidence of life, so keep the old behaviour."""
+        listener, onStale = self._listener(), MagicMock()
+
+        stillRunning = self._poll(listener, self._pastTimeout(), None, onStale)
+
+        self.assertFalse(stillRunning)
+        onStale.assert_called_once()
+
+    def test_hard_ceiling_rebuilds_even_when_idle(self):
+        """The one failure the idle check cannot see is a connect state that
+        keeps answering while its own tick is wedged, so a quiet feed still
+        gets recycled eventually - just hours apart instead of every 30
+        minutes."""
+        listener, onStale = self._listener(), MagicMock()
+
+        stillRunning = self._poll(listener, 100.0 + LISTENER_STALE_HARD_TIMEOUT_SECONDS + 1,
+                                  {"is_playing": False}, onStale)
+
+        self.assertFalse(stillRunning)
+        onStale.assert_called_once()
+
+    def test_idle_listener_keeps_polling_below_the_ceiling(self):
+        """Sanity bound on the ceiling: an idle account is left alone for hours,
+        not minutes."""
+        listener, onStale = self._listener(), MagicMock()
+
+        stillRunning = self._poll(listener, 100.0 + LISTENER_STALE_HARD_TIMEOUT_SECONDS - 60,
+                                  {"is_playing": False}, onStale)
+
+        self.assertTrue(stillRunning)
+        onStale.assert_not_called()
+        self.assertGreater(LISTENER_STALE_HARD_TIMEOUT_SECONDS, LISTENER_STALE_TIMEOUT_SECONDS)
+
+    def test_an_active_feed_never_reaches_the_stale_check(self):
+        """Regression guard: the playback observation must not disturb the
+        normal path where the feed IS changing."""
+        listener, onStale = self._listener(), MagicMock()
+        listener.sp.current_user_recently_played.return_value = [{"played_at": 1}, {"played_at": 2}]
+        callback = MagicMock()
+
+        listener.sp.lastPlayedManager.manager._state = _playingState(self.TRACK_B)
+        with patch("Database.Listeners.spotifyListener.time.monotonic", return_value=self._pastTimeout()):
+            stillRunning = listener._checkOnce(callback, onStale=onStale)
+
+        self.assertTrue(stillRunning)
+        onStale.assert_not_called()
+        callback.assert_called_once()
+        self.assertEqual(listener._lastChangeTime, self._pastTimeout())
 
 
 class TestAuthErrorDetection(unittest.TestCase):

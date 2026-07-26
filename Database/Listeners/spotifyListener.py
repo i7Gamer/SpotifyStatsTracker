@@ -54,6 +54,12 @@ LISTENER_STOP_JOIN_TIMEOUT_SECONDS = 5  #< bound how long shutdown waits for spo
 # assume the feed is dead and ask the caller to rebuild the session rather than
 # staying wedged silently until the process is restarted.
 LISTENER_STALE_TIMEOUT_SECONDS = 30 * 60
+# Ceiling on how long a quiet feed may be explained away as "this account is
+# simply idle" (see _staleFeedIsBroken). The idle check reads the connect
+# state, so the one failure it cannot see is a connect state that keeps
+# answering while its own tick is wedged; past this, a quiet feed is recycled
+# regardless of what the state claims.
+LISTENER_STALE_HARD_TIMEOUT_SECONDS = 6 * 60 * 60
 
 AUTH_ERROR_TIMEOUT_SECONDS = 30  #< trigger reconnection immediately for auth errors, not 30 min
 
@@ -382,6 +388,8 @@ class Listener:
                                             #  different dict shape) so the two polling loops never
                                             #  stomp on each other's cache
         self._lastChangeTime = time.monotonic()
+        self._lastPlayingUri = None       #< last track the connect state reported playing, and when it
+        self._lastPlayingChangeTime = 0.0  #  last changed - see _observePlaybackForStaleness
         self._settledMissingTrackUris = collections.OrderedDict()  #< dedupes _checkConnectStateForMissedTracks
                                                                    #  warnings; OrderedDict (not set) so
                                                                    #  eviction can target the oldest entry
@@ -454,6 +462,41 @@ class Listener:
                 raise
             logger.warning("Could not validate current user: %s", parseError(e))
             return False
+
+    def _observePlaybackForStaleness(self) -> None:
+        """Remember what the connect state says is playing, so the stale-feed
+        check can tell an idle account from a dead session.
+
+        Costs nothing: getConnectPlayerState reads the dict SpotipyFree's own
+        tick already refreshes, with no network call. Only a change BETWEEN two
+        real tracks is recorded - the first sighting isn't one (a listener
+        rebuilt mid-track would otherwise immediately justify the next rebuild),
+        and ads/episodes never reach the recently-played feed at all, so moving
+        between them proves nothing about the feed's health."""
+        state = self.getConnectPlayerState()
+        if not state or not state.get("is_playing") or state.get("is_paused"):
+            return
+        uri = (state.get("track") or {}).get("uri") or ""
+        if not uri.startswith(SPOTIFY_TRACK_URI_PREFIX):
+            return
+        if self._lastPlayingUri is not None and uri != self._lastPlayingUri:
+            self._lastPlayingChangeTime = time.monotonic()
+        self._lastPlayingUri = uri
+
+    def _staleFeedIsBroken(self) -> bool:
+        """Whether a feed that hasn't changed in LISTENER_STALE_TIMEOUT_SECONDS
+        is evidence of a dead session rather than of nobody listening.
+
+        The feed only gains an entry when a track FINISHES, so silence is the
+        normal state of an idle account - and rebuilding on silence alone meant
+        a full spotapi re-login every 30 minutes per user, forever. Two things
+        count as evidence instead: no connect state at all (the websocket tick
+        that produces it isn't running either), or a track change observed
+        after the feed's last update, i.e. a play that finished and never
+        arrived."""
+        if not self.getConnectPlayerState():
+            return True
+        return self._lastPlayingChangeTime > self._lastChangeTime
 
     def getNewItems(self, new: list):
         oldTimes = [item["played_at"] for item in self.recentlyPlayed_Z1]
@@ -639,6 +682,12 @@ class Listener:
             self._lastChangeTime = time.monotonic()
             return True
 
+        # The feed is quiet: from here on, what playback is doing is the only
+        # thing that can explain why (see _observePlaybackForStaleness). While
+        # the feed IS changing the branch above returns first - it's alive by
+        # definition then, and _lastChangeTime is the whole record needed.
+        self._observePlaybackForStaleness()
+
         if onStale is None:
             return True
 
@@ -647,13 +696,24 @@ class Listener:
         if elapsed <= LISTENER_STALE_TIMEOUT_SECONDS:
             return True
 
-        # DEBUG, not WARNING: for anyone not currently listening this is the
-        # expected 30-minute heartbeat, not a fault - it fired 1,270 times in 11
-        # days. The reconnect it triggers reports its own outcome, and only an
-        # unsuccessful one is worth the default level.
+        if elapsed < LISTENER_STALE_HARD_TIMEOUT_SECONDS and not self._staleFeedIsBroken():
+            # Nobody is listening - the feed has nothing to report, which is
+            # not a fault. This is what the 30-minute rebuild was really
+            # detecting: 1,270 reconnects in 11 days, spread evenly across all
+            # 24 hours while actual plays vary 100x between night and day.
+            logger.debug(
+                "Recently-played feed unchanged for over %ss, but the connect state shows no "
+                "unrecorded playback - treating the account as idle rather than the session as dead",
+                LISTENER_STALE_TIMEOUT_SECONDS,
+            )
+            return True
+
+        # DEBUG, not WARNING: the reconnect it triggers reports its own
+        # outcome, and only an unsuccessful one is worth the default level.
         logger.debug(
-            "Recently-played feed unchanged for over %ss, assuming the underlying "
-            "session/websocket died silently - reconnecting", LISTENER_STALE_TIMEOUT_SECONDS,
+            "Recently-played feed unchanged for over %ss with playback that never reached it - "
+            "assuming the underlying session/websocket died silently - reconnecting",
+            LISTENER_STALE_TIMEOUT_SECONDS,
         )
         try:
             onStale()
