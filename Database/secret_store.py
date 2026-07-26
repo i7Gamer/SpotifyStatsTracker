@@ -68,9 +68,33 @@ def _keyMaterial() -> str:
             existing = DEFAULT_KEY_PATH.read_text(encoding="utf-8").strip()
             if existing:
                 return existing
+            # An existing-but-EMPTY key file is not "no key yet". Falling
+            # through here would mint a new one over the old path, and every
+            # enc:v1: value in the database would stop decrypting - which
+            # decryptSecret reports as None, which callers read as "no cookies
+            # stored", so every user is silently bounced to re-login and their
+            # Spotify refresh tokens are unrecoverable. Restoring this file from
+            # a backup fixes everything; minting cannot be undone, so refuse -
+            # the same call _get_or_create_secret_key makes for the placeholder
+            # FLASK_SECRET_KEY.
+            raise RuntimeError(
+                f"The data encryption key file at {DEFAULT_KEY_PATH} exists but is empty. "
+                "Restore it from a backup - without it, every stored Spotify session and API "
+                "credential is unreadable. If this really is a fresh install, delete the empty "
+                f"file and restart, or set {ENCRYPTION_KEY_ENV_VAR}."
+            )
         newKey = secrets.token_hex(KEY_FILE_NUM_BYTES)
         DEFAULT_KEY_PATH.parent.mkdir(parents=True, exist_ok=True)
-        DEFAULT_KEY_PATH.write_text(newKey, encoding="utf-8")
+        # Written via a temp file in the same directory and renamed: a plain
+        # write_text truncates first, so a crash or a full disk between the two
+        # leaves exactly the empty file the branch above has to refuse.
+        tempPath = DEFAULT_KEY_PATH.with_name(DEFAULT_KEY_PATH.name + ".partial")
+        try:
+            tempPath.write_text(newKey, encoding="utf-8")
+            os.replace(tempPath, DEFAULT_KEY_PATH)
+        except Exception:
+            tempPath.unlink(missing_ok=True)
+            raise
         logger.info("Generated a new data encryption key at %s - keep it with your backups: "
                     "without it, stored Spotify sessions can't be read and every user must re-login.",
                     DEFAULT_KEY_PATH)

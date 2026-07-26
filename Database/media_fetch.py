@@ -58,7 +58,20 @@ class MediaFetchMixin:
             if img.mode not in ("RGB", "L"):
                 img = img.convert("RGB")   #< JPEG can't store alpha/palette modes
             path.mkdir(parents=True, exist_ok=True)
-            img.save(path / f"{imgId}.jpeg", format="JPEG")
+            # Staged and renamed, not written in place: a save that dies partway
+            # (full disk, power loss) would otherwise leave a truncated JPEG at
+            # the final path - and lazyFetchArtistImage returns True on
+            # imagePath.exists() BEFORE it consults the download status, so that
+            # broken file would be served forever and never re-fetched. Same
+            # .partial + os.replace shape the database backup uses.
+            finalPath = path / f"{imgId}.jpeg"
+            partialPath = finalPath.with_suffix(".partial")
+            try:
+                img.save(partialPath, format="JPEG")
+                _dbmod.os.replace(partialPath, finalPath)
+            except Exception:
+                partialPath.unlink(missing_ok=True)
+                raise
             self.repo.markImageStatus(imgId, kind, _dbmod.IMAGE_STATUS_OK)
         except Exception as e:
             self.repo.markImageStatus(imgId, kind, _dbmod.IMAGE_STATUS_FAILED)

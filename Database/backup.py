@@ -39,6 +39,10 @@ BACKUP_STARTUP_MAX_DELAY_SECONDS = 300      #  just ran, listeners are spinning 
                                             #  periodic workers instead of all firing at the same instant
 BACKUP_CHECK_INTERVAL_SECONDS = 15 * 60     #< how often the worker re-checks whether a backup is due
 BACKUP_TIMESTAMP_FORMAT = "%Y%m%d_%H%M%S"   #< lexicographic order == chronological order, which rotation relies on
+# Matches the app's own SQLITE_BUSY_TIMEOUT_MS. Not imported from Database.db:
+# this module is deliberately importable standalone (the migrators use it that
+# way, see Migrators/migrate.py's dual import).
+BACKUP_BUSY_TIMEOUT_MS = 5000
 
 
 def _envInt(name: str, default: int) -> int:
@@ -138,6 +142,13 @@ class BackupWorker:
 
         source = sqlite3.connect(self.dbPath)
         try:
+            # Every ConnectionManager connection waits out a lock rather than
+            # failing instantly (see Database/db.py); this one opened raw and
+            # didn't, so a snapshot starting while a checkpoint or VACUUM held
+            # the file raised "database is locked" immediately. The scheduled
+            # loop swallows that into a skipped backup and the admin button
+            # reports an error, for a wait the rest of the app is happy to make.
+            source.execute(f"PRAGMA busy_timeout = {BACKUP_BUSY_TIMEOUT_MS}")
             destination = sqlite3.connect(partialPath)
             try:
                 source.backup(destination)

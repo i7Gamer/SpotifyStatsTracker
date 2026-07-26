@@ -56,6 +56,57 @@ def _imageResponse(imageBytes):
     response.iter_content = lambda chunk_size=None: iter([imageBytes])
     return response
 
+class TestImageWritesAreAtomic(DatabaseTestCase):
+    """PIL wrote the JPEG straight to its final path, so a process that died
+    mid-save left a truncated file behind. The claim row is still `pending` at
+    that point, and startup's stale-pending sweep clears it - but
+    lazyFetchArtistImage returns True on imagePath.exists() BEFORE it consults
+    the status, so the truncated file is served forever and never re-fetched.
+
+    Written to a temp file in the same directory and renamed instead: the same
+    .partial + os.replace shape the database backup uses, so a failed write
+    leaves no file at all rather than half of one."""
+
+    def _responseWithAnImage(self):
+        from PIL import Image
+        from io import BytesIO
+        buffer = BytesIO()
+        Image.new("RGB", (2, 2), (255, 0, 0)).save(buffer, format="PNG")
+        response = MagicMock()
+        response.headers = {}
+        response.iter_content.return_value = [buffer.getvalue()]
+        return response
+
+    def test_a_save_that_dies_partway_leaves_no_file_behind(self):
+        """The real hazard: PIL gets some bytes down and then the process dies
+        (full disk, power loss). Simulated by writing a truncated file and then
+        raising, which is what that leaves on disk."""
+        db = self._makeDb({}, [])
+
+        def truncatedWrite(self_img, target, **kwargs):
+            Path(target).write_bytes(b"\xff\xd8\xff\xe0truncated")
+            raise OSError("no space left on device")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir)
+            with patch("Database.database.requests.get", return_value=self._responseWithAnImage()), \
+                 patch("PIL.Image.Image.save", truncatedWrite):
+                db._downloadImageTask(path, "http://example.com/i.png", "img1", "artist")
+
+            leftovers = [p.name for p in path.iterdir()]
+            self.assertEqual(leftovers, [],
+                             f"a half-written image was left where the app will serve it: {leftovers}")
+
+    def test_a_successful_save_leaves_only_the_final_file(self):
+        db = self._makeDb({}, [])
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir)
+            with patch("Database.database.requests.get", return_value=self._responseWithAnImage()):
+                db._downloadImageTask(path, "http://example.com/i.png", "img1", "artist")
+
+            self.assertEqual([p.name for p in path.iterdir()], ["img1.jpeg"])
+
+
 class TestLazyFetchArtistImage(unittest.TestCase):
     def test_returns_true_without_network_call_if_file_already_exists(self):
         db = _bareDatabase()

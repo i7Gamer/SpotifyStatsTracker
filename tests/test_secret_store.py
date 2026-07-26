@@ -7,7 +7,9 @@ session. Values are Fernet-encrypted with a key that never lives inside the
 database file itself (env var, or a file under secrets/).
 """
 import os
+import pathlib
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -53,6 +55,71 @@ class TestLegacyAndEdgeCases(unittest.TestCase):
             stored = encryptSecret("secret")
         with patch.dict(os.environ, {secretStore.ENCRYPTION_KEY_ENV_VAR: "key-two"}):
             self.assertIsNone(decryptSecret(stored))
+
+
+class TestAnEmptyKeyFileFailsLoudly(unittest.TestCase):
+    """An existing-but-empty key file used to be treated as "no key yet": the
+    resolver fell through and MINTED A NEW ONE, over the top of the old path.
+    Every enc:v1: value in the database then failed to decrypt, and decryptSecret
+    returns None on failure, which callers read as "no cookies / no credentials
+    stored" - so every user was silently bounced to re-login and their stored
+    Spotify refresh tokens became unrecoverable, with nothing louder than a
+    per-read warning.
+
+    The state is reachable: the file is written with a plain truncate-then-write,
+    so a crash or a full disk between the two leaves it empty.
+
+    Refusing to start is the only safe answer - the same call the app already
+    makes for the placeholder FLASK_SECRET_KEY. Restoring the file from a backup
+    recovers everything; minting a key cannot be undone."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        self.keyPath = pathlib.Path(self._tmpdir.name) / "key.txt"
+        patcher = patch.object(secretStore, "DEFAULT_KEY_PATH", self.keyPath)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self._envPatcher = patch.dict(os.environ, {}, clear=False)
+        self._envPatcher.start()
+        self.addCleanup(self._envPatcher.stop)
+        os.environ.pop(secretStore.ENCRYPTION_KEY_ENV_VAR, None)
+        os.environ.pop(secretStore.FLASK_SECRET_KEY_ENV_VAR, None)
+
+    def test_an_empty_key_file_raises_instead_of_minting_a_new_key(self):
+        self.keyPath.write_text("", encoding="utf-8")
+
+        with self.assertRaises(RuntimeError) as ctx:
+            secretStore._keyMaterial()
+
+        self.assertIn(str(self.keyPath), str(ctx.exception))
+        self.assertEqual(self.keyPath.read_text(encoding="utf-8"), "",
+                         "the empty file must be left alone, not overwritten with a new key")
+
+    def test_a_whitespace_only_key_file_is_treated_the_same(self):
+        self.keyPath.write_text("   \n", encoding="utf-8")
+
+        with self.assertRaises(RuntimeError):
+            secretStore._keyMaterial()
+
+    def test_a_missing_key_file_still_mints_one(self):
+        """First run on a fresh install must keep working."""
+        minted = secretStore._keyMaterial()
+
+        self.assertTrue(minted)
+        self.assertEqual(self.keyPath.read_text(encoding="utf-8").strip(), minted)
+
+    def test_a_populated_key_file_is_returned_unchanged(self):
+        self.keyPath.write_text("an-existing-key", encoding="utf-8")
+
+        self.assertEqual(secretStore._keyMaterial(), "an-existing-key")
+
+    def test_the_key_file_is_written_atomically(self):
+        """The truncate-then-write is what creates the empty file above."""
+        secretStore._keyMaterial()
+
+        leftovers = [p.name for p in self.keyPath.parent.iterdir() if p != self.keyPath]
+        self.assertEqual(leftovers, [], f"temporary artefacts left behind: {leftovers}")
 
 
 class TestKeyResolution(unittest.TestCase):
