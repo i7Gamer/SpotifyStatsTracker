@@ -168,6 +168,68 @@ class TestTheHotAggregateIsNotUsed(SkipSortTestCase):
         self.assertEqual(ranked[0]["plays"], 5)
 
 
+class TestASingleTrackLookupSkipsTheRanking(SkipSortTestCase):
+    """getSong falls back to this query whenever getSongsPage returns nothing -
+    for a skip-only song page, and for EVERY request naming a track the user has
+    never played, just before the redirect - and the detail route's shell and
+    deferred body each run it once.
+
+    Ranking one row against a prior is pointless work, and the prior is
+    deliberately never narrowed by the page's filters: computing it read the
+    user's entire history. A trackId filter makes the GROUP BY produce at most
+    one row, so it cannot change the answer."""
+
+    def _statementsFor(self, **kwargs):
+        conn = self.db.repo._conn()
+        captured = []
+        conn.set_trace_callback(captured.append)
+        try:
+            rows = self.db.repo.getMostSkippedTracks(self.db.user, **kwargs)
+        finally:
+            conn.set_trace_callback(None)
+        return rows, " ".join(captured)
+
+    def test_a_single_track_lookup_does_not_read_the_whole_history(self):
+        self._seed("t1", plays=1, skips=3)
+        self._seed("t2", plays=8, skips=1)
+
+        _, sql = self._statementsFor(trackId="t1", limit=1)
+
+        self.assertNotIn("lib AS", sql)
+        self.assertNotIn("SELECT rate FROM lib", sql)
+
+    def test_the_ranked_list_still_uses_the_library_prior(self):
+        """The narrowing must not leak into the path the prior exists for."""
+        self._seed("t1", plays=1, skips=3)
+
+        _, sql = self._statementsFor(limit=10)
+
+        self.assertIn("lib AS", sql)
+        self.assertIn("SELECT rate FROM lib", sql)
+
+    def test_the_row_is_identical_either_way(self):
+        """Equivalence against the un-narrowed query rather than restated
+        numbers - the ranked list is asked for the same track and must agree
+        field for field."""
+        self._seed("t1", plays=1, skips=3)
+        self._seed("t2", plays=8, skips=1)
+        self._seed("t3", plays=2, skips=2)
+
+        narrowed = self.db.repo.getMostSkippedTracks(self.db.user, trackId="t2", limit=1)
+        fromRankedList = [row for row in self.db.repo.getMostSkippedTracks(self.db.user, limit=50)
+                          if row["track_id"] == "t2"]
+
+        self.assertEqual(narrowed, fromRankedList)
+
+    def test_a_track_with_no_skips_still_comes_back_empty(self):
+        """HAVING skips > 0 is what makes getSong's fallback report "no such
+        song" for an unplayed id - the narrowing must not change that."""
+        self._seed("t1", plays=4, skips=0)
+
+        self.assertEqual(self.db.repo.getMostSkippedTracks(self.db.user, trackId="t1", limit=1), [])
+        self.assertEqual(self.db.repo.getMostSkippedTracks(self.db.user, trackId="nope", limit=1), [])
+
+
 class TestArtistsAndAlbumsSortedBySkips(SkipSortTestCase):
     def test_artists_order_by_skip_rate(self):
         self._seed("t1", plays=1, skips=5, artistId="skipped", artistName="Skipped")

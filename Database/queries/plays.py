@@ -1432,17 +1432,32 @@ class PlayQueries:
         track that was only ever skipped.
 
         The filter params mirror getSongsPage()'s and mean the same things
-        there - see _skippedTrackFilters."""
+        there - see _skippedTrackFilters.
+
+        A single-track lookup skips the ranking machinery entirely. `trackId`
+        makes the GROUP BY produce at most one row, so the shrunk rate can't
+        change which row comes back - but the `lib` prior is deliberately never
+        narrowed by the page's filters, so computing it meant a full read of the
+        user's history to order one row against nothing. That path is not rare:
+        getSong falls back to this query for every skip-only song page AND for
+        every request naming a track the user has never played (just before the
+        redirect), and the detail route's shell and deferred body each run it."""
         params: list = []
-        libCte = self._libraryRateCte(username, params, startTs, endTs)
+        rankByLibraryRate = trackId is None
+        libCte = self._libraryRateCte(username, params, startTs, endTs) if rankByLibraryRate else ""
         params.append(username)
         rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
         joins, filterClause = self._skippedTrackFilters(
             params, trackId, artistId, albumId, searchQuery, trackIds, fullPlaysOnly)
-        params += [priorWeight, priorWeight, limit, offset]
+        if rankByLibraryRate:
+            params += [priorWeight, priorWeight]
+            orderBy = f"{self._shrunkSkipRateSql()} DESC, skips DESC, track_id ASC"
+        else:
+            orderBy = "skips DESC, track_id ASC"   #< the same tiebreakers, minus a prior for one row
+        params += [limit, offset]
         rows = self._conn().execute(
             f"""
-            WITH {libCte},
+            WITH {libCte + "," if libCte else ""}
             agg AS (
                 SELECT p.track_id AS track_id,
                        SUM(CASE WHEN p.is_skip = 1 THEN 1 ELSE 0 END) AS skips,
@@ -1457,7 +1472,7 @@ class PlayQueries:
                 HAVING skips > 0
             )
             SELECT * FROM agg
-            ORDER BY {self._shrunkSkipRateSql()} DESC, skips DESC, track_id ASC
+            ORDER BY {orderBy}
             LIMIT ? OFFSET ?
             """,
             params,
