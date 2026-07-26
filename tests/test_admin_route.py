@@ -496,6 +496,51 @@ class TestAdminSkipSettings(AdminRouteTestBase):
         self.assertEqual(stored, 0)
 
 
+class TestDatabaseIntegrityPanel(AdminRouteTestBase):
+    """The startup probe has counted dangling foreign-key rows at every boot
+    since it landed, into the log and nowhere else - so the live instance
+    carried the same 201 for over a week with nobody able to see them without
+    reading app.log. The number's whole value is in noticing when it CHANGES,
+    which needs somewhere it can be looked at."""
+
+    def test_a_healthy_database_says_so(self):
+        dash = self._makeApp()
+
+        body = self._getAdmin(dash).data.decode()
+
+        self.assertIn("Database Integrity", body)
+        self.assertIn("No problems found", body)
+
+    def test_dangling_rows_are_named_and_counted(self):
+        dash = self._makeApp()
+        patches = self._patches(dash, isAdmin=True)
+        patches.append(patch.object(dash.repo, "checkIntegrity", return_value={
+            "ok": False, "corruption": [],
+            "foreignKeyViolations": {"track_artists": 195, "plays": 6},
+        }))
+
+        body = self._getAdmin(dash, patches=patches).data.decode()
+
+        self.assertIn("201", body)          #< the total, which is what moves
+        self.assertIn("track_artists", body)
+        self.assertIn("plays", body)
+
+    def test_corruption_is_reported_separately_from_dangling_rows(self):
+        """They warrant different reactions - a damaged file is an emergency,
+        a dangling track_id is inert - so the panel must not conflate them."""
+        dash = self._makeApp()
+        patches = self._patches(dash, isAdmin=True)
+        patches.append(patch.object(dash.repo, "checkIntegrity", return_value={
+            "ok": False, "corruption": ["row 42 missing from index idx_plays_user_time"],
+            "foreignKeyViolations": {},
+        }))
+
+        body = self._getAdmin(dash, patches=patches).data.decode()
+
+        self.assertIn("row 42 missing from index", body)
+        self.assertIn("Restore from a backup", body)
+
+
 class TestAdminTuningSettings(AdminRouteTestBase):
     def test_non_admin_post_is_forbidden(self):
         dash = self._makeApp()

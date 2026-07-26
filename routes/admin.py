@@ -297,6 +297,15 @@ def register(app, dashboard):
         skip_mode, skip_value = dashboard.repo.getSkipThreshold()
         restart_enabled = os.environ.get(ALLOW_INSTANCE_RESTART_ENV_VAR, "").lower() in TRUTHY_ENV_VALUES
 
+        # Run live rather than reusing the startup probe's result: the number's
+        # value is in noticing when it CHANGES, and a boot-time figure would
+        # still show the old count after a repair migration had cleared it -
+        # which is exactly when someone is looking. ~240 ms on a 105 MB
+        # database (quick_check, not integrity_check - see checkIntegrity), on
+        # an admin-only page that already does heavier work per render.
+        database_integrity = dashboard.repo.checkIntegrity()
+        dangling_row_total = sum(database_integrity["foreignKeyViolations"].values())
+
         return render_template(
             "admin.html",
             restart_enabled=restart_enabled,
@@ -330,6 +339,8 @@ def register(app, dashboard):
             backup_retention_count=dashboard.repo.getBackupRetentionCount(DEFAULT_BACKUP_RETENTION_COUNT),
             backup_interval_min=BACKUP_INTERVAL_HOURS_MIN, backup_interval_max=BACKUP_INTERVAL_HOURS_MAX,
             backup_retention_min=BACKUP_RETENTION_COUNT_MIN, backup_retention_max=BACKUP_RETENTION_COUNT_MAX,
+            database_integrity=database_integrity,
+            dangling_row_total=dangling_row_total,
             listener_summary=listener_summary,
             spotify_api_worker_summary=spotify_api_worker_summary,
             lastfm_worker_summary=lastfm_worker_summary,

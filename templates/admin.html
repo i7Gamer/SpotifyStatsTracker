@@ -252,6 +252,42 @@
         <span class="badge badge-secondary">INACTIVE</span>
       {% endif %}
     </div>
+
+    {# The startup probe (Repository.checkIntegrity) used to report only into
+       app.log, so a dangling-row count nobody could see sat unchanged for over
+       a week. Damage and dangling references are kept apart on purpose: a
+       damaged file is an emergency, a dangling track_id is inert (JOINs drop
+       the row) and only interesting when the number moves. #}
+    <p style="font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin: 1.25rem 0 0.5rem;">Database Integrity</p>
+    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center;">
+      {% if database_integrity.corruption %}
+        <span class="badge badge-danger">DAMAGED</span>
+      {% elif dangling_row_total %}
+        <span class="badge badge-warning">{{ dangling_row_total }} DANGLING ROW{{ 'S' if dangling_row_total != 1 else '' }}</span>
+      {% else %}
+        <span class="badge badge-success">OK</span>
+      {% endif %}
+    </div>
+    {% if database_integrity.corruption %}
+      <p style="color: var(--muted); font-size: 0.85rem; margin: 0.5rem 0 0;">
+        Restore from a backup before trusting anything this process records.
+      </p>
+      <ul style="margin: 0.35rem 0 0; padding-left: 1.1rem; color: var(--muted); font-size: 0.8rem;">
+        {% for finding in database_integrity.corruption[:5] %}<li>{{ finding }}</li>{% endfor %}
+      </ul>
+    {% elif dangling_row_total %}
+      <p style="color: var(--muted); font-size: 0.85rem; margin: 0.5rem 0 0;">
+        Rows referencing something that no longer exists. Inert - every join drops them - but a
+        rising count points at a write path bypassing <code>foreign_keys=ON</code>.
+      </p>
+      <ul style="margin: 0.35rem 0 0; padding-left: 1.1rem; color: var(--muted); font-size: 0.8rem;">
+        {% for table, count in database_integrity.foreignKeyViolations.items() %}
+        <li>{{ table }}: {{ count }}</li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p style="color: var(--muted); font-size: 0.85rem; margin: 0.5rem 0 0;">No problems found.</p>
+    {% endif %}
   </article>
 
   <article class="card" style="padding: 1.5rem;">
