@@ -44,6 +44,14 @@ module.exports = [
         // changed. Every other window.X export is only ever read qualified, or
         // from an inline on*= attribute in templates/.
         renderTimeSeriesChart: "readonly",
+        // Data-island values: a template declares these in a tiny inline
+        // <script> immediately before loading the extracted file, because they
+        // are the one thing that genuinely has to come from the server (see
+        // history.html). Listing them here is what lets the logic itself live
+        // in a linted file instead of inside the template.
+        HISTORY_DEFAULT_WINDOW: "readonly",
+        DASHBOARD_DEFAULT_WINDOW: "readonly",
+        USERNAME: "readonly",
         // Only `module`, not node's whole set. Several of these scripts end with
         // `if (typeof module !== 'undefined' && module.exports) { … }` so their
         // pure logic can be required by the node unit tests - a deliberate

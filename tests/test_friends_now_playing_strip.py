@@ -114,13 +114,14 @@ class TestStripPollIsNotCoupledToNowPlaying(unittest.TestCase):
     or with the admin switch off, and the card could become conditional later.
     Neither may gate the other's polling.
 
-    Asserted against the template source because the coupling is invisible from
+    Asserted against the script source because the coupling is invisible from
     the outside - the poll simply never starts, with no error and no missing
-    markup for a render test to catch."""
+    markup for a render test to catch. (The script moved out of tracks.html into
+    static/js so the lint gate could see it; these assertions follow it.)"""
 
     def setUp(self):
-        templatePath = os.path.join(os.path.dirname(__file__), "..", "templates", "tracks.html")
-        with open(templatePath, encoding="utf-8") as handle:
+        scriptPath = os.path.join(os.path.dirname(__file__), "..", "static", "js", "dashboard-page.js")
+        with open(scriptPath, encoding="utf-8") as handle:
             self.template = handle.read()
 
     def test_the_poll_starts_when_either_half_is_present(self):
@@ -134,8 +135,9 @@ class TestStripPollIsNotCoupledToNowPlaying(unittest.TestCase):
         self.assertNotIn("if (!card) return;", guard)
 
     def test_each_renderer_guards_its_own_element(self):
-        self.assertIn("function render(np) {\n        if (!card) return;", self.template)
-        self.assertIn("function renderFriends(friends, moreCount) {\n        if (!friendsRow) return;",
+        #< one indent level shallower than when this lived inside the template
+        self.assertIn("function render(np) {\n    if (!card) return;", self.template)
+        self.assertIn("function renderFriends(friends, moreCount) {\n    if (!friendsRow) return;",
                       self.template)
 
 

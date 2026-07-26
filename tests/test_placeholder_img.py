@@ -87,12 +87,18 @@ class TestPlaceholderImgDefinition(AppTestCase):
         """Now Playing links the title/cover to our own /song/<id> page when the
         user has actually played the track before (np.trackPlayed), and falls
         back to the real Spotify page otherwise - a first-listen track has no
-        completed play logged yet, so the internal detail page would be empty."""
-        html = self._getDashboardHtml(self._makeApp())
+        completed play logged yet, so the internal detail page would be empty.
 
-        self.assertIn("np.trackId && np.trackPlayed", html)
-        self.assertIn("el.href = '/song/' + encodeURIComponent(np.trackId);", html)
-        self.assertIn("el.href = 'https://open.spotify.com/track/' + encodeURIComponent(np.trackId);", html)
+        Read from the script rather than the rendered page: the dashboard's
+        JavaScript moved out of tracks.html into static/js so the lint gate
+        could see it, and the page now links to it instead of inlining it."""
+        scriptPath = os.path.join(os.path.dirname(__file__), "..", "static", "js", "dashboard-page.js")
+        with open(scriptPath, encoding="utf-8") as handle:
+            script = handle.read()
+
+        self.assertIn("np.trackId && np.trackPlayed", script)
+        self.assertIn("el.href = '/song/' + encodeURIComponent(np.trackId);", script)
+        self.assertIn("el.href = 'https://open.spotify.com/track/' + encodeURIComponent(np.trackId);", script)
 
 
 if __name__ == "__main__":
