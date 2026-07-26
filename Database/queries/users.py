@@ -169,6 +169,26 @@ class UserQueries:
                 updated += 1
         return updated
 
+    #< the users-table columns holding enc: values
+    SECRET_COLUMNS = ("cookies_json", "spotify_client_secret", "spotify_refresh_token", "lastfm_api_key")
+
+    def countSecretsUnderAnotherKey(self) -> int:
+        """How many stored secrets name an encryption key this instance does not
+        have.
+
+        Every one of them reads back as None, which callers treat as "nothing
+        stored" - so without this the symptom is every user appearing logged out
+        for no stated reason. That is what a database restored WITHOUT its
+        matching secrets/data_encryption_key.txt looks like, and it is
+        recoverable: the values are intact, the key is simply elsewhere.
+
+        Counts only values that say so outright (see secret_store's v2 format).
+        A pre-fingerprint value can't be classified, so it is never counted -
+        this number is a floor, never a false alarm."""
+        conn = self._conn()
+        rows = conn.execute(f"SELECT {', '.join(self.SECRET_COLUMNS)} FROM users").fetchall()
+        return sum(1 for row in rows for column in self.SECRET_COLUMNS if isForeignKeyed(row[column]))
+
     def getUserLastfmApiKey(self, username: str) -> str | None:
         conn = self._conn()
         row = conn.execute(

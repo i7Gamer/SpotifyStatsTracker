@@ -361,6 +361,23 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
         if integrity["ok"]:
             logger.info("Database integrity check passed")
 
+        # Said once, at boot, because the symptom otherwise is every user
+        # appearing logged out with nothing anywhere explaining it - which is
+        # exactly what a database restored without its matching key file does.
+        try:
+            foreignSecrets = self.repo.countSecretsUnderAnotherKey()
+        except Exception as e:
+            logger.debug("Could not check stored-secret key ownership: %s", e)
+            foreignSecrets = 0
+        if foreignSecrets:
+            logger.warning(
+                "%d stored secret(s) were encrypted with a DIFFERENT key than this instance uses. "
+                "They are intact but unreadable here - restore secrets/data_encryption_key.txt from "
+                "the same backup as the database (or set DATA_ENCRYPTION_KEY to the original value). "
+                "Until then the affected users read as logged out and must re-authenticate.",
+                foreignSecrets,
+            )
+
     def _ensureAdminExists(self):
         """Admin bootstrap, run at every startup. ADMIN_EMAIL (when set) is
         authoritative: that user becomes the ONLY admin - demoting anyone

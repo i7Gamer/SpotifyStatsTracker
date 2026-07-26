@@ -47,6 +47,21 @@ logger = logging.getLogger(__name__)
 ENCRYPTION_KEY_ENV_VAR = "DATA_ENCRYPTION_KEY"
 FLASK_SECRET_KEY_ENV_VAR = "FLASK_SECRET_KEY"
 ENCRYPTED_PREFIX = "enc:v1:"   #< version-tagged so a future scheme change can coexist with old rows
+# v2 = v1 plus a short fingerprint of the key that wrote the value:
+#   enc:v2:<fingerprint>:<fernet token>
+# Without it, "encrypted under a different key" and "corrupt" are the same
+# observation - decryptSecret returns None for both, and every caller reads None
+# as "no credentials stored". So restoring a database backup without its
+# matching secrets/ key file silently logs every user out and strands their
+# refresh tokens, with nothing anywhere saying why. The two states want opposite
+# responses (find the old key vs. re-authenticate), so the value has to say
+# which one it is.
+#
+# The fingerprint is a truncated hash of the key material, never the key. It
+# discloses nothing to an attacker holding the database, who can already test a
+# candidate key by attempting to decrypt.
+ENCRYPTED_PREFIX_V2 = "enc:v2:"
+KEY_FINGERPRINT_LENGTH = 8
 KEY_FILE_NUM_BYTES = 32        #< entropy of an auto-generated key file
 DEFAULT_KEY_PATH = Path(__file__).resolve().parent.parent / "secrets" / "data_encryption_key.txt"
 
@@ -106,12 +121,38 @@ def _fernet() -> Fernet:
     return Fernet(base64.urlsafe_b64encode(digest))
 
 
+def keyFingerprint() -> str:
+    """A short, non-reversible tag for the key currently in use."""
+    return hashlib.sha256(_keyMaterial().encode("utf-8")).hexdigest()[:KEY_FINGERPRINT_LENGTH]
+
+
 def isEncrypted(stored) -> bool:
-    return isinstance(stored, str) and stored.startswith(ENCRYPTED_PREFIX)
+    return isinstance(stored, str) and stored.startswith((ENCRYPTED_PREFIX, ENCRYPTED_PREFIX_V2))
+
+
+def _storedFingerprint(stored) -> str | None:
+    """The fingerprint a v2 value carries, or None for anything else (a v1
+    value, plaintext, or a malformed one) - the key that wrote those is simply
+    not knowable."""
+    if not isinstance(stored, str) or not stored.startswith(ENCRYPTED_PREFIX_V2):
+        return None
+    remainder = stored[len(ENCRYPTED_PREFIX_V2):]
+    fingerprint, separator, _ = remainder.partition(":")
+    return fingerprint if separator else None
+
+
+def isForeignKeyed(stored) -> bool:
+    """True when this value names a key that is NOT the one in use - i.e. it is
+    readable again if the right key comes back, as opposed to being damaged.
+    False for anything that cannot be classified, so nothing is ever claimed
+    about a v1 value."""
+    fingerprint = _storedFingerprint(stored)
+    return fingerprint is not None and fingerprint != keyFingerprint()
 
 
 def encryptSecret(plaintext: str) -> str:
-    return ENCRYPTED_PREFIX + _fernet().encrypt(plaintext.encode("utf-8")).decode("ascii")
+    token = _fernet().encrypt(plaintext.encode("utf-8")).decode("ascii")
+    return f"{ENCRYPTED_PREFIX_V2}{keyFingerprint()}:{token}"
 
 
 def decryptSecret(stored: str | None) -> str | None:
@@ -122,12 +163,30 @@ def decryptSecret(stored: str | None) -> str | None:
         return None
     if not isEncrypted(stored):
         return stored
+    if isForeignKeyed(stored):
+        # Said plainly, because it is recoverable and the recovery is a
+        # different action from re-authenticating: the value is intact, it just
+        # belongs to another key. This is what a database restored without its
+        # matching secrets/ file looks like.
+        logger.warning(
+            "A stored secret was encrypted with a different key (it names %s, this instance uses "
+            "%s) - most likely a database restored without its matching "
+            "secrets/data_encryption_key.txt, or DATA_ENCRYPTION_KEY/FLASK_SECRET_KEY changed. "
+            "Restore the original key to recover it; otherwise the affected user must log in again.",
+            _storedFingerprint(stored), keyFingerprint(),
+        )
+        return None
+    prefix = ENCRYPTED_PREFIX_V2 if stored.startswith(ENCRYPTED_PREFIX_V2) else ENCRYPTED_PREFIX
+    token = stored[len(prefix):]
+    if prefix is ENCRYPTED_PREFIX_V2:
+        token = token.partition(":")[2]   #< strip the fingerprint this value carries
     try:
-        return _fernet().decrypt(stored[len(ENCRYPTED_PREFIX):].encode("ascii")).decode("utf-8")
+        return _fernet().decrypt(token.encode("ascii")).decode("utf-8")
     except (InvalidToken, ValueError):
         logger.warning(
             "Could not decrypt a stored secret - the encryption key has changed since it was "
             "written (DATA_ENCRYPTION_KEY/FLASK_SECRET_KEY changed, or secrets/data_encryption_key.txt "
-            "was lost). Treating it as missing; the affected user must log in again."
+            "was lost), or the value is damaged. Treating it as missing; the affected user must "
+            "log in again."
         )
         return None

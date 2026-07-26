@@ -7,6 +7,8 @@ import sys
 import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+from Database.secret_store import isEncrypted
+
 from app import SpotifyDashboardApp, RATE_LIMIT_MAX_ATTEMPTS
 from _app_factory import AppTestCase
 
@@ -93,7 +95,8 @@ class TestSaveLastfmKey(ProfileLastfmTestCase):
         self.assertEqual(self.dash.repo.getUserLastfmApiKey("alice"), "goodkey123")
         raw = self.dash.repo._conn().execute(
             "SELECT lastfm_api_key FROM users WHERE username='alice'").fetchone()[0]
-        self.assertTrue(raw.startswith("enc:v1:"))
+        #< the contract is "encrypted at rest", not one version's literal prefix
+        self.assertTrue(isEncrypted(raw))
         self.db.startLastfmGenreBackfiller.assert_called_once()
         self.db.startLastfmBiographyBackfiller.assert_called_once()
         self.db.startLastfmAlbumBiographyBackfiller.assert_called_once()

@@ -14,7 +14,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from Database.repository import Repository
-from Database.secret_store import ENCRYPTED_PREFIX
+from Database.secret_store import ENCRYPTED_PREFIX, isEncrypted
 
 
 class RepositorySecretsTestCase(unittest.TestCase):
@@ -38,7 +38,7 @@ class TestCookiesEncryption(RepositorySecretsTestCase):
         self.repo.setUserCookies("alice", cookies)
 
         raw = self._rawColumn("cookies_json")
-        self.assertTrue(raw.startswith(ENCRYPTED_PREFIX))
+        self.assertTrue(isEncrypted(raw))
         self.assertNotIn("super-secret-session", raw)
         self.assertEqual(self.repo.getUserCookies("alice"), cookies)
 
@@ -72,7 +72,7 @@ class TestSpotifyCredentialsEncryption(RepositorySecretsTestCase):
         for column, plaintext in (("spotify_client_secret", "very-secret"),
                                   ("spotify_refresh_token", "refresh-secret")):
             raw = self._rawColumn(column)
-            self.assertTrue(raw.startswith(ENCRYPTED_PREFIX), f"{column} stored as plaintext")
+            self.assertTrue(isEncrypted(raw), f"{column} stored as plaintext")
             self.assertNotIn(plaintext, raw)
 
         creds = self.repo.getUserSpotifyCredentials("alice")
@@ -145,8 +145,8 @@ class TestEncryptStoredSecretsIfPlaintext(RepositorySecretsTestCase):
         self.repo.commit()
 
         self.assertEqual(updated, 2)
-        self.assertTrue(self._rawColumn("cookies_json").startswith(ENCRYPTED_PREFIX))
-        self.assertTrue(self._rawColumn("spotify_client_secret").startswith(ENCRYPTED_PREFIX))
+        self.assertTrue(isEncrypted(self._rawColumn("cookies_json")))
+        self.assertTrue(isEncrypted(self._rawColumn("spotify_client_secret")))
         self.assertEqual(self.repo.getUserCookies("alice"), {"sp_dc": "alice-cookie"})
         self.assertEqual(self.repo.getUserSpotifyCredentials("alice")["client_secret"], "alice-secret")
         self.assertEqual(self.repo.getUserSpotifyCredentials("bob")["refresh_token"], "bob-token")

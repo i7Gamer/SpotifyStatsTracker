@@ -25,7 +25,9 @@ class TestRoundTrip(unittest.TestCase):
 
     def test_encrypted_form_is_marked_and_unreadable(self):
         stored = encryptSecret('{"sp_dc": "super-secret-cookie"}')
-        self.assertTrue(stored.startswith(ENCRYPTED_PREFIX))
+        #< v2 now, which carries the writing key's fingerprint; isEncrypted
+        #  spans both versions, which is what every caller actually asks
+        self.assertTrue(stored.startswith(secretStore.ENCRYPTED_PREFIX_V2))
         self.assertNotIn("super-secret-cookie", stored)
         self.assertTrue(isEncrypted(stored))
 
@@ -120,6 +122,65 @@ class TestAnEmptyKeyFileFailsLoudly(unittest.TestCase):
 
         leftovers = [p.name for p in self.keyPath.parent.iterdir() if p != self.keyPath]
         self.assertEqual(leftovers, [], f"temporary artefacts left behind: {leftovers}")
+
+
+class TestStoredSecretsNameTheirKey(unittest.TestCase):
+    """`enc:v1:` carried no key identity, so decryptSecret could not tell "this
+    was encrypted with a different key" from "this is corrupt" - both returned
+    None, which every caller reads as "no credentials stored". The two states
+    want opposite responses, and the first is the ordinary one: restoring a
+    database backup without the matching secrets/ key file silently logs every
+    user out and leaves their refresh tokens unrecoverable, with nothing saying
+    why.
+
+    Values now carry a short fingerprint of the key that wrote them. It is a
+    truncated hash, not the key, and it discloses nothing an attacker holding
+    the database couldn't already learn by trying to decrypt."""
+
+    def test_new_values_carry_the_current_keys_fingerprint(self):
+        with patch.dict(os.environ, {secretStore.ENCRYPTION_KEY_ENV_VAR: "key-one"}):
+            stored = encryptSecret("secret")
+
+            self.assertTrue(stored.startswith(secretStore.ENCRYPTED_PREFIX_V2))
+            self.assertIn(secretStore.keyFingerprint(), stored)
+
+    def test_a_value_from_another_key_is_named_as_such(self):
+        with patch.dict(os.environ, {secretStore.ENCRYPTION_KEY_ENV_VAR: "key-one"}):
+            stored = encryptSecret("secret")
+
+        with patch.dict(os.environ, {secretStore.ENCRYPTION_KEY_ENV_VAR: "key-two"}):
+            self.assertTrue(secretStore.isForeignKeyed(stored))
+            self.assertIsNone(decryptSecret(stored))   #< still reads as missing to callers
+
+    def test_a_value_from_the_current_key_is_not_foreign(self):
+        with patch.dict(os.environ, {secretStore.ENCRYPTION_KEY_ENV_VAR: "key-one"}):
+            stored = encryptSecret("secret")
+
+            self.assertFalse(secretStore.isForeignKeyed(stored))
+            self.assertEqual(decryptSecret(stored), "secret")
+
+    def test_a_corrupt_value_is_not_reported_as_foreign(self):
+        """Garbage under OUR fingerprint is damage, not a key mismatch - the
+        distinction is the entire point."""
+        with patch.dict(os.environ, {secretStore.ENCRYPTION_KEY_ENV_VAR: "key-one"}):
+            corrupt = f"{secretStore.ENCRYPTED_PREFIX_V2}{secretStore.keyFingerprint()}:not-a-token"
+
+            self.assertFalse(secretStore.isForeignKeyed(corrupt))
+            self.assertIsNone(decryptSecret(corrupt))
+
+    def test_legacy_v1_values_still_decrypt(self):
+        """Rows written before the fingerprint existed - the whole installed
+        base. They can't be classified, only tried."""
+        with patch.dict(os.environ, {secretStore.ENCRYPTION_KEY_ENV_VAR: "key-one"}):
+            legacy = secretStore.ENCRYPTED_PREFIX + secretStore._fernet().encrypt(b"secret").decode("ascii")
+
+            self.assertTrue(isEncrypted(legacy))
+            self.assertEqual(decryptSecret(legacy), "secret")
+            self.assertFalse(secretStore.isForeignKeyed(legacy))   #< unknowable, so not claimed
+
+    def test_plaintext_and_none_are_not_foreign_keyed(self):
+        self.assertFalse(secretStore.isForeignKeyed(None))
+        self.assertFalse(secretStore.isForeignKeyed('{"sp_dc": "legacy"}'))
 
 
 class TestKeyResolution(unittest.TestCase):

@@ -8,6 +8,8 @@ import time
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+from Database.secret_store import isEncrypted
+
 from conftest import DatabaseTestCase
 from Database.repository import (
     GENRE_BACKFILL_RETRY_SECONDS, INHERITED_GENRES_SETTING_KEY, BIOGRAPHY_BACKFILL_RETRY_SECONDS,
@@ -26,7 +28,8 @@ class LastfmApiKeyTestCase(DatabaseTestCase):
         raw = db.repo._conn().execute(
             "SELECT lastfm_api_key FROM users WHERE username=?", ("testuser",)
         ).fetchone()["lastfm_api_key"]
-        self.assertTrue(raw.startswith("enc:v1:"))
+        #< the contract is "encrypted at rest", not one version's literal prefix
+        self.assertTrue(isEncrypted(raw))
         self.assertNotIn("my-api-key-123", raw)
         self.assertEqual(db.repo.getUserLastfmApiKey("testuser"), "my-api-key-123")
 

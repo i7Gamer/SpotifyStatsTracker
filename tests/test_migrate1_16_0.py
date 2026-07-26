@@ -12,7 +12,7 @@ import Database.Migrators.base as baseModule
 import Database.Migrators.migrate1_16_0 as migrateModule
 from Database.Migrators import dbversion
 from Database.repository import Repository
-from Database.secret_store import ENCRYPTED_PREFIX
+from Database.secret_store import ENCRYPTED_PREFIX, isEncrypted
 
 
 class TestMigrate1_16_0(unittest.TestCase):
@@ -65,9 +65,9 @@ class TestMigrate1_16_0(unittest.TestCase):
         migrateModule.Migrator("1.16.0", "1.17.0").migrate()
 
         row = self._rawUserRow()
-        self.assertTrue(row["cookies_json"].startswith(ENCRYPTED_PREFIX))
-        self.assertTrue(row["spotify_client_secret"].startswith(ENCRYPTED_PREFIX))
-        self.assertTrue(row["spotify_refresh_token"].startswith(ENCRYPTED_PREFIX))
+        self.assertTrue(isEncrypted(row["cookies_json"]))
+        self.assertTrue(isEncrypted(row["spotify_client_secret"]))
+        self.assertTrue(isEncrypted(row["spotify_refresh_token"]))
         self.assertNotIn("plain-cookie", row["cookies_json"])
         self.assertEqual(row["spotify_client_id"], "cid")   #< not a secret - stays readable
 
