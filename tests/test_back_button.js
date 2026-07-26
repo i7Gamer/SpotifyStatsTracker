@@ -105,9 +105,11 @@ run('regression: dashboard search query containing a reserved word is not misrea
   assert.deepStrictEqual(resolveBackTarget(`${ORIGIN}/?q=top-albums&page=2`, ORIGIN, CAN_GO_BACK), backTo('← Back to Dashboard'));
 });
 
-// "Open in new tab": the referrer is a real in-app page, but the new tab has
-// no entry behind it, so history.back() would do nothing - hide the button
-// rather than show a dead one.
+// A tab with nothing behind it has nowhere to go back to, whatever brought it
+// there - hide the button rather than show a dead one (history.back() would do
+// nothing) or a guess at a page the user never visited (the server default).
+
+// "Open in new tab" from inside the app: the referrer is a real in-app page.
 run('in-app referrer in a tab with no earlier entry hides the button', () => {
   assert.deepStrictEqual(resolveBackTarget(`${ORIGIN}/top-songs`, ORIGIN, FRESH_TAB), { hide: true });
 });
@@ -116,12 +118,20 @@ run('unrecognized in-app referrer in a tab with no earlier entry hides the butto
   assert.deepStrictEqual(resolveBackTarget(`${ORIGIN}/charts`, ORIGIN, FRESH_TAB), { hide: true });
 });
 
-run('direct visit with no earlier entry keeps the server-rendered default', () => {
-  assert.strictEqual(resolveBackTarget('', ORIGIN, FRESH_TAB), null);
+// Pasted URL, bookmark, or a shared link opened in a new tab: no referrer at
+// all, so the label logic has nothing to work with - but there is still no
+// earlier entry, so the button must go.
+run('direct visit with no earlier entry hides the button', () => {
+  assert.deepStrictEqual(resolveBackTarget('', ORIGIN, FRESH_TAB), { hide: true });
 });
 
-run('cross-origin referrer with no earlier entry keeps the server-rendered default', () => {
-  assert.strictEqual(resolveBackTarget('https://google.com/', ORIGIN, FRESH_TAB), null);
+// Shared link followed from another site into a fresh tab.
+run('cross-origin referrer with no earlier entry hides the button', () => {
+  assert.deepStrictEqual(resolveBackTarget('https://google.com/', ORIGIN, FRESH_TAB), { hide: true });
+});
+
+run('unparseable referrer with no earlier entry hides the button', () => {
+  assert.deepStrictEqual(resolveBackTarget('not a url', ORIGIN, FRESH_TAB), { hide: true });
 });
 
 run('Navigation API answer wins over history length when present', () => {

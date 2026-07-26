@@ -4,9 +4,13 @@
 // with history.back() instead of a fresh link so filters/pagination/scroll
 // position on the previous page are preserved.
 //
-// When the page was opened in a *new* tab there is an in-app referrer but no
-// history entry behind it, so history.back() would silently do nothing - the
-// button is hidden in that case rather than left dead.
+// When the page was opened in a *new* tab there is no history entry behind it,
+// so history.back() would silently do nothing and the server-rendered fallback
+// href is only a guess at a page the user never visited - the button is hidden
+// in that case rather than left dead or misleading. That holds however the tab
+// was opened: ctrl/middle-click from inside the app (in-app referrer), a shared
+// link from another site (cross-origin referrer), or a pasted URL or bookmark
+// (no referrer at all).
 
 // A tab that has only ever shown this one page has a history length of 1.
 const MIN_HISTORY_LENGTH_WITH_BACK_ENTRY = 1;
@@ -37,11 +41,17 @@ function hasEarlierHistoryEntry(navigationApi, historyLength) {
 
 // Pure decision function: given the referrer, the current page's origin and
 // whether the tab can go back at all, decide what to do with the button.
-// Returns null when there is no usable in-app referrer (direct link,
-// external site) - callers should keep the server-rendered default
-// href/label in that case - { hide: true } when the referrer is in-app but
-// unreachable via history.back(), and { hide: false, label } otherwise.
+// Returns { hide: true } when this tab has nowhere to go back to, null when
+// it does but the referrer is unusable (external site, no referrer) -
+// callers should keep the server-rendered default href/label in that case -
+// and { hide: false, label } otherwise.
 function resolveBackTarget(referrer, currentOrigin, canGoBack) {
+  // Checked before the referrer: a tab with no earlier entry has nothing to go
+  // back to no matter where the visit came from, so this decides on its own.
+  if (!canGoBack) {
+    return { hide: true };
+  }
+
   if (!referrer) {
     return null;
   }
@@ -55,10 +65,6 @@ function resolveBackTarget(referrer, currentOrigin, canGoBack) {
 
   if (referrerUrl.origin !== currentOrigin) {
     return null;
-  }
-
-  if (!canGoBack) {
-    return { hide: true };
   }
 
   const match = BACK_BUTTON_PATH_LABELS.find((entry) => entry.test(referrerUrl.pathname));
