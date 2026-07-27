@@ -19,6 +19,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          # test_license_headers.py blames every source file to check the mixed
+          # MIT/AGPL attribution. The default depth-1 clone attributes all lines
+          # to the graft commit, so the whole check reads as wrong; full history
+          # is ~10 MB here, which is noise next to installing the dependencies.
+          fetch-depth: 0
 
       - uses: actions/setup-python@v7
         with:

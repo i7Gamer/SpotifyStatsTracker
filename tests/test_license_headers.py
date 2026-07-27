@@ -15,13 +15,15 @@ The mixed-authorship check is computed from `git blame` at test time rather than
 hardcoded. A file that gains or loses upstream lines then fails loudly instead
 of quietly carrying a wrong attribution - which is the failure mode that
 actually matters, since MIT's notice-retention condition is what those extra
-lines exist to satisfy.
+lines exist to satisfy. That check needs the full history in the checkout - see
+SHALLOW_CHECKOUT_HINT.
 """
 import subprocess
 import sys
 import os
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -42,6 +44,12 @@ EXCLUDED_FILES = ("dev.py",)
 #< a header buried under a hundred lines is not a notice anyone will see
 MAX_HEADER_LINES = 12
 
+SHALLOW_CHECKOUT_HINT = (
+    "this is a shallow checkout, so git blame cannot see past the graft commit "
+    "and every upstream line count would come back 0 - check out with full "
+    "history (fetch-depth: 0 in .github/workflows/tests.yml) to run this class"
+)
+
 
 def _git(*args):
     return subprocess.run(("git", *args), cwd=REPO_ROOT, capture_output=True,
@@ -55,6 +63,12 @@ def inScopeFiles():
         f for f in tracked
         if not f.startswith(EXCLUDED_PREFIXES) and f not in EXCLUDED_FILES
     )
+
+
+def repoIsShallow():
+    """A shallow checkout makes `git blame` attribute every line to the graft
+    commit, which zeroes out every upstream count below."""
+    return _git("rev-parse", "--is-shallow-repository").strip() == "true"
 
 
 def _upstreamLineCount(path):
@@ -90,6 +104,19 @@ class TestScopeItself(unittest.TestCase):
         self.assertEqual(suffixes, {".py", ".js", ".html", ".css"})
 
 
+class TestShallowCheckoutGuard(unittest.TestCase):
+    """The guard is what stands between a shallow CI checkout and ~20 bogus
+    attribution failures, so it gets tested like any other branch."""
+
+    def test_a_full_checkout_is_not_reported_as_shallow(self):
+        self.assertFalse(repoIsShallow())
+
+    def test_a_shallow_checkout_is_detected(self):
+        """The only way to reach the true branch without cloning at depth 1."""
+        with mock.patch.object(sys.modules[__name__], "_git", return_value="true\n"):
+            self.assertTrue(repoIsShallow())
+
+
 class TestLicenseHeaders(unittest.TestCase):
     def test_every_file_declares_the_license(self):
         missing = [f for f in inScopeFiles() if LICENSE_TAG not in _head(f)]
@@ -112,6 +139,15 @@ class TestLicenseHeaders(unittest.TestCase):
 
         self.assertEqual(buried, [])
 
+    def test_the_license_expression_stays_agpl_only(self):
+        """Deliberately NOT `AGPL-3.0-or-later AND MIT`. AND would assert the
+        file as a whole requires compliance with both licenses; it doesn't - AGPL
+        is the effective license of the combination, and the MIT portions are
+        additionally available under MIT. See NOTICE."""
+        wrong = [f for f in inScopeFiles() if "AND MIT" in _head(f)]
+
+        self.assertEqual(wrong, [])
+
 
 class TestMixedAuthorshipAttribution(unittest.TestCase):
     """Files still carrying upstream MIT lines must name their author too.
@@ -122,6 +158,9 @@ class TestMixedAuthorshipAttribution(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        #< one loud failure beats every file below reading as mis-attributed
+        if repoIsShallow():
+            raise AssertionError(SHALLOW_CHECKOUT_HINT)
         #< one blame pass for the whole suite; it is ~200 subprocess calls
         cls.upstreamCounts = {f: _upstreamLineCount(f) for f in inScopeFiles()}
 
@@ -147,15 +186,6 @@ class TestMixedAuthorshipAttribution(unittest.TestCase):
                         if not n and UPSTREAM_AUTHOR in _head(f)]
 
         self.assertEqual(overCredited, [])
-
-    def test_the_license_expression_stays_agpl_only(self):
-        """Deliberately NOT `AGPL-3.0-or-later AND MIT`. AND would assert the
-        file as a whole requires compliance with both licenses; it doesn't - AGPL
-        is the effective license of the combination, and the MIT portions are
-        additionally available under MIT. See NOTICE."""
-        wrong = [f for f in inScopeFiles() if "AND MIT" in _head(f)]
-
-        self.assertEqual(wrong, [])
 
 
 if __name__ == "__main__":
