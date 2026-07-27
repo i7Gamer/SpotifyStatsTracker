@@ -29,8 +29,12 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 TEMPLATES_DIR = REPO_ROOT / "templates"
 STATIC_JS_DIR = REPO_ROOT / "static" / "js"
 
-INLINE_SCRIPT = re.compile(r"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>", re.DOTALL)
-#< the markers of behaviour, as opposed to a value handed over from the server
+# IGNORECASE because HTML tag names are, so <SCRIPT> is the same element and a
+# gate that only reads the lowercase spelling can be stepped around by accident.
+INLINE_SCRIPT = re.compile(r"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>", re.DOTALL | re.IGNORECASE)
+#< the markers of behaviour, as opposed to a value handed over from the server.
+#  Case-SENSITIVE, unlike the tag above: these are JavaScript identifiers, where
+#  `Fetch` is simply a different name and not the thing being looked for.
 LOGIC_MARKERS = re.compile(r"\bfetch\s*\(|\baddEventListener\s*\(|\bfunction\s+\w+\s*\(")
 
 # Inline blocks that legitimately still hold a statement, with the reason:
@@ -63,6 +67,20 @@ class InlineScriptExtractionTestCase(unittest.TestCase):
                          "logic in a template <script> is invisible to the ESLint gate - move it to "
                          "static/js and leave a data island, or add it to ALLOWED_INLINE_LOGIC "
                          f"with the reason. Offenders: {sorted(offenders)}")
+
+    def test_an_uppercase_script_tag_is_still_seen(self):
+        """HTML tag names are case-insensitive, so `<SCRIPT>` is the same element
+        - but a gate that only knows the lowercase spelling reads it as plain
+        text and waves the block through. Nothing in templates/ is written that
+        way today; the point is that nobody has to know that to stay covered."""
+        self.assertEqual(INLINE_SCRIPT.findall("<SCRIPT>alert(1)</SCRIPT>"), ["alert(1)"])
+        self.assertEqual(INLINE_SCRIPT.findall('<Script type="module">x</Script>'), ["x"])
+
+    def test_an_uppercase_external_script_is_still_skipped(self):
+        """The src= exclusion has to travel with it, or making the gate
+        case-insensitive starts reporting every external <SCRIPT SRC=> as an
+        empty inline block."""
+        self.assertEqual(INLINE_SCRIPT.findall('<SCRIPT SRC="/js/a.js"></SCRIPT>'), [])
 
     def test_the_marker_regex_actually_matches_logic(self):
         """Negative control: without this, the assertion above passes for any
