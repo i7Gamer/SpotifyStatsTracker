@@ -25,19 +25,13 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
 # Copy application code
 COPY . .
 
-# Drop root. docker-compose bind-mounts ./Database/Data and ./autoImport from
-# the host, so everything the app writes - the database, backups, the cover-art
-# cache, app.log - landed root-owned in the user's own working tree, and any RCE
-# in Flask/spotapi/websockets was root with write access to those mounts.
-#
-# A fixed uid (not just a name) so the host-side ownership of those mounts is
-# predictable across rebuilds. The volumes are chowned rather than the whole
-# tree: the code is read-only at runtime and copying it twice would double the
-# image's largest layer.
-RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin app \
-    && mkdir -p /app/Database/Data /app/autoImport /app/secrets \
-    && chown -R app:app /app/Database/Data /app/autoImport /app/secrets
-USER app
+# Deliberately still runs as root, and that is a considered choice rather than an
+# oversight. docker-compose bind-mounts ./Database/Data and ./autoImport, so a
+# non-root uid cannot write to them until the operator chowns those directories -
+# which silently breaks every existing deployment on upgrade. Weighed against a
+# threat model where the container is the only process on a single-tenant host and
+# already holds the database it would be attacked for, the upgrade break costs
+# more than the isolation buys. Revisit if this ever runs somewhere multi-tenant.
 
 # Expose Flask port
 EXPOSE 5000

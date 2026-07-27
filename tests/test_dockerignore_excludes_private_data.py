@@ -1,12 +1,18 @@
-"""Nothing private may reach the published image.
+"""Nothing private may reach the image, whoever builds it.
 
-`Dockerfile` ends in `COPY . .`, and `uploadDocker.ps1` pushes the result to a
-PUBLIC Docker Hub repository. So every .dockerignore gap is a disclosure, and
-`docker-compose`'s bind mounts hide it locally: the running container reads the
-host's real folder either way, so a maintainer would never notice the copy
-baked into the layer.
+The published images are built by .github/workflows/, whose context is a fresh
+actions/checkout - so it holds only TRACKED files, and autoImport/, TestData/ and
+.claude/ are all gitignored. Nothing private has ever shipped, and this file is
+not guarding an incident.
 
-The trap this pins is that .dockerignore patterns are ROOT-ANCHORED and `*` does
+It guards the OTHER build path: uploadDocker.ps1 is committed, runs
+`docker build .` against the developer's real working tree, and pushes to the
+same public i7gamer/spotify-tracker:latest tag. There, `COPY . .` takes whatever
+is on disk - and docker-compose's bind mounts hide the result, since the running
+container reads the host's folder either way, so the copy baked into the layer
+would never be noticed locally.
+
+The trap it pins is that .dockerignore patterns are ROOT-ANCHORED and `*` does
 not cross `/`. `Streaming*.json` therefore never matched
 `autoImport/<user>/Streaming_History_Audio_2023.json` - the export files the
 folder exists to hold - even though it reads exactly like it would.
@@ -23,7 +29,6 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 _REPO_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DOCKERIGNORE = os.path.join(_REPO_DIR, ".dockerignore")
-DOCKERFILE = os.path.join(_REPO_DIR, "Dockerfile")
 
 # Paths that must never enter the image. Spelled as they appear relative to the
 # build context, including the nested ones that defeated the anchored patterns.
@@ -32,7 +37,7 @@ MUST_BE_EXCLUDED = (
     "autoImport/timorzipa/Streaming_History_Audio_2023.json",
     "autoImport/7kevinegger/StreamingHistory0.json",
     "autoImport/testuser/endsong_0.json",
-    #< a real export of the maintainer's own top songs, present in the tree today
+    #< a real export of the maintainer's own top songs, present in the tree
     "TestData/Most played Songs - Week 24 - 2026.csv",
     #< local agent state, including a full second copy of the source tree
     ".claude/settings.local.json",
@@ -126,43 +131,6 @@ class DockerignoreTestCase(unittest.TestCase):
     def test_a_directory_pattern_covers_its_subtree(self):
         self.assertTrue(_matches("secrets", "secrets/secret.key"))
         self.assertFalse(_matches("secrets", "secretsomething.py"))
-
-
-class DockerfileTestCase(unittest.TestCase):
-    """The image must not run as root: docker-compose bind-mounts the host's own
-    Database/Data and autoImport, so a root process writes root-owned files into
-    the user's working tree, and any RCE inherits write access to them."""
-
-    def setUp(self):
-        with open(DOCKERFILE, encoding="utf-8") as handle:
-            self.lines = [line.strip() for line in handle]
-        self.text = "\n".join(self.lines)
-
-    def _indexOf(self, prefix):
-        for index, line in enumerate(self.lines):
-            if line.startswith(prefix):
-                return index
-        return -1
-
-    def test_the_container_drops_root(self):
-        self.assertIn("USER app", self.lines)
-
-    def test_root_is_dropped_after_the_code_is_copied(self):
-        """USER before COPY would make the copied tree app-owned and, worse,
-        break the pip install that has to run as root."""
-        userIndex = self._indexOf("USER app")
-        copyIndex = self._indexOf("COPY . .")
-
-        self.assertGreater(userIndex, copyIndex)
-        self.assertGreater(userIndex, self._indexOf("RUN apt-get"))
-
-    def test_the_writable_volumes_are_owned_by_that_user(self):
-        """Ownership has to be handed over inside the image, or the first write
-        to a bind mount fails instead of the app starting."""
-        self.assertIn("chown -R app:app", self.text)
-        for volume in ("/app/Database/Data", "/app/autoImport", "/app/secrets"):
-            with self.subTest(volume=volume):
-                self.assertIn(volume, self.text)
 
 
 if __name__ == "__main__":
