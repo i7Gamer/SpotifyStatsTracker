@@ -1248,7 +1248,7 @@ class PlayQueries:
         _fullPlaysClause: that builder emits a WHERE fragment, and this needs
         the same boundary twice, inside a CASE pair, with the partial branch
         being its inverse."""
-        ratio = self.getCompletionCompletePercent() / 100.0
+        ratio = self.getCompletionCompletePercent() / PERCENT_DIVISOR
         params = [ratio, ratio, username]
         rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
         row = self._conn().execute(

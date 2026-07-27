@@ -44,6 +44,20 @@ BACKUP_TIMESTAMP_FORMAT = "%Y%m%d_%H%M%S"   #< lexicographic order == chronologi
 # way, see Migrators/migrate.py's dual import).
 BACKUP_BUSY_TIMEOUT_MS = 5000
 
+# Serializes every snapshot in the PROCESS, not merely per BackupWorker. The
+# scheduled loop and the admin's Create Backup Now button share one instance, but
+# Migrators/migrate.py builds its own ad-hoc worker for the pre-migration
+# snapshot - and a per-instance lock left those two free to overlap while the
+# docstring promised otherwise. Overlapping runs sweep each other's .partial file
+# mid-write (PermissionError on Windows, where an open handle can't be unlinked)
+# and, when both start within the same second, write the same path from two
+# connections - so os.replace can promote an interleaved copy to a
+# valid-looking snapshot.
+#
+# All callers back the one shared database, so there is nothing to gain from a
+# per-path lock, and a single one cannot be got wrong.
+_BACKUP_LOCK = threading.Lock()
+
 
 def _envInt(name: str, default: int) -> int:
     raw = os.environ.get(name, "").strip()
@@ -72,14 +86,6 @@ class BackupWorker:
             BACKUP_RETENTION_ENV_VAR, DEFAULT_BACKUP_RETENTION_COUNT)
         self.thread: threading.Thread | None = None
         self._stop_event = threading.Event()
-        # Serializes every snapshot on this instance. The scheduled loop and
-        # the admin's Create Backup Now button are different threads calling
-        # the same code: overlapping runs would sweep each other's .partial
-        # file mid-write (raising PermissionError on Windows, where an open
-        # handle can't be unlinked) and, when both start in the same second,
-        # write the same path from two connections - so os.replace could
-        # promote an interleaved copy to a valid-looking snapshot.
-        self._backup_lock = threading.Lock()
 
     def isEnabled(self) -> bool:
         return self.intervalHours > 0 and self.retentionCount > 0
@@ -107,19 +113,20 @@ class BackupWorker:
         return time.time() - newest >= self.intervalHours * 3600
 
     def isBackupRunning(self) -> bool:
-        """True while a snapshot is in progress on this instance. Advisory
-        only - callers use it for a fast "already in progress" answer;
+        """True while a snapshot is in progress anywhere in this process.
+        Advisory only - callers use it for a fast "already in progress" answer;
         correctness comes from runBackup's own lock."""
-        return self._backup_lock.locked()
+        return _BACKUP_LOCK.locked()
 
     def runBackup(self) -> Path:
         """Snapshot the database and rotate old snapshots. Writes to a
         .partial file first and renames only on success, so a crash mid-backup
         can't leave a truncated file that looks like a valid snapshot.
 
-        Serialized instance-wide (see _backup_lock): a caller arriving while
-        another snapshot runs waits for it rather than overlapping."""
-        with self._backup_lock:
+        Serialized process-wide (see _BACKUP_LOCK): a caller arriving while
+        another snapshot runs waits for it rather than overlapping - including
+        the ad-hoc worker the migrators build for their pre-migration snapshot."""
+        with _BACKUP_LOCK:
             return self._runBackupLocked()
 
     def _runBackupLocked(self) -> Path:

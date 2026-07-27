@@ -297,7 +297,7 @@ class SqlFragments:
         encounters and only the partial listens go.
 
         Requires `trackAlias` to be joined - see _tracksJoin."""
-        params.append(self.getCompletionCompletePercent() / 100.0)
+        params.append(self.getCompletionCompletePercent() / PERCENT_DIVISOR)
         predicate = FULL_PLAY_PREDICATE.format(plays=playsAlias, track=trackAlias)
         skipEscape = f"{playsAlias}.is_skip = 1 OR " if keepSkips else ""
         return f" AND ({skipEscape}{predicate})"

@@ -110,7 +110,7 @@ class TrendQueries:
         # uses), so a track that was merely started/skipped a lot never reads as a
         # forgotten favorite - a favorite has to have been actually heard.
         forgotten_gap_cutoff = now_ts - (TREND_FORGOTTEN_GAP_DAYS * SECONDS_PER_DAY)
-        completion_ratio = self.getCompletionCompletePercent() / 100.0
+        completion_ratio = self.getCompletionCompletePercent() / PERCENT_DIVISOR
         # One statement, run twice: the fallback below differs only in how many
         # historical plays it demands. The completion test is the shared
         # FULL_PLAY_PREDICATE rather than its own copy of the same SQL, so a

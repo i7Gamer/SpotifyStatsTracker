@@ -218,9 +218,9 @@ import sys
 
 
 try:
-    from Database.db import RESTRICTED_FALLBACK_REASON, UNKNOWN_TRACK_NAME
+    from Database.db import RESTRICTED_FALLBACK_REASON, UNKNOWN_TRACK_NAME, UNKNOWN_ALBUM_NAME
 except ModuleNotFoundError:
-    from db import RESTRICTED_FALLBACK_REASON, UNKNOWN_TRACK_NAME
+    from db import RESTRICTED_FALLBACK_REASON, UNKNOWN_TRACK_NAME, UNKNOWN_ALBUM_NAME
 
 # tracks.availability_reason value for a track Spotify wouldn't describe, sitting
 # alongside its own COUNTRY_RESTRICTED/PAYWALL_CONTENT reasons - so the UI's
@@ -290,10 +290,13 @@ def _fallbackTrackRecord(trackId: str) -> dict:
     The id IS real, so the Spotify link is real too - only fabricated ids carry
     an empty url in this codebase.
 
-    The album is keyed per track (album_<trackId>, the same convention the
-    importer's fallbacks use) rather than one shared "Unknown album": a single
-    fabricated album id would collect every undescribable track from every user
-    into one page of unrelated songs."""
+    The album's ID is per track (album_<trackId>, the same convention the
+    importer's fallbacks use), because a single fabricated album id would collect
+    every undescribable track from every user into one page of unrelated songs.
+    Its NAME is the shared UNKNOWN_ALBUM_NAME placeholder for the same reason the
+    title is: it used to pass "", and _formatAlbum's own "Unknown album" default
+    never applied because the key was present, so albums.name was stored empty and
+    rendered blank on the detail page and in every album link."""
     return {
         "name": UNKNOWN_TRACK_NAME,
         "track_id": trackId,
@@ -302,7 +305,7 @@ def _fallbackTrackRecord(trackId: str) -> dict:
         "track_number": 0,
         "duration_ms": 0,
         "artists": [],
-        "album": {"id": f"album_{trackId}", "name": "", "images": [],
+        "album": {"id": f"album_{trackId}", "name": UNKNOWN_ALBUM_NAME, "images": [],
                   "external_urls": {"spotify": ""}, "total_tracks": 0},
         "explicit": False,
         "external_urls": {"spotify": f"https://open.spotify.com/track/{trackId}"},

@@ -1156,6 +1156,26 @@ class TestTrackFallbackOnIncompleteInfo(unittest.TestCase):
         self.assertEqual(formatted["name"], UNKNOWN_TRACK_NAME)
 
     @patch("spotapi.Public")
+    def test_fallback_album_name_is_the_placeholder_not_blank(self, mock_public):
+        """The same reasoning as the title above, applied to the album the record
+        has to invent - and UNKNOWN_ALBUM_NAME exists for exactly this ("Companion
+        for the per-track album a fallback record has to invent", Database/db.py).
+
+        The album dict passed "" and _formatAlbum reads .get("name", "Unknown
+        album"), so the DEFAULT never applied - the key was present - and
+        albums.name was stored empty: a blank album name on the song's detail page
+        and in every album link. migrate1_43_0 already uses the constant for this
+        identical placeholder shape."""
+        from Database.db import UNKNOWN_ALBUM_NAME
+        from Database.Formatters.spotifyClient import Client
+
+        result = self._track(mock_public, {"data": None})
+
+        self.assertEqual(result["album"]["name"], UNKNOWN_ALBUM_NAME)
+        formatted = Client.formatTrack(result, timestamp=1000, msPlayed=5000)
+        self.assertEqual(formatted["album"]["name"], UNKNOWN_ALBUM_NAME)
+
+    @patch("spotapi.Public")
     def test_fallback_album_is_per_track_not_shared(self, mock_public):
         """Two unrelated incomplete tracks must not be merged under one
         "Unknown album" - a shared fabricated album id would link strangers'

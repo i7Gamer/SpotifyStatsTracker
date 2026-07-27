@@ -243,6 +243,54 @@ class TestConcurrentBackups(BackupWorkerTestCase):
 
         self.assertEqual(overlapped, ["start", "end", "start", "end"])
 
+    def test_two_separate_workers_are_serialized_against_each_other(self):
+        """The lock has to be process-wide, not per instance.
+
+        app.py holds one BackupWorker, but Migrators/migrate.py builds its own
+        ad-hoc one for the pre-migration snapshot - so a per-instance lock left
+        exactly those two free to overlap while runBackup's docstring promised
+        they could not. Unreachable in today's startup order (migrations finish
+        before backupWorker.start()), but the promise should hold for the next
+        caller rather than for the current call graph.
+
+        Same interleaving assertion as above, across two instances."""
+        scheduled = self._makeWorker()
+        adHoc = self._makeWorker()      #< what migrate.py constructs
+        overlapped = []
+        inFlight = threading.Event()
+        release = threading.Event()
+        realRun = scheduled._runBackupLocked
+
+        def slowRun():
+            overlapped.append("start")
+            inFlight.set()
+            release.wait()   #< unbounded; released in the finally below
+            try:
+                return realRun()
+            finally:
+                overlapped.append("end")
+
+        try:
+            with patch.object(scheduled, "_runBackupLocked", slowRun):
+                first = threading.Thread(target=scheduled.runBackup, daemon=True)
+                first.start()
+                self.assertTrue(inFlight.wait(HANG_TIMEOUT_SECONDS))
+
+                #< the OTHER instance, which used to hold its own lock
+                second = threading.Thread(target=adHoc.runBackup, daemon=True)
+                second.start()
+                self.assertTrue(adHoc.isBackupRunning(), "isBackupRunning must see the whole process")
+
+                release.set()
+                first.join(timeout=HANG_TIMEOUT_SECONDS)
+                second.join(timeout=HANG_TIMEOUT_SECONDS)
+                self.assertFalse(first.is_alive())
+                self.assertFalse(second.is_alive())
+        finally:
+            release.set()
+
+        self.assertEqual(overlapped, ["start", "end"])   #< only the patched one records
+
     def test_is_backup_running_reports_an_in_flight_snapshot(self):
         worker = self._makeWorker()
         inFlight = threading.Event()

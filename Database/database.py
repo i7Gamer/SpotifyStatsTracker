@@ -1262,7 +1262,14 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
                                     tzinfo=self.tz).timestamp()
 
         dayCounts: dict = {}
-        for row in self.repo.getBucketedPlayTotals(self.user, startTs, None):
+        #< listeningBuckets, like every other consumer: getBucketedPlayTotals
+        #  stopped filtering is_skip=0, so a skip-only bucket comes back with
+        #  plays=0. buildListeningCalendar happens to test count > 0, so the
+        #  totals are right either way - but dayCounts otherwise carries
+        #  "YYYY-MM-DD": 0 entries for skip-only days, and a future consumer
+        #  reading key presence as "listened" reproduces the exact bug that
+        #  helper's docstring documents.
+        for row in listeningBuckets(self.repo.getBucketedPlayTotals(self.user, startTs, None)):
             dateStr = convertToDatetime(row["bucketStartTs"], tz=self.tz).strftime("%Y-%m-%d")
             dayCounts[dateStr] = dayCounts.get(dateStr, 0) + row["plays"]
         return buildListeningCalendar(dayCounts, today, weeks=weeks)
