@@ -129,6 +129,25 @@ class TestWhatIsReported(FriendsNowPlayingTestCase):
         self.assertEqual(friends[0]["artistsText"], "Kavinsky")
         self.assertEqual(friends[0]["imageId"], "img1")
 
+    def test_a_chip_carries_the_display_name_alongside_the_username(self):
+        """The chips are built client-side, so they can't go through the Jinja
+        filter - the name people go by has to ride in the payload. `username`
+        stays too: dashboard-page.js falls back to it."""
+        self._addUser("bob", playing=_nowPlaying())
+        self._share("bob")
+        self.dash.repo.setDisplayName("bob", "Bob Builder")
+
+        entry = self._payload()["friends"][0]
+
+        self.assertEqual(entry["displayName"], "Bob Builder")
+        self.assertEqual(entry["username"], "bob")
+
+    def test_a_friend_without_one_reports_their_username_as_the_display_name(self):
+        self._addUser("bob", playing=_nowPlaying())
+        self._share("bob")
+
+        self.assertEqual(self._payload()["friends"][0]["displayName"], "bob")
+
     def test_playback_position_and_history_flags_are_not_disclosed(self):
         """Narrower than the viewer's own payload on purpose: progress is noise
         at chip size, and the played flags describe the friend's own history."""

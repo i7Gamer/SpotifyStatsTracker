@@ -120,6 +120,16 @@ TRUST_PROXY_HEADERS_ENV_VAR = "TRUST_PROXY_HEADERS"
 # account.
 ADMIN_EMAIL_ENV_VAR = "ADMIN_EMAIL"
 PASSWORD_MIN_LENGTH = 8   #< also enforced client-side via the minlength attribute
+# The editable label an account is shown as (users.display_name). The username
+# itself can never change - it's the primary key eight tables reference by
+# foreign key - so this is the only name a user gets to pick. The charset is the
+# auto-generated username's (see get_or_create_user) plus spaces: it lands in
+# page titles, a share picker, a downloaded PNG's filename and other users'
+# screens, so anything needing escaping or path handling stays out. The minimum
+# is 2 rather than 3 so a short real name ("Jo") isn't rejected.
+DISPLAY_NAME_MIN_LENGTH = 2
+DISPLAY_NAME_MAX_LENGTH = 32   #< also enforced client-side via the maxlength attribute
+DISPLAY_NAME_ALLOWED_PATTERN = r"^[A-Za-z0-9 _-]+$"
 # The Spotify OAuth CSRF `state` round-trip (RFC 6749 §10.12): /spotify-authorize
 # stores a one-shot random value under this session key and sends it along to
 # Spotify; /spotify-callback refuses to exchange a code unless the request

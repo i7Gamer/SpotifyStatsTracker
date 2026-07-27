@@ -1,5 +1,9 @@
 {% extends "layout_public.html" if publicView else "layout.html" %}
 {% block content %}
+{# The page owner as people know them (users.display_name, falling back to the
+   username). Kept separate from `username`, which stays the immutable key and
+   doubles as the cover-image base for the card includes below. #}
+{% set ownerLabel = username | displayName %}
   <style>
     .wrapped-loading-fade {
       opacity: 0.15 !important;
@@ -63,8 +67,13 @@
   </style>
   <section class="hero">
     <div class="hero-content">
-      <h1>{{ (username + "'s") if publicView else "Your" }} {{ year }} Wrapped</h1>
-      <p>A look back at what {{ username if publicView else "you" }} listened to in {{ year }}.</p>
+      {# ownerLabel, not the bare username: this page is public over a share
+         link, so the owner is named by what they go by. The bare `username` in
+         this template's context is ALSO the cover-image base for the card
+         includes (_track_card.html falls back to '/img/' + username), which is
+         why it isn't simply reassigned here. #}
+      <h1>{{ (ownerLabel + "'s") if publicView else "Your" }} {{ year }} Wrapped</h1>
+      <p>A look back at what {{ ownerLabel if publicView else "you" }} listened to in {{ year }}.</p>
     </div>
   </section>
 
@@ -119,7 +128,9 @@
     <div style="flex-shrink: 0; display: flex; gap: 0.75rem; align-items: center;">
       <button id="exportWrappedBtn" class="primary-button" style="background: var(--accent); color: #111; font-weight: bold; border: none; padding: 10px 20px; border-radius: 20px; cursor: pointer; display: inline-flex; align-items: center; gap: 8px;"
               data-year="{{ year }}"
-              data-user="{{ username }}"
+              {# label, not a key: wrapped.js paints it on the exported PNG
+                 ("Listening Summary for @…") and uses it as the filename. #}
+              data-user="{{ ownerLabel }}"
               data-plays="{{ totalPlays }}"
               data-time="{{ totalTime }}"
               data-songs="{{ uniqueSongsCount }}"
@@ -299,7 +310,7 @@
 
   <div data-category="discoveries-songs" {% if not discoveredSongs %}style="display: none;"{% endif %}>
     <h2>Discovered Songs</h2>
-    <p class="chart-subtitle">Songs {{ username if publicView else "you" }} first listened to in {{ year }}.</p>
+    <p class="chart-subtitle">Songs {{ ownerLabel if publicView else "you" }} first listened to in {{ year }}.</p>
     <section class="track-list">
       {% if discoveredSongs %}
         {% for track in discoveredSongs %}
@@ -313,7 +324,7 @@
 
   <div data-category="discoveries-artists" {% if not discoveredArtists %}style="display: none;"{% endif %}>
     <h2>Discovered Artists</h2>
-    <p class="chart-subtitle">Artists {{ username if publicView else "you" }} first listened to in {{ year }}.</p>
+    <p class="chart-subtitle">Artists {{ ownerLabel if publicView else "you" }} first listened to in {{ year }}.</p>
     <section class="track-list">
       {% if discoveredArtists %}
         {% for track in discoveredArtists %}
@@ -327,7 +338,7 @@
 
   <div data-category="discoveries-albums" {% if not discoveredAlbums %}style="display: none;"{% endif %}>
     <h2>Discovered Albums</h2>
-    <p class="chart-subtitle">Albums {{ username if publicView else "you" }} first listened to in {{ year }}.</p>
+    <p class="chart-subtitle">Albums {{ ownerLabel if publicView else "you" }} first listened to in {{ year }}.</p>
     <section class="track-list">
       {% if discoveredAlbums %}
         {% for track in discoveredAlbums %}
@@ -347,7 +358,7 @@
       "timeSeries": timeSeries,
       "fetchUrl": (url_for('sharedWrappedPage', token=token) if publicView else url_for('wrappedPage')),
       "isPublicView": publicView,
-      "shareOwnerName": username,
+      "shareOwnerName": ownerLabel,
       "year": year,
       "groupBy": groupBy,
       "limit": limit,

@@ -1,4 +1,11 @@
 {% from '_compare_macros.html' import detailCell, theirCell, coverLink %}
+{# Two names per user, and they are not interchangeable: myLabel/theirLabel are
+   what a person is CALLED (users.display_name, falling back to the username),
+   while the bare username/withUsername stay the immutable key - coverLink's
+   /img/<username>/ segment below is a session-authorization check, not a
+   label, and swapping it there would 404 every cover image. #}
+{% set myLabel = username | displayName %}
+{% set theirLabel = withUsername | displayName %}
 {# The leader's ▲ + hidden "(higher)" keep the signal readable without
    color (color-blind users, screen readers). `side` is 'mine'/'theirs' so
    the leading cell colors in its own row's identity color. #}
@@ -51,7 +58,7 @@
   </thead>
   <tbody>
     <tr>
-      <td><span class="compare-user-mine compare-user-label js-my-username">{{ username }}</span></td>
+      <td><span class="compare-user-mine compare-user-label js-my-username">{{ myLabel }}</span></td>
       {{ leaderCell("{:,}".format(my.totalPlays), my.totalPlays > their.totalPlays, 'mine') }}
       {{ leaderCell(my.totalTimeText, my.totalMs > their.totalMs, 'mine') }}
       {{ leaderCell("{:,}".format(my.uniqueSongs), my.uniqueSongs > their.uniqueSongs, 'mine') }}
@@ -63,7 +70,7 @@
       <td class="value">{{ my.peakDayText }}</td>
     </tr>
     <tr>
-      <td><span class="compare-user-theirs compare-user-label js-with-username">{{ withUsername }}</span></td>
+      <td><span class="compare-user-theirs compare-user-label js-with-username">{{ theirLabel }}</span></td>
       {{ leaderCell("{:,}".format(their.totalPlays), their.totalPlays > my.totalPlays, 'theirs') }}
       {{ leaderCell(their.totalTimeText, their.totalMs > my.totalMs, 'theirs') }}
       {{ leaderCell("{:,}".format(their.uniqueSongs), their.uniqueSongs > my.uniqueSongs, 'theirs') }}
@@ -92,12 +99,12 @@
     {% set myItem = my.topSongs[0] if my.topSongs else none %}
     {% set theirItem = their.topSongs[0] if their.topSongs else none %}
     {% if myItem and theirItem and myItem.id == theirItem.id %}
-      {{ topItemMerged(username, withUsername, myItem, 'song',
+      {{ topItemMerged(myLabel, theirLabel, myItem, 'song',
                        detailCell(myItem, 'songDetailPage', 'track_id')) }}
     {% else %}
-      {{ topItemSide('mine', username, myItem, 'song',
+      {{ topItemSide('mine', myLabel, myItem, 'song',
                      detailCell(myItem, 'songDetailPage', 'track_id')) }}
-      {{ topItemSide('theirs', withUsername, theirItem, 'song',
+      {{ topItemSide('theirs', theirLabel, theirItem, 'song',
                      theirCell(theirItem, 'songDetailPage', 'track_id')) }}
     {% endif %}
   </article>
@@ -106,12 +113,12 @@
     {% set myItem = my.topArtists[0] if my.topArtists else none %}
     {% set theirItem = their.topArtists[0] if their.topArtists else none %}
     {% if myItem and theirItem and myItem.id == theirItem.id %}
-      {{ topItemMerged(username, withUsername, myItem, 'artist',
+      {{ topItemMerged(myLabel, theirLabel, myItem, 'artist',
                        detailCell(myItem, 'artistDetailPage', 'artist_id')) }}
     {% else %}
-      {{ topItemSide('mine', username, myItem, 'artist',
+      {{ topItemSide('mine', myLabel, myItem, 'artist',
                      detailCell(myItem, 'artistDetailPage', 'artist_id')) }}
-      {{ topItemSide('theirs', withUsername, theirItem, 'artist',
+      {{ topItemSide('theirs', theirLabel, theirItem, 'artist',
                      theirCell(theirItem, 'artistDetailPage', 'artist_id')) }}
     {% endif %}
   </article>
@@ -120,12 +127,12 @@
     {% set myItem = my.topAlbums[0] if my.topAlbums else none %}
     {% set theirItem = their.topAlbums[0] if their.topAlbums else none %}
     {% if myItem and theirItem and myItem.id == theirItem.id %}
-      {{ topItemMerged(username, withUsername, myItem, 'album',
+      {{ topItemMerged(myLabel, theirLabel, myItem, 'album',
                        detailCell(myItem, 'albumDetailPage', 'album_id')) }}
     {% else %}
-      {{ topItemSide('mine', username, myItem, 'album',
+      {{ topItemSide('mine', myLabel, myItem, 'album',
                      detailCell(myItem, 'albumDetailPage', 'album_id')) }}
-      {{ topItemSide('theirs', withUsername, theirItem, 'album',
+      {{ topItemSide('theirs', theirLabel, theirItem, 'album',
                      theirCell(theirItem, 'albumDetailPage', 'album_id')) }}
     {% endif %}
   </article>

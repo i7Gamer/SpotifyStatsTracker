@@ -52,6 +52,79 @@ class UserQueries:
         ).fetchone()
         return row["username"] if row else None
 
+    # ---- Per-user: display name ------------------------------------------------
+    # The editable label standing in for the immutable username key (see the
+    # users table comment in Database/db.py). NULL = "display as the username",
+    # so every read goes through the COALESCE below rather than callers each
+    # remembering the fallback.
+
+    def getDisplayName(self, username: str) -> str:
+        """This user's display name, falling back to the username itself -
+        including for a username with no row at all. Deliberately forgiving:
+        this feeds template rendering, where a stale counterpart name must
+        degrade to the raw name rather than render None or raise."""
+        conn = self._conn()
+        row = conn.execute(
+            "SELECT COALESCE(display_name, username) AS name FROM users WHERE username=?",
+            (username,),
+        ).fetchone()
+        return row["name"] if row else username
+
+    def getDisplayNames(self, usernames: list[str]) -> dict[str, str]:
+        """{username: displayName} for a whole list in one query - the share
+        lists, compare headings and friend chips all name several users per
+        render, and getDisplayName per row would be a query each.
+
+        Unlike getDisplayName, an unknown username is simply ABSENT from the
+        result rather than mapped to itself: callers memoize this dict, and
+        inventing an entry for a user that doesn't exist would cache a fiction."""
+        if not usernames:
+            return {}
+        conn = self._conn()
+        placeholders = ", ".join("?" for _ in usernames)
+        rows = conn.execute(
+            f"SELECT username, COALESCE(display_name, username) AS name "
+            f"FROM users WHERE username IN ({placeholders})",
+            tuple(usernames),
+        ).fetchall()
+        return {row["username"]: row["name"] for row in rows}
+
+    def setDisplayName(self, username: str, displayName: str | None) -> bool:
+        """Set (or clear, with None) this user's display name unless the name is
+        already taken. Returns True iff a row was actually written - False means
+        the name collides, or the user doesn't exist.
+
+        The availability check lives INSIDE the UPDATE, evaluated under SQLite's
+        write lock, so two users claiming the same name at the same instant
+        can't both pass a stale check - the same reasoning as demoteAdmin's
+        count guard, and the reason this isn't a read-then-write in the route.
+
+        Taken means, case-insensitively: another account's display_name, or
+        another account's USERNAME. The second half is what no UNIQUE index
+        could express and is the one that matters - /admin, /compare?with= and
+        the share picker all identify people by the real username, so
+        displaying as someone else's is an impersonation vector inside the
+        share flow. Your OWN row is excluded from both, so re-casing your own
+        name (the most likely edit) is always allowed.
+
+        Clearing is never blocked: NULL isn't a value that can collide, and
+        several accounts hold it at once."""
+        conn = self._conn()
+        with conn:
+            cur = conn.execute(
+                """
+                UPDATE users SET display_name = :new
+                WHERE username = :me
+                  AND (:new IS NULL OR NOT EXISTS (
+                        SELECT 1 FROM users
+                        WHERE username <> :me
+                          AND (display_name = :new COLLATE NOCASE
+                               OR username = :new COLLATE NOCASE)))
+                """,
+                {"new": displayName, "me": username},
+            )
+        return cur.rowcount > 0
+
     def setUserEmail(self, username: str, email: str) -> None:
         conn = self._conn()
         with conn:
@@ -425,8 +498,9 @@ class UserQueries:
         user's own row - what a non-admin viewer is allowed to see (the full
         listing is admin-only, see app.py's overviewPage)."""
         conn = self._conn()
-        query = ("SELECT username, email, cookies_json, spotify_client_id, spotify_refresh_token, "
-                  "spotify_needs_reauth, lastfm_api_key, created_at, is_admin FROM users")
+        query = ("SELECT username, display_name, email, cookies_json, spotify_client_id, "
+                  "spotify_refresh_token, spotify_needs_reauth, lastfm_api_key, created_at, "
+                  "is_admin FROM users")
         params: tuple = ()
         if username is not None:
             query += " WHERE username=?"

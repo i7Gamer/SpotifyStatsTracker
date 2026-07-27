@@ -111,7 +111,9 @@ function loadCompareData({ sortByOnly = false, initial = false } = {}) {
         document.getElementById('sharedSongsList').innerHTML = data.sharedSongsHtml;
         document.getElementById('sharedAlbumsList').innerHTML = data.sharedAlbumsHtml;
 
-        document.querySelectorAll('.js-with-username').forEach(el => el.textContent = data.withUsername);
+        //< the label people go by, not the key data.withUsername still carries
+        const withLabel = data.withDisplayName || data.withUsername;
+        document.querySelectorAll('.js-with-username').forEach(el => el.textContent = withLabel);
 
         const tasteMatchEl = document.getElementById('tasteMatch');
         if (tasteMatchEl) {

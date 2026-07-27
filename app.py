@@ -565,6 +565,10 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
         with self._db_lock:
             liveDbs = [(name, self.user_databases.get(name)) for name in counterparts]
 
+        #< one query for the whole strip rather than one per chip; the chips are
+        #  rendered client-side, so this can't go through the Jinja filter
+        displayNames = self.repo.getDisplayNames([name for name, _ in liveDbs])
+
         playing = []
         for name, db in liveDbs:
             if db is None:
@@ -580,7 +584,9 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
             if not nowPlaying or nowPlaying.get("isPaused"):
                 continue
             playing.append({
+                #< username stays the identity; displayName is what the chip shows
                 "username": name,
+                "displayName": displayNames.get(name, name),
                 "trackId": nowPlaying.get("trackId"),
                 "name": nowPlaying.get("name"),
                 "artistsText": nowPlaying.get("artistsText"),
@@ -905,6 +911,29 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
             if _hstsEnabled():
                 response.headers.setdefault("Strict-Transport-Security", HSTS_HEADER_VALUE)
             return response
+
+        @self.app.template_filter("displayName")
+        def _displayNameFilter(username):
+            """Resolve a username to the label people actually see (see
+            users.display_name). Applied only where a name is DISPLAYED - the
+            `/img/<username>/` segment, `?with=`, and the admin route params are
+            the immutable key and must stay raw.
+
+            Memoized per request on `g`: one render names the same user several
+            times (the compare headings alone name two users six times) and a
+            share list names a dozen, so the un-memoized version would be a
+            query per mention rather than per user. A falsy value passes
+            through untouched so layout.html's `session.get('username') or
+            'Account'` fallback still works on a logged-out page."""
+            if not username:
+                return username
+            cache = getattr(g, "_displayNames", None)
+            if cache is None:
+                cache = {}
+                g._displayNames = cache
+            if username not in cache:
+                cache[username] = self.repo.getDisplayName(username)
+            return cache[username]
 
         @self.app.context_processor
         def _injectPasswordPolicy():

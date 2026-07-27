@@ -266,11 +266,15 @@ def register(app, dashboard):
         myByLabel = {b["label"]: b["totalTimeListened"] for b in db.getListeningTimeSeries(trendStartDate, trendEndDate, groupBy=trendGroupBy)}
         theirByLabel = {b["label"]: b["totalTimeListened"] for b in otherDb.getListeningTimeSeries(trendStartDate, trendEndDate, groupBy=trendGroupBy)}
         allLabels = sorted(set(myByLabel) | set(theirByLabel))
+        #< series names are a chart legend - the label people go by, not the key
+        displayNames = dashboard.repo.getDisplayNames([username, withUsername])
+        myDisplayName = displayNames.get(username, username)
+        withDisplayName = displayNames.get(withUsername, withUsername)
         comparisonTrend = {
             "buckets": allLabels,
             "series": [
-                {"name": username, "data": [myByLabel.get(label, 0) for label in allLabels]},
-                {"name": withUsername, "data": [theirByLabel.get(label, 0) for label in allLabels]},
+                {"name": myDisplayName, "data": [myByLabel.get(label, 0) for label in allLabels]},
+                {"name": withDisplayName, "data": [theirByLabel.get(label, 0) for label in allLabels]},
             ],
         }
 
@@ -280,7 +284,10 @@ def register(app, dashboard):
         # load) fetch these chunks and swap them in place.
         return jsonify({
             **sortableListsJson(),
+            #< withUsername stays the identity (?with=, authorization); the
+            #  heading swap in compare.js reads withDisplayName
             "withUsername": withUsername,
+            "withDisplayName": withDisplayName,
             "tasteMatch": tasteMatch,
             "statsTableHtml": render_template(
                 "_compare_stats_table.html", my=my, their=their,

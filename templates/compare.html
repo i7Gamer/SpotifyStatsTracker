@@ -3,7 +3,7 @@
 
 <section class="hero">
   <div class="hero-content">
-    <h1>Compare with <span class="compare-user-theirs js-with-username">{{ withUsername }}</span></h1>
+    <h1>Compare with <span class="compare-user-theirs js-with-username">{{ withUsername | displayName }}</span></h1>
     <p>See how your listening stats stack up against someone who shares their data with you.</p>
     {# tasteMatch isn't known until the ajax payload lands - hidden until compare.js fills it in. #}
     <div class="taste-match" id="tasteMatch" style="display: none;">
@@ -16,8 +16,10 @@
 {% if acceptedUsernames|length > 1 %}
 <nav class="wrapped-year-badges" aria-label="Select user to compare with">
   {% for candidate in acceptedUsernames %}
+    {# the badge SHOWS the display name but still selects by the real username:
+       ?with= is matched against the accepted-share list server-side. #}
     <a class="wrapped-year-badge{{ ' active' if candidate == withUsername else '' }}"
-       href="{{ url_for('comparePage', with=candidate, interval=interval, startDate=customStart, endDate=customEnd, groupBy=groupBy, limit=limit, sortBy=sortBy) }}">{{ candidate }}</a>
+       href="{{ url_for('comparePage', with=candidate, interval=interval, startDate=customStart, endDate=customEnd, groupBy=groupBy, limit=limit, sortBy=sortBy) }}">{{ candidate | displayName }}</a>
   {% endfor %}
 </nav>
 {% endif %}
@@ -159,13 +161,13 @@
 <div data-category="top-songs">
   <section class="compare-columns">
     <div>
-      <h2><span class="compare-user-mine compare-user-label js-my-username">{{ username }}</span>'s Top Songs</h2>
+      <h2><span class="compare-user-mine compare-user-label js-my-username">{{ username | displayName }}</span>'s Top Songs</h2>
       <div class="track-list" id="myTopSongsList">
         <p class="loading">Loading…</p>
       </div>
     </div>
     <div>
-      <h2><span class="compare-user-theirs compare-user-label js-with-username">{{ withUsername }}</span>'s Top Songs</h2>
+      <h2><span class="compare-user-theirs compare-user-label js-with-username">{{ withUsername | displayName }}</span>'s Top Songs</h2>
       <div class="track-list" id="theirTopSongsList">
         <p class="loading">Loading…</p>
       </div>
@@ -176,13 +178,13 @@
 <div data-category="top-artists">
   <section class="compare-columns">
     <div>
-      <h2><span class="compare-user-mine compare-user-label js-my-username">{{ username }}</span>'s Top Artists</h2>
+      <h2><span class="compare-user-mine compare-user-label js-my-username">{{ username | displayName }}</span>'s Top Artists</h2>
       <div class="track-list" id="myTopArtistsList">
         <p class="loading">Loading…</p>
       </div>
     </div>
     <div>
-      <h2><span class="compare-user-theirs compare-user-label js-with-username">{{ withUsername }}</span>'s Top Artists</h2>
+      <h2><span class="compare-user-theirs compare-user-label js-with-username">{{ withUsername | displayName }}</span>'s Top Artists</h2>
       <div class="track-list" id="theirTopArtistsList">
         <p class="loading">Loading…</p>
       </div>
@@ -193,13 +195,13 @@
 <div data-category="top-albums">
   <section class="compare-columns">
     <div>
-      <h2><span class="compare-user-mine compare-user-label js-my-username">{{ username }}</span>'s Top Albums</h2>
+      <h2><span class="compare-user-mine compare-user-label js-my-username">{{ username | displayName }}</span>'s Top Albums</h2>
       <div class="track-list" id="myTopAlbumsList">
         <p class="loading">Loading…</p>
       </div>
     </div>
     <div>
-      <h2><span class="compare-user-theirs compare-user-label js-with-username">{{ withUsername }}</span>'s Top Albums</h2>
+      <h2><span class="compare-user-theirs compare-user-label js-with-username">{{ withUsername | displayName }}</span>'s Top Albums</h2>
       <div class="track-list" id="theirTopAlbumsList">
         <p class="loading">Loading…</p>
       </div>

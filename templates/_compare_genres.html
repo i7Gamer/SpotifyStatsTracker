@@ -8,12 +8,16 @@
    theirPlays, combinedPlays}), myGenreCoverage/theirGenreCoverage,
    genresUnlocked, lastfmEnabled. #}
 {% import "_genre_macros.html" as genreMacros %}
+{# Names as shown to people (users.display_name, falling back to the username);
+   this block renders no /img/ URLs, so the raw keys aren't needed here. #}
+{% set myLabel = username | displayName %}
+{% set theirLabel = withUsername | displayName %}
 
 {% if lastfmEnabled %}
 {% if genresUnlocked %}
   <div class="compare-columns">
     <div>
-      <h3 style="margin: 0;"><span class="compare-user-mine compare-user-label js-my-username">{{ username }}</span>'s Top Genres</h3>
+      <h3 style="margin: 0;"><span class="compare-user-mine compare-user-label js-my-username">{{ myLabel }}</span>'s Top Genres</h3>
       {% if myTopGenres %}
         {{ genreMacros.genreBarList(myTopGenres, nameWidth='9rem', barHeight='10px', gap='0.5rem') }}
       {% else %}
@@ -21,7 +25,7 @@
       {% endif %}
     </div>
     <div>
-      <h3 style="margin: 0;"><span class="compare-user-theirs compare-user-label js-with-username">{{ withUsername }}</span>'s Top Genres</h3>
+      <h3 style="margin: 0;"><span class="compare-user-theirs compare-user-label js-with-username">{{ theirLabel }}</span>'s Top Genres</h3>
       {% if theirTopGenres %}
         {{ genreMacros.genreBarList(theirTopGenres, nameWidth='9rem', barHeight='10px', gap='0.5rem', color='var(--compare-theirs)') }}
       {% else %}
@@ -36,7 +40,7 @@
       <div style="display: flex; flex-wrap: wrap; gap: 0.5rem;">
         {% for shared in sharedGenres %}
         <span class="badge badge-success" style="text-transform: capitalize; font-size: 0.85rem;"
-              title="{{ username }}: {{ "{:,}".format(shared.myPlays) }} plays &middot; {{ withUsername }}: {{ "{:,}".format(shared.theirPlays) }} plays">
+              title="{{ myLabel }}: {{ "{:,}".format(shared.myPlays) }} plays &middot; {{ theirLabel }}: {{ "{:,}".format(shared.theirPlays) }} plays">
           {{ shared.genre }}
         </span>
         {% endfor %}
@@ -63,7 +67,7 @@
       </tr>
     </thead>
     <tbody>
-      {% for name, coverage in [(username, myGenreCoverage), (withUsername, theirGenreCoverage)] %}
+      {% for name, coverage in [(myLabel, myGenreCoverage), (theirLabel, theirGenreCoverage)] %}
       <tr>
         <td style="font-weight: 600; color: var(--accent);">{{ name }}</td>
         <td class="value">{{ coverage.overall.percent }}%</td>

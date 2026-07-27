@@ -380,3 +380,16 @@ class SchemaQueries:
         if "hide_now_playing" not in columns:
             with conn:
                 conn.execute("ALTER TABLE users ADD COLUMN hide_now_playing INTEGER NOT NULL DEFAULT 0")
+
+    def addDisplayNameColumnIfMissing(self) -> None:
+        """Add users.display_name (migrate1_45_0) if missing - the editable
+        label that stands in for the immutable username key wherever a person
+        is named. NULL means "display as the username", so existing rows need
+        no backfill: the ALTER's own default is already the right answer for
+        every account that has never set one. Guarded so re-running the
+        migration doesn't fail."""
+        conn = self._conn()
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
+        if "display_name" not in columns:
+            with conn:
+                conn.execute("ALTER TABLE users ADD COLUMN display_name TEXT")

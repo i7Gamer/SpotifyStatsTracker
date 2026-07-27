@@ -8,6 +8,7 @@ _passwordPolicyError are aliased from the app module at register() time; the
 per-group _safeNextUrl helper lives here.
 """
 import os
+import re
 import secrets
 import logging
 from urllib.parse import urlencode
@@ -30,7 +31,24 @@ def register(app, dashboard):
     SPOTIFY_OAUTH_STATE_SESSION_KEY = appmod.SPOTIFY_OAUTH_STATE_SESSION_KEY
     SHARE_LINK_EXPIRY_CHOICES = appmod.SHARE_LINK_EXPIRY_CHOICES
     SHARE_LINK_MAX_PER_BUCKET = appmod.SHARE_LINK_MAX_PER_BUCKET
+    DISPLAY_NAME_MIN_LENGTH = appmod.DISPLAY_NAME_MIN_LENGTH
+    DISPLAY_NAME_MAX_LENGTH = appmod.DISPLAY_NAME_MAX_LENGTH
+    DISPLAY_NAME_ALLOWED_PATTERN = appmod.DISPLAY_NAME_ALLOWED_PATTERN
     _passwordPolicyError = appmod._passwordPolicyError
+
+    def _displayNameError(value):
+        """Why this display name can't be used, or None if it's fine.
+
+        Only shape is checked here - whether the name is already TAKEN is
+        decided by setDisplayName's guarded UPDATE, because a check made here
+        would be a separate read that two simultaneous saves could both pass."""
+        if len(value) < DISPLAY_NAME_MIN_LENGTH:
+            return f"A display name needs at least {DISPLAY_NAME_MIN_LENGTH} characters."
+        if len(value) > DISPLAY_NAME_MAX_LENGTH:
+            return f"A display name can be at most {DISPLAY_NAME_MAX_LENGTH} characters."
+        if not re.match(DISPLAY_NAME_ALLOWED_PATTERN, value):
+            return "A display name can only contain letters, digits, spaces, - and _."
+        return None
 
     def _safeNextUrl(nextUrl):
         """Only allow same-origin relative redirects after login - a `next`
@@ -312,6 +330,26 @@ def register(app, dashboard):
                     success = "Preferences saved successfully!"
                 except Exception as e:
                     error = f"Failed to save preferences: {str(e)}"
+            elif action == "save_display_name":
+                # Throttled like request_share: this name is visible to every
+                # user this account shares with, and the uniqueness guard makes
+                # a rejected save a cheap probe for which names exist.
+                if dashboard._rateLimited("save_display_name"):
+                    error = RATE_LIMIT_ERROR_MESSAGE
+                    responseStatus = 429
+                else:
+                    #< empty means "go back to the username" - stored as NULL,
+                    #  never as the username itself, so the account keeps
+                    #  following its key rather than pinning a copy of it
+                    submitted = (request.form.get("display_name") or "").strip()
+                    policyError = _displayNameError(submitted) if submitted else None
+                    if policyError:
+                        error = policyError
+                    elif dashboard.repo.setDisplayName(username, submitted or None):
+                        success = (f"Display name set to {submitted}." if submitted
+                                   else f"Display name cleared - you'll show as {username}.")
+                    else:
+                        error = "That name is already taken."
             elif action == "request_share":
                 if not dashboard.repo.isDataSharingEnabled():
                     abort(404)
@@ -443,6 +481,11 @@ def register(app, dashboard):
             "profile.html",
             milestones=milestones,
             username=username,
+            #< read AFTER the POST branch above, so a just-saved name is what
+            #  the form redisplays rather than the pre-save value
+            displayName=dashboard.repo.getDisplayName(username),
+            displayNameMinLength=DISPLAY_NAME_MIN_LENGTH,
+            displayNameMaxLength=DISPLAY_NAME_MAX_LENGTH,
             email=email,
             client_id=client_id,
             # Never echo the stored secret back into the page - only signal that

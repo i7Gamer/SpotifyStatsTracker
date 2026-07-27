@@ -7,9 +7,36 @@
     <p>Manage your account settings{% if feature_enabled %} and configure the Spotify Developer API for real-time play backfilling{% endif %}.</p>
 
     <div class="profile-details" style="margin-bottom: 2rem; border-bottom: 1px solid var(--border-color, #2d2d2d);">
-      <p><strong>Username:</strong> {{ username }}{% if isAdmin %} <span class="badge badge-success" title="This account administers the instance">ADMIN</span>{% endif %}</p>
+      <p><strong>Display name:</strong> {{ username | displayName }}{% if isAdmin %} <span class="badge badge-success" title="This account administers the instance">ADMIN</span>{% endif %}</p>
+      <p><strong>Username:</strong> {{ username }}</p>
       <p><strong>Email:</strong> {{ email }}</p>
     </div>
+
+    <h2>Display Name</h2>
+    <form class="login-form" method="post" action="{{ url_for('profilePage') }}" style="margin-bottom: 2rem; padding-bottom: 2rem; border-bottom: 1px solid var(--border-color, #2d2d2d);">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+      <input type="hidden" name="action" value="save_display_name">
+
+      <div class="form-group">
+        <label for="display_name">Display name</label>
+        <input type="text" id="display_name" name="display_name" value="{{ displayName if displayName != username else '' }}"
+               placeholder="{{ username }}" maxlength="{{ displayNameMaxLength }}" autocomplete="off"
+               style="width: 100%; box-sizing: border-box;">
+        <p style="font-size: 0.85rem; color: var(--muted, #aaa); margin-top: 0.4rem;">
+          The name shown to you and to people you share data with. {{ displayNameMinLength }}&ndash;{{ displayNameMaxLength }}
+          characters; letters, digits, spaces, <code>-</code> and <code>_</code>. Leave it empty to go back to
+          <strong>{{ username }}</strong>.
+        </p>
+        {# Says the quiet part out loud rather than letting someone discover it
+           from the address bar: the username is the account's permanent key and
+           some URLs are built from it, so it can't be changed. #}
+        <p style="font-size: 0.85rem; color: var(--muted, #aaa); margin-top: 0.4rem;">
+          Your username (<strong>{{ username }}</strong>) is permanent and still appears in some page addresses.
+        </p>
+      </div>
+
+      <button type="submit" class="primary-button">Save Display Name</button>
+    </form>
 
     {% if error %}
       <p class="error" style="color: #ff4a4a; margin-bottom: 1rem;">{{ error }}</p>
@@ -164,8 +191,11 @@
           <label for="targetUsername">Request a share with</label>
           <select id="targetUsername" name="target_username" class="theme-selector" style="width: 100%; box-sizing: border-box; height: 38px;">
             <option value="">Choose a user&hellip;</option>
+            {# label = display name, value = the real username the POST resolves
+               by. A display name can never equal another account's username or
+               display name (see setDisplayName), so the labels stay unambiguous. #}
             {% for candidate in shareCandidates %}
-              <option value="{{ candidate }}">{{ candidate }}</option>
+              <option value="{{ candidate }}">{{ candidate | displayName }}</option>
             {% endfor %}
           </select>
         </div>
@@ -181,7 +211,7 @@
         <tbody>
           {% for share in pendingIncoming %}
           <tr>
-            <td style="padding: 8px;"><span class="badge badge-warning">{{ share.requester_username }}</span> wants to share data with you</td>
+            <td style="padding: 8px;"><span class="badge badge-warning">{{ share.requester_username | displayName }}</span> wants to share data with you</td>
             <td class="share-actions" style="padding: 8px; text-align: right;">
               <form method="post" action="{{ url_for('profileShareAction', share_id=share.id) }}" style="display: inline-block;">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
@@ -208,7 +238,7 @@
         <tbody>
           {% for share in pendingOutgoing %}
           <tr>
-            <td style="padding: 8px;">Waiting on <span class="badge badge-secondary">{{ share.recipient_username }}</span></td>
+            <td style="padding: 8px;">Waiting on <span class="badge badge-secondary">{{ share.recipient_username | displayName }}</span></td>
             <td class="share-actions" style="padding: 8px; text-align: right;">
               <form method="post" action="{{ url_for('profileShareAction', share_id=share.id) }}" style="display: inline-block;">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
@@ -230,7 +260,7 @@
         <tbody>
           {% for share in acceptedShares %}
           <tr>
-            <td style="padding: 8px;"><span class="badge badge-success">{{ share.counterpart }}</span></td>
+            <td style="padding: 8px;"><span class="badge badge-success">{{ share.counterpart | displayName }}</span></td>
             <td class="share-actions" style="padding: 8px; text-align: right;">
               <a href="{{ url_for('comparePage', with=share.counterpart) }}" class="primary-button" style="padding: 4px 12px; text-decoration: none; display: inline-block;">Compare</a>
               <form method="post" action="{{ url_for('profileShareAction', share_id=share.id) }}" style="display: inline-block;">

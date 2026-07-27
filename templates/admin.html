@@ -43,7 +43,12 @@
       <tbody>
         {% for u in users_list %}
         <tr style="font-size: 0.95rem;{% if not loop.last %} border-bottom: 1px solid var(--glass-border);{% endif %}">
-          <td style="padding: 16px 8px; font-weight: 600; color: var(--accent);">{{ u.username }}</td>
+          {# Both names, deliberately: the admin console is the operational view,
+             and the username is the key every other table, route param and
+             /compare?with= link uses - collapsing it to the display name would
+             hide the identifier an admin actually needs to act on. #}
+          <td style="padding: 16px 8px; font-weight: 600; color: var(--accent);">{{ u.username }}{% if u.display_name %}
+            <span style="display: block; font-weight: 400; font-size: 0.85rem; color: var(--muted, #aaa);">{{ u.display_name }}</span>{% endif %}</td>
           <td style="padding: 16px 8px;">
             {% set status = u.sync_status | lower %}
             {% if status == 'healthy' %}

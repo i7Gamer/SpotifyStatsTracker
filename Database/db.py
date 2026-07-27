@@ -207,8 +207,26 @@ CREATE INDEX IF NOT EXISTS idx_user_tags_tag ON user_tags(username, tag);
 -- scripting purposes (e.g. the __main__ smoke test) before the email is known.
 -- SQLite treats each NULL as distinct for UNIQUE, so multiple email-less users
 -- can coexist without colliding.
+--
+-- display_name is the editable, user-facing label; username is the immutable
+-- key. Eight tables below reference users(username) by foreign key, none with
+-- ON UPDATE CASCADE, so it can never be rewritten in place - which is why
+-- "change my name" is a second column rather than an UPDATE. (Deliberately not
+-- listing those tables here: two migrator tests slice this SCHEMA at a table's
+-- section comment and assert the table's name is absent from everything above
+-- it, so naming them in this comment breaks that guard. Grep
+-- "REFERENCES users(username)" for the current set.)
+--
+-- NULL - what every account starts as - means "display as the username", so the
+-- column needs no backfill. Deliberately NOT carrying a UNIQUE index: SCHEMA is
+-- re-stamped onto older databases BEFORE their migrations run, so an index over
+-- a column that doesn't exist yet would fail stamping (the same trap documented
+-- above the plays table for is_skip). Uniqueness is enforced inside
+-- setDisplayName's guarded UPDATE instead, which also covers the half no index
+-- could - collisions against another account's username.
 CREATE TABLE IF NOT EXISTS users (
     username              TEXT PRIMARY KEY,
+    display_name          TEXT,
     email                 TEXT UNIQUE,
     cookies_json          TEXT,
     password_hash         TEXT,

@@ -283,7 +283,7 @@ window.addEventListener('popstate', function () {
       var title = document.createElement('div');
       title.className = 'friends-listening-track';
       //< textContent throughout: names are other users' data
-      title.textContent = friend.username + ' · ' + (friend.name || '');
+      title.textContent = (friend.displayName || friend.username) + ' · ' + (friend.name || '');
       var artist = document.createElement('div');
       artist.className = 'friends-listening-artist';
       artist.textContent = friend.artistsText || '';
