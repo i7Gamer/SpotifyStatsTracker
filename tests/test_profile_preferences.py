@@ -51,7 +51,7 @@ class TestHideTagsPanelCheckbox(ProfilePreferencesTestCase):
             "default_dashboard_window": "week",
             "timezone": "",
             "hide_tags_panel": "1",
-        })
+        }, follow_redirects=True)   #< the action redirects; see test_profile_prg.py
 
         self.assertEqual(resp.status_code, 200)
         self.assertTrue(self.dash.repo.getHideTagsPanel("alice"))

@@ -88,7 +88,8 @@ class TestSaveLastfmKey(ProfileLastfmTestCase):
         mockGet.return_value = _lastfmResponse()
         client = self._loginAs("alice", "alice@example.com")
 
-        resp = client.post("/profile", data={"action": "save_lastfm", "lastfm_api_key": "goodkey123"})
+        resp = client.post("/profile", data={"action": "save_lastfm", "lastfm_api_key": "goodkey123"},
+                           follow_redirects=True)
 
         self.assertEqual(resp.status_code, 200)
         self.assertIn(b"Last.fm API key saved", resp.data)
@@ -106,7 +107,8 @@ class TestSaveLastfmKey(ProfileLastfmTestCase):
         mockGet.return_value = _lastfmResponse(statusCode=403, payload={"error": 10})
         client = self._loginAs("alice", "alice@example.com")
 
-        resp = client.post("/profile", data={"action": "save_lastfm", "lastfm_api_key": "badkey"})
+        resp = client.post("/profile", data={"action": "save_lastfm", "lastfm_api_key": "badkey"},
+                           follow_redirects=True)
 
         self.assertEqual(resp.status_code, 200)
         self.assertIn(b"rejected", resp.data)
@@ -121,7 +123,8 @@ class TestSaveLastfmKey(ProfileLastfmTestCase):
         mockGet.side_effect = requestsModule.exceptions.ConnectionError("down")
         client = self._loginAs("alice", "alice@example.com")
 
-        resp = client.post("/profile", data={"action": "save_lastfm", "lastfm_api_key": "somekey"})
+        resp = client.post("/profile", data={"action": "save_lastfm", "lastfm_api_key": "somekey"},
+                           follow_redirects=True)
 
         self.assertEqual(resp.status_code, 200)
         self.assertIn(b"Could not reach Last.fm", resp.data)
@@ -130,7 +133,8 @@ class TestSaveLastfmKey(ProfileLastfmTestCase):
     def test_blank_key_is_rejected_without_a_request(self):
         client = self._loginAs("alice", "alice@example.com")
         with patch("Database.lastfm.requests.get") as mockGet:
-            resp = client.post("/profile", data={"action": "save_lastfm", "lastfm_api_key": "   "})
+            resp = client.post("/profile", data={"action": "save_lastfm", "lastfm_api_key": "   "},
+                               follow_redirects=True)
             mockGet.assert_not_called()
         self.assertEqual(resp.status_code, 200)
         self.assertIn(b"required", resp.data)
@@ -140,7 +144,8 @@ class TestSaveLastfmKey(ProfileLastfmTestCase):
             mockClientClass.return_value.validateApiKey.return_value = {"ok": False, "error": "busy"}
             client = self._loginAs("alice", "alice@example.com")
 
-            resp = client.post("/profile", data={"action": "save_lastfm", "lastfm_api_key": "somekey"})
+            resp = client.post("/profile", data={"action": "save_lastfm", "lastfm_api_key": "somekey"},
+                               follow_redirects=True)
 
         self.assertEqual(resp.status_code, 200)
         self.assertIn(b"busy right now", resp.data)
@@ -152,7 +157,8 @@ class TestSaveLastfmKey(ProfileLastfmTestCase):
         client = self._loginAs("alice", "alice@example.com")
         self.db.updateUserLastfmApiKey.side_effect = RuntimeError("disk full")
 
-        resp = client.post("/profile", data={"action": "save_lastfm", "lastfm_api_key": "goodkey123"})
+        resp = client.post("/profile", data={"action": "save_lastfm", "lastfm_api_key": "goodkey123"},
+                           follow_redirects=True)
 
         self.assertEqual(resp.status_code, 200)
         self.assertIn(b"Failed to save the Last.fm API key", resp.data)
@@ -166,10 +172,12 @@ class TestSaveLastfmKey(ProfileLastfmTestCase):
         client = self._loginAs("alice", "alice@example.com")
 
         for _ in range(RATE_LIMIT_MAX_ATTEMPTS):
-            resp = client.post("/profile", data={"action": "save_lastfm", "lastfm_api_key": "goodkey123"})
+            resp = client.post("/profile", data={"action": "save_lastfm", "lastfm_api_key": "goodkey123"},
+                               follow_redirects=True)
             self.assertEqual(resp.status_code, 200)
 
-        resp = client.post("/profile", data={"action": "save_lastfm", "lastfm_api_key": "goodkey123"})
+        resp = client.post("/profile", data={"action": "save_lastfm", "lastfm_api_key": "goodkey123"},
+                           follow_redirects=True)
         self.assertEqual(resp.status_code, 429)
         self.assertIn(b"Too many attempts", resp.data)
 
@@ -190,7 +198,8 @@ class TestRemoveLastfmKey(ProfileLastfmTestCase):
         client = self._loginAs("alice", "alice@example.com")
         self.dash.repo.updateUserLastfmApiKey("alice", "key123")
 
-        resp = client.post("/profile", data={"action": "remove_lastfm"})
+        resp = client.post("/profile", data={"action": "remove_lastfm"},
+                           follow_redirects=True)
 
         self.assertEqual(resp.status_code, 200)
         self.assertIn(b"Last.fm API key removed", resp.data)
@@ -204,7 +213,8 @@ class TestRemoveLastfmKey(ProfileLastfmTestCase):
         self.dash.repo.updateUserLastfmApiKey("alice", "key123")
         self.db.stopLastfmGenreBackfiller.side_effect = RuntimeError("thread wedged")
 
-        resp = client.post("/profile", data={"action": "remove_lastfm"})
+        resp = client.post("/profile", data={"action": "remove_lastfm"},
+                           follow_redirects=True)
 
         self.assertEqual(resp.status_code, 200)
         self.assertIn(b"Failed to remove the Last.fm API key", resp.data)

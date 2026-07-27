@@ -53,8 +53,12 @@ class ProfileDisplayNameTestCase(AppTestCase):
         return client
 
     def _save(self, client, value):
+        #< the action redirects (see test_profile_prg.py); follow it so these
+        #  tests keep asserting against the rendered page. A rate-limited save
+        #  returns 429 rather than a redirect and arrives here unchanged.
         return client.post("/profile", data={"action": "save_display_name",
-                                             "display_name": value})
+                                             "display_name": value},
+                           follow_redirects=True)
 
 
 class TestSavingADisplayName(ProfileDisplayNameTestCase):

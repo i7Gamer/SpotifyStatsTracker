@@ -4,6 +4,20 @@
 {% extends "layout.html" %}
 {% block content %}
 
+{#- The success/error message renders inside whichever section produced it:
+    `flashFor` is set by the redirect that followed the POST (see
+    _profileRedirect in routes/auth.py) and matches that section's element id.
+    Saving the Last.fm key at the bottom of the page used to confirm itself
+    ~400 lines above, off-screen. Redirects that aren't section-specific leave
+    flashFor empty and fall through to the block at the top. -#}
+{% macro flashBlock(name) %}
+  {% if flashFor == name %}
+    {% if error %}<p class="error" style="color: #ff4a4a; margin-bottom: 1rem;">{{ error }}</p>{% endif %}
+    {% if success %}<p class="success" style="color: #4aff4a; margin-bottom: 1rem;">{{ success }}</p>{% endif %}
+  {% endif %}
+{% endmacro %}
+{% set KNOWN_FLASH_SECTIONS = ['display-name', 'preferences', 'data-sharing', 'share-links', 'spotify', 'lastfm'] %}
+
 <div class="login-panel profile-panel">
   <div class="login-card" style="width: min(900px, 100%);">
     <h1>User Profile</h1>
@@ -15,7 +29,15 @@
       <p><strong>Email:</strong> {{ email }}</p>
     </div>
 
-    <h2>Display Name</h2>
+    {# Fallback slot: a message that names no section (or an unrecognized one)
+       still has to render somewhere. #}
+    {% if flashFor not in KNOWN_FLASH_SECTIONS %}
+      {% if error %}<p class="error" style="color: #ff4a4a; margin-bottom: 1rem;">{{ error }}</p>{% endif %}
+      {% if success %}<p class="success" style="color: #4aff4a; margin-bottom: 1rem;">{{ success }}</p>{% endif %}
+    {% endif %}
+
+    <h2 id="display-name">Display Name</h2>
+    {{ flashBlock('display-name') }}
     <form class="login-form" method="post" action="{{ url_for('profilePage') }}" style="margin-bottom: 2rem; padding-bottom: 2rem; border-bottom: 1px solid var(--border-color, #2d2d2d);">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
       <input type="hidden" name="action" value="save_display_name">
@@ -40,13 +62,6 @@
 
       <button type="submit" class="primary-button">Save Display Name</button>
     </form>
-
-    {% if error %}
-      <p class="error" style="color: #ff4a4a; margin-bottom: 1rem;">{{ error }}</p>
-    {% endif %}
-    {% if success %}
-      <p class="success" style="color: #4aff4a; margin-bottom: 1rem;">{{ success }}</p>
-    {% endif %}
 
     {% if milestones_enabled %}
     <h2>Milestones</h2>
@@ -79,7 +94,8 @@
     </div>
     {% endif %}
 
-    <h2>Preferences</h2>
+    <h2 id="preferences">Preferences</h2>
+    {{ flashBlock('preferences') }}
     <form class="login-form" method="post" action="{{ url_for('profilePage') }}" style="margin-bottom: 2rem; padding-bottom: 2rem; border-bottom: 1px solid var(--border-color, #2d2d2d);">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
       <input type="hidden" name="action" value="save_preferences">
@@ -181,6 +197,7 @@
 
     {% if sharing_enabled %}
     <h2 id="data-sharing">Data Sharing</h2>
+    {{ flashBlock('data-sharing') }}
     <p style="font-size: 0.9rem; color: #aaa; margin-bottom: 1.5rem;">
       Request to share your listening stats with another user. Once they accept, you'll both be able to compare stats on the Compare page.
     </p>
@@ -282,7 +299,8 @@
 
     {% if share_links_enabled and shareLinks %}
     <div style="margin-bottom: 2rem; padding-bottom: 1.5rem; border-bottom: 1px solid var(--border-color, #2d2d2d);">
-      <h2>Wrapped Share Links</h2>
+      <h2 id="share-links">Wrapped Share Links</h2>
+      {{ flashBlock('share-links') }}
       <p style="font-size: 0.9rem; color: #aaa; margin-bottom: 1.5rem;">
         Public, no-login links to your yearly Wrapped recap - anyone with the link can view it. Create one from the <a href="{{ url_for('wrappedPage') }}">Wrapped</a> page.
       </p>
@@ -309,7 +327,8 @@
     {% endif %}
 
     {% if feature_enabled %}
-    <h2>Spotify Developer API Settings</h2>
+    <h2 id="spotify">Spotify Developer API Settings</h2>
+    {{ flashBlock('spotify') }}
     <p style="font-size: 0.9rem; color: #aaa; margin-bottom: 1.5rem;">
       Configuring this allows the tracker to poll Spotify's Web API and automatically recover any missed plays with precise played-at timestamps.<br>
       To create your App, visit your <a href="https://developer.spotify.com/dashboard" target="_blank" style="color: #1db954; text-decoration: underline;">Spotify Developer Dashboard</a>.
@@ -372,7 +391,8 @@
     {% endif %}
 
     {% if lastfm_enabled %}
-    <h2 style="margin-top: 2rem; padding-top: 1.5rem; border-top: 1px solid var(--border-color, #2d2d2d);">Last.fm API Settings</h2>
+    <h2 id="lastfm" style="margin-top: 2rem; padding-top: 1.5rem; border-top: 1px solid var(--border-color, #2d2d2d);">Last.fm API Settings</h2>
+    {{ flashBlock('lastfm') }}
     <p style="font-size: 0.9rem; color: #aaa; margin-bottom: 1.5rem;">
       Adding a Last.fm API key lets background workers fill in genre data{% if artist_bio_enabled or album_bio_enabled %} and artist/album biographies{% endif %} for the music you listen to -
       once enough of your library is covered, genre insights unlock on the Charts, Wrapped and Compare pages{% if artist_bio_enabled or album_bio_enabled %}, and biographies appear on artist and album pages{% endif %}.<br>

@@ -27,6 +27,22 @@ from services.milestones import formatMilestone
 
 logger = logging.getLogger(__name__)
 
+# Which /profile section a redirect's success/error message belongs to. The value
+# is both the `flash_for` query param and the section's element id, so one string
+# anchors the scroll and picks the block that renders the message (see
+# profile.html's flashBlock macro). An unknown or absent value falls back to the
+# top of the page - redirects that aren't section-specific rely on that.
+PROFILE_FLASH_DISPLAY_NAME = "display-name"
+PROFILE_FLASH_PREFERENCES = "preferences"
+PROFILE_FLASH_SHARING = "data-sharing"
+PROFILE_FLASH_SHARE_LINKS = "share-links"
+PROFILE_FLASH_SPOTIFY = "spotify"
+PROFILE_FLASH_LASTFM = "lastfm"
+
+# Rate-limited actions render this status instead of redirecting - a 302 would
+# drop the code and land the browser on a page that never mentions the throttle.
+HTTP_TOO_MANY_REQUESTS = 429
+
 
 def register(app, dashboard):
     RATE_LIMIT_ERROR_MESSAGE = appmod.RATE_LIMIT_ERROR_MESSAGE
@@ -284,6 +300,15 @@ def register(app, dashboard):
     # top-level GET navigations even under SameSite=Lax).
     app.add_url_rule("/logout", "logout", logout, methods=["POST"])
 
+    def _profileRedirect(flashFor, success=None, error=None):
+        """Back to /profile with the message attached to `flashFor`'s section.
+
+        The same string is the query param the template matches on and the
+        anchor the browser scrolls to, so the message lands next to the form
+        that produced it rather than at the top of a 400-line page."""
+        return redirect(url_for("profilePage", success=success, error=error,
+                                flash_for=flashFor, _anchor=flashFor))
+
     def profilePage():
         email, username, db = dashboard.get_current_user_or_redirect()
         if not email:
@@ -291,6 +316,8 @@ def register(app, dashboard):
 
         success = request.args.get("success")
         error = request.args.get("error")
+        #< which section shows the message; a POST sets it for its own section
+        flashFor = request.args.get("flash_for", "")
         responseStatus = 200   #< 429 when a POST action was rate limited
 
         spotify_callback_url = os.environ.get("SPOTIFY_CALLBACK_URL")
@@ -299,6 +326,7 @@ def register(app, dashboard):
         if request.method == "POST":
             action = request.form.get("action")
             if action == "save_preferences":
+                flashFor = PROFILE_FLASH_PREFERENCES
                 default_window = request.form.get("default_dashboard_window")
                 timezone = request.form.get("timezone")
                 if timezone == "":
@@ -334,12 +362,13 @@ def register(app, dashboard):
                 except Exception as e:
                     error = f"Failed to save preferences: {str(e)}"
             elif action == "save_display_name":
+                flashFor = PROFILE_FLASH_DISPLAY_NAME
                 # Throttled like request_share: this name is visible to every
                 # user this account shares with, and the uniqueness guard makes
                 # a rejected save a cheap probe for which names exist.
                 if dashboard._rateLimited("save_display_name"):
                     error = RATE_LIMIT_ERROR_MESSAGE
-                    responseStatus = 429
+                    responseStatus = HTTP_TOO_MANY_REQUESTS
                 else:
                     #< empty means "go back to the username" - stored as NULL,
                     #  never as the username itself, so the account keeps
@@ -356,13 +385,14 @@ def register(app, dashboard):
             elif action == "request_share":
                 if not dashboard.repo.isDataSharingEnabled():
                     abort(404)
+                flashFor = PROFILE_FLASH_SHARING
                 target_username = request.form.get("target_username", "").strip()
                 # Throttled like login/register: declines delete the row,
                 # so nothing else stops a rejected requester from re-
                 # requesting (or fanning out to every user) indefinitely.
                 if dashboard._rateLimited("request_share"):
                     error = RATE_LIMIT_ERROR_MESSAGE
-                    responseStatus = 429
+                    responseStatus = HTTP_TOO_MANY_REQUESTS
                 elif not target_username:
                     error = "Please choose a user to request a share with."
                 elif target_username == username:
@@ -382,11 +412,12 @@ def register(app, dashboard):
             elif action == "save_lastfm":
                 if not dashboard.repo.isLastfmGenreBackfillEnabled():
                     abort(404)
+                flashFor = PROFILE_FLASH_LASTFM
                 # Throttled like request_share: every save fires a live
                 # validation request against Last.fm.
                 if dashboard._rateLimited("save_lastfm"):
                     error = RATE_LIMIT_ERROR_MESSAGE
-                    responseStatus = 429
+                    responseStatus = HTTP_TOO_MANY_REQUESTS
                 else:
                     lastfm_api_key = (request.form.get("lastfm_api_key") or "").strip()
                     if not lastfm_api_key:
@@ -409,6 +440,7 @@ def register(app, dashboard):
                         else:
                             error = "Could not reach Last.fm to verify the key - try again later."
             elif action == "remove_lastfm":
+                flashFor = PROFILE_FLASH_LASTFM
                 try:
                     db.updateUserLastfmApiKey(None)
                     db.stopLastfmGenreBackfiller()
@@ -420,6 +452,7 @@ def register(app, dashboard):
             else:
                 if not feature_enabled:
                     abort(404)
+                flashFor = PROFILE_FLASH_SPOTIFY
                 client_id = request.form.get("client_id")
                 client_secret = request.form.get("client_secret")
                 if client_id and client_secret:
@@ -430,6 +463,15 @@ def register(app, dashboard):
                         error = f"Failed to save credentials: {str(e)}"
                 else:
                     error = "Both Client ID and Client Secret are required."
+
+            # POST/Redirect/GET: rendering the POST response directly meant a
+            # refresh re-submitted the action. flash_for both anchors the scroll
+            # and tells the template which section shows the message, so a save
+            # at the bottom of the page no longer confirms itself off-screen.
+            # The throttled path deliberately renders instead - see
+            # HTTP_TOO_MANY_REQUESTS.
+            if responseStatus != HTTP_TOO_MANY_REQUESTS:
+                return _profileRedirect(flashFor, success=success, error=error)
 
         creds = db.getUserSpotifyCredentials() or {}
         client_id = creds.get("client_id")
@@ -506,6 +548,7 @@ def register(app, dashboard):
             redirect_uri=spotify_callback_url,
             success=success,
             error=error,
+            flashFor=flashFor,
             section="profile",
             feature_enabled=feature_enabled,
             default_window=default_window,
@@ -529,9 +572,10 @@ def register(app, dashboard):
 
         try:
             db.updateUserSpotifyCredentials(None, None, None)
-            return redirect(url_for("profilePage", success="Successfully disconnected Spotify API credentials."))
+            return _profileRedirect(PROFILE_FLASH_SPOTIFY,
+                                    success="Successfully disconnected Spotify API credentials.")
         except Exception as e:
-            return redirect(url_for("profilePage", error=f"Failed to disconnect: {str(e)}"))
+            return _profileRedirect(PROFILE_FLASH_SPOTIFY, error=f"Failed to disconnect: {str(e)}")
     # POST-only + CSRF-protected: wiping the stored Spotify credentials is
     # state-changing, so it must not be reachable via a cross-site GET link.
     app.add_url_rule("/profile/disconnect", "profileDisconnect", profileDisconnect, methods=["POST"])
@@ -564,8 +608,8 @@ def register(app, dashboard):
             ok, errorMsg = False, "Unknown action."
 
         if ok:
-            return redirect(url_for("profilePage", success=successMsg))
-        return redirect(url_for("profilePage", error=errorMsg))
+            return _profileRedirect(PROFILE_FLASH_SHARING, success=successMsg)
+        return _profileRedirect(PROFILE_FLASH_SHARING, error=errorMsg)
     app.add_url_rule("/profile/shares/<int:share_id>", "profileShareAction", profileShareAction, methods=["POST"])
 
     def spotifyAuthorize():
@@ -579,7 +623,7 @@ def register(app, dashboard):
         creds = db.getUserSpotifyCredentials() or {}
         client_id = creds.get("client_id")
         if not client_id:
-            return redirect(url_for("profilePage", error="API Credentials not configured."))
+            return _profileRedirect(PROFILE_FLASH_SPOTIFY, error="API Credentials not configured.")
 
         scope = "user-read-recently-played"
         # One-shot CSRF state - see SPOTIFY_OAUTH_STATE_SESSION_KEY's
@@ -619,14 +663,16 @@ def register(app, dashboard):
         error = request.args.get("error")
 
         if error or not code:
-            return redirect(url_for("profilePage", error=f"Spotify authorization failed: {error or 'No authorization code returned'}"))
+            return _profileRedirect(
+                PROFILE_FLASH_SPOTIFY,
+                error=f"Spotify authorization failed: {error or 'No authorization code returned'}")
 
         creds = db.getUserSpotifyCredentials() or {}
         client_id = creds.get("client_id")
         client_secret = creds.get("client_secret")
 
         if not client_id or not client_secret:
-            return redirect(url_for("profilePage", error="API Credentials missing."))
+            return _profileRedirect(PROFILE_FLASH_SPOTIFY, error="API Credentials missing.")
 
         import base64
         import requests
@@ -657,16 +703,21 @@ def register(app, dashboard):
                 # Restart listener thread to pick up the credentials immediately
                 db.startListener()
 
-                return redirect(url_for("profilePage", success="Spotify account successfully authorized and connected!"))
+                return _profileRedirect(PROFILE_FLASH_SPOTIFY,
+                                        success="Spotify account successfully authorized and connected!")
             else:
                 # Full response body only server-side - the redirect param ends up
                 # in browser history/access logs and may echo credential details.
                 logger.warning("Spotify token exchange failed for %s (HTTP %s): %s",
                                username, resp.status_code, resp.text)
-                return redirect(url_for("profilePage", error="Failed to exchange token with Spotify - check your API credentials and try again."))
+                return _profileRedirect(
+                    PROFILE_FLASH_SPOTIFY,
+                    error="Failed to exchange token with Spotify - check your API credentials and try again.")
         except Exception as e:
             logger.warning("Exception during Spotify token exchange for %s: %s", username, e)
-            return redirect(url_for("profilePage", error="Something went wrong during the token exchange - please try again."))
+            return _profileRedirect(
+                PROFILE_FLASH_SPOTIFY,
+                error="Something went wrong during the token exchange - please try again.")
     app.add_url_rule("/spotify-callback", "spotifyCallback", spotifyCallback, methods=["GET"])
 
     def profileShareLinkAction(link_id):
@@ -691,8 +742,8 @@ def register(app, dashboard):
                     allYearsLinks=allYearsLinks, shareLinkExpiryChoices=SHARE_LINK_EXPIRY_CHOICES,
                     shareLinkMaxPerBucket=SHARE_LINK_MAX_PER_BUCKET)
                 return jsonify(html=html)
-            return redirect(url_for("profilePage", success="Share link revoked."))
+            return _profileRedirect(PROFILE_FLASH_SHARE_LINKS, success="Share link revoked.")
         if isAjax:
             return jsonify(error="Could not revoke that share link."), 403
-        return redirect(url_for("profilePage", error="Could not revoke that share link."))
+        return _profileRedirect(PROFILE_FLASH_SHARE_LINKS, error="Could not revoke that share link.")
     app.add_url_rule("/profile/share-links/<int:link_id>", "profileShareLinkAction", profileShareLinkAction, methods=["POST"])

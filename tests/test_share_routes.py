@@ -125,7 +125,8 @@ class TestRequestShareAction(ShareRoutesTestCase):
         self.dash.repo.upsertUser("bob", "bob@example.com")
         client = self._loginAs("alice", "alice@example.com")
 
-        resp = client.post("/profile", data={"action": "request_share", "target_username": "bob"})
+        resp = client.post("/profile", data={"action": "request_share", "target_username": "bob"},
+                           follow_redirects=True)
 
         self.assertEqual(resp.status_code, 200)
         self.assertIn(b"Share request sent", resp.data)
@@ -138,7 +139,8 @@ class TestRequestShareAction(ShareRoutesTestCase):
         self.dash.repo.createShareRequest("bob", "alice")
         client = self._loginAs("alice", "alice@example.com")
 
-        resp = client.post("/profile", data={"action": "request_share", "target_username": "bob"})
+        resp = client.post("/profile", data={"action": "request_share", "target_username": "bob"},
+                           follow_redirects=True)
 
         self.assertEqual(resp.status_code, 200)
         self.assertIn(b"now sharing", resp.data)
@@ -147,7 +149,8 @@ class TestRequestShareAction(ShareRoutesTestCase):
     def test_cannot_request_a_share_with_yourself(self):
         client = self._loginAs("alice", "alice@example.com")
 
-        resp = client.post("/profile", data={"action": "request_share", "target_username": "alice"})
+        resp = client.post("/profile", data={"action": "request_share", "target_username": "alice"},
+                           follow_redirects=True)
 
         self.assertEqual(resp.status_code, 200)
         self.assertIn(b"yourself", resp.data)
@@ -156,7 +159,8 @@ class TestRequestShareAction(ShareRoutesTestCase):
     def test_cannot_request_a_share_with_a_nonexistent_user(self):
         client = self._loginAs("alice", "alice@example.com")
 
-        resp = client.post("/profile", data={"action": "request_share", "target_username": "ghost"})
+        resp = client.post("/profile", data={"action": "request_share", "target_username": "ghost"},
+                           follow_redirects=True)
 
         self.assertEqual(resp.status_code, 200)
         self.assertIn(b"does not exist", resp.data)
@@ -165,7 +169,8 @@ class TestRequestShareAction(ShareRoutesTestCase):
     def test_blank_target_username_is_rejected(self):
         client = self._loginAs("alice", "alice@example.com")
 
-        resp = client.post("/profile", data={"action": "request_share", "target_username": ""})
+        resp = client.post("/profile", data={"action": "request_share", "target_username": ""},
+                           follow_redirects=True)
 
         self.assertEqual(resp.status_code, 200)
         self.assertIn(b"error", resp.data.lower())
@@ -178,7 +183,8 @@ class TestRequestShareAction(ShareRoutesTestCase):
         client = self._loginAs("alice", "alice@example.com")
         client.post("/profile", data={"action": "request_share", "target_username": "bob"})
 
-        resp = client.post("/profile", data={"action": "request_share", "target_username": "bob"})
+        resp = client.post("/profile", data={"action": "request_share", "target_username": "bob"},
+                           follow_redirects=True)
 
         self.assertEqual(resp.status_code, 200)
         self.assertIn(b"already pending", resp.data)
@@ -192,7 +198,8 @@ class TestRequestShareAction(ShareRoutesTestCase):
         self.dash.repo.respondToShareRequest(shareId, "bob", accept=True)
         client = self._loginAs("alice", "alice@example.com")
 
-        resp = client.post("/profile", data={"action": "request_share", "target_username": "bob"})
+        resp = client.post("/profile", data={"action": "request_share", "target_username": "bob"},
+                           follow_redirects=True)
 
         self.assertEqual(resp.status_code, 200)
         self.assertIn(b"already share data with bob", resp.data)
@@ -206,7 +213,8 @@ class TestRequestShareAction(ShareRoutesTestCase):
         client = self._loginAs("alice", "alice@example.com")
 
         for _ in range(RATE_LIMIT_MAX_ATTEMPTS):
-            resp = client.post("/profile", data={"action": "request_share", "target_username": "bob"})
+            resp = client.post("/profile", data={"action": "request_share", "target_username": "bob"},
+                               follow_redirects=True)
             self.assertEqual(resp.status_code, 200)
 
         resp = client.post("/profile", data={"action": "request_share", "target_username": "bob"})
@@ -221,7 +229,8 @@ class TestRequestShareAction(ShareRoutesTestCase):
             client.post("/profile", data={"action": "request_share", "target_username": "bob"})
 
         resp = client.post("/profile", data={"action": "save_preferences",
-                                             "default_dashboard_window": "week", "timezone": ""})
+                                             "default_dashboard_window": "week", "timezone": ""},
+                           follow_redirects=True)
 
         self.assertEqual(resp.status_code, 200)
 
