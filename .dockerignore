@@ -23,16 +23,37 @@ README.md
 .vscode
 .idea
 .pytest_cache
+# Local agent state, and .claude/worktrees holds a COMPLETE second copy of this
+# tree - so every root-anchored rule below (Database/Data, secrets/, *.db,
+# *.log) misses the copy inside it. Hence the **/ spellings that follow.
+.claude/
+# Anchored patterns match the whole context-relative path and a single * never
+# crosses a /, so the bare spellings only ever covered the context ROOT. A
+# database or key sitting one directory down - in a worktree, say - was copied
+# straight into the published image.
 *.db
+**/*.db
+**/*.log
 cookies.json
 cookies2.json
 cookies*.json
+**/cookies*.json
+# Spotify export uploads: these are complete listening histories. The drop
+# folder exists to hold them, so the anchored spellings below never matched the
+# files that are actually there (autoImport/<user>/Streaming_History_*.json).
+autoImport/
+TestData/
 Streaming*.json
 StreamingHistory*.json
+**/Streaming*.json
+**/StreamingHistory*.json
+**/endsong*.json
 Database/Data
+**/Database/Data
 Database/Users
 Database/__pycache__
 secrets/
+**/secrets/
 tmp/
 .tmp
 tests/
