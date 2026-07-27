@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 i7Gamer
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Per-domain HTTP route modules, split out of app.py's registerRoutes.
 
 Each module exposes ``register(app, dashboard)``, which defines that domain's

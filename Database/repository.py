@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 i7Gamer
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 from __future__ import annotations
 
 # The Repository data-access layer is split into domain mixins under

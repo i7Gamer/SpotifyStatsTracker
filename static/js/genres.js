@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 i7Gamer
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 /* Genres page: fetches its data after first paint (the initial GET is just a
  * shell), draws with the shared window.ChartUtils primitives (chart-utils.js,
  * loaded first), and refreshes on filter/genre changes without a full reload.

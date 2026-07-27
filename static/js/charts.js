@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 i7Gamer
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 /* Hand-rolled canvas charts for the /charts + /compare pages - no external
  * dependencies, so the app stays self-contained for offline/Docker use. Reads
  * data from window.__chartData, set inline by charts.html/compare.html before

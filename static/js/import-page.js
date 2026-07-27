@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 i7Gamer
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // The import page's progress poller and its destructive-overwrite guard.
 //
 // Moved out of templates/import.html's <script> block so the lint gate reads it

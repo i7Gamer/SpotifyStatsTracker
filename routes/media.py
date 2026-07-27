@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 i7Gamer
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Authenticated image-serving routes (/img/<username>/tracks|artists/...).
 
 Extracted verbatim from app.py. Track/artist images are shared across every

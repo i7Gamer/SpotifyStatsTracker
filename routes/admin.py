@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 i7Gamer
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Admin-only routes: the /admin console and its settings/action endpoints.
 
 Extracted verbatim from app.py. Every handler is fully gated on

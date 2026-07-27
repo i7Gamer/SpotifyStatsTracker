@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 i7Gamer
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Authentication, account and Spotify-connection routes.
 
 Extracted verbatim from app.py: login/register/reset-password/logout, the

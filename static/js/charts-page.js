@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 i7Gamer
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 /* Drives the /charts page: fetches the chart-data payload after first paint
  * (and on every filter change) so the page shell renders immediately, then
  * hands the actual drawing to charts.js (window.renderAllCharts). Mirrors the

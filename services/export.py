@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 i7Gamer
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Streaming CSV/JSON export of a user's play history.
 
 Extracted verbatim from app.py (behavior-preserving). Each play is re-emitted in

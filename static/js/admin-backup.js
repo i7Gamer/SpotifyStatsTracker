@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 i7Gamer
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 /* The admin console "Create backup now" button form: submitted via fetch so
  * triggering a snapshot doesn't reload the page or navigate away - the route
  * answers XHR posts with {kind, message} JSON (see adminCreateBackup), rendered

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 i7Gamer
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 /* The song/artist/album detail pages' play-history list: the Top Songs /
  * History tab toggle (artist/album only - same click-to-toggle-visibility
  * pattern as wrapped.js's [data-category].visible) and in-place AJAX

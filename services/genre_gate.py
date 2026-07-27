@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 i7Gamer
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Genre/biography coverage sanitization and the genre-feature unlock gate.
 
 Extracted verbatim from app.py (behavior-preserving). The genre insights on

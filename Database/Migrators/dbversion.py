@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 i7Gamer
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """The database's schema version, stored inside the sqlite file itself rather
 than in a sibling VERSION text file. A raw file copy (a backup, a manual
 `cp`) carries this along automatically - SQLite's own backup API (used by

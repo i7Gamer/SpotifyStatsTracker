@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 i7Gamer
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Main stats pages: the public /overview, the dashboard index (/), the Top
 Songs/Albums/Artists lists, the /charts analytics page, and the song/artist/
 album detail pages.

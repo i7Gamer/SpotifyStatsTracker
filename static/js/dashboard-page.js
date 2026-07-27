@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 i7Gamer
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // The dashboard: the Time Period filter's AJAX card refresh, the now-playing
 // poll (which also carries the friends-listening strip), the Discover card's
 // deferred load, the listening-calendar tooltip, and the trends fetch.

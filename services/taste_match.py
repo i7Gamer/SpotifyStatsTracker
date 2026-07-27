@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 i7Gamer
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """The taste-match scoring algorithm behind the Compare page.
 
 Extracted verbatim from app.py (behavior-preserving). These are pure functions -

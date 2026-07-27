@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 i7Gamer
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Last.fm Web API client for the genre backfill.
 
 Only the unauthenticated getTopTags family is used - a per-user API key is

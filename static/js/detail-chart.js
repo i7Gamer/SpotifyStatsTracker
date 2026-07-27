@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 i7Gamer
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 /* The song/artist/album detail pages' "Trend buckets" select: re-fetches just
  * the play-history time series via the route's ?ajax=true branch and redraws
  * that one chart in place - no full page reload. Mirrors charts-page.js's

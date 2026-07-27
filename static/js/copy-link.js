@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 i7Gamer
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 /* Shared "copy link" button handler (profile share links, Wrapped share panel).
  * Copies the button's data-url to the clipboard with graceful fallbacks and
  * visible feedback. The old inline onclick called navigator.clipboard.writeText

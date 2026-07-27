@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 i7Gamer
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Stateless service logic extracted from app.py (behavior-preserving).
 
 Each module here holds pure(ish) helpers that a route or template needs but that

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 i7Gamer
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // The Compare page's client logic, extracted from the inline <script> in
 // templates/compare.html so it is a static, cacheable asset instead of
 // template-embedded JS.

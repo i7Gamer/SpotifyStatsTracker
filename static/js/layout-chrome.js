@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 i7Gamer
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Shared chrome for every authenticated page: the debounced search-filter
 // helpers the templates' inline on*= attributes call, the jump-to-page box,
 // and the scroll-to-top button.

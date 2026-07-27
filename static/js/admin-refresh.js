@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 i7Gamer
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 /* The detail pages' admin "Refresh Last.fm Data" form: submitted via fetch so
  * a refresh doesn't navigate away and reset the tab/sort/page state - the
  * route answers XHR posts with {kind, message} JSON instead of redirecting

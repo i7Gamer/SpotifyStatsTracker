@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 i7Gamer
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 /* Two-phase AJAX loader + filter handlers for the Top Songs/Artists/Albums
  * pages (templates/top_*.html + _page_card.html). The shell renders the filter
  * controls and an empty #topListResults placeholder; this fetches the stat

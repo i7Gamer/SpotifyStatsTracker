@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 i7Gamer
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Progressive "Show N more" reveal for the Profile > Milestones list
 // (templates/profile.html). The server renders only the most recent milestone
 // visible; the rest carry the `hidden` attribute next to a [data-milestone-more]

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 i7Gamer
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Encryption-at-rest for secrets stored in the shared database.
 
 Spotify session cookies, API client secrets and refresh tokens live in the

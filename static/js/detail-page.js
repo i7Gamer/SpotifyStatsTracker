@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 i7Gamer
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 /* Two-phase load for the song/artist/album detail pages. The initial GET is a
  * shell - hero, toolbar, tag panel - and everything below it (the entity card,
  * the charts, the songs list, the play log) is fetched here via ?ajax=page and

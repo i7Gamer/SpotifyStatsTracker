@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 i7Gamer
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Instance-wide display and behavior constants.
 
 Extracted from app.py so app.py, the routes/ modules, and the dashboard/ helper

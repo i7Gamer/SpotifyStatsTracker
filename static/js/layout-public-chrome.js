@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 i7Gamer
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // The public (share-link) pages' chrome. Same story as layout-chrome.js:
 // extracted verbatim from layout_public.html so it can be linted; no Jinja,
 // same position, same execution order.

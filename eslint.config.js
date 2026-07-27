@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 i7Gamer
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Lint gate for the browser scripts in static/js, mirroring the philosophy
 // already written down for ruff in pyproject.toml: `rules` below holds only
 // what this codebase already passes, so going red MEANS something. It widens

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 i7Gamer
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Listening streak calendar: a GitHub-style contribution grid of the days a
 user listened, each day shaded by its play volume relative to the busiest day
 in the window.

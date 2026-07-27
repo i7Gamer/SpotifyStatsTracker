@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 i7Gamer
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """The dedicated /genres page: a genre-profile overview (distribution bars,
 share donut, genre-mix-over-time) plus a per-genre drill-down (stat strip,
 bucketed trend, listening clock, top artists, top tracks). All genre surfaces

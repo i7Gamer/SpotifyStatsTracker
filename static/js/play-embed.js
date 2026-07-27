@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 i7Gamer
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // The song/artist/album detail pages' "Play now" button: reveals an embedded
 // Spotify player between the hero card and the charts and starts playback via
 // the official Spotify iFrame API. The API script is loaded lazily on the first

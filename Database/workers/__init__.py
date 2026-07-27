@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 i7Gamer
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Per-user background worker + listener lifecycle for Database.
 
 Split into cohesive sub-mixins (listener, wrapped worker, metadata backfiller,

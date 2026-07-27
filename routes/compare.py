@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 i7Gamer
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """The /compare page - two mutually-shared users' stats side by side.
 
 Extracted verbatim from app.py. The taste-match scoring and genre-gate helpers

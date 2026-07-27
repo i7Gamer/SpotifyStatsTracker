@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 i7Gamer
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 /* Shared failure UI for the AJAX shell pages (history, charts, genres, compare,
  * dashboard filter). Before this, a failed initial/filter fetch left a page
  * stuck on "Loading…" or a blank canvas with only a console.error - the user

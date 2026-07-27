@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 i7Gamer
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Automatic scheduled backups of the shared SQLite database.
 
 Snapshots are taken with SQLite's online backup API - safe against a live,

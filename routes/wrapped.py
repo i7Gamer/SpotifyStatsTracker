@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 i7Gamer
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Wrapped routes: the authenticated /wrapped page, share-link creation, and the
 public /shared/<token> view (plus its no-index image endpoints).
 

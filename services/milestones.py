@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 i7Gamer
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Per-user achievement-milestone detection and display.
 
 Detects when a user crosses a lifetime play-count / listen-time threshold,

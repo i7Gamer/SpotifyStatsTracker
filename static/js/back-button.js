@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 i7Gamer
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Shared "back" button behavior for song/album/artist detail pages.
 // Labels the button after the page the user actually came from (via
 // document.referrer) and, whenever that referrer is same-origin, navigates

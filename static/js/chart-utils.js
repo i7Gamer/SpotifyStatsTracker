@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 i7Gamer
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 /* Shared hand-rolled canvas-chart primitives (no external dependencies, so the
  * app stays self-contained for offline/Docker use). Exposed as window.ChartUtils
  * for pages that build their own charts - currently the Genres page (genres.js).
