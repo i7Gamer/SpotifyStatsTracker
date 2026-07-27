@@ -184,24 +184,73 @@ class TrackQueries:
         the two phases select exactly the same tracks - tests/test_search_two_phase
         pins that they agree row for row and in the same order.
 
-        Note this cannot serve /history's search, which also matches the playlist
-        a play came FROM: that is an attribute of the play, not of the track, so
-        it has no track-id set to resolve to."""
-        params: list = []
-        conditions = self._perWordConditions(params, searchQuery,
-                                             self._SONG_COUNT_MATCH_CONDITION, 3)
-        if not conditions:
+        /history's search ALSO matches the playlist a play came from, which is an
+        attribute of the play rather than the track - see getMatchingPlayedFrom for
+        the other half of that set.
+
+        Shape: one UNION per word, intersected here. A single OR'd query with a
+        correlated artist EXISTS forced `SCAN tracks` and re-evaluated the subquery
+        per row; the UNION lets each branch take its own path, measured at 197ms ->
+        63ms for "love" and 201ms -> 61ms for a term matching nothing.
+
+        The artist branch joins tracks BACK IN, which is not redundant: it reads
+        track_artists, and this database has 195 rows there whose track_id is in no
+        tracks row (a known integrity wart - see checkIntegrity). Without the join
+        the union returned 7 extra ids for "the" and 84 for "a", so it would have
+        counted plays of tracks that do not exist. With it the two shapes are
+        set-equal, which tests/test_search_two_phase pins."""
+        words = self.searchWords(searchQuery)
+        if not words:
             return []
-        where = " AND ".join(conditions)
-        rows = self._conn().execute(
-            f"""
-            SELECT t.id AS id FROM tracks t
-            LEFT JOIN albums al ON al.id = t.album_id
-            WHERE {where}
-            """,
-            params,
-        ).fetchall()
-        return [row["id"] for row in rows]
+        conn = self._conn()
+        matched: set | None = None
+        for word in words:
+            pattern = self._likePattern(word)
+            rows = conn.execute(
+                """
+                SELECT t.id AS id FROM tracks t WHERE t.name LIKE ? ESCAPE '\\'
+                UNION
+                SELECT t.id AS id FROM tracks t JOIN albums al ON al.id = t.album_id
+                 WHERE al.name LIKE ? ESCAPE '\\'
+                UNION
+                SELECT ta.track_id AS id FROM track_artists ta
+                 JOIN tracks t2 ON t2.id = ta.track_id
+                 JOIN artists ar ON ar.id = ta.artist_id
+                 WHERE ar.name LIKE ? ESCAPE '\\'
+                """,
+                (pattern, pattern, pattern),
+            ).fetchall()
+            found = {row["id"] for row in rows}
+            matched = found if matched is None else (matched & found)
+            if not matched:
+                return []   #< every word must match, so an empty intersection is final
+        return list(matched)
+
+    def getMatchingPlayedFrom(self, searchQuery: str) -> list[str]:
+        """The plays.played_from values whose playlist/album NAME matches every
+        word - the other half of /history's search, which matches where a play came
+        from as well as what was played.
+
+        played_from is stored as "type:id" (see Client.formatTrack), so the values
+        are reassembled here rather than joined through substr/instr per play row.
+        Cheap by nature: this instance has 11 playlists rows against 73k plays, of
+        which 62 carry a played_from at all."""
+        words = self.searchWords(searchQuery)
+        if not words:
+            return []
+        conn = self._conn()
+        matched: set | None = None
+        for word in words:
+            rows = conn.execute(
+                "SELECT type || ':' || id AS playedFrom FROM playlists "
+                "WHERE name LIKE ? ESCAPE '\\'",
+                (self._likePattern(word),),
+            ).fetchall()
+            found = {row["playedFrom"] for row in rows}
+            matched = found if matched is None else (matched & found)
+            if not matched:
+                return []
+        return list(matched)
 
     def getTracksByIds(self, trackIds: list[str]) -> dict[str, dict]:
         """Batch equivalent of getTrack() for a specific set of track ids, in a

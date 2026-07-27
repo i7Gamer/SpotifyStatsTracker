@@ -323,49 +323,15 @@ class SqlFragments:
             f" AND {clause}"
             for clause in self._perWordConditions(params, query, condition, patternsPerWord))
 
-    # Dashboard search: matches a track's name, its artist(s), its album, and
-    # the playlist/album it was played from, done in SQL so matching is
-    # pushed down instead of requiring every play in the user's history to be
-    # hydrated first. played_from is stored as "type:id" (see
-    # Client.formatTrack), so it's split with substr/instr to join against
-    # playlists(id, type) rather than needing a second round-trip through
-    # Database.playlistName() per row.
-    _SEARCH_JOIN_CLAUSE = """
-        JOIN tracks t ON t.id = p.track_id
-        LEFT JOIN albums al ON al.id = t.album_id
-        LEFT JOIN playlists pl
-               ON pl.id = substr(p.played_from, instr(p.played_from, ':') + 1)
-              AND pl.type = substr(p.played_from, 1, instr(p.played_from, ':') - 1)
-    """
-
-    # A bare condition (no leading AND, no outer parens): _perWordConditions wraps
-    # and repeats it once per search word. Four patterns per word - see
-    # _SEARCH_PATTERNS_PER_WORD.
-    _SEARCH_MATCH_CONDITION = """
-            t.name LIKE ? ESCAPE '\\'
-            OR al.name LIKE ? ESCAPE '\\'
-            OR pl.name LIKE ? ESCAPE '\\'
-            OR EXISTS (
-                SELECT 1 FROM track_artists ta JOIN artists ar ON ar.id = ta.artist_id
-                WHERE ta.track_id = p.track_id AND ar.name LIKE ? ESCAPE '\\'
-            )
-    """
-    _SEARCH_PATTERNS_PER_WORD = 4   #< the ? count in _SEARCH_MATCH_CONDITION
+    # /history's search used to run here as three joins plus a four-field
+    # predicate: JOIN tracks, LEFT JOIN albums, and a LEFT JOIN playlists matched
+    # on substr(played_from, instr(...)) that no index could serve. All of it is
+    # gone - _playSearchNarrowClause resolves the same match to two id sets, and
+    # searchPlays' SELECT only ever read p.* columns, so the joins existed purely
+    # to serve the predicate. Same for getSongsPage's own inline copy.
 
     #< Top Artists searches the name only - see getArtistAggregates. One pattern.
     _ARTIST_NAME_CONDITION = "ar.name LIKE ? ESCAPE '\\'"
-
-    #< Top Songs: the track's own name, its album, or any credited artist. Three
-    #  patterns. Aliased for the tracks-side queries (t/al), so it is not the same
-    #  condition as _SEARCH_MATCH_CONDITION, which reads off plays (p).
-    _SONG_MATCH_CONDITION = """
-                t.name LIKE ? ESCAPE '\\'
-                OR al.name LIKE ? ESCAPE '\\'
-                OR EXISTS (
-                    SELECT 1 FROM track_artists ta3 JOIN artists ar3 ON ar3.id = ta3.artist_id
-                    WHERE ta3.track_id = t.id AND ar3.name LIKE ? ESCAPE '\\'
-                )
-    """
 
     #< Top Albums: the album's own name, or any artist credited on any of its
     #  tracks. Two patterns.
@@ -429,6 +395,58 @@ class SqlFragments:
         if not self.searchWords(searchQuery):
             return ""
         return self._jsonIdSetClause(params, column, self.getMatchingTrackIds(searchQuery))
+
+    def _playSearchNarrowClause(self, params: list, searchQuery: str | None) -> str:
+        """/history's search, as two id sets instead of three joins and a predicate.
+
+        It matches what was played (track name, album, any credited artist) OR where
+        it was played from (the playlist/album name), so it needs both halves - but
+        neither depends on the play, only on which track and which played_from value
+        the play carries. So the whole thing resolves to "track_id in this set, or
+        played_from in that one", and the tracks/albums/playlists joins disappear
+        entirely: searchPlays' SELECT reads only p.* columns, so those joins existed
+        purely to serve the predicate.
+
+        The playlists join was the odd one - it matched on
+        substr(played_from, instr(...)), which no index can serve, evaluated per
+        play row. It turns out to have been cheap anyway (123ms -> 128ms of the
+        854ms), because only 62 of 73k plays carry a played_from at all.
+
+        Measured on the real library, best of 3:
+            count "love"       831ms -> ~90ms
+            count "xylophone"  839ms -> ~80ms
+        and it fixes the page too, which was NOT fast - it merely looked fast for
+        common terms, where LIMIT 50 stops early. A term with no matches had to scan
+        everything: "radiohead" took 886ms to return zero rows.
+
+        Resolved PER WORD, and this is the subtle part: the old predicate ORed all
+        four fields for each word independently, so "Beta Roadtrip" could match a
+        play whose TRACK supplied "Beta" and whose PLAYLIST supplied "Roadtrip".
+        Resolving one combined set per side instead would demand that every word
+        match the same side, and that play would be lost - a real regression, caught
+        by tests/test_search_two_phase's per-word-spans-both case. So each word gets
+        its own pair of sets, ORed across the two sides and ANDed across words.
+
+        A word that matches on NEITHER side can never be satisfied, so the whole
+        clause short-circuits to `AND 0` rather than scanning the history."""
+        words = self.searchWords(searchQuery)
+        if not words:
+            return ""
+        clauses = []
+        for word in words:
+            trackIds = self.getMatchingTrackIds(word)
+            playedFrom = self.getMatchingPlayedFrom(word)
+            if not trackIds and not playedFrom:
+                return " AND 0"
+            sides = []
+            if trackIds:
+                params.append(json.dumps(list(trackIds)))
+                sides.append("p.track_id IN (SELECT value FROM json_each(?))")
+            if playedFrom:
+                params.append(json.dumps(list(playedFrom)))
+                sides.append("p.played_from IN (SELECT value FROM json_each(?))")
+            clauses.append("(" + " OR ".join(sides) + ")")
+        return "".join(f" AND {clause}" for clause in clauses)
 
     # The track set behind an artist / album filter. Formatted with the bound
     # placeholders by _trackSetClause below.

@@ -480,8 +480,7 @@ class PlayQueries:
         conn = self._conn()
         limitValue = -1 if limit is None else limit
         params = [username]
-        matchClause = self._perWordAndClause(params, query, self._SEARCH_MATCH_CONDITION,
-                                             self._SEARCH_PATTERNS_PER_WORD)
+        matchClause = self._playSearchNarrowClause(params, query)
         rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
         trackIdsClause = self._idSetClause(params, "p.track_id", trackIds)
         params += [limitValue, offset]
@@ -491,7 +490,6 @@ class PlayQueries:
             SELECT p.track_id AS track_id, p.played_at AS played_at,
                    p.time_played AS time_played, p.played_from AS played_from
             FROM plays p
-            {self._SEARCH_JOIN_CLAUSE}
             WHERE p.username = ? AND p.is_skip=0 {matchClause}{rangeClause}{trackIdsClause}
             ORDER BY p.played_at {direction}, p.id {direction}
             LIMIT ? OFFSET ?
@@ -508,15 +506,13 @@ class PlayQueries:
         `trackIds` mirrors the same param on searchPlays()."""
         conn = self._conn()
         params = [username]
-        matchClause = self._perWordAndClause(params, query, self._SEARCH_MATCH_CONDITION,
-                                             self._SEARCH_PATTERNS_PER_WORD)
+        matchClause = self._playSearchNarrowClause(params, query)
         rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
         trackIdsClause = self._idSetClause(params, "p.track_id", trackIds)
         row = conn.execute(
             f"""
             SELECT COUNT(*) AS c
             FROM plays p
-            {self._SEARCH_JOIN_CLAUSE}
             WHERE p.username = ? AND p.is_skip=0 {matchClause}{rangeClause}{trackIdsClause}
             """,
             params,

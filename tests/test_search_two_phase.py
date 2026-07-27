@@ -188,5 +188,83 @@ class TestSearchCombinedWithOtherFilters(TwoPhaseSearchTestCase):
         self.assertEqual(sorted(s["id"] for s in songs), ["t1", "t3"])
 
 
+class TestTheHistorySearch(TwoPhaseSearchTestCase):
+    """/history matches what was played AND where it was played FROM, so its
+    narrowing needs two id sets. This is the half that lost three joins - including
+    a LEFT JOIN playlists matched on substr(played_from, instr(...)), which no index
+    could serve - so the playlist behaviour is what needs pinning hardest.
+
+    The page was never actually fast: it looked fast for common terms because
+    LIMIT 50 stops early. "radiohead" took 886ms to return zero rows."""
+
+    def setUp(self):
+        super().setUp()
+        self.repo.upsertPlaylistName("pl1", "playlist", "Roadtrip Mix")
+        self.repo.upsertPlaylistName("pl2", "playlist", "Study Beats")
+        self.repo.commit()
+        #< a play of a track that matches NOTHING by name, sourced from a playlist
+        #  whose name does - only the played_from side can find it
+        self.repo.insertPlay(self.user, "t2", 5000, 200000, "playlist:pl1")
+        self.repo.commit()
+
+    def _found(self, query):
+        return sorted(e["id"] for e in self.db.searchEntries(query, count=50))
+
+    def test_a_play_is_found_by_the_playlist_it_came_from(self):
+        self.assertIn("t2", self._found("Roadtrip"))
+
+    def test_a_playlist_match_finds_only_plays_sourced_from_it(self):
+        """t2 has other plays with no played_from; only the sourced one qualifies,
+        so the count is what distinguishes a correct played_from filter."""
+        self.assertEqual(self.db.searchEntriesCount("Roadtrip"), 1)
+
+    def test_a_non_matching_playlist_finds_nothing(self):
+        self.assertEqual(self._found("Study"), [])
+
+    def test_track_and_playlist_matches_are_ORed_not_ANDed(self):
+        """"Beta" matches t2 by name (3 plays) and nothing by playlist; the
+        playlist-sourced play is a 4th. All four must come back."""
+        self.assertEqual(self.db.searchEntriesCount("Beta"), 4)
+
+    def test_a_term_matching_neither_side_finds_nothing(self):
+        self.assertEqual(self._found("nomatch"), [])
+        self.assertEqual(self.db.searchEntriesCount("nomatch"), 0)
+
+    def test_the_page_and_the_count_agree(self):
+        for query in ("Beta", "Roadtrip", "Alpha", "nomatch"):
+            with self.subTest(query=query):
+                page = self.db.searchEntries(query, count=500)
+
+                self.assertEqual(self.db.searchEntriesCount(query), len(page))
+
+    def test_per_word_search_spans_track_and_playlist(self):
+        """"Beta Roadtrip" - one word from the track, one from the playlist. Both
+        must be satisfied, and only the sourced play satisfies both."""
+        self.assertEqual(self.db.searchEntriesCount("Beta Roadtrip"), 1)
+
+    def test_the_history_query_no_longer_joins_playlists(self):
+        """Shape assertion: the substr/instr join is what the id sets replaced, and
+        it would be silently reintroduced by anyone "restoring" the old predicate."""
+        conn = self.repo._conn()
+        captured = []
+        conn.set_trace_callback(captured.append)
+        try:
+            self.db.searchEntries("Beta", count=50)
+        finally:
+            conn.set_trace_callback(None)
+        sql = " ".join(captured)
+
+        self.assertIn("json_each", sql)
+        self.assertNotIn("instr(", sql)
+
+    def test_a_playlist_named_search_still_escapes_wildcards(self):
+        self.repo.upsertPlaylistName("pl3", "playlist", "100% Focus")
+        self.repo.commit()
+        self.repo.insertPlay(self.user, "t3", 6000, 200000, "playlist:pl3")
+        self.repo.commit()
+
+        self.assertEqual(self.db.searchEntriesCount("100%"), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
