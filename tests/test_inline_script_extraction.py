@@ -18,6 +18,7 @@ import os
 import re
 import sys
 import unittest
+from html.parser import HTMLParser
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -29,13 +30,55 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 TEMPLATES_DIR = REPO_ROOT / "templates"
 STATIC_JS_DIR = REPO_ROOT / "static" / "js"
 
-# IGNORECASE because HTML tag names are, so <SCRIPT> is the same element and a
-# gate that only reads the lowercase spelling can be stepped around by accident.
-INLINE_SCRIPT = re.compile(r"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>", re.DOTALL | re.IGNORECASE)
 #< the markers of behaviour, as opposed to a value handed over from the server.
-#  Case-SENSITIVE, unlike the tag above: these are JavaScript identifiers, where
-#  `Fetch` is simply a different name and not the thing being looked for.
+#  Case-SENSITIVE, unlike the tag names below: these are JavaScript identifiers,
+#  where `Fetch` is simply a different name and not the thing being looked for.
 LOGIC_MARKERS = re.compile(r"\bfetch\s*\(|\baddEventListener\s*\(|\bfunction\s+\w+\s*\(")
+
+
+class _InlineScriptCollector(HTMLParser):
+    """The text of every <script> block that has no src=, tokenized rather than
+    pattern-matched.
+
+    This started as one regex, and each spelling the spec allows but the pattern
+    missed was a way past the gate: `<SCRIPT>` read as plain text, and `</script >`
+    - whitespace before the bracket is legal - did worse than mis-measure its own
+    block, because the search then ran on to the next end tag it did recognise and
+    merged two blocks into one. When there was no next one, the block vanished from
+    the gate entirely. Comments cut the other way: `<!-- <script>...</script> -->`
+    was reported as live code, failing the build over something that cannot run.
+
+    An HTML tokenizer settles all of them at once by knowing the grammar instead of
+    approximating it, and it cannot drift back - there is no pattern left to leave a
+    case out of. (It also takes this file out of CodeQL's py/bad-tag-filter, which
+    is what surfaced the end-tag gap: alerts #19 and #20.)
+    """
+
+    def __init__(self):
+        super().__init__(convert_charrefs=False)
+        self.blocks: list[str] = []
+        self._inInlineScript = False
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "script":
+            #< src= means the body is elsewhere and ESLint already reads it
+            self._inInlineScript = not any(name.lower() == "src" for name, _ in attrs)
+
+    def handle_data(self, data):
+        if self._inInlineScript:
+            self.blocks.append(data)
+
+    def handle_endtag(self, tag):
+        if tag == "script":
+            self._inInlineScript = False
+
+
+def inlineScriptBlocks(markup: str) -> list[str]:
+    """The body of every inline (non-src) <script> in `markup`."""
+    collector = _InlineScriptCollector()
+    collector.feed(markup)
+    collector.close()
+    return collector.blocks
 
 # Inline blocks that legitimately still hold a statement, with the reason:
 #   layout.html  - the theme bootstrap has to run before first paint, or the page
@@ -51,7 +94,7 @@ def _inlineLogic():
     """{template name: [offending snippets]} for every inline block with logic."""
     offenders: dict[str, list[str]] = {}
     for path in sorted(TEMPLATES_DIR.rglob("*.html")):
-        for block in INLINE_SCRIPT.findall(path.read_text(encoding="utf-8", errors="replace")):
+        for block in inlineScriptBlocks(path.read_text(encoding="utf-8", errors="replace")):
             found = LOGIC_MARKERS.findall(block)
             if found:
                 offenders.setdefault(path.name, []).extend(found)
@@ -73,14 +116,36 @@ class InlineScriptExtractionTestCase(unittest.TestCase):
         - but a gate that only knows the lowercase spelling reads it as plain
         text and waves the block through. Nothing in templates/ is written that
         way today; the point is that nobody has to know that to stay covered."""
-        self.assertEqual(INLINE_SCRIPT.findall("<SCRIPT>alert(1)</SCRIPT>"), ["alert(1)"])
-        self.assertEqual(INLINE_SCRIPT.findall('<Script type="module">x</Script>'), ["x"])
+        self.assertEqual(inlineScriptBlocks("<SCRIPT>alert(1)</SCRIPT>"), ["alert(1)"])
+        self.assertEqual(inlineScriptBlocks('<Script type="module">x</Script>'), ["x"])
 
     def test_an_uppercase_external_script_is_still_skipped(self):
         """The src= exclusion has to travel with it, or making the gate
         case-insensitive starts reporting every external <SCRIPT SRC=> as an
         empty inline block."""
-        self.assertEqual(INLINE_SCRIPT.findall('<SCRIPT SRC="/js/a.js"></SCRIPT>'), [])
+        self.assertEqual(inlineScriptBlocks('<SCRIPT SRC="/js/a.js"></SCRIPT>'), [])
+
+    def test_a_spaced_end_tag_still_closes_the_block(self):
+        """`</script >` is a valid end tag - the spec allows whitespace before
+        the bracket."""
+        self.assertEqual(inlineScriptBlocks("<script>alert(1)</script >"), ["alert(1)"])
+        self.assertEqual(inlineScriptBlocks("<SCRIPT>alert(1)</SCRIPT\t>"), ["alert(1)"])
+
+    def test_a_spaced_end_tag_cannot_hide_the_last_block_in_a_file(self):
+        """The sharp edge behind the case above. An end tag the scan does not
+        recognise does not merely mis-measure that block: the search runs on to
+        the next one it does recognise, so two blocks silently become one - and
+        when there is no next one, the whole block leaves the gate's sight."""
+        self.assertEqual(
+            inlineScriptBlocks('<script src="/js/page.js"></script>\n'
+                               "<script>\n  document.addEventListener('click', f)\n</script >"),
+            ["\n  document.addEventListener('click', f)\n"])
+
+    def test_a_commented_out_block_is_not_reported_as_live(self):
+        """A commented-out block runs nothing, so holding it to the rule fails
+        the gate over code that cannot execute - and the obvious repair is to
+        delete evidence rather than move logic."""
+        self.assertEqual(inlineScriptBlocks("<!-- <script>fetch('/dead')</script> -->"), [])
 
     def test_the_marker_regex_actually_matches_logic(self):
         """Negative control: without this, the assertion above passes for any
