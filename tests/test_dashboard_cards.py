@@ -239,7 +239,7 @@ class DashboardCardsTestCase(_DashboardHelpers, AppTestCase):
         self.assertIn(b">Wrapped</a>", body)
         self.assertIn(b"nav-account-dropdown", body)
         self.assertIn(b">Profile</a>", body)
-        self.assertIn(b">Import</a>", body)
+        self.assertIn(b">Import &amp; Export</a>", body)
         # Log out is a POST form (state-changing), not a plain link.
         self.assertIn(b"dropdown-logout-form", body)
         self.assertIn(b">Log out</button>", body)

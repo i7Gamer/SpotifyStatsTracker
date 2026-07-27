@@ -105,7 +105,7 @@
           <span class="dropdown-trigger" tabindex="0" role="button" aria-haspopup="true">{{ session.get('username') | displayName or 'Account' }} <span class="chevron">▾</span></span>
           <div class="dropdown-content">
             <a class="{{ 'active' if section == 'profile' }}" {% if section == 'profile' %}aria-current="page"{% endif %} href="{{ url_for('profilePage') }}">Profile</a>
-            <a class="{{ 'active' if section == 'import' }}" {% if section == 'import' %}aria-current="page"{% endif %} href="{{ url_for('importPage') }}">Import</a>
+            <a class="{{ 'active' if section == 'import' }}" {% if section == 'import' %}aria-current="page"{% endif %} href="{{ url_for('importPage') }}">Import &amp; Export</a>
             {% if isAdmin %}
             <a class="{{ 'active' if section == 'admin' }}" {% if section == 'admin' %}aria-current="page"{% endif %} href="{{ url_for('adminPage') }}">Admin</a>
             {% endif %}

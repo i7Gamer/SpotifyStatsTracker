@@ -454,5 +454,49 @@ class TestKeysetPagerTermination(unittest.TestCase):
                          [f"r{i}" for i in range(1, 8) if i != 2])
 
 
+class TestExportLinksLiveOnTheImportPage(_AppTestBase):
+    """History in and history out are the same job in the same format, so the
+    download links sit with the upload form rather than on the settings page
+    they used to share with API keys and share requests."""
+
+    def _makeDb(self):
+        db = MagicMock()
+        db.getImportProgress.return_value = {"status": "idle", "percentage": 0, "message": ""}
+        return db
+
+    def test_import_page_offers_both_formats(self):
+        dash = self._makeApp()
+
+        body = self._get(dash, self._makeDb(), "/import").data
+
+        self.assertIn(b"/export-history?format=json", body)
+        self.assertIn(b"/export-history?format=csv", body)
+
+    def test_import_page_is_titled_for_both_directions(self):
+        dash = self._makeApp()
+
+        body = self._get(dash, self._makeDb(), "/import").data
+
+        self.assertIn(b"Import &amp; Export", body)
+
+    def test_nav_entry_names_both_directions(self):
+        dash = self._makeApp()
+
+        body = self._get(dash, self._makeDb(), "/import").data
+
+        self.assertIn(b">Import &amp; Export</a>", body)
+
+    def test_profile_no_longer_offers_the_downloads(self):
+        dash = self._makeApp()
+        db = self._makeDb()
+        db.getUserSpotifyCredentials.return_value = {}
+        db.getUserLastfmApiKey.return_value = None
+
+        body = self._get(dash, db, "/profile").data
+
+        self.assertNotIn(b"/export-history", body)
+        self.assertNotIn(b"Export as JSON", body)
+
+
 if __name__ == "__main__":
     unittest.main()

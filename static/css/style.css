@@ -519,6 +519,20 @@ button {
   margin-bottom: 24px;
 }
 
+/* The two download links on the Import & Export page. They are <a>, not
+   <button>, so they need the centering .primary-button gets from its own box. */
+.export-button-row {
+  display: flex;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.export-button-row .primary-button {
+  flex: 1;
+  text-align: center;
+  text-decoration: none;
+}
+
 #import-form {
   display: grid;
   gap: 12px;

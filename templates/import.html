@@ -10,7 +10,7 @@
 {% block content %}
   <section class="hero">
     <div class="hero-content">
-      <h1>Import Streaming History</h1>
+      <h1>Import &amp; Export Streaming History</h1>
       <p>Upload your Spotify export file and let the app import your listening history with progress tracking. To request your data, visit your <a href="https://www.spotify.com/ch-de/account/privacy/" target="_blank" rel="noreferrer noopener">Spotify privacy settings</a>.</p>
     </div>
   </section>
@@ -52,6 +52,21 @@
         {% endif %}
       </p>
       <progress id="progress-bar" max="100" value="{{ importProgress.percentage or 0 }}"></progress>
+    </div>
+  </section>
+
+  {# The same history, going the other way - and the JSON format is the one the
+     form above accepts, so the round trip belongs on one page. #}
+  <section class="card import-card">
+    <h2 style="margin-top: 0;">Export your history</h2>
+    <p class="import-note">
+      Download your full play history. The JSON export uses Spotify's extended-streaming-history
+      format, so it can be re-imported here (or into another instance) with the form above;
+      the CSV is for spreadsheets and analysis.
+    </p>
+    <div class="export-button-row">
+      <a class="primary-button" href="{{ url_for('exportHistory', format='json') }}">Export as JSON</a>
+      <a class="primary-button" href="{{ url_for('exportHistory', format='csv') }}">Export as CSV</a>
     </div>
   </section>
 
