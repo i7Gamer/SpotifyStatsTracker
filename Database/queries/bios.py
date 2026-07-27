@@ -115,13 +115,22 @@ class BioQueries:
         return len(decoratedIds)
 
     def getArtistsMissingBiographies(self, limit: int, username: str | None = None) -> list[dict]:
-        """Played PRIMARY (position-0) artists still needing a Last.fm
-        artist.getinfo lookup, most-played first - the background biography
-        backfiller's queue (Database._lastfmBiographyBackfillLoop). Same
-        own-vs-global scoping as getArtistsMissingGenres, but the retry
-        condition keys off bio directly (there's no join table for it): an
-        artist with real bio text never requeues, one whose lookup came back
-        empty does after BIOGRAPHY_BACKFILL_RETRY_SECONDS."""
+        """Played artists still needing a Last.fm artist.getinfo lookup,
+        most-played first - the background biography backfiller's queue
+        (Database._lastfmBiographyBackfillLoop). Same own-vs-global scoping as
+        getArtistsMissingGenres, but the retry condition keys off bio directly
+        (there's no join table for it): an artist with real bio text never
+        requeues, one whose lookup came back empty does after
+        BIOGRAPHY_BACKFILL_RETRY_SECONDS.
+
+        Spans the first GENRE_BACKFILL_MAX_ARTIST_POSITION+1 credit positions, not
+        just the position-0 primary. Restricting it to 0 meant an artist who is
+        never anyone's primary credit could never be looked up at all - 3,543
+        artists on the real library, 28.7% of every artist played. That is the same
+        gap getArtistsMissingGenres was fixed for (where it produced a 56.7% genre
+        coverage figure that read as Last.fm sparsity and was really a queue that
+        never asked); this queue was missed at the time. Bounded rather than
+        unlimited for the reason given on that constant."""
         conn = self._conn()
         params: list = []
         userClause = self._queueUserClause(params, username)
@@ -130,7 +139,8 @@ class BioQueries:
             f"""
             SELECT ar.id AS id, ar.name AS name, COUNT(*) AS play_count
             FROM plays p
-            JOIN track_artists ta ON ta.track_id = p.track_id AND ta.position = 0
+            JOIN track_artists ta ON ta.track_id = p.track_id
+                AND ta.position <= {GENRE_BACKFILL_MAX_ARTIST_POSITION}
             JOIN artists ar ON ar.id = ta.artist_id
             WHERE {userClause}(ar.bio_attempted_at IS NULL
                    OR (ar.bio_attempted_at < ? AND ar.bio IS NULL))
@@ -189,6 +199,15 @@ class BioQueries:
             SELECT COUNT(DISTINCT ar.id) AS total,
                    COUNT(DISTINCT CASE WHEN ar.bio IS NOT NULL THEN ar.id END) AS covered
             FROM (SELECT DISTINCT track_id FROM plays WHERE username = ?) p
+            -- position = 0 here is deliberate, and deliberately DIFFERENT from
+            -- getArtistsMissingBiographies above, which spans position <= 4. This
+            -- is a coverage figure, and it means "of the artists you actually
+            -- listen to, how many have a bio" - the primary credit is the axis a
+            -- reader has in mind. The QUEUE has no reason to be that narrow, since
+            -- a feature-only artist still gets a detail page. Same split
+            -- getGenreCoverageCounts settled on, for the same reason; widening
+            -- this to match the queue would move ~3.5k feature-only artists into
+            -- the denominator and make the percentage drop for no real change.
             JOIN track_artists ta ON ta.track_id = p.track_id AND ta.position = 0
             JOIN artists ar ON ar.id = ta.artist_id
             """,

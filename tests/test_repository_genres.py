@@ -456,30 +456,80 @@ class BiographyQueueTestCase(DatabaseTestCase):
     def test_artist_queue_is_play_count_ordered_within_own_scope(self):
         db = self._db()
         rows = db.repo.getArtistsMissingBiographies(10, username="user1")
-        self.assertEqual([r["id"] for r in rows], ["aX", "aY"])
+        #< aF ties aX at 3 plays (id-sorted first); aY has 1. Same expectation the
+        #  genre queue's own test above carries, now that both span position <= 4.
+        self.assertEqual([r["id"] for r in rows], ["aF", "aX", "aY"])
         self.assertEqual(rows[0]["play_count"], 3)
-        self.assertEqual(rows[0]["name"], "Artist X")
+        self.assertEqual(rows[1]["name"], "Artist X")
 
-    def test_featured_artists_are_not_queued(self):
+    def test_featured_artists_are_queued_too(self):
+        """This used to assert the opposite, and the opposite was the bug.
+
+        Restricting the queue to position 0 meant an artist who is never anyone's
+        primary credit could never be looked up at all - on the real library that
+        was 3,543 artists, 28.7% of every artist played. The identical gap was
+        found and fixed for genre coverage (where it accounted for a 56.7%
+        coverage figure that looked like Last.fm sparsity and wasn't); the
+        biography queue was missed at the time."""
         db = self._db()
+
         rows = db.repo.getArtistsMissingBiographies(10, username="user1")
-        self.assertNotIn("aF", [r["id"] for r in rows])   #< only position-0 artists
+
+        self.assertIn("aF", [r["id"] for r in rows])
+
+    def test_the_widening_is_bounded(self):
+        """Bounded rather than unlimited, matching the genre queue: position <= 4
+        covers essentially every real feature credit without letting a pathological
+        50-artist compilation flood the queue."""
+        from conftest import normalizeTrackForTest
+        db = self._db()
+        crowded = {
+            "id": "tD", "name": "Song D",
+            "artists": [{"id": f"aP{i}", "name": f"Pos {i}"} for i in range(7)],
+            "album": self._album("alS", "Album S"),
+        }
+        db.repo.upsertTrack(normalizeTrackForTest(crowded))
+        db.repo.insertPlay("user1", "tD", 6000, 5000, None)
+        db.repo.commit()
+
+        queued = [r["id"] for r in db.repo.getArtistsMissingBiographies(50, username="user1")]
+
+        for position in range(5):
+            with self.subTest(position=position):
+                self.assertIn(f"aP{position}", queued)
+        for position in (5, 6):
+            with self.subTest(position=position):
+                self.assertNotIn(f"aP{position}", queued)
+
+    def test_a_featured_artist_is_not_double_counted(self):
+        """Widening the join must not multiply play_count: the ordering is by plays,
+        and one play crediting two artists is still one play for each of them."""
+        db = self._db()
+
+        rows = {r["id"]: r["play_count"] for r in
+                db.repo.getArtistsMissingBiographies(10, username="user1")}
+
+        #< tA was played 3 times and credits aX (primary) and aF (feature)
+        self.assertEqual(rows["aX"], 3)
+        self.assertEqual(rows["aF"], 3)
 
     def test_global_scope_spans_all_users(self):
         db = self._db()
         rows = db.repo.getArtistsMissingBiographies(10)
-        self.assertEqual([r["id"] for r in rows], ["aX", "aY", "aZ"])   #< 3 plays, then ties by id
+        #< aF ties aX at 3 plays (id-sorted first); aY ties aZ at 1 play
+        self.assertEqual([r["id"] for r in rows], ["aF", "aX", "aY", "aZ"])
 
     def test_limit_is_respected(self):
         db = self._db()
         rows = db.repo.getArtistsMissingBiographies(1, username="user1")
-        self.assertEqual([r["id"] for r in rows], ["aX"])
+        self.assertEqual([r["id"] for r in rows], ["aF"])
 
     def test_recently_attempted_entities_leave_the_queue(self):
         db = self._db()
         db.repo.setArtistBio("aX", "A bio.")
         rows = db.repo.getArtistsMissingBiographies(10, username="user1")
-        self.assertEqual([r["id"] for r in rows], ["aY"])
+        #< aF stays: giving the PRIMARY artist a bio says nothing about the feature
+        self.assertEqual([r["id"] for r in rows], ["aF", "aY"])
 
     def test_empty_bios_requeue_after_the_retry_ttl(self):
         db = self._db()
