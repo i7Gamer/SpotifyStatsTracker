@@ -51,6 +51,27 @@ class TestAjaxRequestsGet401(UnauthenticatedAjaxTestCase):
         self.assertIn("/login", payload["loginUrl"])
         self.assertIn("charts", payload["loginUrl"])
 
+    def test_the_login_url_keeps_the_pages_filters(self):
+        """The query string IS the page state - interval, custom dates, sortBy,
+        tag, page. Built from request.path it was dropped, so logging back in
+        landed the user on an unfiltered first page instead of where they were."""
+        resp = self.client.get("/top-songs?ajax=true&interval=year&sortBy=skips&page=4")
+
+        loginUrl = resp.get_json()["loginUrl"]
+
+        for expected in ("interval%3Dyear", "sortBy%3Dskips", "page%3D4"):
+            with self.subTest(param=expected):
+                self.assertIn(expected, loginUrl)
+
+    def test_a_page_with_no_query_string_does_not_gain_a_stray_marker(self):
+        """request.full_path always appends "?" even with no args, and that would
+        travel through the login redirect into the address bar."""
+        resp = self.client.get("/?ajax=true")
+
+        #< ajax=true itself is part of the state that got us here, but the bare
+        #  path must not come back as "/?"
+        self.assertNotIn("next=%2F%3F&", resp.get_json()["loginUrl"] + "&")
+
     def test_a_non_true_ajax_value_still_counts_as_ajax(self):
         """detail-history uses ?ajax=list, not ?ajax=true."""
         resp = self.client.get("/song/t1?ajax=list")

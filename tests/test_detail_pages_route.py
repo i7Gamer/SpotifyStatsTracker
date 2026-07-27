@@ -12,6 +12,8 @@ from app import SpotifyDashboardApp
 from _app_factory import AppTestCase
 from _detail_client import DetailPageClientMixin
 from routes.charts import DETAIL_BODY_AJAX
+import routes.charts as chartsRoutes
+import app as appmod
 
 
 def _byId(entityId, genres):
@@ -699,6 +701,39 @@ class TestSongDetailRoute(_DetailRouteTestBase):
         self.assertIn("20 Jul 2026", payload.get("resultsHtml", ""))
         db.getListeningTimeSeries.assert_not_called()
         db.getHourOfDayHeatmap.assert_not_called()
+
+    def test_the_play_log_limit_is_clamped(self):
+        """?limit had no ceiling at all - the one pagination parameter in the
+        codebase that didn't - so ?limit=500000 fetched and rendered half a
+        million rows. Own data only, so a footgun rather than a hole, but every
+        other pager is clamped and a shared URL carrying it shouldn't be able to
+        wedge the page."""
+        dash = self._makeApp()
+        db = MagicMock()
+        db.getSong.return_value = self._song()
+        db.getEntriesCount.return_value = 10 ** 6
+        db.getEntriesFromNew.return_value = []
+
+        with patch.object(dash, "_embedSongsTextElements", side_effect=lambda songs: songs):
+            self._getPath(dash, db, "/song/t1?ajax=list&limit=500000")
+
+        requestedLimit = db.getEntriesFromNew.call_args.kwargs["count"]
+        self.assertEqual(requestedLimit, appmod.PAGE_SIZE * chartsRoutes.MAX_DETAIL_HISTORY_PAGES)
+
+    def test_a_limit_within_the_ceiling_is_honoured(self):
+        """"Show more" legitimately grows the batch past PAGE_SIZE, so the clamp
+        must not collapse every request back to one page."""
+        dash = self._makeApp()
+        db = MagicMock()
+        db.getSong.return_value = self._song()
+        db.getEntriesCount.return_value = 10 ** 6
+        db.getEntriesFromNew.return_value = []
+        allowed = appmod.PAGE_SIZE * 2
+
+        with patch.object(dash, "_embedSongsTextElements", side_effect=lambda songs: songs):
+            self._getPath(dash, db, f"/song/t1?ajax=list&limit={allowed}")
+
+        self.assertEqual(db.getEntriesFromNew.call_args.kwargs["count"], allowed)
 
     def test_song_detail_next_batch_size_partial_remaining(self):
         dash = self._makeApp()

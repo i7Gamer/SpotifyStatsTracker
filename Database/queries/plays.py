@@ -1529,7 +1529,15 @@ class PlayQueries:
         """How many tracks appear in a skip-ranked list - the paging counterpart
         to getMostSkippedTracks, filtered identically. Every track with at least
         one skip qualifies: low-volume rows are tempered by the ranking rather
-        than excluded, so the count and the pages always agree."""
+        than excluded, so the count and the pages always agree.
+
+        Deliberately takes no trackId/artistId/albumId, unlike the list it pages:
+        no caller narrows a skip-ranked page to a single entity today (only the
+        three Top pages offer sortBy="skips", and none of them does), and a count
+        that silently ignored such a filter would size the pager off a different
+        population than the list it sits under. If a detail page ever gains a
+        skip sort, thread the entity through here rather than leaving it to be
+        dropped in silence."""
         params: list = [username]
         rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
         joins, filterClause = self._skippedTrackFilters(

@@ -696,7 +696,12 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
         generic "couldn't load" with a Retry that fails identically forever.
         The client turns the 401 into a real navigation (see
         AjaxStatus.redirectIfUnauthorized). Everything else keeps the redirect."""
-        target = nextPath or request.path
+        #< full_path, not path: the query string IS the page state here (interval,
+        #  custom dates, sortBy, tag, page), so dropping it landed the user on an
+        #  unfiltered first page after logging back in. rstrip("?") because
+        #  full_path always appends one, even with no args. _safeNextUrl still
+        #  vets it on the way back (see routes/auth.py).
+        target = nextPath or request.full_path.rstrip("?")
         if request.args.get("ajax"):
             return jsonify(error="Not logged in", loginUrl=url_for("login", next=target)), 401
         return redirect(url_for("login", next=target))

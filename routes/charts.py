@@ -28,6 +28,13 @@ logger = logging.getLogger(__name__)
 #  this value is deliberately neither of theirs. See static/js/detail-page.js.
 DETAIL_BODY_AJAX = "page"
 
+#< How many pages' worth of rows one ?limit= may ask for. The detail history's
+#  "Show more" grows its batch, so limit legitimately exceeds PAGE_SIZE - but it
+#  was the one pagination parameter in the codebase with no ceiling at all, so
+#  ?limit=500000 fetched and rendered half a million rows. Own data only, so this
+#  is a footgun rather than a hole, and every other pager is already clamped.
+MAX_DETAIL_HISTORY_PAGES = 10
+
 
 def register(app, dashboard):
     PAGE_SIZE = appmod.PAGE_SIZE
@@ -262,10 +269,9 @@ def register(app, dashboard):
         if interval == "custom" and not (customStart and customEnd):
             interval = default_window
 
-        #< same default in both, or the heading can name a different window than
-        #  the data covers
-        intervalLabel = dashboard._getIntervalLabel(interval, customStart, customEnd,
-                                                    default=default_window)
+        #< no _getIntervalLabel here: unlike /charts and /genres, neither
+        #  tracks.html nor _dashboard_summary.html renders one - the dashboard
+        #  names its window with the <select> itself
         startDate, endDate = dashboard._getDateRange(interval, customStart, customEnd,
                                                      default=default_window, tz=db.tz)
 
@@ -332,7 +338,6 @@ def register(app, dashboard):
             nextMilestones=nextMilestones,
             lastfmGenreEnabled=lastfmGenreEnabled,
             friends_now_playing_enabled=dashboard.repo.isFriendsNowPlayingEnabled(),
-            intervalLabel=intervalLabel,
             section="dashboard",
             interval=interval,
             customStart=customStart,
@@ -779,7 +784,8 @@ def register(app, dashboard):
                 offset = defaultOffset
 
             try:
-                limit = max(1, int(request.args.get("limit", PAGE_SIZE)))
+                limit = min(PAGE_SIZE * MAX_DETAIL_HISTORY_PAGES,
+                            max(1, int(request.args.get("limit", PAGE_SIZE))))
             except (ValueError, TypeError):
                 limit = PAGE_SIZE
 
