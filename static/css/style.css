@@ -1766,6 +1766,62 @@ progress::-moz-progress-bar {
   margin-top: 18px;
 }
 
+/* Admin settings rows: a small on-demand info popover (native <details>, no
+   JS) for checkboxes whose consequences don't fit in a short label. Kept as
+   a sibling of the row's <label> rather than nested inside it - anything
+   inside a <label> forwards its click to the checkbox, which would toggle
+   the setting every time someone tried to read the hint. */
+.setting-hint {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.setting-hint summary {
+  list-style: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 1px solid var(--muted);
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-style: italic;
+  font-weight: 700;
+  user-select: none;
+}
+
+.setting-hint summary::-webkit-details-marker {
+  display: none;
+}
+
+.setting-hint summary:hover,
+.setting-hint[open] summary {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.setting-hint p {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  width: 240px;
+  max-width: 70vw;
+  margin: 0;
+  padding: 0.6rem 0.75rem;
+  background: var(--surface);
+  border: 1px solid var(--glass-border);
+  border-radius: 8px;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35);
+  font-size: 0.8rem;
+  color: var(--muted);
+  line-height: 1.4;
+  text-align: left;
+  z-index: 5;
+}
+
 .instructions h3 {
   margin-top: 0;
   color: var(--text);

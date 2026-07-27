@@ -355,6 +355,58 @@ class TestAdminUserSettings(AdminRouteTestBase):
         self.assertTrue(dash.repo.isTagsEnabled())
 
 
+class TestAdminUserSettingsHints(AdminRouteTestBase):
+    """User Settings used to bury each checkbox's real scope/consequences in a
+    parenthetical tail on the label - e.g. milestone_recalc's tail is the only
+    place explaining that saving it rewrites achieved_at dates. Deleting that
+    text would lose real information, so it moved into an on-demand <details>
+    hint instead of the label itself, which is what was inflating the card's
+    height 3x past its shortest neighbour."""
+
+    # label -> hint text as Jinja autoescape renders it (apostrophes become
+    # &#39;), for every checkbox whose tail became a hint.
+    _HINTS = {
+        "Data sharing": "Compare page and share requests on Profile",
+        "Public Wrapped share links": "no-login links to a user&#39;s own yearly recap",
+        "Cookie–email verification at login": "stops one user claiming another&#39;s account",
+        "Achievement milestones": "topbar badge, plus the Milestones and Next milestones cards on the dashboard",
+        "Treat imported history as the milestone source of truth":
+            "recalculate dates, don&#39;t notify import-crossed milestones, remove ones the data no longer supports",
+        "Tags": "tag panel on song/artist/album pages, tag filter on Top Songs/Artists/Albums, and the Playlists page",
+        "Friends' current track on the dashboard":
+            "only between accepted shares; each user can also opt out on their own Profile",
+    }
+
+    def test_labels_no_longer_carry_the_explanation_inline(self):
+        """The old markup rendered "Label (hint text)" as one string in the
+        <label> - if that concatenation still exists the hint never actually
+        moved anywhere, it just got a wrapper."""
+        body = self._getAdmin(self._makeApp()).data.decode()
+
+        for label, hint in self._HINTS.items():
+            self.assertNotIn("{} ({}".format(label, hint), body)
+
+    def test_every_hint_is_still_reachable_via_its_disclosure(self):
+        body = self._getAdmin(self._makeApp()).data.decode()
+
+        for hint in self._HINTS.values():
+            self.assertIn(hint, body)
+
+    def test_hint_count_matches_checkboxes_that_have_one(self):
+        """New user registration is the one checkbox short enough to need no
+        explanation - it must not grow an empty info icon just for symmetry
+        with its siblings."""
+        body = self._getAdmin(self._makeApp()).data.decode()
+
+        self.assertEqual(body.count('class="setting-hint"'), len(self._HINTS))
+
+    def test_registration_row_has_no_hint_disclosure(self):
+        body = self._getAdmin(self._makeApp()).data.decode()
+        start = body.index("New user registration")
+
+        self.assertNotIn("setting-hint", body[start:start + 200])
+
+
 class TestAdminMilestoneWorkerHealth(AdminRouteTestBase):
     """The Instance Services panel's Milestone Detection entry. The milestone
     pass has no thread of its own - it rides the periodic login-check loop - so

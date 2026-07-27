@@ -356,38 +356,42 @@
     <div style="padding: 0 1.5rem 1.5rem 1.5rem;">
       <form method="post" action="{{ url_for('adminUserSettings') }}">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
-        <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; margin-bottom: 0.6rem;">
-          <input type="checkbox" name="data_sharing" value="1" {% if sharing_enabled %}checked{% endif %}>
-          Data sharing (Compare page and share requests on Profile)
-        </label>
-        <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; margin-bottom: 0.6rem;">
-          <input type="checkbox" name="registration" value="1" {% if registration_enabled %}checked{% endif %}>
-          New user registration
-        </label>
-        <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; margin-bottom: 0.6rem;">
-          <input type="checkbox" name="share_links" value="1" {% if share_links_enabled %}checked{% endif %}>
-          Public Wrapped share links (no-login links to a user's own yearly recap)
-        </label>
-        <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; margin-bottom: 0.6rem;">
-          <input type="checkbox" name="email_verification" value="1" {% if email_verification_enabled %}checked{% endif %}>
-          Cookie–email verification at login (stops one user claiming another's account)
-        </label>
-        <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; margin-bottom: 0.6rem;">
-          <input type="checkbox" name="milestones" value="1" {% if milestones_enabled %}checked{% endif %}>
-          Achievement milestones (topbar badge, plus the Milestones and Next milestones cards on the dashboard)
-        </label>
-        <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; margin-bottom: 0.6rem;">
-          <input type="checkbox" name="milestone_recalc" value="1" {% if milestone_recalc_enabled %}checked{% endif %}>
-          Treat imported history as the milestone source of truth (recalculate dates, don't notify import-crossed milestones, remove ones the data no longer supports)
-        </label>
-        <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; margin-bottom: 1rem;">
-          <input type="checkbox" name="tags" value="1" {% if tags_enabled %}checked{% endif %}>
-          Tags (tag panel on song/artist/album pages, tag filter on Top Songs/Artists/Albums, and the Playlists page)
-        </label>
-        <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; margin-bottom: 1rem;">
-          <input type="checkbox" name="friends_now_playing" value="1" {% if friends_now_playing_enabled %}checked{% endif %}>
-          Friends' current track on the dashboard (only between accepted shares; each user can also opt out on their own Profile)
-        </label>
+        {# label kept short, the consequence/scope tail moved into an on-demand
+           <details> hint (see .setting-hint in style.css) instead of always
+           rendering inline - this card was 3x the height of its shortest
+           neighbour mostly from these tails wrapping to 2-3 lines each. #}
+        {% set user_settings_fields = [
+          ('data_sharing', 'Data sharing', sharing_enabled,
+           'Compare page and share requests on Profile', '0.6rem'),
+          ('registration', 'New user registration', registration_enabled,
+           none, '0.6rem'),
+          ('share_links', 'Public Wrapped share links', share_links_enabled,
+           "no-login links to a user's own yearly recap", '0.6rem'),
+          ('email_verification', 'Cookie–email verification at login', email_verification_enabled,
+           "stops one user claiming another's account", '0.6rem'),
+          ('milestones', 'Achievement milestones', milestones_enabled,
+           'topbar badge, plus the Milestones and Next milestones cards on the dashboard', '0.6rem'),
+          ('milestone_recalc', 'Treat imported history as the milestone source of truth', milestone_recalc_enabled,
+           "recalculate dates, don't notify import-crossed milestones, remove ones the data no longer supports", '0.6rem'),
+          ('tags', 'Tags', tags_enabled,
+           'tag panel on song/artist/album pages, tag filter on Top Songs/Artists/Albums, and the Playlists page', '1rem'),
+          ('friends_now_playing', "Friends' current track on the dashboard", friends_now_playing_enabled,
+           'only between accepted shares; each user can also opt out on their own Profile', '1rem'),
+        ] %}
+        {% for name, label, checked, hint, margin in user_settings_fields %}
+        <div style="display: flex; align-items: center; gap: 0.4rem; margin-bottom: {{ margin }};">
+          <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; flex: 1;">
+            <input type="checkbox" name="{{ name }}" value="1" {% if checked %}checked{% endif %}>
+            {{ label }}
+          </label>
+          {% if hint %}
+          <details class="setting-hint">
+            <summary aria-label="More info" title="More info">i</summary>
+            <p>{{ hint }}</p>
+          </details>
+          {% endif %}
+        </div>
+        {% endfor %}
         <button type="submit" class="primary-button" style="padding: 4px 16px;">Save</button>
       </form>
     </div>
