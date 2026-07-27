@@ -43,7 +43,15 @@ def _iterKeysetChunks(fetchRaw, hydrate):
 
     played_at is not unique on its own (two different tracks can carry the same
     timestamp), so each chunk starts AT the last timestamp seen and the rows
-    already seen at exactly that timestamp are filtered out."""
+    already seen at exactly that timestamp are filtered out.
+
+    That bookkeeping has to cover EVERY row seen on the cursor, not just the ones
+    this chunk emitted. Keeping only `fresh`'s rows dropped the ones filtered out
+    at that same timestamp, so when a chunk boundary landed inside a group of
+    equal timestamps the cursor stopped advancing and the group's two halves
+    alternated forever, re-emitting rows on every pass - an export that never
+    ended. Reachable only with EXPORT_CHUNK_SIZE rows sharing one exact played_at,
+    hence latent, but the failure mode is bad enough to close."""
     afterTs = None
     seenAtCursor = set()
     while True:
@@ -56,10 +64,19 @@ def _iterKeysetChunks(fetchRaw, hydrate):
             # need EXPORT_CHUNK_SIZE distinct tracks played in the same second.
             return
         yield from hydrate(fresh)
+        previousTs = afterTs
         afterTs = fresh[-1].get("playedAt")
-        seenAtCursor = {(e.get("id"), e.get("playedAt")) for e in fresh
+        #< every row at the cursor, seen or fresh, so the next chunk can filter
+        #  out all of them rather than just this chunk's share
+        seenAtCursor = {(e.get("id"), e.get("playedAt")) for e in rawEntries
                         if e.get("playedAt") == afterTs}
         if len(rawEntries) < EXPORT_CHUNK_SIZE:
+            return
+        if afterTs == previousTs:
+            # A full chunk that did not move the cursor: the group at this
+            # timestamp is larger than one chunk, so `played_at >= afterTs` can
+            # never step past it. Stop instead of re-reading the same window -
+            # the alternative is not more rows, it is an endless stream.
             return
 
 

@@ -21,6 +21,7 @@ decrypts (rotated/lost key) reads as missing - the affected user is routed
 through re-login instead of the app crashing on it.
 """
 import base64
+import functools
 import hashlib
 import logging
 import os
@@ -69,6 +70,15 @@ DEFAULT_KEY_PATH = Path(__file__).resolve().parent.parent / "secrets" / "data_en
 # first time simultaneously must not each generate (and write) their own key.
 _keyFileLock = threading.Lock()
 
+# The SHA-256 derivations below are cached on the key MATERIAL, not on "the
+# current key": _keyMaterial is still consulted every time, so an env var or key
+# file changing at runtime is still honoured. This only avoids re-hashing the
+# same string, which mattered because isForeignKeyed + _fernet each derived
+# independently - so every decryptSecret hashed twice, and
+# countSecretsUnderAnotherKey did it once per secret column per user.
+# Small: only the env key, the file key, and a test's substitutes ever appear.
+_DERIVATION_CACHE_SIZE = 4
+
 
 def _keyMaterial() -> str:
     envKey = os.environ.get(ENCRYPTION_KEY_ENV_VAR, "").strip()
@@ -116,14 +126,24 @@ def _keyMaterial() -> str:
         return newKey
 
 
-def _fernet() -> Fernet:
-    digest = hashlib.sha256(_keyMaterial().encode("utf-8")).digest()
+@functools.lru_cache(maxsize=_DERIVATION_CACHE_SIZE)
+def _fernetFor(material: str) -> Fernet:
+    digest = hashlib.sha256(material.encode("utf-8")).digest()
     return Fernet(base64.urlsafe_b64encode(digest))
+
+
+@functools.lru_cache(maxsize=_DERIVATION_CACHE_SIZE)
+def _fingerprintFor(material: str) -> str:
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:KEY_FINGERPRINT_LENGTH]
+
+
+def _fernet() -> Fernet:
+    return _fernetFor(_keyMaterial())
 
 
 def keyFingerprint() -> str:
     """A short, non-reversible tag for the key currently in use."""
-    return hashlib.sha256(_keyMaterial().encode("utf-8")).hexdigest()[:KEY_FINGERPRINT_LENGTH]
+    return _fingerprintFor(_keyMaterial())
 
 
 def isEncrypted(stored) -> bool:
@@ -141,13 +161,20 @@ def _storedFingerprint(stored) -> str | None:
     return fingerprint if separator else None
 
 
-def isForeignKeyed(stored) -> bool:
+def isForeignKeyed(stored, currentFingerprint: str | None = None) -> bool:
     """True when this value names a key that is NOT the one in use - i.e. it is
     readable again if the right key comes back, as opposed to being damaged.
     False for anything that cannot be classified, so nothing is ever claimed
-    about a v1 value."""
+    about a v1 value.
+
+    `currentFingerprint` lets a caller classifying MANY values resolve the key
+    once instead of per value (see countSecretsUnderAnotherKey, which otherwise
+    re-read the key file for every secret column of every user, each time behind
+    _keyFileLock)."""
     fingerprint = _storedFingerprint(stored)
-    return fingerprint is not None and fingerprint != keyFingerprint()
+    if fingerprint is None:
+        return False
+    return fingerprint != (currentFingerprint if currentFingerprint is not None else keyFingerprint())
 
 
 def encryptSecret(plaintext: str) -> str:

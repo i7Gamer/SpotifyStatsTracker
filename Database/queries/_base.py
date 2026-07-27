@@ -33,11 +33,13 @@ from pathlib import Path
 try:
     import Database.db as db
     from Database.db import ConnectionManager, SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON, BEHAVIORAL_COLUMNS
-    from Database.secret_store import encryptSecret, decryptSecret, isEncrypted, isForeignKeyed
+    from Database.secret_store import (encryptSecret, decryptSecret, isEncrypted, isForeignKeyed,
+                                       keyFingerprint)
 except ModuleNotFoundError:
     import db
     from db import ConnectionManager, SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON, BEHAVIORAL_COLUMNS
-    from secret_store import encryptSecret, decryptSecret, isEncrypted, isForeignKeyed
+    from secret_store import (encryptSecret, decryptSecret, isEncrypted, isForeignKeyed,
+                              keyFingerprint)
 
 IMAGE_KIND_TRACK = "track"
 IMAGE_KIND_ARTIST = "artist"

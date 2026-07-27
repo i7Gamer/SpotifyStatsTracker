@@ -159,6 +159,41 @@ class TestStoredSecretsNameTheirKey(unittest.TestCase):
             self.assertFalse(secretStore.isForeignKeyed(stored))
             self.assertEqual(decryptSecret(stored), "secret")
 
+    def test_a_supplied_fingerprint_matches_resolving_it_per_value(self):
+        """isForeignKeyed takes an optional current fingerprint so a caller
+        classifying many values resolves the key once - countSecretsUnderAnotherKey
+        was reading the key file (behind _keyFileLock) for every secret column of
+        every user. The shortcut must answer identically."""
+        with patch.dict(os.environ, {secretStore.ENCRYPTION_KEY_ENV_VAR: "key-one"}):
+            mine = encryptSecret("secret")
+        with patch.dict(os.environ, {secretStore.ENCRYPTION_KEY_ENV_VAR: "key-two"}):
+            theirs = encryptSecret("secret")
+            current = secretStore.keyFingerprint()
+
+            for value in (mine, theirs, "plain", None, "enc:v2:garbage"):
+                with self.subTest(value=value):
+                    self.assertEqual(secretStore.isForeignKeyed(value, current),
+                                     secretStore.isForeignKeyed(value))
+
+    def test_caching_the_derivation_still_honours_a_changed_key(self):
+        """The SHA-256 derivations are memoized on the key MATERIAL, not on "the
+        current key", so _keyMaterial is still consulted every call. If that ever
+        became a cache of the resolved key, rotating it at runtime would silently
+        keep using the old one - and every value written afterwards would carry a
+        fingerprint that does not match the key that wrote it."""
+        with patch.dict(os.environ, {secretStore.ENCRYPTION_KEY_ENV_VAR: "key-one"}):
+            firstFingerprint = secretStore.keyFingerprint()
+            firstValue = encryptSecret("secret")
+        with patch.dict(os.environ, {secretStore.ENCRYPTION_KEY_ENV_VAR: "key-two"}):
+            secondFingerprint = secretStore.keyFingerprint()
+
+            self.assertNotEqual(firstFingerprint, secondFingerprint)
+            self.assertIsNone(decryptSecret(firstValue))
+        #< and switching back recovers it, which a stale cache could not do
+        with patch.dict(os.environ, {secretStore.ENCRYPTION_KEY_ENV_VAR: "key-one"}):
+            self.assertEqual(secretStore.keyFingerprint(), firstFingerprint)
+            self.assertEqual(decryptSecret(firstValue), "secret")
+
     def test_a_corrupt_value_is_not_reported_as_foreign(self):
         """Garbage under OUR fingerprint is damage, not a key mismatch - the
         distinction is the entire point."""

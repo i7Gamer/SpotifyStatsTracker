@@ -187,7 +187,10 @@ class UserQueries:
         this number is a floor, never a false alarm."""
         conn = self._conn()
         rows = conn.execute(f"SELECT {', '.join(self.SECRET_COLUMNS)} FROM users").fetchall()
-        return sum(1 for row in rows for column in self.SECRET_COLUMNS if isForeignKeyed(row[column]))
+        #< resolved once, not per value: it reads the key file behind a lock
+        current = keyFingerprint()
+        return sum(1 for row in rows for column in self.SECRET_COLUMNS
+                   if isForeignKeyed(row[column], current))
 
     def getUserLastfmApiKey(self, username: str) -> str | None:
         conn = self._conn()

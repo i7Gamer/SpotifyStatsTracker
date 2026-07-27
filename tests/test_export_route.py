@@ -7,6 +7,7 @@ re-imports cleanly into another through the existing import pipeline.
 """
 import csv
 import io
+import itertools
 import json
 import sys
 import os
@@ -24,6 +25,7 @@ from _app_factory import AppTestCase
 from Database.Importers.StreamingHistoryImporter import Importer
 from Database.utils import timeToInt
 from services.export import isoUtc
+import services.export as exportModule
 
 _SECRET_KEY_PATCH = 'app.SpotifyDashboardApp._get_or_create_secret_key'
 
@@ -373,6 +375,83 @@ class TestExportRoundTrip(DatabaseTestCase, _AppTestBase):
                     for e in targetDb.getEntriesFromOld(fullPagination=False)}
         expected = {(e["id"], e["playedAt"], e["timePlayed"]) for e in _ENTRIES}
         self.assertEqual(imported, expected)
+
+
+class TestKeysetPagerTermination(unittest.TestCase):
+    """played_at is not unique, so the pager restarts each chunk AT the last
+    timestamp seen and filters out the rows it already emitted there.
+
+    It kept only the rows from the last chunk that sat on the cursor, dropping
+    the ones it had FILTERED OUT at that same timestamp. When a chunk boundary
+    lands inside a group of equal timestamps the cursor then stops advancing and
+    the two halves of the group alternate forever, re-emitting rows on every
+    pass - an export that never ends, growing until the client gives up.
+
+    Driven directly with a small chunk size: reproducing it through the real
+    query would need EXPORT_CHUNK_SIZE (5000) plays sharing one exact played_at.
+    That is what makes it latent rather than live - and also what makes it worth
+    a test, since nothing else here would ever reach it."""
+
+    CHUNK = 3
+
+    def _rows(self):
+        #< the boundary falls INSIDE the T group: one row before it, three on it
+        return ([{"id": "a", "playedAt": 100.0}]
+                + [{"id": f"r{i}", "playedAt": 200.0} for i in range(1, 4)])
+
+    def _fetch(self, rows):
+        def fetchRaw(afterTs):
+            #< the real queries are `played_at >= ?`, oldest first, LIMIT chunk
+            eligible = [r for r in rows if afterTs is None or r["playedAt"] >= afterTs]
+            return eligible[:self.CHUNK]
+        return fetchRaw
+
+    def test_every_row_is_emitted_exactly_once_and_the_export_ends(self):
+        rows = self._rows()
+        with patch.object(exportModule, "EXPORT_CHUNK_SIZE", self.CHUNK):
+            #< islice is the hang guard: before the fix this generator is infinite
+            emitted = list(itertools.islice(
+                exportModule._iterKeysetChunks(self._fetch(rows), lambda chunk: chunk),
+                len(rows) * 4))
+
+        self.assertEqual([r["id"] for r in emitted], ["a", "r1", "r2", "r3"])
+
+    def test_a_whole_chunk_sharing_one_timestamp_still_terminates(self):
+        """The case the code already documented, kept alongside it: here every
+        row is on the cursor, so no row can be skipped past."""
+        rows = [{"id": f"r{i}", "playedAt": 200.0} for i in range(1, 6)]
+        with patch.object(exportModule, "EXPORT_CHUNK_SIZE", self.CHUNK):
+            emitted = list(itertools.islice(
+                exportModule._iterKeysetChunks(self._fetch(rows), lambda chunk: chunk),
+                len(rows) * 4))
+
+        #< it cannot page past a group larger than one chunk, but it must not
+        #  loop or duplicate while failing to
+        self.assertEqual([r["id"] for r in emitted], ["r1", "r2", "r3"])
+
+    def test_ordinary_paging_is_unaffected(self):
+        rows = [{"id": f"r{i}", "playedAt": 100.0 + i} for i in range(1, 8)]
+        with patch.object(exportModule, "EXPORT_CHUNK_SIZE", self.CHUNK):
+            emitted = list(itertools.islice(
+                exportModule._iterKeysetChunks(self._fetch(rows), lambda chunk: chunk),
+                len(rows) * 4))
+
+        self.assertEqual([r["id"] for r in emitted], [f"r{i}" for i in range(1, 8)])
+
+    def test_a_dropped_unhydratable_row_does_not_truncate_the_export(self):
+        """The pager measures chunks on RAW rows precisely so a row hydrate()
+        drops only loses itself - pinned here because the fix touches the same
+        bookkeeping."""
+        rows = [{"id": f"r{i}", "playedAt": 100.0 + i} for i in range(1, 8)]
+        with patch.object(exportModule, "EXPORT_CHUNK_SIZE", self.CHUNK):
+            emitted = list(itertools.islice(
+                exportModule._iterKeysetChunks(
+                    self._fetch(rows),
+                    lambda chunk: [r for r in chunk if r["id"] != "r2"]),
+                len(rows) * 4))
+
+        self.assertEqual([r["id"] for r in emitted],
+                         [f"r{i}" for i in range(1, 8) if i != 2])
 
 
 if __name__ == "__main__":
