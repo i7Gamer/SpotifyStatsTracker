@@ -3,10 +3,11 @@
 
 """Authentication, account and Spotify-connection routes.
 
-Extracted verbatim from app.py: login/register/reset-password/logout, the
-profile page and its POST actions (preferences, share requests, Last.fm key,
-Spotify Developer credentials), share request/link actions, and the Spotify
-OAuth authorize/callback pair. App-level constants and the shared
+Extracted verbatim from app.py: login/register/reset-password/logout, the three
+profile pages and their POST actions (/profile for the display name and
+preferences, /profile/sharing for share requests, /profile/connections for the
+Last.fm key and Spotify Developer credentials), share request/link actions, and
+the Spotify OAuth authorize/callback pair. App-level constants and the shared
 _passwordPolicyError are aliased from the app module at register() time; the
 per-group _safeNextUrl helper lives here.
 """
@@ -26,17 +27,19 @@ from Database.utils import dateToString
 
 logger = logging.getLogger(__name__)
 
-# Which /profile section a redirect's success/error message belongs to. The value
+# Which profile section a redirect's success/error message belongs to. The value
 # is both the `flash_for` query param and the section's element id, so one string
 # anchors the scroll and picks the block that renders the message (see
-# profile.html's flashBlock macro). An unknown or absent value falls back to the
-# top of the page - redirects that aren't section-specific rely on that.
+# _profile_macros.html's flash macro). A value the landing page has no section
+# for - absent, unknown, or naming a section that lives on one of the other two
+# pages - falls through to that page's flashFallback slot rather than vanishing.
 PROFILE_FLASH_DISPLAY_NAME = "display-name"
 PROFILE_FLASH_PREFERENCES = "preferences"
 PROFILE_FLASH_SHARING = "data-sharing"
 PROFILE_FLASH_SPOTIFY = "spotify"
 PROFILE_FLASH_LASTFM = "lastfm"
 
+HTTP_BAD_REQUEST = 400
 # Rate-limited actions render this status instead of redirecting - a 302 would
 # drop the code and land the browser on a page that never mentions the throttle.
 HTTP_TOO_MANY_REQUESTS = 429
@@ -776,6 +779,13 @@ def register(app, dashboard):
             if isAjax:
                 return jsonify(error="Please log in again."), 401
             return redirect(url_for("login"))
+
+        # Checked BEFORE the revoke, not after: the panel this branch re-renders
+        # builds a create-form action from `year`, whose rule is <int:year>, so a
+        # missing or non-numeric field raised a BuildError - 500ing on an action
+        # that had already destroyed the link. Every real client sends it.
+        if isAjax and year is None:
+            return jsonify(error="Missing the year this panel is showing."), HTTP_BAD_REQUEST
 
         if dashboard.repo.revokeShareLink(link_id, username):
             if isAjax:

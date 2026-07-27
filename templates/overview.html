@@ -139,7 +139,7 @@
     {% with coverage = genre_coverage %}{% include "_genre_progress.html" %}{% endwith %}
     {% if not genre_worker.configured %}
       <p style="font-size: 0.85rem; color: var(--muted); margin-top: 0.75rem;">
-        Add a Last.fm API key on your <a href="{{ url_for('profilePage') }}" style="color: var(--accent);">profile</a> to start backfilling.
+        Add a Last.fm API key on your <a href="{{ url_for('profileConnectionsPage') }}" style="color: var(--accent);">profile</a> to start backfilling.
       </p>
     {% endif %}
   </div>
@@ -159,7 +159,7 @@
     {% with rows = biography_rows %}{% include "_biography_progress.html" %}{% endwith %}
     {% if (artist_bio_enabled and not biography_rows[0].worker.configured) or (album_bio_enabled and not biography_rows[1].worker.configured) %}
       <p style="font-size: 0.85rem; color: var(--muted); margin-top: 0.75rem;">
-        Add a Last.fm API key on your <a href="{{ url_for('profilePage') }}" style="color: var(--accent);">profile</a> to start backfilling.
+        Add a Last.fm API key on your <a href="{{ url_for('profileConnectionsPage') }}" style="color: var(--accent);">profile</a> to start backfilling.
       </p>
     {% endif %}
   </div>

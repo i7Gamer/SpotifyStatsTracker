@@ -130,6 +130,76 @@ class TestTheSubNav(ProfileSplitTestCase):
                 self.assertIn(b"nav-account-dropdown active-parent", client.get(path).data)
 
 
+class TestLinksFromOtherPagesPointAtTheRightTab(unittest.TestCase):
+    """Prompts elsewhere in the app that send a user to add an API key must
+    point at the page holding the form. The split moved the form to
+    /profile/connections while four other templates still said "your profile",
+    landing people on Account with no field in sight.
+
+    A source scan rather than a render: these prompts only appear in states
+    that are awkward to reach through the test client (no genre coverage yet,
+    no plays at all), which is exactly why the stale links survived the split.
+    """
+
+    #< templates whose profilePage link is a *form* target that moved
+    PROMPT_TEMPLATES = [
+        "_genre_progress.html",
+        "_history_results.html",
+        "overview.html",
+    ]
+    #< the Account page's own forms and the two navs legitimately link there
+    ALLOWED = {"profile.html", "_profile_nav.html", "layout.html"}
+
+    def _templateDir(self):
+        return os.path.join(os.path.dirname(__file__), "..", "templates")
+
+    def test_the_api_key_prompts_link_to_connections(self):
+        for name in self.PROMPT_TEMPLATES:
+            with self.subTest(template=name):
+                with open(os.path.join(self._templateDir(), name), encoding="utf-8") as handle:
+                    source = handle.read()
+                self.assertIn("url_for('profileConnectionsPage')", source)
+                self.assertNotIn("url_for('profilePage')", source)
+
+    def test_no_other_template_links_to_the_account_page(self):
+        """Catches the next one: a new prompt added to some other page that
+        copies the old wording."""
+        offenders = []
+        for name in sorted(os.listdir(self._templateDir())):
+            if not name.endswith(".html") or name in self.ALLOWED:
+                continue
+            with open(os.path.join(self._templateDir(), name), encoding="utf-8") as handle:
+                if "url_for('profilePage')" in handle.read():
+                    offenders.append(name)
+        self.assertEqual(offenders, [])
+
+
+class TestFlashSurvivesAGatedSection(ProfileSplitTestCase):
+    def test_a_lastfm_message_still_renders_with_the_section_switched_off(self):
+        """remove_lastfm works whether or not the admin switch is on, so its
+        confirmation has to land somewhere even when the Last.fm section it
+        names was never rendered."""
+        self.dash.repo.setLastfmGenreBackfillEnabled(False)
+        client = self._loginAs()
+
+        with patch.dict(os.environ, {"SPOTIFY_CALLBACK_URL": _CALLBACK_URL}):
+            resp = client.get("/profile/connections?success=Key+removed&flash_for=lastfm")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotIn(b'id="lastfm"', resp.data)   #< the section really is absent
+        self.assertIn(b"Key removed", resp.data)
+
+    def test_a_spotify_message_still_renders_without_the_callback_env(self):
+        self.assertNotIn("SPOTIFY_CALLBACK_URL", os.environ)
+        client = self._loginAs()
+
+        resp = client.get("/profile/connections?success=Creds+saved&flash_for=spotify")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotIn(b'id="spotify"', resp.data)
+        self.assertIn(b"Creds saved", resp.data)
+
+
 class TestCompareLinksToShareManagement(ProfileSplitTestCase):
     def test_the_empty_state_points_at_the_sharing_page(self):
         """A user with no accepted share cannot reach /compare at all, so this

@@ -492,6 +492,33 @@ class TestProfileNoLongerListsShareLinks(ShareLinkRoutesTestCase):
         self.assertNotIn("Wrapped Share Links", body)
         self.assertNotIn(token, body)
 
+    def test_ajax_revoke_without_a_year_is_rejected_before_it_deletes(self):
+        """The panel this branch re-renders builds a create-form action from
+        `year` against an <int:year> rule, so a missing field used to raise a
+        BuildError - a 500 for an action that had already destroyed the link."""
+        self.dash.repo.upsertUser("alice", "alice@example.com")
+        token = self.dash.repo.createShareLink(
+            "alice", self.dash.repo.SHARE_LINK_KIND_WRAPPED, 2026, None)
+        linkId = self.dash.repo.getShareLink(token)["id"]
+        client = self._loginAs("alice", "alice@example.com")
+
+        resp = client.post(f"/profile/share-links/{linkId}?ajax=true")
+
+        self.assertEqual(resp.status_code, 400)
+        self.assertIsNotNone(self.dash.repo.getShareLink(token))   #< still there
+
+    def test_ajax_revoke_with_a_junk_year_is_rejected_too(self):
+        self.dash.repo.upsertUser("alice", "alice@example.com")
+        token = self.dash.repo.createShareLink(
+            "alice", self.dash.repo.SHARE_LINK_KIND_WRAPPED, 2026, None)
+        linkId = self.dash.repo.getShareLink(token)["id"]
+        client = self._loginAs("alice", "alice@example.com")
+
+        resp = client.post(f"/profile/share-links/{linkId}?ajax=true", data={"year": "nonsense"})
+
+        self.assertEqual(resp.status_code, 400)
+        self.assertIsNotNone(self.dash.repo.getShareLink(token))
+
     def test_non_ajax_revoke_returns_to_wrapped(self):
         """The redirect used to land on /profile, which no longer shows them."""
         self.dash.repo.upsertUser("alice", "alice@example.com")

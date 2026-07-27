@@ -12,7 +12,12 @@
 {% block profileTitle %}Connections{% endblock %}
 {% block profileBody %}
 
-{{ profileMacros.flashFallback(['spotify', 'lastfm']) }}
+{#- Only the sections this render actually produced. Claiming both
+    unconditionally dropped the message whenever its section was gated off -
+    e.g. remove_lastfm still succeeds after an admin disables Last.fm backfill,
+    and its confirmation had nowhere to land. -#}
+{{ profileMacros.flashFallback((['spotify'] if feature_enabled else [])
+                               + (['lastfm'] if lastfm_enabled else [])) }}
 
 {% if feature_enabled %}
 <section class="profile-section">

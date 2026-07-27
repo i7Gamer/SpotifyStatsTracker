@@ -18,7 +18,7 @@ A web application that allows users to track and analyze their Spotify listening
 - **Charts & Analytics**: Visualize your listening patterns and statistics with interactive charts, customizable trend bucket granularity (hour, day, week, month, year), and a Top Genres breakdown once enough genre data has been backfilled (see Genre Insights below)
 - **Yearly Wrapped & Share Links**: Get a personalized recap of your yearly listening with category filters (Top Songs, Artists, Albums, Discovered Songs, Artists, Albums) plus top genres, and generate shareable links with custom expiration
 - **Data Sharing & Comparison**: Request to share your listening stats with another user - once they accept, compare top songs/artists/albums, a taste-match score, and shared genres side by side on the Compare page
-- **Genre Insights & Biographies**: Add a free Last.fm API key on your Profile page to backfill genre tags and rich artist/album biographies in the background (see [Genre Data](#genre-data-optional) below)
+- **Genre Insights & Biographies**: Add a free Last.fm API key under Profile > Connections to backfill genre tags and rich artist/album biographies in the background (see [Genre Data](#genre-data-optional) below)
 - **Detail Pages & Interactive Timeline**: Drill down into individual songs, artists, and albums with an interactive play history timeline (with date headers, time gaps, and skip filters), embedded Spotify player, detailed stats, and biographies, plus a "Refresh Last.fm Data" button
 - **Admin Console**: Instance admins can monitor real-time worker health (auto-importer, Last.fm backfiller, backup worker, metadata backfiller), manage user sync states, inspect catalog backfill coverage, and configure instance-wide settings at `/admin`
 - **Multi-File Import**: Import multiple Spotify data export files at once with progress tracking
@@ -145,7 +145,7 @@ Listening history, tracks, images, and login sessions all live in one SQLite fil
 
 These snapshots live on the same disk as the database, so they protect against corruption and accidental deletion - copy them somewhere else (a different disk, cloud storage) for real disaster protection.
 
-You can also export your own play history from the Profile page (JSON in Spotify's extended-export format - re-importable via the Import page - or CSV).
+You can also export your own play history from the Import & Export page (JSON in Spotify's extended-export format - re-importable through the form on that same page - or CSV).
 
 To take a manual snapshot: the app runs the database in [WAL mode](https://www.sqlite.org/wal.html), so **don't just copy the `.db` file** while the container is running - recent writes can still be sitting in a separate `-wal` file that a raw copy would miss, producing a backup that's silently missing data or corrupt. Use SQLite's own online backup API instead, which is safe to run against a live, in-use database:
 
@@ -164,14 +164,14 @@ To enable automatic backfilling of missed plays via the Spotify Developer API, y
 1. Register an application in the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard).
 2. Set the **Redirect URI** in your Spotify app configuration to match your public callback URL (e.g. `http://localhost:5000/spotify-callback`).
 3. Set the `SPOTIFY_CALLBACK_URL` environment variable in your `docker-compose.yml` to this exact callback URL.
-4. Once set, the Spotify Developer settings section will become visible on your User Profile page, allowing you to link your account.
+4. Once set, the Spotify Developer settings section will become visible under Profile > Connections, allowing you to link your account.
 
 ### Genre Data (Optional)
 
 Each user can add their own [Last.fm](https://www.last.fm) API key to have a background worker fetch genre tags for the artists, albums, and songs in their listening history:
 
 1. Create a free key on the [Last.fm API account page](https://www.last.fm/api/account/create) (no Last.fm scrobbling account required).
-2. Paste it into the Last.fm API Settings section on your Profile page.
+2. Paste it into the Last.fm API Settings section under Profile > Connections.
 3. A background worker starts fetching genre tags for your most-played artists, albums, and songs first, respecting Last.fm's request-rate limits. Once your own library is covered, it keeps helping backfill genres for everyone else's, since the artist/album/song catalog is shared across all users.
 4. Track progress on the Overview page. Once enough of your history has genre data, genre breakdowns unlock on the Charts, Wrapped, and Compare pages.
 

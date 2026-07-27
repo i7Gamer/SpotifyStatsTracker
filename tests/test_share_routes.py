@@ -1,5 +1,5 @@
-"""Data-sharing management: the request_share action on /profile, and the
-accept/decline/cancel/revoke actions on POST /profile/shares/<id>.
+"""Data-sharing management: the request_share action on /profile/sharing, and
+the accept/decline/cancel/revoke actions on POST /profile/shares/<id>.
 """
 import unittest
 from unittest.mock import patch, MagicMock

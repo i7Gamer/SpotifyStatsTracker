@@ -36,7 +36,7 @@
   </p>
   {% if not coverage.song.total %}
   <p style="font-size: 0.85rem; color: var(--muted, #aaa); margin-top: 0.5rem;">
-    Add a Last.fm API key on {{ (username + "'s") if publicView else "your" }} <a href="{{ url_for('profilePage') }}" style="color: var(--accent);">profile</a> to start backfilling genre data.
+    Add a Last.fm API key on {{ (username + "'s") if publicView else "your" }} <a href="{{ url_for('profileConnectionsPage') }}" style="color: var(--accent);">profile</a> to start backfilling genre data.
   </p>
   {% endif %}
   {% import "_genre_macros.html" as genreMacros %}
