@@ -407,8 +407,9 @@ class SettingQueries:
     def isMilestonesEnabled(self) -> bool:
         """Whether the achievement-milestones feature is on instance-wide
         (absent row = enabled). Gates background detection plus the topbar badge
-        and the /profile Milestones section - disabling hides them without
-        deleting recorded rows, so re-enabling restores the history."""
+        and the dashboard's Milestones / Next milestones cards - disabling hides
+        them without deleting recorded rows, so re-enabling restores the
+        history."""
         return self._isFeatureEnabled(MILESTONES_SETTING_KEY)
 
     def setMilestonesEnabled(self, enabled: bool) -> None:

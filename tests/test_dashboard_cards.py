@@ -1,5 +1,7 @@
 """The dashboard's unfiltered live cards (Now Playing, Listening streak, On this
 day, Discover) and their placement above the interval/date-range filter form."""
+import datetime
+import json
 import unittest
 from unittest.mock import patch, MagicMock
 import sys
@@ -223,6 +225,8 @@ class DashboardCardsTestCase(_DashboardHelpers, AppTestCase):
         self.assertIn(b"next-milestone-card", resp.data)
         self.assertIn(b"820 / 1,000 lifetime plays", resp.data)
         db.getPlayTotals.assert_called_once()
+        #< gated with the earned-milestones card beside it, see
+        #  DashboardMilestonesCardTestCase.test_kill_switch_hides_both_cards
 
     def test_nav_groups_analytics_and_account(self):
         # The analytics pages live under an Insights dropdown; account/management
@@ -449,6 +453,221 @@ class DashboardAjaxFilterTestCase(_DashboardHelpers, AppTestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertIn(b"streak-block", resp.data)
         db.getCurrentStreak.assert_called_once()
+
+
+class DashboardMilestonesCardTestCase(_DashboardHelpers, AppTestCase):
+    """Achievements earned, shown next to the progress bars toward the next
+    ones. This list used to live on /profile, which is a settings page - and
+    it meant the topbar badge sent you somewhere with no other reason to go.
+
+    Both cards are gated on the same admin kill switch: an instance with
+    milestones switched off used to keep showing progress toward them."""
+
+    def _record(self, dash, username="alice", kind="plays", threshold=1000,
+                detail=None, achievedAt=1609459200.0, seen=True):
+        dash.repo.upsertUser(username, f"{username}@example.com")
+        dash.repo.recordMilestone(username, kind, threshold, detail, achievedAt, seen=seen)
+
+    def _earnedList(self, body):
+        """Just the earned-milestones <ul>.
+
+        The two cards share vocabulary - "1,000 lifetime plays" is also how the
+        Next-milestones bar beside it labels its target - so an unscoped
+        assertIn passes whether or not the earned card rendered at all."""
+        start = body.find(b'class="milestone-list"')
+        self.assertNotEqual(start, -1, "earned-milestones list not rendered")
+        return body[start:body.index(b"</ul>", start)]
+
+    def test_card_renders_in_the_same_row_as_next_milestones(self):
+        dash = self._makeApp()
+        self._record(dash)
+        db = self._makeDb()
+        db.getPlayTotals.return_value = (820, 0)
+
+        body = self._get(dash, db).data
+
+        self.assertIn(b"milestone-row", body)
+        self.assertIn(b"milestone-card", body)
+        self.assertIn(b"next-milestone-card", body)
+        #< earned on the left, progress toward the next on the right
+        self.assertLess(body.index(b'class="summary-card milestone-card"'),
+                        body.index(b'class="summary-card next-milestone-card"'))
+
+    def test_lists_the_achievement(self):
+        dash = self._makeApp()
+        self._record(dash)
+
+        earned = self._earnedList(self._get(dash, self._makeDb()).data)
+
+        self.assertIn(b"1,000 lifetime plays", earned)
+
+    def test_orders_newest_first(self):
+        dash = self._makeApp()
+        self._record(dash, kind="plays", threshold=1000, achievedAt=1609459200.0)
+        self._record(dash, kind="streak", threshold=7, achievedAt=1612137600.0)
+
+        earned = self._earnedList(self._get(dash, self._makeDb()).data)
+
+        self.assertLess(earned.index(b"7-day listening streak"),
+                        earned.index(b"1,000 lifetime plays"))
+
+    def test_shows_the_date_in_the_users_timezone(self):
+        """Pinned to a zone whose local date DIFFERS from both UTC and the
+        server's own - otherwise the assertion passes even if the route stops
+        passing tz at all, since every fallback lands on the same day."""
+        dash = self._makeApp()
+        self._record(dash, achievedAt=1609459200.0)   #< 2021-01-01 00:00 UTC
+        db = self._makeDb()
+        db.tz = datetime.timezone(datetime.timedelta(hours=-8))   #< 2020-12-31 local
+
+        earned = self._earnedList(self._get(dash, db).data)
+
+        self.assertIn(b"2020-12-31", earned)
+        self.assertNotIn(b"2021-01-01", earned)
+
+    def test_top_artist_milestone_links_to_the_artist_page(self):
+        dash = self._makeApp()
+        self._record(dash, kind="top_artist", threshold=0,
+                     detail=json.dumps({"id": "art9", "name": "Boards of Canada"}))
+
+        earned = self._earnedList(self._get(dash, self._makeDb()).data)
+
+        self.assertIn(b"New #1 artist: Boards of Canada", earned)
+        self.assertIn(b"/artist/art9", earned)
+
+    def test_visiting_the_dashboard_clears_the_badge(self):
+        dash = self._makeApp()
+        self._record(dash, seen=False)
+        self.assertEqual(dash.repo.getUnseenMilestoneCount("alice"), 1)
+
+        self._get(dash, self._makeDb())
+
+        self.assertEqual(dash.repo.getUnseenMilestoneCount("alice"), 0)
+
+    def test_badge_still_renders_on_the_render_that_clears_it(self):
+        """`/` is where login drops you, and it both shows the milestones and
+        acknowledges them. Context processors run after the view, so without
+        priming (see primeMilestoneBadge) the badge would count what was just
+        cleared - zero - and a user landing here would never see the
+        notification at all."""
+        dash = self._makeApp()
+        self._record(dash, seen=False)
+
+        first = self._get(dash, self._makeDb()).data
+
+        self.assertIn(b'class="milestone-badge"', first)
+        self.assertIn(b"1 new milestone", first)
+
+    def test_badge_is_gone_on_the_next_load(self):
+        dash = self._makeApp()
+        self._record(dash, seen=False)
+
+        self._get(dash, self._makeDb())
+        second = self._get(dash, self._makeDb()).data
+
+        self.assertNotIn(b"milestone-badge", second)
+
+    def test_empty_state_when_nothing_earned_yet(self):
+        dash = self._makeApp()
+        dash.repo.upsertUser("alice", "alice@example.com")
+
+        body = self._get(dash, self._makeDb()).data
+
+        self.assertIn(b"No milestones yet", body)
+
+    def test_extras_collapse_behind_the_show_more_button(self):
+        """Three stay visible so the card roughly matches the height of the
+        three progress bars beside it; milestone-more.js reveals the rest."""
+        dash = self._makeApp()
+        for i in range(5):
+            self._record(dash, kind="plays", threshold=1000 * (i + 1),
+                         achievedAt=1609459200.0 + i)
+
+        body = self._get(dash, self._makeDb()).data
+
+        #< every milestone is in the DOM; the surplus ones just carry `hidden`,
+        #  so the class substring matches those too - count them separately
+        total = body.count(b'class="milestone-item"')
+        hidden = body.count(b'class="milestone-item" hidden')
+        self.assertEqual(total, 5)
+        self.assertEqual(hidden, 2)
+        self.assertEqual(total - hidden, 3)   #< visible
+        self.assertIn(b"data-milestone-more", body)
+        self.assertIn(b'data-chunk-size="5"', body)
+        self.assertIn(b"Show 2 more", body)
+        #< the button is inert without its script, and the suite would not
+        #  otherwise notice the tag going missing
+        self.assertIn(b"js/milestone-more.js", body)
+
+    def test_no_show_more_button_at_exactly_the_visible_limit(self):
+        """The boundary itself: 3 earned, 3 visible, nothing left to reveal."""
+        dash = self._makeApp()
+        for i in range(3):
+            self._record(dash, threshold=1000 * (i + 1), achievedAt=1609459200.0 + i)
+
+        body = self._get(dash, self._makeDb()).data
+
+        self.assertEqual(body.count(b'class="milestone-item"'), 3)
+        self.assertNotIn(b"data-milestone-more", body)
+        self.assertNotIn(b'class="milestone-item" hidden', body)
+
+    def test_show_more_button_appears_one_past_the_limit(self):
+        dash = self._makeApp()
+        for i in range(4):
+            self._record(dash, threshold=1000 * (i + 1), achievedAt=1609459200.0 + i)
+
+        body = self._get(dash, self._makeDb()).data
+
+        self.assertIn(b"data-milestone-more", body)
+        self.assertIn(b"Show 1 more", body)   #< not the full chunk size
+        self.assertEqual(body.count(b'class="milestone-item" hidden'), 1)
+
+    def test_kill_switch_hides_both_cards(self):
+        dash = self._makeApp()
+        self._record(dash)
+        dash.repo.setMilestonesEnabled(False)
+        db = self._makeDb()
+        db.getPlayTotals.return_value = (820, 0)
+
+        body = self._get(dash, db).data
+
+        self.assertNotIn(b"milestone-row", body)
+        self.assertNotIn(b"1,000 lifetime plays", body)
+        #< the progress bars go too: an instance with the feature off should
+        #  not advertise progress toward milestones it will never record
+        self.assertNotIn(b"next-milestone-card", body)
+        self.assertNotIn(b"820 / 1,000 lifetime plays", body)
+
+    def test_kill_switch_skips_the_lifetime_totals_query(self):
+        """Nothing renders from it, so nothing should pay for it."""
+        dash = self._makeApp()
+        dash.repo.setMilestonesEnabled(False)
+        db = self._makeDb()
+
+        self._get(dash, db)
+
+        db.getPlayTotals.assert_not_called()
+
+    def test_kill_switch_does_not_clear_the_badge(self):
+        """Same contract as the topbar badge: the switch hides the rows, it
+        does not silently acknowledge them."""
+        dash = self._makeApp()
+        self._record(dash, seen=False)
+        dash.repo.setMilestonesEnabled(False)
+
+        self._get(dash, self._makeDb())
+
+        self.assertEqual(dash.repo.getMilestonesForUser("alice")[0]["seen"], 0)
+
+    def test_ajax_filter_change_does_not_rebuild_the_cards(self):
+        """The milestone cards are unfiltered, like the streak and calendar."""
+        dash = self._makeApp()
+        self._record(dash, seen=False)
+        db = self._makeDb()
+
+        self._get(dash, db, path="/?ajax=true")
+
+        self.assertEqual(dash.repo.getUnseenMilestoneCount("alice"), 1)
 
 
 if __name__ == "__main__":

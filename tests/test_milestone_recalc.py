@@ -321,7 +321,7 @@ class TestRecalculateTopArtist(_RecalcTestCase):
 class TestRemoveUnsupportedRows(_RecalcTestCase):
     """removeUnsupported=True - the settled pass after an overwrite import:
     rows whose threshold the rewritten history can no longer reach are
-    deleted, so the Milestones section reflects the data that actually
+    deleted, so the Milestones card reflects the data that actually
     exists. Organic recalculation passes keep the default (False) so e.g. a
     tightened skip threshold never deletes rows only to re-notify them when
     it's loosened again."""

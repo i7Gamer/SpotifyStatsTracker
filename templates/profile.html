@@ -63,37 +63,6 @@
       <button type="submit" class="primary-button">Save Display Name</button>
     </form>
 
-    {% if milestones_enabled %}
-    <h2>Milestones</h2>
-    <div class="milestones-section" style="margin-bottom: 2rem; padding-bottom: 2rem; border-bottom: 1px solid var(--border-color, #2d2d2d);">
-      {% if milestones %}
-        {# Only the most recent milestone shows by default; milestone-more.js
-           reveals the rest MILESTONE_CHUNK_SIZE at a time via the button below. #}
-        {% set MILESTONE_INITIAL_VISIBLE = 1 %}
-        {% set MILESTONE_CHUNK_SIZE = 5 %}
-        {% macro milestoneItem(m, hidden=false) %}
-          <li class="milestone-item"{% if hidden %} hidden{% endif %}>
-            <span class="milestone-icon" aria-hidden="true">{{ m.icon }}</span>
-            <span class="milestone-label">
-              {% if m.artistId %}<a href="{{ url_for('artistDetailPage', artist_id=m.artistId) }}">{{ m.label }}</a>{% else %}{{ m.label }}{% endif %}
-            </span>
-            <span class="milestone-date">{{ m.dateText }}</span>
-          </li>
-        {% endmacro %}
-        <ul class="milestone-list" data-milestone-list>
-          {% for m in milestones %}
-            {{ milestoneItem(m, loop.index0 >= MILESTONE_INITIAL_VISIBLE) }}
-          {% endfor %}
-        </ul>
-        {% if milestones|length > MILESTONE_INITIAL_VISIBLE %}
-        <button type="button" class="milestone-more-btn" data-milestone-more data-chunk-size="{{ MILESTONE_CHUNK_SIZE }}">Show {{ [MILESTONE_CHUNK_SIZE, milestones|length - MILESTONE_INITIAL_VISIBLE]|min }} more</button>
-        {% endif %}
-      {% else %}
-        <p class="milestone-empty">No milestones yet &mdash; keep listening and they'll show up here as you hit play-count, listening-time, and streak achievements.</p>
-      {% endif %}
-    </div>
-    {% endif %}
-
     <h2 id="preferences">Preferences</h2>
     {{ flashBlock('preferences') }}
     <form class="login-form" method="post" action="{{ url_for('profilePage') }}" style="margin-bottom: 2rem; padding-bottom: 2rem; border-bottom: 1px solid var(--border-color, #2d2d2d);">
@@ -457,7 +426,4 @@
     });
   })();
 </script>
-{% if milestones_enabled %}
-<script src="{{ url_for('static', filename='js/milestone-more.js') }}"></script>
-{% endif %}
 {% endblock %}

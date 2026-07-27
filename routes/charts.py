@@ -16,12 +16,12 @@ from flask import render_template, redirect, request, url_for, session, jsonify
 
 import app as appmod
 from routes._auth import makeRequiresUser
-from Database.utils import convertToDatetime, msToString
+from Database.utils import convertToDatetime, dateToString, msToString
 from services.genre_gate import (
     emptyGenreCoverage, resolveGenreCoverage, genreGatePasses, resolveGenreDistribution,
     emptyBiographyCoverage, resolveBiographyCoverage,
 )
-from services.milestones import buildNextMilestones, MS_PER_HOUR
+from services.milestones import buildNextMilestones, formatMilestone, MS_PER_HOUR
 
 logger = logging.getLogger(__name__)
 
@@ -326,18 +326,48 @@ def register(app, dashboard):
         # being deferred like the full-history Discover card.
         listeningCalendar = db.getListeningCalendar()
 
-        # "Next milestones" progress bars: lifetime totals against the same
-        # thresholds detection uses. getPlayTotals is a single COUNT+SUM scan;
-        # removing the play-history list from this page more than pays for it.
-        totalPlays, totalMs = db.getPlayTotals(None, None)
-        streakDays = currentStreak.get("days", 0) if isinstance(currentStreak, dict) else 0
-        nextMilestones = buildNextMilestones(totalPlays, (totalMs or 0) // MS_PER_HOUR, streakDays)
+        # The milestones row: what's been earned, beside the progress bars
+        # toward what's next. Both are gated on the admin kill switch - an
+        # instance with the feature off recorded nothing, so advertising
+        # progress toward milestones it will never grant was misleading, and
+        # the queries behind it are pure waste there.
+        #
+        # getMilestonesForUser is an indexed read, measured at ~0.02ms against a
+        # real 131k-play db next to the ~15ms getPlayTotals below already costs.
+        # The threshold kinds cap out at 21 rows/user (9 plays + 7 listen-time +
+        # 5 streak); top_artist appends one row per change of #1 artist, so the
+        # table is slow-growing rather than strictly bounded - still nowhere
+        # near enough to defer the way the Discover card is deferred.
+        milestones = []
+        nextMilestones = []
+        if dashboard.repo.isMilestonesEnabled():
+            milestones = [
+                {**formatMilestone(row), "dateText": dateToString(row["achieved_at"], tz=db.tz)}
+                for row in dashboard.repo.getMilestonesForUser(username)
+            ]
+            # Freeze the badge count BEFORE acknowledging, or the topbar badge
+            # never renders on this page: context processors run after the view,
+            # so _injectMilestoneStatus would count what markMilestonesSeen just
+            # cleared. See primeMilestoneBadge.
+            dashboard.primeMilestoneBadge(username)
+            # Reaching this render means the cards are about to show them -
+            # same acknowledgment pattern as the accepted-share notification.
+            dashboard.repo.markMilestonesSeen(username)
+
+            # "Next milestones" progress bars: lifetime totals against the same
+            # thresholds detection uses. getPlayTotals is a single COUNT+SUM
+            # scan; removing the play-history list from this page more than
+            # pays for it.
+            totalPlays, totalMs = db.getPlayTotals(None, None)
+            streakDays = currentStreak.get("days", 0) if isinstance(currentStreak, dict) else 0
+            nextMilestones = buildNextMilestones(totalPlays, (totalMs or 0) // MS_PER_HOUR, streakDays)
 
         return render_template(
             "tracks.html",
             currentStreak=currentStreak,
             onThisDay=onThisDay,
             listeningCalendar=listeningCalendar,
+            milestones=milestones,
             nextMilestones=nextMilestones,
             lastfmGenreEnabled=lastfmGenreEnabled,
             friends_now_playing_enabled=dashboard.repo.isFriendsNowPlayingEnabled(),

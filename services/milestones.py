@@ -358,7 +358,7 @@ def _formatNumber(value) -> str:
 
 def formatMilestone(row) -> dict:
     """Human-readable {icon, label, artistId?} for one user_milestones row, for
-    the Profile Milestones section. artistId is present only on top_artist rows
+    the dashboard's Milestones card. artistId is present only on top_artist rows
     so the template can link to the artist page (None if the id is unknown)."""
     kind = row.get("kind")
     threshold = row.get("threshold") or 0

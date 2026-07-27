@@ -392,8 +392,8 @@ CREATE INDEX IF NOT EXISTS idx_share_links_username ON share_links(username);
 -- Per-user achievement milestones: lifetime play-count and listen-time
 -- thresholds, listening-streak thresholds, and each change of the all-time #1
 -- artist. A row is written once its milestone is reached; seen=0 drives the
--- topbar "new milestone" badge until the user opens the Milestones section on
--- /profile (markMilestonesSeen). The user's FIRST detection pass seeds every
+-- topbar "new milestone" badge until the user opens the dashboard, where the
+-- Milestones card shows them (markMilestonesSeen). The user's FIRST detection pass seeds every
 -- already-achieved milestone as seen=1 (see users.milestones_baseline_at and
 -- services/milestones.py) so shipping this never floods an existing account
 -- with notifications for milestones it passed long ago.

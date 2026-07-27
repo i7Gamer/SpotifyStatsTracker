@@ -14,6 +14,11 @@
   --text: #f6f6f6;
   --muted: #a0a0a0;
   --border: rgba(255, 255, 255, 0.08);
+  /* Resting height of the sticky .topbar: 14px padding, a 1.2rem brand line and
+     a 1px border. Used as a scroll offset so #anchor jumps do not land under
+     it. Approximate on purpose - the bar is flex-wrap, so badges can make it
+     taller; erring low just leaves the target slightly higher on the screen. */
+  --topbar-height: 52px;
   /* Tokens the admin/profile inline styles reference with a hardcoded fallback
      (var(--fg, #f0f0f0) etc.). Defining them once here - at their existing
      fallback values, so appearance is unchanged - single-sources them and lets
@@ -2219,6 +2224,10 @@ progress::-moz-progress-bar {
 }
 
 .milestone-more-btn {
+  /* Grid item of .summary-card (display: grid) since the list moved onto the
+     dashboard - without this it stretches to the full card width and stops
+     reading as a link. The card's own gap supplies the spacing. */
+  justify-self: start;
   margin-top: 8px;
   background: none;
   border: none;
@@ -3757,10 +3766,31 @@ html.theme-red {
   }
 }
 
-/* Next milestones: progress bars toward the next play-count / listen-time /
-   streak threshold. Full-width row in the live panel, like the calendar. */
-.next-milestone-card {
-  flex: 0 0 auto;
+/* The milestones row: earned achievements beside progress bars toward the next
+   play-count / listen-time / streak threshold.
+
+   No flex sizing here on purpose - .summary-card is already flex: 1 1 0, which
+   is exactly "share the row evenly". .next-milestone-card used to override that
+   to 0 0 auto because it was a full-width row of its own; paired with the
+   earned-milestones card it no longer is, and that override is gone.
+
+   Only the wrap needs saying: .dashboard-summary-cards is nowrap + overflow-x:
+   auto below 901px, which would make this pair a horizontal scroller on a
+   phone. Two cards of prose side by side are unreadable at that width anyway. */
+@media (max-width: 900px) {
+  .milestone-row {
+    flex-wrap: wrap;
+  }
+}
+
+/* Anchor landing spots. The topbar is position: sticky; top: 0 (see .topbar),
+   so a fragment jump scrolls the target to y=0 - underneath it. Two links do
+   that: the milestone badge's #milestones, and the /profile section anchors a
+   save redirects to (see _profileRedirect in routes/auth.py), which would
+   otherwise hide the very heading the confirmation sits under. */
+.milestone-row,
+.profile-panel h2[id] {
+  scroll-margin-top: calc(var(--topbar-height) + 16px);
 }
 
 .next-milestone-list {

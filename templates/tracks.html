@@ -136,23 +136,61 @@
       </div>
       {% endif %}
 
-      {% if nextMilestones %}
-      <div class="summary-card next-milestone-card">
-        <h2>Next milestones</h2>
-        <ul class="next-milestone-list">
-          {% for m in nextMilestones %}
-          <li class="next-milestone-item">
-            <div class="next-milestone-head">
-              <span class="next-milestone-icon" aria-hidden="true">{{ m.icon }}</span>
-              <span class="next-milestone-text">{{ "{:,}".format(m.current) }} / {{ "{:,}".format(m.target) }} {{ m.label }}</span>
-              <span class="next-milestone-remaining">{{ "{:,}".format(m.remaining) }} to go</span>
-            </div>
-            <div class="next-milestone-bar" role="progressbar" aria-valuenow="{{ m.percent }}" aria-valuemin="0" aria-valuemax="100">
-              <div class="next-milestone-fill" style="width: {{ m.percent }}%;"></div>
-            </div>
-          </li>
-          {% endfor %}
-        </ul>
+      {# Earned on the left, progress toward the next on the right. Both are
+         gated on the same admin kill switch (see dashboardIndex), so an
+         instance with milestones off shows neither - and the topbar's
+         milestone badge links straight to this row's #milestones anchor. #}
+      {% if milestones_enabled %}
+      <div class="dashboard-summary-cards milestone-row" id="milestones">
+        <div class="summary-card milestone-card">
+          <h2>Milestones</h2>
+          {% if milestones %}
+            {# Only the first few show; milestone-more.js reveals the rest
+               MILESTONE_CHUNK_SIZE at a time via the button below. The initial
+               count roughly matches the height of the progress bars beside it. #}
+            {% set MILESTONE_INITIAL_VISIBLE = 3 %}
+            {% set MILESTONE_CHUNK_SIZE = 5 %}
+            {% macro milestoneItem(m, hidden=false) %}
+              <li class="milestone-item"{% if hidden %} hidden{% endif %}>
+                <span class="milestone-icon" aria-hidden="true">{{ m.icon }}</span>
+                <span class="milestone-label">
+                  {% if m.artistId %}<a href="{{ url_for('artistDetailPage', artist_id=m.artistId) }}">{{ m.label }}</a>{% else %}{{ m.label }}{% endif %}
+                </span>
+                <span class="milestone-date">{{ m.dateText }}</span>
+              </li>
+            {% endmacro %}
+            <ul class="milestone-list" data-milestone-list>
+              {% for m in milestones %}
+                {{ milestoneItem(m, loop.index0 >= MILESTONE_INITIAL_VISIBLE) }}
+              {% endfor %}
+            </ul>
+            {% if milestones|length > MILESTONE_INITIAL_VISIBLE %}
+            <button type="button" class="milestone-more-btn" data-milestone-more data-chunk-size="{{ MILESTONE_CHUNK_SIZE }}">Show {{ [MILESTONE_CHUNK_SIZE, milestones|length - MILESTONE_INITIAL_VISIBLE]|min }} more</button>
+            {% endif %}
+          {% else %}
+            <p class="milestone-empty">No milestones yet &mdash; keep listening and they'll show up here as you hit play-count, listening-time, and streak achievements.</p>
+          {% endif %}
+        </div>
+
+        {% if nextMilestones %}
+        <div class="summary-card next-milestone-card">
+          <h2>Next milestones</h2>
+          <ul class="next-milestone-list">
+            {% for m in nextMilestones %}
+            <li class="next-milestone-item">
+              <div class="next-milestone-head">
+                <span class="next-milestone-icon" aria-hidden="true">{{ m.icon }}</span>
+                <span class="next-milestone-text">{{ "{:,}".format(m.current) }} / {{ "{:,}".format(m.target) }} {{ m.label }}</span>
+                <span class="next-milestone-remaining">{{ "{:,}".format(m.remaining) }} to go</span>
+              </div>
+              <div class="next-milestone-bar" role="progressbar" aria-valuenow="{{ m.percent }}" aria-valuemin="0" aria-valuemax="100">
+                <div class="next-milestone-fill" style="width: {{ m.percent }}%;"></div>
+              </div>
+            </li>
+            {% endfor %}
+          </ul>
+        </div>
+        {% endif %}
       </div>
       {% endif %}
     </div>
@@ -201,4 +239,7 @@
     var USERNAME = {{ username | tojson }};
   </script>
   <script src="{{ url_for('static', filename='js/dashboard-page.js') }}"></script>
+  {% if milestones_enabled %}
+  <script src="{{ url_for('static', filename='js/milestone-more.js') }}"></script>
+  {% endif %}
 {% endblock %}

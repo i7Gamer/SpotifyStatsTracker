@@ -119,17 +119,17 @@ class MilestoneQueries:
 
     def getUnseenMilestoneCount(self, username: str) -> int:
         """How many milestones this user hasn't acknowledged (by opening the
-        Milestones section on /profile) - the topbar badge count. Runs on every
-        template render (see _injectMilestoneStatus in app.py), hence the
-        (username, seen) index."""
+        dashboard, where the Milestones card shows them) - the topbar badge
+        count. Runs on every template render (see _injectMilestoneStatus in
+        app.py), hence the (username, seen) index."""
         row = self._conn().execute(
             "SELECT COUNT(*) AS c FROM user_milestones WHERE username=? AND seen=0", (username,)
         ).fetchone()
         return row["c"]
 
     def getMilestonesForUser(self, username: str, limit: int | None = None) -> list[dict]:
-        """This user's milestones, newest first, for the Profile Milestones
-        section."""
+        """This user's milestones, newest first, for the dashboard's Milestones
+        card."""
         sql = ("SELECT id, kind, threshold, detail, achieved_at, seen FROM user_milestones "
                "WHERE username=? ORDER BY achieved_at DESC, id DESC")
         params: list = [username]
@@ -140,8 +140,11 @@ class MilestoneQueries:
         return [dict(r) for r in rows]
 
     def markMilestonesSeen(self, username: str) -> None:
-        """Clears the "new milestone" badge - called when `username` opens
-        /profile, where the milestones are actually shown."""
+        """Clears the "new milestone" badge - called when `username` opens the
+        dashboard (routes/charts.py's dashboardIndex), where the Milestones card
+        actually shows them. That view primes the badge count first (see
+        primeMilestoneBadge), so the badge still renders on the page that
+        acknowledges it."""
         conn = self._conn()
         with conn:
             conn.execute(

@@ -5,6 +5,7 @@ No test in this suite should ever reach the real network: everything external
 or worse, pass while hammering open.spotify.com - so real socket connections
 are blocked for every test and raise instead.
 """
+import datetime
 import socket
 import tempfile
 import unittest
@@ -176,6 +177,8 @@ def makeDashboardDbMock() -> MagicMock:
     dashboard means editing every one of them, which is how getListeningCalendar
     landed as three separate edits."""
     db = MagicMock()
+    #< a real tzinfo, not a Mock: the milestone card formats achieved_at with it
+    db.tz = datetime.timezone.utc
     db.repo.getUserSettings.return_value = {"default_dashboard_window": "day"}
     db.getOverallStats.return_value = {
         "currentTopSongs": [], "currentTopArtists": [],

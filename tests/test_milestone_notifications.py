@@ -1,9 +1,12 @@
 """Wiring for the achievement-milestones feature: the topbar "new milestone"
-badge (layout.html + app.py's _injectMilestoneStatus), the Profile Milestones
-section, and the background detection pass folded into _ensureAllUsersLogin.
+badge (layout.html + app.py's _injectMilestoneStatus) and the background
+detection pass folded into _ensureAllUsersLogin.
 
-The detection LOGIC itself is covered by test_milestones.py; this file covers
-that it surfaces to the user and fires from the right place.
+The detection LOGIC itself is covered by test_milestones.py; the card the badge
+points at lives on the dashboard, so its rendering (and the badge-clearing that
+comes with viewing it) is covered by test_dashboard_cards.py's
+DashboardMilestonesCardTestCase. This file covers that the feature surfaces to
+the user and fires from the right place.
 """
 import os
 import sys
@@ -21,7 +24,7 @@ class _BadgeTestCase(AppTestCase):
     def _makeDb(self):
         db = MagicMock()
         db.repo = self.dash.repo
-        db.tz = datetime.timezone.utc   #< /profile formats milestone/share dates with this
+        db.tz = datetime.timezone.utc   #< /profile formats share-link dates with this
         db.getUserSpotifyCredentials.return_value = {}
         db.getUserLastfmApiKey.return_value = None
         return db
@@ -65,7 +68,8 @@ class TestMilestoneTopbarBadge(_BadgeTestCase):
 
         self.assertIn(b'class="milestone-badge"', resp.data)
         self.assertIn(b"2 new milestones", resp.data)
-        self.assertIn(b'href="/profile"', resp.data)
+        #< straight to the card, not to the settings page it used to live on
+        self.assertIn(b'href="/#milestones"', resp.data)
 
     def test_seen_milestones_do_not_show(self):
         client = self._loginAs("alice", "alice@example.com")
@@ -96,81 +100,27 @@ class TestMilestoneTopbarBadge(_BadgeTestCase):
         self.assertNotIn(b"milestone-badge", resp.data)
 
 
-class TestProfileMilestonesSection(_BadgeTestCase):
-    def test_lists_milestone_and_clears_badge(self):
+class TestProfileNoLongerCarriesMilestones(_BadgeTestCase):
+    """The list moved to the dashboard - /profile must not render it (or pay
+    for its query), and must not silently clear the badge on the way past."""
+
+    def test_profile_does_not_render_milestones(self):
+        client = self._loginAs("alice", "alice@example.com")
+        self.dash.repo.recordMilestone("alice", "plays", 1000, None, 1609459200.0, seen=True)
+
+        resp = client.get("/profile")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotIn(b"1,000 lifetime plays", resp.data)
+        self.assertNotIn(b"milestone-list", resp.data)
+
+    def test_profile_does_not_clear_the_badge(self):
         client = self._loginAs("alice", "alice@example.com")
         self.dash.repo.recordMilestone("alice", "plays", 1000, None, 1609459200.0, seen=False)
+
+        client.get("/profile")
+
         self.assertEqual(self.dash.repo.getUnseenMilestoneCount("alice"), 1)
-
-        resp = client.get("/profile")
-
-        self.assertEqual(resp.status_code, 200)
-        self.assertIn(b"1,000 lifetime plays", resp.data)
-        # Viewing the section acknowledges it - badge is cleared for next load.
-        self.assertEqual(self.dash.repo.getUnseenMilestoneCount("alice"), 0)
-
-    def test_top_artist_milestone_links_to_artist_page(self):
-        client = self._loginAs("alice", "alice@example.com")
-        self.dash.repo.recordMilestone(
-            "alice", "top_artist", 0, json.dumps({"id": "art9", "name": "Boards of Canada"}),
-            1609459200.0, seen=True)
-
-        resp = client.get("/profile")
-
-        self.assertIn(b"New #1 artist: Boards of Canada", resp.data)
-        self.assertIn(b"/artist/art9", resp.data)
-
-    def test_extra_milestones_collapsed_behind_show_more_button(self):
-        # Server renders every milestone but leaves only the most recent one
-        # visible; the rest carry `hidden` and milestone-more.js reveals them in
-        # chunks via the button. Newest-first ordering => the visible one is the
-        # most recent.
-        client = self._loginAs("alice", "alice@example.com")
-        self.dash.repo.recordMilestone("alice", "plays", 1000, None, 1609459200.0, seen=True)   # older
-        self.dash.repo.recordMilestone("alice", "streak", 7, None, 1612137600.0, seen=True)      # newer
-
-        resp = client.get("/profile")
-        body = resp.data
-
-        self.assertEqual(resp.status_code, 200)
-        # Both milestones are in the DOM, newest first.
-        self.assertIn(b"7-day listening streak", body)
-        self.assertIn(b"1,000 lifetime plays", body)
-        self.assertLess(body.index(b"7-day listening streak"), body.index(b"1,000 lifetime plays"))
-        # Exactly one item is left visible; the older one carries `hidden`.
-        self.assertEqual(body.count(b'class="milestone-item"'), 2)
-        self.assertEqual(body.count(b'class="milestone-item" hidden'), 1)
-        # The reveal control is present with the chunk size milestone-more.js reads.
-        self.assertIn(b"data-milestone-more", body)
-        self.assertIn(b'data-chunk-size="5"', body)
-
-    def test_no_show_more_button_with_single_milestone(self):
-        client = self._loginAs("alice", "alice@example.com")
-        self.dash.repo.recordMilestone("alice", "plays", 1000, None, 1609459200.0, seen=True)
-
-        resp = client.get("/profile")
-
-        self.assertIn(b"1,000 lifetime plays", resp.data)
-        self.assertNotIn(b"data-milestone-more", resp.data)
-        self.assertNotIn(b'class="milestone-item" hidden', resp.data)
-
-    def test_empty_state_when_no_milestones(self):
-        client = self._loginAs("alice", "alice@example.com")
-
-        resp = client.get("/profile")
-
-        self.assertIn(b"No milestones yet", resp.data)
-
-    def test_section_hidden_when_feature_disabled(self):
-        client = self._loginAs("alice", "alice@example.com")
-        self.dash.repo.recordMilestone("alice", "plays", 1000, None, 1609459200.0, seen=True)
-        self.dash.repo.setMilestonesEnabled(False)
-
-        resp = client.get("/profile")
-
-        self.assertEqual(resp.status_code, 200)
-        self.assertNotIn(b"milestones-section", resp.data)
-        self.assertNotIn(b"1,000 lifetime plays", resp.data)
 
 
 class TestDetectionWiring(AppTestCase):

@@ -56,7 +56,7 @@
       </a>
       {% endif %}
       {% if unseenMilestoneCount %}
-      <a href="{{ url_for('profilePage') }}" class="milestone-badge" title="New listening milestone reached">
+      <a href="{{ url_for('dashboard', _anchor='milestones') }}" class="milestone-badge" title="New listening milestone reached">
         🏆 {{ unseenMilestoneCount }} new milestone{{ 's' if unseenMilestoneCount != 1 else '' }}
       </a>
       {% endif %}

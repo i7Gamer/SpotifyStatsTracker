@@ -23,7 +23,6 @@ import app as appmod
 from SpotipyFree import parseCookieString
 from Database.lastfm import LastfmClient
 from Database.utils import dateToString
-from services.milestones import formatMilestone
 
 logger = logging.getLogger(__name__)
 
@@ -508,23 +507,8 @@ def register(app, dashboard):
             for link in dashboard.repo.getShareLinksForUser(username)
         ]
 
-        # Achievement milestones (newest first) for the Milestones section, then
-        # clear the topbar "new milestone" badge - reaching this render means the
-        # user is looking at them, same acknowledgment pattern as the accepted-
-        # share notification above. Skipped entirely when the admin kill switch
-        # is off (the section is hidden then, so don't build the list or clear
-        # the badge - milestones_enabled comes from _injectMilestoneStatus).
-        milestones = []
-        if dashboard.repo.isMilestonesEnabled():
-            milestones = [
-                {**formatMilestone(row), "dateText": dateToString(row["achieved_at"], tz=db.tz)}
-                for row in dashboard.repo.getMilestonesForUser(username)
-            ]
-            dashboard.repo.markMilestonesSeen(username)
-
         return render_template(
             "profile.html",
-            milestones=milestones,
             username=username,
             #< read AFTER the POST branch above, so a just-saved name is what
             #  the form redisplays rather than the pre-save value

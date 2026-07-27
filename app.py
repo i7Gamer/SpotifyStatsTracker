@@ -797,6 +797,29 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
         except Exception as e:
             logger.warning("Milestone detection failed for %s: %s", username, e)
 
+    def primeMilestoneBadge(self, username: str) -> None:
+        """Freeze the milestone badge count for THIS render, before the caller
+        acknowledges the milestones.
+
+        Context processors run when the template renders - i.e. AFTER the view
+        function. The dashboard both shows the milestones and clears the badge
+        (markMilestonesSeen), so without priming, _injectMilestoneStatus counts
+        what is left after the clear: zero. The badge would then never appear on
+        the very page the user landed on, and `/` is where login drops them - so
+        for anyone whose first page is the dashboard the notification was
+        silently consumed without ever being shown.
+
+        Priming g with the pre-clear count gives the badge its one appearance
+        alongside the card, and the next page load has nothing left to show.
+        Costs nothing: the context processor's own memo means this replaces its
+        read rather than adding one."""
+        if "unseenMilestoneCount" not in g:
+            g.milestonesEnabled = self.repo.isMilestonesEnabled()
+            g.unseenMilestoneCount = (
+                self.repo.getUnseenMilestoneCount(username)
+                if g.milestonesEnabled and username else 0
+            )
+
     def _rateLimited(self, bucket: str) -> bool:
         """True if this request's source IP has exceeded RATE_LIMIT_MAX_ATTEMPTS
         for `bucket` within RATE_LIMIT_WINDOW_SECONDS - callers should reject
@@ -1143,16 +1166,19 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
         def _injectMilestoneStatus():
             # Topbar badge for unacknowledged achievement milestones (new
             # play/listen-time/streak thresholds or a new #1 artist), cleared
-            # when the user opens the Milestones section on /profile
-            # (markMilestonesSeen). Memoized on g like _injectShareStatus: one
-            # request can render several templates and each re-runs every
-            # context processor, so this cheap indexed count must not repeat per
-            # partial. No is_user_logged_in check, for the same reason
-            # _injectShareStatus skips it - the worst case is a badge that 302s
-            # to login like every other nav item. The admin kill switch
-            # (milestones_enabled) zeroes the count and hides the /profile
-            # section rather than deleting rows, mirroring how the data-sharing
-            # switch zeroes the share badges.
+            # when the dashboard renders the Milestones card (markMilestonesSeen
+            # in routes/charts.py's dashboardIndex). Memoized on g like
+            # _injectShareStatus: one request can render several templates and
+            # each re-runs every context processor, so this cheap indexed count
+            # must not repeat per partial. That memo is also what lets the
+            # dashboard prime the count before clearing it - see
+            # primeMilestoneBadge, without which the badge would never render on
+            # the page that acknowledges it. No is_user_logged_in check, for the
+            # same reason _injectShareStatus skips it - the worst case is a
+            # badge that 302s to login like every other nav item. The admin kill
+            # switch (milestones_enabled) zeroes the count and hides the
+            # dashboard milestones row rather than deleting rows, mirroring how
+            # the data-sharing switch zeroes the share badges.
             if "unseenMilestoneCount" not in g:
                 g.milestonesEnabled = self.repo.isMilestonesEnabled()
                 username = session.get("username")

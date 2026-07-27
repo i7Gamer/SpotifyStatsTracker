@@ -1,11 +1,12 @@
 // SPDX-FileCopyrightText: 2026 i7Gamer
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// Progressive "Show N more" reveal for the Profile > Milestones list
-// (templates/profile.html). The server renders only the most recent milestone
+// Progressive "Show N more" reveal for the dashboard's Milestones card
+// (templates/tracks.html). The server renders only the first few milestones
 // visible; the rest carry the `hidden` attribute next to a [data-milestone-more]
 // button. This reveals them a chunk (data-chunk-size) at a time, and drops the
-// button once everything is showing.
+// button once everything is showing. How many start visible is the template's
+// business - this only reads the DOM it is given.
 
 // Pure decision function: given how many items should currently be visible, the
 // total number of items, and the chunk size, return the render state - how many
