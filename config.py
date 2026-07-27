@@ -176,6 +176,11 @@ VERSION_CHECK_MAX_START_DELAY_SECONDS = 180
 LOGIN_CHECK_MIN_START_DELAY_SECONDS = 60
 LOGIN_CHECK_MAX_START_DELAY_SECONDS = 300
 
+# Query parameter carrying a static asset's mtime, appended to every
+# url_for('static', ...) by registerRoutes' url_defaults hook in app.py so a
+# changed file is served under a URL the browser has never cached.
+STATIC_VERSION_PARAM = "v"
+
 # Baseline defense-in-depth headers applied to every response (see
 # registerRoutes' after_request hook in app.py).
 #

@@ -909,7 +909,41 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
     # 'unsafe-eval' never leaks onto the rest of the app.
     _DETAIL_CSP_ENDPOINTS = frozenset({"songDetailPage", "artistDetailPage", "albumDetailPage"})
 
+    def _staticVersionStamp(self, filename):
+        """The value appended to a /static URL as ``?v=`` - the asset's mtime,
+        or None when there is no file behind the name (a typo'd asset must
+        still 404 in the browser rather than break the page render).
+
+        Deliberately not memoized: one stat() per asset per render is nothing
+        next to this app's queries, and caching would leave a developer editing
+        static/js/*.js serving yesterday's URL until the next restart."""
+        try:
+            return str(int(os.stat(os.path.join(self.app.static_folder, filename)).st_mtime))
+        except OSError:
+            return None
+
     def registerRoutes(self):
+        @self.app.url_defaults
+        def _versionStaticUrl(endpoint, values):
+            """Make a changed static file a cache MISS instead of a
+            revalidation the browser is free to skip.
+
+            Flask serves /static with a bare ``no-cache``, which asks the
+            browser to revalidate but doesn't force it to - so a copy could
+            outlive its file. That was survivable while each file stood alone;
+            it stopped being survivable once nine page loaders came to depend
+            on one shared function in ajax-status.js, because a browser holding
+            the older shared file broke every AJAX page at once (dashboard,
+            /history, /charts, the top lists) with no way out but a hard
+            reload. Stamping the URL with the file's mtime means a deploy
+            changes the URL, and a URL the browser has never seen cannot be
+            answered from its cache."""
+            if endpoint != "static" or "filename" not in values:
+                return
+            stamp = self._staticVersionStamp(values["filename"])
+            if stamp:
+                values[STATIC_VERSION_PARAM] = stamp
+
         @self.app.after_request
         def _setSecurityHeaders(response):
             for header, value in SECURITY_HEADERS.items():
