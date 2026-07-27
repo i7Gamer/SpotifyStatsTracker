@@ -22,6 +22,21 @@ def _byId(entityId, genres):
     return {entityId: genres}
 
 
+_SPOTIFY_ANCHOR = 'class="track-label track-spotify-link" href='
+_PLAY_BUTTON = 'class="track-label track-spotify-link play-now-button"'
+
+
+def _heroCard(body):
+    """The detail page's hero card markup.
+
+    `<section id="track-list">` wraps exactly the one card the page is about;
+    the artist/album pages' song lists sit in their own (id-less) sections
+    below, so slicing to the next </section> isolates the hero.
+    """
+    start = body.index('<section id="track-list"')
+    return body[start:body.index("</section>", start)]
+
+
 class _DetailRouteTestBase(DetailPageClientMixin, AppTestCase):
     """`self._getPath(...)` is the shell GET plus its deferred ?ajax=page body,
     which is what a browser ends up showing - see _detail_client.py. Tests
@@ -235,19 +250,24 @@ class TestSongDetailRoute(_DetailRouteTestBase):
         buttonIdx = body.index('class="track-label track-spotify-link play-now-button"')
         self.assertLess(genreContainerIdx, buttonIdx)
 
-    def test_play_now_button_replaces_open_in_spotify_on_the_hero_card(self):
+    def test_the_hero_card_offers_the_spotify_link_before_the_play_button(self):
+        """The Play now button used to REPLACE the Open in Spotify anchor here,
+        so the detail pages were the one surface from which you couldn't reach
+        the entity on Spotify itself. The hero carries both now, the anchor
+        first: leaving is the plain option, the embedded player the extra one."""
         dash = self._makeApp()
         db = MagicMock()
         db.getSong.return_value = self._song()
         db.getListeningTimeSeries.return_value = []
         db.getHourOfDayHeatmap.return_value = [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
 
-        resp = self._getPath(dash, db, "/song/t1")
+        card = _heroCard(self._getPath(dash, db, "/song/t1").data.decode())
 
-        self.assertIn(b'play-now-button', resp.data)
-        self.assertNotIn(b'Open in Spotify', resp.data)
-        self.assertIn(b'data-spotify-url="http://example.com/t1"', resp.data)
-        self.assertIn(b'data-embed-type="track"', resp.data)
+        self.assertIn("Open in Spotify", card)
+        self.assertLess(card.index(_SPOTIFY_ANCHOR), card.index(_PLAY_BUTTON))
+        self.assertIn('href="http://example.com/t1"', card)
+        self.assertIn('data-spotify-url="http://example.com/t1"', card)
+        self.assertIn('data-embed-type="track"', card)
 
     def test_play_embed_container_renders_hidden_between_card_and_charts(self):
         dash = self._makeApp()
@@ -930,10 +950,10 @@ class TestArtistDetailRoute(_DetailRouteTestBase):
         db.getArtistBio.assert_not_called()
 
     def test_hero_gets_play_button_but_song_sublist_keeps_spotify_anchors(self):
-        """Only the hero artist card becomes a Play now button; the songs
-        sub-list below (a second _track_card.html include) must keep its normal
-        Open in Spotify anchors - the playNowButton flag must not leak into
-        that loop's shared page context."""
+        """Only the hero artist card gains a Play now button; the songs sub-list
+        below (a second _track_card.html include) must keep its normal Open in
+        Spotify anchors and nothing more - the playNowButton flag must not leak
+        into that loop's shared page context."""
         dash = self._makeApp()
         db = MagicMock()
         db.getArtist.return_value = self._artist()
@@ -944,11 +964,13 @@ class TestArtistDetailRoute(_DetailRouteTestBase):
         ]
         db.getListeningTimeSeries.return_value = []
 
-        resp = self._getPath(dash, db, "/artist/a1")
+        body = self._getPath(dash, db, "/artist/a1").data.decode()
 
-        self.assertEqual(resp.data.count(b'play-now-button'), 1)
-        self.assertIn(b'data-embed-type="artist"', resp.data)
-        self.assertIn(b'Open in Spotify', resp.data)
+        self.assertEqual(body.count(_PLAY_BUTTON), 1)
+        self.assertIn('data-embed-type="artist"', body)
+        self.assertIn("Open in Spotify", body)
+        card = _heroCard(body)
+        self.assertLess(card.index(_SPOTIFY_ANCHOR), card.index(_PLAY_BUTTON))
 
     def test_csp_allows_unsafe_eval_for_the_spotify_embed(self):
         dash = self._makeApp()
@@ -1266,20 +1288,22 @@ class TestAlbumDetailRoute(_DetailRouteTestBase):
         db.getAlbumBio.assert_not_called()
 
     def test_hero_gets_play_button_but_song_sublist_keeps_spotify_anchors(self):
-        """Only the hero album card becomes a Play now button; the tracklist
-        below keeps its Open in Spotify anchors (playNowButton flag must not
-        leak into that loop's shared page context)."""
+        """Only the hero album card gains a Play now button; the tracklist below
+        keeps its Open in Spotify anchors and nothing more (the playNowButton
+        flag must not leak into that loop's shared page context)."""
         dash = self._makeApp()
         db = MagicMock()
         db.getAlbum.return_value = self._album()
         db.getSongsStats.return_value = [self._song("t1", 100), self._song("t2", 200)]
         db.getListeningTimeSeries.return_value = []
 
-        resp = self._getPath(dash, db, "/album/alb1")
+        body = self._getPath(dash, db, "/album/alb1").data.decode()
 
-        self.assertEqual(resp.data.count(b'play-now-button'), 1)
-        self.assertIn(b'data-embed-type="album"', resp.data)
-        self.assertIn(b'Open in Spotify', resp.data)
+        self.assertEqual(body.count(_PLAY_BUTTON), 1)
+        self.assertIn('data-embed-type="album"', body)
+        self.assertIn("Open in Spotify", body)
+        card = _heroCard(body)
+        self.assertLess(card.index(_SPOTIFY_ANCHOR), card.index(_PLAY_BUTTON))
 
     def test_csp_allows_unsafe_eval_for_the_spotify_embed(self):
         dash = self._makeApp()
