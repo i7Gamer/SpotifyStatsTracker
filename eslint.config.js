@@ -28,7 +28,13 @@ module.exports = [
     // excused `module`, `require`, `process` and `global` in static/js - real
     // copy-paste hazards in a tree where chart-utils.js is dual-use CJS, and
     // exactly the class of typo no-undef is here to catch.
-    files: ["static/js/**/*.js"],
+    // Braced deliberately. `overrides` in package.json pins minimatch, whose
+    // brace expansion this pattern is the only thing in the repo that exercises:
+    // an override that breaks it (pinning brace-expansion itself did, since v5
+    // exports { expand } where minimatch@3 called the module) leaves every
+    // brace-free pattern working, so `npm run lint` passed while the gate was
+    // one brace away from dying on a TypeError. Now it dies here, immediately.
+    files: ["static/js/**/*.{js,mjs}"],
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: "script",
@@ -88,11 +94,42 @@ module.exports = [
     // The JS unit tests run under plain node (see tests/test_js_test_suite.py)
     // and stub browser APIs onto `global`, so they need node's globals - and
     // browser's too, since what they exercise is browser code.
-    files: ["tests/test_*.js"],
+    files: ["tests/test_*.{js,mjs}"],
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: "script",
       globals: { ...globals.browser, ...globals.node },
+    },
+    linterOptions: { reportUnusedDisableDirectives: "error" },
+    rules: {
+      "no-undef": "error",
+      "no-dupe-keys": "error",
+      "no-dupe-args": "error",
+      "no-duplicate-case": "error",
+      "no-unreachable": "error",
+      "no-cond-assign": "error",
+      "no-self-assign": "error",
+      "no-self-compare": "error",
+      "no-constant-condition": "error",
+      "no-func-assign": "error",
+      "no-obj-calls": "error",
+      "no-sparse-arrays": "error",
+      "no-unsafe-negation": "error",
+      "use-isnan": "error",
+      "valid-typeof": "error",
+    },
+  },
+  {
+    // This file itself, and any future root-level tooling script. A file that
+    // matches no `files:` block is still "linted" - with zero rules - so
+    // `npm run lint` reported success on it without reading it. Paired with
+    // widening that script from `eslint static/js tests` to `eslint .`, which
+    // is what brings root-level JS into scope at all.
+    files: ["*.{js,mjs,cjs}"],
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: "script",
+      globals: { ...globals.node },
     },
     linterOptions: { reportUnusedDisableDirectives: "error" },
     rules: {

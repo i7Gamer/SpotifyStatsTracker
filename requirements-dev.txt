@@ -1,0 +1,15 @@
+# Test-only dependencies. NOT installed into the Docker image - requirements.txt
+# is what the image gets, and .dockerignore keeps the rest of the dev tooling out.
+#
+# This file exists because pyproject.toml's [tool.pytest.ini_options] sets
+# `addopts = "-n auto"`, which makes pytest-xdist mandatory rather than optional:
+# without it a bare `pytest` does not run the suite slowly, it refuses to start
+# at all ("unrecognized arguments: -n auto", exit 4) - naming a flag the user
+# never typed. Nothing declared these, and the README documented no test setup,
+# so a fresh clone could not run the tests.
+#
+# Pinned for the same reason ruff and eslint are pinned in the lint workflow: a
+# new pytest major can change collection or deprecate an API and turn CI red on
+# a push that touched none of it.
+pytest==9.1.1
+pytest-xdist==3.8.0

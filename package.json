@@ -3,13 +3,13 @@
   "private": true,
   "description": "Dev-only manifest: the app ships no JS bundle and has no runtime node dependency. This exists so the browser scripts in static/js can be linted (see eslint.config.js) - nothing here is installed into the Docker image, which is why .dockerignore excludes it.",
   "scripts": {
-    "lint": "eslint static/js tests"
+    "lint": "eslint ."
   },
   "devDependencies": {
     "eslint": "9.39.0",
     "globals": "14.0.0"
   },
   "overrides": {
-    "brace-expansion": "5.0.8"
+    "minimatch": "^10"
   }
 }

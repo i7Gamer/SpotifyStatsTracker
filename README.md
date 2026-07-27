@@ -103,6 +103,28 @@ http://127.0.0.1:5444
 
 **Note:** The Docker container persists data in the `Database/Data/` directory on your host machine.
 
+### Running the tests
+
+The test dependencies are separate from the app's, and `pytest-xdist` is required
+rather than optional — `pyproject.toml` sets `addopts = "-n auto"`, so without it
+pytest refuses to start instead of merely running serially.
+
+```bash
+pip install -r requirements.txt -r requirements-dev.txt
+pytest
+```
+
+Run serially when a failure is easier to read that way, or to keep `print`/`-s`
+output in order (note that `-p no:xdist` does *not* work — it makes `-n` an
+unrecognized argument):
+
+```bash
+pytest -n 0
+```
+
+Linting matches CI (`ruff check .` for Python, `npm run lint` for the browser
+scripts in `static/js`, after `npm install`).
+
 ### Restarting the app (admin restart button)
 
 The admin console has an optional **"Restart app to apply"** button — used after changing worker-pool sizes on the Advanced Tuning panel, since those only take effect on restart. It works by gracefully stopping background workers and exiting, so **something must relaunch the process**. It stays hidden unless you set `ALLOW_INSTANCE_RESTART=1`.
