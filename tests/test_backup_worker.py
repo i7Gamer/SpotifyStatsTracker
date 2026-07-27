@@ -63,6 +63,40 @@ class TestRunBackup(BackupWorkerTestCase):
         rows = conn.execute("SELECT note FROM plays").fetchall()
         self.assertEqual(rows, [("keep me safe",)])
 
+    def test_the_source_connection_waits_out_a_lock(self):
+        """3101c8d's fix, which had no test.
+
+        Every ConnectionManager connection waits out a lock; this one is opened
+        raw with sqlite3.connect and so did not, meaning a snapshot starting
+        while a checkpoint or VACUUM held the file raised "database is locked"
+        instantly. The scheduled loop swallows that into a skipped backup and the
+        admin button reports an error - for a wait the rest of the app makes
+        happily. Dropping the pragma leaves every other test in this file green.
+
+        Asserted through the trace hook: the pragma's effect (a 5s wait) is not
+        something a test should sit through, and reading it back would need the
+        same connection runBackup owns and closes."""
+        statements = []
+        realConnect = sqlite3.connect
+
+        def tracingConnect(path, *args, **kwargs):
+            conn = realConnect(path, *args, **kwargs)
+            if str(path) == str(self.dbPath):
+                conn.set_trace_callback(statements.append)
+            return conn
+
+        with patch.object(backupModule.sqlite3, "connect", tracingConnect):
+            self._makeWorker().runBackup()
+
+        self.assertIn(f"PRAGMA busy_timeout = {backupModule.BACKUP_BUSY_TIMEOUT_MS}", statements)
+
+    def test_the_backup_timeout_matches_the_apps_own(self):
+        """The constant is deliberately duplicated rather than imported (see its
+        comment), so nothing else keeps the two in step."""
+        from Database.db import SQLITE_BUSY_TIMEOUT_MS
+
+        self.assertEqual(backupModule.BACKUP_BUSY_TIMEOUT_MS, SQLITE_BUSY_TIMEOUT_MS)
+
     def test_backup_of_a_missing_source_raises_instead_of_an_empty_snapshot(self):
         """sqlite3.connect() would CREATE a missing source, so a misconfigured
         path used to produce a valid-looking but EMPTY snapshot. It must raise."""

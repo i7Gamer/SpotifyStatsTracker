@@ -287,8 +287,13 @@ class TestRecalcFlagIsAtomic(DatabaseTestCase):
 
         raiser = threading.Thread(target=db.raiseMilestoneRecalcFlag)
         raiser.start()
-        raiser.join(timeout=0.2)
-        self.assertTrue(raiser.is_alive(), "the raise slipped in mid-consume")
+        #< deliberately NOT `raiser.join(0.2); assertTrue(raiser.is_alive())`:
+        #  that cannot tell a thread blocked on the lock from one the OS has not
+        #  scheduled yet, so it asserted a timing symptom and would pass for the
+        #  wrong reason under a loaded parallel suite. 346ae68 removed the same
+        #  pattern from two other files. The two outcome assertions below, plus
+        #  started.wait(5) above, already pin the atomicity: the raise cannot be
+        #  observed until the consume completes.
 
         release.set()
         consumer.join(timeout=5)

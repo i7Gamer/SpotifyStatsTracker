@@ -474,6 +474,56 @@ class TestTheSkipPageRespectsTheFilters(SkipSortTestCase):
         self.assertEqual(unfiltered, ["solid", "halfhearted"])
         self.assertEqual(filtered, ["halfhearted", "solid"])
 
+    def test_the_prior_ignores_the_full_plays_checkbox(self):
+        """fac3da3 dropped the tracks join that had excluded partial listens from
+        the prior when Full-plays-only was on (it doubled the query, 1.5s -> 3.1s
+        on 400k plays, for a second-order ordering shift). That checkbox DEFAULTS
+        ON, so this is the ordering nearly every visitor to a Top page sees, and
+        the commit shipped with no test - re-adding the join would break nothing.
+
+        The rule now is one rule: the prior is whole-library, always.
+
+        The shrunk rate is ORDER BY only and never leaves the query, so the prior
+        is asserted where it IS observable: the lib CTE the two calls emit has to
+        be the same SQL, bound the same way. That states the rule directly, rather
+        than an ordering that happens to come out equal on this fixture."""
+        #< partial listens dominate, so a prior that still respected the checkbox
+        #  would measure a very different average in the two calls
+        self._seed("bulk", plays=2, skips=0, partials=60, duration=200_000)
+        self._seed("mixed", plays=4, skips=6, partials=20, duration=200_000)
+
+        withFilter = self._libCteFor(fullPlaysOnly=True)
+        withoutFilter = self._libCteFor(fullPlaysOnly=False)
+
+        self.assertEqual(withFilter, withoutFilter)
+
+    def _libCteFor(self, fullPlaysOnly):
+        """The `lib AS (...)` CTE as actually emitted, with its bound values -
+        the prior, observably."""
+        conn = self.db.repo._conn()
+        captured = []
+        conn.set_trace_callback(captured.append)
+        try:
+            self.db.getTopSongs(by="skips", limit=10, fullPlaysOnly=fullPlaysOnly)
+        finally:
+            conn.set_trace_callback(None)
+        #< set_trace_callback expands bound params, so this compares the values too
+        sql = next(statement for statement in captured if "lib AS" in statement)
+        start = sql.index("lib AS")
+        return " ".join(sql[start:sql.index(")", sql.index("FROM plays p", start))].split())
+
+    def test_the_prior_query_never_joins_tracks(self):
+        """The reason the prior is whole-library is a measured one, so pin the
+        shape too: that join is what cost 1.5s, and the equality test above would
+        still pass if someone re-added it and narrowed both halves to match."""
+        self._seed("t1", plays=1, skips=1, duration=200_000)
+
+        libClause = self._libCteFor(fullPlaysOnly=True)
+
+        self.assertIn("FROM plays p WHERE", libClause)
+        self.assertNotIn("JOIN tracks", libClause)
+        self.assertNotIn("time_played", libClause)   #< the full-play predicate's column
+
     def test_the_library_average_is_not_narrowed_by_the_filters(self):
         """The prior is "this listener's own norm", so it stays whole-library
         however the page is filtered. Narrowing it to the search results would

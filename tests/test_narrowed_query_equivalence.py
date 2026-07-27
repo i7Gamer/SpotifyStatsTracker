@@ -247,5 +247,78 @@ class NarrowedQueryEquivalenceTestCase(DatabaseTestCase):
         self.assertEqual(db.repo.getPlayTimeRange(db.user, trackId="t1"), (100.0, 100.0))
 
 
+class NarrowedQueryPlanTestCase(DatabaseTestCase):
+    """The seekable clause is REDUNDANT BY CONSTRUCTION - that is the whole point
+    of it, and it is also why every test above would still pass with the entire
+    optimisation reverted.
+
+    `_trackSetClause`'s own docstring says it "can only ever change the PLAN, not
+    the rows", so result equivalence can never detect its absence. The measured
+    win it protects was 985ms -> 19ms on an artist song list. Without these
+    assertions the repo's largest performance investment is pinned by nothing,
+    and the regression would surface as "the detail pages feel slow again" months
+    later, with no failing test pointing at the cause.
+
+    Asserted on the emitted SQL rather than on timings, which are not
+    deterministic under a parallel suite, and rather than on EXPLAIN output,
+    whose wording is SQLite's to change."""
+
+    SEEKABLE = "p.track_id IN"
+
+    def _sqlFor(self, call):
+        db = self._makeDb({"t1": _track("t1", ALBUM_1, [ARTIST_A])},
+                          [{"id": "t1", "playedAt": 100.0, "timePlayed": LISTEN_MS}])
+        conn = db.repo._conn()
+        captured = []
+        conn.set_trace_callback(captured.append)
+        try:
+            call(db)
+        finally:
+            conn.set_trace_callback(None)
+        return " ".join(captured)
+
+    def test_the_artist_song_list_names_the_track_set_on_plays(self):
+        """The artist filter itself is an EXISTS over track_artists, which is
+        exactly what leaves plays unseekable - the twin is what makes it seek."""
+        sql = self._sqlFor(lambda db: db.repo.getSongsPage(db.user, None, None, artistId=ARTIST_A))
+
+        self.assertIn(self.SEEKABLE, sql)
+
+    def test_the_album_song_list_names_the_track_set_on_plays(self):
+        """Here the filter is `al.id = ?` - on the JOINED table, so likewise
+        nothing plays can seek on."""
+        sql = self._sqlFor(lambda db: db.repo.getSongsPage(db.user, None, None, albumId=ALBUM_1))
+
+        self.assertIn(self.SEEKABLE, sql)
+
+    def test_the_artist_aggregate_names_the_track_set_on_plays(self):
+        sql = self._sqlFor(lambda db: db.repo.getArtistAggregates(db.user, None, None,
+                                                                  artistId=ARTIST_A, limit=1))
+
+        self.assertIn(self.SEEKABLE, sql)
+
+    def test_the_album_page_names_the_track_set_on_plays(self):
+        sql = self._sqlFor(lambda db: db.repo.getAlbumsPage(db.user, None, None,
+                                                            albumId=ALBUM_1, limit=1))
+
+        self.assertIn(self.SEEKABLE, sql)
+
+    def test_the_item_filter_clauses_stay_a_membership_test_on_plays(self):
+        """_itemFilterClauses' artist/album branches were the EXISTS form that
+        started all this; an EXISTS over track_artists leaves nothing seekable."""
+        sql = self._sqlFor(lambda db: db.repo.getPlaysCount(db.user, artistId=ARTIST_A))
+
+        self.assertIn("plays.track_id IN", sql)
+        self.assertNotIn("EXISTS", sql)
+
+    def test_an_unnarrowed_query_does_not_carry_the_clause(self):
+        """Negative control: the assertions above would pass for any SQL if the
+        clause were emitted unconditionally, which would also mean the helper's
+        None-means-no-filter contract had broken."""
+        sql = self._sqlFor(lambda db: db.repo.getSongsPage(db.user, None, None))
+
+        self.assertNotIn(self.SEEKABLE, sql)
+
+
 if __name__ == "__main__":
     unittest.main()
