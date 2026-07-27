@@ -140,8 +140,10 @@ class PlayQueries:
         ).fetchall()
         return {row["track_id"] for row in rows}
 
-    def getPlayTimesInRange(self, username: str, startTs: float, endTs: float) -> list[float]:
-        """Every played_at this user has in the closed [startTs, endTs] window.
+    def getTrackPlayTimesInRange(self, username: str, startTs: float,
+                                 endTs: float) -> list[tuple[str, float]]:
+        """Every (track_id, played_at) this user has in the closed
+        [startTs, endTs] window.
 
         Backs the Web API backfill's duplicate check (see _checkWebApiBackfill):
         the listener's in-memory caches only cover the current listener object's
@@ -150,13 +152,21 @@ class PlayQueries:
         getRecentlyRecordedTrackIds it answers "did we record this at all", so
         is_skip rows count - re-announcing a recorded skip as missing is the
         same false positive. One range query per poll, rather than the
-        page-sized set of point lookups the insert guard answers one by one."""
+        page-sized set of point lookups the insert guard answers one by one.
+
+        The track id travels WITH the timestamp because the caller's dedup is
+        only sound per track: this window spans the whole API page (hours,
+        typically hundreds of rows, skip bursts seconds apart), and comparing
+        timestamps alone let any one of them answer for a different track's
+        genuine gap - which under gapless playback is not a coincidence but the
+        norm, since a missing track's derived start equals its predecessor's
+        recorded end."""
         conn = self._conn()
         rows = conn.execute(
-            "SELECT played_at FROM plays WHERE username=? AND played_at BETWEEN ? AND ?",
+            "SELECT track_id, played_at FROM plays WHERE username=? AND played_at BETWEEN ? AND ?",
             (username, startTs, endTs),
         ).fetchall()
-        return [row["played_at"] for row in rows]
+        return [(row["track_id"], row["played_at"]) for row in rows]
 
     def getPlaysNearTime(self, username: str, trackId: str, playedAt: float, toleranceSeconds: float) -> list[dict]:
         """Return all plays for this exact track already existing for this user

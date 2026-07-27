@@ -211,7 +211,17 @@ class TestGetPlayTimesInRange(unittest.TestCase):
         self.repo.commit()
 
     def _lookup(self, startTs, endTs):
-        return sorted(self.repo.getPlayTimesInRange("alice", startTs, endTs))
+        return sorted(playedAt for _trackId, playedAt in self._lookupPairs(startTs, endTs))
+
+    def _lookupPairs(self, startTs, endTs):
+        return self.repo.getTrackPlayTimesInRange("alice", startTs, endTs)
+
+    def test_each_time_carries_the_track_it_belongs_to(self):
+        """The backfill's dedup compares per track: a timestamp on its own let a
+        recorded play of one track suppress a genuinely missing play of another
+        (their played_at values sit seconds apart under gapless playback)."""
+        self.assertEqual(sorted(self._lookupPairs(self.base - 10, self.base + 1200)),
+                         [("t1", self.base), ("t2", self.base + 600)])
 
     def test_returns_played_at_values_inside_the_window(self):
         self.assertEqual(self._lookup(self.base - 10, self.base + 1200), [self.base, self.base + 600])

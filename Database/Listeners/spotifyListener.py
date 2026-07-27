@@ -109,6 +109,17 @@ USER_VALIDATION_CACHE_SECONDS = 5 * 60  #< Cache user validation results to redu
 TRUTHY_DEBUG_VALUES = {"1", "true"}  #< FLASK_DEBUG values that enable verbose diagnostics (mirrors Database.database)
 
 
+def _itemTrackId(item: dict) -> str | None:
+    """The track id of a recently-played entry from EITHER cache.
+
+    The live listener's rows come from SpotipyFree and spell it track.track_id;
+    the Web API's spell it track.id. `or {}` (not get's default) because an entry
+    can carry "track": None, where None.get would raise.
+    """
+    track = item.get("track") or {}
+    return track.get("id") or track.get("track_id")
+
+
 def _flaskDebugEnabled() -> bool:
     return os.environ.get("FLASK_DEBUG", "").lower() in TRUTHY_DEBUG_VALUES
 
@@ -769,10 +780,16 @@ class Listener:
                     logger.error("Error in listener: %s", parseError(e))
                     self._stop_event.wait(30)
 
-    def _recordedPlayTimesFromDatabase(self, items: list) -> set:
-        """The played_at values the database already holds across the window
-        `items` spans - the half of the backfill's dedup set that survives a
-        listener rebuild.
+    def _recordedPlayTimesFromDatabase(self, items: list) -> dict:
+        """{track_id: {played_at, ...}} for the window `items` spans - the half
+        of the backfill's dedup set that survives a listener rebuild.
+
+        Keyed by track because this window is wide (the whole API page plus a
+        track length: hours, typically hundreds of rows, and skip bursts sitting
+        seconds apart). A flat set of timestamps let any recorded row answer for
+        any candidate, and the end-time interpretation below made that
+        systematic rather than accidental - see the dedup comment in
+        _checkWebApiBackfill.
 
         Kept as a callback rather than a repo handle so the listener still knows
         nothing about the database (same contract as get_credentials /
@@ -781,11 +798,11 @@ class Listener:
         already-recorded play is harmless (appendTrackData's guard drops it),
         whereas suppressing a genuinely missing one would lose it for good."""
         if not self.get_recorded_play_times or not items:
-            return set()
+            return {}
 
         timestamps = [ts for ts in (timeToInt(item.get("played_at")) for item in items) if ts > 0]
         if not timestamps:
-            return set()
+            return {}
 
         # played_at may be the END of a play (see the dedup comment below), in
         # which case the recorded row sits up to one track-length earlier - so
@@ -796,11 +813,14 @@ class Listener:
         startTs = min(timestamps) - longestTrackSeconds - WEB_API_BACKFILL_DEDUP_TOLERANCE_SECONDS
         endTs = max(timestamps) + WEB_API_BACKFILL_DEDUP_TOLERANCE_SECONDS
         try:
-            return {float(playedAt) for playedAt in self.get_recorded_play_times(startTs, endTs)}
+            recorded: dict = {}
+            for trackId, playedAt in self.get_recorded_play_times(startTs, endTs):
+                recorded.setdefault(trackId, set()).add(float(playedAt))
+            return recorded
         except Exception as e:
             logger.debug("Backfill dedup database lookup failed, judging on the in-memory caches alone: %s",
                          parseError(e))
-            return set()
+            return {}
 
     def _checkWebApiBackfill(self, callback, onWebApiSnapshot=None) -> None:
         if not self.get_credentials:
@@ -902,11 +922,17 @@ class Listener:
             # a previous poll (kept separate from recentlyPlayed_Z1, which is
             # exclusively owned by the live-listener path - see webApiRecentlyPlayed_Z1's
             # own comment in __init__).
-            recorded_timestamps = {
-                timeToInt(item.get("played_at"))
-                for item in self.recentlyPlayed_Z1 + self.webApiRecentlyPlayed_Z1
-                if item.get("played_at")
-            }
+            # Keyed by track id, not a flat set of timestamps: see the
+            # is_recorded test below for why a timestamp alone cannot answer
+            # "was THIS play recorded". The two caches spell the id differently
+            # (the live listener's SpotipyFree rows carry track.track_id, the Web
+            # API's carry track.id), so _itemTrackId reads both.
+            recorded_timestamps: dict = {}
+            for item in self.recentlyPlayed_Z1 + self.webApiRecentlyPlayed_Z1:
+                trackId = _itemTrackId(item)
+                if not item.get("played_at") or not trackId:
+                    continue
+                recorded_timestamps.setdefault(trackId, set()).add(timeToInt(item.get("played_at")))
             # Both caches above live and die with this listener object, and a
             # listener is rebuilt on every stale-feed reconnect (1,568 times in
             # 11 days for 3 users) - webApiRecentlyPlayed_Z1 starts empty, and
@@ -918,7 +944,8 @@ class Listener:
             # appendTrackData's own duplicate guard, long after the log had
             # claimed them. The database is what tells a real gap from a cold
             # cache.
-            recorded_timestamps |= self._recordedPlayTimesFromDatabase(items)
+            for trackId, playedAts in self._recordedPlayTimesFromDatabase(items).items():
+                recorded_timestamps.setdefault(trackId, set()).update(playedAts)
 
             # Built directly from `items` in one pass so each missed item stays
             # tied to its OWN source API item's played_at - no post-hoc
@@ -947,10 +974,19 @@ class Listener:
                 # a start time, or timestamp being an end time duration_s
                 # seconds after the true start - before deciding this play is
                 # genuinely missing.
+                #
+                # Only THIS track's recorded times can answer for it. A flat set
+                # of timestamps meant any recorded play within the tolerance
+                # did, and the second arm made that systematic: under gapless
+                # playback a missing track's derived start equals the recorded
+                # END of the track before it - i.e. the one recorded neighbour a
+                # real gap always has beside it. The suppressed play was then
+                # lost for good, since the next poll's page collides identically
+                # and nothing else retries it.
                 is_recorded = any(
                     abs(timestamp - recorded_t) <= WEB_API_BACKFILL_DEDUP_TOLERANCE_SECONDS
                     or abs(timestamp - duration_s - recorded_t) <= WEB_API_BACKFILL_DEDUP_TOLERANCE_SECONDS
-                    for recorded_t in recorded_timestamps
+                    for recorded_t in recorded_timestamps.get(track_id, ())
                 )
                 if not is_recorded:
                     context = item.get("context") or {}
