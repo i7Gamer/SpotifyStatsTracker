@@ -12,6 +12,10 @@ instance/
 .env
 .env.*
 .token-savior-cache.json
+# coverage.py output (see requirements-dev.txt)
+.coverage
+.coverage.*
+htmlcov/
 Streaming*.json
 secrets.json
 cookies*.json

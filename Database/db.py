@@ -259,6 +259,27 @@ CREATE TABLE IF NOT EXISTS plays (
 );
 CREATE INDEX IF NOT EXISTS idx_plays_user_time ON plays(username, played_at);
 CREATE INDEX IF NOT EXISTS idx_plays_user_track ON plays(username, track_id);
+-- MEASURED AND REJECTED, twice - do not add a third index here without repeating
+-- the whole exercise. An is_skip PARTIAL index regressed top-songs 2x. A covering
+-- index, plays(username, track_id, is_skip, time_played), was then measured on a
+-- copy of a real 131k-play database (2026-07-27, no ANALYZE, best-of-3): it does
+-- buy a lot on some queries - top-songs count -93%, skipped-tracks count -94%,
+-- genre play counts -78%, decade counts -28% - and is still a net loss:
+--   recomputeSkipFlags        +695%  (152ms -> 1210ms; it UPDATEs is_skip on
+--                                    EVERY row, so the index is rewritten too -
+--                                    this is the admin's skip-threshold change
+--                                    and what migrate1_41_0/1_42_0 run)
+--   top-artists (2nd user)     +30% all-time, +51% for a 1-year range
+--   play time range            +56%
+--   bucketed totals (1y)       +55%, (per-artist) +29%
+--   2000 insertPlay            +25%,  delete +19%
+-- Two lessons worth more than the numbers: a probe set narrow enough to look
+-- like a clean win (the first 12 queries showed no regression at all) is not
+-- evidence, and per-user data distribution changes which index SQLite picks -
+-- the top-artists regression appears for one account and not the other. Any
+-- future candidate needs the full read set, BOTH the write path and more than
+-- one user's data. Also note is_skip cannot appear in a SCHEMA index at all;
+-- see the note above the plays table.
 
 CREATE TABLE IF NOT EXISTS import_progress (
     username    TEXT PRIMARY KEY REFERENCES users(username),

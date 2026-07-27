@@ -13,3 +13,8 @@
 # a push that touched none of it.
 pytest==9.1.1
 pytest-xdist==3.8.0
+
+# Used to find untested paths - routes/system.py's three polled status
+# endpoints were found this way, at 78% with no test at all. Not needed to
+# RUN the suite, but declared so `coverage run -m pytest` works from a clone.
+coverage==7.15.2
