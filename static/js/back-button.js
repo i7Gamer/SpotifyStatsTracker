@@ -11,9 +11,26 @@
 // was opened: ctrl/middle-click from inside the app (in-app referrer), a shared
 // link from another site (cross-origin referrer), or a pasted URL or bookmark
 // (no referrer at all).
+//
+// One referrer is not a page the visitor came FROM: this page itself, left
+// behind by a link that pointed back at the page it was on. That reload keeps
+// the same history entry, so the label has to survive it too - it is remembered
+// in sessionStorage and carried over rather than re-derived. See
+// resolveBackTarget.
 
 // A tab that has only ever shown this one page has a history length of 1.
 const MIN_HISTORY_LENGTH_WITH_BACK_ENTRY = 1;
+
+// Where a load's resolved label is remembered for a later reload of the SAME
+// page (see resolveBackTarget's same-page branch). sessionStorage scopes it to
+// this tab; the key carries the page's own URL so two detail pages open in one
+// tab can't read each other's.
+const BACK_BUTTON_LABEL_STORAGE_PREFIX = 'backButtonLabel:';
+
+// Remembered when the referrer resolved to no label of its own - "go back, but
+// keep the server-rendered text". Distinct from nothing stored at all, which
+// means no earlier load of this page ever got that far.
+const NO_LABEL_REMEMBERED = '';
 
 const BACK_BUTTON_PATH_LABELS = [
   { test: (pathname) => pathname === '/', label: 'Dashboard' },
@@ -39,13 +56,26 @@ function hasEarlierHistoryEntry(navigationApi, historyLength) {
   return historyLength > MIN_HISTORY_LENGTH_WITH_BACK_ENTRY;
 }
 
-// Pure decision function: given the referrer, the current page's origin and
-// whether the tab can go back at all, decide what to do with the button.
-// Returns { hide: true } when this tab has nowhere to go back to, null when
-// it does but the referrer is unusable (external site, no referrer) -
-// callers should keep the server-rendered default href/label in that case -
-// and { hide: false, label } otherwise.
-function resolveBackTarget(referrer, currentOrigin, canGoBack) {
+// The identity a referrer has to match to count as "the page you are already
+// on": origin, path and query. The fragment is left out - a referrer never
+// carries one, and a fragment navigation doesn't reload the page anyway.
+function pageIdentity(url) {
+  return url.origin + url.pathname + url.search;
+}
+
+// Key under which this page's resolved label is remembered.
+function backButtonLabelStorageKey(currentUrl) {
+  return BACK_BUTTON_LABEL_STORAGE_PREFIX + pageIdentity(new URL(currentUrl));
+}
+
+// Pure decision function: given the referrer, the current page's URL, whether
+// the tab can go back at all and the label a previous load of this same page
+// remembered, decide what to do with the button. Returns { hide: true } when
+// this tab has nowhere to go back to, null when it does but the referrer is
+// unusable (external site, no referrer, or a stay on this page with nothing
+// remembered) - callers should keep the server-rendered default href/label in
+// that case - and { hide: false, label } otherwise.
+function resolveBackTarget(referrer, currentUrl, canGoBack, rememberedLabel) {
   // Checked before the referrer: a tab with no earlier entry has nothing to go
   // back to no matter where the visit came from, so this decides on its own.
   if (!canGoBack) {
@@ -63,12 +93,46 @@ function resolveBackTarget(referrer, currentOrigin, canGoBack) {
     return null;
   }
 
-  if (referrerUrl.origin !== currentOrigin) {
+  const current = new URL(currentUrl);
+  if (referrerUrl.origin !== current.origin) {
     return null;
+  }
+
+  // Clicking a link to the page you are already on - a song list linking its
+  // own artist, a track card linking the album you are looking at - reloads
+  // this page with ITSELF as the referrer, and the browser replaces the tab's
+  // current history entry rather than adding one. So Back still leads exactly
+  // where it led before the click, and re-deriving the label here would rename
+  // the button after the page the visitor never left ("← Back to Artist" while
+  // standing on that artist). What the previous load resolved is still true.
+  if (pageIdentity(referrerUrl) === pageIdentity(current)) {
+    if (rememberedLabel === null || rememberedLabel === undefined) {
+      return null;
+    }
+    return { hide: false, label: rememberedLabel || null };
   }
 
   const match = BACK_BUTTON_PATH_LABELS.find((entry) => entry.test(referrerUrl.pathname));
   return { hide: false, label: match ? `← Back to ${match.label}` : null };
+}
+
+// sessionStorage can throw outright (Safari private browsing, storage disabled
+// by policy). Losing the memory only costs the carry-over above, so both sides
+// degrade to "nothing remembered" rather than taking the button down with them.
+function readRememberedLabel(key) {
+  try {
+    return window.sessionStorage.getItem(key);
+  } catch (e) {
+    return null;
+  }
+}
+
+function rememberLabel(key, label) {
+  try {
+    window.sessionStorage.setItem(key, label);
+  } catch (e) {
+    //< nothing to do: the next same-page click just falls back to the default
+  }
 }
 
 function initBackButton() {
@@ -77,8 +141,10 @@ function initBackButton() {
     return;
   }
 
+  const storageKey = backButtonLabelStorageKey(window.location.href);
   const canGoBack = hasEarlierHistoryEntry(window.navigation, window.history.length);
-  const target = resolveBackTarget(document.referrer, window.location.origin, canGoBack);
+  const target = resolveBackTarget(document.referrer, window.location.href, canGoBack,
+                                   readRememberedLabel(storageKey));
   if (!target) {
     return;
   }
@@ -87,6 +153,10 @@ function initBackButton() {
     backButton.hidden = true;
     return;
   }
+
+  //< for a later click on a link back to this same page, which reloads it with
+  //  itself as the referrer - see resolveBackTarget
+  rememberLabel(storageKey, target.label || NO_LABEL_REMEMBERED);
 
   if (target.label) {
     backButton.textContent = target.label;
@@ -99,5 +169,8 @@ function initBackButton() {
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { resolveBackTarget, hasEarlierHistoryEntry, BACK_BUTTON_PATH_LABELS };
+  module.exports = {
+    resolveBackTarget, hasEarlierHistoryEntry, backButtonLabelStorageKey, initBackButton,
+    BACK_BUTTON_PATH_LABELS,
+  };
 }
