@@ -55,15 +55,9 @@
       headers: { 'X-Requested-With': 'XMLHttpRequest' },
       signal: controller.signal
     }).then(function (resp) {
-      //< an expired session: go to the login page instead of parsing its
-      //  HTML as JSON and dead-ending on a Retry that can never succeed
-      if (window.AjaxStatus && window.AjaxStatus.redirectIfUnauthorized(resp)) {
-        throw new Error(window.AjaxStatus.UNAUTHORIZED_ERROR);
-      }
-      //< the Group-by select has already moved, so swallowing a non-2xx left the
-      //  PREVIOUS series on screen labelled as the new one, with nothing said
-      if (!resp.ok) throw new Error('detail chart fetch failed: ' + resp.status);
-      return resp.json();
+      //< the Group-by select has already moved, so a swallowed non-2xx would
+      //  leave the PREVIOUS series on screen labelled as the new one
+      return window.AjaxStatus.readJsonOrThrow(resp, 'detail chart');
     });
 
     Promise.all([fetched, delay])

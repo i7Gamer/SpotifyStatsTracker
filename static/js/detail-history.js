@@ -71,16 +71,9 @@
       headers: { 'X-Requested-With': 'XMLHttpRequest' },
       signal: controller.signal
     }).then(function (resp) {
-      //< an expired session: go to the login page instead of parsing its
-      //  HTML as JSON and dead-ending on a Retry that can never succeed
-      if (window.AjaxStatus && window.AjaxStatus.redirectIfUnauthorized(resp)) {
-        throw new Error(window.AjaxStatus.UNAUTHORIZED_ERROR);
-      }
-      //< onContainerClick replaceStates the URL BEFORE fetching, so swallowing a
-      //  non-2xx left the old list on screen under a URL claiming the new sort
-      //  or page - and a refresh would then show something different
-      if (!resp.ok) throw new Error('detail history fetch failed: ' + resp.status);
-      return resp.json();
+      //< onContainerClick replaceStates the URL BEFORE fetching, so a swallowed
+      //  non-2xx would leave the old list under a URL claiming the new sort
+      return window.AjaxStatus.readJsonOrThrow(resp, 'detail history');
     });
 
     Promise.all([fetched, delay])
@@ -148,13 +141,9 @@
           headers: { 'X-Requested-With': 'XMLHttpRequest' }
         })
           .then(function (resp) {
-            if (window.AjaxStatus && window.AjaxStatus.redirectIfUnauthorized(resp)) {
-              throw new Error(window.AjaxStatus.UNAUTHORIZED_ERROR);
-            }
             //< a swallowed non-2xx just re-enabled the button, so the click was
             //  lost with nothing said about why no rows arrived
-            if (!resp.ok) throw new Error('show more fetch failed: ' + resp.status);
-            return resp.json();
+            return window.AjaxStatus.readJsonOrThrow(resp, 'show more');
           })
           .then(function (data) {
             //< the list was re-rendered while this was in flight: these rows

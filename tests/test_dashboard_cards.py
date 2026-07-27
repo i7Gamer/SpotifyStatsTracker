@@ -9,6 +9,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 from app import SpotifyDashboardApp  # noqa: F401
 from _app_factory import AppTestCase
+from conftest import makeDashboardDbMock
 
 
 def coverageDict(song, album, artist, total=1000):
@@ -28,25 +29,17 @@ class _DashboardHelpers:
     inherit from (and re-run) DashboardCardsTestCase's own tests."""
 
     def _makeDb(self, streak=None, onThisDay=None, coverage=None, recommendations=None):
-        db = MagicMock()
-        db.repo.getUserSettings.return_value = {"default_dashboard_window": "day"}
+        #< the dashboard route's baseline (the six queries whose shapes matter)
+        #  comes from conftest; this only layers on what these tests vary
+        db = makeDashboardDbMock()
         db.getEntriesFromNew.return_value = []
         db.getEntriesCount.return_value = 0
         db.searchEntries.return_value = []
         db.searchEntriesCount.return_value = 0
-        db.getOverallStats.return_value = {
-            "currentTopSongs": [], "currentTopArtists": [],
-            "totalSongsPlayed": 0, "totalDurationMs": 0,
-            "previousSongsPlayed": 0, "previousDurationMs": 0,
-        }
-        db.getCurrentStreak.return_value = streak or {"days": 0, "activeToday": False}
-        db.getOnThisDay.return_value = onThisDay or []
-        db.getPlayTotals.return_value = (0, 0)   #< lifetime totals feed the Next-milestones bars
-        # Empty grid by default: the calendar card only renders when weeks is
-        # non-empty, so most card tests aren't perturbed by it. The dedicated
-        # test below overrides this with a real built grid.
-        db.getListeningCalendar.return_value = {
-            "weeks": [], "monthLabels": [], "maxCount": 0, "activeDays": 0, "totalPlays": 0}
+        if streak is not None:
+            db.getCurrentStreak.return_value = streak
+        if onThisDay is not None:
+            db.getOnThisDay.return_value = onThisDay
         if coverage is not None:
             db.getGenreCoverage.return_value = coverage
         if recommendations is not None:

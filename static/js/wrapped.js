@@ -108,12 +108,7 @@ function loadWrappedData(year, groupBy, limit, sortBy, updateType = 'all') {
   });
   const fetchPromise = fetch(`${WRAPPED_FETCH_URL}?${fetchParams.toString()}`, { signal: controller.signal })
     .then(response => {
-      //< an expired session: go to the login page instead of parsing its
-      //  HTML as JSON and dead-ending on a Retry that can never succeed
-      if (window.AjaxStatus && window.AjaxStatus.redirectIfUnauthorized(response)) {
-        throw new Error(window.AjaxStatus.UNAUTHORIZED_ERROR);
-      }
-      return response.json();
+      return window.AjaxStatus.readJsonOrThrow(response, 'wrapped data');
     });
 
   Promise.all([fetchPromise, delayPromise])

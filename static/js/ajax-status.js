@@ -84,12 +84,35 @@
     return !!err && err.message === UNAUTHORIZED_ERROR;
   }
 
+  // The two checks every AJAX loader must make before touching the payload,
+  // written once instead of nine times.
+  //
+  // Both were separately forgotten in production. A 401 answers with a JSON body,
+  // so `.json()` RESOLVES and the payload key is simply absent - the dashboard and
+  // /history each rendered the string "undefined" over their content. And a
+  // non-2xx handed to `resp.ok ? resp.json() : null` reads to the caller exactly
+  // like "nothing to do", which left placeholders loading forever and stale lists
+  // under URLs that said otherwise.
+  //
+  // Returning the parsed JSON (rather than the response) is deliberate: it leaves
+  // a caller no way to reach the body without passing through here.
+  function readJsonOrThrow(resp, label) {
+    if (redirectIfUnauthorized(resp)) {
+      throw new Error(UNAUTHORIZED_ERROR);
+    }
+    if (!resp.ok) {
+      throw new Error((label || 'ajax') + ' fetch failed: ' + resp.status);
+    }
+    return resp.json();
+  }
+
   var AjaxStatus = {
     renderInto: renderInto,
     showBanner: showBanner,
     clearBanner: clearBanner,
     redirectIfUnauthorized: redirectIfUnauthorized,
     isUnauthorizedError: isUnauthorizedError,
+    readJsonOrThrow: readJsonOrThrow,
     UNAUTHORIZED_ERROR: UNAUTHORIZED_ERROR,
     DEFAULT_MESSAGE: DEFAULT_MESSAGE,
   };

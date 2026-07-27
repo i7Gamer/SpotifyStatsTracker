@@ -44,13 +44,7 @@
       headers: { 'X-Requested-With': 'XMLHttpRequest' },
       signal: controller.signal
     }).then(function (resp) {
-      //< an expired session: go to the login page instead of parsing its
-      //  HTML as JSON and dead-ending on a Retry that can never succeed
-      if (window.AjaxStatus && window.AjaxStatus.redirectIfUnauthorized(resp)) {
-        throw new Error(window.AjaxStatus.UNAUTHORIZED_ERROR);
-      }
-      if (!resp.ok) throw new Error('charts data fetch failed: ' + resp.status);
-      return resp.json();
+      return window.AjaxStatus.readJsonOrThrow(resp, 'charts data');
     });
 
     Promise.all([fetched, delay])

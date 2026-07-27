@@ -14,14 +14,16 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 import app as appModule
 from app import SpotifyDashboardApp
 from _app_factory import AppTestCase
+from conftest import makeDashboardDbMock
 
 
 class _ListRouteTestBase(AppTestCase):
     """Shared fixtures for exercising the list routes with a mocked per-user db."""
 
     def _makeDb(self, entryCount):
-        db = MagicMock()
-        db.repo.getUserSettings.return_value = {"default_dashboard_window": "day"}
+        #< the dashboard route's baseline comes from conftest; the list-page stubs
+        #  below are what THESE tests (pagination across the Top pages) add
+        db = makeDashboardDbMock()
         db.repo.getUserTags.return_value = []
         db.getEntriesFromNew.return_value = []
         db.getEntriesFromOld.return_value = []
@@ -30,22 +32,9 @@ class _ListRouteTestBase(AppTestCase):
         db.searchEntriesCount.return_value = 0
         db.getTopSongs.return_value = []
         db.getSongsCount.return_value = 0
-        db.getPlayTotals.return_value = (0, 0)
         db.getTopArtists.return_value = []
         db.getArtistsCount.return_value = 0
         db.getArtistTotals.return_value = (0, 0, 0)
-        db.getOverallStats.return_value = {
-            "currentTopSongs": [],
-            "currentTopArtists": [],
-            "totalSongsPlayed": 0,
-            "totalDurationMs": 0,
-            "previousSongsPlayed": 0,
-            "previousDurationMs": 0,
-        }
-        db.getCurrentStreak.return_value = {"days": 0, "activeToday": False}
-        db.getOnThisDay.return_value = []
-        db.getListeningCalendar.return_value = {
-            "weeks": [], "monthLabels": [], "maxCount": 0, "activeDays": 0, "totalPlays": 0}
         return db
 
     def _getPath(self, dash, db, path):

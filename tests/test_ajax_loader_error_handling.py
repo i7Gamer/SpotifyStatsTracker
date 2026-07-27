@@ -105,12 +105,43 @@ class AjaxLoaderErrorHandlingTestCase(unittest.TestCase):
         self.assertEqual(discovered, EXPECTED_PAGE_LOADERS)
 
     def test_every_page_loader_handles_an_expired_session(self):
+        """Either through the shared helper (the normal way) or, for a loader
+        whose response handling genuinely differs, by calling the check itself.
+
+        detail-page.js is the one exception: it has to read a 404's body to find
+        the redirectUrl the route sends when an entity no longer resolves, so it
+        cannot delegate to a helper that throws on every non-2xx."""
         missing = sorted(name for name in EXPECTED_PAGE_LOADERS
-                         if "redirectIfUnauthorized" not in self.files[name])
+                         if "readJsonOrThrow" not in self.files[name]
+                         and "redirectIfUnauthorized" not in self.files[name])
 
         self.assertEqual(missing, [], f"page AJAX loaders with no 401 handling: {missing}. "
                                       "A 401's JSON body resolves, so the payload key is undefined "
                                       "and the page renders the word 'undefined'.")
+
+    def test_the_shared_helper_is_the_normal_way_to_read_a_payload(self):
+        """Pins the convention rather than just the outcome: a new loader that
+        hand-rolls the pair is how one of them lost the 401 check in the first
+        place. Only the documented exception may opt out."""
+        HAND_ROLLED_EXCEPTIONS = {"detail-page.js"}   #< needs a 404's body, see above
+
+        handRolled = sorted(name for name in EXPECTED_PAGE_LOADERS - HAND_ROLLED_EXCEPTIONS
+                            if "readJsonOrThrow" not in self.files[name])
+
+        self.assertEqual(handRolled, [], "these loaders read a payload without "
+                                         "AjaxStatus.readJsonOrThrow; use it, or add the file to "
+                                         "HAND_ROLLED_EXCEPTIONS with the reason")
+
+    def test_every_layout_hosting_a_loader_also_loads_ajax_status(self):
+        """AjaxStatus is a hard dependency of readJsonOrThrow, not an optional
+        nicety. layout_public.html hosted wrapped.js WITHOUT it, so every
+        renderInto/showBanner call on the public shared-Wrapped page was silently
+        skipped and a failed filter change said nothing at all."""
+        templatesDir = REPO_ROOT / "templates"
+        for layout in ("layout.html", "layout_public.html"):
+            with self.subTest(layout=layout):
+                self.assertIn("js/ajax-status.js",
+                              (templatesDir / layout).read_text(encoding="utf-8"))
 
     def test_no_page_loader_swallows_a_non_2xx_into_null(self):
         """Counted, not merely absent, so the two deliberate swallows stay
@@ -131,9 +162,11 @@ class AjaxLoaderErrorHandlingTestCase(unittest.TestCase):
                 handler = _handlerAfter(self.files[fileName], f"fetch('{endpoint}')")
 
                 self.assertNotEqual(handler, "", f"{endpoint} is no longer fetched from {fileName}")
-                self.assertIn(".ok", handler,
-                              f"{endpoint}'s handler never checks the status, so a 500 or a 401 "
-                              "resolves and the card silently keeps its placeholder")
+                #< either through the shared helper (which checks the status and
+                #  throws) or by checking it inline
+                self.assertTrue("readJsonOrThrow" in handler or ".ok" in handler,
+                                f"{endpoint}'s handler never checks the status, so a 500 or a 401 "
+                                "resolves and the card silently keeps its placeholder")
                 #< .ok alone is not enough: the swallowing ternary contains it and
                 #  still ends in the same silent no-op
                 self.assertNotRegex(handler, SWALLOWING_TERNARY,

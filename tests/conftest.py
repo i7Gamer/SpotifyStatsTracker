@@ -9,6 +9,7 @@ import socket
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -131,6 +132,64 @@ def normalizeTrackForTest(track: dict) -> dict:
         for artist in track.get("artists", [])
     ]
     return track
+
+
+def rawSpotifyTrackForTest(trackId: str, name: str = None, artistName: str = "Artist One") -> dict:
+    """A track in SPOTIFY'S OWN wire shape - what `Spotify.track()` returns and
+    `Client.formatTrack` converts.
+
+    normalizeTrackForTest above produces the app's INTERNAL shape, which is a
+    different thing: passing one where the other is expected fails on
+    `track["external_urls"]["spotify"]`. This exists so a test can stub the
+    importer's Spotify client instead of constructing a real one - a real client
+    tries to log in, then retries a lookup that cannot succeed, which cost one
+    test in test_import_commit.py 7.3 seconds (2.1s of it retry backoff)."""
+    return {
+        "id": trackId,
+        "name": name or f"Song {trackId}",
+        "duration_ms": 200_000,
+        "explicit": False,
+        "disc_number": 1,
+        "track_number": 1,
+        "external_urls": {"spotify": f"https://open.spotify.com/track/{trackId}"},
+        "external_ids": {"isrc": ""},
+        "artists": [{"id": "a1", "name": artistName,
+                     "external_urls": {"spotify": "https://open.spotify.com/artist/a1"}}],
+        "album": {
+            "id": f"{trackId}-album", "name": "Album One", "total_tracks": 1,
+            "release_date": "2023-01-01", "images": [],
+            "external_urls": {"spotify": f"https://open.spotify.com/album/{trackId}-album"},
+            "artists": [{"id": "a1", "name": artistName,
+                         "external_urls": {"spotify": "https://open.spotify.com/artist/a1"}}],
+        },
+    }
+
+
+def makeDashboardDbMock() -> MagicMock:
+    """A MagicMock db answering everything the dashboard route (`/`) reads, with
+    empty-but-well-shaped values. Callers override only what their test is about.
+
+    Shared because the route reads six things whose SHAPES matter - a MagicMock
+    default would be a Mock where a dict or a tuple is expected, so every
+    dashboard route test had to stub all six, and three files wrote out the same
+    block. That is real coupling, not just repetition: adding a query to the
+    dashboard means editing every one of them, which is how getListeningCalendar
+    landed as three separate edits."""
+    db = MagicMock()
+    db.repo.getUserSettings.return_value = {"default_dashboard_window": "day"}
+    db.getOverallStats.return_value = {
+        "currentTopSongs": [], "currentTopArtists": [],
+        "totalSongsPlayed": 0, "totalDurationMs": 0,
+        "previousSongsPlayed": 0, "previousDurationMs": 0,
+    }
+    db.getCurrentStreak.return_value = {"days": 0, "activeToday": False}
+    db.getOnThisDay.return_value = []
+    db.getPlayTotals.return_value = (0, 0)          #< lifetime totals feed the Next-milestones bars
+    #< the calendar card only renders when weeks is non-empty, so an empty grid
+    #  keeps unrelated tests from being perturbed by it
+    db.getListeningCalendar.return_value = {
+        "weeks": [], "monthLabels": [], "maxCount": 0, "activeDays": 0, "totalPlays": 0}
+    return db
 
 
 def makeDatabaseWithData(dbPath: Path, tracks: dict, entries: list, username: str = "testuser",

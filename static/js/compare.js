@@ -87,12 +87,7 @@ function loadCompareData({ sortByOnly = false, initial = false } = {}) {
   const delay = new Promise(resolve => setTimeout(resolve, COMPARE_FADE_MS));
   const fetched = fetch(window.location.pathname + '?' + params.toString(), { signal: controller.signal })
     .then(response => {
-      //< an expired session: go to the login page instead of parsing its
-      //  HTML as JSON and dead-ending on a Retry that can never succeed
-      if (window.AjaxStatus && window.AjaxStatus.redirectIfUnauthorized(response)) {
-        throw new Error(window.AjaxStatus.UNAUTHORIZED_ERROR);
-      }
-      return response.json();
+      return window.AjaxStatus.readJsonOrThrow(response, 'compare data');
     });
 
   Promise.all([fetched, delay])

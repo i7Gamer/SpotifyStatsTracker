@@ -25,6 +25,12 @@
   </head>
   <body>
     <main class="page">{% block content %}{% endblock %}</main>
+    {# The shared-Wrapped page loads wrapped.js, whose loader reports failures
+       through AjaxStatus - and this layout did not include it, so every
+       renderInto/showBanner call on the public page was silently skipped and a
+       failed filter change said nothing at all. tests/test_ajax_loader_error_handling.py
+       pins that a layout hosting a loader also hosts this. #}
+    <script src="{{ url_for('static', filename='js/ajax-status.js') }}"></script>
     <script src="{{ url_for('static', filename='js/artist-toggle.js') }}"></script>
     <script src="{{ url_for('static', filename='js/layout-public-chrome.js') }}"></script>
 

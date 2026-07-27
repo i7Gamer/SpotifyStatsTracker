@@ -903,21 +903,27 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         topArtistIds = [artist["id"] for artist in self.getTopArtists(by="plays", limit=excludeTopN)]
         return self.repo.getArtistsByGenres(self.user, topGenres, topArtistIds, limit)
 
+    def _genreNames(self, rows, includeInherited) -> list[str]:
+        """Genre names from repo genre rows, honouring the inherited-genre toggle
+        (None = read the admin's instance-wide setting).
+
+        Shared by the four track/album accessors below because the RULE is what
+        repeats, not just the shape: "drop inherited rows unless the setting says
+        otherwise" decides what a page displays, and four copies is four places
+        to get it backwards. Artists have no inherited concept (nothing to
+        inherit FROM), so they don't come through here."""
+        inherited = self._resolveIncludeInherited(includeInherited)
+        return [row["genre"] for row in rows if inherited or not row["inherited"]]
+
     def getGenresForTrack(self, trackId: str, includeInherited: bool | None = None) -> list[str]:
         """This track's own genre names, position-ordered - the track-card
-        badge's data source. Respects the same inherited-genre toggle as
-        every other genre stat (None = read the admin's instance-wide
-        setting)."""
-        inherited = self._resolveIncludeInherited(includeInherited)
-        return [row["genre"] for row in self.repo.getTrackGenres(trackId)
-                if inherited or not row["inherited"]]
+        badge's data source."""
+        return self._genreNames(self.repo.getTrackGenres(trackId), includeInherited)
 
     def getGenresForAlbum(self, albumId: str, includeInherited: bool | None = None) -> list[str]:
         """This album's own genre names, position-ordered - see
         getGenresForTrack."""
-        inherited = self._resolveIncludeInherited(includeInherited)
-        return [row["genre"] for row in self.repo.getAlbumGenres(albumId)
-                if inherited or not row["inherited"]]
+        return self._genreNames(self.repo.getAlbumGenres(albumId), includeInherited)
 
     def getGenresForArtist(self, artistId: str) -> list[str]:
         """This artist's own genre names, position-ordered. Artists have no
@@ -929,16 +935,20 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         """Batched getGenresForTrack for a page of cards: {trackId: [genre, ...]}
         in two queries total (the inherited-genre setting once, the genre rows
         once) instead of two per card. Ids with no genres map to []."""
-        inherited = self._resolveIncludeInherited(includeInherited)
-        return {trackId: [row["genre"] for row in rows if inherited or not row["inherited"]]
-                for trackId, rows in self.repo.getTrackGenresForIds(trackIds).items()}
+        return self._genreNamesByIds(self.repo.getTrackGenresForIds(trackIds), includeInherited)
 
     def getGenresForAlbums(self, albumIds: list[str],
                             includeInherited: bool | None = None) -> dict[str, list[str]]:
         """Batched getGenresForAlbum - see getGenresForTracks."""
+        return self._genreNamesByIds(self.repo.getAlbumGenresForIds(albumIds), includeInherited)
+
+    def _genreNamesByIds(self, rowsById: dict, includeInherited) -> dict[str, list[str]]:
+        """_genreNames over a batched {id: rows} mapping. Resolves the
+        inherited-genre setting ONCE for the whole page, which is the point of the
+        batched queries above."""
         inherited = self._resolveIncludeInherited(includeInherited)
-        return {albumId: [row["genre"] for row in rows if inherited or not row["inherited"]]
-                for albumId, rows in self.repo.getAlbumGenresForIds(albumIds).items()}
+        return {entityId: [row["genre"] for row in rows if inherited or not row["inherited"]]
+                for entityId, rows in rowsById.items()}
 
     def getGenresForArtists(self, artistIds: list[str]) -> dict[str, list[str]]:
         """Batched getGenresForArtist - one query, no inherited toggle."""

@@ -4,7 +4,8 @@ from unittest.mock import patch, MagicMock
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from conftest import DatabaseTestCase, normalizeTrackForTest
+from conftest import DatabaseTestCase, normalizeTrackForTest, rawSpotifyTrackForTest
+import Database.Importers.StreamingHistoryImporter as importerModule
 
 
 def _meta(trackId, playedAt):
@@ -37,6 +38,15 @@ class TestImportHistoryCommit(DatabaseTestCase):
 
     def _playedAts(self):
         return [e["playedAt"] for e in self.db.getEntriesFromOld(fullPagination=False)]
+
+    def _stubSpotifyClient(self, *trackIds):
+        """A stand-in for the importer's Spotify client that answers lookups from
+        canned wire-shape data, so the real parser still runs but nothing tries
+        to log in or retry over the network."""
+        canned = {trackId: rawSpotifyTrackForTest(trackId) for trackId in trackIds}
+        client = MagicMock()
+        client.track.side_effect = lambda uri: canned.get(str(uri).rsplit(":", 1)[-1])
+        return client
 
     def test_successful_import_merges_and_sorts(self):
         def gen():
@@ -160,7 +170,14 @@ class TestImportHistoryCommit(DatabaseTestCase):
     def test_a_file_that_is_only_partly_unreadable_still_imports_the_rest(self):
         """The loud failure is for a file nothing could be read from. One bad
         row among good ones must not throw the good ones away - they import,
-        and the count is what the overwrite guard reads."""
+        and the count is what the overwrite guard reads.
+
+        Unlike its siblings this exercises the REAL parser (that is the point -
+        _extendedEntryTuple raising KeyError on the bad row is the behaviour
+        under test), so only the Spotify client is stubbed. Constructing a real
+        one made this the slowest test in the suite by 15x - 7.3s, of which 2.1s
+        was retry backoff on a lookup that cannot succeed offline - for a
+        network round trip the assertions never look at."""
         import json
         mixed = json.dumps([
             {"ts": "2023-05-01T10:00:00Z", "ms_played": 150000,
@@ -170,7 +187,9 @@ class TestImportHistoryCommit(DatabaseTestCase):
             {"ts": "2023-05-01T11:00:00Z", "ms_played": 120000},   #< unreadable
         ])
 
-        self.db.importHistory(mixed)
+        with patch.object(importerModule.SpotipyFree, "Spotify",
+                          return_value=self._stubSpotifyClient("track123")):
+            self.db.importHistory(mixed)
 
         self.assertEqual(self.db.readProgress()["status"], "complete")
         self.assertEqual(len(self._playedAts()), 3)   #< the two seeded plus the readable one

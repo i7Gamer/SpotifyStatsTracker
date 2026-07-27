@@ -168,4 +168,71 @@ run('the unauthorized sentinel is recognized so no banner flashes', () => {
   assert.strictEqual(AjaxStatus.isUnauthorizedError(null), false);
 });
 
+// --- readJsonOrThrow ---------------------------------------------------------
+// The two checks every loader must make before touching a payload, written once
+// instead of nine times. Both were separately forgotten in production, so this is
+// now the function whose failure would break every page at once.
+
+function response(status, body) {
+  return {
+    status: status,
+    ok: status >= 200 && status < 300,
+    json: () => Promise.resolve(body),
+  };
+}
+
+run('a 2xx yields the parsed body', () => {
+  installDomWithLocation('/charts', '');
+  const payload = { resultsHtml: '<p>ok</p>' };
+
+  const result = AjaxStatus.readJsonOrThrow(response(200, payload), 'charts');
+
+  assert.ok(result && typeof result.then === 'function', 'returns resp.json()');
+  return result.then((data) => assert.deepStrictEqual(data, payload));
+});
+
+run('a 401 navigates instead of handing back its body', () => {
+  // The bug: a 401's body is VALID JSON, so .json() resolves and the payload key
+  // is merely absent - innerHTML then wrote the string "undefined" over the page.
+  installDomWithLocation('/', '?ajax=true');
+
+  assert.throws(
+    () => AjaxStatus.readJsonOrThrow(response(401, { error: 'Not logged in' }), 'dashboard'),
+    (err) => AjaxStatus.isUnauthorizedError(err));
+  assert.ok(global.window.location.href.startsWith('/login?next='));
+});
+
+run('a 500 throws a labelled error and does not navigate', () => {
+  installDomWithLocation('/charts', '');
+
+  assert.throws(() => AjaxStatus.readJsonOrThrow(response(500, null), 'charts'),
+    /charts fetch failed: 500/);
+  assert.strictEqual(global.window.location.href, '/charts');
+});
+
+run('a 404 throws too, so it cannot be mistaken for an empty answer', () => {
+  installDomWithLocation('/song/t1', '');
+
+  assert.throws(() => AjaxStatus.readJsonOrThrow(response(404, null), 'detail body'),
+    /detail body fetch failed: 404/);
+});
+
+run('a server error is not reported as an unauthorized navigation', () => {
+  // Otherwise every loader's catch would swallow real server errors silently.
+  installDomWithLocation('/charts', '');
+
+  try {
+    AjaxStatus.readJsonOrThrow(response(503, null), 'charts');
+    assert.fail('should have thrown');
+  } catch (err) {
+    assert.strictEqual(AjaxStatus.isUnauthorizedError(err), false);
+  }
+});
+
+run('a missing label still produces a usable message', () => {
+  installDomWithLocation('/charts', '');
+
+  assert.throws(() => AjaxStatus.readJsonOrThrow(response(500, null)), /ajax fetch failed: 500/);
+});
+
 console.log('All ajax-status tests passed.');

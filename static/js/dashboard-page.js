@@ -31,14 +31,7 @@ function loadDashboardSummary() {
   var delay = new Promise(function (resolve) { setTimeout(resolve, DASHBOARD_FADE_MS); });
   var fetched = fetch(window.location.pathname + '?' + params.toString(), { signal: controller.signal })
     .then(function (response) {
-      //< an expired session: go to the login page instead of reading summaryHtml
-      //  off a 401's JSON body, which resolves fine and simply has no such key -
-      //  innerHTML then wrote the string "undefined" over the four cards
-      if (window.AjaxStatus && window.AjaxStatus.redirectIfUnauthorized(response)) {
-        throw new Error(window.AjaxStatus.UNAUTHORIZED_ERROR);
-      }
-      if (!response.ok) throw new Error('dashboard summary fetch failed: ' + response.status);
-      return response.json();
+      return window.AjaxStatus.readJsonOrThrow(response, 'dashboard summary');
     });
 
   Promise.all([fetched, delay])
@@ -469,15 +462,7 @@ document.addEventListener('DOMContentLoaded', function() {
     if (!container) return;
     fetch('/api/dashboard-trends')
       .then(function(res) {
-        //< an expired session answers 401 with a JSON body, so res.json()
-        //  resolves and trendsHtml is simply absent - the swap below then
-        //  silently no-opped and the three cards said "Loading listening
-        //  trends…" for as long as the page stayed open
-        if (window.AjaxStatus && window.AjaxStatus.redirectIfUnauthorized(res)) {
-          throw new Error(window.AjaxStatus.UNAUTHORIZED_ERROR);
-        }
-        if (!res.ok) throw new Error('dashboard trends fetch failed: ' + res.status);
-        return res.json();
+        return window.AjaxStatus.readJsonOrThrow(res, 'dashboard trends');
       })
       .then(function(data) {
         container.innerHTML = data.trendsHtml;

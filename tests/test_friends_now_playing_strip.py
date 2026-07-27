@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from _app_factory import AppTestCase
+from conftest import makeDashboardDbMock
 
 
 class FriendsStripTestCase(AppTestCase):
@@ -26,19 +27,9 @@ class FriendsStripTestCase(AppTestCase):
         self.dash.repo.upsertUser(self.USERNAME, self.EMAIL)
 
     def _makeDb(self):
-        db = MagicMock()
-        db.repo.getUserSettings.return_value = {"default_dashboard_window": "day"}
-        db.getOverallStats.return_value = {
-            "currentTopSongs": [], "currentTopArtists": [],
-            "totalSongsPlayed": 0, "totalDurationMs": 0,
-            "previousSongsPlayed": 0, "previousDurationMs": 0,
-        }
-        db.getCurrentStreak.return_value = {"days": 0, "activeToday": False}
-        db.getOnThisDay.return_value = []
-        db.getPlayTotals.return_value = (0, 0)
-        db.getListeningCalendar.return_value = {
-            "weeks": [], "monthLabels": [], "maxCount": 0, "activeDays": 0, "totalPlays": 0}
-        return db
+        #< the dashboard route's baseline lives in conftest: this test is about the
+        #  friends strip, not about which six queries the page happens to read
+        return makeDashboardDbMock()
 
     def _dashboardHtml(self, hasShares=True):
         client = self.dash.app.test_client()

@@ -82,12 +82,7 @@ if (typeof window !== 'undefined') (function () {
     var delay = new Promise(function (resolve) { setTimeout(resolve, initial ? 0 : FADE_MS); });
     var fetched = fetch(window.location.pathname + '?' + params.toString(), { signal: controller.signal })
       .then(function (resp) {
-        //< an expired session: go to the login page instead of parsing its
-        //  HTML as JSON and dead-ending on a Retry that can never succeed
-        if (window.AjaxStatus && window.AjaxStatus.redirectIfUnauthorized(resp)) {
-          throw new Error(window.AjaxStatus.UNAUTHORIZED_ERROR);
-        }
-        return resp.json();
+        return window.AjaxStatus.readJsonOrThrow(resp, 'top list');
       });
 
     Promise.all([fetched, delay]).then(function (results) {
