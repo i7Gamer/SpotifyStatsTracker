@@ -275,7 +275,9 @@ class TestRevokeShareLink(ShareLinkRoutesTestCase):
         resp = client.post(f"/profile/share-links/{linkId}")
 
         self.assertEqual(resp.status_code, 302)
-        self.assertIn("/profile", resp.headers["Location"])
+        #< back to the panel that owns them now, not the profile page they
+        #  used to be listed on
+        self.assertIn("/wrapped", resp.headers["Location"])
         self.assertIsNone(self.dash.repo.getShareLink(token))
 
     def test_non_owner_cannot_revoke(self):
@@ -375,101 +377,134 @@ class TestRevokeShareLinkAjax(ShareLinkRoutesTestCase):
         self.assertIsNotNone(self.dash.repo.getShareLink(tokenC))
 
 
-class TestShareLinkListOnProfilePage(ShareLinkRoutesTestCase):
-    def test_all_years_link_shows_all_years_badge_not_none(self):
+class TestOtherYearLinksInThePanel(ShareLinkRoutesTestCase):
+    """Links scoped to a year other than the one on screen.
+
+    The panel used to show only the current year's bucket plus the all-years
+    bucket, so managing a 2024 link meant navigating to 2024 - which is why
+    /profile carried a second, parallel list of every link. That list is gone;
+    this group is what replaced it."""
+
+    def _panel(self, body):
+        start = body.index("data-other-year-links")
+        return body[start:body.index("</details>", start)]
+
+    def test_a_link_from_another_year_is_listed(self):
         self.dash.repo.upsertUser("alice", "alice@example.com")
-        self.dash.repo.createShareLink("alice", self.dash.repo.SHARE_LINK_KIND_WRAPPED, None, expiresInSeconds=None)
+        token = self.dash.repo.createShareLink(
+            "alice", self.dash.repo.SHARE_LINK_KIND_WRAPPED, 2024, None)
         client = self._loginAs("alice", "alice@example.com")
 
-        resp = client.get("/profile")
-        body = resp.data.decode()
+        body = client.get("/wrapped?year=2026").data.decode()
 
-        self.assertIn('<span class="badge badge-secondary">All years</span>', body)
-        self.assertNotIn(">None<", body)
+        group = self._panel(body)
+        self.assertIn("2024", group)
+        self.assertRegex(group, rf'data-url="https?://[^"]*/shared/{token}"')
 
-    def test_lists_year_created_and_expiry(self):
+    def test_each_other_year_link_is_revocable(self):
         self.dash.repo.upsertUser("alice", "alice@example.com")
-        self.dash.repo.createShareLink("alice", self.dash.repo.SHARE_LINK_KIND_WRAPPED, 2026, expiresInSeconds=None)
-        client = self._loginAs("alice", "alice@example.com")
-
-        resp = client.get("/profile")
-        body = resp.data.decode()
-
-        self.assertIn("Wrapped Share Links", body)
-        self.assertIn("2026", body)
-        self.assertIn("Never", body)   #< expiresInSeconds=None -> "Never" expires
-
-    def test_revoke_button_targets_the_right_link(self):
-        self.dash.repo.upsertUser("alice", "alice@example.com")
-        token = self.dash.repo.createShareLink("alice", self.dash.repo.SHARE_LINK_KIND_WRAPPED, 2026, None)
+        token = self.dash.repo.createShareLink(
+            "alice", self.dash.repo.SHARE_LINK_KIND_WRAPPED, 2024, None)
         linkId = self.dash.repo.getShareLink(token)["id"]
         client = self._loginAs("alice", "alice@example.com")
 
-        resp = client.get("/profile")
+        group = self._panel(client.get("/wrapped?year=2026").data.decode())
 
-        self.assertIn(f'action="/profile/share-links/{linkId}"'.encode(), resp.data)
+        self.assertIn(f'action="/profile/share-links/{linkId}"', group)
 
-    def test_copy_link_button_carries_the_full_share_url(self):
-        self.dash.repo.upsertUser("alice", "alice@example.com")
-        token = self.dash.repo.createShareLink("alice", self.dash.repo.SHARE_LINK_KIND_WRAPPED, 2026, None)
-        client = self._loginAs("alice", "alice@example.com")
-
-        resp = client.get("/profile")
-        body = resp.data.decode()
-
-        self.assertIn("Copy Link", body)
-        self.assertRegex(body, rf'data-url="https?://[^"]*/shared/{token}"')
-
-    def test_each_links_copy_button_carries_its_own_url(self):
-        self.dash.repo.upsertUser("alice", "alice@example.com")
-        tokenA = self.dash.repo.createShareLink("alice", self.dash.repo.SHARE_LINK_KIND_WRAPPED, 2025, None)
-        tokenB = self.dash.repo.createShareLink("alice", self.dash.repo.SHARE_LINK_KIND_WRAPPED, 2026, None)
-        client = self._loginAs("alice", "alice@example.com")
-
-        resp = client.get("/profile")
-        body = resp.data.decode()
-
-        self.assertRegex(body, rf'data-url="https?://[^"]*/shared/{tokenA}"')
-        self.assertRegex(body, rf'data-url="https?://[^"]*/shared/{tokenB}"')
-
-    def test_section_hidden_when_user_has_no_links(self):
-        client = self._loginAs("alice", "alice@example.com")
-
-        resp = client.get("/profile")
-
-        self.assertNotIn(b"Wrapped Share Links", resp.data)
-
-    def test_section_hidden_when_feature_disabled_even_with_links(self):
+    def test_group_is_absent_when_every_link_is_current_or_all_years(self):
         self.dash.repo.upsertUser("alice", "alice@example.com")
         self.dash.repo.createShareLink("alice", self.dash.repo.SHARE_LINK_KIND_WRAPPED, 2026, None)
-        self.dash.repo.setShareLinksEnabled(False)
+        self.dash.repo.createShareLink("alice", self.dash.repo.SHARE_LINK_KIND_WRAPPED, None, None)
         client = self._loginAs("alice", "alice@example.com")
 
-        resp = client.get("/profile")
+        body = client.get("/wrapped?year=2026").data.decode()
 
-        self.assertNotIn(b"Wrapped Share Links", resp.data)
+        self.assertNotIn("data-other-year-links", body)
 
-    def test_expired_link_does_not_appear(self):
+    def test_an_all_years_link_is_not_counted_as_another_year(self):
+        """It has its own bucket and its own cap - listing it twice would
+        imply revoking it there was a different action."""
         self.dash.repo.upsertUser("alice", "alice@example.com")
-        self.dash.repo.createShareLink("alice", self.dash.repo.SHARE_LINK_KIND_WRAPPED, 2026, expiresInSeconds=-10)
+        self.dash.repo.createShareLink("alice", self.dash.repo.SHARE_LINK_KIND_WRAPPED, None, None)
         client = self._loginAs("alice", "alice@example.com")
 
-        resp = client.get("/profile")
+        body = client.get("/wrapped?year=2026").data.decode()
 
-        self.assertNotIn(b"Wrapped Share Links", resp.data)
+        self.assertIn('<span class="badge badge-secondary">All years</span>', body)
+        self.assertNotIn("data-other-year-links", body)
+        self.assertNotIn(">None<", body)
 
-    def test_multiple_links_for_the_same_year_all_appear_in_the_table(self):
+    def test_other_year_links_do_not_count_toward_this_years_cap(self):
+        """The cap is per bucket. Five 2024 links must not block a 2026 one."""
         self.dash.repo.upsertUser("alice", "alice@example.com")
-        tokenA = self.dash.repo.createShareLink("alice", self.dash.repo.SHARE_LINK_KIND_WRAPPED, 2026, None)
-        tokenB = self.dash.repo.createShareLink(
-            "alice", self.dash.repo.SHARE_LINK_KIND_WRAPPED, 2026, 7 * 24 * 3600)
+        for _ in range(appModule.SHARE_LINK_MAX_PER_BUCKET):
+            self.dash.repo.createShareLink("alice", self.dash.repo.SHARE_LINK_KIND_WRAPPED, 2024, None)
         client = self._loginAs("alice", "alice@example.com")
 
-        resp = client.get("/profile")
-        body = resp.data.decode()
+        body = client.get("/wrapped?year=2026").data.decode()
 
-        self.assertRegex(body, rf'data-url="https?://[^"]*/shared/{tokenA}"')
-        self.assertRegex(body, rf'data-url="https?://[^"]*/shared/{tokenB}"')
+        self.assertIn("Create Share Link", body)
+        self.assertNotIn("reached the limit", body)
+
+    def test_expired_other_year_link_does_not_appear(self):
+        self.dash.repo.upsertUser("alice", "alice@example.com")
+        self.dash.repo.createShareLink(
+            "alice", self.dash.repo.SHARE_LINK_KIND_WRAPPED, 2024, expiresInSeconds=-10)
+        client = self._loginAs("alice", "alice@example.com")
+
+        body = client.get("/wrapped?year=2026").data.decode()
+
+        self.assertNotIn("data-other-year-links", body)
+
+    def test_several_other_years_are_all_listed(self):
+        self.dash.repo.upsertUser("alice", "alice@example.com")
+        tokenA = self.dash.repo.createShareLink("alice", self.dash.repo.SHARE_LINK_KIND_WRAPPED, 2023, None)
+        tokenB = self.dash.repo.createShareLink("alice", self.dash.repo.SHARE_LINK_KIND_WRAPPED, 2024, None)
+        client = self._loginAs("alice", "alice@example.com")
+
+        group = self._panel(client.get("/wrapped?year=2026").data.decode())
+
+        self.assertRegex(group, rf'data-url="https?://[^"]*/shared/{tokenA}"')
+        self.assertRegex(group, rf'data-url="https?://[^"]*/shared/{tokenB}"')
+
+    def test_group_survives_an_ajax_year_switch(self):
+        """The panel is re-rendered server-side on an ajax year change, so the
+        group has to come through that path too - not just the full render."""
+        self.dash.repo.upsertUser("alice", "alice@example.com")
+        self.dash.repo.createShareLink("alice", self.dash.repo.SHARE_LINK_KIND_WRAPPED, 2024, None)
+        client = self._loginAs("alice", "alice@example.com")
+
+        resp = client.get("/wrapped?year=2026&ajax=true&update=all")
+
+        self.assertIn("data-other-year-links", resp.get_json()["sharePanelHtml"])
+
+
+class TestProfileNoLongerListsShareLinks(ShareLinkRoutesTestCase):
+    def test_profile_has_no_share_links_section(self):
+        self.dash.repo.upsertUser("alice", "alice@example.com")
+        token = self.dash.repo.createShareLink(
+            "alice", self.dash.repo.SHARE_LINK_KIND_WRAPPED, 2026, None)
+        client = self._loginAs("alice", "alice@example.com")
+
+        body = client.get("/profile").data.decode()
+
+        self.assertNotIn("Wrapped Share Links", body)
+        self.assertNotIn(token, body)
+
+    def test_non_ajax_revoke_returns_to_wrapped(self):
+        """The redirect used to land on /profile, which no longer shows them."""
+        self.dash.repo.upsertUser("alice", "alice@example.com")
+        token = self.dash.repo.createShareLink(
+            "alice", self.dash.repo.SHARE_LINK_KIND_WRAPPED, 2026, None)
+        linkId = self.dash.repo.getShareLink(token)["id"]
+        client = self._loginAs("alice", "alice@example.com")
+
+        resp = client.post(f"/profile/share-links/{linkId}")
+
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn("/wrapped", resp.headers["Location"])
+        self.assertNotIn("/profile", resp.headers["Location"])
 
 
 class PublicSharedWrappedTestCase(ShareLinkRoutesTestCase):
@@ -912,6 +947,9 @@ class TestShareLinkPanelOnWrappedPage(ShareLinkRoutesTestCase):
         self.assertIn("Create Share Link", body)   #< always shown now, so a second link can be added
 
     def test_a_different_years_link_does_not_show_as_the_current_one(self):
+        """It is still listed - in the other-years group below (see
+        TestOtherYearLinksInThePanel) - but must not be mistaken for a link
+        covering the year on screen, and must not suppress the create form."""
         self.dash.repo.upsertUser("alice", "alice@example.com")
         self.dash.repo.createShareLink("alice", self.dash.repo.SHARE_LINK_KIND_WRAPPED, 2025, None)
         client = self._loginAs("alice", "alice@example.com")
@@ -920,7 +958,9 @@ class TestShareLinkPanelOnWrappedPage(ShareLinkRoutesTestCase):
         body = resp.data.decode()
 
         self.assertIn("Create Share Link", body)
-        self.assertNotIn("Revoke", body)
+        #< the current-year list is what precedes the other-years group
+        currentSection = body[:body.index("data-other-year-links")]
+        self.assertNotIn("Revoke", currentSection)
 
     def test_all_years_link_and_a_per_year_link_both_show_together(self):
         """An all-years link no longer hides a same-year link in the panel -
@@ -1016,7 +1056,10 @@ class TestShareLinkPanelOnWrappedPage(ShareLinkRoutesTestCase):
 
         panelHtml = resp.get_json()["sharePanelHtml"]
         self.assertIn("Create Share Link", panelHtml)
-        self.assertNotIn("Revoke", panelHtml)
+        #< the 2025 link is still listed, but in the other-years group - what
+        #  must not appear is a revoke for the year on screen
+        currentSection = panelHtml[panelHtml.index("</details>"):]
+        self.assertNotIn("Revoke", currentSection)
 
     def test_ajax_chart_only_update_does_not_touch_the_share_panel(self):
         """type=chart/lists narrow updates only ever fire when the year

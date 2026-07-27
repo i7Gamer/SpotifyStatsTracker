@@ -34,7 +34,6 @@ logger = logging.getLogger(__name__)
 PROFILE_FLASH_DISPLAY_NAME = "display-name"
 PROFILE_FLASH_PREFERENCES = "preferences"
 PROFILE_FLASH_SHARING = "data-sharing"
-PROFILE_FLASH_SHARE_LINKS = "share-links"
 PROFILE_FLASH_SPOTIFY = "spotify"
 PROFILE_FLASH_LASTFM = "lastfm"
 
@@ -47,8 +46,6 @@ def register(app, dashboard):
     RATE_LIMIT_ERROR_MESSAGE = appmod.RATE_LIMIT_ERROR_MESSAGE
     SPOTIFY_OAUTH_STATE_NUM_BYTES = appmod.SPOTIFY_OAUTH_STATE_NUM_BYTES
     SPOTIFY_OAUTH_STATE_SESSION_KEY = appmod.SPOTIFY_OAUTH_STATE_SESSION_KEY
-    SHARE_LINK_EXPIRY_CHOICES = appmod.SHARE_LINK_EXPIRY_CHOICES
-    SHARE_LINK_MAX_PER_BUCKET = appmod.SHARE_LINK_MAX_PER_BUCKET
     DISPLAY_NAME_MIN_LENGTH = appmod.DISPLAY_NAME_MIN_LENGTH
     DISPLAY_NAME_MAX_LENGTH = appmod.DISPLAY_NAME_MAX_LENGTH
     DISPLAY_NAME_ALLOWED_PATTERN = appmod.DISPLAY_NAME_ALLOWED_PATTERN
@@ -500,13 +497,6 @@ def register(app, dashboard):
         shareCandidates = [u for u in dashboard.repo.getAllUsernamesExcept(username)
                            if u not in existingCounterparts]
 
-        shareLinks = [
-            {**link,
-             "createdText": dateToString(link["created_at"], tz=db.tz),
-             "expiresText": dateToString(link["expires_at"], tz=db.tz) if link["expires_at"] else "Never"}
-            for link in dashboard.repo.getShareLinksForUser(username)
-        ]
-
         return render_template(
             "profile.html",
             username=username,
@@ -543,7 +533,6 @@ def register(app, dashboard):
             pendingOutgoing=pendingOutgoing,
             acceptedShares=acceptedShares,
             shareCandidates=shareCandidates,
-            shareLinks=shareLinks,
         ), responseStatus
     app.add_url_rule("/profile", "profilePage", profilePage, methods=["GET", "POST"])
 
@@ -707,10 +696,16 @@ def register(app, dashboard):
     def profileShareLinkAction(link_id):
         """Owner-only revoke for a public Wrapped share link - accept/
         decline don't apply here (unlike profileShareAction's mutual
-        shares), there's only ever one action. ajax=true is the wrapped.html
-        modal's revoke form (see createWrappedShareLink); profile.html's
-        own revoke form never sets it and keeps the classic redirect."""
+        shares), there's only ever one action. ajax=true is how the
+        wrapped.html modal calls it (see createWrappedShareLink); the
+        no-JS fallback redirects back to the modal.
+
+        The /profile URL is a leftover: the links were managed there until
+        they moved into the Wrapped modal, and /wrapped/share-links/<int:...>
+        is already taken by createWrappedShareLink's <int:year>, so the two
+        would collide on the same converter."""
         isAjax = request.args.get("ajax") == "true"
+        year = request.form.get("year", type=int)
         email, username, db = dashboard.get_current_user_or_redirect()
         if not email:
             if isAjax:
@@ -719,15 +714,13 @@ def register(app, dashboard):
 
         if dashboard.repo.revokeShareLink(link_id, username):
             if isAjax:
-                year = request.form.get("year", type=int)
-                yearLinks, allYearsLinks = dashboard._resolveShareLinksForYear(username, year)
-                html = render_template(
-                    "_share_link_panel.html", year=year, yearLinks=yearLinks,
-                    allYearsLinks=allYearsLinks, shareLinkExpiryChoices=SHARE_LINK_EXPIRY_CHOICES,
-                    shareLinkMaxPerBucket=SHARE_LINK_MAX_PER_BUCKET)
+                html = render_template("_share_link_panel.html",
+                                       **dashboard.shareLinkPanelArgs(username, year))
                 return jsonify(html=html)
-            return _profileRedirect(PROFILE_FLASH_SHARE_LINKS, success="Share link revoked.")
+            return redirect(url_for("wrappedPage", year=year, success="Share link revoked.",
+                                    openShareModal=1))
         if isAjax:
             return jsonify(error="Could not revoke that share link."), 403
-        return _profileRedirect(PROFILE_FLASH_SHARE_LINKS, error="Could not revoke that share link.")
+        return redirect(url_for("wrappedPage", year=year,
+                                error="Could not revoke that share link.", openShareModal=1))
     app.add_url_rule("/profile/share-links/<int:link_id>", "profileShareLinkAction", profileShareLinkAction, methods=["POST"])

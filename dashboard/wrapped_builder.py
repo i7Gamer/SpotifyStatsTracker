@@ -10,7 +10,10 @@ import time
 from flask import render_template, request
 from Database.utils import convertToDatetime, msToString, now
 from services.genre_gate import emptyGenreCoverage, genreGatePasses, resolveGenreCoverage, resolveGenreDistribution
-from config import WRAPPED_LIMIT_OPTIONS, WRAPPED_LIST_SIZE, WRAPPED_TOP_GENRES_LIMIT
+from config import (
+    SHARE_LINK_EXPIRY_CHOICES, SHARE_LINK_MAX_PER_BUCKET,
+    WRAPPED_LIMIT_OPTIONS, WRAPPED_LIST_SIZE, WRAPPED_TOP_GENRES_LIMIT,
+)
 
 
 class WrappedBuilderMixin:
@@ -87,25 +90,43 @@ class WrappedBuilderMixin:
             return "Expires today"
         return f"Expires in {remainingDays} day" + ("" if remainingDays == 1 else "s")
 
-    def _resolveShareLinksForYear(self, username: str, year: int) -> tuple[list[dict], list[dict]]:
-        """(yearLinks, allYearsLinks) - every still-active link scoped to
-        this exact year, and every still-active all-years link, both freshly
-        re-derived from the DB, never assumed from whichever link an action
-        just touched, since the share-link panel can now be showing several
-        of either type and creating/revoking one doesn't tell you what state
-        the rest are in. Each link dict is annotated with an "expiryLabel"
-        (see _shareLinkExpiryLabel) ready for the template to render."""
+    def shareLinkPanelArgs(self, username: str, year: int) -> dict:
+        """Everything _share_link_panel.html renders, for all four places that
+        render it: the /wrapped page, its ajax year switch, share-link creation
+        and share-link revocation (see routes/wrapped.py and routes/auth.py).
+        They each used to assemble these kwargs themselves, which is how a new
+        one could reach three of the four and quietly go missing from the
+        fourth.
+
+        Three buckets, all freshly re-derived from the DB rather than assumed
+        from whichever link an action just touched - the panel can be showing
+        several links of each type, and creating or revoking one tells you
+        nothing about the state of the rest:
+
+          yearLinks       links scoped to exactly this year
+          allYearsLinks   links covering every year
+          otherYearLinks  everything else the user still has active
+
+        otherYearLinks is display-only. The per-bucket cap
+        (SHARE_LINK_MAX_PER_BUCKET) deliberately ignores it: those links are
+        listed so a stale one can be revoked without navigating to its year,
+        which is what /profile's parallel list used to be for."""
         nowTs = time.time()
         links = self.repo.getShareLinksForUser(username)
-        yearLinks = [
-            {**link, "expiryLabel": self._shareLinkExpiryLabel(link["expires_at"], nowTs)}
-            for link in links if link["year"] == year
-        ]
-        allYearsLinks = [
-            {**link, "expiryLabel": self._shareLinkExpiryLabel(link["expires_at"], nowTs)}
-            for link in links if link["year"] is None
-        ]
-        return yearLinks, allYearsLinks
+
+        def annotate(subset):
+            return [{**link, "expiryLabel": self._shareLinkExpiryLabel(link["expires_at"], nowTs)}
+                    for link in subset]
+
+        return {
+            "year": year,
+            "yearLinks": annotate(link for link in links if link["year"] == year),
+            "allYearsLinks": annotate(link for link in links if link["year"] is None),
+            "otherYearLinks": annotate(
+                link for link in links if link["year"] is not None and link["year"] != year),
+            "shareLinkExpiryChoices": SHARE_LINK_EXPIRY_CHOICES,
+            "shareLinkMaxPerBucket": SHARE_LINK_MAX_PER_BUCKET,
+        }
 
     @staticmethod
     def _resortByMetric(items: list, sortBy: str) -> list:

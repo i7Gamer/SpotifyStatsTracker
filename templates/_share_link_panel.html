@@ -24,6 +24,39 @@
 </div>
 {% endif %}
 
+{#- Links scoped to some OTHER year. Display-only: they are deliberately absent
+    from the cap maths below, since the cap is per bucket. Collapsed by default
+    so the panel stays about the year on screen - the point is that a stale link
+    can be revoked without navigating to its year, which is what the parallel
+    list on /profile used to be for. -#}
+{% if otherYearLinks %}
+<details data-other-year-links style="margin: 0 0 1rem;">
+  <summary style="cursor: pointer; font-size: 0.85rem; color: var(--muted);">
+    Links for other years ({{ otherYearLinks | length }})
+  </summary>
+  <div style="display: flex; flex-direction: column; gap: 0.5rem; margin: 0.5rem 0 0;">
+    {% for link in otherYearLinks %}
+    <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; flex-wrap: wrap; padding: 0.4rem 0; border-bottom: 1px solid var(--border);">
+      <div style="font-size: 0.85rem; display: flex; align-items: center; gap: 0.5rem;">
+        <span class="badge badge-secondary">{{ link.year }}</span>
+        <span style="color: var(--muted);">{{ link.expiryLabel }}</span>
+      </div>
+      <div style="display: flex; gap: 0.5rem; align-items: center;">
+        <button type="button" class="primary-button" style="padding: 4px 12px;" data-url="{{ url_for('sharedWrappedPage', token=link.token, _external=True) }}" onclick="copyShareLink(this)">Copy</button>
+        {# year= is the year still on screen, not the link's - the panel this
+           refresh returns is the one the user is looking at. #}
+        <form method="post" action="{{ url_for('profileShareLinkAction', link_id=link.id) }}" class="share-link-revoke-form" style="margin: 0; display: inline-block;">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+          <input type="hidden" name="year" value="{{ year }}"/>
+          <button type="submit" class="primary-button" style="padding: 4px 12px; background: #c92a2a;">Revoke</button>
+        </form>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</details>
+{% endif %}
+
 {% set yearAtCap = yearLinks | length >= shareLinkMaxPerBucket %}
 {% set allYearsAtCap = allYearsLinks | length >= shareLinkMaxPerBucket %}
 

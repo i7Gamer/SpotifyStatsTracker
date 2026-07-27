@@ -55,11 +55,8 @@ def register(app, dashboard):
             # create-link form/action-URL/existing-link state even
             # though the rest of the page has moved on.
             if ajaxUpdateType == "all" and dashboard.repo.isShareLinksEnabled():
-                yearLinks, allYearsLinks = dashboard._resolveShareLinksForYear(username, year)
                 res["sharePanelHtml"] = render_template(
-                    "_share_link_panel.html", year=year, yearLinks=yearLinks,
-                    allYearsLinks=allYearsLinks, shareLinkExpiryChoices=SHARE_LINK_EXPIRY_CHOICES,
-                    shareLinkMaxPerBucket=SHARE_LINK_MAX_PER_BUCKET)
+                    "_share_link_panel.html", **dashboard.shareLinkPanelArgs(username, year))
             return jsonify(res)
 
         totalPlays, totalMs = ctx["totalPlays"], ctx["totalMs"]
@@ -81,8 +78,10 @@ def register(app, dashboard):
         error = request.args.get("error")
 
         shareLinksEnabled = dashboard.repo.isShareLinksEnabled()
-        yearLinks, allYearsLinks = (
-            dashboard._resolveShareLinksForYear(username, year) if shareLinksEnabled else ([], []))
+        #< the page includes the panel inline (see wrapped.html's modal), so its
+        #  kwargs ride along in this render's context
+        sharePanelArgs = (dashboard.shareLinkPanelArgs(username, year) if shareLinksEnabled
+                          else {"yearLinks": [], "allYearsLinks": [], "otherYearLinks": []})
 
         return render_template(
             "wrapped.html",
@@ -120,10 +119,14 @@ def register(app, dashboard):
             error=error,
             publicView=False,
             shareLinksEnabled=shareLinksEnabled,
-            yearLinks=yearLinks,
-            allYearsLinks=allYearsLinks,
             shareLinkExpiryChoices=SHARE_LINK_EXPIRY_CHOICES,
             shareLinkMaxPerBucket=SHARE_LINK_MAX_PER_BUCKET,
+            #< named rather than spread: the helper also carries year and the
+            #  two constants, which this render already passes as page-level
+            #  context
+            yearLinks=sharePanelArgs["yearLinks"],
+            allYearsLinks=sharePanelArgs["allYearsLinks"],
+            otherYearLinks=sharePanelArgs["otherYearLinks"],
         )
     app.add_url_rule("/wrapped", "wrappedPage", wrappedPage, methods=["GET"])
 
@@ -174,11 +177,8 @@ def register(app, dashboard):
 
         dashboard.repo.createShareLink(username, Repository.SHARE_LINK_KIND_WRAPPED, linkYear, expiresInSeconds)
         if isAjax:
-            yearLinks, allYearsLinks = dashboard._resolveShareLinksForYear(username, year)
-            html = render_template(
-                "_share_link_panel.html", year=year, yearLinks=yearLinks,
-                allYearsLinks=allYearsLinks, shareLinkExpiryChoices=SHARE_LINK_EXPIRY_CHOICES,
-                shareLinkMaxPerBucket=SHARE_LINK_MAX_PER_BUCKET)
+            html = render_template("_share_link_panel.html",
+                                   **dashboard.shareLinkPanelArgs(username, year))
             return jsonify(html=html)
         return redirect(url_for("wrappedPage", year=year, success="Share link created.", openShareModal=1))
     app.add_url_rule("/wrapped/share-links/<int:year>", "createWrappedShareLink", createWrappedShareLink, methods=["POST"])
@@ -282,6 +282,7 @@ def register(app, dashboard):
             shareLinksEnabled=False,
             yearLinks=[],
             allYearsLinks=[],
+            otherYearLinks=[],
             shareLinkExpiryChoices=SHARE_LINK_EXPIRY_CHOICES,
             shareLinkMaxPerBucket=SHARE_LINK_MAX_PER_BUCKET,
         ))
