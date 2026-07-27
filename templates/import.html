@@ -48,51 +48,12 @@
   </section>
 
   <script>
-    const progressBar = document.getElementById('progress-bar');
-    const progressMessage = document.getElementById('progress-message');
-    const importForm = document.getElementById('import-form');
-
-    async function fetchProgress() {
-      try {
-        const response = await fetch('{{ url_for('importProgress') }}');
-        if (!response.ok) {
-          return;
-        }
-        const progress = await response.json();
-        progressBar.value = progress.percentage || 0;
-        if (progress.status === 'running') {
-          progressMessage.textContent = `Import in progress: ${progress.percentage}% — ${progress.message}`;
-          setTimeout(fetchProgress, 1200);
-        } else if (progress.status === 'complete') {
-          progressMessage.textContent = `Import complete: ${progress.message}`;
-        } else if (progress.status === 'failed') {
-          progressMessage.textContent = `Import failed: ${progress.message}`;
-        }
-        else {
-          setTimeout(fetchProgress, 5000);
-        }
-      } catch (error) {
-        console.error('Failed to load import progress', error);
-      }
-    }
-
-    if ({{ 'true' if importProgress.status == 'running' else 'false' }}) {
-      fetchProgress();
-    }
-
-    importForm?.addEventListener('submit', (event) => {
-      const overwriteChecked = document.getElementById('overwrite-range').checked;
-      if (overwriteChecked && !confirm(
-        'This deletes ALL recorded plays in the years these files cover - including live-tracked and ' +
-        'manually added ones - then re-imports them fresh. This cannot be undone.\n\nContinue?'
-      )) {
-        event.preventDefault();
-        return;
-      }
-      const fileCount = document.getElementById('history_file').files.length;
-      const label = fileCount > 1 ? `Starting import of ${fileCount} files...` : 'Starting import...';
-      progressMessage.textContent = label;
-      progressBar.value = 0;
-    });
+    //< data island: the only values this page's script needs from the server.
+    //  The logic itself lives in static/js/import-page.js so it is covered by
+    //  the lint gate - on this page a ReferenceError would take out the
+    //  confirmation dialog in front of a destructive overwrite.
+    window.IMPORT_PROGRESS_URL = {{ url_for('importProgress') | tojson }};
+    window.IMPORT_IS_RUNNING = {{ (importProgress.status == 'running') | tojson }};
   </script>
+  <script src="{{ url_for('static', filename='js/import-page.js') }}"></script>
 {% endblock %}
