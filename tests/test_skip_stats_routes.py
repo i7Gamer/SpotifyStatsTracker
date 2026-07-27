@@ -273,7 +273,10 @@ class TestDetailPageSkipStat(SkipStatsRouteTestCase):
 
         body = self._getPath(dash, db, "/song/t1").data.decode()
 
-        self.assertIn(">1 skip</span>", body)
+        # Matched on the word boundary rather than on the surrounding markup:
+        # the count no longer has an element of its own (see
+        # tests/test_skip_count_text_colour.py), and the wording is the point.
+        self.assertRegex(body, r"1 skip\b")
         self.assertNotIn("1 skips", body)
 
 

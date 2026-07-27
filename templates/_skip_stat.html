@@ -27,7 +27,7 @@
 {%- if leadIn %} · {% endif -%}
 <span class="detail-skip-stat">
 {%- if skipStats.skips -%}
-<span class="detail-skip-count">{{ skipStats.skips }} skip{{ 's' if skipStats.skips != 1 else '' }}</span> · {{ skipStats.skipPercent }}% skipped
+{{ skipStats.skips }} skip{{ 's' if skipStats.skips != 1 else '' }} · {{ skipStats.skipPercent }}% skipped
 {%- else -%}
 Never skipped
 {%- endif -%}

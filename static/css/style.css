@@ -3531,12 +3531,12 @@ html.theme-red {
   border-color: var(--accent);
 }
 
-/* Skip summary under the hero card on the song/artist/album detail pages
-   (templates/_skip_stat.html). Sits between the card and the charts as a quiet
-   one-liner - it's context, not a headline. */
-/* The detail hero card's skip summary. It sits inside .track-meta.small now
-   rather than in a block of its own below the card, so it inherits that line's
-   size and colour and only needs to stay on the same line as the rest. */
+/* The detail hero card's skip summary (templates/_skip_stat.html). It sits
+   inside .track-meta.small rather than in a block of its own below the card, so
+   it inherits that line's size and colour - including for the skip count, which
+   kept a `color: var(--text)` wrapper from its standalone days and so read as a
+   highlight on a line of otherwise muted text. All this rule owes the line now
+   is staying on it. */
 .detail-skip-stat {
   white-space: nowrap;
 }
@@ -3577,10 +3577,6 @@ html.theme-red {
   .detail-skeleton-block {
     animation: none;
   }
-}
-
-.detail-skip-count {
-  color: var(--text);
 }
 
 /* Friends-listening strip: what the people you share with are playing right
