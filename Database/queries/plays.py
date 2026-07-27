@@ -469,139 +469,6 @@ class PlayQueries:
             entry["extras"] = extras if any(v is not None for v in extras.values()) else None
         return entry
 
-    @staticmethod
-    def _likePattern(query: str) -> str:
-        """Wraps `query` for a LIKE '%...%' match, escaping LIKE's own wildcard
-        characters so a literal "%" or "_" typed by the user is matched as text
-        rather than treated as a wildcard - matches the substring-only
-        semantics of the Python `in` check this replaces."""
-        escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        return f"%{escaped}%"
-
-    @staticmethod
-    def searchWords(query: str) -> list[str]:
-        """`query` split into the words a match has to satisfy.
-
-        Whitespace-separated, empties dropped, so trailing/repeated spaces don't
-        produce a word that matches everything."""
-        return [word for word in (query or "").split() if word]
-
-    def _perWordConditions(self, params: list, query: str, condition: str,
-                            patternsPerWord: int) -> list[str]:
-        """One parenthesised copy of `condition` per word in `query`, with that
-        word's LIKE patterns appended to `params`. The caller joins them, because
-        the sites differ in whether they need a leading WHERE or AND.
-
-        The whole query used to be ONE substring matched against each field
-        separately, so the most natural way to search - "artist song" - could
-        never match: no single field contains both. Searching this library for
-        "Luis Despacito" returned nothing while "Despacito" returned nine rows.
-
-        AND across words, OR across fields (that's the caller's template): every
-        word must appear SOMEWHERE - title, album, playlist or any credited
-        artist - but not all in the same one. So it narrows as more words are
-        typed, and for a multi-word query it returns a superset of the old
-        behaviour, never less.
-
-        Costs nothing measurable: each ANDed word shrinks the candidate set
-        rather than adding a pass, and the artist EXISTS was already evaluated
-        per candidate row. Measured on a real 131k-play library at 207ms for one
-        word vs 201ms for two.
-
-        An empty query yields an empty list, so a caller that joins gets no
-        clause at all - which is how every caller already guards it."""
-        words = self.searchWords(query)
-        for word in words:
-            params += [self._likePattern(word)] * patternsPerWord
-        return [f"({condition})"] * len(words)
-
-    def _perWordAndClause(self, params: list, query: str, condition: str,
-                           patternsPerWord: int) -> str:
-        """_perWordConditions ready to append to an existing WHERE - the shape
-        most call sites want."""
-        return "".join(
-            f" AND {clause}"
-            for clause in self._perWordConditions(params, query, condition, patternsPerWord))
-
-    # Dashboard search: matches a track's name, its artist(s), its album, and
-    # the playlist/album it was played from, done in SQL so matching is
-    # pushed down instead of requiring every play in the user's history to be
-    # hydrated first. played_from is stored as "type:id" (see
-    # Client.formatTrack), so it's split with substr/instr to join against
-    # playlists(id, type) rather than needing a second round-trip through
-    # Database.playlistName() per row.
-    _SEARCH_JOIN_CLAUSE = """
-        JOIN tracks t ON t.id = p.track_id
-        LEFT JOIN albums al ON al.id = t.album_id
-        LEFT JOIN playlists pl
-               ON pl.id = substr(p.played_from, instr(p.played_from, ':') + 1)
-              AND pl.type = substr(p.played_from, 1, instr(p.played_from, ':') - 1)
-    """
-
-    # A bare condition (no leading AND, no outer parens): _perWordConditions wraps
-    # and repeats it once per search word. Four patterns per word - see
-    # _SEARCH_PATTERNS_PER_WORD.
-    _SEARCH_MATCH_CONDITION = """
-            t.name LIKE ? ESCAPE '\\'
-            OR al.name LIKE ? ESCAPE '\\'
-            OR pl.name LIKE ? ESCAPE '\\'
-            OR EXISTS (
-                SELECT 1 FROM track_artists ta JOIN artists ar ON ar.id = ta.artist_id
-                WHERE ta.track_id = p.track_id AND ar.name LIKE ? ESCAPE '\\'
-            )
-    """
-    _SEARCH_PATTERNS_PER_WORD = 4   #< the ? count in _SEARCH_MATCH_CONDITION
-
-    #< Top Artists searches the name only - see getArtistAggregates. One pattern.
-    _ARTIST_NAME_CONDITION = "ar.name LIKE ? ESCAPE '\\'"
-
-    #< Top Songs: the track's own name, its album, or any credited artist. Three
-    #  patterns. Aliased for the tracks-side queries (t/al), so it is not the same
-    #  condition as _SEARCH_MATCH_CONDITION, which reads off plays (p).
-    _SONG_MATCH_CONDITION = """
-                t.name LIKE ? ESCAPE '\\'
-                OR al.name LIKE ? ESCAPE '\\'
-                OR EXISTS (
-                    SELECT 1 FROM track_artists ta3 JOIN artists ar3 ON ar3.id = ta3.artist_id
-                    WHERE ta3.track_id = t.id AND ar3.name LIKE ? ESCAPE '\\'
-                )
-    """
-
-    #< Top Albums: the album's own name, or any artist credited on any of its
-    #  tracks. Two patterns.
-    _ALBUM_MATCH_CONDITION = """
-                al.name LIKE ? ESCAPE '\\'
-                OR EXISTS (
-                    SELECT 1 FROM tracks t2
-                    JOIN track_artists ta2 ON ta2.track_id = t2.id
-                    JOIN artists ar2 ON ar2.id = ta2.artist_id
-                    WHERE t2.album_id = al.id AND ar2.name LIKE ? ESCAPE '\\'
-                )
-    """
-
-    #< The skip scan's copy of the song condition: it groups PLAYS, so the artist
-    #  EXISTS correlates on p.track_id rather than t.id.
-    _SKIPPED_TRACK_MATCH_CONDITION = """
-                t.name LIKE ? ESCAPE '\\'
-                OR al.name LIKE ? ESCAPE '\\'
-                OR EXISTS (
-                    SELECT 1 FROM track_artists ta3 JOIN artists ar3 ON ar3.id = ta3.artist_id
-                    WHERE ta3.track_id = p.track_id AND ar3.name LIKE ? ESCAPE '\\'
-                )
-    """
-
-    #< getSongsCount's copy: same three fields, but its subquery has track_artists
-    #  free to alias as ta (getSongsPage already uses that alias), hence ta3 there
-    #  and ta here.
-    _SONG_COUNT_MATCH_CONDITION = """
-                    t.name LIKE ? ESCAPE '\\'
-                    OR al.name LIKE ? ESCAPE '\\'
-                    OR EXISTS (
-                        SELECT 1 FROM track_artists ta JOIN artists ar ON ar.id = ta.artist_id
-                        WHERE ta.track_id = t.id AND ar.name LIKE ? ESCAPE '\\'
-                    )
-    """
-
     def searchPlays(self, username: str, query: str, limit: int | None = None, offset: int = 0,
                      startTs: float | None = None, endTs: float | None = None,
                      oldestFirst: bool = False, trackIds: list[str] | None = None) -> list[dict]:
@@ -932,8 +799,7 @@ class PlayQueries:
         extraClauses += self._trackSetClause(params, self.ALBUM_TRACKS_SUBQUERY,
                                              [albumId] if albumId is not None else None)
         extraClauses += self._idSetClause(params, "t.id", trackIds)
-        extraClauses += self._perWordAndClause(params, searchQuery,
-                                               self._SONG_MATCH_CONDITION, 3)
+        extraClauses += self._searchNarrowClause(params, searchQuery, "t.id")
         if fullPlaysOnly:
             extraClauses += self._fullPlaysClause(params)
         params += [limitValue, offset]
@@ -1005,8 +871,7 @@ class PlayQueries:
         if fullPlaysOnly:
             fullPlaysClause = self._fullPlaysClause(params)
         #< appended last, so it must also be the last clause in the SQL below
-        searchClause = self._perWordAndClause(params, searchQuery,
-                                              self._SONG_COUNT_MATCH_CONDITION, 3)
+        searchClause = self._searchNarrowClause(params, searchQuery, "p.track_id")
         row = conn.execute(
             f"""
             SELECT COUNT(*) AS c FROM (

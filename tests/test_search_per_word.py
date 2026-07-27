@@ -135,8 +135,10 @@ class TestSearchWords(unittest.TestCase):
     """The splitter itself, so the rule is readable without a database."""
 
     def setUp(self):
-        from Database.queries.plays import PlayQueries
-        self.split = PlayQueries.searchWords
+        #< lives on the shared SqlFragments base, not PlayQueries: the catalog-side
+        #  getMatchingTrackIds needs it too
+        from Database.queries._base import SqlFragments
+        self.split = SqlFragments.searchWords
 
     def test_it_splits_on_whitespace(self):
         self.assertEqual(self.split("luis despacito"), ["luis", "despacito"])

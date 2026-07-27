@@ -166,6 +166,43 @@ class TrackQueries:
             for trackRow in trackRows
         ]
 
+    def getMatchingTrackIds(self, searchQuery: str) -> list[str]:
+        """Track ids whose own name, album name, or any credited artist matches
+        every word of `searchQuery` - resolved against the CATALOG only, with no
+        reference to plays.
+
+        This exists so a search can be answered in two phases. The search
+        predicate used to sit inside the per-play aggregate, so its artist EXISTS
+        was re-evaluated for every grouped track (~17.5k of them) rather than
+        once. Measured on a real 131k-play library: the whole search page cost
+        ~850ms, and cost the same 847ms for a term matching NOTHING - the price
+        was structural, not proportional to results. Resolving the ids first and
+        narrowing the aggregate to them is the same trick that took the artist
+        song list from 985ms to 19ms.
+
+        The condition is deliberately the same one getSongsPage applies inline, so
+        the two phases select exactly the same tracks - tests/test_search_two_phase
+        pins that they agree row for row and in the same order.
+
+        Note this cannot serve /history's search, which also matches the playlist
+        a play came FROM: that is an attribute of the play, not of the track, so
+        it has no track-id set to resolve to."""
+        params: list = []
+        conditions = self._perWordConditions(params, searchQuery,
+                                             self._SONG_COUNT_MATCH_CONDITION, 3)
+        if not conditions:
+            return []
+        where = " AND ".join(conditions)
+        rows = self._conn().execute(
+            f"""
+            SELECT t.id AS id FROM tracks t
+            LEFT JOIN albums al ON al.id = t.album_id
+            WHERE {where}
+            """,
+            params,
+        ).fetchall()
+        return [row["id"] for row in rows]
+
     def getTracksByIds(self, trackIds: list[str]) -> dict[str, dict]:
         """Batch equivalent of getTrack() for a specific set of track ids, in a
         fixed 3 queries total regardless of how many ids are requested (tracks,
