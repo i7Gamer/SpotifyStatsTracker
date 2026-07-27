@@ -18,7 +18,11 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from _app_factory import AppTestCase
 
 # The pages whose content is loaded/refreshed by a fetch in static/js.
-AJAX_PATHS = ("/", "/charts", "/genres", "/history", "/top-songs", "/top-artists", "/top-albums")
+AJAX_PATHS = ("/", "/charts", "/genres", "/history", "/top-songs", "/top-artists", "/top-albums",
+              #< wrapped.js has called redirectIfUnauthorized since the feature
+              #  landed, but the route still answered a 302, which fetch follows
+              #  transparently - so the check never saw a 401 to act on
+              "/wrapped")
 
 
 class UnauthenticatedAjaxTestCase(AppTestCase):

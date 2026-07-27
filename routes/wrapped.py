@@ -29,7 +29,11 @@ def register(app, dashboard):
     def wrappedPage():
         email, username, db = dashboard.get_current_user_or_redirect()
         if not email:
-            return redirect(url_for("login", next=request.path))
+            #< an ajax filter change needs the 401, not a 302: fetch follows the
+            #  redirect transparently, so wrapped.js's redirectIfUnauthorized
+            #  (which only fires on 401) never saw it and the user got a banner
+            #  whose Retry could only ever earn another login page
+            return dashboard.unauthenticatedResponse()
 
         nowLocal = now(tz=db.tz)
         currentYear = nowLocal.year

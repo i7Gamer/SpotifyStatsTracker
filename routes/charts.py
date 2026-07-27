@@ -247,15 +247,27 @@ def register(app, dashboard):
         customStart = request.args.get("startDate", "")
         customEnd = request.args.get("endDate", "")
 
-        interval = request.args.get("interval", default_window)
-        if interval == "":
+        #< resolved the same way /charts and /genres resolve it. Reading the raw
+        #  param meant an unrecognised value (a stale or hand-edited URL, one
+        #  truncated in a chat client) reached _getDateRange and _getIntervalLabel
+        #  unchecked, where default="day" - not the user's configured window -
+        #  decided what they got, and the heading then named it confidently.
+        #< `or default_window` before validating: _getValidInterval accepts ""
+        #  (it means "unset" on other paths), and while _getDateRange coerces it
+        #  for the DATA, the template's <select> compares against this variable -
+        #  so an empty ?interval= left every option unselected and the control
+        #  displayed "All Time" over month-scoped numbers
+        interval = dashboard._getValidInterval(request.args.get("interval", default_window) or default_window,
+                                               default=default_window)
+        if interval == "custom" and not (customStart and customEnd):
             interval = default_window
 
-        if interval == "custom" and not (customStart and customEnd):
-            interval = "all time"
-
-        intervalLabel = dashboard._getIntervalLabel(interval, customStart, customEnd)
-        startDate, endDate = dashboard._getDateRange(interval, customStart, customEnd, default="day", tz=db.tz)
+        #< same default in both, or the heading can name a different window than
+        #  the data covers
+        intervalLabel = dashboard._getIntervalLabel(interval, customStart, customEnd,
+                                                    default=default_window)
+        startDate, endDate = dashboard._getDateRange(interval, customStart, customEnd,
+                                                     default=default_window, tz=db.tz)
 
         # The Time Period filter scopes these summary cards. The searchable play
         # history itself lives on its own /history page now (see historyPage).

@@ -350,6 +350,48 @@ class DashboardCardsTestCase(_DashboardHelpers, AppTestCase):
         db.getGenreCoverage.assert_not_called()
 
 
+class DashboardIntervalResolutionTestCase(_DashboardHelpers, AppTestCase):
+    """The dashboard has to resolve ?interval= the way /charts and /genres do.
+
+    It was reading the param straight out of the query string with no
+    _getValidInterval, then handing default="day" to both _getDateRange and
+    _getIntervalLabel - so an unrecognised value fell back to the literal "day"
+    rather than the window the user configured, and the heading confidently
+    named it."""
+
+    def _settings(self, window):
+        db = self._makeDb()
+        db.repo.getUserSettings.return_value = {"default_dashboard_window": window, "timezone": None}
+        return db
+
+    def test_the_saved_window_is_used_when_no_interval_is_given(self):
+        resp = self._get(self._makeApp(), self._settings("month"))
+
+        self.assertIn(b'<option value="month" selected>', resp.data)
+
+    def test_an_unrecognised_interval_falls_back_to_the_saved_window(self):
+        """A stale or hand-edited URL, or one truncated by a chat client."""
+        resp = self._get(self._makeApp(), self._settings("month"), path="/?interval=bogus")
+
+        self.assertIn(b'<option value="month" selected>', resp.data)
+        self.assertNotIn(b'<option value="day" selected>', resp.data)
+
+    def test_an_empty_interval_falls_back_to_the_saved_window(self):
+        resp = self._get(self._makeApp(), self._settings("week"), path="/?interval=")
+
+        self.assertIn(b'<option value="week" selected>', resp.data)
+
+    def test_a_valid_interval_still_wins_over_the_saved_window(self):
+        resp = self._get(self._makeApp(), self._settings("month"), path="/?interval=year")
+
+        self.assertIn(b'<option value="year" selected>', resp.data)
+
+    def test_custom_without_both_dates_falls_back_to_the_saved_window(self):
+        resp = self._get(self._makeApp(), self._settings("month"), path="/?interval=custom")
+
+        self.assertIn(b'<option value="month" selected>', resp.data)
+
+
 class DashboardAjaxFilterTestCase(_DashboardHelpers, AppTestCase):
     """The Time Period filter (interval/date range) now updates via ?ajax=true
     instead of a full page reload - static/js in tracks.html swaps the
