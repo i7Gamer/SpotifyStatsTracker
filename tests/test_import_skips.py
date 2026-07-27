@@ -188,6 +188,43 @@ class TestSkipNearTimeDedup(_ImportTestBase):
 
         self.assertEqual(len(self._skipRows(db)), 2)
 
+    def test_one_recorded_skip_answers_for_only_one_export_entry(self):
+        """_ImportRunState's contract: an existing row can be claimed by at most
+        one import entry per run, because one physical play is one export entry.
+
+        The skip branch matched a nearby row without CLAIMING it, so a second
+        export entry inside the window matched the very same row and was dropped
+        too - silently, with no stat reporting it. Re-importing exists to repair
+        exactly the skip the listener missed, and here it repaired nothing."""
+        db = self._makeDb({}, [])
+        self._seedListenerSkip(db, "track_x", 1000)
+
+        def gen():
+            yield _meta("track_x", 1001, timePlayed=400, isSkip=True)   #< the recorded one
+            yield _meta("track_x", 1006, timePlayed=400, isSkip=True)   #< the one it missed
+
+        self._import(db, gen)
+
+        #< the claimed row plus the genuinely missing second skip
+        self.assertEqual(len(self._skipRows(db)), 2)
+
+    def test_the_nearest_recorded_skip_is_the_one_claimed(self):
+        """With two recorded rows in range, pairing has to be deterministic, or
+        which entry survives depends on row order."""
+        db = self._makeDb({}, [])
+        self._seedListenerSkip(db, "track_x", 1000)
+        db.repo.insertPlay(db.user, "track_x", 1008, 400, created_reason="listener", is_skip=1)
+        db.repo.commit()
+
+        def gen():
+            yield _meta("track_x", 1001, timePlayed=400, isSkip=True)   #< nearest 1000
+            yield _meta("track_x", 1007, timePlayed=400, isSkip=True)   #< nearest 1008
+
+        self._import(db, gen)
+
+        #< both entries paired off against a row already there: nothing added
+        self.assertEqual(sorted(row["played_at"] for row in self._skipRows(db)), [1000, 1008])
+
     def test_a_nearby_real_play_is_never_treated_as_the_same_event(self):
         """Skips match only against skips - a real play must not suppress a
         skip (nor be claimed by one)."""

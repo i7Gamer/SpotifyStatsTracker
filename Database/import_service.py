@@ -309,6 +309,15 @@ class ImportMixin:
                         if not runState.isOwnWrite(track_id, skip)
                     ]
                     if nearbySkips:
+                        # Claim it, exactly as the real-play path below does. An
+                        # unclaimed match stayed a candidate for every LATER
+                        # entry too, so a second genuine skip inside the same
+                        # 10s window matched the same row and was dropped as a
+                        # duplicate - silently, and counted by nothing. Nearest
+                        # first, so which entry pairs with which row does not
+                        # depend on the order the query returned them in.
+                        closest = min(nearbySkips, key=lambda skip: abs(skip["played_at"] - played_at))
+                        runState.claimedRowIds.add(closest["id"])
                         continue
                     if self.repo.insertPlay(self.user, track_id, played_at, time_played,
                                             created_reason=f"history_import (user: {self.user})",

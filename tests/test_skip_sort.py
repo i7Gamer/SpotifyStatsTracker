@@ -270,6 +270,64 @@ class TestArtistsAndAlbumsSortedBySkips(SkipSortTestCase):
         self.assertEqual(self.db.getAlbumsCount(sortBy="skips"), 2)
 
 
+class TestASkipOnlyEntityHasADetailPage(SkipSortTestCase):
+    """The Most Skipped lists qualify on HAVING skips > 0, so an entity you
+    encountered once and skipped (plays = 0) is listed and linked. Its detail
+    lookup then has to find it, or the link bounces the user straight back to
+    the list they clicked from - losing their sort, tag, range and page.
+
+    getSong already carries this fallback; getArtist and getAlbum did not, so
+    the very rows their own lists advertise were unreachable."""
+
+    def test_a_skip_only_artist_is_listed(self):
+        """Precondition: the list really does advertise the link."""
+        self._seed("t1", plays=0, skips=3, artistId="skipped", artistName="Skipped")
+
+        self.assertEqual([a["id"] for a in self.db.getTopArtists(by="skips", limit=10)], ["skipped"])
+
+    def test_a_skip_only_artist_has_a_detail_row(self):
+        self._seed("t1", plays=0, skips=3, artistId="skipped", artistName="Skipped")
+
+        artist = self.db.getArtist("skipped")
+
+        self.assertIsNotNone(artist, "the Most Skipped list links here, so the page must render")
+        self.assertEqual(artist["name"], "Skipped")
+        self.assertEqual(artist["plays"], 0)
+        self.assertEqual(artist["skips"], 3)
+
+    def test_a_skip_only_album_is_listed(self):
+        self._seed("t1", plays=0, skips=3, albumId="alb1", albumName="Skipped Album")
+
+        self.assertEqual([a["id"] for a in self.db.getTopAlbums(by="skips", limit=10)], ["alb1"])
+
+    def test_a_skip_only_album_has_a_detail_row(self):
+        self._seed("t1", plays=0, skips=3, albumId="alb1", albumName="Skipped Album")
+
+        album = self.db.getAlbum("alb1")
+
+        self.assertIsNotNone(album, "the Most Skipped list links here, so the page must render")
+        self.assertEqual(album["name"], "Skipped Album")
+        self.assertEqual(album["plays"], 0)
+        self.assertEqual(album["skips"], 3)
+
+    def test_a_played_artist_still_comes_from_the_play_ranked_query(self):
+        """The fallback is a second query, not a relaxation of the first: an
+        artist with real plays must still report them."""
+        self._seed("t1", plays=4, skips=1, artistId="normal", artistName="Normal")
+
+        artist = self.db.getArtist("normal")
+
+        self.assertEqual(artist["plays"], 4)
+
+    def test_an_unknown_artist_or_album_is_still_missing(self):
+        """The redirect has to keep working for an id the user never encountered
+        - the fallback must not invent a row."""
+        self._seed("t1", plays=1, skips=0, artistId="art1", albumId="alb1")
+
+        self.assertIsNone(self.db.getArtist("nope"))
+        self.assertIsNone(self.db.getAlbum("nope"))
+
+
 class TestTheSkipPageLooksLikeEveryOtherPage(SkipSortTestCase):
     """A card doesn't know which sort produced it, so a skip-ranked row has to
     carry the same keys a plays-ranked one does. Changing the sort should

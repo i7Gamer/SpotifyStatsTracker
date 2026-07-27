@@ -1466,9 +1466,16 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
                                         fullPlaysOnly=fullPlaysOnly)
 
     def getAlbum(self, albumId: str) -> dict | None:
-        """A single album's aggregate stats - the album-detail page's lookup."""
+        """A single album's aggregate stats - the album-detail page's lookup.
+
+        Falls back to the skip-ranked query for the same reason getArtist and
+        getSong do - getAlbumsPage filters is_skip=0, so a skip-only album's own
+        Most Skipped entry linked to a page that redirected away."""
         results = self.getAlbumsStats(sortBy="plays", limit=1, albumId=albumId)
-        return results[0] if results else None
+        if results:
+            return results[0]
+        skipOnly = self.getAlbumsStats(sortBy=self.SKIP_SORT_BY, limit=1, albumId=albumId)
+        return skipOnly[0] if skipOnly else None
 
     def getAlbumBio(self, albumId: str) -> str | None:
         """This album's stored biography (see lazyFetchAlbumBio), or None if
@@ -1527,9 +1534,20 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
 
     def getArtist(self, artistId: str, startDate: datetime.datetime = None,
                   endDate: datetime.datetime = None) -> dict | None:
-        """A single artist's aggregate stats - the artist-detail page's lookup."""
+        """A single artist's aggregate stats - the artist-detail page's lookup.
+
+        Falls back to the skip-ranked query for the same reason getSong does:
+        getArtistAggregates filters is_skip=0, so an artist whose every
+        encounter was a skip has no row there, and the detail route reads that
+        as "no such artist" and redirects away - while the Most Skipped list
+        (HAVING skips > 0) links straight to it, losing the sort, tag, range and
+        page the user came from."""
         results = self.getArtistsStats(startDate, endDate, artistId=artistId, limit=1)
-        return results[0] if results else None
+        if results:
+            return results[0]
+        skipOnly = self.getArtistsStats(startDate, endDate, artistId=artistId,
+                                        sortBy=self.SKIP_SORT_BY, limit=1)
+        return skipOnly[0] if skipOnly else None
 
     def getArtistBio(self, artistId: str) -> str | None:
         """This artist's stored biography (see lazyFetchArtistBio), or None
