@@ -10,6 +10,12 @@ COPY requirements.txt .
 # TzurSoffer's fork (see the note there) - it used to be uninstalled and
 # reinstalled from the fork's unpinned HEAD right here, which made every build
 # non-reproducible and meant CI never tested what this image actually runs.
+#
+# `apt-get upgrade` is a deliberate exception to that reproducibility goal, not
+# an oversight: the base image lags its own security updates, and two builds of
+# the same tag differing by a patched libssl is the trade that is worth making.
+# Everything the app's behaviour depends on - Python packages, spotapi's commit -
+# is pinned, so this can only move OS-level packages.
 RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends gcc git \
     && pip install --no-cache-dir -r requirements.txt \
     && apt-get purge -y git gcc \

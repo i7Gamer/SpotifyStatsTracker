@@ -9,6 +9,25 @@
 # depends on which editor or script touched the file last.
 * text=auto
 
-# Never transform these bytes. PNG data can contain 0x0D0A sequences that mean
-# nothing about lines, and "normalizing" them would corrupt the image.
+# Never transform these bytes. Binary data can contain 0x0D0A sequences that mean
+# nothing about lines, and "normalizing" them would corrupt the file. `text=auto`
+# above only guesses from a NUL byte in the first 8000 bytes, which a small icon
+# or a short font can lack entirely - so the formats that could plausibly land
+# here are named rather than left to the heuristic.
 *.png binary
+*.ico binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.db binary
+
+# Shell scripts must keep LF whatever the checkout platform does. Dockerfile does
+# `COPY . .` from the build context, so a CRLF script authored on Windows reaches
+# a Linux image with \r in its shebang and fails with "no such file or directory"
+# - naming the interpreter it can't find, which reads like anything but a
+# line-ending problem.
+*.sh text eol=lf

