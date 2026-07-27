@@ -1,0 +1,35 @@
+{#- SPDX-FileCopyrightText: 2026 i7Gamer
+    SPDX-License-Identifier: AGPL-3.0-or-later
+
+    Shared chrome for the three profile pages (account / sharing / connections):
+    the panel, the identity block, the sub-nav and the log-out control. Each
+    page fills profileBody; nothing else differs. -#}
+
+{% extends "layout.html" %}
+{% block content %}
+
+<div class="login-panel profile-panel">
+  <div class="login-card profile-card">
+    <h1>{% block profileTitle %}User Profile{% endblock %}</h1>
+
+    <div class="profile-details">
+      <p><strong>Display name:</strong> {{ username | displayName }}{% if isAdmin %} <span class="badge badge-success" title="This account administers the instance">ADMIN</span>{% endif %}</p>
+      <p><strong>Username:</strong> {{ username }}</p>
+      <p><strong>Email:</strong> {{ email }}</p>
+    </div>
+
+    {% include '_profile_nav.html' %}
+
+    {% block profileBody %}{% endblock %}
+
+    <div class="profile-logout-row">
+      <form method="post" action="{{ url_for('logout') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+        <button type="submit" class="primary-button profile-logout-button">Log out of Tracker</button>
+      </form>
+    </div>
+  </div>
+</div>
+
+{% block profileScripts %}{% endblock %}
+{% endblock %}

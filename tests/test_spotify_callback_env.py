@@ -41,13 +41,13 @@ class TestSpotifyCallbackEnv(SpotifyEnvTestCase):
             mock_get_db.return_value = mock_db
 
             # GET /profile
-            resp = client.get("/profile")
+            resp = client.get("/profile/connections")
             self.assertEqual(resp.status_code, 200)
             self.assertNotIn(b"Spotify Developer API Settings", resp.data)
             self.assertNotIn(b"Connection Status", resp.data)
 
             # POST /profile should return 404
-            resp = client.post("/profile", data={"client_id": "id", "client_secret": "secret"})
+            resp = client.post("/profile/connections", data={"client_id": "id", "client_secret": "secret"})
             self.assertEqual(resp.status_code, 404)
 
             # POST /profile/disconnect should return 404 (disconnect is POST-only)
@@ -74,7 +74,7 @@ class TestSpotifyCallbackEnv(SpotifyEnvTestCase):
             mock_get_db.return_value = mock_db
 
             # GET /profile
-            resp = client.get("/profile")
+            resp = client.get("/profile/connections")
             self.assertEqual(resp.status_code, 200)
             self.assertIn(b"Spotify Developer API Settings", resp.data)
             self.assertIn(b"Connection Status", resp.data)
@@ -250,7 +250,7 @@ class TestProfilePageReauthStatus(SpotifyEnvTestCase):
                 "refresh_token": "rt", **credsExtra,
             }
             mock_get_db.return_value = mock_db
-            return client.get("/profile")
+            return client.get("/profile/connections")
 
     def test_shows_reauth_prompt_when_flagged(self):
         resp = self._getProfile({"needs_reauth": True})
@@ -259,14 +259,14 @@ class TestProfilePageReauthStatus(SpotifyEnvTestCase):
 
     def test_shows_connected_when_not_flagged(self):
         resp = self._getProfile({"needs_reauth": False})
-        self.assertIn(b"Connected & Authorized", resp.data)
+        self.assertIn(b"Connected &amp; Authorized", resp.data)
         self.assertNotIn(b"Authorization Expired", resp.data)
 
     def test_missing_needs_reauth_key_defaults_to_connected(self):
         """A credentials dict without the key at all (e.g. a mock that
         predates this field) must not be mistaken for "needs reauth"."""
         resp = self._getProfile({})
-        self.assertIn(b"Connected & Authorized", resp.data)
+        self.assertIn(b"Connected &amp; Authorized", resp.data)
         self.assertNotIn(b"Authorization Expired", resp.data)
 
 

@@ -1,0 +1,112 @@
+{#- SPDX-FileCopyrightText: 2026 i7Gamer
+    SPDX-License-Identifier: AGPL-3.0-or-later
+
+    The whole data-sharing UI: request picker, incoming/outgoing requests and
+    active shares. A partial rather than page markup so it can also be dropped
+    into a Compare-page modal later without a rewrite - see the Wrapped share
+    modal for the pattern. Every POST here targets a real URL and works without
+    JavaScript.
+
+    Needs: shareCandidates, pendingIncoming, pendingOutgoing, acceptedShares. -#}
+
+<p class="profile-hint">
+  Request to share your listening stats with another user. Once they accept, you'll both be able to compare stats on the Compare page.
+</p>
+
+{% if shareCandidates %}
+<form class="login-form profile-share-request" method="post" action="{{ url_for('profileSharingPage') }}">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+  <input type="hidden" name="action" value="request_share">
+  <div class="share-request-row">
+    <div class="form-field">
+      <label for="targetUsername">Request a share with</label>
+      <select id="targetUsername" name="target_username" class="theme-selector profile-select">
+        <option value="">Choose a user&hellip;</option>
+        {# label = display name, value = the real username the POST resolves
+           by. A display name can never equal another account's username or
+           display name (see setDisplayName), so the labels stay unambiguous. #}
+        {% for candidate in shareCandidates %}
+          <option value="{{ candidate }}">{{ candidate | displayName }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <button type="submit" class="primary-button">Request Share</button>
+  </div>
+</form>
+{% endif %}
+
+{% if pendingIncoming %}
+<div class="profile-share-group">
+  <h3>Requests waiting on you</h3>
+  <table class="status-table share-table">
+    <tbody>
+      {% for share in pendingIncoming %}
+      <tr>
+        <td><span class="badge badge-warning">{{ share.requester_username | displayName }}</span> wants to share data with you</td>
+        <td class="share-actions">
+          <form method="post" action="{{ url_for('profileShareAction', share_id=share.id) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+            <input type="hidden" name="action" value="accept">
+            <button type="submit" class="primary-button share-action-button">Accept</button>
+          </form>
+          <form method="post" action="{{ url_for('profileShareAction', share_id=share.id) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+            <input type="hidden" name="action" value="decline">
+            <button type="submit" class="primary-button share-action-button is-neutral">Decline</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+{% if pendingOutgoing %}
+<div class="profile-share-group">
+  <h3>Requests you sent</h3>
+  <table class="status-table share-table">
+    <tbody>
+      {% for share in pendingOutgoing %}
+      <tr>
+        <td>Waiting on <span class="badge badge-secondary">{{ share.recipient_username | displayName }}</span></td>
+        <td class="share-actions">
+          <form method="post" action="{{ url_for('profileShareAction', share_id=share.id) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+            <input type="hidden" name="action" value="cancel">
+            <button type="submit" class="primary-button share-action-button is-neutral">Cancel</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+{% if acceptedShares %}
+<div class="profile-share-group">
+  <h3>Active shares</h3>
+  <table class="status-table share-table">
+    <tbody>
+      {% for share in acceptedShares %}
+      <tr>
+        <td><span class="badge badge-success">{{ share.counterpart | displayName }}</span></td>
+        <td class="share-actions">
+          <a href="{{ url_for('comparePage', with=share.counterpart) }}" class="primary-button share-action-button">Compare</a>
+          <form method="post" action="{{ url_for('profileShareAction', share_id=share.id) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+            <input type="hidden" name="action" value="revoke">
+            <button type="submit" class="primary-button share-action-button is-danger">Revoke</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+{% if not shareCandidates and not pendingIncoming and not pendingOutgoing and not acceptedShares %}
+<p class="profile-hint">There's nobody else on this instance to share with yet.</p>
+{% endif %}

@@ -59,27 +59,50 @@ class TestLastfmSectionRendering(ProfileLastfmTestCase):
     def test_section_renders_without_the_spotify_callback_env(self):
         self.assertNotIn("SPOTIFY_CALLBACK_URL", os.environ)
         client = self._loginAs("alice", "alice@example.com")
-        resp = client.get("/profile")
+        resp = client.get("/profile/connections")
         self.assertEqual(resp.status_code, 200)
         self.assertIn(b"Last.fm API Settings", resp.data)
         self.assertIn(b'name="lastfm_api_key"', resp.data)
 
     def test_status_reflects_a_stored_key(self):
         client = self._loginAs("alice", "alice@example.com")
-        self.assertIn(b"Not Configured", client.get("/profile").data)
+        self.assertIn(b"Not Configured", client.get("/profile/connections").data)
 
         self.dash.repo.updateUserLastfmApiKey("alice", "key123")
-        resp = client.get("/profile")
+        resp = client.get("/profile/connections")
         self.assertIn(b"remove_lastfm", resp.data)   #< remove button only with a stored key
         self.assertNotIn(b"key123", resp.data)       #< the key itself is never echoed back
 
     def test_section_hides_when_the_admin_disables_lastfm_backfill(self):
+        """With Spotify's integration configured the page still exists - just
+        without the Last.fm half."""
         self.dash.repo.setLastfmGenreBackfillEnabled(False)
         client = self._loginAs("alice", "alice@example.com")
-        resp = client.get("/profile")
+        with patch.dict(os.environ, {"SPOTIFY_CALLBACK_URL": "https://example.test/cb"}):
+            resp = client.get("/profile/connections")
         self.assertEqual(resp.status_code, 200)
         self.assertNotIn(b"Last.fm API Settings", resp.data)
         self.assertNotIn(b'name="lastfm_api_key"', resp.data)
+
+    def test_page_is_gone_when_neither_integration_is_available(self):
+        """Nothing left to configure - the sub-nav drops the tab too, so a
+        stale link or bookmark should 404 rather than open an empty page."""
+        self.assertNotIn("SPOTIFY_CALLBACK_URL", os.environ)
+        self.dash.repo.setLastfmGenreBackfillEnabled(False)
+        client = self._loginAs("alice", "alice@example.com")
+
+        resp = client.get("/profile/connections")
+
+        self.assertEqual(resp.status_code, 404)
+
+    def test_sub_nav_drops_the_tab_when_neither_is_available(self):
+        self.dash.repo.setLastfmGenreBackfillEnabled(False)
+        client = self._loginAs("alice", "alice@example.com")
+
+        resp = client.get("/profile")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotIn(b"/profile/connections", resp.data)
 
 
 class TestSaveLastfmKey(ProfileLastfmTestCase):
@@ -88,7 +111,7 @@ class TestSaveLastfmKey(ProfileLastfmTestCase):
         mockGet.return_value = _lastfmResponse()
         client = self._loginAs("alice", "alice@example.com")
 
-        resp = client.post("/profile", data={"action": "save_lastfm", "lastfm_api_key": "goodkey123"},
+        resp = client.post("/profile/connections", data={"action": "save_lastfm", "lastfm_api_key": "goodkey123"},
                            follow_redirects=True)
 
         self.assertEqual(resp.status_code, 200)
@@ -107,7 +130,7 @@ class TestSaveLastfmKey(ProfileLastfmTestCase):
         mockGet.return_value = _lastfmResponse(statusCode=403, payload={"error": 10})
         client = self._loginAs("alice", "alice@example.com")
 
-        resp = client.post("/profile", data={"action": "save_lastfm", "lastfm_api_key": "badkey"},
+        resp = client.post("/profile/connections", data={"action": "save_lastfm", "lastfm_api_key": "badkey"},
                            follow_redirects=True)
 
         self.assertEqual(resp.status_code, 200)
@@ -123,7 +146,7 @@ class TestSaveLastfmKey(ProfileLastfmTestCase):
         mockGet.side_effect = requestsModule.exceptions.ConnectionError("down")
         client = self._loginAs("alice", "alice@example.com")
 
-        resp = client.post("/profile", data={"action": "save_lastfm", "lastfm_api_key": "somekey"},
+        resp = client.post("/profile/connections", data={"action": "save_lastfm", "lastfm_api_key": "somekey"},
                            follow_redirects=True)
 
         self.assertEqual(resp.status_code, 200)
@@ -133,7 +156,7 @@ class TestSaveLastfmKey(ProfileLastfmTestCase):
     def test_blank_key_is_rejected_without_a_request(self):
         client = self._loginAs("alice", "alice@example.com")
         with patch("Database.lastfm.requests.get") as mockGet:
-            resp = client.post("/profile", data={"action": "save_lastfm", "lastfm_api_key": "   "},
+            resp = client.post("/profile/connections", data={"action": "save_lastfm", "lastfm_api_key": "   "},
                                follow_redirects=True)
             mockGet.assert_not_called()
         self.assertEqual(resp.status_code, 200)
@@ -144,7 +167,7 @@ class TestSaveLastfmKey(ProfileLastfmTestCase):
             mockClientClass.return_value.validateApiKey.return_value = {"ok": False, "error": "busy"}
             client = self._loginAs("alice", "alice@example.com")
 
-            resp = client.post("/profile", data={"action": "save_lastfm", "lastfm_api_key": "somekey"},
+            resp = client.post("/profile/connections", data={"action": "save_lastfm", "lastfm_api_key": "somekey"},
                                follow_redirects=True)
 
         self.assertEqual(resp.status_code, 200)
@@ -157,7 +180,7 @@ class TestSaveLastfmKey(ProfileLastfmTestCase):
         client = self._loginAs("alice", "alice@example.com")
         self.db.updateUserLastfmApiKey.side_effect = RuntimeError("disk full")
 
-        resp = client.post("/profile", data={"action": "save_lastfm", "lastfm_api_key": "goodkey123"},
+        resp = client.post("/profile/connections", data={"action": "save_lastfm", "lastfm_api_key": "goodkey123"},
                            follow_redirects=True)
 
         self.assertEqual(resp.status_code, 200)
@@ -172,11 +195,11 @@ class TestSaveLastfmKey(ProfileLastfmTestCase):
         client = self._loginAs("alice", "alice@example.com")
 
         for _ in range(RATE_LIMIT_MAX_ATTEMPTS):
-            resp = client.post("/profile", data={"action": "save_lastfm", "lastfm_api_key": "goodkey123"},
+            resp = client.post("/profile/connections", data={"action": "save_lastfm", "lastfm_api_key": "goodkey123"},
                                follow_redirects=True)
             self.assertEqual(resp.status_code, 200)
 
-        resp = client.post("/profile", data={"action": "save_lastfm", "lastfm_api_key": "goodkey123"},
+        resp = client.post("/profile/connections", data={"action": "save_lastfm", "lastfm_api_key": "goodkey123"},
                            follow_redirects=True)
         self.assertEqual(resp.status_code, 429)
         self.assertIn(b"Too many attempts", resp.data)
@@ -186,7 +209,7 @@ class TestSaveLastfmKey(ProfileLastfmTestCase):
         self.dash.repo.setLastfmGenreBackfillEnabled(False)
         client = self._loginAs("alice", "alice@example.com")
 
-        resp = client.post("/profile", data={"action": "save_lastfm", "lastfm_api_key": "goodkey123"})
+        resp = client.post("/profile/connections", data={"action": "save_lastfm", "lastfm_api_key": "goodkey123"})
 
         self.assertEqual(resp.status_code, 404)
         self.assertIsNone(self.dash.repo.getUserLastfmApiKey("alice"))
@@ -198,7 +221,7 @@ class TestRemoveLastfmKey(ProfileLastfmTestCase):
         client = self._loginAs("alice", "alice@example.com")
         self.dash.repo.updateUserLastfmApiKey("alice", "key123")
 
-        resp = client.post("/profile", data={"action": "remove_lastfm"},
+        resp = client.post("/profile/connections", data={"action": "remove_lastfm"},
                            follow_redirects=True)
 
         self.assertEqual(resp.status_code, 200)
@@ -213,7 +236,7 @@ class TestRemoveLastfmKey(ProfileLastfmTestCase):
         self.dash.repo.updateUserLastfmApiKey("alice", "key123")
         self.db.stopLastfmGenreBackfiller.side_effect = RuntimeError("thread wedged")
 
-        resp = client.post("/profile", data={"action": "remove_lastfm"},
+        resp = client.post("/profile/connections", data={"action": "remove_lastfm"},
                            follow_redirects=True)
 
         self.assertEqual(resp.status_code, 200)

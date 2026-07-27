@@ -1,0 +1,124 @@
+{#- SPDX-FileCopyrightText: 2026 i7Gamer
+    SPDX-License-Identifier: AGPL-3.0-or-later
+
+    The third-party API keys: Spotify's Web API for backfilling missed plays,
+    and Last.fm's for genre/biography data. Either section can be switched off
+    instance-wide; with both off this page isn't reachable (see
+    profileConnectionsPage). -#}
+
+{% extends "_profile_base.html" %}
+{% import "_profile_macros.html" as profileMacros with context %}
+
+{% block profileTitle %}Connections{% endblock %}
+{% block profileBody %}
+
+{{ profileMacros.flashFallback(['spotify', 'lastfm']) }}
+
+{% if feature_enabled %}
+<section class="profile-section">
+  <h2 id="spotify">Spotify Developer API Settings</h2>
+  {{ profileMacros.flash('spotify') }}
+  <p class="profile-hint">
+    Configuring this allows the tracker to poll Spotify's Web API and automatically recover any missed plays with precise played-at timestamps.<br>
+    To create your App, visit your <a class="profile-link-spotify" href="https://developer.spotify.com/dashboard" target="_blank" rel="noreferrer noopener">Spotify Developer Dashboard</a>.
+  </p>
+
+  <form class="login-form" method="post" action="{{ url_for('profileConnectionsPage') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+    <input type="hidden" name="action" value="save_spotify">
+
+    <div class="form-group">
+      <label for="clientId">Spotify Client ID</label>
+      <input type="text" id="clientId" name="client_id" value="{{ client_id or '' }}" placeholder="Enter Client ID from Spotify Developer Dashboard" required>
+    </div>
+
+    <div class="form-group">
+      <label for="clientSecret">Spotify Client Secret</label>
+      <input type="password" id="clientSecret" name="client_secret" value=""
+             placeholder="{% if has_client_secret %}A secret is saved - enter it again to replace it{% else %}Enter Client Secret{% endif %}" required>
+    </div>
+
+    <div class="profile-button-row">
+      <button type="submit" class="primary-button">Save Credentials</button>
+      {% if has_api %}
+        {# Associated with the separate POST form below via the form= attribute:
+           disconnect is state-changing so it must be a CSRF-protected POST, and
+           a <form> can't be nested inside the credentials form above. #}
+        <button type="submit" form="disconnectApiForm" class="primary-button is-danger">Disconnect API</button>
+      {% endif %}
+    </div>
+  </form>
+  {% if has_api %}
+  <form id="disconnectApiForm" method="post" action="{{ url_for('profileDisconnect') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+  </form>
+  {% endif %}
+
+  <div class="api-status profile-status-box">
+    <h3>Connection Status</h3>
+    {% if has_api %}
+      <p><strong>Spotify API Configuration:</strong> Saved</p>
+      {% if is_authenticated and spotify_needs_reauth %}
+        <p><strong>OAuth Authorization:</strong> <span class="profile-status-bad">Authorization Expired - Missing Permission</span></p>
+        <p class="profile-hint">Spotify rejected the last backfill request because this authorization doesn't grant the recently-played permission. Re-authorize to fix it.</p>
+        <a href="{{ url_for('spotifyAuthorize') }}" class="primary-button profile-spotify-button">Re-authorize with Spotify</a>
+      {% elif is_authenticated %}
+        <p><strong>OAuth Authorization:</strong> <span class="profile-status-good">Connected &amp; Authorized</span></p>
+        <p class="profile-hint">The background tracker is actively querying the Web API every 5 minutes to backfill missed tracks.</p>
+      {% else %}
+        <p><strong>OAuth Authorization:</strong> <span class="profile-status-warn">Not Authorized</span></p>
+        <a href="{{ url_for('spotifyAuthorize') }}" class="primary-button profile-spotify-button">Authorize with Spotify</a>
+      {% endif %}
+    {% else %}
+      <p><strong>Spotify API Configuration:</strong> Not Configured</p>
+      <p class="profile-hint">To connect, register an app in the <a class="profile-link-spotify" href="https://developer.spotify.com/dashboard" target="_blank" rel="noreferrer noopener">Spotify Developer Dashboard</a>. Ensure the Redirect URI is set to: <br><code class="profile-redirect-uri">{{ redirect_uri }}</code></p>
+    {% endif %}
+  </div>
+</section>
+{% endif %}
+
+{% if lastfm_enabled %}
+<section class="profile-section is-last">
+  <h2 id="lastfm">Last.fm API Settings</h2>
+  {{ profileMacros.flash('lastfm') }}
+  <p class="profile-hint">
+    Adding a Last.fm API key lets background workers fill in genre data{% if artist_bio_enabled or album_bio_enabled %} and artist/album biographies{% endif %} for the music you listen to -
+    once enough of your library is covered, genre insights unlock on the Charts, Wrapped and Compare pages{% if artist_bio_enabled or album_bio_enabled %}, and biographies appear on artist and album pages{% endif %}.<br>
+    Create a free key on the <a class="profile-link-lastfm" href="https://www.last.fm/api/account/create" target="_blank" rel="noreferrer noopener">Last.fm API account page</a> (no Last.fm scrobbling account required).
+  </p>
+
+  <form class="login-form" method="post" action="{{ url_for('profileConnectionsPage') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+    <input type="hidden" name="action" value="save_lastfm">
+
+    <div class="form-group">
+      <label for="lastfmApiKey">Last.fm API Key</label>
+      <input type="password" id="lastfmApiKey" name="lastfm_api_key" value=""
+             placeholder="{% if has_lastfm %}A key is saved - enter a new one to replace it{% else %}Enter your Last.fm API key{% endif %}" required>
+    </div>
+
+    <button type="submit" class="primary-button profile-wide-button">Save API Key</button>
+  </form>
+
+  {% if has_lastfm %}
+  <form method="post" action="{{ url_for('profileConnectionsPage') }}" class="profile-remove-key-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+    <input type="hidden" name="action" value="remove_lastfm">
+    <button type="submit" class="primary-button profile-wide-button is-danger">Remove Key &amp; Stop Backfilling</button>
+  </form>
+  {% endif %}
+
+  <div class="api-status profile-status-box">
+    <h3>{% if artist_bio_enabled or album_bio_enabled %}Genre &amp; Biography Backfill Status{% else %}Genre Backfill Status{% endif %}</h3>
+    {% if has_lastfm %}
+      <p><strong>Last.fm API Key:</strong> <span class="profile-status-good">Saved</span></p>
+      <p class="profile-hint">Background workers are fetching genre tags{% if artist_bio_enabled or album_bio_enabled %} and biographies{% endif %} for your most-played artists, albums and songs. Progress is shown on the <a class="profile-link-lastfm" href="{{ url_for('overviewPage') }}">Overview</a> page.</p>
+    {% else %}
+      <p><strong>Last.fm API Key:</strong> Not Configured</p>
+    {% endif %}
+    {% import "_genre_macros.html" as genreMacros %}
+    {{ genreMacros.lastfmAttribution() }}
+  </div>
+</section>
+{% endif %}
+{% endblock %}

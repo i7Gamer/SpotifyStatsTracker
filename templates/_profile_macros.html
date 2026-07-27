@@ -1,0 +1,25 @@
+{#- SPDX-FileCopyrightText: 2026 i7Gamer
+    SPDX-License-Identifier: AGPL-3.0-or-later
+
+    Import "with context" - both macros read flashFor/error/success from the
+    rendering page's context rather than taking them as arguments. -#}
+
+{#- The success/error message for one section, rendered next to the form that
+    produced it. `flashFor` is set by the redirect that followed the POST (see
+    _profileRedirect in routes/auth.py) and matches the section's element id. -#}
+{% macro flash(name) %}
+  {% if flashFor == name %}
+    {% if error %}<p class="profile-flash profile-flash-error">{{ error }}</p>{% endif %}
+    {% if success %}<p class="profile-flash profile-flash-success">{{ success }}</p>{% endif %}
+  {% endif %}
+{% endmacro %}
+
+{#- Everything the page's own sections didn't claim: a message from a redirect
+    that named no section (the Spotify OAuth callback), or one naming a section
+    that lives on a different profile page. Never silently dropped. -#}
+{% macro flashFallback(sections) %}
+  {% if flashFor not in sections %}
+    {% if error %}<p class="profile-flash profile-flash-error">{{ error }}</p>{% endif %}
+    {% if success %}<p class="profile-flash profile-flash-success">{{ success }}</p>{% endif %}
+  {% endif %}
+{% endmacro %}

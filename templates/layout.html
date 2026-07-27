@@ -46,12 +46,12 @@
         <span id="version-badge-text"></span>
       </div>
       {% if pendingIncomingSharesCount %}
-      <a href="{{ url_for('profilePage') }}" class="pending-shares-badge" title="Data-sharing requests waiting on you">
+      <a href="{{ url_for('profileSharingPage') }}" class="pending-shares-badge" title="Data-sharing requests waiting on you">
         {{ pendingIncomingSharesCount }} share request{{ 's' if pendingIncomingSharesCount != 1 else '' }}
       </a>
       {% endif %}
       {% if unseenAcceptedShareCount %}
-      <a href="{{ url_for('profilePage') }}" class="accepted-share-badge" title="A share request you sent was accepted">
+      <a href="{{ url_for('profileSharingPage') }}" class="accepted-share-badge" title="A share request you sent was accepted">
         {{ unseenAcceptedShareCount }} share request{{ 's' if unseenAcceptedShareCount != 1 else '' }} accepted!
       </a>
       {% endif %}
@@ -61,7 +61,7 @@
       </a>
       {% endif %}
       {% if spotifyNeedsReauthBadge %}
-      <a href="{{ url_for('profilePage') }}" class="spotify-reauth-badge" title="Spotify backfill is stuck - re-authorization needed">
+      <a href="{{ url_for('profileConnectionsPage') }}" class="spotify-reauth-badge" title="Spotify backfill is stuck - re-authorization needed">
         Spotify re-authorization needed
       </a>
       {% endif %}

@@ -296,28 +296,52 @@ def register(app, dashboard):
     # top-level GET navigations even under SameSite=Lax).
     app.add_url_rule("/logout", "logout", logout, methods=["POST"])
 
-    def _profileRedirect(flashFor, success=None, error=None):
-        """Back to /profile with the message attached to `flashFor`'s section.
+    def _profileRedirect(endpoint, flashFor, success=None, error=None):
+        """Back to a profile page with the message attached to `flashFor`'s
+        section.
 
         The same string is the query param the template matches on and the
-        anchor the browser scrolls to, so the message lands next to the form
-        that produced it rather than at the top of a 400-line page."""
-        return redirect(url_for("profilePage", success=success, error=error,
+        anchor the browser scrolls to, so a save confirms itself next to the
+        form that produced it rather than at the top of the page."""
+        return redirect(url_for(endpoint, success=success, error=error,
                                 flash_for=flashFor, _anchor=flashFor))
 
+    def _profileChrome(username, email, subsection):
+        """The context all three profile pages share: the identity block, which
+        sub-nav tab is current, which tabs exist at all, and whatever flash the
+        redirect that landed here carried."""
+        spotifyCallbackUrl = os.environ.get("SPOTIFY_CALLBACK_URL")
+        lastfmEnabled = dashboard.repo.isLastfmGenreBackfillEnabled()
+        featureEnabled = bool(spotifyCallbackUrl)
+        return dict(
+            username=username,
+            email=email,
+            #< stays "profile" on all three so the topbar's Account dropdown
+            #  highlight needs no special case; subsection drives the sub-nav
+            section="profile",
+            subsection=subsection,
+            sharing_enabled=dashboard.repo.isDataSharingEnabled(),
+            feature_enabled=featureEnabled,
+            lastfm_enabled=lastfmEnabled,
+            #< with both integrations off the Connections tab disappears rather
+            #  than leading to a page with nothing on it
+            connections_available=featureEnabled or lastfmEnabled,
+            redirect_uri=spotifyCallbackUrl,
+            success=request.args.get("success"),
+            error=request.args.get("error"),
+            flashFor=request.args.get("flash_for", ""),
+        )
+
     def profilePage():
+        """Account: identity, display name and per-user preferences."""
         email, username, db = dashboard.get_current_user_or_redirect()
         if not email:
             return redirect(url_for("login", next=request.path))
 
-        success = request.args.get("success")
-        error = request.args.get("error")
-        #< which section shows the message; a POST sets it for its own section
-        flashFor = request.args.get("flash_for", "")
+        chrome = _profileChrome(username, email, "account")
+        success = error = None
+        flashFor = ""
         responseStatus = 200   #< 429 when a POST action was rate limited
-
-        spotify_callback_url = os.environ.get("SPOTIFY_CALLBACK_URL")
-        feature_enabled = bool(spotify_callback_url)
 
         if request.method == "POST":
             action = request.form.get("action")
@@ -378,35 +402,123 @@ def register(app, dashboard):
                                    else f"Display name cleared - you'll show as {username}.")
                     else:
                         error = "That name is already taken."
-            elif action == "request_share":
-                if not dashboard.repo.isDataSharingEnabled():
-                    abort(404)
-                flashFor = PROFILE_FLASH_SHARING
-                target_username = request.form.get("target_username", "").strip()
-                # Throttled like login/register: declines delete the row,
-                # so nothing else stops a rejected requester from re-
-                # requesting (or fanning out to every user) indefinitely.
-                if dashboard._rateLimited("request_share"):
-                    error = RATE_LIMIT_ERROR_MESSAGE
-                    responseStatus = HTTP_TOO_MANY_REQUESTS
-                elif not target_username:
-                    error = "Please choose a user to request a share with."
-                elif target_username == username:
-                    error = "You cannot request a share with yourself."
-                elif not dashboard.repo.usernameExists(target_username):
-                    error = "That username does not exist."
-                else:
-                    result = dashboard.repo.createShareRequest(username, target_username)
-                    if result == "accepted":
-                        success = f"You and {target_username} are now sharing data with each other!"
-                    elif result == "requested":
-                        success = f"Share request sent to {target_username}."
-                    elif result == "already_accepted":
-                        success = f"You already share data with {target_username}."
-                    else:   #< "already_requested"
-                        success = f"A share request to {target_username} is already pending."
-            elif action == "save_lastfm":
-                if not dashboard.repo.isLastfmGenreBackfillEnabled():
+            else:
+                abort(404)
+
+            # POST/Redirect/GET: rendering the POST response directly meant a
+            # refresh re-submitted the action. The throttled path deliberately
+            # renders instead - see HTTP_TOO_MANY_REQUESTS.
+            if responseStatus != HTTP_TOO_MANY_REQUESTS:
+                return _profileRedirect("profilePage", flashFor, success=success, error=error)
+            chrome.update(success=success, error=error, flashFor=flashFor)
+
+        settings = db.repo.getUserSettings(username)
+
+        return render_template(
+            "profile.html",
+            #< read AFTER the POST branch above, so a just-saved name is what
+            #  the form redisplays rather than the pre-save value
+            displayName=dashboard.repo.getDisplayName(username),
+            displayNameMinLength=DISPLAY_NAME_MIN_LENGTH,
+            displayNameMaxLength=DISPLAY_NAME_MAX_LENGTH,
+            default_window=settings.get("default_dashboard_window", "day"),
+            user_timezone=settings.get("timezone") or "",
+            hide_now_playing=settings.get("hide_now_playing", False),
+            friends_now_playing_enabled=dashboard.repo.isFriendsNowPlayingEnabled(),
+            **chrome,
+        ), responseStatus
+    app.add_url_rule("/profile", "profilePage", profilePage, methods=["GET", "POST"])
+
+    def profileSharingPage():
+        """Mutual data sharing: the request picker and the three lists."""
+        if not dashboard.repo.isDataSharingEnabled():
+            abort(404)
+        email, username, db = dashboard.get_current_user_or_redirect()
+        if not email:
+            return redirect(url_for("login", next=request.path))
+
+        chrome = _profileChrome(username, email, "sharing")
+        success = error = None
+        responseStatus = 200
+
+        if request.method == "POST":
+            if request.form.get("action") != "request_share":
+                abort(404)
+            target_username = request.form.get("target_username", "").strip()
+            # Throttled like login/register: declines delete the row,
+            # so nothing else stops a rejected requester from re-
+            # requesting (or fanning out to every user) indefinitely.
+            if dashboard._rateLimited("request_share"):
+                error = RATE_LIMIT_ERROR_MESSAGE
+                responseStatus = HTTP_TOO_MANY_REQUESTS
+            elif not target_username:
+                error = "Please choose a user to request a share with."
+            elif target_username == username:
+                error = "You cannot request a share with yourself."
+            elif not dashboard.repo.usernameExists(target_username):
+                error = "That username does not exist."
+            else:
+                result = dashboard.repo.createShareRequest(username, target_username)
+                if result == "accepted":
+                    success = f"You and {target_username} are now sharing data with each other!"
+                elif result == "requested":
+                    success = f"Share request sent to {target_username}."
+                elif result == "already_accepted":
+                    success = f"You already share data with {target_username}."
+                else:   #< "already_requested"
+                    success = f"A share request to {target_username} is already pending."
+
+            if responseStatus != HTTP_TOO_MANY_REQUESTS:
+                return _profileRedirect("profileSharingPage", PROFILE_FLASH_SHARING,
+                                        success=success, error=error)
+            chrome.update(success=success, error=error, flashFor=PROFILE_FLASH_SHARING)
+
+        # Reaching this render means the Active Shares list below is
+        # about to show whatever the notification was about - clears the
+        # topbar's "your request was accepted" badge for next page load.
+        dashboard.repo.markAcceptedSharesSeenByRequester(username)
+
+        pendingIncoming = dashboard.repo.getPendingIncomingShares(username)
+        pendingOutgoing = dashboard.repo.getPendingOutgoingShares(username)
+        acceptedShares = dashboard.repo.getAcceptedShares(username)
+        # Users already in a share relationship (either direction, pending
+        # or accepted) are excluded from the request picker - re-requesting
+        # them is always a no-op, so offering them just invites confusion.
+        existingCounterparts = ({share["counterpart"] for share in acceptedShares}
+                                | {r["requester_username"] for r in pendingIncoming}
+                                | {r["recipient_username"] for r in pendingOutgoing})
+        shareCandidates = [u for u in dashboard.repo.getAllUsernamesExcept(username)
+                           if u not in existingCounterparts]
+
+        return render_template(
+            "profile_sharing.html",
+            pendingIncoming=pendingIncoming,
+            pendingOutgoing=pendingOutgoing,
+            acceptedShares=acceptedShares,
+            shareCandidates=shareCandidates,
+            **chrome,
+        ), responseStatus
+    app.add_url_rule("/profile/sharing", "profileSharingPage", profileSharingPage,
+                     methods=["GET", "POST"])
+
+    def profileConnectionsPage():
+        """The third-party API keys: Spotify's Web API and Last.fm's."""
+        email, username, db = dashboard.get_current_user_or_redirect()
+        if not email:
+            return redirect(url_for("login", next=request.path))
+
+        chrome = _profileChrome(username, email, "connections")
+        if not chrome["connections_available"]:
+            abort(404)   #< both integrations off: the tab isn't offered either
+        feature_enabled = chrome["feature_enabled"]
+        success = error = None
+        flashFor = ""
+        responseStatus = 200
+
+        if request.method == "POST":
+            action = request.form.get("action")
+            if action == "save_lastfm":
+                if not chrome["lastfm_enabled"]:
                     abort(404)
                 flashFor = PROFILE_FLASH_LASTFM
                 # Throttled like request_share: every save fires a live
@@ -446,6 +558,8 @@ def register(app, dashboard):
                 except Exception as e:
                     error = f"Failed to remove the Last.fm API key: {str(e)}"
             else:
+                #< anything else on this page is the credentials form, which
+                #  predates the action field and posts without one
                 if not feature_enabled:
                     abort(404)
                 flashFor = PROFILE_FLASH_SPOTIFY
@@ -460,52 +574,17 @@ def register(app, dashboard):
                 else:
                     error = "Both Client ID and Client Secret are required."
 
-            # POST/Redirect/GET: rendering the POST response directly meant a
-            # refresh re-submitted the action. flash_for both anchors the scroll
-            # and tells the template which section shows the message, so a save
-            # at the bottom of the page no longer confirms itself off-screen.
-            # The throttled path deliberately renders instead - see
-            # HTTP_TOO_MANY_REQUESTS.
             if responseStatus != HTTP_TOO_MANY_REQUESTS:
-                return _profileRedirect(flashFor, success=success, error=error)
+                return _profileRedirect("profileConnectionsPage", flashFor,
+                                        success=success, error=error)
+            chrome.update(success=success, error=error, flashFor=flashFor)
 
         creds = db.getUserSpotifyCredentials() or {}
         client_id = creds.get("client_id")
         client_secret = creds.get("client_secret")
-        refresh_token = creds.get("refresh_token")
-        spotify_needs_reauth = creds.get("needs_reauth", False)
-
-        settings = db.repo.getUserSettings(username)
-        default_window = settings.get("default_dashboard_window", "day")
-        user_timezone = settings.get("timezone") or ""
-        hide_now_playing = settings.get("hide_now_playing", False)
-
-        # Reaching this render means the Active Shares list below is
-        # about to show whatever the notification was about - clears the
-        # topbar's "your request was accepted" badge for next page load.
-        dashboard.repo.markAcceptedSharesSeenByRequester(username)
-
-        pendingIncoming = dashboard.repo.getPendingIncomingShares(username)
-        pendingOutgoing = dashboard.repo.getPendingOutgoingShares(username)
-        acceptedShares = dashboard.repo.getAcceptedShares(username)
-        # Users already in a share relationship (either direction, pending
-        # or accepted) are excluded from the request picker - re-requesting
-        # them is always a no-op, so offering them just invites confusion.
-        existingCounterparts = ({share["counterpart"] for share in acceptedShares}
-                                | {r["requester_username"] for r in pendingIncoming}
-                                | {r["recipient_username"] for r in pendingOutgoing})
-        shareCandidates = [u for u in dashboard.repo.getAllUsernamesExcept(username)
-                           if u not in existingCounterparts]
 
         return render_template(
-            "profile.html",
-            username=username,
-            #< read AFTER the POST branch above, so a just-saved name is what
-            #  the form redisplays rather than the pre-save value
-            displayName=dashboard.repo.getDisplayName(username),
-            displayNameMinLength=DISPLAY_NAME_MIN_LENGTH,
-            displayNameMaxLength=DISPLAY_NAME_MAX_LENGTH,
-            email=email,
+            "profile_connections.html",
             client_id=client_id,
             # Never echo the stored secret back into the page - only signal that
             # one is saved so the field can show a placeholder (mirrors the
@@ -513,28 +592,14 @@ def register(app, dashboard):
             has_client_secret=bool(client_secret),
             has_api=bool(client_id and client_secret),
             has_lastfm=bool(db.getUserLastfmApiKey()),
-            lastfm_enabled=dashboard.repo.isLastfmGenreBackfillEnabled(),
             artist_bio_enabled=dashboard.repo.isArtistBioEnabled(),
             album_bio_enabled=dashboard.repo.isAlbumBioEnabled(),
-            sharing_enabled=dashboard.repo.isDataSharingEnabled(),
-            is_authenticated=bool(refresh_token),
-            spotify_needs_reauth=spotify_needs_reauth,
-            redirect_uri=spotify_callback_url,
-            success=success,
-            error=error,
-            flashFor=flashFor,
-            section="profile",
-            feature_enabled=feature_enabled,
-            default_window=default_window,
-            user_timezone=user_timezone,
-            hide_now_playing=hide_now_playing,
-            friends_now_playing_enabled=dashboard.repo.isFriendsNowPlayingEnabled(),
-            pendingIncoming=pendingIncoming,
-            pendingOutgoing=pendingOutgoing,
-            acceptedShares=acceptedShares,
-            shareCandidates=shareCandidates,
+            is_authenticated=bool(creds.get("refresh_token")),
+            spotify_needs_reauth=creds.get("needs_reauth", False),
+            **chrome,
         ), responseStatus
-    app.add_url_rule("/profile", "profilePage", profilePage, methods=["GET", "POST"])
+    app.add_url_rule("/profile/connections", "profileConnectionsPage", profileConnectionsPage,
+                     methods=["GET", "POST"])
 
     def profileDisconnect():
         if not os.environ.get("SPOTIFY_CALLBACK_URL"):
@@ -545,10 +610,10 @@ def register(app, dashboard):
 
         try:
             db.updateUserSpotifyCredentials(None, None, None)
-            return _profileRedirect(PROFILE_FLASH_SPOTIFY,
+            return _profileRedirect("profileConnectionsPage", PROFILE_FLASH_SPOTIFY,
                                     success="Successfully disconnected Spotify API credentials.")
         except Exception as e:
-            return _profileRedirect(PROFILE_FLASH_SPOTIFY, error=f"Failed to disconnect: {str(e)}")
+            return _profileRedirect("profileConnectionsPage", PROFILE_FLASH_SPOTIFY, error=f"Failed to disconnect: {str(e)}")
     # POST-only + CSRF-protected: wiping the stored Spotify credentials is
     # state-changing, so it must not be reachable via a cross-site GET link.
     app.add_url_rule("/profile/disconnect", "profileDisconnect", profileDisconnect, methods=["POST"])
@@ -581,8 +646,8 @@ def register(app, dashboard):
             ok, errorMsg = False, "Unknown action."
 
         if ok:
-            return _profileRedirect(PROFILE_FLASH_SHARING, success=successMsg)
-        return _profileRedirect(PROFILE_FLASH_SHARING, error=errorMsg)
+            return _profileRedirect("profileSharingPage", PROFILE_FLASH_SHARING, success=successMsg)
+        return _profileRedirect("profileSharingPage", PROFILE_FLASH_SHARING, error=errorMsg)
     app.add_url_rule("/profile/shares/<int:share_id>", "profileShareAction", profileShareAction, methods=["POST"])
 
     def spotifyAuthorize():
@@ -596,7 +661,7 @@ def register(app, dashboard):
         creds = db.getUserSpotifyCredentials() or {}
         client_id = creds.get("client_id")
         if not client_id:
-            return _profileRedirect(PROFILE_FLASH_SPOTIFY, error="API Credentials not configured.")
+            return _profileRedirect("profileConnectionsPage", PROFILE_FLASH_SPOTIFY, error="API Credentials not configured.")
 
         scope = "user-read-recently-played"
         # One-shot CSRF state - see SPOTIFY_OAUTH_STATE_SESSION_KEY's
@@ -637,7 +702,7 @@ def register(app, dashboard):
 
         if error or not code:
             return _profileRedirect(
-                PROFILE_FLASH_SPOTIFY,
+                "profileConnectionsPage", PROFILE_FLASH_SPOTIFY,
                 error=f"Spotify authorization failed: {error or 'No authorization code returned'}")
 
         creds = db.getUserSpotifyCredentials() or {}
@@ -645,7 +710,7 @@ def register(app, dashboard):
         client_secret = creds.get("client_secret")
 
         if not client_id or not client_secret:
-            return _profileRedirect(PROFILE_FLASH_SPOTIFY, error="API Credentials missing.")
+            return _profileRedirect("profileConnectionsPage", PROFILE_FLASH_SPOTIFY, error="API Credentials missing.")
 
         import base64
         import requests
@@ -676,7 +741,7 @@ def register(app, dashboard):
                 # Restart listener thread to pick up the credentials immediately
                 db.startListener()
 
-                return _profileRedirect(PROFILE_FLASH_SPOTIFY,
+                return _profileRedirect("profileConnectionsPage", PROFILE_FLASH_SPOTIFY,
                                         success="Spotify account successfully authorized and connected!")
             else:
                 # Full response body only server-side - the redirect param ends up
@@ -684,12 +749,12 @@ def register(app, dashboard):
                 logger.warning("Spotify token exchange failed for %s (HTTP %s): %s",
                                username, resp.status_code, resp.text)
                 return _profileRedirect(
-                    PROFILE_FLASH_SPOTIFY,
+                    "profileConnectionsPage", PROFILE_FLASH_SPOTIFY,
                     error="Failed to exchange token with Spotify - check your API credentials and try again.")
         except Exception as e:
             logger.warning("Exception during Spotify token exchange for %s: %s", username, e)
             return _profileRedirect(
-                PROFILE_FLASH_SPOTIFY,
+                "profileConnectionsPage", PROFILE_FLASH_SPOTIFY,
                 error="Something went wrong during the token exchange - please try again.")
     app.add_url_rule("/spotify-callback", "spotifyCallback", spotifyCallback, methods=["GET"])
 

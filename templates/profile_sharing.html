@@ -1,0 +1,17 @@
+{#- SPDX-FileCopyrightText: 2026 i7Gamer
+    SPDX-License-Identifier: AGPL-3.0-or-later -#}
+
+{% extends "_profile_base.html" %}
+{% import "_profile_macros.html" as profileMacros with context %}
+
+{% block profileTitle %}Data Sharing{% endblock %}
+{% block profileBody %}
+
+{{ profileMacros.flashFallback(['data-sharing']) }}
+
+<section class="profile-section is-last">
+  <h2 id="data-sharing">Data Sharing</h2>
+  {{ profileMacros.flash('data-sharing') }}
+  {% include '_share_manage_panel.html' %}
+</section>
+{% endblock %}

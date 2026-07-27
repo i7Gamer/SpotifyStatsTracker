@@ -1,0 +1,24 @@
+{#- SPDX-FileCopyrightText: 2026 i7Gamer
+    SPDX-License-Identifier: AGPL-3.0-or-later
+
+    Sub-navigation across the three profile pages. A tab whose feature is
+    switched off instance-wide is omitted rather than shown leading to an empty
+    page - on a minimal instance this is a one- or two-tab bar.
+
+    `section` stays "profile" on all three so the topbar's Account dropdown
+    highlight (layout.html) needs no special case; `subsection` drives this. -#}
+<nav class="profile-subnav" aria-label="Profile sections">
+  <a class="{{ 'active' if subsection == 'account' }}"
+     {% if subsection == 'account' %}aria-current="page"{% endif %}
+     href="{{ url_for('profilePage') }}">Account</a>
+  {% if sharing_enabled %}
+  <a class="{{ 'active' if subsection == 'sharing' }}"
+     {% if subsection == 'sharing' %}aria-current="page"{% endif %}
+     href="{{ url_for('profileSharingPage') }}">Sharing</a>
+  {% endif %}
+  {% if connections_available %}
+  <a class="{{ 'active' if subsection == 'connections' }}"
+     {% if subsection == 'connections' %}aria-current="page"{% endif %}
+     href="{{ url_for('profileConnectionsPage') }}">Connections</a>
+  {% endif %}
+</nav>

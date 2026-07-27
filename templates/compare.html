@@ -27,6 +27,14 @@
 </nav>
 {% endif %}
 
+{# Adding or dropping a counterpart is what you reach for while looking at this
+   page. A link rather than a panel: this page only exists once you already have
+   an accepted share, so it can't be the only way in - the badges and
+   compare_empty.html point at the same place. #}
+<p class="compare-manage-shares">
+  <a href="{{ url_for('profileSharingPage') }}">Manage shares</a>
+</p>
+
 <section class="filter-section" style="display: flex; flex-wrap: wrap; gap: 1rem; align-items: center;">
   <div class="filter-group">
     <label for="interval">Time Period:</label>

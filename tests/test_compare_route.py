@@ -125,7 +125,7 @@ class TestCompareRoute(AppTestCase):
 
         self.assertEqual(resp.status_code, 200)
         self.assertIn(b"haven't connected with anyone yet", resp.data)
-        self.assertIn(b'href="/profile#data-sharing"', resp.data)
+        self.assertIn(b'href="/profile/sharing"', resp.data)
 
     def test_404_when_data_sharing_is_disabled(self):
         """The admin's instance-wide kill switch blocks the route outright,

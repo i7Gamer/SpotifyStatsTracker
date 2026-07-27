@@ -49,12 +49,13 @@ class ProfilePrgTestCase(AppTestCase):
 
 
 class TestActionsRedirect(ProfilePrgTestCase):
-    """Each action returns 302 back to /profile, tagged with its own section."""
+    """Each action returns 302 to the page that owns it, tagged with its own
+    section - the three profile pages each answer for their own forms."""
 
-    def _assertRedirectsTo(self, resp, flashFor):
+    def _assertRedirectsTo(self, resp, path, flashFor):
         self.assertEqual(resp.status_code, 302)
         location = resp.headers["Location"]
-        self.assertIn("/profile", location)
+        self.assertTrue(location.startswith(path), f"{location} does not start with {path}")
         self.assertIn(f"flash_for={flashFor}", location)
         #< the anchor is what puts the section (and its message) on screen
         self.assertTrue(location.endswith(f"#{flashFor}"), location)
@@ -63,20 +64,20 @@ class TestActionsRedirect(ProfilePrgTestCase):
         client = self._loginAs("alice", "alice@example.com")
         resp = client.post("/profile", data={
             "action": "save_preferences", "default_dashboard_window": "week", "timezone": ""})
-        self._assertRedirectsTo(resp, "preferences")
+        self._assertRedirectsTo(resp, "/profile?", "preferences")
 
     def test_save_display_name(self):
         client = self._loginAs("alice", "alice@example.com")
         resp = client.post("/profile", data={
             "action": "save_display_name", "display_name": "Alice A"})
-        self._assertRedirectsTo(resp, "display-name")
+        self._assertRedirectsTo(resp, "/profile?", "display-name")
 
     def test_request_share(self):
         client = self._loginAs("alice", "alice@example.com")
         self.dash.repo.upsertUser("bob", "bob@example.com")
-        resp = client.post("/profile", data={
+        resp = client.post("/profile/sharing", data={
             "action": "request_share", "target_username": "bob"})
-        self._assertRedirectsTo(resp, "data-sharing")
+        self._assertRedirectsTo(resp, "/profile/sharing", "data-sharing")
 
     def test_save_lastfm_rejected_key_still_redirects(self):
         """Errors redirect too - otherwise a refresh re-runs the failed save."""
@@ -84,30 +85,43 @@ class TestActionsRedirect(ProfilePrgTestCase):
         with patch("routes.auth.LastfmClient") as mockClientClass:
             mockClientClass.return_value.validateApiKey.return_value = {
                 "ok": False, "error": "invalid_key"}
-            resp = client.post("/profile", data={
+            resp = client.post("/profile/connections", data={
                 "action": "save_lastfm", "lastfm_api_key": "badkey"})
-        self._assertRedirectsTo(resp, "lastfm")
+        self._assertRedirectsTo(resp, "/profile/connections", "lastfm")
         self.assertIn("error=", resp.headers["Location"])
 
     def test_remove_lastfm(self):
         client = self._loginAs("alice", "alice@example.com")
         self.dash.repo.updateUserLastfmApiKey("alice", "key123")
-        resp = client.post("/profile", data={"action": "remove_lastfm"})
-        self._assertRedirectsTo(resp, "lastfm")
+        resp = client.post("/profile/connections", data={"action": "remove_lastfm"})
+        self._assertRedirectsTo(resp, "/profile/connections", "lastfm")
 
     def test_save_spotify_credentials(self):
         client = self._loginAs("alice", "alice@example.com")
         with patch.dict(os.environ, {"SPOTIFY_CALLBACK_URL": _CALLBACK_URL}):
-            resp = client.post("/profile", data={
+            resp = client.post("/profile/connections", data={
                 "client_id": "abc", "client_secret": "def"})
-        self._assertRedirectsTo(resp, "spotify")
+        self._assertRedirectsTo(resp, "/profile/connections", "spotify")
 
     def test_missing_spotify_credentials_redirects_with_the_error(self):
         client = self._loginAs("alice", "alice@example.com")
         with patch.dict(os.environ, {"SPOTIFY_CALLBACK_URL": _CALLBACK_URL}):
-            resp = client.post("/profile", data={"client_id": "abc", "client_secret": ""})
-        self._assertRedirectsTo(resp, "spotify")
+            resp = client.post("/profile/connections",
+                               data={"client_id": "abc", "client_secret": ""})
+        self._assertRedirectsTo(resp, "/profile/connections", "spotify")
         self.assertIn("error=", resp.headers["Location"])
+
+    def test_an_action_posted_to_the_wrong_page_is_not_honoured(self):
+        """Each page dispatches only its own actions - the single /profile
+        handler that took all five is gone."""
+        client = self._loginAs("alice", "alice@example.com")
+        self.dash.repo.upsertUser("bob", "bob@example.com")
+
+        resp = client.post("/profile", data={
+            "action": "request_share", "target_username": "bob"})
+
+        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(self.dash.repo.getPendingOutgoingShares("alice"), [])
 
     def test_following_the_redirect_shows_the_message(self):
         client = self._loginAs("alice", "alice@example.com")
@@ -126,9 +140,11 @@ class TestRateLimitedActionsDoNotRedirect(ProfilePrgTestCase):
         client = self._loginAs("alice", "alice@example.com")
         self.dash.repo.upsertUser("bob", "bob@example.com")
         for _ in range(RATE_LIMIT_MAX_ATTEMPTS):
-            client.post("/profile", data={"action": "request_share", "target_username": "bob"})
+            client.post("/profile/sharing",
+                        data={"action": "request_share", "target_username": "bob"})
 
-        resp = client.post("/profile", data={"action": "request_share", "target_username": "bob"})
+        resp = client.post("/profile/sharing",
+                           data={"action": "request_share", "target_username": "bob"})
 
         self.assertEqual(resp.status_code, 429)
         self.assertIn(b"Too many attempts", resp.data)
@@ -150,11 +166,11 @@ class TestRateLimitedActionsDoNotRedirect(ProfilePrgTestCase):
         with patch("routes.auth.LastfmClient") as mockClientClass:
             mockClientClass.return_value.validateApiKey.return_value = {"ok": True}
             for _ in range(RATE_LIMIT_MAX_ATTEMPTS):
-                client.post("/profile", data={"action": "save_lastfm",
-                                              "lastfm_api_key": "somekey"})
+                client.post("/profile/connections", data={"action": "save_lastfm",
+                                                          "lastfm_api_key": "somekey"})
 
-            resp = client.post("/profile", data={"action": "save_lastfm",
-                                                 "lastfm_api_key": "somekey"})
+            resp = client.post("/profile/connections", data={"action": "save_lastfm",
+                                                             "lastfm_api_key": "somekey"})
 
         self.assertEqual(resp.status_code, 429)
 
@@ -170,13 +186,22 @@ class TestFlashPlacement(ProfilePrgTestCase):
     def test_message_renders_inside_the_named_section(self):
         client = self._loginAs("alice", "alice@example.com")
 
-        resp = client.get("/profile?success=Key+saved&flash_for=lastfm")
+        resp = client.get("/profile/connections?success=Key+saved&flash_for=lastfm")
 
         body = resp.data
         self.assertIn(b"Key saved", body)
         #< after the Last.fm heading, not stranded at the top of the page
         self.assertGreater(self._indexOf(body, b"Key saved"),
                            self._indexOf(body, b'id="lastfm"'))
+
+    def test_a_message_for_another_pages_section_still_renders(self):
+        """A section name this page doesn't have must not swallow the message -
+        the fallback slot catches it."""
+        client = self._loginAs("alice", "alice@example.com")
+
+        resp = client.get("/profile?success=Elsewhere&flash_for=lastfm")
+
+        self.assertIn(b"Elsewhere", resp.data)
 
     def test_message_without_flash_for_falls_back_to_the_top(self):
         """Redirects from elsewhere (the Spotify OAuth callback, share actions)

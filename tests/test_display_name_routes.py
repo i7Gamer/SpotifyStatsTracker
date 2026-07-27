@@ -233,7 +233,7 @@ class TestTheShareLists(ProfileDisplayNameTestCase):
     def test_the_request_picker_labels_by_display_name_but_submits_the_username(self):
         client = self._loginAs("alice")
 
-        body = client.get("/profile").data.decode("utf-8")
+        body = client.get("/profile/sharing").data.decode("utf-8")
 
         self.assertIn('<option value="bob">Bob Builder</option>', body)
 
@@ -241,7 +241,7 @@ class TestTheShareLists(ProfileDisplayNameTestCase):
         self.dash.repo.createShareRequest("bob", "alice")
         client = self._loginAs("alice")
 
-        body = client.get("/profile").data.decode("utf-8")
+        body = client.get("/profile/sharing").data.decode("utf-8")
 
         self.assertIn("Bob Builder", body)
         self.assertIn("wants to share data with you", body)
@@ -250,7 +250,7 @@ class TestTheShareLists(ProfileDisplayNameTestCase):
         client = self._loginAs("alice")
         self.dash.repo.createShareRequest("alice", "bob")
 
-        body = client.get("/profile").data.decode("utf-8")
+        body = client.get("/profile/sharing").data.decode("utf-8")
 
         self.assertIn("Waiting on", body)
         self.assertIn("Bob Builder", body)
@@ -261,7 +261,7 @@ class TestTheShareLists(ProfileDisplayNameTestCase):
         self.dash.repo.respondToShareRequest(shareId, "alice", accept=True)
         client = self._loginAs("alice")
 
-        body = client.get("/profile").data.decode("utf-8")
+        body = client.get("/profile/sharing").data.decode("utf-8")
 
         self.assertIn("Bob Builder", body)
         #< the Compare link still addresses the counterpart by the real key

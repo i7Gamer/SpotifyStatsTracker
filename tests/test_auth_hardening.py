@@ -57,7 +57,7 @@ class TestClientSecretNotEchoed(_LoggedInProfileTestCase):
         self._login(dash, client)
         with patch.object(dash, "get_user_db") as mock_get_db:
             self._mockDb(mock_get_db)
-            resp = client.get("/profile")
+            resp = client.get("/profile/connections")
 
         self.assertEqual(resp.status_code, 200)
         # The secret must not round-trip into the page in any form.
@@ -71,7 +71,7 @@ class TestClientSecretNotEchoed(_LoggedInProfileTestCase):
         self._login(dash, client)
         with patch.object(dash, "get_user_db") as mock_get_db:
             self._mockDb(mock_get_db)
-            resp = client.get("/profile")
+            resp = client.get("/profile/connections")
 
         self.assertIn(b"A secret is saved", resp.data)
 

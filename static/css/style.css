@@ -668,6 +668,216 @@ progress::-moz-progress-bar {
   place-items: start center;
 }
 
+/* ---- The three profile pages (account / sharing / connections) ----
+   These replaced ~85 inline style attributes when /profile was split; the
+   markup below is shared by profile.html, profile_sharing.html and
+   profile_connections.html through _profile_base.html. */
+
+.profile-card {
+  /* Wider than the login card it borrows its chrome from - these pages are
+     forms plus tables, not a single email/password pair. */
+  width: min(900px, 100%);
+}
+
+.profile-details {
+  margin-bottom: 1.25rem;
+}
+
+.profile-subnav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 2rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.profile-subnav a {
+  padding: 8px 14px;
+  color: var(--muted);
+  text-decoration: none;
+  font-weight: 600;
+  font-size: 0.95rem;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;   /* sit the active underline on the nav's own border */
+}
+
+.profile-subnav a:hover {
+  color: var(--text);
+}
+
+.profile-subnav a.active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+
+.profile-section {
+  margin-bottom: 2rem;
+  padding-bottom: 2rem;
+  border-bottom: 1px solid var(--border);
+}
+
+/* The log-out row supplies the closing rule, so the last section must not draw
+   a second one right above it. Explicit rather than :last-of-type: a section
+   can be hidden by a feature switch, which would move that pseudo-class onto
+   whichever one happened to render last. */
+.profile-section.is-last {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.profile-hint {
+  font-size: 0.85rem;
+  color: var(--muted);
+  margin-top: 0.4rem;
+}
+
+.profile-field,
+.profile-select {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.profile-select {
+  height: 38px;
+}
+
+.profile-wide-button {
+  width: 100%;
+}
+
+.profile-button-row {
+  display: flex;
+  gap: 1rem;
+}
+
+.profile-button-row .primary-button {
+  flex: 1;
+}
+
+.profile-remove-key-form {
+  margin-top: 1rem;
+}
+
+.profile-flash {
+  margin-bottom: 1rem;
+}
+
+.profile-flash-error {
+  color: #ff4a4a;
+}
+
+.profile-flash-success {
+  color: #4aff4a;
+}
+
+.profile-status-box {
+  margin-top: 1rem;
+  padding: 1rem;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+
+.profile-status-good {
+  color: #4aff4a;
+  font-weight: bold;
+}
+
+.profile-status-warn {
+  color: #ffaa4a;
+  font-weight: bold;
+}
+
+.profile-status-bad {
+  color: #ff6b4a;
+  font-weight: bold;
+}
+
+.profile-spotify-button {
+  display: inline-block;
+  margin-top: 1rem;
+  padding: 0.5rem 1.5rem;
+  background: #1db954;
+  color: #fff;
+  text-decoration: none;
+}
+
+.profile-link-spotify {
+  color: #1db954;
+  text-decoration: underline;
+}
+
+.profile-link-lastfm {
+  color: #d51007;
+  text-decoration: underline;
+}
+
+.profile-redirect-uri {
+  color: #1db954;
+  word-break: break-all;
+}
+
+.profile-share-request {
+  margin-bottom: 1.5rem;
+}
+
+.profile-share-group {
+  margin-bottom: 1.5rem;
+}
+
+.profile-share-group h3 {
+  font-size: 1rem;
+}
+
+.profile-share-group .share-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.profile-share-group .share-table td {
+  padding: 8px;
+}
+
+.profile-share-group .share-actions {
+  text-align: right;
+}
+
+.share-action-button {
+  padding: 4px 12px;
+  text-decoration: none;
+  display: inline-block;
+}
+
+.share-actions form {
+  display: inline-block;
+}
+
+/* Destructive and neutral variants of .primary-button, so the templates stop
+   carrying a hardcoded background in a style attribute. */
+.primary-button.is-danger {
+  background: #c92a2a;
+}
+
+.primary-button.is-neutral {
+  background: #555;
+}
+
+.profile-logout-row {
+  margin-top: 3rem;
+  text-align: center;
+}
+
+.profile-logout-button {
+  background: #555;
+  padding: 0.5rem 2rem;
+}
+
+/* The Compare page's way back to share management (see compare.html). */
+.compare-manage-shares {
+  margin: 0 0 1rem;
+  font-size: 0.9rem;
+}
+
 .login-card {
   width: min(420px, 100%);
   padding: 32px;
