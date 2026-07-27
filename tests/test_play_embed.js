@@ -2,7 +2,9 @@
 // (static/js/play-embed.js). No test framework/dependency - run with:
 //   node tests/test_play_embed.js
 const assert = require('assert');
-const { nextPlayEmbedState, embedHeightFor, EMBED_HEIGHT_PX } = require('../static/js/play-embed.js');
+const {
+  nextPlayEmbedState, embedHeightFor, EMBED_HEIGHT_PX, initPlayEmbed, SCRIPT_FAILED_NOTICE,
+} = require('../static/js/play-embed.js');
 
 function run(name, fn) {
   try {
@@ -124,6 +126,99 @@ run('a script error once the player is ready changes nothing', () => {
 
   assert.strictEqual(after.phase, 'ready');
   assert.strictEqual(after.action, 'none');
+});
+
+// --- what that failure actually renders --------------------------------------
+// The notice used to build an "Open in Spotify" anchor of its own, because the
+// hero card had none: the Play now button REPLACED the card's anchor. The card
+// carries both now (templates/_track_card.html), so a second link a few pixels
+// under the first is noise - the notice points at the one already there. Which
+// nodes get built is wiring, not state, so this drives initPlayEmbed against a
+// hand-rolled page (same approach as tests/test_back_button.js, no jsdom).
+
+const SPOTIFY_URL = 'https://open.spotify.com/track/abc';
+
+function fakeElement(tagName) {
+  const element = {
+    tagName,
+    className: '',
+    textContent: '',
+    hidden: false,
+    offsetHeight: 0,
+    children: [],
+    listeners: {},
+    attributes: {},
+    style: { setProperty() {} },
+    classList: {
+      names: [],
+      add(name) { element.classList.names.push(name); },
+      remove(name) { element.classList.names = element.classList.names.filter((n) => n !== name); },
+      contains(name) { return element.classList.names.includes(name); },
+    },
+    appendChild(child) { element.children.push(child); return child; },
+    addEventListener(event, handler) { element.listeners[event] = handler; },
+    setAttribute(name, value) { element.attributes[name] = value; },
+  };
+  return element;
+}
+
+/** A page whose first Play-now click gets no API script back. */
+function failedScriptLoad() {
+  const button = fakeElement('button');
+  button.dataset = { spotifyUrl: SPOTIFY_URL, embedType: 'track' };
+  button.textContent = 'Play now';
+  const container = fakeElement('section');
+  const slot = fakeElement('div');
+  const created = [];
+  const body = fakeElement('body');
+
+  global.window = {};
+  global.document = {
+    body,
+    querySelector(selector) { return selector === '.play-now-button' ? button : null; },
+    getElementById(id) {
+      if (id === 'play-embed') { return container; }
+      if (id === 'play-embed-slot') { return slot; }
+      return null;
+    },
+    createElement(tagName) {
+      const element = fakeElement(tagName);
+      created.push(element);
+      return element;
+    },
+  };
+
+  initPlayEmbed();
+  button.listeners.click();              //< requests the API script...
+  body.children[0].listeners.error();    //< ...which never arrives
+
+  return { button, container, slot, created };
+}
+
+run('the failure notice replaces the slot and says what happened', () => {
+  const { slot } = failedScriptLoad();
+
+  assert.strictEqual(slot.children.length, 1);
+  assert.strictEqual(slot.children[0].tagName, 'p');
+  assert.strictEqual(slot.children[0].className, 'dashboard-card-empty');
+  assert.strictEqual(slot.children[0].textContent, SCRIPT_FAILED_NOTICE);
+});
+
+run('the notice sends the visitor to the pill on the card, not to a link of its own', () => {
+  const { slot, created } = failedScriptLoad();
+
+  assert.ok(SCRIPT_FAILED_NOTICE.includes('Open in Spotify'));
+  assert.deepStrictEqual(created.filter((element) => element.tagName === 'a'), []);
+  assert.strictEqual(slot.children[0].children.length, 0);
+});
+
+run('the failure still reveals the container and frees the button to retry', () => {
+  const { button, container } = failedScriptLoad();
+
+  assert.strictEqual(container.hidden, false);
+  assert.ok(container.classList.contains('is-visible'));
+  assert.strictEqual(button.textContent, 'Play now');
+  assert.strictEqual(button.attributes['aria-expanded'], 'true');
 });
 
 console.log('All play-embed tests passed.');

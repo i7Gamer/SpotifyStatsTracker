@@ -14,6 +14,12 @@ const PLAY_LABEL = 'Play now';
 const HIDE_LABEL = 'Hide player';
 const SPOTIFY_IFRAME_API_SRC = 'https://open.spotify.com/embed/iframe-api/v1';
 
+// Shown in the player's place when the API script never loads. It names the
+// card's own "Open in Spotify" pill rather than repeating it as a link here -
+// see showScriptFailedFallback below.
+const SCRIPT_FAILED_NOTICE = "Spotify's player couldn't be loaded. "
+  + 'Use the Open in Spotify link above to listen there.';
+
 // Spotify's standard embed heights: a compact track card vs the taller
 // artist/album card that shows a tracklist.
 const EMBED_HEIGHT_PX = { track: 152, artist: 352, album: 352 };
@@ -112,21 +118,18 @@ function initPlayEmbed() {
     // user gesture. With open.spotify.com blocked by an extension or a DNS rule
     // the button therefore did NOTHING visible at all.
     //
-    // An anchor the user clicks themselves can never be blocked, so the failure
-    // is reported in the container the player would have filled. The state
-    // machine has already returned to 'idle', so a later click still retries the
-    // script (a transient network failure recovers) - this only makes sure the
-    // visitor is told, and has a way through, when it does not.
+    // So the failure is reported in the container the player would have filled.
+    // It used to carry its own "Open in Spotify" anchor as the way through,
+    // because back then the hero card had none - the Play now button replaced
+    // it. The card shows both now, so the notice points at that pill instead of
+    // duplicating it inches below itself. The state machine has already returned
+    // to 'idle', so a later click still retries the script (a transient network
+    // failure recovers) - this only makes sure the visitor is told when it does
+    // not.
     slot.textContent = '';
     const notice = document.createElement('p');
     notice.className = 'dashboard-card-empty';
-    notice.textContent = "Spotify's player couldn't be loaded. ";
-    const link = document.createElement('a');
-    link.href = button.dataset.spotifyUrl;
-    link.target = '_blank';
-    link.rel = 'noreferrer noopener';
-    link.textContent = 'Open in Spotify ↗';
-    notice.appendChild(link);
+    notice.textContent = SCRIPT_FAILED_NOTICE;
     slot.appendChild(notice);
 
     container.hidden = false;
@@ -208,5 +211,10 @@ if (typeof document !== 'undefined') {
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { nextPlayEmbedState, embedHeightFor, EMBED_HEIGHT_PX, SPOTIFY_IFRAME_API_SRC };
+  // initPlayEmbed is exported for the DOM-stub tests only; in a browser the
+  // guard above has already run it.
+  module.exports = {
+    nextPlayEmbedState, embedHeightFor, EMBED_HEIGHT_PX, SPOTIFY_IFRAME_API_SRC,
+    initPlayEmbed, SCRIPT_FAILED_NOTICE,
+  };
 }
