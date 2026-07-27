@@ -297,8 +297,12 @@ class TestAdminWorkerHealthRoute(unittest.TestCase):
             self.assertEqual(resp.status_code, 200)
             self.assertIn('<span class="badge badge-danger">FAILING: 1</span>', body)
             # Below-threshold and zero-failure workers don't render a FAILING badge.
+            # Wrapped is the last entry in the Worker Health card, so the next
+            # card's heading is the tight end of its block - "Database Backup
+            # Service" used to sit right below it and now lives in that next
+            # card, which would silently widen this slice past what it checks.
             wrappedBlockStart = body.index("Wrapped Calculation Workers")
-            wrappedBlockEnd = body.index("Database Backup Service")
+            wrappedBlockEnd = body.index("Instance Services")
             self.assertNotIn("FAILING", body[wrappedBlockStart:wrappedBlockEnd])
 
     @patch('app.SpotifyDashboardApp._get_or_create_secret_key', return_value='test-secret-key')

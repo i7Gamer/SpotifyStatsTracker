@@ -356,16 +356,16 @@ class TestAdminUserSettings(AdminRouteTestBase):
 
 
 class TestAdminMilestoneWorkerHealth(AdminRouteTestBase):
-    """The Worker Health panel's Milestone Detection entry. The milestone pass
-    has no thread of its own - it rides the periodic login-check loop - so its
-    health is that hosting thread's: RUNNING while alive, INACTIVE otherwise,
-    DISABLED when the admin kill switch turns the whole feature off, plus a
-    warning badge when the import-hygiene auto-recalc toggle is off."""
+    """The Instance Services panel's Milestone Detection entry. The milestone
+    pass has no thread of its own - it rides the periodic login-check loop - so
+    its health is that hosting thread's: RUNNING while alive, INACTIVE
+    otherwise, DISABLED when the admin kill switch turns the whole feature off,
+    plus a warning badge when the import-hygiene auto-recalc toggle is off."""
 
     def _milestoneSection(self, resp):
         """The Milestone Detection badge markup only - RUNNING/INACTIVE also
-        appear in other Worker Health sections, so assertions must scope to
-        this section's marker id."""
+        appear in the Worker Health card's sections, so assertions must scope
+        to this section's marker id."""
         self.assertIn(b'id="milestoneWorkerStatus"', resp.data)
         return resp.data.split(b'id="milestoneWorkerStatus"')[1][:300]
 
@@ -509,7 +509,17 @@ class TestDatabaseIntegrityPanel(AdminRouteTestBase):
         body = self._getAdmin(dash).data.decode()
 
         self.assertIn("Database Integrity", body)
-        self.assertIn("No problems found", body)
+        self.assertIn('<span class="badge badge-success">OK</span>', body)
+
+    def test_a_healthy_database_adds_no_filler_line(self):
+        """The OK badge is the whole message. The "No problems found." sentence
+        that used to sit under it said nothing the badge didn't, and cost height
+        in the card the insights row wants short."""
+        dash = self._makeApp()
+
+        body = self._getAdmin(dash).data.decode()
+
+        self.assertNotIn("No problems found", body)
 
     def test_dangling_rows_are_named_and_counted(self):
         dash = self._makeApp()
@@ -1106,6 +1116,90 @@ class TestAdminInsights(AdminRouteTestBase):
         self.assertIn("Activity", body)
         self.assertIn("2", body)   # last_7_days
         self.assertIn("9", body)  # last_30_days
+
+
+class TestAdminInsightsLayout(AdminRouteTestBase):
+    """The insights row was Coverage | Worker Health | Activity, and .grid
+    stretches every card in a row to the tallest one: Worker Health carried
+    nine worker families plus the integrity probe, Activity carried five
+    numbers, so Activity rendered at roughly three times the height its content
+    needed. The instance-scoped entries are their own card now, and Activity
+    left the row entirely rather than being padded out to fill it."""
+
+    # Every entry that must stay in the Worker Health card - all per-account
+    # thread pools, in render order.
+    _WORKER_FAMILIES = (
+        "Listener Sync",
+        "Spotify API Backfill Workers",
+        "Last.fm Genre Workers",
+        "Last.fm Album Bio Workers",
+        "Last.fm Artist Bio Workers",
+        "Auto-Importer Watchdogs",
+        "Wrapped Calculation Workers",
+    )
+
+    # Instance-scoped, one of each per install rather than one per account.
+    _SERVICE_ENTRIES = (
+        "Milestone Detection",
+        "Database Backup Service",
+        "Database Integrity",
+    )
+
+    def _assertTile(self, body, label, value):
+        """A stat tile renders its value close after its label - the window
+        keeps this from passing on a digit that happens to appear anywhere
+        else on a page full of counts."""
+        at = body.index(label)
+        window = body[at:at + 300]
+        self.assertIn(">{}</h2>".format(value), window,
+                      "the '{}' tile must show {}".format(label, value))
+
+    def test_instance_services_is_its_own_card(self):
+        body = self._getAdmin(self._makeApp()).data.decode()
+
+        self.assertIn("Instance Services", body)
+
+    def test_worker_families_and_services_land_in_separate_cards(self):
+        """The split is the whole point - if an entry drifts back across the
+        boundary the tall card comes back with it."""
+        body = self._getAdmin(self._makeApp()).data.decode()
+        servicesAt = body.index("Instance Services")
+
+        for family in self._WORKER_FAMILIES:
+            self.assertLess(body.index(family), servicesAt,
+                            "{} belongs in the Worker Health card".format(family))
+        for entry in self._SERVICE_ENTRIES:
+            self.assertGreater(body.index(entry), servicesAt,
+                               "{} belongs in the Instance Services card".format(entry))
+
+    def test_insights_cards_do_not_stretch_to_the_tallest_in_the_row(self):
+        """Splitting the card evens the row out but never exactly - without
+        this the shorter two are still inflated to whatever the tallest one
+        happens to be."""
+        body = self._getAdmin(self._makeApp()).data.decode()
+
+        self.assertIn("align-items: start", body)
+
+    def test_activity_renders_between_the_users_table_and_the_insights_row(self):
+        body = self._getAdmin(self._makeApp()).data.decode()
+
+        self.assertLess(body.index("Registered Users & Sync Status"), body.index("New users (7d)"))
+        self.assertLess(body.index("New users (7d)"), body.index("Catalog Backfill Coverage"))
+
+    def test_activity_tiles_render_every_metric(self):
+        extra = {
+            "getRecentRegistrationCounts": {"last_7_days": 2, "last_30_days": 9},
+            "getInstanceShareCounts": {"pending": 3, "accepted": 4},
+            "getActiveShareLinksCount": 6,
+        }
+
+        body = self._getAdmin(self._makeApp(), extraInsights=extra).data.decode()
+
+        self._assertTile(body, "New users (7d)", 2)
+        self._assertTile(body, "New users (30d)", 9)
+        self._assertTile(body, "Pending shares", 3)
+        self._assertTile(body, "Accepted shares", 4)
+        self._assertTile(body, "Wrapped links", 6)
 
 
 if __name__ == "__main__":

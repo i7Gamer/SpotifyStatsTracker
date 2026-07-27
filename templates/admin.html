@@ -109,8 +109,35 @@
   </div>
 </section>
 
-<!-- Instance Insights: read-only, catalog/instance-wide numbers no single user sees -->
-<section class="grid" style="grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.5rem; margin-bottom: 2.5rem;">
+<!-- Activity: five bare counters, which is too little to hold a column in the
+     insights row below - stretched to its neighbours' height the card was
+     mostly empty. As Overview's stat tiles they use the width instead, and
+     they sit under the users table because that is what they describe. -->
+<h2>Activity</h2>
+<p style="color: var(--muted); font-size: 0.9rem; margin: 0 0 1.25rem;">Instance-wide signups and data-sharing activity.</p>
+<section class="grid" style="grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1.5rem; margin-bottom: 2.5rem;">
+  {% for icon, label, value, hint in [
+    ("🆕", "New users (7d)", registration_counts.last_7_days, "Accounts registered in the last 7 days"),
+    ("📈", "New users (30d)", registration_counts.last_30_days, "Accounts registered in the last 30 days"),
+    ("⏳", "Pending shares", instance_share_counts.pending, "Share requests sent but not yet accepted"),
+    ("🤝", "Accepted shares", instance_share_counts.accepted, "Mutually accepted data-sharing pairs"),
+    ("🔗", "Wrapped links", active_share_links_count, "Active public Wrapped share links - no-login links to a user's own yearly recap")
+  ] %}
+  <article class="card stats-card" title="{{ hint }}">
+    <div class="stats-card-icon">{{ icon }}</div>
+    <div class="stats-card-info">
+      <span class="stats-card-label">{{ label }}</span>
+      <h2 class="summary-value" style="font-size: 2.2rem; margin: 0.5rem 0 0 0;">{{ value }}</h2>
+    </div>
+  </article>
+  {% endfor %}
+</section>
+
+<!-- Instance Insights: read-only, catalog/instance-wide numbers no single user sees.
+     align-items keeps the row's cards at their own height - the default stretch
+     inflates every card to the tallest one, which is what left the short ones
+     half empty. -->
+<section class="grid" style="grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.5rem; margin-bottom: 2.5rem; align-items: start;">
   <article class="card" style="padding: 1.5rem;">
     <h3 style="margin-top: 0; font-family: var(--font-headings);">Catalog Backfill Coverage</h3>
     <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem; margin-bottom: 1rem;">
@@ -158,7 +185,7 @@
   <article class="card" style="padding: 1.5rem;">
     <h3 style="margin-top: 0; font-family: var(--font-headings);">Worker Health</h3>
     <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem; margin-bottom: 1rem;">
-      Background worker/thread state across every account and instance services.
+      Background worker/thread state across every account.
     </p>
 
     <p style="font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">Listener Sync</p>
@@ -226,13 +253,23 @@
     </div>
 
     <p style="font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">Wrapped Calculation Workers</p>
-    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem;">
+    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
       <span class="badge badge-success">RUNNING: {{ wrapped_worker_summary.running }}</span>
       <span class="badge badge-warning">IDLE: {{ wrapped_worker_summary.idle }}</span>
       {% if wrapped_worker_summary.failing > 0 %}
         <span class="badge badge-danger">FAILING: {{ wrapped_worker_summary.failing }}</span>
       {% endif %}
     </div>
+  </article>
+
+  {# Split out of Worker Health, which was carrying nine per-account worker
+     families plus these three and towered over the cards beside it. What lives
+     here is what there is one of per install rather than one per account. #}
+  <article class="card" style="padding: 1.5rem;">
+    <h3 style="margin-top: 0; font-family: var(--font-headings);">Instance Services</h3>
+    <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem; margin-bottom: 1rem;">
+      Instance-wide services and health checks, one of each per install.
+    </p>
 
     {# Milestone detection rides the periodic login-check loop (no thread of
        its own) - RUNNING/INACTIVE is that loop's liveness, DISABLED the admin
@@ -303,28 +340,14 @@
         <li>{{ table }}: {{ count }}</li>
         {% endfor %}
       </ul>
-    {% else %}
-      <p style="color: var(--muted); font-size: 0.85rem; margin: 0.5rem 0 0;">No problems found.</p>
     {% endif %}
-  </article>
-
-  <article class="card" style="padding: 1.5rem;">
-    <h3 style="margin-top: 0; font-family: var(--font-headings);">Activity</h3>
-    <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem; margin-bottom: 1rem;">
-      Instance-wide signups and data-sharing activity.
-    </p>
-    <ul style="list-style: none; padding: 0; margin: 0; font-size: 0.9rem; color: var(--muted); line-height: 1.9;">
-      <li>New users (7d): <strong style="color: var(--fg, #fff);">{{ registration_counts.last_7_days }}</strong></li>
-      <li>New users (30d): <strong style="color: var(--fg, #fff);">{{ registration_counts.last_30_days }}</strong></li>
-      <li>Pending share requests: <strong style="color: var(--fg, #fff);">{{ instance_share_counts.pending }}</strong></li>
-      <li>Accepted shares: <strong style="color: var(--fg, #fff);">{{ instance_share_counts.accepted }}</strong></li>
-      <li>Active public Wrapped links: <strong style="color: var(--fg, #fff);">{{ active_share_links_count }}</strong></li>
-    </ul>
   </article>
 </section>
 
-<!-- Settings, grouped by what they govern rather than one flat checkbox list -->
-<section class="grid" style="gap: 1.5rem;">
+<!-- Settings, grouped by what they govern rather than one flat checkbox list.
+     align-items as above: a one-checkbox card has no business being as tall as
+     the nine-checkbox one beside it. -->
+<section class="grid" style="gap: 1.5rem; align-items: start;">
   <article class="card" style="padding: 0;">
     <div class="card-header" style="padding: 1.5rem 1.5rem 0.5rem 1.5rem;">
       <h2 style="margin: 0; font-family: var(--font-headings); font-size: 1.15rem;">User Settings</h2>
