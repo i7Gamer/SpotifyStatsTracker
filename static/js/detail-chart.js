@@ -60,7 +60,10 @@
       if (window.AjaxStatus && window.AjaxStatus.redirectIfUnauthorized(resp)) {
         throw new Error(window.AjaxStatus.UNAUTHORIZED_ERROR);
       }
-      return resp.ok ? resp.json() : null;
+      //< the Group-by select has already moved, so swallowing a non-2xx left the
+      //  PREVIOUS series on screen labelled as the new one, with nothing said
+      if (!resp.ok) throw new Error('detail chart fetch failed: ' + resp.status);
+      return resp.json();
     });
 
     Promise.all([fetched, delay])
@@ -70,16 +73,21 @@
         if (!activeLoad || activeLoad.controller !== controller) {
           return;
         }
-        if (results[0]) {
-          window.__chartData.timeSeries = results[0].timeSeries;
-          if (window.renderTimeSeriesChart) {
-            window.renderTimeSeriesChart();
-          }
+        window.__chartData.timeSeries = results[0].timeSeries;
+        if (window.renderTimeSeriesChart) {
+          window.renderTimeSeriesChart();
         }
+        if (window.AjaxStatus) window.AjaxStatus.clearBanner();
       })
       .catch(function (err) {
+        //< navigating to /login - not a load failure to report
+        if (window.AjaxStatus && window.AjaxStatus.isUnauthorizedError(err)) return;
         if (err.name !== 'AbortError') {
           console.error(err);
+          //< the canvas can't hold a message, so surface a banner with Retry
+          if ((!activeLoad || activeLoad.controller === controller) && window.AjaxStatus) {
+            window.AjaxStatus.showBanner(function () { loadDetailTimeSeries(); });
+          }
         }
       })
       .finally(function () {

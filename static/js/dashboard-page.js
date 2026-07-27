@@ -30,7 +30,16 @@ function loadDashboardSummary() {
   params.set('ajax', 'true');
   var delay = new Promise(function (resolve) { setTimeout(resolve, DASHBOARD_FADE_MS); });
   var fetched = fetch(window.location.pathname + '?' + params.toString(), { signal: controller.signal })
-    .then(function (response) { return response.json(); });
+    .then(function (response) {
+      //< an expired session: go to the login page instead of reading summaryHtml
+      //  off a 401's JSON body, which resolves fine and simply has no such key -
+      //  innerHTML then wrote the string "undefined" over the four cards
+      if (window.AjaxStatus && window.AjaxStatus.redirectIfUnauthorized(response)) {
+        throw new Error(window.AjaxStatus.UNAUTHORIZED_ERROR);
+      }
+      if (!response.ok) throw new Error('dashboard summary fetch failed: ' + response.status);
+      return response.json();
+    });
 
   Promise.all([fetched, delay])
     .then(function (results) {
@@ -43,6 +52,8 @@ function loadDashboardSummary() {
       target.innerHTML = data.summaryHtml;
     })
     .catch(function (err) {
+      //< navigating to /login - not a load failure to report
+      if (window.AjaxStatus && window.AjaxStatus.isUnauthorizedError(err)) return;
       if (err.name !== 'AbortError') {
         console.error(err);
         //< genuine failure (not superseded): replace the stuck/stale cards
@@ -370,7 +381,14 @@ window.addEventListener('popstate', function () {
   }
 
   fetch('/api/dashboard-discover')
-    .then(function (resp) { return resp.ok ? resp.json() : null; })
+    .then(function (resp) {
+      //< a non-2xx used to resolve to null, which "!data" below then reported as
+      //  "not unlocked yet" - a statement about the user's own library that a
+      //  server error is no evidence for. Throw into the catch, which
+      //  deliberately leaves the card blank instead.
+      if (!resp.ok) throw new Error('discover fetch failed: ' + resp.status);
+      return resp.json();
+    })
     .then(function (data) {
       loadingEl.style.display = 'none';
       if (!data || !data.unlocked) {
@@ -446,15 +464,32 @@ window.addEventListener('popstate', function () {
 })();
 
 document.addEventListener('DOMContentLoaded', function() {
-  fetch('/api/dashboard-trends')
-    .then(function(res) { return res.json(); })
-    .then(function(data) {
-      if (data && data.trendsHtml) {
-        var container = document.getElementById('dashboardTrendsContainer');
-        if (container) container.innerHTML = data.trendsHtml;
-      }
-    })
-    .catch(function(err) {
-      console.error('Error fetching dashboard trends:', err);
-    });
+  function loadDashboardTrends() {
+    var container = document.getElementById('dashboardTrendsContainer');
+    if (!container) return;
+    fetch('/api/dashboard-trends')
+      .then(function(res) {
+        //< an expired session answers 401 with a JSON body, so res.json()
+        //  resolves and trendsHtml is simply absent - the swap below then
+        //  silently no-opped and the three cards said "Loading listening
+        //  trends…" for as long as the page stayed open
+        if (window.AjaxStatus && window.AjaxStatus.redirectIfUnauthorized(res)) {
+          throw new Error(window.AjaxStatus.UNAUTHORIZED_ERROR);
+        }
+        if (!res.ok) throw new Error('dashboard trends fetch failed: ' + res.status);
+        return res.json();
+      })
+      .then(function(data) {
+        container.innerHTML = data.trendsHtml;
+      })
+      .catch(function(err) {
+        //< navigating to /login - not a load failure to report
+        if (window.AjaxStatus && window.AjaxStatus.isUnauthorizedError(err)) return;
+        console.error('Error fetching dashboard trends:', err);
+        //< the placeholders can't say anything useful on their own, so replace
+        //  them with an error + Retry rather than leave them loading forever
+        if (window.AjaxStatus) window.AjaxStatus.renderInto(container, loadDashboardTrends);
+      });
+  }
+  loadDashboardTrends();
 });

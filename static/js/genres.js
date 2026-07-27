@@ -168,6 +168,13 @@
       headers: { 'X-Requested-With': 'XMLHttpRequest' }
     })
       .then(function (resp) {
+        //< an expired session must be told apart from a server error FIRST:
+        //  both are non-2xx, but a banner's Retry can never fix a 401 - it
+        //  re-fetches, gets another 401, and re-shows the banner forever while
+        //  never telling the user they are logged out
+        if (window.AjaxStatus && window.AjaxStatus.redirectIfUnauthorized(resp)) {
+          throw new Error(window.AjaxStatus.UNAUTHORIZED_ERROR);
+        }
         //< a non-2xx used to resolve to null and be swallowed silently below,
         //  leaving the server-rendered "Loading..." placeholders up forever
         //  with no error and no retry. Throw so the catch shows the banner,
@@ -197,7 +204,9 @@
         renderAll();
         if (window.AjaxStatus) window.AjaxStatus.clearBanner();
       })
-      .catch(function () {
+      .catch(function (err) {
+        //< navigating to /login - not a load failure to report
+        if (window.AjaxStatus && window.AjaxStatus.isUnauthorizedError(err)) return;
         //< genuine failure of the current load: surface a banner + Retry (a
         //  superseded load's failure is ignored by the token guard)
         if (token === loadToken && window.AjaxStatus) {

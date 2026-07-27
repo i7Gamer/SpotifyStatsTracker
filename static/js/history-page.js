@@ -31,7 +31,16 @@ function loadHistoryResults(opts) {
   params.set('ajax', 'true');
   var delay = new Promise(function (resolve) { setTimeout(resolve, initial ? 0 : HISTORY_FADE_MS); });
   var fetched = fetch(window.location.pathname + '?' + params.toString(), { signal: controller.signal })
-    .then(function (response) { return response.json(); });
+    .then(function (response) {
+      //< an expired session: go to the login page instead of reading resultsHtml
+      //  off a 401's JSON body, which resolves fine and simply has no such key -
+      //  innerHTML then wrote the string "undefined" over the whole list
+      if (window.AjaxStatus && window.AjaxStatus.redirectIfUnauthorized(response)) {
+        throw new Error(window.AjaxStatus.UNAUTHORIZED_ERROR);
+      }
+      if (!response.ok) throw new Error('history fetch failed: ' + response.status);
+      return response.json();
+    });
 
   Promise.all([fetched, delay])
     .then(function (results) {
@@ -53,6 +62,8 @@ function loadHistoryResults(opts) {
       });
     })
     .catch(function (err) {
+      //< navigating to /login - not a load failure to report
+      if (window.AjaxStatus && window.AjaxStatus.isUnauthorizedError(err)) return;
       if (err.name !== 'AbortError') {
         console.error(err);
         //< genuine failure (not superseded): show an inline error + Retry

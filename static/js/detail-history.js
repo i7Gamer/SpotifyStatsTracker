@@ -76,7 +76,11 @@
       if (window.AjaxStatus && window.AjaxStatus.redirectIfUnauthorized(resp)) {
         throw new Error(window.AjaxStatus.UNAUTHORIZED_ERROR);
       }
-      return resp.ok ? resp.json() : null;
+      //< onContainerClick replaceStates the URL BEFORE fetching, so swallowing a
+      //  non-2xx left the old list on screen under a URL claiming the new sort
+      //  or page - and a refresh would then show something different
+      if (!resp.ok) throw new Error('detail history fetch failed: ' + resp.status);
+      return resp.json();
     });
 
     Promise.all([fetched, delay])
@@ -86,14 +90,20 @@
         if (!activeLoad || activeLoad.controller !== controller) {
           return;
         }
-        if (results[0]) {
-          container.innerHTML = results[0].resultsHtml;
-          listGeneration += 1;
-        }
+        container.innerHTML = results[0].resultsHtml;
+        listGeneration += 1;
+        if (window.AjaxStatus) window.AjaxStatus.clearBanner();
       })
       .catch(function (err) {
+        //< navigating to /login - not a load failure to report
+        if (window.AjaxStatus && window.AjaxStatus.isUnauthorizedError(err)) return;
         if (err.name !== 'AbortError') {
           console.error(err);
+          //< a banner, not renderInto: the list still holds the previous page,
+          //  which is worth keeping on screen behind the error
+          if ((!activeLoad || activeLoad.controller === controller) && window.AjaxStatus) {
+            window.AjaxStatus.showBanner(function () { loadDetailHistory(); });
+          }
         }
       })
       .finally(function () {
@@ -137,7 +147,15 @@
         fetch(window.location.pathname + '?' + params.toString(), {
           headers: { 'X-Requested-With': 'XMLHttpRequest' }
         })
-          .then(function (resp) { return resp.ok ? resp.json() : null; })
+          .then(function (resp) {
+            if (window.AjaxStatus && window.AjaxStatus.redirectIfUnauthorized(resp)) {
+              throw new Error(window.AjaxStatus.UNAUTHORIZED_ERROR);
+            }
+            //< a swallowed non-2xx just re-enabled the button, so the click was
+            //  lost with nothing said about why no rows arrived
+            if (!resp.ok) throw new Error('show more fetch failed: ' + resp.status);
+            return resp.json();
+          })
           .then(function (data) {
             //< the list was re-rendered while this was in flight: these rows
             //  belong to a filter/sort that is no longer on screen
@@ -177,6 +195,9 @@
             if (generation !== listGeneration) return;
             showMoreBtn.disabled = false;
             showMoreBtn.textContent = formatShowMoreLabel(currentBatchSize);
+            //< the re-enabled button alone reads as "there was nothing more to
+            //  load"; say that the request failed
+            if (window.AjaxStatus) window.AjaxStatus.showBanner(function () { showMoreBtn.click(); });
           });
       }
   }
