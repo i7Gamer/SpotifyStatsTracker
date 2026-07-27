@@ -42,8 +42,13 @@
       </select>
     </div>
 
+    {# This page renders a SHELL on a plain GET and fetches its body via
+       ?ajax=true, so submitting this form reloaded to a permanent
+       "Loading..." - the Apply button that used to sit here could not work
+       by construction. Say what is actually wrong instead. #}
     <noscript>
-      <button class="primary-button" type="submit">Apply</button>
+      <p class="dashboard-card-empty">This page needs JavaScript to load its data.
+      With it enabled the filters above apply as you change them.</p>
     </noscript>
   </form>
 

@@ -1531,20 +1531,48 @@ class TestDetailPageDeferredBody(_DetailRouteTestBase):
         self.assertIn('id="detailBody"', resp.data.decode())
         db.getSkipStats.assert_not_called()
 
-    def test_an_unknown_entity_still_redirects_before_any_of_this(self):
-        for path, endpoint in (("/song/missing", "/top-songs"), ("/artist/missing", "/top-artists"),
-                               ("/album/missing", "/top-albums")):
-            with self.subTest(path=path):
-                dash = self._makeApp()
-                db = MagicMock()
-                db.getSong.return_value = None
-                db.getArtist.return_value = None
-                db.getAlbum.return_value = None
+    def _missingEntityApp(self):
+        dash = self._makeApp()
+        db = MagicMock()
+        db.getSong.return_value = None
+        db.getArtist.return_value = None
+        db.getAlbum.return_value = None
+        return dash, db
 
-                for suffix in ("", "?ajax=page"):
+    MISSING_PATHS = (("/song/missing", "/top-songs"), ("/artist/missing", "/top-artists"),
+                     ("/album/missing", "/top-albums"))
+
+    def test_an_unknown_entity_is_resolved_before_any_of_this(self):
+        """A plain GET still redirects, as it always has."""
+        for path, endpoint in self.MISSING_PATHS:
+            with self.subTest(path=path):
+                dash, db = self._missingEntityApp()
+
+                resp = self._getRaw(dash, db, path)
+
+                self.assertEqual(resp.status_code, 302)
+                self.assertIn(endpoint, resp.headers["Location"])
+
+    def test_an_unknown_entity_tells_an_ajax_caller_where_to_go(self):
+        """An AJAX request must NOT get the 302: fetch follows it transparently
+        to the top-list page's 200 HTML, which passes resp.ok and then throws in
+        resp.json() - so the visitor saw "couldn't load" and a Retry that behaved
+        identically, rather than arriving at the list.
+
+        Reachable from a shared or bookmarked URL for an entity an overwrite
+        import removed between the shell request and the body request. Shaped
+        like unauthenticatedResponse's loginUrl, so the client has one convention
+        for "go here instead"."""
+        for path, endpoint in self.MISSING_PATHS:
+            for suffix in ("?ajax=page", "?ajax=true", "?ajax=list"):
+                with self.subTest(path=path, suffix=suffix):
+                    dash, db = self._missingEntityApp()
+
                     resp = self._getRaw(dash, db, path + suffix)
-                    self.assertEqual(resp.status_code, 302)
-                    self.assertIn(endpoint, resp.headers["Location"])
+
+                    self.assertEqual(resp.status_code, 404)
+                    self.assertEqual(resp.mimetype, "application/json")
+                    self.assertIn(endpoint, resp.get_json()["redirectUrl"])
 
 
 class TestDetailHeroSpacingCss(unittest.TestCase):

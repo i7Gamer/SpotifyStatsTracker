@@ -838,12 +838,28 @@ def register(app, dashboard):
             **dashboard._buildPaginationContext(endpoint, page, totalPages, totalCount, **sharedArgs),
         }
 
+    def _missingEntityResponse(endpoint):
+        """The answer for a detail URL whose entity no longer resolves.
+
+        A plain GET redirects, as it always has. An AJAX request must NOT: the
+        deferred-body fetch follows a 302 transparently, lands on the top-list
+        page's 200 HTML, passes resp.ok and then throws in resp.json() - so the
+        visitor got "couldn't load" plus a Retry that behaves identically, rather
+        than being taken to the list. Reachable via a shared or bookmarked URL
+        for an entity an overwrite import removed between the two requests.
+
+        Shaped like unauthenticatedResponse's loginUrl so the client has one
+        convention for "go here instead"."""
+        if request.args.get("ajax"):
+            return jsonify(redirectUrl=url_for(endpoint)), 404
+        return redirect(url_for(endpoint))
+
     @requiresUser
     def songDetailPage(username, db, track_id):
 
         song = db.getSong(track_id)
         if song is None:
-            return redirect(url_for("topSongsPage"))
+            return _missingEntityResponse("topSongsPage")
 
         groupByParam = request.args.get("groupBy", "")   #< raw: the select keeps showing Auto
         # Three AJAX modes share this route. They're tested most-specific first
@@ -929,7 +945,7 @@ def register(app, dashboard):
 
         artist = db.getArtist(artist_id)
         if artist is None:
-            return redirect(url_for("topArtistsPage"))
+            return _missingEntityResponse("topArtistsPage")
 
         groupByParam = request.args.get("groupBy", "")   #< raw: the select keeps showing Auto
         ajax = request.args.get("ajax", "")
@@ -1015,7 +1031,7 @@ def register(app, dashboard):
 
         album = db.getAlbum(album_id)
         if album is None:
-            return redirect(url_for("topAlbumsPage"))
+            return _missingEntityResponse("topAlbumsPage")
 
         groupByParam = request.args.get("groupBy", "")   #< raw: the select keeps showing Auto
         ajax = request.args.get("ajax", "")

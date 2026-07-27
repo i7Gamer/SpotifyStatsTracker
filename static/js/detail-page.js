@@ -24,6 +24,11 @@
 //< must match routes/charts.py's DETAIL_BODY_AJAX
 var DETAIL_BODY_AJAX = 'page';
 
+// Thrown once a navigation is already under way, so the catch below knows this
+// is not a load failure to report - same convention as AjaxStatus's
+// UNAUTHORIZED_ERROR.
+var REDIRECTING_ERROR = 'detail-redirecting';
+
 // The deferred body's URL for the page currently on screen. Every other
 // parameter rides along untouched: ?page=, ?sort=, ?view= and ?groupBy= are
 // all part of what the visitor asked for, and a shared link carries them.
@@ -86,6 +91,21 @@ if (typeof window !== 'undefined') (function () {
         if (window.AjaxStatus && window.AjaxStatus.redirectIfUnauthorized(resp)) {
           throw new Error(window.AjaxStatus.UNAUTHORIZED_ERROR);
         }
+        //< the entity no longer resolves (a shared or bookmarked URL for
+        //  something an overwrite import removed). The route answers a 404 with
+        //  where to go instead, rather than a 302 that fetch would follow into
+        //  the top-list page's HTML - which passed resp.ok and then threw in
+        //  resp.json(), so the visitor got "couldn't load" and a Retry that
+        //  behaved identically, instead of arriving at the list.
+        if (resp.status === 404) {
+          return resp.json().then(function (data) {
+            if (data && data.redirectUrl) {
+              window.location.replace(data.redirectUrl);
+              throw new Error(REDIRECTING_ERROR);
+            }
+            throw new Error('detail body fetch failed: ' + resp.status);
+          });
+        }
         if (!resp.ok) throw new Error('detail body fetch failed: ' + resp.status);
         return resp.json();
       })
@@ -93,8 +113,9 @@ if (typeof window !== 'undefined') (function () {
         applyDetailBody(el, data);
       })
       .catch(function (err) {
-        //< navigating to /login - not a load failure to report
+        //< navigating to /login or to the top-list page - not a load failure
         if (window.AjaxStatus && window.AjaxStatus.isUnauthorizedError(err)) return;
+        if (err && err.message === REDIRECTING_ERROR) return;
         console.error(err);
         //< the skeleton would otherwise pulse forever with no way out
         if (window.AjaxStatus) window.AjaxStatus.renderInto(el, loadDetailBody);

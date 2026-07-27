@@ -103,6 +103,35 @@ function initPlayEmbed() {
     );
   }
 
+  function showScriptFailedFallback() {
+    // window.open used to run here, and browsers block it: this fires from the
+    // injected script's async error event, not from the click, so it is not a
+    // user gesture. With open.spotify.com blocked by an extension or a DNS rule
+    // the button therefore did NOTHING visible at all.
+    //
+    // An anchor the user clicks themselves can never be blocked, so the failure
+    // is reported in the container the player would have filled. The state
+    // machine has already returned to 'idle', so a later click still retries the
+    // script (a transient network failure recovers) - this only makes sure the
+    // visitor is told, and has a way through, when it does not.
+    slot.textContent = '';
+    const notice = document.createElement('p');
+    notice.className = 'dashboard-card-empty';
+    notice.textContent = "Spotify's player couldn't be loaded. ";
+    const link = document.createElement('a');
+    link.href = button.dataset.spotifyUrl;
+    link.target = '_blank';
+    link.rel = 'noreferrer noopener';
+    link.textContent = 'Open in Spotify ↗';
+    notice.appendChild(link);
+    slot.appendChild(notice);
+
+    container.hidden = false;
+    container.classList.add('is-visible');
+    button.textContent = PLAY_LABEL;   //< a later click retries the script
+    button.setAttribute('aria-expanded', 'true');
+  }
+
   function safePlay() {
     if (!controller) {
       return;
@@ -124,10 +153,8 @@ function initPlayEmbed() {
     if (action === 'load-script') {
       loadScript();
     } else if (action === 'script-failed') {
-      container.hidden = true;
-      container.classList.remove('is-visible');
-      button.setAttribute('aria-expanded', 'false');
-      window.open(button.dataset.spotifyUrl, '_blank', 'noreferrer,noopener');
+      showScriptFailedFallback();
+      return;   //< the fallback owns the container and the label from here
     } else if (action === 'create') {
       createController(IFrameAPI, false);
     } else if (action === 'create-and-play') {
