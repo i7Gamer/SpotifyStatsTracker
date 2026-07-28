@@ -113,8 +113,10 @@
      insights row below - stretched to its neighbours' height the card was
      mostly empty. As Overview's stat tiles they use the width instead, and
      they sit under the users table because that is what they describe. -->
-<h2>Activity</h2>
-<p style="color: var(--muted); font-size: 0.9rem; margin: 0 0 1.25rem;">Instance-wide signups and data-sharing activity.</p>
+<div style="display: flex; align-items: baseline; gap: 0.75rem; margin-bottom: 1.25rem; flex-wrap: wrap;">
+  <h2 style="margin: 0;">Activity</h2>
+  <span style="color: var(--muted); font-size: 0.9rem;">Instance-wide signups and data-sharing activity.</span>
+</div>
 <section class="grid" style="grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1.5rem; margin-bottom: 2.5rem;">
   {% for icon, label, value, hint in [
     ("📈", "New users (30d)", registration_counts.last_30_days, "Accounts registered in the last 30 days"),

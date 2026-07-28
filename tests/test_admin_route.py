@@ -1351,6 +1351,15 @@ class TestAdminInsightsLayout(AdminRouteTestBase):
         self._assertTile(body, "Accepted shares", 4)
         self._assertTile(body, "Wrapped links", 6)
 
+    def test_activity_heading_and_description_render_inline(self):
+        body = self._getAdmin(self._makeApp()).data.decode()
+
+        self.assertIn("Instance-wide signups and data-sharing activity.", body)
+        descAt = body.index("Instance-wide signups and data-sharing activity.")
+        container_snippet = body[descAt - 200:descAt + 100]
+        self.assertIn("display: flex", container_snippet)
+        self.assertIn("align-items: baseline", container_snippet)
+
 
 if __name__ == "__main__":
     unittest.main()
