@@ -21,6 +21,18 @@ from services.export import generateJsonExport, generateCsvExport
 
 logger = logging.getLogger(__name__)
 
+# Progress statuses that mean "this import is over". Anything else - notably
+# the 'running' the route claims before starting the thread - means the slot is
+# still held and has to be released before the thread exits (see
+# _runImportBatch). Kept as a set here rather than as a check for == "running"
+# so a future intermediate status can't silently be treated as terminal.
+_TERMINAL_IMPORT_STATUSES = frozenset({"complete", "failed"})
+
+_IMPORT_CRASH_MESSAGE = (
+    "Import stopped unexpectedly. Nothing further was written - check the server "
+    "log for the error, then try the import again."
+)
+
 
 def register(app, dashboard):
 
@@ -81,8 +93,43 @@ def register(app, dashboard):
         if not db.tryClaimImportRunning():
             return redirect(url_for("importPage"))
 
-        thread = threading.Thread(target=db.importHistoryBatch, args=(contents,),
-                                  kwargs={"overwriteRange": overwriteRange}, daemon=True)
+        def _releaseImportSlot():
+            """Write a terminal progress row if the import didn't write one.
+
+            The claim above is a lock, not just a status: tryClaimImportRunning
+            only claims when the stored status is NOT already 'running', so a
+            thread that dies before writing a terminal row locks this user out
+            of importing anything ever again, with nothing in the UI to clear
+            it.
+
+            Database.importHistoryBatch already writes a terminal row for every
+            failure it can see - both batch paths end in one - so this only
+            fires for what escapes them: _computeCoveredRange runs before the
+            overwrite path's first try block, and the terminal writeProgress
+            calls are themselves unguarded. Conditional on purpose: the batch's
+            own message ("Imported 3/4 files (1 skipped)") says far more than
+            this one, and must win whenever it exists."""
+            progress = db.readProgress()
+            if progress and progress.get("status") in _TERMINAL_IMPORT_STATUSES:
+                return
+            db.writeProgress("failed", 0, len(contents), _IMPORT_CRASH_MESSAGE, error=True)
+
+        def _runImportBatch():
+            try:
+                db.importHistoryBatch(contents, overwriteRange=overwriteRange)
+            except Exception:
+                logger.exception("Import thread failed for user %s", username)
+            finally:
+                try:
+                    _releaseImportSlot()
+                except Exception:
+                    # This runs *because* the database misbehaved, so it can
+                    # misbehave too. Letting it escape a daemon thread turns a
+                    # stuck import into an unraisable-exception warning and
+                    # nothing more useful.
+                    logger.exception("Could not release the import slot for user %s", username)
+
+        thread = threading.Thread(target=_runImportBatch, daemon=True)
         thread.start()
         return redirect(url_for("importPage"))
     app.add_url_rule("/import-history", "importHistory", importHistory, methods=["POST"])

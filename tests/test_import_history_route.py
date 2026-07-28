@@ -2,6 +2,7 @@
 block a Waitress worker thread for a full second on every submission.
 """
 import io
+import threading
 import time
 import unittest
 from unittest.mock import MagicMock, patch
@@ -132,6 +133,154 @@ class TestImportHistoryRoute(AppTestCase):
             self._postImport(dash, db, {'history_file': (io.BytesIO(b'{}'), 'history.json')})
 
         mock_sleep.assert_not_called()
+
+
+class TestImportThreadReleasesTheRunningSlot(AppTestCase):
+    """The claimed "running" slot is a lock, not just a status.
+
+    tryClaimImportRunning only claims when the stored status is NOT already
+    'running', so a thread that dies without writing a terminal state locks
+    that user out of importing anything, permanently, with no UI to clear it.
+
+    Database.importHistoryBatch does write a terminal state on every failure it
+    can see - but not every line is inside those try blocks (_computeCoveredRange
+    runs before the first one, and the terminal writeProgress calls are
+    themselves unguarded). This is the backstop for whatever gets through.
+
+    Deterministic throughout: every wait is on an Event the code under test
+    sets, so the timeout is an upper bound on a hang rather than a race window.
+    """
+
+    # Generous on purpose - only reached when the guard never runs at all,
+    # in which case the test is failing regardless of how long it waited.
+    _THREAD_TIMEOUT_SECONDS = 10
+
+    def _makeDb(self, status):
+        db = MagicMock()
+        db.readProgress.return_value = {
+            "status": status, "current": 0, "total": 0,
+            "percentage": 0, "message": "", "error": False,
+        }
+        return db
+
+    def _postImport(self, dash, db):
+        with patch.object(dash, 'is_user_logged_in', return_value=True), \
+             patch.object(dash, 'get_username_for_email', return_value='alice'), \
+             patch.object(dash, 'get_user_db', return_value=db):
+            client = dash.app.test_client()
+            with client.session_transaction() as sess:
+                sess['email'] = 'alice@example.com'
+            return client.post(
+                '/import-history',
+                data={'history_file': (io.BytesIO(b'{"msPlayed": 1}'), 'history.json')},
+                content_type='multipart/form-data',
+            )
+
+    def _onProgressRead(self, db, status):
+        """Fire an Event when the guard reads the progress row - that read is
+        the last thing the thread does, so waiting on it is what makes these
+        assertions race-free."""
+        checked = threading.Event()
+        row = {"status": status, "current": 0, "total": 0,
+               "percentage": 0, "message": "", "error": False}
+
+        def readProgress():
+            checked.set()
+            return row
+
+        db.readProgress.side_effect = readProgress
+        return checked
+
+    def test_a_crashing_import_writes_a_terminal_progress_state(self):
+        dash = self._makeApp()
+        db = self._makeDb("running")
+        db.importHistoryBatch.side_effect = RuntimeError("boom")
+        written = threading.Event()
+        db.writeProgress.side_effect = lambda *a, **k: written.set()
+
+        resp = self._postImport(dash, db)
+
+        self.assertEqual(resp.status_code, 302)
+        self.assertTrue(written.wait(self._THREAD_TIMEOUT_SECONDS),
+                        "the crashed thread left the slot claimed forever")
+        self.assertNotEqual(db.writeProgress.call_args.args[0], "running")
+
+    def test_the_replacement_state_says_the_import_failed(self):
+        """It has to read as an error, not as a quiet 'complete' - the user
+        needs to know their history did not land."""
+        dash = self._makeApp()
+        db = self._makeDb("running")
+        db.importHistoryBatch.side_effect = RuntimeError("boom")
+        written = threading.Event()
+        db.writeProgress.side_effect = lambda *a, **k: written.set()
+
+        self._postImport(dash, db)
+        self.assertTrue(written.wait(self._THREAD_TIMEOUT_SECONDS))
+
+        self.assertEqual(db.writeProgress.call_args.args[0], "failed")
+        self.assertTrue(db.writeProgress.call_args.kwargs.get("error"))
+
+    def test_a_successful_import_keeps_the_progress_it_wrote_itself(self):
+        """The batch writes a detailed terminal message ("Imported 3/4 files
+        (1 skipped)"). Overwriting that with the generic backstop text would
+        make every successful import report less than it knows."""
+        dash = self._makeApp()
+        db = self._makeDb("complete")
+        db.importHistoryBatch.return_value = ["imported"]
+        checked = self._onProgressRead(db, "complete")
+
+        self._postImport(dash, db)
+        self.assertTrue(checked.wait(self._THREAD_TIMEOUT_SECONDS))
+
+        db.writeProgress.assert_not_called()
+
+    def test_a_batch_that_reported_failure_itself_is_not_overwritten(self):
+        dash = self._makeApp()
+        db = self._makeDb("failed")
+        db.importHistoryBatch.return_value = ["failed"]
+        checked = self._onProgressRead(db, "failed")
+
+        self._postImport(dash, db)
+        self.assertTrue(checked.wait(self._THREAD_TIMEOUT_SECONDS))
+
+        db.writeProgress.assert_not_called()
+
+    def test_a_missing_progress_row_is_treated_as_still_claimed(self):
+        """readProgress returns None when there is no row at all. That is not
+        'someone already finished' - it is a row that went missing after the
+        claim, and leaving it would look exactly like a stuck import."""
+        dash = self._makeApp()
+        db = self._makeDb("running")
+        db.importHistoryBatch.side_effect = RuntimeError("boom")
+        db.readProgress.return_value = None
+        written = threading.Event()
+        db.writeProgress.side_effect = lambda *a, **k: written.set()
+
+        self._postImport(dash, db)
+
+        self.assertTrue(written.wait(self._THREAD_TIMEOUT_SECONDS))
+        self.assertEqual(db.writeProgress.call_args.args[0], "failed")
+
+    def test_a_failing_guard_does_not_take_the_process_down(self):
+        """The guard runs because the database misbehaved, so its own
+        readProgress/writeProgress can misbehave too. An exception escaping
+        here would surface as an unraisable-exception warning from a daemon
+        thread and nothing else useful."""
+        dash = self._makeApp()
+        db = self._makeDb("running")
+        db.importHistoryBatch.side_effect = RuntimeError("boom")
+        attempted = threading.Event()
+
+        def explode(*args, **kwargs):
+            attempted.set()
+            raise RuntimeError("the database is gone")
+
+        db.readProgress.side_effect = explode
+
+        resp = self._postImport(dash, db)
+
+        self.assertEqual(resp.status_code, 302)
+        self.assertTrue(attempted.wait(self._THREAD_TIMEOUT_SECONDS))
 
 
 if __name__ == "__main__":
