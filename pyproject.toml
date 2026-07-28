@@ -24,6 +24,11 @@ select = [
     "E9",    # syntax errors and IO errors that stop the file parsing at all
     "F63",   # broken comparisons/assertions - `assert (a, b)` is always true
     "F7",    # misplaced statements - `break` outside a loop, etc.
+    "F821",  # an undefined name - the Python half of what eslint's no-undef
+             # catches for static/js (see eslint.config.js: two files shipped a
+             # ReferenceError to production because nothing checked). Ruff skips
+             # this rule inside a module with a star import rather than guessing,
+             # so Database/queries/_base.py's re-export pattern costs nothing.
     "F811",  # a name redefined before it was ever used - usually a lost edit
     "F841",  # a local assigned and never read
     "B006",  # mutable default argument, shared across every call
