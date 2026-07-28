@@ -1,0 +1,60 @@
+{#- SPDX-FileCopyrightText: 2026 i7Gamer
+    SPDX-License-Identifier: AGPL-3.0-or-later
+
+    Profile: Email notification preferences per user. -#}
+
+{% extends "_profile_base.html" %}
+{% import "_profile_macros.html" as profileMacros with context %}
+
+{% block profileTitle %}Notification Preferences{% endblock %}
+{% block profileBody %}
+
+{{ profileMacros.flashFallback(['notifications']) }}
+
+<section class="profile-section">
+  <h2 id="notifications">Event Email Notifications</h2>
+  <p class="profile-hint" style="margin-bottom: 1.25rem;">
+    Choose which event notifications you want to receive via email (<strong>{{ email }}</strong>).
+  </p>
+
+  {{ profileMacros.flash('notifications') }}
+  <form class="login-form" method="post" action="{{ url_for('profileNotificationsPage') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+
+    <div class="form-group">
+      <label class="setting-toggle">
+        <span class="setting-toggle-text">
+          Invalid Spotify session / cookie alerts
+          <small>Receive an email if your Spotify cookies expire or require re-authentication.</small>
+        </span>
+        <input type="checkbox" name="notif_invalid_cookies" value="1" {% if preferences.invalid_cookies %}checked{% endif %}>
+        <span class="setting-toggle-track" aria-hidden="true"></span>
+      </label>
+    </div>
+
+    <div class="form-group">
+      <label class="setting-toggle">
+        <span class="setting-toggle-text">
+          API Key &amp; Credentials errors
+          <small>Receive an email if your Spotify Developer API or Last.fm key fails during backfilling.</small>
+        </span>
+        <input type="checkbox" name="notif_api_key_failed" value="1" {% if preferences.api_key_failed %}checked{% endif %}>
+        <span class="setting-toggle-track" aria-hidden="true"></span>
+      </label>
+    </div>
+
+    <div class="form-group">
+      <label class="setting-toggle">
+        <span class="setting-toggle-text">
+          Data Sharing requests
+          <small>Receive an email when another user requests to share listening statistics with you.</small>
+        </span>
+        <input type="checkbox" name="notif_share_request" value="1" {% if preferences.share_request %}checked{% endif %}>
+        <span class="setting-toggle-track" aria-hidden="true"></span>
+      </label>
+    </div>
+
+    <button type="submit" class="primary-button profile-wide-button">Save Notification Preferences</button>
+  </form>
+</section>
+{% endblock %}

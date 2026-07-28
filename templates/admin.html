@@ -399,6 +399,81 @@
 
   <article class="card" style="padding: 0;">
     <div class="card-header" style="padding: 1.5rem 1.5rem 0.5rem 1.5rem;">
+      <h2 style="margin: 0; font-family: var(--font-headings); font-size: 1.15rem;">Email &amp; Notifications</h2>
+      <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem;">SMTP server credentials and instance-wide notification controls.</p>
+    </div>
+    <div style="padding: 0 1.5rem 1.5rem 1.5rem;">
+      <form method="post" action="{{ url_for('adminEmailSettings') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+
+        <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; margin-bottom: 1rem;">
+          <input type="checkbox" name="email_notifications_enabled" value="1" {% if smtp_config.enabled %}checked{% endif %}>
+          <strong>Enable email notifications instance-wide</strong>
+          <details class="setting-hint">
+            <summary aria-label="More info" title="More info">i</summary>
+            <p>When disabled, outgoing emails are paused and the Notifications section is hidden on user profiles.</p>
+          </details>
+        </label>
+
+        <label style="display: flex; justify-content: space-between; align-items: center; font-size: 0.85rem; color: var(--muted);">
+          <span>Public Instance URL</span>
+          <input type="url" name="instance_public_url" value="{{ instance_public_url }}" placeholder="https://tracker.example.com" style="width: 12rem; padding: 4px 8px; background: var(--card-bg, #1e1e1e); color: var(--fg, #eee); border: 1px solid var(--border, #444); border-radius: 4px;">
+        </label>
+        <p style="color: var(--muted); font-size: 0.8rem; margin: 0.25rem 0 1rem 0;">The address other people use to reach this instance. Used to build the login/action links inside notification emails; leave blank to send emails without a link.</p>
+
+        <div style="display: flex; flex-direction: column; gap: 0.6rem; margin-bottom: 1rem;">
+          <label style="display: flex; justify-content: space-between; align-items: center; font-size: 0.85rem; color: var(--muted);">
+            <span>SMTP Host</span>
+            <input type="text" name="smtp_host" value="{{ smtp_config.host }}" placeholder="smtp.gmail.com" style="width: 12rem; padding: 4px 8px; background: var(--card-bg, #1e1e1e); color: var(--fg, #eee); border: 1px solid var(--border, #444); border-radius: 4px;">
+          </label>
+          <label style="display: flex; justify-content: space-between; align-items: center; font-size: 0.85rem; color: var(--muted);">
+            <span>SMTP Port</span>
+            <input type="number" name="smtp_port" value="{{ smtp_config.port }}" placeholder="587" style="width: 5.5rem; padding: 4px 8px; background: var(--card-bg, #1e1e1e); color: var(--fg, #eee); border: 1px solid var(--border, #444); border-radius: 4px;">
+          </label>
+          <label style="display: flex; justify-content: space-between; align-items: center; font-size: 0.85rem; color: var(--muted);">
+            <span>Encryption</span>
+            <select name="smtp_encryption" style="width: 8rem; padding: 4px 8px; background: var(--card-bg, #1e1e1e); color: var(--fg, #eee); border: 1px solid var(--border, #444); border-radius: 4px;">
+              <option value="tls" {% if smtp_config.encryption == 'tls' %}selected{% endif %}>TLS / STARTTLS</option>
+              <option value="ssl" {% if smtp_config.encryption == 'ssl' %}selected{% endif %}>SSL</option>
+              <option value="none" {% if smtp_config.encryption == 'none' %}selected{% endif %}>None</option>
+            </select>
+          </label>
+          <label style="display: flex; justify-content: space-between; align-items: center; font-size: 0.85rem; color: var(--muted);">
+            <span>Username</span>
+            <input type="text" name="smtp_user" value="{{ smtp_config.user }}" placeholder="user@example.com" style="width: 12rem; padding: 4px 8px; background: var(--card-bg, #1e1e1e); color: var(--fg, #eee); border: 1px solid var(--border, #444); border-radius: 4px;">
+          </label>
+          <label style="display: flex; justify-content: space-between; align-items: center; font-size: 0.85rem; color: var(--muted);">
+            <span>Password</span>
+            <input type="password" name="smtp_password" value="" placeholder="{% if smtp_config.password %}••••••••{% else %}Not set{% endif %}" style="width: 12rem; padding: 4px 8px; background: var(--card-bg, #1e1e1e); color: var(--fg, #eee); border: 1px solid var(--border, #444); border-radius: 4px;">
+          </label>
+          {% if smtp_config.password %}
+          <label style="display: flex; align-items: center; gap: 0.4rem; font-size: 0.8rem; color: var(--muted); padding-left: 0.25rem;">
+            <input type="checkbox" name="clear_password" value="1">
+            <span>Clear saved password</span>
+          </label>
+          {% endif %}
+          <label style="display: flex; justify-content: space-between; align-items: center; font-size: 0.85rem; color: var(--muted);">
+            <span>Sender Email</span>
+            <input type="email" name="smtp_from_email" value="{{ smtp_config.from_email }}" placeholder="noreply@example.com" style="width: 12rem; padding: 4px 8px; background: var(--card-bg, #1e1e1e); color: var(--fg, #eee); border: 1px solid var(--border, #444); border-radius: 4px;">
+          </label>
+          <label style="display: flex; justify-content: space-between; align-items: center; font-size: 0.85rem; color: var(--muted);">
+            <span>Sender Name</span>
+            <input type="text" name="smtp_from_name" value="{{ smtp_config.from_name }}" placeholder="Spotify Tracker" style="width: 12rem; padding: 4px 8px; background: var(--card-bg, #1e1e1e); color: var(--fg, #eee); border: 1px solid var(--border, #444); border-radius: 4px;">
+          </label>
+        </div>
+
+        <button type="submit" class="primary-button" style="padding: 4px 16px;">Save Email Settings</button>
+      </form>
+
+      <form method="post" action="{{ url_for('adminTestEmail') }}" style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--border, #333);">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+        <button type="submit" class="button" style="padding: 4px 16px;">Send Test Email to Admin</button>
+      </form>
+    </div>
+  </article>
+
+  <article class="card" style="padding: 0;">
+    <div class="card-header" style="padding: 1.5rem 1.5rem 0.5rem 1.5rem;">
       <h2 style="margin: 0; font-family: var(--font-headings); font-size: 1.15rem;">Last.fm Backfilling Settings</h2>
       <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem;">Genre and biography data sourced from Last.fm.</p>
     </div>

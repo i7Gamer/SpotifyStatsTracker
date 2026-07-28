@@ -1,0 +1,339 @@
+# SPDX-FileCopyrightText: 2026 i7Gamer
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+from __future__ import annotations
+
+import html
+import logging
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from typing import Any
+
+from Database.repository import Repository
+from Database.secret_store import encryptSecret, decryptSecret
+from Database.queries.email_queries import (
+    EVENT_INVALID_COOKIES,
+    EVENT_API_KEY_FAILED,
+    EVENT_SHARE_REQUEST,
+    DEFAULT_NOTIFICATION_COOLDOWN_SECONDS,
+)
+
+logger = logging.getLogger(__name__)
+
+# App Settings Keys
+SETTING_EMAIL_NOTIF_ENABLED = "email_notifications_enabled"
+SETTING_SMTP_HOST = "smtp_host"
+SETTING_SMTP_PORT = "smtp_port"
+SETTING_SMTP_ENCRYPTION = "smtp_encryption"  # 'tls', 'ssl', 'none'
+SETTING_SMTP_USER = "smtp_user"
+SETTING_SMTP_PASSWORD = "smtp_password"
+SETTING_SMTP_FROM_EMAIL = "smtp_from_email"
+SETTING_SMTP_FROM_NAME = "smtp_from_name"
+SETTING_INSTANCE_PUBLIC_URL = "instance_public_url"
+
+DEFAULT_SMTP_PORT = 587
+DEFAULT_SMTP_ENCRYPTION = "tls"
+DEFAULT_SMTP_FROM_NAME = "Spotify Stats Tracker"
+
+# Where each event's email should send the recipient, relative to
+# get_instance_public_url() - lives once here instead of being threaded
+# through every call site that queues a notification.
+_EVENT_LINK_PATHS = {
+    EVENT_INVALID_COOKIES: "/login",
+    EVENT_API_KEY_FAILED: "/profile/connections",
+    EVENT_SHARE_REQUEST: "/profile/sharing",
+}
+
+
+def get_smtp_config(repo: Repository) -> dict[str, Any]:
+    """Retrieve full SMTP configuration and global email notification toggle from app_settings."""
+    enabled_val = repo.getAppSetting(SETTING_EMAIL_NOTIF_ENABLED, "0")
+    host = repo.getAppSetting(SETTING_SMTP_HOST, "") or ""
+    port_str = repo.getAppSetting(SETTING_SMTP_PORT, str(DEFAULT_SMTP_PORT))
+    try:
+        port = int(port_str)
+    except (ValueError, TypeError):
+        port = DEFAULT_SMTP_PORT
+
+    encryption = repo.getAppSetting(SETTING_SMTP_ENCRYPTION, DEFAULT_SMTP_ENCRYPTION) or DEFAULT_SMTP_ENCRYPTION
+    user = repo.getAppSetting(SETTING_SMTP_USER, "") or ""
+    raw_password = repo.getAppSetting(SETTING_SMTP_PASSWORD, "") or ""
+    password = decryptSecret(raw_password) if raw_password else ""
+
+    from_email = repo.getAppSetting(SETTING_SMTP_FROM_EMAIL, "") or ""
+    from_name = repo.getAppSetting(SETTING_SMTP_FROM_NAME, DEFAULT_SMTP_FROM_NAME) or DEFAULT_SMTP_FROM_NAME
+
+    return {
+        "enabled": enabled_val == "1",
+        "host": host,
+        "port": port,
+        "encryption": encryption,
+        "user": user,
+        "password": password,
+        "from_email": from_email,
+        "from_name": from_name,
+    }
+
+
+def save_smtp_config(
+    repo: Repository,
+    enabled: bool,
+    host: str,
+    port: int,
+    encryption: str,
+    user: str,
+    password: str | None,
+    from_email: str,
+    from_name: str,
+) -> None:
+    """Save SMTP configuration into app_settings."""
+    repo.setAppSetting(SETTING_EMAIL_NOTIF_ENABLED, "1" if enabled else "0")
+    repo.setAppSetting(SETTING_SMTP_HOST, host.strip())
+    repo.setAppSetting(SETTING_SMTP_PORT, str(port))
+    repo.setAppSetting(SETTING_SMTP_ENCRYPTION, encryption.lower().strip())
+    repo.setAppSetting(SETTING_SMTP_USER, user.strip())
+
+    if password is None:
+        pass  # keep existing stored value
+    elif password == "":
+        repo.setAppSetting(SETTING_SMTP_PASSWORD, "")  # explicit clear
+    else:
+        repo.setAppSetting(SETTING_SMTP_PASSWORD, encryptSecret(password))
+
+    repo.setAppSetting(SETTING_SMTP_FROM_EMAIL, from_email.strip())
+    repo.setAppSetting(SETTING_SMTP_FROM_NAME, from_name.strip())
+
+
+def get_instance_public_url(repo: Repository) -> str:
+    """The admin-configured base URL notification emails use to link back to
+    this instance (e.g. "https://tracker.example.com"). Empty when unset -
+    callers must treat that as no link being available, never guess at one:
+    a self-hosted instance has no fixed public domain to fall back on."""
+    return (repo.getAppSetting(SETTING_INSTANCE_PUBLIC_URL, "") or "").strip().rstrip("/")
+
+
+def save_instance_public_url(repo: Repository, url: str) -> None:
+    """Save the instance's public base URL used to build links in notification emails."""
+    repo.setAppSetting(SETTING_INSTANCE_PUBLIC_URL, url.strip().rstrip("/"))
+
+
+def build_email_message(
+    to_email: str,
+    subject: str,
+    text_body: str,
+    html_body: str | None = None,
+    from_email: str = "",
+    from_name: str = DEFAULT_SMTP_FROM_NAME,
+) -> MIMEMultipart:
+    """Construct a MIME email message with plain text and optional HTML content."""
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+
+    if from_name:
+        msg["From"] = f"{from_name} <{from_email}>" if from_email else from_name
+    else:
+        msg["From"] = from_email
+
+    msg["To"] = to_email
+
+    msg.attach(MIMEText(text_body, "plain", "utf-8"))
+    if html_body:
+        msg.attach(MIMEText(html_body, "html", "utf-8"))
+
+    return msg
+
+
+def _send_smtp_message(config: dict[str, Any], msg: MIMEMultipart) -> tuple[bool, str | None]:
+    """Execute SMTP connection and transmit email message."""
+    host = config["host"]
+    port = config["port"]
+    encryption = config["encryption"]
+    user = config["user"]
+    password = config["password"]
+
+    if not host:
+        return False, "SMTP Host is not configured"
+
+    try:
+        if encryption == "ssl":
+            with smtplib.SMTP_SSL(host, port, timeout=15) as server:
+                if user and password:
+                    server.login(user, password)
+                server.send_message(msg)
+        else:
+            with smtplib.SMTP(host, port, timeout=15) as server:
+                if encryption == "tls":
+                    server.starttls()
+                if user and password:
+                    server.login(user, password)
+                server.send_message(msg)
+        return True, None
+    except Exception as e:
+        logger.error("Failed to send email via SMTP (%s:%s): %s", host, port, e)
+        return False, str(e)
+
+
+def send_test_email(repo: Repository, recipient_email: str) -> tuple[bool, str | None]:
+    """Send a test notification email to recipient_email using saved SMTP settings."""
+    config = get_smtp_config(repo)
+    if not config["host"]:
+        return False, "SMTP host is empty. Please enter SMTP settings first."
+
+    subject = "Spotify Stats Tracker — Test Email"
+    text_body = "This is a test notification email from your Spotify Stats Tracker instance."
+    html_body = """
+    <div style="font-family: Arial, sans-serif; padding: 20px; background-color: #121212; color: #ffffff;">
+      <h2 style="color: #1db954;">Spotify Stats Tracker</h2>
+      <p>This is a test notification email verifying that your SMTP credentials are configured correctly.</p>
+      <p style="color: #888888; font-size: 0.85em;">Sent by Spotify Stats Tracker Admin Settings</p>
+    </div>
+    """
+
+    msg = build_email_message(
+        to_email=recipient_email,
+        subject=subject,
+        text_body=text_body,
+        html_body=html_body,
+        from_email=config["from_email"],
+        from_name=config["from_name"],
+    )
+
+    return _send_smtp_message(config, msg)
+
+
+def _eventLink(event_type: str, base_url: str) -> str | None:
+    """The absolute URL an event's email should point to, or None when no
+    instance URL is configured (or this event has no known destination) -
+    callers must fall back to plain-text guidance instead of ever emitting a
+    dead or guessed-at href."""
+    if not base_url:
+        return None
+    path = _EVENT_LINK_PATHS.get(event_type)
+    return f"{base_url.rstrip('/')}{path}" if path else None
+
+
+def _ctaButton(link: str, label: str) -> str:
+    """A styled call-to-action <a> for the HTML body. `link` is admin-
+    supplied (the instance public URL setting), so it's escaped like any
+    other value interpolated into an HTML attribute; `label` is always one
+    of this module's own literal strings, never escaped."""
+    return (
+        f'<a href="{html.escape(link)}" style="background: #1db954; color: #ffffff; padding: 8px 16px; '
+        f'text-decoration: none; border-radius: 4px; display: inline-block;">{label}</a>'
+    )
+
+
+def _render_event_template(
+    event_type: str, username: str, context: dict[str, Any], base_url: str = ""
+) -> tuple[str, str, str]:
+    """Generate subject, text_body, and html_body for a given event type.
+
+    base_url is the instance's configured public URL (see
+    get_instance_public_url): when set, the email links straight to the
+    relevant page; when blank, the copy falls back to telling the recipient
+    where to go in words, since there's nothing reliable to link to."""
+    link = _eventLink(event_type, base_url)
+
+    if event_type == EVENT_INVALID_COOKIES:
+        subject = "Spotify Stats Tracker — Action Required: Re-authenticate Session"
+        text_body = (
+            f"Hello {username},\n\nYour Spotify session cookies are invalid or expired. "
+            "Spotify Stats Tracker cannot log your listening activity until you log in again.\n\n"
+            + (f"Log in here: {link}" if link else "Please visit your tracker instance to update your session.")
+        )
+        cta = _ctaButton(link, "Log In to Re-authenticate") if link else \
+            "Please visit your tracker instance and log in again to resume tracking."
+        html_body = f"""
+        <div style="font-family: Arial, sans-serif; padding: 20px; background-color: #121212; color: #ffffff;">
+          <h2 style="color: #e05252;">Session Re-authentication Required</h2>
+          <p>Hello <strong>{username}</strong>,</p>
+          <p>Your Spotify session cookies have expired or become invalid. Listening tracking has been paused.</p>
+          <p>{cta}</p>
+        </div>
+        """
+    elif event_type == EVENT_API_KEY_FAILED:
+        subject = "Spotify Stats Tracker — API Key Error"
+        text_body = (
+            f"Hello {username},\n\nYour Spotify or Last.fm API credentials returned an authentication error during backfill.\n\n"
+            + (f"Update them here: {link}" if link else "Please check your account Connections on your profile page.")
+        )
+        cta = _ctaButton(link, "Update Connections") if link else \
+            "Please update your credentials on your Profile Connections page."
+        html_body = f"""
+        <div style="font-family: Arial, sans-serif; padding: 20px; background-color: #121212; color: #ffffff;">
+          <h2 style="color: #ff9800;">API Credentials Error</h2>
+          <p>Hello <strong>{username}</strong>,</p>
+          <p>Your API credentials (Spotify Developer API or Last.fm key) failed during recent backfill tasks.</p>
+          <p>{cta}</p>
+        </div>
+        """
+    elif event_type == EVENT_SHARE_REQUEST:
+        requester = context.get("requester_username", "A user")
+        subject = f"Spotify Stats Tracker — New Share Request from {requester}"
+        text_body = (
+            f"Hello {username},\n\n{requester} requested to share listening data with you on Spotify Stats Tracker.\n\n"
+            + (f"Respond here: {link}" if link else "Log in to accept or decline this request on your profile Sharing page.")
+        )
+        cta = _ctaButton(link, "View Request") if link else \
+            "Log in to view, accept, or decline this request on your Profile Sharing page."
+        html_body = f"""
+        <div style="font-family: Arial, sans-serif; padding: 20px; background-color: #121212; color: #ffffff;">
+          <h2 style="color: #1db954;">New Data Sharing Request</h2>
+          <p>Hello <strong>{username}</strong>,</p>
+          <p><strong>{requester}</strong> sent you a request to share listening statistics.</p>
+          <p>{cta}</p>
+        </div>
+        """
+    else:
+        subject = f"Spotify Stats Tracker — Notification ({event_type})"
+        text_body = f"Hello {username},\n\nYou have a new notification on Spotify Stats Tracker."
+        html_body = f"<p>Hello {username}, you have a new notification.</p>"
+
+    return subject, text_body, html_body
+
+
+def send_email_notification(
+    repo: Repository, username: str, event_type: str, context: dict[str, Any] | None = None
+) -> bool:
+    """Send an event notification email to username, adhering to global and user settings and cooldown limits."""
+    config = get_smtp_config(repo)
+    if not config["enabled"] or not config["host"]:
+        return False
+
+    # Check user preference
+    if not repo.getUserNotificationPreference(username, event_type):
+        logger.debug("User %s opted out of email notification for event %s", username, event_type)
+        return False
+
+    # Check anti-spam cooldown
+    if repo.isNotificationCooldownActive(username, event_type, cooldown_seconds=DEFAULT_NOTIFICATION_COOLDOWN_SECONDS):
+        logger.debug("Cooldown active for user %s event %s, skipping email", username, event_type)
+        return False
+
+    user_email = repo.getEmailForUsername(username)
+    if not user_email:
+        logger.warning("No email address on record for user %s", username)
+        return False
+
+    ctx = context or {}
+    base_url = get_instance_public_url(repo)
+    subject, text_body, html_body = _render_event_template(event_type, username, ctx, base_url)
+
+    msg = build_email_message(
+        to_email=user_email,
+        subject=subject,
+        text_body=text_body,
+        html_body=html_body,
+        from_email=config["from_email"],
+        from_name=config["from_name"],
+    )
+
+    success, err = _send_smtp_message(config, msg)
+    if success:
+        repo.recordNotificationSent(username, event_type)
+        logger.info("Notification email (%s) sent successfully to %s", event_type, username)
+        return True
+    else:
+        logger.error("Failed to send notification email (%s) to %s: %s", event_type, username, err)
+        return False

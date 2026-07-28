@@ -39,6 +39,7 @@ from Database.backup import (
     BackupWorker, _envInt, BACKUP_INTERVAL_ENV_VAR, BACKUP_RETENTION_ENV_VAR,
     DEFAULT_BACKUP_INTERVAL_HOURS, DEFAULT_BACKUP_RETENTION_COUNT,
 )
+from services.email_worker import EMAIL_WORKER
 from Database.db import SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON
 from Database.repository import Repository
 from Database.Migrators.migrate import migrateIfNeeded
@@ -296,6 +297,8 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
                 _envInt(BACKUP_RETENTION_ENV_VAR, DEFAULT_BACKUP_RETENTION_COUNT)),
         )
         self.backupWorker.start()
+        EMAIL_WORKER.bind_repo(self.repo)
+        EMAIL_WORKER.start()
         self.startVersionCheck_thread()
         self.checkLogin_thread()
 
@@ -1214,6 +1217,7 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
     def shutdown(self):
         self._stop_event.set()
         self.backupWorker.stop()
+        EMAIL_WORKER.stop()
         with self._db_lock:
             databases = list(self.user_databases.values())
         # Two-phase: SIGNAL every user's stop flags first (no joins), THEN

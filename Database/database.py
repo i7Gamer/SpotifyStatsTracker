@@ -1859,6 +1859,10 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
 
     def setSpotifyNeedsReauth(self, needsReauth: bool) -> None:
         self.repo.setSpotifyNeedsReauth(self.user, needsReauth)
+        if needsReauth:
+            from services.email_worker import queue_email_notification
+            from Database.queries.email_queries import EVENT_API_KEY_FAILED
+            queue_email_notification(self.user, EVENT_API_KEY_FAILED)
 
     def getRecentlyRecordedTrackIds(self, trackIds: list[str]) -> set[str]:
         """Which of these tracks this user already has a recent play for.

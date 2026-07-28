@@ -206,6 +206,21 @@ CREATE TABLE IF NOT EXISTS user_tags (
 CREATE INDEX IF NOT EXISTS idx_user_tags_lookup ON user_tags(username, entity_type, entity_id);
 CREATE INDEX IF NOT EXISTS idx_user_tags_tag ON user_tags(username, tag);
 
+CREATE TABLE IF NOT EXISTS user_notification_preferences (
+    username    TEXT NOT NULL REFERENCES users(username),
+    event_type  TEXT NOT NULL,
+    enabled     INTEGER NOT NULL DEFAULT 1,
+    updated_at  REAL NOT NULL,
+    PRIMARY KEY (username, event_type)
+);
+
+CREATE TABLE IF NOT EXISTS user_notification_cooldowns (
+    username     TEXT NOT NULL REFERENCES users(username),
+    event_type   TEXT NOT NULL,
+    last_sent_at REAL NOT NULL,
+    PRIMARY KEY (username, event_type)
+);
+
 -- email is nullable: a Database instance can be constructed for maintenance/
 -- scripting purposes (e.g. the __main__ smoke test) before the email is known.
 -- SQLite treats each NULL as distinct for UNIQUE, so multiple email-less users

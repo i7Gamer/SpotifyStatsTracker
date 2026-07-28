@@ -34,6 +34,11 @@ from Database.repository import (
 )
 from Database.backup import DEFAULT_BACKUP_INTERVAL_HOURS, DEFAULT_BACKUP_RETENTION_COUNT
 from Database.utils import convertToDatetime
+from services.email_service import (
+    get_smtp_config, save_smtp_config, send_test_email,
+    get_instance_public_url, save_instance_public_url,
+    DEFAULT_SMTP_PORT, DEFAULT_SMTP_ENCRYPTION, DEFAULT_SMTP_FROM_NAME,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -342,6 +347,8 @@ def register(app, dashboard):
             backup_retention_count=dashboard.repo.getBackupRetentionCount(DEFAULT_BACKUP_RETENTION_COUNT),
             backup_interval_min=BACKUP_INTERVAL_HOURS_MIN, backup_interval_max=BACKUP_INTERVAL_HOURS_MAX,
             backup_retention_min=BACKUP_RETENTION_COUNT_MIN, backup_retention_max=BACKUP_RETENTION_COUNT_MAX,
+            smtp_config=get_smtp_config(dashboard.repo),
+            instance_public_url=get_instance_public_url(dashboard.repo),
             database_integrity=database_integrity,
             dangling_row_total=dangling_row_total,
             listener_summary=listener_summary,
@@ -363,6 +370,65 @@ def register(app, dashboard):
             section="admin",
         )
     app.add_url_rule("/admin", "adminPage", adminPage, methods=["GET"])
+
+    def adminEmailSettings():
+        """Admin-only: update instance-wide SMTP configuration, the global
+        email notifications toggle, and the public URL notification emails
+        link back to."""
+        email, username, db = dashboard.get_current_user_or_redirect()
+        if not email:
+            return redirect(url_for("login", next=url_for("adminPage")))
+        if not dashboard.repo.isAdmin(username):
+            abort(403)
+        enabled = request.form.get("email_notifications_enabled") == "1"
+        host = request.form.get("smtp_host", "")
+        try:
+            port = int(request.form.get("smtp_port", str(DEFAULT_SMTP_PORT)))
+        except (ValueError, TypeError):
+            port = DEFAULT_SMTP_PORT
+        encryption = request.form.get("smtp_encryption", DEFAULT_SMTP_ENCRYPTION)
+        user = request.form.get("smtp_user", "")
+        raw_password = request.form.get("smtp_password", "")
+        clear_password = request.form.get("clear_password") == "1"
+        # None = keep existing encrypted value; "" = intentional clear; non-empty = update
+        if clear_password:
+            password = ""  # triggers explicit clear in save_smtp_config
+        elif raw_password:
+            password = raw_password
+        else:
+            password = None  # blank field submitted without clear → keep existing
+        from_email = request.form.get("smtp_from_email", "")
+        from_name = request.form.get("smtp_from_name", DEFAULT_SMTP_FROM_NAME)
+        public_url = request.form.get("instance_public_url", "")
+
+        save_smtp_config(
+            repo=dashboard.repo,
+            enabled=enabled,
+            host=host,
+            port=port,
+            encryption=encryption,
+            user=user,
+            password=password,
+            from_email=from_email,
+            from_name=from_name,
+        )
+        save_instance_public_url(dashboard.repo, public_url)
+        return redirect(url_for("adminPage", message="Email notification settings saved."))
+    app.add_url_rule("/admin/email_settings", "adminEmailSettings", adminEmailSettings, methods=["POST"])
+
+    def adminTestEmail():
+        """Admin-only: send a test email to the current admin account."""
+        email, username, db = dashboard.get_current_user_or_redirect()
+        if not email:
+            return redirect(url_for("login", next=url_for("adminPage")))
+        if not dashboard.repo.isAdmin(username):
+            abort(403)
+        success, err = send_test_email(dashboard.repo, email)
+        if success:
+            return redirect(url_for("adminPage", message=f"Test email successfully sent to {email}."))
+        else:
+            return redirect(url_for("adminPage", error=f"Test email failed: {err}"))
+    app.add_url_rule("/admin/test_email", "adminTestEmail", adminTestEmail, methods=["POST"])
 
     def adminUserSettings():
         """Admin-only: instance-wide toggles for data sharing (Compare +

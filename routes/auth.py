@@ -24,6 +24,13 @@ import app as appmod
 from SpotipyFree import parseCookieString
 from Database.lastfm import LastfmClient
 from Database.utils import dateToString
+from services.email_worker import queue_email_notification
+from Database.queries.email_queries import (
+    EVENT_INVALID_COOKIES,
+    EVENT_API_KEY_FAILED,
+    EVENT_SHARE_REQUEST,
+    VALID_NOTIFICATION_EVENTS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -299,6 +306,9 @@ def register(app, dashboard):
     # top-level GET navigations even under SameSite=Lax).
     app.add_url_rule("/logout", "logout", logout, methods=["POST"])
 
+    PROFILE_FLASH_LASTFM = "lastfm"
+    PROFILE_FLASH_NOTIFICATIONS = "notifications"
+
     def _profileRedirect(endpoint, flashFor, success=None, error=None):
         """Back to a profile page with the message attached to `flashFor`'s
         section.
@@ -310,20 +320,22 @@ def register(app, dashboard):
                                 flash_for=flashFor, _anchor=flashFor))
 
     def _profileChrome(username, email, subsection):
-        """The context all three profile pages share: the identity block, which
+        """The context all profile pages share: the identity block, which
         sub-nav tab is current, which tabs exist at all, and whatever flash the
         redirect that landed here carried."""
         spotifyCallbackUrl = os.environ.get("SPOTIFY_CALLBACK_URL")
         lastfmEnabled = dashboard.repo.isLastfmGenreBackfillEnabled()
         featureEnabled = bool(spotifyCallbackUrl)
+        emailNotifsEnabled = dashboard.repo.getAppSetting("email_notifications_enabled", "0") == "1"
         return dict(
             username=username,
             email=email,
-            #< stays "profile" on all three so the topbar's Account dropdown
+            #< stays "profile" on all so the topbar's Account dropdown
             #  highlight needs no special case; subsection drives the sub-nav
             section="profile",
             subsection=subsection,
             sharing_enabled=dashboard.repo.isDataSharingEnabled(),
+            email_notifications_enabled=emailNotifsEnabled,
             feature_enabled=featureEnabled,
             lastfm_enabled=lastfmEnabled,
             #< with both integrations off the Connections tab disappears rather
@@ -465,6 +477,7 @@ def register(app, dashboard):
                 if result == "accepted":
                     success = f"You and {target_username} are now sharing data with each other!"
                 elif result == "requested":
+                    queue_email_notification(target_username, EVENT_SHARE_REQUEST, {"requester_username": username})
                     success = f"Share request sent to {target_username}."
                 elif result == "already_accepted":
                     success = f"You already share data with {target_username}."
@@ -602,6 +615,38 @@ def register(app, dashboard):
             **chrome,
         ), responseStatus
     app.add_url_rule("/profile/connections", "profileConnectionsPage", profileConnectionsPage,
+                     methods=["GET", "POST"])
+
+    def profileNotificationsPage():
+        """User email notification event preferences."""
+        email, username, db = dashboard.get_current_user_or_redirect()
+        if not email:
+            return redirect(url_for("login", next=request.path))
+
+        chrome = _profileChrome(username, email, "notifications")
+        if not chrome["email_notifications_enabled"]:
+            abort(404)
+
+        success = error = None
+        flashFor = ""
+        responseStatus = 200
+
+        if request.method == "POST":
+            flashFor = PROFILE_FLASH_NOTIFICATIONS
+            for event in VALID_NOTIFICATION_EVENTS:
+                form_key = f"notif_{event}"
+                enabled = request.form.get(form_key) == "1"
+                dashboard.repo.setUserNotificationPreference(username, event, enabled)
+            success = "Notification preferences saved."
+            return _profileRedirect("profileNotificationsPage", flashFor, success=success, error=error)
+
+        preferences = dashboard.repo.getAllUserNotificationPreferences(username)
+        return render_template(
+            "profile_notifications.html",
+            preferences=preferences,
+            **chrome,
+        ), responseStatus
+    app.add_url_rule("/profile/notifications", "profileNotificationsPage", profileNotificationsPage,
                      methods=["GET", "POST"])
 
     def profileDisconnect():

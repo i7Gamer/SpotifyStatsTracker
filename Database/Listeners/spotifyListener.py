@@ -401,6 +401,11 @@ class Listener:
         except Exception as e:
             logger.warning("Could not verify authenticated user during listener init: %s", parseError(e))
 
+        if (self.loginFailed or self.contaminationDetected) and self.user:
+            from services.email_worker import queue_email_notification
+            from Database.queries.email_queries import EVENT_INVALID_COOKIES
+            queue_email_notification(self.user, EVENT_INVALID_COOKIES)
+
         self.recentlyPlayed_Z1 = self.sp.current_user_recently_played()
         self.webApiRecentlyPlayed_Z1 = []  #< _checkWebApiBackfill's own dedup bookkeeping, kept
                                             #  separate from recentlyPlayed_Z1 (live-listener-owned,

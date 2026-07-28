@@ -21,9 +21,10 @@ from Database.queries.wrapped import WrappedQueries
 from Database.queries.milestones import MilestoneQueries
 from Database.queries.tags import TagQueries
 from Database.queries.trends import TrendQueries
+from Database.queries.email_queries import EmailQueries, VALID_NOTIFICATION_EVENTS, EVENT_INVALID_COOKIES, EVENT_API_KEY_FAILED, EVENT_SHARE_REQUEST
 
 
-class Repository(SqlFragments, TrackQueries, PlayQueries, UserQueries, ShareQueries, SchemaQueries, GenreQueries, BioQueries, SettingQueries, WrappedQueries, MilestoneQueries, TagQueries, TrendQueries):
+class Repository(SqlFragments, TrackQueries, PlayQueries, UserQueries, ShareQueries, SchemaQueries, GenreQueries, BioQueries, SettingQueries, WrappedQueries, MilestoneQueries, TagQueries, TrendQueries, EmailQueries):
     """Data-access layer over the shared SQLite database.
 
     Catalog methods (tracks/artists/albums/playlists/images) operate on data

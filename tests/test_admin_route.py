@@ -375,6 +375,8 @@ class TestAdminUserSettingsHints(AdminRouteTestBase):
         "Tags": "tag panel on song/artist/album pages, tag filter on Top Songs/Artists/Albums, and the Playlists page",
         "Friends' current track on the dashboard":
             "only between accepted shares; each user can also opt out on their own Profile",
+        "Enable email notifications instance-wide":
+            "When disabled, outgoing emails are paused and the Notifications section is hidden on user profiles.",
     }
 
     def test_labels_no_longer_carry_the_explanation_inline(self):
@@ -757,6 +759,94 @@ class TestAdminBackupSettings(AdminRouteTestBase):
         dash = self._makeApp()
         self._post(dash, "/admin/backup_settings", isAdmin=True, data={"backup_interval_hours": "0"})
         self.assertEqual(dash.repo.getBackupIntervalHours(24), 0)
+
+
+class TestAdminEmailSettings(AdminRouteTestBase):
+    def test_non_admin_post_is_forbidden(self):
+        dash = self._makeApp()
+        resp = self._post(dash, "/admin/email_settings", isAdmin=False, data={})
+        self.assertEqual(resp.status_code, 403)
+
+    def test_anonymous_post_redirects_to_login(self):
+        dash = self._makeApp()
+        resp = self._post(dash, "/admin/email_settings", isAdmin=True, data={}, loggedIn=False)
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn("/login", resp.headers["Location"])
+
+    def test_admin_can_save_settings(self):
+        dash = self._makeApp()
+        resp = self._post(dash, "/admin/email_settings", isAdmin=True, data={
+            "email_notifications_enabled": "1",
+            "smtp_host": "smtp.example.com",
+            "smtp_port": "465",
+            "smtp_encryption": "ssl",
+            "smtp_user": "bot@example.com",
+            "smtp_password": "hunter2",
+            "smtp_from_email": "noreply@example.com",
+            "smtp_from_name": "Tracker",
+            "instance_public_url": "https://tracker.example.com",
+        })
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn("/admin", resp.headers["Location"])
+
+        from services.email_service import get_smtp_config, get_instance_public_url
+        config = get_smtp_config(dash.repo)
+        self.assertTrue(config["enabled"])
+        self.assertEqual(config["host"], "smtp.example.com")
+        self.assertEqual(config["port"], 465)
+        self.assertEqual(config["encryption"], "ssl")
+        self.assertEqual(config["from_email"], "noreply@example.com")
+        self.assertEqual(get_instance_public_url(dash.repo), "https://tracker.example.com")
+
+    def test_public_url_defaults_to_empty_when_omitted(self):
+        dash = self._makeApp()
+        self._post(dash, "/admin/email_settings", isAdmin=True, data={})
+
+        from services.email_service import get_instance_public_url
+        self.assertEqual(get_instance_public_url(dash.repo), "")
+
+    def test_invalid_port_falls_back_to_default(self):
+        dash = self._makeApp()
+        self._post(dash, "/admin/email_settings", isAdmin=True, data={"smtp_port": "not-a-number"})
+
+        from services.email_service import get_smtp_config, DEFAULT_SMTP_PORT
+        self.assertEqual(get_smtp_config(dash.repo)["port"], DEFAULT_SMTP_PORT)
+
+
+class TestAdminSendTestEmail(AdminRouteTestBase):
+    def test_non_admin_post_is_forbidden(self):
+        dash = self._makeApp()
+        resp = self._post(dash, "/admin/test_email", isAdmin=False, data={})
+        self.assertEqual(resp.status_code, 403)
+
+    def test_anonymous_post_redirects_to_login(self):
+        dash = self._makeApp()
+        resp = self._post(dash, "/admin/test_email", isAdmin=True, data={}, loggedIn=False)
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn("/login", resp.headers["Location"])
+
+    def test_admin_without_smtp_configured_redirects_with_error(self):
+        """No SMTP host has been saved yet - send_test_email must fail
+        cleanly (no network call, blocked by conftest's _blockNetwork
+        anyway) rather than the route raising."""
+        dash = self._makeApp()
+        resp = self._post(dash, "/admin/test_email", isAdmin=True, data={})
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn("error=", resp.headers["Location"])
+
+    def test_admin_success_redirects_with_message(self):
+        dash = self._makeApp()
+        with patch("routes.admin.send_test_email", return_value=(True, None)):
+            resp = self._post(dash, "/admin/test_email", isAdmin=True, data={})
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn("message=", resp.headers["Location"])
+
+    def test_admin_failure_redirects_with_error(self):
+        dash = self._makeApp()
+        with patch("routes.admin.send_test_email", return_value=(False, "Connection refused")):
+            resp = self._post(dash, "/admin/test_email", isAdmin=True, data={})
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn("error=", resp.headers["Location"])
 
 
 class TestAdminCreateBackup(AdminRouteTestBase):

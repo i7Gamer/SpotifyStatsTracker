@@ -21,4 +21,9 @@
      {% if subsection == 'connections' %}aria-current="page"{% endif %}
      href="{{ url_for('profileConnectionsPage') }}">Connections</a>
   {% endif %}
+  {% if email_notifications_enabled %}
+  <a class="{{ 'active' if subsection == 'notifications' }}"
+     {% if subsection == 'notifications' %}aria-current="page"{% endif %}
+     href="{{ url_for('profileNotificationsPage') }}">Notifications</a>
+  {% endif %}
 </nav>
