@@ -160,7 +160,7 @@
       cur.querySelectorAll('script').forEach(function (s) {
         /* Only text-content scripts; skip src= ones (not present here). */
         if (!s.src) {
-          try { /* jshint ignore:line */
+          try {
             /* Deliberate: an inline <script> inserted via innerHTML is inert,
                so re-running its text is the only way to revive it. Not a
                suppression - no-new-func isn't among the enabled rules, and a
