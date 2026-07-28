@@ -3,7 +3,9 @@ these were set previously, leaving the app without even basic defense-in-
 depth against clickjacking, MIME-sniffing, or (partially) the DOM-based XSS
 class of bug found in charts.js's chart tooltips.
 """
+import re
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import sys
@@ -15,6 +17,18 @@ from app import SpotifyDashboardApp, _hstsEnabled
 from _app_factory import AppTestCase
 
 _SECRET_KEY_PATCH = 'app.SpotifyDashboardApp._get_or_create_secret_key'
+
+_STATIC_JS_DIR = Path(__file__).resolve().parent.parent / "static" / "js"
+
+# Constructs that compile a string into code, all of which CSP gates behind
+# 'unsafe-eval'. setTimeout/setInterval only need it when handed a string, so
+# they are matched with an opening quote rather than bare.
+_EVAL_FAMILY_PATTERNS = {
+    "new Function()": re.compile(r"\bnew\s+Function\s*\("),
+    "eval()": re.compile(r"(?<![.\w])eval\s*\("),
+    "setTimeout(string)": re.compile(r"\bsetTimeout\s*\(\s*['\"`]"),
+    "setInterval(string)": re.compile(r"\bsetInterval\s*\(\s*['\"`]"),
+}
 
 
 class TestSecurityHeaders(AppTestCase):
@@ -99,6 +113,68 @@ class TestSecurityHeaders(AppTestCase):
         csp = resp.headers.get("Content-Security-Policy", "")
 
         self.assertNotIn("unsafe-eval", csp)
+
+
+class TestBrowserScriptsRespectTheCsp(unittest.TestCase):
+    """The companion to test_non_detail_pages_do_not_get_unsafe_eval above.
+
+    That test pins the *header*; nothing pinned the *scripts*, and the two
+    drifted apart: profile-page.js revived swapped-in inline <script> blocks
+    with `new Function(text)()`, which /profile's CSP forbids. The EvalError
+    landed in a `catch (_) {}` and was swallowed, so the Account tab's
+    theme-selector initialiser silently stopped working after an AJAX tab
+    switch - a dead feature no header test could see.
+
+    Scanning source is crude but it is the only check that runs without a
+    browser, and the failure it guards against is silent by construction.
+    """
+
+    def _sources(self):
+        files = sorted(_STATIC_JS_DIR.glob("*.js"))
+        self.assertTrue(files, "no browser scripts found to scan")
+        return [(path, path.read_text(encoding="utf-8")) for path in files]
+
+    def test_no_browser_script_uses_an_eval_family_construct(self):
+        offenders = [
+            f"{path.name}: {label}"
+            for path, source in self._sources()
+            for label, pattern in _EVAL_FAMILY_PATTERNS.items()
+            if pattern.search(source)
+        ]
+
+        self.assertEqual(
+            offenders, [],
+            "these need 'unsafe-eval', which only the detail routes grant - and "
+            "they fail silently, not loudly: " + ", ".join(offenders),
+        )
+
+    def test_the_scanner_would_actually_catch_an_offender(self):
+        """A regex that matches nothing is indistinguishable from a clean tree,
+        so prove each pattern still fires on the construct it names."""
+        samples = {
+            "new Function()": "var f = new Function('return 1');",
+            "eval()": "eval('1 + 1');",
+            "setTimeout(string)": "setTimeout('doThing()', 10);",
+            "setInterval(string)": 'setInterval("poll()", 10);',
+        }
+
+        for label, pattern in _EVAL_FAMILY_PATTERNS.items():
+            with self.subTest(construct=label):
+                self.assertIsNotNone(pattern.search(samples[label]))
+
+    def test_the_scanner_does_not_flag_the_ordinary_callback_forms(self):
+        """setTimeout/setInterval with a function are fine under any CSP, and
+        `.eval` as a property name is not the global eval."""
+        benign = (
+            "setTimeout(function () { doThing(); }, 10);\n"
+            "setInterval(poll, 10);\n"
+            "setTimeout(() => doThing(), 10);\n"
+            "thing.eval(x);\n"
+        )
+
+        for label, pattern in _EVAL_FAMILY_PATTERNS.items():
+            with self.subTest(construct=label):
+                self.assertIsNone(pattern.search(benign))
 
 
 class TestHstsToggleParsing(unittest.TestCase):

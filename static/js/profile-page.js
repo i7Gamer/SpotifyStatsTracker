@@ -149,28 +149,59 @@
     }
   }
 
+  /** Attributes worth carrying from an inert script node onto its
+   *  replacement. `type` decides whether - and how - the browser runs it at
+   *  all (module vs classic vs a non-executable type), so dropping it would
+   *  change the script's meaning. Nothing else in the tab partials sets one. */
+  var REVIVED_SCRIPT_ATTRS = ['type'];
+
+  /** Swap one inert <script> node for a freshly created, equivalent one.
+   *
+   *  An inline <script> inserted via innerHTML is inert by spec, so it has to
+   *  be re-created to run. This deliberately builds a real element rather than
+   *  compiling the text: the string-compiling call this replaced needed
+   *  'unsafe-eval', which the baseline CSP does not grant - it is scoped to
+   *  the three detail routes for Spotify's iFrame bundle (DETAIL_PAGE_CSP in
+   *  config.py). On /profile the call therefore threw EvalError straight into
+   *  the catch below and the Account tab's theme-selector initialiser silently
+   *  never ran after an AJAX swap. A script *element* is covered by
+   *  'unsafe-inline', which the baseline does grant, so this runs under the
+   *  policy the page actually ships with instead of asking to widen it.
+   *  tests/test_security_headers.py scans this tree for the whole eval family,
+   *  so re-introducing one fails the suite rather than failing in silence. */
+  function _reviveScript(stale) {
+    var fresh = document.createElement('script');
+    REVIVED_SCRIPT_ATTRS.forEach(function (name) {
+      var value = stale.getAttribute(name);
+      if (value !== null) fresh.setAttribute(name, value);
+    });
+    fresh.textContent = stale.textContent;
+    /* replaceChild, not append-then-remove: inserting the replacement is what
+       executes it, so it must land in the position the original held. */
+    if (stale.parentNode) stale.parentNode.replaceChild(fresh, stale);
+  }
+
   /** Re-execute inline <script> blocks that may be in the swapped content
    *  (e.g. the theme-selector initialiser on the Account tab). */
-  function _runInlineScripts(container) {
+  function _runInlineScripts() {
     var nav = document.querySelector(SUBNAV_SEL);
     if (!nav) return;
     var logout = document.querySelector('.profile-logout-row');
     var cur = nav.nextElementSibling;
     while (cur && cur !== logout) {
-      cur.querySelectorAll('script').forEach(function (s) {
-        /* Only text-content scripts; skip src= ones (not present here). */
+      var next = cur.nextElementSibling;
+      /* Snapshot before mutating: replaceChild edits the live tree the
+         NodeList this returns is a view of. */
+      Array.prototype.slice.call(cur.querySelectorAll('script')).forEach(function (s) {
+        /* Only text-content scripts; skip src= ones (not present here) -
+           re-adding one would re-download and re-run a whole file. */
         if (!s.src) {
           try {
-            /* Deliberate: an inline <script> inserted via innerHTML is inert,
-               so re-running its text is the only way to revive it. Not a
-               suppression - no-new-func isn't among the enabled rules, and a
-               disable directive for a rule that never fires is itself an
-               error under reportUnusedDisableDirectives. */
-            new Function(s.textContent)();
+            _reviveScript(s);
           } catch (_) { /* non-fatal */ }
         }
       });
-      cur = cur.nextElementSibling;
+      cur = next;
     }
   }
 
@@ -246,11 +277,12 @@
     },
 
     /* Exposed for testing. */
-    _parse:        _parse,
-    _extractNav:   _extractNav,
-    _extractBody:  _extractBody,
-    _swapBody:     _swapBody,
-    _syncNav:      _syncNav,
+    _parse:             _parse,
+    _extractNav:        _extractNav,
+    _extractBody:       _extractBody,
+    _swapBody:          _swapBody,
+    _syncNav:           _syncNav,
+    _runInlineScripts:  _runInlineScripts,
   };
 
   /* Make available globally and as a CJS module (node tests). */

@@ -43,6 +43,14 @@ function makeEl(tag, attrs) {
       if (i >= 0) children.splice(i, 1);
       return child;
     },
+    replaceChild(fresh, stale) {
+      const i = children.indexOf(stale);
+      if (i >= 0) {
+        fresh._parent = el;
+        children.splice(i, 1, fresh);
+      }
+      return stale;
+    },
     addEventListener(type, fn)  { (handlers[type] = handlers[type] || []).push(fn); },
     dispatchEvent(type, evt)    { (handlers[type] || []).forEach(fn => fn(evt || {})); },
     getAttribute(name)          { return el._attrs[name] !== undefined ? el._attrs[name] : null; },
@@ -137,7 +145,10 @@ function installProfileDom() {
           // Parse children naively: just track text.
         },
       });
-      el.firstChild = null;  // will be null for empty div
+      // No `el.firstChild = null` here: makeEl already exposes firstChild as a
+      // getter-only accessor, so assigning to it throws TypeError under the
+      // 'use strict' at the top of this file - which made document.createElement
+      // unusable for every tag the individual tests didn't special-case.
       return el;
     },
     querySelector(sel) {
@@ -302,6 +313,85 @@ run('_swapBody removes old siblings and inserts new ones', () => {
 
   assert.ok(!card.children.includes(section), 'old section should be removed');
   assert.ok(card.children.includes(newSection), 'new section should be inserted');
+});
+
+/* ------------------------------------------------------------------ */
+/* Inline-script revival (CSP)                                         */
+/* ------------------------------------------------------------------ */
+
+/* Put `script` elements where _runInlineScripts walks, i.e. on the siblings
+ * between the subnav and the logout row. Returns the stale script node. */
+function installInlineScript(section, text, attrs) {
+  const script = makeEl('script', attrs || {});
+  script.textContent = text;
+  section.appendChild(script);
+  section.querySelectorAll = (sel) => (sel === 'script' ? [script] : []);
+  return script;
+}
+
+/* Record every element the module creates, so a test can tell a real
+ * `<script>` element apart from a string-eval. */
+function captureCreatedElements() {
+  const created = [];
+  const orig = global.document.createElement;
+  global.document.createElement = (tag) => {
+    const el = orig(tag);
+    el.textContent = '';
+    created.push(el);
+    return el;
+  };
+  return { created, restore: () => { global.document.createElement = orig; } };
+}
+
+run('_runInlineScripts revives an inline script as a real <script> element', () => {
+  /* The regression this pins: the module used to call new Function(text)(),
+     which every page outside DETAIL_CSP_ENDPOINTS forbids ('unsafe-eval' is
+     scoped to the three detail routes - see config.py/DETAIL_PAGE_CSP). The
+     EvalError landed in the catch and was swallowed, so the Account tab's
+     theme-selector initialiser silently never ran after an AJAX tab swap. */
+  const { section } = installProfileDom();
+  const stale = installInlineScript(section, 'window.__revived = true;');
+  const capture = captureCreatedElements();
+
+  ProfilePage._runInlineScripts();
+  capture.restore();
+
+  const scripts = capture.created.filter(el => el.tagName === 'SCRIPT');
+  assert.strictEqual(scripts.length, 1, 'exactly one replacement <script> element');
+  assert.strictEqual(scripts[0].textContent, 'window.__revived = true;');
+  assert.ok(section.children.includes(scripts[0]), 'replacement must be inserted into the document');
+  assert.ok(!section.children.includes(stale), 'the inert original must be replaced, not left behind');
+});
+
+run('_runInlineScripts carries the type attribute onto the replacement', () => {
+  /* A replacement that drops type="module" (or picks up an implicit
+     "text/javascript" where the original had a non-executable type) would
+     change whether - and how - the browser runs it. */
+  const { section } = installProfileDom();
+  installInlineScript(section, 'export const x = 1;', { type: 'module' });
+  const capture = captureCreatedElements();
+
+  ProfilePage._runInlineScripts();
+  capture.restore();
+
+  const script = capture.created.filter(el => el.tagName === 'SCRIPT')[0];
+  assert.ok(script, 'a replacement script element was created');
+  assert.strictEqual(script.getAttribute('type'), 'module');
+});
+
+run('_runInlineScripts leaves src= scripts alone', () => {
+  /* An external script inserted via innerHTML is inert too, but re-adding it
+     would re-download and re-run a whole file; the tab partials have none. */
+  const { section } = installProfileDom();
+  const stale = installInlineScript(section, '', { src: '/static/js/whatever.js' });
+  stale.src = '/static/js/whatever.js';
+  const capture = captureCreatedElements();
+
+  ProfilePage._runInlineScripts();
+  capture.restore();
+
+  assert.strictEqual(capture.created.filter(el => el.tagName === 'SCRIPT').length, 0);
+  assert.ok(section.children.includes(stale), 'the src= script must be left untouched');
 });
 
 run('init wires the subnav exactly once (idempotent)', () => {
