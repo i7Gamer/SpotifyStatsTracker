@@ -12,13 +12,13 @@
 </section>
 
 {% if error %}
-<section class="card" style="margin-bottom: 1.5rem; border: 1px solid var(--danger, #e05252); padding: 1rem 1.5rem;">
+<section class="card" style="margin-bottom: 1.5rem; border: 1px solid var(--danger, #e05252); padding: 1rem 1.5rem; min-height: auto; width: fit-content; max-width: 100%;">
   <p style="margin: 0; color: var(--danger, #e05252);">{{ error }}</p>
 </section>
 {% endif %}
 
 {% if message %}
-<section class="card" style="margin-bottom: 1.5rem; border: 1px solid var(--accent, #1db954); padding: 1rem 1.5rem;">
+<section class="card" style="margin-bottom: 1.5rem; border: 1px solid var(--accent, #1db954); padding: 1rem 1.5rem; min-height: auto; width: fit-content; max-width: 100%;">
   <p style="margin: 0; color: var(--accent, #1db954);">{{ message }}</p>
 </section>
 {% endif %}

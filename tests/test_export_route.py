@@ -497,6 +497,14 @@ class TestExportLinksLiveOnTheImportPage(_AppTestBase):
         self.assertNotIn(b"/export-history", body)
         self.assertNotIn(b"Export as JSON", body)
 
+    def test_export_card_has_compact_export_card_class(self):
+        dash = self._makeApp()
+
+        body = self._get(dash, self._makeDb(), "/import").data
+
+        self.assertIn(b'class="card import-card export-card"', body)
+
+
 
 if __name__ == "__main__":
     unittest.main()

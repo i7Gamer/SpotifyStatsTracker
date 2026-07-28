@@ -98,7 +98,7 @@ class AdminRouteTestBase(AppTestCase):
             patches.append(patch.object(dash.repo, name, return_value=value))
         return patches
 
-    def _getAdmin(self, dash, isAdmin=True, users=None, loggedIn=True, extraInsights=None, patches=None):
+    def _getAdmin(self, dash, isAdmin=True, users=None, loggedIn=True, extraInsights=None, patches=None, path="/admin"):
         patches = patches if patches is not None else self._patches(
             dash, isAdmin, users=users, loggedIn=loggedIn, extraInsights=extraInsights)
         with contextlib.ExitStack() as stack:
@@ -108,7 +108,7 @@ class AdminRouteTestBase(AppTestCase):
             if loggedIn:
                 with client.session_transaction() as sess:
                     sess['email'] = 'alice@example.com'
-            return client.get("/admin")
+            return client.get(path)
 
     def _post(self, dash, path, isAdmin, data, loggedIn=True):
         with patch.object(dash.repo, 'isAdmin', return_value=isAdmin), \
@@ -140,6 +140,15 @@ class TestAdminPageAuthGate(AdminRouteTestBase):
         resp = self._getAdmin(dash, isAdmin=True)
         self.assertEqual(resp.status_code, 200)
         self.assertIn(b"Registered Users & Sync Status", resp.data)
+
+    def test_admin_message_card_sizing(self):
+        dash = self._makeApp()
+        resp = self._getAdmin(dash, isAdmin=True, path="/admin?message=Test+email+successfully+sent+to+admin@example.com.")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn(b"Test email successfully sent to admin@example.com.", resp.data)
+        html = resp.data.decode("utf-8")
+        self.assertIn('min-height: auto;', html)
+        self.assertIn('width: fit-content;', html)
 
 
 class TestAdminUsersTable(AdminRouteTestBase):

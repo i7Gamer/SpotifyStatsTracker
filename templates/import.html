@@ -57,13 +57,15 @@
 
   {# The same history, going the other way - and the JSON format is the one the
      form above accepts, so the round trip belongs on one page. #}
-  <section class="card import-card">
-    <h2 style="margin-top: 0;">Export your history</h2>
-    <p class="import-note">
-      Download your full play history. The JSON export uses Spotify's extended-streaming-history
-      format, so it can be re-imported here (or into another instance) with the form above;
-      the CSV is for spreadsheets and analysis.
-    </p>
+  <section class="card import-card export-card">
+    <div class="export-card-text">
+      <h2>Export your history</h2>
+      <p class="import-note">
+        Download your full play history. The JSON export uses Spotify's extended-streaming-history
+        format, so it can be re-imported here (or into another instance) with the form above;
+        the CSV is for spreadsheets and analysis.
+      </p>
+    </div>
     <div class="export-button-row">
       <a class="primary-button" href="{{ url_for('exportHistory', format='json') }}">Export as JSON</a>
       <a class="primary-button" href="{{ url_for('exportHistory', format='csv') }}">Export as CSV</a>

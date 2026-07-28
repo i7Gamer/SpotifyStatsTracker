@@ -519,12 +519,34 @@ button {
   margin-bottom: 24px;
 }
 
+.export-card {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 20px;
+}
+
+.export-card-text {
+  flex: 1 1 300px;
+}
+
+.export-card-text h2 {
+  margin: 0 0 4px;
+}
+
 /* The two download links on the Import & Export page. They are <a>, not
    <button>, so they need the centering .primary-button gets from its own box. */
 .export-button-row {
   display: flex;
   gap: 12px;
   margin-top: 16px;
+}
+
+.export-card .export-button-row {
+  flex: 0 0 auto;
+  margin-top: 0;
 }
 
 .export-button-row .primary-button {
