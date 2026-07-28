@@ -141,7 +141,9 @@
     var parent = nav.parentNode;
     var before = logout || null;
     var child;
-    // eslint-disable-next-line no-cond-assign
+    //< the extra parens are what mark this assignment as deliberate; that is
+    //  exactly no-cond-assign's "except-parens" default, so no suppression is
+    //  needed (and an unused one is itself a lint error - see eslint.config.js)
     while ((child = tmp.firstChild)) {
       parent.insertBefore(child, before);
     }
@@ -159,7 +161,11 @@
         /* Only text-content scripts; skip src= ones (not present here). */
         if (!s.src) {
           try { /* jshint ignore:line */
-            // eslint-disable-next-line no-new-func
+            /* Deliberate: an inline <script> inserted via innerHTML is inert,
+               so re-running its text is the only way to revive it. Not a
+               suppression - no-new-func isn't among the enabled rules, and a
+               disable directive for a rule that never fires is itself an
+               error under reportUnusedDisableDirectives. */
             new Function(s.textContent)();
           } catch (_) { /* non-fatal */ }
         }
