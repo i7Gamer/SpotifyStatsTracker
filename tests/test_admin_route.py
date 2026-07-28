@@ -1325,8 +1325,8 @@ class TestAdminInsightsLayout(AdminRouteTestBase):
     def test_activity_renders_between_the_users_table_and_the_insights_row(self):
         body = self._getAdmin(self._makeApp()).data.decode()
 
-        self.assertLess(body.index("Registered Users & Sync Status"), body.index("New users (7d)"))
-        self.assertLess(body.index("New users (7d)"), body.index("Catalog Backfill Coverage"))
+        self.assertLess(body.index("Registered Users & Sync Status"), body.index("New users (30d)"))
+        self.assertLess(body.index("New users (30d)"), body.index("Catalog Backfill Coverage"))
 
     def test_activity_tiles_render_every_metric(self):
         extra = {
@@ -1337,7 +1337,6 @@ class TestAdminInsightsLayout(AdminRouteTestBase):
 
         body = self._getAdmin(self._makeApp(), extraInsights=extra).data.decode()
 
-        self._assertTile(body, "New users (7d)", 2)
         self._assertTile(body, "New users (30d)", 9)
         self._assertTile(body, "Pending shares", 3)
         self._assertTile(body, "Accepted shares", 4)

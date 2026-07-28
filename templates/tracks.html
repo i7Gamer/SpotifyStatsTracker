@@ -148,7 +148,7 @@
             {# Only the first few show; milestone-more.js reveals the rest
                MILESTONE_CHUNK_SIZE at a time via the button below. The initial
                count roughly matches the height of the progress bars beside it. #}
-            {% set MILESTONE_INITIAL_VISIBLE = 3 %}
+            {% set MILESTONE_INITIAL_VISIBLE = 2 %}
             {% set MILESTONE_CHUNK_SIZE = 5 %}
             {% macro milestoneItem(m, hidden=false) %}
               <li class="milestone-item"{% if hidden %} hidden{% endif %}>

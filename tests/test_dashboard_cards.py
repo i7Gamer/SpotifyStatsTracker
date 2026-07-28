@@ -576,8 +576,8 @@ class DashboardMilestonesCardTestCase(_DashboardHelpers, AppTestCase):
         self.assertIn(b"No milestones yet", body)
 
     def test_extras_collapse_behind_the_show_more_button(self):
-        """Three stay visible so the card roughly matches the height of the
-        three progress bars beside it; milestone-more.js reveals the rest."""
+        """Two stay visible so the card roughly matches the height of the
+        progress bars beside it; milestone-more.js reveals the rest."""
         dash = self._makeApp()
         for i in range(5):
             self._record(dash, kind="plays", threshold=1000 * (i + 1),
@@ -590,30 +590,30 @@ class DashboardMilestonesCardTestCase(_DashboardHelpers, AppTestCase):
         total = body.count(b'class="milestone-item"')
         hidden = body.count(b'class="milestone-item" hidden')
         self.assertEqual(total, 5)
-        self.assertEqual(hidden, 2)
-        self.assertEqual(total - hidden, 3)   #< visible
+        self.assertEqual(hidden, 3)
+        self.assertEqual(total - hidden, 2)   #< visible
         self.assertIn(b"data-milestone-more", body)
         self.assertIn(b'data-chunk-size="5"', body)
-        self.assertIn(b"Show 2 more", body)
+        self.assertIn(b"Show 3 more", body)
         #< the button is inert without its script, and the suite would not
         #  otherwise notice the tag going missing
         self.assertIn(b"js/milestone-more.js", body)
 
     def test_no_show_more_button_at_exactly_the_visible_limit(self):
-        """The boundary itself: 3 earned, 3 visible, nothing left to reveal."""
+        """The boundary itself: 2 earned, 2 visible, nothing left to reveal."""
         dash = self._makeApp()
-        for i in range(3):
+        for i in range(2):
             self._record(dash, threshold=1000 * (i + 1), achievedAt=1609459200.0 + i)
 
         body = self._get(dash, self._makeDb()).data
 
-        self.assertEqual(body.count(b'class="milestone-item"'), 3)
+        self.assertEqual(body.count(b'class="milestone-item"'), 2)
         self.assertNotIn(b"data-milestone-more", body)
         self.assertNotIn(b'class="milestone-item" hidden', body)
 
     def test_show_more_button_appears_one_past_the_limit(self):
         dash = self._makeApp()
-        for i in range(4):
+        for i in range(3):
             self._record(dash, threshold=1000 * (i + 1), achievedAt=1609459200.0 + i)
 
         body = self._get(dash, self._makeDb()).data
