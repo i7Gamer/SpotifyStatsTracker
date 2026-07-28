@@ -7,9 +7,8 @@ Extracted verbatim from app.py: login/register/reset-password/logout, the three
 profile pages and their POST actions (/profile for the display name and
 preferences, /profile/sharing for share requests, /profile/connections for the
 Last.fm key and Spotify Developer credentials), share request/link actions, and
-the Spotify OAuth authorize/callback pair. App-level constants and the shared
-_passwordPolicyError are aliased from the app module at register() time; the
-per-group _safeNextUrl helper lives here.
+the Spotify OAuth authorize/callback pair. Constants come from config; the
+per-group _safeNextUrl and the shared _passwordPolicyError live here.
 """
 import os
 import re
@@ -20,7 +19,11 @@ from urllib.parse import urlencode
 from flask import render_template, redirect, request, url_for, session, abort, jsonify
 from werkzeug.security import generate_password_hash, check_password_hash
 
-import app as appmod
+from config import (
+    PASSWORD_MIN_LENGTH, RATE_LIMIT_ERROR_MESSAGE, SPOTIFY_OAUTH_STATE_NUM_BYTES,
+    SPOTIFY_OAUTH_STATE_SESSION_KEY, DISPLAY_NAME_MIN_LENGTH,
+    DISPLAY_NAME_MAX_LENGTH, DISPLAY_NAME_ALLOWED_PATTERN,
+)
 from SpotipyFree import parseCookieString
 from Database.lastfm import LastfmClient
 from Database.utils import dateToString
@@ -52,15 +55,21 @@ HTTP_BAD_REQUEST = 400
 HTTP_TOO_MANY_REQUESTS = 429
 
 
-def register(app, dashboard):
-    RATE_LIMIT_ERROR_MESSAGE = appmod.RATE_LIMIT_ERROR_MESSAGE
-    SPOTIFY_OAUTH_STATE_NUM_BYTES = appmod.SPOTIFY_OAUTH_STATE_NUM_BYTES
-    SPOTIFY_OAUTH_STATE_SESSION_KEY = appmod.SPOTIFY_OAUTH_STATE_SESSION_KEY
-    DISPLAY_NAME_MIN_LENGTH = appmod.DISPLAY_NAME_MIN_LENGTH
-    DISPLAY_NAME_MAX_LENGTH = appmod.DISPLAY_NAME_MAX_LENGTH
-    DISPLAY_NAME_ALLOWED_PATTERN = appmod.DISPLAY_NAME_ALLOWED_PATTERN
-    _passwordPolicyError = appmod._passwordPolicyError
+def _passwordPolicyError(password: str) -> str | None:
+    """None if `password` satisfies the account password policy, otherwise a
+    user-facing message naming the first unmet rule."""
+    if len(password) < PASSWORD_MIN_LENGTH:
+        return f"Password must be at least {PASSWORD_MIN_LENGTH} characters long."
+    if not any(c.isupper() for c in password):
+        return "Password must contain at least one uppercase letter."
+    if not any(c.islower() for c in password):
+        return "Password must contain at least one lowercase letter."
+    if not any(c.isdigit() or not c.isalnum() for c in password):
+        return "Password must contain at least one number or special character."
+    return None
 
+
+def register(app, dashboard):
     def _displayNameError(value):
         """Why this display name can't be used, or None if it's fine.
 

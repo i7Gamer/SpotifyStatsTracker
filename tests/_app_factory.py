@@ -2,7 +2,8 @@
 
 ~40 test classes each repeated the same 5-decorator ``_makeApp`` that builds a
 SpotifyDashboardApp with migrations, the version/login background threads and
-secret-key persistence patched out. This centralizes that setup:
+secret-key persistence patched out. This centralizes that setup (the background
+workers no longer need patching at all - see SpotifyDashboardApp.startWorkers):
 
 - subclass :class:`AppTestCase` to keep calling ``self._makeApp()`` unchanged, or
 - call :func:`makeApp` directly (module-level tests, or when extra setup is needed).
@@ -23,13 +24,12 @@ _SECRET_KEY_PATCH = "app.SpotifyDashboardApp._get_or_create_secret_key"
 def makeApp():
     """A ready-to-use SpotifyDashboardApp with no filesystem, network or threads.
 
-    Migrations, the periodic version-check and login-check background threads,
-    and secret-key persistence are all patched out for the duration of
-    construction (they run in ``__init__``); the returned instance is otherwise
+    Migrations and secret-key persistence are patched out for the duration of
+    construction (they still run in ``__init__``); the background workers need
+    no patching, since ``startWorkers()`` - which this deliberately never calls
+    - is the only thing that starts them. The returned instance is otherwise
     real, with an in-memory/temp Repository (see conftest's DB isolation)."""
     with patch(_SECRET_KEY_PATCH, return_value="test-secret-key"), \
-         patch("app.SpotifyDashboardApp.startVersionCheck_thread"), \
-         patch("app.SpotifyDashboardApp.checkLogin_thread"), \
          patch("app.migrateIfNeeded"), \
          patch("app.Path.exists", return_value=False):
         return SpotifyDashboardApp()

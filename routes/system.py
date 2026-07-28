@@ -15,7 +15,7 @@ from flask import (
     render_template, redirect, request, url_for, jsonify, Response, stream_with_context,
 )
 
-import app as appmod
+from config import MAX_UPLOAD_MB, EXPORT_FORMATS
 from Database.utils import versionTuple, now
 from services.export import generateJsonExport, generateCsvExport
 
@@ -23,8 +23,6 @@ logger = logging.getLogger(__name__)
 
 
 def register(app, dashboard):
-    MAX_UPLOAD_MB = appmod.MAX_UPLOAD_MB
-    EXPORT_FORMATS = appmod.EXPORT_FORMATS
 
     def _is_version_newer(remote: str, local: str) -> bool:
         try:

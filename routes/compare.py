@@ -13,7 +13,10 @@ from datetime import timedelta
 
 from flask import render_template, redirect, request, url_for, abort, jsonify
 
-import app as appmod
+from config import (
+    WRAPPED_LIMIT_OPTIONS, COMPARE_TOP_LIST_SIZE, COMPARE_SHARED_POOL_SIZE,
+    COMPARE_GENRE_POOL_SIZE, COMPARE_TOP_GENRES_LIMIT,
+)
 from Database.utils import convertToDatetime
 from services.taste_match import _markLinkExternally, _tasteMatchPercent
 from services.genre_gate import (
@@ -24,11 +27,6 @@ from services.genre_gate import (
 def register(app, dashboard):
     # App-level display constants this route depends on (defined in app.py and
     # also used by dashboard._gatherCompareStats / the Wrapped page).
-    WRAPPED_LIMIT_OPTIONS = appmod.WRAPPED_LIMIT_OPTIONS
-    COMPARE_TOP_LIST_SIZE = appmod.COMPARE_TOP_LIST_SIZE
-    COMPARE_SHARED_POOL_SIZE = appmod.COMPARE_SHARED_POOL_SIZE
-    COMPARE_GENRE_POOL_SIZE = appmod.COMPARE_GENRE_POOL_SIZE
-    COMPARE_TOP_GENRES_LIMIT = appmod.COMPARE_TOP_GENRES_LIMIT
 
     def comparePage():
         if not dashboard.repo.isDataSharingEnabled():

@@ -7,7 +7,7 @@ import logging
 import re
 from flask import render_template, redirect, request, url_for, jsonify, Response, stream_with_context, abort
 
-import app as appmod
+from config import PLAYLIST_EXPORT_FORMATS
 from services.export import generatePlaylistCsv, generatePlaylistM3u, generatePlaylistXspf
 
 logger = logging.getLogger(__name__)
@@ -20,7 +20,6 @@ FILENAME_UNSAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
 def register(app, dashboard):
-    PLAYLIST_EXPORT_FORMATS = appmod.PLAYLIST_EXPORT_FORMATS
 
     def addTagApi():
         email, username, db = dashboard.get_current_user_or_redirect()

@@ -27,7 +27,10 @@ import logging
 
 from flask import render_template, redirect, request, url_for, jsonify
 
-import app as appmod
+from config import (
+    GENRE_PAGE_LIST_LIMIT, GENRE_MIX_TREND_TOP_N, GENRE_PAGE_TOP_ARTISTS_LIMIT,
+    GENRE_PAGE_TOP_TRACKS_LIMIT, LISTEN_TIME_HIDE_SECONDS_ABOVE_HOURS,
+)
 from Database.utils import msToString, convertToDatetime
 from services.genre_gate import (
     emptyGenreCoverage, resolveGenreCoverage, genreGatePasses, resolveGenreDistribution,
@@ -39,11 +42,6 @@ logger = logging.getLogger(__name__)
 
 
 def register(app, dashboard):
-    GENRE_PAGE_LIST_LIMIT = appmod.GENRE_PAGE_LIST_LIMIT
-    GENRE_MIX_TREND_TOP_N = appmod.GENRE_MIX_TREND_TOP_N
-    GENRE_PAGE_TOP_ARTISTS_LIMIT = appmod.GENRE_PAGE_TOP_ARTISTS_LIMIT
-    GENRE_PAGE_TOP_TRACKS_LIMIT = appmod.GENRE_PAGE_TOP_TRACKS_LIMIT
-    LISTEN_TIME_HIDE_SECONDS_ABOVE_HOURS = appmod.LISTEN_TIME_HIDE_SECONDS_ABOVE_HOURS
 
     def _buildGenreDetail(db, username, selectedGenre, startDate, endDate, intervalLabel, trendGroupBy):
         """The per-genre drill-down context (stat strip + top lists) plus its

@@ -16,18 +16,16 @@ from flask import (
     abort, send_from_directory,
 )
 
-import app as appmod
+from config import (
+    WRAPPED_LIMIT_OPTIONS, WRAPPED_LIST_SIZE, SHARE_LINK_EXPIRY_CHOICES,
+    SHARE_LINK_MAX_PER_BUCKET, RATE_LIMIT_ERROR_MESSAGE,
+)
 from Database.database import Database
 from Database.repository import Repository
 from Database.utils import msToString, now
 
 
 def register(app, dashboard):
-    WRAPPED_LIMIT_OPTIONS = appmod.WRAPPED_LIMIT_OPTIONS
-    WRAPPED_LIST_SIZE = appmod.WRAPPED_LIST_SIZE   #< server default for a URL with no ?limit
-    SHARE_LINK_EXPIRY_CHOICES = appmod.SHARE_LINK_EXPIRY_CHOICES
-    SHARE_LINK_MAX_PER_BUCKET = appmod.SHARE_LINK_MAX_PER_BUCKET
-    RATE_LIMIT_ERROR_MESSAGE = appmod.RATE_LIMIT_ERROR_MESSAGE
 
     def wrappedPage():
         email, username, db = dashboard.get_current_user_or_redirect()

@@ -4,8 +4,11 @@
 import os
 from app import SpotifyDashboardApp
 
-# Initialize the application instance
+# Initialize the application instance. Construction only builds the WSGI app;
+# the background workers (backup, email, version-check, per-user listeners) are
+# a separate, explicit step - see SpotifyDashboardApp.startWorkers.
 dashboardApp = SpotifyDashboardApp()
+dashboardApp.startWorkers()
 app = dashboardApp.app
 
 def main():

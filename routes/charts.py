@@ -6,16 +6,21 @@ Songs/Albums/Artists lists, the /charts analytics page, and the song/artist/
 album detail pages.
 
 Extracted verbatim from app.py. Genre-gate/coverage helpers come from services/;
-the app-level PAGE_SIZE / CHART_* constants are aliased from the app module at
-register() time. Every stats/pagination/embed helper is reached through the
-dashboard instance.
+the PAGE_SIZE / CHART_* constants come from config. Every stats/pagination/embed
+helper is reached through the dashboard instance.
 """
 import logging
 
 from flask import render_template, redirect, request, url_for, session, jsonify
 
-import app as appmod
+from config import (
+    PAGE_SIZE, CHART_ARTIST_TREND_TOP_N, CHART_TOP_GENRES_LIMIT,
+    CHART_MOST_SKIPPED_LIMIT, TOP_LIST_SORT_BY, ON_THIS_DAY_YEARS_LIMIT,
+    LISTEN_TIME_HIDE_SECONDS_ABOVE_HOURS, RECOMMENDATION_ARTIST_LIMIT,
+    RECOMMENDATION_GENRE_POOL, RECOMMENDATION_EXCLUDE_TOP_N,
+)
 from routes._auth import makeRequiresUser
+from Database.database import Database
 from Database.utils import convertToDatetime, dateToString, msToString
 from services.genre_gate import (
     emptyGenreCoverage, resolveGenreCoverage, genreGatePasses, resolveGenreDistribution,
@@ -40,17 +45,11 @@ MAX_DETAIL_HISTORY_PAGES = 10
 
 
 def register(app, dashboard):
-    PAGE_SIZE = appmod.PAGE_SIZE
-    CHART_ARTIST_TREND_TOP_N = appmod.CHART_ARTIST_TREND_TOP_N
-    CHART_TOP_GENRES_LIMIT = appmod.CHART_TOP_GENRES_LIMIT
-    CHART_MOST_SKIPPED_LIMIT = appmod.CHART_MOST_SKIPPED_LIMIT
-    #< only the three Top pages can rank by skips - see config.TOP_LIST_SORT_BY
-    TOP_LIST_SORT_BY = appmod.TOP_LIST_SORT_BY
     # Read off the class, not the per-request db instance. A route test's
     # MagicMock db answers `db.SKIP_SORT_BY` with a Mock, which equals no
     # string - so every branch guarded on it silently took the other path and
     # the whole skip-count path went untested.
-    SKIP_SORT_BY = appmod.Database.SKIP_SORT_BY
+    SKIP_SORT_BY = Database.SKIP_SORT_BY
     requiresUser = makeRequiresUser(dashboard)
 
     # ---- Top Songs/Albums/Artists: the parts all three share -----------------
@@ -283,7 +282,7 @@ def register(app, dashboard):
         stats = db.getOverallStats(startDate, endDate)
 
         totalDurationText = msToString(stats["totalDurationMs"],
-                                       hideSecondsAboveHours=appmod.LISTEN_TIME_HIDE_SECONDS_ABOVE_HOURS)
+                                       hideSecondsAboveHours=LISTEN_TIME_HIDE_SECONDS_ABOVE_HOURS)
 
         currentTopSong = dashboard._embedTopSongTextElements(stats["currentTopSongs"][0], sortBy="plays", totalPlays=stats["totalSongsPlayed"], totalMs=stats["totalDurationMs"]) if stats["currentTopSongs"] else None
         currentTopArtist = dashboard._embedArtistTextElement(stats["currentTopArtists"][0], sortBy="totalTimeListened", totalPlays=stats["totalSongsPlayed"], totalMs=stats["totalDurationMs"]) if stats["currentTopArtists"] else None
@@ -318,7 +317,7 @@ def register(app, dashboard):
         # library - see dashboardDiscover) so they're fetched by the page's
         # own JS after first paint instead of blocking this render.
         currentStreak = db.getCurrentStreak()
-        onThisDay = db.getOnThisDay(limit=appmod.ON_THIS_DAY_YEARS_LIMIT)
+        onThisDay = db.getOnThisDay(limit=ON_THIS_DAY_YEARS_LIMIT)
         lastfmGenreEnabled = dashboard.repo.isLastfmGenreBackfillEnabled()
         # Streak calendar: ~1 year of daily play counts, rendered inline below
         # the live cards. Comparable cost to getCurrentStreak above (a similar
@@ -509,9 +508,9 @@ def register(app, dashboard):
         if unlocked:
             recommendations = db.getRecommendedArtists(
                 # Admin-tunable, read live per request; falls back to the code default.
-                limit=dashboard.repo.getDiscoverArtistLimit(appmod.RECOMMENDATION_ARTIST_LIMIT),
-                genrePool=appmod.RECOMMENDATION_GENRE_POOL,
-                excludeTopN=appmod.RECOMMENDATION_EXCLUDE_TOP_N,
+                limit=dashboard.repo.getDiscoverArtistLimit(RECOMMENDATION_ARTIST_LIMIT),
+                genrePool=RECOMMENDATION_GENRE_POOL,
+                excludeTopN=RECOMMENDATION_EXCLUDE_TOP_N,
             )
         return jsonify({"unlocked": unlocked, "recommendations": recommendations})
     app.add_url_rule("/api/dashboard-discover", "dashboardDiscover", dashboardDiscover, methods=["GET"])

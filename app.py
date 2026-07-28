@@ -12,22 +12,12 @@ import os
 import json
 import random
 import secrets
-import sys
 import tempfile
 import threading
 import requests
 from pathlib import Path
 import time
 from datetime import timedelta, datetime, timezone
-
-# When this file is run directly (py app.py), Python registers it in
-# sys.modules as "__main__", not "app". The routes/* modules below do
-# `import app as appmod` to reach PAGE_SIZE etc.; without this line that
-# import can't find "app" in sys.modules and re-executes this file from
-# scratch, re-entering the routes.charts import mid-flight before its
-# register() is defined - a circular ImportError. No-op on a normal
-# `import app`, since sys.modules["app"] is already this module by then.
-sys.modules.setdefault("app", sys.modules[__name__])
 
 from flask import Flask, render_template, redirect, request, url_for, jsonify, send_from_directory, session, g, abort, Response, stream_with_context, make_response
 from flask_wtf.csrf import CSRFProtect
@@ -109,20 +99,6 @@ def _hstsEnabled() -> bool:
     would break access. Enable it only when a TLS-terminating reverse proxy is
     in front. Read live per response so a flip doesn't need a restart."""
     return os.environ.get(ENABLE_HSTS_ENV_VAR, "").strip().lower() in TRUTHY_ENV_VALUES
-
-
-def _passwordPolicyError(password: str) -> str | None:
-    """None if `password` satisfies the account password policy, otherwise a
-    user-facing message naming the first unmet rule."""
-    if len(password) < PASSWORD_MIN_LENGTH:
-        return f"Password must be at least {PASSWORD_MIN_LENGTH} characters long."
-    if not any(c.isupper() for c in password):
-        return "Password must contain at least one uppercase letter."
-    if not any(c.islower() for c in password):
-        return "Password must contain at least one lowercase letter."
-    if not any(c.isdigit() or not c.isalnum() for c in password):
-        return "Password must contain at least one number or special character."
-    return None
 
 
 class _RateLimiter:
@@ -296,11 +272,10 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
             retentionCount=self.repo.getBackupRetentionCount(
                 _envInt(BACKUP_RETENTION_ENV_VAR, DEFAULT_BACKUP_RETENTION_COUNT)),
         )
-        self.backupWorker.start()
-        EMAIL_WORKER.bind_repo(self.repo)
-        EMAIL_WORKER.start()
-        self.startVersionCheck_thread()
-        self.checkLogin_thread()
+        # The workers themselves are constructed here (BackupWorker reads its
+        # schedule from admin settings, and /admin's Worker Health panel reads
+        # self.backupWorker) but deliberately NOT started - see startWorkers().
+        self._workersStarted = False
 
         self.registerRoutes()
 
@@ -1214,6 +1189,33 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
 
         registerTagsRoutes(self.app, self)
 
+    def startWorkers(self):
+        """Start the background workers. Call once, from the entry point, after
+        construction.
+
+        Kept out of __init__ because constructing this object should not have
+        side-effects on the world: these start four threads, and
+        checkLogin_thread's synchronous first pass additionally opens every
+        user's database and performs a network-bound Spotify login per user.
+        A caller that only wants the WSGI app (a test, a CLI subcommand) would
+        otherwise have to patch each one out individually - and EMAIL_WORKER,
+        being a module-level singleton, would have its repo rebound by whichever
+        app was constructed last.
+
+        Idempotent: wsgi.py's module-level construction and run() would
+        otherwise both start the login/version loops, neither of which guards
+        against a second thread of itself."""
+        if self._workersStarted:
+            return
+        self._workersStarted = True
+        self.backupWorker.start()
+        # Bind before start: the worker polls immediately, and an unbound one
+        # opens a throwaway connection per job (see EmailWorker.process_one).
+        EMAIL_WORKER.bind_repo(self.repo)
+        EMAIL_WORKER.start()
+        self.startVersionCheck_thread()
+        self.checkLogin_thread()
+
     def shutdown(self):
         self._stop_event.set()
         self.backupWorker.stop()
@@ -1238,6 +1240,7 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
 
     def run(self):
         try:
+            self.startWorkers()
             debug = os.environ.get("FLASK_DEBUG", "").lower() in TRUTHY_ENV_VALUES
             self.app.run(host="0.0.0.0", debug=debug, port=5444, use_reloader=False)#, threaded=False)
         finally:
