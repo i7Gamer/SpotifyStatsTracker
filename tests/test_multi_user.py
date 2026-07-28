@@ -87,7 +87,7 @@ class TestMultiUser(unittest.TestCase):
         self.assertEqual(app.repo.getUsernameForEmail("alice@example.com"), "alice_1")
 
     @patch(_SECRET_KEY_PATCH, return_value='test-secret-key')
-    @patch('app.Database')   #< get_user_db must not build a real Database (files, threads, network)
+    @patch('dashboard.user_registry.Database')   #< get_user_db must not build a real Database (files, threads, network)
     @patch('app.SpotifyDashboardApp.startVersionCheck_thread')
     @patch('app.SpotifyDashboardApp.checkLogin_thread')
     @patch('app.migrateIfNeeded')

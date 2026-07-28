@@ -348,7 +348,7 @@ class TestAppShutdownTwoPhase(unittest.TestCase):
         """Databases must observe the app-wide stop event, or the reconnect
         gates never fire."""
         dash = self._bareApp()
-        with patch("app.Database") as MockDatabase:
+        with patch("dashboard.user_registry.Database") as MockDatabase:
             MockDatabase.return_value = MagicMock()
             dash.get_user_db("alice", "alice@example.com")
 

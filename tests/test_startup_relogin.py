@@ -146,7 +146,7 @@ class TestStartupReloginFromDatabaseCookies(unittest.TestCase):
             createdDatabases.append(db)
             return db
 
-        with patch("app.Database", side_effect=recordingDatabase), \
+        with patch("dashboard.user_registry.Database", side_effect=recordingDatabase), \
              patch("Database.database.Listener",
                    side_effect=RuntimeError("Could not GET https://open.spotify.com/. Status Code: 504")), \
              patch("Database.database.AutoImporter") as mockAutoImporterClass:

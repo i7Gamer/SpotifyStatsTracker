@@ -25,7 +25,7 @@ class TestGetReadOnlyUserDb(ReadOnlyUserDbTestCase):
     def test_cold_user_gets_a_db_without_activation(self):
         app = self._makeApp()
 
-        with patch('app.Database', side_effect=lambda *a, **k: MagicMock()):
+        with patch('dashboard.user_registry.Database', side_effect=lambda *a, **k: MagicMock()):
             db = app._getReadOnlyUserDb("alice")
 
         self.assertIsNotNone(db)
@@ -38,7 +38,7 @@ class TestGetReadOnlyUserDb(ReadOnlyUserDbTestCase):
     def test_second_call_reuses_the_same_instance(self):
         app = self._makeApp()
 
-        with patch('app.Database', side_effect=lambda *a, **k: MagicMock()) as mock_database:
+        with patch('dashboard.user_registry.Database', side_effect=lambda *a, **k: MagicMock()) as mock_database:
             db1 = app._getReadOnlyUserDb("alice")
             db2 = app._getReadOnlyUserDb("alice")
 
@@ -48,7 +48,7 @@ class TestGetReadOnlyUserDb(ReadOnlyUserDbTestCase):
     def test_reuses_an_already_active_instance_instead_of_building_a_readonly_one(self):
         app = self._makeApp()
 
-        with patch('app.Database', side_effect=lambda *a, **k: MagicMock()) as mock_database:
+        with patch('dashboard.user_registry.Database', side_effect=lambda *a, **k: MagicMock()) as mock_database:
             activeDb = app.get_user_db("alice", "alice@example.com")
             readOnlyDb = app._getReadOnlyUserDb("alice")
 
@@ -61,7 +61,7 @@ class TestActivationGuardOnRealLogin(ReadOnlyUserDbTestCase):
     def test_real_login_activates_a_previously_read_only_instance_in_place(self):
         app = self._makeApp()
 
-        with patch('app.Database', side_effect=lambda *a, **k: MagicMock()) as mock_database:
+        with patch('dashboard.user_registry.Database', side_effect=lambda *a, **k: MagicMock()) as mock_database:
             readOnlyDb = app._getReadOnlyUserDb("alice")
             readOnlyDb.startListener.assert_not_called()
 
@@ -77,7 +77,7 @@ class TestActivationGuardOnRealLogin(ReadOnlyUserDbTestCase):
     def test_activation_only_happens_once_across_repeated_real_logins(self):
         app = self._makeApp()
 
-        with patch('app.Database', side_effect=lambda *a, **k: MagicMock()):
+        with patch('dashboard.user_registry.Database', side_effect=lambda *a, **k: MagicMock()):
             app._getReadOnlyUserDb("alice")
             db1 = app.get_user_db("alice", "alice@example.com")
             db2 = app.get_user_db("alice", "alice@example.com")
@@ -90,7 +90,7 @@ class TestActivationGuardOnRealLogin(ReadOnlyUserDbTestCase):
         the activation-guard rework must not change existing behavior here."""
         app = self._makeApp()
 
-        with patch('app.Database', side_effect=lambda *a, **k: MagicMock()) as mock_database:
+        with patch('dashboard.user_registry.Database', side_effect=lambda *a, **k: MagicMock()) as mock_database:
             db1 = app.get_user_db("alice", "alice@example.com")
             db2 = app.get_user_db("alice", "alice@example.com")
 
@@ -108,7 +108,7 @@ class TestActivationFailureHandling(ReadOnlyUserDbTestCase):
 
         app = self._makeApp()
 
-        with patch('app.Database', side_effect=_makeBrokenDb):
+        with patch('dashboard.user_registry.Database', side_effect=_makeBrokenDb):
             with self.assertRaises(RuntimeError):
                 app.get_user_db("alice", "alice@example.com")
 
@@ -118,7 +118,7 @@ class TestActivationFailureHandling(ReadOnlyUserDbTestCase):
     def test_upgrade_activation_failure_removes_the_dead_instance_from_both_caches(self):
         app = self._makeApp()
 
-        with patch('app.Database', side_effect=lambda *a, **k: MagicMock()):
+        with patch('dashboard.user_registry.Database', side_effect=lambda *a, **k: MagicMock()):
             readOnlyDb = app._getReadOnlyUserDb("alice")
             readOnlyDb.startListener.side_effect = RuntimeError("bad cookies")
 
@@ -132,7 +132,7 @@ class TestActivationFailureHandling(ReadOnlyUserDbTestCase):
     def test_a_later_call_after_upgrade_failure_reconstructs_fresh(self):
         app = self._makeApp()
 
-        with patch('app.Database', side_effect=lambda *a, **k: MagicMock()) as mock_database:
+        with patch('dashboard.user_registry.Database', side_effect=lambda *a, **k: MagicMock()) as mock_database:
             readOnlyDb = app._getReadOnlyUserDb("alice")
             readOnlyDb.startListener.side_effect = RuntimeError("bad cookies")
             with self.assertRaises(RuntimeError):

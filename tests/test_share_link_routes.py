@@ -1285,7 +1285,7 @@ class TestActivationGuardViaPublicRoute(ShareLinkRoutesTestCase):
     def test_cold_username_view_then_real_login_activates_once(self):
         self.dash.repo.upsertUser("alice", "alice@example.com")
 
-        with patch('app.Database', side_effect=self._makeMockDb):
+        with patch('dashboard.user_registry.Database', side_effect=self._makeMockDb):
             token = self.dash.repo.createShareLink("alice", self.dash.repo.SHARE_LINK_KIND_WRAPPED, 2026, None)
             client = self.dash.app.test_client()
 
