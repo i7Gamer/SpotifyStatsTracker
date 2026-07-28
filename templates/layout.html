@@ -28,7 +28,9 @@
     <meta name="theme-color" content="#000000" />
     <meta name="title" content="Spotify Tracker" />
     <meta name="description" content="Keep track of your Spotify listening habits with this Spotify Tracker." />
-    <title>Spotify Tracker</title>
+    {#- Page-specific first, app name second: a narrow tab strip truncates from
+        the right, so the part that tells two open tabs apart has to lead. -#}
+    <title>{% block title %}Spotify Tracker{% endblock %}</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
     <link rel="manifest" href="{{ url_for('static', filename='manifest.json') }}" />
     <link rel="icon" type="image/png" href="{{ url_for('static', filename='images/favicon.png') }}">
@@ -37,6 +39,14 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@400;600;700;800&display=swap" rel="stylesheet">
   </head>
   <body>
+    {#- First thing in the body so the first Tab reaches it, and the only
+        focusable thing before <main> - which matters most on this layout,
+        where the alternative is tabbing through the brand link, every badge,
+        the nav toggle and three dropdowns on every single page load.
+        tabindex="-1" on the target is what actually moves focus: without it
+        the browser scrolls but leaves focus on the link, so the next Tab
+        resumes from the top of the document. -#}
+    <a class="skip-link" href="#main-content">Skip to main content</a>
     <header class="topbar">
       <a class="brand" href="{{ url_for('overviewPage') }}">
         Spotify Tracker
@@ -118,7 +128,7 @@
       </nav>
     </header>
 
-    <main class="page">{% block content %}{% endblock %}</main>
+    <main id="main-content" tabindex="-1" class="page">{% block content %}{% endblock %}</main>
     <script src="{{ url_for('static', filename='js/ajax-status.js') }}"></script>
     <script src="{{ url_for('static', filename='js/artist-toggle.js') }}"></script>
     <script src="{{ url_for('static', filename='js/copy-link.js') }}"></script>

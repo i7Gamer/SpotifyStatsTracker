@@ -2,6 +2,7 @@
     SPDX-License-Identifier: AGPL-3.0-or-later -#}
 
 {% extends "layout.html" %}
+{% block title %}{{ artist.get('name', '') }} - {{ super() }}{% endblock %}
 {% block content %}
   {# Shell of a two-phase load - see song_detail.html's comment; the body is
      _artist_detail_body.html, fetched via ?ajax=page. #}

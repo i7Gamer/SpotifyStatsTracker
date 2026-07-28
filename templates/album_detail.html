@@ -2,6 +2,7 @@
     SPDX-License-Identifier: AGPL-3.0-or-later -#}
 
 {% extends "layout.html" %}
+{% block title %}{{ album.get('name', '') }} - {{ super() }}{% endblock %}
 {% from '_artist_links.html' import artistLinks with context %}
 {% block content %}
   {# Shell of a two-phase load - see song_detail.html's comment; the body is

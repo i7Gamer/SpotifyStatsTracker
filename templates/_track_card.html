@@ -68,10 +68,16 @@
 
   <div class="track-media">
   {% if item_number %}<div class="track-number">{{ item_number }}</div>{% endif %}
+  {# The cover link goes exactly where the heading link below goes, so leaving
+     both in the tab order costs two stops per card for one destination - 100
+     on a 50-card Top page - and a screen reader announces the same target
+     twice (once by the img alt, once by the heading). Kept clickable for the
+     mouse, removed from the keyboard/AT path; the heading link is the one that
+     carries the accessible name. -#}
   {% if linkableId %}
-    <a href="{{ detailUrl }}" class="track-cover-link">
+    <a href="{{ detailUrl }}" class="track-cover-link" tabindex="-1" aria-hidden="true">
   {% elif externalUrl %}
-    <a href="{{ externalUrl }}" class="track-cover-link" target="_blank" rel="noreferrer noopener">
+    <a href="{{ externalUrl }}" class="track-cover-link" target="_blank" rel="noreferrer noopener" tabindex="-1" aria-hidden="true">
   {% endif %}
   <!-- Image path depends on section -->
   {% if section == 'top_artists' %}

@@ -7,6 +7,7 @@
     AGPL-3.0-or-later. See NOTICE. -#}
 
 {% extends "layout.html" %}
+{% block title %}Top Songs - {{ super() }}{% endblock %}
 {% block content %}
   {# Two-phase load like /charts, /genres, /history: this GET renders just the
      filter card + an empty #topListResults placeholder; static/js/top-list.js

@@ -2,6 +2,7 @@
     SPDX-License-Identifier: AGPL-3.0-or-later -#}
 
 {% extends "layout.html" %}
+{% block title %}{{ song.get('name', '') }} - {{ super() }}{% endblock %}
 {% from '_artist_links.html' import artistLinks with context %}
 {% block content %}
   {# Two-phase load like /charts, /genres, /history and the Top pages: this GET

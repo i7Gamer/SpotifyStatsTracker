@@ -2,6 +2,7 @@
     SPDX-License-Identifier: AGPL-3.0-or-later -#}
 
 {% extends "layout.html" %}
+{% block title %}History - {{ super() }}{% endblock %}
 {% block content %}
   {# The searchable, paginated play history - split off the dashboard so that
      page stays a glanceable overview. Filter form mirrors the one the dashboard

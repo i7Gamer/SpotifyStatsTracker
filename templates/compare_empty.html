@@ -2,6 +2,7 @@
     SPDX-License-Identifier: AGPL-3.0-or-later -#}
 
 {% extends "layout.html" %}
+{% block title %}Compare - {{ super() }}{% endblock %}
 {% block content %}
 
 {# Shown instead of the full compare.html shell when comparePage() finds no

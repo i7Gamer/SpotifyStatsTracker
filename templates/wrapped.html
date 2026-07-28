@@ -2,6 +2,7 @@
     SPDX-License-Identifier: AGPL-3.0-or-later -#}
 
 {% extends "layout_public.html" if publicView else "layout.html" %}
+{% block title %}{{ year }} Wrapped - {{ super() }}{% endblock %}
 {% block content %}
 {# The page owner as people know them (users.display_name, falling back to the
    username). Kept separate from `username`, which stays the immutable key and

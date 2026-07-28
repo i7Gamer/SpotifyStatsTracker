@@ -2,6 +2,7 @@
     SPDX-License-Identifier: AGPL-3.0-or-later -#}
 
 {% extends "layout.html" %}
+{% block title %}Top Albums - {{ super() }}{% endblock %}
 {% block content %}
   {# Two-phase load - see top_songs.html. #}
   <section class="hero">

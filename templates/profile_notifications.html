@@ -4,6 +4,7 @@
     Profile: Email notification preferences per user. -#}
 
 {% extends "_profile_base.html" %}
+{% block title %}Notifications - {{ super() }}{% endblock %}
 {% import "_profile_macros.html" as profileMacros with context %}
 
 {% block profileTitle %}Notification Preferences{% endblock %}

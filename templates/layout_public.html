@@ -19,7 +19,9 @@
     <meta name="theme-color" content="#000000" />
     <meta name="title" content="Spotify Tracker" />
     <meta name="description" content="Keep track of your Spotify listening habits with this Spotify Tracker." />
-    <title>Spotify Tracker</title>
+    {#- Page-specific first, app name second: a narrow tab strip truncates from
+        the right, so the part that tells two open tabs apart has to lead. -#}
+    <title>{% block title %}Spotify Tracker{% endblock %}</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
     <link rel="icon" type="image/png" href="{{ url_for('static', filename='images/favicon.png') }}">
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -27,7 +29,12 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@400;600;700;800&display=swap" rel="stylesheet">
   </head>
   <body>
-    <main class="page">{% block content %}{% endblock %}</main>
+    {#- First thing in the body so the first Tab reaches it, and the only
+        focusable thing before <main>. tabindex="-1" on the target is what
+        actually moves focus: without it the browser scrolls but leaves focus
+        on the link, so the next Tab resumes from the top of the document. -#}
+    <a class="skip-link" href="#main-content">Skip to main content</a>
+    <main id="main-content" tabindex="-1" class="page">{% block content %}{% endblock %}</main>
     {# The shared-Wrapped page loads wrapped.js, whose loader reports failures
        through AjaxStatus - and this layout did not include it, so every
        renderInto/showBanner call on the public page was silently skipped and a

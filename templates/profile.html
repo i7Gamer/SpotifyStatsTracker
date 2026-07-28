@@ -5,6 +5,7 @@
     profile_sharing.html, the API keys on profile_connections.html. -#}
 
 {% extends "_profile_base.html" %}
+{% block title %}Account - {{ super() }}{% endblock %}
 {% import "_profile_macros.html" as profileMacros with context %}
 
 {% block profileTitle %}Account{% endblock %}
