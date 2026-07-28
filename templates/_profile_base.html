@@ -32,4 +32,10 @@
 </div>
 
 {% block profileScripts %}{% endblock %}
+<script src="{{ url_for('static', filename='js/profile-page.js') }}"></script>
+<script>
+  (function () {
+    if (typeof ProfilePage !== 'undefined') { ProfilePage.init(); }
+  }());
+</script>
 {% endblock %}
