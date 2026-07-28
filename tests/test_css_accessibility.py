@@ -23,6 +23,12 @@ class TestNavKeyboardCss(unittest.TestCase):
     def test_logout_form_button_is_styled_like_dropdown_links(self):
         self.assertIn(".dropdown-content .dropdown-logout-form button", self.css)
 
+    def test_setting_hint_summary_centered(self):
+        # Verify .setting-hint summary includes padding-right to shift the italic 'i' symbol left into optical center
+        self.assertIn(".setting-hint summary", self.css)
+        self.assertIn("padding-right: 1px;", self.css)
+
+
 
 if __name__ == "__main__":
     unittest.main()

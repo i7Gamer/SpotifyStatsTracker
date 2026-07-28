@@ -673,9 +673,11 @@ progress::-moz-progress-bar {
    markup below is shared by profile.html, profile_sharing.html and
    profile_connections.html through _profile_base.html. */
 
-.profile-card {
+.login-card.profile-card {
   /* Wider than the login card it borrows its chrome from - these pages are
-     forms plus tables, not a single email/password pair. */
+     forms plus tables, not a single email/password pair. Double-class
+     selector beats .login-card alone so the 900 px width wins regardless
+     of the declaration order in this sheet. */
   width: min(900px, 100%);
 }
 
@@ -743,6 +745,13 @@ progress::-moz-progress-bar {
 
 .profile-wide-button {
   width: 100%;
+}
+
+/* Applied to .login-card while an AJAX tab fetch is in flight. */
+.profile-tab-loading {
+  opacity: 0.6;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
 }
 
 .profile-button-row {
@@ -2001,6 +2010,7 @@ progress::-moz-progress-bar {
   font-style: italic;
   font-weight: 700;
   user-select: none;
+  padding-right: 1px;
 }
 
 .setting-hint summary::-webkit-details-marker {
