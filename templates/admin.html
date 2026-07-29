@@ -92,6 +92,7 @@
               <form method="post" action="{{ url_for('adminSetUserAdmin', username=u.username) }}" style="margin: 0;">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
                 <input type="hidden" name="make_admin" value="{{ '0' if u.is_admin else '1' }}"/>
+                <input type="hidden" name="tab" value="{{ current_tab }}"/>
                 <button type="submit" class="primary-button" style="padding: 2px 10px; font-size: 0.8rem;{% if u.is_admin %} background: #555;{% endif %}"
                         {% if u.is_admin and admin_count <= 1 %}disabled title="Cannot remove the instance's last admin"{% endif %}>
                   {{ 'Demote' if u.is_admin else 'Promote' }}
@@ -120,7 +121,7 @@
 </nav>
 
 <!-- Swappable Tab Body Container -->
-<div id="admin-tab-body">
+<div id="admin-tab-body" aria-live="polite" aria-atomic="false">
   {% if current_tab == 'overview' %}
     <!-- Activity Tiles -->
     <div style="display: flex; align-items: baseline; gap: 0.75rem; margin-bottom: 1.25rem; flex-wrap: wrap;">

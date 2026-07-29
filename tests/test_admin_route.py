@@ -1439,9 +1439,44 @@ class TestAdminTabNavigation(AdminRouteTestBase):
         self.assertIn("tab=settings", resp.location)
 
 
+class TestAdminRestartTabRedirect(AdminRouteTestBase):
+    def test_restart_disabled_redirects_to_settings_tab(self):
+        """adminRestart error redirect must land on the settings tab."""
+        import os
+        from unittest.mock import patch
+        dash = self._makeApp()
+        with patch.dict(os.environ, {}, clear=False):
+            # ALLOW_INSTANCE_RESTART not set → disabled path
+            resp = self._post(dash, "/admin/restart", isAdmin=True, data={})
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn("tab=settings", resp.location)
+
+
+class TestAdminUserAdminFormHiddenTab(AdminRouteTestBase):
+    def test_promote_demote_form_includes_hidden_tab_field(self):
+        """The Promote/Demote form must carry a hidden tab input so the
+        backend can redirect back to the tab the admin was on."""
+        dash = self._makeApp()
+        dash.repo.upsertUser("charlie", "charlie@example.com")
+        body = self._getAdmin(dash, isAdmin=True).data.decode()
+        self.assertIn('name="tab"', body)
+
+    def test_aria_live_on_tab_body(self):
+        """#admin-tab-body must declare aria-live so AJAX swaps are
+        announced to screen readers."""
+        dash = self._makeApp()
+        body = self._getAdmin(dash, isAdmin=True).data.decode()
+        self.assertIn('aria-live', body)
+        # The aria-live attribute must be on or near the tab body container
+        idx = body.find('id="admin-tab-body"')
+        self.assertNotEqual(idx, -1)
+        snippet = body[idx:idx + 80]
+        self.assertIn('aria-live', snippet)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
 
 

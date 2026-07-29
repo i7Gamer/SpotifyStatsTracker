@@ -717,7 +717,7 @@ def register(app, dashboard):
         if not dashboard.repo.isAdmin(username):
             abort(403)
         if os.environ.get(ALLOW_INSTANCE_RESTART_ENV_VAR, "").lower() not in TRUTHY_ENV_VALUES:
-            return redirect(url_for("adminPage",
+            return redirect(url_for("adminPage", tab="settings",
                 error="Instance restart is disabled. Set ALLOW_INSTANCE_RESTART=1 in a supervised launch to enable it."))
 
         def _gracefulExit():
@@ -728,7 +728,7 @@ def register(app, dashboard):
         threading.Timer(INSTANCE_RESTART_DELAY_SECONDS, _gracefulExit).start()
         # `message`, not `error`: the restart was accepted, so /admin should
         # show it in the informational banner rather than the red error one.
-        return redirect(url_for("adminPage",
+        return redirect(url_for("adminPage", tab="settings",
             message="Restarting now - the app will be back in a few seconds if the process is supervised."))
     app.add_url_rule("/admin/restart", "adminRestart", adminRestart, methods=["POST"])
 
