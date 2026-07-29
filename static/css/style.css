@@ -4515,7 +4515,7 @@ html.theme-red {
 }
 
 .admin-select-input {
-  width: 8rem;
+  width: 9rem;
   padding: 4px 8px;
   background: var(--card-bg, #1e1e1e);
   color: var(--fg, #eee);

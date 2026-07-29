@@ -57,6 +57,11 @@ class TestAdminUtilityClasses(unittest.TestCase):
     def test_admin_status_table_class_exists(self):
         self.assertIn('.admin-status-table', self.css)
 
+    def test_admin_select_input_width(self):
+        self.assertIn('.admin-select-input', self.css)
+        self.assertIn('width: 9rem;', self.css)
+
+
 
 if __name__ == "__main__":
     unittest.main()
