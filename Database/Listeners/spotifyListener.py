@@ -126,7 +126,29 @@ _SCOPE_ERROR = object()
 # confusingly instant, since nothing was actually wrong - re-auth flow.
 SCOPE_ERROR_CONFIRM_THRESHOLD = 3
 
-USER_VALIDATION_CACHE_SECONDS = 5 * 60  #< Cache user validation results to reduce bot detection triggers
+# How long an identity check stands before the session is re-verified.
+#
+# MUST stay longer than WEB_API_POLL_INTERVAL_SECONDS. The check runs against
+# www.spotify.com/api/account-settings/v1/profile, which is Spotify's CONSUMER
+# WEB front-end and therefore bot-protected: every "Oh nein!" HTML challenge
+# page in app.log came from that one endpoint, at 0.2 requests a minute per
+# user, while the connect-state API backend absorbed 50x the volume without
+# complaint. Volume was never what made this call fail - being pointed at a
+# browser endpoint was.
+#
+# So for any user with Spotify API credentials the backfill's own /v1/me check
+# (official API, OAuth, no bot check - see _recordExternalIdentityCheck) now
+# refreshes this window before it can expire, and the browser endpoint is
+# never reached on a schedule at all. Keeping this above the backfill interval
+# is what makes that true; drop it below and the browser call comes back.
+#
+# For users WITHOUT credentials this is simply the old 5 minutes stretched:
+# the contamination bug it guards against had its root cause fixed in
+# patched_spotify_login (every login now gets its own TLSClient rather than
+# sharing one process-wide cookie jar), __init__ still checks on every listener
+# build, and a mid-session recheck is defence in depth - not worth paying for
+# on a bot-protected endpoint every five minutes.
+USER_VALIDATION_CACHE_SECONDS = 20 * 60
 
 # How long the profile endpoint is left alone after IT was what failed - a
 # bot-check page or a rate limit, rather than an answer.
@@ -518,6 +540,25 @@ class Listener:
                                "(rate limit or malformed response): %s", self.logUser, parseError(e))
                 return True
             return False
+
+    def _recordExternalIdentityCheck(self, now: float) -> None:
+        """Count a POSITIVE identity check made elsewhere as this listener's
+        session validation, so the cookie-based one doesn't have to run.
+
+        Today that means the Web API backfill's /v1/me lookup: same question
+        ("do these credentials still belong to this account?"), asked of the
+        official OAuth API instead of the bot-protected consumer web endpoint
+        that _validateCurrentUser has to use. It runs every
+        WEB_API_POLL_INTERVAL_SECONDS, which is shorter than the window it
+        refreshes here, so a credentialed user's listener stops touching
+        www.spotify.com on a schedule entirely.
+
+        Only ever called for a check that actually PROVED identity - see the
+        caller. A comparison that couldn't run (no email on either side) proves
+        nothing and must not suppress the real one."""
+        self._last_user_validation_time = now
+        self._last_user_validation_result = True
+        self._last_validation_error_time = None
 
     def _validationIsOnCooldown(self, now: float) -> bool:
         """Whether the profile endpoint should be left alone this poll.
@@ -1013,9 +1054,12 @@ class Listener:
             # may store user IDs differently than the Spotify Web API, check email first (most reliable),
             # fall back to display name if email unavailable.
             mismatch = False
+            identityConfirmed = False  #< the comparison actually RAN and passed
             if self.email and web_api_user_email and self.email.lower() != web_api_user_email.lower():
                 mismatch = True
                 mismatch_reason = f"email mismatch: API has {web_api_user_email}, listener is {self.email}"
+            elif self.email and web_api_user_email:
+                identityConfirmed = True
             elif self.email and not web_api_user_email and web_api_user_display:
                 # Email validation failed (API response missing email), fall back to display name
                 # Only flag if listener email username doesn't roughly match display name
@@ -1023,11 +1067,20 @@ class Listener:
                 mismatch = False  # Can't prove mismatch without email, be lenient
 
             if mismatch:
+                # Deliberately NOT fed into the validation cache as a False.
+                # This proves the OAuth CREDENTIALS point at another account,
+                # which rebuilding the cookie session cannot fix - the two
+                # identities have separate failure modes and separate remedies.
                 logger.error(
                     "CONTAMINATION CHECK FAILED: Web API user mismatch (%s). Skipping backfill to prevent cross-user data import.",
                     mismatch_reason
                 )
                 return
+
+            if identityConfirmed:
+                # The official API just answered the question _validateCurrentUser
+                # would otherwise ask the bot-protected consumer endpoint.
+                self._recordExternalIdentityCheck(now)
 
             items = _fetch_recently_played_from_web_api(access_token, logUser=self.logUser)
 

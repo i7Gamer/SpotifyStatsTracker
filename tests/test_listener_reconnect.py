@@ -30,6 +30,7 @@ from Database.Listeners.spotifyListener import (
     LOCAL_PAUSE_RETRY_WAIT_SECONDS,
     USER_VALIDATION_CACHE_SECONDS,
     USER_VALIDATION_ERROR_COOLDOWN_SECONDS,
+    WEB_API_POLL_INTERVAL_SECONDS,
     LISTENER_POLL_INTERVAL_SECONDS,
     LISTENER_POLL_INTERVAL_JITTER_SECONDS,
     _pollIntervalWithJitter,
@@ -683,6 +684,102 @@ class TestLocalPauseIsNotSpotifyPushback(unittest.TestCase):
             "Spotify rate limit backoff in progress - skipped account-settings/profile")
         self.assertTrue(_is_rate_limit_error(error))
         self.assertFalse(_is_auth_error(error))
+
+
+class TestWebApiIdentityCheckReplacesTheBrowserEndpoint(unittest.TestCase):
+    """_validateCurrentUser's only tool is
+    www.spotify.com/api/account-settings/v1/profile - Spotify's CONSUMER WEB
+    front-end, and therefore bot-protected. Every "Oh nein!" HTML challenge in
+    app.log came from that one endpoint at 0.2 requests/minute/user, while the
+    connect-state API backend took 50x the volume without complaint. Volume was
+    never what made it fail; being pointed at a browser endpoint was.
+
+    The backfill's /v1/me lookup already asks the same question of the official
+    OAuth API, so for a credentialed user it can carry the answer and the
+    browser endpoint never needs to be called on a schedule."""
+
+    def _listenerWithBackfill(self, apiUser, listenerEmail="alice@example.com"):
+        listener = _bareListener()
+        listener.email = listenerEmail
+        listener.user = "alice"
+        listener.get_credentials = MagicMock(return_value={
+            "client_id": "cid", "client_secret": "cs", "refresh_token": "rt"})
+        listener.get_backfill_enabled = None
+        listener.get_recorded_play_times = None
+        listener._lastWebApiPollTime = None
+        listener._consecutiveScopeErrors = 0
+        listener.on_scope_status_change = None
+        listener.webApiRecentlyPlayed_Z1 = []
+
+        with patch("Database.Listeners.spotifyListener._refresh_spotify_access_token",
+                   return_value="token123"), \
+             patch("Database.Listeners.spotifyListener._get_current_user_from_web_api",
+                   return_value=apiUser), \
+             patch("Database.Listeners.spotifyListener._fetch_recently_played_from_web_api",
+                   return_value=[]), \
+             patch("Database.Listeners.spotifyListener.time.monotonic", return_value=_MONOTONIC_NOW):
+            listener._checkWebApiBackfill(MagicMock())
+        return listener
+
+    def _matchingApiUser(self):
+        return {"id": "alice", "display_name": "Alice", "email": "alice@example.com"}
+
+    def test_a_confirmed_api_identity_stops_the_browser_call(self):
+        listener = self._listenerWithBackfill(self._matchingApiUser())
+
+        with patch("Database.Listeners.spotifyListener.time.monotonic", return_value=_MONOTONIC_NOW + 1):
+            self.assertTrue(listener._validateCurrentUser())
+
+        listener.sp.current_user.assert_not_called()
+
+    def test_the_trust_window_outlives_the_backfill_interval(self):
+        """The invariant that makes it work at all: if the window expired
+        before the next /v1/me check, the browser endpoint would be reached in
+        the gap and nothing would have been gained."""
+        self.assertGreater(USER_VALIDATION_CACHE_SECONDS, WEB_API_POLL_INTERVAL_SECONDS)
+
+    def test_an_api_response_without_an_email_proves_nothing(self):
+        """The comparison never ran, so it must not suppress the real check -
+        being lenient about a missing email is not the same as confirming."""
+        listener = self._listenerWithBackfill(
+            {"id": "alice", "display_name": "Alice", "email": ""})
+
+        with patch("Database.Listeners.spotifyListener.time.monotonic", return_value=_MONOTONIC_NOW + 1):
+            listener._validateCurrentUser()
+
+        listener.sp.current_user.assert_called_once()
+
+    def test_a_listener_without_an_expected_email_proves_nothing(self):
+        listener = self._listenerWithBackfill(self._matchingApiUser(), listenerEmail=None)
+
+        with patch("Database.Listeners.spotifyListener.time.monotonic", return_value=_MONOTONIC_NOW + 1):
+            listener._validateCurrentUser()
+
+        listener.sp.current_user.assert_called_once()
+
+    def test_a_mismatch_never_marks_the_cookie_session_invalid(self):
+        """A Web API mismatch means the OAuth CREDENTIALS point at another
+        account. Rebuilding the cookie session cannot fix that, so it must not
+        be reported as a failed session validation."""
+        listener = self._listenerWithBackfill(
+            {"id": "bob", "display_name": "Bob", "email": "bob@example.com"})
+
+        self.assertIsNone(listener._last_user_validation_time)
+        listener.sp.current_user.return_value = {"id": None}
+        with patch("Database.Listeners.spotifyListener.time.monotonic", return_value=_MONOTONIC_NOW + 1):
+            self.assertTrue(listener._validateCurrentUser())
+
+    def test_a_user_without_credentials_still_gets_validated(self):
+        """No API credentials means no /v1/me to lean on - the cookie check is
+        still the only identity source, just on a longer leash."""
+        listener = _bareListener()
+        listener._authenticated_user_id = "user1"
+        listener.sp.current_user.return_value = {"id": "user1"}
+
+        with patch("Database.Listeners.spotifyListener.time.monotonic", return_value=_MONOTONIC_NOW):
+            self.assertTrue(listener._validateCurrentUser())
+
+        listener.sp.current_user.assert_called_once()
 
 
 class TestPollIntervalJitter(unittest.TestCase):
