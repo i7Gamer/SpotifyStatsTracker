@@ -744,15 +744,17 @@ def register(app, dashboard):
             return redirect(url_for("login", next=url_for("adminPage")))
         if not dashboard.repo.isAdmin(actingUsername):
             abort(403)
+        tab = request.args.get("tab") or request.form.get("tab") or "overview"
         makeAdmin = request.form.get("make_admin") == "1"
         if makeAdmin:
             dashboard.repo.setUserAdmin(username, True)
-            return redirect(url_for("adminPage"))
+            return redirect(url_for("adminPage", tab=tab))
         # Demotion: demoteAdmin returns False both when the target was never an
         # admin (nothing to do) and when it's the last admin (must be blocked) -
         # only the latter is an error, so re-check admin status to tell them
         # apart.
         if not dashboard.repo.demoteAdmin(username) and dashboard.repo.isAdmin(username):
-            return redirect(url_for("adminPage", error="Cannot remove the instance's last admin."))
-        return redirect(url_for("adminPage"))
+            return redirect(url_for("adminPage", tab=tab, error="Cannot remove the instance's last admin."))
+        return redirect(url_for("adminPage", tab=tab))
     app.add_url_rule("/admin/users/<username>/admin", "adminSetUserAdmin", adminSetUserAdmin, methods=["POST"])
+

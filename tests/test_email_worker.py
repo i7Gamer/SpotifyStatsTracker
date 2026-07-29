@@ -79,3 +79,16 @@ def test_email_worker_get_summary_unconfigured_smtp(mock_get_config):
     assert summary["smtp_configured"] is False
     assert summary["queue_size"] == 1
 
+
+@patch("services.email_worker.get_smtp_config")
+def test_email_worker_get_summary_non_string_host_repro(mock_get_config):
+    # Host configured as an integer (e.g. 587 instead of "smtp.example.com")
+    mock_get_config.return_value = {"enabled": True, "host": 587}
+    worker = EmailWorker()
+
+    summary = worker.get_summary()
+    # Expect enabled to remain True and host to be treated as configured
+    assert summary["enabled"] is True
+    assert summary["smtp_configured"] is True
+
+

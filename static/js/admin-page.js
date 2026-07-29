@@ -79,6 +79,10 @@
     if (typeof window.onSkipModeChange === 'function') {
       try { window.onSkipModeChange(); } catch (_) {}
     }
+
+    if (typeof window.initAdminBackupForm === 'function') {
+      try { window.initAdminBackupForm(); } catch (_) {}
+    }
   }
 
   var AdminPage = {
@@ -115,6 +119,10 @@
       var nav = document.querySelector(SUBNAV_SEL);
       if (!nav || nav._adminAjaxWired) return;
       nav._adminAjaxWired = true;
+
+      if (typeof history !== 'undefined' && history.replaceState && !history.state) {
+        history.replaceState({ adminTab: location.href }, '', location.href);
+      }
 
       nav.addEventListener('click', function (e) {
         var link = e.target.closest('a[href]');

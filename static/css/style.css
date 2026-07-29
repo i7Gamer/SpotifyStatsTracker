@@ -4425,6 +4425,12 @@ html.theme-red {
   color: var(--muted);
 }
 
+.admin-tab-loading {
+  opacity: 0.6;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
+}
+
 /* Respect a user's reduced-motion preference: the permanent 20s ambientGlow
    background animation, the staggered fadeInSlideUp card entrances, and every
    hover transform/transition are vestibular-motion triggers. Near-instant

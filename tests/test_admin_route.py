@@ -1425,8 +1425,23 @@ class TestAdminTabNavigation(AdminRouteTestBase):
         self.assertEqual(resp.status_code, 302)
         self.assertIn("tab=settings", resp.location)
 
+    def test_user_admin_post_redirect_preserves_tab(self):
+        dash = self._makeApp()
+        dash.repo.upsertUser("bob", "bob@example.com")
+        resp = self._post(dash, "/admin/users/bob/admin?tab=overview", isAdmin=True, data={"make_admin": "1"})
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn("tab=overview", resp.location)
+
+    def test_test_email_post_redirects_to_settings_tab(self):
+        dash = self._makeApp()
+        resp = self._post(dash, "/admin/test_email", isAdmin=True, data={})
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn("tab=settings", resp.location)
+
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
 

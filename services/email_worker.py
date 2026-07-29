@@ -43,19 +43,21 @@ class EmailWorker:
         try:
             config = get_smtp_config(target_repo)
             enabled = config.get("enabled", False)
-            smtp_configured = bool((config.get("host") or "").strip())
+            smtp_configured = bool(str(config.get("host") or "").strip())
         except Exception as e:
             logger.warning("Failed to retrieve SMTP config in EmailWorker.get_summary: %s", e)
             enabled = False
             smtp_configured = False
 
-        is_running = self._thread is not None and self._thread.is_alive()
+        t = self._thread
+        is_running = t is not None and t.is_alive()
         if not enabled:
             status = "DISABLED"
         elif is_running:
             status = "RUNNING"
         else:
             status = "INACTIVE"
+
 
         return {
             "status": status,
