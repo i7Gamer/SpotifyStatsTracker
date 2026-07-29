@@ -349,12 +349,14 @@
           </label>
         </div>
 
-        <button type="submit" class="primary-button" style="padding: 4px 16px;">Save Email Settings</button>
+        <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; margin-top: 1rem;">
+          <button type="submit" class="primary-button" style="padding: 4px 16px;">Save Email Settings</button>
+          <button type="submit" form="adminTestEmailForm" class="primary-button" style="padding: 4px 16px;">Send Test Email to Admin</button>
+        </div>
       </form>
 
-      <form method="post" action="{{ url_for('adminTestEmail') }}" style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--border, #333);">
+      <form id="adminTestEmailForm" method="post" action="{{ url_for('adminTestEmail') }}">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
-        <button type="submit" class="button" style="padding: 4px 16px;">Send Test Email to Admin</button>
       </form>
     </div>
   </article>

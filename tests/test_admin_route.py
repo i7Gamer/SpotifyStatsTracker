@@ -1371,6 +1371,14 @@ class TestAdminMailWorkerHealth(AdminRouteTestBase):
         self.assertIn("Mail Worker", body)
         self.assertIn('id="emailWorkerStatus"', body)
 
+    def test_send_test_email_button_design_and_position(self):
+        dash = self._makeApp()
+        resp = self._getAdmin(dash, isAdmin=True)
+        body = resp.data.decode()
+
+        self.assertIn('form="adminTestEmailForm" class="primary-button"', body)
+        self.assertIn('Send Test Email to Admin</button>', body)
+
 
 if __name__ == "__main__":
     unittest.main()
