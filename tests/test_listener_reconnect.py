@@ -9,6 +9,7 @@ no exception, no new items, nothing recorded, indefinitely. This tests the
 staleness timeout that detects that frozen state and asks the caller to
 rebuild the session instead of staying wedged forever.
 """
+import logging
 import sys
 import os
 import unittest
@@ -19,11 +20,14 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 if isinstance(sys.modules.get("Database.database"), MagicMock):
     del sys.modules["Database.database"]
 
+from Database.rate_limit import SpotifyLocallyRateLimitedError
 from Database.Listeners.spotifyListener import (
     Listener,
     LISTENER_STALE_TIMEOUT_SECONDS,
     LISTENER_STALE_HARD_TIMEOUT_SECONDS,
     RATE_LIMIT_ERROR_BACKOFF_SECONDS,
+    RATE_LIMIT_REASON_LISTENER_POLL,
+    LOCAL_PAUSE_RETRY_WAIT_SECONDS,
     USER_VALIDATION_CACHE_SECONDS,
     USER_VALIDATION_ERROR_COOLDOWN_SECONDS,
     LISTENER_POLL_INTERVAL_SECONDS,
@@ -557,6 +561,128 @@ class TestValidationErrorCooldown(unittest.TestCase):
         self.assertIsNone(listener._last_validation_error_time)
         self.assertFalse(self._validateAt(listener, _MONOTONIC_NOW + 1))
         self.assertEqual(listener.sp.current_user.call_count, 2)
+
+
+class TestLocalPauseIsNotSpotifyPushback(unittest.TestCase):
+    """Regression, observed live at 2026-07-29 17:43.
+
+    One real rate limit on laurateresaschoen opened the shared window. The next
+    two listeners' profile calls were then refused by that window - and each
+    reported it as its own brand-new rate limit, logging a WARNING, standing
+    down 60s, and opening ANOTHER process-wide backoff. One event became three:
+    the admin count inflated per user, the recorded cause was overwritten by
+    whichever listener tripped last, and the window crept forward each time.
+
+    A refusal from our own limiter is not evidence about Spotify. It is the
+    backoff, so it must never re-arm it."""
+
+    def _listener(self):
+        listener = _bareListener()
+        listener.user = "timorzipa"
+        listener._authenticated_user_id = "user1"
+        listener.sp.current_user.side_effect = SpotifyLocallyRateLimitedError(
+            "Spotify rate limit backoff in progress - skipped account-settings/profile")
+        return listener
+
+    def test_validation_answers_from_cache_instead_of_raising(self):
+        listener = self._listener()
+
+        with patch("Database.Listeners.spotifyListener.time.monotonic", return_value=_MONOTONIC_NOW):
+            self.assertTrue(listener._validateCurrentUser())
+
+    def test_validation_records_no_refusal_cooldown(self):
+        """That cooldown exists to stop us pestering an endpoint that pushed
+        back. This one never answered because it was never asked."""
+        listener = self._listener()
+
+        with patch("Database.Listeners.spotifyListener.time.monotonic", return_value=_MONOTONIC_NOW):
+            listener._validateCurrentUser()
+
+        self.assertIsNone(listener._last_validation_error_time)
+
+    def test_validation_logs_no_warning(self):
+        listener = self._listener()
+        moduleLogger = logging.getLogger("Database.Listeners.spotifyListener")
+        records = []
+        handler = logging.Handler()
+        handler.emit = lambda record: records.append(record)
+        moduleLogger.addHandler(handler)
+        try:
+            with patch("Database.Listeners.spotifyListener.time.monotonic", return_value=_MONOTONIC_NOW):
+                listener._validateCurrentUser()
+        finally:
+            moduleLogger.removeHandler(handler)
+
+        self.assertEqual([r for r in records if r.levelno >= logging.WARNING], [])
+
+    def test_login_check_stays_logged_in_without_a_warning(self):
+        listener = self._listener()
+        listener.contaminationDetected = False
+        listener.sp.isLoggedIn.return_value = True
+        moduleLogger = logging.getLogger("Database.Listeners.spotifyListener")
+        records = []
+        handler = logging.Handler()
+        handler.emit = lambda record: records.append(record)
+        moduleLogger.addHandler(handler)
+        try:
+            self.assertTrue(listener.isLoggedIn())
+        finally:
+            moduleLogger.removeHandler(handler)
+
+        self.assertEqual([r for r in records if r.levelno >= logging.WARNING], [])
+
+    def test_the_poll_loop_never_re_arms_the_window_it_tripped_over(self):
+        from Database.rate_limit import SPOTIFY_LIMITER
+
+        listener = _bareListener()
+        listener.user = "7kevinegger"
+        listener.contaminationDetected = False
+        listener._stop_event = MagicMock()
+        listener._stop_event.is_set.side_effect = [False, True]
+        listener._checkOnce = MagicMock(side_effect=SpotifyLocallyRateLimitedError(
+            "Spotify rate limit backoff in progress - skipped account-settings/profile"))
+
+        listener.startListener(MagicMock())
+
+        self.assertEqual(SPOTIFY_LIMITER.snapshot()["backoffs"], 0)
+        listener._stop_event.wait.assert_any_call(LOCAL_PAUSE_RETRY_WAIT_SECONDS)
+
+    def test_one_real_event_stays_one_event_across_every_listener(self):
+        """The end-to-end shape of the 17:43 log: a genuine rate limit on one
+        account, then two more listeners refused by the window it opened."""
+        from Database.rate_limit import SPOTIFY_LIMITER
+
+        real = _bareListener()
+        real.user = "laurateresaschoen"
+        real.contaminationDetected = False
+        real._stop_event = MagicMock()
+        real._stop_event.is_set.side_effect = [False, True]
+        real._checkOnce = MagicMock(side_effect=Exception("Invalid JSON (Status: 200, Type: str)"))
+        with self.assertLogs("Database.Listeners.spotifyListener", level="WARNING"):
+            real.startListener(MagicMock())
+
+        for username in ("timorzipa", "7kevinegger"):
+            refused = _bareListener()
+            refused.user = username
+            refused.contaminationDetected = False
+            refused._stop_event = MagicMock()
+            refused._stop_event.is_set.side_effect = [False, True]
+            refused._checkOnce = MagicMock(side_effect=SpotifyLocallyRateLimitedError(
+                "Spotify rate limit backoff in progress - skipped account-settings/profile"))
+            refused.startListener(MagicMock())
+
+        snapshot = SPOTIFY_LIMITER.snapshot()
+        self.assertEqual(snapshot["backoffs"], 1)
+        self.assertEqual(snapshot["lastReason"], RATE_LIMIT_REASON_LISTENER_POLL)
+
+    def test_it_still_classifies_as_transient(self):
+        """The substring classifier must keep bucketing it as transient - that
+        is what stands the poll loop down rather than escalating to a
+        reconnect. Which is exactly why the type check has to come first."""
+        error = SpotifyLocallyRateLimitedError(
+            "Spotify rate limit backoff in progress - skipped account-settings/profile")
+        self.assertTrue(_is_rate_limit_error(error))
+        self.assertFalse(_is_auth_error(error))
 
 
 class TestPollIntervalJitter(unittest.TestCase):

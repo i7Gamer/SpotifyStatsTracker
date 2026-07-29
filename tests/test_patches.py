@@ -1826,6 +1826,22 @@ class TestTrackFetchLimiting(unittest.TestCase):
         self.assertEqual(track["uri"], "spotify:track:t1")
         songInfo.assert_called_once_with("t1")   #< the refused attempt sent nothing
 
+    def test_a_refused_slot_never_re_arms_the_window_it_tripped_over(self):
+        """Regression: the refusal message says "rate limit" too, so the
+        substring classifier here counted our own open window as Spotify
+        pushback and extended it - the same feedback loop the listener had
+        (2026-07-29 17:43). Matched by type, ahead of the strings."""
+        from Database.patches import _get_track_info_with_retry
+        from Database.rate_limit import SPOTIFY_LIMITER
+
+        songInfo = MagicMock(return_value={"data": {"trackUnion": fakeTrackUnion("t1")}})
+        with patch("spotapi.Public.song_info", songInfo):
+            with patch.object(SPOTIFY_LIMITER, "acquire", side_effect=[False, True]):
+                with patch("time.sleep"):
+                    _get_track_info_with_retry("t1")
+
+        self.assertEqual(SPOTIFY_LIMITER.snapshot()["backoffs"], 0)
+
     def test_a_spotify_rate_limit_pauses_every_spotify_request(self):
         from Database.patches import _get_track_info_with_retry, ENDPOINT_TRACK_INFO
         from Database.rate_limit import SPOTIFY_LIMITER

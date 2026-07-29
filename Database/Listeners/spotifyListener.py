@@ -16,7 +16,9 @@ import threading
 import time
 from contextlib import contextmanager
 from SpotipyFree import Spotify
-from Database.rate_limit import SPOTIFY_LIMITER, SPOTIFY_RATE_LIMIT_BACKOFF_SECONDS
+from Database.rate_limit import (
+    SPOTIFY_LIMITER, SPOTIFY_RATE_LIMIT_BACKOFF_SECONDS, SpotifyLocallyRateLimitedError,
+)
 from Database.utils import parseError, timeToInt
 
 # A background thread's websocket ping (e.g. spotapi's keep_alive) can raise
@@ -78,6 +80,12 @@ RATE_LIMIT_ERROR_BACKOFF_SECONDS = 60  #< how long THIS listener's poll loop pau
                                         #  separately - see the backoff branch in startListener.
 
 RATE_LIMIT_REASON_LISTENER_POLL = "listener poll"  #< label for the shared limiter's snapshot
+
+# How long the poll loop stands down when it trips over the shared limiter's
+# OWN open window (as opposed to Spotify pushing back). Short: the window is
+# already doing the waiting, and this only exists so the loop doesn't spin
+# against it.
+LOCAL_PAUSE_RETRY_WAIT_SECONDS = 5
 
 # Bounds memory for the missed-track dedup set in _checkConnectStateForMissedTracks -
 # prev_tracks itself is always much shorter than this (it's a rolling local queue
@@ -489,6 +497,14 @@ class Listener:
         try:
             self.sp.current_user()
             return True
+        except SpotifyLocallyRateLimitedError as e:
+            # Our own open window, not a verdict on these cookies - see
+            # _validateCurrentUser. Same answer as the transient branch below
+            # (stay logged in), without the warning: this is the system
+            # working, not an incident.
+            logger.debug("Skipped login check for user %s while the shared Spotify "
+                         "backoff is open: %s", self.logUser, parseError(e))
+            return True
         except Exception as e:
             error_str = str(e).lower()
             # Spotify sometimes answers current_user() with a non-JSON
@@ -550,6 +566,21 @@ class Listener:
             self._last_user_validation_result = result
             self._last_validation_error_time = None  #< it answered; the endpoint is healthy again
             return result
+        except SpotifyLocallyRateLimitedError as e:
+            # WE paused, not Spotify - the endpoint was never asked. So there
+            # is no refusal to record (that cooldown exists to stop us pestering
+            # an endpoint that pushed back; this one didn't), and nothing to
+            # back off from, because the open window that refused this call IS
+            # the backoff. Answer from cache like the cooldown branch above:
+            # the pause is far shorter than the cache it sits inside.
+            #
+            # Raising instead is what produced the 2026-07-29 17:43 log - one
+            # real rate limit on one account, then every other listener
+            # tripping over the shared window and reporting it as its own
+            # brand-new rate limit, each opening yet another.
+            logger.debug("Skipped validating current user %s while the shared Spotify "
+                         "backoff is open: %s", self.logUser, parseError(e))
+            return self._last_user_validation_result
         except Exception as e:
             error_str = str(e).lower()
             # Invalid JSON errors usually indicate rate limiting or bad response from Spotify
@@ -855,6 +886,16 @@ class Listener:
                             logger.error("Reconnect attempt failed: %s", parseError(reconnect_err))
                     self.run = False
                     return
+                elif isinstance(e, SpotifyLocallyRateLimitedError):
+                    # Tested BEFORE the rate-limit branch, which its message
+                    # would otherwise match. This is our own open window
+                    # reaching the loop from some path that doesn't answer it
+                    # inline; re-arming the window here is what turned one real
+                    # rate limit into one per listener. Stand down briefly and
+                    # let the window expire on its own schedule.
+                    logger.debug("Listener poll for user %s skipped while the shared "
+                                 "Spotify backoff is open: %s", self.logUser, parseError(e))
+                    self._stop_event.wait(LOCAL_PAUSE_RETRY_WAIT_SECONDS)
                 elif _is_rate_limit_error(e):
                     # Pause every Spotify request in the process, not just this
                     # thread. The local wait below is nearly worthless on its

@@ -64,6 +64,25 @@ SPOTIFY_ACQUIRE_TIMEOUT_SECONDS = 1.0
 SPOTIFY_TRACK_ACQUIRE_TIMEOUT_SECONDS = SPOTIFY_RATE_LIMIT_BACKOFF_SECONDS + 5
 
 
+class SpotifyLocallyRateLimitedError(Exception):
+    """No slot came free within the caller's timeout: THIS process is holding
+    Spotify traffic back, and the request was never sent.
+
+    Never evidence of Spotify pushing back. The pause it reports is one we are
+    already applying, so feeding it into applyBackoff re-arms the very window
+    that raised it - and with one limiter shared by every listener, a single
+    real rate-limit event then fans out into one bogus event per user: the
+    count inflates, the recorded cause is overwritten by whichever listener
+    tripped last, and the window creeps forward on each one.
+
+    So every call site must test for this BY TYPE, ahead of any string
+    heuristic. Its message deliberately still says "rate limit" - the
+    listener's substring classifier needs that to bucket it as transient and
+    stand the poll loop down - which is exactly why the type check has to come
+    first.
+    """
+
+
 class SlotRateLimiter:
     """Thread-safe slot spacer on the monotonic clock: acquire() blocks until
     the next request slot is free (returning False if the stop event fires or

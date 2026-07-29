@@ -17,18 +17,10 @@ import spotapi.websocket
 from Database.rate_limit import (
     SPOTIFY_LIMITER, SPOTIFY_ACQUIRE_TIMEOUT_SECONDS,
     SPOTIFY_TRACK_ACQUIRE_TIMEOUT_SECONDS, SPOTIFY_RATE_LIMIT_BACKOFF_SECONDS,
+    SpotifyLocallyRateLimitedError,
 )
 
 logger = logging.getLogger(__name__)
-
-
-class SpotifyLocallyRateLimitedError(Exception):
-    """No slot came free within the caller's timeout: this process is holding
-    Spotify traffic back (see Database/rate_limit.py), the request was never
-    sent. A transient condition by construction - whatever window is open will
-    close - so every call site treats it as retryable rather than as a
-    failure of the account or the endpoint."""
-
 
 # Endpoint labels for the shared limiter's backoff reason - short enough for
 # the /admin card, specific enough to say WHICH Spotify surface pushed back.
@@ -428,7 +420,15 @@ def _get_track_info_with_retry(trackId: str, max_retries: int = 3):
             continue  #< deliberately does not advance `attempt`
         except Exception as e:
             error_str = str(e).lower()
-            is_rate_limit = "429" in error_str or ("rate" in error_str and "limit" in error_str)
+            # Our own limiter refusing a slot: nothing was sent, so this is the
+            # most transient failure there is - matched by type rather than by
+            # message, like SongError below. Tested FIRST, and excluded from
+            # is_rate_limit below, because its message says "rate limit" too:
+            # counting it as Spotify's would re-arm the very window that
+            # refused this call (see SpotifyLocallyRateLimitedError).
+            is_locally_paused = isinstance(e, SpotifyLocallyRateLimitedError)
+            is_rate_limit = not is_locally_paused and (
+                "429" in error_str or ("rate" in error_str and "limit" in error_str))
             is_session_error = "could not get session" in error_str or "session" in error_str
             # spotapi raises SongError from exactly one place in
             # Song.get_track_info: `if resp.fail`, i.e. the HTTP request itself
@@ -441,10 +441,6 @@ def _get_track_info_with_retry(trackId: str, max_retries: int = 3):
             # such losses in 11 days of app.log). Matched by type, not by
             # message: the message is spotapi's to change.
             is_failed_request = isinstance(e, spotapi.exceptions.SongError)
-            # Our own limiter refusing a slot: nothing was sent, so this is the
-            # most transient failure there is - matched by type rather than by
-            # message, like SongError above.
-            is_locally_paused = isinstance(e, SpotifyLocallyRateLimitedError)
 
             # Only retry on transient errors (rate limit, session issues, a
             # failed request), not on real 404s
