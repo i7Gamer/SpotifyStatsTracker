@@ -34,3 +34,48 @@ def test_global_queue_email_notification(mock_send):
     from services.email_worker import EMAIL_WORKER
     processed = EMAIL_WORKER.process_one()
     assert processed is True
+
+
+@patch("services.email_worker.get_smtp_config")
+def test_email_worker_get_summary_disabled(mock_get_config):
+    mock_get_config.return_value = {"enabled": False, "host": "smtp.example.com"}
+    worker = EmailWorker()
+    summary = worker.get_summary()
+    assert summary["status"] == "DISABLED"
+    assert summary["enabled"] is False
+    assert summary["smtp_configured"] is True
+    assert summary["queue_size"] == 0
+
+
+@patch("services.email_worker.get_smtp_config")
+def test_email_worker_get_summary_running_and_inactive(mock_get_config):
+    mock_get_config.return_value = {"enabled": True, "host": "smtp.example.com"}
+    worker = EmailWorker()
+
+    # When thread is not started
+    summary = worker.get_summary()
+    assert summary["status"] == "INACTIVE"
+    assert summary["enabled"] is True
+    assert summary["smtp_configured"] is True
+
+    # When thread is mocked as alive
+    mock_thread = patch.object(worker, "_thread").start()
+    mock_thread.is_alive.return_value = True
+    try:
+        summary_running = worker.get_summary()
+        assert summary_running["status"] == "RUNNING"
+    finally:
+        patch.stopall()
+
+
+@patch("services.email_worker.get_smtp_config")
+def test_email_worker_get_summary_unconfigured_smtp(mock_get_config):
+    mock_get_config.return_value = {"enabled": True, "host": ""}
+    worker = EmailWorker()
+    worker.enqueue("user1", EVENT_INVALID_COOKIES)
+
+    summary = worker.get_summary()
+    assert summary["status"] == "INACTIVE"
+    assert summary["smtp_configured"] is False
+    assert summary["queue_size"] == 1
+

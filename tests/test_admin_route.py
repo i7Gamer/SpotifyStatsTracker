@@ -1293,6 +1293,7 @@ class TestAdminInsightsLayout(AdminRouteTestBase):
     _SERVICE_ENTRIES = (
         "Milestone Detection",
         "Database Backup Service",
+        "Mail Worker",
         "Database Integrity",
     )
 
@@ -1361,5 +1362,16 @@ class TestAdminInsightsLayout(AdminRouteTestBase):
         self.assertIn("align-items: baseline", container_snippet)
 
 
+class TestAdminMailWorkerHealth(AdminRouteTestBase):
+    def test_mail_worker_renders_in_instance_services(self):
+        dash = self._makeApp()
+        resp = self._getAdmin(dash, isAdmin=True)
+        body = resp.data.decode()
+
+        self.assertIn("Mail Worker", body)
+        self.assertIn('id="emailWorkerStatus"', body)
+
+
 if __name__ == "__main__":
     unittest.main()
+

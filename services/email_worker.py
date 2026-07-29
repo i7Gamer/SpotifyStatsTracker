@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from Database.repository import Repository
 
-from services.email_service import send_email_notification
+from services.email_service import get_smtp_config, send_email_notification
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +32,37 @@ class EmailWorker:
         """Attach the shared Repository this worker's jobs should use, instead
         of each job opening its own throwaway connection (see process_one)."""
         self._repo = repo
+
+    def get_summary(self, repo: Repository | None = None) -> dict[str, Any]:
+        """Return status summary of the email worker for admin status views."""
+        target_repo = repo if repo is not None else self._repo
+        if target_repo is None:
+            from Database.repository import Repository
+            target_repo = Repository()
+
+        try:
+            config = get_smtp_config(target_repo)
+            enabled = config.get("enabled", False)
+            smtp_configured = bool((config.get("host") or "").strip())
+        except Exception as e:
+            logger.warning("Failed to retrieve SMTP config in EmailWorker.get_summary: %s", e)
+            enabled = False
+            smtp_configured = False
+
+        is_running = self._thread is not None and self._thread.is_alive()
+        if not enabled:
+            status = "DISABLED"
+        elif is_running:
+            status = "RUNNING"
+        else:
+            status = "INACTIVE"
+
+        return {
+            "status": status,
+            "queue_size": self._queue.qsize(),
+            "enabled": enabled,
+            "smtp_configured": smtp_configured,
+        }
 
     def enqueue(self, username: str, event_type: str, context: dict[str, Any] | None = None) -> None:
         """Enqueue an email notification job."""

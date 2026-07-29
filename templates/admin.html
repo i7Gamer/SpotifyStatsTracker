@@ -439,11 +439,28 @@
     </div>
 
     <p style="font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">Database Backup Service</p>
-    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem;">
       {% if backup_worker_summary.status == 'RUNNING' %}
         <span class="badge badge-success">RUNNING</span>
       {% else %}
         <span class="badge badge-secondary">INACTIVE</span>
+      {% endif %}
+    </div>
+
+    <p style="font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">Mail Worker</p>
+    <div id="emailWorkerStatus" style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+      {% if email_worker_summary.status == 'RUNNING' %}
+        <span class="badge badge-success">RUNNING</span>
+      {% elif email_worker_summary.status == 'DISABLED' %}
+        <span class="badge badge-secondary">DISABLED</span>
+      {% else %}
+        <span class="badge badge-secondary">INACTIVE</span>
+      {% endif %}
+      {% if email_worker_summary.status != 'DISABLED' and not email_worker_summary.smtp_configured %}
+        <span class="badge badge-warning">SMTP NOT CONFIGURED</span>
+      {% endif %}
+      {% if email_worker_summary.queue_size > 0 %}
+        <span class="badge badge-secondary">{{ email_worker_summary.queue_size }} QUEUED</span>
       {% endif %}
     </div>
 

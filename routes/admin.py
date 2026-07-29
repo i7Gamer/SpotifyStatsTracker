@@ -40,6 +40,7 @@ from services.email_service import (
     get_instance_public_url, save_instance_public_url,
     DEFAULT_SMTP_PORT, DEFAULT_SMTP_ENCRYPTION, DEFAULT_SMTP_FROM_NAME,
 )
+from services.email_worker import EMAIL_WORKER
 
 logger = logging.getLogger(__name__)
 
@@ -303,6 +304,8 @@ def register(app, dashboard):
             "recalc_enabled": dashboard.repo.isMilestoneRecalcEnabled(),
         }
 
+        email_worker_summary = EMAIL_WORKER.get_summary(dashboard.repo)
+
         # Instance-wide, not per-user: every listener and worker shares one
         # Spotify request budget because Spotify enforces its limits per IP
         # (see Database/rate_limit.py). Before this, a rate-limit event was a
@@ -369,6 +372,7 @@ def register(app, dashboard):
             wrapped_worker_summary=wrapped_worker_summary,
             backup_worker_summary=backup_worker_summary,
             milestone_worker_summary=milestone_worker_summary,
+            email_worker_summary=email_worker_summary,
             catalog_genre_coverage=dashboard.repo.getCatalogGenreCoverage(),
             catalog_biography_coverage=dashboard.repo.getCatalogBiographyCoverage(),
             registration_counts=dashboard.repo.getRecentRegistrationCounts(),
