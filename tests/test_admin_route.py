@@ -1420,6 +1420,19 @@ class TestAdminTabNavigation(AdminRouteTestBase):
         self.assertIn("Playback Classification", body)
         self.assertIn("Backups", body)
 
+    def test_settings_tab_3_column_structure(self):
+        dash = self._makeApp()
+        resp = self._getAdmin(dash, isAdmin=True, path="/admin?tab=settings")
+        body = resp.data.decode()
+
+        playback_idx = body.find("Playback Classification")
+        backups_idx = body.find("Backups")
+        self.assertNotEqual(playback_idx, -1)
+        self.assertNotEqual(backups_idx, -1)
+        self.assertLess(playback_idx, backups_idx)
+        self.assertIn('<div style="display: flex; flex-direction: column; gap: 1.5rem;">', body)
+
+
     def test_email_settings_post_redirects_to_settings_tab(self):
         dash = self._makeApp()
         data = {"email_notifications_enabled": "1", "smtp_host": "smtp.example.com", "smtp_port": "587"}

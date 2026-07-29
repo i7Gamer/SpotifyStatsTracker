@@ -591,64 +591,66 @@
         </div>
       </article>
 
-      <article class="card" style="padding: 0;">
-        <div class="card-header admin-card-header">
-          <h2 style="margin: 0; font-family: var(--font-headings); font-size: 1.15rem;">Playback Classification</h2>
-          <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem;">The skip threshold decides skip vs. real listen (plays under it are excluded from counts, listen time, top lists and streaks — saving reclassifies all history). The completion percent then splits real plays into complete vs. partial on the Charts completion chart.</p>
-        </div>
-        <div class="admin-card-body">
-          <form method="post" action="{{ url_for('adminSkipSettings') }}">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
-            <label class="admin-check-label" style="margin-bottom: 0.6rem;">
-              <input type="radio" name="skip_mode" id="skipModeSeconds" value="{{ skip_mode_seconds }}" {% if skip_mode == skip_mode_seconds %}checked{% endif %} onchange="onSkipModeChange()">
-              Fixed seconds ({{ skip_seconds_min }}–{{ skip_seconds_max }}s)
-            </label>
-            <label class="admin-check-label" style="margin-bottom: 0.8rem;">
-              <input type="radio" name="skip_mode" id="skipModePercent" value="{{ skip_mode_percent }}" {% if skip_mode == skip_mode_percent %}checked{% endif %} onchange="onSkipModeChange()">
-              Percent of track duration ({{ skip_percent_min }}–{{ skip_percent_max }}%)
-            </label>
-            <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 1rem;">
-              <input type="number" name="skip_value" id="skipValueInput" value="{{ skip_value }}"
-                     min="{{ skip_seconds_min if skip_mode == skip_mode_seconds else skip_percent_min }}"
-                     max="{{ skip_seconds_max if skip_mode == skip_mode_seconds else skip_percent_max }}"
-                     step="1" required
-                     class="admin-number-input" style="width: 6rem;">
-              <span id="skipValueUnit" style="color: var(--muted);">{{ '%' if skip_mode == skip_mode_percent else 's' }}</span>
-            </div>
-            <label class="admin-form-row" style="gap: 0.5rem; margin-bottom: 1rem;">
-              <span>Counts as a complete listen at/over</span>
-              <span style="white-space: nowrap;"><input type="number" name="completion_complete_percent" value="{{ completion_complete_percent }}" min="{{ completion_min }}" max="{{ completion_max }}" step="1" class="admin-number-input"> % of duration</span>
-            </label>
-            <button type="submit" class="primary-button admin-save-btn">Save</button>
-          </form>
-        </div>
-      </article>
+      <div style="display: flex; flex-direction: column; gap: 1.5rem;">
+        <article class="card" style="padding: 0;">
+          <div class="card-header admin-card-header">
+            <h2 style="margin: 0; font-family: var(--font-headings); font-size: 1.15rem;">Playback Classification</h2>
+            <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem;">The skip threshold decides skip vs. real listen (plays under it are excluded from counts, listen time, top lists and streaks — saving reclassifies all history). The completion percent then splits real plays into complete vs. partial on the Charts completion chart.</p>
+          </div>
+          <div class="admin-card-body">
+            <form method="post" action="{{ url_for('adminSkipSettings') }}">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+              <label class="admin-check-label" style="margin-bottom: 0.6rem;">
+                <input type="radio" name="skip_mode" id="skipModeSeconds" value="{{ skip_mode_seconds }}" {% if skip_mode == skip_mode_seconds %}checked{% endif %} onchange="onSkipModeChange()">
+                Fixed seconds ({{ skip_seconds_min }}–{{ skip_seconds_max }}s)
+              </label>
+              <label class="admin-check-label" style="margin-bottom: 0.8rem;">
+                <input type="radio" name="skip_mode" id="skipModePercent" value="{{ skip_mode_percent }}" {% if skip_mode == skip_mode_percent %}checked{% endif %} onchange="onSkipModeChange()">
+                Percent of track duration ({{ skip_percent_min }}–{{ skip_percent_max }}%)
+              </label>
+              <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 1rem;">
+                <input type="number" name="skip_value" id="skipValueInput" value="{{ skip_value }}"
+                       min="{{ skip_seconds_min if skip_mode == skip_mode_seconds else skip_percent_min }}"
+                       max="{{ skip_seconds_max if skip_mode == skip_mode_seconds else skip_percent_max }}"
+                       step="1" required
+                       class="admin-number-input" style="width: 6rem;">
+                <span id="skipValueUnit" style="color: var(--muted);">{{ '%' if skip_mode == skip_mode_percent else 's' }}</span>
+              </div>
+              <label class="admin-form-row" style="gap: 0.5rem; margin-bottom: 1rem;">
+                <span>Counts as a complete listen at/over</span>
+                <span style="white-space: nowrap;"><input type="number" name="completion_complete_percent" value="{{ completion_complete_percent }}" min="{{ completion_min }}" max="{{ completion_max }}" step="1" class="admin-number-input"> % of duration</span>
+              </label>
+              <button type="submit" class="primary-button admin-save-btn">Save</button>
+            </form>
+          </div>
+        </article>
 
-      <article class="card" style="padding: 0;">
-        <div class="card-header admin-card-header">
-          <h2 style="margin: 0; font-family: var(--font-headings); font-size: 1.15rem;">Backups</h2>
-          <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem;">Automatic database snapshots into Database/Data/Backups. Set either to 0 to disable. Applies after the app restarts.</p>
-        </div>
-        <div class="admin-card-body">
-          <form method="post" action="{{ url_for('adminBackupSettings') }}">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
-            <label class="admin-form-row" style="gap: 0.5rem; margin-bottom: 0.6rem;">
-              <span>Snapshot every</span>
-              <span style="white-space: nowrap;"><input type="number" name="backup_interval_hours" value="{{ backup_interval_hours }}" min="{{ backup_interval_min }}" max="{{ backup_interval_max }}" step="1" class="admin-number-input"> hours</span>
-            </label>
-            <label class="admin-form-row" style="gap: 0.5rem; margin-bottom: 1rem;">
-              <span>Keep newest</span>
-              <span style="white-space: nowrap;"><input type="number" name="backup_retention_count" value="{{ backup_retention_count }}" min="{{ backup_retention_min }}" max="{{ backup_retention_max }}" step="1" class="admin-number-input"> snapshots</span>
-            </label>
-            <button type="submit" class="primary-button admin-save-btn">Save</button>
-          </form>
-          <div id="backup-status-message" style="margin-top: 0.75rem; min-height: 1.5em;"></div>
-          <form method="post" action="{{ url_for('adminCreateBackup') }}" style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--border, #333);">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
-            <button type="submit" id="btn-create-backup" class="primary-button" style="padding: 4px 16px;">Create backup now</button>
-          </form>
-        </div>
-      </article>
+        <article class="card" style="padding: 0;">
+          <div class="card-header admin-card-header">
+            <h2 style="margin: 0; font-family: var(--font-headings); font-size: 1.15rem;">Backups</h2>
+            <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem;">Automatic database snapshots into Database/Data/Backups. Set either to 0 to disable. Applies after the app restarts.</p>
+          </div>
+          <div class="admin-card-body">
+            <form method="post" action="{{ url_for('adminBackupSettings') }}">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+              <label class="admin-form-row" style="gap: 0.5rem; margin-bottom: 0.6rem;">
+                <span>Snapshot every</span>
+                <span style="white-space: nowrap;"><input type="number" name="backup_interval_hours" value="{{ backup_interval_hours }}" min="{{ backup_interval_min }}" max="{{ backup_interval_max }}" step="1" class="admin-number-input"> hours</span>
+              </label>
+              <label class="admin-form-row" style="gap: 0.5rem; margin-bottom: 1rem;">
+                <span>Keep newest</span>
+                <span style="white-space: nowrap;"><input type="number" name="backup_retention_count" value="{{ backup_retention_count }}" min="{{ backup_retention_min }}" max="{{ backup_retention_max }}" step="1" class="admin-number-input"> snapshots</span>
+              </label>
+              <button type="submit" class="primary-button admin-save-btn">Save</button>
+            </form>
+            <div id="backup-status-message" style="margin-top: 0.75rem; min-height: 1.5em;"></div>
+            <form method="post" action="{{ url_for('adminCreateBackup') }}" style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--border, #333);">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+              <button type="submit" id="btn-create-backup" class="primary-button" style="padding: 4px 16px;">Create backup now</button>
+            </form>
+          </div>
+        </article>
+      </div>
     </section>
   {% endif %}
 </div>
