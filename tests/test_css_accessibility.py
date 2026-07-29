@@ -28,6 +28,34 @@ class TestNavKeyboardCss(unittest.TestCase):
         self.assertIn(".setting-hint summary", self.css)
         self.assertIn("padding-right: 1px;", self.css)
 
+class TestAdminUtilityClasses(unittest.TestCase):
+    def setUp(self):
+        with open(_CSS_PATH, encoding="utf-8") as fh:
+            self.css = fh.read()
+
+    def test_admin_worker_label_class_exists(self):
+        self.assertIn('.admin-worker-label', self.css)
+
+    def test_admin_worker_row_class_exists(self):
+        self.assertIn('.admin-worker-row', self.css)
+
+    def test_admin_number_input_class_exists(self):
+        self.assertIn('.admin-number-input', self.css)
+
+    def test_admin_check_label_class_exists(self):
+        self.assertIn('.admin-check-label', self.css)
+
+    def test_admin_form_row_class_exists(self):
+        self.assertIn('.admin-form-row', self.css)
+
+    def test_admin_card_grid_class_exists(self):
+        self.assertIn('.admin-card-grid', self.css)
+
+    def test_admin_text_input_class_exists(self):
+        self.assertIn('.admin-text-input', self.css)
+
+    def test_admin_status_table_class_exists(self):
+        self.assertIn('.admin-status-table', self.css)
 
 
 if __name__ == "__main__":

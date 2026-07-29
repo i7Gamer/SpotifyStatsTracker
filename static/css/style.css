@@ -4446,3 +4446,118 @@ html.theme-red {
     scroll-behavior: auto !important;
   }
 }
+
+/* Admin page utility classes (extracted from inline styles) */
+
+.admin-worker-label {
+  font-size: 0.85rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 0.5rem;
+}
+
+.admin-worker-row {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-bottom: 1rem;
+}
+
+.admin-number-input {
+  width: 5.5rem;
+  padding: 6px 10px;
+  font-size: 1.05rem;
+  background: var(--card-bg, #1e1e1e);
+  color: var(--fg, #eee);
+  border: 1px solid var(--border, #444);
+  border-radius: 4px;
+}
+
+.admin-check-label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.admin-form-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.admin-settings-inputs {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  margin-bottom: 1rem;
+}
+
+.admin-card-grid {
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 1.5rem;
+  margin-bottom: 2.5rem;
+  align-items: start;
+}
+
+.admin-text-input {
+  width: 12rem;
+  padding: 4px 8px;
+  background: var(--card-bg, #1e1e1e);
+  color: var(--fg, #eee);
+  border: 1px solid var(--border, #444);
+  border-radius: 4px;
+}
+
+.admin-select-input {
+  width: 8rem;
+  padding: 4px 8px;
+  background: var(--card-bg, #1e1e1e);
+  color: var(--fg, #eee);
+  border: 1px solid var(--border, #444);
+  border-radius: 4px;
+}
+
+.admin-card-padded {
+  padding: 1.5rem;
+}
+
+.admin-card-body {
+  padding: 0 1.5rem 1.5rem 1.5rem;
+}
+
+.admin-card-header {
+  padding: 1.5rem 1.5rem 0.5rem 1.5rem;
+}
+
+.admin-save-btn {
+  padding: 4px 16px;
+}
+
+.admin-status-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+  min-width: 760px;
+}
+
+.admin-status-table th {
+  padding: 12px 8px;
+}
+
+.admin-status-table td {
+  padding: 16px 8px;
+}
+
+.admin-table-header-row {
+  border-bottom: 2px solid var(--glass-border);
+  color: var(--muted);
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}

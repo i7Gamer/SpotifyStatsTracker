@@ -26,30 +26,30 @@
 
 <!-- Registered Users & Sync Status: permanently pinned at the top -->
 <section class="card" style="margin-bottom: 1.5rem; overflow-x: auto;">
-  <div class="card-header" style="padding: 1.5rem 1.5rem 0.5rem 1.5rem;">
+  <div class="card-header admin-card-header">
     <h2 style="margin: 0; font-family: var(--font-headings);">Registered Users &amp; Sync Status</h2>
     <p style="color: var(--muted); font-size: 0.9rem; margin-top: 0.25rem;">Monitor real-time sync status and background thread states for all active user profiles, and manage who administers this instance.</p>
   </div>
-  <div style="padding: 0 1.5rem 1.5rem 1.5rem;">
-    <table class="status-table" style="width: 100%; border-collapse: collapse; text-align: left; min-width: 760px;">
+  <div class="admin-card-body">
+    <table class="status-table admin-status-table">
       <thead>
-        <tr style="border-bottom: 2px solid var(--glass-border); color: var(--muted); font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.05em;">
-          <th style="padding: 12px 8px;">Username</th>
-          <th style="padding: 12px 8px;">Sync Status</th>
-          <th style="padding: 12px 8px;">Spotify API Backfill{% if not spotify_backfill_enabled %} <span style="text-transform: none; font-weight: normal;">(disabled)</span>{% endif %}</th>
-          <th style="padding: 12px 8px;">Last.fm API Backfill{% if not lastfm_backfill_enabled %} <span style="text-transform: none; font-weight: normal;">(disabled)</span>{% endif %}</th>
-          <th style="padding: 12px 8px; text-align: right;">Total Plays</th>
-          <th style="padding: 12px 8px; text-align: right;">Total Skips</th>
-          <th style="padding: 12px 8px; text-align: right;">Registered</th>
-          <th style="padding: 12px 8px;">Admin</th>
+        <tr class="admin-table-header-row">
+          <th>Username</th>
+          <th>Sync Status</th>
+          <th>Spotify API Backfill{% if not spotify_backfill_enabled %} <span style="text-transform: none; font-weight: normal;">(disabled)</span>{% endif %}</th>
+          <th>Last.fm API Backfill{% if not lastfm_backfill_enabled %} <span style="text-transform: none; font-weight: normal;">(disabled)</span>{% endif %}</th>
+          <th style="text-align: right;">Total Plays</th>
+          <th style="text-align: right;">Total Skips</th>
+          <th style="text-align: right;">Registered</th>
+          <th>Admin</th>
         </tr>
       </thead>
       <tbody>
         {% for u in users_list %}
         <tr style="font-size: 0.95rem;{% if not loop.last %} border-bottom: 1px solid var(--glass-border);{% endif %}">
-          <td style="padding: 16px 8px; font-weight: 600; color: var(--accent);">{{ u.username }}{% if u.display_name %}
+          <td style="font-weight: 600; color: var(--accent);">{{ u.username }}{% if u.display_name %}
             <span style="display: block; font-weight: 400; font-size: 0.85rem; color: var(--muted, #aaa);">{{ u.display_name }}</span>{% endif %}</td>
-          <td style="padding: 16px 8px;">
+          <td>
             {% set status = u.sync_status | lower %}
             {% if status == 'healthy' %}
               <span class="badge badge-success">HEALTHY</span>
@@ -65,7 +65,7 @@
               <span class="badge badge-secondary">NOT CONFIGURED</span>
             {% endif %}
           </td>
-          <td style="padding: 16px 8px;">
+          <td>
             {% if u.spotify_api_status == 'Needs Re-Auth' %}
               <span class="badge badge-orange" title="Spotify rejected the last backfill request as missing the recently-played permission - re-authorization required.">NEEDS RE-AUTH</span>
             {% elif u.spotify_api_status == 'Configured' %}
@@ -74,17 +74,17 @@
               <span class="badge badge-secondary">NOT CONFIGURED</span>
             {% endif %}
           </td>
-          <td style="padding: 16px 8px;">
+          <td>
             {% if u.lastfm_api_status == 'Configured' %}
               <span class="badge badge-success">CONFIGURED</span>
             {% else %}
               <span class="badge badge-secondary">NOT CONFIGURED</span>
             {% endif %}
           </td>
-          <td style="padding: 16px 8px; text-align: right; font-weight: 500;">{{ "{:,}".format(u.plays_count) }}</td>
-          <td style="padding: 16px 8px; text-align: right; font-weight: 500;">{{ "{:,}".format(u.skips_count) }}</td>
-          <td style="padding: 16px 8px; text-align: right; color: var(--muted); font-size: 0.85rem;">{{ u.created_at }}</td>
-          <td style="padding: 16px 8px;">
+          <td style="text-align: right; font-weight: 500;">{{ "{:,}".format(u.plays_count) }}</td>
+          <td style="text-align: right; font-weight: 500;">{{ "{:,}".format(u.skips_count) }}</td>
+          <td style="text-align: right; color: var(--muted); font-size: 0.85rem;">{{ u.created_at }}</td>
+          <td>
             <div style="display: flex; align-items: center; gap: 0.5rem;">
               {% if u.is_admin %}
                 <span class="badge badge-success">ADMIN</span>
@@ -146,8 +146,8 @@
     </section>
 
     <!-- Overview Grid: Coverage, Worker Health, and Services cards -->
-    <section class="grid" style="grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.5rem; margin-bottom: 2.5rem; align-items: start;">
-      <article class="card" style="padding: 1.5rem;">
+    <section class="grid admin-card-grid">
+      <article class="card admin-card-padded">
         <h3 style="margin-top: 0; font-family: var(--font-headings);">Catalog Backfill Coverage</h3>
         <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem; margin-bottom: 1rem;">
           Share of the whole shared catalog with Last.fm data, regardless of who played what.
@@ -191,14 +191,14 @@
         {% endfor %}
       </article>
 
-      <article class="card" style="padding: 1.5rem;">
+      <article class="card admin-card-padded">
         <h3 style="margin-top: 0; font-family: var(--font-headings);">Worker Health</h3>
         <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem; margin-bottom: 1rem;">
           Background worker/thread state across every account.
         </p>
 
-        <p style="font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">Listener Sync</p>
-        <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem;">
+        <p class="admin-worker-label">Listener Sync</p>
+        <div class="admin-worker-row">
           {% for status, count in listener_summary.items() %}
             {% set st_lower = status | lower %}
             {% if st_lower == 'healthy' %}
@@ -215,8 +215,8 @@
           {% endfor %}
         </div>
 
-        <p style="font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">Spotify Rate Limiting</p>
-        <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem;">
+        <p class="admin-worker-label">Spotify Rate Limiting</p>
+        <div class="admin-worker-row">
           {% if spotify_rate_limit.backoffRemainingSeconds > 0 %}
             <span class="badge badge-orange">BACKING OFF: {{ spotify_rate_limit.backoffRemainingSeconds | round | int }}s left</span>
           {% else %}
@@ -231,8 +231,8 @@
           {% endif %}
         </div>
 
-        <p style="font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">Spotify API Backfill Workers</p>
-        <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem;">
+        <p class="admin-worker-label">Spotify API Backfill Workers</p>
+        <div class="admin-worker-row">
           <span class="badge badge-success">RUNNING: {{ spotify_api_worker_summary.running }}</span>
           <span class="badge badge-warning">IDLE: {{ spotify_api_worker_summary.idle }}</span>
           <span class="badge badge-secondary">NOT CONFIGURED: {{ spotify_api_worker_summary.no_key }}</span>
@@ -241,8 +241,8 @@
           {% endif %}
         </div>
 
-        <p style="font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">Last.fm Genre Workers</p>
-        <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem;">
+        <p class="admin-worker-label">Last.fm Genre Workers</p>
+        <div class="admin-worker-row">
           <span class="badge badge-success">RUNNING: {{ lastfm_worker_summary.running }}</span>
           <span class="badge badge-warning">IDLE: {{ lastfm_worker_summary.idle }}</span>
           <span class="badge badge-secondary">NO API KEY: {{ lastfm_worker_summary.no_key }}</span>
@@ -251,8 +251,8 @@
           {% endif %}
         </div>
 
-        <p style="font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">Last.fm Album Bio Workers</p>
-        <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem;">
+        <p class="admin-worker-label">Last.fm Album Bio Workers</p>
+        <div class="admin-worker-row">
           <span class="badge badge-success">RUNNING: {{ lastfm_album_bio_worker_summary.running }}</span>
           <span class="badge badge-warning">IDLE: {{ lastfm_album_bio_worker_summary.idle }}</span>
           <span class="badge badge-secondary">NO API KEY: {{ lastfm_album_bio_worker_summary.no_key }}</span>
@@ -261,8 +261,8 @@
           {% endif %}
         </div>
 
-        <p style="font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">Last.fm Artist Bio Workers</p>
-        <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem;">
+        <p class="admin-worker-label">Last.fm Artist Bio Workers</p>
+        <div class="admin-worker-row">
           <span class="badge badge-success">RUNNING: {{ lastfm_artist_bio_worker_summary.running }}</span>
           <span class="badge badge-warning">IDLE: {{ lastfm_artist_bio_worker_summary.idle }}</span>
           <span class="badge badge-secondary">NO API KEY: {{ lastfm_artist_bio_worker_summary.no_key }}</span>
@@ -271,13 +271,13 @@
           {% endif %}
         </div>
 
-        <p style="font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">Auto-Importer Watchdogs</p>
-        <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem;">
+        <p class="admin-worker-label">Auto-Importer Watchdogs</p>
+        <div class="admin-worker-row">
           <span class="badge badge-success">RUNNING: {{ auto_importer_worker_summary.running }}</span>
           <span class="badge badge-warning">IDLE: {{ auto_importer_worker_summary.idle }}</span>
         </div>
 
-        <p style="font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">Wrapped Calculation Workers</p>
+        <p class="admin-worker-label">Wrapped Calculation Workers</p>
         <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
           <span class="badge badge-success">RUNNING: {{ wrapped_worker_summary.running }}</span>
           <span class="badge badge-warning">IDLE: {{ wrapped_worker_summary.idle }}</span>
@@ -288,14 +288,14 @@
       </article>
 
       <!-- Instance Services: placed right beside Worker Health -->
-      <article class="card" style="padding: 1.5rem;">
+      <article class="card admin-card-padded">
         <h2 style="margin-top: 0; font-family: var(--font-headings); font-size: 1.15rem;">Instance Services</h2>
         <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem; margin-bottom: 1rem;">
           Instance-wide services and health checks, one of each per install.
         </p>
 
-        <p style="font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">Milestone Detection</p>
-        <div id="milestoneWorkerStatus" style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem;">
+        <p class="admin-worker-label">Milestone Detection</p>
+        <div id="milestoneWorkerStatus" class="admin-worker-row">
           {% if milestone_worker_summary.status == 'RUNNING' %}
             <span class="badge badge-success">RUNNING</span>
           {% elif milestone_worker_summary.status == 'DISABLED' %}
@@ -308,8 +308,8 @@
           {% endif %}
         </div>
 
-        <p style="font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">Database Backup Service</p>
-        <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem;">
+        <p class="admin-worker-label">Database Backup Service</p>
+        <div class="admin-worker-row">
           {% if backup_worker_summary.status == 'RUNNING' %}
             <span class="badge badge-success">RUNNING</span>
           {% else %}
@@ -317,8 +317,8 @@
           {% endif %}
         </div>
 
-        <p style="font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">Mail Worker</p>
-        <div id="emailWorkerStatus" style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem;">
+        <p class="admin-worker-label">Mail Worker</p>
+        <div id="emailWorkerStatus" class="admin-worker-row">
           {% if email_worker_summary.status == 'RUNNING' %}
             <span class="badge badge-success">RUNNING</span>
           {% elif email_worker_summary.status == 'DISABLED' %}
@@ -375,67 +375,67 @@
 
   {% elif current_tab == 'workers' %}
     <!-- Workers Tab: Spotify API, Last.fm Backfilling, Advanced Tuning -->
-    <section class="grid" style="grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.5rem; margin-bottom: 2.5rem; align-items: start;">
+    <section class="grid admin-card-grid">
       <article class="card" style="padding: 0;">
-        <div class="card-header" style="padding: 1.5rem 1.5rem 0.5rem 1.5rem;">
+        <div class="card-header admin-card-header">
           <h2 style="margin: 0; font-family: var(--font-headings); font-size: 1.15rem;">Spotify API Backfilling</h2>
           <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem;">Recovery and metadata fetching via the Spotify Developer API.</p>
         </div>
-        <div style="padding: 0 1.5rem 1.5rem 1.5rem;">
+        <div class="admin-card-body">
           <form method="post" action="{{ url_for('adminSpotifySettings') }}">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
-            <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; margin-bottom: 1rem;">
+            <label class="admin-check-label" style="margin-bottom: 1rem;">
               <input type="checkbox" name="spotify_backfill" value="1" {% if spotify_backfill_enabled %}checked{% endif %}>
               Spotify API backfill (missed-plays recovery and album/track metadata fetching)
             </label>
-            <button type="submit" class="primary-button" style="padding: 4px 16px;">Save</button>
+            <button type="submit" class="primary-button admin-save-btn">Save</button>
           </form>
         </div>
       </article>
 
       <article class="card" style="padding: 0;">
-        <div class="card-header" style="padding: 1.5rem 1.5rem 0.5rem 1.5rem;">
+        <div class="card-header admin-card-header">
           <h2 style="margin: 0; font-family: var(--font-headings); font-size: 1.15rem;">Last.fm Backfilling Settings</h2>
           <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem;">Genre and biography data sourced from Last.fm.</p>
         </div>
-        <div style="padding: 0 1.5rem 1.5rem 1.5rem;">
+        <div class="admin-card-body">
           <form method="post" action="{{ url_for('adminLastfmSettings') }}">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
-            <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; margin-bottom: 0.6rem;">
+            <label class="admin-check-label" style="margin-bottom: 0.6rem;">
               <input type="checkbox" name="lastfm_backfill" value="1" {% if lastfm_backfill_enabled %}checked{% endif %}>
               Genre backfill (genre insights on Charts, Wrapped, Compare and track/album/artist pages)
             </label>
-            <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; margin-bottom: 0.6rem;">
+            <label class="admin-check-label" style="margin-bottom: 0.6rem;">
               <input type="checkbox" name="artist_bio" value="1" {% if artist_bio_enabled %}checked{% endif %}>
               Artist biographies (Last.fm biography on artist pages)
             </label>
-            <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; margin-bottom: 0.6rem;">
+            <label class="admin-check-label" style="margin-bottom: 0.6rem;">
               <input type="checkbox" name="album_bio" value="1" {% if album_bio_enabled %}checked{% endif %}>
               Album biographies (Last.fm biography on album pages)
             </label>
-            <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; margin-bottom: 0.8rem;">
+            <label class="admin-check-label" style="margin-bottom: 0.8rem;">
               <input type="checkbox" name="include_inherited" value="1" {% if inherited_genres_enabled %}checked{% endif %}>
               Count inherited genres (songs/albums without own Last.fm tags use their artist's genres)
             </label>
-            <label style="display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); margin-bottom: 0.6rem;">
+            <label class="admin-form-row" style="gap: 0.5rem; margin-bottom: 0.6rem;">
               <span>Genre re-attempt interval (empty results)</span>
-              <span style="white-space: nowrap;"><input type="number" name="genre_backfill_retry_days" value="{{ genre_backfill_retry_days }}" min="{{ backfill_retry_min }}" max="{{ backfill_retry_max }}" step="1" style="width: 5.5rem; padding: 6px 10px; font-size: 1.05rem; background: var(--card-bg, #1e1e1e); color: var(--fg, #eee); border: 1px solid var(--border, #444); border-radius: 4px;"> days</span>
+              <span style="white-space: nowrap;"><input type="number" name="genre_backfill_retry_days" value="{{ genre_backfill_retry_days }}" min="{{ backfill_retry_min }}" max="{{ backfill_retry_max }}" step="1" class="admin-number-input"> days</span>
             </label>
-            <label style="display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); margin-bottom: 1rem;">
+            <label class="admin-form-row" style="gap: 0.5rem; margin-bottom: 1rem;">
               <span>Biography re-attempt interval (empty results)</span>
-              <span style="white-space: nowrap;"><input type="number" name="bio_backfill_retry_days" value="{{ bio_backfill_retry_days }}" min="{{ backfill_retry_min }}" max="{{ backfill_retry_max }}" step="1" style="width: 5.5rem; padding: 6px 10px; font-size: 1.05rem; background: var(--card-bg, #1e1e1e); color: var(--fg, #eee); border: 1px solid var(--border, #444); border-radius: 4px;"> days</span>
+              <span style="white-space: nowrap;"><input type="number" name="bio_backfill_retry_days" value="{{ bio_backfill_retry_days }}" min="{{ backfill_retry_min }}" max="{{ backfill_retry_max }}" step="1" class="admin-number-input"> days</span>
             </label>
-            <button type="submit" class="primary-button" style="padding: 4px 16px;">Save</button>
+            <button type="submit" class="primary-button admin-save-btn">Save</button>
           </form>
         </div>
       </article>
 
       <article class="card" style="padding: 0;">
-        <div class="card-header" style="padding: 1.5rem 1.5rem 0.5rem 1.5rem;">
+        <div class="card-header admin-card-header">
           <h2 style="margin: 0; font-family: var(--font-headings); font-size: 1.15rem;">Advanced Tuning</h2>
           <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem;">Numeric limits that were previously fixed in code. Worker counts apply after the app restarts.</p>
         </div>
-        <div style="padding: 0 1.5rem 1.5rem 1.5rem;">
+        <div class="admin-card-body">
           <form method="post" action="{{ url_for('adminTuningSettings') }}">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
             {% set tuning_fields = [
@@ -445,19 +445,19 @@
               ('album_bio_workers', 'Album biography workers', 'restart', album_bio_workers, worker_min, worker_max)
             ] %}
             {% for name, label, kind, value, lo, hi in tuning_fields %}
-            <label style="display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); margin-bottom: 0.6rem;">
+            <label class="admin-form-row" style="gap: 0.5rem; margin-bottom: 0.6rem;">
               <span>{{ label }} <em style="font-style: normal; opacity: 0.65;">({{ kind }})</em></span>
               <input type="number" name="{{ name }}" value="{{ value }}" min="{{ lo }}" max="{{ hi }}" step="1"
-                     style="width: 5.5rem; padding: 6px 10px; font-size: 1.05rem; background: var(--card-bg, #1e1e1e); color: var(--fg, #eee); border: 1px solid var(--border, #444); border-radius: 4px;">
+                     class="admin-number-input">
             </label>
             {% endfor %}
-            <button type="submit" class="primary-button" style="padding: 4px 16px; margin-top: 0.4rem;">Save</button>
+            <button type="submit" class="primary-button admin-save-btn" style="margin-top: 0.4rem;">Save</button>
           </form>
           {% if restart_enabled %}
           <form method="post" action="{{ url_for('adminRestart') }}" style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--border, #333);"
                 onsubmit="return confirm('Restart the app now? Worker-count changes apply after the restart. This only recovers if the process is supervised (a relaunch-on-exit launch script) - otherwise the app will stop.');">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
-            <button type="submit" class="button button-danger" style="padding: 4px 16px; min-height: auto;">Restart app to apply</button>
+            <button type="submit" class="button button-danger admin-save-btn" style="min-height: auto;">Restart app to apply</button>
           </form>
           {% else %}
           <p style="color: var(--muted); font-size: 0.8rem; margin: 1rem 0 0 0; padding-top: 1rem; border-top: 1px solid var(--border, #333);">Worker-count changes apply after you restart the app. A one-click restart button appears here when <code>ALLOW_INSTANCE_RESTART=1</code> is set in a supervised launch.</p>
@@ -468,13 +468,13 @@
 
   {% elif current_tab == 'settings' %}
     <!-- Settings Tab: User Settings, Email & Notifications, Playback Classification, Backups -->
-    <section class="grid" style="grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.5rem; margin-bottom: 2.5rem; align-items: start;">
+    <section class="grid admin-card-grid">
       <article class="card" style="padding: 0;">
-        <div class="card-header" style="padding: 1.5rem 1.5rem 0.5rem 1.5rem;">
+        <div class="card-header admin-card-header">
           <h2 style="margin: 0; font-family: var(--font-headings); font-size: 1.15rem;">User Settings</h2>
           <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem;">Account creation and cross-account features.</p>
         </div>
-        <div style="padding: 0 1.5rem 1.5rem 1.5rem;">
+        <div class="admin-card-body">
           <form method="post" action="{{ url_for('adminUserSettings') }}">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
             {% set user_settings_fields = [
@@ -497,7 +497,7 @@
             ] %}
             {% for name, label, checked, hint, margin in user_settings_fields %}
             <div style="display: flex; align-items: center; gap: 0.4rem; margin-bottom: {{ margin }};">
-              <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; flex: 1;">
+              <label class="admin-check-label" style="flex: 1;">
                 <input type="checkbox" name="{{ name }}" value="1" {% if checked %}checked{% endif %}>
                 {{ label }}
               </label>
@@ -509,21 +509,21 @@
               {% endif %}
             </div>
             {% endfor %}
-            <button type="submit" class="primary-button" style="padding: 4px 16px;">Save</button>
+            <button type="submit" class="primary-button admin-save-btn">Save</button>
           </form>
         </div>
       </article>
 
       <article class="card" style="padding: 0;">
-        <div class="card-header" style="padding: 1.5rem 1.5rem 0.5rem 1.5rem;">
+        <div class="card-header admin-card-header">
           <h3 style="margin: 0; font-family: var(--font-headings);">Email &amp; Notifications</h3>
           <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem;">SMTP server credentials and instance-wide notification controls.</p>
         </div>
-        <div style="padding: 0 1.5rem 1.5rem 1.5rem;">
+        <div class="admin-card-body">
           <form method="post" action="{{ url_for('adminEmailSettings') }}">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
 
-            <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; margin-bottom: 1rem;">
+            <label class="admin-check-label" style="margin-bottom: 1rem;">
               <input type="checkbox" name="email_notifications_enabled" value="1" {% if smtp_config.enabled %}checked{% endif %}>
               <strong>Enable email notifications instance-wide</strong>
               <details class="setting-hint">
@@ -532,36 +532,36 @@
               </details>
             </label>
 
-            <label style="display: flex; justify-content: space-between; align-items: center; font-size: 0.85rem; color: var(--muted);">
+            <label class="admin-form-row">
               <span>Public Instance URL</span>
-              <input type="url" name="instance_public_url" value="{{ instance_public_url }}" placeholder="https://tracker.example.com" style="width: 12rem; padding: 4px 8px; background: var(--card-bg, #1e1e1e); color: var(--fg, #eee); border: 1px solid var(--border, #444); border-radius: 4px;">
+              <input type="url" name="instance_public_url" value="{{ instance_public_url }}" placeholder="https://tracker.example.com" class="admin-text-input">
             </label>
             <p style="color: var(--muted); font-size: 0.8rem; margin: 0.25rem 0 1rem 0;">The address other people use to reach this instance. Used to build the login/action links inside notification emails; leave blank to send emails without a link.</p>
 
-            <div style="display: flex; flex-direction: column; gap: 0.6rem; margin-bottom: 1rem;">
-              <label style="display: flex; justify-content: space-between; align-items: center; font-size: 0.85rem; color: var(--muted);">
+            <div class="admin-settings-inputs">
+              <label class="admin-form-row">
                 <span>SMTP Host</span>
-                <input type="text" name="smtp_host" value="{{ smtp_config.host }}" placeholder="smtp.gmail.com" style="width: 12rem; padding: 4px 8px; background: var(--card-bg, #1e1e1e); color: var(--fg, #eee); border: 1px solid var(--border, #444); border-radius: 4px;">
+                <input type="text" name="smtp_host" value="{{ smtp_config.host }}" placeholder="smtp.gmail.com" class="admin-text-input">
               </label>
-              <label style="display: flex; justify-content: space-between; align-items: center; font-size: 0.85rem; color: var(--muted);">
+              <label class="admin-form-row">
                 <span>SMTP Port</span>
-                <input type="number" name="smtp_port" value="{{ smtp_config.port }}" placeholder="587" style="width: 5.5rem; padding: 4px 8px; background: var(--card-bg, #1e1e1e); color: var(--fg, #eee); border: 1px solid var(--border, #444); border-radius: 4px;">
+                <input type="number" name="smtp_port" value="{{ smtp_config.port }}" placeholder="587" class="admin-text-input" style="width: 5.5rem;">
               </label>
-              <label style="display: flex; justify-content: space-between; align-items: center; font-size: 0.85rem; color: var(--muted);">
+              <label class="admin-form-row">
                 <span>Encryption</span>
-                <select name="smtp_encryption" style="width: 8rem; padding: 4px 8px; background: var(--card-bg, #1e1e1e); color: var(--fg, #eee); border: 1px solid var(--border, #444); border-radius: 4px;">
+                <select name="smtp_encryption" class="admin-select-input">
                   <option value="tls" {% if smtp_config.encryption == 'tls' %}selected{% endif %}>TLS / STARTTLS</option>
                   <option value="ssl" {% if smtp_config.encryption == 'ssl' %}selected{% endif %}>SSL</option>
                   <option value="none" {% if smtp_config.encryption == 'none' %}selected{% endif %}>None</option>
                 </select>
               </label>
-              <label style="display: flex; justify-content: space-between; align-items: center; font-size: 0.85rem; color: var(--muted);">
+              <label class="admin-form-row">
                 <span>Username</span>
-                <input type="text" name="smtp_user" value="{{ smtp_config.user }}" placeholder="user@example.com" style="width: 12rem; padding: 4px 8px; background: var(--card-bg, #1e1e1e); color: var(--fg, #eee); border: 1px solid var(--border, #444); border-radius: 4px;">
+                <input type="text" name="smtp_user" value="{{ smtp_config.user }}" placeholder="user@example.com" class="admin-text-input">
               </label>
-              <label style="display: flex; justify-content: space-between; align-items: center; font-size: 0.85rem; color: var(--muted);">
+              <label class="admin-form-row">
                 <span>Password</span>
-                <input type="password" name="smtp_password" value="" placeholder="{% if smtp_config.password %}••••••••{% else %}Not set{% endif %}" style="width: 12rem; padding: 4px 8px; background: var(--card-bg, #1e1e1e); color: var(--fg, #eee); border: 1px solid var(--border, #444); border-radius: 4px;">
+                <input type="password" name="smtp_password" value="" placeholder="{% if smtp_config.password %}••••••••{% else %}Not set{% endif %}" class="admin-text-input">
               </label>
               {% if smtp_config.password %}
               <label style="display: flex; align-items: center; gap: 0.4rem; font-size: 0.8rem; color: var(--muted); padding-left: 0.25rem;">
@@ -569,18 +569,18 @@
                 <span>Clear saved password</span>
               </label>
               {% endif %}
-              <label style="display: flex; justify-content: space-between; align-items: center; font-size: 0.85rem; color: var(--muted);">
+              <label class="admin-form-row">
                 <span>Sender Email</span>
-                <input type="email" name="smtp_from_email" value="{{ smtp_config.from_email }}" placeholder="noreply@example.com" style="width: 12rem; padding: 4px 8px; background: var(--card-bg, #1e1e1e); color: var(--fg, #eee); border: 1px solid var(--border, #444); border-radius: 4px;">
+                <input type="email" name="smtp_from_email" value="{{ smtp_config.from_email }}" placeholder="noreply@example.com" class="admin-text-input">
               </label>
-              <label style="display: flex; justify-content: space-between; align-items: center; font-size: 0.85rem; color: var(--muted);">
+              <label class="admin-form-row">
                 <span>Sender Name</span>
-                <input type="text" name="smtp_from_name" value="{{ smtp_config.from_name }}" placeholder="Spotify Tracker" style="width: 12rem; padding: 4px 8px; background: var(--card-bg, #1e1e1e); color: var(--fg, #eee); border: 1px solid var(--border, #444); border-radius: 4px;">
+                <input type="text" name="smtp_from_name" value="{{ smtp_config.from_name }}" placeholder="Spotify Tracker" class="admin-text-input">
               </label>
             </div>
 
             <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; margin-top: 1rem;">
-              <button type="submit" class="primary-button" style="padding: 4px 16px;">Save Email Settings</button>
+              <button type="submit" class="primary-button admin-save-btn">Save Email Settings</button>
               <button type="submit" form="adminTestEmailForm" class="primary-button" style="padding: 4px 16px;">Send Test Email to Admin</button>
             </div>
           </form>
@@ -592,18 +592,18 @@
       </article>
 
       <article class="card" style="padding: 0;">
-        <div class="card-header" style="padding: 1.5rem 1.5rem 0.5rem 1.5rem;">
+        <div class="card-header admin-card-header">
           <h2 style="margin: 0; font-family: var(--font-headings); font-size: 1.15rem;">Playback Classification</h2>
           <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem;">The skip threshold decides skip vs. real listen (plays under it are excluded from counts, listen time, top lists and streaks — saving reclassifies all history). The completion percent then splits real plays into complete vs. partial on the Charts completion chart.</p>
         </div>
-        <div style="padding: 0 1.5rem 1.5rem 1.5rem;">
+        <div class="admin-card-body">
           <form method="post" action="{{ url_for('adminSkipSettings') }}">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
-            <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; margin-bottom: 0.6rem;">
+            <label class="admin-check-label" style="margin-bottom: 0.6rem;">
               <input type="radio" name="skip_mode" id="skipModeSeconds" value="{{ skip_mode_seconds }}" {% if skip_mode == skip_mode_seconds %}checked{% endif %} onchange="onSkipModeChange()">
               Fixed seconds ({{ skip_seconds_min }}–{{ skip_seconds_max }}s)
             </label>
-            <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; margin-bottom: 0.8rem;">
+            <label class="admin-check-label" style="margin-bottom: 0.8rem;">
               <input type="radio" name="skip_mode" id="skipModePercent" value="{{ skip_mode_percent }}" {% if skip_mode == skip_mode_percent %}checked{% endif %} onchange="onSkipModeChange()">
               Percent of track duration ({{ skip_percent_min }}–{{ skip_percent_max }}%)
             </label>
@@ -612,35 +612,35 @@
                      min="{{ skip_seconds_min if skip_mode == skip_mode_seconds else skip_percent_min }}"
                      max="{{ skip_seconds_max if skip_mode == skip_mode_seconds else skip_percent_max }}"
                      step="1" required
-                     style="width: 6rem; padding: 6px 10px; font-size: 1.05rem; background: var(--card-bg, #1e1e1e); color: var(--fg, #eee); border: 1px solid var(--border, #444); border-radius: 4px;">
+                     class="admin-number-input" style="width: 6rem;">
               <span id="skipValueUnit" style="color: var(--muted);">{{ '%' if skip_mode == skip_mode_percent else 's' }}</span>
             </div>
-            <label style="display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); margin-bottom: 1rem;">
+            <label class="admin-form-row" style="gap: 0.5rem; margin-bottom: 1rem;">
               <span>Counts as a complete listen at/over</span>
-              <span style="white-space: nowrap;"><input type="number" name="completion_complete_percent" value="{{ completion_complete_percent }}" min="{{ completion_min }}" max="{{ completion_max }}" step="1" style="width: 5.5rem; padding: 6px 10px; font-size: 1.05rem; background: var(--card-bg, #1e1e1e); color: var(--fg, #eee); border: 1px solid var(--border, #444); border-radius: 4px;"> % of duration</span>
+              <span style="white-space: nowrap;"><input type="number" name="completion_complete_percent" value="{{ completion_complete_percent }}" min="{{ completion_min }}" max="{{ completion_max }}" step="1" class="admin-number-input"> % of duration</span>
             </label>
-            <button type="submit" class="primary-button" style="padding: 4px 16px;">Save</button>
+            <button type="submit" class="primary-button admin-save-btn">Save</button>
           </form>
         </div>
       </article>
 
       <article class="card" style="padding: 0;">
-        <div class="card-header" style="padding: 1.5rem 1.5rem 0.5rem 1.5rem;">
+        <div class="card-header admin-card-header">
           <h2 style="margin: 0; font-family: var(--font-headings); font-size: 1.15rem;">Backups</h2>
           <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem;">Automatic database snapshots into Database/Data/Backups. Set either to 0 to disable. Applies after the app restarts.</p>
         </div>
-        <div style="padding: 0 1.5rem 1.5rem 1.5rem;">
+        <div class="admin-card-body">
           <form method="post" action="{{ url_for('adminBackupSettings') }}">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
-            <label style="display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); margin-bottom: 0.6rem;">
+            <label class="admin-form-row" style="gap: 0.5rem; margin-bottom: 0.6rem;">
               <span>Snapshot every</span>
-              <span style="white-space: nowrap;"><input type="number" name="backup_interval_hours" value="{{ backup_interval_hours }}" min="{{ backup_interval_min }}" max="{{ backup_interval_max }}" step="1" style="width: 5.5rem; padding: 6px 10px; font-size: 1.05rem; background: var(--card-bg, #1e1e1e); color: var(--fg, #eee); border: 1px solid var(--border, #444); border-radius: 4px;"> hours</span>
+              <span style="white-space: nowrap;"><input type="number" name="backup_interval_hours" value="{{ backup_interval_hours }}" min="{{ backup_interval_min }}" max="{{ backup_interval_max }}" step="1" class="admin-number-input"> hours</span>
             </label>
-            <label style="display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); margin-bottom: 1rem;">
+            <label class="admin-form-row" style="gap: 0.5rem; margin-bottom: 1rem;">
               <span>Keep newest</span>
-              <span style="white-space: nowrap;"><input type="number" name="backup_retention_count" value="{{ backup_retention_count }}" min="{{ backup_retention_min }}" max="{{ backup_retention_max }}" step="1" style="width: 5.5rem; padding: 6px 10px; font-size: 1.05rem; background: var(--card-bg, #1e1e1e); color: var(--fg, #eee); border: 1px solid var(--border, #444); border-radius: 4px;"> snapshots</span>
+              <span style="white-space: nowrap;"><input type="number" name="backup_retention_count" value="{{ backup_retention_count }}" min="{{ backup_retention_min }}" max="{{ backup_retention_max }}" step="1" class="admin-number-input"> snapshots</span>
             </label>
-            <button type="submit" class="primary-button" style="padding: 4px 16px;">Save</button>
+            <button type="submit" class="primary-button admin-save-btn">Save</button>
           </form>
           <div id="backup-status-message" style="margin-top: 0.75rem; min-height: 1.5em;"></div>
           <form method="post" action="{{ url_for('adminCreateBackup') }}" style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--border, #333);">
