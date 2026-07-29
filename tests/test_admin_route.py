@@ -1324,17 +1324,6 @@ class TestAdminInsightsLayout(AdminRouteTestBase):
             self.assertGreater(body.index(entry), servicesAt,
                                "{} belongs in the Instance Services card".format(entry))
 
-    def test_spotify_rate_limiting_next_to_listener_sync(self):
-        body = self._getAdmin(self._makeApp()).data.decode()
-        sync_idx = body.index("Listener Sync")
-        rate_limit_idx = body.index("Spotify Rate Limiting")
-        backfill_idx = body.index("Spotify API Backfill Workers")
-
-        self.assertLess(sync_idx, backfill_idx)
-        self.assertLess(rate_limit_idx, backfill_idx)
-        self.assertIn('class="admin-worker-group"', body)
-        self.assertIn('class="admin-worker-col"', body)
-
     def test_spotify_rate_limiting_backing_off_badge(self):
         fake_snapshot = {
             "backoffRemainingSeconds": 45.2,

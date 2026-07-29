@@ -4465,18 +4465,6 @@ html.theme-red {
   margin-bottom: 1rem;
 }
 
-.admin-worker-group {
-  display: flex;
-  gap: 1.5rem;
-  flex-wrap: wrap;
-  margin-bottom: 1rem;
-}
-
-.admin-worker-col {
-  flex: 1;
-  min-width: 200px;
-}
-
 .admin-settings-col {
   display: flex;
   flex-direction: column;
