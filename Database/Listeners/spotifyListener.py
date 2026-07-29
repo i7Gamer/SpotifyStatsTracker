@@ -15,6 +15,7 @@ import threading
 import time
 from contextlib import contextmanager
 from SpotipyFree import Spotify
+from Database.rate_limit import SPOTIFY_LIMITER, SPOTIFY_RATE_LIMIT_BACKOFF_SECONDS
 from Database.utils import parseError, timeToInt
 
 # A background thread's websocket ping (e.g. spotapi's keep_alive) can raise
@@ -71,7 +72,11 @@ LISTENER_STALE_HARD_TIMEOUT_SECONDS = 6 * 60 * 60
 
 AUTH_ERROR_TIMEOUT_SECONDS = 30  #< trigger reconnection immediately for auth errors, not 30 min
 
-RATE_LIMIT_ERROR_BACKOFF_SECONDS = 60  #< backoff for 429 rate limit errors from Spotify API
+RATE_LIMIT_ERROR_BACKOFF_SECONDS = 60  #< how long THIS listener's poll loop pauses after a rate limit.
+                                        #  The process-wide pause that actually matters is applied
+                                        #  separately - see the backoff branch in startListener.
+
+RATE_LIMIT_REASON_LISTENER_POLL = "listener poll"  #< label for the shared limiter's snapshot
 
 # Bounds memory for the missed-track dedup set in _checkConnectStateForMissedTracks -
 # prev_tracks itself is always much shorter than this (it's a rolling local queue
@@ -446,7 +451,8 @@ class Listener:
             # already do: trust the cookie check above and stay logged in,
             # rather than bouncing the user to the login flow.
             if "json" in error_str or _is_rate_limit_error(e):
-                logger.warning("Transient error checking login status (rate limit or malformed response): %s", parseError(e))
+                logger.warning("Transient error checking login status for user %s "
+                               "(rate limit or malformed response): %s", self.logUser, parseError(e))
                 return True
             return False
 
@@ -480,7 +486,8 @@ class Listener:
             error_str = str(e).lower()
             # Invalid JSON errors usually indicate rate limiting or bad response from Spotify
             if "json" in error_str or _is_rate_limit_error(e):
-                logger.warning("Transient error validating current user (rate limit or malformed response): %s", parseError(e))
+                logger.warning("Transient error validating current user %s "
+                               "(rate limit or malformed response): %s", self.logUser, parseError(e))
                 raise  # Trigger rate limit backoff in startListener
             if not _is_auth_error(e):
                 raise
@@ -693,7 +700,8 @@ class Listener:
             error_str = str(e).lower()
             # Invalid JSON errors usually indicate rate limiting or bad response from Spotify
             if "json" in error_str or _is_rate_limit_error(e):
-                logger.warning("Transient error fetching recently played (rate limit or malformed response): %s", parseError(e))
+                logger.warning("Transient error fetching recently played for user %s "
+                               "(rate limit or malformed response): %s", self.logUser, parseError(e))
                 raise  # Trigger rate limit backoff in startListener
             raise  # Let startListener handle other errors
 
@@ -776,6 +784,18 @@ class Listener:
                     self.run = False
                     return
                 elif _is_rate_limit_error(e):
+                    # Pause every Spotify request in the process, not just this
+                    # thread. The local wait below is nearly worthless on its
+                    # own: this loop's only rate-limited call is the
+                    # 5-minutely _validateCurrentUser (the recently-played read
+                    # is a local cache hit), while the connect-state poll that
+                    # actually generates ~10 requests a minute PER USER runs on
+                    # spotapi's own thread and never saw this backoff at all.
+                    # It stays as the local half - there is no point retrying
+                    # validation inside a window we just opened - but the
+                    # shared one is what the limit is actually about.
+                    SPOTIFY_LIMITER.applyBackoff(SPOTIFY_RATE_LIMIT_BACKOFF_SECONDS,
+                                                 reason=RATE_LIMIT_REASON_LISTENER_POLL)
                     # One line for a routine backoff: the path that raised has
                     # normally already logged the exception (see
                     # _validateCurrentUser's transient branch), so repeating it
@@ -783,11 +803,11 @@ class Listener:
                     # reply is a whole HTML fallback page. FLASK_DEBUG brings
                     # the detail back for the paths that raise without logging.
                     if _flaskDebugEnabled():
-                        logger.warning("Rate limit error detected, backing off for %d seconds: %s",
-                                       RATE_LIMIT_ERROR_BACKOFF_SECONDS, parseError(e))
+                        logger.warning("Rate limit error detected for user %s, backing off for %d seconds: %s",
+                                       self.logUser, RATE_LIMIT_ERROR_BACKOFF_SECONDS, parseError(e))
                     else:
-                        logger.warning("Rate limit error detected, backing off for %d seconds",
-                                       RATE_LIMIT_ERROR_BACKOFF_SECONDS)
+                        logger.warning("Rate limit error detected for user %s, backing off for %d seconds",
+                                       self.logUser, RATE_LIMIT_ERROR_BACKOFF_SECONDS)
                     self._stop_event.wait(RATE_LIMIT_ERROR_BACKOFF_SECONDS)
                 else:
                     logger.error("Error in listener: %s", parseError(e))

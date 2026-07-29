@@ -456,5 +456,82 @@ class TestAdminWorkerHealthRoute(unittest.TestCase):
             self.assertNotIn("Un-inherited: 50.0%", body)
 
 
+class TestAdminSpotifyRateLimitPanel(unittest.TestCase):
+    """The Spotify rate-limit block is INSTANCE-wide, unlike every other row in
+    the Worker Health card: Spotify limits per IP, so all four listeners and
+    every backfiller share one budget (Database/rate_limit.py). It exists
+    because a rate-limit event used to be a log line nobody counted - the only
+    way to ask "is this getting worse?" was to grep app.log."""
+
+    @patch('app.SpotifyDashboardApp._get_or_create_secret_key', return_value='test-secret-key')
+    @patch('app.SpotifyDashboardApp.startVersionCheck_thread')
+    @patch('app.SpotifyDashboardApp.checkLogin_thread')
+    @patch('app.migrateIfNeeded')
+    @patch('app.Path.exists')
+    def _renderAdmin(self, mock_exists, mock_migrate, mock_check, mock_version, mock_secret):
+        mock_exists.return_value = False
+        dash = SpotifyDashboardApp()
+        dash.backupWorker = None
+        dash.user_databases = {}
+
+        insights = {
+            "getCatalogGenreCoverage": {
+                "song": {"covered": 0, "total": 0, "percent": 0.0},
+                "album": {"covered": 0, "total": 0, "percent": 0.0},
+                "artist": {"covered": 0, "total": 0, "percent": 0.0},
+                "overall": {"percent": 0.0},
+            },
+            "getCatalogBiographyCoverage": {
+                "artist": {"covered": 0, "total": 0}, "album": {"covered": 0, "total": 0},
+            },
+            "getRecentRegistrationCounts": {"last_7_days": 0, "last_30_days": 0},
+            "getInstanceShareCounts": {"pending": 0, "accepted": 0},
+            "getActiveShareLinksCount": 0,
+        }
+        patches = [
+            patch.object(dash.repo, 'getGlobalDatabaseStats', return_value={}),
+            patch.object(dash.repo, 'getAllUsersDetails', return_value=[]),
+            patch.object(dash.repo, 'isAdmin', return_value=True),
+            patch.object(dash.repo, 'getAdminUsernames', return_value=['alice']),
+            patch.object(dash, 'is_user_logged_in', return_value=True),
+            patch.object(dash, 'get_username_for_email', return_value='alice'),
+            patch.object(dash, 'get_user_db', return_value=MagicMock()),
+        ]
+        for name, value in insights.items():
+            patches.append(patch.object(dash.repo, name, return_value=value))
+
+        with contextlib.ExitStack() as stack:
+            for p in patches:
+                stack.enter_context(p)
+            client = dash.app.test_client()
+            with client.session_transaction() as sess:
+                sess['email'] = 'alice@example.com'
+            resp = client.get("/admin")
+            self.assertEqual(resp.status_code, 200)
+            return resp.data.decode()
+
+    def test_a_quiet_instance_reports_clear_with_no_events(self):
+        body = self._renderAdmin()
+
+        self.assertIn("Spotify Rate Limiting", body)
+        self.assertIn("CLEAR", body)
+        self.assertIn("EVENTS: 0", body)
+
+    def test_an_open_window_is_reported_with_its_cause_and_time_left(self):
+        """The three things an admin needs when tracking pushes back: that it
+        IS happening, which Spotify surface complained, and how many times."""
+        from Database.rate_limit import SPOTIFY_LIMITER
+
+        SPOTIFY_LIMITER.applyBackoff(30, reason="account-settings/profile")
+        SPOTIFY_LIMITER.applyBackoff(30, reason="connect-state")
+
+        body = self._renderAdmin()
+
+        self.assertIn("BACKING OFF", body)
+        self.assertIn("EVENTS: 2", body)
+        self.assertIn("LAST: connect-state", body)
+        self.assertNotIn("CLEAR", body)
+
+
 if __name__ == "__main__":
     unittest.main()

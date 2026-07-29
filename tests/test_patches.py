@@ -9,6 +9,7 @@ import spotapi.status
 import spotapi.websocket
 import spotapi.public
 
+import Database.rate_limit as rateLimitModule
 from Database.patches import patch_spotipy_free
 
 
@@ -830,6 +831,8 @@ class TestUpdateLoopShutdown(unittest.TestCase):
         transient outages must still recover once Spotify is reachable again."""
         from Database.patches import STATE_FAILURE_RECONNECT_THRESHOLD
 
+        from Database.rate_limit import SPOTIFY_LIMITER
+
         script = [ValueError("Could not get player state")] * (STATE_FAILURE_RECONNECT_THRESHOLD + 1)
         manager = _ScriptedStateManager(script)
         manager.reconnect = MagicMock(side_effect=RuntimeError("Spotify unreachable"))
@@ -842,8 +845,14 @@ class TestUpdateLoopShutdown(unittest.TestCase):
             if sleepCount[0] >= len(script):
                 lpm.run = False
 
-        with patch("time.sleep", side_effect=mockSleep):
-            lpm.updateLoop(MagicMock(), refreshInterval=1)
+        # Escalating to a reconnect also opens a process-wide backoff window
+        # (see TestConnectStatePollLimiting), which would hold the poll after
+        # it - correct in production, but here it would stop the loop before
+        # it could prove it survived the failed reconnect. Grant every slot so
+        # this test stays about the reconnect path alone.
+        with patch.object(SPOTIFY_LIMITER, "acquire", return_value=True):
+            with patch("time.sleep", side_effect=mockSleep):
+                lpm.updateLoop(MagicMock(), refreshInterval=1)
 
         manager.reconnect.assert_called_once_with()
         self.assertEqual(manager._results, [])  #< loop survived past the failed reconnect
@@ -876,6 +885,16 @@ class TestIncompleteTrackInfo(unittest.TestCase):
         sleepPatcher = patch("Database.patches.time.sleep")
         self.mockSleep = sleepPatcher.start()
         self.addCleanup(sleepPatcher.stop)
+
+        # These tests are about the retry BUDGETS, but a "429 rate limit" in
+        # their scripts now also opens a real process-wide backoff window (see
+        # TestSharedLimiterWiring) that the next attempt would wait out. Worse,
+        # the sleep patch above is the one the limiter's own wait uses, so it
+        # would spin out the full timeout rather than sleep it. Grant every
+        # slot here; the shared limiter has its own coverage elsewhere.
+        acquirePatcher = patch.object(rateLimitModule.SPOTIFY_LIMITER, "acquire", return_value=True)
+        acquirePatcher.start()
+        self.addCleanup(acquirePatcher.stop)
 
     def _newSpotifyInstance(self):
         import SpotipyFree
@@ -1078,6 +1097,16 @@ class TestTrackFallbackOnIncompleteInfo(unittest.TestCase):
         sleepPatcher = patch("Database.patches.time.sleep")
         self.mockSleep = sleepPatcher.start()
         self.addCleanup(sleepPatcher.stop)
+
+        # These tests are about the retry BUDGETS, but a "429 rate limit" in
+        # their scripts now also opens a real process-wide backoff window (see
+        # TestSharedLimiterWiring) that the next attempt would wait out. Worse,
+        # the sleep patch above is the one the limiter's own wait uses, so it
+        # would spin out the full timeout rather than sleep it. Grant every
+        # slot here; the shared limiter has its own coverage elsewhere.
+        acquirePatcher = patch.object(rateLimitModule.SPOTIFY_LIMITER, "acquire", return_value=True)
+        acquirePatcher.start()
+        self.addCleanup(acquirePatcher.stop)
 
     def _newSpotifyInstance(self):
         import SpotipyFree
@@ -1491,6 +1520,334 @@ class TestFlaskDebugEnabled(unittest.TestCase):
         self.assertFalse(self._enabled("0"))
         self.assertFalse(self._enabled(""))
         self.assertFalse(self._enabled(None))
+
+
+class TestThrottleDetection(unittest.TestCase):
+    """_looksThrottled decides whether a reply is Spotify pushing back. The
+    hard case is the one that actually happens: HTTP 200 carrying an HTML
+    bot-check page, which no status-code check can see."""
+
+    def _looksThrottled(self, status, response):
+        from Database.patches import _looksThrottled
+        return _looksThrottled(status, response)
+
+    def test_explicit_throttle_statuses_count(self):
+        self.assertTrue(self._looksThrottled(429, None))
+        self.assertTrue(self._looksThrottled(503, None))
+
+    def test_html_body_counts_even_at_http_200(self):
+        """The "Oh nein!" fallback page - the exact shape seen in app.log."""
+        page = "<!DOCTYPE html><html><head><title>Oh nein!</title></head><body>x</body></html>"
+        self.assertTrue(self._looksThrottled(200, page))
+
+    def test_a_normal_json_reply_is_not_throttling(self):
+        self.assertFalse(self._looksThrottled(200, {"id": "alice"}))
+
+    def test_an_ordinary_failure_is_not_throttling(self):
+        """A 404 or a 500 with a plain body is a failure, not back-pressure -
+        pausing every user's Spotify traffic for it would be wrong."""
+        self.assertFalse(self._looksThrottled(404, "not found"))
+        self.assertFalse(self._looksThrottled(500, "internal error"))
+
+    def test_an_unstringable_body_never_raises(self):
+        class Hostile:
+            def __str__(self):
+                raise RuntimeError("nope")
+
+        self.assertFalse(self._looksThrottled(200, Hostile()))
+
+
+class TestSharedLimiterWiring(unittest.TestCase):
+    """Every Spotify request in the process goes through one limiter, and
+    every rate-limit signal pauses all of them.
+
+    This is the property the old code did NOT have: a rate limit paused the
+    one listener poll thread that noticed it (~0.3 requests/minute) while every
+    user's connect-state poll carried on at ~10 requests/minute each."""
+
+    _LOGGER = "Database.patches"
+    FALLBACK_PAGE = (
+        "<!DOCTYPE html><html><head><title>Oh nein!</title>"
+        "<style>body { background-color: #eee; }</style></head><body>x</body></html>"
+    )
+
+    def setUp(self):
+        from Database.rate_limit import SPOTIFY_LIMITER
+        self.limiter = SPOTIFY_LIMITER   #< conftest resets its state per test
+
+    def _userInstance(self, response, status=200, fail=False):
+        import spotapi.user
+        mockLogin = MagicMock()
+        mockLogin.logged_in = True
+        resp = MagicMock()
+        resp.status_code = status
+        resp.fail = fail
+        resp.response = response
+        resp.raw.headers = {}
+        mockLogin.client.get.return_value = resp
+        return spotapi.user.User(mockLogin), mockLogin
+
+    def test_profile_lookup_takes_a_slot_before_requesting(self):
+        userInst, mockLogin = self._userInstance({"id": "alice"})
+
+        with patch.object(self.limiter, "acquire", return_value=True) as acquire:
+            userInst.get_user_info()
+
+        acquire.assert_called_once()
+        mockLogin.client.get.assert_called_once()
+
+    def test_profile_lookup_is_skipped_while_the_process_is_paused(self):
+        """No slot means the request is never sent - a backoff that still let
+        the request through would be decorative."""
+        from Database.patches import SpotifyLocallyRateLimitedError
+
+        userInst, mockLogin = self._userInstance({"id": "alice"})
+
+        with patch.object(self.limiter, "acquire", return_value=False):
+            with self.assertRaises(SpotifyLocallyRateLimitedError):
+                userInst.get_user_info()
+
+        mockLogin.client.get.assert_not_called()
+
+    def test_local_pause_classifies_as_transient_not_auth(self):
+        """The listener buckets this exception the same way it buckets a real
+        rate limit: back off and retry, never bounce the user to a re-login."""
+        from Database.patches import SpotifyLocallyRateLimitedError
+        from Database.Listeners.spotifyListener import _is_rate_limit_error, _is_auth_error
+
+        error = SpotifyLocallyRateLimitedError(
+            "Spotify rate limit backoff in progress - skipped account-settings/profile")
+        self.assertTrue(_is_rate_limit_error(error))
+        self.assertFalse(_is_auth_error(error))
+
+    def test_bot_check_page_pauses_every_spotify_request(self):
+        from spotapi.exceptions import UserError
+
+        userInst, _ = self._userInstance(self.FALLBACK_PAGE)
+
+        with patch("Database.patches._flaskDebugEnabled", return_value=False):
+            with self.assertLogs(self._LOGGER, level="WARNING"):
+                with self.assertRaises(UserError):
+                    userInst.get_user_info()
+
+        snapshot = self.limiter.snapshot()
+        self.assertEqual(snapshot["backoffs"], 1)
+        self.assertGreater(snapshot["backoffRemainingSeconds"], 0)
+
+    def test_the_backoff_names_the_endpoint_that_pushed_back(self):
+        """Which Spotify surface complained is the thing the logs could not
+        answer before - all three of them logged an anonymous line."""
+        from spotapi.exceptions import UserError
+        from Database.patches import ENDPOINT_ACCOUNT_PROFILE, ENDPOINT_ACCOUNT_PLAN
+
+        # Each half grants its own slot explicitly: the first bot-check opens a
+        # real process-wide window, which would (correctly) refuse the second
+        # call outright - the very behaviour the other tests here assert.
+        for fetch, expected in (("get_user_info", ENDPOINT_ACCOUNT_PROFILE),
+                                ("get_plan_info", ENDPOINT_ACCOUNT_PLAN)):
+            userInst, _ = self._userInstance(self.FALLBACK_PAGE)
+            with patch.object(self.limiter, "acquire", return_value=True):
+                with patch("Database.patches._flaskDebugEnabled", return_value=False):
+                    with self.assertLogs(self._LOGGER, level="WARNING"):
+                        with self.assertRaises(UserError):
+                            getattr(userInst, fetch)()
+            self.assertEqual(self.limiter.snapshot()["lastReason"], expected)
+
+    def test_the_endpoint_is_named_in_the_warning_too(self):
+        from spotapi.exceptions import UserError
+        from Database.patches import ENDPOINT_ACCOUNT_PROFILE
+
+        userInst, _ = self._userInstance(self.FALLBACK_PAGE)
+
+        with patch("Database.patches._flaskDebugEnabled", return_value=False):
+            with self.assertLogs(self._LOGGER, level="WARNING") as logCapture:
+                with self.assertRaises(UserError):
+                    userInst.get_user_info()
+
+        self.assertIn(ENDPOINT_ACCOUNT_PROFILE, "\n".join(logCapture.output))
+
+    def test_a_clean_reply_pauses_nothing(self):
+        userInst, _ = self._userInstance({"id": "alice"})
+        userInst.get_user_info()
+        self.assertEqual(self.limiter.snapshot()["backoffs"], 0)
+
+    def test_an_ordinary_failure_pauses_nothing(self):
+        """resp.fail with a plain body and a non-throttle status is a broken
+        request, not back-pressure."""
+        from spotapi.exceptions import UserError
+
+        userInst, _ = self._userInstance("boom", status=500, fail=True)
+
+        with self.assertLogs(self._LOGGER, level="WARNING"):
+            with self.assertRaises(UserError):
+                userInst.get_user_info()
+
+        self.assertEqual(self.limiter.snapshot()["backoffs"], 0)
+
+    def test_a_429_pauses_every_spotify_request(self):
+        from spotapi.exceptions import UserError
+
+        userInst, _ = self._userInstance("Too Many Requests", status=429, fail=True)
+
+        with self.assertLogs(self._LOGGER, level="WARNING"):
+            with self.assertRaises(UserError):
+                userInst.get_user_info()
+
+        self.assertEqual(self.limiter.snapshot()["backoffs"], 1)
+
+
+class TestConnectStatePollLimiting(unittest.TestCase):
+    """The connect-state poll loop is the dominant Spotify traffic in this
+    process (~10 requests/minute per user at refreshInterval=6) and was the one
+    caller no backoff could reach - it runs on spotapi's own thread, not the
+    listener's."""
+
+    def _lastPlayedManager(self, manager):
+        from SpotipyFree.LastPlayed import LastPlayedManger
+        with patch("SpotipyFree.LastPlayed.PlayerStatus"):
+            lpm = LastPlayedManger(MagicMock())
+        lpm.manager = manager
+        lpm.run = True
+        return lpm
+
+    def _runIterations(self, manager, iterations):
+        lpm = self._lastPlayedManager(manager)
+        callback = MagicMock()
+        sleepCount = [0]
+
+        def mockSleep(_secs):
+            sleepCount[0] += 1
+            if sleepCount[0] >= iterations:
+                lpm.run = False
+
+        with patch("time.sleep", side_effect=mockSleep):
+            lpm.updateLoop(callback, refreshInterval=1)
+        return callback
+
+    def test_each_poll_takes_a_slot(self):
+        from Database.rate_limit import SPOTIFY_LIMITER
+
+        manager = _ScriptedStateManager([makeIdleState(), makeIdleState()])
+
+        with patch.object(SPOTIFY_LIMITER, "acquire", return_value=True) as acquire:
+            self._runIterations(manager, 2)
+
+        self.assertEqual(acquire.call_count, 2)
+
+    def test_a_refused_slot_skips_the_poll_without_counting_a_failure(self):
+        """Being held back locally is not a Spotify failure: counting it would
+        escalate a backoff into a websocket reconnect, i.e. MORE traffic."""
+        from Database.rate_limit import SPOTIFY_LIMITER
+
+        manager = _ScriptedStateManager([])   #< any state access would IndexError
+        lpm = self._lastPlayedManager(manager)
+        refusals = [0]
+
+        def refuseThenStop(*args, **kwargs):
+            refusals[0] += 1
+            if refusals[0] >= 3:
+                lpm.run = False
+            return False
+
+        with patch.object(SPOTIFY_LIMITER, "acquire", side_effect=refuseThenStop):
+            lpm.updateLoop(MagicMock(), refreshInterval=1)
+
+        manager.reconnect.assert_not_called()
+
+    def test_a_state_failure_streak_pauses_every_spotify_request(self):
+        """spotapi collapses a throttled connect-state PUT to a bare
+        ValueError, so a whole streak of them is the only throttling signal
+        this endpoint gives us."""
+        from Database.patches import STATE_FAILURE_RECONNECT_THRESHOLD, ENDPOINT_CONNECT_STATE
+        from Database.rate_limit import SPOTIFY_LIMITER
+
+        manager = _ScriptedStateManager(
+            [ValueError("Could not get player state")] * STATE_FAILURE_RECONNECT_THRESHOLD
+        )
+
+        self._runIterations(manager, STATE_FAILURE_RECONNECT_THRESHOLD)
+
+        snapshot = SPOTIFY_LIMITER.snapshot()
+        self.assertEqual(snapshot["backoffs"], 1)
+        self.assertEqual(snapshot["lastReason"], ENDPOINT_CONNECT_STATE)
+
+    def test_a_sub_threshold_streak_pauses_nothing(self):
+        """One blip must not stall every user - only a sustained streak does."""
+        from Database.patches import STATE_FAILURE_RECONNECT_THRESHOLD
+        from Database.rate_limit import SPOTIFY_LIMITER
+
+        failures = STATE_FAILURE_RECONNECT_THRESHOLD - 1
+        manager = _ScriptedStateManager([ValueError("Could not get player state")] * failures)
+
+        with self.assertLogs("Database.patches", level="WARNING"):
+            self._runIterations(manager, failures)
+
+        self.assertEqual(SPOTIFY_LIMITER.snapshot()["backoffs"], 0)
+
+
+class TestTrackFetchLimiting(unittest.TestCase):
+    """Track metadata rides the same budget, but with a much longer patience:
+    giving up here loses a play that really happened."""
+
+    def test_track_fetch_takes_a_slot(self):
+        from Database.patches import _get_track_info_with_retry
+        from Database.rate_limit import SPOTIFY_LIMITER
+
+        with patch("spotapi.Public.song_info", return_value={"data": {"trackUnion": fakeTrackUnion("t1")}}):
+            with patch.object(SPOTIFY_LIMITER, "acquire", return_value=True) as acquire:
+                _get_track_info_with_retry("t1")
+
+        acquire.assert_called_once()
+
+    def test_track_fetch_waits_out_a_whole_penalty_window(self):
+        """A short polling timeout here would drop plays, so this call site
+        gets the longer one."""
+        from Database.patches import _get_track_info_with_retry
+        from Database.rate_limit import SPOTIFY_LIMITER, SPOTIFY_TRACK_ACQUIRE_TIMEOUT_SECONDS
+
+        with patch("spotapi.Public.song_info", return_value={"data": {"trackUnion": fakeTrackUnion("t1")}}):
+            with patch.object(SPOTIFY_LIMITER, "acquire", return_value=True) as acquire:
+                _get_track_info_with_retry("t1")
+
+        self.assertEqual(acquire.call_args.kwargs["timeout"], SPOTIFY_TRACK_ACQUIRE_TIMEOUT_SECONDS)
+
+    def test_a_refused_slot_is_retried_not_raised_immediately(self):
+        """SpotifyLocallyRateLimitedError is the most transient failure there
+        is - nothing was even sent - so it must ride the existing ladder."""
+        from Database.patches import _get_track_info_with_retry
+        from Database.rate_limit import SPOTIFY_LIMITER
+
+        songInfo = MagicMock(return_value={"data": {"trackUnion": fakeTrackUnion("t1")}})
+        with patch("spotapi.Public.song_info", songInfo):
+            with patch.object(SPOTIFY_LIMITER, "acquire", side_effect=[False, True]):
+                with patch("time.sleep"):
+                    track = _get_track_info_with_retry("t1")
+
+        self.assertEqual(track["uri"], "spotify:track:t1")
+        songInfo.assert_called_once_with("t1")   #< the refused attempt sent nothing
+
+    def test_a_spotify_rate_limit_pauses_every_spotify_request(self):
+        from Database.patches import _get_track_info_with_retry, ENDPOINT_TRACK_INFO
+        from Database.rate_limit import SPOTIFY_LIMITER
+
+        with patch("spotapi.Public.song_info", side_effect=Exception("429 rate limit exceeded")):
+            with patch("time.sleep"):
+                with self.assertRaisesRegex(Exception, "429"):
+                    _get_track_info_with_retry("t1", max_retries=1)
+
+        snapshot = SPOTIFY_LIMITER.snapshot()
+        self.assertGreaterEqual(snapshot["backoffs"], 1)
+        self.assertEqual(snapshot["lastReason"], ENDPOINT_TRACK_INFO)
+
+    def test_a_real_404_still_raises_without_pausing_anything(self):
+        from Database.patches import _get_track_info_with_retry
+        from Database.rate_limit import SPOTIFY_LIMITER
+
+        with patch("spotapi.Public.song_info", side_effect=Exception("404 not found")):
+            with self.assertRaisesRegex(Exception, "404"):
+                _get_track_info_with_retry("t1")
+
+        self.assertEqual(SPOTIFY_LIMITER.snapshot()["backoffs"], 0)
 
 
 if __name__ == "__main__":

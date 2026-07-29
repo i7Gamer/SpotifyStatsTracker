@@ -14,7 +14,74 @@ import spotapi.exceptions
 import spotapi.status
 import spotapi.websocket
 
+from Database.rate_limit import (
+    SPOTIFY_LIMITER, SPOTIFY_ACQUIRE_TIMEOUT_SECONDS,
+    SPOTIFY_TRACK_ACQUIRE_TIMEOUT_SECONDS, SPOTIFY_RATE_LIMIT_BACKOFF_SECONDS,
+)
+
 logger = logging.getLogger(__name__)
+
+
+class SpotifyLocallyRateLimitedError(Exception):
+    """No slot came free within the caller's timeout: this process is holding
+    Spotify traffic back (see Database/rate_limit.py), the request was never
+    sent. A transient condition by construction - whatever window is open will
+    close - so every call site treats it as retryable rather than as a
+    failure of the account or the endpoint."""
+
+
+# Endpoint labels for the shared limiter's backoff reason - short enough for
+# the /admin card, specific enough to say WHICH Spotify surface pushed back.
+ENDPOINT_ACCOUNT_PROFILE = "account-settings/profile"
+ENDPOINT_ACCOUNT_PLAN = "account/plan"
+ENDPOINT_CONNECT_STATE = "connect-state"
+ENDPOINT_TRACK_INFO = "track metadata"
+
+# HTTP statuses that are Spotify explicitly throttling rather than failing.
+# 503 is included because Spotify's edge answers sustained pressure with it
+# before it ever reaches a 429.
+SPOTIFY_THROTTLE_STATUS_CODES = frozenset({429, 503})
+
+
+def _looksThrottled(statusCode, response) -> bool:
+    """Whether a reply is Spotify pushing back, as opposed to an ordinary
+    failure. Two signals, both observed live:
+
+    - an explicit throttle status, or
+    - ANY HTML body. These endpoints only ever answer JSON, so a web page
+      means the request was diverted to Spotify's bot-check/error fallback -
+      which arrives as HTTP 200 with 46 KB of markup titled "Oh nein!", i.e.
+      invisible to a status-code check alone.
+    """
+    if statusCode in SPOTIFY_THROTTLE_STATUS_CODES:
+        return True
+    if response is None:
+        return False
+    try:
+        return _looksLikeHtml(str(response))
+    except Exception:
+        # Never let the throttle heuristic raise: every caller is already on
+        # an error path, where this failing would replace a logged warning
+        # (and a raised UserError) with an unrelated exception.
+        return False
+
+
+def _backoffIfThrottled(statusCode, response, endpoint: str) -> bool:
+    """Pause EVERY Spotify request in this process if `response` shows Spotify
+    pushing back. Returns whether a backoff was applied.
+
+    Process-wide is the whole point: the traffic that trips Spotify's limits
+    is the sum of every user's listener, and until this existed the only
+    reaction to a rate limit was one listener's poll thread sleeping - which
+    paused about 0.3 requests a minute while the other users' connect-state
+    polls carried on at ~10 a minute each."""
+    if not _looksThrottled(statusCode, response):
+        return False
+    SPOTIFY_LIMITER.applyBackoff(SPOTIFY_RATE_LIMIT_BACKOFF_SECONDS, reason=endpoint)
+    logger.warning(
+        "Spotify pushed back on %s (status=%s) - holding every Spotify request "
+        "in this process for %ds", endpoint, statusCode, SPOTIFY_RATE_LIMIT_BACKOFF_SECONDS)
+    return True
 
 # 1. Monkey patch websockets.sync.client.connect to disable the built-in keepalive ping
 # that causes ConnectionClosedError during CPU blockages / imports.
@@ -341,6 +408,12 @@ def _get_track_info_with_retry(trackId: str, max_retries: int = 3):
     attempt = 0
     while attempt < max_retries:
         try:
+            # Waits out a whole penalty window rather than the short polling
+            # timeout the loops use - see SPOTIFY_TRACK_ACQUIRE_TIMEOUT_SECONDS
+            # for why giving up here is the expensive option.
+            if not SPOTIFY_LIMITER.acquire(timeout=SPOTIFY_TRACK_ACQUIRE_TIMEOUT_SECONDS):
+                raise SpotifyLocallyRateLimitedError(
+                    f"Spotify rate limit backoff in progress - skipped {ENDPOINT_TRACK_INFO} for {trackId}")
             return _extractTrackUnion(spotapi.Public.song_info(trackId), trackId)
         except IncompleteTrackInfoError as e:
             if incompleteAttempts >= INCOMPLETE_TRACK_INFO_RETRIES:
@@ -368,11 +441,21 @@ def _get_track_info_with_retry(trackId: str, max_retries: int = 3):
             # such losses in 11 days of app.log). Matched by type, not by
             # message: the message is spotapi's to change.
             is_failed_request = isinstance(e, spotapi.exceptions.SongError)
+            # Our own limiter refusing a slot: nothing was sent, so this is the
+            # most transient failure there is - matched by type rather than by
+            # message, like SongError above.
+            is_locally_paused = isinstance(e, SpotifyLocallyRateLimitedError)
 
             # Only retry on transient errors (rate limit, session issues, a
             # failed request), not on real 404s
-            if not (is_rate_limit or is_session_error or is_failed_request):
+            if not (is_rate_limit or is_session_error or is_failed_request or is_locally_paused):
                 raise
+
+            if is_rate_limit:
+                # Spotify said so explicitly: hold the whole process, not just
+                # this call's private 1/2/4s ladder.
+                SPOTIFY_LIMITER.applyBackoff(SPOTIFY_RATE_LIMIT_BACKOFF_SECONDS,
+                                             reason=ENDPOINT_TRACK_INFO)
 
             if attempt < max_retries - 1:
                 backoff_secs = 2 ** attempt  # 1, 2, 4 seconds
@@ -631,26 +714,33 @@ def patch_spotapi_user() -> bool:
 
         def patched_get_user_info(self) -> Mapping[str, Any]:
             url = "https://www.spotify.com/api/account-settings/v1/profile"
+            if not SPOTIFY_LIMITER.acquire(timeout=SPOTIFY_ACQUIRE_TIMEOUT_SECONDS):
+                raise SpotifyLocallyRateLimitedError(
+                    f"Spotify rate limit backoff in progress - skipped {ENDPOINT_ACCOUNT_PROFILE}")
             resp = self.login.client.get(url)
 
             if resp.fail:
                 logger.warning(
-                    "spotapi.User.get_user_info HTTP request failed: status=%s, error=%s, response=%s, headers=%s",
+                    "spotapi.User.get_user_info HTTP request failed: endpoint=%s, status=%s, error=%s, response=%s, headers=%s",
+                    ENDPOINT_ACCOUNT_PROFILE,
                     resp.status_code,
                     resp.error.string if hasattr(resp.error, "string") else None,
                     _describeResponseBody(resp.response, RESPONSE_SNIPPET_MAX_LEN),
                     _safeResponseHeaders(getattr(getattr(resp, "raw", None), "headers", None))
                 )
+                _backoffIfThrottled(resp.status_code, resp.response, ENDPOINT_ACCOUNT_PROFILE)
                 raise UserError("Could not get user info", error=resp.error.string)
 
             if not isinstance(resp.response, Mapping):
                 logger.warning(
-                    "spotapi.User.get_user_info returned non-Mapping response: status=%s, type=%s, response=%s, headers=%s",
+                    "spotapi.User.get_user_info returned non-Mapping response: endpoint=%s, status=%s, type=%s, response=%s, headers=%s",
+                    ENDPOINT_ACCOUNT_PROFILE,
                     resp.status_code,
                     type(resp.response).__name__,
                     _describeResponseBody(resp.response, RESPONSE_SNIPPET_MAX_LEN),
                     _safeResponseHeaders(getattr(getattr(resp, "raw", None), "headers", None))
                 )
+                _backoffIfThrottled(resp.status_code, resp.response, ENDPOINT_ACCOUNT_PROFILE)
                 raise UserError(
                     f"Invalid JSON (Status: {resp.status_code}, Type: {type(resp.response).__name__}, "
                     f"Response: {_describeResponseBody(resp.response, RESPONSE_ERROR_SNIPPET_MAX_LEN)})"
@@ -661,26 +751,33 @@ def patch_spotapi_user() -> bool:
 
         def patched_get_plan_info(self) -> Mapping[str, Any]:
             url = "https://www.spotify.com/ca-en/api/account/v2/plan/"
+            if not SPOTIFY_LIMITER.acquire(timeout=SPOTIFY_ACQUIRE_TIMEOUT_SECONDS):
+                raise SpotifyLocallyRateLimitedError(
+                    f"Spotify rate limit backoff in progress - skipped {ENDPOINT_ACCOUNT_PLAN}")
             resp = self.login.client.get(url)
 
             if resp.fail:
                 logger.warning(
-                    "spotapi.User.get_plan_info HTTP request failed: status=%s, error=%s, response=%s, headers=%s",
+                    "spotapi.User.get_plan_info HTTP request failed: endpoint=%s, status=%s, error=%s, response=%s, headers=%s",
+                    ENDPOINT_ACCOUNT_PLAN,
                     resp.status_code,
                     resp.error.string if hasattr(resp.error, "string") else None,
                     _describeResponseBody(resp.response, RESPONSE_SNIPPET_MAX_LEN),
                     _safeResponseHeaders(getattr(getattr(resp, "raw", None), "headers", None))
                 )
+                _backoffIfThrottled(resp.status_code, resp.response, ENDPOINT_ACCOUNT_PLAN)
                 raise UserError("Could not get user plan info", error=resp.error.string)
 
             if not isinstance(resp.response, Mapping):
                 logger.warning(
-                    "spotapi.User.get_plan_info returned non-Mapping response: status=%s, type=%s, response=%s, headers=%s",
+                    "spotapi.User.get_plan_info returned non-Mapping response: endpoint=%s, status=%s, type=%s, response=%s, headers=%s",
+                    ENDPOINT_ACCOUNT_PLAN,
                     resp.status_code,
                     type(resp.response).__name__,
                     _describeResponseBody(resp.response, RESPONSE_SNIPPET_MAX_LEN),
                     _safeResponseHeaders(getattr(getattr(resp, "raw", None), "headers", None))
                 )
+                _backoffIfThrottled(resp.status_code, resp.response, ENDPOINT_ACCOUNT_PLAN)
                 raise UserError(
                     f"Invalid JSON (Status: {resp.status_code}, Type: {type(resp.response).__name__}, "
                     f"Response: {_describeResponseBody(resp.response, RESPONSE_ERROR_SNIPPET_MAX_LEN)})"
@@ -752,6 +849,24 @@ def patch_last_played() -> bool:
                     logger.info("[SpotipyFree] Player-state loop exiting: websocket was closed deliberately")
                     self.run = False
                     return
+                # Take a slot from the process-wide Spotify budget BEFORE
+                # touching the network. This loop is what that budget exists
+                # for: reading manager.state PUTs to the connect-state
+                # endpoint, so at refreshInterval=6 it is ~10 requests a
+                # minute PER USER - dwarfing every other Spotify call in the
+                # process, and until now the one thing a rate-limit backoff
+                # could not pause (the listener's own backoff sleeps a
+                # different thread entirely; see Database/Listeners/
+                # spotifyListener.py's startListener).
+                if not SPOTIFY_LIMITER.acquire(timeout=SPOTIFY_ACQUIRE_TIMEOUT_SECONDS):
+                    # Held back locally. Loop rather than sleep, so the stop
+                    # flags above are re-checked every acquire timeout instead
+                    # of after a whole penalty window, and leave
+                    # consecutiveStateFailures alone: nothing was asked of
+                    # Spotify, so nothing failed - counting it would escalate
+                    # a backoff into a websocket reconnect, which is more
+                    # traffic, not less.
+                    continue
                 try:
                     try:
                         state = self.manager.state
@@ -768,6 +883,14 @@ def patch_last_played() -> bool:
                                 consecutiveStateFailures, stateError,
                             )
                             consecutiveStateFailures = 0
+                            # A whole streak of failed connect-state PUTs is
+                            # the throttling signal this endpoint gives us -
+                            # there is no status code to read here, spotapi
+                            # collapses it to ValueError. Applied at the
+                            # escalation threshold, not per failure, so a
+                            # single blip doesn't pause every user.
+                            SPOTIFY_LIMITER.applyBackoff(SPOTIFY_RATE_LIMIT_BACKOFF_SECONDS,
+                                                         reason=ENDPOINT_CONNECT_STATE)
                             try:
                                 self.manager.reconnect()
                             except Exception as reconnect_err:

@@ -33,6 +33,33 @@ def _fastLastfmRateLimiter():
     lastfmModule.RATE_LIMITER._interval = 0.0
 
 
+@pytest.fixture(autouse=True)
+def _resetSpotifyRateLimiter():
+    """Database.rate_limit.SPOTIFY_LIMITER is a real, process-wide singleton
+    that Database/patches.py routes EVERY Spotify request through - the
+    connect-state poll loop, the account-settings lookups, and track metadata
+    fetches. Two problems for tests, both fixed here:
+
+    Its interval really does time.sleep() between grants, so a test driving
+    five poll iterations would pay five real waits for pacing nothing asserts
+    on (test_rate_limit.py builds its own fresh instances for that).
+
+    And applyBackoff() is process-wide by design, so a test that exercises a
+    rate-limit path would leave a live penalty window that stalls every
+    unrelated test after it. Function-scoped (unlike the Last.fm fixture
+    above, which only needs the interval zeroed once) precisely because that
+    state is per-test."""
+    import Database.rate_limit as rateLimitModule
+
+    limiter = rateLimitModule.SPOTIFY_LIMITER
+    limiter._interval = 0.0
+    limiter._nextSlotAt = 0.0
+    limiter._backoffUntil = 0.0
+    limiter._backoffCount = 0
+    limiter._lastBackoffAt = None
+    limiter._lastReason = None
+
+
 @pytest.fixture(autouse=True, scope="session")
 def _fastPasswordHashing():
     """generate_password_hash defaults to scrypt (~85ms/call - a real,

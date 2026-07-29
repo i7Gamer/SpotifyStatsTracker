@@ -208,6 +208,24 @@
       {% endfor %}
     </div>
 
+    {# Instance-wide, not per-user: Spotify rate limits per IP, so every
+       listener and worker in this process shares one budget. #}
+    <p style="font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">Spotify Rate Limiting</p>
+    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem;">
+      {% if spotify_rate_limit.backoffRemainingSeconds > 0 %}
+        <span class="badge badge-orange">BACKING OFF: {{ spotify_rate_limit.backoffRemainingSeconds | round | int }}s left</span>
+      {% else %}
+        <span class="badge badge-success">CLEAR</span>
+      {% endif %}
+      <span class="badge badge-secondary">EVENTS: {{ spotify_rate_limit.backoffs }}</span>
+      {% if spotify_rate_limit.lastReason %}
+        <span class="badge badge-secondary">LAST: {{ spotify_rate_limit.lastReason }}</span>
+      {% endif %}
+      {% if spotify_rate_limit.secondsSinceLastBackoff is not none %}
+        <span class="badge badge-secondary">{{ (spotify_rate_limit.secondsSinceLastBackoff / 60) | round | int }} min ago</span>
+      {% endif %}
+    </div>
+
     <p style="font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">Spotify API Backfill Workers</p>
     <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem;">
       <span class="badge badge-success">RUNNING: {{ spotify_api_worker_summary.running }}</span>

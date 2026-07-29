@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import Database.lastfm as lastfm
+import Database.rate_limit as rateLimitModule
 from Database.lastfm import (
     LastfmClient, LastfmRateLimiter, FetchOutcome, ArtistInfoOutcome, AlbumInfoOutcome,
     OUTCOME_OK, OUTCOME_NOT_FOUND, OUTCOME_TRANSIENT, OUTCOME_INVALID_KEY,
@@ -21,8 +22,9 @@ from Database.lastfm import (
 
 
 class _FakeClock:
-    """Deterministic stand-in for the time module inside Database.lastfm:
-    sleep() advances monotonic() instead of blocking."""
+    """Deterministic stand-in for the time module inside Database.rate_limit
+    (where the limiter's clock lives): sleep() advances monotonic() instead of
+    blocking."""
 
     def __init__(self):
         self.now = 0.0
@@ -35,9 +37,14 @@ class _FakeClock:
 
 
 class RateLimiterTestCase(unittest.TestCase):
+    """LastfmRateLimiter is now an alias for the shared SlotRateLimiter (see
+    Database/rate_limit.py) - these stay to pin the Last.fm-side contract that
+    the genre/bio workers depend on. The limiter's own exhaustive coverage,
+    snapshot() included, lives in test_rate_limit.py."""
+
     def _limiterWithClock(self, requestsPerSecond):
         clock = _FakeClock()
-        patcher = patch.object(lastfm, "time", clock)
+        patcher = patch.object(rateLimitModule, "time", clock)
         patcher.start()
         self.addCleanup(patcher.stop)
         return LastfmRateLimiter(requestsPerSecond), clock

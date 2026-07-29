@@ -28,11 +28,12 @@ import html
 import logging
 import re
 import threading
-import time
 from collections import namedtuple
 from pathlib import Path
 
 import requests
+
+from Database.rate_limit import SlotRateLimiter
 
 logger = logging.getLogger(__name__)
 
@@ -176,46 +177,12 @@ ArtistInfoOutcome = namedtuple("ArtistInfoOutcome", ["status", "bio"])
 AlbumInfoOutcome = namedtuple("AlbumInfoOutcome", ["status", "bio"])
 
 
-class LastfmRateLimiter:
-    """Thread-safe slot spacer on the monotonic clock: acquire() blocks until
-    the next request slot is free (returning False if the stop event fires or
-    the timeout expires first), applyBackoff() pushes every future slot past a
-    penalty window. One shared instance paces the whole process."""
-
-    def __init__(self, requestsPerSecond: float):
-        self._interval = 1.0 / requestsPerSecond
-        self._lock = threading.Lock()
-        self._nextSlotAt = 0.0
-        self._backoffUntil = 0.0
-
-    def acquire(self, stop_event: threading.Event | None = None,
-                timeout: float | None = None) -> bool:
-        deadline = time.monotonic() + timeout if timeout is not None else None
-        while True:
-            with self._lock:
-                now = time.monotonic()
-                readyAt = max(self._nextSlotAt, self._backoffUntil)
-                if readyAt <= now:
-                    self._nextSlotAt = now + self._interval
-                    return True
-                waitFor = readyAt - now
-            if deadline is not None:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    return False
-                waitFor = min(waitFor, remaining)
-            if stop_event is not None:
-                if stop_event.wait(waitFor):
-                    return False
-            else:
-                time.sleep(waitFor)
-
-    def applyBackoff(self, seconds: float) -> None:
-        with self._lock:
-            # max() so overlapping penalties from concurrent workers never
-            # shrink an already-running window.
-            self._backoffUntil = max(self._backoffUntil, time.monotonic() + seconds)
-
+# The slot spacer this module used to define itself. It moved to
+# Database/rate_limit.py unchanged when Spotify needed the same mechanism -
+# the two APIs need separate INSTANCES (a Spotify bot-check must not stall the
+# genre backfillers) but the exact same behaviour. The alias keeps the
+# Last.fm-flavoured name every caller and test here already uses.
+LastfmRateLimiter = SlotRateLimiter
 
 # Shared by every per-user worker and the profile page's key validation.
 RATE_LIMITER = LastfmRateLimiter(LASTFM_REQUESTS_PER_SECOND)

@@ -473,8 +473,9 @@ class TestRateLimitBackoffLogging(unittest.TestCase):
     _LOGGER = "Database.Listeners.spotifyListener"
     _ERROR_TEXT = "Invalid JSON (Status: 200, Type: str)"
 
-    def _runOneRateLimitedIteration(self):
+    def _runOneRateLimitedIteration(self, user="7kevinegger"):
         listener = _bareListener()
+        listener.user = user
         listener.contaminationDetected = False
         listener._stop_event = MagicMock()
         listener._stop_event.is_set.side_effect = [False, True]  #< one iteration, then stop
@@ -503,6 +504,74 @@ class TestRateLimitBackoffLogging(unittest.TestCase):
         emitted = "\n".join(logCapture.output)
         self.assertIn("Rate limit error detected", emitted)
         self.assertIn(self._ERROR_TEXT, emitted)
+
+    def test_the_backoff_line_names_the_user(self):
+        """Which account hit the limit was the one thing these lines never
+        said - with four listeners logging identically there was no way to
+        tell one struggling account from an instance-wide problem."""
+        with patch("Database.Listeners.spotifyListener._flaskDebugEnabled", return_value=False):
+            _, logCapture = self._runOneRateLimitedIteration(user="7kevinegger")
+
+        self.assertIn("7kevinegger", "\n".join(logCapture.output))
+
+
+class TestRateLimitPausesEveryListener(unittest.TestCase):
+    """The listener's own 60s wait only ever paused this thread - whose sole
+    rate-limited call is the 5-minutely _validateCurrentUser, since the
+    recently-played read is a local cache hit. The traffic that actually
+    provokes Spotify (~10 connect-state requests a minute PER USER) runs on
+    spotapi's thread and never saw it. So the backoff that matters is the
+    process-wide one."""
+
+    _LOGGER = "Database.Listeners.spotifyListener"
+    _ERROR_TEXT = "Invalid JSON (Status: 200, Type: str)"
+
+    def _runOneRateLimitedIteration(self):
+        listener = _bareListener()
+        listener.user = "7kevinegger"
+        listener.contaminationDetected = False
+        listener._stop_event = MagicMock()
+        listener._stop_event.is_set.side_effect = [False, True]  #< one iteration, then stop
+        listener._checkOnce = MagicMock(side_effect=Exception(self._ERROR_TEXT))
+        with self.assertLogs(self._LOGGER, level="WARNING"):
+            listener.startListener(MagicMock())
+        return listener
+
+    def test_a_rate_limit_opens_a_process_wide_backoff(self):
+        from Database.rate_limit import SPOTIFY_LIMITER
+        from Database.Listeners.spotifyListener import RATE_LIMIT_REASON_LISTENER_POLL
+
+        self._runOneRateLimitedIteration()
+
+        snapshot = SPOTIFY_LIMITER.snapshot()
+        self.assertEqual(snapshot["backoffs"], 1)
+        self.assertEqual(snapshot["lastReason"], RATE_LIMIT_REASON_LISTENER_POLL)
+        self.assertGreater(snapshot["backoffRemainingSeconds"], 0)
+
+    def test_the_local_wait_is_kept_as_well(self):
+        """Retrying validation inside a window we just opened would be pointless
+        traffic, so this thread still stands down too."""
+        from Database.Listeners.spotifyListener import RATE_LIMIT_ERROR_BACKOFF_SECONDS
+
+        listener = self._runOneRateLimitedIteration()
+
+        listener._stop_event.wait.assert_any_call(RATE_LIMIT_ERROR_BACKOFF_SECONDS)
+
+    def test_an_ordinary_error_pauses_nothing(self):
+        """Only rate limits are instance-wide. A plain listener bug must not
+        stall every other user's tracking."""
+        from Database.rate_limit import SPOTIFY_LIMITER
+
+        listener = _bareListener()
+        listener.contaminationDetected = False
+        listener._stop_event = MagicMock()
+        listener._stop_event.is_set.side_effect = [False, True]
+        listener._checkOnce = MagicMock(side_effect=Exception("something else broke"))
+
+        with self.assertLogs("Database.Listeners.spotifyListener", level="ERROR"):
+            listener.startListener(MagicMock())
+
+        self.assertEqual(SPOTIFY_LIMITER.snapshot()["backoffs"], 0)
 
 
 if __name__ == "__main__":

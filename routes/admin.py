@@ -33,6 +33,7 @@ from Database.repository import (
     BACKFILL_RETRY_DAYS_MIN, BACKFILL_RETRY_DAYS_MAX,
 )
 from Database.backup import DEFAULT_BACKUP_INTERVAL_HOURS, DEFAULT_BACKUP_RETENTION_COUNT
+from Database.rate_limit import SPOTIFY_LIMITER
 from Database.utils import convertToDatetime
 from services.email_service import (
     get_smtp_config, save_smtp_config, send_test_email,
@@ -302,6 +303,13 @@ def register(app, dashboard):
             "recalc_enabled": dashboard.repo.isMilestoneRecalcEnabled(),
         }
 
+        # Instance-wide, not per-user: every listener and worker shares one
+        # Spotify request budget because Spotify enforces its limits per IP
+        # (see Database/rate_limit.py). Before this, a rate-limit event was a
+        # log line nobody counted - the only way to answer "is this getting
+        # worse?" was to grep app.log.
+        spotify_rate_limit = SPOTIFY_LIMITER.snapshot()
+
         skip_mode, skip_value = dashboard.repo.getSkipThreshold()
         restart_enabled = os.environ.get(ALLOW_INSTANCE_RESTART_ENV_VAR, "").lower() in TRUTHY_ENV_VALUES
 
@@ -352,6 +360,7 @@ def register(app, dashboard):
             database_integrity=database_integrity,
             dangling_row_total=dangling_row_total,
             listener_summary=listener_summary,
+            spotify_rate_limit=spotify_rate_limit,
             spotify_api_worker_summary=spotify_api_worker_summary,
             lastfm_worker_summary=lastfm_worker_summary,
             lastfm_album_bio_worker_summary=lastfm_album_bio_worker_summary,
