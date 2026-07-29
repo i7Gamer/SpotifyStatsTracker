@@ -4454,6 +4454,7 @@ html.theme-red {
   color: var(--muted);
   text-transform: uppercase;
   letter-spacing: 0.05em;
+  margin-top: 0;
   margin-bottom: 0.5rem;
 }
 
@@ -4462,6 +4463,24 @@ html.theme-red {
   gap: 0.5rem;
   flex-wrap: wrap;
   margin-bottom: 1rem;
+}
+
+.admin-worker-group {
+  display: flex;
+  gap: 1.5rem;
+  flex-wrap: wrap;
+  margin-bottom: 1rem;
+}
+
+.admin-worker-col {
+  flex: 1;
+  min-width: 200px;
+}
+
+.admin-settings-col {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
 }
 
 .admin-number-input {
@@ -4516,6 +4535,7 @@ html.theme-red {
 
 .admin-select-input {
   width: 9rem;
+  max-width: 100%;
   padding: 4px 8px;
   background: var(--card-bg, #1e1e1e);
   color: var(--fg, #eee);

@@ -197,8 +197,8 @@
           Background worker/thread state across every account.
         </p>
 
-        <div style="display: flex; gap: 1.5rem; flex-wrap: wrap; margin-bottom: 1rem;">
-          <div style="flex: 1; min-width: 200px;">
+        <div class="admin-worker-group">
+          <div class="admin-worker-col">
             <p class="admin-worker-label">Listener Sync</p>
             <div class="admin-worker-row" style="margin-bottom: 0;">
               {% for status, count in listener_summary.items() %}
@@ -217,20 +217,24 @@
               {% endfor %}
             </div>
           </div>
-          <div style="flex: 1; min-width: 200px;">
+          <div class="admin-worker-col">
             <p class="admin-worker-label">Spotify Rate Limiting</p>
             <div class="admin-worker-row" style="margin-bottom: 0;">
-              {% if spotify_rate_limit.backoffRemainingSeconds > 0 %}
-                <span class="badge badge-orange">BACKING OFF: {{ spotify_rate_limit.backoffRemainingSeconds | round | int }}s left</span>
+              {% if spotify_rate_limit %}
+                {% if spotify_rate_limit.backoffRemainingSeconds > 0 %}
+                  <span class="badge badge-orange">BACKING OFF: {{ spotify_rate_limit.backoffRemainingSeconds | round | int }}s left</span>
+                {% else %}
+                  <span class="badge badge-success">CLEAR</span>
+                {% endif %}
+                <span class="badge badge-secondary">EVENTS: {{ spotify_rate_limit.backoffs }}</span>
+                {% if spotify_rate_limit.lastReason %}
+                  <span class="badge badge-secondary">LAST: {{ spotify_rate_limit.lastReason }}</span>
+                {% endif %}
+                {% if spotify_rate_limit.secondsSinceLastBackoff is not none %}
+                  <span class="badge badge-secondary">{{ (spotify_rate_limit.secondsSinceLastBackoff / 60) | round | int }} min ago</span>
+                {% endif %}
               {% else %}
-                <span class="badge badge-success">CLEAR</span>
-              {% endif %}
-              <span class="badge badge-secondary">EVENTS: {{ spotify_rate_limit.backoffs }}</span>
-              {% if spotify_rate_limit.lastReason %}
-                <span class="badge badge-secondary">LAST: {{ spotify_rate_limit.lastReason }}</span>
-              {% endif %}
-              {% if spotify_rate_limit.secondsSinceLastBackoff is not none %}
-                <span class="badge badge-secondary">{{ (spotify_rate_limit.secondsSinceLastBackoff / 60) | round | int }} min ago</span>
+                <span class="badge badge-secondary">UNAVAILABLE</span>
               {% endif %}
             </div>
           </div>
@@ -596,7 +600,7 @@
         </div>
       </article>
 
-      <div style="display: flex; flex-direction: column; gap: 1.5rem;">
+      <div class="admin-settings-col">
         <article class="card" style="padding: 0;">
           <div class="card-header admin-card-header">
             <h2 style="margin: 0; font-family: var(--font-headings); font-size: 1.15rem;">Playback Classification</h2>
@@ -615,6 +619,7 @@
               </label>
               <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 1rem;">
                 <input type="number" name="skip_value" id="skipValueInput" value="{{ skip_value }}"
+                       aria-label="Skip threshold value"
                        min="{{ skip_seconds_min if skip_mode == skip_mode_seconds else skip_percent_min }}"
                        max="{{ skip_seconds_max if skip_mode == skip_mode_seconds else skip_percent_max }}"
                        step="1" required

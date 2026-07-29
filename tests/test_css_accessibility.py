@@ -59,7 +59,9 @@ class TestAdminUtilityClasses(unittest.TestCase):
 
     def test_admin_select_input_width(self):
         self.assertIn('.admin-select-input', self.css)
-        self.assertIn('width: 9rem;', self.css)
+        select_block = self.css.split('.admin-select-input {')[1].split('}')[0]
+        self.assertIn('width: 9rem;', select_block)
+        self.assertIn('max-width: 100%;', select_block)
 
 
 

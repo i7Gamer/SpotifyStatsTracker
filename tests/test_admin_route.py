@@ -1332,7 +1332,34 @@ class TestAdminInsightsLayout(AdminRouteTestBase):
 
         self.assertLess(sync_idx, backfill_idx)
         self.assertLess(rate_limit_idx, backfill_idx)
-        self.assertIn('<div style="display: flex; gap: 1.5rem; flex-wrap: wrap; margin-bottom: 1rem;">', body)
+        self.assertIn('class="admin-worker-group"', body)
+        self.assertIn('class="admin-worker-col"', body)
+
+    def test_spotify_rate_limiting_backing_off_badge(self):
+        fake_snapshot = {
+            "backoffRemainingSeconds": 45.2,
+            "backoffs": 3,
+            "lastReason": "429 Too Many Requests",
+            "secondsSinceLastBackoff": 120
+        }
+        with patch('routes.admin.SPOTIFY_LIMITER.snapshot', return_value=fake_snapshot):
+            body = self._getAdmin(self._makeApp()).data.decode()
+            self.assertIn("BACKING OFF: 45s left", body)
+            self.assertIn("LAST: 429 Too Many Requests", body)
+            self.assertIn("2 min ago", body)
+
+    def test_spotify_rate_limiting_handles_none_gracefully(self):
+        with patch('routes.admin.SPOTIFY_LIMITER.snapshot', return_value=None):
+            body = self._getAdmin(self._makeApp()).data.decode()
+            self.assertIn("Spotify Rate Limiting", body)
+            self.assertIn("UNAVAILABLE", body)
+
+    def test_skip_value_input_has_aria_label(self):
+        dash = self._makeApp()
+        resp = self._getAdmin(dash, isAdmin=True, path="/admin?tab=settings")
+        body = resp.data.decode()
+        self.assertIn('id="skipValueInput"', body)
+        self.assertIn('aria-label="Skip threshold value"', body)
 
     def test_insights_cards_do_not_stretch_to_the_tallest_in_the_row(self):
         """Splitting the card evens the row out but never exactly - without
@@ -1440,7 +1467,7 @@ class TestAdminTabNavigation(AdminRouteTestBase):
         self.assertNotEqual(playback_idx, -1)
         self.assertNotEqual(backups_idx, -1)
         self.assertLess(playback_idx, backups_idx)
-        self.assertIn('<div style="display: flex; flex-direction: column; gap: 1.5rem;">', body)
+        self.assertIn('class="admin-settings-col"', body)
 
 
     def test_email_settings_post_redirects_to_settings_tab(self):
