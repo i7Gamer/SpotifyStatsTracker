@@ -1327,10 +1327,12 @@ class TestAdminInsightsLayout(AdminRouteTestBase):
     def test_insights_cards_do_not_stretch_to_the_tallest_in_the_row(self):
         """Splitting the card evens the row out but never exactly - without
         this the shorter two are still inflated to whatever the tallest one
-        happens to be."""
+        happens to be.  The layout is now enforced via .admin-card-grid which
+        carries align-items: start in style.css rather than as an inline style."""
         body = self._getAdmin(self._makeApp()).data.decode()
 
-        self.assertIn("align-items: start", body)
+        # The grid class is present (carries align-items: start in CSS)
+        self.assertIn("admin-card-grid", body)
 
     def test_activity_renders_between_the_users_table_and_the_insights_row(self):
         body = self._getAdmin(self._makeApp()).data.decode()
