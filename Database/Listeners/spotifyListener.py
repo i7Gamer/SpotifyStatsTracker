@@ -9,6 +9,7 @@
 import collections
 import os
 import logging
+import random
 import re
 import signal
 import threading
@@ -119,6 +120,37 @@ SCOPE_ERROR_CONFIRM_THRESHOLD = 3
 
 USER_VALIDATION_CACHE_SECONDS = 5 * 60  #< Cache user validation results to reduce bot detection triggers
 
+# How long the profile endpoint is left alone after IT was what failed - a
+# bot-check page or a rate limit, rather than an answer.
+#
+# The transient branch below used to raise without recording anything, so the
+# freshness cache above stayed empty and the very next poll after the loop's
+# 60s backoff called current_user() again. That turned a 5-minute cadence into
+# a 60-second one exactly while Spotify was pushing back - the one moment it
+# should have been the other way round.
+#
+# Shorter than the success cache because recovery is worth noticing promptly,
+# and because an auth failure arriving mid-cooldown goes unnoticed until it
+# expires. That was always true of the 5-minute success cache too, so 2
+# minutes is strictly the smaller blind spot, not a new one.
+USER_VALIDATION_ERROR_COOLDOWN_SECONDS = 2 * 60
+
+# Cadence of spotapi's connect-state poll (LastPlayedManger.updateLoop reads
+# manager.state, which PUTs to the connect-state endpoint). This is by far the
+# largest source of Spotify traffic this app generates - one request per
+# interval PER USER, against roughly one every five minutes from everything
+# else the listener does - so it is the first number to change if Spotify's
+# pushback ever becomes sustained rather than sporadic.
+LISTENER_POLL_INTERVAL_SECONDS = 6
+
+# Random per-listener addition to that cadence. Without it every user's poll
+# runs at exactly the same rate, so once two listeners start near each other
+# they stay near each other forever, arriving together on every tick. The
+# shared limiter (Database/rate_limit.py) would then de-align them by BLOCKING
+# one thread until the other's slot passed; spreading them out here means it
+# rarely has to.
+LISTENER_POLL_INTERVAL_JITTER_SECONDS = 1.0
+
 TRUTHY_DEBUG_VALUES = {"1", "true"}  #< FLASK_DEBUG values that enable verbose diagnostics (mirrors Database.database)
 
 
@@ -135,6 +167,15 @@ def _itemTrackId(item: dict) -> str | None:
 
 def _flaskDebugEnabled() -> bool:
     return os.environ.get("FLASK_DEBUG", "").lower() in TRUTHY_DEBUG_VALUES
+
+
+def _pollIntervalWithJitter() -> float:
+    """The connect-state poll cadence for one listener: the shared base plus a
+    small random offset, so no two users' polls stay in lockstep. Drawn once
+    per Listener, which means a rebuilt listener re-draws - fine, and in fact
+    the point: two accounts that happened to land close together get another
+    chance to separate."""
+    return LISTENER_POLL_INTERVAL_SECONDS + random.uniform(0, LISTENER_POLL_INTERVAL_JITTER_SECONDS)
 
 
 def _describeException(exc: Exception) -> str:
@@ -311,9 +352,13 @@ def _suppress_signal_in_thread():
 
 
 class Listener:
-    def __init__(self, cookiesFile, refreshInterval=6, email=None, get_credentials=None,
+    def __init__(self, cookiesFile, refreshInterval=None, email=None, get_credentials=None,
                  get_backfill_enabled=None, on_scope_status_change=None, user=None,
                  get_recorded_track_ids=None, get_recorded_play_times=None):
+        # None (every production caller) means "the shared cadence, jittered
+        # for this listener" - see _pollIntervalWithJitter. An explicit value
+        # is honoured verbatim so a test can pin it.
+        self.refreshInterval = _pollIntervalWithJitter() if refreshInterval is None else refreshInterval
         self.run = False
         self._stop_event = threading.Event()
         self.email = email  #< store expected email for validation
@@ -353,7 +398,7 @@ class Listener:
         with _suppress_signal_in_thread():
             self.sp = Spotify(cookiesFile=cookiesFile, email=email)
             if self.sp.isLoggedIn():
-                self.sp.startRecentlyPlayedListener(refreshInterval=refreshInterval)
+                self.sp.startRecentlyPlayedListener(refreshInterval=self.refreshInterval)
             else:
                 # self.sp.user_auth stays a plain bool (SpotipyFree's own
                 # not-logged-in sentinel) when the stored cookies fail to
@@ -424,6 +469,8 @@ class Listener:
                                                                    #  eviction can target the oldest entry
         self._last_user_validation_time = None  #< None means "never validated yet" - forces an immediate first check
         self._last_user_validation_result = True  #< cache validation result
+        self._last_validation_error_time = None  #< when the profile endpoint last refused to answer;
+                                                  #  see USER_VALIDATION_ERROR_COOLDOWN_SECONDS
 
     @property
     def logUser(self) -> str | None:
@@ -456,15 +503,35 @@ class Listener:
                 return True
             return False
 
+    def _validationIsOnCooldown(self, now: float) -> bool:
+        """Whether the profile endpoint should be left alone this poll.
+
+        Two independent reasons, and they are NOT the same thing: a fresh
+        answer (don't re-ask for USER_VALIDATION_CACHE_SECONDS), or a refusal
+        to answer at all (don't re-ask for USER_VALIDATION_ERROR_COOLDOWN_SECONDS).
+        Only the first existed before, which is why a bot-checked profile call
+        was retried every 60s instead of every 5 minutes."""
+        if self._last_user_validation_time is not None and \
+                (now - self._last_user_validation_time) < USER_VALIDATION_CACHE_SECONDS:
+            return True
+        return self._last_validation_error_time is not None and \
+            (now - self._last_validation_error_time) < USER_VALIDATION_ERROR_COOLDOWN_SECONDS
+
     def _validateCurrentUser(self) -> bool:
         """Verify that the authenticated Spotify session still belongs to the expected user.
         Returns True if valid, False if session has changed. Logs warnings if mismatches detected.
 
         Results are cached for USER_VALIDATION_CACHE_SECONDS to reduce bot detection triggers
-        from excessive polling. Cache is bypassed on errors to detect auth failures quickly."""
+        from excessive polling; a refusal to answer starts its own, shorter
+        cooldown (see _validationIsOnCooldown). Auth errors are not cached at
+        all - those return False immediately so the caller can reconnect."""
         now = time.monotonic()
-        # Return cached result if still fresh (never cached yet on first call)
-        if self._last_user_validation_time is not None and (now - self._last_user_validation_time) < USER_VALIDATION_CACHE_SECONDS:
+        if self._validationIsOnCooldown(now):
+            # The last KNOWN answer, which on a listener that has never had one
+            # is the constructor's optimistic default. That is unchanged
+            # behaviour: the 5-minute success cache always returned it too for
+            # the window after any check, and __init__'s contamination check is
+            # what actually guards against recording under the wrong account.
             return self._last_user_validation_result
 
         try:
@@ -481,11 +548,16 @@ class Listener:
 
             self._last_user_validation_time = now
             self._last_user_validation_result = result
+            self._last_validation_error_time = None  #< it answered; the endpoint is healthy again
             return result
         except Exception as e:
             error_str = str(e).lower()
             # Invalid JSON errors usually indicate rate limiting or bad response from Spotify
             if "json" in error_str or _is_rate_limit_error(e):
+                # Record the REFUSAL, not a result: the caller still backs off
+                # on this raise, but the next poll after that backoff must not
+                # walk straight back into the same endpoint.
+                self._last_validation_error_time = now
                 logger.warning("Transient error validating current user %s "
                                "(rate limit or malformed response): %s", self.logUser, parseError(e))
                 raise  # Trigger rate limit backoff in startListener

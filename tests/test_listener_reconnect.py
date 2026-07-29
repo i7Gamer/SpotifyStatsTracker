@@ -25,6 +25,10 @@ from Database.Listeners.spotifyListener import (
     LISTENER_STALE_HARD_TIMEOUT_SECONDS,
     RATE_LIMIT_ERROR_BACKOFF_SECONDS,
     USER_VALIDATION_CACHE_SECONDS,
+    USER_VALIDATION_ERROR_COOLDOWN_SECONDS,
+    LISTENER_POLL_INTERVAL_SECONDS,
+    LISTENER_POLL_INTERVAL_JITTER_SECONDS,
+    _pollIntervalWithJitter,
     _is_auth_error,
     _is_rate_limit_error,
     classifyListenerError,
@@ -56,6 +60,7 @@ def _bareListener(recentlyPlayed=None):
     listener.user = None  #< matches Listener.__init__; self.logUser reads both
     listener._last_user_validation_time = None  #< matches Listener.__init__: never validated yet
     listener._last_user_validation_result = True
+    listener._last_validation_error_time = None  #< matches Listener.__init__: no refusal recorded
     return listener
 
 
@@ -461,6 +466,146 @@ class TestValidateCurrentUser(unittest.TestCase):
             listener._validateCurrentUser()
 
         listener.sp.current_user.assert_called_once()
+
+
+class TestValidationErrorCooldown(unittest.TestCase):
+    """A refused profile call now starts its own cooldown.
+
+    Before, the transient branch raised without recording anything, so the
+    freshness cache stayed empty and the very next poll after the loop's 60s
+    backoff called current_user() again - a 60-second cadence in place of a
+    5-minute one, at the exact moment Spotify was pushing back."""
+
+    _TRANSIENT = "Invalid JSON (Status: 200, Type: str)"
+
+    def _listener(self):
+        listener = _bareListener()
+        listener._authenticated_user_id = "user1"
+        return listener
+
+    def _validateAt(self, listener, when):
+        with patch("Database.Listeners.spotifyListener.time.monotonic", return_value=when):
+            return listener._validateCurrentUser()
+
+    def _failOnceAt(self, listener, when):
+        listener.sp.current_user.side_effect = Exception(self._TRANSIENT)
+        with self.assertRaisesRegex(Exception, "Invalid JSON"):
+            self._validateAt(listener, when)
+        listener.sp.current_user.reset_mock()
+        listener.sp.current_user.side_effect = None
+        listener.sp.current_user.return_value = {"id": "user1"}
+
+    def test_a_refusal_still_raises_so_the_caller_backs_off(self):
+        listener = self._listener()
+        listener.sp.current_user.side_effect = Exception(self._TRANSIENT)
+
+        with self.assertRaisesRegex(Exception, "Invalid JSON"):
+            self._validateAt(listener, _MONOTONIC_NOW)
+
+    def test_the_next_poll_inside_the_cooldown_makes_no_request(self):
+        """This is the whole fix: the poll that follows the 60s backoff must
+        not walk straight back into the endpoint that just refused."""
+        listener = self._listener()
+        self._failOnceAt(listener, _MONOTONIC_NOW)
+
+        justAfterTheBackoff = _MONOTONIC_NOW + RATE_LIMIT_ERROR_BACKOFF_SECONDS + 1
+        self._validateAt(listener, justAfterTheBackoff)
+
+        listener.sp.current_user.assert_not_called()
+
+    def test_the_cooldown_keeps_reporting_the_last_known_answer(self):
+        listener = self._listener()
+        listener.sp.current_user.return_value = {"id": "user2"}   #< a real mismatch
+        self.assertFalse(self._validateAt(listener, _MONOTONIC_NOW))
+
+        laterFailure = _MONOTONIC_NOW + USER_VALIDATION_CACHE_SECONDS + 1
+        self._failOnceAt(listener, laterFailure)
+
+        self.assertFalse(self._validateAt(listener, laterFailure + 1))
+
+    def test_validation_resumes_once_the_cooldown_expires(self):
+        """Shorter than the success cache on purpose - recovery is worth
+        noticing promptly."""
+        listener = self._listener()
+        self._failOnceAt(listener, _MONOTONIC_NOW)
+
+        self.assertTrue(self._validateAt(
+            listener, _MONOTONIC_NOW + USER_VALIDATION_ERROR_COOLDOWN_SECONDS + 1))
+        listener.sp.current_user.assert_called_once()
+
+    def test_the_cooldown_is_shorter_than_the_success_cache(self):
+        self.assertLess(USER_VALIDATION_ERROR_COOLDOWN_SECONDS, USER_VALIDATION_CACHE_SECONDS)
+
+    def test_a_successful_check_clears_the_cooldown(self):
+        """Otherwise a stale refusal would keep suppressing checks long after
+        the endpoint recovered."""
+        listener = self._listener()
+        self._failOnceAt(listener, _MONOTONIC_NOW)
+
+        recoveredAt = _MONOTONIC_NOW + USER_VALIDATION_ERROR_COOLDOWN_SECONDS + 1
+        self._validateAt(listener, recoveredAt)
+
+        self.assertIsNone(listener._last_validation_error_time)
+
+    def test_an_auth_error_starts_no_cooldown(self):
+        """An auth failure is an answer, not a refusal - it must keep returning
+        False on every poll so the reconnect fires."""
+        listener = self._listener()
+        listener.sp.current_user.side_effect = Exception("HTTP 401 Unauthorized")
+
+        self.assertFalse(self._validateAt(listener, _MONOTONIC_NOW))
+        self.assertIsNone(listener._last_validation_error_time)
+        self.assertFalse(self._validateAt(listener, _MONOTONIC_NOW + 1))
+        self.assertEqual(listener.sp.current_user.call_count, 2)
+
+
+class TestPollIntervalJitter(unittest.TestCase):
+    """Every listener polling at exactly the same rate means two accounts that
+    start near each other arrive together on every tick, forever. The shared
+    limiter would then de-align them by blocking a thread; spreading them here
+    means it rarely has to."""
+
+    def test_the_interval_stays_within_the_declared_band(self):
+        for _ in range(50):
+            interval = _pollIntervalWithJitter()
+            self.assertGreaterEqual(interval, LISTENER_POLL_INTERVAL_SECONDS)
+            self.assertLessEqual(
+                interval, LISTENER_POLL_INTERVAL_SECONDS + LISTENER_POLL_INTERVAL_JITTER_SECONDS)
+
+    def test_separate_draws_do_not_all_land_on_the_same_value(self):
+        self.assertGreater(len({_pollIntervalWithJitter() for _ in range(50)}), 1)
+
+    def test_the_base_cadence_is_a_named_constant(self):
+        """It used to be a bare `refreshInterval=6` default - the single
+        biggest lever on how much Spotify traffic this app generates, with no
+        name to find it by."""
+        self.assertEqual(LISTENER_POLL_INTERVAL_SECONDS, 6)
+
+    def _build(self, **kwargs):
+        sp = MagicMock()
+        sp.isLoggedIn.return_value = True
+        sp.current_user.return_value = {"id": "u1", "email": None}
+        sp.current_user_recently_played.return_value = []
+        with patch("Database.Listeners.spotifyListener.Spotify", return_value=sp):
+            listener = Listener(cookiesFile="unused.json", **kwargs)
+        return listener, sp
+
+    def test_a_listener_polls_at_its_own_jittered_interval(self):
+        listener, sp = self._build()
+
+        sp.startRecentlyPlayedListener.assert_called_once_with(
+            refreshInterval=listener.refreshInterval)
+        self.assertGreaterEqual(listener.refreshInterval, LISTENER_POLL_INTERVAL_SECONDS)
+        self.assertLessEqual(
+            listener.refreshInterval,
+            LISTENER_POLL_INTERVAL_SECONDS + LISTENER_POLL_INTERVAL_JITTER_SECONDS)
+
+    def test_an_explicit_interval_is_honoured_verbatim(self):
+        """So a test can pin the cadence without fighting the jitter."""
+        listener, sp = self._build(refreshInterval=2)
+
+        self.assertEqual(listener.refreshInterval, 2)
+        sp.startRecentlyPlayedListener.assert_called_once_with(refreshInterval=2)
 
 
 class TestRateLimitBackoffLogging(unittest.TestCase):
