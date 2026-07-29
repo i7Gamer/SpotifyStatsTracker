@@ -1324,6 +1324,16 @@ class TestAdminInsightsLayout(AdminRouteTestBase):
             self.assertGreater(body.index(entry), servicesAt,
                                "{} belongs in the Instance Services card".format(entry))
 
+    def test_spotify_rate_limiting_next_to_listener_sync(self):
+        body = self._getAdmin(self._makeApp()).data.decode()
+        sync_idx = body.index("Listener Sync")
+        rate_limit_idx = body.index("Spotify Rate Limiting")
+        backfill_idx = body.index("Spotify API Backfill Workers")
+
+        self.assertLess(sync_idx, backfill_idx)
+        self.assertLess(rate_limit_idx, backfill_idx)
+        self.assertIn('<div style="display: flex; gap: 1.5rem; flex-wrap: wrap; margin-bottom: 1rem;">', body)
+
     def test_insights_cards_do_not_stretch_to_the_tallest_in_the_row(self):
         """Splitting the card evens the row out but never exactly - without
         this the shorter two are still inflated to whatever the tallest one

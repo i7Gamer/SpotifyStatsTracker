@@ -197,38 +197,43 @@
           Background worker/thread state across every account.
         </p>
 
-        <p class="admin-worker-label">Listener Sync</p>
-        <div class="admin-worker-row">
-          {% for status, count in listener_summary.items() %}
-            {% set st_lower = status | lower %}
-            {% if st_lower == 'healthy' %}
-              <span class="badge badge-success">{{ status }}: {{ count }}</span>
-            {% elif st_lower == 'initializing' %}
-              <span class="badge badge-warning">{{ status }}: {{ count }}</span>
-            {% elif st_lower == 'degraded' %}
-              <span class="badge badge-orange">{{ status }}: {{ count }}</span>
-            {% elif st_lower == 'dead' %}
-              <span class="badge badge-danger">{{ status }}: {{ count }}</span>
-            {% else %}
-              <span class="badge badge-secondary">{{ status }}: {{ count }}</span>
-            {% endif %}
-          {% endfor %}
-        </div>
-
-        <p class="admin-worker-label">Spotify Rate Limiting</p>
-        <div class="admin-worker-row">
-          {% if spotify_rate_limit.backoffRemainingSeconds > 0 %}
-            <span class="badge badge-orange">BACKING OFF: {{ spotify_rate_limit.backoffRemainingSeconds | round | int }}s left</span>
-          {% else %}
-            <span class="badge badge-success">CLEAR</span>
-          {% endif %}
-          <span class="badge badge-secondary">EVENTS: {{ spotify_rate_limit.backoffs }}</span>
-          {% if spotify_rate_limit.lastReason %}
-            <span class="badge badge-secondary">LAST: {{ spotify_rate_limit.lastReason }}</span>
-          {% endif %}
-          {% if spotify_rate_limit.secondsSinceLastBackoff is not none %}
-            <span class="badge badge-secondary">{{ (spotify_rate_limit.secondsSinceLastBackoff / 60) | round | int }} min ago</span>
-          {% endif %}
+        <div style="display: flex; gap: 1.5rem; flex-wrap: wrap; margin-bottom: 1rem;">
+          <div style="flex: 1; min-width: 200px;">
+            <p class="admin-worker-label">Listener Sync</p>
+            <div class="admin-worker-row" style="margin-bottom: 0;">
+              {% for status, count in listener_summary.items() %}
+                {% set st_lower = status | lower %}
+                {% if st_lower == 'healthy' %}
+                  <span class="badge badge-success">{{ status }}: {{ count }}</span>
+                {% elif st_lower == 'initializing' %}
+                  <span class="badge badge-warning">{{ status }}: {{ count }}</span>
+                {% elif st_lower == 'degraded' %}
+                  <span class="badge badge-orange">{{ status }}: {{ count }}</span>
+                {% elif st_lower == 'dead' %}
+                  <span class="badge badge-danger">{{ status }}: {{ count }}</span>
+                {% else %}
+                  <span class="badge badge-secondary">{{ status }}: {{ count }}</span>
+                {% endif %}
+              {% endfor %}
+            </div>
+          </div>
+          <div style="flex: 1; min-width: 200px;">
+            <p class="admin-worker-label">Spotify Rate Limiting</p>
+            <div class="admin-worker-row" style="margin-bottom: 0;">
+              {% if spotify_rate_limit.backoffRemainingSeconds > 0 %}
+                <span class="badge badge-orange">BACKING OFF: {{ spotify_rate_limit.backoffRemainingSeconds | round | int }}s left</span>
+              {% else %}
+                <span class="badge badge-success">CLEAR</span>
+              {% endif %}
+              <span class="badge badge-secondary">EVENTS: {{ spotify_rate_limit.backoffs }}</span>
+              {% if spotify_rate_limit.lastReason %}
+                <span class="badge badge-secondary">LAST: {{ spotify_rate_limit.lastReason }}</span>
+              {% endif %}
+              {% if spotify_rate_limit.secondsSinceLastBackoff is not none %}
+                <span class="badge badge-secondary">{{ (spotify_rate_limit.secondsSinceLastBackoff / 60) | round | int }} min ago</span>
+              {% endif %}
+            </div>
+          </div>
         </div>
 
         <p class="admin-worker-label">Spotify API Backfill Workers</p>
