@@ -325,6 +325,10 @@ def register(app, dashboard):
         database_integrity = dashboard.repo.checkIntegrity()
         dangling_row_total = sum(database_integrity["foreignKeyViolations"].values())
 
+        current_tab = request.args.get("tab", "overview").lower()
+        if current_tab not in ("overview", "workers", "settings"):
+            current_tab = "overview"
+
         return render_template(
             "admin.html",
             restart_enabled=restart_enabled,
@@ -378,6 +382,7 @@ def register(app, dashboard):
             registration_counts=dashboard.repo.getRecentRegistrationCounts(),
             instance_share_counts=dashboard.repo.getInstanceShareCounts(),
             active_share_links_count=dashboard.repo.getActiveShareLinksCount(),
+            current_tab=current_tab,
             error=request.args.get("error"),
             message=request.args.get("message"),
             section="admin",
@@ -426,7 +431,7 @@ def register(app, dashboard):
             from_name=from_name,
         )
         save_instance_public_url(dashboard.repo, public_url)
-        return redirect(url_for("adminPage", message="Email notification settings saved."))
+        return redirect(url_for("adminPage", tab="settings", message="Email notification settings saved."))
     app.add_url_rule("/admin/email_settings", "adminEmailSettings", adminEmailSettings, methods=["POST"])
 
     def adminTestEmail():
@@ -438,9 +443,9 @@ def register(app, dashboard):
             abort(403)
         success, err = send_test_email(dashboard.repo, email)
         if success:
-            return redirect(url_for("adminPage", message=f"Test email successfully sent to {email}."))
+            return redirect(url_for("adminPage", tab="settings", message=f"Test email successfully sent to {email}."))
         else:
-            return redirect(url_for("adminPage", error=f"Test email failed: {err}"))
+            return redirect(url_for("adminPage", tab="settings", error=f"Test email failed: {err}"))
     app.add_url_rule("/admin/test_email", "adminTestEmail", adminTestEmail, methods=["POST"])
 
     def adminUserSettings():
@@ -463,7 +468,7 @@ def register(app, dashboard):
         dashboard.repo.setMilestoneRecalcEnabled(request.form.get("milestone_recalc") == "1")
         dashboard.repo.setTagsEnabled(request.form.get("tags") == "1")
         dashboard.repo.setFriendsNowPlayingEnabled(request.form.get("friends_now_playing") == "1")
-        return redirect(url_for("adminPage"))
+        return redirect(url_for("adminPage", tab="settings", message="User settings saved."))
     app.add_url_rule("/admin/user_settings", "adminUserSettings", adminUserSettings, methods=["POST"])
 
     def adminLastfmSettings():
@@ -489,7 +494,7 @@ def register(app, dashboard):
                     dashboard.repo.setIntSetting(key, int(raw), BACKFILL_RETRY_DAYS_MIN, BACKFILL_RETRY_DAYS_MAX)
                 except (TypeError, ValueError):
                     pass
-        return redirect(url_for("adminPage"))
+        return redirect(url_for("adminPage", tab="workers", message="Last.fm settings saved."))
     app.add_url_rule("/admin/lastfm_settings", "adminLastfmSettings", adminLastfmSettings, methods=["POST"])
 
     def adminRefreshLastfmEntity(kind, entity_id):
@@ -543,7 +548,7 @@ def register(app, dashboard):
         if not dashboard.repo.isAdmin(username):
             abort(403)
         dashboard.repo.setSpotifyApiBackfillEnabled(request.form.get("spotify_backfill") == "1")
-        return redirect(url_for("adminPage"))
+        return redirect(url_for("adminPage", tab="workers", message="Spotify API backfill settings saved."))
     app.add_url_rule("/admin/spotify_settings", "adminSpotifySettings", adminSpotifySettings, methods=["POST"])
 
     def adminSkipSettings():
@@ -562,7 +567,7 @@ def register(app, dashboard):
         try:
             value = int(request.form.get("skip_value", ""))
         except (TypeError, ValueError):
-            return redirect(url_for("adminPage", error="Skip threshold must be a whole number."))
+            return redirect(url_for("adminPage", tab="settings", error="Skip threshold must be a whole number."))
         # Both settings are stored BEFORE the recompute, because both are inputs
         # to it: computeIsSkip caps its threshold at the completion boundary
         # (73e1a2c), so recomputing first would classify every row under the old
@@ -579,7 +584,7 @@ def register(app, dashboard):
             except (TypeError, ValueError):
                 pass
         dashboard.repo.recomputeSkipFlags()             #< self-commits; reclassifies every play
-        return redirect(url_for("adminPage"))
+        return redirect(url_for("adminPage", tab="settings", message="Playback classification settings saved."))
     app.add_url_rule("/admin/skip_settings", "adminSkipSettings", adminSkipSettings, methods=["POST"])
 
     def adminBackupSettings():
@@ -602,7 +607,7 @@ def register(app, dashboard):
                 dashboard.repo.setIntSetting(key, int(raw), lo, hi)
             except (TypeError, ValueError):
                 pass
-        return redirect(url_for("adminPage"))
+        return redirect(url_for("adminPage", tab="settings", message="Backup settings saved."))
     app.add_url_rule("/admin/backup_settings", "adminBackupSettings", adminBackupSettings, methods=["POST"])
 
     def adminCreateBackup():
@@ -627,7 +632,7 @@ def register(app, dashboard):
             if is_ajax:
                 return jsonify(kind=kind, message=message)
             key = "message" if kind == "success" else "error"
-            return redirect(url_for("adminPage", **{key: message}))
+            return redirect(url_for("adminPage", tab="settings", **{key: message}))
 
         backup_worker = getattr(dashboard, "backupWorker", None)
         if backup_worker is None:
@@ -694,7 +699,7 @@ def register(app, dashboard):
         _save("image_download_workers", IMAGE_DOWNLOAD_WORKERS_KEY, WORKER_COUNT_MIN, WORKER_COUNT_MAX)
         _save("artist_bio_workers", ARTIST_BIO_FETCH_WORKERS_KEY, WORKER_COUNT_MIN, WORKER_COUNT_MAX)
         _save("album_bio_workers", ALBUM_BIO_FETCH_WORKERS_KEY, WORKER_COUNT_MIN, WORKER_COUNT_MAX)
-        return redirect(url_for("adminPage"))
+        return redirect(url_for("adminPage", tab="workers", message="Advanced tuning settings saved."))
     app.add_url_rule("/admin/tuning_settings", "adminTuningSettings", adminTuningSettings, methods=["POST"])
 
     def adminRestart():

@@ -392,13 +392,13 @@ class TestAdminUserSettingsHints(AdminRouteTestBase):
         """The old markup rendered "Label (hint text)" as one string in the
         <label> - if that concatenation still exists the hint never actually
         moved anywhere, it just got a wrapper."""
-        body = self._getAdmin(self._makeApp()).data.decode()
+        body = self._getAdmin(self._makeApp(), path="/admin?tab=settings").data.decode()
 
         for label, hint in self._HINTS.items():
             self.assertNotIn("{} ({}".format(label, hint), body)
 
     def test_every_hint_is_still_reachable_via_its_disclosure(self):
-        body = self._getAdmin(self._makeApp()).data.decode()
+        body = self._getAdmin(self._makeApp(), path="/admin?tab=settings").data.decode()
 
         for hint in self._HINTS.values():
             self.assertIn(hint, body)
@@ -407,12 +407,12 @@ class TestAdminUserSettingsHints(AdminRouteTestBase):
         """New user registration is the one checkbox short enough to need no
         explanation - it must not grow an empty info icon just for symmetry
         with its siblings."""
-        body = self._getAdmin(self._makeApp()).data.decode()
+        body = self._getAdmin(self._makeApp(), path="/admin?tab=settings").data.decode()
 
         self.assertEqual(body.count('class="setting-hint"'), len(self._HINTS))
 
     def test_registration_row_has_no_hint_disclosure(self):
-        body = self._getAdmin(self._makeApp()).data.decode()
+        body = self._getAdmin(self._makeApp(), path="/admin?tab=settings").data.decode()
         start = body.index("New user registration")
 
         self.assertNotIn("setting-hint", body[start:start + 200])
@@ -1373,13 +1373,60 @@ class TestAdminMailWorkerHealth(AdminRouteTestBase):
 
     def test_send_test_email_button_design_and_position(self):
         dash = self._makeApp()
-        resp = self._getAdmin(dash, isAdmin=True)
+        resp = self._getAdmin(dash, isAdmin=True, path="/admin?tab=settings")
         body = resp.data.decode()
 
         self.assertIn('form="adminTestEmailForm" class="primary-button"', body)
         self.assertIn('Send Test Email to Admin</button>', body)
 
 
+class TestAdminTabNavigation(AdminRouteTestBase):
+    def test_registered_users_table_always_rendered(self):
+        dash = self._makeApp()
+        for tab in ("overview", "workers", "settings"):
+            resp = self._getAdmin(dash, isAdmin=True, path=f"/admin?tab={tab}")
+            body = resp.data.decode()
+            self.assertIn("Registered Users & Sync Status", body)
+            self.assertIn("alice", body)
+
+    def test_overview_tab_contents(self):
+        dash = self._makeApp()
+        resp = self._getAdmin(dash, isAdmin=True, path="/admin?tab=overview")
+        body = resp.data.decode()
+
+        self.assertIn("Activity", body)
+        self.assertIn("Catalog Backfill Coverage", body)
+        self.assertIn("Worker Health", body)
+        self.assertIn("Instance Services", body)
+
+    def test_workers_tab_contents(self):
+        dash = self._makeApp()
+        resp = self._getAdmin(dash, isAdmin=True, path="/admin?tab=workers")
+        body = resp.data.decode()
+
+        self.assertIn("Spotify API Backfilling", body)
+        self.assertIn("Last.fm Backfilling Settings", body)
+        self.assertIn("Advanced Tuning", body)
+
+    def test_settings_tab_contents(self):
+        dash = self._makeApp()
+        resp = self._getAdmin(dash, isAdmin=True, path="/admin?tab=settings")
+        body = resp.data.decode()
+
+        self.assertIn("User Settings", body)
+        self.assertIn("Email &amp; Notifications", body)
+        self.assertIn("Playback Classification", body)
+        self.assertIn("Backups", body)
+
+    def test_email_settings_post_redirects_to_settings_tab(self):
+        dash = self._makeApp()
+        data = {"email_notifications_enabled": "1", "smtp_host": "smtp.example.com", "smtp_port": "587"}
+        resp = self._post(dash, "/admin/email_settings", isAdmin=True, data=data)
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn("tab=settings", resp.location)
+
+
 if __name__ == "__main__":
     unittest.main()
+
 

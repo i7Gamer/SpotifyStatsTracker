@@ -24,10 +24,10 @@
 </section>
 {% endif %}
 
-<!-- Registered Users & Sync Status: every account, with per-account admin controls -->
-<section class="card" style="margin-bottom: 2.5rem; overflow-x: auto;">
+<!-- Registered Users & Sync Status: permanently pinned at the top -->
+<section class="card" style="margin-bottom: 1.5rem; overflow-x: auto;">
   <div class="card-header" style="padding: 1.5rem 1.5rem 0.5rem 1.5rem;">
-    <h2 style="margin: 0; font-family: var(--font-headings);">Registered Users & Sync Status</h2>
+    <h2 style="margin: 0; font-family: var(--font-headings);">Registered Users &amp; Sync Status</h2>
     <p style="color: var(--muted); font-size: 0.9rem; margin-top: 0.25rem;">Monitor real-time sync status and background thread states for all active user profiles, and manage who administers this instance.</p>
   </div>
   <div style="padding: 0 1.5rem 1.5rem 1.5rem;">
@@ -47,10 +47,6 @@
       <tbody>
         {% for u in users_list %}
         <tr style="font-size: 0.95rem;{% if not loop.last %} border-bottom: 1px solid var(--glass-border);{% endif %}">
-          {# Both names, deliberately: the admin console is the operational view,
-             and the username is the key every other table, route param and
-             /compare?with= link uses - collapsing it to the display name would
-             hide the identifier an admin actually needs to act on. #}
           <td style="padding: 16px 8px; font-weight: 600; color: var(--accent);">{{ u.username }}{% if u.display_name %}
             <span style="display: block; font-weight: 400; font-size: 0.85rem; color: var(--muted, #aaa);">{{ u.display_name }}</span>{% endif %}</td>
           <td style="padding: 16px 8px;">
@@ -110,555 +106,551 @@
   </div>
 </section>
 
-<!-- Activity: five bare counters, which is too little to hold a column in the
-     insights row below - stretched to its neighbours' height the card was
-     mostly empty. As Overview's stat tiles they use the width instead, and
-     they sit under the users table because that is what they describe. -->
-<div style="display: flex; align-items: baseline; gap: 0.75rem; margin-bottom: 1.25rem; flex-wrap: wrap;">
-  <h2 style="margin: 0;">Activity</h2>
-  <span style="color: var(--muted); font-size: 0.9rem;">Instance-wide signups and data-sharing activity.</span>
-</div>
-<section class="grid" style="grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1.5rem; margin-bottom: 2.5rem;">
-  {% for icon, label, value, hint in [
-    ("📈", "New users (30d)", registration_counts.last_30_days, "Accounts registered in the last 30 days"),
-    ("⏳", "Pending shares", instance_share_counts.pending, "Share requests sent but not yet accepted"),
-    ("🤝", "Accepted shares", instance_share_counts.accepted, "Mutually accepted data-sharing pairs"),
-    ("🔗", "Wrapped links", active_share_links_count, "Active public Wrapped share links - no-login links to a user's own yearly recap")
-  ] %}
-  <article class="card stats-card" title="{{ hint }}">
-    <div class="stats-card-icon">{{ icon }}</div>
-    <div class="stats-card-info">
-      <span class="stats-card-label">{{ label }}</span>
-      <h2 class="summary-value" style="font-size: 2.2rem; margin: 0.5rem 0 0 0;">{{ value }}</h2>
-    </div>
-  </article>
-  {% endfor %}
-</section>
+<!-- Admin Section Tabs -->
+<nav class="profile-subnav admin-subnav" aria-label="Admin sections" style="margin-bottom: 1.5rem;">
+  <a class="{{ 'active' if current_tab == 'overview' }}"
+     {% if current_tab == 'overview' %}aria-current="page"{% endif %}
+     href="{{ url_for('adminPage', tab='overview') }}">Overview</a>
+  <a class="{{ 'active' if current_tab == 'workers' }}"
+     {% if current_tab == 'workers' %}aria-current="page"{% endif %}
+     href="{{ url_for('adminPage', tab='workers') }}">Workers</a>
+  <a class="{{ 'active' if current_tab == 'settings' }}"
+     {% if current_tab == 'settings' %}aria-current="page"{% endif %}
+     href="{{ url_for('adminPage', tab='settings') }}">Settings</a>
+</nav>
 
-<!-- Instance Insights: read-only, catalog/instance-wide numbers no single user sees.
-     align-items keeps the row's cards at their own height - the default stretch
-     inflates every card to the tallest one, which is what left the short ones
-     half empty. -->
-<section class="grid" style="grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.5rem; margin-bottom: 2.5rem; align-items: start;">
-  <article class="card" style="padding: 1.5rem;">
-    <h3 style="margin-top: 0; font-family: var(--font-headings);">Catalog Backfill Coverage</h3>
-    <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem; margin-bottom: 1rem;">
-      Share of the whole shared catalog with Last.fm data, regardless of who played what.
-    </p>
-    {% for label, category, has_inherited in [("Songs (genre)", catalog_genre_coverage.song, true), ("Albums (genre)", catalog_genre_coverage.album, true), ("Artists (genre)", catalog_genre_coverage.artist, false)] %}
-    {% set own_pct = category.own_percent if category.own_percent is defined else (category.ownPercent if category.ownPercent is defined else category.percent) %}
-    <div style="margin-bottom: 0.85rem;">
-      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.3rem;">
-        <span style="font-size: 0.85rem; font-weight: 500; color: var(--fg);">{{ label }}</span>
-        <span style="font-size: 0.85rem; font-weight: 600; color: var(--accent);">{{ category.percent }}%</span>
-      </div>
-      <div style="position: relative; width: 100%; background: rgba(255, 255, 255, 0.08); border-radius: 4px; height: 8px; overflow: hidden; margin-bottom: 0.3rem;">
-        <div style="position: absolute; top: 0; left: 0; height: 100%; width: {{ [category.percent, 100] | min }}%; background: var(--accent); border-radius: 4px;"></div>
-        {% if has_inherited %}
-        <div style="position: absolute; top: 0; left: 0; height: 100%; width: {{ [own_pct, 100] | min }}%; background: var(--accent-secondary); border-radius: 4px;"></div>
-        {% endif %}
-      </div>
-      <div style="display: flex; justify-content: space-between; font-size: 0.8rem;">
-        <span style="color: var(--muted);">Covered: {{ "{:,}".format(category.covered) }} / {{ "{:,}".format(category.total) }}</span>
-        {% if has_inherited %}
-        <span style="color: var(--accent-secondary); font-weight: 600;">Un-inherited: {{ own_pct }}%</span>
-        {% endif %}
-      </div>
+<!-- Swappable Tab Body Container -->
+<div id="admin-tab-body">
+  {% if current_tab == 'overview' %}
+    <!-- Activity Tiles -->
+    <div style="display: flex; align-items: baseline; gap: 0.75rem; margin-bottom: 1.25rem; flex-wrap: wrap;">
+      <h2 style="margin: 0;">Activity</h2>
+      <span style="color: var(--muted); font-size: 0.9rem;">Instance-wide signups and data-sharing activity.</span>
     </div>
-    {% endfor %}
-    <p style="font-size: 0.85rem; color: var(--muted); margin: 0.5rem 0 1.25rem 0;">Overall Genre Coverage: <strong>{{ catalog_genre_coverage.overall.percent }}%</strong></p>
-    {% for label, category in [("Artist bios", catalog_biography_coverage.artist), ("Album bios", catalog_biography_coverage.album)] %}
-    {% set percent = (category.covered / category.total * 100) if category.total else 0 %}
-    <div style="margin-bottom: 0.85rem;">
-      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.3rem;">
-        <span style="font-size: 0.85rem; font-weight: 500; color: var(--fg);">{{ label }}</span>
-        <span style="font-size: 0.85rem; font-weight: 600; color: var(--accent);">{{ "%.1f"|format(percent) }}%</span>
-      </div>
-      <div style="position: relative; width: 100%; background: rgba(255, 255, 255, 0.08); border-radius: 4px; height: 8px; overflow: hidden; margin-bottom: 0.3rem;">
-        <div style="width: {{ [percent, 100] | min }}%; background: var(--accent); height: 100%; border-radius: 4px;"></div>
-      </div>
-      <div style="display: flex; justify-content: space-between; font-size: 0.8rem;">
-        <span style="color: var(--muted);">Covered: {{ "{:,}".format(category.covered) }} / {{ "{:,}".format(category.total) }}</span>
-      </div>
-    </div>
-    {% endfor %}
-  </article>
-
-  <article class="card" style="padding: 1.5rem;">
-    <h3 style="margin-top: 0; font-family: var(--font-headings);">Worker Health</h3>
-    <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem; margin-bottom: 1rem;">
-      Background worker/thread state across every account.
-    </p>
-
-    <p style="font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">Listener Sync</p>
-    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem;">
-      {% for status, count in listener_summary.items() %}
-        {% set st_lower = status | lower %}
-        {% if st_lower == 'healthy' %}
-          <span class="badge badge-success">{{ status }}: {{ count }}</span>
-        {% elif st_lower == 'initializing' %}
-          <span class="badge badge-warning">{{ status }}: {{ count }}</span>
-        {% elif st_lower == 'degraded' %}
-          <span class="badge badge-orange">{{ status }}: {{ count }}</span>
-        {% elif st_lower == 'dead' %}
-          <span class="badge badge-danger">{{ status }}: {{ count }}</span>
-        {% else %}
-          <span class="badge badge-secondary">{{ status }}: {{ count }}</span>
-        {% endif %}
+    <section class="grid" style="grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1.5rem; margin-bottom: 2.5rem;">
+      {% for icon, label, value, hint in [
+        ("📈", "New users (30d)", registration_counts.last_30_days, "Accounts registered in the last 30 days"),
+        ("⏳", "Pending shares", instance_share_counts.pending, "Share requests sent but not yet accepted"),
+        ("🤝", "Accepted shares", instance_share_counts.accepted, "Mutually accepted data-sharing pairs"),
+        ("🔗", "Wrapped links", active_share_links_count, "Active public Wrapped share links - no-login links to a user's own yearly recap")
+      ] %}
+      <article class="card stats-card" title="{{ hint }}">
+        <div class="stats-card-icon">{{ icon }}</div>
+        <div class="stats-card-info">
+          <span class="stats-card-label">{{ label }}</span>
+          <h2 class="summary-value" style="font-size: 2.2rem; margin: 0.5rem 0 0 0;">{{ value }}</h2>
+        </div>
+      </article>
       {% endfor %}
-    </div>
+    </section>
 
-    {# Instance-wide, not per-user: Spotify rate limits per IP, so every
-       listener and worker in this process shares one budget. #}
-    <p style="font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">Spotify Rate Limiting</p>
-    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem;">
-      {% if spotify_rate_limit.backoffRemainingSeconds > 0 %}
-        <span class="badge badge-orange">BACKING OFF: {{ spotify_rate_limit.backoffRemainingSeconds | round | int }}s left</span>
-      {% else %}
-        <span class="badge badge-success">CLEAR</span>
-      {% endif %}
-      <span class="badge badge-secondary">EVENTS: {{ spotify_rate_limit.backoffs }}</span>
-      {% if spotify_rate_limit.lastReason %}
-        <span class="badge badge-secondary">LAST: {{ spotify_rate_limit.lastReason }}</span>
-      {% endif %}
-      {% if spotify_rate_limit.secondsSinceLastBackoff is not none %}
-        <span class="badge badge-secondary">{{ (spotify_rate_limit.secondsSinceLastBackoff / 60) | round | int }} min ago</span>
-      {% endif %}
-    </div>
+    <!-- Overview Grid: Coverage, Worker Health, and Services cards -->
+    <section class="grid" style="grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.5rem; margin-bottom: 2.5rem; align-items: start;">
+      <article class="card" style="padding: 1.5rem;">
+        <h3 style="margin-top: 0; font-family: var(--font-headings);">Catalog Backfill Coverage</h3>
+        <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem; margin-bottom: 1rem;">
+          Share of the whole shared catalog with Last.fm data, regardless of who played what.
+        </p>
+        {% for label, category, has_inherited in [("Songs (genre)", catalog_genre_coverage.song, true), ("Albums (genre)", catalog_genre_coverage.album, true), ("Artists (genre)", catalog_genre_coverage.artist, false)] %}
+        {% set own_pct = category.own_percent if category.own_percent is defined else (category.ownPercent if category.ownPercent is defined else category.percent) %}
+        <div style="margin-bottom: 0.85rem;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.3rem;">
+            <span style="font-size: 0.85rem; font-weight: 500; color: var(--fg);">{{ label }}</span>
+            <span style="font-size: 0.85rem; font-weight: 600; color: var(--accent);">{{ category.percent }}%</span>
+          </div>
+          <div style="position: relative; width: 100%; background: rgba(255, 255, 255, 0.08); border-radius: 4px; height: 8px; overflow: hidden; margin-bottom: 0.3rem;">
+            <div style="position: absolute; top: 0; left: 0; height: 100%; width: {{ [category.percent, 100] | min }}%; background: var(--accent); border-radius: 4px;"></div>
+            {% if has_inherited %}
+            <div style="position: absolute; top: 0; left: 0; height: 100%; width: {{ [own_pct, 100] | min }}%; background: var(--accent-secondary); border-radius: 4px;"></div>
+            {% endif %}
+          </div>
+          <div style="display: flex; justify-content: space-between; font-size: 0.8rem;">
+            <span style="color: var(--muted);">Covered: {{ "{:,}".format(category.covered) }} / {{ "{:,}".format(category.total) }}</span>
+            {% if has_inherited %}
+            <span style="color: var(--accent-secondary); font-weight: 600;">Un-inherited: {{ own_pct }}%</span>
+            {% endif %}
+          </div>
+        </div>
+        {% endfor %}
+        <p style="font-size: 0.85rem; color: var(--muted); margin: 0.5rem 0 1.25rem 0;">Overall Genre Coverage: <strong>{{ catalog_genre_coverage.overall.percent }}%</strong></p>
+        {% for label, category in [("Artist bios", catalog_biography_coverage.artist), ("Album bios", catalog_biography_coverage.album)] %}
+        {% set percent = (category.covered / category.total * 100) if category.total else 0 %}
+        <div style="margin-bottom: 0.85rem;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.3rem;">
+            <span style="font-size: 0.85rem; font-weight: 500; color: var(--fg);">{{ label }}</span>
+            <span style="font-size: 0.85rem; font-weight: 600; color: var(--accent);">{{ "%.1f"|format(percent) }}%</span>
+          </div>
+          <div style="position: relative; width: 100%; background: rgba(255, 255, 255, 0.08); border-radius: 4px; height: 8px; overflow: hidden; margin-bottom: 0.3rem;">
+            <div style="width: {{ [percent, 100] | min }}%; background: var(--accent); height: 100%; border-radius: 4px;"></div>
+          </div>
+          <div style="display: flex; justify-content: space-between; font-size: 0.8rem;">
+            <span style="color: var(--muted);">Covered: {{ "{:,}".format(category.covered) }} / {{ "{:,}".format(category.total) }}</span>
+          </div>
+        </div>
+        {% endfor %}
+      </article>
 
-    <p style="font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">Spotify API Backfill Workers</p>
-    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem;">
-      <span class="badge badge-success">RUNNING: {{ spotify_api_worker_summary.running }}</span>
-      <span class="badge badge-warning">IDLE: {{ spotify_api_worker_summary.idle }}</span>
-      <span class="badge badge-secondary">NOT CONFIGURED: {{ spotify_api_worker_summary.no_key }}</span>
-      {% if spotify_api_worker_summary.failing > 0 %}
-        <span class="badge badge-danger">FAILING: {{ spotify_api_worker_summary.failing }}</span>
-      {% endif %}
-    </div>
+      <article class="card" style="padding: 1.5rem;">
+        <h3 style="margin-top: 0; font-family: var(--font-headings);">Worker Health</h3>
+        <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem; margin-bottom: 1rem;">
+          Background worker/thread state across every account.
+        </p>
 
-    <p style="font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">Last.fm Genre Workers</p>
-    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem;">
-      <span class="badge badge-success">RUNNING: {{ lastfm_worker_summary.running }}</span>
-      <span class="badge badge-warning">IDLE: {{ lastfm_worker_summary.idle }}</span>
-      <span class="badge badge-secondary">NO API KEY: {{ lastfm_worker_summary.no_key }}</span>
-      {% if lastfm_worker_summary.failing > 0 %}
-        <span class="badge badge-danger">FAILING: {{ lastfm_worker_summary.failing }}</span>
-      {% endif %}
-    </div>
+        <p style="font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">Listener Sync</p>
+        <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem;">
+          {% for status, count in listener_summary.items() %}
+            {% set st_lower = status | lower %}
+            {% if st_lower == 'healthy' %}
+              <span class="badge badge-success">{{ status }}: {{ count }}</span>
+            {% elif st_lower == 'initializing' %}
+              <span class="badge badge-warning">{{ status }}: {{ count }}</span>
+            {% elif st_lower == 'degraded' %}
+              <span class="badge badge-orange">{{ status }}: {{ count }}</span>
+            {% elif st_lower == 'dead' %}
+              <span class="badge badge-danger">{{ status }}: {{ count }}</span>
+            {% else %}
+              <span class="badge badge-secondary">{{ status }}: {{ count }}</span>
+            {% endif %}
+          {% endfor %}
+        </div>
 
-    <p style="font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">Last.fm Album Bio Workers</p>
-    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem;">
-      <span class="badge badge-success">RUNNING: {{ lastfm_album_bio_worker_summary.running }}</span>
-      <span class="badge badge-warning">IDLE: {{ lastfm_album_bio_worker_summary.idle }}</span>
-      <span class="badge badge-secondary">NO API KEY: {{ lastfm_album_bio_worker_summary.no_key }}</span>
-      {% if lastfm_album_bio_worker_summary.failing > 0 %}
-        <span class="badge badge-danger">FAILING: {{ lastfm_album_bio_worker_summary.failing }}</span>
-      {% endif %}
-    </div>
-
-    <p style="font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">Last.fm Artist Bio Workers</p>
-    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem;">
-      <span class="badge badge-success">RUNNING: {{ lastfm_artist_bio_worker_summary.running }}</span>
-      <span class="badge badge-warning">IDLE: {{ lastfm_artist_bio_worker_summary.idle }}</span>
-      <span class="badge badge-secondary">NO API KEY: {{ lastfm_artist_bio_worker_summary.no_key }}</span>
-      {% if lastfm_artist_bio_worker_summary.failing > 0 %}
-        <span class="badge badge-danger">FAILING: {{ lastfm_artist_bio_worker_summary.failing }}</span>
-      {% endif %}
-    </div>
-
-    <p style="font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">Auto-Importer Watchdogs</p>
-    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem;">
-      <span class="badge badge-success">RUNNING: {{ auto_importer_worker_summary.running }}</span>
-      <span class="badge badge-warning">IDLE: {{ auto_importer_worker_summary.idle }}</span>
-    </div>
-
-    <p style="font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">Wrapped Calculation Workers</p>
-    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
-      <span class="badge badge-success">RUNNING: {{ wrapped_worker_summary.running }}</span>
-      <span class="badge badge-warning">IDLE: {{ wrapped_worker_summary.idle }}</span>
-      {% if wrapped_worker_summary.failing > 0 %}
-        <span class="badge badge-danger">FAILING: {{ wrapped_worker_summary.failing }}</span>
-      {% endif %}
-    </div>
-  </article>
-
-  {# Email & Notifications moved here from the settings section so it sits
-     beside the other instance-level status/service cards. #}
-  <article class="card" style="padding: 0;">
-    <div class="card-header" style="padding: 1.5rem 1.5rem 0.5rem 1.5rem;">
-      <h3 style="margin: 0; font-family: var(--font-headings);">Email &amp; Notifications</h3>
-      <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem;">SMTP server credentials and instance-wide notification controls.</p>
-    </div>
-    <div style="padding: 0 1.5rem 1.5rem 1.5rem;">
-      <form method="post" action="{{ url_for('adminEmailSettings') }}">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
-
-        <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; margin-bottom: 1rem;">
-          <input type="checkbox" name="email_notifications_enabled" value="1" {% if smtp_config.enabled %}checked{% endif %}>
-          <strong>Enable email notifications instance-wide</strong>
-          <details class="setting-hint">
-            <summary aria-label="More info" title="More info">i</summary>
-            <p>When disabled, outgoing emails are paused and the Notifications section is hidden on user profiles.</p>
-          </details>
-        </label>
-
-        <label style="display: flex; justify-content: space-between; align-items: center; font-size: 0.85rem; color: var(--muted);">
-          <span>Public Instance URL</span>
-          <input type="url" name="instance_public_url" value="{{ instance_public_url }}" placeholder="https://tracker.example.com" style="width: 12rem; padding: 4px 8px; background: var(--card-bg, #1e1e1e); color: var(--fg, #eee); border: 1px solid var(--border, #444); border-radius: 4px;">
-        </label>
-        <p style="color: var(--muted); font-size: 0.8rem; margin: 0.25rem 0 1rem 0;">The address other people use to reach this instance. Used to build the login/action links inside notification emails; leave blank to send emails without a link.</p>
-
-        <div style="display: flex; flex-direction: column; gap: 0.6rem; margin-bottom: 1rem;">
-          <label style="display: flex; justify-content: space-between; align-items: center; font-size: 0.85rem; color: var(--muted);">
-            <span>SMTP Host</span>
-            <input type="text" name="smtp_host" value="{{ smtp_config.host }}" placeholder="smtp.gmail.com" style="width: 12rem; padding: 4px 8px; background: var(--card-bg, #1e1e1e); color: var(--fg, #eee); border: 1px solid var(--border, #444); border-radius: 4px;">
-          </label>
-          <label style="display: flex; justify-content: space-between; align-items: center; font-size: 0.85rem; color: var(--muted);">
-            <span>SMTP Port</span>
-            <input type="number" name="smtp_port" value="{{ smtp_config.port }}" placeholder="587" style="width: 5.5rem; padding: 4px 8px; background: var(--card-bg, #1e1e1e); color: var(--fg, #eee); border: 1px solid var(--border, #444); border-radius: 4px;">
-          </label>
-          <label style="display: flex; justify-content: space-between; align-items: center; font-size: 0.85rem; color: var(--muted);">
-            <span>Encryption</span>
-            <select name="smtp_encryption" style="width: 8rem; padding: 4px 8px; background: var(--card-bg, #1e1e1e); color: var(--fg, #eee); border: 1px solid var(--border, #444); border-radius: 4px;">
-              <option value="tls" {% if smtp_config.encryption == 'tls' %}selected{% endif %}>TLS / STARTTLS</option>
-              <option value="ssl" {% if smtp_config.encryption == 'ssl' %}selected{% endif %}>SSL</option>
-              <option value="none" {% if smtp_config.encryption == 'none' %}selected{% endif %}>None</option>
-            </select>
-          </label>
-          <label style="display: flex; justify-content: space-between; align-items: center; font-size: 0.85rem; color: var(--muted);">
-            <span>Username</span>
-            <input type="text" name="smtp_user" value="{{ smtp_config.user }}" placeholder="user@example.com" style="width: 12rem; padding: 4px 8px; background: var(--card-bg, #1e1e1e); color: var(--fg, #eee); border: 1px solid var(--border, #444); border-radius: 4px;">
-          </label>
-          <label style="display: flex; justify-content: space-between; align-items: center; font-size: 0.85rem; color: var(--muted);">
-            <span>Password</span>
-            <input type="password" name="smtp_password" value="" placeholder="{% if smtp_config.password %}••••••••{% else %}Not set{% endif %}" style="width: 12rem; padding: 4px 8px; background: var(--card-bg, #1e1e1e); color: var(--fg, #eee); border: 1px solid var(--border, #444); border-radius: 4px;">
-          </label>
-          {% if smtp_config.password %}
-          <label style="display: flex; align-items: center; gap: 0.4rem; font-size: 0.8rem; color: var(--muted); padding-left: 0.25rem;">
-            <input type="checkbox" name="clear_password" value="1">
-            <span>Clear saved password</span>
-          </label>
+        <p style="font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">Spotify Rate Limiting</p>
+        <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem;">
+          {% if spotify_rate_limit.backoffRemainingSeconds > 0 %}
+            <span class="badge badge-orange">BACKING OFF: {{ spotify_rate_limit.backoffRemainingSeconds | round | int }}s left</span>
+          {% else %}
+            <span class="badge badge-success">CLEAR</span>
           {% endif %}
-          <label style="display: flex; justify-content: space-between; align-items: center; font-size: 0.85rem; color: var(--muted);">
-            <span>Sender Email</span>
-            <input type="email" name="smtp_from_email" value="{{ smtp_config.from_email }}" placeholder="noreply@example.com" style="width: 12rem; padding: 4px 8px; background: var(--card-bg, #1e1e1e); color: var(--fg, #eee); border: 1px solid var(--border, #444); border-radius: 4px;">
-          </label>
-          <label style="display: flex; justify-content: space-between; align-items: center; font-size: 0.85rem; color: var(--muted);">
-            <span>Sender Name</span>
-            <input type="text" name="smtp_from_name" value="{{ smtp_config.from_name }}" placeholder="Spotify Tracker" style="width: 12rem; padding: 4px 8px; background: var(--card-bg, #1e1e1e); color: var(--fg, #eee); border: 1px solid var(--border, #444); border-radius: 4px;">
-          </label>
-        </div>
-
-        <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; margin-top: 1rem;">
-          <button type="submit" class="primary-button" style="padding: 4px 16px;">Save Email Settings</button>
-          <button type="submit" form="adminTestEmailForm" class="primary-button" style="padding: 4px 16px;">Send Test Email to Admin</button>
-        </div>
-      </form>
-
-      <form id="adminTestEmailForm" method="post" action="{{ url_for('adminTestEmail') }}">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
-      </form>
-    </div>
-  </article>
-</section>
-
-<!-- Settings, grouped by what they govern rather than one flat checkbox list.
-     align-items as above: a one-checkbox card has no business being as tall as
-     the nine-checkbox one beside it. -->
-<section class="grid" style="gap: 1.5rem; align-items: start;">
-  <article class="card" style="padding: 0;">
-    <div class="card-header" style="padding: 1.5rem 1.5rem 0.5rem 1.5rem;">
-      <h2 style="margin: 0; font-family: var(--font-headings); font-size: 1.15rem;">User Settings</h2>
-      <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem;">Account creation and cross-account features.</p>
-    </div>
-    <div style="padding: 0 1.5rem 1.5rem 1.5rem;">
-      <form method="post" action="{{ url_for('adminUserSettings') }}">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
-        {# label kept short, the consequence/scope tail moved into an on-demand
-           <details> hint (see .setting-hint in style.css) instead of always
-           rendering inline - this card was 3x the height of its shortest
-           neighbour mostly from these tails wrapping to 2-3 lines each. #}
-        {% set user_settings_fields = [
-          ('data_sharing', 'Data sharing', sharing_enabled,
-           'Compare page and share requests on Profile', '0.6rem'),
-          ('registration', 'New user registration', registration_enabled,
-           none, '0.6rem'),
-          ('share_links', 'Public Wrapped share links', share_links_enabled,
-           "no-login links to a user's own yearly recap", '0.6rem'),
-          ('email_verification', 'Cookie–email verification at login', email_verification_enabled,
-           "stops one user claiming another's account", '0.6rem'),
-          ('milestones', 'Achievement milestones', milestones_enabled,
-           'topbar badge, plus the Milestones and Next milestones cards on the dashboard', '0.6rem'),
-          ('milestone_recalc', 'Treat imported history as the milestone source of truth', milestone_recalc_enabled,
-           "recalculate dates, don't notify import-crossed milestones, remove ones the data no longer supports", '0.6rem'),
-          ('tags', 'Tags', tags_enabled,
-           'tag panel on song/artist/album pages, tag filter on Top Songs/Artists/Albums, and the Playlists page', '1rem'),
-          ('friends_now_playing', "Friends' current track on the dashboard", friends_now_playing_enabled,
-           'only between accepted shares; each user can also opt out on their own Profile', '1rem'),
-        ] %}
-        {% for name, label, checked, hint, margin in user_settings_fields %}
-        <div style="display: flex; align-items: center; gap: 0.4rem; margin-bottom: {{ margin }};">
-          <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; flex: 1;">
-            <input type="checkbox" name="{{ name }}" value="1" {% if checked %}checked{% endif %}>
-            {{ label }}
-          </label>
-          {% if hint %}
-          <details class="setting-hint">
-            <summary aria-label="More info" title="More info">i</summary>
-            <p>{{ hint }}</p>
-          </details>
+          <span class="badge badge-secondary">EVENTS: {{ spotify_rate_limit.backoffs }}</span>
+          {% if spotify_rate_limit.lastReason %}
+            <span class="badge badge-secondary">LAST: {{ spotify_rate_limit.lastReason }}</span>
+          {% endif %}
+          {% if spotify_rate_limit.secondsSinceLastBackoff is not none %}
+            <span class="badge badge-secondary">{{ (spotify_rate_limit.secondsSinceLastBackoff / 60) | round | int }} min ago</span>
           {% endif %}
         </div>
-        {% endfor %}
-        <button type="submit" class="primary-button" style="padding: 4px 16px;">Save</button>
-      </form>
-    </div>
-  </article>
 
-  {# Instance Services moved here from the status section. #}
-  <article class="card" style="padding: 1.5rem;">
-    <h2 style="margin-top: 0; font-family: var(--font-headings); font-size: 1.15rem;">Instance Services</h2>
-    <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem; margin-bottom: 1rem;">
-      Instance-wide services and health checks, one of each per install.
-    </p>
-
-    {# Milestone detection rides the periodic login-check loop (no thread of
-       its own) - RUNNING/INACTIVE is that loop's liveness, DISABLED the admin
-       kill switch, and the warning badge the import-hygiene auto-recalc
-       toggle being off. #}
-    <p style="font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">Milestone Detection</p>
-    <div id="milestoneWorkerStatus" style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem;">
-      {% if milestone_worker_summary.status == 'RUNNING' %}
-        <span class="badge badge-success">RUNNING</span>
-      {% elif milestone_worker_summary.status == 'DISABLED' %}
-        <span class="badge badge-secondary">DISABLED</span>
-      {% else %}
-        <span class="badge badge-secondary">INACTIVE</span>
-      {% endif %}
-      {% if milestone_worker_summary.status != 'DISABLED' and not milestone_worker_summary.recalc_enabled %}
-        <span class="badge badge-warning">AUTO-RECALC OFF</span>
-      {% endif %}
-    </div>
-
-    <p style="font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">Database Backup Service</p>
-    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem;">
-      {% if backup_worker_summary.status == 'RUNNING' %}
-        <span class="badge badge-success">RUNNING</span>
-      {% else %}
-        <span class="badge badge-secondary">INACTIVE</span>
-      {% endif %}
-    </div>
-
-    <p style="font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">Mail Worker</p>
-    <div id="emailWorkerStatus" style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
-      {% if email_worker_summary.status == 'RUNNING' %}
-        <span class="badge badge-success">RUNNING</span>
-      {% elif email_worker_summary.status == 'DISABLED' %}
-        <span class="badge badge-secondary">DISABLED</span>
-      {% else %}
-        <span class="badge badge-secondary">INACTIVE</span>
-      {% endif %}
-      {% if email_worker_summary.status != 'DISABLED' and not email_worker_summary.smtp_configured %}
-        <span class="badge badge-warning">SMTP NOT CONFIGURED</span>
-      {% endif %}
-      {% if email_worker_summary.queue_size > 0 %}
-        <span class="badge badge-secondary">{{ email_worker_summary.queue_size }} QUEUED</span>
-      {% endif %}
-    </div>
-
-    {# The startup probe (Repository.checkIntegrity) used to report only into
-       app.log, so a dangling-row count nobody could see sat unchanged for over
-       a week. Damage and dangling references are kept apart on purpose: a
-       damaged file is an emergency, a dangling track_id is inert (JOINs drop
-       the row) and only interesting when the number moves. #}
-    <p style="font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin: 1.25rem 0 0.5rem;">Database Integrity</p>
-    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center;">
-      {% if database_integrity.probeError %}
-        <span class="badge badge-secondary">NOT CHECKED</span>
-      {% elif database_integrity.corruption %}
-        <span class="badge badge-danger">DAMAGED</span>
-      {% elif dangling_row_total %}
-        <span class="badge badge-warning">{{ dangling_row_total }} DANGLING ROW{{ 'S' if dangling_row_total != 1 else '' }}</span>
-      {% else %}
-        <span class="badge badge-success">OK</span>
-      {% endif %}
-    </div>
-    {% if database_integrity.probeError %}
-      <p style="color: var(--muted); font-size: 0.85rem; margin: 0.5rem 0 0;">
-        The check could not run, which says nothing about the database's health - most likely the
-        file was locked by other work. Reload to try again.
-      </p>
-      <ul style="margin: 0.35rem 0 0; padding-left: 1.1rem; color: var(--muted); font-size: 0.8rem;">
-        <li>{{ database_integrity.probeError }}</li>
-      </ul>
-    {% elif database_integrity.corruption %}
-      <p style="color: var(--muted); font-size: 0.85rem; margin: 0.5rem 0 0;">
-        Restore from a backup before trusting anything this process records.
-      </p>
-      <ul style="margin: 0.35rem 0 0; padding-left: 1.1rem; color: var(--muted); font-size: 0.8rem;">
-        {% for finding in database_integrity.corruption[:5] %}<li>{{ finding }}</li>{% endfor %}
-      </ul>
-    {% elif dangling_row_total %}
-      <p style="color: var(--muted); font-size: 0.85rem; margin: 0.5rem 0 0;">
-        Rows referencing something that no longer exists. Inert - every join drops them - but a
-        rising count points at a write path bypassing <code>foreign_keys=ON</code>.
-      </p>
-      <ul style="margin: 0.35rem 0 0; padding-left: 1.1rem; color: var(--muted); font-size: 0.8rem;">
-        {% for table, count in database_integrity.foreignKeyViolations.items() %}
-        <li>{{ table }}: {{ count }}</li>
-        {% endfor %}
-      </ul>
-    {% endif %}
-  </article>
-
-  <article class="card" style="padding: 0;">
-    <div class="card-header" style="padding: 1.5rem 1.5rem 0.5rem 1.5rem;">
-      <h2 style="margin: 0; font-family: var(--font-headings); font-size: 1.15rem;">Last.fm Backfilling Settings</h2>
-      <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem;">Genre and biography data sourced from Last.fm.</p>
-    </div>
-    <div style="padding: 0 1.5rem 1.5rem 1.5rem;">
-      <form method="post" action="{{ url_for('adminLastfmSettings') }}">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
-        <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; margin-bottom: 0.6rem;">
-          <input type="checkbox" name="lastfm_backfill" value="1" {% if lastfm_backfill_enabled %}checked{% endif %}>
-          Genre backfill (genre insights on Charts, Wrapped, Compare and track/album/artist pages)
-        </label>
-        <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; margin-bottom: 0.6rem;">
-          <input type="checkbox" name="artist_bio" value="1" {% if artist_bio_enabled %}checked{% endif %}>
-          Artist biographies (Last.fm biography on artist pages)
-        </label>
-        <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; margin-bottom: 0.6rem;">
-          <input type="checkbox" name="album_bio" value="1" {% if album_bio_enabled %}checked{% endif %}>
-          Album biographies (Last.fm biography on album pages)
-        </label>
-        <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; margin-bottom: 0.8rem;">
-          <input type="checkbox" name="include_inherited" value="1" {% if inherited_genres_enabled %}checked{% endif %}>
-          Count inherited genres (songs/albums without own Last.fm tags use their artist's genres)
-        </label>
-        <label style="display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); margin-bottom: 0.6rem;">
-          <span>Genre re-attempt interval (empty results)</span>
-          <span style="white-space: nowrap;"><input type="number" name="genre_backfill_retry_days" value="{{ genre_backfill_retry_days }}" min="{{ backfill_retry_min }}" max="{{ backfill_retry_max }}" step="1" style="width: 5.5rem; padding: 6px 10px; font-size: 1.05rem; background: var(--card-bg, #1e1e1e); color: var(--fg, #eee); border: 1px solid var(--border, #444); border-radius: 4px;"> days</span>
-        </label>
-        <label style="display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); margin-bottom: 1rem;">
-          <span>Biography re-attempt interval (empty results)</span>
-          <span style="white-space: nowrap;"><input type="number" name="bio_backfill_retry_days" value="{{ bio_backfill_retry_days }}" min="{{ backfill_retry_min }}" max="{{ backfill_retry_max }}" step="1" style="width: 5.5rem; padding: 6px 10px; font-size: 1.05rem; background: var(--card-bg, #1e1e1e); color: var(--fg, #eee); border: 1px solid var(--border, #444); border-radius: 4px;"> days</span>
-        </label>
-        <button type="submit" class="primary-button" style="padding: 4px 16px;">Save</button>
-      </form>
-    </div>
-  </article>
-
-  <article class="card" style="padding: 0;">
-    <div class="card-header" style="padding: 1.5rem 1.5rem 0.5rem 1.5rem;">
-      <h2 style="margin: 0; font-family: var(--font-headings); font-size: 1.15rem;">Spotify API Backfilling</h2>
-      <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem;">Recovery and metadata fetching via the Spotify Developer API.</p>
-    </div>
-    <div style="padding: 0 1.5rem 1.5rem 1.5rem;">
-      <form method="post" action="{{ url_for('adminSpotifySettings') }}">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
-        <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; margin-bottom: 1rem;">
-          <input type="checkbox" name="spotify_backfill" value="1" {% if spotify_backfill_enabled %}checked{% endif %}>
-          Spotify API backfill (missed-plays recovery and album/track metadata fetching)
-        </label>
-        <button type="submit" class="primary-button" style="padding: 4px 16px;">Save</button>
-      </form>
-    </div>
-  </article>
-
-  <article class="card" style="padding: 0;">
-    <div class="card-header" style="padding: 1.5rem 1.5rem 0.5rem 1.5rem;">
-      <h2 style="margin: 0; font-family: var(--font-headings); font-size: 1.15rem;">Playback Classification</h2>
-      <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem;">The skip threshold decides skip vs. real listen (plays under it are excluded from counts, listen time, top lists and streaks — saving reclassifies all history). The completion percent then splits real plays into complete vs. partial on the Charts completion chart.</p>
-    </div>
-    <div style="padding: 0 1.5rem 1.5rem 1.5rem;">
-      <form method="post" action="{{ url_for('adminSkipSettings') }}">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
-        <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; margin-bottom: 0.6rem;">
-          <input type="radio" name="skip_mode" id="skipModeSeconds" value="{{ skip_mode_seconds }}" {% if skip_mode == skip_mode_seconds %}checked{% endif %} onchange="onSkipModeChange()">
-          Fixed seconds ({{ skip_seconds_min }}–{{ skip_seconds_max }}s)
-        </label>
-        <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; margin-bottom: 0.8rem;">
-          <input type="radio" name="skip_mode" id="skipModePercent" value="{{ skip_mode_percent }}" {% if skip_mode == skip_mode_percent %}checked{% endif %} onchange="onSkipModeChange()">
-          Percent of track duration ({{ skip_percent_min }}–{{ skip_percent_max }}%)
-        </label>
-        <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 1rem;">
-          <input type="number" name="skip_value" id="skipValueInput" value="{{ skip_value }}"
-                 min="{{ skip_seconds_min if skip_mode == skip_mode_seconds else skip_percent_min }}"
-                 max="{{ skip_seconds_max if skip_mode == skip_mode_seconds else skip_percent_max }}"
-                 step="1" required
-                 style="width: 6rem; padding: 6px 10px; font-size: 1.05rem; background: var(--card-bg, #1e1e1e); color: var(--fg, #eee); border: 1px solid var(--border, #444); border-radius: 4px;">
-          <span id="skipValueUnit" style="color: var(--muted);">{{ '%' if skip_mode == skip_mode_percent else 's' }}</span>
+        <p style="font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">Spotify API Backfill Workers</p>
+        <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem;">
+          <span class="badge badge-success">RUNNING: {{ spotify_api_worker_summary.running }}</span>
+          <span class="badge badge-warning">IDLE: {{ spotify_api_worker_summary.idle }}</span>
+          <span class="badge badge-secondary">NOT CONFIGURED: {{ spotify_api_worker_summary.no_key }}</span>
+          {% if spotify_api_worker_summary.failing > 0 %}
+            <span class="badge badge-danger">FAILING: {{ spotify_api_worker_summary.failing }}</span>
+          {% endif %}
         </div>
-        <label style="display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); margin-bottom: 1rem;">
-          <span>Counts as a complete listen at/over</span>
-          <span style="white-space: nowrap;"><input type="number" name="completion_complete_percent" value="{{ completion_complete_percent }}" min="{{ completion_min }}" max="{{ completion_max }}" step="1" style="width: 5.5rem; padding: 6px 10px; font-size: 1.05rem; background: var(--card-bg, #1e1e1e); color: var(--fg, #eee); border: 1px solid var(--border, #444); border-radius: 4px;"> % of duration</span>
-        </label>
-        <button type="submit" class="primary-button" style="padding: 4px 16px;">Save</button>
-      </form>
-    </div>
-  </article>
 
-  <article class="card" style="padding: 0;">
-    <div class="card-header" style="padding: 1.5rem 1.5rem 0.5rem 1.5rem;">
-      <h2 style="margin: 0; font-family: var(--font-headings); font-size: 1.15rem;">Backups</h2>
-      <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem;">Automatic database snapshots into Database/Data/Backups. Set either to 0 to disable. Applies after the app restarts.</p>
-    </div>
-    <div style="padding: 0 1.5rem 1.5rem 1.5rem;">
-      <form method="post" action="{{ url_for('adminBackupSettings') }}">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
-        <label style="display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); margin-bottom: 0.6rem;">
-          <span>Snapshot every</span>
-          <span style="white-space: nowrap;"><input type="number" name="backup_interval_hours" value="{{ backup_interval_hours }}" min="{{ backup_interval_min }}" max="{{ backup_interval_max }}" step="1" style="width: 5.5rem; padding: 6px 10px; font-size: 1.05rem; background: var(--card-bg, #1e1e1e); color: var(--fg, #eee); border: 1px solid var(--border, #444); border-radius: 4px;"> hours</span>
-        </label>
-        <label style="display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); margin-bottom: 1rem;">
-          <span>Keep newest</span>
-          <span style="white-space: nowrap;"><input type="number" name="backup_retention_count" value="{{ backup_retention_count }}" min="{{ backup_retention_min }}" max="{{ backup_retention_max }}" step="1" style="width: 5.5rem; padding: 6px 10px; font-size: 1.05rem; background: var(--card-bg, #1e1e1e); color: var(--fg, #eee); border: 1px solid var(--border, #444); border-radius: 4px;"> snapshots</span>
-        </label>
-        <button type="submit" class="primary-button" style="padding: 4px 16px;">Save</button>
-      </form>
-      <div id="backup-status-message" style="margin-top: 0.75rem; min-height: 1.5em;"></div>
-      <form method="post" action="{{ url_for('adminCreateBackup') }}" style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--border, #333);">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
-        <button type="submit" id="btn-create-backup" class="primary-button" style="padding: 4px 16px;">Create backup now</button>
-      </form>
-    </div>
-  </article>
+        <p style="font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">Last.fm Genre Workers</p>
+        <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem;">
+          <span class="badge badge-success">RUNNING: {{ lastfm_worker_summary.running }}</span>
+          <span class="badge badge-warning">IDLE: {{ lastfm_worker_summary.idle }}</span>
+          <span class="badge badge-secondary">NO API KEY: {{ lastfm_worker_summary.no_key }}</span>
+          {% if lastfm_worker_summary.failing > 0 %}
+            <span class="badge badge-danger">FAILING: {{ lastfm_worker_summary.failing }}</span>
+          {% endif %}
+        </div>
 
-  <article class="card" style="padding: 0;">
-    <div class="card-header" style="padding: 1.5rem 1.5rem 0.5rem 1.5rem;">
-      <h2 style="margin: 0; font-family: var(--font-headings); font-size: 1.15rem;">Advanced Tuning</h2>
-      <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem;">Numeric limits that were previously fixed in code. Worker counts apply after the app restarts.</p>
-    </div>
-    <div style="padding: 0 1.5rem 1.5rem 1.5rem;">
-      <form method="post" action="{{ url_for('adminTuningSettings') }}">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
-        {% set tuning_fields = [
-          ('discover_artist_limit', 'Discover artists on dashboard', 'live', discover_artist_limit, discover_min, discover_max),
-          ('image_download_workers', 'Image download workers', 'restart', image_download_workers, worker_min, worker_max),
-          ('artist_bio_workers', 'Artist biography workers', 'restart', artist_bio_workers, worker_min, worker_max),
-          ('album_bio_workers', 'Album biography workers', 'restart', album_bio_workers, worker_min, worker_max)
-        ] %}
-        {% for name, label, kind, value, lo, hi in tuning_fields %}
-        <label style="display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); margin-bottom: 0.6rem;">
-          <span>{{ label }} <em style="font-style: normal; opacity: 0.65;">({{ kind }})</em></span>
-          <input type="number" name="{{ name }}" value="{{ value }}" min="{{ lo }}" max="{{ hi }}" step="1"
-                 style="width: 5.5rem; padding: 6px 10px; font-size: 1.05rem; background: var(--card-bg, #1e1e1e); color: var(--fg, #eee); border: 1px solid var(--border, #444); border-radius: 4px;">
-        </label>
-        {% endfor %}
-        <button type="submit" class="primary-button" style="padding: 4px 16px; margin-top: 0.4rem;">Save</button>
-      </form>
-      {% if restart_enabled %}
-      <form method="post" action="{{ url_for('adminRestart') }}" style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--border, #333);"
-            onsubmit="return confirm('Restart the app now? Worker-count changes apply after the restart. This only recovers if the process is supervised (a relaunch-on-exit launch script) - otherwise the app will stop.');">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
-        <button type="submit" class="button button-danger" style="padding: 4px 16px; min-height: auto;">Restart app to apply</button>
-      </form>
-      {% else %}
-      <p style="color: var(--muted); font-size: 0.8rem; margin: 1rem 0 0 0; padding-top: 1rem; border-top: 1px solid var(--border, #333);">Worker-count changes apply after you restart the app. A one-click restart button appears here when <code>ALLOW_INSTANCE_RESTART=1</code> is set in a supervised launch.</p>
-      {% endif %}
-    </div>
-  </article>
-</section>
+        <p style="font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">Last.fm Album Bio Workers</p>
+        <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem;">
+          <span class="badge badge-success">RUNNING: {{ lastfm_album_bio_worker_summary.running }}</span>
+          <span class="badge badge-warning">IDLE: {{ lastfm_album_bio_worker_summary.idle }}</span>
+          <span class="badge badge-secondary">NO API KEY: {{ lastfm_album_bio_worker_summary.no_key }}</span>
+          {% if lastfm_album_bio_worker_summary.failing > 0 %}
+            <span class="badge badge-danger">FAILING: {{ lastfm_album_bio_worker_summary.failing }}</span>
+          {% endif %}
+        </div>
+
+        <p style="font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">Last.fm Artist Bio Workers</p>
+        <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem;">
+          <span class="badge badge-success">RUNNING: {{ lastfm_artist_bio_worker_summary.running }}</span>
+          <span class="badge badge-warning">IDLE: {{ lastfm_artist_bio_worker_summary.idle }}</span>
+          <span class="badge badge-secondary">NO API KEY: {{ lastfm_artist_bio_worker_summary.no_key }}</span>
+          {% if lastfm_artist_bio_worker_summary.failing > 0 %}
+            <span class="badge badge-danger">FAILING: {{ lastfm_artist_bio_worker_summary.failing }}</span>
+          {% endif %}
+        </div>
+
+        <p style="font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">Auto-Importer Watchdogs</p>
+        <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem;">
+          <span class="badge badge-success">RUNNING: {{ auto_importer_worker_summary.running }}</span>
+          <span class="badge badge-warning">IDLE: {{ auto_importer_worker_summary.idle }}</span>
+        </div>
+
+        <p style="font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">Wrapped Calculation Workers</p>
+        <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+          <span class="badge badge-success">RUNNING: {{ wrapped_worker_summary.running }}</span>
+          <span class="badge badge-warning">IDLE: {{ wrapped_worker_summary.idle }}</span>
+          {% if wrapped_worker_summary.failing > 0 %}
+            <span class="badge badge-danger">FAILING: {{ wrapped_worker_summary.failing }}</span>
+          {% endif %}
+        </div>
+      </article>
+
+      <!-- Instance Services: placed right beside Worker Health -->
+      <article class="card" style="padding: 1.5rem;">
+        <h2 style="margin-top: 0; font-family: var(--font-headings); font-size: 1.15rem;">Instance Services</h2>
+        <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem; margin-bottom: 1rem;">
+          Instance-wide services and health checks, one of each per install.
+        </p>
+
+        <p style="font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">Milestone Detection</p>
+        <div id="milestoneWorkerStatus" style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem;">
+          {% if milestone_worker_summary.status == 'RUNNING' %}
+            <span class="badge badge-success">RUNNING</span>
+          {% elif milestone_worker_summary.status == 'DISABLED' %}
+            <span class="badge badge-secondary">DISABLED</span>
+          {% else %}
+            <span class="badge badge-secondary">INACTIVE</span>
+          {% endif %}
+          {% if milestone_worker_summary.status != 'DISABLED' and not milestone_worker_summary.recalc_enabled %}
+            <span class="badge badge-warning">AUTO-RECALC OFF</span>
+          {% endif %}
+        </div>
+
+        <p style="font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">Database Backup Service</p>
+        <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem;">
+          {% if backup_worker_summary.status == 'RUNNING' %}
+            <span class="badge badge-success">RUNNING</span>
+          {% else %}
+            <span class="badge badge-secondary">INACTIVE</span>
+          {% endif %}
+        </div>
+
+        <p style="font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">Mail Worker</p>
+        <div id="emailWorkerStatus" style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem;">
+          {% if email_worker_summary.status == 'RUNNING' %}
+            <span class="badge badge-success">RUNNING</span>
+          {% elif email_worker_summary.status == 'DISABLED' %}
+            <span class="badge badge-secondary">DISABLED</span>
+          {% else %}
+            <span class="badge badge-secondary">INACTIVE</span>
+          {% endif %}
+          {% if email_worker_summary.status != 'DISABLED' and not email_worker_summary.smtp_configured %}
+            <span class="badge badge-warning">SMTP NOT CONFIGURED</span>
+          {% endif %}
+          {% if email_worker_summary.queue_size > 0 %}
+            <span class="badge badge-secondary">{{ email_worker_summary.queue_size }} QUEUED</span>
+          {% endif %}
+        </div>
+
+        <p style="font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin: 1.25rem 0 0.5rem;">Database Integrity</p>
+        <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center;">
+          {% if database_integrity.probeError %}
+            <span class="badge badge-secondary">NOT CHECKED</span>
+          {% elif database_integrity.corruption %}
+            <span class="badge badge-danger">DAMAGED</span>
+          {% elif dangling_row_total %}
+            <span class="badge badge-warning">{{ dangling_row_total }} DANGLING ROW{{ 'S' if dangling_row_total != 1 else '' }}</span>
+          {% else %}
+            <span class="badge badge-success">OK</span>
+          {% endif %}
+        </div>
+        {% if database_integrity.probeError %}
+          <p style="color: var(--muted); font-size: 0.85rem; margin: 0.5rem 0 0;">
+            The check could not run, which says nothing about the database's health - most likely the file was locked by other work. Reload to try again.
+          </p>
+          <ul style="margin: 0.35rem 0 0; padding-left: 1.1rem; color: var(--muted); font-size: 0.8rem;">
+            <li>{{ database_integrity.probeError }}</li>
+          </ul>
+        {% elif database_integrity.corruption %}
+          <p style="color: var(--muted); font-size: 0.85rem; margin: 0.5rem 0 0;">
+            Restore from a backup before trusting anything this process records.
+          </p>
+          <ul style="margin: 0.35rem 0 0; padding-left: 1.1rem; color: var(--muted); font-size: 0.8rem;">
+            {% for finding in database_integrity.corruption[:5] %}<li>{{ finding }}</li>{% endfor %}
+          </ul>
+        {% elif dangling_row_total %}
+          <p style="color: var(--muted); font-size: 0.85rem; margin: 0.5rem 0 0;">
+            Rows referencing something that no longer exists. Inert - every join drops them - but a rising count points at a write path bypassing <code>foreign_keys=ON</code>.
+          </p>
+          <ul style="margin: 0.35rem 0 0; padding-left: 1.1rem; color: var(--muted); font-size: 0.8rem;">
+            {% for table, count in database_integrity.foreignKeyViolations.items() %}
+            <li>{{ table }}: {{ count }}</li>
+            {% endfor %}
+          </ul>
+        {% endif %}
+      </article>
+    </section>
+
+  {% elif current_tab == 'workers' %}
+    <!-- Workers Tab: Spotify API, Last.fm Backfilling, Advanced Tuning -->
+    <section class="grid" style="grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.5rem; margin-bottom: 2.5rem; align-items: start;">
+      <article class="card" style="padding: 0;">
+        <div class="card-header" style="padding: 1.5rem 1.5rem 0.5rem 1.5rem;">
+          <h2 style="margin: 0; font-family: var(--font-headings); font-size: 1.15rem;">Spotify API Backfilling</h2>
+          <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem;">Recovery and metadata fetching via the Spotify Developer API.</p>
+        </div>
+        <div style="padding: 0 1.5rem 1.5rem 1.5rem;">
+          <form method="post" action="{{ url_for('adminSpotifySettings') }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+            <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; margin-bottom: 1rem;">
+              <input type="checkbox" name="spotify_backfill" value="1" {% if spotify_backfill_enabled %}checked{% endif %}>
+              Spotify API backfill (missed-plays recovery and album/track metadata fetching)
+            </label>
+            <button type="submit" class="primary-button" style="padding: 4px 16px;">Save</button>
+          </form>
+        </div>
+      </article>
+
+      <article class="card" style="padding: 0;">
+        <div class="card-header" style="padding: 1.5rem 1.5rem 0.5rem 1.5rem;">
+          <h2 style="margin: 0; font-family: var(--font-headings); font-size: 1.15rem;">Last.fm Backfilling Settings</h2>
+          <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem;">Genre and biography data sourced from Last.fm.</p>
+        </div>
+        <div style="padding: 0 1.5rem 1.5rem 1.5rem;">
+          <form method="post" action="{{ url_for('adminLastfmSettings') }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+            <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; margin-bottom: 0.6rem;">
+              <input type="checkbox" name="lastfm_backfill" value="1" {% if lastfm_backfill_enabled %}checked{% endif %}>
+              Genre backfill (genre insights on Charts, Wrapped, Compare and track/album/artist pages)
+            </label>
+            <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; margin-bottom: 0.6rem;">
+              <input type="checkbox" name="artist_bio" value="1" {% if artist_bio_enabled %}checked{% endif %}>
+              Artist biographies (Last.fm biography on artist pages)
+            </label>
+            <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; margin-bottom: 0.6rem;">
+              <input type="checkbox" name="album_bio" value="1" {% if album_bio_enabled %}checked{% endif %}>
+              Album biographies (Last.fm biography on album pages)
+            </label>
+            <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; margin-bottom: 0.8rem;">
+              <input type="checkbox" name="include_inherited" value="1" {% if inherited_genres_enabled %}checked{% endif %}>
+              Count inherited genres (songs/albums without own Last.fm tags use their artist's genres)
+            </label>
+            <label style="display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); margin-bottom: 0.6rem;">
+              <span>Genre re-attempt interval (empty results)</span>
+              <span style="white-space: nowrap;"><input type="number" name="genre_backfill_retry_days" value="{{ genre_backfill_retry_days }}" min="{{ backfill_retry_min }}" max="{{ backfill_retry_max }}" step="1" style="width: 5.5rem; padding: 6px 10px; font-size: 1.05rem; background: var(--card-bg, #1e1e1e); color: var(--fg, #eee); border: 1px solid var(--border, #444); border-radius: 4px;"> days</span>
+            </label>
+            <label style="display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); margin-bottom: 1rem;">
+              <span>Biography re-attempt interval (empty results)</span>
+              <span style="white-space: nowrap;"><input type="number" name="bio_backfill_retry_days" value="{{ bio_backfill_retry_days }}" min="{{ backfill_retry_min }}" max="{{ backfill_retry_max }}" step="1" style="width: 5.5rem; padding: 6px 10px; font-size: 1.05rem; background: var(--card-bg, #1e1e1e); color: var(--fg, #eee); border: 1px solid var(--border, #444); border-radius: 4px;"> days</span>
+            </label>
+            <button type="submit" class="primary-button" style="padding: 4px 16px;">Save</button>
+          </form>
+        </div>
+      </article>
+
+      <article class="card" style="padding: 0;">
+        <div class="card-header" style="padding: 1.5rem 1.5rem 0.5rem 1.5rem;">
+          <h2 style="margin: 0; font-family: var(--font-headings); font-size: 1.15rem;">Advanced Tuning</h2>
+          <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem;">Numeric limits that were previously fixed in code. Worker counts apply after the app restarts.</p>
+        </div>
+        <div style="padding: 0 1.5rem 1.5rem 1.5rem;">
+          <form method="post" action="{{ url_for('adminTuningSettings') }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+            {% set tuning_fields = [
+              ('discover_artist_limit', 'Discover artists on dashboard', 'live', discover_artist_limit, discover_min, discover_max),
+              ('image_download_workers', 'Image download workers', 'restart', image_download_workers, worker_min, worker_max),
+              ('artist_bio_workers', 'Artist biography workers', 'restart', artist_bio_workers, worker_min, worker_max),
+              ('album_bio_workers', 'Album biography workers', 'restart', album_bio_workers, worker_min, worker_max)
+            ] %}
+            {% for name, label, kind, value, lo, hi in tuning_fields %}
+            <label style="display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); margin-bottom: 0.6rem;">
+              <span>{{ label }} <em style="font-style: normal; opacity: 0.65;">({{ kind }})</em></span>
+              <input type="number" name="{{ name }}" value="{{ value }}" min="{{ lo }}" max="{{ hi }}" step="1"
+                     style="width: 5.5rem; padding: 6px 10px; font-size: 1.05rem; background: var(--card-bg, #1e1e1e); color: var(--fg, #eee); border: 1px solid var(--border, #444); border-radius: 4px;">
+            </label>
+            {% endfor %}
+            <button type="submit" class="primary-button" style="padding: 4px 16px; margin-top: 0.4rem;">Save</button>
+          </form>
+          {% if restart_enabled %}
+          <form method="post" action="{{ url_for('adminRestart') }}" style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--border, #333);"
+                onsubmit="return confirm('Restart the app now? Worker-count changes apply after the restart. This only recovers if the process is supervised (a relaunch-on-exit launch script) - otherwise the app will stop.');">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+            <button type="submit" class="button button-danger" style="padding: 4px 16px; min-height: auto;">Restart app to apply</button>
+          </form>
+          {% else %}
+          <p style="color: var(--muted); font-size: 0.8rem; margin: 1rem 0 0 0; padding-top: 1rem; border-top: 1px solid var(--border, #333);">Worker-count changes apply after you restart the app. A one-click restart button appears here when <code>ALLOW_INSTANCE_RESTART=1</code> is set in a supervised launch.</p>
+          {% endif %}
+        </div>
+      </article>
+    </section>
+
+  {% elif current_tab == 'settings' %}
+    <!-- Settings Tab: User Settings, Email & Notifications, Playback Classification, Backups -->
+    <section class="grid" style="grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.5rem; margin-bottom: 2.5rem; align-items: start;">
+      <article class="card" style="padding: 0;">
+        <div class="card-header" style="padding: 1.5rem 1.5rem 0.5rem 1.5rem;">
+          <h2 style="margin: 0; font-family: var(--font-headings); font-size: 1.15rem;">User Settings</h2>
+          <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem;">Account creation and cross-account features.</p>
+        </div>
+        <div style="padding: 0 1.5rem 1.5rem 1.5rem;">
+          <form method="post" action="{{ url_for('adminUserSettings') }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+            {% set user_settings_fields = [
+              ('data_sharing', 'Data sharing', sharing_enabled,
+               'Compare page and share requests on Profile', '0.6rem'),
+              ('registration', 'New user registration', registration_enabled,
+               none, '0.6rem'),
+              ('share_links', 'Public Wrapped share links', share_links_enabled,
+               "no-login links to a user's own yearly recap", '0.6rem'),
+              ('email_verification', 'Cookie–email verification at login', email_verification_enabled,
+               "stops one user claiming another's account", '0.6rem'),
+              ('milestones', 'Achievement milestones', milestones_enabled,
+               'topbar badge, plus the Milestones and Next milestones cards on the dashboard', '0.6rem'),
+              ('milestone_recalc', 'Treat imported history as the milestone source of truth', milestone_recalc_enabled,
+               "recalculate dates, don't notify import-crossed milestones, remove ones the data no longer supports", '0.6rem'),
+              ('tags', 'Tags', tags_enabled,
+               'tag panel on song/artist/album pages, tag filter on Top Songs/Artists/Albums, and the Playlists page', '1rem'),
+              ('friends_now_playing', "Friends' current track on the dashboard", friends_now_playing_enabled,
+               'only between accepted shares; each user can also opt out on their own Profile', '1rem'),
+            ] %}
+            {% for name, label, checked, hint, margin in user_settings_fields %}
+            <div style="display: flex; align-items: center; gap: 0.4rem; margin-bottom: {{ margin }};">
+              <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; flex: 1;">
+                <input type="checkbox" name="{{ name }}" value="1" {% if checked %}checked{% endif %}>
+                {{ label }}
+              </label>
+              {% if hint %}
+              <details class="setting-hint">
+                <summary aria-label="More info" title="More info">i</summary>
+                <p>{{ hint }}</p>
+              </details>
+              {% endif %}
+            </div>
+            {% endfor %}
+            <button type="submit" class="primary-button" style="padding: 4px 16px;">Save</button>
+          </form>
+        </div>
+      </article>
+
+      <article class="card" style="padding: 0;">
+        <div class="card-header" style="padding: 1.5rem 1.5rem 0.5rem 1.5rem;">
+          <h3 style="margin: 0; font-family: var(--font-headings);">Email &amp; Notifications</h3>
+          <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem;">SMTP server credentials and instance-wide notification controls.</p>
+        </div>
+        <div style="padding: 0 1.5rem 1.5rem 1.5rem;">
+          <form method="post" action="{{ url_for('adminEmailSettings') }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+
+            <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; margin-bottom: 1rem;">
+              <input type="checkbox" name="email_notifications_enabled" value="1" {% if smtp_config.enabled %}checked{% endif %}>
+              <strong>Enable email notifications instance-wide</strong>
+              <details class="setting-hint">
+                <summary aria-label="More info" title="More info">i</summary>
+                <p>When disabled, outgoing emails are paused and the Notifications section is hidden on user profiles.</p>
+              </details>
+            </label>
+
+            <label style="display: flex; justify-content: space-between; align-items: center; font-size: 0.85rem; color: var(--muted);">
+              <span>Public Instance URL</span>
+              <input type="url" name="instance_public_url" value="{{ instance_public_url }}" placeholder="https://tracker.example.com" style="width: 12rem; padding: 4px 8px; background: var(--card-bg, #1e1e1e); color: var(--fg, #eee); border: 1px solid var(--border, #444); border-radius: 4px;">
+            </label>
+            <p style="color: var(--muted); font-size: 0.8rem; margin: 0.25rem 0 1rem 0;">The address other people use to reach this instance. Used to build the login/action links inside notification emails; leave blank to send emails without a link.</p>
+
+            <div style="display: flex; flex-direction: column; gap: 0.6rem; margin-bottom: 1rem;">
+              <label style="display: flex; justify-content: space-between; align-items: center; font-size: 0.85rem; color: var(--muted);">
+                <span>SMTP Host</span>
+                <input type="text" name="smtp_host" value="{{ smtp_config.host }}" placeholder="smtp.gmail.com" style="width: 12rem; padding: 4px 8px; background: var(--card-bg, #1e1e1e); color: var(--fg, #eee); border: 1px solid var(--border, #444); border-radius: 4px;">
+              </label>
+              <label style="display: flex; justify-content: space-between; align-items: center; font-size: 0.85rem; color: var(--muted);">
+                <span>SMTP Port</span>
+                <input type="number" name="smtp_port" value="{{ smtp_config.port }}" placeholder="587" style="width: 5.5rem; padding: 4px 8px; background: var(--card-bg, #1e1e1e); color: var(--fg, #eee); border: 1px solid var(--border, #444); border-radius: 4px;">
+              </label>
+              <label style="display: flex; justify-content: space-between; align-items: center; font-size: 0.85rem; color: var(--muted);">
+                <span>Encryption</span>
+                <select name="smtp_encryption" style="width: 8rem; padding: 4px 8px; background: var(--card-bg, #1e1e1e); color: var(--fg, #eee); border: 1px solid var(--border, #444); border-radius: 4px;">
+                  <option value="tls" {% if smtp_config.encryption == 'tls' %}selected{% endif %}>TLS / STARTTLS</option>
+                  <option value="ssl" {% if smtp_config.encryption == 'ssl' %}selected{% endif %}>SSL</option>
+                  <option value="none" {% if smtp_config.encryption == 'none' %}selected{% endif %}>None</option>
+                </select>
+              </label>
+              <label style="display: flex; justify-content: space-between; align-items: center; font-size: 0.85rem; color: var(--muted);">
+                <span>Username</span>
+                <input type="text" name="smtp_user" value="{{ smtp_config.user }}" placeholder="user@example.com" style="width: 12rem; padding: 4px 8px; background: var(--card-bg, #1e1e1e); color: var(--fg, #eee); border: 1px solid var(--border, #444); border-radius: 4px;">
+              </label>
+              <label style="display: flex; justify-content: space-between; align-items: center; font-size: 0.85rem; color: var(--muted);">
+                <span>Password</span>
+                <input type="password" name="smtp_password" value="" placeholder="{% if smtp_config.password %}••••••••{% else %}Not set{% endif %}" style="width: 12rem; padding: 4px 8px; background: var(--card-bg, #1e1e1e); color: var(--fg, #eee); border: 1px solid var(--border, #444); border-radius: 4px;">
+              </label>
+              {% if smtp_config.password %}
+              <label style="display: flex; align-items: center; gap: 0.4rem; font-size: 0.8rem; color: var(--muted); padding-left: 0.25rem;">
+                <input type="checkbox" name="clear_password" value="1">
+                <span>Clear saved password</span>
+              </label>
+              {% endif %}
+              <label style="display: flex; justify-content: space-between; align-items: center; font-size: 0.85rem; color: var(--muted);">
+                <span>Sender Email</span>
+                <input type="email" name="smtp_from_email" value="{{ smtp_config.from_email }}" placeholder="noreply@example.com" style="width: 12rem; padding: 4px 8px; background: var(--card-bg, #1e1e1e); color: var(--fg, #eee); border: 1px solid var(--border, #444); border-radius: 4px;">
+              </label>
+              <label style="display: flex; justify-content: space-between; align-items: center; font-size: 0.85rem; color: var(--muted);">
+                <span>Sender Name</span>
+                <input type="text" name="smtp_from_name" value="{{ smtp_config.from_name }}" placeholder="Spotify Tracker" style="width: 12rem; padding: 4px 8px; background: var(--card-bg, #1e1e1e); color: var(--fg, #eee); border: 1px solid var(--border, #444); border-radius: 4px;">
+              </label>
+            </div>
+
+            <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; margin-top: 1rem;">
+              <button type="submit" class="primary-button" style="padding: 4px 16px;">Save Email Settings</button>
+              <button type="submit" form="adminTestEmailForm" class="primary-button" style="padding: 4px 16px;">Send Test Email to Admin</button>
+            </div>
+          </form>
+
+          <form id="adminTestEmailForm" method="post" action="{{ url_for('adminTestEmail') }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+          </form>
+        </div>
+      </article>
+
+      <article class="card" style="padding: 0;">
+        <div class="card-header" style="padding: 1.5rem 1.5rem 0.5rem 1.5rem;">
+          <h2 style="margin: 0; font-family: var(--font-headings); font-size: 1.15rem;">Playback Classification</h2>
+          <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem;">The skip threshold decides skip vs. real listen (plays under it are excluded from counts, listen time, top lists and streaks — saving reclassifies all history). The completion percent then splits real plays into complete vs. partial on the Charts completion chart.</p>
+        </div>
+        <div style="padding: 0 1.5rem 1.5rem 1.5rem;">
+          <form method="post" action="{{ url_for('adminSkipSettings') }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+            <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; margin-bottom: 0.6rem;">
+              <input type="radio" name="skip_mode" id="skipModeSeconds" value="{{ skip_mode_seconds }}" {% if skip_mode == skip_mode_seconds %}checked{% endif %} onchange="onSkipModeChange()">
+              Fixed seconds ({{ skip_seconds_min }}–{{ skip_seconds_max }}s)
+            </label>
+            <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; margin-bottom: 0.8rem;">
+              <input type="radio" name="skip_mode" id="skipModePercent" value="{{ skip_mode_percent }}" {% if skip_mode == skip_mode_percent %}checked{% endif %} onchange="onSkipModeChange()">
+              Percent of track duration ({{ skip_percent_min }}–{{ skip_percent_max }}%)
+            </label>
+            <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 1rem;">
+              <input type="number" name="skip_value" id="skipValueInput" value="{{ skip_value }}"
+                     min="{{ skip_seconds_min if skip_mode == skip_mode_seconds else skip_percent_min }}"
+                     max="{{ skip_seconds_max if skip_mode == skip_mode_seconds else skip_percent_max }}"
+                     step="1" required
+                     style="width: 6rem; padding: 6px 10px; font-size: 1.05rem; background: var(--card-bg, #1e1e1e); color: var(--fg, #eee); border: 1px solid var(--border, #444); border-radius: 4px;">
+              <span id="skipValueUnit" style="color: var(--muted);">{{ '%' if skip_mode == skip_mode_percent else 's' }}</span>
+            </div>
+            <label style="display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); margin-bottom: 1rem;">
+              <span>Counts as a complete listen at/over</span>
+              <span style="white-space: nowrap;"><input type="number" name="completion_complete_percent" value="{{ completion_complete_percent }}" min="{{ completion_min }}" max="{{ completion_max }}" step="1" style="width: 5.5rem; padding: 6px 10px; font-size: 1.05rem; background: var(--card-bg, #1e1e1e); color: var(--fg, #eee); border: 1px solid var(--border, #444); border-radius: 4px;"> % of duration</span>
+            </label>
+            <button type="submit" class="primary-button" style="padding: 4px 16px;">Save</button>
+          </form>
+        </div>
+      </article>
+
+      <article class="card" style="padding: 0;">
+        <div class="card-header" style="padding: 1.5rem 1.5rem 0.5rem 1.5rem;">
+          <h2 style="margin: 0; font-family: var(--font-headings); font-size: 1.15rem;">Backups</h2>
+          <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem;">Automatic database snapshots into Database/Data/Backups. Set either to 0 to disable. Applies after the app restarts.</p>
+        </div>
+        <div style="padding: 0 1.5rem 1.5rem 1.5rem;">
+          <form method="post" action="{{ url_for('adminBackupSettings') }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+            <label style="display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); margin-bottom: 0.6rem;">
+              <span>Snapshot every</span>
+              <span style="white-space: nowrap;"><input type="number" name="backup_interval_hours" value="{{ backup_interval_hours }}" min="{{ backup_interval_min }}" max="{{ backup_interval_max }}" step="1" style="width: 5.5rem; padding: 6px 10px; font-size: 1.05rem; background: var(--card-bg, #1e1e1e); color: var(--fg, #eee); border: 1px solid var(--border, #444); border-radius: 4px;"> hours</span>
+            </label>
+            <label style="display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; font-size: 0.9rem; color: var(--muted); margin-bottom: 1rem;">
+              <span>Keep newest</span>
+              <span style="white-space: nowrap;"><input type="number" name="backup_retention_count" value="{{ backup_retention_count }}" min="{{ backup_retention_min }}" max="{{ backup_retention_max }}" step="1" style="width: 5.5rem; padding: 6px 10px; font-size: 1.05rem; background: var(--card-bg, #1e1e1e); color: var(--fg, #eee); border: 1px solid var(--border, #444); border-radius: 4px;"> snapshots</span>
+            </label>
+            <button type="submit" class="primary-button" style="padding: 4px 16px;">Save</button>
+          </form>
+          <div id="backup-status-message" style="margin-top: 0.75rem; min-height: 1.5em;"></div>
+          <form method="post" action="{{ url_for('adminCreateBackup') }}" style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--border, #333);">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+            <button type="submit" id="btn-create-backup" class="primary-button" style="padding: 4px 16px;">Create backup now</button>
+          </form>
+        </div>
+      </article>
+    </section>
+  {% endif %}
+</div>
 
 <script>
   var SKIP_BOUNDS = {
@@ -666,13 +658,16 @@
     "{{ skip_mode_percent }}": {min: {{ skip_percent_min }}, max: {{ skip_percent_max }}, unit: "%"}
   };
   function onSkipModeChange() {
-    var mode = document.getElementById("skipModePercent").checked
-      ? "{{ skip_mode_percent }}" : "{{ skip_mode_seconds }}";
+    var elemMode = document.getElementById("skipModePercent");
+    if (!elemMode) return;
+    var mode = elemMode.checked ? "{{ skip_mode_percent }}" : "{{ skip_mode_seconds }}";
     var b = SKIP_BOUNDS[mode];
     var input = document.getElementById("skipValueInput");
+    if (!input) return;
     input.min = b.min;
     input.max = b.max;
-    document.getElementById("skipValueUnit").textContent = b.unit;
+    var unitElem = document.getElementById("skipValueUnit");
+    if (unitElem) unitElem.textContent = b.unit;
     var v = parseInt(input.value, 10);
     if (isNaN(v) || v < b.min) v = b.min;
     if (v > b.max) v = b.max;
@@ -682,5 +677,11 @@
 </script>
 
 <script src="{{ url_for('static', filename='js/admin-backup.js') }}"></script>
+<script src="{{ url_for('static', filename='js/admin-page.js') }}"></script>
+<script>
+  (function () {
+    if (typeof AdminPage !== 'undefined') { AdminPage.init(); }
+  }());
+</script>
 
 {% endblock %}
