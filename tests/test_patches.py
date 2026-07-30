@@ -1944,14 +1944,33 @@ class TestPushLoop(unittest.TestCase):
 
     def test_a_keepalive_pong_keeps_the_channel_alive(self):
         """A pong carries no state but proves the socket works, so it must
-        reset the watchdog - otherwise an idle account would flap back to
-        polling every few minutes."""
-        manager = _PushManager([{"type": "pong"}, {"type": "pong"}],
+        reset the watchdog. Phase 0 saw 3.75 h between state pushes against a
+        pong every 60s - without this an idle account would flap back to
+        polling every few minutes.
+
+        The clock is driven past the fallback threshold deliberately: a test
+        that merely feeds two pongs in real time passes whether or not the
+        reset happens."""
+        from Database.patches import PUSH_FRAME_SILENCE_FALLBACK_SECONDS, _runPushLoop
+
+        pongs = 4
+        manager = _PushManager([{"type": "pong"} for _ in range(pongs)],
                                initialCluster=pushedCluster())
+        lpm = _pushLastPlayed(manager)
+        manager.onExhausted = lambda: setattr(lpm, "run", False)
 
-        outcome, callback, _ = self._run(manager)
+        clock = [1000.0]
 
-        self.assertEqual(outcome, "stopped")
+        def steppingMonotonic():
+            #< each pass advances half the threshold, so two unreset passes trip it
+            clock[0] += PUSH_FRAME_SILENCE_FALLBACK_SECONDS / 2
+            return clock[0]
+
+        callback = MagicMock()
+        with patch("Database.patches.time.monotonic", side_effect=steppingMonotonic):
+            outcome = _runPushLoop(lpm, callback)
+
+        self.assertEqual(outcome, "stopped")   #< never fell back despite the elapsed time
         callback.assert_not_called()
 
     def test_the_initial_subscribe_takes_a_limiter_slot(self):
