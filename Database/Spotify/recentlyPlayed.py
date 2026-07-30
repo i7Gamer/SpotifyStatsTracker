@@ -270,13 +270,21 @@ def _applyPushedState(self, manager, callback) -> None:
     Deep-copied for the same reason the state property is: spotapi's
     Track.from_dict REPLACES data["metadata"] in place, so handing it the cached
     _state would corrupt what getConnectPlayerState (Now Playing, the
-    missed-track cross-check) reads next."""
+    missed-track cross-check) reads next.
+
+    Track detection sits INSIDE the guard: the callback resolves track
+    metadata, so it can raise (track()'s retry ladder re-raising, a rate
+    limit), and the push loop has no other containment - an escape here killed
+    the thread with `run` still True, freezing _state so the account read as
+    idle until the 6h stale hard-timeout rebuilt it. The poll loop's catch-all
+    contains the identical failure; this is push's equivalent. The failed play
+    is retried, not dropped: lastPlayedUid only advances after the callback
+    returns (see _applyStateToTracking)."""
     try:
         state = spotapi.status.PlayerState.from_dict(copy.deepcopy(manager._state))
-    except Exception as e:  # noqa: BLE001 - a malformed push must not kill the loop
-        logger.warning("[Spotify] Could not read a pushed player state: %s", e)
-        return
-    _applyStateToTracking(self, state, callback)
+        _applyStateToTracking(self, state, callback)
+    except Exception as e:  # noqa: BLE001 - a malformed push or failing callback must not kill the loop
+        logger.warning("[Spotify] Could not apply a pushed player state: %s", e)
 
 
 def _subscribeConnectState(manager):

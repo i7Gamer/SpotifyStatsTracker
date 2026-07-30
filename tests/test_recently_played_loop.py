@@ -539,6 +539,46 @@ class TestPushLoop(unittest.TestCase):
 
         self.assertEqual(manager._state["track"]["uri"], "spotify:track:bbb")
 
+    def test_a_raising_callback_does_not_kill_the_push_loop(self):
+        """The poll loop's catch-all contains a raising play-finished callback
+        (log, sleep, reconnect); push had no guard, so the same failure - e.g.
+        track() re-raising after its retry ladder - killed the thread with
+        `run` still True and _state frozen. A frozen state reads as IDLE to
+        _staleFeedIsBroken, so nothing rebuilt for the 6h hard timeout and
+        every play in the window was lost, silently."""
+        first = pushedCluster(uid="uid-1")
+        second = pushedCluster(trackUri="spotify:track:bbb", uid="uid-2")
+        manager = _PushManager([pushFrame(second)], initialCluster=first)
+        lpm = _pushLastPlayed(manager)
+        manager.onExhausted = lambda: setattr(lpm, "run", False)
+        callback = MagicMock(side_effect=RuntimeError("track lookup blew up"))
+
+        from Database.Spotify.recentlyPlayed import _runPushLoop
+        with self.assertLogs("Database.Spotify.recentlyPlayed", level="WARNING"):
+            outcome = _runPushLoop(lpm, callback)   #< must not raise
+
+        self.assertEqual(outcome, "stopped")
+        callback.assert_called_once()
+
+    def test_a_failed_play_is_retried_on_the_next_observation(self):
+        """Containment must not turn into dropping: when the callback raises,
+        lastPlayedUid stays un-advanced (the callback runs before the state
+        update), so the next pushed frame retries the same play - mirroring
+        the poll loop exactly."""
+        first = pushedCluster(uid="uid-1")
+        second = pushedCluster(trackUri="spotify:track:bbb", uid="uid-2")
+        manager = _PushManager([pushFrame(second), pushFrame(second)], initialCluster=first)
+        lpm = _pushLastPlayed(manager)
+        manager.onExhausted = lambda: setattr(lpm, "run", False)
+        callback = MagicMock(side_effect=RuntimeError("still failing"))
+
+        from Database.Spotify.recentlyPlayed import _runPushLoop
+        with self.assertLogs("Database.Spotify.recentlyPlayed", level="WARNING"):
+            _runPushLoop(lpm, callback)
+
+        self.assertEqual(callback.call_count, 2)
+        self.assertEqual(callback.call_args[0][0], "spotify:track:aaa")   #< same previous track, retried
+
     def test_a_deliberate_close_stops_without_falling_back(self):
         manager = _PushManager([], initialCluster=pushedCluster())
         lpm = _pushLastPlayed(manager)
