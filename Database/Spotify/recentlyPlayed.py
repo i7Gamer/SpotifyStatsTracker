@@ -519,7 +519,9 @@ class RecentlyPlayedManager:
             target=self.updateLoop, args=(callback, refreshInterval), daemon=True)
         self.thread.start()
 
-    def stop(self):
-        self.run = False
-        if self.thread is not None:
-            self.thread.join()
+    # Deliberately NO stop() method. Shutdown goes through spotifyListener's
+    # signalStop()/stop(), which set `run` and join `thread` with a bounded
+    # timeout via the attribute contract above. A convenience stop() here
+    # carried an unbounded join - against a loop that sleeps up to 10s and
+    # retries reconnects, that is the 2026-07-17 shutdown hang waiting for its
+    # first caller.
