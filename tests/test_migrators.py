@@ -14,6 +14,7 @@ if isinstance(sys.modules.get("Database.Migrators.migrate"), MagicMock):
     del sys.modules["Database.Migrators.migrate"]
 
 import Database.Migrators.migrate as migrateModule
+import Database.Migrators.base as baseModule
 from Database.Migrators import dbversion
 from Database.Migrators.base import BaseMigrator
 
@@ -123,6 +124,60 @@ class TestMigrateIfNeeded(unittest.TestCase):
             message = str(ctx.exception)
             self.assertIn("1.4.0", message)   #< names the version it found
             self.assertIn(migrateModule.LAST_JSON_ERA_CAPABLE_RELEASE, message)  #< and the way out
+
+    def test_a_patch_bump_needs_no_migrator(self):
+        """1.46.0 -> 1.46.1 is free: needsMigration compares (major, minor),
+        so an existing install starts the patch release without a
+        migrate1_46_0.py existing. This is half of what makes patch releases
+        possible at all - the other half is the patch-born install below."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            migratorsDir = base / "Migrators"
+            migratorsDir.mkdir()
+            (base / "VERSION").write_text("1.46.1", encoding="utf-8")
+            dataDir = base / "Data"
+            dataDir.mkdir()
+            (dataDir / "VERSION").write_text("1.46.0", encoding="utf-8")
+
+            with patch.object(migrateModule, "__file__", str(migratorsDir / "migrate.py")), \
+                 patch.object(migrateModule, "migrate") as mock_migrate:
+                migrateModule.migrateIfNeeded()
+
+            mock_migrate.assert_not_called()
+
+    def test_a_patch_born_install_still_migrates_to_the_next_minor(self):
+        """The trap that made patch releases impossible: a fresh install of
+        1.46.1 stamps its FULL version, and the next minor's migrator expects
+        from-version "1.46.0" - full-string preconditions bricked it at the
+        1.47.0 upgrade. With the (major, minor) check the chain must run
+        cleanly through a real (stamp-only) migrator module.
+
+        baseModule.__file__ is patched alongside migrateModule's: the temp
+        migrator subclasses the REAL BaseMigrator, whose runtime-dir
+        resolution reads base.py's module __file__ - unpatched, this test
+        would write version markers into the real Database/Data."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            migratorsDir = base / "Migrators"
+            migratorsDir.mkdir()
+            (migratorsDir / "migrate1_46_0.py").write_text(
+                "from Database.Migrators.base import BaseMigrator\n"
+                "class Migrator(BaseMigrator):\n"
+                "    def migrate(self):\n"
+                "        self.checkPreconditions()\n"
+                "        self.updateAppVersion('1.47.0')\n",
+                encoding="utf-8")
+            (base / "VERSION").write_text("1.47.0", encoding="utf-8")
+            dataDir = base / "Data"
+            dataDir.mkdir()
+            (dataDir / "VERSION").write_text("1.46.1", encoding="utf-8")   #< stamped by a fresh 1.46.1 install
+
+            with patch.object(migrateModule, "__file__", str(migratorsDir / "migrate.py")), \
+                 patch.object(baseModule, "__file__", str(migratorsDir / "base.py")):
+                migrateModule.migrateIfNeeded()
+
+            self.assertEqual((dataDir / "VERSION").read_text(encoding="utf-8").strip(),
+                             "1.47.0")
 
     def test_the_named_rescue_release_is_older_than_this_one(self):
         """The refusal says "run release X once, then upgrade to this

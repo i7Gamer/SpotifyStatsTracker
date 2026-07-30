@@ -74,6 +74,23 @@ class TestCheckPreconditions(MigratorBaseTestCase):
         self._writeVersions(appVersion="1.9.0", databaseVersion="1.6.0")
         BaseMigrator("1.6.0", "1.7.0").checkPreconditions()  # must not raise
 
+    def test_a_patch_stamped_database_passes_the_same_minor_check(self):
+        """A fresh install born on a patch release stamps its FULL version
+        (migrateIfNeeded writes appVersion verbatim), so a 1.7.1 install's
+        marker says "1.7.1" - and the next minor's migrator expects
+        from-version "1.7.0". The chain steps at minor granularity, so that
+        database IS the state the migrator expects; full-string equality
+        bricked every such install at its next upgrade."""
+        self._writeVersions(appVersion="1.9.0", databaseVersion="1.7.1")
+        BaseMigrator("1.7.0", "1.8.0").checkPreconditions()  # must not raise
+
+    def test_a_garbage_marker_still_raises_the_named_mismatch(self):
+        """A marker that can't even parse must get the operator-facing
+        mismatch message, not a bare ValueError out of int()."""
+        self._writeVersions(appVersion="1.9.0", databaseVersion="not-a-version")
+        with self.assertRaisesRegex(Exception, "does not match migrator's expected from-version"):
+            BaseMigrator("1.7.0", "1.8.0").checkPreconditions()
+
 
 class TestReadVersionPriority(MigratorBaseTestCase):
     """The database's version lives inside the .db file (schema_version

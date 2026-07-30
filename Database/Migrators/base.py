@@ -69,9 +69,20 @@ class BaseMigrator:  #< one step in the chain migrate.py drives
         return int(major), int(minor)
 
     def checkPreconditions(self) -> None:
+        # (major, minor), not the full string: the chain steps at minor
+        # granularity, and a fresh install born on a patch release stamps its
+        # FULL version (migrateIfNeeded writes appVersion verbatim) - so a
+        # "1.46.1" database IS the state migrate1_46_0 expects, and
+        # full-string equality bricked every such install at its next minor
+        # upgrade. A marker that cannot even parse still gets the named
+        # mismatch below rather than a bare ValueError out of int().
+        try:
+            matches = self.getMajorMinor(self.databaseVersion) == self.getMajorMinor(self.fromVersion)
+        except ValueError:
+            matches = False
         # The message text is pinned by tests/test_migrator_base.py - it is
         # what an operator sees when a chain is run out of order.
-        if self.databaseVersion != self.fromVersion:
+        if not matches:
             raise Exception(
                 f"Database version {self.databaseVersion} does not match "
                 f"migrator's expected from-version {self.fromVersion}.")
