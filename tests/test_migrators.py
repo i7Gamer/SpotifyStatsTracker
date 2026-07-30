@@ -145,6 +145,34 @@ class TestMigrateIfNeeded(unittest.TestCase):
 
             mock_migrate.assert_not_called()
 
+    def test_a_patch_bump_still_brings_the_markers_current(self):
+        """No migrator runs for 1.46.0 -> 1.46.1, but the markers must not be
+        left behind either: the chain steps at minor granularity and its last
+        migrator stamps x.y.0, so the patch component is migrateIfNeeded's own
+        job. Otherwise an install upgraded to a patch release reports the old
+        version forever, while a fresh install of the same release stamps the
+        full one - two installs of one release disagreeing about what they
+        are."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            migratorsDir = base / "Migrators"
+            migratorsDir.mkdir()
+            (base / "VERSION").write_text("1.46.1", encoding="utf-8")
+            dataDir = base / "Data"
+            dataDir.mkdir()
+            (dataDir / "VERSION").write_text("1.46.0", encoding="utf-8")
+            dbPath = dataDir / "spotify_stats.db"
+            sqlite3.connect(dbPath).close()
+            dbversion.writeDbVersion(dbPath, "1.46.0")
+
+            with patch.object(migrateModule, "__file__", str(migratorsDir / "migrate.py")), \
+                 patch.object(migrateModule, "migrate") as mock_migrate:
+                migrateModule.migrateIfNeeded()
+
+            mock_migrate.assert_not_called()
+            self.assertEqual((dataDir / "VERSION").read_text(encoding="utf-8").strip(), "1.46.1")
+            self.assertEqual(dbversion.readDbVersion(dbPath), "1.46.1")
+
     def test_a_patch_born_install_still_migrates_to_the_next_minor(self):
         """The trap that made patch releases impossible: a fresh install of
         1.46.1 stamps its FULL version, and the next minor's migrator expects

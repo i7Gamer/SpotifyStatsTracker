@@ -18,11 +18,12 @@ from pathlib import Path
 # a clear refusal pointing through that release instead of a
 # FileNotFoundError from a missing migrator module.
 MIGRATION_FLOOR_VERSION = "1.6.0"
-# 1.45.0, NOT the release the migrators were removed in: this tree still calls
-# itself 1.46.0, so naming 1.46.0 would tell the user to run the very release
-# that is refusing them - two artifacts share that number and only the one cut
-# before the removal can migrate. 1.45.0 uniquely predates the removal and
-# migrates a JSON-era database all the way past the floor.
+# 1.45.0, NOT the release the migrators were removed in: this tree ships as
+# 1.46.x, so naming a 1.46 release would tell the user to run (a sibling of)
+# the very release that is refusing them - releases either side of the removal
+# share that minor and only the one cut before it can migrate. 1.45.0 uniquely
+# predates the removal and migrates a JSON-era database all the way past the
+# floor.
 # (tests/test_migrators.py pins this constant strictly below Database/VERSION.)
 LAST_JSON_ERA_CAPABLE_RELEASE = "1.45.0"
 
@@ -141,26 +142,36 @@ def migrateIfNeeded() -> None:
     # a genuine major bump would make the loop below hunt forever for a
     # migrator file that can never satisfy a minor-only comparison.
     needsMigration = BaseMigrator.getMajorMinor(databaseVersion) != BaseMigrator.getMajorMinor(appVersion)
-    if not needsMigration:
-        return
+    if needsMigration:
+        # The floor only matters when there is something to migrate: an ancient
+        # install whose app and database AGREE has nothing to run and keeps
+        # working (its own release still carries whatever it needs).
+        if BaseMigrator.getMajorMinor(databaseVersion) < BaseMigrator.getMajorMinor(MIGRATION_FLOOR_VERSION):
+            raise RuntimeError(
+                f"This database is at version {databaseVersion}, older than "
+                f"{MIGRATION_FLOOR_VERSION} - the oldest version this release can "
+                f"still migrate (the JSON-file-era migrators were removed). Run "
+                f"release {LAST_JSON_ERA_CAPABLE_RELEASE} once to bring the data "
+                f"up, then upgrade to this release."
+            )
 
-    # The floor only matters when there is something to migrate: an ancient
-    # install whose app and database AGREE has nothing to run and keeps
-    # working (its own release still carries whatever it needs).
-    if BaseMigrator.getMajorMinor(databaseVersion) < BaseMigrator.getMajorMinor(MIGRATION_FLOOR_VERSION):
-        raise RuntimeError(
-            f"This database is at version {databaseVersion}, older than "
-            f"{MIGRATION_FLOOR_VERSION} - the oldest version this release can "
-            f"still migrate (the JSON-file-era migrators were removed). Run "
-            f"release {LAST_JSON_ERA_CAPABLE_RELEASE} once to bring the data "
-            f"up, then upgrade to this release."
-        )
+        _snapshotBeforeMigrating(runtimeDir)
 
-    _snapshotBeforeMigrating(runtimeDir)
+        while BaseMigrator.getMajorMinor(databaseVersion) != BaseMigrator.getMajorMinor(appVersion):
+            dbMajor, dbMinor = BaseMigrator.getMajorMinor(databaseVersion)
+            migrate(dbMajor, dbMinor, migratorsDir)
 
-    while BaseMigrator.getMajorMinor(databaseVersion) != BaseMigrator.getMajorMinor(appVersion):
-        dbMajor, dbMinor = BaseMigrator.getMajorMinor(databaseVersion)
-        migrate(dbMajor, dbMinor, migratorsDir)
+            runtimeDir = resolveRuntimeDir(migratorsDir)   #< location may have changed (e.g. a Users/ -> Data/ rename)
+            databaseVersion = _resolveDatabaseVersion(runtimeDir)
 
-        runtimeDir = resolveRuntimeDir(migratorsDir)   #< location may have changed (e.g. a Users/ -> Data/ rename)
-        databaseVersion = _resolveDatabaseVersion(runtimeDir)
+    # The PATCH component is this function's own job: the chain steps at minor
+    # granularity and its last migrator stamps x.y.0, so on a patch release
+    # (1.46.0 -> 1.46.1) no migrator runs and none could bring the markers to
+    # the exact running version. Without this, an upgraded install reports the
+    # old version forever while a fresh install of the same release stamps the
+    # full one. A no-op on the common startup (markers already exact).
+    if databaseVersion != appVersion:
+        (runtimeDir / "VERSION").write_text(appVersion)
+        dbPath = runtimeDir / "spotify_stats.db"
+        if dbPath.exists():
+            dbversion.writeDbVersion(dbPath, appVersion)
