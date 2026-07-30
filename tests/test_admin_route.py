@@ -1317,7 +1317,10 @@ class TestAdminInsightsLayout(AdminRouteTestBase):
     )
 
     # Instance-scoped, one of each per install rather than one per account.
+    # The TOTP secret is shared by every account's session, so its entry
+    # leads the card rather than living with the per-account worker pools.
     _SERVICE_ENTRIES = (
+        "Spotify Session Token",
         "Milestone Detection",
         "Database Backup Service",
         "Mail Worker",
@@ -1350,6 +1353,15 @@ class TestAdminInsightsLayout(AdminRouteTestBase):
         for entry in self._SERVICE_ENTRIES:
             self.assertGreater(body.index(entry), servicesAt,
                                "{} belongs in the Instance Services card".format(entry))
+
+    def test_spotify_session_token_leads_the_instance_services_card(self):
+        """It affects every account at once, so it renders first in the card."""
+        body = self._getAdmin(self._makeApp()).data.decode()
+        servicesAt = body.index("Instance Services")
+
+        self.assertLess(body.index("Spotify Session Token", servicesAt),
+                        body.index("Milestone Detection", servicesAt),
+                        "Spotify Session Token must be the card's first entry")
 
     def test_spotify_rate_limiting_backing_off_badge(self):
         fake_snapshot = {
