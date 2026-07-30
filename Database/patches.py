@@ -9,6 +9,7 @@ import re
 import signal
 import threading
 import time
+import requests
 import websockets.sync.client
 import websockets.exceptions
 import spotapi.exceptions
@@ -596,4 +597,112 @@ def patch_spotapi_user() -> bool:
         return False
 
 
+# --- Pinned TOTP secret ---------------------------------------------------------
+#
+# Spotify's web player proves itself to open.spotify.com/api/token with a TOTP
+# derived from a secret Spotify rotates occasionally. spotapi does not ship that
+# secret as configuration - it FETCHES it, from a third-party mirror
+# (code.thetadev.de), on every cold start and every 15 minutes after, and falls
+# back SILENTLY to its own hardcoded copy when the fetch fails. That put a host
+# this project does not control, cannot pin and did not choose directly in the
+# login path of every user.
+#
+# Verified 2026-07-30: the mirror's newest entry (version 61) is byte-identical
+# to spotapi's own _FALLBACK_SECRET. The request being removed here was
+# returning a value the library already had compiled in, so pinning changes
+# nothing about what is sent to Spotify - it only deletes the round trip and the
+# dependency. tests/test_patches.py asserts that equality, so a spotapi bump
+# that changes its fallback fails loudly instead of drifting.
+#
+# WHEN SPOTIFY ROTATES: logins stop working and _get_auth_vars raises
+# BaseClientError("Could not get session auth tokens"). The wrapper below turns
+# that into a log line naming these constants. Two ways to recover:
+#   - an operator can set SPOTIFY_TOTP_SECRET="<version>:<b1,b2,...>" and
+#     restart, without waiting for a new image;
+#   - the fix proper is to refresh the two constants here and cut a release.
+# Rotation becomes a loud, infrequent, deliberate maintenance event instead of a
+# silent runtime dependency on someone else's uptime.
+SPOTIFY_TOTP_SECRET_VERSION = 61
+SPOTIFY_TOTP_SECRET_BYTES = (
+    44, 55, 47, 42, 70, 40, 34, 114, 76, 74, 50, 111, 120,
+    97, 75, 76, 94, 102, 43, 69, 49, 120, 118, 80, 64, 78,
+)
+
+TOTP_SECRET_ENV_VAR = "SPOTIFY_TOTP_SECRET"
+TOTP_SECRET_BYTE_MAX = 255   #< a secret byte is a byte; anything else is a typo, not a rotation
+
+
+def _parseTotpSecretOverride(raw: str):
+    """A "<version>:<b1,b2,...>" override string as (version, bytearray), or a
+    ValueError when it isn't one. Strict on purpose - a half-understood value
+    would fail later, at Spotify, as an unexplained login failure."""
+    version, separator, byteText = raw.partition(":")
+    if not separator:
+        raise ValueError('expected "<version>:<comma-separated bytes>"')
+    values = [chunk.strip() for chunk in byteText.split(",") if chunk.strip()]
+    if not values:
+        raise ValueError("no secret bytes given")
+    secret = bytearray()
+    for value in values:
+        number = int(value)   #< ValueError for anything non-numeric
+        if not 0 <= number <= TOTP_SECRET_BYTE_MAX:
+            raise ValueError(f"byte {number} out of range 0-{TOTP_SECRET_BYTE_MAX}")
+        secret.append(number)
+    return int(version.strip()), secret
+
+
+def _resolveTotpSecret():
+    """The (version, secret) to authenticate with: the environment override when
+    it parses, the pinned constants otherwise.
+
+    A malformed override is reported and then IGNORED rather than raised. The
+    override exists to rescue an instance during a rotation; letting a typo in
+    it take login offline would invert the point of having it."""
+    raw = os.environ.get(TOTP_SECRET_ENV_VAR, "").strip()
+    if raw:
+        try:
+            return _parseTotpSecretOverride(raw)
+        except ValueError as e:
+            logger.error(
+                "Ignoring malformed %s (%s); falling back to the secret pinned in "
+                "Database/patches.py (version %s).",
+                TOTP_SECRET_ENV_VAR, e, SPOTIFY_TOTP_SECRET_VERSION)
+    # A fresh bytearray per call: generate_totp() transforms these bytes, and a
+    # shared mutable would let one caller's mutation corrupt every later login.
+    return SPOTIFY_TOTP_SECRET_VERSION, bytearray(SPOTIFY_TOTP_SECRET_BYTES)
+
+
+def patch_totp_secret() -> bool:
+    """Replace spotapi's mirror fetch with the pinned secret, and make a token
+    failure name it (see the block comment above)."""
+    try:
+        import spotapi.client
+    except (ModuleNotFoundError, ImportError):
+        return False
+
+    spotapi.client.get_latest_totp_secret = _resolveTotpSecret
+
+    original_get_auth_vars = spotapi.client.BaseClient._get_auth_vars
+
+    def patched_get_auth_vars(self, *args, **kwargs):
+        try:
+            return original_get_auth_vars(self, *args, **kwargs)
+        except spotapi.exceptions.BaseClientError:
+            # The one failure this patch can plausibly cause, and the message
+            # spotapi raises mentions neither TOTP nor these constants - so the
+            # pin would be undiscoverable from the symptom it produces.
+            logger.error(
+                "Spotify refused the session token request. If this is persistent for "
+                "every user, Spotify has most likely rotated its TOTP secret: this build "
+                'pins version %s (SPOTIFY_TOTP_SECRET_VERSION in Database/patches.py). '
+                'Set %s="<version>:<comma-separated bytes>" and restart to apply a new '
+                "one without waiting for a release.",
+                SPOTIFY_TOTP_SECRET_VERSION, TOTP_SECRET_ENV_VAR)
+            raise
+
+    spotapi.client.BaseClient._get_auth_vars = patched_get_auth_vars
+    return True
+
+
 patch_spotapi_user()
+patch_totp_secret()

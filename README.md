@@ -66,6 +66,7 @@ services:
       # - IMPORT_KEYWORD=Weekly       #< Uncomment to auto-import only files whose name contains this keyword
       # - FLASK_DEBUG=1               #< Verbose Flask logging - enable when reporting an issue
       # - SKIP_EMAIL_VERIFICATION=1   #< Uncomment to disable the "do these cookies belong to this email" check at login (only do this if you trust everyone who can reach this instance - it's what stops one user from claiming another's account, AND what stops the /reset-password flow from letting anyone set a new password on any account)
+      # - SPOTIFY_TOTP_SECRET=61:44,55,...  #< Emergency override for the pinned Spotify TOTP secret. Only needed if Spotify rotates it and logins start failing instance-wide before a fixed release is out - the log line at that point tells you so. Format is "<version>:<comma-separated bytes>"; a malformed value is ignored (with an error logged) rather than taking login offline.
     restart: always
 ```
 

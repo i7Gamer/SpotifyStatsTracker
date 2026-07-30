@@ -16,8 +16,9 @@ def setUpModule():
     # other test module's mock was still in sys.modules, the real spotapi
     # would never get patched for the rest of the process. Re-applying here
     # makes this module correct regardless of import order.
-    from Database.patches import patch_spotapi_user
+    from Database.patches import patch_spotapi_user, patch_totp_secret
     patch_spotapi_user()
+    patch_totp_secret()
 
 
 class TestPatches(unittest.TestCase):
@@ -1032,6 +1033,161 @@ class TestSharedLimiterWiring(unittest.TestCase):
                 userInst.get_user_info()
 
         self.assertEqual(self.limiter.snapshot()["backoffs"], 1)
+
+
+class TestPinnedTotpSecret(unittest.TestCase):
+    """Spotify's web player derives a TOTP from a rotating secret. spotapi
+    fetched that secret from a third-party mirror on every cold start and
+    every 15 minutes after - a host we don't control, can't pin and didn't
+    choose, sitting in the login path, with a SILENT fallback when it failed.
+    The secret is pinned here instead."""
+
+    def test_the_pinned_secret_is_returned_without_touching_the_network(self):
+        import spotapi.client
+        from Database.patches import SPOTIFY_TOTP_SECRET_VERSION, SPOTIFY_TOTP_SECRET_BYTES
+
+        with patch("Database.patches.requests.get") as ourGet, \
+             patch("spotapi.client.requests.get") as theirGet:
+            version, secret = spotapi.client.get_latest_totp_secret()
+
+        ourGet.assert_not_called()
+        theirGet.assert_not_called()
+        self.assertEqual(version, SPOTIFY_TOTP_SECRET_VERSION)
+        self.assertEqual(secret, bytearray(SPOTIFY_TOTP_SECRET_BYTES))
+
+    def test_the_secret_is_a_fresh_bytearray_each_call(self):
+        """generate_totp() enumerates and transforms the bytes; handing out the
+        same mutable object every time would let one caller's mutation corrupt
+        every later login."""
+        import spotapi.client
+
+        _, first = spotapi.client.get_latest_totp_secret()
+        first[0] ^= 0xFF
+        _, second = spotapi.client.get_latest_totp_secret()
+
+        self.assertNotEqual(first, second)
+
+    def test_generate_totp_still_produces_a_code_for_the_pinned_version(self):
+        """The patch replaces only where the secret comes from - the derivation
+        spotapi does with it, and the version it reports, must be unchanged."""
+        import spotapi.client
+        from Database.patches import SPOTIFY_TOTP_SECRET_VERSION
+
+        totp, version = spotapi.client.generate_totp()
+
+        self.assertEqual(version, SPOTIFY_TOTP_SECRET_VERSION)
+        self.assertRegex(totp, r"^\d{6}$")
+
+    def test_the_pin_matches_the_dependency_s_own_fallback(self):
+        """Sanity check on spotapi itself, and the evidence that pinning
+        changed nothing: as of 2026-07-30 the mirror's newest entry and
+        spotapi's hardcoded _FALLBACK_SECRET are byte-identical, so the fetch
+        this patch removes was returning what the library already had. If a
+        spotapi bump changes its fallback, this fails - which is the moment to
+        check whether Spotify rotated and the pin needs refreshing."""
+        import spotapi.client
+        from Database.patches import SPOTIFY_TOTP_SECRET_VERSION, SPOTIFY_TOTP_SECRET_BYTES
+
+        fallbackVersion, fallbackSecret = spotapi.client._FALLBACK_SECRET
+
+        self.assertEqual(int(fallbackVersion), SPOTIFY_TOTP_SECRET_VERSION)
+        self.assertEqual(bytes(fallbackSecret), bytes(bytearray(SPOTIFY_TOTP_SECRET_BYTES)))
+
+
+class TestTotpSecretOverride(unittest.TestCase):
+    """Rotation must not require a new Docker image. The published image is
+    what most installs run, so an operator needs a way to apply a new secret
+    without waiting for a release - but a malformed value must never be what
+    takes an instance's login offline."""
+
+    def _resolve(self, raw):
+        from Database.patches import _resolveTotpSecret
+        with patch.dict("os.environ", {"SPOTIFY_TOTP_SECRET": raw} if raw is not None else {},
+                        clear=False):
+            if raw is None:
+                import os
+                os.environ.pop("SPOTIFY_TOTP_SECRET", None)
+            return _resolveTotpSecret()
+
+    def test_unset_uses_the_pinned_default(self):
+        from Database.patches import SPOTIFY_TOTP_SECRET_VERSION, SPOTIFY_TOTP_SECRET_BYTES
+
+        version, secret = self._resolve(None)
+
+        self.assertEqual(version, SPOTIFY_TOTP_SECRET_VERSION)
+        self.assertEqual(secret, bytearray(SPOTIFY_TOTP_SECRET_BYTES))
+
+    def test_a_well_formed_override_wins(self):
+        version, secret = self._resolve("62: 1, 2 ,3")
+
+        self.assertEqual(version, 62)
+        self.assertEqual(secret, bytearray([1, 2, 3]))
+
+    def test_a_malformed_override_falls_back_to_the_pin_and_says_so(self):
+        from Database.patches import SPOTIFY_TOTP_SECRET_VERSION
+
+        for raw in ("nonsense", "61:", ":1,2,3", "61:1,two,3", "61:1,999,3", "61:-1,2"):
+            with self.subTest(raw=raw):
+                with self.assertLogs("Database.patches", level="ERROR"):
+                    version, _ = self._resolve(raw)
+                self.assertEqual(version, SPOTIFY_TOTP_SECRET_VERSION)
+
+    def test_an_empty_override_is_just_unset_and_stays_quiet(self):
+        """Set-but-empty is what an unfilled compose placeholder looks like.
+        It means "no override", so it must not log an error on every start."""
+        from Database.patches import SPOTIFY_TOTP_SECRET_VERSION
+
+        with self.assertNoLogs("Database.patches", level="ERROR"):
+            version, _ = self._resolve("   ")
+
+        self.assertEqual(version, SPOTIFY_TOTP_SECRET_VERSION)
+
+
+class TestAuthFailureHint(unittest.TestCase):
+    """When Spotify rotates the secret, the only symptom is
+    BaseClientError("Could not get session auth tokens") from a module nobody
+    here owns - a message that names neither TOTP nor the pinned constant.
+    Without a hint, the pin is undiscoverable from the failure it causes."""
+
+    def _failingClient(self):
+        import spotapi.client
+        instance = spotapi.client.BaseClient.__new__(spotapi.client.BaseClient)
+        instance.access_token = spotapi.client._Undefined
+        instance.client_id = spotapi.client._Undefined
+        failure = MagicMock()
+        failure.fail = True
+        failure.error.string = "401 Unauthorized"
+        instance.client = MagicMock()
+        instance.client.get.return_value = failure
+        return instance
+
+    def test_a_token_failure_points_at_the_pinned_secret(self):
+        import spotapi.client
+        from spotapi.exceptions import BaseClientError
+
+        with self.assertLogs("Database.patches", level="ERROR") as logCapture:
+            with self.assertRaises(BaseClientError):
+                spotapi.client.BaseClient._get_auth_vars(self._failingClient())
+
+        message = " ".join(logCapture.output)
+        self.assertIn("SPOTIFY_TOTP_SECRET", message)   #< the env override an operator can set
+        self.assertIn("61", message)                    #< the version currently pinned
+
+    def test_a_successful_call_is_untouched(self):
+        import spotapi.client
+
+        instance = self._failingClient()
+        ok = MagicMock()
+        ok.fail = False
+        ok.response = {"accessToken": "tok", "clientId": "cid",
+                       "accessTokenExpirationTimestampMs": "1234"}
+        instance.client.get.return_value = ok
+
+        spotapi.client.BaseClient._get_auth_vars(instance)
+
+        self.assertEqual(instance.access_token, "tok")
+        self.assertEqual(instance.client_id, "cid")
+        self.assertEqual(instance.access_token_expires_at_ms, 1234.0)
 
 
 if __name__ == "__main__":
