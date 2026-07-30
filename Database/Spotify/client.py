@@ -343,26 +343,36 @@ class Spotify:
             return fallbackTrackRecord(trackId)
         return formatTrackUnion(raw)
 
+    @staticmethod
+    def _publicLookupClient() -> "spotapi.TLSClient":
+        """A private TLSClient for one public (unauthenticated) lookup.
+
+        spotapi.PublicAlbum/Artist default `client` to a single import-time
+        TLSClient, and BaseClient.__init__ re-points that shared client's
+        authenticate/on_auth_failure callbacks at itself - so two concurrent
+        lookups authenticate through whichever BaseClient was constructed
+        last. Same footgun as Config.client and Song.client, and these callers
+        really are concurrent: the metadata backfiller loops per user on its
+        own thread while media_fetch resolves artist images in a thread pool.
+
+        It also bounds a leak - BaseClient.__init__ does
+        atexit.register(self.client.close), so every construction against the
+        shared default piles another entry onto the same object."""
+        return spotapi.TLSClient(TLS_CLIENT_PROFILE, "", auto_retries=TLS_CLIENT_AUTO_RETRIES)
+
     def album(self, albumId, *args, **kwargs) -> dict:
         """Album metadata, including up to the first page of its track list
         (get_album_info's default 25 - same ceiling as the wrapper this
-        replaces; the backfiller uses those tracks as a duration source).
-
-        PublicAlbum's `client` argument defaults to an import-time-shared
-        TLSClient - the same footgun the login and track paths were fixed for.
-        Deliberately NOT fixed here in the cutover: album()/artist() run on
-        slow single background loops today, and this preserves the wrapper's
-        exact behavior. Worth revisiting together with artist() below."""
+        replaces; the backfiller uses those tracks as a duration source)."""
         albumId = normalizeSpotifyId(albumId)
-        payload = spotapi.PublicAlbum(albumId).get_album_info()
+        payload = spotapi.PublicAlbum(albumId, client=self._publicLookupClient()).get_album_info()
         return formatAlbumUnion(((payload or {}).get("data") or {}).get("albumUnion") or {})
 
     def artist(self, artistId, *args, **kwargs) -> dict:
         """Artist profile + avatar images - media_fetch's lazy artist-image
-        fallback reads images[0].url. Shares album()'s shared-default-client
-        caveat."""
+        fallback reads images[0].url."""
         artistId = normalizeSpotifyId(artistId)
-        payload = spotapi.Artist().get_artist(artistId)
+        payload = spotapi.Artist(client=self._publicLookupClient()).get_artist(artistId)
         return formatArtistUnion(((payload or {}).get("data") or {}).get("artistUnion") or {})
 
     def playlist(self, playlistId, *args, **kwargs) -> dict:

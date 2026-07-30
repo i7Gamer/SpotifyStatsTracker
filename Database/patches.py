@@ -9,7 +9,6 @@ import re
 import signal
 import threading
 import time
-import requests
 import websockets.sync.client
 import websockets.exceptions
 import spotapi.exceptions

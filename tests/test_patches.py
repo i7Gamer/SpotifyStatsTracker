@@ -1046,12 +1046,10 @@ class TestPinnedTotpSecret(unittest.TestCase):
         import spotapi.client
         from Database.patches import SPOTIFY_TOTP_SECRET_VERSION, SPOTIFY_TOTP_SECRET_BYTES
 
-        with patch("Database.patches.requests.get") as ourGet, \
-             patch("spotapi.client.requests.get") as theirGet:
+        with patch("spotapi.client.requests.get") as mirrorGet:
             version, secret = spotapi.client.get_latest_totp_secret()
 
-        ourGet.assert_not_called()
-        theirGet.assert_not_called()
+        mirrorGet.assert_not_called()   #< the mirror is where the fetch used to go
         self.assertEqual(version, SPOTIFY_TOTP_SECRET_VERSION)
         self.assertEqual(secret, bytearray(SPOTIFY_TOTP_SECRET_BYTES))
 

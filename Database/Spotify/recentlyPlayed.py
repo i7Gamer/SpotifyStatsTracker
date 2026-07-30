@@ -38,7 +38,7 @@ from Database.rate_limit import (
 
 logger = logging.getLogger(__name__)
 
-ENDPOINT_CONNECT_STATE = "connect-state"  #< shared-limiter backoff reason label (see patches.py's twin)
+ENDPOINT_CONNECT_STATE = "connect-state"  #< shared-limiter backoff reason label, shown on /admin
 
 # Reading manager.state PUTs to connect-state every refreshInterval - ~10
 # requests a minute PER USER, and by far the largest source of Spotify traffic

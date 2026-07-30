@@ -319,6 +319,66 @@ class TestAlbumPlaylistContract(unittest.TestCase):
         self.assertEqual(playlist["id"], PLAYLIST_ID)
 
 
+class TestPublicLookupClientIsolation(unittest.TestCase):
+    """album() and artist() must each get their own TLSClient.
+
+    spotapi.PublicAlbum/Artist default their `client` argument to ONE
+    import-time TLSClient, and BaseClient.__init__ re-points that shared
+    client's `authenticate`/`on_auth_failure` callbacks at itself
+    (spotapi/client.py:94-95) - the identical footgun that made concurrent
+    spotapi.Song() lookups authenticate with each other's state, and the one
+    the login path was fixed for. These callers really do run concurrently:
+    the metadata backfiller loops per user on its own thread while
+    media_fetch resolves artist images inside a thread pool."""
+
+    @patch("spotapi.PublicAlbum")
+    def test_each_album_lookup_builds_its_own_client(self, mock_album_cls):
+        mock_album_cls.return_value.get_album_info.return_value = {
+            "data": {"albumUnion": fakeAlbumUnion()}}
+        sp = buildClient()
+
+        sp.album(ALBUM_ID)
+        sp.album(ALBUM_ID)
+
+        first = mock_album_cls.call_args_list[0].kwargs["client"]
+        second = mock_album_cls.call_args_list[1].kwargs["client"]
+        self.assertIsNot(first, second)
+
+    @patch("spotapi.Artist")
+    def test_each_artist_lookup_builds_its_own_client(self, mock_artist_cls):
+        mock_artist_cls.return_value.get_artist.return_value = {"data": {"artistUnion": {
+            "uri": f"spotify:artist:{ARTIST_ID}", "profile": {"name": "First Artist"}}}}
+        sp = buildClient()
+
+        sp.artist(ARTIST_ID)
+        sp.artist(ARTIST_ID)
+
+        first = mock_artist_cls.call_args_list[0].kwargs["client"]
+        second = mock_artist_cls.call_args_list[1].kwargs["client"]
+        self.assertIsNot(first, second)
+
+    @patch("spotapi.PublicAlbum")
+    def test_the_client_is_not_spotapi_s_shared_default(self, mock_album_cls):
+        """Sanity check on the dependency: PublicAlbum's default really is a
+        single shared instance, so passing one explicitly is what isolates the
+        call. If a future spotapi switches to a default_factory this fails,
+        flagging that the workaround is no longer needed."""
+        import inspect
+        import spotapi.album   #< the submodule: only the spotapi.PublicAlbum re-export is mocked here
+
+        mock_album_cls.return_value.get_album_info.return_value = {
+            "data": {"albumUnion": fakeAlbumUnion()}}
+        realDefault = inspect.signature(
+            spotapi.album.PublicAlbum.__init__).parameters["client"].default
+
+        buildClient().album(ALBUM_ID)
+
+        passed = mock_album_cls.call_args.kwargs["client"]
+        #< a shared instance, not a factory - which is exactly why we pass our own
+        self.assertIsInstance(realDefault, spotapi.TLSClient)
+        self.assertIsNot(passed, realDefault)
+
+
 class TestArtistContract(unittest.TestCase):
     """media_fetch's lazy artist-image fallback reads
     artist.get("images")[0]["url"] - largest first, same as albums."""
