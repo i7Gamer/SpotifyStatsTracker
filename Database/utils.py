@@ -181,13 +181,15 @@ def parseDateString(dateText: str, tz=None):
 
 
 def parseDatetime(value, tz=None):
-    """ISO form first, bare-date forms second; None when neither matches."""
-    parsed = None
+    """ISO form first, bare-date forms second; None when neither matches.
+
+    The zone conversion stays INSIDE the guard: an in-range instant can still
+    overflow when expressed in the target zone (year 9999 pushed east, year 1
+    pushed west), and "cannot be read" has to cover that too - this is a
+    fallback chain, not a parser."""
     with suppress(Exception):
-        parsed = parseIsoDatetime(value)
-    if parsed is None:
-        return parseDateString(value, tz=tz)
-    return toTimezone(parsed, tz)
+        return toTimezone(parseIsoDatetime(value), tz)
+    return parseDateString(value, tz=tz)
 
 
 def convertToDatetime(timestamp, tz=None):
@@ -198,11 +200,11 @@ def convertToDatetime(timestamp, tz=None):
     if isinstance(timestamp, datetime.datetime):   #< already a datetime: just normalize the zone
         return toTimezone(timestamp, tz=tz)
 
-    numeric = None
-    with suppress(TypeError, ValueError):
-        numeric = float(timestamp)
-    if numeric is not None:
-        return fromtimestamp(numeric, tz=tz)
+    # The CONVERSION sits inside the guard, not just the float() call: NaN and
+    # infinity pass float() and then blow up in fromtimestamp's arithmetic,
+    # and per the contract above they are "unparseable", not errors.
+    with suppress(TypeError, ValueError, OverflowError):
+        return fromtimestamp(float(timestamp), tz=tz)
 
     if timestamp == "0000-00-00":   #< the 'unknown date' placeholder old exports carry
         return epoch(tz=tz)
@@ -244,11 +246,10 @@ def timeToInt(timestampOrStr) -> int:
     if isinstance(timestampOrStr, datetime.datetime):
         return int(toTimezone(timestampOrStr).timestamp())   #< toTimezone pins a zone on naive input first
 
-    numeric = None
-    with suppress(TypeError, ValueError):
-        numeric = float(timestampOrStr)
-    if numeric is not None:
-        return int(numeric)
+    # int() inside the guard: "nan"/"inf" pass float() and fail int(), and the
+    # contract is 0 for anything unreadable, not a ValueError mid-import.
+    with suppress(TypeError, ValueError, OverflowError):
+        return int(float(timestampOrStr))
 
     asDatetime = parseDatetime(timestampOrStr)
     return 0 if asDatetime is None else int(asDatetime.timestamp())

@@ -217,6 +217,69 @@ class TestFormatTimeGap(unittest.TestCase):
         self.assertEqual(utilsModule.formatTimeGap(86400 * 365 * 3), "3 years later")
 
 
+class TestUnparseableInputNeverRaises(unittest.TestCase):
+    """timeToInt / convertToDatetime / dateToString / parseDatetime document
+    fallbacks (0 / epoch / "1970-01-01" / None) for input they cannot read -
+    convertToDatetime's own docstring: "one bad date on one row must not take
+    down a whole page".
+
+    The blast radius when this breaks is the importer: json.loads accepts a
+    bare NaN, one raising `ts` in the per-entry parse counts as
+    droppedMalformed, droppedMalformed is in UNREADABLE_DROP_STAT_KEYS, and
+    that aborts a whole overwrite import.
+
+    The out-of-range cases need an explicit zone: year 9999 only overflows
+    when converting EAST of UTC, year 1 only WEST, and the suite must fail on
+    a UTC CI runner either way. (TZ env is useless here - Windows ignores it.)
+    """
+
+    def setUp(self):
+        patcher = patch.object(utilsModule, "tz", datetime.timezone.utc)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_nan_maps_to_the_documented_fallbacks(self):
+        for value in ("nan", "NaN", " nan ", float("nan")):
+            with self.subTest(value=value):
+                self.assertEqual(utilsModule.timeToInt(value), 0)
+                self.assertEqual(utilsModule.timeToIntUTC(value), 0)
+                self.assertEqual(utilsModule.convertToDatetime(value), utilsModule.epoch())
+                self.assertEqual(utilsModule.dateToString(value), "1970-01-01")
+        self.assertIsNone(utilsModule.parseDatetime("nan"))
+
+    def test_infinity_maps_to_the_documented_fallbacks(self):
+        for value in ("inf", "-inf", float("inf")):
+            with self.subTest(value=value):
+                self.assertEqual(utilsModule.timeToInt(value), 0)
+                self.assertEqual(utilsModule.convertToDatetime(value), utilsModule.epoch())
+
+    def test_out_of_range_aware_iso_east_of_utc(self):
+        """Year 9999 with a positive offset pushes past datetime.max in
+        toTimezone - the exact OverflowError a Europe/* instance hit."""
+        east = datetime.timezone(datetime.timedelta(hours=2))
+        value = "9999-12-31T23:59:59Z"
+        self.assertIsNone(utilsModule.parseDatetime(value, tz=east))
+        self.assertEqual(utilsModule.convertToDatetime(value, tz=east),
+                         utilsModule.epoch(tz=east))
+
+    def test_out_of_range_aware_iso_west_of_utc(self):
+        """The mirror image: year 1 with a negative offset underflows."""
+        west = datetime.timezone(datetime.timedelta(hours=-5))
+        value = "0001-01-01T00:00:00+00:00"
+        self.assertIsNone(utilsModule.parseDatetime(value, tz=west))
+        self.assertEqual(utilsModule.convertToDatetime(value, tz=west),
+                         utilsModule.epoch(tz=west))
+
+    def test_the_readable_forms_still_parse(self):
+        """Negative control: hardening the failure paths must not have dulled
+        the success ones."""
+        self.assertEqual(utilsModule.timeToInt(1700000000), 1700000000)
+        self.assertEqual(utilsModule.timeToInt("1700000000"), 1700000000)
+        self.assertEqual(utilsModule.timeToInt("2024-03-05T12:00:00Z"), 1709640000)
+        self.assertEqual(utilsModule.dateToString("2024-03-05T12:00:00Z"), "2024-03-05")
+        self.assertEqual(utilsModule.convertToDatetime("0000-00-00"), utilsModule.epoch())
+
+
 if __name__ == "__main__":
     unittest.main()
 
