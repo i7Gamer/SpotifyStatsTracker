@@ -141,10 +141,11 @@ class TestTrackContract(unittest.TestCase):
         self.assertEqual(album["external_urls"]["spotify"],
                          f"https://open.spotify.com/album/{ALBUM_ID}")
         self.assertEqual(album["total_tracks"], 12)
-        # convertToDatetime must be able to parse this (spotifyClient.py
-        # _formatAlbum calls .timestamp() on the result).
-        from Database.utils import convertToDatetime
-        self.assertEqual(convertToDatetime(album["release_date"]).year, 2021)
+        # Date-only, not the wire's full "T00:00:00Z" instant: convertToDatetime
+        # (spotifyClient.py _formatAlbum calls .timestamp() on the result) reads
+        # a bare date as instance-zone midnight, so the full instant renders a
+        # day EARLIER anywhere west of UTC.
+        self.assertEqual(album["release_date"], "2021-05-07")
 
     @patch("spotapi.Public")
     def test_album_images_largest_first(self, mock_public):
@@ -263,9 +264,15 @@ def fakeAlbumUnion(albumId=ALBUM_ID):
             "totalCount": 2,
             "items": [
                 {"track": {"uri": f"spotify:track:{TRACK_ID}", "name": "Fixture Song",
-                           "duration": {"totalMilliseconds": 200040}}},
+                           "duration": {"totalMilliseconds": 200040},
+                           "artists": {"items": [
+                               {"uri": f"spotify:artist:{ARTIST_ID}",
+                                "profile": {"name": "First Artist"}}]}}},
                 {"track": {"uri": "spotify:track:secondTrackId000000000x", "name": "Second Song",
-                           "duration": {"totalMilliseconds": 180000}}},
+                           "duration": {"totalMilliseconds": 180000},
+                           "artists": {"items": [
+                               {"uri": f"spotify:artist:{ARTIST_ID}",
+                                "profile": {"name": "First Artist"}}]}}},
             ],
         },
     }
@@ -299,6 +306,41 @@ class TestAlbumPlaylistContract(unittest.TestCase):
         self.assertEqual(tracks[0]["id"], TRACK_ID)
         self.assertEqual(tracks[0]["name"], "Fixture Song")
         self.assertEqual(tracks[0]["duration_ms"], 200040)
+
+    @patch("spotapi.PublicAlbum")
+    def test_album_tracks_carry_their_artists(self, mock_album_cls):
+        """The backfiller's artist-repair path exists BECAUSE the album payload
+        carries per-track artists (_normalizeBackfillArtists reads id + name,
+        falling back on external_urls.spotify): albums with artistless tracks
+        are queued specifically so addMissingTrackArtists can link them. Without
+        this key the cookie-client route repairs nothing, forever re-queueing
+        the same albums."""
+        mock_album_cls.return_value.get_album_info.return_value = {
+            "data": {"albumUnion": fakeAlbumUnion()}}
+
+        album = buildClient().album(ALBUM_ID)
+
+        artists = album["tracks"]["items"][0]["artists"]
+        self.assertEqual(len(artists), 1)
+        self.assertEqual(artists[0]["id"], ARTIST_ID)
+        self.assertEqual(artists[0]["name"], "First Artist")
+        self.assertEqual(artists[0]["external_urls"]["spotify"],
+                         f"https://open.spotify.com/artist/{ARTIST_ID}")
+
+    @patch("spotapi.PublicAlbum")
+    def test_album_release_date_is_date_only(self, mock_album_cls):
+        """The wire carries "2021-05-07T00:00:00Z"; storing that verbatim
+        shifts the date a day EARLIER anywhere west of UTC once
+        convertToDatetime expresses the instant in the instance zone. The old
+        wrapper split on "T", and the Web-API backfill path stores Spotify's
+        own YYYY-MM-DD - both consumers of albums.release_date agree on
+        date-only, so the same album must not flap between two spellings."""
+        mock_album_cls.return_value.get_album_info.return_value = {
+            "data": {"albumUnion": fakeAlbumUnion()}}
+
+        album = buildClient().album(ALBUM_ID)
+
+        self.assertEqual(album["release_date"], "2021-05-07")
 
     @patch("spotapi.PublicAlbum")
     def test_album_without_release_date_omits_key(self, mock_album_cls):
@@ -366,6 +408,23 @@ class TestPublicLookupClientPooling(unittest.TestCase):
         buildClient().artist(ARTIST_ID)
 
         used = mock_artist_cls.call_args.kwargs["client"]
+        self.assertIn(used, self.pool.queue)
+
+    @patch("spotapi.PublicPlaylist")
+    def test_playlist_borrows_from_the_pool_too(self, mock_playlist_cls):
+        """playlist() was the sibling the original isolation fix missed: it
+        constructed PublicPlaylist with NO client, riding the shared
+        import-time default - and it runs on listener threads, import threads
+        and Flask request threads (playlistName -> dashboard view models)."""
+        mock_playlist_cls.return_value.get_playlist_info.return_value = {
+            "data": {"playlistV2": {"uri": f"spotify:playlist:{PLAYLIST_ID}",
+                                    "name": "Fixture Playlist"}}}
+
+        buildClient().playlist(PLAYLIST_ID)
+
+        used = mock_playlist_cls.call_args.kwargs.get("client")
+        self.assertIsNotNone(used, "playlist() must pass an explicit client, "
+                                   "never ride PublicPlaylist's shared default")
         self.assertIn(used, self.pool.queue)
 
     @patch("spotapi.PublicAlbum")

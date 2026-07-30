@@ -394,7 +394,8 @@ class Spotify:
 
     def playlist(self, playlistId, *args, **kwargs) -> dict:
         playlistId = normalizeSpotifyId(playlistId)
-        payload = spotapi.PublicPlaylist(playlistId).get_playlist_info()
+        with _pooledPublicClient() as client:
+            payload = spotapi.PublicPlaylist(playlistId, client=client).get_playlist_info()
         return formatPlaylistV2(((payload or {}).get("data") or {}).get("playlistV2") or {})
 
     def search(self, query, type="track", *args, **kwargs) -> dict:
