@@ -246,16 +246,69 @@ class TestSearchContract(unittest.TestCase):
         self.assertEqual(buildClient().search("track:zzz artist:zzz")["tracks"]["items"], [])
 
 
+def fakeAlbumUnion(albumId=ALBUM_ID):
+    """A getAlbum albumUnion. Track entries sit under tracksV2 wrapped in
+    {"track": ...} - the formatter must unwrap them."""
+    return {
+        "__typename": "Album",
+        "uri": f"spotify:album:{albumId}",
+        "name": "Fixture Album",
+        "date": {"isoString": "2021-05-07T00:00:00Z", "precision": "DAY"},
+        "coverArt": {"sources": [
+            {"url": "https://i.scdn.co/image/albsmall", "width": 64, "height": 64},
+            {"url": "https://i.scdn.co/image/alblarge", "width": 640, "height": 640},
+        ]},
+        "tracksV2": {
+            "totalCount": 2,
+            "items": [
+                {"track": {"uri": f"spotify:track:{TRACK_ID}", "name": "Fixture Song",
+                           "duration": {"totalMilliseconds": 200040}}},
+                {"track": {"uri": "spotify:track:secondTrackId000000000x", "name": "Second Song",
+                           "duration": {"totalMilliseconds": 180000}}},
+            ],
+        },
+    }
+
+
 class TestAlbumPlaylistContract(unittest.TestCase):
-    """The listener reads exactly one key from each: .get("name")."""
+    """The listener reads .get("name"); the metadata backfiller reads much
+    more from albums: release_date, total_tracks, and tracks.items[] with
+    {id, name, duration_ms} per track (the album response is the only
+    duration source for tracks whose own lookup came back blanked)."""
 
     @patch("spotapi.PublicAlbum")
-    def test_album_has_name_and_id(self, mock_album_cls):
+    def _fetchAlbum(self, mock_album_cls):
         mock_album_cls.return_value.get_album_info.return_value = {
-            "data": {"albumUnion": {"uri": f"spotify:album:{ALBUM_ID}", "name": "Fixture Album"}}}
-        album = buildClient().album(ALBUM_ID)
+            "data": {"albumUnion": fakeAlbumUnion()}}
+        return buildClient().album(ALBUM_ID)
+
+    def test_album_identity(self):
+        album = self._fetchAlbum()
         self.assertEqual(album["name"], "Fixture Album")
         self.assertEqual(album["id"], ALBUM_ID)
+
+    def test_album_backfiller_fields(self):
+        album = self._fetchAlbum()
+        self.assertEqual(album["total_tracks"], 2)
+        from Database.utils import convertToDatetime
+        self.assertEqual(convertToDatetime(album["release_date"]).year, 2021)
+
+        tracks = album["tracks"]["items"]
+        self.assertEqual(len(tracks), 2)
+        self.assertEqual(tracks[0]["id"], TRACK_ID)
+        self.assertEqual(tracks[0]["name"], "Fixture Song")
+        self.assertEqual(tracks[0]["duration_ms"], 200040)
+
+    @patch("spotapi.PublicAlbum")
+    def test_album_without_release_date_omits_key(self, mock_album_cls):
+        """The backfiller maps a missing/empty release_date to 0.0 itself;
+        inventing a date here would claim a fact Spotify didn't state."""
+        union = fakeAlbumUnion()
+        del union["date"]
+        mock_album_cls.return_value.get_album_info.return_value = {
+            "data": {"albumUnion": union}}
+        album = buildClient().album(ALBUM_ID)
+        self.assertFalse(album.get("release_date"))
 
     @patch("spotapi.PublicPlaylist")
     def test_playlist_has_name_and_id(self, mock_playlist_cls):
@@ -264,6 +317,84 @@ class TestAlbumPlaylistContract(unittest.TestCase):
         playlist = buildClient().playlist(PLAYLIST_ID)
         self.assertEqual(playlist["name"], "Fixture Playlist")
         self.assertEqual(playlist["id"], PLAYLIST_ID)
+
+
+class TestArtistContract(unittest.TestCase):
+    """media_fetch's lazy artist-image fallback reads
+    artist.get("images")[0]["url"] - largest first, same as albums."""
+
+    @patch("spotapi.Artist")
+    def test_artist_images_largest_first(self, mock_artist_cls):
+        mock_artist_cls.return_value.get_artist.return_value = {"data": {"artistUnion": {
+            "uri": f"spotify:artist:{ARTIST_ID}",
+            "profile": {"name": "First Artist"},
+            "visuals": {"avatarImage": {"sources": [
+                {"url": "https://i.scdn.co/image/artsmall", "width": 160, "height": 160},
+                {"url": "https://i.scdn.co/image/artlarge", "width": 640, "height": 640},
+            ]}},
+        }}}
+        artist = buildClient().artist(ARTIST_ID)
+        self.assertEqual(artist["name"], "First Artist")
+        self.assertEqual(artist["id"], ARTIST_ID)
+        self.assertEqual(artist["images"][0]["url"], "https://i.scdn.co/image/artlarge")
+
+    @patch("spotapi.Artist")
+    def test_artist_without_visuals_has_empty_images(self, mock_artist_cls):
+        """media_fetch treats an empty images list as "no artwork available";
+        a KeyError here would instead mark the fetch failed forever."""
+        mock_artist_cls.return_value.get_artist.return_value = {"data": {"artistUnion": {
+            "uri": f"spotify:artist:{ARTIST_ID}", "profile": {"name": "First Artist"}}}}
+        self.assertEqual(buildClient().artist(ARTIST_ID)["images"], [])
+
+
+class TestCookieUtilitiesContract(unittest.TestCase):
+    """parseCookieString feeds the login form's pasted cookies (routes/auth),
+    saveSession writes the sessions file the login flow verifies against
+    (app._verifyCookiesMatchEmail). Formats supported are what users actually
+    paste: a devtools "k=v; k2=v2" line, a Netscape tab export (with its
+    header row and # comments), or bare k=v lines."""
+
+    def test_semicolon_line(self):
+        from Database.Spotify.cookies import parseCookieString
+        cookies = parseCookieString("sp_dc=abc; sp_key=def; sp_t=ghi")
+        self.assertEqual(cookies, {"sp_dc": "abc", "sp_key": "def", "sp_t": "ghi"})
+
+    def test_tab_separated_export_skips_header_and_comments(self):
+        from Database.Spotify.cookies import parseCookieString
+        raw = ("# Netscape HTTP Cookie File\n"
+               "NAME\tVALUE\tDOMAIN\n"
+               "sp_dc\tabc\t.spotify.com\n"
+               "sp_key\tdef\t.spotify.com\n")
+        cookies = parseCookieString(raw)
+        self.assertEqual(cookies, {"sp_dc": "abc", "sp_key": "def"})
+
+    def test_bare_pairs_one_per_line(self):
+        from Database.Spotify.cookies import parseCookieString
+        self.assertEqual(parseCookieString("sp_dc=abc\nsp_key=def\n\n"),
+                         {"sp_dc": "abc", "sp_key": "def"})
+
+    def test_save_session_replaces_same_identifier(self):
+        from Database.Spotify.cookies import saveSession
+        with TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "sessions.json")
+            saveSession({"sp_dc": "old"}, "a@example.com", path)
+            saveSession({"sp_dc": "keep"}, "b@example.com", path)
+            saveSession({"sp_dc": "new"}, "a@example.com", path)
+
+            sessions = json.loads(Path(path).read_text(encoding="utf-8"))
+            byId = {s["identifier"]: s["cookies"] for s in sessions}
+            self.assertEqual(len(sessions), 2)  #< replaced, not appended
+            self.assertEqual(byId["a@example.com"], {"sp_dc": "new"})
+            self.assertEqual(byId["b@example.com"], {"sp_dc": "keep"})
+
+    def test_save_session_tolerates_corrupt_file(self):
+        from Database.Spotify.cookies import saveSession
+        with TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "sessions.json")
+            Path(path).write_text("{not json", encoding="utf-8")
+            self.assertTrue(saveSession({"sp_dc": "x"}, "a@example.com", path))
+            sessions = json.loads(Path(path).read_text(encoding="utf-8"))
+            self.assertEqual(sessions[0]["identifier"], "a@example.com")
 
 
 class TestCurrentUserContract(unittest.TestCase):

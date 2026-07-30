@@ -35,8 +35,8 @@ from Database.rate_limit import (
     SPOTIFY_RATE_LIMIT_BACKOFF_SECONDS, SpotifyLocallyRateLimitedError,
 )
 from Database.Spotify.formatting import (
-    formatTrackUnion, formatSearchTrackData, formatAlbumUnion, formatPlaylistV2,
-    formatProfile, formatContext, openSpotifyUrl,
+    formatTrackUnion, formatSearchTrackData, formatAlbumUnion, formatArtistUnion,
+    formatPlaylistV2, formatProfile, formatContext, openSpotifyUrl,
 )
 from Database.Spotify.recentlyPlayed import RecentlyPlayedManager
 
@@ -344,9 +344,26 @@ class Spotify:
         return formatTrackUnion(raw)
 
     def album(self, albumId, *args, **kwargs) -> dict:
+        """Album metadata, including up to the first page of its track list
+        (get_album_info's default 25 - same ceiling as the wrapper this
+        replaces; the backfiller uses those tracks as a duration source).
+
+        PublicAlbum's `client` argument defaults to an import-time-shared
+        TLSClient - the same footgun the login and track paths were fixed for.
+        Deliberately NOT fixed here in the cutover: album()/artist() run on
+        slow single background loops today, and this preserves the wrapper's
+        exact behavior. Worth revisiting together with artist() below."""
         albumId = normalizeSpotifyId(albumId)
         payload = spotapi.PublicAlbum(albumId).get_album_info()
         return formatAlbumUnion(((payload or {}).get("data") or {}).get("albumUnion") or {})
+
+    def artist(self, artistId, *args, **kwargs) -> dict:
+        """Artist profile + avatar images - media_fetch's lazy artist-image
+        fallback reads images[0].url. Shares album()'s shared-default-client
+        caveat."""
+        artistId = normalizeSpotifyId(artistId)
+        payload = spotapi.Artist().get_artist(artistId)
+        return formatArtistUnion(((payload or {}).get("data") or {}).get("artistUnion") or {})
 
     def playlist(self, playlistId, *args, **kwargs) -> dict:
         playlistId = normalizeSpotifyId(playlistId)

@@ -62,16 +62,11 @@ def _formatArtistItems(items) -> list:
 
 
 def _formatAlbumOfTrack(albumOfTrack: dict) -> dict:
-    """The album block, spotipy-shaped. images[] is sorted LARGEST first:
-    Client.formatTrack takes images[0].url as the artwork, and the wire order
-    of coverArt.sources is not a documented promise - trusting it would ship
-    64px covers whenever Spotify happens to list small-to-large."""
+    """The album block, spotipy-shaped. images[] is sorted LARGEST first (see
+    _sortedImages) - trusting wire order would ship 64px covers whenever
+    Spotify happens to list small-to-large."""
     albumId = idFromUri(albumOfTrack.get("uri"))
-    sources = ((albumOfTrack.get("coverArt") or {}).get("sources")) or []
-    images = sorted(
-        ({"url": s.get("url", ""), "width": s.get("width", 0), "height": s.get("height", 0)}
-         for s in sources if isinstance(s, dict)),
-        key=lambda img: img["width"], reverse=True)
+    images = _sortedImages((albumOfTrack.get("coverArt") or {}).get("sources"))
 
     album = {
         "name": albumOfTrack.get("name", ""),
@@ -133,14 +128,67 @@ def formatSearchTrackData(trackData: dict) -> dict:
     return _formatTrackCommon(trackData, artists)
 
 
+def _sortedImages(sources) -> list:
+    """coverArt/avatarImage sources to spotipy-style images, LARGEST first -
+    consumers take images[0].url as THE artwork, and wire order is not a
+    documented promise."""
+    return sorted(
+        ({"url": s.get("url", ""), "width": s.get("width", 0), "height": s.get("height", 0)}
+         for s in (sources or []) if isinstance(s, dict)),
+        key=lambda img: img["width"], reverse=True)
+
+
 def formatAlbumUnion(albumUnion: dict) -> dict:
-    """A getAlbum albumUnion. The listener reads exactly .get("name"); id is
-    kept so the dict identifies itself."""
+    """A getAlbum albumUnion. The listener reads .get("name"); the metadata
+    backfiller reads release_date, total_tracks and tracks.items[]'s
+    {id, name, duration_ms} - the album response is the only duration source
+    for tracks whose own lookup came back blanked."""
     albumId = idFromUri(albumUnion.get("uri"))
-    return {
+    tracksV2 = albumUnion.get("tracksV2") or {}
+
+    trackItems = []
+    for item in (tracksV2.get("items") or []):
+        if not isinstance(item, dict):
+            continue
+        # Entries arrive wrapped in {"track": ...}; tolerate a bare track dict
+        # too so a wrapper removal upstream degrades to "still works".
+        trackData = item.get("track") if isinstance(item.get("track"), dict) else item
+        trackId = idFromUri(trackData.get("uri"))
+        if not trackId:
+            continue
+        trackItems.append({
+            "id": trackId,
+            "name": trackData.get("name", ""),
+            "duration_ms": ((trackData.get("duration") or {}).get("totalMilliseconds")) or 0,
+        })
+
+    album = {
         "name": albumUnion.get("name", ""),
         "id": albumId,
         "external_urls": {"spotify": openSpotifyUrl("album", albumId)},
+        "images": _sortedImages((albumUnion.get("coverArt") or {}).get("sources")),
+        "total_tracks": tracksV2.get("totalCount") or 0,
+        "tracks": {"items": trackItems},
+    }
+    releaseDate = (albumUnion.get("date") or {}).get("isoString")
+    if releaseDate:
+        # Absent otherwise: the backfiller maps a missing date to 0.0 itself;
+        # inventing one here would claim a fact Spotify didn't state.
+        album["release_date"] = releaseDate
+    return album
+
+
+def formatArtistUnion(artistUnion: dict) -> dict:
+    """A queryArtistOverview artistUnion. media_fetch's lazy image fallback
+    reads .get("images")[0]["url"]; an artist with no avatar yields an empty
+    list (= "no artwork available"), never a KeyError."""
+    artistId = idFromUri(artistUnion.get("uri"))
+    sources = (((artistUnion.get("visuals") or {}).get("avatarImage")) or {}).get("sources")
+    return {
+        "name": (artistUnion.get("profile") or {}).get("name", ""),
+        "id": artistId,
+        "external_urls": {"spotify": openSpotifyUrl("artist", artistId)},
+        "images": _sortedImages(sources),
     }
 
 
