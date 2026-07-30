@@ -83,7 +83,7 @@ def _blockNetwork(monkeypatch):
     def guardedConnect(self, address):
         raise RuntimeError(
             f"Test attempted a real network connection to {address!r} - mock the "
-            "HTTP call (e.g. patch requests.get / SpotipyFree) instead."
+            "HTTP call (e.g. patch requests.get / Database.Spotify) instead."
         )
 
     monkeypatch.setattr(socket.socket, "connect", guardedConnect)

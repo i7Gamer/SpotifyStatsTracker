@@ -1,7 +1,6 @@
 Flask==3.1.3
 Flask-WTF==1.3.0
 cryptography==49.0.0
-spotipyFree==1.9.13
 # spotapi comes from TzurSoffer's fork, not PyPI, and is PINNED to a commit.
 #
 # It was previously installed only inside the Dockerfile ("pip uninstall spotAPI
@@ -23,9 +22,12 @@ requests==2.34.2
 websockets==16.1
 waitress==3.0.2
 tzdata==2026.3
-# Transitive dependency of spotapi (pulled in via spotipyFree), not used directly
-# anywhere in this codebase - spotapi/utils/saver.py does an unconditional
-# `import redis` for its optional Redis-backed session saver, even though this
-# app only ever uses spotapi's JSONSaver. Required for `import spotapi` (and
-# therefore spotipyFree) to succeed at all - do not remove as "unused".
+# Neither of these is used anywhere in this codebase - spotapi/utils/saver.py
+# does an unconditional `import redis` and `import pymongo` for its optional
+# Redis/Mongo-backed session savers, even though this app only ever uses
+# spotapi's JSONSaver, and it declares both as extras while importing them at
+# module scope. Required for `import spotapi` to succeed at all - do not remove
+# as "unused". (pymongo used to arrive transitively via spotipyFree; with that
+# wrapper replaced by Database/Spotify/, it has to be named here.)
 redis==8.0.1
+pymongo==4.17.0

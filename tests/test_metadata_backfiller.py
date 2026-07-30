@@ -365,7 +365,7 @@ class TestMetadataBackfiller(DatabaseTestCase):
         self.assertIn("db unavailable", telemetry["last_error"])
 
     @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value=None)
-    @patch("SpotipyFree.Spotify")
+    @patch("Database.Spotify.Spotify")
     @patch("requests.get")
     def test_backfiller_loop_fallback_to_spotipy_free(self, mock_get, mock_spotipy_class, mock_refresh):
         # 1. Setup mock response for official API: return 403 Forbidden
@@ -411,7 +411,7 @@ class TestMetadataBackfiller(DatabaseTestCase):
         # Run backfiller
         db._metadataBackfillLoop()
 
-        # Verify alb1 was updated via SpotipyFree fallback and stamped as attempted
+        # Verify alb1 was updated via the cookie-client fallback and stamped as attempted
         row = conn.execute("SELECT release_date, total_tracks, backfill_attempted_at FROM albums WHERE id='alb1'").fetchone()
         self.assertGreater(row["release_date"], 0)
         self.assertEqual(row["total_tracks"], 8)
@@ -419,7 +419,7 @@ class TestMetadataBackfiller(DatabaseTestCase):
         mock_sp.album.assert_called_once_with("alb1")
 
     @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value="mock_token")
-    @patch("SpotipyFree.Spotify")
+    @patch("Database.Spotify.Spotify")
     @patch("requests.get")
     @patch("Database.database.logger")
     def test_backfiller_loop_403_warning_logged_only_with_debug(self, mock_logger, mock_get, mock_spotipy_class, mock_refresh):

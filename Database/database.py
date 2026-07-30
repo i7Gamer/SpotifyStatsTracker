@@ -228,7 +228,7 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
                                                 #  not a real playback - report nothing instead
 
     LISTENER_DURATION_CORRUPTION_FACTOR = 10   #< a listener-reported play duration more than this many times
-                                                #  the track's own length is SpotipyFree corruption (e.g.
+                                                #  the track's own length is feed corruption (e.g.
                                                 #  7062895ms for a 171s track) - the play is recorded with the
                                                 #  track's actual length instead of being dropped
 
@@ -466,10 +466,10 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
             self.tz = utils.getTimezone()
 
     def _materializeCookiesFile(self) -> Path:
-        """SpotipyFree/spotapi only know how to read a Spotify session from a file
+        """spotapi only knows how to read a Spotify session from a file
         path (spotapi.saver.JSONSaver), not from a dict - write this user's
         cookies (the database is the source of truth) to a short-lived temp file
-        in the same [{"identifier", "cookies"}, ...] shape SpotipyFree.saveSession
+        in the same [{"identifier", "cookies"}, ...] shape Database.Spotify.cookies.saveSession
         produces. The caller is responsible for deleting it once the client
         holding it has been constructed - it's only read at construction time."""
         cookies = self.repo.getUserCookies(self.user) or {}

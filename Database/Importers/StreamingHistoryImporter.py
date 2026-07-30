@@ -11,7 +11,6 @@ import json
 import datetime
 import hashlib
 import logging
-import SpotipyFree
 import concurrent.futures
 import threading
 
@@ -22,11 +21,13 @@ try:
     from Database.db import (SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON, SKIP_THRESHOLD_MS,
                              looksLikeSpotifyTrackId)
     from Database.utils import timeToInt, timeToIntUTC, parseError, convertToDatetime, getTimezone
+    from Database.Spotify import Spotify
 except ModuleNotFoundError:
     from Formatters.spotifyClient import Client
     from db import (SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON, SKIP_THRESHOLD_MS,
                     looksLikeSpotifyTrackId)
     from utils import timeToInt, timeToIntUTC, parseError, convertToDatetime, getTimezone
+    from Spotify import Spotify
 
 
 def _knownNameKey(name: str, artist: str) -> str:
@@ -72,7 +73,7 @@ class Importer:
     )
 
     def __init__(self, cookiesFile=None, email=None):
-        self.sp = SpotipyFree.Spotify(cookiesFile=cookiesFile, email=email)
+        self.sp = Spotify(cookiesFile=cookiesFile, email=email)
 
     def _searchForSong(self, name, artist):
         query = f"track:{name} artist:{artist}"

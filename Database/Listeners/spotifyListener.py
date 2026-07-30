@@ -15,7 +15,7 @@ import signal
 import threading
 import time
 from contextlib import contextmanager
-from SpotipyFree import Spotify
+from Database.Spotify import Spotify
 from Database.rate_limit import (
     SPOTIFY_LIMITER, SPOTIFY_RATE_LIMIT_BACKOFF_SECONDS, SpotifyLocallyRateLimitedError,
 )
@@ -58,7 +58,7 @@ threading.excepthook = _shutdown_exception_hook
 LISTENER_STOP_JOIN_TIMEOUT_SECONDS = 5  #< bound how long shutdown waits for spotapi's background LastPlayed thread to exit
 
 # current_user_recently_played() doesn't actually poll - it just returns spotapi's
-# websocket-fed local cache (see SpotipyFree.Spotify.current_user_recently_played).
+# websocket-fed local cache (see Database/Spotify/client.py's current_user_recently_played).
 # That websocket can silently die (its own reconnect() call targets a method that
 # doesn't exist on PlayerStatus - a bug in spotapi, not this code), after which the
 # cache is frozen forever: no exception, no new items, nothing recorded, ever again,
@@ -187,7 +187,7 @@ TRUTHY_DEBUG_VALUES = {"1", "true"}  #< FLASK_DEBUG values that enable verbose d
 def _itemTrackId(item: dict) -> str | None:
     """The track id of a recently-played entry from EITHER cache.
 
-    The live listener's rows come from SpotipyFree and spell it track.track_id;
+    The live listener's fallback rows spell it track.track_id (fallbackTrackRecord);
     the Web API's spell it track.id. `or {}` (not get's default) because an entry
     can carry "track": None, where None.get would raise.
     """
@@ -430,17 +430,13 @@ class Listener:
             if self.sp.isLoggedIn():
                 self.sp.startRecentlyPlayedListener(refreshInterval=self.refreshInterval)
             else:
-                # self.sp.user_auth stays a plain bool (SpotipyFree's own
+                # self.sp.user_auth stays a plain bool (the client's
                 # not-logged-in sentinel) when the stored cookies fail to
-                # authenticate. Calling startRecentlyPlayedListener() anyway
-                # doesn't fail cleanly - it builds a PlayerStatus/
-                # WebsocketStreamer around that bool, and spotapi's own
-                # WebsocketStreamer.__init__ does `login.logged_in`, raising
-                # AttributeError deep inside a third-party dependency instead
-                # of leaving this listener in a clean, detectable non-working
-                # state. Skip it and let startListener() (Database/workers/
-                # listener.py) report this the same way it already does for
-                # contaminationDetected below.
+                # authenticate. startRecentlyPlayedListener() would refuse
+                # with a ValueError in that state; skip it and let
+                # startListener() (Database/workers/listener.py) report this
+                # the same way it already does for contaminationDetected
+                # below.
                 self.loginFailed = True
                 logger.warning("Spotify login failed for user %s - stored cookies may be invalid or expired", self.logUser)
 
@@ -642,7 +638,7 @@ class Listener:
         """Remember what the connect state says is playing, so the stale-feed
         check can tell an idle account from a dead session.
 
-        Costs nothing: getConnectPlayerState reads the dict SpotipyFree's own
+        Costs nothing: getConnectPlayerState reads the dict the update loop's own
         tick already refreshes, with no network call. Only a change BETWEEN two
         real tracks is recorded - the first sighting isn't one (a listener
         rebuilt mid-track would otherwise immediately justify the next rebuild),
@@ -693,8 +689,8 @@ class Listener:
 
     def getConnectPlayerState(self) -> dict | None:
         """The raw connect player_state dict off the same PlayerStatus object
-        SpotipyFree's LastPlayedManger already keeps refreshed every
-        refreshInterval tick (see SpotipyFree/LastPlayed.py) - no extra
+        the RecentlyPlayedManager already keeps refreshed every
+        refreshInterval tick (see Database/Spotify/recentlyPlayed.py) - no extra
         network call needed. Feeds both the missed-track cross-check and the
         dashboard's Now Playing.
 
@@ -1050,7 +1046,7 @@ class Listener:
                 logger.info("Web API user: %s (ID: %s, email: %s), Listener email: %s",
                            web_api_user_display, web_api_user_id, web_api_user_email, self.email)
 
-            # Validate that the access token belongs to the authenticated user. Since SpotipyFree
+            # Validate that the access token belongs to the authenticated user. Since the cookie client
             # may store user IDs differently than the Spotify Web API, check email first (most reliable),
             # fall back to display name if email unavailable.
             mismatch = False
@@ -1124,7 +1120,7 @@ class Listener:
             # Keyed by track id, not a flat set of timestamps: see the
             # is_recorded test below for why a timestamp alone cannot answer
             # "was THIS play recorded". The two caches spell the id differently
-            # (the live listener's SpotipyFree rows carry track.track_id, the Web
+            # (the live listener's fallback rows carry track.track_id, the Web
             # API's carry track.id), so _itemTrackId reads both.
             recorded_timestamps: dict = {}
             for item in self.recentlyPlayed_Z1 + self.webApiRecentlyPlayed_Z1:
@@ -1135,7 +1131,7 @@ class Listener:
             # Both caches above live and die with this listener object, and a
             # listener is rebuilt on every stale-feed reconnect (1,568 times in
             # 11 days for 3 users) - webApiRecentlyPlayed_Z1 starts empty, and
-            # so does recentlyPlayed_Z1, since SpotipyFree's deque only fills
+            # so does recentlyPlayed_Z1, since the client's deque only fills
             # from track changes its websocket observes after start. So the
             # first poll after every rebuild saw the whole page as missing:
             # 74,579 plays announced over those 11 days, of which 201 were

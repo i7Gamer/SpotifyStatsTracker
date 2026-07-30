@@ -34,7 +34,7 @@ from Database.db import SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON
 from Database.repository import Repository
 from Database.Migrators.migrate import migrateIfNeeded
 from Database.Listeners.spotifyListener import _suppress_signal_in_thread
-from Database.patches import setPushListenerEnabledHook as patch_push_listener_hook
+from Database.Spotify.recentlyPlayed import setPushListenerEnabledHook as patch_push_listener_hook
 from Database.logging_config import configureLogging
 from Database.utils import msToString, convertToDatetime, formatDuration, dateToString, versionTuple, now, startOfDay, parseDateString
 # Genre-gate / coverage helpers live in services/genre_gate.py; re-exported here
@@ -67,8 +67,8 @@ from routes.wrapped import register as registerWrappedRoutes
 from routes.auth import register as registerAuthRoutes
 from routes.system import register as registerSystemRoutes
 from routes.tags import register as registerTagsRoutes
-import SpotipyFree
-from SpotipyFree import saveSession, parseCookieString
+from Database.Spotify import Spotify
+from Database.Spotify.cookies import saveSession, parseCookieString
 
 logger = logging.getLogger(__name__)
 
@@ -391,7 +391,7 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
         try:
             saveSession(cookies, email, tmpPath)
             with _suppress_signal_in_thread():
-                sp = SpotipyFree.Spotify(cookiesFile=tmpPath, email=email)
+                sp = Spotify(cookiesFile=tmpPath, email=email)
             if not sp.isLoggedIn():
                 return False
             profile = sp.current_user() or {}

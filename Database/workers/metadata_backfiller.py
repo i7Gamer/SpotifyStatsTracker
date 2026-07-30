@@ -40,7 +40,7 @@ class MetadataBackfillMixin:
     @staticmethod
     def _normalizeBackfillArtists(artistsRaw: list) -> list[dict]:
         """Repo-shaped artist dicts from an album payload's per-track artist
-        list (Web API and SpotipyFree both expose id/name/external_urls).
+        list (Web API and the cookie client both expose id/name/external_urls).
         Entries without a real id or name are dropped - fabricating links
         would be worse than leaving the track for the next repair pass."""
         artists = []
@@ -146,18 +146,18 @@ class MetadataBackfillMixin:
                             else:
                                 if _dbmod.os.environ.get("FLASK_DEBUG", "").lower() in _dbmod.TRUTHY_DEBUG_VALUES:
                                     _dbmod.logger.warning(
-                                        "[Backfiller-%s] Spotify Web API returned status %d. Falling back to SpotipyFree.",
+                                        "[Backfiller-%s] Spotify Web API returned status %d. Falling back to the cookie client.",
                                         self.user, resp.status_code
                                     )
                         else:
-                            _dbmod.logger.warning("[Backfiller-%s] Failed to refresh access token. Falling back to SpotipyFree.", self.user)
+                            _dbmod.logger.warning("[Backfiller-%s] Failed to refresh access token. Falling back to the cookie client.", self.user)
 
                     if use_fallback:
-                        import SpotipyFree
+                        import Database.Spotify
                         import time
                         cookiesFile = self._materializeCookiesFile()
                         try:
-                            sp = SpotipyFree.Spotify(cookiesFile=str(cookiesFile))
+                            sp = Database.Spotify.Spotify(cookiesFile=str(cookiesFile))
                             for album_id in target_ids:
                                 if stop_event.is_set():
                                     break
@@ -167,15 +167,15 @@ class MetadataBackfillMixin:
                                         fetched_albums.append(album_raw)
                                     attempted_ids.append(album_id)  #< a clean "no data" reply is definitive; exceptions stay unmarked for a next-cycle retry
                                 except Exception as fe:
-                                    _dbmod.logger.warning("[Backfiller-%s] SpotipyFree failed for album %s: %s", self.user, album_id, fe)
+                                    _dbmod.logger.warning("[Backfiller-%s] Cookie client failed for album %s: %s", self.user, album_id, fe)
                                 stop_event.wait(1.0)
                         finally:
                             cookiesFile.unlink(missing_ok=True)
 
                         if fetched_albums:
-                            _dbmod.logger.info("[Backfiller-%s] SpotipyFree fetched %d album(s)", self.user, len(fetched_albums))
+                            _dbmod.logger.info("[Backfiller-%s] Cookie client fetched %d album(s)", self.user, len(fetched_albums))
                         else:
-                            _dbmod.logger.warning("[Backfiller-%s] SpotipyFree fallback failed to fetch any albums", self.user)
+                            _dbmod.logger.warning("[Backfiller-%s] Cookie-client fallback failed to fetch any albums", self.user)
 
                     from Database.utils import convertToDatetime
                     updated_count = 0
