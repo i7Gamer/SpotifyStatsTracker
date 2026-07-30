@@ -1,0 +1,452 @@
+"""Contract tests for Database.Spotify - the owned replacement for spotipyFree.
+
+Written BEFORE the implementation (dependencyRewritePlan.md Phase 1.1). Every
+expectation here is derived from a CONSUMER of the client, not from what the
+current spotipyFree wrapper happens to return - a snapshot of today's output
+would enshrine today's bugs. The consumers, and what each one reads:
+
+  Database/Formatters/spotifyClient.py  Client.formatTrack hard-subscripts
+                                        track["id"] and
+                                        track["external_urls"]["spotify"]; reads
+                                        name, duration_ms, artists[], album{},
+                                        explicit, external_ids.isrc,
+                                        disc_number, track_number, playability,
+                                        created_reason via .get().
+  Database/workers/listener.py          item["track"].get("duration_ms"/"id"/
+                                        "name"), item["played_at"],
+                                        item["ms_played"], item["context"].
+  Database/Listeners/spotifyListener.py current_user().get("id"/"email"),
+                                        album()/playlist().get("name"),
+                                        current_user_recently_played() items'
+                                        "played_at" membership (getNewItems),
+                                        sp.user_auth bool sentinel,
+                                        sp.lastPlayedManager.{manager,run,thread}.
+  Database/Importers/StreamingHistoryImporter.py
+                                        search(...)["tracks"]["items"],
+                                        track(<spotify:track:URI or id>).
+
+The GraphQL fixtures below describe Spotify's wire format (getTrack's
+trackUnion, searchDesktop items, account-settings profile) - interop facts,
+NOT spotipyFree's code. Field names come from the pathfinder API itself.
+"""
+
+import json
+import threading
+import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import MagicMock, patch
+
+from Database.db import UNKNOWN_TRACK_NAME, UNKNOWN_ALBUM_NAME, RESTRICTED_FALLBACK_REASON
+
+
+TRACK_ID = "6rqhFgbbKwnb9MLmUQDhG6"
+ALBUM_ID = "4LH4d3cOWNNsVw41Gqt2kv"
+ARTIST_ID = "0OdUWJ0sBjDrqHygGUXeCF"
+PLAYLIST_ID = "37i9dQZF1DXcBWIGoYBM5M"
+
+
+def fakeTrackUnion(trackId=TRACK_ID, *, explicitLabel="NONE", playable=True):
+    """A getTrack response's trackUnion, as the pathfinder API shapes it.
+
+    coverArt sources are deliberately ordered smallest-first: the contract
+    requires images[0] to be the LARGEST (Client.formatTrack takes images[0]
+    as the artwork), so the formatter must sort rather than trust wire order.
+    """
+    return {
+        "__typename": "Track",
+        "uri": f"spotify:track:{trackId}",
+        "name": "Fixture Song",
+        "duration": {"totalMilliseconds": 200040},
+        "trackNumber": 5,
+        "discNumber": 1,
+        "contentRating": {"label": explicitLabel},
+        "playability": {"playable": playable,
+                        "reason": "PLAYABLE" if playable else "COUNTRY_RESTRICTED"},
+        "albumOfTrack": {
+            "uri": f"spotify:album:{ALBUM_ID}",
+            "name": "Fixture Album",
+            "date": {"isoString": "2021-05-07T00:00:00Z", "precision": "DAY"},
+            "coverArt": {"sources": [
+                {"url": "https://i.scdn.co/image/small", "width": 64, "height": 64},
+                {"url": "https://i.scdn.co/image/large", "width": 640, "height": 640},
+                {"url": "https://i.scdn.co/image/mid", "width": 300, "height": 300},
+            ]},
+            "tracks": {"totalCount": 12},
+        },
+        "firstArtist": {"items": [
+            {"uri": f"spotify:artist:{ARTIST_ID}", "profile": {"name": "First Artist"}},
+        ]},
+        "otherArtists": {"items": [
+            {"uri": "spotify:artist:2ndArtistId0000000000x", "profile": {"name": "Second Artist"}},
+        ]},
+    }
+
+
+def fakeSearchPage(trackId=TRACK_ID):
+    """One page of searchDesktop results, as Public().song_search yields them:
+    a list of {"item": {"data": <track>}} wrappers. Search tracks carry a flat
+    "artists" collection (not firstArtist/otherArtists) - that difference in
+    wire shape is exactly why the formatter, not the caller, absorbs it."""
+    track = fakeTrackUnion(trackId)
+    track["artists"] = {"items": track.pop("firstArtist")["items"] + track.pop("otherArtists")["items"]}
+    notATrack = {"item": {"data": {"__typename": "Album", "uri": f"spotify:album:{ALBUM_ID}"}}}
+    return [{"item": {"data": track}}, notATrack]
+
+
+def buildClient():
+    """A Spotify client with no cookies file: user_auth stays False, nothing
+    touches the network. Mirrors test_patches' _newSpotifyInstance."""
+    from Database.Spotify import Spotify
+    return Spotify()
+
+
+class TestTrackContract(unittest.TestCase):
+    """track() output must satisfy Client.formatTrack's reads - the hard
+    subscripts especially - and its input must accept every id form the app
+    passes: bare ids (listener), spotify:track: URIs (importer, straight from
+    export files), and open.spotify.com URLs."""
+
+    def _fetch(self, mock_public, union=None, trackId=TRACK_ID):
+        mock_public.song_info.return_value = {"data": {"trackUnion": union or fakeTrackUnion(trackId)}}
+        return buildClient().track(trackId)
+
+    @patch("spotapi.Public")
+    def test_hard_required_keys(self, mock_public):
+        """Client.formatTrack subscripts these without .get(); their absence is
+        a crash in the play-recording path."""
+        track = self._fetch(mock_public)
+        self.assertEqual(track["id"], TRACK_ID)
+        self.assertEqual(track["external_urls"]["spotify"],
+                         f"https://open.spotify.com/track/{TRACK_ID}")
+
+    @patch("spotapi.Public")
+    def test_full_consumer_key_set(self, mock_public):
+        track = self._fetch(mock_public)
+        self.assertEqual(track["name"], "Fixture Song")
+        self.assertEqual(track["duration_ms"], 200040)
+        self.assertEqual(track["disc_number"], 1)
+        self.assertEqual(track["track_number"], 5)
+        self.assertIsInstance(track["explicit"], bool)
+        self.assertIn("isrc", track["external_ids"])
+        # Passed through for availability_reason recording (spotifyClient.py).
+        self.assertEqual(track["playability"], {"playable": True, "reason": "PLAYABLE"})
+
+    @patch("spotapi.Public")
+    def test_album_shape(self, mock_public):
+        album = self._fetch(mock_public)["album"]
+        self.assertEqual(album["id"], ALBUM_ID)
+        self.assertEqual(album["name"], "Fixture Album")
+        self.assertEqual(album["external_urls"]["spotify"],
+                         f"https://open.spotify.com/album/{ALBUM_ID}")
+        self.assertEqual(album["total_tracks"], 12)
+        # convertToDatetime must be able to parse this (spotifyClient.py
+        # _formatAlbum calls .timestamp() on the result).
+        from Database.utils import convertToDatetime
+        self.assertEqual(convertToDatetime(album["release_date"]).year, 2021)
+
+    @patch("spotapi.Public")
+    def test_album_images_largest_first(self, mock_public):
+        """Client.formatTrack takes images[0].url as THE artwork; spotipy's
+        convention is widest-first. The fixture is wire-ordered smallest-first
+        on purpose - trusting wire order would ship 64px artwork."""
+        images = self._fetch(mock_public)["album"]["images"]
+        self.assertEqual(images[0]["url"], "https://i.scdn.co/image/large")
+        self.assertEqual([i["width"] for i in images], [640, 300, 64])
+
+    @patch("spotapi.Public")
+    def test_artists_merged_in_order_with_ids(self, mock_public):
+        """firstArtist then otherArtists, ids recovered from the artist uri -
+        _formatArtists derives catalog rows and Spotify links from artist.id."""
+        artists = self._fetch(mock_public)["artists"]
+        self.assertEqual([a["name"] for a in artists], ["First Artist", "Second Artist"])
+        self.assertEqual(artists[0]["id"], ARTIST_ID)
+        self.assertEqual(artists[0]["external_urls"]["spotify"],
+                         f"https://open.spotify.com/artist/{ARTIST_ID}")
+
+    @patch("spotapi.Public")
+    def test_explicit_mapping(self, mock_public):
+        self.assertFalse(self._fetch(mock_public)["explicit"])
+        explicit = self._fetch(mock_public, union=fakeTrackUnion(explicitLabel="EXPLICIT"))
+        self.assertTrue(explicit["explicit"])
+
+    @patch("spotapi.Public")
+    def test_accepts_spotify_uri(self, mock_public):
+        """The importer passes spotify:track: URIs straight from export files
+        (StreamingHistoryImporter._fetchTrackMeta). The wrapper it replaces
+        mangled these - isUrl() matched but urlToId() split on "/" and left the
+        URI intact, so pathfinder got spotify:track:spotify:track:<id> and every
+        URI lookup silently fell back to a name search. The owned client must
+        normalize to the bare id."""
+        mock_public.song_info.return_value = {"data": {"trackUnion": fakeTrackUnion()}}
+        buildClient().track(f"spotify:track:{TRACK_ID}")
+        mock_public.song_info.assert_called_once_with(TRACK_ID)
+
+    @patch("spotapi.Public")
+    def test_accepts_open_spotify_url(self, mock_public):
+        mock_public.song_info.return_value = {"data": {"trackUnion": fakeTrackUnion()}}
+        buildClient().track(f"https://open.spotify.com/track/{TRACK_ID}?si=abc123def")
+        mock_public.song_info.assert_called_once_with(TRACK_ID)
+
+    @patch("spotapi.Public")
+    def test_accepts_bare_id(self, mock_public):
+        mock_public.song_info.return_value = {"data": {"trackUnion": fakeTrackUnion()}}
+        buildClient().track(TRACK_ID)
+        mock_public.song_info.assert_called_once_with(TRACK_ID)
+
+
+class TestTrackFallbackContract(unittest.TestCase):
+    """A track Spotify wouldn't describe must yield a marked fallback record,
+    not an exception - raising propagates into the poll loop's catch-all and
+    loses the play (11 occurrences in 11 days of app.log; see patches.py's
+    _fallbackTrackRecord, which moves here with its shape unchanged)."""
+
+    @patch("Database.Spotify.client.time")  #< the retry ladder sleeps; tests must not
+    @patch("spotapi.Public")
+    def test_degraded_payload_yields_fallback_record(self, mock_public, _mock_time):
+        mock_public.song_info.return_value = {"data": None}
+        track = buildClient().track(TRACK_ID)
+
+        # Facts are not invented: no duration, no artists, placeholder names.
+        self.assertEqual(track["name"], UNKNOWN_TRACK_NAME)
+        self.assertEqual(track["duration_ms"], 0)
+        self.assertEqual(track["artists"], [])
+        self.assertEqual(track["album"]["name"], UNKNOWN_ALBUM_NAME)
+        # The id IS real, so the link is real - only fabricated ids carry "".
+        self.assertEqual(track["id"], TRACK_ID)
+        self.assertEqual(track["external_urls"]["spotify"],
+                         f"https://open.spotify.com/track/{TRACK_ID}")
+        # Per-track album id: one shared fabricated id would collect every
+        # undescribable track into a single album page.
+        self.assertEqual(track["album"]["id"], f"album_{TRACK_ID}")
+        # The marker upsertTrack keys its don't-clobber-real-metadata guard off.
+        self.assertEqual(track["created_reason"], RESTRICTED_FALLBACK_REASON)
+        self.assertFalse(track["playability"]["playable"])
+
+
+class TestSearchContract(unittest.TestCase):
+    """search() feeds StreamingHistoryImporter._searchForSong, which reads
+    result["tracks"]["items"] and treats an empty list as "no results"."""
+
+    @patch("spotapi.Public")
+    def test_search_shape_and_track_filtering(self, mock_public):
+        mock_public.return_value.song_search.return_value = iter([fakeSearchPage()])
+        result = buildClient().search("track:Fixture Song artist:First Artist")
+
+        items = result["tracks"]["items"]
+        self.assertEqual(len(items), 1)  #< the Album item must be filtered out
+        self.assertEqual(items[0]["id"], TRACK_ID)
+        self.assertEqual(items[0]["external_urls"]["spotify"],
+                         f"https://open.spotify.com/track/{TRACK_ID}")
+        self.assertEqual(items[0]["duration_ms"], 200040)
+
+    @patch("spotapi.Public")
+    def test_no_results_is_empty_list_not_error(self, mock_public):
+        mock_public.return_value.song_search.return_value = iter([[]])
+        self.assertEqual(buildClient().search("track:zzz artist:zzz")["tracks"]["items"], [])
+
+
+class TestAlbumPlaylistContract(unittest.TestCase):
+    """The listener reads exactly one key from each: .get("name")."""
+
+    @patch("spotapi.PublicAlbum")
+    def test_album_has_name_and_id(self, mock_album_cls):
+        mock_album_cls.return_value.get_album_info.return_value = {
+            "data": {"albumUnion": {"uri": f"spotify:album:{ALBUM_ID}", "name": "Fixture Album"}}}
+        album = buildClient().album(ALBUM_ID)
+        self.assertEqual(album["name"], "Fixture Album")
+        self.assertEqual(album["id"], ALBUM_ID)
+
+    @patch("spotapi.PublicPlaylist")
+    def test_playlist_has_name_and_id(self, mock_playlist_cls):
+        mock_playlist_cls.return_value.get_playlist_info.return_value = {
+            "data": {"playlistV2": {"uri": f"spotify:playlist:{PLAYLIST_ID}", "name": "Fixture Playlist"}}}
+        playlist = buildClient().playlist(PLAYLIST_ID)
+        self.assertEqual(playlist["name"], "Fixture Playlist")
+        self.assertEqual(playlist["id"], PLAYLIST_ID)
+
+
+class TestCurrentUserContract(unittest.TestCase):
+    """The listener reads current_user().get("id") and .get("email") to detect
+    cookie contamination. For some account types Spotify's profile carries no
+    username, and the listener's own comments record that the email then serves
+    AS the id - so id falls back to email rather than to None."""
+
+    def _client(self):
+        sp = buildClient()
+        sp.user_auth = MagicMock()  #< logged-in sentinel; profile call is mocked anyway
+        return sp
+
+    @patch("spotapi.user.User")
+    def test_id_and_email_from_profile(self, mock_user_cls):
+        mock_user_cls.return_value.get_user_info.return_value = {
+            "profile": {"username": "spotify_user_1", "email": "person@example.com"}}
+        user = self._client().current_user()
+        self.assertEqual(user["id"], "spotify_user_1")
+        self.assertEqual(user["email"], "person@example.com")
+
+    @patch("spotapi.user.User")
+    def test_id_falls_back_to_email_when_no_username(self, mock_user_cls):
+        mock_user_cls.return_value.get_user_info.return_value = {
+            "profile": {"email": "person@example.com"}}
+        user = self._client().current_user()
+        self.assertEqual(user["id"], "person@example.com")
+        self.assertEqual(user["email"], "person@example.com")
+
+
+class TestRecentlyPlayedBufferContract(unittest.TestCase):
+    """current_user_recently_played() is a LOCAL buffer, not a Spotify call -
+    the single most important fact in this file. The listener's Z1 dedup
+    (getNewItems) and the worker's item processing depend on:
+      - a list (not None) even before anything played,
+      - items shaped {"track", "played_at", "ms_played", "context"},
+      - oldest-first order, capped at 50,
+      - zero network on read."""
+
+    def test_empty_before_anything_played(self):
+        self.assertEqual(buildClient().current_user_recently_played(), [])
+
+    @patch("spotapi.Public")
+    def test_item_shape_after_a_play(self, mock_public):
+        mock_public.song_info.return_value = {"data": {"trackUnion": fakeTrackUnion()}}
+        sp = buildClient()
+        sp._addToRecentlyPlayed(f"spotify:track:{TRACK_ID}", "2026-07-30T12:00:00Z",
+                                f"spotify:playlist:{PLAYLIST_ID}", 200040)
+
+        items = sp.current_user_recently_played()
+        self.assertEqual(len(items), 1)
+        item = items[0]
+        self.assertEqual(item["track"]["id"], TRACK_ID)
+        self.assertEqual(item["played_at"], "2026-07-30T12:00:00Z")
+        self.assertEqual(item["ms_played"], 200040)
+        self.assertEqual(item["context"]["uri"], f"spotify:playlist:{PLAYLIST_ID}")
+
+    @patch("spotapi.Public")
+    def test_no_context_is_tolerated(self, mock_public):
+        """A play with no known source still counts (spotifyClient.formatTrack
+        treats a missing/None context as "source unknown", never an error)."""
+        mock_public.song_info.return_value = {"data": {"trackUnion": fakeTrackUnion()}}
+        sp = buildClient()
+        sp._addToRecentlyPlayed(f"spotify:track:{TRACK_ID}", "2026-07-30T12:00:00Z", None, 1000)
+        item = sp.current_user_recently_played()[0]
+        self.assertTrue(item["context"] is None or item["context"].get("uri") in (None, ""))
+
+    @patch("spotapi.Public")
+    def test_oldest_first_capped_at_50(self, mock_public):
+        mock_public.song_info.return_value = {"data": {"trackUnion": fakeTrackUnion()}}
+        sp = buildClient()
+        for i in range(55):
+            sp._addToRecentlyPlayed(f"spotify:track:{TRACK_ID}", f"2026-07-30T12:{i:02d}:00Z", None, 1000)
+
+        items = sp.current_user_recently_played()
+        self.assertEqual(len(items), 50)
+        self.assertEqual(items[0]["played_at"], "2026-07-30T12:05:00Z")   #< oldest surviving
+        self.assertEqual(items[-1]["played_at"], "2026-07-30T12:54:00Z")  #< newest
+
+    def test_read_makes_no_network_call(self):
+        with patch("spotapi.Public") as mock_public:
+            buildClient().current_user_recently_played()
+            mock_public.song_info.assert_not_called()
+            mock_public.return_value.song_search.assert_not_called()
+
+
+class TestLoginContract(unittest.TestCase):
+    """Login rules the listener's failure handling is built on:
+      - a failed login RETURNS False and leaves user_auth a bool - it must not
+        raise, and must not leave a half-built Login (spotifyListener's
+        loginFailed branch reads exactly this sentinel),
+      - the session matching the constructor's email is chosen from a
+        multi-session cookies file (the cross-user contamination fix),
+      - every login gets a FRESH TLSClient, never a shared default (ditto)."""
+
+    def setUp(self):
+        self._tmp = TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.cookiesFile = str(Path(self._tmp.name) / "cookies.json")
+
+    def _writeSessions(self, identifiers):
+        with open(self.cookiesFile, "w") as f:
+            json.dump([{"identifier": ident, "cookies": {}} for ident in identifiers], f)
+
+    def test_missing_cookies_file_fails_closed(self):
+        from Database.Spotify import Spotify
+        sp = Spotify(cookiesFile=str(Path(self._tmp.name) / "nope.json"), email="a@b.c")
+        self.assertIsInstance(sp.user_auth, bool)
+        self.assertFalse(sp.isLoggedIn())
+
+    def test_corrupt_cookies_file_fails_closed(self):
+        Path(self.cookiesFile).write_text("{not json", encoding="utf-8")
+        from Database.Spotify import Spotify
+        sp = Spotify(cookiesFile=self.cookiesFile, email="a@b.c")
+        self.assertFalse(sp.isLoggedIn())
+
+    @patch("spotapi.Login")
+    def test_email_selects_matching_session(self, mock_login):
+        self._writeSessions(["other@example.com", "target@example.com"])
+        from Database.Spotify import Spotify
+        Spotify(cookiesFile=self.cookiesFile, email="target@example.com")
+        identifier = mock_login.from_saver.call_args.args[2]
+        self.assertEqual(identifier, "target@example.com")
+
+    @patch("spotapi.Login")
+    def test_no_match_falls_back_to_first_session(self, mock_login):
+        self._writeSessions(["first@example.com", "second@example.com"])
+        from Database.Spotify import Spotify
+        Spotify(cookiesFile=self.cookiesFile, email="absent@example.com")
+        self.assertEqual(mock_login.from_saver.call_args.args[2], "first@example.com")
+
+    @patch("spotapi.Login")
+    def test_each_login_gets_a_fresh_tls_client(self, mock_login):
+        """Two logins must not share a client: spotapi's Config dataclass
+        defaults `client` to ONE import-time TLSClient, so every user's cookies
+        landed in one process-wide jar - the cross-user contamination bug."""
+        self._writeSessions(["a@example.com"])
+        from Database.Spotify import Spotify
+        Spotify(cookiesFile=self.cookiesFile, email="a@example.com")
+        Spotify(cookiesFile=self.cookiesFile, email="a@example.com")
+
+        cfg1 = mock_login.from_saver.call_args_list[0].args[1]
+        cfg2 = mock_login.from_saver.call_args_list[1].args[1]
+        self.assertIsNot(cfg1.client, cfg2.client)
+
+    @patch("spotapi.Login")
+    def test_successful_login_reports_logged_in(self, mock_login):
+        self._writeSessions(["a@example.com"])
+        from Database.Spotify import Spotify
+        sp = Spotify(cookiesFile=self.cookiesFile, email="a@example.com")
+        self.assertTrue(sp.isLoggedIn())
+        self.assertEqual(sp.email, "a@example.com")
+
+
+class TestListenerInternalsContract(unittest.TestCase):
+    """spotifyListener reaches into the client via getattr chains during
+    connect-state reads and shutdown. The attribute NAMES are the contract:
+      sp.lastPlayedManager            None until the listener starts
+      lastPlayedManager.manager       the PlayerStatus (has ._state, .ws)
+      lastPlayedManager.run           writable stop flag
+      lastPlayedManager.thread        joinable Thread"""
+
+    def test_fresh_client_has_no_last_played_manager(self):
+        sp = buildClient()
+        self.assertIsNone(getattr(sp, "lastPlayedManager", "MISSING"),
+                          "lastPlayedManager must exist and be None before start")
+
+    def test_start_wires_manager_run_and_thread(self):
+        sp = buildClient()
+        sp.user_auth = MagicMock()  #< logged-in sentinel
+
+        fakeManagerCls = MagicMock()
+        with patch("Database.Spotify.client.RecentlyPlayedManager", fakeManagerCls):
+            sp.startRecentlyPlayedListener(refreshInterval=6)
+
+        fakeManagerCls.assert_called_once_with(sp.user_auth)
+        manager = fakeManagerCls.return_value
+        self.assertIs(sp.lastPlayedManager, manager)
+        # started with the client's buffer-append callback and the interval
+        callbackArg, intervalArg = manager.start.call_args.args
+        self.assertEqual(callbackArg, sp._addToRecentlyPlayed)
+        self.assertEqual(intervalArg, 6)
+
+
+if __name__ == "__main__":
+    unittest.main()
