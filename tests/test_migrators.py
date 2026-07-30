@@ -98,6 +98,74 @@ class TestMigrateIfNeeded(unittest.TestCase):
             self.assertEqual((calledMajor, calledMinor), (1, 7))
             self.assertEqual(Path(calledBaseDir).resolve(), migratorsDir.resolve())
 
+    def test_json_era_database_is_refused_with_an_upgrade_path(self):
+        """The pre-SQLite migrators (1.0.0-1.5.0, all operating on
+        history.json/entries.json/tracks.json) were deleted. A database that
+        old must get a clear refusal naming the last release that can still
+        upgrade it - not a FileNotFoundError from a missing migrator module,
+        and absolutely not a silent skip."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            migratorsDir = base / "Migrators"
+            migratorsDir.mkdir()
+            (base / "VERSION").write_text("1.47.0", encoding="utf-8")
+            usersDir = base / "Users"   #< JSON era predates the Data/ rename
+            usersDir.mkdir()
+            (usersDir / "VERSION").write_text("1.4.0", encoding="utf-8")
+
+            with patch.object(migrateModule, "__file__", str(migratorsDir / "migrate.py")), \
+                 patch.object(migrateModule, "migrate") as mock_migrate:
+                with self.assertRaises(RuntimeError) as ctx:
+                    migrateModule.migrateIfNeeded()
+
+            mock_migrate.assert_not_called()
+            message = str(ctx.exception)
+            self.assertIn("1.4.0", message)   #< names the version it found
+            self.assertIn(migrateModule.LAST_JSON_ERA_CAPABLE_RELEASE, message)  #< and the way out
+
+    def test_a_database_at_the_floor_still_migrates(self):
+        """1.6.0 is the oldest version with a surviving migrator - it must
+        keep migrating, only versions strictly below it are refused."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            migratorsDir = base / "Migrators"
+            migratorsDir.mkdir()
+            (base / "VERSION").write_text("1.7.0", encoding="utf-8")
+            usersDir = base / "Users"
+            usersDir.mkdir()
+            versionFile = usersDir / "VERSION"
+            versionFile.write_text("1.6.0", encoding="utf-8")
+
+            def fakeMigrate(major, minor, baseDir):
+                versionFile.write_text("1.7.0", encoding="utf-8")
+
+            with patch.object(migrateModule, "__file__", str(migratorsDir / "migrate.py")), \
+                 patch.object(migrateModule, "migrate", side_effect=fakeMigrate) as mock_migrate:
+                migrateModule.migrateIfNeeded()
+
+            mock_migrate.assert_called_once()
+            self.assertEqual(mock_migrate.call_args.args[:2], (1, 6))
+
+    def test_matching_below_floor_versions_are_left_alone(self):
+        """An ancient install whose app and database agree needs no migration,
+        so the floor must not reject it - there is nothing to migrate.
+        (test_no_migration_when_versions_match already runs at 1.5.0; this
+        test exists to say that behavior is deliberate, not an oversight.)"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            migratorsDir = base / "Migrators"
+            migratorsDir.mkdir()
+            (base / "VERSION").write_text("1.3.0", encoding="utf-8")
+            usersDir = base / "Users"
+            usersDir.mkdir()
+            (usersDir / "VERSION").write_text("1.3.0", encoding="utf-8")
+
+            with patch.object(migrateModule, "__file__", str(migratorsDir / "migrate.py")), \
+                 patch.object(migrateModule, "migrate") as mock_migrate:
+                migrateModule.migrateIfNeeded()   #< must not raise
+
+            mock_migrate.assert_not_called()
+
     def test_migrator_module_name_includes_the_major_version(self):
         """migrate() must not hardcode major version 1 into the module name it
         loads - a future migrate2_0_0.py must be reachable once the database

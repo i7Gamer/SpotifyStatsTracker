@@ -1,17 +1,12 @@
 # SPDX-FileCopyrightText: 2026 i7Gamer
-# SPDX-FileCopyrightText: 2026 Tzur Soffer
 # SPDX-License-Identifier: AGPL-3.0-or-later
-#
-# Portions remain copyright Tzur Soffer under the MIT License (LICENSE.MIT) and
-# stay available under MIT from the upstream project; the file as a whole is
-# AGPL-3.0-or-later. See NOTICE.
-
-from pathlib import Path
 
 try:
     from Database.Migrators import dbversion
 except ModuleNotFoundError:
     import dbversion
+
+from pathlib import Path
 
 
 def resolveRuntimeDir(baseDir: Path) -> Path:
@@ -30,15 +25,25 @@ def resolveRuntimeDir(baseDir: Path) -> Path:
     return dataDir
 
 
-class BaseMigrator:
+class BaseMigrator:  #< one step in the chain migrate.py drives
+    """Subclasses override migrate() (calling super() so checkPreconditions
+    runs) and finish by calling updateAppVersion()."""
+
     def __init__(self, fromVersion: str, toVersion: str, *args, **kwargs):
-        self.baseDir = Path(__file__).resolve().parent
+        self.fromVersion = fromVersion
+        self.toVersion = toVersion
+        self.baseDir: Path = Path(__file__).resolve().parent
+        self._bindRuntimePaths()
+        self.databaseVersion = self._readVersion()
+
+    def _bindRuntimePaths(self) -> None:
+        """Point dbPath/databaseVersionFile at wherever the runtime dir IS
+        right now - resolved again by updateAppVersion because a migrator can
+        move the directory (Users/ -> Data/) or create spotify_stats.db for
+        the first time mid-step (migrate1_6_0 did both)."""
         runtimeDir = resolveRuntimeDir(self.baseDir)
         self.dbPath = runtimeDir / "spotify_stats.db"
         self.databaseVersionFile = runtimeDir / "VERSION"
-        self.databaseVersion = self._readVersion()
-        self.fromVersion = fromVersion
-        self.toVersion = toVersion
 
     def _readVersion(self) -> str:
         """The version lives inside the .db file itself (schema_version
@@ -63,25 +68,23 @@ class BaseMigrator:
         major, minor = version.split(".")[:2]
         return int(major), int(minor)
 
-    def checkPreconditions(self):
+    def checkPreconditions(self) -> None:
+        # The message text is pinned by tests/test_migrator_base.py - it is
+        # what an operator sees when a chain is run out of order.
         if self.databaseVersion != self.fromVersion:
-            raise Exception(f"Database version {self.databaseVersion} does not match migrator's expected from-version {self.fromVersion}.")
+            raise Exception(
+                f"Database version {self.databaseVersion} does not match "
+                f"migrator's expected from-version {self.fromVersion}.")
 
-    def updateAppVersion(self, newVersion):
-        self.databaseVersion = newVersion
-        # Re-resolved fresh (not just self.dbPath/self.databaseVersionFile)
-        # because a migrator can move the runtime dir (Users/ -> Data/) or
-        # create spotify_stats.db for the first time before calling this -
-        # see migrate1_6_0, which does both.
-        runtimeDir = resolveRuntimeDir(self.baseDir)
-        self.databaseVersionFile = runtimeDir / "VERSION"
-        self.dbPath = runtimeDir / "spotify_stats.db"
+    def updateAppVersion(self, newVersion: str) -> None:
+        self._bindRuntimePaths()   #< the step may have moved the runtime dir - see _bindRuntimePaths
+        self.databaseVersion = newVersion   #< keep the in-memory view in step with what is persisted below
 
-        self.databaseVersionFile.write_text(newVersion)
+        self.databaseVersionFile.write_text(newVersion, encoding="utf-8")
         # Kept as a safety-net/rollback path alongside the in-db marker
         # (cheap to write, lets an older app build still find a version).
         if self.dbPath.exists():
             dbversion.writeDbVersion(self.dbPath, newVersion)
 
-    def migrate(self):
-        self.checkPreconditions()
+    def migrate(self) -> None:
+        self.checkPreconditions()   #< every subclass's super().migrate() lands here

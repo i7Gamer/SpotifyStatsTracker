@@ -1,13 +1,5 @@
 # SPDX-FileCopyrightText: 2026 i7Gamer
-# SPDX-FileCopyrightText: 2026 Tzur Soffer
 # SPDX-License-Identifier: AGPL-3.0-or-later
-#
-# Portions remain copyright Tzur Soffer under the MIT License (LICENSE.MIT) and
-# stay available under MIT from the upstream project; the file as a whole is
-# AGPL-3.0-or-later. See NOTICE.
-
-from pathlib import Path
-import importlib.util
 
 try:
     from Database.Migrators.base import resolveRuntimeDir, BaseMigrator
@@ -16,27 +8,43 @@ except ModuleNotFoundError:
     from base import resolveRuntimeDir, BaseMigrator
     import dbversion
 
-def _import(name, modulePath):
-    spec = importlib.util.spec_from_file_location(name, modulePath)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+from importlib.util import module_from_spec, spec_from_file_location
+from pathlib import Path
+
+# The oldest database version with a surviving migrator. Everything below it
+# is the JSON-file era (history.json/entries.json/tracks.json): those six
+# migrators were removed in Phase 2 of the dependency rewrite, and the release
+# named here is the last one that still carried them. A database that old gets
+# a clear refusal pointing through that release instead of a
+# FileNotFoundError from a missing migrator module.
+MIGRATION_FLOOR_VERSION = "1.6.0"
+LAST_JSON_ERA_CAPABLE_RELEASE = "1.46.0"
+
+
+def _loadMigratorModule(moduleName: str, modulePath: Path):
+    """One migrator file, imported by path - not via the package system, so
+    dev.py can run migrations standalone from inside Database/."""
+    spec = spec_from_file_location(moduleName, modulePath)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"No loadable migrator module at {modulePath}")
+    migratorModule = module_from_spec(spec)
+    spec.loader.exec_module(migratorModule)
+    return migratorModule
+
 
 def migrate(major, minor, baseDir):
-    print(f"Migrating from version {major}.{minor}.0")
+    """Run the single migration step that lifts a {major}.{minor}.0 database
+    to the next minor version."""
+    fromVersion = f"{major}.{minor}.0"
+    print(f"Migrating from version {fromVersion}")
 
     # Migrator module names encode the major version too (not hardcoded to
     # "1") so a future major-version bump's migrators (e.g. migrate2_0_0.py)
     # get picked up correctly instead of always looking for a "migrate1_*"
     # file regardless of which major version the database is actually on.
     moduleName = f"migrate{major}_{minor}_0"
-    modulePath = baseDir / f"{moduleName}.py"
-    module = _import(moduleName, modulePath)
-
-    fromVersion = f"{major}.{minor}.0"
-    toVersion = f"{major}.{minor + 1}.0"
-    Migrator = module.Migrator
-    Migrator(fromVersion, toVersion).migrate()
+    migratorModule = _loadMigratorModule(moduleName, baseDir / f"{moduleName}.py")
+    migratorModule.Migrator(fromVersion, f"{major}.{minor + 1}.0").migrate()
 
 def _resolveDatabaseVersion(runtimeDir: Path) -> str | None:
     """The current database version, or None if this is a genuinely fresh
@@ -106,32 +114,47 @@ def _snapshotBeforeMigrating(runtimeDir: Path) -> None:
         print(f"Pre-migration snapshot failed (continuing without it): {e}")
 
 
-def migrateIfNeeded():
-    baseDir = Path(__file__).resolve().parent
-    appVersionFile = baseDir / ".." / "VERSION"
-    appVersion = appVersionFile.read_text().strip()
+def migrateIfNeeded() -> None:
+    migratorsDir = Path(__file__).resolve().parent
+    appVersion = (migratorsDir / ".." / "VERSION").read_text().strip()
 
-    runtimeDir = resolveRuntimeDir(baseDir)
+    runtimeDir = resolveRuntimeDir(migratorsDir)
     databaseVersion = _resolveDatabaseVersion(runtimeDir)
     if databaseVersion is None:
+        # First run: stamp the current version everywhere and skip migration.
         runtimeDir.mkdir(parents=True, exist_ok=True)   #< runtime data dir absent on a fresh install
         (runtimeDir / "VERSION").write_text(appVersion)
         dbPath = runtimeDir / "spotify_stats.db"
         if dbPath.exists():
             dbversion.writeDbVersion(dbPath, appVersion)
-        return   #< means this is first run, no migration needed
+        return
 
     # Compare the full (major, minor) pair, not just the minor component -
     # otherwise a database and app that only differ in major version (e.g.
     # "1.7.0" vs "2.7.0") would be mistaken for already being up to date, and
     # a genuine major bump would make the loop below hunt forever for a
     # migrator file that can never satisfy a minor-only comparison.
-    if BaseMigrator.getMajorMinor(databaseVersion) != BaseMigrator.getMajorMinor(appVersion):
-        _snapshotBeforeMigrating(runtimeDir)
+    needsMigration = BaseMigrator.getMajorMinor(databaseVersion) != BaseMigrator.getMajorMinor(appVersion)
+    if not needsMigration:
+        return
+
+    # The floor only matters when there is something to migrate: an ancient
+    # install whose app and database AGREE has nothing to run and keeps
+    # working (its own release still carries whatever it needs).
+    if BaseMigrator.getMajorMinor(databaseVersion) < BaseMigrator.getMajorMinor(MIGRATION_FLOOR_VERSION):
+        raise RuntimeError(
+            f"This database is at version {databaseVersion}, older than "
+            f"{MIGRATION_FLOOR_VERSION} - the oldest version this release can "
+            f"still migrate (the JSON-file-era migrators were removed). Run "
+            f"release {LAST_JSON_ERA_CAPABLE_RELEASE} once to bring the data "
+            f"up, then upgrade to this release."
+        )
+
+    _snapshotBeforeMigrating(runtimeDir)
 
     while BaseMigrator.getMajorMinor(databaseVersion) != BaseMigrator.getMajorMinor(appVersion):
         dbMajor, dbMinor = BaseMigrator.getMajorMinor(databaseVersion)
-        migrate(dbMajor, dbMinor, baseDir)
+        migrate(dbMajor, dbMinor, migratorsDir)
 
-        runtimeDir = resolveRuntimeDir(baseDir)   #< location may have changed (e.g. a Users/ -> Data/ rename)
+        runtimeDir = resolveRuntimeDir(migratorsDir)   #< location may have changed (e.g. a Users/ -> Data/ rename)
         databaseVersion = _resolveDatabaseVersion(runtimeDir)

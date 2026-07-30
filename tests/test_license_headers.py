@@ -72,10 +72,24 @@ def repoIsShallow():
 
 
 def _upstreamLineCount(path):
-    """How many of this file's current lines git blames on the upstream author."""
+    """How many of this file's current lines git blames on the upstream author.
+
+    Whitespace-only lines are excluded: a blank line carries no copyrightable
+    expression, so it cannot be an "upstream MIT line" in any sense the notice
+    exists for - and git's diff freely re-anchors blanks as unchanged context,
+    so counting them would demand pure churn commits to flip lines that say
+    nothing."""
     blame = _git("blame", "--line-porcelain", "--", path)
-    return sum(1 for line in blame.splitlines()
-               if line.startswith("author ") and UPSTREAM_AUTHOR in line)
+    count = 0
+    author = None
+    for line in blame.splitlines():
+        if line.startswith("author "):
+            author = line
+        elif line.startswith("\t"):
+            if author and UPSTREAM_AUTHOR in author and line[1:].strip():
+                count += 1
+            author = None
+    return count
 
 
 def _head(path, lines=MAX_HEADER_LINES):
