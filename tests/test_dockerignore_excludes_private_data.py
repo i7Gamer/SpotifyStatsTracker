@@ -50,6 +50,11 @@ MUST_BE_EXCLUDED = (
     ".claude/worktrees/some-worktree/secrets/secret.key",
     "Database/Data/app.log",
     ".claude/worktrees/some-worktree/Database/Data/app.log",
+    #< the smoketest's session file holds live sp_dc/sp_key cookies, and its
+    #  own docs say to keep it "beside this module" - i.e. inside the tree
+    "Database/Spotify/session.json",
+    "session.json",
+    "sessions.json",
 )
 
 # The image genuinely needs these - a rule broad enough to catch the above must
@@ -69,6 +74,9 @@ MUST_BE_INCLUDED = (
     #< the license must travel with the work (AGPL-3.0 / GPL-3.0 section 4)
     "COPYING",
     "NOTICE",
+    #< placeholders only, and the reference the smoketest's usage text points at -
+    #  the negation that keeps it is also this suite's proof negation works at all
+    "Database/Spotify/session.example.json",
 )
 
 
@@ -103,7 +111,16 @@ def _matches(pattern: str, path: str) -> bool:
 
 
 def _isExcluded(path: str) -> bool:
-    return any(_matches(pattern, path) for pattern in _patterns())
+    """Docker applies the rules in order and the LAST match wins, which is what
+    lets a `!` exception re-include one file from under a broad exclusion."""
+    excluded = False
+    for pattern in _patterns():
+        if pattern.startswith("!"):
+            if _matches(pattern[1:], path):
+                excluded = False
+        elif _matches(pattern, path):
+            excluded = True
+    return excluded
 
 
 class DockerignoreTestCase(unittest.TestCase):
@@ -130,6 +147,28 @@ class DockerignoreTestCase(unittest.TestCase):
     def test_a_directory_pattern_covers_its_subtree(self):
         self.assertTrue(_matches("secrets", "secrets/secret.key"))
         self.assertFalse(_matches("secrets", "secretsomething.py"))
+
+    def test_a_negation_only_reincludes_its_own_path(self):
+        """The matcher's negation control: last match wins, and an exception
+        re-includes exactly its named file - not its siblings."""
+        #< bare + **/ pair, same as the real file: `**` does not cover the
+        #  zero-directory case in this matcher (nor reliably in docker's own)
+        patterns = ["session*.json", "**/session*.json",
+                    "!Database/Spotify/session.example.json"]
+
+        def isExcluded(path):
+            excluded = False
+            for pattern in patterns:
+                if pattern.startswith("!"):
+                    if _matches(pattern[1:], path):
+                        excluded = False
+                elif _matches(pattern, path):
+                    excluded = True
+            return excluded
+
+        self.assertFalse(isExcluded("Database/Spotify/session.example.json"))
+        self.assertTrue(isExcluded("Database/Spotify/session.json"))
+        self.assertTrue(isExcluded("session.json"))
 
 
 if __name__ == "__main__":

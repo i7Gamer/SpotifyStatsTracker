@@ -38,6 +38,12 @@ cookies.json
 cookies2.json
 cookies*.json
 **/cookies*.json
+# The smoketest's spotapi sessions file: live sp_dc/sp_key cookies, documented
+# as living beside Database/Spotify/smoketest.py. The example file is
+# placeholders and the reference the smoketest's usage text points at.
+session*.json
+**/session*.json
+!Database/Spotify/session.example.json
 # Spotify export uploads: these are complete listening histories. The drop
 # folder exists to hold them, so the anchored spellings below never matched the
 # files that are actually there (autoImport/<user>/Streaming_History_*.json).
