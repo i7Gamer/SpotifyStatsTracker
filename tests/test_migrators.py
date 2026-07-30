@@ -15,6 +15,7 @@ if isinstance(sys.modules.get("Database.Migrators.migrate"), MagicMock):
 
 import Database.Migrators.migrate as migrateModule
 from Database.Migrators import dbversion
+from Database.Migrators.base import BaseMigrator
 
 
 class TestMigrateIfNeeded(unittest.TestCase):
@@ -122,6 +123,20 @@ class TestMigrateIfNeeded(unittest.TestCase):
             message = str(ctx.exception)
             self.assertIn("1.4.0", message)   #< names the version it found
             self.assertIn(migrateModule.LAST_JSON_ERA_CAPABLE_RELEASE, message)  #< and the way out
+
+    def test_the_named_rescue_release_is_older_than_this_one(self):
+        """The refusal says "run release X once, then upgrade to this
+        release". If X is the version THIS tree ships as, the instruction is
+        circular: two artifacts share the number and only the older one still
+        carries the JSON-era migrators. The named release must predate the
+        removal - i.e. be strictly older than Database/VERSION."""
+        current = (Path(migrateModule.__file__).resolve().parent.parent / "VERSION") \
+            .read_text(encoding="utf-8").strip()
+        self.assertLess(
+            BaseMigrator.getMajorMinor(migrateModule.LAST_JSON_ERA_CAPABLE_RELEASE),
+            BaseMigrator.getMajorMinor(current),
+            "LAST_JSON_ERA_CAPABLE_RELEASE points at the release printing the "
+            "refusal - a user told to 'run it once' is already running it")
 
     def test_a_database_at_the_floor_still_migrates(self):
         """1.6.0 is the oldest version with a surviving migrator - it must

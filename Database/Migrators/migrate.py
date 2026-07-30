@@ -18,7 +18,13 @@ from pathlib import Path
 # a clear refusal pointing through that release instead of a
 # FileNotFoundError from a missing migrator module.
 MIGRATION_FLOOR_VERSION = "1.6.0"
-LAST_JSON_ERA_CAPABLE_RELEASE = "1.46.0"
+# 1.45.0, NOT the release the migrators were removed in: this tree still calls
+# itself 1.46.0, so naming 1.46.0 would tell the user to run the very release
+# that is refusing them - two artifacts share that number and only the one cut
+# before the removal can migrate. 1.45.0 uniquely predates the removal and
+# migrates a JSON-era database all the way past the floor.
+# (tests/test_migrators.py pins this constant strictly below Database/VERSION.)
+LAST_JSON_ERA_CAPABLE_RELEASE = "1.45.0"
 
 
 def _loadMigratorModule(moduleName: str, modulePath: Path):
