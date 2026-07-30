@@ -320,22 +320,63 @@ class TestAlbumPlaylistContract(unittest.TestCase):
         self.assertEqual(playlist["id"], PLAYLIST_ID)
 
 
-class TestPublicLookupClientIsolation(unittest.TestCase):
-    """album() and artist() must each get their own TLSClient.
+class TestPublicLookupClientPooling(unittest.TestCase):
+    """album() and artist() must BORROW their TLSClient from spotapi's locked
+    pool, never mint one per call and never fall back to the shared default.
 
-    spotapi.PublicAlbum/Artist default their `client` argument to ONE
-    import-time TLSClient, and BaseClient.__init__ re-points that shared
-    client's `authenticate`/`on_auth_failure` callbacks at itself
-    (spotapi/client.py:94-95) - the identical footgun that made concurrent
-    spotapi.Song() lookups authenticate with each other's state, and the one
-    the login path was fixed for. These callers really do run concurrently:
-    the metadata backfiller loops per user on its own thread while
-    media_fetch resolves artist images inside a thread pool."""
+    Two failure modes, and every test here pins one of them:
+
+    - Sharing: spotapi.PublicAlbum/Artist default their `client` argument to
+      ONE import-time TLSClient, and BaseClient.__init__ re-points that shared
+      client's `authenticate`/`on_auth_failure` callbacks at itself
+      (spotapi/client.py:94-95). These callers really do run concurrently -
+      the metadata backfiller loops per user on its own thread while
+      media_fetch resolves artist images inside a thread pool - so the shared
+      default races.
+    - Minting: a FRESH TLSClient per call is pinned forever, because both
+      TLSClient.__init__ and BaseClient.__init__ atexit.register a close that
+      is never unregistered (measured: 30 lookups left 30 live curl sessions
+      after gc). The pool bounds live clients at peak concurrency instead.
+
+    spotapi.Public's own song path already works this way (client_pool.get/
+    put); track() rides it via Public.song_info."""
+
+    def setUp(self):
+        from spotapi.public import client_pool
+        self.pool = client_pool
+        self.pool.clear()   #< start empty; tests seed exactly what they assert on
+        self.addCleanup(self.pool.clear)
 
     @patch("spotapi.PublicAlbum")
-    def test_each_album_lookup_builds_its_own_client(self, mock_album_cls):
+    def test_album_returns_its_borrowed_client_to_the_pool(self, mock_album_cls):
         mock_album_cls.return_value.get_album_info.return_value = {
             "data": {"albumUnion": fakeAlbumUnion()}}
+
+        buildClient().album(ALBUM_ID)
+
+        used = mock_album_cls.call_args.kwargs["client"]
+        self.assertIn(used, self.pool.queue,
+                      "the borrowed client must go back to the pool, not leak")
+
+    @patch("spotapi.Artist")
+    def test_artist_returns_its_borrowed_client_to_the_pool(self, mock_artist_cls):
+        mock_artist_cls.return_value.get_artist.return_value = {"data": {"artistUnion": {
+            "uri": f"spotify:artist:{ARTIST_ID}", "profile": {"name": "First Artist"}}}}
+
+        buildClient().artist(ARTIST_ID)
+
+        used = mock_artist_cls.call_args.kwargs["client"]
+        self.assertIn(used, self.pool.queue)
+
+    @patch("spotapi.PublicAlbum")
+    def test_sequential_lookups_reuse_the_pooled_client(self, mock_album_cls):
+        """The anti-leak half: a second lookup must pick the returned client
+        back up, not construct a new TLSClient (each construction is pinned
+        for the life of the process by its atexit registration)."""
+        mock_album_cls.return_value.get_album_info.return_value = {
+            "data": {"albumUnion": fakeAlbumUnion()}}
+        seeded = object()   #< anything pool-shaped; PublicAlbum is mocked
+        self.pool.put(seeded)
         sp = buildClient()
 
         sp.album(ALBUM_ID)
@@ -343,20 +384,38 @@ class TestPublicLookupClientIsolation(unittest.TestCase):
 
         first = mock_album_cls.call_args_list[0].kwargs["client"]
         second = mock_album_cls.call_args_list[1].kwargs["client"]
-        self.assertIsNot(first, second)
+        self.assertIs(first, seeded)
+        self.assertIs(second, seeded)
+        self.assertEqual(len(self.pool.queue), 1,
+                         "reuse must not grow the pool either")
 
-    @patch("spotapi.Artist")
-    def test_each_artist_lookup_builds_its_own_client(self, mock_artist_cls):
-        mock_artist_cls.return_value.get_artist.return_value = {"data": {"artistUnion": {
-            "uri": f"spotify:artist:{ARTIST_ID}", "profile": {"name": "First Artist"}}}}
-        sp = buildClient()
+    @patch("spotapi.PublicAlbum")
+    def test_the_client_is_returned_even_when_the_lookup_raises(self, mock_album_cls):
+        """The backfiller catches per-album exceptions and moves on - if the
+        raising lookup kept its client checked out, every failure would leak
+        one and a flaky stretch would drain the pool into minting."""
+        mock_album_cls.return_value.get_album_info.side_effect = RuntimeError("boom")
+        seeded = object()
+        self.pool.put(seeded)
 
-        sp.artist(ARTIST_ID)
-        sp.artist(ARTIST_ID)
+        with self.assertRaises(RuntimeError):
+            buildClient().album(ALBUM_ID)
 
-        first = mock_artist_cls.call_args_list[0].kwargs["client"]
-        second = mock_artist_cls.call_args_list[1].kwargs["client"]
-        self.assertIsNot(first, second)
+        self.assertIn(seeded, self.pool.queue)
+
+    def test_concurrent_borrows_get_distinct_clients(self):
+        """The isolation half (what commit 11af1fc fixed, kept): while one
+        lookup holds a client, an overlapping one must get a DIFFERENT one -
+        BaseClient re-points the borrowed client's auth callbacks at itself,
+        so two concurrent holders of one client authenticate through
+        whichever BaseClient was built last."""
+        import spotapi
+        from Database.Spotify.client import _pooledPublicClient
+
+        with _pooledPublicClient() as outer, _pooledPublicClient() as inner:
+            self.assertIsNot(outer, inner)
+            self.assertIsInstance(outer, spotapi.TLSClient)
+            self.assertIsInstance(inner, spotapi.TLSClient)
 
     @patch("spotapi.PublicAlbum")
     def test_the_client_is_not_spotapi_s_shared_default(self, mock_album_cls):

@@ -26,9 +26,11 @@ import json
 import logging
 import time
 from collections import deque
+from contextlib import contextmanager
 
 import spotapi
 import spotapi.user
+from spotapi.public import client_pool
 
 from Database.rate_limit import (
     SPOTIFY_LIMITER, SPOTIFY_TRACK_ACQUIRE_TIMEOUT_SECONDS,
@@ -232,6 +234,36 @@ def getTrackInfoWithRetry(trackId: str, max_retries: int = TRACK_FETCH_MAX_RETRI
                 raise
 
 
+@contextmanager
+def _pooledPublicClient():
+    """A TLSClient on loan from spotapi's locked pool, for one public
+    (unauthenticated) lookup - the same mechanism spotapi.Public already uses
+    for the track path, so album/artist lookups behave like song_info does.
+
+    Why not the constructor defaults: spotapi.PublicAlbum/Artist default
+    `client` to a single import-time TLSClient, and BaseClient.__init__
+    re-points that shared client's authenticate/on_auth_failure callbacks at
+    itself - so two concurrent lookups authenticate through whichever
+    BaseClient was constructed last. These callers really are concurrent: the
+    metadata backfiller loops per user on its own thread while media_fetch
+    resolves artist images in a thread pool. The pool hands concurrent
+    borrowers DISTINCT clients, which is all the isolation that race needs.
+
+    Why not a fresh TLSClient per call (what this replaced): both
+    TLSClient.__init__ and BaseClient.__init__ atexit.register a close that
+    nothing unregisters, so every construction pinned one live curl session
+    for the life of the process - measured at 30 lookups -> 30 sessions still
+    alive after gc. Borrowing bounds live clients at peak concurrency.
+    (BaseClient still appends one atexit entry per construction, but against
+    a pooled client they are cheap bound methods over the same few objects -
+    the pre-existing cost the track path has always paid, not a leak.)"""
+    client = client_pool.get()
+    try:
+        yield client
+    finally:
+        client_pool.put(client)
+
+
 def normalizeSpotifyId(value) -> str:
     """A bare entity id out of any form the app passes: spotify:<kind>:<id>
     URIs (the importer, straight from export files), open.spotify.com URLs, or
@@ -343,36 +375,21 @@ class Spotify:
             return fallbackTrackRecord(trackId)
         return formatTrackUnion(raw)
 
-    @staticmethod
-    def _publicLookupClient() -> "spotapi.TLSClient":
-        """A private TLSClient for one public (unauthenticated) lookup.
-
-        spotapi.PublicAlbum/Artist default `client` to a single import-time
-        TLSClient, and BaseClient.__init__ re-points that shared client's
-        authenticate/on_auth_failure callbacks at itself - so two concurrent
-        lookups authenticate through whichever BaseClient was constructed
-        last. Same footgun as Config.client and Song.client, and these callers
-        really are concurrent: the metadata backfiller loops per user on its
-        own thread while media_fetch resolves artist images in a thread pool.
-
-        It also bounds a leak - BaseClient.__init__ does
-        atexit.register(self.client.close), so every construction against the
-        shared default piles another entry onto the same object."""
-        return spotapi.TLSClient(TLS_CLIENT_PROFILE, "", auto_retries=TLS_CLIENT_AUTO_RETRIES)
-
     def album(self, albumId, *args, **kwargs) -> dict:
         """Album metadata, including up to the first page of its track list
         (get_album_info's default 25 - same ceiling as the wrapper this
         replaces; the backfiller uses those tracks as a duration source)."""
         albumId = normalizeSpotifyId(albumId)
-        payload = spotapi.PublicAlbum(albumId, client=self._publicLookupClient()).get_album_info()
+        with _pooledPublicClient() as client:
+            payload = spotapi.PublicAlbum(albumId, client=client).get_album_info()
         return formatAlbumUnion(((payload or {}).get("data") or {}).get("albumUnion") or {})
 
     def artist(self, artistId, *args, **kwargs) -> dict:
         """Artist profile + avatar images - media_fetch's lazy artist-image
         fallback reads images[0].url."""
         artistId = normalizeSpotifyId(artistId)
-        payload = spotapi.Artist(client=self._publicLookupClient()).get_artist(artistId)
+        with _pooledPublicClient() as client:
+            payload = spotapi.Artist(client=client).get_artist(artistId)
         return formatArtistUnion(((payload or {}).get("data") or {}).get("artistUnion") or {})
 
     def playlist(self, playlistId, *args, **kwargs) -> dict:
