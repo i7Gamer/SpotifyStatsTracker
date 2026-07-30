@@ -414,6 +414,23 @@ class ArtistNameFoldFallbackTestCase(unittest.TestCase):
         mockGet.assert_called_once()   #< name doesn't fold, no second request
 
     @patch("Database.lastfm.requests.get")
+    def test_tags_that_are_all_non_genres_do_not_count_as_a_hit(self, mockGet):
+        """"Recovered tags" only matter if they survive the genre whitelist -
+        a stylized name whose Last.fm entry carries nothing but non-genre
+        community tags ("seen live", "austria") is exactly as unresolved as
+        one carrying no tags at all, so the fold retry still has to fire."""
+        client, _ = self._client()
+        mockGet.side_effect = [
+            _response(payload={"toptags": {"tag": [
+                {"name": "seen live", "count": 100}, {"name": "austria", "count": 80}]}}),
+            _response(payload={"toptags": {"tag": [{"name": "rock", "count": 10}]}}),
+        ]
+        outcome = client.getArtistTopTags("HUGØ")
+        self.assertEqual([t["name"] for t in outcome.tags], ["rock"])
+        self.assertEqual(mockGet.call_count, 2)
+        self.assertEqual(mockGet.call_args_list[1].kwargs["params"]["artist"], "HUGO")
+
+    @patch("Database.lastfm.requests.get")
     def test_fallback_not_triggered_when_the_name_does_not_fold(self, mockGet):
         client, _ = self._client()
         mockGet.return_value = _response(payload={"toptags": {"tag": []}})
@@ -678,6 +695,24 @@ class AlbumTopTagsArtistNameFallbackTestCase(unittest.TestCase):
         thirdParams = mockGet.call_args_list[2].kwargs["params"]
         self.assertEqual(thirdParams["artist"], "HUGO")
 
+    @patch("Database.lastfm.requests.get")
+    def test_tags_that_are_all_non_genres_do_not_count_as_a_hit(self, mockGet):
+        """Non-genre tags leave the album with nothing to store, so the
+        artist-name retries must still fire (see the artist-side twin). The
+        verbatim name's album.getinfo fallback stays skipped - gettoptags did
+        answer with tags, which is the divergence that fallback tests for."""
+        client = self._client()
+        mockGet.side_effect = [
+            _response(payload={"toptags": {"tag": [{"name": "seen live", "count": 100}]}}),
+            _response(payload={"toptags": {"tag": [{"name": "rock", "count": 5}]}}),
+        ]
+        outcome = client.getAlbumTopTags("HUGØ", "Some Album")
+        self.assertEqual([t["name"] for t in outcome.tags], ["rock"])
+        self.assertEqual(mockGet.call_count, 2)
+        secondParams = mockGet.call_args_list[1].kwargs["params"]
+        self.assertEqual(secondParams["method"], "album.gettoptags")
+        self.assertEqual(secondParams["artist"], "HUGO")
+
 
 class TrackGetInfoFallbackTestCase(unittest.TestCase):
     """track.gettoptags is assumed to share the same confirmed-live
@@ -867,6 +902,21 @@ class TrackTopTagsArtistNameFallbackTestCase(unittest.TestCase):
         self.assertEqual(outcome.status, OUTCOME_OK)
         self.assertEqual(outcome.tags, [])
         self.assertEqual(mockGet.call_count, 2)   #< gettoptags + getinfo only, no name candidates to try
+
+    @patch("Database.lastfm.requests.get")
+    def test_tags_that_are_all_non_genres_do_not_count_as_a_hit(self, mockGet):
+        """Track-side twin of the artist/album cases: tags that all miss the
+        genre whitelist leave the track with nothing to store, so the
+        artist-name retries must still fire."""
+        client = self._client()
+        mockGet.side_effect = [
+            _response(payload={"toptags": {"tag": [{"name": "seen live", "count": 100}]}}),
+            _response(payload={"toptags": {"tag": [{"name": "pop", "count": 8}]}}),
+        ]
+        outcome = client.getTrackTopTags("HUGØ", "Some Track")
+        self.assertEqual([t["name"] for t in outcome.tags], ["pop"])
+        self.assertEqual(mockGet.call_count, 2)
+        self.assertEqual(mockGet.call_args_list[1].kwargs["params"]["artist"], "HUGO")
 
 
 class ArtistInfoBioTestCase(unittest.TestCase):

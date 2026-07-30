@@ -341,6 +341,18 @@ def _extractTrackInfoTags(payload) -> list:
     return []
 
 
+def _hasUsableGenres(outcome) -> bool:
+    """Whether a tag lookup actually resolved the entity - i.e. produced at
+    least one tag that survives the genre whitelist. Raw tags are the wrong
+    measure: Last.fm's community tags are full of non-genres ("seen live",
+    "austria", "national anthem") that filterTagsToGenres drops, leaving the
+    entity exactly as genre-less as one that came back with no tags at all.
+    Judging hits on `outcome.tags` therefore let a junk-tag result short-
+    circuit the artist-name retries that exist to find the entity's REAL
+    Last.fm entry (the stylized-name fold recovers ~40% of tested cases)."""
+    return bool(filterTagsToGenres(outcome.tags))
+
+
 def _logGetInfoRecovery(kind: str, tags: list, artistName: str, entityName: str) -> None:
     """Report a *.getinfo fallback recovery in terms of the GENRES it will
     actually contribute, not the raw tag count. Most of Last.fm's raw tags
@@ -513,7 +525,10 @@ class LastfmClient:
         override the original verbatim result, since it's the final word
         this lookup has left to give. Never replaces a real result and costs
         nothing extra on the majority of names with nothing to transform or
-        fold. `fetchOne(name)` -> outcome | None; `isHit(outcome)` -> bool."""
+        fold. `fetchOne(name)` -> outcome | None; `isHit(outcome)` -> bool -
+        for the tag lookups that's _hasUsableGenres, NOT "carries any tags":
+        a result of nothing but non-genre community tags stores nothing, so
+        it must not short-circuit the retries."""
         outcome = fetchOne(artistName)
         if outcome is None or outcome.status not in (OUTCOME_OK, OUTCOME_NOT_FOUND) or isHit(outcome):
             return outcome
@@ -541,7 +556,7 @@ class LastfmClient:
         return self._lookupWithArtistNameFallback(
             artistName,
             lambda name: self._fetchTopTags("artist.gettoptags", {"artist": name}, stop_event),
-            lambda outcome: bool(outcome.tags),
+            _hasUsableGenres,
             "artist tags")
 
     def getAlbumTopTags(self, artistName: str, albumName: str,
@@ -549,7 +564,7 @@ class LastfmClient:
         return self._lookupWithArtistNameFallback(
             artistName,
             lambda name: self._fetchAlbumTopTagsForArtist(name, albumName, stop_event),
-            lambda outcome: bool(outcome.tags),
+            _hasUsableGenres,
             "album tags")
 
     def _fetchAlbumTopTagsForArtist(self, artistName: str, albumName: str,
@@ -584,7 +599,7 @@ class LastfmClient:
         return self._lookupWithArtistNameFallback(
             artistName,
             lambda name: self._fetchTrackTopTagsForArtist(name, trackName, stop_event),
-            lambda outcome: bool(outcome.tags),
+            _hasUsableGenres,
             "track tags")
 
     def _fetchTrackTopTagsForArtist(self, artistName: str, trackName: str,
