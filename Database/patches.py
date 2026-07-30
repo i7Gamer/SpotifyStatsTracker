@@ -413,6 +413,32 @@ def _setRecvReconnectFailures(self, count: int) -> None:
 spotapi.websocket.WebsocketStreamer.get_packet = patched_get_packet
 
 
+# 6. Remove @enforce's frozen copies of the methods patched above.
+#
+# spotapi's @enforce class decorator iterates dir(cls) - inherited methods
+# included - and setattr's a signature-checking wrapper of each onto the
+# decorated class itself. PlayerStatus and EventManager are both decorated, so
+# at import time they froze their own copies of the ORIGINAL base-class
+# methods, and those copies shadow every class-level patch above on the
+# classes this app actually instantiates: get_packet's frozen copy still had
+# the (self)-only signature, so the push loop's get_packet(timeout=...) raised
+# "got an unexpected keyword argument 'timeout'" and killed the listener
+# thread (2026-07-31) - and patched_keep_alive never ran at all. Deleting the
+# copies lets method lookup fall through the MRO to the patched versions.
+# Dunders (__init__, patch 3) never need this: @enforce skips them. The
+# state/saved_state properties don't either: @enforce skips properties.
+# The vars() guard covers names a given spotapi version never froze (the
+# PyPI/fork builds disagree on whether reconnect exists to begin with).
+_ENFORCE_SHADOWED_METHODS = (
+    (spotapi.status.PlayerStatus, ("keep_alive", "get_packet")),
+    (spotapi.status.EventManager, ("keep_alive", "get_packet", "reconnect", "renew_state")),
+)
+for _shadowedClass, _methodNames in _ENFORCE_SHADOWED_METHODS:
+    for _methodName in _methodNames:
+        if _methodName in vars(_shadowedClass):
+            delattr(_shadowedClass, _methodName)
+
+
 RESPONSE_SNIPPET_MAX_LEN = 1000
 RESPONSE_ERROR_SNIPPET_MAX_LEN = 200
 

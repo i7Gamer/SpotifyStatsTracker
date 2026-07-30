@@ -861,6 +861,50 @@ class TestPatchedGetPacket(unittest.TestCase):
         self.assertIsNone(event)   #< _listen's own guard covers this
 
 
+class TestEnforceShadowRemoval(unittest.TestCase):
+    """spotapi's @enforce class decorator iterates dir(cls) - inherited methods
+    included - and setattr's a signature-checking wrapper of each onto the
+    decorated class itself. PlayerStatus and EventManager are both decorated,
+    so at import time they froze their own copies of the ORIGINAL base-class
+    methods, shadowing every later class-level patch. The 2026-07-31 symptom:
+    the push loop's get_packet(timeout=...) hit the frozen (self)-only
+    signature and died with "TypeError: got an unexpected keyword argument
+    'timeout'" - taking the whole listener thread with it, since only a
+    "fallback" RETURN reverts to polling, never an exception. These tests pin
+    that every class the app can instantiate resolves to the patched methods."""
+
+    def test_player_status_sees_the_patched_get_packet(self):
+        from Database.patches import patched_get_packet
+        self.assertIs(spotapi.status.PlayerStatus.get_packet, patched_get_packet)
+
+    def test_player_status_sees_the_patched_keep_alive(self):
+        from Database.patches import patched_keep_alive
+        self.assertIs(spotapi.status.PlayerStatus.keep_alive, patched_keep_alive)
+
+    def test_event_manager_sees_the_patched_methods_too(self):
+        from Database.patches import patched_get_packet, patched_keep_alive
+        self.assertIs(spotapi.status.EventManager.get_packet, patched_get_packet)
+        self.assertIs(spotapi.status.EventManager.keep_alive, patched_keep_alive)
+
+    def test_event_manager_inherits_the_playerstatus_level_patches(self):
+        """reconnect/renew_state are patched onto PlayerStatus directly, which
+        replaces its frozen copy - but EventManager froze its own copies of the
+        originals at import and must fall through to the patched ones."""
+        from Database.patches import player_status_reconnect, player_status_renew_state
+        self.assertIs(spotapi.status.EventManager.reconnect, player_status_reconnect)
+        self.assertIs(spotapi.status.EventManager.renew_state, player_status_renew_state)
+
+    def test_get_packet_accepts_timeout_through_player_status(self):
+        """The exact call _runPushLoop makes, resolved the way a real instance
+        would resolve it - through PlayerStatus, not WebsocketStreamer."""
+        streamer = _fakeStreamer(['{"type":"pong"}'])
+
+        packet = spotapi.status.PlayerStatus.get_packet(streamer, timeout=0.25)
+
+        self.assertEqual(packet, {"type": "pong"})
+        self.assertEqual(streamer.ws.recvTimeouts, [0.25])
+
+
 class TestThrottleDetection(unittest.TestCase):
     """_looksThrottled decides whether a reply is Spotify pushing back. The
     hard case is the one that actually happens: HTTP 200 carrying an HTML
