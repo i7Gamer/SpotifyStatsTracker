@@ -787,8 +787,12 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
             if not recentUris:
                 return
 
+            #< _itemTrackId, NOT a direct key read: the owned client's tracks
+            #  spell it track.id and only fallback records still carry
+            #  track.track_id - reading one spelling collapses this set to
+            #  {None} and every queue URI reads as "never recorded".
             recordedTrackIds = {
-                item.get("track", {}).get("track_id")
+                _itemTrackId(item)
                 for item in self.recentlyPlayed_Z1
                 if item.get("track")
             }
