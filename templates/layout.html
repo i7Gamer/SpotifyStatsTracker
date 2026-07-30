@@ -6,7 +6,7 @@
     stay available under MIT from the upstream project; the file as a whole is
     AGPL-3.0-or-later. See NOTICE. -#}
 
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
   <head>
     <script>
@@ -23,16 +23,16 @@
       // would then assign the string "undefined" as its src (GET /undefined).
       window.PLACEHOLDER_IMG = "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='16' fill='%231d1d1d'/><path d='M62 24v34.8a12 12 0 1 0 6 10.4V36l10-3v-9l-16 4z' fill='%23555'/></svg>";
     </script>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#000000" />
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#000000">
     <meta name="title" content="Spotify Tracker" />
-    <meta name="description" content="Keep track of your Spotify listening habits with this Spotify Tracker." />
+    <meta name="description" content="Keep track of your Spotify listening habits with this Spotify Tracker.">
     {#- Page-specific first, app name second: a narrow tab strip truncates from
         the right, so the part that tells two open tabs apart has to lead. -#}
     <title>{% block title %}Spotify Tracker{% endblock %}</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
-    <link rel="manifest" href="{{ url_for('static', filename='manifest.json') }}" />
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="manifest" href="{{ url_for('static', filename='manifest.json') }}">
     <link rel="icon" type="image/png" href="{{ url_for('static', filename='images/favicon.png') }}">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -52,9 +52,7 @@
         Spotify Tracker
         <span id="listener-status-pill" class="status-pill status-initializing" title="Sync Status: Initializing" style="display:none;"></span>
       </a>
-      <div id="version-badge" class="version-badge" style="display:none;">
-        <span id="version-badge-text"></span>
-      </div>
+      <div id="version-badge" class="version-badge" style="display:none;"><span id="version-badge-text"></span></div>
       {% if pendingIncomingSharesCount %}
       <a href="{{ url_for('profileSharingPage') }}" class="pending-shares-badge" title="Data-sharing requests waiting on you">
         {{ pendingIncomingSharesCount }} share request{{ 's' if pendingIncomingSharesCount != 1 else '' }}
@@ -81,7 +79,7 @@
         <span></span>
       </button>
       <nav class="nav-links" id="nav-menu">
-        {% set currentQuery = request.args.get('q', '') %}
+        {% set currentQuery = request.args.get('q') or '' %}
         <a class="{{ 'active' if section == 'dashboard' }}" {% if section == 'dashboard' %}aria-current="page"{% endif %} href="{{ url_for('dashboard') }}">Dashboard</a>
         <a class="{{ 'active' if section == 'history' }}" {% if section == 'history' %}aria-current="page"{% endif %} href="{{ url_for('history', q=currentQuery) if currentQuery else url_for('history') }}">History</a>
         {% set top_active = section in ['top_songs', 'top_artists', 'top_albums'] %}

@@ -19,15 +19,15 @@
 
 <div class="filter-group">
     <label for="interval">Time Period:</label>
-    <select id="interval" name="interval" onchange="updateIntervalFilter()">
-    <option value="">All Time</option>
+    <select name="interval" id="interval" onchange="updateIntervalFilter()">
+    <option value="">All Time</option>{# the unfiltered default #}
     <option value="today" {% if interval == 'today' %}selected{% endif %}>Today</option>
     <option value="day" {% if interval == 'day' %}selected{% endif %}>Yesterday</option>
-    <option value="week" {% if interval == 'week' %}selected{% endif %}>Last Week</option>
-    <option value="month" {% if interval == 'month' %}selected{% endif %}>Last Month</option>
-    <option value="year" {% if interval == 'year' %}selected{% endif %}>Last Year</option>
-    <option value="5years" {% if interval == '5years' %}selected{% endif %}>Last 5 Years</option>
-    <option value="custom" {% if customStart and customEnd %}selected{% endif %}>Custom Date Range</option>
+    <option value="week" {{ 'selected' if interval == 'week' }}>Last Week</option>
+    <option value="month" {{ 'selected' if interval == 'month' }}>Last Month</option>
+    <option value="year" {{ 'selected' if interval == 'year' }}>Last Year</option>
+    <option value="5years" {{ 'selected' if interval == '5years' }}>Last 5 Years</option>
+    <option value="custom" {{ 'selected' if customStart and customEnd }}>Custom Date Range</option>
     </select>
 </div>
 
@@ -41,10 +41,10 @@
 
 <div class="filter-group">
     <label for="sortBy">Sort by:</label>
-    <select id="sortBy" name="sortBy" onchange="updateFilters()">
-    <option value="totalTimeListened" {% if sortBy == 'totalTimeListened' %}selected{% endif %}>Time Played</option>
-    <option value="plays" {% if sortBy == 'plays' %}selected{% endif %}>Number of Plays</option>
-    <option value="name" {% if sortBy == 'name' %}selected{% endif %}>Name (A-Z)</option>
+    <select name="sortBy" id="sortBy" onchange="updateFilters()">
+    <option value="totalTimeListened" {{ 'selected' if sortBy == 'totalTimeListened' }}>Time Played</option>
+    <option value="plays" {{ 'selected' if sortBy == 'plays' }}>Number of Plays</option>
+    <option value="name" {{ 'selected' if sortBy == 'name' }}>Name (A-Z)</option>
     <option value="skips" {% if sortBy == 'skips' %}selected{% endif %}>Most Skipped</option>
     </select>
 </div>
