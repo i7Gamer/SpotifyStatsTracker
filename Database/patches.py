@@ -23,6 +23,9 @@ from Database.rate_limit import (
 # The dead-transport detector moved to the owned client package with the loop
 # machinery (Phase 1.5); the websocket receive path here still needs it.
 from Database.Spotify.recentlyPlayed import _isSessionClosedError
+# Rotation recovery reads the current secret from Spotify's own web player -
+# see the pinned-secret block below, and Database/Spotify/totpSecret.py.
+from Database.Spotify.totpSecret import fetchWebPlayerSecrets
 
 logger = logging.getLogger(__name__)
 
@@ -640,9 +643,27 @@ TOTP_SECRET_BYTE_MAX = 255   #< a secret byte is a byte; anything else is a typo
 # SCOPE_ERROR_CONFIRM_THRESHOLD in the listener.
 TOTP_ROTATION_CONFIRM_THRESHOLD = 3
 
+# Once a rotation is CONFIRMED, the replacement is read from Spotify's own
+# web-player bundle (Database/Spotify/totpSecret.py) rather than from any
+# third-party mirror. Two unauthenticated requests, and only ever after the
+# threshold above - the pinned secret remains the normal path, so if Spotify
+# restructures that bundle the result is "recovery unavailable" (exactly
+# today's behaviour) rather than broken logins.
+#
+# On by default because the source is Spotify itself and it only runs when the
+# instance is already failing; the switch exists for operators who would rather
+# nothing touched authentication on its own.
+TOTP_AUTO_RECOVER_ENV_VAR = "SPOTIFY_TOTP_AUTO_RECOVER"
+
+# An instance in this state retries on every request, so without a cooldown a
+# rotation would turn into a request flood against Spotify's CDN.
+TOTP_RECOVERY_COOLDOWN_SECONDS = 15 * 60
+
 _totpAuthLock = threading.Lock()
 _totpConsecutiveFailures = 0
 _totpFirstFailureAt = None   #< monotonic; "how long has this been going on"
+_totpAdoptedSecret = None    #< (version, bytearray) once recovery has found a newer one
+_totpLastRecoveryAt = None   #< monotonic; gates the cooldown above
 
 
 def recordTotpAuthFailure() -> int:
@@ -665,9 +686,62 @@ def recordTotpAuthSuccess() -> None:
 
 
 def resetTotpAuthState() -> None:
-    """Test seam - the counter is process-global, so tests must not inherit
-    each other's streaks."""
+    """Test seam - this state is process-global, so tests must not inherit each
+    other's streaks, adopted secrets or cooldowns."""
+    global _totpAdoptedSecret, _totpLastRecoveryAt
     recordTotpAuthSuccess()
+    with _totpAuthLock:
+        _totpAdoptedSecret = None
+        _totpLastRecoveryAt = None
+
+
+def _autoRecoverEnabled() -> bool:
+    raw = os.environ.get(TOTP_AUTO_RECOVER_ENV_VAR)
+    if raw is None:
+        return True   #< default on
+    return raw.strip().lower() in TRUTHY_DEBUG_VALUES
+
+
+def attemptTotpRecovery() -> bool:
+    """Read the current secret from Spotify's web player and adopt it if it is
+    newer than the one in force. True when something was adopted.
+
+    Strictly-newer only: re-reading the version we already have proves nothing
+    changed, and an older one (a stale edge, a rollback) must never walk us
+    backwards. Never raises - the caller is already handling a failure, and an
+    exception here would replace a diagnosable auth error with a network one."""
+    global _totpAdoptedSecret, _totpLastRecoveryAt
+
+    if not _autoRecoverEnabled():
+        return False
+
+    now = time.monotonic()
+    with _totpAuthLock:
+        if _totpLastRecoveryAt is not None and now - _totpLastRecoveryAt < TOTP_RECOVERY_COOLDOWN_SECONDS:
+            return False
+        _totpLastRecoveryAt = now
+
+    currentVersion, _ = _resolveTotpSecret()
+    candidates = [(version, secret) for version, secret in fetchWebPlayerSecrets()
+                  if version > currentVersion]
+    if not candidates:
+        logger.warning(
+            "Read Spotify's web player for a newer TOTP secret and found none newer "
+            "than version %s. If logins are still failing, the cause is something "
+            'else, or set %s="<version>:<comma-separated bytes>" manually.',
+            currentVersion, TOTP_SECRET_ENV_VAR)
+        return False
+
+    version, secret = max(candidates, key=lambda pair: pair[0])
+    with _totpAuthLock:
+        _totpAdoptedSecret = (version, bytearray(secret))
+    logger.warning(
+        "Adopted TOTP secret version %s, read from Spotify's own web player (was %s). "
+        "Logins should recover on the next attempt. This lives in memory only - pin it "
+        "in Database/patches.py (SPOTIFY_TOTP_SECRET_VERSION/_BYTES) to make it "
+        "permanent, or it will be re-read after every restart.",
+        version, currentVersion)
+    return True
 
 
 def totpAuthSnapshot() -> dict:
@@ -680,10 +754,16 @@ def totpAuthSnapshot() -> dict:
     with _totpAuthLock:
         failures = _totpConsecutiveFailures
         firstAt = _totpFirstFailureAt
+        adopted = _totpAdoptedSecret
+    envOverride = bool(os.environ.get(TOTP_SECRET_ENV_VAR, "").strip())
     return {
         "pinnedVersion": SPOTIFY_TOTP_SECRET_VERSION,
         "activeVersion": activeVersion,
-        "overrideActive": activeVersion != SPOTIFY_TOTP_SECRET_VERSION,
+        # Distinguished on purpose: "someone set a variable" and "we adopted
+        # one off Spotify" call for different follow-up, and both differ from
+        # the pinned default.
+        "overrideActive": envOverride,
+        "autoRecovered": not envOverride and adopted is not None,
         "overrideEnvVar": TOTP_SECRET_ENV_VAR,
         "consecutiveFailures": failures,
         "suspectedRotation": failures >= TOTP_ROTATION_CONFIRM_THRESHOLD,
@@ -711,8 +791,12 @@ def _parseTotpSecretOverride(raw: str):
 
 
 def _resolveTotpSecret():
-    """The (version, secret) to authenticate with: the environment override when
-    it parses, the pinned constants otherwise.
+    """The (version, secret) to authenticate with, in precedence order:
+
+      1. the environment override, when it parses - a human setting it is a
+         decision, and it must beat anything derived automatically;
+      2. a secret adopted by recovery from Spotify's own web player;
+      3. the pinned constants - the normal path.
 
     A malformed override is reported and then IGNORED rather than raised. The
     override exists to rescue an instance during a rotation; letting a typo in
@@ -726,6 +810,12 @@ def _resolveTotpSecret():
                 "Ignoring malformed %s (%s); falling back to the secret pinned in "
                 "Database/patches.py (version %s).",
                 TOTP_SECRET_ENV_VAR, e, SPOTIFY_TOTP_SECRET_VERSION)
+
+    with _totpAuthLock:
+        adopted = _totpAdoptedSecret
+    if adopted is not None:
+        return adopted[0], bytearray(adopted[1])
+
     # A fresh bytearray per call: generate_totp() transforms these bytes, and a
     # shared mutable would let one caller's mutation corrupt every later login.
     return SPOTIFY_TOTP_SECRET_VERSION, bytearray(SPOTIFY_TOTP_SECRET_BYTES)
@@ -772,6 +862,12 @@ def patch_totp_secret() -> bool:
                     "restart to apply a new one without waiting for a release. See the "
                     "Worker Health panel on /admin.",
                     failures, SPOTIFY_TOTP_SECRET_VERSION, TOTP_SECRET_ENV_VAR)
+                # Confirmed streak: go read the current secret off Spotify's own
+                # web player. Rate-limited and never raising (see
+                # attemptTotpRecovery); an adopted secret takes effect on the
+                # next attempt rather than retrying this one, which keeps the
+                # error semantics of this call unchanged.
+                attemptTotpRecovery()
             raise
         recordTotpAuthSuccess()
         return result

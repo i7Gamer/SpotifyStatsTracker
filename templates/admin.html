@@ -253,16 +253,28 @@
             <span class="badge badge-secondary">VERSION: {{ spotify_totp.activeVersion }}</span>
             {% if spotify_totp.overrideActive %}
               <span class="badge badge-warning">OVERRIDDEN VIA {{ spotify_totp.overrideEnvVar }}</span>
+            {% elif spotify_totp.autoRecovered %}
+              {# Read off Spotify's web player after a rotation - in memory only #}
+              <span class="badge badge-warning">AUTO-RECOVERED (PINNED: {{ spotify_totp.pinnedVersion }})</span>
             {% endif %}
           {% else %}
             <span class="badge badge-secondary">UNAVAILABLE</span>
           {% endif %}
         </div>
-        {% if spotify_totp and spotify_totp.suspectedRotation %}
+        {% if spotify_totp and spotify_totp.autoRecovered %}
         <p class="admin-worker-note">
-          Every user's Spotify session fails at once when this happens. Set
+          Version {{ spotify_totp.activeVersion }} was read from Spotify's own web player
+          after a rotation, and is held <strong>in memory only</strong> - it will be re-read
+          after every restart. Pin it in <code>Database/patches.py</code>
+          (<code>SPOTIFY_TOTP_SECRET_VERSION</code> / <code>SPOTIFY_TOTP_SECRET_BYTES</code>)
+          to make it permanent.
+        </p>
+        {% elif spotify_totp and spotify_totp.suspectedRotation %}
+        <p class="admin-worker-note">
+          Every user's Spotify session fails at once when this happens. Recovery reads the
+          current secret from Spotify's web player automatically; if it hasn't, set
           <code>{{ spotify_totp.overrideEnvVar }}="&lt;version&gt;:&lt;comma-separated bytes&gt;"</code>
-          and restart to recover without waiting for a release. Run
+          and restart. Run
           <code>python -m Database.Spotify.smoketest &lt;sessionFile&gt;</code> to confirm:
           if the public lookups fail too, it is the secret rather than anyone's cookies.
         </p>

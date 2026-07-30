@@ -1267,6 +1267,144 @@ class TestTotpRotationTracking(unittest.TestCase):
         self.assertEqual(totpAuthSnapshot()["consecutiveFailures"], 1)
 
 
+class TestTotpAutoRecovery(unittest.TestCase):
+    """Once a rotation is confirmed, the new secret is read from Spotify's own
+    web-player bundle - the source of truth, not a third-party mirror. This is
+    the RECOVERY path only: the pinned secret stays the normal one, so a
+    Spotify restructure degrades to "recovery unavailable" (today's behaviour)
+    rather than to broken logins."""
+
+    def setUp(self):
+        from Database.patches import resetTotpAuthState
+        resetTotpAuthState()
+        self.addCleanup(resetTotpAuthState)
+
+    def _fetches(self, secrets):
+        return patch("Database.patches.fetchWebPlayerSecrets", return_value=secrets)
+
+    def test_a_newer_secret_is_adopted(self):
+        from Database.patches import attemptTotpRecovery, _resolveTotpSecret
+
+        with self._fetches([(62, bytearray([1, 2, 3])), (61, bytearray([9]))]):
+            with self.assertLogs("Database.patches", level="WARNING"):
+                adopted = attemptTotpRecovery()
+
+        self.assertTrue(adopted)
+        self.assertEqual(_resolveTotpSecret(), (62, bytearray([1, 2, 3])))
+
+    def test_the_same_version_is_not_adopted(self):
+        """Re-reading the version we already pin proves nothing changed, so
+        swapping it in would only muddy which secret is in force."""
+        from Database.patches import attemptTotpRecovery, SPOTIFY_TOTP_SECRET_VERSION
+
+        with self._fetches([(SPOTIFY_TOTP_SECRET_VERSION, bytearray([1, 2, 3]))]):
+            self.assertFalse(attemptTotpRecovery())
+
+    def test_an_older_secret_is_never_adopted(self):
+        """A stale or rolled-back bundle must not walk us backwards."""
+        from Database.patches import attemptTotpRecovery, _resolveTotpSecret, SPOTIFY_TOTP_SECRET_VERSION
+
+        with self._fetches([(SPOTIFY_TOTP_SECRET_VERSION - 5, bytearray([1, 2, 3]))]):
+            self.assertFalse(attemptTotpRecovery())
+        self.assertEqual(_resolveTotpSecret()[0], SPOTIFY_TOTP_SECRET_VERSION)
+
+    def test_finding_nothing_is_not_a_crash(self):
+        from Database.patches import attemptTotpRecovery, _resolveTotpSecret, SPOTIFY_TOTP_SECRET_VERSION
+
+        with self._fetches([]):
+            self.assertFalse(attemptTotpRecovery())
+        self.assertEqual(_resolveTotpSecret()[0], SPOTIFY_TOTP_SECRET_VERSION)
+
+    def test_an_explicit_override_still_wins(self):
+        """A human setting the variable is a decision; a scrape is a guess."""
+        from Database.patches import attemptTotpRecovery, _resolveTotpSecret, TOTP_SECRET_ENV_VAR
+
+        with self._fetches([(62, bytearray([1, 2, 3]))]):
+            with self.assertLogs("Database.patches", level="WARNING"):
+                attemptTotpRecovery()
+
+        with patch.dict("os.environ", {TOTP_SECRET_ENV_VAR: "70:7,7,7"}):
+            self.assertEqual(_resolveTotpSecret(), (70, bytearray([7, 7, 7])))
+
+    def test_recovery_is_rate_limited(self):
+        """An instance in this state retries constantly; without a cooldown it
+        would hammer Spotify's CDN for every failed login."""
+        from Database.patches import attemptTotpRecovery
+
+        with self._fetches([]) as fetch:
+            attemptTotpRecovery()
+            attemptTotpRecovery()
+            attemptTotpRecovery()
+
+        self.assertEqual(fetch.call_count, 1)
+
+    def test_it_can_be_switched_off(self):
+        from Database.patches import attemptTotpRecovery, TOTP_AUTO_RECOVER_ENV_VAR
+
+        with self._fetches([(62, bytearray([1, 2, 3]))]) as fetch:
+            with patch.dict("os.environ", {TOTP_AUTO_RECOVER_ENV_VAR: "0"}):
+                self.assertFalse(attemptTotpRecovery())
+
+        fetch.assert_not_called()
+
+    def test_a_confirmed_rotation_triggers_it(self):
+        """The wiring: the failure streak reaching the threshold is what calls
+        recovery - it must not need anything else to notice."""
+        import spotapi.client
+        from spotapi.exceptions import BaseClientError
+        from Database.patches import TOTP_ROTATION_CONFIRM_THRESHOLD
+
+        instance = spotapi.client.BaseClient.__new__(spotapi.client.BaseClient)
+        instance.access_token = spotapi.client._Undefined
+        instance.client_id = spotapi.client._Undefined
+        failure = MagicMock()
+        failure.fail = True
+        failure.error.string = "400 Bad Request"
+        instance.client = MagicMock()
+        instance.client.get.return_value = failure
+
+        with self._fetches([]) as fetch:
+            with self.assertLogs("Database.patches", level="ERROR"):
+                for _ in range(TOTP_ROTATION_CONFIRM_THRESHOLD):
+                    with self.assertRaises(BaseClientError):
+                        spotapi.client.BaseClient._get_auth_vars(instance)
+
+        fetch.assert_called_once()
+
+    def test_a_single_failure_does_not_trigger_it(self):
+        """Recovery is for a confirmed rotation, not for every blip."""
+        import spotapi.client
+        from spotapi.exceptions import BaseClientError
+
+        instance = spotapi.client.BaseClient.__new__(spotapi.client.BaseClient)
+        instance.access_token = spotapi.client._Undefined
+        instance.client_id = spotapi.client._Undefined
+        failure = MagicMock()
+        failure.fail = True
+        failure.error.string = "429 Too Many Requests"
+        instance.client = MagicMock()
+        instance.client.get.return_value = failure
+
+        with self._fetches([]) as fetch:
+            with self.assertRaises(BaseClientError):
+                spotapi.client.BaseClient._get_auth_vars(instance)
+
+        fetch.assert_not_called()
+
+    def test_the_admin_snapshot_reports_an_adopted_secret(self):
+        """"We pin 61" must not be what the panel says while running on 62."""
+        from Database.patches import attemptTotpRecovery, totpAuthSnapshot
+
+        with self._fetches([(62, bytearray([1, 2, 3]))]):
+            with self.assertLogs("Database.patches", level="WARNING"):
+                attemptTotpRecovery()
+
+        snapshot = totpAuthSnapshot()
+        self.assertTrue(snapshot["autoRecovered"])
+        self.assertEqual(snapshot["activeVersion"], 62)
+        self.assertEqual(snapshot["pinnedVersion"], 61)
+
+
 class TestAuthFailureHint(unittest.TestCase):
     """When Spotify rotates the secret, the only symptom is
     BaseClientError("Could not get session auth tokens") from a module nobody

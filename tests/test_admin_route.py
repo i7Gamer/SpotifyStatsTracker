@@ -1372,8 +1372,9 @@ class TestAdminInsightsLayout(AdminRouteTestBase):
 
     _HEALTHY_TOTP = {
         "pinnedVersion": 61, "activeVersion": 61, "overrideActive": False,
-        "overrideEnvVar": "SPOTIFY_TOTP_SECRET", "consecutiveFailures": 0,
-        "suspectedRotation": False, "secondsSinceFirstFailure": None,
+        "autoRecovered": False, "overrideEnvVar": "SPOTIFY_TOTP_SECRET",
+        "consecutiveFailures": 0, "suspectedRotation": False,
+        "secondsSinceFirstFailure": None,
     }
 
     def _totpBody(self, **overrides):
@@ -1416,6 +1417,25 @@ class TestAdminInsightsLayout(AdminRouteTestBase):
 
         self.assertIn("VERSION: 62", body)
         self.assertIn("OVERRIDDEN VIA SPOTIFY_TOTP_SECRET", body)
+
+    def test_an_auto_recovered_secret_is_shown_as_temporary(self):
+        """Recovery keeps the instance running but holds the secret in memory,
+        so the panel has to say it will vanish on restart - otherwise the
+        incident looks closed and the pin never gets updated."""
+        body = self._totpBody(activeVersion=62, autoRecovered=True)
+
+        self.assertIn("AUTO-RECOVERED (PINNED: 61)", body)
+        self.assertIn("VERSION: 62", body)
+        self.assertIn("in memory only", body)
+        self.assertIn("SPOTIFY_TOTP_SECRET_VERSION", body)   #< where to make it permanent
+
+    def test_an_env_override_outranks_auto_recovery_in_the_display(self):
+        """Both can be true at once; the env var is what's actually in force,
+        so showing the auto-recovery badge would misdescribe the instance."""
+        body = self._totpBody(activeVersion=70, overrideActive=True, autoRecovered=True)
+
+        self.assertIn("OVERRIDDEN VIA SPOTIFY_TOTP_SECRET", body)
+        self.assertNotIn("AUTO-RECOVERED", body)
 
     def test_spotify_session_token_handles_none_gracefully(self):
         with patch("routes.admin.totpAuthSnapshot", return_value=None):
