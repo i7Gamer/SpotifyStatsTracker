@@ -323,11 +323,11 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         assertion depended on. Production always starts them."""
         if not user:
             raise ValueError("Database user must be specified and cannot be empty.")
-        self.user = user
+        self.user = user   #< internal account key; identifies this db, its folders and its logs
         self.cookiesFile = cookiesFile
         self.email = email
-        self.listener = None
-        self.baseDir = Path(__file__).resolve().parent
+        self.listener = None   #< built by startListener()
+        self.baseDir: Path = Path(__file__).resolve().parent
 
         # Shutdown coordination. shutdown_event is the app-wide "we are
         # exiting" signal (SpotifyDashboardApp shares its _stop_event here);
@@ -375,15 +375,16 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         # calls importHistory, which takes the same lock.
         self._importLock = threading.RLock()
 
-        filterKeyword = os.environ.get("IMPORT_KEYWORD", None)
+        filterKeyword = os.environ.get("IMPORT_KEYWORD")   #< None = import every dropped file
         logger.info("auto import filtering by %s", filterKeyword)
         # importHistoryBatch (not importHistory): files dropped together share
         # one import run state, so a skip/replay pair straddling a file
         # boundary isn't collapsed - and a bad file doesn't abort the rest.
-        self.autoImporter = AutoImporter(folderPath=self.autoImportFolderPath,
-                                         importCallback=self.importHistoryBatch,
-                                         pollInterval=5,
-                                         keyword=filterKeyword)
+        self.autoImporter = AutoImporter(
+            folderPath=self.autoImportFolderPath,
+            importCallback=self.importHistoryBatch,
+            pollInterval=5,
+            keyword=filterKeyword)
 
         self._initWorkerTelemetry()
 
@@ -503,10 +504,10 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
     def _splitEntryAndTrack(metadata: dict) -> tuple[dict, dict]:
         entry = {
             "id": metadata["id"],
-            "playedAt": metadata["playedAt"],
+            "playedAt": metadata["playedAt"],   #< the play's own fields...
             "timePlayed": metadata["timePlayed"],
             "playedFrom": metadata.get("playedFrom"),
-            # Importer-decided routing/enrichment info (absent on listener metas)
+            # ...plus importer-decided routing/enrichment info (absent on listener metas)
             "isSkip": metadata.get("isSkip", False),
             "importExtras": metadata.get("importExtras"),
         }
@@ -516,9 +517,9 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
 
     @staticmethod
     def _mergeEntryWithTrack(entry: dict, track: dict) -> dict:
-        meta = track.copy()
+        meta = track.copy()   #< the catalog row stays untouched
         meta["playedAt"] = entry["playedAt"]
-        meta["timePlayed"] = entry["timePlayed"]
+        meta["timePlayed"] = entry["timePlayed"]   #< the play's own fields win
         meta["playedFrom"] = entry.get("playedFrom")
         meta["extras"] = entry.get("extras")   #< behavioral columns, when the read carried them
         # The play's own classification, not the track's: the song detail
@@ -620,7 +621,7 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
 
     def updatePlaylists(self, playlist: str | None) -> None:
         if playlist is None:
-            return
+            return   #< a play with no known source has no playlist to record
         parsed = self._splitContextUri(playlist)
         if parsed is None:
             return
@@ -715,19 +716,21 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
         return self.repo.searchPlaysCount(self.user, query, startTs=startTs, endTs=endTs, trackIds=trackIds)
 
-    def writeProgress(self, status: str, current: int = 0, total: int = 0, message: str = "", error: bool = False):
+    def writeProgress(self, status: str, current: int = 0, total: int = 0, message: str = "", error: bool = False) -> None:
         self.repo.writeProgress(self.user, status, current, total, message, error)
 
     def tryClaimImportRunning(self) -> bool:
         return self.repo.tryClaimImportRunning(self.user)
 
     def readProgress(self) -> dict:
+        """The stored import progress, or an idle placeholder for a user who
+        never imported."""
         progress = self.repo.readProgress(self.user)
         if progress is None:
             return {"status": "idle", "current": 0, "total": 0, "percentage": 0, "message": "", "error": False}
         return progress
 
-    def resetProgress(self):
+    def resetProgress(self) -> None:
         self.writeProgress("idle", 0, 0, "", False)
 
     # A play exactly at a year boundary's midnight belongs to the NEXT year -
@@ -1615,13 +1618,14 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         return self.repo.getArtistTotals(self.user, startTs, endTs, fullPlaysOnly=fullPlaysOnly,
                                           artistIds=artistIds)
 
-    def getOverallStats(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> list:
-        """Return songs sorted by play count with full song metadata and listen totals."""
+    def getOverallStats(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> dict:
+        """The dashboard's headline numbers: top song/artist plus play and
+        duration totals, with the same-length PRECEDING window's totals for
+        the trend arrows."""
         previousSongsPlayed, previousDurationMs = 0, 0
         if startDate and endDate:
-            duration = endDate - startDate
-            previousStart = startDate - duration
-            previousEnd = startDate
+            windowLength = endDate - startDate
+            previousStart, previousEnd = startDate - windowLength, startDate
             prevStartTs, prevEndTs = self._dateRangeToTimestamps(previousStart, previousEnd)
             previousSongsPlayed, previousDurationMs = self.repo.getPlayTotals(self.user, prevStartTs, prevEndTs)
 
@@ -1634,13 +1638,14 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         currentTopSongs = self.getTopSongs(startDate=startDate, endDate=endDate, by="plays", limit=1)
         currentTopArtists = self.getTopArtists(startDate=startDate, endDate=endDate, by="totalTimeListened", limit=1)
 
-        return {"currentTopSongs": currentTopSongs,
-                "currentTopArtists": currentTopArtists,
-                "totalSongsPlayed": totalSongsPlayed,
-                "totalDurationMs": totalDurationMs,
-                "previousSongsPlayed": previousSongsPlayed,
-                "previousDurationMs": previousDurationMs
-                }
+        return {
+            "currentTopSongs": currentTopSongs,
+            "currentTopArtists": currentTopArtists,
+            "totalSongsPlayed": totalSongsPlayed,
+            "totalDurationMs": totalDurationMs,
+            "previousSongsPlayed": previousSongsPlayed,
+            "previousDurationMs": previousDurationMs,
+        }
 
     def getTopSongs(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None, by: str = "plays",
                      limit: int | None = None, offset: int = 0, searchQuery: str | None = None,

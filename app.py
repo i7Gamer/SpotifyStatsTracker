@@ -17,6 +17,7 @@ import threading
 import requests
 from pathlib import Path
 import time
+from contextlib import suppress
 from datetime import timedelta, datetime, timezone
 
 from flask import Flask, render_template, redirect, request, url_for, jsonify, send_from_directory, session, g, abort, Response, stream_with_context, make_response
@@ -162,7 +163,7 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
                           CompareStatsMixin, UserRegistryMixin):
     def __init__(self):
         configureLogging()
-        migrateIfNeeded()
+        migrateIfNeeded()   #< before anything opens the database
         self.app = Flask(__name__)
         # The genre-gate thresholds are quoted in templates (the locked-state
         # progress card) - exposed as globals so every include sees them
@@ -228,11 +229,11 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
         # what stops one user from claiming another's account/database.
         self.skipEmailVerification = os.environ.get("SKIP_EMAIL_VERIFICATION", "").strip().lower() in TRUTHY_ENV_VALUES
         
-        try:
-            self.currentVersion = (self.baseDir / "Database" / "VERSION").read_text(encoding="utf-8").strip()  #< only needs to be checked once because app cant update without restart
-        except Exception:
-            self.currentVersion = "0.0.0"
-        self.latestVersion = None
+        self.currentVersion = "0.0.0"   #< placeholder in case the VERSION file is unreadable
+        with suppress(Exception):
+            #< read once - the app cannot update without a restart
+            self.currentVersion = (self.baseDir / "Database" / "VERSION").read_text(encoding="utf-8").strip()
+        self.latestVersion = None   #< set by the version-check worker when a newer release exists
         self._version_lock = threading.Lock()
         self._stop_event = threading.Event()
         # Per-user {username: (totalPlays, totalMs)} from the last milestone
@@ -261,7 +262,7 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
         # self.backupWorker) but deliberately NOT started - see startWorkers().
         self._workersStarted = False
 
-        self.registerRoutes()
+        self.registerRoutes()   #< all HTTP surface lives in routes/, registered here
 
     def _get_or_create_secret_key(self):
         """Resolve the Flask session-signing key. Prefers FLASK_SECRET_KEY, otherwise
@@ -530,7 +531,7 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
         identifier = request.remote_addr or "unknown"
         return not self._authRateLimiter.hit(bucket, identifier)
 
-    def checkLogin_thread(self):
+    def checkLogin_thread(self) -> None:
         self._ensureAllUsersLogin()
         # Stored (not just started) so /admin's Worker Health panel can report
         # this loop's liveness - it hosts the per-user milestone pass, which
@@ -570,7 +571,7 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
             except Exception as e:
                 logger.error("Error initializing user %s: %s", username, e)
     
-    def _checkLoginLoop(self):
+    def _checkLoginLoop(self) -> None:
         # checkLogin_thread() already ran _ensureAllUsersLogin synchronously
         # before this thread started (listeners must come up immediately), so
         # the loop's own first pass can wait out a random offset - staggering
@@ -582,11 +583,10 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
             self._ensureAllUsersLogin()
             self._stop_event.wait(60 * 5)  # Check every 5 minutes
 
-    def startVersionCheck_thread(self):
-        thread = threading.Thread(target=self._versionCheckLoop, daemon=True)
-        thread.start()
+    def startVersionCheck_thread(self) -> None:
+        threading.Thread(target=self._versionCheckLoop, daemon=True).start()
 
-    def _versionCheckLoop(self):
+    def _versionCheckLoop(self) -> None:
         # Check the latest published GitHub Release - not just whatever
         # Database/VERSION says on main, which can be bumped ahead of what's
         # actually been released/tagged (see .github/workflows/dockerReleaseTag.yml)
@@ -599,16 +599,14 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
         while not self._stop_event.is_set():
             try:
                 resp = requests.get(url, timeout=6, headers={"Accept": "application/vnd.github+json"})
-                if resp.status_code == 200:
+                if resp.status_code == 200:   #< a real published release to compare against
                     # Releases are tagged e.g. "1.31.0" (occasionally "v1.31.0").
                     remoteVersion = resp.json().get("tag_name", "").strip().lstrip("vV")
-                    # store remoteVersion if it's newer than current
+                    # Keep it only while it is strictly newer than what runs here.
                     try:
                         with self._version_lock:
-                            if remoteVersion and versionTuple(remoteVersion) > versionTuple(self.currentVersion):
-                                self.latestVersion = remoteVersion
-                            else:
-                                self.latestVersion = None
+                            isNewer = remoteVersion and versionTuple(remoteVersion) > versionTuple(self.currentVersion)
+                            self.latestVersion = remoteVersion if isNewer else None
                     except Exception as e:
                         logger.warning("Ignoring malformed release tag %r: %s", remoteVersion, e)
                 elif resp.status_code == 404:
@@ -648,7 +646,7 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
         except OSError:
             return None
 
-    def registerRoutes(self):
+    def registerRoutes(self) -> None:
         @self.app.url_defaults
         def _versionStaticUrl(endpoint, values):
             """Make a changed static file a cache MISS instead of a
@@ -970,7 +968,7 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
             except Exception as e:
                 logger.error("Error stopping database for %s: %s", db.user, e)
 
-    def run(self):
+    def run(self) -> None:
         try:
             self.startWorkers()
             debug = os.environ.get("FLASK_DEBUG", "").lower() in TRUTHY_ENV_VALUES
@@ -980,8 +978,5 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
 
 
 if __name__ == "__main__":
-    ## $env:IMPORT_KEYWORD="Weekly"
-    ## $env:TZ="America/Los_Angeles"
-
-    dashboardApp = SpotifyDashboardApp()
-    dashboardApp.run()
+    # Handy dev-shell settings:  $env:IMPORT_KEYWORD="Weekly"   $env:TZ="America/Los_Angeles"
+    SpotifyDashboardApp().run()

@@ -8,7 +8,6 @@
 
 import os
 import random
-import time
 import threading
 import shutil
 import logging
@@ -27,15 +26,17 @@ WATCHDOG_STOP_JOIN_TIMEOUT_SECONDS = 2  #< bound how long stop() waits for the p
 try:
     from Database.utils import parseError
 except ModuleNotFoundError:
+    # Standalone execution from inside Database/: put the parent on the path
+    # so `utils` resolves the same way the package import above would.
     import sys
-    folderPath = "../"
-    if folderPath not in sys.path:
-        sys.path.append(folderPath)
+    parentDir = "../"
+    if parentDir not in sys.path:
+        sys.path.append(parentDir)
     from utils import parseError
 
-class Watchdog:
+class Watchdog:  #< polls a folder and hands over files once their size stops changing
     def __init__(self):
-        self.run = True
+        self.run = True   #< signalStop()/stop() clear it; the poll loop checks it every pass
         self._stop_event = threading.Event()
 
     @staticmethod
@@ -68,8 +69,8 @@ class Watchdog:
         if startupDelaySeconds and self._stop_event.wait(startupDelaySeconds):
             return
         logger.info(f"Monitoring {pathToWatch} for new files (Polling)...")
-        if not os.path.exists(pathToWatch):
-            os.makedirs(pathToWatch)
+        if not os.path.exists(pathToWatch):   #< first run for this user
+            os.makedirs(pathToWatch)   #< create the drop folder before the initial scan
         try:
             knownFiles = {f for f in os.listdir(pathToWatch) if os.path.isfile(os.path.join(pathToWatch, f))}
             if callbackInitialFiles and knownFiles:
@@ -79,7 +80,7 @@ class Watchdog:
                 callback(fullPaths)
         except FileNotFoundError:
             logger.error(f"Error: The directory {pathToWatch} does not exist.")
-            return
+            return   #< nothing to watch; startAutoImporter would have to recreate it anyway
         pendingSizes = {}   #< name -> size at last poll, for files waiting to stabilize
         while self.run and not self._stop_event.is_set():
             self._stop_event.wait(checkInterval)
@@ -145,19 +146,19 @@ class Watchdog:
         """Signal-only half of stop() - no join, safe for shutdown's
         signal-everything-first phase."""
         self._stop_event.set()
-        self.run = False
+        self.run = False   #< the poll loop re-checks this after every wait
 
     def stop(self):
         self.signalStop()
         if hasattr(self, "thread") and self.thread.is_alive():
             self.thread.join(timeout=WATCHDOG_STOP_JOIN_TIMEOUT_SECONDS)
 
-class AutoImporter:
+class AutoImporter:  #< drop-folder importer: Watchdog feeds _handleImport; files end in DONE/ or FAILED/
     def __init__(self, folderPath, importCallback, pollInterval=5, keyword=None):
-        self.folderPath = folderPath
+        self.folderPath = folderPath   #< the user's autoImport/<user>/ drop folder
+        self.importCallback = importCallback   #< receives one poll's whole batch of stable files
         self.pollInterval = pollInterval
-        self.importCallback = importCallback
-        self.keyword = keyword
+        self.keyword = keyword   #< None = import everything; else the filename must contain it
         self.wd = Watchdog()
 
     def _destinationPath(self, path, subdirName="DONE"):
@@ -190,7 +191,7 @@ class AutoImporter:
                     logger.info(f"Keyword '{self.keyword}' not found in '{fileName}'. Skipping import and moving directly to DONE.")
                     shutil.move(path, self._destinationPath(path))
                     continue
-                with open(path, "r", encoding="utf-8") as f:
+                with open(path, encoding="utf-8") as f:
                     toImport.append((path, f.read()))
             except Exception as e:
                 logger.error(f"Error reading file {path}: {e}")
@@ -229,12 +230,11 @@ class AutoImporter:
             except Exception as e:
                 logger.error(f"Error moving file {path}: {e}")
 
-    def start(self):
+    def start(self) -> None:
         self.wd.watchFolder(self.folderPath, self._handleImport, self.pollInterval,
                             startupDelaySeconds=random.randint(AUTO_IMPORT_MIN_START_DELAY_SECONDS,
                                                                AUTO_IMPORT_MAX_START_DELAY_SECONDS))
 
 
-if __name__ == "__main__":
-    autoImporter = AutoImporter("../../autoImport", print, pollInterval=1, keyword="Weekly")
-    autoImporter.start()
+if __name__ == "__main__":   #< manual smoke test: watch ../../autoImport and print each batch
+    AutoImporter("../../autoImport", print, pollInterval=1, keyword="Weekly").start()

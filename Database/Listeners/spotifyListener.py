@@ -381,7 +381,7 @@ def _suppress_signal_in_thread():
         signal.signal = original
 
 
-class Listener:
+class Listener:  #< one user's live playback watcher: cookie session + Web API backfill
     def __init__(self, cookiesFile, refreshInterval=None, email=None, get_credentials=None,
                  get_backfill_enabled=None, on_scope_status_change=None, user=None,
                  get_recorded_track_ids=None, get_recorded_play_times=None):
@@ -389,7 +389,7 @@ class Listener:
         # for this listener" - see _pollIntervalWithJitter. An explicit value
         # is honoured verbatim so a test can pin it.
         self.refreshInterval = _pollIntervalWithJitter() if refreshInterval is None else refreshInterval
-        self.run = False
+        self.run = False   #< startListener() raises it; stop()/signalStop() clear it
         self._stop_event = threading.Event()
         self.email = email  #< store expected email for validation
         # Internal user key (e.g. "7kevinegger"), used for log identification so
@@ -482,7 +482,7 @@ class Listener:
             from Database.queries.email_queries import EVENT_INVALID_COOKIES
             queue_email_notification(self.user, EVENT_INVALID_COOKIES)
 
-        self.recentlyPlayed_Z1 = self.sp.current_user_recently_played()
+        self.recentlyPlayed_Z1 = self.sp.current_user_recently_played()   #< Z1 = the previous poll's snapshot
         self.webApiRecentlyPlayed_Z1 = []  #< _checkWebApiBackfill's own dedup bookkeeping, kept
                                             #  separate from recentlyPlayed_Z1 (live-listener-owned,
                                             #  different dict shape) so the two polling loops never
@@ -504,17 +504,17 @@ class Listener:
         user key when the caller supplied one, else the email as before."""
         return self.user or self.email
 
-    def isLoggedIn(self):
+    def isLoggedIn(self) -> bool:
         # A contaminated session is technically logged in - as the WRONG
         # account. Reporting False routes the user back through the login
         # flow, whose cookie verification requires the matching account.
         if self.contaminationDetected:
             return False
-        if self.sp.isLoggedIn() == False:
-            return False
+        if not self.sp.isLoggedIn():
+            return False   #< the client's own cookie-level verdict
         try:
-            self.sp.current_user()
-            return True
+            self.sp.current_user()   #< any answer at all proves the session works
+            return True   #< the session answered for itself
         except SpotifyLocallyRateLimitedError as e:
             # Our own open window, not a verdict on these cookies - see
             # _validateCurrentUser. Same answer as the transient branch below
@@ -535,7 +535,7 @@ class Listener:
                 logger.warning("Transient error checking login status for user %s "
                                "(rate limit or malformed response): %s", self.logUser, parseError(e))
                 return True
-            return False
+            return False   #< a real refusal: the cookies no longer authenticate
 
     def _recordExternalIdentityCheck(self, now: float) -> None:
         """Count a POSITIVE identity check made elsewhere as this listener's
@@ -669,23 +669,24 @@ class Listener:
             return True
         return self._lastPlayingChangeTime > self._lastChangeTime
 
-    def getNewItems(self, new: list):
-        oldTimes = [item["played_at"] for item in self.recentlyPlayed_Z1]
-
-        for i, item in enumerate(new):
-            # print("Comparing item played at:", item["played_at"], "with old times:", oldTimes)
-            if item["played_at"] not in oldTimes:
-                return new[i:]
-
+    def getNewItems(self, new: list) -> list | None:
+        """The suffix of `new` that starts at the first item the previous
+        snapshot (Z1) hasn't seen, or None when nothing is new. Items are
+        identified by played_at - the feed only ever appends."""
+        knownTimes = {item["played_at"] for item in self.recentlyPlayed_Z1}
+        for index, item in enumerate(new):
+            if item["played_at"] not in knownTimes:
+                return new[index:]
         return None
 
-    def track(self, id):
-        return self.sp.track(id)
-    
-    def playlistName(self, playlistId):
-        return self.sp.playlist(playlistId).get("name", "Unknown Playlist")
-    def albumName(self, albumId):
-        return self.sp.album(albumId).get("name", "Unknown Album")
+    def track(self, trackId):
+        return self.sp.track(trackId)
+
+    def playlistName(self, playlistId) -> str:
+        return (self.sp.playlist(playlistId) or {}).get("name", "Unknown Playlist")
+
+    def albumName(self, albumId) -> str:
+        return (self.sp.album(albumId) or {}).get("name", "Unknown Album")
 
     def getConnectPlayerState(self) -> dict | None:
         """The raw connect player_state dict off the same PlayerStatus object
@@ -904,7 +905,7 @@ class Listener:
             )
             self.run = False
             return
-        self.run = True
+        self.run = True   #< from here only _checkOnce/auth errors or a stop signal end the loop
         while self.run and not self._stop_event.is_set():
             try:
                 if not self._checkOnce(callback, onStale):
@@ -1254,7 +1255,7 @@ class Listener:
         stop_event = getattr(self, "_stop_event", None)
         if stop_event is not None:
             stop_event.set()
-        self.run = False
+        self.run = False   #< the poll loop checks this every pass
 
         lastPlayedManager = getattr(self.sp, "lastPlayedManager", None)
         if lastPlayedManager is not None:
