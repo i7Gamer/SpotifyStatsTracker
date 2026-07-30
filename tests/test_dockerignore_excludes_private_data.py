@@ -66,9 +66,8 @@ MUST_BE_INCLUDED = (
     "services/export.py",
     "static/js/dashboard-page.js",
     "templates/tracks.html",
-    #< the licenses must travel with the work (AGPL-3.0 / GPL-3.0 section 4)
+    #< the license must travel with the work (AGPL-3.0 / GPL-3.0 section 4)
     "COPYING",
-    "LICENSE.MIT",
     "NOTICE",
 )
 

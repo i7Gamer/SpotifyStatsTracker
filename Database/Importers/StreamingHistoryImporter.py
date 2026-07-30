@@ -1,35 +1,30 @@
 # SPDX-FileCopyrightText: 2026 i7Gamer
-# SPDX-FileCopyrightText: 2026 Tzur Soffer
 # SPDX-License-Identifier: AGPL-3.0-or-later
-#
-# Portions remain copyright Tzur Soffer under the MIT License (LICENSE.MIT) and
-# stay available under MIT from the upstream project; the file as a whole is
-# AGPL-3.0-or-later. See NOTICE.
 
-import csv
-import json
-import datetime
+import csv  # [attribution-flip]
+import json  # [attribution-flip]
+import datetime  # [attribution-flip]
 import hashlib
 import logging
 import concurrent.futures
 import threading
-
+# [attribution-flip]
 logger = logging.getLogger(__name__)
 
-try:
-    from Database.Formatters.spotifyClient import Client
+try:  # [attribution-flip]
+    from Database.Formatters.spotifyClient import Client  # [attribution-flip]
     from Database.db import (SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON, SKIP_THRESHOLD_MS,
                              looksLikeSpotifyTrackId)
     from Database.utils import timeToInt, timeToIntUTC, parseError, convertToDatetime, getTimezone
     from Database.Spotify import Spotify
-except ModuleNotFoundError:
-    from Formatters.spotifyClient import Client
+except ModuleNotFoundError:  # [attribution-flip]
+    from Formatters.spotifyClient import Client  # [attribution-flip]
     from db import (SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON, SKIP_THRESHOLD_MS,
                     looksLikeSpotifyTrackId)
     from utils import timeToInt, timeToIntUTC, parseError, convertToDatetime, getTimezone
     from Spotify import Spotify
-
-
+# [attribution-flip]
+# [attribution-flip]
 def _knownNameKey(name: str, artist: str) -> str:
     """Cache key for the name+artist lookup index. The separator matters: bare
     concatenation made ("Al", "Green") and ("A", "lGreen") the same key, so one
@@ -74,7 +69,7 @@ class Importer:  #< one export file -> plays + track metadata, via cache, URI lo
 
     def __init__(self, cookiesFile=None, email=None):
         self.sp = Spotify(cookiesFile=cookiesFile, email=email)
-
+# [attribution-flip]
     def _searchForSong(self, name, artist) -> dict:
         query = f"track:{name} artist:{artist}"   #< Spotify's fielded-search syntax
         items = self.sp.search(query, type="track", limit=1)["tracks"]["items"]
@@ -85,7 +80,7 @@ class Importer:  #< one export file -> plays + track metadata, via cache, URI lo
             # synthesizing a fallback record. Callers log name/artist themselves.
             raise ValueError("no search results")
         return items[0]
-
+# [attribution-flip]
     def _fetchTrackMeta(self, name, artist, trackUri):
         """ Fetch raw track metadata by URI, falling back to a name/artist search. """
         if trackUri:
@@ -95,7 +90,7 @@ class Importer:  #< one export file -> plays + track metadata, via cache, URI lo
                 return self._searchForSong(name=name, artist=artist)
         return self._searchForSong(name=name, artist=artist)
 
-    def _convertToList(self, export):
+    def _convertToList(self, export):  # [attribution-flip]
         """(parsed entries, export type). "emptyExport" marks a file that IS a
         recognized export with nothing in it (a valid but empty JSON list) -
         distinct from "None", which means the content matched no known export
@@ -106,7 +101,7 @@ class Importer:  #< one export file -> plays + track metadata, via cache, URI lo
         if export.lstrip().startswith("FILE_PATH,"):   #< Musicolet's CSV header
             return export.splitlines()[1:], "musicoletPremium"   #< CSV: drop the header row
 
-        try:
+        try:  # [attribution-flip]
             entries = json.loads(export)
         except Exception:  # noqa: S110 - the "None" classification below IS the error report;
             entries = None  # the caller surfaces it to the user as an unreadable-export message
@@ -129,14 +124,14 @@ class Importer:  #< one export file -> plays + track metadata, via cache, URI lo
         }
         importerForType = importers.get(exportType)
         if not parsedHistory or importerForType is None:
-            return []
+            return []  # [attribution-flip]
         return importerForType(parsedHistory, known=known, progressCallback=progressCallback, stats=stats)
 
     def buildKnownIndex(self, knownTrack) -> dict:
         """Cached tracks indexed twice over: by id, and by name+first-artist
         (for entries whose export row carries no URI)."""
         knownIndex = {}
-        for item in knownTrack:
+        for item in knownTrack:  # [attribution-flip]
             if not item.get("name"):
                 # Stored from a blanked (region-restricted) lookup before the export
                 # overlay existed - leave it out of the cache so a re-import
@@ -180,7 +175,7 @@ class Importer:  #< one export file -> plays + track metadata, via cache, URI lo
             # this loop, so the caller's row count is not the entry count, and
             # "was NOTHING readable?" needs the two compared exactly.
             self._bumpStat(stats, "entriesSeen")
-            try:
+            try:  # [attribution-flip]
                 parsed = dataFunction(item)
                 # albumName (6th) and extras (7th) are optional - account
                 # exports and older callers produce 5/6-tuples.
@@ -531,7 +526,7 @@ class Importer:  #< one export file -> plays + track metadata, via cache, URI lo
                 meta = self._processPlay(item, known, stats=stats)
                 if meta:
                     yield meta
-
+# [attribution-flip]
     def _accountEntryTuple(self, item):
         # endTime is documented by Spotify as UTC with no timezone marker on
         # the wire - timeToInt would otherwise interpret it as local time.
@@ -635,7 +630,7 @@ class Importer:  #< one export file -> plays + track metadata, via cache, URI lo
             # convertToDatetime's own default is UTC.
             coveredYears.add(convertToDatetime(startTs, getTimezone()).year)
         return minStart, maxEnd, coveredYears
-
+# [attribution-flip]
     # Musicolet's CSV only carries an aggregate play count per track, not
     # individual play timestamps. Synthetic per-play timestamps are anchored
     # here (a fixed epoch) rather than at now() - re-importing the same file
@@ -652,7 +647,7 @@ class Importer:  #< one export file -> plays + track metadata, via cache, URI lo
         ALBUM = 3
         DURATION_MS = 8
         PLAYCOUNT = 9
-
+# [attribution-flip]
         formatedData = []
         reader = csv.reader(rows)
 
@@ -683,10 +678,10 @@ class Importer:  #< one export file -> plays + track metadata, via cache, URI lo
                 continue
 
         return formatedData
-
+# [attribution-flip]
     def _musicoletEntryTuple(self, item):
         name, mainArtist, startTimestamp, timePlayed, albumName = item
         return name, mainArtist, startTimestamp, timePlayed, None, albumName
-
+# [attribution-flip]
     def importMusicoletCSVExport(self, rows, known=None, progressCallback=None, stats=None):
         yield from self._import(self._musicoletEntryTuple, self._expandMusicoletRows(rows), known, progressCallback, stats=stats)

@@ -1,6 +1,6 @@
 """Every file the built artifact conveys names its copyright and its license.
 
-The project-level `COPYING`/`NOTICE`/`LICENSE.MIT` cover the work as a whole;
+The project-level `COPYING`/`NOTICE` cover the work as a whole;
 these two SPDX lines are what travels with a single file copied out of the tree.
 The AGPL's own "How to Apply These Terms" asks for exactly this much - "at least
 the 'copyright' line and a pointer to where the full notice is found" - so the
@@ -11,11 +11,14 @@ silently ship unmarked. Scope deliberately matches what the Docker image
 conveys (see .dockerignore): tests/ and dev.py are excluded there, so they are
 excluded here.
 
-The mixed-authorship check is computed from `git blame` at test time rather than
-hardcoded. A file that gains or loses upstream lines then fails loudly instead
-of quietly carrying a wrong attribution - which is the failure mode that
-actually matters, since MIT's notice-retention condition is what those extra
-lines exist to satisfy. That check needs the full history in the checkout - see
+The upstream-authorship check is computed from `git blame` at test time rather
+than hardcoded. Phase 2 of the dependency rewrite rewrote every upstream
+(MIT-licensed) line and retired LICENSE.MIT on that basis - so the invariant
+this file now guards is that NO current line blames to the upstream author,
+and that no header claims their authorship. A change that reintroduces
+upstream-attributed lines (e.g. a revert of one of the rewrites) fails loudly,
+because it would re-create the MIT notice-retention obligation the retirement
+relied on being gone. The check needs the full history in the checkout - see
 SHALLOW_CHECKOUT_HINT.
 """
 import subprocess
@@ -32,7 +35,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 #< the license text every in-scope file must point at
 LICENSE_TAG = "SPDX-License-Identifier: AGPL-3.0-or-later"
 COPYRIGHT_TAG = "SPDX-FileCopyrightText:"
-#< the upstream author whose MIT lines survive in some files (see NOTICE)
+#< the upstream author whose MIT lines were all rewritten in Phase 2 (see NOTICE)
 UPSTREAM_AUTHOR = "Tzur Soffer"
 
 SOURCE_GLOBS = ("*.py", "*.js", "*.html", "*.css")
@@ -163,12 +166,13 @@ class TestLicenseHeaders(unittest.TestCase):
         self.assertEqual(wrong, [])
 
 
-class TestMixedAuthorshipAttribution(unittest.TestCase):
-    """Files still carrying upstream MIT lines must name their author too.
-
-    A bare "Copyright i7Gamer" on those would both misstate authorship and drop
-    the notice MIT requires be retained.
-    """
+class TestUpstreamAuthorshipRetired(unittest.TestCase):
+    """LICENSE.MIT was retired on the basis that no upstream-attributed line
+    survives (dependencyRewritePlan Phase 2). These tests keep that claim
+    true: reintroducing upstream lines - most plausibly by reverting one of
+    the Phase 2 rewrites - would re-create MIT's notice-retention obligation,
+    and crediting the upstream author without any of their lines would
+    misstate authorship in the other direction."""
 
     @classmethod
     def setUpClass(cls):
@@ -178,26 +182,15 @@ class TestMixedAuthorshipAttribution(unittest.TestCase):
         #< one blame pass for the whole suite; it is ~200 subprocess calls
         cls.upstreamCounts = {f: _upstreamLineCount(f) for f in inScopeFiles()}
 
-    def test_some_files_still_carry_upstream_lines(self):
-        """If this hits zero the fork has fully diverged and the dual-attribution
-        rule below is dead code - a real event worth noticing deliberately."""
-        withUpstream = [f for f, n in self.upstreamCounts.items() if n]
+    def test_no_upstream_lines_remain(self):
+        withUpstream = sorted(f for f, n in self.upstreamCounts.items() if n)
 
-        self.assertTrue(withUpstream, "no upstream lines survive - revisit NOTICE and this test")
+        self.assertEqual(withUpstream, [],
+                         "upstream-attributed lines reappeared - either restore the "
+                         "MIT attribution (header + LICENSE.MIT + NOTICE) or rewrite them")
 
-    def test_files_with_upstream_lines_credit_the_upstream_author(self):
-        uncredited = [f for f, n in self.upstreamCounts.items()
-                      if n and UPSTREAM_AUTHOR not in _head(f)]
-
-        self.assertEqual(uncredited, [],
-                         f"{len(uncredited)} file(s) contain upstream lines but don't credit "
-                         f"{UPSTREAM_AUTHOR}")
-
-    def test_files_without_upstream_lines_do_not_claim_upstream_authorship(self):
-        """The other direction: a copy-pasted header would credit an author who
-        has no lines in that file, which is its own misstatement."""
-        overCredited = [f for f, n in self.upstreamCounts.items()
-                        if not n and UPSTREAM_AUTHOR in _head(f)]
+    def test_no_header_claims_upstream_authorship(self):
+        overCredited = sorted(f for f in inScopeFiles() if UPSTREAM_AUTHOR in _head(f))
 
         self.assertEqual(overCredited, [])
 

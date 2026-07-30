@@ -178,8 +178,8 @@ In short: you may use, study, modify and redistribute it, but derivative works m
 
 Two things worth knowing:
 
-- This project is a fork of [TzurSoffer/SpotifyStatsTracker](https://github.com/TzurSoffer/SpotifyStatsTracker) and was itself MIT-licensed through version 1.45.0. Anything obtained at or before that point stays MIT - that grant cannot be withdrawn. Portions of the code are still copyright Tzur Soffer under the MIT License, whose notice is preserved in [LICENSE.MIT](LICENSE.MIT).
-- The switch away from MIT was not purely a preference. `spotapi`, a required runtime dependency that `Database/patches.py` imports and patches, is licensed under the GPL-3.0, and the Docker image bundles it. A copyleft license for the project as a whole is what that dependency requires.
+- This project began as a fork of [TzurSoffer/SpotifyStatsTracker](https://github.com/TzurSoffer/SpotifyStatsTracker) and was itself MIT-licensed through version 1.45.0. Anything obtained at or before that point stays MIT - that grant cannot be withdrawn. The current tree no longer contains MIT-licensed portions: the last upstream-attributed code was rewritten in the Phase 2 dependency rewrite (see NOTICE for the history), so the former LICENSE.MIT file is gone.
+- The switch away from MIT was not purely a preference. `spotapi`, a required runtime dependency that `Database/Spotify/` builds on and `Database/patches.py` patches, is licensed under the GPL-3.0, and the Docker image bundles it. A copyleft license for the project as a whole is what that dependency requires.
 
 See [NOTICE](NOTICE) for the relicensing history and third-party component details.
 

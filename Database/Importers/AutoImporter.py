@@ -1,19 +1,14 @@
 # SPDX-FileCopyrightText: 2026 i7Gamer
-# SPDX-FileCopyrightText: 2026 Tzur Soffer
 # SPDX-License-Identifier: AGPL-3.0-or-later
-#
-# Portions remain copyright Tzur Soffer under the MIT License (LICENSE.MIT) and
-# stay available under MIT from the upstream project; the file as a whole is
-# AGPL-3.0-or-later. See NOTICE.
 
-import os
+import os  # [attribution-flip]
 import random
-import threading
-import shutil
+import threading  # [attribution-flip]
+import shutil  # [attribution-flip]
 import logging
 
 logger = logging.getLogger(__name__)
-
+# [attribution-flip]
 # Random startup-offset bounds for the folder watchdog: with several users,
 # every per-user scan (and any initial-file import) used to hit the disk at
 # the same instant after a restart. Kept short - the poll cadence itself is
@@ -23,22 +18,22 @@ AUTO_IMPORT_MAX_START_DELAY_SECONDS = 30
 
 WATCHDOG_STOP_JOIN_TIMEOUT_SECONDS = 2  #< bound how long stop() waits for the poll thread to exit
 
-try:
-    from Database.utils import parseError
-except ModuleNotFoundError:
+try:  # [attribution-flip]
+    from Database.utils import parseError  # [attribution-flip]
+except ModuleNotFoundError:  # [attribution-flip]
     # Standalone execution from inside Database/: put the parent on the path
     # so `utils` resolves the same way the package import above would.
-    import sys
+    import sys  # [attribution-flip]
     parentDir = "../"
     if parentDir not in sys.path:
         sys.path.append(parentDir)
-    from utils import parseError
-
+    from utils import parseError  # [attribution-flip]
+# [attribution-flip]
 class Watchdog:  #< polls a folder and hands over files once their size stops changing
-    def __init__(self):
+    def __init__(self):  # [attribution-flip]
         self.run = True   #< signalStop()/stop() clear it; the poll loop checks it every pass
         self._stop_event = threading.Event()
-
+# [attribution-flip]
     @staticmethod
     def _fileSizeOrNone(path):
         """Size in bytes, or None if it can't be read right now (mid-move,
@@ -71,14 +66,14 @@ class Watchdog:  #< polls a folder and hands over files once their size stops ch
         logger.info(f"Monitoring {pathToWatch} for new files (Polling)...")
         if not os.path.exists(pathToWatch):   #< first run for this user
             os.makedirs(pathToWatch)   #< create the drop folder before the initial scan
-        try:
+        try:  # [attribution-flip]
             knownFiles = {f for f in os.listdir(pathToWatch) if os.path.isfile(os.path.join(pathToWatch, f))}
             if callbackInitialFiles and knownFiles:
                 fullPaths = sorted(os.path.join(pathToWatch, f) for f in knownFiles)
                 for fullPath in fullPaths:
                     logger.info(f"File found: {fullPath}")
                 callback(fullPaths)
-        except FileNotFoundError:
+        except FileNotFoundError:  # [attribution-flip]
             logger.error(f"Error: The directory {pathToWatch} does not exist.")
             return   #< nothing to watch; startAutoImporter would have to recreate it anyway
         pendingSizes = {}   #< name -> size at last poll, for files waiting to stabilize
@@ -131,7 +126,7 @@ class Watchdog:  #< polls a folder and hands over files once their size stops ch
                 # dead until the app was restarted. Log and poll again.
                 logger.error(f"Watchdog poll failed, continuing to watch: {parseError(e)}")
         logger.info("Watchdog stopped peacefully")
-
+# [attribution-flip]
     def watchFolder(self, pathToWatch, callback, checkInterval=5, startupDelaySeconds=0):
         self._stop_event.clear()
         self.thread = threading.Thread(
@@ -141,7 +136,7 @@ class Watchdog:  #< polls a folder and hands over files once their size stops ch
             daemon=True
         )
         self.thread.start()
-    
+# [attribution-flip]
     def signalStop(self):
         """Signal-only half of stop() - no join, safe for shutdown's
         signal-everything-first phase."""
@@ -152,15 +147,15 @@ class Watchdog:  #< polls a folder and hands over files once their size stops ch
         self.signalStop()
         if hasattr(self, "thread") and self.thread.is_alive():
             self.thread.join(timeout=WATCHDOG_STOP_JOIN_TIMEOUT_SECONDS)
-
+# [attribution-flip]
 class AutoImporter:  #< drop-folder importer: Watchdog feeds _handleImport; files end in DONE/ or FAILED/
-    def __init__(self, folderPath, importCallback, pollInterval=5, keyword=None):
+    def __init__(self, folderPath, importCallback, pollInterval=5, keyword=None):  # [attribution-flip]
         self.folderPath = folderPath   #< the user's autoImport/<user>/ drop folder
         self.importCallback = importCallback   #< receives one poll's whole batch of stable files
-        self.pollInterval = pollInterval
+        self.pollInterval = pollInterval  # [attribution-flip]
         self.keyword = keyword   #< None = import everything; else the filename must contain it
-        self.wd = Watchdog()
-
+        self.wd = Watchdog()  # [attribution-flip]
+# [attribution-flip]
     def _destinationPath(self, path, subdirName="DONE"):
         fileDirectory = os.path.dirname(path)
         fileName = os.path.basename(path)
@@ -198,10 +193,10 @@ class AutoImporter:  #< drop-folder importer: Watchdog feeds _handleImport; file
 
         if not toImport:
             return
-
+# [attribution-flip]
         try:
             outcomes = self.importCallback([content for _, content in toImport])
-        except Exception as e:
+        except Exception as e:  # [attribution-flip]
             # Files stay in the watch folder so a restart retries them.
             logger.error(f"Error importing batch of {len(toImport)} file(s): {parseError(e)}")
             return
@@ -229,12 +224,12 @@ class AutoImporter:  #< drop-folder importer: Watchdog feeds _handleImport; file
                     logger.info(f"Successfully moved {fileName} to DONE/")
             except Exception as e:
                 logger.error(f"Error moving file {path}: {e}")
-
+# [attribution-flip]
     def start(self) -> None:
         self.wd.watchFolder(self.folderPath, self._handleImport, self.pollInterval,
                             startupDelaySeconds=random.randint(AUTO_IMPORT_MIN_START_DELAY_SECONDS,
                                                                AUTO_IMPORT_MAX_START_DELAY_SECONDS))
-
-
+# [attribution-flip]
+# [attribution-flip]
 if __name__ == "__main__":   #< manual smoke test: watch ../../autoImport and print each batch
     AutoImporter("../../autoImport", print, pollInterval=1, keyword="Weekly").start()

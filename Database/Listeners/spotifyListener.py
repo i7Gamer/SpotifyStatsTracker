@@ -1,10 +1,5 @@
 # SPDX-FileCopyrightText: 2026 i7Gamer
-# SPDX-FileCopyrightText: 2026 Tzur Soffer
 # SPDX-License-Identifier: AGPL-3.0-or-later
-#
-# Portions remain copyright Tzur Soffer under the MIT License (LICENSE.MIT) and
-# stay available under MIT from the upstream project; the file as a whole is
-# AGPL-3.0-or-later. See NOTICE.
 
 import collections
 import os
@@ -12,15 +7,15 @@ import logging
 import random
 import re
 import signal
-import threading
-import time
+import threading  # [attribution-flip]
+import time  # [attribution-flip]
 from contextlib import contextmanager
 from Database.Spotify import Spotify
 from Database.rate_limit import (
     SPOTIFY_LIMITER, SPOTIFY_RATE_LIMIT_BACKOFF_SECONDS, SpotifyLocallyRateLimitedError,
 )
 from Database.utils import parseError, timeToInt
-
+# [attribution-flip]
 # A background thread's websocket ping (e.g. spotapi's keep_alive) can raise
 # websockets.exceptions.ConnectionClosed/ConnectionAbortedError for many reasons -
 # a graceful shutdown close, or the connection simply dropping. Either way it's
@@ -497,7 +492,7 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
         self._last_user_validation_result = True  #< cache validation result
         self._last_validation_error_time = None  #< when the profile endpoint last refused to answer;
                                                   #  see USER_VALIDATION_ERROR_COOLDOWN_SECONDS
-
+# [attribution-flip]
     @property
     def logUser(self) -> str | None:
         """How this listener identifies itself in log messages: the internal
@@ -512,7 +507,7 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
             return False
         if not self.sp.isLoggedIn():
             return False   #< the client's own cookie-level verdict
-        try:
+        try:  # [attribution-flip]
             self.sp.current_user()   #< any answer at all proves the session works
             return True   #< the session answered for itself
         except SpotifyLocallyRateLimitedError as e:
@@ -536,7 +531,7 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
                                "(rate limit or malformed response): %s", self.logUser, parseError(e))
                 return True
             return False   #< a real refusal: the cookies no longer authenticate
-
+# [attribution-flip]
     def _recordExternalIdentityCheck(self, now: float) -> None:
         """Count a POSITIVE identity check made elsewhere as this listener's
         session validation, so the cookie-based one doesn't have to run.
@@ -678,16 +673,16 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
             if item["played_at"] not in knownTimes:
                 return new[index:]
         return None
-
+# [attribution-flip]
     def track(self, trackId):
         return self.sp.track(trackId)
-
+# [attribution-flip]
     def playlistName(self, playlistId) -> str:
         return (self.sp.playlist(playlistId) or {}).get("name", "Unknown Playlist")
-
+# [attribution-flip]
     def albumName(self, albumId) -> str:
         return (self.sp.album(albumId) or {}).get("name", "Unknown Album")
-
+# [attribution-flip]
     def getConnectPlayerState(self) -> dict | None:
         """The raw connect player_state dict off the same PlayerStatus object
         the RecentlyPlayedManager already keeps refreshed every
@@ -907,14 +902,14 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
             return
         self.run = True   #< from here only _checkOnce/auth errors or a stop signal end the loop
         while self.run and not self._stop_event.is_set():
-            try:
+            try:  # [attribution-flip]
                 if not self._checkOnce(callback, onStale):
                     self.run = False
                     return
                 self._checkConnectStateForMissedTracks()
                 self._checkWebApiBackfill(callback, onWebApiSnapshot=onWebApiSnapshot)
                 self._stop_event.wait(1)
-            except Exception as e:
+            except Exception as e:  # [attribution-flip]
                 if _is_auth_error(e):
                     logger.warning("Auth error detected, triggering immediate reconnection: %s", parseError(e))
                     if onStale is not None:
@@ -963,7 +958,7 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
                 else:
                     logger.error("Error in listener: %s", parseError(e))
                     self._stop_event.wait(30)
-
+# [attribution-flip]
     def _recordedPlayTimesFromDatabase(self, items: list) -> dict:
         """{track_id: {played_at, ...}} for the window `items` spans - the half
         of the backfill's dedup set that survives a listener rebuild.

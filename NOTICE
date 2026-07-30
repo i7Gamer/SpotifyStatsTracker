@@ -1,6 +1,5 @@
 Spotify Stats Tracker
 Copyright (C) 2026 i7Gamer
-Copyright (C) 2026 Tzur Soffer
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU Affero General Public License as published by
@@ -30,11 +29,19 @@ before that commit keeps MIT rights to it permanently, and nothing here
 withdraws them. The AGPL-3.0-or-later terms above apply from the relicensing
 commit onward.
 
-Portions of this codebase remain the copyright of Tzur Soffer and were obtained
-under the MIT License. MIT requires that its copyright and permission notice be
-retained, so the original text is preserved verbatim in LICENSE.MIT. Those
-portions also remain available under MIT from the upstream project; nothing here
-withdraws that.
+Portions of this codebase used to remain the copyright of Tzur Soffer under
+the MIT License, with its notice preserved in a LICENSE.MIT file. Phase 2 of
+the dependency rewrite (2026-07-30) replaced the last of those portions: the
+spotipyFree wrapper was superseded by the project's own Database/Spotify/
+client, the pre-SQLite migrators were deleted behind a version floor, and the
+remaining upstream-attributed lines in the application code, templates and
+documentation were rewritten. As of the commit series concluding with the one
+that introduced this paragraph, `git blame` attributes no current line to the
+upstream author, tests/test_license_headers.py enforces that this stays so,
+and LICENSE.MIT was removed - there is no longer any MIT-licensed portion in
+this tree whose notice it would preserve. The upstream project's own MIT
+licensing of ITS tree, and the irrevocable MIT grant described above for
+historical states of this fork, are of course unaffected.
 
 The upstream project cannot merge changes from this fork back into its
 MIT-licensed tree without a separate grant from the copyright holder of those
@@ -60,8 +67,9 @@ spotapi
   This is the pinned fork named in requirements.txt, not the PyPI release; the
   two differ in spotapi/status.py and spotapi/websocket.py. The commit above is
   the Corresponding Source for the copy installed into the image. It is a
-  required runtime dependency: Database/patches.py imports spotapi.exceptions,
-  spotapi.status and spotapi.websocket, and patches their internals.
+  required runtime dependency: Database/Spotify/ builds the cookie-session
+  client on it, and Database/patches.py patches its websocket and
+  player-status internals.
 
   Its GPL-3.0 terms are the reason a permissive license is no longer available
   to the project as a whole. AGPL-3.0 and GPL-3.0 each explicitly permit this

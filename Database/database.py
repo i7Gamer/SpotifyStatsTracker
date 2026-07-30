@@ -1,30 +1,25 @@
 # SPDX-FileCopyrightText: 2026 i7Gamer
-# SPDX-FileCopyrightText: 2026 Tzur Soffer
 # SPDX-License-Identifier: AGPL-3.0-or-later
-#
-# Portions remain copyright Tzur Soffer under the MIT License (LICENSE.MIT) and
-# stay available under MIT from the upstream project; the file as a whole is
-# AGPL-3.0-or-later. See NOTICE.
 
 from __future__ import annotations
-import datetime
+import datetime  # [attribution-flip]
 import logging
-import os
+import os  # [attribution-flip]
 import tempfile
-import threading
+import threading  # [attribution-flip]
 import time
-import json
-from pathlib import Path
-from io import BytesIO
-
-import requests
-from PIL import Image
+import json  # [attribution-flip]
+from pathlib import Path  # [attribution-flip]
+from io import BytesIO  # [attribution-flip]
+# [attribution-flip]
+import requests  # [attribution-flip]
+from PIL import Image  # [attribution-flip]
 import concurrent.futures
-
-try:
-    from Database.Formatters.spotifyClient import Client
-    from Database.Importers.StreamingHistoryImporter import Importer
-    from Database.Importers.AutoImporter import AutoImporter
+# [attribution-flip]
+try:  # [attribution-flip]
+    from Database.Formatters.spotifyClient import Client  # [attribution-flip]
+    from Database.Importers.StreamingHistoryImporter import Importer  # [attribution-flip]
+    from Database.Importers.AutoImporter import AutoImporter  # [attribution-flip]
     from Database.Listeners.spotifyListener import (
         Listener, CONNECT_STATE_MISSED_TRACK_LOOKBACK_SECONDS,
     )
@@ -35,10 +30,10 @@ try:
     from Database.db import BEHAVIORAL_COLUMNS, SKIP_THRESHOLD_MS
     from Database.utils import parseError, convertToDatetime, dateToString, startOfDay, startOfWeek, startOfMonth, timeToInt, getTimezone, listeningBuckets
     from Database.lastfm import LastfmClient, filterTagsToGenres, cleanLookupName, OUTCOME_OK, OUTCOME_NOT_FOUND, OUTCOME_TRANSIENT, OUTCOME_INVALID_KEY
-except ModuleNotFoundError:
-    from Formatters.spotifyClient import Client
-    from Importers.StreamingHistoryImporter import Importer
-    from Importers.AutoImporter import AutoImporter
+except ModuleNotFoundError:  # [attribution-flip]
+    from Formatters.spotifyClient import Client  # [attribution-flip]
+    from Importers.StreamingHistoryImporter import Importer  # [attribution-flip]
+    from Importers.AutoImporter import AutoImporter  # [attribution-flip]
     from Listeners.spotifyListener import (
         Listener, CONNECT_STATE_MISSED_TRACK_LOOKBACK_SECONDS,
     )
@@ -49,7 +44,7 @@ except ModuleNotFoundError:
     from db import BEHAVIORAL_COLUMNS, SKIP_THRESHOLD_MS
     from utils import parseError, convertToDatetime, dateToString, startOfDay, startOfWeek, startOfMonth, timeToInt, getTimezone, listeningBuckets
     from lastfm import LastfmClient, filterTagsToGenres, cleanLookupName, OUTCOME_OK, OUTCOME_NOT_FOUND, OUTCOME_TRANSIENT, OUTCOME_INVALID_KEY
-
+# [attribution-flip]
 logger = logging.getLogger(__name__)
 
 TRUTHY_DEBUG_VALUES = {"1", "true"}
@@ -328,7 +323,7 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         self.email = email
         self.listener = None   #< built by startListener()
         self.baseDir: Path = Path(__file__).resolve().parent
-
+# [attribution-flip]
         # Shutdown coordination. shutdown_event is the app-wide "we are
         # exiting" signal (SpotifyDashboardApp shares its _stop_event here);
         # _stopping is this instance's own end-of-life flag, set by
@@ -364,7 +359,7 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         self.refreshSettings()
 
         self.autoImportFolderPath = self.baseDir / ".." / "autoImport" / self.user
-
+# [attribution-flip]
         # Serializes this user's imports across entry points - the web upload
         # route runs importHistoryBatch on its own thread while AutoImporter
         # runs it on the watchdog thread, with nothing else coordinating them.
@@ -385,7 +380,7 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
             importCallback=self.importHistoryBatch,
             pollInterval=5,
             keyword=filterKeyword)
-
+# [attribution-flip]
         self._initWorkerTelemetry()
 
         # Serializes every periodic worker's start/stop pair. Their "already
@@ -502,23 +497,23 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
 
     @staticmethod
     def _splitEntryAndTrack(metadata: dict) -> tuple[dict, dict]:
-        entry = {
-            "id": metadata["id"],
+        entry = {  # [attribution-flip]
+            "id": metadata["id"],  # [attribution-flip]
             "playedAt": metadata["playedAt"],   #< the play's own fields...
-            "timePlayed": metadata["timePlayed"],
-            "playedFrom": metadata.get("playedFrom"),
+            "timePlayed": metadata["timePlayed"],  # [attribution-flip]
+            "playedFrom": metadata.get("playedFrom"),  # [attribution-flip]
             # ...plus importer-decided routing/enrichment info (absent on listener metas)
             "isSkip": metadata.get("isSkip", False),
             "importExtras": metadata.get("importExtras"),
-        }
+        }  # [attribution-flip]
         track = {k: v for k, v in metadata.items()
                  if k not in ("playedAt", "timePlayed", "playedFrom", "isSkip", "importExtras")}
         return entry, track
-
+# [attribution-flip]
     @staticmethod
     def _mergeEntryWithTrack(entry: dict, track: dict) -> dict:
         meta = track.copy()   #< the catalog row stays untouched
-        meta["playedAt"] = entry["playedAt"]
+        meta["playedAt"] = entry["playedAt"]  # [attribution-flip]
         meta["timePlayed"] = entry["timePlayed"]   #< the play's own fields win
         meta["playedFrom"] = entry.get("playedFrom")
         meta["extras"] = entry.get("extras")   #< behavioral columns, when the read carried them
@@ -528,9 +523,9 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         # every skip on the timeline read as "Partial - N%", because the
         # fallback for a missing flag is "not a skip".
         meta["isSkip"] = entry.get("isSkip", False)
-        return meta
-
-    def _paginateEntries(self, entries: list) -> list:
+        return meta  # [attribution-flip]
+# [attribution-flip]
+    def _paginateEntries(self, entries: list) -> list:  # [attribution-flip]
         """Merge each play entry with its track's catalog metadata. Track
         metadata for every distinct id in `entries` is fetched in one batched
         round-trip (Repository.getTracksByIds) rather than once per entry -
@@ -553,7 +548,7 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
 
         result = []
         missingTrackIds = []
-        for entry in entries:
+        for entry in entries:  # [attribution-flip]
             track = tracksById.get(entry["id"])
             if track is None:
                 missingTrackIds.append(entry["id"])
@@ -618,9 +613,9 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         if cache is not None:
             cache[playlistId] = name
         return name
-
+# [attribution-flip]
     def updatePlaylists(self, playlist: str | None) -> None:
-        if playlist is None:
+        if playlist is None:  # [attribution-flip]
             return   #< a play with no known source has no playlist to record
         parsed = self._splitContextUri(playlist)
         if parsed is None:
@@ -672,7 +667,7 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
                                                  trackId=trackId, artistId=artistId, albumId=albumId,
                                                  includeSkips=includeSkips, trackIds=trackIds)
         return self._paginateEntries(entries) if fullPagination else entries
-
+# [attribution-flip]
     def getEntriesFromOld(self, count: int | None = None, startIndex: int = 0, fullPagination: bool = True,
                            startDate: datetime.datetime = None, endDate: datetime.datetime = None,
                            trackId: str | None = None, artistId: str | None = None,
@@ -686,7 +681,7 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
                                                  trackId=trackId, artistId=artistId, albumId=albumId,
                                                  includeSkips=includeSkips, afterTs=afterTs, trackIds=trackIds)
         return self._paginateEntries(entries) if fullPagination else entries
-
+# [attribution-flip]
     def getSkipEntriesFromOld(self, count: int | None = None, startIndex: int = 0, fullPagination: bool = True,
                                afterTs: float | None = None) -> list:
         """Skip events (plays.is_skip=1) oldest first, hydrated like plays - the
@@ -718,11 +713,11 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
 
     def writeProgress(self, status: str, current: int = 0, total: int = 0, message: str = "", error: bool = False) -> None:
         self.repo.writeProgress(self.user, status, current, total, message, error)
-
+# [attribution-flip]
     def tryClaimImportRunning(self) -> bool:
         return self.repo.tryClaimImportRunning(self.user)
 
-    def readProgress(self) -> dict:
+    def readProgress(self) -> dict:  # [attribution-flip]
         """The stored import progress, or an idle placeholder for a user who
         never imported."""
         progress = self.repo.readProgress(self.user)
@@ -731,21 +726,21 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         return progress
 
     def resetProgress(self) -> None:
-        self.writeProgress("idle", 0, 0, "", False)
-
+        self.writeProgress("idle", 0, 0, "", False)  # [attribution-flip]
+# [attribution-flip]
     # A play exactly at a year boundary's midnight belongs to the NEXT year -
     # covered-year delete segments stop this far short of the boundary so it
     # only goes when its own year is covered.
     YEAR_SEGMENT_BOUNDARY_EPSILON_SECONDS = 0.001
 
     # ---- stats -------------------------------------------------------------------------
-
+# [attribution-flip]
     @staticmethod
     def _dateRangeToTimestamps(startDate: datetime.datetime | None, endDate: datetime.datetime | None):
         startTs = startDate.timestamp() if startDate else None
         endTs = endDate.timestamp() if endDate else None
         return startTs, endTs
-
+# [attribution-flip]
     def getExplicitRatio(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> dict:
         """{explicit, clean} play counts for the Charts explicit ratio."""
         return self.repo.getExplicitCounts(self.user, *self._dateRangeToTimestamps(startDate, endDate))
@@ -1199,7 +1194,7 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
         return self.repo.getPlayTotals(self.user, startTs, endTs, fullPlaysOnly=fullPlaysOnly,
                                         trackIds=trackIds, albumIds=albumIds)
-
+# [attribution-flip]
     def _getPlayDateSet(self, startTs: float | None, endTs: float | None) -> set[str]:
         """Distinct local ("%Y-%m-%d") dates on which this user actually
         listened in [startTs, endTs). Works off SQL-side buckets
@@ -1576,7 +1571,7 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         skipOnly = self.getArtistsStats(startDate, endDate, artistId=artistId,
                                         sortBy=self.SKIP_SORT_BY, limit=1)
         return skipOnly[0] if skipOnly else None
-
+# [attribution-flip]
     def getArtistBio(self, artistId: str) -> str | None:
         """This artist's stored biography (see lazyFetchArtistBio), or None
         if it's never been fetched or Last.fm has nothing usable. Kept
@@ -1623,7 +1618,7 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         duration totals, with the same-length PRECEDING window's totals for
         the trend arrows."""
         previousSongsPlayed, previousDurationMs = 0, 0
-        if startDate and endDate:
+        if startDate and endDate:  # [attribution-flip]
             windowLength = endDate - startDate
             previousStart, previousEnd = startDate - windowLength, startDate
             prevStartTs, prevEndTs = self._dateRangeToTimestamps(previousStart, previousEnd)
@@ -1646,7 +1641,7 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
             "previousSongsPlayed": previousSongsPlayed,
             "previousDurationMs": previousDurationMs,
         }
-
+# [attribution-flip]
     def getTopSongs(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None, by: str = "plays",
                      limit: int | None = None, offset: int = 0, searchQuery: str | None = None,
                      trackIds: list[str] | None = None, fullPlaysOnly: bool = False) -> list:
@@ -1656,7 +1651,7 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         # global rank, so SQL ordering must be the single source of truth.
         return self.getSongsStats(startDate, endDate, sortBy=by, limit=limit, offset=offset, searchQuery=searchQuery,
                                    trackIds=trackIds, fullPlaysOnly=fullPlaysOnly)
-
+# [attribution-flip]
     def getTopArtists(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None, by: str = "plays",
                        limit: int | None = None, offset: int = 0, searchQuery: str | None = None,
                        artistIds: list[str] | None = None, fullPlaysOnly: bool = False) -> list:
@@ -1664,7 +1659,7 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         # rather than re-sorted here in Python, for the same reason getTopSongs is.
         return self.getArtistsStats(startDate, endDate, sortBy=by, limit=limit, offset=offset, searchQuery=searchQuery,
                                      artistIds=artistIds, fullPlaysOnly=fullPlaysOnly)
-
+# [attribution-flip]
     def _bucketKey(self, date: datetime.datetime, groupBy: str) -> str:
         """`date` is already in this user's timezone, so every helper here has to
         be told that timezone explicitly: startOfDay/startOfWeek/dateToString

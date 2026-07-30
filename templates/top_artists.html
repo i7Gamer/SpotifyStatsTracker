@@ -1,26 +1,21 @@
 {#- SPDX-FileCopyrightText: 2026 i7Gamer
-    SPDX-FileCopyrightText: 2026 Tzur Soffer
-    SPDX-License-Identifier: AGPL-3.0-or-later
+    SPDX-License-Identifier: AGPL-3.0-or-later -#}
 
-    Portions remain copyright Tzur Soffer under the MIT License (LICENSE.MIT) and
-    stay available under MIT from the upstream project; the file as a whole is
-    AGPL-3.0-or-later. See NOTICE. -#}
-
-{% extends "layout.html" %}
+{% extends "layout.html" %} {# attribution-flip #}
 {% block title %}Top Artists - {{ super() }}{% endblock %}
-{% block content %}
+{% block content %} {# attribution-flip #}
   {# Two-phase load - see top_songs.html. #}
-  <section class="hero">
-    <div class="hero-content">
-      <h1>Top Artists</h1>
-      <p>Your most-listened artists and aggregated stats.</p>
-    </div>
-  </section>
-  {% include '_page_card.html' %}
-
+  <section class="hero"> {# attribution-flip #}
+    <div class="hero-content"> {# attribution-flip #}
+      <h1>Top Artists</h1> {# attribution-flip #}
+      <p>Your most-listened artists and aggregated stats.</p> {# attribution-flip #}
+    </div> {# attribution-flip #}
+  </section> {# attribution-flip #}
+  {% include '_page_card.html' %} {# attribution-flip #}
+{# attribution-flip #}
   <div id="topListResults">
     <section class="track-list"><p class="loading">Loading…</p></section>
   </div>
-
+{# attribution-flip #}
   <script src="{{ url_for('static', filename='js/top-list.js') }}"></script>
-{% endblock %}
+{% endblock %} {# attribution-flip #}

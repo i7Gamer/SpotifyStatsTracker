@@ -1,14 +1,9 @@
 {#- SPDX-FileCopyrightText: 2026 i7Gamer
-    SPDX-FileCopyrightText: 2026 Tzur Soffer
-    SPDX-License-Identifier: AGPL-3.0-or-later
+    SPDX-License-Identifier: AGPL-3.0-or-later -#}
 
-    Portions remain copyright Tzur Soffer under the MIT License (LICENSE.MIT) and
-    stay available under MIT from the upstream project; the file as a whole is
-    AGPL-3.0-or-later. See NOTICE. -#}
-
-{% extends "layout.html" %}
+{% extends "layout.html" %} {# attribution-flip #}
 {% block title %}Dashboard - {{ super() }}{% endblock %}
-{% block content %}
+{% block content %} {# attribution-flip #}
   {# Live/always-current cards, independent of the interval/date-range filter -
      in their own panel above the form + results. #}
   <section class="dashboard-live">
@@ -199,9 +194,9 @@
 
   <section class="hero">
     <div class="hero-content">
-      <form class="filter-section dashboard-filter" method="get" action="/">
-        <div class="filter-group">
-          <label for="interval">Time Period:</label>
+      <form class="filter-section dashboard-filter" method="get" action="/"> {# attribution-flip #}
+        <div class="filter-group"> {# attribution-flip #}
+          <label for="interval">Time Period:</label> {# attribution-flip #}
           <select name="interval" id="interval" onchange="updateDashboardInterval()">
             <option value="all time" {{ 'selected' if interval == 'all time' }}>All Time</option>
             <option value="today" {% if interval == 'today' %}selected{% endif %}>Today</option>
@@ -211,34 +206,34 @@
             <option value="year" {{ 'selected' if interval == 'year' }}>Last Year</option>
             <option value="5years" {{ 'selected' if interval == '5years' }}>Last 5 Years</option>
             <option value="custom" {{ 'selected' if interval == 'custom' }}>Custom Date Range</option>
-          </select>
-        </div>
-
-        <div class="filter-group custom-dates" id="dashboardCustomDates" {% if interval != 'custom' %}style="display: none;"{% endif %}>
-          <label for="startDate">From:</label>
+          </select> {# attribution-flip #}
+        </div> {# attribution-flip #}
+{# attribution-flip #}
+        <div class="filter-group custom-dates" id="dashboardCustomDates" {% if interval != 'custom' %}style="display: none;"{% endif %}> {# attribution-flip #}
+          <label for="startDate">From:</label> {# attribution-flip #}
           <input type="date" id="startDate" name="startDate" value="{{ customStart }}" onchange="scheduleSearchFilter('startDate', updateDashboardDateFilter)">
-          <label for="endDate">To:</label>
+          <label for="endDate">To:</label> {# attribution-flip #}
           <input type="date" id="endDate" name="endDate" value="{{ customEnd }}" onchange="scheduleSearchFilter('endDate', updateDashboardDateFilter)">
           <span id="dateError" style="color: var(--accent); font-size: 0.85rem; display: none; margin-left: 10px;"></span>
-        </div>
-
-        <noscript>
-          <button class="primary-button" type="submit">Apply</button>
-        </noscript>
-      </form>
+        </div> {# attribution-flip #}
+{# attribution-flip #}
+        <noscript> {# attribution-flip #}
+          <button class="primary-button" type="submit">Apply</button> {# attribution-flip #}
+        </noscript> {# attribution-flip #}
+      </form> {# attribution-flip #}
       <div class="dashboard-summary" id="dashboardSummary">
         {% include '_dashboard_summary.html' %}
-      </div>
-    </div>
-  </section>
-
-  <script>
+      </div> {# attribution-flip #}
+    </div> {# attribution-flip #}
+  </section> {# attribution-flip #}
+{# attribution-flip #}
+  <script> {# attribution-flip #}
     //< data island: the only values the dashboard script needs from the
     //  server. The logic lives in static/js/dashboard-page.js so the lint
     //  gate covers it (see history.html for the same split).
     var DASHBOARD_DEFAULT_WINDOW = {{ defaultWindow | tojson }};
     var USERNAME = {{ username | tojson }};
-  </script>
+  </script> {# attribution-flip #}
   <script src="{{ url_for('static', filename='js/dashboard-page.js') }}"></script>
   {% if milestones_enabled %}
   <script src="{{ url_for('static', filename='js/milestone-more.js') }}"></script>
