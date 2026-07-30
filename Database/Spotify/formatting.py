@@ -79,7 +79,11 @@ def _formatAlbumOfTrack(albumOfTrack: dict) -> dict:
     if releaseDate:
         # Left absent otherwise: Client._formatAlbum's own "NA" default maps a
         # missing date to the epoch, and inventing one here would claim a fact.
-        album["release_date"] = releaseDate
+        # Date-only (the "T00:00:00Z" tail dropped): convertToDatetime reads a
+        # bare date as instance-zone midnight, so the full instant would render
+        # a day earlier anywhere west of UTC - and the Web-API backfill path
+        # stores Spotify's own YYYY-MM-DD, so the two sources must agree.
+        album["release_date"] = str(releaseDate).split("T")[0]
     return album
 
 
@@ -160,6 +164,10 @@ def formatAlbumUnion(albumUnion: dict) -> dict:
             "id": trackId,
             "name": trackData.get("name", ""),
             "duration_ms": ((trackData.get("duration") or {}).get("totalMilliseconds")) or 0,
+            # The whole reason the backfiller queues albums with artistless
+            # tracks: this payload is where the repair links come from
+            # (_normalizeBackfillArtists reads id/name/external_urls).
+            "artists": _formatArtistItems((trackData.get("artists") or {}).get("items")),
         })
 
     album = {
@@ -174,7 +182,10 @@ def formatAlbumUnion(albumUnion: dict) -> dict:
     if releaseDate:
         # Absent otherwise: the backfiller maps a missing date to 0.0 itself;
         # inventing one here would claim a fact Spotify didn't state.
-        album["release_date"] = releaseDate
+        # Date-only, for the same two reasons as _formatAlbumOfTrack: a full
+        # instant reads a day earlier west of UTC, and the Web-API path
+        # stores YYYY-MM-DD.
+        album["release_date"] = str(releaseDate).split("T")[0]
     return album
 
 
