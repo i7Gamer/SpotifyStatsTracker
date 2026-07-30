@@ -582,6 +582,43 @@ class AlbumGetInfoFallbackTestCase(unittest.TestCase):
         self.assertEqual(outcome.status, OUTCOME_NOT_FOUND)
 
     @patch("Database.lastfm.requests.get")
+    def test_recovery_log_counts_only_tags_that_survive_the_genre_whitelist(self, mockGet):
+        """The log line has to describe what the user will actually see on the
+        album page - i.e. whitelisted genres - not the raw tag count. Raw
+        counts read as a successful recovery for albums whose tags all get
+        dropped by filterTagsToGenres later."""
+        client, _ = self._client()
+        mockGet.side_effect = [
+            _response(payload={"toptags": {"tag": []}}),
+            _response(payload={"album": {"tags": {"tag": [
+                {"name": "national anthem", "count": 100},
+                {"name": "austria", "count": 90},
+                {"name": "rock", "count": 5}]}}}),
+        ]
+        with self.assertLogs(lastfm.logger, level="INFO") as captured:
+            outcome = client.getAlbumTopTags("Militaermusik Tirol", "Bundeshymne")
+        message = "\n".join(captured.output)
+        self.assertIn("1 genre tag(s)", message)
+        self.assertIn("rock", message)
+        self.assertNotIn("national anthem", message)
+        # The outcome itself still carries every raw tag - only the log is filtered.
+        self.assertEqual(len(outcome.tags), 3)
+
+    @patch("Database.lastfm.requests.get")
+    def test_no_recovery_log_when_nothing_survives_the_genre_whitelist(self, mockGet):
+        client, _ = self._client()
+        mockGet.side_effect = [
+            _response(payload={"toptags": {"tag": []}}),
+            _response(payload={"album": {"tags": {"tag": [
+                {"name": "national anthem", "count": 100},
+                {"name": "austria", "count": 90}]}}}),
+        ]
+        with self.assertNoLogs(lastfm.logger, level="INFO"):
+            outcome = client.getAlbumTopTags("Militaermusik Tirol", "Bundeshymne")
+        self.assertEqual(outcome.status, OUTCOME_OK)
+        self.assertEqual(len(outcome.tags), 2)   #< the tags still flow through unchanged
+
+    @patch("Database.lastfm.requests.get")
     def test_getinfo_fallback_fires_when_gettoptags_itself_is_not_found(self, mockGet):
         """album.gettoptags can 404 (error 6) on a pair that album.getinfo
         still resolves - the same gettoptags-vs-getinfo divergence this
@@ -745,6 +782,35 @@ class TrackGetInfoFallbackTestCase(unittest.TestCase):
         self.assertEqual(mockGet.call_count, 2)
         secondParams = mockGet.call_args_list[1].kwargs["params"]
         self.assertEqual(secondParams["method"], "track.getinfo")
+
+    @patch("Database.lastfm.requests.get")
+    def test_recovery_log_counts_only_tags_that_survive_the_genre_whitelist(self, mockGet):
+        """Same contract as the album fallback's log line - report the genres
+        that will actually be stored, not the raw tag count."""
+        client, _ = self._client()
+        mockGet.side_effect = [
+            _response(payload={"toptags": {"tag": []}}),
+            _response(payload={"track": {"toptags": {"tag": [
+                {"name": "national anthem", "count": 100},
+                {"name": "rock", "count": 5}]}}}),
+        ]
+        with self.assertLogs(lastfm.logger, level="INFO") as captured:
+            client.getTrackTopTags("Militaermusik Tirol", "Bundeshymne")
+        message = "\n".join(captured.output)
+        self.assertIn("1 genre tag(s)", message)
+        self.assertNotIn("national anthem", message)
+
+    @patch("Database.lastfm.requests.get")
+    def test_no_recovery_log_when_nothing_survives_the_genre_whitelist(self, mockGet):
+        client, _ = self._client()
+        mockGet.side_effect = [
+            _response(payload={"toptags": {"tag": []}}),
+            _response(payload={"track": {"toptags": {"tag": [
+                {"name": "national anthem", "count": 100}]}}}),
+        ]
+        with self.assertNoLogs(lastfm.logger, level="INFO"):
+            outcome = client.getTrackTopTags("Militaermusik Tirol", "Bundeshymne")
+        self.assertEqual(len(outcome.tags), 1)   #< the tag still flows through unchanged
 
 
 class TrackTopTagsArtistNameFallbackTestCase(unittest.TestCase):

@@ -341,6 +341,24 @@ def _extractTrackInfoTags(payload) -> list:
     return []
 
 
+def _logGetInfoRecovery(kind: str, tags: list, artistName: str, entityName: str) -> None:
+    """Report a *.getinfo fallback recovery in terms of the GENRES it will
+    actually contribute, not the raw tag count. Most of Last.fm's raw tags
+    aren't genres ("national anthem", "austria", "seen live") and
+    filterTagsToGenres drops every one that misses lastfm_genres.txt, so a
+    raw count reads as a successful recovery for entities that end up with
+    nothing to show: measured 2026-07-31 over the live app.log, 219 of the
+    4839 album pairs this line reported as recovered carry no own genre in
+    the database at all. Nothing survives the whitelist -> nothing worth
+    reporting, since nothing will be stored or displayed."""
+    genres = filterTagsToGenres(tags)
+    if not genres:
+        return
+    logger.info("[Lastfm] %s.getinfo fallback recovered %d genre tag(s) for %r / %r "
+                "after an empty %s.gettoptags result: %s",
+                kind, len(genres), artistName, entityName, kind, ", ".join(genres))
+
+
 # Artist-bio cleaning: Last.fm bios carry embedded HTML (a trailing "Read
 # more on Last.fm" link) - that HTML is never rendered as-is (no sanitizer
 # dependency added just for this; the tags are simply stripped, converting
@@ -558,9 +576,7 @@ class LastfmClient:
                                       {"artist": artistName, "album": albumName}, stop_event,
                                       extractFn=_extractAlbumInfoTags)
         if fallback is not None and fallback.status == OUTCOME_OK and fallback.tags:
-            logger.info("[Lastfm] album.getinfo fallback recovered %d tag(s) for %r / %r "
-                       "after an empty album.gettoptags result", len(fallback.tags),
-                       artistName, albumName)
+            _logGetInfoRecovery("album", fallback.tags, artistName, albumName)
         return fallback
 
     def getTrackTopTags(self, artistName: str, trackName: str,
@@ -606,9 +622,7 @@ class LastfmClient:
                                       {"artist": artistName, "track": trackName}, stop_event,
                                       extractFn=_extractTrackInfoTags)
         if fallback is not None and fallback.status == OUTCOME_OK and fallback.tags:
-            logger.info("[Lastfm] track.getinfo fallback recovered %d tag(s) for %r / %r "
-                       "after an empty track.gettoptags result", len(fallback.tags),
-                       artistName, trackName)
+            _logGetInfoRecovery("track", fallback.tags, artistName, trackName)
         return fallback
 
     def validateApiKey(self) -> dict:
