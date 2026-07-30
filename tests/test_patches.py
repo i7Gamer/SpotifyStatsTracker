@@ -1864,6 +1864,112 @@ class TestPushedClusterHandling(unittest.TestCase):
         self.assertEqual(manager._devices, cluster["devices"])
 
 
+class TestPlayedDuration(unittest.TestCase):
+    """time_played used to be wall-clock since the track became current, which
+    counts pause time. app.log 2026-07-30 10:14:59 recorded a track paused
+    overnight as 35,377,992ms - 154x its length - and only the corruption guard
+    stopped it landing as a full play. Worse: a track paused 30 seconds in and
+    abandoned got clamped to its duration and counted as a COMPLETE listen,
+    which is also what decides plays.is_skip.
+
+    This is on the shared path, so it applies to polling as well as push."""
+
+    def _state(self, uid="uid-1", positionMs="30000", timestampMs="1785000000000",
+               durationMs="200000", isPaused=False, trackUri="spotify:track:aaa"):
+        cluster = pushedCluster(trackUri=trackUri, uid=uid, timestampMs=timestampMs,
+                                isPaused=isPaused)
+        cluster["player_state"]["position_as_of_timestamp"] = positionMs
+        cluster["player_state"]["duration"] = durationMs
+        return spotapi.status.PlayerState.from_dict(cluster["player_state"])
+
+    def _observe(self, lpm, state, callback, nowEpoch):
+        from Database.patches import _applyStateToTracking
+        with patch("Database.patches.time.time", return_value=nowEpoch):
+            _applyStateToTracking(lpm, state, callback)
+
+    def test_a_paused_track_records_its_paused_position(self):
+        """The regression: paused 30s in at 1785000000, changed 5 hours later.
+        The old code recorded 5 hours."""
+        lpm = _pushLastPlayed(_PushManager([]))
+        callback = MagicMock()
+
+        self._observe(lpm, self._state(uid="uid-1", positionMs="30000", isPaused=True),
+                      callback, nowEpoch=1785000000)
+        self._observe(lpm, self._state(uid="uid-2", trackUri="spotify:track:bbb"),
+                      callback, nowEpoch=1785000000 + 5 * 3600)
+
+        callback.assert_called_once()
+        self.assertEqual(callback.call_args[0][3], 30000)
+
+    def test_a_playing_track_counts_position_plus_elapsed(self):
+        lpm = _pushLastPlayed(_PushManager([]))
+        callback = MagicMock()
+
+        #< snapshot says 30s in at t=1785000000; 10s later it is 40s in
+        self._observe(lpm, self._state(uid="uid-1", positionMs="30000",
+                                       timestampMs="1785000000000"),
+                      callback, nowEpoch=1785000000)
+        self._observe(lpm, self._state(uid="uid-2", trackUri="spotify:track:bbb"),
+                      callback, nowEpoch=1785000010)
+
+        self.assertEqual(callback.call_args[0][3], 40000)
+
+    def test_it_never_exceeds_the_track_duration(self):
+        lpm = _pushLastPlayed(_PushManager([]))
+        callback = MagicMock()
+
+        self._observe(lpm, self._state(uid="uid-1", positionMs="30000", durationMs="200000"),
+                      callback, nowEpoch=1785000000)
+        self._observe(lpm, self._state(uid="uid-2", trackUri="spotify:track:bbb"),
+                      callback, nowEpoch=1785000000 + 3600)
+
+        self.assertLessEqual(callback.call_args[0][3], 200000)
+
+    def test_joining_mid_track_counts_where_playback_actually_was(self):
+        """A listener joins mid-track on EVERY rebuild, and lastPlayedAt is then
+        its first sighting, not the real start. Measuring from that sighting -
+        which is what capping at wall-clock would do - reports 10s for a track
+        already 3 minutes in, and a full listen looks like a skip."""
+        lpm = _pushLastPlayed(_PushManager([]))
+        callback = MagicMock()
+
+        self._observe(lpm, self._state(uid="uid-1", positionMs="180000", isPaused=True),
+                      callback, nowEpoch=1785000000)
+        self._observe(lpm, self._state(uid="uid-2", trackUri="spotify:track:bbb"),
+                      callback, nowEpoch=1785000010)
+
+        self.assertEqual(callback.call_args[0][3], 180000)
+
+    def test_a_state_without_a_position_falls_back_to_wall_clock(self):
+        """Old behaviour, kept for anything that doesn't carry the fields."""
+        from Database.patches import _playedMsForOutgoingTrack
+        import datetime as dt
+
+        lpm = _pushLastPlayed(_PushManager([]))
+        lpm.lastPlayedAt = dt.datetime.fromtimestamp(1785000000, tz=dt.timezone.utc)
+
+        with patch("Database.patches.time.time", return_value=1785000060):
+            self.assertEqual(_playedMsForOutgoingTrack(lpm, None), 60000)
+
+    def test_the_observation_is_refreshed_without_a_track_change(self):
+        """A mid-track pause is exactly the update that makes the next
+        measurement accurate, so it must be recorded even though nothing
+        changed tracks."""
+        from Database.patches import _applyStateToTracking
+
+        lpm = _pushLastPlayed(_PushManager([]))
+        callback = MagicMock()
+
+        self._observe(lpm, self._state(uid="uid-1", positionMs="1000"), callback,
+                      nowEpoch=1785000000)
+        self._observe(lpm, self._state(uid="uid-1", positionMs="95000", isPaused=True),
+                      callback, nowEpoch=1785000094)
+
+        callback.assert_not_called()
+        self.assertEqual(lpm._lastObservedPlayback[0], 95000)
+        self.assertTrue(lpm._lastObservedPlayback[2])
+
+
 class TestPushLoop(unittest.TestCase):
     """The push loop must record plays through exactly the same code the poll
     loop uses (_applyStateToTracking), and must hand back to polling rather

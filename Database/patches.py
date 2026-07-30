@@ -1050,6 +1050,72 @@ def _isSessionClosedError(exc: BaseException | None) -> bool:
     return False
 
 
+def _connectStateInt(value) -> int:
+    """Connect-state numbers arrive as strings ("duration": "215000"); 0 for
+    anything missing or malformed. A local copy of the helper in
+    Database.workers.listener rather than an import: this module is patched in
+    before the app package is importable."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _observedPlayback(state):
+    """(positionMs, stateTimestampMs, isPaused, durationMs) for a player state,
+    or None when it carries no usable position."""
+    stateTimestampMs = _connectStateInt(getattr(state, "timestamp", None))
+    if stateTimestampMs <= 0:
+        return None
+    return (
+        _connectStateInt(getattr(state, "position_as_of_timestamp", None)),
+        stateTimestampMs,
+        bool(getattr(state, "is_paused", False)),
+        _connectStateInt(getattr(state, "duration", None)),
+    )
+
+
+def _playedMsForOutgoingTrack(self, observed) -> int:
+    """How long the track being left was actually PLAYED.
+
+    The old answer was wall-clock since it became current, which silently counts
+    pause time: app.log 2026-07-30 10:14:59 recorded a track paused overnight as
+    35,377,992ms - 154x its own length - and only
+    LISTENER_DURATION_CORRUPTION_FACTOR stopped that landing in the database.
+    The clamp hid the worse case: a track paused 30 seconds in and abandoned was
+    rewritten to its full duration and counted as a complete listen, and
+    time_played is what plays.is_skip is materialised from.
+
+    The connect state carries the real playback position, in both modes (poll
+    and push fill _state from the same shape), so the answer is "how far into
+    the track it had got", capped at the track's own length. Wall-clock remains
+    the fallback for a state that carries no position.
+
+    Deliberately NOT also capped at how long we had been watching the track. A
+    listener joins mid-track on every rebuild, and its lastPlayedAt is then the
+    moment it FIRST SAW the track rather than the moment playback started - so
+    that ceiling would throw away the position it joined at and turn full
+    listens into skips on every reconnect. The trade is that seeking forward
+    reads as progress, which is rarer and smaller than under-reporting every
+    reconnect.
+
+    Same position maths as Database.workers.listener.getNowPlaying, which has
+    read these fields for the dashboard since the now-playing strip landed."""
+    if observed is None:
+        return max(0, int((time.time() - self.lastPlayedAt.timestamp()) * 1000))
+
+    positionMs, stateTimestampMs, isPaused, durationMs = observed
+    if isPaused:
+        playedMs = positionMs
+    else:
+        # The state only updates on play/pause/seek/track change, so the live
+        # position is its snapshot plus the time since that snapshot.
+        playedMs = positionMs + max(0, int(time.time() * 1000) - stateTimestampMs)
+    if durationMs > 0:
+        playedMs = min(playedMs, durationMs)
+    return max(0, int(playedMs))
+
+
 def _applyStateToTracking(self, state, callback) -> None:
     """Turn an observed player state into a recorded play, if the track changed.
 
@@ -1071,13 +1137,19 @@ def _applyStateToTracking(self, state, callback) -> None:
     timestamp = int(state.timestamp) / 1000
     if self.lastPLayed != state.track.uid:
         if self.lastTrackUri is not None:
-            timePlayed = max(0, int((time.time() - self.lastPlayedAt.timestamp()) * 1000))
+            # Measured from the LAST observation of the outgoing track, not
+            # from this one - this state already describes its replacement.
+            timePlayed = _playedMsForOutgoingTrack(self, getattr(self, "_lastObservedPlayback", None))
             callback(self.lastTrackUri, self.lastPlayedAtText, self.lastContextUri, timePlayed)
         self.lastTrackUri = state.track.uri
         self.lastPlayedAt = datetime.datetime.fromtimestamp(timestamp, tz=datetime.timezone.utc)
         self.lastPlayedAtText = self.lastPlayedAt.isoformat().replace("+00:00", "Z")
         self.lastContextUri = state.context_uri
         self.lastPLayed = state.track.uid
+    # Every observation refreshes it, not just changes: this is what the NEXT
+    # track change measures against, and mid-track pauses/seeks are exactly the
+    # updates that make it accurate.
+    self._lastObservedPlayback = _observedPlayback(state)
 
 
 def _applyPushedState(self, manager, callback) -> None:
