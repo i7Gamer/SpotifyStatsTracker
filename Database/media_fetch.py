@@ -101,10 +101,10 @@ class MediaFetchMixin:
         """Looks up a real Spotify CDN image URL for an artist, mirroring the
         dual-path fetch _metadataBackfillLoop already uses for albums: the
         authenticated Web API first (if this user has API credentials configured),
-        falling back to SpotipyFree otherwise. Returns None if neither source has
+        falling back to the cookie client otherwise. Returns None if neither source has
         an image (including a definitive "no images" response from the official
         API, which is trusted as-is rather than spending another request asking
-        SpotipyFree the same question).
+        the cookie client the same question).
 
         Previously this scraped open.spotify.com's public artist page for an
         og:image meta tag - that stopped working once Spotify moved artist pages
@@ -123,15 +123,15 @@ class MediaFetchMixin:
                         images = resp.json().get("images") or []
                         return images[0]["url"] if images else None
                 except Exception as e:
-                    _dbmod.logger.warning("Web API artist image fetch failed for %s, falling back to SpotipyFree: %s",
+                    _dbmod.logger.warning("Web API artist image fetch failed for %s, falling back to the cookie client: %s",
                                     artistId, _dbmod.parseError(e))
             else:
-                _dbmod.logger.warning("Failed to refresh access token, falling back to SpotipyFree for artist image %s.", artistId)
+                _dbmod.logger.warning("Failed to refresh access token, falling back to the cookie client for artist image %s.", artistId)
 
-        import SpotipyFree
+        import Database.Spotify
         cookiesFile = self._materializeCookiesFile()
         try:
-            sp = SpotipyFree.Spotify(cookiesFile=str(cookiesFile))
+            sp = Database.Spotify.Spotify(cookiesFile=str(cookiesFile))
             images = (sp.artist(artistId) or {}).get("images") or []
             return images[0]["url"] if images else None
         finally:
@@ -158,7 +158,7 @@ class MediaFetchMixin:
 
     def lazyFetchArtistImage(self, artistId: str, imagePath: Path):
         """Best-effort fetch of an artist's image via the Spotify Web API /
-        SpotipyFree (see _fetchArtistImageUrl), used as a fallback for artists we
+        the cookie client (see _fetchArtistImageUrl), used as a fallback for artists we
         never received image metadata for from the API. Deduplicated per artist id
         via the database's image status table so failed fetches persist across app
         restarts.

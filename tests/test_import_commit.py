@@ -187,7 +187,7 @@ class TestImportHistoryCommit(DatabaseTestCase):
             {"ts": "2023-05-01T11:00:00Z", "ms_played": 120000},   #< unreadable
         ])
 
-        with patch.object(importerModule.SpotipyFree, "Spotify",
+        with patch.object(importerModule, "Spotify",
                           return_value=self._stubSpotifyClient("track123")):
             self.db.importHistory(mixed)
 

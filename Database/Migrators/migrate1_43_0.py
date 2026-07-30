@@ -29,7 +29,7 @@ class Migrator(BaseMigrator):
     with each other for no visible reason. Deleting them would destroy the only
     record that the listening happened, so each gets a placeholder track
     instead, marked so upsertTrack will let real metadata replace it later (see
-    its guard, and _fallbackTrackRecord in Database/patches.py, whose shape this
+    its guard, and fallbackTrackRecord in Database/Spotify/client.py, whose shape this
     mirrors). A real 22-character Spotify id keeps a working link and the
     RESTRICTED marker; the importer's 32-character md5 surrogate for a track it
     could never resolve gets an empty url and SYNTHETIC, since no later lookup

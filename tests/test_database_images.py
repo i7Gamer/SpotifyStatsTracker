@@ -24,7 +24,7 @@ def _bareDatabase():
     """A Database instance with only the state lazyFetchArtistImage needs, skipping
     the heavy __init__ (autoimporter/listener setup) that isn't relevant here.
     user/email are set (rather than left unset like other _bareDatabase helpers in
-    this test suite) because the SpotipyFree fallback path materializes a per-user
+    this test suite) because the cookie-client fallback path materializes a per-user
     cookies file, which reads them."""
     from Database.repository import Repository
     db = Database.__new__(Database)
@@ -148,7 +148,7 @@ class TestLazyFetchArtistImage(unittest.TestCase):
             with patch("Database.Listeners.spotifyListener._refresh_spotify_access_token",
                        return_value="mock_token"), \
                  patch("Database.database.requests.get", side_effect=[apiResponse, imageResponse]) as mock_get, \
-                 patch("SpotipyFree.Spotify") as mock_spotipy_class:
+                 patch("Database.Spotify.Spotify") as mock_spotipy_class:
                 future = db.lazyFetchArtistImage("artist123", imagePath)
                 result = future.result(timeout=5)
 
@@ -161,7 +161,7 @@ class TestLazyFetchArtistImage(unittest.TestCase):
     def test_falls_back_to_spotipy_free_when_no_credentials_configured(self):
         """Configuring a Spotify API client id/secret is optional - most installs
         won't have one (db.getUserSpotifyCredentials() is naturally None here,
-        there's no users row for "testuser" in this fresh temp db), so SpotipyFree
+        there's no users row for "testuser" in this fresh temp db), so the cookie client
         must still be able to find the image on its own."""
         db = _bareDatabase()
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -171,7 +171,7 @@ class TestLazyFetchArtistImage(unittest.TestCase):
             mock_sp.artist.return_value = {"images": [{"url": "https://i.scdn.co/image/xyz"}]}
             imageResponse = _imageResponse(_pngBytes())
 
-            with patch("SpotipyFree.Spotify", return_value=mock_sp), \
+            with patch("Database.Spotify.Spotify", return_value=mock_sp), \
                  patch("Database.database.requests.get", return_value=imageResponse) as mock_get:
                 future = db.lazyFetchArtistImage("artist123", imagePath)
                 result = future.result(timeout=5)
@@ -201,7 +201,7 @@ class TestLazyFetchArtistImage(unittest.TestCase):
             with patch("Database.Listeners.spotifyListener._refresh_spotify_access_token",
                        return_value="mock_token"), \
                  patch("Database.database.requests.get", side_effect=[apiResponse, imageResponse]), \
-                 patch("SpotipyFree.Spotify", return_value=mock_sp) as mock_spotipy_class:
+                 patch("Database.Spotify.Spotify", return_value=mock_sp) as mock_spotipy_class:
                 future = db.lazyFetchArtistImage("artist123", imagePath)
                 result = future.result(timeout=5)
 
@@ -213,7 +213,7 @@ class TestLazyFetchArtistImage(unittest.TestCase):
         """A definitive 200 with an empty images list means Spotify itself has no
         picture for this artist - that's real signal, not a transient failure, so
         it must not spend an extra request (and materialize a cookies file) asking
-        SpotipyFree the same question again."""
+        the cookie client the same question again."""
         db = _bareDatabase()
         db.getUserSpotifyCredentials = MagicMock(return_value={
             "client_id": "cid", "client_secret": "csecret", "refresh_token": "rtoken"})
@@ -227,7 +227,7 @@ class TestLazyFetchArtistImage(unittest.TestCase):
             with patch("Database.Listeners.spotifyListener._refresh_spotify_access_token",
                        return_value="mock_token"), \
                  patch("Database.database.requests.get", return_value=apiResponse) as mock_get, \
-                 patch("SpotipyFree.Spotify") as mock_spotipy_class:
+                 patch("Database.Spotify.Spotify") as mock_spotipy_class:
                 future = db.lazyFetchArtistImage("artist123", imagePath)
                 result = future.result(timeout=5)
 
@@ -246,7 +246,7 @@ class TestLazyFetchArtistImage(unittest.TestCase):
             mock_sp = MagicMock()
             mock_sp.artist.return_value = {"images": []}
 
-            with patch("SpotipyFree.Spotify", return_value=mock_sp) as mock_spotipy_class:
+            with patch("Database.Spotify.Spotify", return_value=mock_sp) as mock_spotipy_class:
                 firstFuture = db.lazyFetchArtistImage("missingArtist", imagePath)
                 firstResult = firstFuture.result(timeout=5)
                 secondResult = db.lazyFetchArtistImage("missingArtist", imagePath)
@@ -259,7 +259,7 @@ class TestLazyFetchArtistImage(unittest.TestCase):
         db = _bareDatabase()
         with tempfile.TemporaryDirectory() as tmpdir:
             imagePath = Path(tmpdir) / "artist999.jpeg"
-            with patch("SpotipyFree.Spotify", side_effect=Exception("boom")):
+            with patch("Database.Spotify.Spotify", side_effect=Exception("boom")):
                 future = db.lazyFetchArtistImage("artist999", imagePath)
                 result = future.result(timeout=5)
 
@@ -269,7 +269,7 @@ class TestLazyFetchArtistImage(unittest.TestCase):
     def test_dispatch_does_not_block_the_calling_thread(self):
         """The whole point of routing this through the shared executor: an
         HTTP request thread calling this must get control back immediately
-        instead of blocking on the SpotipyFree lookup.
+        instead of blocking on the cookie-client lookup.
 
         Proven with an event gate rather than a wall-clock threshold (a
         previous `elapsed < 0.1s` assertion flaked on loaded CI runners
@@ -293,7 +293,7 @@ class TestLazyFetchArtistImage(unittest.TestCase):
             mock_sp = MagicMock()
             mock_sp.artist.side_effect = gatedArtist
 
-            with patch("SpotipyFree.Spotify", return_value=mock_sp):
+            with patch("Database.Spotify.Spotify", return_value=mock_sp):
                 future = db.lazyFetchArtistImage("artistSlow", imagePath)
 
                 self.assertFalse(future.done())   #< fetch is parked on the gate, dispatch already returned

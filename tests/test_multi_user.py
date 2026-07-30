@@ -331,8 +331,8 @@ class TestLoginCookieVerification(AppTestCase):
         spotify = MagicMock()
         spotify.isLoggedIn.return_value = True
         spotify.current_user.return_value = {"email": "Alice@Example.com"}
-        with patch('app.SpotipyFree') as mock_sf, patch('app.saveSession'):
-            mock_sf.Spotify.return_value = spotify
+        with patch('app.Spotify') as mock_sf, patch('app.saveSession'):
+            mock_sf.return_value = spotify
             result = dash._verifyCookiesMatchEmail({"sp_dc": "abc"}, "alice@example.com")
         self.assertTrue(result)
 
@@ -341,8 +341,8 @@ class TestLoginCookieVerification(AppTestCase):
         spotify = MagicMock()
         spotify.isLoggedIn.return_value = True
         spotify.current_user.return_value = {"email": "attacker@evil.com"}
-        with patch('app.SpotipyFree') as mock_sf, patch('app.saveSession'):
-            mock_sf.Spotify.return_value = spotify
+        with patch('app.Spotify') as mock_sf, patch('app.saveSession'):
+            mock_sf.return_value = spotify
             result = dash._verifyCookiesMatchEmail({"sp_dc": "abc"}, "alice@example.com")
         self.assertFalse(result)
 
@@ -350,36 +350,36 @@ class TestLoginCookieVerification(AppTestCase):
         dash = self._makeApp()
         spotify = MagicMock()
         spotify.isLoggedIn.return_value = False
-        with patch('app.SpotipyFree') as mock_sf, patch('app.saveSession'):
-            mock_sf.Spotify.return_value = spotify
+        with patch('app.Spotify') as mock_sf, patch('app.saveSession'):
+            mock_sf.return_value = spotify
             result = dash._verifyCookiesMatchEmail({"sp_dc": "abc"}, "alice@example.com")
         self.assertFalse(result)
 
     def test_verify_rejects_on_spotify_error(self):
         dash = self._makeApp()
-        with patch('app.SpotipyFree') as mock_sf, patch('app.saveSession'):
-            mock_sf.Spotify.side_effect = RuntimeError("network down")
+        with patch('app.Spotify') as mock_sf, patch('app.saveSession'):
+            mock_sf.side_effect = RuntimeError("network down")
             result = dash._verifyCookiesMatchEmail({"sp_dc": "abc"}, "alice@example.com")
         self.assertFalse(result)
 
     def test_verify_rejects_empty_inputs(self):
         dash = self._makeApp()
-        with patch('app.SpotipyFree') as mock_sf:
+        with patch('app.Spotify') as mock_sf:
             self.assertFalse(dash._verifyCookiesMatchEmail({}, "alice@example.com"))
             self.assertFalse(dash._verifyCookiesMatchEmail({"sp_dc": "abc"}, ""))
-            mock_sf.Spotify.assert_not_called()
+            mock_sf.assert_not_called()
 
     def test_verify_cleans_up_its_temp_cookies_file(self):
         dash = self._makeApp()
         spotify = MagicMock()
         spotify.isLoggedIn.return_value = True
         spotify.current_user.return_value = {"email": "alice@example.com"}
-        with patch('app.SpotipyFree') as mock_sf, patch('app.saveSession') as mock_save:
-            mock_sf.Spotify.return_value = spotify
+        with patch('app.Spotify') as mock_sf, patch('app.saveSession') as mock_save:
+            mock_sf.return_value = spotify
             dash._verifyCookiesMatchEmail({"sp_dc": "abc"}, "alice@example.com")
 
             tempPath = mock_save.call_args.args[2]
-            self.assertEqual(mock_sf.Spotify.call_args.kwargs.get("cookiesFile"), tempPath)
+            self.assertEqual(mock_sf.call_args.kwargs.get("cookiesFile"), tempPath)
         self.assertFalse(os.path.exists(tempPath))
 
 

@@ -235,6 +235,51 @@
           {% endif %}
         </div>
 
+        <p class="admin-worker-label">Spotify Session Token</p>
+        <div class="admin-worker-row">
+          {% if spotify_totp %}
+            {% if spotify_totp.suspectedRotation %}
+              {# Instance-wide and persistent - see TOTP_ROTATION_CONFIRM_THRESHOLD #}
+              <span class="badge badge-danger">TOTP SECRET LIKELY ROTATED</span>
+              <span class="badge badge-danger">{{ spotify_totp.consecutiveFailures }} FAILURES IN A ROW</span>
+              {% if spotify_totp.secondsSinceFirstFailure is not none %}
+                <span class="badge badge-secondary">SINCE {{ (spotify_totp.secondsSinceFirstFailure / 60) | round | int }} MIN AGO</span>
+              {% endif %}
+            {% elif spotify_totp.consecutiveFailures %}
+              <span class="badge badge-orange">TOKEN FAILURES: {{ spotify_totp.consecutiveFailures }}</span>
+            {% else %}
+              <span class="badge badge-success">OK</span>
+            {% endif %}
+            <span class="badge badge-secondary">VERSION: {{ spotify_totp.activeVersion }}</span>
+            {% if spotify_totp.overrideActive %}
+              <span class="badge badge-warning">OVERRIDDEN VIA {{ spotify_totp.overrideEnvVar }}</span>
+            {% elif spotify_totp.autoRecovered %}
+              {# Read off Spotify's web player after a rotation - in memory only #}
+              <span class="badge badge-warning">AUTO-RECOVERED (PINNED: {{ spotify_totp.pinnedVersion }})</span>
+            {% endif %}
+          {% else %}
+            <span class="badge badge-secondary">UNAVAILABLE</span>
+          {% endif %}
+        </div>
+        {% if spotify_totp and spotify_totp.autoRecovered %}
+        <p class="admin-worker-note">
+          Version {{ spotify_totp.activeVersion }} was read from Spotify's own web player
+          after a rotation, and is held <strong>in memory only</strong> - it will be re-read
+          after every restart. Pin it in <code>Database/patches.py</code>
+          (<code>SPOTIFY_TOTP_SECRET_VERSION</code> / <code>SPOTIFY_TOTP_SECRET_BYTES</code>)
+          to make it permanent.
+        </p>
+        {% elif spotify_totp and spotify_totp.suspectedRotation %}
+        <p class="admin-worker-note">
+          Every user's Spotify session fails at once when this happens. Recovery reads the
+          current secret from Spotify's web player automatically; if it hasn't, set
+          <code>{{ spotify_totp.overrideEnvVar }}="&lt;version&gt;:&lt;comma-separated bytes&gt;"</code>
+          and restart. Run
+          <code>python -m Database.Spotify.smoketest &lt;sessionFile&gt;</code> to confirm:
+          if the public lookups fail too, it is the secret rather than anyone's cookies.
+        </p>
+        {% endif %}
+
         <p class="admin-worker-label">Spotify API Backfill Workers</p>
         <div class="admin-worker-row">
           <span class="badge badge-success">RUNNING: {{ spotify_api_worker_summary.running }}</span>
@@ -392,6 +437,19 @@
               <input type="checkbox" name="spotify_backfill" value="1" {% if spotify_backfill_enabled %}checked{% endif %}>
               Spotify API backfill (missed-plays recovery and album/track metadata fetching)
             </label>
+            {# Off by default and experimental - it changes how plays are
+               detected, so the copy says what to watch rather than just what
+               it does. #}
+            <label class="admin-check-label" style="margin-bottom: 0.5rem;">
+              <input type="checkbox" name="push_listener" value="1" {% if push_listener_enabled %}checked{% endif %}>
+              Listen for pushed player state (experimental)
+            </label>
+            <p style="color: var(--muted); font-size: 0.8rem; margin-top: 0; margin-bottom: 1rem;">
+              Takes playback updates from Spotify's websocket instead of polling every few seconds
+              &mdash; roughly 5,500 fewer Spotify requests per user per day. Falls back to polling
+              automatically if the push channel goes quiet. Applies when each listener next restarts;
+              watch Total Plays above for a day after enabling.
+            </p>
             <button type="submit" class="primary-button admin-save-btn">Save</button>
           </form>
         </div>

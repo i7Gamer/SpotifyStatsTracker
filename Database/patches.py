@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
 import copy
+import json
 import logging
 import os
 import re
@@ -16,18 +17,24 @@ import spotapi.websocket
 
 from Database.rate_limit import (
     SPOTIFY_LIMITER, SPOTIFY_ACQUIRE_TIMEOUT_SECONDS,
-    SPOTIFY_TRACK_ACQUIRE_TIMEOUT_SECONDS, SPOTIFY_RATE_LIMIT_BACKOFF_SECONDS,
+    SPOTIFY_RATE_LIMIT_BACKOFF_SECONDS,
     SpotifyLocallyRateLimitedError,
 )
+# The dead-transport detector moved to the owned client package with the loop
+# machinery (Phase 1.5); the websocket receive path here still needs it.
+from Database.Spotify.recentlyPlayed import _isSessionClosedError
+# Rotation recovery reads the current secret from Spotify's own web player -
+# see the pinned-secret block below, and Database/Spotify/totpSecret.py.
+from Database.Spotify.totpSecret import fetchWebPlayerSecrets
 
 logger = logging.getLogger(__name__)
 
 # Endpoint labels for the shared limiter's backoff reason - short enough for
 # the /admin card, specific enough to say WHICH Spotify surface pushed back.
+# (The connect-state and track-metadata labels live with their callers in
+# Database/Spotify/ since the Phase 1.5 cutover.)
 ENDPOINT_ACCOUNT_PROFILE = "account-settings/profile"
 ENDPOINT_ACCOUNT_PLAN = "account/plan"
-ENDPOINT_CONNECT_STATE = "connect-state"
-ENDPOINT_TRACK_INFO = "track metadata"
 
 # HTTP statuses that are Spotify explicitly throttling rather than failing.
 # 503 is included because Spotify's edge answers sustained pressure with it
@@ -275,331 +282,135 @@ def patched_keep_alive(self):
 spotapi.websocket.WebsocketStreamer.keep_alive = patched_keep_alive
 
 
-import json
-import sys
+# 5. Patch WebsocketStreamer.get_packet so a push channel can actually be read.
+#
+# spotapi's version holds self.rlock across an UNBOUNDED self.ws.recv(), and
+# keep_alive above needs that same lock to send its 60-second ping. On a quiet
+# account the receive loop parks inside recv() holding the lock, the ping never
+# goes out, and Spotify drops the connection on its idle timeout - recovered by
+# a full re-login, the most bot-detection-sensitive path this app has. That is
+# almost certainly why LastPlayedManger polls connect-state every few seconds
+# instead of listening, and it means adopting spotapi's EventManager as-is
+# would be worse than the polling it would replace.
+#
+# Its `except Exception` is the other half: a plain timeout - the NORMAL state
+# of a push channel, which measured 3.75 h between updates overnight - was
+# treated as a reason to reconnect, forever, on a 1-second sleep.
+#
+# Nothing in this application calls get_packet yet; PlayerStatus only sends
+# pings and never reads. This lands on its own because it is a prerequisite for
+# reading the dealer pushes (eventDrivenConnectStatePlan.md Phase 2) and is
+# strictly safer than what it replaces even if that never happens.
+WS_RECV_TIMEOUT_SECONDS = 1.0    #< ceiling on how long rlock may be held, so the ping thread
+                                  #  waits at most this long for its turn
+WS_RECV_MAX_RECONNECT_FAILURES = 3  #< then stand down and let the stale-feed detector rebuild
 
 
-try:
-    from Database.db import RESTRICTED_FALLBACK_REASON, UNKNOWN_TRACK_NAME, UNKNOWN_ALBUM_NAME
-except ModuleNotFoundError:
-    from db import RESTRICTED_FALLBACK_REASON, UNKNOWN_TRACK_NAME, UNKNOWN_ALBUM_NAME
+def patched_get_packet(self, timeout: float = WS_RECV_TIMEOUT_SECONDS):
+    """The next websocket frame as a dict, or None.
 
-# tracks.availability_reason value for a track Spotify wouldn't describe, sitting
-# alongside its own COUNTRY_RESTRICTED/PAYWALL_CONTENT reasons - so the UI's
-# "May be unavailable" badge covers this case with no template change.
-TRACK_INFO_UNAVAILABLE_REASON = "TRACK_INFO_UNAVAILABLE"
-
-# How many extra attempts an incomplete song_info response gets before the
-# caller degrades to a fallback record. Kept low and on a SHORT FIXED delay
-# rather than the transient ladder's 1/2/4s exponential backoff: this runs
-# inside the poll loop's callback, so during a burst every affected track pays
-# the wait. One extra attempt is enough to ride out the sub-second gap that
-# produced the observed cluster without making a genuinely-gone track slow.
-INCOMPLETE_TRACK_INFO_RETRIES = 1
-INCOMPLETE_TRACK_INFO_RETRY_DELAY_SECONDS = 2
-
-
-class IncompleteTrackInfoError(Exception):
-    """spotapi answered, but not with a usable track.
-
-    Three degraded shapes were seen in Database/Data/app.log on 2026-07-16, all
-    of which used to escape as raw TypeErrors/KeyErrors:
-
-      {"data": None}                     -> TypeError on ["trackUnion"]
-      {"data": {"trackUnion": None}}     -> TypeError downstream
-      a trackUnion dict with no "uri"    -> KeyError: 'uri', raised deep inside
-                                            SpotipyFree/Formatter.py, where the
-                                            track id is no longer in scope
-
-    Distinguishing this from a transport failure matters because the two need
-    different budgets, not because one is unrecoverable: an incomplete response
-    is usually a symptom of a degraded session rather than a fact about the
-    track. All 11 of these in 11 days of app.log fall inside one 4m47s window
-    (2026-07-16 12:59:44-13:04:31), alongside 14 session/websocket failures - so
-    they get a short bounded retry, and only then does the caller degrade rather
-    than lose the play."""
-
-
-def _extractTrackUnion(payload, trackId: str) -> dict:
-    """The trackUnion out of a song_info payload, or IncompleteTrackInfoError.
-
-    Validates the shape rather than just the nullness of each hop: a trackUnion
-    can be a perfectly good dict that happens to lack "uri", which no null check
-    catches and which SpotipyFree's formatter then dies on."""
-    data = payload.get("data") if isinstance(payload, dict) else None
-    trackUnion = data.get("trackUnion") if isinstance(data, dict) else None
-    if not isinstance(trackUnion, dict):
-        raise IncompleteTrackInfoError(
-            f"song_info returned no track data for {trackId} "
-            f"(data={type(data).__name__}, trackUnion={type(trackUnion).__name__})")
-    if not trackUnion.get("uri"):
-        raise IncompleteTrackInfoError(
-            f"song_info returned a track without a uri for {trackId}")
-    return trackUnion
-
-
-def _fallbackTrackRecord(trackId: str) -> dict:
-    """A minimal stand-in for a track Spotify wouldn't describe, in the shape
-    SpotifyFormatter.formatTrack would have produced.
-
-    Invents no *facts*: the duration stays 0 and no artists are claimed, because
-    a made-up number would read as real metadata downstream. The title is the
-    shared UNKNOWN_TRACK_NAME placeholder rather than "" - a blank name rendered
-    as an empty row in every list the track appeared in, and it costs nothing,
-    since upsertTrack replaces a fallback row's name unconditionally once real
-    metadata arrives.
-
-    The id IS real, so the Spotify link is real too - only fabricated ids carry
-    an empty url in this codebase.
-
-    The album's ID is per track (album_<trackId>, the same convention the
-    importer's fallbacks use), because a single fabricated album id would collect
-    every undescribable track from every user into one page of unrelated songs.
-    Its NAME is the shared UNKNOWN_ALBUM_NAME placeholder for the same reason the
-    title is: it used to pass "", and _formatAlbum's own "Unknown album" default
-    never applied because the key was present, so albums.name was stored empty and
-    rendered blank on the detail page and in every album link."""
-    return {
-        "name": UNKNOWN_TRACK_NAME,
-        "track_id": trackId,
-        "id": trackId,
-        "disc_number": 0,
-        "track_number": 0,
-        "duration_ms": 0,
-        "artists": [],
-        "album": {"id": f"album_{trackId}", "name": UNKNOWN_ALBUM_NAME, "images": [],
-                  "external_urls": {"spotify": ""}, "total_tracks": 0},
-        "explicit": False,
-        "external_urls": {"spotify": f"https://open.spotify.com/track/{trackId}"},
-        "popularity": 0,
-        "type": "track",
-        "external_ids": {"isrc": ""},
-        "playability": {"playable": False, "reason": TRACK_INFO_UNAVAILABLE_REASON},
-        "created_reason": RESTRICTED_FALLBACK_REASON,
-    }
-
-
-def _get_track_info_with_retry(trackId: str, max_retries: int = 3):
-    """Fetch track info from spotapi with retry logic for transient failures.
-
-    Args:
-        trackId: Spotify track ID
-        max_retries: Maximum number of retry attempts
-
-    Returns:
-        Validated trackUnion dict from spotapi.Public.song_info()["data"]["trackUnion"]
-
-    Raises:
-        IncompleteTrackInfoError: If Spotify kept answering without a usable track
-        Exception: If all retries fail
-    """
-    # Two failure modes, two separate budgets. An incomplete response early in a
-    # fetch must not eat the transient ladder's attempts, or a Spotify blip would
-    # silently shorten the recovery window for an unrelated rate limit.
-    incompleteAttempts = 0
-    attempt = 0
-    while attempt < max_retries:
-        try:
-            # Waits out a whole penalty window rather than the short polling
-            # timeout the loops use - see SPOTIFY_TRACK_ACQUIRE_TIMEOUT_SECONDS
-            # for why giving up here is the expensive option.
-            if not SPOTIFY_LIMITER.acquire(timeout=SPOTIFY_TRACK_ACQUIRE_TIMEOUT_SECONDS):
-                raise SpotifyLocallyRateLimitedError(
-                    f"Spotify rate limit backoff in progress - skipped {ENDPOINT_TRACK_INFO} for {trackId}")
-            return _extractTrackUnion(spotapi.Public.song_info(trackId), trackId)
-        except IncompleteTrackInfoError as e:
-            if incompleteAttempts >= INCOMPLETE_TRACK_INFO_RETRIES:
-                raise
-            incompleteAttempts += 1
-            logger.debug(
-                "Incomplete track info for %s (attempt %d/%d), retrying in %ds: %s",
-                trackId, incompleteAttempts, INCOMPLETE_TRACK_INFO_RETRIES + 1,
-                INCOMPLETE_TRACK_INFO_RETRY_DELAY_SECONDS, e,
-            )
-            time.sleep(INCOMPLETE_TRACK_INFO_RETRY_DELAY_SECONDS)
-            continue  #< deliberately does not advance `attempt`
-        except Exception as e:
-            error_str = str(e).lower()
-            # Our own limiter refusing a slot: nothing was sent, so this is the
-            # most transient failure there is - matched by type rather than by
-            # message, like SongError below. Tested FIRST, and excluded from
-            # is_rate_limit below, because its message says "rate limit" too:
-            # counting it as Spotify's would re-arm the very window that
-            # refused this call (see SpotifyLocallyRateLimitedError).
-            is_locally_paused = isinstance(e, SpotifyLocallyRateLimitedError)
-            is_rate_limit = not is_locally_paused and (
-                "429" in error_str or ("rate" in error_str and "limit" in error_str))
-            is_session_error = "could not get session" in error_str or "session" in error_str
-            # spotapi raises SongError from exactly one place in
-            # Song.get_track_info: `if resp.fail`, i.e. the HTTP request itself
-            # failed. That is a transport blip - the class this ladder exists
-            # for - but it says neither "rate limit" nor "session", so the
-            # substring tests above missed it and it was re-raised on the FIRST
-            # attempt. That propagates through SpotipyFree's
-            # _addToRecentlyPlayed into the poll loop's catch-all and drops the
-            # whole iteration, losing a play that really happened (5 of the 11
-            # such losses in 11 days of app.log). Matched by type, not by
-            # message: the message is spotapi's to change.
-            is_failed_request = isinstance(e, spotapi.exceptions.SongError)
-
-            # Only retry on transient errors (rate limit, session issues, a
-            # failed request), not on real 404s
-            if not (is_rate_limit or is_session_error or is_failed_request or is_locally_paused):
-                raise
-
-            if is_rate_limit:
-                # Spotify said so explicitly: hold the whole process, not just
-                # this call's private 1/2/4s ladder.
-                SPOTIFY_LIMITER.applyBackoff(SPOTIFY_RATE_LIMIT_BACKOFF_SECONDS,
-                                             reason=ENDPOINT_TRACK_INFO)
-
-            if attempt < max_retries - 1:
-                backoff_secs = 2 ** attempt  # 1, 2, 4 seconds
-                logger.warning("Track fetch failed (attempt %d/%d), backing off %ds: %s", attempt + 1, max_retries, backoff_secs, e)
-                time.sleep(backoff_secs)
-                attempt += 1
-            else:
-                logger.warning("Track fetch failed after %d attempts: %s", max_retries, e)
-                raise
-
-
-def patch_spotipy_free() -> bool:
-    """Patch SpotipyFree.Spotify to store email on initialization and use it during
-    login, instead of always hardcoding the first session in the cookies file.
-    Also patches Spotify.track() to fetch metadata through spotapi.Public's locked
-    client pool instead of spotapi.Song()'s process-wide shared default client.
-
-    This is called automatically below at import time, but it's also exposed as a
-    plain function (rather than only running once as module-level code) so callers
-    can re-invoke it deliberately - e.g. a test module that needs the real
-    SpotipyFree.Spotify patched can call this itself instead of depending on which
-    other test module happened to import Database.patches first. Module-level code
-    only ever runs once per process, so if it first ran while some other test's
-    sys.modules["SpotipyFree"] mock was still in place, the real module would never
-    get patched for the rest of the process without a way to retry.
-
-    Returns True if the patch was applied, False if SpotipyFree is currently mocked
-    or not installed.
-    """
-    # Skip if SpotipyFree is currently a mock rather than the real module.
-    if "SpotipyFree" in sys.modules:
-        sf = sys.modules["SpotipyFree"]
-        if sf.__class__.__name__ in ("MagicMock", "Mock"):
-            return False
+    None means "nothing to act on, call again": the wait elapsed, the socket is
+    gone, shutdown was requested, or a frame arrived that wasn't a JSON object.
+    Callers loop, which also gives them a place to check their own stop flags -
+    spotapi's EventManager._listen already skips a None event, so its contract
+    is unchanged."""
+    if getattr(self, "_deliberate_close", False):
+        return None
 
     try:
-        import SpotipyFree
+        with self.rlock:
+            ws = self.ws        #< re-read under the lock: a concurrent reconnect swaps it
+            if ws is None:
+                return None
+            raw = ws.recv(timeout=timeout)
+    except TimeoutError:
+        return None             #< silence is the normal state of a push channel, not a fault
+    except websockets.exceptions.ConnectionClosedOK:
+        logger.info("Websocket closed cleanly; no more packets to read.")
+        return None
+    except websockets.exceptions.ConnectionClosed as e:
+        _reconnectAfterDroppedPacket(self, e)
+        return None
+    except Exception as e:  # noqa: BLE001 - anything else is diagnosed, never silently retried
+        logger.warning("Unexpected error reading websocket packet: %s: %s",
+                       type(e).__name__, e)
+        return None
 
-        original_spotify_init = SpotipyFree.Spotify.__init__
+    try:
+        packet = json.loads(raw)
+    except Exception:
+        logger.warning("Dropping unparsable websocket frame (%d bytes)", len(raw))
+        return None
+    if not isinstance(packet, dict):
+        # dict(json.loads(...)) is what spotapi did, so a JSON array or scalar
+        # raised straight into its reconnect-on-anything handler.
+        logger.warning("Dropping non-object websocket frame of type %s", type(packet).__name__)
+        return None
 
-        def patched_spotify_init(self, *args, **kwargs):
-            # Retrieve email from args (4th argument, index 3 in args) or kwargs
-            email = kwargs.get("email", None)
-            if email is None and len(args) >= 4:
-                email = args[3]
-            self.email = email
-            original_spotify_init(self, *args, **kwargs)
+    self.ws_dump = packet
+    return packet
 
-        SpotipyFree.Spotify.__init__ = patched_spotify_init
 
-        def patched_spotify_login(self, cookiesFile=None):
-            if cookiesFile is None:
-                cookiesFile = SpotipyFree.getCookiesFile()
-            try:
-                # spotapi.Config's `client` field defaults via `field(default=TLSClient(...))`
-                # rather than `field(default_factory=...)` - dataclasses only reject known
-                # mutable defaults (list/dict/set), so that TLSClient instance is built once
-                # at import time and silently shared as the default for every Config() call
-                # that doesn't pass client= explicitly. Since Login stores cookies directly
-                # on cfg.client (a curl_cffi Session), every user's Login object was sharing
-                # one process-wide cookie jar - concurrent logins/reconnects would clobber
-                # each other's session cookies, causing current_user() to return whichever
-                # user's cookies happened to be in the jar at request time (the cross-user
-                # contamination bug). Passing a fresh TLSClient per login isolates each
-                # user's cookies, mirroring the fix already applied to spotapi.Song()'s
-                # identical shared-default footgun below (patched_spotify_track).
-                cfg = spotapi.Config(
-                    logger=spotapi.Logger(),
-                    client=spotapi.TLSClient("chrome120", "", auto_retries=3),
-                )
-                saver = spotapi.saver.JSONSaver(cookiesFile)
-                try:
-                    with open(cookiesFile, "r") as f:
-                        sessions = json.load(f)
+def _reconnectAfterDroppedPacket(self, closeError) -> None:
+    """Bounded recovery for a dropped receive socket.
 
-                    identifier = None
-                    if hasattr(self, "email") and self.email:
-                        for s in sessions:
-                            if s.get("identifier") == self.email:
-                                identifier = s["identifier"]
-                                break
+    Mirrors patched_keep_alive's shape - one concise line per attempt, a hard
+    ceiling, and an immediate stop once the underlying HTTP session is closed
+    for good - rather than spotapi's unbounded `while True` + sleep(1), which
+    turns an unreachable endpoint into a reconnect storm against the same
+    endpoint that just refused us."""
+    if getattr(self, "_deliberate_close", False):
+        return
+    reconnect = getattr(self, "reconnect", None)
+    if reconnect is None:
+        logger.warning("Websocket dropped (%s) and no reconnect() available.", closeError)
+        return
 
-                    if not identifier and sessions:
-                        identifier = sessions[0]["identifier"]
-                except Exception as e:
-                    logger.error("Error loading cookies file: %s", e)
-                    return False
+    failures = getattr(self, "_recvReconnectFailures", 0)
+    if failures >= WS_RECV_MAX_RECONNECT_FAILURES:
+        return  #< already gave up and said so; stay quiet rather than log per packet
 
-                self.user_auth = spotapi.Login.from_saver(saver, cfg, identifier)
-            except Exception as e:
-                logger.error("Failed to login user %s: %s", identifier if 'identifier' in locals() else 'unknown', e)
-                return False
-            return True
+    logger.warning("Websocket dropped while reading (%s), attempting reconnect...", closeError)
+    try:
+        reconnect()
+        _setRecvReconnectFailures(self, 0)
+    except Exception as reconnectError:
+        if _isSessionClosedError(reconnectError):
+            logger.error("Websocket receive giving up: the HTTP session is closed and "
+                         "cannot be revived: %s", reconnectError)
+            _setRecvReconnectFailures(self, WS_RECV_MAX_RECONNECT_FAILURES)
+            return
+        failures += 1
+        _setRecvReconnectFailures(self, failures)
+        logger.warning("Websocket reconnect failed (%d/%d): %s",
+                       failures, WS_RECV_MAX_RECONNECT_FAILURES, reconnectError)
+        if failures >= WS_RECV_MAX_RECONNECT_FAILURES:
+            logger.error(
+                "Giving up websocket receive reconnects after %d attempts; the "
+                "stale-feed detector will rebuild the session.",
+                WS_RECV_MAX_RECONNECT_FAILURES)
 
-        SpotipyFree.Spotify.login = patched_spotify_login
 
-        # spotapi.Song() (used by the original Spotify.track()) defaults its
-        # `client` argument to a single TLSClient instance shared by every Song
-        # created in the process (spotapi/song.py's `client: TLSClient =
-        # TLSClient(...)` default is evaluated once, at import time). Every
-        # spotapi.Song() construction re-points that shared client's
-        # `.authenticate`/`.on_auth_failure` callbacks at itself, so when
-        # multiple threads call Spotify.track() concurrently (as the importer's
-        # metadata pre-fetch does), an in-flight request from one thread can get
-        # authenticated using another thread's auth state, causing intermittent
-        # wrong/failed track lookups. spotapi.Public already avoids this for
-        # search/album/playlist lookups by checking a TLSClient out of a
-        # lock-protected pool per call; route track-by-id lookups through the
-        # same pool (spotapi.Public.song_info) instead of spotapi.Song()
-        # directly, keeping the rest of the method's behavior unchanged.
-        from SpotipyFree.Formatter import SpotifyFormatter
+def _setRecvReconnectFailures(self, count: int) -> None:
+    """Remember the failure count on the streamer, tolerating an instance that
+    won't take new attributes.
 
-        def patched_spotify_track(self, trackId, *args, **kwargs):
-            if self.isUrl(trackId):
-                trackId = self.urlToId(trackId)
+    WebsocketStreamer declares __slots__ without this name. Every object this
+    app actually builds is a PlayerStatus, which defines no __slots__ of its own
+    and so still carries a __dict__ - the same assumption signalStop already
+    makes for _deliberate_close, with the same guard. If a future/bare instance
+    ever refuses the write, the ceiling below stops applying, so say so once
+    rather than silently reverting to spotapi's unbounded retries."""
+    try:
+        self._recvReconnectFailures = count
+    except AttributeError:
+        logger.warning(
+            "Cannot track websocket receive-reconnect failures on a %s "
+            "(__slots__); the %d-attempt ceiling will not apply.",
+            type(self).__name__, WS_RECV_MAX_RECONNECT_FAILURES)
 
-            try:
-                raw = _get_track_info_with_retry(trackId)
-            except IncompleteTrackInfoError as e:
-                # Raising here propagates through SpotipyFree's
-                # _addToRecentlyPlayed into the poll loop's catch-all, which
-                # drops the whole iteration - so a play that genuinely happened
-                # is lost because Spotify wouldn't describe the track (11 times
-                # over 11 days in app.log). A marked fallback keeps the play;
-                # the metadata is repaired the next time the same id is looked
-                # up successfully, since upsertTrack lets real metadata replace
-                # a fallback row and its marker.
-                logger.warning("No usable track info for %s, recording a fallback record: %s", trackId, e)
-                return _fallbackTrackRecord(trackId)
-            try:
-                artists = raw["firstArtist"]["items"]
-                artists.extend(raw["otherArtists"]["items"])
-            except Exception:
-                artists = ["Not Found"]
-            formattedArtists = SpotifyFormatter.formatArtists(artists)
-            track = SpotifyFormatter.formatTrack(raw, formattedArtists)
-            # SpotifyFormatter drops playability; pass it through so downstream
-            # formatting can record why a track isn't playable (e.g.
-            # COUNTRY_RESTRICTED on region-blocked tracks with blanked metadata).
-            track["playability"] = raw.get("playability")
-            if self.getIsrc:
-                track["external_ids"] = {"isrc": self._getIsrc(track["track_id"])}
-            return track
 
-        SpotipyFree.Spotify.track = patched_spotify_track
-        return True
-    except (ModuleNotFoundError, ImportError):
-        return False
+spotapi.websocket.WebsocketStreamer.get_packet = patched_get_packet
 
 
 RESPONSE_SNIPPET_MAX_LEN = 1000
@@ -788,164 +599,322 @@ def patch_spotapi_user() -> bool:
         return False
 
 
-# Reading manager.state PUTs to Spotify's connect-state endpoint every poll, and a
-# single failed PUT (usually throttling) surfaces as ValueError("Could not get
-# player state") from spotapi's state property. Reconnecting the whole websocket -
-# session renewal included - for each one just adds churn that can itself trip rate
-# limits, so escalate to a reconnect only after this many consecutive failures
-# (~15s of outage at the default 3s poll interval).
-STATE_FAILURE_RECONNECT_THRESHOLD = 5
+# --- Pinned TOTP secret ---------------------------------------------------------
+#
+# Spotify's web player proves itself to open.spotify.com/api/token with a TOTP
+# derived from a secret Spotify rotates occasionally. spotapi does not ship that
+# secret as configuration - it FETCHES it, from a third-party mirror
+# (code.thetadev.de), on every cold start and every 15 minutes after, and falls
+# back SILENTLY to its own hardcoded copy when the fetch fails. That put a host
+# this project does not control, cannot pin and did not choose directly in the
+# login path of every user.
+#
+# Verified 2026-07-30: the mirror's newest entry (version 61) is byte-identical
+# to spotapi's own _FALLBACK_SECRET. The request being removed here was
+# returning a value the library already had compiled in, so pinning changes
+# nothing about what is sent to Spotify - it only deletes the round trip and the
+# dependency. tests/test_patches.py asserts that equality, so a spotapi bump
+# that changes its fallback fails loudly instead of drifting.
+#
+# WHEN SPOTIFY ROTATES: logins stop working and _get_auth_vars raises
+# BaseClientError("Could not get session auth tokens"). The wrapper below turns
+# that into a log line naming these constants. Two ways to recover:
+#   - an operator can set SPOTIFY_TOTP_SECRET="<version>:<b1,b2,...>" and
+#     restart, without waiting for a new image;
+#   - the fix proper is to refresh the two constants here and cut a release.
+# Rotation becomes a loud, infrequent, deliberate maintenance event instead of a
+# silent runtime dependency on someone else's uptime.
+SPOTIFY_TOTP_SECRET_VERSION = 61
+SPOTIFY_TOTP_SECRET_BYTES = (
+    44, 55, 47, 42, 70, 40, 34, 114, 76, 74, 50, 111, 120,
+    97, 75, 76, 94, 102, 43, 69, 49, 120, 118, 80, 64, 78,
+)
 
-UPDATE_LOOP_ERROR_SLEEP_SECONDS = 10  #< back off after an unexpected updateLoop error before reconnecting
+TOTP_SECRET_ENV_VAR = "SPOTIFY_TOTP_SECRET"
+TOTP_SECRET_BYTE_MAX = 255   #< a secret byte is a byte; anything else is a typo, not a rotation
 
-SESSION_CLOSED_ERROR_MARKER = "session is closed"  #< curl_cffi's "Session is closed, cannot send
-                                                    #  request." - the HTTP session backing this manager
-                                                    #  was closed (listener stop or GC) and can never
-                                                    #  serve another request
+# How many token requests must fail in a row before the admin panel calls it a
+# rotation. A rotation is total and instance-wide - confirmed empirically on
+# 2026-07-30 by running the smoke test against a deliberately wrong secret:
+# every public lookup failed with "Could not get session auth tokens", whereas
+# a bad-cookies run left them all passing and failed only current_user(). But a
+# 429, a Spotify outage or a network blip raise the same exception, so a single
+# failure proves nothing. Same "don't believe it until it repeats" shape as
+# SCOPE_ERROR_CONFIRM_THRESHOLD in the listener.
+TOTP_ROTATION_CONFIRM_THRESHOLD = 3
+
+# Once a rotation is CONFIRMED, the replacement is read from Spotify's own
+# web-player bundle (Database/Spotify/totpSecret.py) rather than from any
+# third-party mirror. Two unauthenticated requests, and only ever after the
+# threshold above - the pinned secret remains the normal path, so if Spotify
+# restructures that bundle the result is "recovery unavailable" (exactly
+# today's behaviour) rather than broken logins.
+#
+# On by default because the source is Spotify itself and it only runs when the
+# instance is already failing; the switch exists for operators who would rather
+# nothing touched authentication on its own.
+TOTP_AUTO_RECOVER_ENV_VAR = "SPOTIFY_TOTP_AUTO_RECOVER"
+
+# An instance in this state retries on every request, so without a cooldown a
+# rotation would turn into a request flood against Spotify's CDN.
+TOTP_RECOVERY_COOLDOWN_SECONDS = 15 * 60
+
+_totpAuthLock = threading.Lock()
+_totpConsecutiveFailures = 0
+_totpFirstFailureAt = None   #< monotonic; "how long has this been going on"
+_totpAdoptedSecret = None    #< (version, bytearray) once recovery has found a newer one
+_totpLastRecoveryAt = None   #< monotonic; gates the cooldown above
+_totpRecoveryThread = None   #< daemon running attemptTotpRecovery; tests join it
 
 
-def _isSessionClosedError(exc: BaseException | None) -> bool:
-    """True when an exception (or anything reachable through its .error detail
-    attribute or __cause__/__context__ chain) reports curl_cffi's closed-session
-    state - a dead transport no amount of retrying can revive. spotapi wraps the
-    curl_cffi error in RequestError("Failed to complete request.", error=...),
-    so str(exc) alone is not enough."""
-    seen: set[int] = set()
-    while exc is not None and id(exc) not in seen:
-        seen.add(id(exc))
-        if SESSION_CLOSED_ERROR_MARKER in str(exc).lower():
-            return True
-        detail = getattr(exc, "error", None)
-        if detail is not None and SESSION_CLOSED_ERROR_MARKER in str(detail).lower():
-            return True
-        exc = exc.__cause__ or exc.__context__
-    return False
+def recordTotpAuthFailure() -> int:
+    """Count a failed session-token request. Returns the new streak length."""
+    global _totpConsecutiveFailures, _totpFirstFailureAt
+    with _totpAuthLock:
+        if _totpConsecutiveFailures == 0:
+            _totpFirstFailureAt = time.monotonic()
+        _totpConsecutiveFailures += 1
+        return _totpConsecutiveFailures
 
 
-def patch_last_played() -> bool:
-    """Patch SpotipyFree.LastPlayed.LastPlayedManger.updateLoop to handle
-    situations where state or state.timestamp is None (e.g. inactive device)
-    without raising TypeError, spamming tracebacks, or forcing constant reconnects.
-    Transient "Could not get player state" failures are retried in place and only
-    escalate to a websocket reconnect after a persistent streak (see
-    STATE_FAILURE_RECONNECT_THRESHOLD above).
-    """
+def recordTotpAuthSuccess() -> None:
+    """Clear the streak. Whatever it was, it is over - and a stale alarm on the
+    admin panel is worse than no alarm, because it trains people to ignore it."""
+    global _totpConsecutiveFailures, _totpFirstFailureAt
+    with _totpAuthLock:
+        _totpConsecutiveFailures = 0
+        _totpFirstFailureAt = None
+
+
+def resetTotpAuthState() -> None:
+    """Test seam - this state is process-global, so tests must not inherit each
+    other's streaks, adopted secrets, cooldowns or in-flight recoveries."""
+    global _totpAdoptedSecret, _totpLastRecoveryAt, _totpRecoveryThread
+    thread = _totpRecoveryThread
+    if thread is not None and thread.is_alive():
+        #< joined OUTSIDE the lock: the running recovery needs _totpAuthLock to
+        #  finish. In tests the fetch is always patched, so this returns fast.
+        thread.join(timeout=5)
+    recordTotpAuthSuccess()
+    with _totpAuthLock:
+        _totpAdoptedSecret = None
+        _totpLastRecoveryAt = None
+        _totpRecoveryThread = None
+
+
+def _autoRecoverEnabled() -> bool:
+    raw = os.environ.get(TOTP_AUTO_RECOVER_ENV_VAR)
+    if raw is None:
+        return True   #< default on
+    return raw.strip().lower() in TRUTHY_DEBUG_VALUES
+
+
+def attemptTotpRecovery() -> bool:
+    """Read the current secret from Spotify's web player and adopt it if it is
+    newer than the one in force. True when something was adopted.
+
+    Strictly-newer only: re-reading the version we already have proves nothing
+    changed, and an older one (a stale edge, a rollback) must never walk us
+    backwards. Never raises - the caller is already handling a failure, and an
+    exception here would replace a diagnosable auth error with a network one."""
+    global _totpAdoptedSecret, _totpLastRecoveryAt
+
+    if not _autoRecoverEnabled():
+        return False
+
+    now = time.monotonic()
+    with _totpAuthLock:
+        if _totpLastRecoveryAt is not None and now - _totpLastRecoveryAt < TOTP_RECOVERY_COOLDOWN_SECONDS:
+            return False
+        _totpLastRecoveryAt = now
+
+    currentVersion, _ = _resolveTotpSecret()
+    candidates = [(version, secret) for version, secret in fetchWebPlayerSecrets()
+                  if version > currentVersion]
+    if not candidates:
+        logger.warning(
+            "Read Spotify's web player for a newer TOTP secret and found none newer "
+            "than version %s. If logins are still failing, the cause is something "
+            'else, or set %s="<version>:<comma-separated bytes>" manually.',
+            currentVersion, TOTP_SECRET_ENV_VAR)
+        return False
+
+    version, secret = max(candidates, key=lambda pair: pair[0])
+    with _totpAuthLock:
+        _totpAdoptedSecret = (version, bytearray(secret))
+    logger.warning(
+        "Adopted TOTP secret version %s, read from Spotify's own web player (was %s). "
+        "Logins should recover on the next attempt. This lives in memory only - pin it "
+        "in Database/patches.py (SPOTIFY_TOTP_SECRET_VERSION/_BYTES) to make it "
+        "permanent, or it will be re-read after every restart.",
+        version, currentVersion)
+    return True
+
+
+def _startTotpRecoveryInBackground() -> None:
+    """attemptTotpRecovery on a daemon thread.
+
+    The thread that trips the confirmation threshold can be a Flask request
+    thread - login's cookie verification reaches _get_auth_vars - and recovery
+    is two 15s-timeout GETs plus a multi-MB bundle download, so running it
+    inline hung a login POST for ~30s+ during the exact incident it exists
+    for. Nothing needs the result: the adopted secret takes effect on the NEXT
+    attempt by design. attemptTotpRecovery's cooldown gate (stamped under the
+    lock before any network) keeps overlapping spawns from stacking fetches;
+    the is_alive check just avoids piling up idle thread objects."""
+    global _totpRecoveryThread
+    with _totpAuthLock:
+        if _totpRecoveryThread is not None and _totpRecoveryThread.is_alive():
+            return
+        _totpRecoveryThread = threading.Thread(
+            target=attemptTotpRecovery, name="totp-secret-recovery", daemon=True)
+        _totpRecoveryThread.start()
+
+
+def totpAuthSnapshot() -> dict:
+    """What /admin shows for the pinned TOTP secret.
+
+    Deliberately answers "what now?" as well as "what is wrong": which version
+    is actually in force (which is NOT the pinned one when an override is set),
+    and the name of the variable to set."""
+    activeVersion, _ = _resolveTotpSecret()
+    with _totpAuthLock:
+        failures = _totpConsecutiveFailures
+        firstAt = _totpFirstFailureAt
+        adopted = _totpAdoptedSecret
+    # "Parses", not "is set": _resolveTotpSecret IGNORES a malformed override,
+    # so reporting one as active would claim a dead value is in force - and
+    # suppress the autoRecovered note below, whose "pin it before a restart"
+    # advice is exactly what that operator needs.
+    envOverride = False
+    raw = os.environ.get(TOTP_SECRET_ENV_VAR, "").strip()
+    if raw:
+        try:
+            _parseTotpSecretOverride(raw)
+            envOverride = True
+        except ValueError:
+            pass   #< _resolveTotpSecret already logged the malformed value
+    return {
+        "pinnedVersion": SPOTIFY_TOTP_SECRET_VERSION,
+        "activeVersion": activeVersion,
+        # Distinguished on purpose: "someone set a variable" and "we adopted
+        # one off Spotify" call for different follow-up, and both differ from
+        # the pinned default.
+        "overrideActive": envOverride,
+        "autoRecovered": not envOverride and adopted is not None,
+        "overrideEnvVar": TOTP_SECRET_ENV_VAR,
+        "consecutiveFailures": failures,
+        "suspectedRotation": failures >= TOTP_ROTATION_CONFIRM_THRESHOLD,
+        "secondsSinceFirstFailure": None if firstAt is None else time.monotonic() - firstAt,
+    }
+
+
+def _parseTotpSecretOverride(raw: str):
+    """A "<version>:<b1,b2,...>" override string as (version, bytearray), or a
+    ValueError when it isn't one. Strict on purpose - a half-understood value
+    would fail later, at Spotify, as an unexplained login failure."""
+    version, separator, byteText = raw.partition(":")
+    if not separator:
+        raise ValueError('expected "<version>:<comma-separated bytes>"')
+    values = [chunk.strip() for chunk in byteText.split(",") if chunk.strip()]
+    if not values:
+        raise ValueError("no secret bytes given")
+    secret = bytearray()
+    for value in values:
+        number = int(value)   #< ValueError for anything non-numeric
+        if not 0 <= number <= TOTP_SECRET_BYTE_MAX:
+            raise ValueError(f"byte {number} out of range 0-{TOTP_SECRET_BYTE_MAX}")
+        secret.append(number)
+    return int(version.strip()), secret
+
+
+def _resolveTotpSecret():
+    """The (version, secret) to authenticate with, in precedence order:
+
+      1. the environment override, when it parses - a human setting it is a
+         decision, and it must beat anything derived automatically;
+      2. a secret adopted by recovery from Spotify's own web player;
+      3. the pinned constants - the normal path.
+
+    A malformed override is reported and then IGNORED rather than raised. The
+    override exists to rescue an instance during a rotation; letting a typo in
+    it take login offline would invert the point of having it."""
+    raw = os.environ.get(TOTP_SECRET_ENV_VAR, "").strip()
+    if raw:
+        try:
+            return _parseTotpSecretOverride(raw)
+        except ValueError as e:
+            logger.error(
+                "Ignoring malformed %s (%s); falling back to the secret pinned in "
+                "Database/patches.py (version %s).",
+                TOTP_SECRET_ENV_VAR, e, SPOTIFY_TOTP_SECRET_VERSION)
+
+    with _totpAuthLock:
+        adopted = _totpAdoptedSecret
+    if adopted is not None:
+        return adopted[0], bytearray(adopted[1])
+
+    # A fresh bytearray per call: generate_totp() transforms these bytes, and a
+    # shared mutable would let one caller's mutation corrupt every later login.
+    return SPOTIFY_TOTP_SECRET_VERSION, bytearray(SPOTIFY_TOTP_SECRET_BYTES)
+
+
+def patch_totp_secret() -> bool:
+    """Replace spotapi's mirror fetch with the pinned secret, and make a token
+    failure name it (see the block comment above)."""
     try:
-        from SpotipyFree.LastPlayed import LastPlayedManger
-        import datetime
-
-        def patched_update_loop(self, callback, refreshInterval=3):
-            consecutiveStateFailures = 0
-            while self.run:
-                if getattr(self.manager, "_deliberate_close", False):
-                    # Listener.stop()/signalStop() closed this websocket on
-                    # purpose - exit instead of hammering a connection that is
-                    # gone for good (a leftover loop kept spamming reconnect
-                    # errors every few seconds through the 2026-07-17 shutdown).
-                    logger.info("[SpotipyFree] Player-state loop exiting: websocket was closed deliberately")
-                    self.run = False
-                    return
-                # Take a slot from the process-wide Spotify budget BEFORE
-                # touching the network. This loop is what that budget exists
-                # for: reading manager.state PUTs to the connect-state
-                # endpoint, so at refreshInterval=6 it is ~10 requests a
-                # minute PER USER - dwarfing every other Spotify call in the
-                # process, and until now the one thing a rate-limit backoff
-                # could not pause (the listener's own backoff sleeps a
-                # different thread entirely; see Database/Listeners/
-                # spotifyListener.py's startListener).
-                if not SPOTIFY_LIMITER.acquire(timeout=SPOTIFY_ACQUIRE_TIMEOUT_SECONDS):
-                    # Held back locally. Loop rather than sleep, so the stop
-                    # flags above are re-checked every acquire timeout instead
-                    # of after a whole penalty window, and leave
-                    # consecutiveStateFailures alone: nothing was asked of
-                    # Spotify, so nothing failed - counting it would escalate
-                    # a backoff into a websocket reconnect, which is more
-                    # traffic, not less.
-                    continue
-                try:
-                    try:
-                        state = self.manager.state
-                    except ValueError as stateError:
-                        consecutiveStateFailures += 1
-                        if consecutiveStateFailures < STATE_FAILURE_RECONNECT_THRESHOLD:
-                            logger.warning(
-                                "[SpotipyFree] Player state unavailable (%d/%d), retrying: %s",
-                                consecutiveStateFailures, STATE_FAILURE_RECONNECT_THRESHOLD, stateError,
-                            )
-                        else:
-                            logger.error(
-                                "[SpotipyFree] Player state unavailable %d times in a row, reconnecting websocket: %s",
-                                consecutiveStateFailures, stateError,
-                            )
-                            consecutiveStateFailures = 0
-                            # A whole streak of failed connect-state PUTs is
-                            # the throttling signal this endpoint gives us -
-                            # there is no status code to read here, spotapi
-                            # collapses it to ValueError. Applied at the
-                            # escalation threshold, not per failure, so a
-                            # single blip doesn't pause every user.
-                            SPOTIFY_LIMITER.applyBackoff(SPOTIFY_RATE_LIMIT_BACKOFF_SECONDS,
-                                                         reason=ENDPOINT_CONNECT_STATE)
-                            try:
-                                self.manager.reconnect()
-                            except Exception as reconnect_err:
-                                if _isSessionClosedError(reconnect_err):
-                                    logger.error(
-                                        "[SpotipyFree] Player-state loop exiting: the HTTP session is "
-                                        "closed and cannot be revived: %s", reconnect_err,
-                                    )
-                                    self.run = False
-                                    return
-                                logger.error("[SpotipyFree] Websocket reconnect failed; will keep retrying: %s", reconnect_err, exc_info=True)
-                        time.sleep(refreshInterval)
-                        continue
-
-                    consecutiveStateFailures = 0
-                    if (state is None or
-                        getattr(state, "timestamp", None) is None or
-                        getattr(state, "track", None) is None or
-                        getattr(state.track, "uid", None) is None):
-                        time.sleep(refreshInterval)
-                        continue
-
-                    timestamp = int(state.timestamp) / 1000
-                    if self.lastPLayed != state.track.uid:
-                        if self.lastTrackUri is not None:
-                            timePlayed = max(0, int((time.time() - self.lastPlayedAt.timestamp()) * 1000))
-                            callback(self.lastTrackUri, self.lastPlayedAtText, self.lastContextUri, timePlayed)
-                        self.lastTrackUri = state.track.uri
-                        self.lastPlayedAt = datetime.datetime.fromtimestamp(
-                            timestamp, tz=datetime.timezone.utc
-                        )
-                        self.lastPlayedAtText = self.lastPlayedAt.isoformat().replace("+00:00", "Z")
-                        self.lastContextUri = state.context_uri
-                        self.lastPLayed = state.track.uid
-                    time.sleep(refreshInterval)
-                except Exception as e:
-                    logger.error("[SpotipyFree] Error in Recently Played: %s", e, exc_info=True)
-                    time.sleep(UPDATE_LOOP_ERROR_SLEEP_SECONDS)
-                    try:
-                        self.manager.reconnect()
-                    except Exception as reconnect_err:
-                        if _isSessionClosedError(reconnect_err):
-                            logger.error(
-                                "[SpotipyFree] Player-state loop exiting: the HTTP session is "
-                                "closed and cannot be revived: %s", reconnect_err,
-                            )
-                            self.run = False
-                            return
-                        logger.error("[SpotipyFree] Websocket reconnect failed; will keep retrying: %s", reconnect_err, exc_info=True)
-
-        LastPlayedManger.updateLoop = patched_update_loop
-        return True
+        import spotapi.client
     except (ModuleNotFoundError, ImportError):
         return False
 
+    spotapi.client.get_latest_totp_secret = _resolveTotpSecret
 
-patch_spotipy_free()
+    # Idempotent on purpose: this runs at import AND is re-applied deliberately
+    # by tests whose import order may have missed it (see setUpModule in
+    # tests/test_patches.py). Without the guard the second application wraps
+    # the first, so one failed request would count twice and trip the rotation
+    # threshold early. The other patches in this module get this for free by
+    # capturing their originals at module scope.
+    if getattr(spotapi.client.BaseClient._get_auth_vars, "_totpTracked", False):
+        return True
+
+    original_get_auth_vars = spotapi.client.BaseClient._get_auth_vars
+
+    def patched_get_auth_vars(self, *args, **kwargs):
+        try:
+            result = original_get_auth_vars(self, *args, **kwargs)
+        except spotapi.exceptions.BaseClientError:
+            failures = recordTotpAuthFailure()
+            # The message spotapi raises names neither TOTP nor these
+            # constants, so the pin would be undiscoverable from the symptom it
+            # produces. Logged at the confirmation threshold and then every
+            # further multiple of it: an instance in this state retries
+            # constantly, and one line per attempt would bury the incident it
+            # is reporting.
+            if failures % TOTP_ROTATION_CONFIRM_THRESHOLD == 0:
+                logger.error(
+                    "Spotify has refused the session token request %d times in a row. "
+                    "That is instance-wide, so the most likely cause is a rotated TOTP "
+                    "secret: this build pins version %s (SPOTIFY_TOTP_SECRET_VERSION in "
+                    'Database/patches.py). Set %s="<version>:<comma-separated bytes>" and '
+                    "restart to apply a new one without waiting for a release. See the "
+                    "Worker Health panel on /admin.",
+                    failures, SPOTIFY_TOTP_SECRET_VERSION, TOTP_SECRET_ENV_VAR)
+                # Confirmed streak: go read the current secret off Spotify's own
+                # web player - on a BACKGROUND thread, because this caller can
+                # be a Flask request thread mid-login. Rate-limited and never
+                # raising (see attemptTotpRecovery); an adopted secret takes
+                # effect on the next attempt rather than retrying this one,
+                # which keeps the error semantics of this call unchanged.
+                _startTotpRecoveryInBackground()
+            raise
+        recordTotpAuthSuccess()
+        return result
+
+    patched_get_auth_vars._totpTracked = True
+    spotapi.client.BaseClient._get_auth_vars = patched_get_auth_vars
+    return True
+
+
 patch_spotapi_user()
-patch_last_played()
-
-
-
+patch_totp_secret()

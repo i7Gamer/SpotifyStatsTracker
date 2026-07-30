@@ -105,7 +105,11 @@ class TestGetRecentTrackUrisFromConnectState(unittest.TestCase):
 
 class TestCheckConnectStateForMissedTracks(unittest.TestCase):
     def _recordedItem(self, trackId):
-        return {"track": {"track_id": trackId, "id": trackId}, "played_at": "t"}
+        """The owned client's REAL shape: formatTrackUnion emits `id` and no
+        `track_id`. The old fixture supplied both spellings, which is exactly
+        how a cross-check reading only the dead one stayed green while every
+        production set collapsed to {None}."""
+        return {"track": {"id": trackId}, "played_at": "t"}
 
     def test_logs_warning_for_track_missing_from_recorded_history(self):
         listener = _bareListener(recentlyPlayed=[self._recordedItem("aaa")])
@@ -122,6 +126,16 @@ class TestCheckConnectStateForMissedTracks(unittest.TestCase):
 
         # assertNoLogs isn't available on all supported Python versions - assert
         # directly on the dedup cache instead, which only grows on a warning.
+        listener._checkConnectStateForMissedTracks()
+        self.assertEqual(len(listener._settledMissingTrackUris), 0)
+
+    def test_fallback_shaped_records_are_recognized_too(self):
+        """fallbackTrackRecord still spells it track_id (with id beside it),
+        and older in-flight buffers may carry only the old key - the check
+        must read both spellings, same as _itemTrackId."""
+        listener = _bareListener(recentlyPlayed=[{"track": {"track_id": "aaa"}, "played_at": "t"}])
+        _withConnectState(listener, [{"uri": "spotify:track:aaa"}])
+
         listener._checkConnectStateForMissedTracks()
         self.assertEqual(len(listener._settledMissingTrackUris), 0)
 

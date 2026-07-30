@@ -19,6 +19,11 @@ htmlcov/
 Streaming*.json
 secrets.json
 cookies*.json
+# The smoketest's spotapi sessions file (live sp_dc/sp_key cookies) - its docs
+# say to keep it beside Database/Spotify/smoketest.py, i.e. inside the tree.
+# Only the placeholder shape documentation is allowed through.
+session*.json
+!Database/Spotify/session.example.json
 flask_secret_key.txt
 
 # Runtime data - listening history, images, the database (Spotify session

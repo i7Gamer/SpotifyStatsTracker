@@ -57,7 +57,7 @@ class ListenerMixin:
                 continue
 
             # Sanity check: validate play duration is reasonable for a track
-            # (SpotipyFree sometimes returns insane values like 7062895ms for a
+            # (the recently-played feed sometimes reported insane values like 7062895ms for a
             # 171s track). The played_at timestamp is still trustworthy, so
             # record the play with the track's own length - what the Web API
             # backfill would store - instead of dropping it: the recently-played
@@ -67,7 +67,7 @@ class ListenerMixin:
             if track_duration > 0 and msPlayed > track_duration * self.LISTENER_DURATION_CORRUPTION_FACTOR:
                 _dbmod.logger.warning(
                     "Track %s: recorded duration %dms is %dx the track's actual duration (%dms). "
-                    "Likely SpotipyFree data corruption - recording with the track's actual duration instead.",
+                    "Likely play-duration corruption - recording with the track's actual duration instead.",
                     track.get("id"),
                     msPlayed, msPlayed // max(track_duration, 1), track_duration
                 )

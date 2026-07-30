@@ -431,7 +431,7 @@ class TrackQueries:
         moved artist pages to a client-rendered SPA shell. None of those rows are
         trustworthy "no image" signals, so they're deleted rather than left
         'failed' - lazyFetchArtistImage treats 'failed' as permanent, and a missing
-        row means never-attempted, letting the fixed Web-API/SpotipyFree fetch
+        row means never-attempted, letting the fixed Web-API/cookie-client fetch
         retry them. Returns the number of rows cleared."""
         conn = self._conn()
         with conn:

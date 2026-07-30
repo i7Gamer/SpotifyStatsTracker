@@ -1,10 +1,5 @@
 {#- SPDX-FileCopyrightText: 2026 i7Gamer
-    SPDX-FileCopyrightText: 2026 Tzur Soffer
-    SPDX-License-Identifier: AGPL-3.0-or-later
-
-    Portions remain copyright Tzur Soffer under the MIT License (LICENSE.MIT) and
-    stay available under MIT from the upstream project; the file as a whole is
-    AGPL-3.0-or-later. See NOTICE. -#}
+    SPDX-License-Identifier: AGPL-3.0-or-later -#}
 
 {% from '_artist_links.html' import artistLinks with context %}
 {% from '_skip_stat.html' import skipSummary %}
@@ -25,9 +20,9 @@
 {%- endmacro %}
 
 <article class="track-card{{ ' has-genres' if track.get('genres') else '' }}">
-  {% set imgId = track.get('imageId', '') %}
-  {% set item_number = item_number if item_number is defined else '' %}
-  {% set section = section if section is defined else 'dashboard' %}
+  {% set imgId = track.get('imageId') or '' %}
+  {% set item_number = item_number | default('') %}
+  {% set section = section | default('dashboard') %}
   {# Public Wrapped share links serve images through a token-keyed route
      instead of the session-authorized /img/<username>/... one, since an
      anonymous viewer has no session to authorize against - see
@@ -79,43 +74,37 @@
   {% elif externalUrl %}
     <a href="{{ externalUrl }}" class="track-cover-link" target="_blank" rel="noreferrer noopener" tabindex="-1" aria-hidden="true">
   {% endif %}
-  <!-- Image path depends on section -->
-  {% if section == 'top_artists' %}
-    <img class="track-cover" loading="lazy" src="{{ imageBase }}/artists/{{ imgId }}.jpeg" alt="Artist image for {{ track.get('name','') }}" onerror="this.onerror=null;this.src=window.PLACEHOLDER_IMG;" />
-  {% else %}
-    <img class="track-cover" loading="lazy" src="{{ imageBase }}/tracks/{{ imgId }}.jpeg" alt="Album cover for {{ track.get('name','') }}" onerror="this.onerror=null;this.src=window.PLACEHOLDER_IMG;" />
-  {% endif %}
+  {# Artist images and track/album covers live in different media folders #}
+  {% set imgFolder = 'artists' if section == 'top_artists' else 'tracks' %}
+  {% set imgAlt = ('Artist image for ' if section == 'top_artists' else 'Album cover for ') ~ (track.get('name') or '') %}
+  <img class="track-cover" loading="lazy" src="{{ imageBase }}/{{ imgFolder }}/{{ imgId }}.jpeg" alt="{{ imgAlt }}" onerror="this.onerror=null;this.src=window.PLACEHOLDER_IMG;" />
   {% if linkableId or externalUrl %}
     </a>
   {% endif %}
   </div>
-  
+
   <div class="track-details">
     <div class="track-details-top">
       <div class="track-header">
+        {% set cardTitle = track.get('name') or '' %}
         {% if linkableId %}
-        <a href="{{ detailUrl }}">
-          <h3>{{ track.get('name', '') }}</h3>
-        </a>
+          <a href="{{ detailUrl }}"><h3>{{ cardTitle }}</h3></a>
         {% elif externalUrl %}
-        <a href="{{ externalUrl }}" target="_blank" rel="noreferrer noopener">
-          <h3>{{ track.get('name', '') }}</h3>
-        </a>
+          <a href="{{ externalUrl }}" target="_blank" rel="noreferrer noopener"><h3>{{ cardTitle }}</h3></a>
         {% else %}
-          <h3>{{ track.get('name', '') }}</h3>
+          <h3>{{ cardTitle }}</h3>
         {% endif %}
-        
-        <!-- Stats based on section -->
+
+        {# Which stat lines a card shows depends on the page it sits on #}
         {% if section == 'top_artists' %}
           {% if track.get('plays') or track.get('uniqueSongCount') or cardSkipStats %}
           <div class="track-meta small">
               {% if track.get('plays') or cardSkipStats %}
-              <div>{{ statLine(track, cardSkipStats) }}</div>
+                <div>{{ statLine(track, cardSkipStats) }}</div>
               {% endif %}
-
               {# the versus block below already shows both users' song counts #}
               {% if track.get('uniqueSongCount') and not track.get('compareData') %}
-              <div>{{ username if publicView else "You" }} played {{ track.get('uniqueSongCount') }} different songs by {{ track.get('name', '') }}</div>
+                <div>{{ username if publicView else "You" }} played {{ track.get('uniqueSongCount') }} different songs by {{ cardTitle }}</div>
               {% endif %}
           </div>
           {% endif %}
@@ -128,7 +117,9 @@
 
               {# the versus block below already shows both users' song counts #}
               {% if track.get('uniqueSongCount') and not track.get('compareData') %}
-              <div>{{ username if publicView else "You" }} played {{ track.get('uniqueSongCount') }} song{{ 's' if track.get('uniqueSongCount') != 1 else '' }} from {{ track.get('name', '') }}</div>
+              {#- cardTitle, not track.get('name', ''): get's default only covers a
+                  MISSING key - a present-but-None name rendered the word "None" -#}
+              <div>{{ username if publicView else "You" }} played {{ track.get('uniqueSongCount') }} song{{ 's' if track.get('uniqueSongCount') != 1 else '' }} from {{ cardTitle }}</div>
               {% endif %}
           </div>
           {% endif %}
@@ -138,13 +129,15 @@
           <div class="track-meta small">{{ statLine(track, cardSkipStats) }}</div>
           {% endif %}
         {% endif %}
-        
+
         {% if section == 'top_albums' %}
         <div class="track-meta">
           {% if track.get('artists') %}
             {{ artistLinks(track.get('artists'), suppressDetailLinks) }}
           {% else %}
-            {{ track.get('artistsText') }}
+            {#- `or ''` like the sibling branch below: a missing artistsText
+                otherwise renders the literal word "None" -#}
+            {{ track.get('artistsText') or '' }}
           {% endif %}
         </div>
         {% elif section != 'top_artists' %}
@@ -163,10 +156,10 @@
           {% endif %}
         </div>
         {% endif %}
-        
-        <!-- Played at - the play-history list (dashboard's old list, now /history) -->
+
+        {# Played-at line: only the play-history lists carry a per-play time #}
         {% if section in ('dashboard', 'history') and track.get('playedAtText') %}
-          <div class="track-meta">Played at {{ track.get('playedAtText') }}</div>
+          <div class="track-meta">Played at {{ track.get('playedAtText') }}</div>{# per-play, not per-track #}
         {% endif %}
 
         {# Compare page's Top Common Songs/Artists/Albums cards: both users'
@@ -193,8 +186,8 @@
           </div>
         {% endif %}
       </div>
-      
-      <!-- Attributes based on section -->
+
+      {# Attribute chips - the section decides which details matter #}
       <div class="track-attributes">
         {% if track.get('created_reason') == SYNTHETIC_FALLBACK_REASON %}
           <span class="track-label danger">Deleted/Unavailable on Spotify</span>
@@ -211,21 +204,41 @@
           <span class="track-label warning">{{ availabilityLabels.get(track.get('availability_reason'), 'May be unavailable') }}</span>
         {% endif %}
         {% if section in ('dashboard', 'history') %}
-          <!-- Play-history list: duration, time played, track info, explicit, isrc -->
-          {% if track.get('durationText') %}<span class="track-label">Duration: {{ track.get('durationText') }}</span>{% endif %}
-          {% if track.get('timePlayedText') %}<span class="track-label">Time Played: {{ track.get('timePlayedText') }}</span>{% endif %}
-          {% if track.get('trackNumber') %}<span class="track-label">Track {{ track.get('trackNumber') }} · Disc {{ track.get('discNumber') }}</span>{% endif %}
-          <span class="track-label">{{ "Explicit" if track.get('explicit') else "Clean" }}</span>
-          {% if track.get('isrc') %}<span class="track-label">ISRC: {{ track.get('isrc') }}</span>{% endif %}
-          {% if track.get('contextName') %}<span class="track-label">Played from {{ track.get('contextName') }}</span>{% endif %}
+          {# play-history rows: duration, time played, track info, explicit, isrc, context #}
+          {% if track.get('durationText') %}
+            <span class="track-label">Duration: {{ track.get('durationText') }}</span>
+          {% endif %}
+          {% if track.get('timePlayedText') %}
+            <span class="track-label">Time Played: {{ track.get('timePlayedText') }}</span>
+          {% endif %}
+          {% if track.get('trackNumber') %}
+            <span class="track-label">Track {{ track.get('trackNumber') }} · Disc {{ track.get('discNumber') }}</span>
+          {% endif %}
+          <span class="track-label">{{ 'Explicit' if track.get('explicit') else 'Clean' }}</span>
+          {% if track.get('isrc') %}
+            <span class="track-label">ISRC: {{ track.get('isrc') }}</span>
+          {% endif %}
+          {% if track.get('contextName') %}
+            <span class="track-label">Played from {{ track.get('contextName') }}</span>
+          {% endif %}
         {% elif section == 'top_songs' %}
-          {% if track.get('firstListenedText') %}<span class="track-label">First Listened: {{ track.get('firstListenedText') }}</span>{% endif %}
-          {% if track.get('durationText') %}<span class="track-label">Duration: {{ track.get('durationText') }}</span>{% endif %}
-          {% if track.get('trackNumber') %}<span class="track-label">Track {{ track.get('trackNumber') }} · Disc {{ track.get('discNumber') }}</span>{% endif %}
-          <span class="track-label">{{ "Explicit" if track.get('explicit') else "Clean" }}</span>
-          {% if track.get('isrc') %}<span class="track-label">ISRC: {{ track.get('isrc') }}</span>{% endif %}
+          {% if track.get('firstListenedText') %}
+            <span class="track-label">First Listened: {{ track.get('firstListenedText') }}</span>
+          {% endif %}
+          {% if track.get('durationText') %}
+            <span class="track-label">Duration: {{ track.get('durationText') }}</span>
+          {% endif %}
+          {% if track.get('trackNumber') %}
+            <span class="track-label">Track {{ track.get('trackNumber') }} · Disc {{ track.get('discNumber') }}</span>
+          {% endif %}
+          <span class="track-label">{{ 'Explicit' if track.get('explicit') else 'Clean' }}</span>
+          {% if track.get('isrc') %}
+            <span class="track-label">ISRC: {{ track.get('isrc') }}</span>
+          {% endif %}
         {% elif section == 'top_artists' %}
-          {% if track.get('firstListenedText') %}<span class="track-label">First Listened: {{ track.get('firstListenedText') }}</span>{% endif %}
+          {% if track.get('firstListenedText') %}
+            <span class="track-label">First Listened: {{ track.get('firstListenedText') }}</span>
+          {% endif %}
         {% elif section == 'top_albums' %}
           {% if track.get('firstListenedText') %}<span class="track-label">First Listened: {{ track.get('firstListenedText') }}</span>{% endif %}
           {% if track.get('releaseDateText') %}<span class="track-label">Released: {{ track.get('releaseDateText') }}</span>{% endif %}

@@ -1,17 +1,11 @@
 # SPDX-FileCopyrightText: 2026 i7Gamer
-# SPDX-FileCopyrightText: 2026 Tzur Soffer
 # SPDX-License-Identifier: AGPL-3.0-or-later
-#
-# Portions remain copyright Tzur Soffer under the MIT License (LICENSE.MIT) and
-# stay available under MIT from the upstream project; the file as a whole is
-# AGPL-3.0-or-later. See NOTICE.
 
 import csv
 import json
 import datetime
 import hashlib
 import logging
-import SpotipyFree
 import concurrent.futures
 import threading
 
@@ -22,11 +16,13 @@ try:
     from Database.db import (SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON, SKIP_THRESHOLD_MS,
                              looksLikeSpotifyTrackId)
     from Database.utils import timeToInt, timeToIntUTC, parseError, convertToDatetime, getTimezone
+    from Database.Spotify import Spotify
 except ModuleNotFoundError:
     from Formatters.spotifyClient import Client
     from db import (SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON, SKIP_THRESHOLD_MS,
                     looksLikeSpotifyTrackId)
     from utils import timeToInt, timeToIntUTC, parseError, convertToDatetime, getTimezone
+    from Spotify import Spotify
 
 
 def _knownNameKey(name: str, artist: str) -> str:
@@ -37,7 +33,7 @@ def _knownNameKey(name: str, artist: str) -> str:
     return f"{name}::{artist}"
 
 
-class Importer:
+class Importer:  #< one export file -> plays + track metadata, via cache, URI lookup, or name search
     # 1000 allows for frequent progress bar updates in the UI and batches API pre-fetches
     # to avoid rate limits/network blocking without long delays.
     CHUNK_SIZE = 1000
@@ -72,10 +68,10 @@ class Importer:
     )
 
     def __init__(self, cookiesFile=None, email=None):
-        self.sp = SpotipyFree.Spotify(cookiesFile=cookiesFile, email=email)
+        self.sp = Spotify(cookiesFile=cookiesFile, email=email)
 
-    def _searchForSong(self, name, artist):
-        query = f"track:{name} artist:{artist}"
+    def _searchForSong(self, name, artist) -> dict:
+        query = f"track:{name} artist:{artist}"   #< Spotify's fielded-search syntax
         items = self.sp.search(query, type="track", limit=1)["tracks"]["items"]
         if not items:
             # Static message on purpose: name/artist are user data and a track
@@ -102,46 +98,49 @@ class Importer:
         which Database.importHistory treats as a failed import rather than
         silently succeeding."""
         export = export.lstrip("\ufeff")
-        if export.lstrip().startswith("FILE_PATH,"):
-            return export.splitlines()[1:], "musicoletPremium"
-        try:
-            export = json.loads(export)
-            if not isinstance(export, list):
-                return [], "None"
-            if not export:
-                return [], "emptyExport"
-            if "msPlayed" in export[0]:   #< Acount export
-                return export, "spotifyAcountExport"
-            if "ts" in export[0]:         #< Extended export
-                return export, "spotifyExtendedExport"
-        except Exception:  # noqa: S110 - the "None" classification below IS the error report;
-            pass           #  the caller surfaces it to the user as an unreadable-export message
-        return [], "None"
-    
-    def importHistory(self, parsedHistory, known, exportType, progressCallback=None, stats=None):
-        if len(parsedHistory) == 0:
-            return []
-        if exportType == "spotifyAcountExport":
-            return self.importAcountHistory(parsedHistory, known=known, progressCallback=progressCallback, stats=stats)
-        if exportType == "spotifyExtendedExport":
-                return self.importExtendedHistory(parsedHistory, known=known, progressCallback=progressCallback, stats=stats)
-        if exportType == "musicoletPremium":
-            return self.importMusicoletCSVExport(parsedHistory, known=known, progressCallback=progressCallback, stats=stats)
-        return []
+        if export.lstrip().startswith("FILE_PATH,"):   #< Musicolet's CSV header
+            return export.splitlines()[1:], "musicoletPremium"   #< CSV: drop the header row
 
-    def buildKnownIndex(self, knownTrack):
-        index = {}
+        try:
+            entries = json.loads(export)
+        except Exception:  # noqa: S110 - the "None" classification below IS the error report;
+            entries = None  # the caller surfaces it to the user as an unreadable-export message
+        if isinstance(entries, list):
+            if not entries:
+                return [], "emptyExport"
+            first = entries[0]
+            if isinstance(first, dict):   #< both Spotify exports are lists of objects
+                if "msPlayed" in first:
+                    return entries, "spotifyAcountExport"   #< the Account export's field naming
+                if "ts" in first:
+                    return entries, "spotifyExtendedExport"
+        return [], "None"   #< unrecognized: importHistory surfaces this as an unreadable export
+
+    def importHistory(self, parsedHistory, known, exportType, progressCallback=None, stats=None):
+        importers = {
+            "spotifyAcountExport": self.importAcountHistory,
+            "spotifyExtendedExport": self.importExtendedHistory,
+            "musicoletPremium": self.importMusicoletCSVExport,
+        }
+        importerForType = importers.get(exportType)
+        if not parsedHistory or importerForType is None:
+            return []
+        return importerForType(parsedHistory, known=known, progressCallback=progressCallback, stats=stats)
+
+    def buildKnownIndex(self, knownTrack) -> dict:
+        """Cached tracks indexed twice over: by id, and by name+first-artist
+        (for entries whose export row carries no URI)."""
+        knownIndex = {}
         for item in knownTrack:
             if not item.get("name"):
                 # Stored from a blanked (region-restricted) lookup before the export
                 # overlay existed - leave it out of the cache so a re-import
                 # re-fetches it and heals the record.
                 continue
-            index[item["id"]] = item
-            if len(item["artists"]) == 0:
-                continue
-            index[_knownNameKey(item["name"], item["artists"][0]["name"])] = item
-        return index
+            knownIndex[item["id"]] = item
+            if item["artists"]:
+                knownIndex[_knownNameKey(item["name"], item["artists"][0]["name"])] = item
+        return knownIndex
 
     def _parseHistory(self, dataFunction, history, stats=None):
         """Turn raw export entries into the tuples the rest of the import works

@@ -4465,6 +4465,22 @@ html.theme-red {
   margin-bottom: 1rem;
 }
 
+/* Recovery instructions shown under a worker row that is reporting a problem
+   (currently only a suspected Spotify TOTP rotation). Not uppercased like the
+   label above it: this is prose someone has to read and act on, and it sits
+   between the row it explains and the next label. */
+.admin-worker-note {
+  font-size: 0.85rem;
+  color: var(--muted);
+  margin-top: -0.5rem;
+  margin-bottom: 1rem;
+  line-height: 1.5;
+}
+
+.admin-worker-note code {
+  word-break: break-all;   /* the env-var example is long and must not overflow the card */
+}
+
 .admin-settings-col {
   display: flex;
   flex-direction: column;

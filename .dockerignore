@@ -15,11 +15,12 @@ venv
 *.log
 *.md
 README.md
-# COPYING, LICENSE.MIT and NOTICE are deliberately NOT excluded: the image
-# bundles GPL-licensed spotapi alongside this AGPL-licensed code, and both
-# licenses require a copy of the license text to travel with the work
-# (AGPL-3.0 / GPL-3.0 section 4). This line used to read "LICENSE", which never
-# matched the file anyway - it was spelled "LICENCE" until the AGPL move.
+# COPYING and NOTICE are deliberately NOT excluded: the image bundles
+# GPL-licensed spotapi alongside this AGPL-licensed code, and both licenses
+# require a copy of the license text to travel with the work (AGPL-3.0 /
+# GPL-3.0 section 4). (LICENSE.MIT was retired when the last MIT-attributed
+# code was rewritten - see NOTICE.) This line used to read "LICENSE", which
+# never matched the file anyway - it was spelled "LICENCE" until the AGPL move.
 .vscode
 .idea
 .pytest_cache
@@ -38,6 +39,12 @@ cookies.json
 cookies2.json
 cookies*.json
 **/cookies*.json
+# The smoketest's spotapi sessions file: live sp_dc/sp_key cookies, documented
+# as living beside Database/Spotify/smoketest.py. The example file is
+# placeholders and the reference the smoketest's usage text points at.
+session*.json
+**/session*.json
+!Database/Spotify/session.example.json
 # Spotify export uploads: these are complete listening histories. The drop
 # folder exists to hold them, so the anchored spellings below never matched the
 # files that are actually there (autoImport/<user>/Streaming_History_*.json).

@@ -1,0 +1,10 @@
+[
+  {
+    "identifier": "REPLACE-WITH-YOUR-SPOTIFY-EMAIL@example.com",
+    "cookies": {
+      "sp_dc": "REPLACE-WITH-THE-sp_dc-COOKIE-VALUE",
+      "sp_key": "REPLACE-WITH-THE-sp_key-COOKIE-VALUE",
+      "sp_t": "REPLACE-WITH-THE-sp_t-COOKIE-VALUE"
+    }
+  }
+]

@@ -1,10 +1,5 @@
 # SPDX-FileCopyrightText: 2026 i7Gamer
-# SPDX-FileCopyrightText: 2026 Tzur Soffer
 # SPDX-License-Identifier: AGPL-3.0-or-later
-#
-# Portions remain copyright Tzur Soffer under the MIT License (LICENSE.MIT) and
-# stay available under MIT from the upstream project; the file as a whole is
-# AGPL-3.0-or-later. See NOTICE.
 
 import collections
 import os
@@ -15,7 +10,7 @@ import signal
 import threading
 import time
 from contextlib import contextmanager
-from SpotipyFree import Spotify
+from Database.Spotify import Spotify
 from Database.rate_limit import (
     SPOTIFY_LIMITER, SPOTIFY_RATE_LIMIT_BACKOFF_SECONDS, SpotifyLocallyRateLimitedError,
 )
@@ -58,7 +53,7 @@ threading.excepthook = _shutdown_exception_hook
 LISTENER_STOP_JOIN_TIMEOUT_SECONDS = 5  #< bound how long shutdown waits for spotapi's background LastPlayed thread to exit
 
 # current_user_recently_played() doesn't actually poll - it just returns spotapi's
-# websocket-fed local cache (see SpotipyFree.Spotify.current_user_recently_played).
+# websocket-fed local cache (see Database/Spotify/client.py's current_user_recently_played).
 # That websocket can silently die (its own reconnect() call targets a method that
 # doesn't exist on PlayerStatus - a bug in spotapi, not this code), after which the
 # cache is frozen forever: no exception, no new items, nothing recorded, ever again,
@@ -187,7 +182,7 @@ TRUTHY_DEBUG_VALUES = {"1", "true"}  #< FLASK_DEBUG values that enable verbose d
 def _itemTrackId(item: dict) -> str | None:
     """The track id of a recently-played entry from EITHER cache.
 
-    The live listener's rows come from SpotipyFree and spell it track.track_id;
+    The live listener's fallback rows spell it track.track_id (fallbackTrackRecord);
     the Web API's spell it track.id. `or {}` (not get's default) because an entry
     can carry "track": None, where None.get would raise.
     """
@@ -381,7 +376,7 @@ def _suppress_signal_in_thread():
         signal.signal = original
 
 
-class Listener:
+class Listener:  #< one user's live playback watcher: cookie session + Web API backfill
     def __init__(self, cookiesFile, refreshInterval=None, email=None, get_credentials=None,
                  get_backfill_enabled=None, on_scope_status_change=None, user=None,
                  get_recorded_track_ids=None, get_recorded_play_times=None):
@@ -389,7 +384,7 @@ class Listener:
         # for this listener" - see _pollIntervalWithJitter. An explicit value
         # is honoured verbatim so a test can pin it.
         self.refreshInterval = _pollIntervalWithJitter() if refreshInterval is None else refreshInterval
-        self.run = False
+        self.run = False   #< startListener() raises it; stop()/signalStop() clear it
         self._stop_event = threading.Event()
         self.email = email  #< store expected email for validation
         # Internal user key (e.g. "7kevinegger"), used for log identification so
@@ -430,17 +425,13 @@ class Listener:
             if self.sp.isLoggedIn():
                 self.sp.startRecentlyPlayedListener(refreshInterval=self.refreshInterval)
             else:
-                # self.sp.user_auth stays a plain bool (SpotipyFree's own
+                # self.sp.user_auth stays a plain bool (the client's
                 # not-logged-in sentinel) when the stored cookies fail to
-                # authenticate. Calling startRecentlyPlayedListener() anyway
-                # doesn't fail cleanly - it builds a PlayerStatus/
-                # WebsocketStreamer around that bool, and spotapi's own
-                # WebsocketStreamer.__init__ does `login.logged_in`, raising
-                # AttributeError deep inside a third-party dependency instead
-                # of leaving this listener in a clean, detectable non-working
-                # state. Skip it and let startListener() (Database/workers/
-                # listener.py) report this the same way it already does for
-                # contaminationDetected below.
+                # authenticate. startRecentlyPlayedListener() would refuse
+                # with a ValueError in that state; skip it and let
+                # startListener() (Database/workers/listener.py) report this
+                # the same way it already does for contaminationDetected
+                # below.
                 self.loginFailed = True
                 logger.warning("Spotify login failed for user %s - stored cookies may be invalid or expired", self.logUser)
 
@@ -486,7 +477,7 @@ class Listener:
             from Database.queries.email_queries import EVENT_INVALID_COOKIES
             queue_email_notification(self.user, EVENT_INVALID_COOKIES)
 
-        self.recentlyPlayed_Z1 = self.sp.current_user_recently_played()
+        self.recentlyPlayed_Z1 = self.sp.current_user_recently_played()   #< Z1 = the previous poll's snapshot
         self.webApiRecentlyPlayed_Z1 = []  #< _checkWebApiBackfill's own dedup bookkeeping, kept
                                             #  separate from recentlyPlayed_Z1 (live-listener-owned,
                                             #  different dict shape) so the two polling loops never
@@ -508,17 +499,17 @@ class Listener:
         user key when the caller supplied one, else the email as before."""
         return self.user or self.email
 
-    def isLoggedIn(self):
+    def isLoggedIn(self) -> bool:
         # A contaminated session is technically logged in - as the WRONG
         # account. Reporting False routes the user back through the login
         # flow, whose cookie verification requires the matching account.
         if self.contaminationDetected:
             return False
-        if self.sp.isLoggedIn() == False:
-            return False
+        if not self.sp.isLoggedIn():
+            return False   #< the client's own cookie-level verdict
         try:
-            self.sp.current_user()
-            return True
+            self.sp.current_user()   #< any answer at all proves the session works
+            return True   #< the session answered for itself
         except SpotifyLocallyRateLimitedError as e:
             # Our own open window, not a verdict on these cookies - see
             # _validateCurrentUser. Same answer as the transient branch below
@@ -539,7 +530,7 @@ class Listener:
                 logger.warning("Transient error checking login status for user %s "
                                "(rate limit or malformed response): %s", self.logUser, parseError(e))
                 return True
-            return False
+            return False   #< a real refusal: the cookies no longer authenticate
 
     def _recordExternalIdentityCheck(self, now: float) -> None:
         """Count a POSITIVE identity check made elsewhere as this listener's
@@ -642,7 +633,7 @@ class Listener:
         """Remember what the connect state says is playing, so the stale-feed
         check can tell an idle account from a dead session.
 
-        Costs nothing: getConnectPlayerState reads the dict SpotipyFree's own
+        Costs nothing: getConnectPlayerState reads the dict the update loop's own
         tick already refreshes, with no network call. Only a change BETWEEN two
         real tracks is recorded - the first sighting isn't one (a listener
         rebuilt mid-track would otherwise immediately justify the next rebuild),
@@ -673,28 +664,29 @@ class Listener:
             return True
         return self._lastPlayingChangeTime > self._lastChangeTime
 
-    def getNewItems(self, new: list):
-        oldTimes = [item["played_at"] for item in self.recentlyPlayed_Z1]
-
-        for i, item in enumerate(new):
-            # print("Comparing item played at:", item["played_at"], "with old times:", oldTimes)
-            if item["played_at"] not in oldTimes:
-                return new[i:]
-
+    def getNewItems(self, new: list) -> list | None:
+        """The suffix of `new` that starts at the first item the previous
+        snapshot (Z1) hasn't seen, or None when nothing is new. Items are
+        identified by played_at - the feed only ever appends."""
+        knownTimes = {item["played_at"] for item in self.recentlyPlayed_Z1}
+        for index, item in enumerate(new):
+            if item["played_at"] not in knownTimes:
+                return new[index:]
         return None
 
-    def track(self, id):
-        return self.sp.track(id)
-    
-    def playlistName(self, playlistId):
-        return self.sp.playlist(playlistId).get("name", "Unknown Playlist")
-    def albumName(self, albumId):
-        return self.sp.album(albumId).get("name", "Unknown Album")
+    def track(self, trackId):
+        return self.sp.track(trackId)
+
+    def playlistName(self, playlistId) -> str:
+        return (self.sp.playlist(playlistId) or {}).get("name", "Unknown Playlist")
+
+    def albumName(self, albumId) -> str:
+        return (self.sp.album(albumId) or {}).get("name", "Unknown Album")
 
     def getConnectPlayerState(self) -> dict | None:
         """The raw connect player_state dict off the same PlayerStatus object
-        SpotipyFree's LastPlayedManger already keeps refreshed every
-        refreshInterval tick (see SpotipyFree/LastPlayed.py) - no extra
+        the RecentlyPlayedManager already keeps refreshed every
+        refreshInterval tick (see Database/Spotify/recentlyPlayed.py) - no extra
         network call needed. Feeds both the missed-track cross-check and the
         dashboard's Now Playing.
 
@@ -795,8 +787,12 @@ class Listener:
             if not recentUris:
                 return
 
+            #< _itemTrackId, NOT a direct key read: the owned client's tracks
+            #  spell it track.id and only fallback records still carry
+            #  track.track_id - reading one spelling collapses this set to
+            #  {None} and every queue URI reads as "never recorded".
             recordedTrackIds = {
-                item.get("track", {}).get("track_id")
+                _itemTrackId(item)
                 for item in self.recentlyPlayed_Z1
                 if item.get("track")
             }
@@ -908,7 +904,7 @@ class Listener:
             )
             self.run = False
             return
-        self.run = True
+        self.run = True   #< from here only _checkOnce/auth errors or a stop signal end the loop
         while self.run and not self._stop_event.is_set():
             try:
                 if not self._checkOnce(callback, onStale):
@@ -1050,7 +1046,7 @@ class Listener:
                 logger.info("Web API user: %s (ID: %s, email: %s), Listener email: %s",
                            web_api_user_display, web_api_user_id, web_api_user_email, self.email)
 
-            # Validate that the access token belongs to the authenticated user. Since SpotipyFree
+            # Validate that the access token belongs to the authenticated user. Since the cookie client
             # may store user IDs differently than the Spotify Web API, check email first (most reliable),
             # fall back to display name if email unavailable.
             mismatch = False
@@ -1124,7 +1120,7 @@ class Listener:
             # Keyed by track id, not a flat set of timestamps: see the
             # is_recorded test below for why a timestamp alone cannot answer
             # "was THIS play recorded". The two caches spell the id differently
-            # (the live listener's SpotipyFree rows carry track.track_id, the Web
+            # (the live listener's fallback rows carry track.track_id, the Web
             # API's carry track.id), so _itemTrackId reads both.
             recorded_timestamps: dict = {}
             for item in self.recentlyPlayed_Z1 + self.webApiRecentlyPlayed_Z1:
@@ -1135,7 +1131,7 @@ class Listener:
             # Both caches above live and die with this listener object, and a
             # listener is rebuilt on every stale-feed reconnect (1,568 times in
             # 11 days for 3 users) - webApiRecentlyPlayed_Z1 starts empty, and
-            # so does recentlyPlayed_Z1, since SpotipyFree's deque only fills
+            # so does recentlyPlayed_Z1, since the client's deque only fills
             # from track changes its websocket observes after start. So the
             # first poll after every rebuild saw the whole page as missing:
             # 74,579 plays announced over those 11 days, of which 201 were
@@ -1258,7 +1254,7 @@ class Listener:
         stop_event = getattr(self, "_stop_event", None)
         if stop_event is not None:
             stop_event.set()
-        self.run = False
+        self.run = False   #< the poll loop checks this every pass
 
         lastPlayedManager = getattr(self.sp, "lastPlayedManager", None)
         if lastPlayedManager is not None:

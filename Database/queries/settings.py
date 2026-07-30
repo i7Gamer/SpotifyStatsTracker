@@ -362,6 +362,19 @@ class SettingQueries:
     def _setFeatureEnabled(self, key: str, enabled: bool) -> None:
         self.setAppSetting(key, APP_SETTING_TRUE if enabled else APP_SETTING_FALSE)
 
+    def isPushListenerEnabled(self) -> bool:
+        """Whether listeners take player state from Spotify's pushed
+        connect-state instead of polling for it.
+
+        The only feature key that defaults to OFF (absent row = disabled) - see
+        PUSH_LISTENER_SETTING_KEY for why. Read once per listener build, so a
+        flip takes effect when the listener is next rebuilt rather than
+        mid-stream."""
+        return self.getAppSetting(PUSH_LISTENER_SETTING_KEY, APP_SETTING_FALSE) == APP_SETTING_TRUE
+
+    def setPushListenerEnabled(self, enabled: bool) -> None:
+        self._setFeatureEnabled(PUSH_LISTENER_SETTING_KEY, enabled)
+
     def isSpotifyApiBackfillEnabled(self) -> bool:
         return self._isFeatureEnabled(SPOTIFY_BACKFILL_SETTING_KEY)
 

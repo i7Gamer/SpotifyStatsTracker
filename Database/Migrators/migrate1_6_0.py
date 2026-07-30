@@ -25,10 +25,11 @@ class Migrator(BaseMigrator):
     As its last step, renames the runtime-data directory from Users/ to Data/ -
     "Users" stopped being an accurate name once its main contents became a
     shared database and shared media, rather than per-user files. The rename
-    happens last (after this migrator has already read everything it needs from
-    Users/) so migrate1_0_0 through migrate1_5_0, which all hardcode "Users"
-    internally, run completely unaffected - they always run earlier in the
-    chain, before this directory ever gets renamed.
+    happens last, after this migrator has already read everything it needs
+    from Users/. (It originally also protected the pre-SQLite migrators
+    1.0.0-1.5.0, which hardcoded "Users" and ran earlier in the chain; those
+    were removed in favour of the version floor in Migrators/migrate.py, which
+    now refuses anything older than this migrator can pick up.)
 
     Safe to re-run: every write is an upsert/INSERT-OR-IGNORE, and the app
     version marker is only advanced (and the rename only performed) after every

@@ -1,6 +1,6 @@
 """Every file the built artifact conveys names its copyright and its license.
 
-The project-level `COPYING`/`NOTICE`/`LICENSE.MIT` cover the work as a whole;
+The project-level `COPYING`/`NOTICE` cover the work as a whole;
 these two SPDX lines are what travels with a single file copied out of the tree.
 The AGPL's own "How to Apply These Terms" asks for exactly this much - "at least
 the 'copyright' line and a pointer to where the full notice is found" - so the
@@ -11,11 +11,14 @@ silently ship unmarked. Scope deliberately matches what the Docker image
 conveys (see .dockerignore): tests/ and dev.py are excluded there, so they are
 excluded here.
 
-The mixed-authorship check is computed from `git blame` at test time rather than
-hardcoded. A file that gains or loses upstream lines then fails loudly instead
-of quietly carrying a wrong attribution - which is the failure mode that
-actually matters, since MIT's notice-retention condition is what those extra
-lines exist to satisfy. That check needs the full history in the checkout - see
+The upstream-authorship check is computed from `git blame` at test time rather
+than hardcoded. Phase 2 of the dependency rewrite rewrote every upstream
+(MIT-licensed) line and retired LICENSE.MIT on that basis - so the invariant
+this file now guards is that NO current line blames to the upstream author,
+and that no header claims their authorship. A change that reintroduces
+upstream-attributed lines (e.g. a revert of one of the rewrites) fails loudly,
+because it would re-create the MIT notice-retention obligation the retirement
+relied on being gone. The check needs the full history in the checkout - see
 SHALLOW_CHECKOUT_HINT.
 """
 import subprocess
@@ -32,7 +35,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 #< the license text every in-scope file must point at
 LICENSE_TAG = "SPDX-License-Identifier: AGPL-3.0-or-later"
 COPYRIGHT_TAG = "SPDX-FileCopyrightText:"
-#< the upstream author whose MIT lines survive in some files (see NOTICE)
+#< the upstream author whose MIT lines were all rewritten in Phase 2 (see NOTICE)
 UPSTREAM_AUTHOR = "Tzur Soffer"
 
 SOURCE_GLOBS = ("*.py", "*.js", "*.html", "*.css")
@@ -52,8 +55,15 @@ SHALLOW_CHECKOUT_HINT = (
 
 
 def _git(*args):
-    return subprocess.run(("git", *args), cwd=REPO_ROOT, capture_output=True,
-                          text=True, errors="replace").stdout
+    """stdout of a git command, or a loud RuntimeError. Returning "" on
+    failure would make every blame-derived count read as 0 - which is now the
+    EXPECTED value everywhere, so the failure would be invisible."""
+    result = subprocess.run(("git", *args), cwd=REPO_ROOT, capture_output=True,
+                            text=True, errors="replace")
+    if result.returncode != 0:
+        raise RuntimeError(f"git {' '.join(args)} failed ({result.returncode}): "
+                           f"{result.stderr.strip()}")
+    return result.stdout
 
 
 def inScopeFiles():
@@ -71,11 +81,33 @@ def repoIsShallow():
     return _git("rev-parse", "--is-shallow-repository").strip() == "true"
 
 
+def _countUpstreamLines(blame):
+    """Upstream-authored content lines in `git blame --line-porcelain` output.
+
+    Whitespace-only lines are excluded: a blank line carries no copyrightable
+    expression, so it cannot be an "upstream MIT line" in any sense the notice
+    exists for - and git's diff freely re-anchors blanks as unchanged context,
+    so counting them would demand pure churn commits to flip lines that say
+    nothing.
+
+    Split from the subprocess call so the parsing has a positive control
+    (TestUpstreamCountingItself): with every real count expected to be 0, only
+    synthetic input can prove the counting still works at all."""
+    count = 0
+    author = None
+    for line in blame.splitlines():
+        if line.startswith("author "):
+            author = line
+        elif line.startswith("\t"):
+            if author and UPSTREAM_AUTHOR in author and line[1:].strip():
+                count += 1
+            author = None
+    return count
+
+
 def _upstreamLineCount(path):
     """How many of this file's current lines git blames on the upstream author."""
-    blame = _git("blame", "--line-porcelain", "--", path)
-    return sum(1 for line in blame.splitlines()
-               if line.startswith("author ") and UPSTREAM_AUTHOR in line)
+    return _countUpstreamLines(_git("blame", "--line-porcelain", "--", path))
 
 
 def _head(path, lines=MAX_HEADER_LINES):
@@ -102,6 +134,44 @@ class TestScopeItself(unittest.TestCase):
         suffixes = {Path(f).suffix for f in inScopeFiles()}
 
         self.assertEqual(suffixes, {".py", ".js", ".html", ".css"})
+
+
+class TestUpstreamCountingItself(unittest.TestCase):
+    """Positive control for the blame check. The expected upstream count is
+    now 0 for EVERY file, so a parser that silently broke (a porcelain format
+    change, git erroring out) would produce the same all-zero answer as the
+    real invariant - the quietest way to lose the guard. These pin the parser
+    on synthetic porcelain where the right answer is NOT zero."""
+
+    SYNTHETIC_BLAME = (
+        "abc123 1 1 1\n"
+        f"author {UPSTREAM_AUTHOR}\n"
+        "author-mail <upstream@example.com>\n"
+        "\tupstream content line\n"
+        "abc123 2 2 1\n"
+        f"author {UPSTREAM_AUTHOR}\n"
+        "\t   \n"                        #< whitespace-only: carries no expression, not counted
+        "def456 3 3 1\n"
+        "author i7Gamer\n"
+        "\tour line\n"
+        "abc123 4 4 1\n"
+        f"author {UPSTREAM_AUTHOR}\n"
+        "\tsecond upstream line\n"
+    )
+
+    def test_upstream_lines_are_counted(self):
+        self.assertEqual(_countUpstreamLines(self.SYNTHETIC_BLAME), 2)
+
+    def test_empty_blame_counts_zero(self):
+        """The failure mode this class exists for: empty input must be
+        distinguishable from 'checked and clean' - which is why _git raises on
+        a failed command instead of returning '' (tested below) and this
+        parser is pinned on nonzero input above."""
+        self.assertEqual(_countUpstreamLines(""), 0)
+
+    def test_a_failed_git_command_raises_instead_of_returning_empty(self):
+        with self.assertRaises(RuntimeError):
+            _git("blame", "--line-porcelain", "--", "no/such/file.py")
 
 
 class TestShallowCheckoutGuard(unittest.TestCase):
@@ -149,12 +219,13 @@ class TestLicenseHeaders(unittest.TestCase):
         self.assertEqual(wrong, [])
 
 
-class TestMixedAuthorshipAttribution(unittest.TestCase):
-    """Files still carrying upstream MIT lines must name their author too.
-
-    A bare "Copyright i7Gamer" on those would both misstate authorship and drop
-    the notice MIT requires be retained.
-    """
+class TestUpstreamAuthorshipRetired(unittest.TestCase):
+    """LICENSE.MIT was retired on the basis that no upstream-attributed line
+    survives (dependencyRewritePlan Phase 2). These tests keep that claim
+    true: reintroducing upstream lines - most plausibly by reverting one of
+    the Phase 2 rewrites - would re-create MIT's notice-retention obligation,
+    and crediting the upstream author without any of their lines would
+    misstate authorship in the other direction."""
 
     @classmethod
     def setUpClass(cls):
@@ -164,26 +235,15 @@ class TestMixedAuthorshipAttribution(unittest.TestCase):
         #< one blame pass for the whole suite; it is ~200 subprocess calls
         cls.upstreamCounts = {f: _upstreamLineCount(f) for f in inScopeFiles()}
 
-    def test_some_files_still_carry_upstream_lines(self):
-        """If this hits zero the fork has fully diverged and the dual-attribution
-        rule below is dead code - a real event worth noticing deliberately."""
-        withUpstream = [f for f, n in self.upstreamCounts.items() if n]
+    def test_no_upstream_lines_remain(self):
+        withUpstream = sorted(f for f, n in self.upstreamCounts.items() if n)
 
-        self.assertTrue(withUpstream, "no upstream lines survive - revisit NOTICE and this test")
+        self.assertEqual(withUpstream, [],
+                         "upstream-attributed lines reappeared - either restore the "
+                         "MIT attribution (header + LICENSE.MIT + NOTICE) or rewrite them")
 
-    def test_files_with_upstream_lines_credit_the_upstream_author(self):
-        uncredited = [f for f, n in self.upstreamCounts.items()
-                      if n and UPSTREAM_AUTHOR not in _head(f)]
-
-        self.assertEqual(uncredited, [],
-                         f"{len(uncredited)} file(s) contain upstream lines but don't credit "
-                         f"{UPSTREAM_AUTHOR}")
-
-    def test_files_without_upstream_lines_do_not_claim_upstream_authorship(self):
-        """The other direction: a copy-pasted header would credit an author who
-        has no lines in that file, which is its own misstatement."""
-        overCredited = [f for f, n in self.upstreamCounts.items()
-                        if not n and UPSTREAM_AUTHOR in _head(f)]
+    def test_no_header_claims_upstream_authorship(self):
+        overCredited = sorted(f for f in inScopeFiles() if UPSTREAM_AUTHOR in _head(f))
 
         self.assertEqual(overCredited, [])
 

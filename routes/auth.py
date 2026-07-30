@@ -24,7 +24,7 @@ from config import (
     SPOTIFY_OAUTH_STATE_SESSION_KEY, DISPLAY_NAME_MIN_LENGTH,
     DISPLAY_NAME_MAX_LENGTH, DISPLAY_NAME_ALLOWED_PATTERN,
 )
-from SpotipyFree import parseCookieString
+from Database.Spotify.cookies import parseCookieString
 from Database.lastfm import LastfmClient
 from Database.utils import dateToString
 from services.email_worker import queue_email_notification

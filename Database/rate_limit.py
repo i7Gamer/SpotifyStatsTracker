@@ -153,6 +153,7 @@ class SlotRateLimiter:
 
 
 # Shared by every Spotify call site in the process: the per-user connect-state
-# poll, the account-settings profile/plan lookups, and track metadata fetches.
-# See Database/patches.py, which is where all three are hooked.
+# poll (Database/Spotify/recentlyPlayed.py), track metadata fetches
+# (Database/Spotify/client.py's getTrackInfoWithRetry), and the
+# account-settings profile/plan lookups (hooked in Database/patches.py).
 SPOTIFY_LIMITER = SlotRateLimiter(SPOTIFY_REQUESTS_PER_SECOND)

@@ -6,7 +6,7 @@
 ## Spotify Stats Tracker - [![Tests](https://github.com/i7Gamer/SpotifyStatsTracker/actions/workflows/tests.yml/badge.svg)](https://github.com/i7Gamer/SpotifyStatsTracker/actions/workflows/tests.yml) [![Lint](https://github.com/i7Gamer/SpotifyStatsTracker/actions/workflows/lint.yml/badge.svg)](https://github.com/i7Gamer/SpotifyStatsTracker/actions/workflows/lint.yml) [![CodeQL](https://github.com/i7Gamer/SpotifyStatsTracker/actions/workflows/github-code-scanning/codeql/badge.svg)](https://github.com/i7Gamer/SpotifyStatsTracker/security/code-scanning)
 
 ### If you found [this repository](https://github.com/i7Gamer/SpotifyStatsTracker) useful, please give it a ⭐!
-A web application that allows users to track and analyze their Spotify listening habits and statistics **without Spotify Premium**.
+A self-hosted web application for recording and exploring your Spotify listening history and statistics - **no Spotify Premium required**.
 
 ## Features
 
@@ -28,14 +28,11 @@ A web application that allows users to track and analyze their Spotify listening
 
 ## Installation
 
-1. Clone the repository:
+Clone the repository and install the pinned dependencies:
+
 ```bash
 git clone https://github.com/i7Gamer/SpotifyStatsTracker
 cd SpotifyStatsTracker
-```
-
-2. Install dependencies:
-```bash
 pip install -r requirements.txt
 ```
 
@@ -43,7 +40,8 @@ pip install -r requirements.txt
 
 ### Using Docker
 
-Use this docker-compose file:
+A ready-to-adapt compose file:
+
 ```docker
 version: '3.8'
 
@@ -54,20 +52,21 @@ services:
       - "5000:5000"
     volumes:
       - ./Database/Data:/app/Database/Data
-      - ./autoImport:/app/autoImport  #< files put in this folder will be imported automatically
+      - ./autoImport:/app/autoImport  #< exports dropped here are picked up and imported on their own
     environment:
       - FLASK_APP=wsgi.py
       - PYTHONUNBUFFERED=1
-      - TZ=America/Los_Angeles        #< don't forget to change this or you will get the wrong times for songs
+      - TZ=America/Los_Angeles        #< set YOUR IANA zone, or every play lands at the wrong local time
       - FLASK_SECRET_KEY=changeme-generate-your-own-random-value  #< YOU MUST CHANGE THIS - the app refuses to start on this exact placeholder (it's public, so it makes sessions forgeable). Generate one with `python -c "import secrets; print(secrets.token_hex(32))"`. A fixed value = sessions survive a restart; unset = a new one is generated each restart, logging everyone out. Also used to encrypt stored Spotify sessions unless DATA_ENCRYPTION_KEY is set - changing it means everyone must log in again.
       # - DATA_ENCRYPTION_KEY=changeme-another-random-value  #< Optional dedicated key for encrypting stored Spotify sessions/API secrets at rest (falls back to FLASK_SECRET_KEY). Keep it safe alongside your backups: without the key that encrypted them, stored sessions can't be read and every user must re-login with fresh cookies.
       # - TRUST_PROXY_HEADERS=1       #< Set when running behind a reverse proxy (nginx/traefik/caddy) so rate limiting sees real client IPs instead of the proxy's; use the number of proxy hops (usually 1). Only set this if a proxy is actually in front - otherwise clients could forge their IP.
       # - ENABLE_HSTS=1               #< Send a Strict-Transport-Security header so browsers pin this origin to HTTPS. Only enable behind a TLS-terminating reverse proxy - on plain-HTTP access it will lock browsers out of the site.
       # - ADMIN_EMAIL=you@example.com #< Makes this account the instance's only admin (grants access to the Admin Console at /admin to view all user sync states, worker health, and system settings). Without it, the earliest-registered user is promoted automatically.
       # - SPOTIFY_CALLBACK_URL=http://localhost:5000/spotify-callback  #< Uncomment and set to your public callback URL to enable Spotify Web API backfilling
-      # - IMPORT_KEYWORD=Weekly       #< Uncomment to apply a filter to what files get auto-imported (only files containing this will be imported)
-      # - FLASK_DEBUG=1               #< To get more detailed logs from Flask (provide this when opening an issue)
+      # - IMPORT_KEYWORD=Weekly       #< Uncomment to auto-import only files whose name contains this keyword
+      # - FLASK_DEBUG=1               #< Verbose Flask logging - enable when reporting an issue
       # - SKIP_EMAIL_VERIFICATION=1   #< Uncomment to disable the "do these cookies belong to this email" check at login (only do this if you trust everyone who can reach this instance - it's what stops one user from claiming another's account, AND what stops the /reset-password flow from letting anyone set a new password on any account)
+      # - SPOTIFY_TOTP_SECRET=61:44,55,...  #< Emergency override for the pinned Spotify TOTP secret. Only needed if Spotify rotates it and logins start failing instance-wide before a fixed release is out - the log line at that point tells you so. Format is "<version>:<comma-separated bytes>"; a malformed value is ignored (with an error logged) rather than taking login offline.
     restart: always
 ```
 
@@ -87,19 +86,14 @@ restart.
 
 ### Local Development
 
-1. Start the app:
+Start the app directly and open it in a browser:
+
 ```bash
 python app.py
 ```
 
-2. Open the app in your browser:
-```text
-http://localhost:5444
-```
-or whatever your IP is
-```text
-http://127.0.0.1:5444
-```
+The dev server listens on port 5444: `http://localhost:5444` (or the
+machine's own IP, e.g. `http://127.0.0.1:5444`).
 
 **Note:** The Docker container persists data in the `Database/Data/` directory on your host machine.
 
@@ -185,14 +179,14 @@ In short: you may use, study, modify and redistribute it, but derivative works m
 
 Two things worth knowing:
 
-- This project is a fork of [TzurSoffer/SpotifyStatsTracker](https://github.com/TzurSoffer/SpotifyStatsTracker) and was itself MIT-licensed through version 1.45.0. Anything obtained at or before that point stays MIT - that grant cannot be withdrawn. Portions of the code are still copyright Tzur Soffer under the MIT License, whose notice is preserved in [LICENSE.MIT](LICENSE.MIT).
-- The switch away from MIT was not purely a preference. `spotapi`, a required runtime dependency that `Database/patches.py` imports and patches, is licensed under the GPL-3.0, and the Docker image bundles it. A copyleft license for the project as a whole is what that dependency requires.
+- This project began as a fork of [TzurSoffer/SpotifyStatsTracker](https://github.com/TzurSoffer/SpotifyStatsTracker) and was itself MIT-licensed through version 1.45.0. Anything obtained at or before that point stays MIT - that grant cannot be withdrawn. The current tree no longer contains MIT-licensed portions: the last upstream-attributed code was rewritten in the Phase 2 dependency rewrite (see NOTICE for the history), so the former LICENSE.MIT file is gone.
+- The switch away from MIT was not purely a preference. `spotapi`, a required runtime dependency that `Database/Spotify/` builds on and `Database/patches.py` patches, is licensed under the GPL-3.0, and the Docker image bundles it. A copyleft license for the project as a whole is what that dependency requires.
 
 See [NOTICE](NOTICE) for the relicensing history and third-party component details.
 
 ## Support
 
-For support, please open an issue on the GitHub repository or contact me.
+Questions and bug reports are welcome as GitHub issues on this repository.
 
 Additional Screenshots:
 

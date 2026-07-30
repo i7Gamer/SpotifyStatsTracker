@@ -34,6 +34,7 @@ from Database.repository import (
 )
 from Database.backup import DEFAULT_BACKUP_INTERVAL_HOURS, DEFAULT_BACKUP_RETENTION_COUNT
 from Database.rate_limit import SPOTIFY_LIMITER
+from Database.patches import totpAuthSnapshot
 from Database.utils import convertToDatetime
 from services.email_service import (
     get_smtp_config, save_smtp_config, send_test_email,
@@ -313,6 +314,12 @@ def register(app, dashboard):
         # worse?" was to grep app.log.
         spotify_rate_limit = SPOTIFY_LIMITER.snapshot()
 
+        # Spotify rotates the TOTP secret the web player authenticates with, and
+        # this build pins it (see Database/patches.py). A rotation takes every
+        # user's session down at once and its only other trace is a log line, so
+        # it belongs on the panel someone actually opens when "nothing works".
+        spotify_totp = totpAuthSnapshot()
+
         skip_mode, skip_value = dashboard.repo.getSkipThreshold()
         restart_enabled = os.environ.get(ALLOW_INSTANCE_RESTART_ENV_VAR, "").lower() in TRUTHY_ENV_VALUES
 
@@ -335,6 +342,7 @@ def register(app, dashboard):
             users_list=users_list,
             admin_count=len(dashboard.repo.getAdminUsernames()),
             spotify_backfill_enabled=dashboard.repo.isSpotifyApiBackfillEnabled(),
+            push_listener_enabled=dashboard.repo.isPushListenerEnabled(),
             lastfm_backfill_enabled=dashboard.repo.isLastfmGenreBackfillEnabled(),
             sharing_enabled=dashboard.repo.isDataSharingEnabled(),
             inherited_genres_enabled=dashboard.repo.isInheritedGenresEnabled(),
@@ -368,6 +376,7 @@ def register(app, dashboard):
             dangling_row_total=dangling_row_total,
             listener_summary=listener_summary,
             spotify_rate_limit=spotify_rate_limit,
+            spotify_totp=spotify_totp,
             spotify_api_worker_summary=spotify_api_worker_summary,
             lastfm_worker_summary=lastfm_worker_summary,
             lastfm_album_bio_worker_summary=lastfm_album_bio_worker_summary,
@@ -548,7 +557,11 @@ def register(app, dashboard):
         if not dashboard.repo.isAdmin(username):
             abort(403)
         dashboard.repo.setSpotifyApiBackfillEnabled(request.form.get("spotify_backfill") == "1")
-        return redirect(url_for("adminPage", tab="workers", message="Spotify API backfill settings saved."))
+        # Read once per listener build, so this takes effect on the next
+        # rebuild rather than mid-stream - say so instead of implying it is live.
+        dashboard.repo.setPushListenerEnabled(request.form.get("push_listener") == "1")
+        return redirect(url_for("adminPage", tab="workers",
+                                message="Spotify settings saved. Push mode applies when each listener next restarts."))
     app.add_url_rule("/admin/spotify_settings", "adminSpotifySettings", adminSpotifySettings, methods=["POST"])
 
     def adminSkipSettings():
