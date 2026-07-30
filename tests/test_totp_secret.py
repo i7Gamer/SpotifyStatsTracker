@@ -19,9 +19,11 @@ identifiers, which change every build. `secret` and `version` are read by name
 elsewhere in the bundle, so a minifier cannot rename them.
 """
 import unittest
+from unittest.mock import MagicMock, patch
 
 from Database.Spotify.totpSecret import (
     parseSecretsFromBundle, MIN_SECRET_BYTES, MAX_SECRET_BYTES,
+    fetchWebPlayerSecrets, _findMainPackUrl, _readCapped,
 )
 
 # The real declaration, verbatim from web-player.5f92fe2d.js. Raw string so the
@@ -109,6 +111,129 @@ class TestParsingRefusesJunk(unittest.TestCase):
 
         self.assertEqual(found[0][0], 61)
         self.assertEqual(list(found[0][1]), KNOWN_V61)
+
+
+def _response(text="", chunks=None, raises=None):
+    """A requests.Response-shaped double. `chunks` drives iter_content for the
+    streamed bundle download; `raises` makes raise_for_status throw."""
+    response = MagicMock()
+    response.text = text
+    if raises is not None:
+        response.raise_for_status.side_effect = raises
+    if chunks is not None:
+        response.iter_content.return_value = iter(chunks)
+    return response
+
+
+def _session(responses):
+    """A requests.Session double whose get() replays `responses` in order."""
+    session = MagicMock()
+    session.headers = {}
+    session.get.side_effect = list(responses)
+    return session
+
+
+HOME_HTML = (
+    '<script src="https://cdn.example/vendor~web-player.abc.js"></script>'
+    '<script src="https://cdn.example/web-player/web-player.5f92fe2d.js"></script>'
+)
+PACK_URL = "https://cdn.example/web-player/web-player.5f92fe2d.js"
+
+
+class TestFetchWebPlayerSecrets(unittest.TestCase):
+    """The network layer around the parser. Its whole contract is 'the parsed
+    secrets, or [] on ANY failure' - it runs while authentication is already
+    broken, so an exception here would replace a diagnosable auth error with
+    an unrelated network one. Every failure branch must land on []."""
+
+    def _fetch(self, session):
+        with patch("Database.Spotify.totpSecret.requests.Session", return_value=session):
+            return fetchWebPlayerSecrets()
+
+    def test_the_happy_path_parses_the_streamed_pack(self):
+        session = _session([
+            _response(text=HOME_HTML),
+            _response(chunks=[LIVE_BUNDLE_FRAGMENT.encode("utf-8")]),
+        ])
+
+        found = self._fetch(session)
+
+        self.assertEqual([version for version, _ in found], [61, 60, 59])
+        self.assertEqual(list(found[0][1]), KNOWN_V61)
+        #< the pack is the multi-MB request; it must stream so the size cap can
+        #  stop reading, not merely discard afterwards
+        packCall = session.get.call_args_list[1]
+        self.assertEqual(packCall.args[0], PACK_URL)
+        self.assertTrue(packCall.kwargs.get("stream"))
+
+    def test_the_bundle_is_requested_as_a_browser(self):
+        session = _session([
+            _response(text=HOME_HTML),
+            _response(chunks=[b""]),
+        ])
+
+        self._fetch(session)
+
+        self.assertIn("Mozilla", session.headers.get("User-Agent", ""))
+
+    def test_a_home_page_without_a_pack_url_yields_nothing(self):
+        session = _session([_response(text="<html>restructured entirely</html>")])
+
+        with self.assertLogs("Database.Spotify.totpSecret", level="WARNING"):
+            self.assertEqual(self._fetch(session), [])
+        self.assertEqual(session.get.call_count, 1)   #< no second request to guess at
+
+    def test_an_http_error_yields_nothing_not_an_exception(self):
+        session = _session([_response(text=HOME_HTML, raises=RuntimeError("503"))])
+
+        with self.assertLogs("Database.Spotify.totpSecret", level="WARNING"):
+            self.assertEqual(self._fetch(session), [])
+
+    def test_a_network_error_yields_nothing_not_an_exception(self):
+        session = MagicMock()
+        session.headers = {}
+        session.get.side_effect = OSError("connection timed out")
+
+        with self.assertLogs("Database.Spotify.totpSecret", level="WARNING"):
+            self.assertEqual(self._fetch(session), [])
+
+    def test_an_oversized_pack_is_abandoned(self):
+        """A redirect to something huge must not be read into memory - the cap
+        exists so recovery can never be the thing that OOMs the instance."""
+        session = _session([
+            _response(text=HOME_HTML),
+            _response(chunks=[b"x" * 60, b"y" * 60]),
+        ])
+
+        with patch("Database.Spotify.totpSecret.MAX_BUNDLE_BYTES", 100):
+            with self.assertLogs("Database.Spotify.totpSecret", level="WARNING"):
+                self.assertEqual(self._fetch(session), [])
+
+
+class TestFindMainPackUrl(unittest.TestCase):
+    def test_only_the_main_pack_is_selected(self):
+        self.assertEqual(_findMainPackUrl(HOME_HTML), PACK_URL)
+
+    def test_no_marker_means_none(self):
+        self.assertIsNone(_findMainPackUrl(
+            '<script src="https://cdn.example/vendor~web-player.abc.js"></script>'))
+        self.assertIsNone(_findMainPackUrl(""))
+
+
+class TestReadCapped(unittest.TestCase):
+    def test_reads_up_to_the_cap_exactly(self):
+        with patch("Database.Spotify.totpSecret.MAX_BUNDLE_BYTES", 10):
+            self.assertEqual(_readCapped(_response(chunks=[b"12345", b"67890"])), "1234567890")
+
+    def test_one_byte_over_the_cap_is_none(self):
+        with patch("Database.Spotify.totpSecret.MAX_BUNDLE_BYTES", 10):
+            self.assertIsNone(_readCapped(_response(chunks=[b"12345", b"678901"])))
+
+    def test_undecodable_bytes_are_replaced_not_fatal(self):
+        """The parser only needs the ASCII secret block; a stray invalid byte
+        elsewhere in a 4.5MB minified bundle must not throw the parse away."""
+        text = _readCapped(_response(chunks=[b"ok\xff\xfeok"]))
+        self.assertIn("ok", text)
 
 
 if __name__ == "__main__":
