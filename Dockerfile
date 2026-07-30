@@ -22,7 +22,7 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
     && apt-get autoremove --purge -y \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy application code
+# The application itself (everything .dockerignore lets through)
 COPY . .
 
 # Deliberately still runs as root, and that is a considered choice rather than an
@@ -33,10 +33,10 @@ COPY . .
 # already holds the database it would be attacked for, the upgrade break costs
 # more than the isolation buys. Revisit if this ever runs somewhere multi-tenant.
 
-# Expose Flask port
+# The port waitress serves on inside the container
 EXPOSE 5000
 
-# Set environment variables
+# Baseline environment; compose overrides/extends these
 ENV FLASK_APP=wsgi.py
 ENV PYTHONUNBUFFERED=1
 
@@ -46,5 +46,5 @@ ENV PYTHONUNBUFFERED=1
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
     CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:5000/health', timeout=3).getcode() == 200 else 1)"
 
-# Run the Flask app
+# Serve via wsgi.py (waitress), not the Flask dev server
 CMD ["python", "wsgi.py"]

@@ -1,7 +1,8 @@
+# Stale bytecode caches must not leak into the image
 Get-ChildItem -Recurse -Directory -Filter "__pycache__" | Remove-Item -Recurse -Force
 
 docker build --no-cache -t spotify-tracker:latest .
-# docker build -t spotify-tracker:latest .
+# cached variant: docker build -t spotify-tracker:latest .
 
 # PowerShell does not stop on a failed native command, and a failed build leaves
 # the PREVIOUS spotify-tracker:latest in place - so falling through to the tag

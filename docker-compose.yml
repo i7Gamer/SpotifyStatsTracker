@@ -7,14 +7,14 @@ services:
       - "5000:5000"
     volumes:
       - ./Database/Data:/app/Database/Data
-      - ./autoImport:/app/autoImport  #< files put in this folder will be imported automatically
+      - ./autoImport:/app/autoImport  #< exports dropped here are picked up and imported on their own
     environment:
       - FLASK_APP=wsgi.py
       - PYTHONUNBUFFERED=1
-      - TZ=America/Los_Angeles        #< don't forget to change this or you will get the wrong times for songs
+      - TZ=America/Los_Angeles        #< set YOUR IANA zone, or every play lands at the wrong local time
       - FLASK_SECRET_KEY=changeme-generate-your-own-random-value  #< YOU MUST CHANGE THIS - the app refuses to start on this placeholder (it's public: forgeable sessions + readable stored Spotify sessions). Generate one with: python -c "import secrets; print(secrets.token_hex(32))". A fixed value keeps sessions alive across restarts; unset = a new one each restart, logging everyone out
       # - SPOTIFY_CALLBACK_URL=http://localhost:5000/spotify-callback  #< Uncomment and set to your public callback URL to enable Spotify Web API backfilling
-      # - IMPORT_KEYWORD=Weekly       #< Uncomment to apply a filter to what files get auto-imported (only files containing this will be imported)
-      # - FLASK_DEBUG=1               #< To get more detailed logs from Flask (provide this when opening an issue)
+      # - IMPORT_KEYWORD=Weekly       #< Uncomment to auto-import only files whose name contains this keyword
+      # - FLASK_DEBUG=1               #< Verbose Flask logging - enable when reporting an issue
       # - SKIP_EMAIL_VERIFICATION=1   #< Uncomment to disable the "do these cookies belong to this email" check at login (only do this if you trust everyone who can reach this instance - it's what stops one user from claiming another's account, AND what stops /reset-password from letting anyone set a new password on any account)
     restart: always
