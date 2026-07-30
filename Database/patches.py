@@ -275,6 +275,137 @@ def patched_keep_alive(self):
 spotapi.websocket.WebsocketStreamer.keep_alive = patched_keep_alive
 
 
+# 5. Patch WebsocketStreamer.get_packet so a push channel can actually be read.
+#
+# spotapi's version holds self.rlock across an UNBOUNDED self.ws.recv(), and
+# keep_alive above needs that same lock to send its 60-second ping. On a quiet
+# account the receive loop parks inside recv() holding the lock, the ping never
+# goes out, and Spotify drops the connection on its idle timeout - recovered by
+# a full re-login, the most bot-detection-sensitive path this app has. That is
+# almost certainly why LastPlayedManger polls connect-state every few seconds
+# instead of listening, and it means adopting spotapi's EventManager as-is
+# would be worse than the polling it would replace.
+#
+# Its `except Exception` is the other half: a plain timeout - the NORMAL state
+# of a push channel, which measured 3.75 h between updates overnight - was
+# treated as a reason to reconnect, forever, on a 1-second sleep.
+#
+# Nothing in this application calls get_packet yet; PlayerStatus only sends
+# pings and never reads. This lands on its own because it is a prerequisite for
+# reading the dealer pushes (eventDrivenConnectStatePlan.md Phase 2) and is
+# strictly safer than what it replaces even if that never happens.
+WS_RECV_TIMEOUT_SECONDS = 1.0    #< ceiling on how long rlock may be held, so the ping thread
+                                  #  waits at most this long for its turn
+WS_RECV_MAX_RECONNECT_FAILURES = 3  #< then stand down and let the stale-feed detector rebuild
+
+
+def patched_get_packet(self, timeout: float = WS_RECV_TIMEOUT_SECONDS):
+    """The next websocket frame as a dict, or None.
+
+    None means "nothing to act on, call again": the wait elapsed, the socket is
+    gone, shutdown was requested, or a frame arrived that wasn't a JSON object.
+    Callers loop, which also gives them a place to check their own stop flags -
+    spotapi's EventManager._listen already skips a None event, so its contract
+    is unchanged."""
+    if getattr(self, "_deliberate_close", False):
+        return None
+
+    try:
+        with self.rlock:
+            ws = self.ws        #< re-read under the lock: a concurrent reconnect swaps it
+            if ws is None:
+                return None
+            raw = ws.recv(timeout=timeout)
+    except TimeoutError:
+        return None             #< silence is the normal state of a push channel, not a fault
+    except websockets.exceptions.ConnectionClosedOK:
+        logger.info("Websocket closed cleanly; no more packets to read.")
+        return None
+    except websockets.exceptions.ConnectionClosed as e:
+        _reconnectAfterDroppedPacket(self, e)
+        return None
+    except Exception as e:  # noqa: BLE001 - anything else is diagnosed, never silently retried
+        logger.warning("Unexpected error reading websocket packet: %s: %s",
+                       type(e).__name__, e)
+        return None
+
+    try:
+        packet = json.loads(raw)
+    except Exception:
+        logger.warning("Dropping unparsable websocket frame (%d bytes)", len(raw))
+        return None
+    if not isinstance(packet, dict):
+        # dict(json.loads(...)) is what spotapi did, so a JSON array or scalar
+        # raised straight into its reconnect-on-anything handler.
+        logger.warning("Dropping non-object websocket frame of type %s", type(packet).__name__)
+        return None
+
+    self.ws_dump = packet
+    return packet
+
+
+def _reconnectAfterDroppedPacket(self, closeError) -> None:
+    """Bounded recovery for a dropped receive socket.
+
+    Mirrors patched_keep_alive's shape - one concise line per attempt, a hard
+    ceiling, and an immediate stop once the underlying HTTP session is closed
+    for good - rather than spotapi's unbounded `while True` + sleep(1), which
+    turns an unreachable endpoint into a reconnect storm against the same
+    endpoint that just refused us."""
+    if getattr(self, "_deliberate_close", False):
+        return
+    reconnect = getattr(self, "reconnect", None)
+    if reconnect is None:
+        logger.warning("Websocket dropped (%s) and no reconnect() available.", closeError)
+        return
+
+    failures = getattr(self, "_recvReconnectFailures", 0)
+    if failures >= WS_RECV_MAX_RECONNECT_FAILURES:
+        return  #< already gave up and said so; stay quiet rather than log per packet
+
+    logger.warning("Websocket dropped while reading (%s), attempting reconnect...", closeError)
+    try:
+        reconnect()
+        _setRecvReconnectFailures(self, 0)
+    except Exception as reconnectError:
+        if _isSessionClosedError(reconnectError):
+            logger.error("Websocket receive giving up: the HTTP session is closed and "
+                         "cannot be revived: %s", reconnectError)
+            _setRecvReconnectFailures(self, WS_RECV_MAX_RECONNECT_FAILURES)
+            return
+        failures += 1
+        _setRecvReconnectFailures(self, failures)
+        logger.warning("Websocket reconnect failed (%d/%d): %s",
+                       failures, WS_RECV_MAX_RECONNECT_FAILURES, reconnectError)
+        if failures >= WS_RECV_MAX_RECONNECT_FAILURES:
+            logger.error(
+                "Giving up websocket receive reconnects after %d attempts; the "
+                "stale-feed detector will rebuild the session.",
+                WS_RECV_MAX_RECONNECT_FAILURES)
+
+
+def _setRecvReconnectFailures(self, count: int) -> None:
+    """Remember the failure count on the streamer, tolerating an instance that
+    won't take new attributes.
+
+    WebsocketStreamer declares __slots__ without this name. Every object this
+    app actually builds is a PlayerStatus, which defines no __slots__ of its own
+    and so still carries a __dict__ - the same assumption signalStop already
+    makes for _deliberate_close, with the same guard. If a future/bare instance
+    ever refuses the write, the ceiling below stops applying, so say so once
+    rather than silently reverting to spotapi's unbounded retries."""
+    try:
+        self._recvReconnectFailures = count
+    except AttributeError:
+        logger.warning(
+            "Cannot track websocket receive-reconnect failures on a %s "
+            "(__slots__); the %d-attempt ceiling will not apply.",
+            type(self).__name__, WS_RECV_MAX_RECONNECT_FAILURES)
+
+
+spotapi.websocket.WebsocketStreamer.get_packet = patched_get_packet
+
+
 import json
 import sys
 

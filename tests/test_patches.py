@@ -1522,6 +1522,229 @@ class TestFlaskDebugEnabled(unittest.TestCase):
         self.assertFalse(self._enabled(None))
 
 
+class _FakeWebsocket:
+    """Stands in for the sync websocket client: each recv() consumes the next
+    scripted result - Exception instances are raised, anything else returned.
+    Records the timeout it was called with, which is the whole point of the
+    patch under test."""
+
+    def __init__(self, results):
+        self._results = list(results)
+        self.recvTimeouts = []
+
+    def recv(self, timeout=None, decode=None):
+        self.recvTimeouts.append(timeout)
+        if not self._results:
+            raise TimeoutError("no more scripted results")
+        result = self._results.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+
+def _fakeStreamer(results, deliberateClose=False):
+    """A stand-in WebsocketStreamer carrying only what get_packet touches."""
+    import types
+    streamer = types.SimpleNamespace()
+    streamer.ws = _FakeWebsocket(results)
+    streamer.rlock = threading.Lock()
+    streamer.ws_dump = None
+    streamer._deliberate_close = deliberateClose
+    streamer.reconnect = MagicMock()
+    return streamer
+
+
+def _getPacket(streamer, **kwargs):
+    import spotapi.websocket
+    return spotapi.websocket.WebsocketStreamer.get_packet(streamer, **kwargs)
+
+
+class TestPatchedGetPacket(unittest.TestCase):
+    """spotapi's own get_packet holds rlock across an UNBOUNDED ws.recv(), and
+    keep_alive needs that same lock to send its 60s ping. On a quiet account
+    the receive loop parks in recv() holding the lock, the ping never goes out,
+    and Spotify drops the connection on its idle timeout - recovered by a full
+    re-login, the most bot-detection-sensitive path there is.
+
+    That is why LastPlayedManger polls instead of listening, and why adopting
+    spotapi's EventManager as-is would be worse than the polling it replaces.
+    Phase 0 measured the fix working: 601/601 keepalive pongs over 10 hours
+    (see eventDrivenConnectStatePlan.md).
+
+    Its bare `except Exception` is the second half of the problem: it treats a
+    plain timeout - the NORMAL state of a push channel - as a reason to
+    reconnect, and retries forever with a 1s sleep."""
+
+    def test_a_frame_is_returned_as_a_dict_and_cached(self):
+        streamer = _fakeStreamer(['{"type":"pong"}'])
+
+        packet = _getPacket(streamer)
+
+        self.assertEqual(packet, {"type": "pong"})
+        self.assertEqual(streamer.ws_dump, {"type": "pong"})
+
+    def test_the_recv_wait_is_bounded(self):
+        """The starvation fix: the lock may only be held for a bounded recv,
+        never an open-ended one. An unbounded wait is what stops the ping."""
+        from Database.patches import WS_RECV_TIMEOUT_SECONDS
+
+        streamer = _fakeStreamer(['{"type":"pong"}'])
+        _getPacket(streamer)
+
+        self.assertEqual(streamer.ws.recvTimeouts, [WS_RECV_TIMEOUT_SECONDS])
+
+    def test_the_lock_is_released_before_returning(self):
+        streamer = _fakeStreamer(['{"type":"pong"}'])
+        _getPacket(streamer)
+
+        self.assertTrue(streamer.rlock.acquire(blocking=False))
+        streamer.rlock.release()
+
+    def test_a_timeout_returns_none_without_reconnecting(self):
+        """Silence is the normal state of a push channel - Phase 0 saw 3.75 h
+        between state pushes. Reconnecting on it would turn every idle period
+        into a re-login."""
+        streamer = _fakeStreamer([TimeoutError("nothing pushed")])
+
+        self.assertIsNone(_getPacket(streamer))
+        streamer.reconnect.assert_not_called()
+
+    def test_a_deliberate_close_returns_without_touching_the_socket(self):
+        streamer = _fakeStreamer(['{"type":"pong"}'], deliberateClose=True)
+
+        self.assertIsNone(_getPacket(streamer))
+        self.assertEqual(streamer.ws.recvTimeouts, [])
+        streamer.reconnect.assert_not_called()
+
+    def test_a_missing_socket_returns_none_rather_than_raising(self):
+        streamer = _fakeStreamer([])
+        streamer.ws = None
+
+        self.assertIsNone(_getPacket(streamer))
+        streamer.reconnect.assert_not_called()
+
+    def test_a_clean_close_does_not_reconnect(self):
+        import websockets.exceptions
+
+        streamer = _fakeStreamer([
+            websockets.exceptions.ConnectionClosedOK(None, None)])
+
+        self.assertIsNone(_getPacket(streamer))
+        streamer.reconnect.assert_not_called()
+
+    def test_an_unexpected_drop_reconnects_once(self):
+        import websockets.exceptions
+
+        streamer = _fakeStreamer([
+            websockets.exceptions.ConnectionClosedError(None, None)])
+
+        with self.assertLogs("Database.patches", level="WARNING"):
+            self.assertIsNone(_getPacket(streamer))
+
+        streamer.reconnect.assert_called_once_with()
+
+    def test_reconnect_failures_are_bounded(self):
+        """spotapi retries forever on a 1s sleep. A dead endpoint must not be
+        hammered - the stale-feed detector rebuilds the session instead."""
+        import websockets.exceptions
+        from Database.patches import WS_RECV_MAX_RECONNECT_FAILURES
+
+        drops = [websockets.exceptions.ConnectionClosedError(None, None)
+                 for _ in range(WS_RECV_MAX_RECONNECT_FAILURES + 3)]
+        streamer = _fakeStreamer(drops)
+        streamer.reconnect = MagicMock(side_effect=RuntimeError("endpoint down"))
+
+        with self.assertLogs("Database.patches", level="WARNING"):
+            with patch("Database.patches.time.sleep"):
+                for _ in range(WS_RECV_MAX_RECONNECT_FAILURES + 3):
+                    _getPacket(streamer)
+
+        self.assertLessEqual(streamer.reconnect.call_count, WS_RECV_MAX_RECONNECT_FAILURES)
+
+    def test_a_closed_session_gives_up_immediately(self):
+        """curl_cffi's closed session can never be revived - see
+        _isSessionClosedError. One attempt, then stop."""
+        import websockets.exceptions
+        from spotapi.exceptions import RequestError
+
+        streamer = _fakeStreamer([
+            websockets.exceptions.ConnectionClosedError(None, None),
+            websockets.exceptions.ConnectionClosedError(None, None)])
+        streamer.reconnect = MagicMock(side_effect=RequestError(
+            "Failed to complete request.", error="Session is closed, cannot send request."))
+
+        with self.assertLogs("Database.patches", level="ERROR"):
+            _getPacket(streamer)
+            _getPacket(streamer)
+
+        streamer.reconnect.assert_called_once_with()
+
+    def test_an_unparsable_frame_is_dropped_not_reconnected(self):
+        """A malformed frame says nothing about the connection's health."""
+        streamer = _fakeStreamer(["<html>nope</html>"])
+
+        with self.assertLogs("Database.patches", level="WARNING"):
+            self.assertIsNone(_getPacket(streamer))
+
+        streamer.reconnect.assert_not_called()
+
+    def test_a_non_object_frame_is_dropped(self):
+        """dict(json.loads(...)) raises on a JSON array or scalar - spotapi's
+        version let that reach its reconnect-on-anything handler."""
+        streamer = _fakeStreamer(["[1, 2, 3]"])
+
+        with self.assertLogs("Database.patches", level="WARNING"):
+            self.assertIsNone(_getPacket(streamer))
+
+        streamer.reconnect.assert_not_called()
+
+    def test_the_caller_can_override_the_timeout(self):
+        streamer = _fakeStreamer(['{"type":"pong"}'])
+
+        _getPacket(streamer, timeout=0.25)
+
+        self.assertEqual(streamer.ws.recvTimeouts, [0.25])
+
+    def test_a_slotted_instance_says_so_instead_of_retrying_forever(self):
+        """WebsocketStreamer declares __slots__ without the failure counter.
+        Every instance this app builds is a PlayerStatus, which has a __dict__ -
+        but if that ever changed, losing the ceiling silently would restore
+        exactly the reconnect storm this patch exists to prevent."""
+        import websockets.exceptions
+        from Database.patches import _setRecvReconnectFailures
+
+        class Slotted:
+            __slots__ = ()
+
+        with self.assertLogs("Database.patches", level="WARNING") as logCapture:
+            _setRecvReconnectFailures(Slotted(), 1)
+
+        self.assertIn("__slots__", "\n".join(logCapture.output))
+
+    def test_a_successful_reconnect_clears_the_failure_count(self):
+        import websockets.exceptions
+
+        streamer = _fakeStreamer([
+            websockets.exceptions.ConnectionClosedError(None, None),
+            websockets.exceptions.ConnectionClosedError(None, None)])
+        streamer.reconnect = MagicMock(side_effect=[RuntimeError("blip"), None])
+
+        with self.assertLogs("Database.patches", level="WARNING"):
+            _getPacket(streamer)
+            _getPacket(streamer)
+
+        self.assertEqual(streamer._recvReconnectFailures, 0)
+
+    def test_event_manager_still_gets_the_shape_it_expects(self):
+        """EventManager._listen does `if event is None or event.get("payloads")
+        is None: continue` - returning None on a quiet socket is exactly what
+        that already handles, so the existing caller stays correct."""
+        streamer = _fakeStreamer([TimeoutError()])
+        event = _getPacket(streamer)
+
+        self.assertIsNone(event)   #< _listen's own guard covers this
+
+
 class TestThrottleDetection(unittest.TestCase):
     """_looksThrottled decides whether a reply is Spotify pushing back. The
     hard case is the one that actually happens: HTTP 200 carrying an HTML
