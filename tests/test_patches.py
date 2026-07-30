@@ -1775,14 +1775,20 @@ def pushFrame(cluster, updateReason="DEVICE_STATE_CHANGED"):
 
 class _PushManager:
     """Stands in for PlayerStatus during a push loop: hands out scripted frames
-    from get_packet and records connect_device calls."""
+    from get_packet and records connect_device calls.
+
+    Starts with EMPTY caches on purpose. spotapi's connect_device() only returns
+    the cluster - it never writes _state/_device_dump (renew_state is what
+    normally does that), so a double that pre-filled them hid the fact that the
+    push loop began with no state at all."""
 
     def __init__(self, frames, initialCluster=None):
         self._frames = list(frames)
         self._deliberate_close = False
-        self._device_dump = initialCluster
-        self._state = (initialCluster or {}).get("player_state")
+        self._device_dump = None
+        self._state = None
         self._devices = None
+        self.cluster = initialCluster      #< what connect_device replies with
         self.connectCalls = 0
         self.connectError = None
         self.onExhausted = None
@@ -1791,7 +1797,7 @@ class _PushManager:
         self.connectCalls += 1
         if self.connectError is not None:
             raise self.connectError
-        return self._device_dump
+        return self.cluster
 
     def get_packet(self, timeout=None):
         if self._frames:
@@ -1972,6 +1978,69 @@ class TestPushLoop(unittest.TestCase):
 
         self.assertEqual(outcome, "stopped")   #< never fell back despite the elapsed time
         callback.assert_not_called()
+
+    def test_the_subscribe_reply_seeds_the_state(self):
+        """connect_device() returns the cluster but never writes the caches -
+        renew_state is what normally does that, and push mode does not call it.
+        Without adopting the reply the loop would start blind, and the first
+        real push would look like a track change from nothing."""
+        manager = _PushManager([], initialCluster=pushedCluster(uid="uid-1"))
+
+        self._run(manager)
+
+        self.assertEqual(manager._state["track"]["uid"], "uid-1")
+        self.assertIsInstance(manager._device_dump, dict)
+
+    def test_a_first_push_after_seeding_is_not_a_phantom_change(self):
+        """Seeded with uid-1, pushed uid-1: nothing played, nothing recorded."""
+        cluster = pushedCluster(uid="uid-1")
+        manager = _PushManager([pushFrame(cluster)], initialCluster=cluster)
+
+        _, callback, _ = self._run(manager)
+
+        callback.assert_not_called()
+
+    def test_a_periodic_resubscribe_refreshes_the_state(self):
+        """The floor under push mode: if the subscription silently stops
+        delivering while the socket stays healthy, pongs keep the watchdog
+        quiet and _state would freeze forever. Re-subscribing re-reads it, and
+        a change that happened meanwhile is recovered rather than lost."""
+        from Database.patches import CONNECT_STATE_RESUBSCRIBE_SECONDS, _runPushLoop
+
+        # Pongs throughout: the socket is healthy, so the frame watchdog stays
+        # quiet - which is exactly the failure it cannot see, and why the
+        # re-subscribe has to be the probe.
+        manager = _PushManager([{"type": "pong"}] * 10,
+                               initialCluster=pushedCluster(uid="uid-1"))
+        lpm = _pushLastPlayed(manager)
+        manager.onExhausted = lambda: setattr(lpm, "run", False)
+
+        clock = [1000.0]
+        step = CONNECT_STATE_RESUBSCRIBE_SECONDS / 2
+
+        def steppingMonotonic():
+            clock[0] += step
+            return clock[0]
+
+        original = manager.connect_device
+
+        def connectThenAdvanceTheTrack():
+            result = original()
+            #< after the seeding call, Spotify reports a different track: the
+            #  change that arrived while pushes were silently dead
+            manager.cluster = pushedCluster(trackUri="spotify:track:bbb", uid="uid-2")
+            if manager.connectCalls >= 2:
+                lpm.run = False
+            return result
+        manager.connect_device = connectThenAdvanceTheTrack
+
+        callback = MagicMock()
+        with patch("Database.patches.time.monotonic", side_effect=steppingMonotonic):
+            _runPushLoop(lpm, callback)
+
+        self.assertGreaterEqual(manager.connectCalls, 2)     #< it really re-subscribed
+        callback.assert_called_once()                         #< and caught the missed change
+        self.assertEqual(callback.call_args[0][0], "spotify:track:aaa")
 
     def test_the_initial_subscribe_takes_a_limiter_slot(self):
         from Database.rate_limit import SPOTIFY_LIMITER

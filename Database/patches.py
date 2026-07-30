@@ -1106,11 +1106,21 @@ def _subscribeConnectState(manager):
     if not SPOTIFY_LIMITER.acquire(timeout=SPOTIFY_ACQUIRE_TIMEOUT_SECONDS):
         return None
     try:
-        manager.connect_device()
-        return True
+        dump = manager.connect_device()
     except Exception as e:  # noqa: BLE001
         logger.warning("[SpotipyFree] connect-state subscribe failed: %s", e)
         return False
+
+    # The reply IS the current cluster - same shape a push carries - so adopting
+    # it makes every subscribe double as a poll. That is what gives push mode a
+    # floor: connect_device() itself never touches the caches (renew_state is
+    # what normally does), so without this the loop would start with no state at
+    # all, and a subscription that silently stopped delivering while the socket
+    # stayed healthy would freeze _state indefinitely. Now it refreshes at least
+    # every CONNECT_STATE_RESUBSCRIBE_SECONDS.
+    if isinstance(dump, dict):
+        _adoptCluster(manager, dump)
+    return True
 
 
 def _runPushLoop(self, callback) -> str:
@@ -1133,10 +1143,9 @@ def _runPushLoop(self, callback) -> str:
         logger.warning("[SpotipyFree] Could not subscribe to connect-state pushes; polling instead")
         return "fallback"
 
-    # connect_device's reply IS the current state, so the channel starts seeded -
+    # _subscribeConnectState adopted the reply, so the channel starts seeded -
     # no separate poll needed to know what is playing right now.
-    if isinstance(manager._device_dump, dict):
-        _adoptCluster(manager, manager._device_dump)
+    if isinstance(manager._state, dict):
         _applyPushedState(self, manager, callback)
 
     logger.info("[SpotipyFree] Listening for connect-state pushes (polling disabled)")
@@ -1175,6 +1184,11 @@ def _runPushLoop(self, callback) -> str:
             lastSubscribeAt = now
             if outcome:
                 resubscribeFailures = 0
+                # The refreshed state runs through track detection too, so a
+                # change missed while pushes were silently dead is recovered
+                # here rather than lost. Idempotent: an unchanged track uid is
+                # a no-op, so this can never double-record.
+                _applyPushedState(self, manager, callback)
             else:
                 resubscribeFailures += 1
                 if resubscribeFailures >= PUSH_RESUBSCRIBE_MAX_FAILURES:
