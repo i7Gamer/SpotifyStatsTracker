@@ -85,8 +85,9 @@ def fakeTrackUnion(trackId=TRACK_ID, *, explicitLabel="NONE", playable=True):
 
 
 def fakeSearchPage(trackId=TRACK_ID):
-    """One page of searchDesktop results, as Public().song_search yields them:
-    a list of {"item": {"data": <track>}} wrappers. Search tracks carry a flat
+    """One page of searchDesktop result items - the tracksV2.items list of
+    {"item": {"data": <track>}} wrappers (see fakeSearchResponse for the raw
+    envelope query_songs returns them in). Search tracks carry a flat
     "artists" collection (not firstArtist/otherArtists) - that difference in
     wire shape is exactly why the formatter, not the caller, absorbs it."""
     track = fakeTrackUnion(trackId)
@@ -226,13 +227,19 @@ class TestTrackFallbackContract(unittest.TestCase):
         self.assertFalse(track["playability"]["playable"])
 
 
+def fakeSearchResponse(items):
+    """query_songs' RAW searchDesktop mapping - unlike paginate_songs, which
+    yields the items pre-extracted."""
+    return {"data": {"searchV2": {"tracksV2": {"totalCount": len(items), "items": items}}}}
+
+
 class TestSearchContract(unittest.TestCase):
     """search() feeds StreamingHistoryImporter._searchForSong, which reads
     result["tracks"]["items"] and treats an empty list as "no results"."""
 
-    @patch("spotapi.Public")
-    def test_search_shape_and_track_filtering(self, mock_public):
-        mock_public.return_value.song_search.return_value = iter([fakeSearchPage()])
+    @patch("spotapi.Song")
+    def test_search_shape_and_track_filtering(self, mock_song_cls):
+        mock_song_cls.return_value.query_songs.return_value = fakeSearchResponse(fakeSearchPage())
         result = buildClient().search("track:Fixture Song artist:First Artist")
 
         items = result["tracks"]["items"]
@@ -242,10 +249,49 @@ class TestSearchContract(unittest.TestCase):
                          f"https://open.spotify.com/track/{TRACK_ID}")
         self.assertEqual(items[0]["duration_ms"], 200040)
 
-    @patch("spotapi.Public")
-    def test_no_results_is_empty_list_not_error(self, mock_public):
-        mock_public.return_value.song_search.return_value = iter([[]])
+    @patch("spotapi.Song")
+    def test_no_results_is_empty_list_not_error(self, mock_song_cls):
+        mock_song_cls.return_value.query_songs.return_value = fakeSearchResponse([])
         self.assertEqual(buildClient().search("track:zzz artist:zzz")["tracks"]["items"], [])
+
+    @patch("spotapi.Song")
+    def test_the_requested_limit_reaches_the_wire(self, mock_song_cls):
+        """The importer's by-name fallback passes limit=1 and reads items[0].
+        Public.song_search always requested a 100-result page, silently
+        dropping the argument - every fallback lookup downloaded and formatted
+        100x what it used."""
+        mock_song_cls.return_value.query_songs.return_value = fakeSearchResponse([])
+
+        buildClient().search("track:x artist:y", limit=1)
+
+        self.assertEqual(mock_song_cls.return_value.query_songs.call_args.kwargs["limit"], 1)
+
+    @patch("spotapi.Song")
+    def test_the_default_limit_is_a_page_not_a_hundred(self, mock_song_cls):
+        from Database.Spotify.client import SEARCH_DEFAULT_LIMIT
+
+        mock_song_cls.return_value.query_songs.return_value = fakeSearchResponse([])
+
+        buildClient().search("track:x artist:y")
+
+        self.assertEqual(mock_song_cls.return_value.query_songs.call_args.kwargs["limit"],
+                         SEARCH_DEFAULT_LIMIT)
+
+    @patch("spotapi.Song")
+    def test_search_borrows_its_client_from_the_pool(self, mock_song_cls):
+        """Song's `client` argument has the same shared import-time default
+        as PublicAlbum's - the exact race the pooled borrow exists for."""
+        from spotapi.public import client_pool
+
+        client_pool.clear()
+        self.addCleanup(client_pool.clear)
+        mock_song_cls.return_value.query_songs.return_value = fakeSearchResponse([])
+
+        buildClient().search("track:x artist:y")
+
+        used = mock_song_cls.call_args.kwargs.get("client")
+        self.assertIsNotNone(used)
+        self.assertIn(used, client_pool.queue)
 
 
 def fakeAlbumUnion(albumId=ALBUM_ID):

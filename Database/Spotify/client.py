@@ -71,6 +71,7 @@ INCOMPLETE_TRACK_INFO_RETRY_DELAY_SECONDS = 2
 
 TRACK_FETCH_MAX_RETRIES = 3            #< transient-failure ladder: 1s, 2s, 4s
 RECENTLY_PLAYED_BUFFER_SIZE = 50       #< matches the Web API's own recently-played page size
+SEARCH_DEFAULT_LIMIT = 10              #< spotapi query_songs' own default, and spotipy search's
 
 # The curl_cffi TLS fingerprint each per-user client impersonates.
 TLS_CLIENT_PROFILE = "chrome120"
@@ -398,15 +399,23 @@ class Spotify:
             payload = spotapi.PublicPlaylist(playlistId, client=client).get_playlist_info()
         return formatPlaylistV2(((payload or {}).get("data") or {}).get("playlistV2") or {})
 
-    def search(self, query, type="track", *args, **kwargs) -> dict:
+    def search(self, query, type="track", limit=SEARCH_DEFAULT_LIMIT, *args, **kwargs) -> dict:
         """First page of track results, spotipy-shaped. Only the importer's
-        by-name fallback calls this, and it reads ["tracks"]["items"][0] -
-        pagination would be dead code."""
-        pages = spotapi.Public().song_search(query)
-        firstPage = next(iter(pages), [])
+        by-name fallback calls this, and it reads ["tracks"]["items"][0] with
+        limit=1 - pagination would be dead code.
 
+        query_songs directly, NOT Public.song_search: the pagination wrapper
+        hardcodes a 100-result page, so the limit argument was silently
+        dropped and every by-name fallback downloaded and formatted 100x what
+        it used. Song's `client` default is the same shared import-time
+        TLSClient as PublicAlbum's, hence the pooled borrow."""
+        with _pooledPublicClient() as client:
+            payload = spotapi.Song(client=client).query_songs(query, limit=limit)
+
+        results = ((((payload or {}).get("data") or {}).get("searchV2") or {})
+                   .get("tracksV2") or {}).get("items") or []
         items = []
-        for result in firstPage:
+        for result in results:
             data = ((result or {}).get("item") or {}).get("data") or {}
             if data.get("__typename") != "Track":
                 continue  #< search surfaces albums/artists/playlists too
