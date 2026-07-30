@@ -88,7 +88,7 @@ class TestMusicoletImport(unittest.TestCase):
             ("Track B", "Artist B", "2023-01-01 00:03:00", 180000, "uriB"),
         ]
         
-        # Mock SpotipyFree search/track to return valid items
+        # Mock the Spotify client's search/track to return valid items
         importer.sp.track.side_effect = [
             {"id": "uriA", "name": "Track A", "external_urls": {"spotify": "http://a"}, "duration_ms": 180000, "album": {"images": []}},
             {"id": "uriB", "name": "Track B", "external_urls": {"spotify": "http://b"}, "duration_ms": 180000, "album": {"images": []}},
