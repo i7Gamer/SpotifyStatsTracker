@@ -23,7 +23,7 @@ SYNTHETIC_FALLBACK_REASON = "synthetic_fallback"
 RESTRICTED_FALLBACK_REASON = "restricted_fallback"
 
 # Display name for a track whose real title isn't known - Client.formatTrack's
-# default, and what patches._fallbackTrackRecord stores when Spotify won't
+# default, and what Database/Spotify/client.py's fallbackTrackRecord stores when Spotify won't
 # describe a track at all. Shared so the two can't drift: a fallback row that
 # said "" rendered as a blank title in every list it appeared in, and one that
 # invented a title would be indistinguishable from real metadata. Safe to store
