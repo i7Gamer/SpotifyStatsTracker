@@ -117,7 +117,9 @@
 
               {# the versus block below already shows both users' song counts #}
               {% if track.get('uniqueSongCount') and not track.get('compareData') %}
-              <div>{{ username if publicView else "You" }} played {{ track.get('uniqueSongCount') }} song{{ 's' if track.get('uniqueSongCount') != 1 else '' }} from {{ track.get('name', '') }}</div>
+              {#- cardTitle, not track.get('name', ''): get's default only covers a
+                  MISSING key - a present-but-None name rendered the word "None" -#}
+              <div>{{ username if publicView else "You" }} played {{ track.get('uniqueSongCount') }} song{{ 's' if track.get('uniqueSongCount') != 1 else '' }} from {{ cardTitle }}</div>
               {% endif %}
           </div>
           {% endif %}
@@ -133,7 +135,9 @@
           {% if track.get('artists') %}
             {{ artistLinks(track.get('artists'), suppressDetailLinks) }}
           {% else %}
-            {{ track.get('artistsText') }}
+            {#- `or ''` like the sibling branch below: a missing artistsText
+                otherwise renders the literal word "None" -#}
+            {{ track.get('artistsText') or '' }}
           {% endif %}
         </div>
         {% elif section != 'top_artists' %}
