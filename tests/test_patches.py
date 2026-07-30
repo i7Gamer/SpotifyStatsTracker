@@ -1368,8 +1368,57 @@ class TestTotpAutoRecovery(unittest.TestCase):
                 for _ in range(TOTP_ROTATION_CONFIRM_THRESHOLD):
                     with self.assertRaises(BaseClientError):
                         spotapi.client.BaseClient._get_auth_vars(instance)
+            self._joinRecoveryThread()
 
         fetch.assert_called_once()
+
+    def test_recovery_runs_off_the_failing_thread(self):
+        """The thread that hit the auth failure can be a Flask request thread
+        (login's cookie verification reaches _get_auth_vars), and recovery is
+        two 15s-timeout GETs plus a multi-MB bundle download - inline, a login
+        POST during a rotation hung for ~30s+. The adopted secret only takes
+        effect on the NEXT attempt anyway, so nothing needs to wait: the fetch
+        must run on its own thread, never the caller's."""
+        import threading
+        import spotapi.client
+        from spotapi.exceptions import BaseClientError
+        from Database.patches import TOTP_ROTATION_CONFIRM_THRESHOLD
+
+        instance = spotapi.client.BaseClient.__new__(spotapi.client.BaseClient)
+        instance.access_token = spotapi.client._Undefined
+        instance.client_id = spotapi.client._Undefined
+        failure = MagicMock()
+        failure.fail = True
+        failure.error.string = "400 Bad Request"
+        instance.client = MagicMock()
+        instance.client.get.return_value = failure
+
+        fetchThreads = []
+
+        def recordingFetch():
+            fetchThreads.append(threading.current_thread())
+            return []
+
+        with patch("Database.patches.fetchWebPlayerSecrets", side_effect=recordingFetch):
+            with self.assertLogs("Database.patches", level="ERROR"):
+                for _ in range(TOTP_ROTATION_CONFIRM_THRESHOLD):
+                    with self.assertRaises(BaseClientError):
+                        spotapi.client.BaseClient._get_auth_vars(instance)
+            self._joinRecoveryThread()
+
+        self.assertEqual(len(fetchThreads), 1)
+        self.assertIsNot(fetchThreads[0], threading.current_thread(),
+                         "recovery fetched on the failing caller's thread - "
+                         "a login request would block on it")
+
+    def _joinRecoveryThread(self):
+        """Recovery is asynchronous by design; tests wait for it explicitly
+        instead of sleeping (deterministic, no clock)."""
+        import Database.patches as patches
+        thread = patches._totpRecoveryThread
+        self.assertIsNotNone(thread, "no recovery thread was started")
+        thread.join(timeout=5)
+        self.assertFalse(thread.is_alive(), "recovery thread did not finish")
 
     def test_a_single_failure_does_not_trigger_it(self):
         """Recovery is for a confirmed rotation, not for every blip."""

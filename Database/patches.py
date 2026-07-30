@@ -664,6 +664,7 @@ _totpConsecutiveFailures = 0
 _totpFirstFailureAt = None   #< monotonic; "how long has this been going on"
 _totpAdoptedSecret = None    #< (version, bytearray) once recovery has found a newer one
 _totpLastRecoveryAt = None   #< monotonic; gates the cooldown above
+_totpRecoveryThread = None   #< daemon running attemptTotpRecovery; tests join it
 
 
 def recordTotpAuthFailure() -> int:
@@ -687,12 +688,18 @@ def recordTotpAuthSuccess() -> None:
 
 def resetTotpAuthState() -> None:
     """Test seam - this state is process-global, so tests must not inherit each
-    other's streaks, adopted secrets or cooldowns."""
-    global _totpAdoptedSecret, _totpLastRecoveryAt
+    other's streaks, adopted secrets, cooldowns or in-flight recoveries."""
+    global _totpAdoptedSecret, _totpLastRecoveryAt, _totpRecoveryThread
+    thread = _totpRecoveryThread
+    if thread is not None and thread.is_alive():
+        #< joined OUTSIDE the lock: the running recovery needs _totpAuthLock to
+        #  finish. In tests the fetch is always patched, so this returns fast.
+        thread.join(timeout=5)
     recordTotpAuthSuccess()
     with _totpAuthLock:
         _totpAdoptedSecret = None
         _totpLastRecoveryAt = None
+        _totpRecoveryThread = None
 
 
 def _autoRecoverEnabled() -> bool:
@@ -742,6 +749,26 @@ def attemptTotpRecovery() -> bool:
         "permanent, or it will be re-read after every restart.",
         version, currentVersion)
     return True
+
+
+def _startTotpRecoveryInBackground() -> None:
+    """attemptTotpRecovery on a daemon thread.
+
+    The thread that trips the confirmation threshold can be a Flask request
+    thread - login's cookie verification reaches _get_auth_vars - and recovery
+    is two 15s-timeout GETs plus a multi-MB bundle download, so running it
+    inline hung a login POST for ~30s+ during the exact incident it exists
+    for. Nothing needs the result: the adopted secret takes effect on the NEXT
+    attempt by design. attemptTotpRecovery's cooldown gate (stamped under the
+    lock before any network) keeps overlapping spawns from stacking fetches;
+    the is_alive check just avoids piling up idle thread objects."""
+    global _totpRecoveryThread
+    with _totpAuthLock:
+        if _totpRecoveryThread is not None and _totpRecoveryThread.is_alive():
+            return
+        _totpRecoveryThread = threading.Thread(
+            target=attemptTotpRecovery, name="totp-secret-recovery", daemon=True)
+        _totpRecoveryThread.start()
 
 
 def totpAuthSnapshot() -> dict:
@@ -863,11 +890,12 @@ def patch_totp_secret() -> bool:
                     "Worker Health panel on /admin.",
                     failures, SPOTIFY_TOTP_SECRET_VERSION, TOTP_SECRET_ENV_VAR)
                 # Confirmed streak: go read the current secret off Spotify's own
-                # web player. Rate-limited and never raising (see
-                # attemptTotpRecovery); an adopted secret takes effect on the
-                # next attempt rather than retrying this one, which keeps the
-                # error semantics of this call unchanged.
-                attemptTotpRecovery()
+                # web player - on a BACKGROUND thread, because this caller can
+                # be a Flask request thread mid-login. Rate-limited and never
+                # raising (see attemptTotpRecovery); an adopted secret takes
+                # effect on the next attempt rather than retrying this one,
+                # which keeps the error semantics of this call unchanged.
+                _startTotpRecoveryInBackground()
             raise
         recordTotpAuthSuccess()
         return result
