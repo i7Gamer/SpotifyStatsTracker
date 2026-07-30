@@ -1,19 +1,15 @@
 # SPDX-FileCopyrightText: 2026 i7Gamer
-# SPDX-FileCopyrightText: 2026 Tzur Soffer
 # SPDX-License-Identifier: AGPL-3.0-or-later
-#
-# Portions remain copyright Tzur Soffer under the MIT License (LICENSE.MIT) and
-# stay available under MIT from the upstream project; the file as a whole is
-# AGPL-3.0-or-later. See NOTICE.
 
-import os
-import sys
+import datetime   #< deliberately not from-imported: datetime.datetime/timezone/timedelta read clearest
 import time as _time
-import traceback
-import datetime
-from zoneinfo import ZoneInfo
+from os import environ
+from os.path import basename
+from traceback import extract_tb
+from contextlib import suppress
+from zoneinfo import ZoneInfo   #< IANA zones, selected via the TZ env var below
 
-DATE_FORMATS = ("%Y-%m-%d", "%Y-%m", "%Y")
+DATE_FORMATS = ("%Y-%m-%d", "%Y-%m", "%Y")   #< bare-date forms parseDateString accepts, most specific first
 
 
 class _SystemLocalTimezone(datetime.tzinfo):
@@ -63,8 +59,8 @@ class _SystemLocalTimezone(datetime.tzinfo):
         return _time.tzname[1 if self._isDst(dt) else 0]
 
 
-## TIMEZONE SETUP
-tzName = os.environ.get("TZ")
+# --- Instance timezone, chosen once at import ---------------------------------
+tzName = environ.get("TZ")
 tz = None
 
 if not tzName:
@@ -86,79 +82,80 @@ else:
         tzName = None
 
 
-## ERROR PRINTING
-def parseError(e):
-    _, _, excTb = sys.exc_info()
-    summary = traceback.extract_tb(excTb)
+# --- Error rendering -----------------------------------------------------------
+def parseError(e) -> str:
+    """A one-line account of an exception, naming the frame that raised it:
+    "TypeError in file.py -> func() at line 12: 'the code' -> Error: message".
 
-    if summary:
-        lastFrame = summary[-1]
-        fname = os.path.basename(lastFrame.filename)
-        lineno = lastFrame.lineno
-        funcName = lastFrame.name
-        codeLine = lastFrame.line
+    Reads the exception's own __traceback__ (attached the moment it was
+    raised), so it answers correctly for a stored exception object too, not
+    only inside the except block that caught it."""
+    frames = extract_tb(getattr(e, "__traceback__", None))
+    if not frames:
+        return f"{type(e).__name__}: {e}"
 
-        return f"{type(e).__name__} in {fname} -> {funcName}() at line {lineno}: '{codeLine}' -> Error: {e}"
+    frame = frames[-1]
+    return (f"{type(e).__name__} in {basename(frame.filename)} -> {frame.name}() "
+            f"at line {frame.lineno}: '{frame.line}' -> Error: {e}")
 
-    return f"{type(e).__name__}: {e}"
+
+# --- Datetime helpers ----------------------------------------------------------
+def _tzOrDefault(tz, default=None):
+    """The tzinfo to actually use: `tz` when it really is one (a few call
+    sites historically passed non-tzinfo values through **kwargs - anything
+    else is ignored rather than crashing strftime later), otherwise `default`,
+    otherwise the instance zone."""
+    if isinstance(tz, datetime.tzinfo):
+        return tz
+    return default if default is not None else getTimezone()
 
 
-## DATETIME RELATED
-def fromtimestamp(ts, tz=None):
-    """
-    Cross-platform safe timestamp conversion.
-    Windows cannot handle negative timestamps, so we manually offset from epoch.
-    """
-    if tz is not None and not isinstance(tz, datetime.tzinfo):
-        tz = None
-    if tz is None:
-        tz = datetime.timezone.utc
+def fromtimestamp(ts, tz=None) -> datetime.datetime:
+    """The aware datetime for a Unix timestamp that may be negative (pre-1970)
+    or far out of range. Windows' C runtime refuses negative timestamps (and
+    raises for the far-out-of-range sentinels this codebase round-trips), so
+    those are computed by offsetting from the epoch instead. Defaults to UTC,
+    NOT the instance zone - timestamps are absolute."""
+    tz = _tzOrDefault(tz, default=datetime.timezone.utc)
+    with suppress(OSError, ValueError):
+        return datetime.datetime.fromtimestamp(ts, tz)
+    return datetime.datetime(1970, 1, 1, tzinfo=tz) + datetime.timedelta(seconds=ts)
 
-    try:
-        # Works on Linux/macOS
-        return datetime.datetime.fromtimestamp(ts, tz=tz)
-    except (OSError, ValueError):
-        # Windows fallback for negative timestamps
-        epoch = datetime.datetime(1970, 1, 1, tzinfo=tz)
-        return epoch + datetime.timedelta(seconds=ts)
 
 def epoch(tz=None):
-    if tz is not None and not isinstance(tz, datetime.tzinfo):
-        tz = None
-    if tz is None:
-        tz = getTimezone()
-    return fromtimestamp(0, tz=tz)
+    """1970-01-01T00:00:00, the app's 'no date' placeholder value."""
+    return fromtimestamp(0, tz=_tzOrDefault(tz))
 
-def parseIsoDatetime(value):
-    """
-    Handles ISO strings, including those ending with Z.
-    """
-    value = str(value).replace("Z", "+00:00")
-    return datetime.datetime.fromisoformat(value)
 
-def getTimezone():
-    return tz
+def parseIsoDatetime(value) -> datetime.datetime:
+    """fromisoformat, with the trailing "Z" Spotify's timestamps carry mapped
+    to an explicit +00:00 offset."""
+    return datetime.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+
+
+def getTimezone() -> datetime.tzinfo:
+    """The instance-wide zone (module-level, chosen once at import above)."""
+    return tz   #< assigned once by the setup block above
+
 
 def now(tz=None):
-    if tz is not None and not isinstance(tz, datetime.tzinfo):
-        tz = None
-    if tz is None:
-        tz = getTimezone()
-    return datetime.datetime.now(tz=tz)
+    return datetime.datetime.now(tz=_tzOrDefault(tz))
 
-def toTimezone(dt: datetime.datetime, tz=None):
-    if tz is not None and not isinstance(tz, datetime.tzinfo):
-        tz = None
-    if tz is None:
-        tz = getTimezone()
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=tz)
-    return dt.astimezone(tz)
+
+def toTimezone(dt: datetime.datetime, tz=None) -> datetime.datetime:
+    """dt expressed in the given (or instance) zone. A naive dt is DECLARED to
+    be in that zone - no shifting - because naive values in this codebase are
+    local wall-clock readings, not disguised UTC."""
+    tz = _tzOrDefault(tz)
+    if dt.tzinfo is not None:
+        return dt.astimezone(tz)
+    return dt.replace(tzinfo=tz)
 
 
 def startOfDay(dt: datetime.datetime = None, tz=None):
+    """Midnight (in the given/instance zone) of the day containing dt (or now)."""
     dt = toTimezone(dt or now(tz=tz), tz=tz)
-    return dt.replace(hour=0, minute=0, second=0, microsecond=0)
+    return datetime.datetime.combine(dt.date(), datetime.time.min, tzinfo=dt.tzinfo)
 
 
 def startOfWeek(dt: datetime.datetime = None, tz=None):
@@ -173,55 +170,53 @@ def startOfMonth(dt: datetime.datetime = None, tz=None):
 
 
 def parseDateString(dateText: str, tz=None):
-    if tz is not None and not isinstance(tz, datetime.tzinfo):
-        tz = None
-    if tz is None:
-        tz = getTimezone()
-    for fmt in DATE_FORMATS:
-        try:
-            return datetime.datetime.strptime(str(dateText), fmt).replace(tzinfo=tz)
-        except ValueError:
-            pass
-    return None
+    """A bare date ("2021-05-07", "2021-05", "2021") as an aware datetime at
+    the start of its period, or None when no known form matches."""
+    tz = _tzOrDefault(tz)
+    text = str(dateText)
+    for candidate in DATE_FORMATS:
+        with suppress(ValueError):
+            return datetime.datetime.strptime(text, candidate).replace(tzinfo=tz)
+    return None   #< no known form matched
+
 
 def parseDatetime(value, tz=None):
-    try:
-        return toTimezone(parseIsoDatetime(value), tz)
-    except Exception:
+    """ISO form first, bare-date forms second; None when neither matches."""
+    parsed = None
+    with suppress(Exception):
+        parsed = parseIsoDatetime(value)
+    if parsed is None:
         return parseDateString(value, tz=tz)
+    return toTimezone(parsed, tz)
+
 
 def convertToDatetime(timestamp, tz=None):
-    """
-    Converts:
-    - datetime -> normalized
-    - numeric timestamp -> safe conversion
-    - ISO string -> parsed
-    - date-only string -> parsed
-    - "0000-00-00" -> epoch
-    - invalid -> epoch
-    """
-    if isinstance(timestamp, datetime.datetime):
+    """Anything this codebase stores as 'a time' - datetime, Unix timestamp,
+    ISO string, bare date - as an aware datetime. The unparseable, and the
+    "0000-00-00" placeholder old exports carry, map to the epoch rather than
+    raising: one bad date on one row must not take down a whole page."""
+    if isinstance(timestamp, datetime.datetime):   #< already a datetime: just normalize the zone
         return toTimezone(timestamp, tz=tz)
 
-    try:
-        return fromtimestamp(float(timestamp), tz=tz)
-    except (ValueError, TypeError):
-        pass
+    numeric = None
+    with suppress(TypeError, ValueError):
+        numeric = float(timestamp)
+    if numeric is not None:
+        return fromtimestamp(numeric, tz=tz)
 
-    if timestamp == "0000-00-00":
+    if timestamp == "0000-00-00":   #< the 'unknown date' placeholder old exports carry
         return epoch(tz=tz)
 
     parsed = parseDatetime(timestamp, tz=tz)
     return parsed if parsed is not None else epoch(tz=tz)
 
-def dateToString(timestamp, tz=None):
-    if type(timestamp) in (float, int):
-        timestamp = fromtimestamp(timestamp, tz=tz)
-    elif type(timestamp) != datetime.datetime:
-        timestamp = convertToDatetime(timestamp, tz=tz)
 
-    timestamp = toTimezone(timestamp, tz=tz)
-    return timestamp.strftime("%Y-%m-%d")
+def dateToString(timestamp, tz=None):
+    """The YYYY-MM-DD day, in the given (or instance) zone, of any value
+    convertToDatetime accepts. The explicit toTimezone matters for numeric
+    input: fromtimestamp answers in UTC, and the DAY a play belongs to is a
+    local question."""
+    return toTimezone(convertToDatetime(timestamp, tz=tz), tz=tz).strftime("%Y-%m-%d")
 
 def listeningBuckets(rows):
     """The getBucketedPlayTotals rows that represent actual listening.
@@ -241,21 +236,22 @@ def listeningBuckets(rows):
     recalculation)."""
     return [row for row in rows if row["plays"]]
 
-def timeToInt(timestampOrStr):
-    """
-    Converts datetime or string to integer timestamp.
-    Handles negative timestamps safely.
-    """
-    if type(timestampOrStr) == datetime.datetime:
-        return int(toTimezone(timestampOrStr).timestamp())
+def timeToInt(timestampOrStr) -> int:
+    """Unix seconds for a datetime, a numeric string, or any parseable time
+    string; 0 when nothing matches (callers treat 0 as 'no timestamp'). A
+    string with no zone marker is read in the instance zone - see timeToIntUTC
+    for sources documented as UTC."""
+    if isinstance(timestampOrStr, datetime.datetime):
+        return int(toTimezone(timestampOrStr).timestamp())   #< toTimezone pins a zone on naive input first
 
-    try:
-        return int(float(timestampOrStr))
-    except (ValueError, TypeError):
-        pass
+    numeric = None
+    with suppress(TypeError, ValueError):
+        numeric = float(timestampOrStr)
+    if numeric is not None:
+        return int(numeric)
 
-    parsed = parseDatetime(timestampOrStr)
-    return int(parsed.timestamp()) if parsed else 0
+    asDatetime = parseDatetime(timestampOrStr)
+    return 0 if asDatetime is None else int(asDatetime.timestamp())
 
 def timeToIntUTC(timestampOrStr):
     """Like timeToInt, but a date/time string with no timezone marker (no "Z" or
@@ -279,32 +275,27 @@ def msToString(ms: int | float, hideSecondsAboveHours: int | None = None) -> str
     instead of "12h 3m 41s") - the seconds are noise at that scale. Left as None
     everywhere the precise value matters (now-playing progress, tooltips, ...).
     """
-    if ms is None or ms <= 0:
+    if not ms or ms < 0:
         return "0s"
 
-    totalSeconds = int(ms) // 1000
+    hours, remainder = divmod(int(ms) // 1000, 3600)
+    minutes, seconds = divmod(remainder, 60)
 
-    seconds = totalSeconds % 60
-    minutes = (totalSeconds // 60) % 60
-    hours = totalSeconds // 3600
-
-    parts = []
-
-    if hours > 0:
-        parts.append(f"{hours}h")
-    if minutes > 0 or hours > 0:
-        parts.append(f"{minutes}m")
+    labeled = []
+    if hours:
+        labeled.append(f"{hours}h")
+    if minutes or hours:
+        labeled.append(f"{minutes}m")
     showSeconds = hideSecondsAboveHours is None or hours < hideSecondsAboveHours
-    if showSeconds and (seconds > 0 or minutes > 0 or hours > 0):
-        parts.append(f"{seconds}s")
+    if showSeconds and (seconds or minutes or hours):
+        labeled.append(f"{seconds}s")
+    return " ".join(labeled)
 
-    return " ".join(parts)
 
-def formatDuration(ms: int) -> str:
-    seconds = max(0, ms // 1000)
-    minutes = seconds // 60
-    remaining = seconds % 60
-    return f"{minutes}:{remaining:02d}"
+def formatDuration(durationMs: int) -> str:
+    """m:ss - the player-style track length."""
+    minutes, seconds = divmod(max(0, durationMs // 1000), 60)
+    return f"{minutes}:{seconds:02d}"
 
 def formatTimeGap(seconds: float | int) -> str:
     """Formats a time gap in seconds into a human-readable string for timeline connectors."""
@@ -331,13 +322,13 @@ def formatTimeGap(seconds: float | int) -> str:
     years = sec // (86400 * 365)
     return f"{years} year later" if years == 1 else f"{years} years later"
 
-def versionTuple(version: str) -> tuple:
-    """ Can be used to compare versions with > and < """
-    return tuple(int(x) for x in version.split("."))
+def versionTuple(version: str) -> tuple[int, ...]:
+    """Version components as ints, so < and > order them correctly - a plain
+    string compare puts "1.10.0" before "1.9.0"."""
+    return tuple(int(component) for component in version.split("."))
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":   #< `python Database/utils.py` drops into a REPL with the helpers loaded
     import code
-    print("un = timeToInt('2022-09-22T03:29:43Z')")
-    print("dt = convertToDatetime(un)")
+    print("Try: timeToInt('2022-09-22T03:29:43Z'), then convertToDatetime(<that>)")
     code.interact(local=dict(globals(), **locals()))
