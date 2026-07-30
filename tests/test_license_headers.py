@@ -55,8 +55,15 @@ SHALLOW_CHECKOUT_HINT = (
 
 
 def _git(*args):
-    return subprocess.run(("git", *args), cwd=REPO_ROOT, capture_output=True,
-                          text=True, errors="replace").stdout
+    """stdout of a git command, or a loud RuntimeError. Returning "" on
+    failure would make every blame-derived count read as 0 - which is now the
+    EXPECTED value everywhere, so the failure would be invisible."""
+    result = subprocess.run(("git", *args), cwd=REPO_ROOT, capture_output=True,
+                            text=True, errors="replace")
+    if result.returncode != 0:
+        raise RuntimeError(f"git {' '.join(args)} failed ({result.returncode}): "
+                           f"{result.stderr.strip()}")
+    return result.stdout
 
 
 def inScopeFiles():
@@ -74,15 +81,18 @@ def repoIsShallow():
     return _git("rev-parse", "--is-shallow-repository").strip() == "true"
 
 
-def _upstreamLineCount(path):
-    """How many of this file's current lines git blames on the upstream author.
+def _countUpstreamLines(blame):
+    """Upstream-authored content lines in `git blame --line-porcelain` output.
 
     Whitespace-only lines are excluded: a blank line carries no copyrightable
     expression, so it cannot be an "upstream MIT line" in any sense the notice
     exists for - and git's diff freely re-anchors blanks as unchanged context,
     so counting them would demand pure churn commits to flip lines that say
-    nothing."""
-    blame = _git("blame", "--line-porcelain", "--", path)
+    nothing.
+
+    Split from the subprocess call so the parsing has a positive control
+    (TestUpstreamCountingItself): with every real count expected to be 0, only
+    synthetic input can prove the counting still works at all."""
     count = 0
     author = None
     for line in blame.splitlines():
@@ -93,6 +103,11 @@ def _upstreamLineCount(path):
                 count += 1
             author = None
     return count
+
+
+def _upstreamLineCount(path):
+    """How many of this file's current lines git blames on the upstream author."""
+    return _countUpstreamLines(_git("blame", "--line-porcelain", "--", path))
 
 
 def _head(path, lines=MAX_HEADER_LINES):
@@ -119,6 +134,44 @@ class TestScopeItself(unittest.TestCase):
         suffixes = {Path(f).suffix for f in inScopeFiles()}
 
         self.assertEqual(suffixes, {".py", ".js", ".html", ".css"})
+
+
+class TestUpstreamCountingItself(unittest.TestCase):
+    """Positive control for the blame check. The expected upstream count is
+    now 0 for EVERY file, so a parser that silently broke (a porcelain format
+    change, git erroring out) would produce the same all-zero answer as the
+    real invariant - the quietest way to lose the guard. These pin the parser
+    on synthetic porcelain where the right answer is NOT zero."""
+
+    SYNTHETIC_BLAME = (
+        "abc123 1 1 1\n"
+        f"author {UPSTREAM_AUTHOR}\n"
+        "author-mail <upstream@example.com>\n"
+        "\tupstream content line\n"
+        "abc123 2 2 1\n"
+        f"author {UPSTREAM_AUTHOR}\n"
+        "\t   \n"                        #< whitespace-only: carries no expression, not counted
+        "def456 3 3 1\n"
+        "author i7Gamer\n"
+        "\tour line\n"
+        "abc123 4 4 1\n"
+        f"author {UPSTREAM_AUTHOR}\n"
+        "\tsecond upstream line\n"
+    )
+
+    def test_upstream_lines_are_counted(self):
+        self.assertEqual(_countUpstreamLines(self.SYNTHETIC_BLAME), 2)
+
+    def test_empty_blame_counts_zero(self):
+        """The failure mode this class exists for: empty input must be
+        distinguishable from 'checked and clean' - which is why _git raises on
+        a failed command instead of returning '' (tested below) and this
+        parser is pinned on nonzero input above."""
+        self.assertEqual(_countUpstreamLines(""), 0)
+
+    def test_a_failed_git_command_raises_instead_of_returning_empty(self):
+        with self.assertRaises(RuntimeError):
+            _git("blame", "--line-porcelain", "--", "no/such/file.py")
 
 
 class TestShallowCheckoutGuard(unittest.TestCase):
