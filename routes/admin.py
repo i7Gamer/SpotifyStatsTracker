@@ -34,6 +34,7 @@ from Database.repository import (
 )
 from Database.backup import DEFAULT_BACKUP_INTERVAL_HOURS, DEFAULT_BACKUP_RETENTION_COUNT
 from Database.rate_limit import SPOTIFY_LIMITER
+from Database.patches import totpAuthSnapshot
 from Database.utils import convertToDatetime
 from services.email_service import (
     get_smtp_config, save_smtp_config, send_test_email,
@@ -313,6 +314,12 @@ def register(app, dashboard):
         # worse?" was to grep app.log.
         spotify_rate_limit = SPOTIFY_LIMITER.snapshot()
 
+        # Spotify rotates the TOTP secret the web player authenticates with, and
+        # this build pins it (see Database/patches.py). A rotation takes every
+        # user's session down at once and its only other trace is a log line, so
+        # it belongs on the panel someone actually opens when "nothing works".
+        spotify_totp = totpAuthSnapshot()
+
         skip_mode, skip_value = dashboard.repo.getSkipThreshold()
         restart_enabled = os.environ.get(ALLOW_INSTANCE_RESTART_ENV_VAR, "").lower() in TRUTHY_ENV_VALUES
 
@@ -369,6 +376,7 @@ def register(app, dashboard):
             dangling_row_total=dangling_row_total,
             listener_summary=listener_summary,
             spotify_rate_limit=spotify_rate_limit,
+            spotify_totp=spotify_totp,
             spotify_api_worker_summary=spotify_api_worker_summary,
             lastfm_worker_summary=lastfm_worker_summary,
             lastfm_album_bio_worker_summary=lastfm_album_bio_worker_summary,

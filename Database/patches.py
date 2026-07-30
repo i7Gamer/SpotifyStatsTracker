@@ -630,6 +630,66 @@ SPOTIFY_TOTP_SECRET_BYTES = (
 TOTP_SECRET_ENV_VAR = "SPOTIFY_TOTP_SECRET"
 TOTP_SECRET_BYTE_MAX = 255   #< a secret byte is a byte; anything else is a typo, not a rotation
 
+# How many token requests must fail in a row before the admin panel calls it a
+# rotation. A rotation is total and instance-wide - confirmed empirically on
+# 2026-07-30 by running the smoke test against a deliberately wrong secret:
+# every public lookup failed with "Could not get session auth tokens", whereas
+# a bad-cookies run left them all passing and failed only current_user(). But a
+# 429, a Spotify outage or a network blip raise the same exception, so a single
+# failure proves nothing. Same "don't believe it until it repeats" shape as
+# SCOPE_ERROR_CONFIRM_THRESHOLD in the listener.
+TOTP_ROTATION_CONFIRM_THRESHOLD = 3
+
+_totpAuthLock = threading.Lock()
+_totpConsecutiveFailures = 0
+_totpFirstFailureAt = None   #< monotonic; "how long has this been going on"
+
+
+def recordTotpAuthFailure() -> int:
+    """Count a failed session-token request. Returns the new streak length."""
+    global _totpConsecutiveFailures, _totpFirstFailureAt
+    with _totpAuthLock:
+        if _totpConsecutiveFailures == 0:
+            _totpFirstFailureAt = time.monotonic()
+        _totpConsecutiveFailures += 1
+        return _totpConsecutiveFailures
+
+
+def recordTotpAuthSuccess() -> None:
+    """Clear the streak. Whatever it was, it is over - and a stale alarm on the
+    admin panel is worse than no alarm, because it trains people to ignore it."""
+    global _totpConsecutiveFailures, _totpFirstFailureAt
+    with _totpAuthLock:
+        _totpConsecutiveFailures = 0
+        _totpFirstFailureAt = None
+
+
+def resetTotpAuthState() -> None:
+    """Test seam - the counter is process-global, so tests must not inherit
+    each other's streaks."""
+    recordTotpAuthSuccess()
+
+
+def totpAuthSnapshot() -> dict:
+    """What /admin shows for the pinned TOTP secret.
+
+    Deliberately answers "what now?" as well as "what is wrong": which version
+    is actually in force (which is NOT the pinned one when an override is set),
+    and the name of the variable to set."""
+    activeVersion, _ = _resolveTotpSecret()
+    with _totpAuthLock:
+        failures = _totpConsecutiveFailures
+        firstAt = _totpFirstFailureAt
+    return {
+        "pinnedVersion": SPOTIFY_TOTP_SECRET_VERSION,
+        "activeVersion": activeVersion,
+        "overrideActive": activeVersion != SPOTIFY_TOTP_SECRET_VERSION,
+        "overrideEnvVar": TOTP_SECRET_ENV_VAR,
+        "consecutiveFailures": failures,
+        "suspectedRotation": failures >= TOTP_ROTATION_CONFIRM_THRESHOLD,
+        "secondsSinceFirstFailure": None if firstAt is None else time.monotonic() - firstAt,
+    }
+
 
 def _parseTotpSecretOverride(raw: str):
     """A "<version>:<b1,b2,...>" override string as (version, bytearray), or a
@@ -681,24 +741,42 @@ def patch_totp_secret() -> bool:
 
     spotapi.client.get_latest_totp_secret = _resolveTotpSecret
 
+    # Idempotent on purpose: this runs at import AND is re-applied deliberately
+    # by tests whose import order may have missed it (see setUpModule in
+    # tests/test_patches.py). Without the guard the second application wraps
+    # the first, so one failed request would count twice and trip the rotation
+    # threshold early. The other patches in this module get this for free by
+    # capturing their originals at module scope.
+    if getattr(spotapi.client.BaseClient._get_auth_vars, "_totpTracked", False):
+        return True
+
     original_get_auth_vars = spotapi.client.BaseClient._get_auth_vars
 
     def patched_get_auth_vars(self, *args, **kwargs):
         try:
-            return original_get_auth_vars(self, *args, **kwargs)
+            result = original_get_auth_vars(self, *args, **kwargs)
         except spotapi.exceptions.BaseClientError:
-            # The one failure this patch can plausibly cause, and the message
-            # spotapi raises mentions neither TOTP nor these constants - so the
-            # pin would be undiscoverable from the symptom it produces.
-            logger.error(
-                "Spotify refused the session token request. If this is persistent for "
-                "every user, Spotify has most likely rotated its TOTP secret: this build "
-                'pins version %s (SPOTIFY_TOTP_SECRET_VERSION in Database/patches.py). '
-                'Set %s="<version>:<comma-separated bytes>" and restart to apply a new '
-                "one without waiting for a release.",
-                SPOTIFY_TOTP_SECRET_VERSION, TOTP_SECRET_ENV_VAR)
+            failures = recordTotpAuthFailure()
+            # The message spotapi raises names neither TOTP nor these
+            # constants, so the pin would be undiscoverable from the symptom it
+            # produces. Logged at the confirmation threshold and then every
+            # further multiple of it: an instance in this state retries
+            # constantly, and one line per attempt would bury the incident it
+            # is reporting.
+            if failures % TOTP_ROTATION_CONFIRM_THRESHOLD == 0:
+                logger.error(
+                    "Spotify has refused the session token request %d times in a row. "
+                    "That is instance-wide, so the most likely cause is a rotated TOTP "
+                    "secret: this build pins version %s (SPOTIFY_TOTP_SECRET_VERSION in "
+                    'Database/patches.py). Set %s="<version>:<comma-separated bytes>" and '
+                    "restart to apply a new one without waiting for a release. See the "
+                    "Worker Health panel on /admin.",
+                    failures, SPOTIFY_TOTP_SECRET_VERSION, TOTP_SECRET_ENV_VAR)
             raise
+        recordTotpAuthSuccess()
+        return result
 
+    patched_get_auth_vars._totpTracked = True
     spotapi.client.BaseClient._get_auth_vars = patched_get_auth_vars
     return True
 

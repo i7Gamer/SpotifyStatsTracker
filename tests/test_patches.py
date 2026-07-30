@@ -1141,11 +1141,142 @@ class TestTotpSecretOverride(unittest.TestCase):
         self.assertEqual(version, SPOTIFY_TOTP_SECRET_VERSION)
 
 
+class TestTotpRotationTracking(unittest.TestCase):
+    """A rotated secret is invisible in the logs until someone greps for it,
+    and its signature is distinctive: EVERY token request fails, for every
+    user, persistently. Confirmed empirically (2026-07-30) by running the
+    smoke test with a deliberately wrong secret - the public lookups, which
+    need the TOTP-derived token but no user cookies, all failed with
+    "Could not get session auth tokens", while a bad-cookies run left them
+    passing and failed only current_user(). One failure is not that, though:
+    a 429, an outage or a blip produce the same exception, so the state only
+    flips after a run of them."""
+
+    def setUp(self):
+        from Database.patches import resetTotpAuthState
+        resetTotpAuthState()
+        self.addCleanup(resetTotpAuthState)
+
+    def _fail(self, times):
+        from Database.patches import recordTotpAuthFailure
+        for _ in range(times):
+            recordTotpAuthFailure()
+
+    def test_a_healthy_instance_reports_ok(self):
+        from Database.patches import totpAuthSnapshot
+
+        snapshot = totpAuthSnapshot()
+
+        self.assertFalse(snapshot["suspectedRotation"])
+        self.assertEqual(snapshot["consecutiveFailures"], 0)
+        self.assertEqual(snapshot["pinnedVersion"], 61)
+
+    def test_a_single_failure_is_not_a_rotation(self):
+        """Blips must not raise an alarm that sends someone editing secrets."""
+        from Database.patches import totpAuthSnapshot
+
+        self._fail(1)
+
+        self.assertFalse(totpAuthSnapshot()["suspectedRotation"])
+
+    def test_a_sustained_run_of_failures_is(self):
+        from Database.patches import totpAuthSnapshot, TOTP_ROTATION_CONFIRM_THRESHOLD
+
+        self._fail(TOTP_ROTATION_CONFIRM_THRESHOLD)
+
+        snapshot = totpAuthSnapshot()
+        self.assertTrue(snapshot["suspectedRotation"])
+        self.assertEqual(snapshot["consecutiveFailures"], TOTP_ROTATION_CONFIRM_THRESHOLD)
+        self.assertIsNotNone(snapshot["secondsSinceFirstFailure"])
+
+    def test_one_success_clears_it(self):
+        """Whatever it was, it is over - a stale alarm is worse than none."""
+        from Database.patches import recordTotpAuthSuccess, totpAuthSnapshot, TOTP_ROTATION_CONFIRM_THRESHOLD
+
+        self._fail(TOTP_ROTATION_CONFIRM_THRESHOLD)
+        recordTotpAuthSuccess()
+
+        snapshot = totpAuthSnapshot()
+        self.assertFalse(snapshot["suspectedRotation"])
+        self.assertEqual(snapshot["consecutiveFailures"], 0)
+
+    def test_the_snapshot_names_what_an_operator_needs(self):
+        """The panel has to answer "what now?" without a trip to the source."""
+        from Database.patches import totpAuthSnapshot, TOTP_SECRET_ENV_VAR
+
+        snapshot = totpAuthSnapshot()
+
+        self.assertEqual(snapshot["overrideEnvVar"], TOTP_SECRET_ENV_VAR)
+        self.assertIn("overrideActive", snapshot)
+
+    def test_it_reports_when_an_override_is_in_force(self):
+        """A fetched/overridden secret must not look like the pinned one -
+        otherwise "we pin 61" is a lie the panel tells you during an incident."""
+        from Database.patches import totpAuthSnapshot, TOTP_SECRET_ENV_VAR
+
+        with patch.dict("os.environ", {TOTP_SECRET_ENV_VAR: "62:1,2,3"}):
+            snapshot = totpAuthSnapshot()
+
+        self.assertTrue(snapshot["overrideActive"])
+        self.assertEqual(snapshot["activeVersion"], 62)
+
+    def test_reapplying_the_patch_does_not_double_count(self):
+        """patch_totp_secret runs at import and is re-applied by setUpModule
+        when import order may have missed it. A non-idempotent wrapper would
+        nest, so a single failed request would count twice and trip the
+        rotation threshold on a third of the evidence it is supposed to need."""
+        import spotapi.client
+        from spotapi.exceptions import BaseClientError
+        from Database.patches import patch_totp_secret, totpAuthSnapshot
+
+        patch_totp_secret()
+        patch_totp_secret()
+
+        instance = spotapi.client.BaseClient.__new__(spotapi.client.BaseClient)
+        instance.access_token = spotapi.client._Undefined
+        instance.client_id = spotapi.client._Undefined
+        failure = MagicMock()
+        failure.fail = True
+        failure.error.string = "400 Bad Request"
+        instance.client = MagicMock()
+        instance.client.get.return_value = failure
+
+        with self.assertRaises(BaseClientError):
+            spotapi.client.BaseClient._get_auth_vars(instance)
+
+        self.assertEqual(totpAuthSnapshot()["consecutiveFailures"], 1)
+
+    def test_the_patched_call_feeds_the_tracker(self):
+        """The counter is worthless if the real code path doesn't drive it."""
+        import spotapi.client
+        from spotapi.exceptions import BaseClientError
+        from Database.patches import totpAuthSnapshot
+
+        instance = spotapi.client.BaseClient.__new__(spotapi.client.BaseClient)
+        instance.access_token = spotapi.client._Undefined
+        instance.client_id = spotapi.client._Undefined
+        failure = MagicMock()
+        failure.fail = True
+        failure.error.string = "400 Bad Request"
+        instance.client = MagicMock()
+        instance.client.get.return_value = failure
+
+        with self.assertRaises(BaseClientError):
+            spotapi.client.BaseClient._get_auth_vars(instance)
+
+        self.assertEqual(totpAuthSnapshot()["consecutiveFailures"], 1)
+
+
 class TestAuthFailureHint(unittest.TestCase):
     """When Spotify rotates the secret, the only symptom is
     BaseClientError("Could not get session auth tokens") from a module nobody
     here owns - a message that names neither TOTP nor the pinned constant.
     Without a hint, the pin is undiscoverable from the failure it causes."""
+
+    def setUp(self):
+        from Database.patches import resetTotpAuthState
+        resetTotpAuthState()   #< the failure streak is process-global
+        self.addCleanup(resetTotpAuthState)
 
     def _failingClient(self):
         import spotapi.client
@@ -1159,14 +1290,21 @@ class TestAuthFailureHint(unittest.TestCase):
         instance.client.get.return_value = failure
         return instance
 
-    def test_a_token_failure_points_at_the_pinned_secret(self):
+    def test_a_sustained_token_failure_points_at_the_pinned_secret(self):
+        """Reported once the streak confirms it, not per attempt: an instance
+        in this state retries constantly, and a line per attempt would bury
+        the incident it is reporting."""
         import spotapi.client
         from spotapi.exceptions import BaseClientError
+        from Database.patches import TOTP_ROTATION_CONFIRM_THRESHOLD
 
+        client = self._failingClient()
         with self.assertLogs("Database.patches", level="ERROR") as logCapture:
-            with self.assertRaises(BaseClientError):
-                spotapi.client.BaseClient._get_auth_vars(self._failingClient())
+            for _ in range(TOTP_ROTATION_CONFIRM_THRESHOLD):
+                with self.assertRaises(BaseClientError):
+                    spotapi.client.BaseClient._get_auth_vars(client)
 
+        self.assertEqual(len(logCapture.records), 1, "one line per confirmed streak, not per attempt")
         message = " ".join(logCapture.output)
         self.assertIn("SPOTIFY_TOTP_SECRET", message)   #< the env override an operator can set
         self.assertIn("61", message)                    #< the version currently pinned

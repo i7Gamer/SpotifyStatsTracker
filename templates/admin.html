@@ -235,6 +235,39 @@
           {% endif %}
         </div>
 
+        <p class="admin-worker-label">Spotify Session Token</p>
+        <div class="admin-worker-row">
+          {% if spotify_totp %}
+            {% if spotify_totp.suspectedRotation %}
+              {# Instance-wide and persistent - see TOTP_ROTATION_CONFIRM_THRESHOLD #}
+              <span class="badge badge-danger">TOTP SECRET LIKELY ROTATED</span>
+              <span class="badge badge-danger">{{ spotify_totp.consecutiveFailures }} FAILURES IN A ROW</span>
+              {% if spotify_totp.secondsSinceFirstFailure is not none %}
+                <span class="badge badge-secondary">SINCE {{ (spotify_totp.secondsSinceFirstFailure / 60) | round | int }} MIN AGO</span>
+              {% endif %}
+            {% elif spotify_totp.consecutiveFailures %}
+              <span class="badge badge-orange">TOKEN FAILURES: {{ spotify_totp.consecutiveFailures }}</span>
+            {% else %}
+              <span class="badge badge-success">OK</span>
+            {% endif %}
+            <span class="badge badge-secondary">VERSION: {{ spotify_totp.activeVersion }}</span>
+            {% if spotify_totp.overrideActive %}
+              <span class="badge badge-warning">OVERRIDDEN VIA {{ spotify_totp.overrideEnvVar }}</span>
+            {% endif %}
+          {% else %}
+            <span class="badge badge-secondary">UNAVAILABLE</span>
+          {% endif %}
+        </div>
+        {% if spotify_totp and spotify_totp.suspectedRotation %}
+        <p class="admin-worker-note">
+          Every user's Spotify session fails at once when this happens. Set
+          <code>{{ spotify_totp.overrideEnvVar }}="&lt;version&gt;:&lt;comma-separated bytes&gt;"</code>
+          and restart to recover without waiting for a release. Run
+          <code>python -m Database.Spotify.smoketest &lt;sessionFile&gt;</code> to confirm:
+          if the public lookups fail too, it is the secret rather than anyone's cookies.
+        </p>
+        {% endif %}
+
         <p class="admin-worker-label">Spotify API Backfill Workers</p>
         <div class="admin-worker-row">
           <span class="badge badge-success">RUNNING: {{ spotify_api_worker_summary.running }}</span>

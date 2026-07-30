@@ -1370,6 +1370,60 @@ class TestAdminInsightsLayout(AdminRouteTestBase):
             self.assertIn("Spotify Rate Limiting", body)
             self.assertIn("UNAVAILABLE", body)
 
+    _HEALTHY_TOTP = {
+        "pinnedVersion": 61, "activeVersion": 61, "overrideActive": False,
+        "overrideEnvVar": "SPOTIFY_TOTP_SECRET", "consecutiveFailures": 0,
+        "suspectedRotation": False, "secondsSinceFirstFailure": None,
+    }
+
+    def _totpBody(self, **overrides):
+        snapshot = {**self._HEALTHY_TOTP, **overrides}
+        with patch("routes.admin.totpAuthSnapshot", return_value=snapshot):
+            return self._getAdmin(self._makeApp()).data.decode()
+
+    def test_spotify_session_token_reports_ok_when_healthy(self):
+        body = self._totpBody()
+
+        self.assertIn("Spotify Session Token", body)
+        self.assertIn("VERSION: 61", body)
+        #< no recovery instructions while nothing is wrong
+        self.assertNotIn("TOTP SECRET LIKELY ROTATED", body)
+
+    def test_a_confirmed_rotation_is_called_out_with_how_to_recover(self):
+        """The panel has to answer "what now?" - an operator seeing only a red
+        badge still has to go find the env var name in the source."""
+        body = self._totpBody(consecutiveFailures=7, suspectedRotation=True,
+                              secondsSinceFirstFailure=300)
+
+        self.assertIn("TOTP SECRET LIKELY ROTATED", body)
+        self.assertIn("7 FAILURES IN A ROW", body)
+        self.assertIn("SINCE 5 MIN AGO", body)
+        self.assertIn("SPOTIFY_TOTP_SECRET", body)
+        self.assertIn("smoketest", body)   #< how to confirm it's the secret, not cookies
+
+    def test_a_short_failure_streak_is_reported_without_crying_rotation(self):
+        """Below the threshold it's a blip - visible, but not an alarm that
+        sends someone editing secrets."""
+        body = self._totpBody(consecutiveFailures=1)
+
+        self.assertIn("TOKEN FAILURES: 1", body)
+        self.assertNotIn("TOTP SECRET LIKELY ROTATED", body)
+
+    def test_an_active_override_is_never_hidden(self):
+        """"We pin 61" would be a lie during an incident where someone already
+        applied a different secret."""
+        body = self._totpBody(activeVersion=62, overrideActive=True)
+
+        self.assertIn("VERSION: 62", body)
+        self.assertIn("OVERRIDDEN VIA SPOTIFY_TOTP_SECRET", body)
+
+    def test_spotify_session_token_handles_none_gracefully(self):
+        with patch("routes.admin.totpAuthSnapshot", return_value=None):
+            body = self._getAdmin(self._makeApp()).data.decode()
+
+        self.assertIn("Spotify Session Token", body)
+        self.assertIn("UNAVAILABLE", body)
+
     def test_skip_value_input_has_aria_label(self):
         dash = self._makeApp()
         resp = self._getAdmin(dash, isAdmin=True, path="/admin?tab=settings")
