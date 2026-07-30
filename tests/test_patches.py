@@ -1440,6 +1440,36 @@ class TestTotpAutoRecovery(unittest.TestCase):
 
         fetch.assert_not_called()
 
+    def test_a_malformed_override_does_not_report_as_active(self):
+        """_resolveTotpSecret IGNORES a malformed override (a typo must not
+        take login offline), so the snapshot saying OVERRIDDEN for one is a
+        lie with a cost: it also suppresses the autoRecovered flag, whose
+        admin-panel note is the only prompt to pin an adopted secret before a
+        restart loses it. The operator trusts their (dead) override and never
+        pins."""
+        from Database.patches import attemptTotpRecovery, totpAuthSnapshot, TOTP_SECRET_ENV_VAR
+
+        with self._fetches([(62, bytearray([1, 2, 3]))]):
+            with self.assertLogs("Database.patches", level="WARNING"):
+                attemptTotpRecovery()
+
+        with patch.dict("os.environ", {TOTP_SECRET_ENV_VAR: "62:44,55,notabyte"}):
+            snapshot = totpAuthSnapshot()
+
+        self.assertFalse(snapshot["overrideActive"])
+        self.assertTrue(snapshot["autoRecovered"])
+        self.assertEqual(snapshot["activeVersion"], 62)   #< what is actually in force
+
+    def test_a_wellformed_override_reports_as_active(self):
+        from Database.patches import totpAuthSnapshot, TOTP_SECRET_ENV_VAR
+
+        with patch.dict("os.environ", {TOTP_SECRET_ENV_VAR: "70:7,7,7"}):
+            snapshot = totpAuthSnapshot()
+
+        self.assertTrue(snapshot["overrideActive"])
+        self.assertFalse(snapshot["autoRecovered"])
+        self.assertEqual(snapshot["activeVersion"], 70)
+
     def test_the_admin_snapshot_reports_an_adopted_secret(self):
         """"We pin 61" must not be what the panel says while running on 62."""
         from Database.patches import attemptTotpRecovery, totpAuthSnapshot

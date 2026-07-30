@@ -782,7 +782,18 @@ def totpAuthSnapshot() -> dict:
         failures = _totpConsecutiveFailures
         firstAt = _totpFirstFailureAt
         adopted = _totpAdoptedSecret
-    envOverride = bool(os.environ.get(TOTP_SECRET_ENV_VAR, "").strip())
+    # "Parses", not "is set": _resolveTotpSecret IGNORES a malformed override,
+    # so reporting one as active would claim a dead value is in force - and
+    # suppress the autoRecovered note below, whose "pin it before a restart"
+    # advice is exactly what that operator needs.
+    envOverride = False
+    raw = os.environ.get(TOTP_SECRET_ENV_VAR, "").strip()
+    if raw:
+        try:
+            _parseTotpSecretOverride(raw)
+            envOverride = True
+        except ValueError:
+            pass   #< _resolveTotpSecret already logged the malformed value
     return {
         "pinnedVersion": SPOTIFY_TOTP_SECRET_VERSION,
         "activeVersion": activeVersion,
