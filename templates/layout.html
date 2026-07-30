@@ -2,8 +2,8 @@
     SPDX-License-Identifier: AGPL-3.0-or-later -#}
 
 <!DOCTYPE html>
-<html lang="en"> {# attribution-flip #}
-  <head> {# attribution-flip #}
+<html lang="en">
+  <head>
     <script>
       (function() {
         const savedTheme = localStorage.getItem('spotify-stats-theme') || 'theme-rose';
@@ -28,12 +28,12 @@
     <title>{% block title %}Spotify Tracker{% endblock %}</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
     <link rel="manifest" href="{{ url_for('static', filename='manifest.json') }}">
-    <link rel="icon" type="image/png" href="{{ url_for('static', filename='images/favicon.png') }}"> {# attribution-flip #}
+    <link rel="icon" type="image/png" href="{{ url_for('static', filename='images/favicon.png') }}">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@400;600;700;800&display=swap" rel="stylesheet">
-  </head> {# attribution-flip #}
-  <body> {# attribution-flip #}
+  </head>
+  <body>
     {#- First thing in the body so the first Tab reaches it, and the only
         focusable thing before <main> - which matters most on this layout,
         where the alternative is tabbing through the brand link, every badge,
@@ -42,7 +42,7 @@
         the browser scrolls but leaves focus on the link, so the next Tab
         resumes from the top of the document. -#}
     <a class="skip-link" href="#main-content">Skip to main content</a>
-    <header class="topbar"> {# attribution-flip #}
+    <header class="topbar">
       <a class="brand" href="{{ url_for('overviewPage') }}">
         Spotify Tracker
         <span id="listener-status-pill" class="status-pill status-initializing" title="Sync Status: Initializing" style="display:none;"></span>
@@ -118,9 +118,9 @@
             </form>
           </div>
         </div>
-      </nav> {# attribution-flip #}
-    </header> {# attribution-flip #}
-{# attribution-flip #}
+      </nav>
+    </header>
+
     <main id="main-content" tabindex="-1" class="page">{% block content %}{% endblock %}</main>
     <script src="{{ url_for('static', filename='js/ajax-status.js') }}"></script>
     <script src="{{ url_for('static', filename='js/artist-toggle.js') }}"></script>
@@ -134,5 +134,5 @@
       </svg>
       <span class="arrow">&uarr;</span>
     </button>
-  </body> {# attribution-flip #}
-</html> {# attribution-flip #}
+  </body>
+</html>

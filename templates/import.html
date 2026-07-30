@@ -1,21 +1,21 @@
 {#- SPDX-FileCopyrightText: 2026 i7Gamer
     SPDX-License-Identifier: AGPL-3.0-or-later -#}
 
-{% extends "layout.html" %} {# attribution-flip #}
+{% extends "layout.html" %}
 {% block title %}Import &amp; Export - {{ super() }}{% endblock %}
-{% block content %} {# attribution-flip #}
-  <section class="hero"> {# attribution-flip #}
-    <div class="hero-content"> {# attribution-flip #}
+{% block content %}
+  <section class="hero">
+    <div class="hero-content">
       <h1>Import &amp; Export Streaming History</h1>
       <p>Upload your Spotify export file and let the app import your listening history with progress tracking. To request your data, visit your <a href="https://www.spotify.com/ch-de/account/privacy/" target="_blank" rel="noreferrer noopener">Spotify privacy settings</a>.</p>
-    </div> {# attribution-flip #}
-  </section> {# attribution-flip #}
-{# attribution-flip #}
-  <section class="card import-card"> {# attribution-flip #}
+    </div>
+  </section>
+
+  <section class="card import-card">
     {% if uploadTooLarge %}
       <p class="error">That upload is too large (max {{ maxUploadMb }} MB total per request). Try uploading fewer files at once.</p>
     {% endif %}
-    <form id="import-form" action="{{ url_for('importHistory') }}" method="post" enctype="multipart/form-data"> {# attribution-flip #}
+    <form id="import-form" action="{{ url_for('importHistory') }}" method="post" enctype="multipart/form-data">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
       <label for="history_file">Spotify history JSON file(s)</label>
       <div class="import-input-wrapper">
@@ -33,25 +33,25 @@
         (e.g. wrong offline-play timestamps). Years no uploaded file covers are left untouched, but upload your
         complete export to be safe. Cannot be undone.</p>
       <button type="submit" class="primary-button">Start Import</button>
-    </form> {# attribution-flip #}
-{# attribution-flip #}
-    <div id="import-status" class="import-status"> {# attribution-flip #}
-      <p id="progress-message"> {# attribution-flip #}
+    </form>
+
+    <div id="import-status" class="import-status">
+      <p id="progress-message">
         {# import-progress.js keeps this text current while a run is live #}
-        {% if importProgress.status == 'running' %} {# attribution-flip #}
-          Import in progress: {{ importProgress.percentage }}% — {{ importProgress.message }} {# attribution-flip #}
-        {% elif importProgress.status == 'complete' %} {# attribution-flip #}
-          Last import completed: {{ importProgress.message }} {# attribution-flip #}
-        {% elif importProgress.status == 'failed' %} {# attribution-flip #}
-          Import failed: {{ importProgress.message }} {# attribution-flip #}
-        {% else %} {# attribution-flip #}
+        {% if importProgress.status == 'running' %}
+          Import in progress: {{ importProgress.percentage }}% — {{ importProgress.message }}
+        {% elif importProgress.status == 'complete' %}
+          Last import completed: {{ importProgress.message }}
+        {% elif importProgress.status == 'failed' %}
+          Import failed: {{ importProgress.message }}
+        {% else %}
           Ready to import
-        {% endif %} {# attribution-flip #}
-      </p> {# attribution-flip #}
+        {% endif %}
+      </p>
       <progress id="progress-bar" value="{{ importProgress.percentage or 0 }}" max="100"></progress>
-    </div> {# attribution-flip #}
-  </section> {# attribution-flip #}
-{# attribution-flip #}
+    </div>
+  </section>
+
   {# The same history, going the other way - and the JSON format is the one the
      form above accepts, so the round trip belongs on one page. #}
   <section class="card import-card export-card">
@@ -69,13 +69,13 @@
     </div>
   </section>
 
-  <script> {# attribution-flip #}
+  <script>
     //< data island: the only values this page's script needs from the server.
     //  The logic itself lives in static/js/import-page.js so it is covered by
     //  the lint gate - on this page a ReferenceError would take out the
     //  confirmation dialog in front of a destructive overwrite.
     window.IMPORT_PROGRESS_URL = {{ url_for('importProgress') | tojson }};
     window.IMPORT_IS_RUNNING = {{ (importProgress.status == 'running') | tojson }};
-  </script> {# attribution-flip #}
+  </script>
   <script src="{{ url_for('static', filename='js/import-page.js') }}"></script>
-{% endblock %} {# attribution-flip #}
+{% endblock %}

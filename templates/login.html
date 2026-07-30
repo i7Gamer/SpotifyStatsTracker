@@ -1,35 +1,35 @@
 {#- SPDX-FileCopyrightText: 2026 i7Gamer
     SPDX-License-Identifier: AGPL-3.0-or-later -#}
 
-{% extends "layout.html" %} {# attribution-flip #}
+{% extends "layout.html" %}
 {% block title %}Log in - {{ super() }}{% endblock %}
-{% block content %} {# attribution-flip #}
-{# attribution-flip #}
+{% block content %}
+
 <div class="login-panel">
   <div class="login-card">
     <h1>Log in</h1>
     <p>Log in with your email and password to keep tracking your listening history.</p>
-{# attribution-flip #}
+
     {% if error %}
       <p class="error">{{ error }}</p>
     {% endif %}
-{# attribution-flip #}
+
     <form class="login-form" method="post" action="/login">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
       {% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
-{# attribution-flip #}
-      <div class="form-group"> {# attribution-flip #}
+
+      <div class="form-group">
         <label for="loginEmail">Email</label>
         <input type="email" id="loginEmail" name="email" value="{{ email or '' }}" required autofocus>
-      </div> {# attribution-flip #}
-{# attribution-flip #}
-      <div class="form-group"> {# attribution-flip #}
+      </div>
+
+      <div class="form-group">
         <label for="loginPassword">Password</label>
         <input type="password" id="loginPassword" name="password" required>
-      </div> {# attribution-flip #}
-{# attribution-flip #}
+      </div>
+
       <button type="submit" class="primary-button">Log in</button>
-    </form> {# attribution-flip #}
+    </form>
 
     <div class="auth-links">
       {% if registration_enabled %}
@@ -62,5 +62,5 @@
     </details>
   </div>
 </div>
-{# attribution-flip #}
-{% endblock %} {# attribution-flip #}
+
+{% endblock %}

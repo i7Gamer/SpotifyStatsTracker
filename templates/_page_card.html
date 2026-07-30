@@ -6,14 +6,14 @@
    updateFilters/updateTagFilter/updateFullPlaysFilter) live in
    static/js/top-list.js, which mutates the URL in place and re-fetches the
    list via ?ajax=true instead of a full page reload. #}
-<section class="filter-section"> {# attribution-flip #}
-<div class="filter-group filter-search"> {# attribution-flip #}
-    <label for="searchQuery">Search:</label> {# attribution-flip #}
+<section class="filter-section">
+<div class="filter-group filter-search">
+    <label for="searchQuery">Search:</label>
     <input type="search" id="searchQuery" class="auto-search-focus" name="q" value="{{ request.args.get('q', '') }}" placeholder="Search songs, artists, playlists" aria-label="Search the current page" onkeydown="handleSearchKeydown(event, updateSearchFilter)" onblur="handleSearchBlur(event, updateSearchFilter)">
-</div> {# attribution-flip #}
-{# attribution-flip #}
-<div class="filter-group"> {# attribution-flip #}
-    <label for="interval">Time Period:</label> {# attribution-flip #}
+</div>
+
+<div class="filter-group">
+    <label for="interval">Time Period:</label>
     <select name="interval" id="interval" onchange="updateIntervalFilter()">
     <option value="">All Time</option>{# the unfiltered default #}
     <option value="today" {% if interval == 'today' %}selected{% endif %}>Today</option>
@@ -23,26 +23,26 @@
     <option value="year" {{ 'selected' if interval == 'year' }}>Last Year</option>
     <option value="5years" {{ 'selected' if interval == '5years' }}>Last 5 Years</option>
     <option value="custom" {{ 'selected' if customStart and customEnd }}>Custom Date Range</option>
-    </select> {# attribution-flip #}
-</div> {# attribution-flip #}
-{# attribution-flip #}
-<div class="filter-group custom-dates" id="customDates" {% if not (customStart and customEnd) %}style="display: none;"{% endif %}> {# attribution-flip #}
-    <label for="startDate">From:</label> {# attribution-flip #}
+    </select>
+</div>
+
+<div class="filter-group custom-dates" id="customDates" {% if not (customStart and customEnd) %}style="display: none;"{% endif %}>
+    <label for="startDate">From:</label>
     <input type="date" id="startDate" name="startDate" value="{{ customStart }}" onchange="scheduleSearchFilter('startDate', updateDateFilter)">
-    <label for="endDate">To:</label> {# attribution-flip #}
+    <label for="endDate">To:</label>
     <input type="date" id="endDate" name="endDate" value="{{ customEnd }}" onchange="scheduleSearchFilter('endDate', updateDateFilter)">
     <span id="dateError" class="date-error" style="display: none; color: var(--accent);"></span>
-</div> {# attribution-flip #}
-{# attribution-flip #}
-<div class="filter-group"> {# attribution-flip #}
-    <label for="sortBy">Sort by:</label> {# attribution-flip #}
+</div>
+
+<div class="filter-group">
+    <label for="sortBy">Sort by:</label>
     <select name="sortBy" id="sortBy" onchange="updateFilters()">
     <option value="totalTimeListened" {{ 'selected' if sortBy == 'totalTimeListened' }}>Time Played</option>
     <option value="plays" {{ 'selected' if sortBy == 'plays' }}>Number of Plays</option>
     <option value="name" {{ 'selected' if sortBy == 'name' }}>Name (A-Z)</option>
     <option value="skips" {% if sortBy == 'skips' %}selected{% endif %}>Most Skipped</option>
-    </select> {# attribution-flip #}
-</div> {# attribution-flip #}
+    </select>
+</div>
 
 {% if tags_enabled and user_tags %}
 <div class="filter-group">
@@ -64,4 +64,4 @@
     </label>
 </div>
 {% endif %}
-</section> {# attribution-flip #}
+</section>

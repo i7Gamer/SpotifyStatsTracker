@@ -3,23 +3,23 @@
 
 import logging
 import math
-import os  # [attribution-flip]
-import json  # [attribution-flip]
+import os
+import json
 import random
 import secrets
 import tempfile
-import threading  # [attribution-flip]
-import requests  # [attribution-flip]
-from pathlib import Path  # [attribution-flip]
-import time  # [attribution-flip]
+import threading
+import requests
+from pathlib import Path
+import time
 from contextlib import suppress
 from datetime import timedelta, datetime, timezone
-# [attribution-flip]
+
 from flask import Flask, render_template, redirect, request, url_for, jsonify, send_from_directory, session, g, abort, Response, stream_with_context, make_response
 from flask_wtf.csrf import CSRFProtect
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import generate_password_hash, check_password_hash
-# [attribution-flip]
+
 from Database.database import Database
 from Database.backup import (
     BackupWorker, _envInt, BACKUP_INTERVAL_ENV_VAR, BACKUP_RETENTION_ENV_VAR,
@@ -28,11 +28,11 @@ from Database.backup import (
 from services.email_worker import EMAIL_WORKER
 from Database.db import SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON
 from Database.repository import Repository
-from Database.Migrators.migrate import migrateIfNeeded  # [attribution-flip]
+from Database.Migrators.migrate import migrateIfNeeded
 from Database.Listeners.spotifyListener import _suppress_signal_in_thread
 from Database.Spotify.recentlyPlayed import setPushListenerEnabledHook as patch_push_listener_hook
 from Database.logging_config import configureLogging
-from Database.utils import msToString, convertToDatetime, formatDuration, dateToString, versionTuple, now, startOfDay, parseDateString  # [attribution-flip]
+from Database.utils import msToString, convertToDatetime, formatDuration, dateToString, versionTuple, now, startOfDay, parseDateString
 # Genre-gate / coverage helpers live in services/genre_gate.py; re-exported here
 # so route code (and the test suite, which imports several by name) still reach
 # them through `app`.
@@ -65,7 +65,7 @@ from routes.system import register as registerSystemRoutes
 from routes.tags import register as registerTagsRoutes
 from Database.Spotify import Spotify
 from Database.Spotify.cookies import saveSession, parseCookieString
-# [attribution-flip]
+
 logger = logging.getLogger(__name__)
 
 # Instance-wide display/behavior constants live in config.py; imported * here so
@@ -156,10 +156,10 @@ from dashboard.user_registry import UserRegistryMixin
 
 class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, WrappedBuilderMixin,
                           CompareStatsMixin, UserRegistryMixin):
-    def __init__(self):  # [attribution-flip]
+    def __init__(self):
         configureLogging()
         migrateIfNeeded()   #< before anything opens the database
-        self.app = Flask(__name__)  # [attribution-flip]
+        self.app = Flask(__name__)
         # The genre-gate thresholds are quoted in templates (the locked-state
         # progress card) - exposed as globals so every include sees them
         # without each route re-passing them.
@@ -173,7 +173,7 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
             # X-Forwarded-* headers set by the reverse proxy in front of this
             # app - request.remote_addr is what the auth rate limiter keys on.
             self.app.wsgi_app = ProxyFix(self.app.wsgi_app, x_for=proxyHops, x_proto=proxyHops, x_host=proxyHops)
-        self.baseDir = Path(__file__).resolve().parent  # [attribution-flip]
+        self.baseDir = Path(__file__).resolve().parent
         self.app.secret_key = self._get_or_create_secret_key()
         self.app.permanent_session_lifetime = timedelta(days=30)
         # Session cookie hardening. HttpOnly (Flask's default) keeps JS off the
@@ -229,7 +229,7 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
             #< read once - the app cannot update without a restart
             self.currentVersion = (self.baseDir / "Database" / "VERSION").read_text(encoding="utf-8").strip()
         self.latestVersion = None   #< set by the version-check worker when a newer release exists
-        self._version_lock = threading.Lock()  # [attribution-flip]
+        self._version_lock = threading.Lock()
         self._stop_event = threading.Event()
         # Per-user {username: (totalPlays, totalMs)} from the last milestone
         # pass, so an idle background cycle skips the heavy streak/top-artist
@@ -256,9 +256,9 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
         # schedule from admin settings, and /admin's Worker Health panel reads
         # self.backupWorker) but deliberately NOT started - see startWorkers().
         self._workersStarted = False
-# [attribution-flip]
+
         self.registerRoutes()   #< all HTTP surface lives in routes/, registered here
-# [attribution-flip]
+
     def _get_or_create_secret_key(self):
         """Resolve the Flask session-signing key. Prefers FLASK_SECRET_KEY, otherwise
         persists a random key under secrets/ so sessions can't be forged using the
@@ -565,7 +565,7 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
                 self._detectMilestonesSafely(db, username)
             except Exception as e:
                 logger.error("Error initializing user %s: %s", username, e)
-# [attribution-flip]
+
     def _checkLoginLoop(self) -> None:
         # checkLogin_thread() already ran _ensureAllUsersLogin synchronously
         # before this thread started (listeners must come up immediately), so
@@ -577,10 +577,10 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
         while not self._stop_event.is_set():
             self._ensureAllUsersLogin()
             self._stop_event.wait(60 * 5)  # Check every 5 minutes
-# [attribution-flip]
+
     def startVersionCheck_thread(self) -> None:
         threading.Thread(target=self._versionCheckLoop, daemon=True).start()
-# [attribution-flip]
+
     def _versionCheckLoop(self) -> None:
         # Check the latest published GitHub Release - not just whatever
         # Database/VERSION says on main, which can be bumped ahead of what's
@@ -592,14 +592,14 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
                                                 VERSION_CHECK_MAX_START_DELAY_SECONDS)):
             return
         while not self._stop_event.is_set():
-            try:  # [attribution-flip]
+            try:
                 resp = requests.get(url, timeout=6, headers={"Accept": "application/vnd.github+json"})
                 if resp.status_code == 200:   #< a real published release to compare against
                     # Releases are tagged e.g. "1.31.0" (occasionally "v1.31.0").
                     remoteVersion = resp.json().get("tag_name", "").strip().lstrip("vV")
                     # Keep it only while it is strictly newer than what runs here.
-                    try:  # [attribution-flip]
-                        with self._version_lock:  # [attribution-flip]
+                    try:
+                        with self._version_lock:
                             isNewer = remoteVersion and versionTuple(remoteVersion) > versionTuple(self.currentVersion)
                             self.latestVersion = remoteVersion if isNewer else None
                     except Exception as e:
@@ -612,9 +612,9 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
                 # Transient (DNS/TLS/GitHub outage) - debug, not warning, so an
                 # offline instance doesn't spam its log every hour.
                 logger.debug("Version check request failed: %s", e)
-# [attribution-flip]
+
             self._stop_event.wait(60 * 60)
-# [attribution-flip]
+
     # Batched per-kind genre lookups for _attachGenres - one query per rendered
     # list, not per card (see resolveGenresForTracks' degrade-to-{} contract).
     _GENRE_RESOLVERS = {
@@ -888,7 +888,7 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
         registerSystemRoutes(self.app, self)
 
         registerMediaRoutes(self.app, self)
-# [attribution-flip]
+
         @self.app.errorhandler(413)
         def _uploadTooLarge(error):
             return redirect(url_for("importPage", error="upload_too_large"))
@@ -970,8 +970,8 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
             self.app.run(host="0.0.0.0", debug=debug, port=5444, use_reloader=False)#, threaded=False)
         finally:
             self.shutdown()
-# [attribution-flip]
 
-if __name__ == "__main__":  # [attribution-flip]
+
+if __name__ == "__main__":
     # Handy dev-shell settings:  $env:IMPORT_KEYWORD="Weekly"   $env:TZ="America/Los_Angeles"
     SpotifyDashboardApp().run()

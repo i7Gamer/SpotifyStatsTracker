@@ -82,32 +82,32 @@
     </a>
   {% endif %}
   </div>
-{# attribution-flip #}
-  <div class="track-details"> {# attribution-flip #}
-    <div class="track-details-top"> {# attribution-flip #}
-      <div class="track-header"> {# attribution-flip #}
+
+  <div class="track-details">
+    <div class="track-details-top">
+      <div class="track-header">
         {% set cardTitle = track.get('name') or '' %}
         {% if linkableId %}
           <a href="{{ detailUrl }}"><h3>{{ cardTitle }}</h3></a>
         {% elif externalUrl %}
           <a href="{{ externalUrl }}" target="_blank" rel="noreferrer noopener"><h3>{{ cardTitle }}</h3></a>
-        {% else %} {# attribution-flip #}
+        {% else %}
           <h3>{{ cardTitle }}</h3>
-        {% endif %} {# attribution-flip #}
-{# attribution-flip #}
+        {% endif %}
+
         {# Which stat lines a card shows depends on the page it sits on #}
-        {% if section == 'top_artists' %} {# attribution-flip #}
+        {% if section == 'top_artists' %}
           {% if track.get('plays') or track.get('uniqueSongCount') or cardSkipStats %}
-          <div class="track-meta small"> {# attribution-flip #}
+          <div class="track-meta small">
               {% if track.get('plays') or cardSkipStats %}
                 <div>{{ statLine(track, cardSkipStats) }}</div>
-              {% endif %} {# attribution-flip #}
+              {% endif %}
               {# the versus block below already shows both users' song counts #}
               {% if track.get('uniqueSongCount') and not track.get('compareData') %}
                 <div>{{ username if publicView else "You" }} played {{ track.get('uniqueSongCount') }} different songs by {{ cardTitle }}</div>
-              {% endif %} {# attribution-flip #}
-          </div> {# attribution-flip #}
-          {% endif %} {# attribution-flip #}
+              {% endif %}
+          </div>
+          {% endif %}
         {% elif section == 'top_albums' %}
           {% if track.get('plays') or track.get('uniqueSongCount') or cardSkipStats %}
           <div class="track-meta small">
@@ -121,13 +121,13 @@
               {% endif %}
           </div>
           {% endif %}
-        {% elif section == 'top_songs' %} {# attribution-flip #}
+        {% elif section == 'top_songs' %}
           <!-- Top Songs stats: plays, time, and (detail hero only) skips -->
           {% if track.get('plays') or track.get('totalTimeListenedText') or cardSkipStats %}
           <div class="track-meta small">{{ statLine(track, cardSkipStats) }}</div>
-          {% endif %} {# attribution-flip #}
-        {% endif %} {# attribution-flip #}
-{# attribution-flip #}
+          {% endif %}
+        {% endif %}
+
         {% if section == 'top_albums' %}
         <div class="track-meta">
           {% if track.get('artists') %}
@@ -151,12 +151,12 @@
             · {{ track.get('album').get('name') }}
           {% endif %}
         </div>
-        {% endif %} {# attribution-flip #}
-{# attribution-flip #}
+        {% endif %}
+
         {# Played-at line: only the play-history lists carry a per-play time #}
         {% if section in ('dashboard', 'history') and track.get('playedAtText') %}
           <div class="track-meta">Played at {{ track.get('playedAtText') }}</div>{# per-play, not per-track #}
-        {% endif %} {# attribution-flip #}
+        {% endif %}
 
         {# Compare page's Top Common Songs/Artists/Albums cards: both users'
            stats - led by each side's own plays-rank, the thing the list is
@@ -181,10 +181,10 @@
             </div>
           </div>
         {% endif %}
-      </div> {# attribution-flip #}
-{# attribution-flip #}
+      </div>
+
       {# Attribute chips - the section decides which details matter #}
-      <div class="track-attributes"> {# attribution-flip #}
+      <div class="track-attributes">
         {% if track.get('created_reason') == SYNTHETIC_FALLBACK_REASON %}
           <span class="track-label danger">Deleted/Unavailable on Spotify</span>
         {% elif track.get('availability_reason') or track.get('created_reason') == RESTRICTED_FALLBACK_REASON %}
@@ -217,7 +217,7 @@
           {% if track.get('contextName') %}
             <span class="track-label">Played from {{ track.get('contextName') }}</span>
           {% endif %}
-        {% elif section == 'top_songs' %} {# attribution-flip #}
+        {% elif section == 'top_songs' %}
           {% if track.get('firstListenedText') %}
             <span class="track-label">First Listened: {{ track.get('firstListenedText') }}</span>
           {% endif %}
@@ -231,7 +231,7 @@
           {% if track.get('isrc') %}
             <span class="track-label">ISRC: {{ track.get('isrc') }}</span>
           {% endif %}
-        {% elif section == 'top_artists' %} {# attribution-flip #}
+        {% elif section == 'top_artists' %}
           {% if track.get('firstListenedText') %}
             <span class="track-label">First Listened: {{ track.get('firstListenedText') }}</span>
           {% endif %}
@@ -239,7 +239,7 @@
           {% if track.get('firstListenedText') %}<span class="track-label">First Listened: {{ track.get('firstListenedText') }}</span>{% endif %}
           {% if track.get('releaseDateText') %}<span class="track-label">Released: {{ track.get('releaseDateText') }}</span>{% endif %}
           {% if track.get('totalTracks') %}<span class="track-label">{{ track.get('totalTracks') }} tracks</span>{% endif %}
-        {% endif %} {# attribution-flip #}
+        {% endif %}
         {# Only the skip-sorted Top pages attach these; every other surface
            renders the card without them and shows no label. A detail hero
            carries them too when the entity's plays are ALL skips (getSong's
@@ -271,7 +271,7 @@
                     aria-expanded="false" aria-controls="play-embed">Play now</button>
           {% endif %}
         {% endif %}
-      </div> {# attribution-flip #}
-    </div> {# attribution-flip #}
-  </div> {# attribution-flip #}
-</article> {# attribution-flip #}
+      </div>
+    </div>
+  </div>
+</article>

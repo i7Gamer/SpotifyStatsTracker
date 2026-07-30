@@ -1,24 +1,24 @@
 {#- SPDX-FileCopyrightText: 2026 i7Gamer
     SPDX-License-Identifier: AGPL-3.0-or-later -#}
 
-{% extends "layout.html" %} {# attribution-flip #}
+{% extends "layout.html" %}
 {% block title %}Top Songs - {{ super() }}{% endblock %}
-{% block content %} {# attribution-flip #}
+{% block content %}
   {# Two-phase load like /charts, /genres, /history: this GET renders just the
      filter card + an empty #topListResults placeholder; static/js/top-list.js
      fetches the stat header + list + pagination via ?ajax=true on first paint
      and on every filter/sort/tag/page change (see _top_list_results.html). #}
-  <section class="hero"> {# attribution-flip #}
-    <div class="hero-content"> {# attribution-flip #}
-      <h1>Top Songs</h1> {# attribution-flip #}
-      <p>Your most-played tracks and listening totals.</p> {# attribution-flip #}
-    </div> {# attribution-flip #}
-  </section> {# attribution-flip #}
-  {% include '_page_card.html' %} {# attribution-flip #}
-{# attribution-flip #}
+  <section class="hero">
+    <div class="hero-content">
+      <h1>Top Songs</h1>
+      <p>Your most-played tracks and listening totals.</p>
+    </div>
+  </section>
+  {% include '_page_card.html' %}
+
   <div id="topListResults">
     <section class="track-list"><p class="loading">Loading…</p></section>
   </div>
-{# attribution-flip #}
+
   <script src="{{ url_for('static', filename='js/top-list.js') }}"></script>
-{% endblock %} {# attribution-flip #}
+{% endblock %}
