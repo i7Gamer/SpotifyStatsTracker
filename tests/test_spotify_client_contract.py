@@ -31,11 +31,12 @@ NOT spotipyFree's code. Field names come from the pathfinder API itself.
 """
 
 import json
-import threading
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock, patch
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 from Database.db import UNKNOWN_TRACK_NAME, UNKNOWN_ALBUM_NAME, RESTRICTED_FALLBACK_REASON
 
@@ -637,6 +638,44 @@ class TestListenerInternalsContract(unittest.TestCase):
         callbackArg, intervalArg = manager.start.call_args.args
         self.assertEqual(callbackArg, sp._addToRecentlyPlayed)
         self.assertEqual(intervalArg, 6)
+
+
+class TestSmokeTestStaysOutOfCI(unittest.TestCase):
+    """Database/Spotify/smoketest.py talks to the REAL Spotify. It must never
+    be collected by the suite: CI has no valid cookies, and a green build would
+    then depend on Spotify's availability rather than on this code.
+
+    Four things keep it out today - the CI command (`pytest tests`), testpaths
+    in pyproject.toml, its filename, and the absence of test-shaped names
+    inside it. The first two are configuration someone could widen; these
+    assertions cover the two that live in the file itself, so a rename to
+    test_smoke.py fails here with a reason instead of turning CI flaky."""
+
+    #< pytest's defaults: python_files = test_*.py *_test.py
+    def test_its_filename_does_not_match_pytest_discovery(self):
+        from pathlib import Path
+
+        name = Path("Database/Spotify/smoketest.py").name
+
+        self.assertFalse(name.startswith("test_"), f"{name} would be auto-collected")
+        self.assertFalse(name.endswith("_test.py"), f"{name} would be auto-collected")
+
+    def test_it_defines_nothing_pytest_would_collect(self):
+        """Belt and braces: even if a path config someday pulls the file in,
+        pytest still finds nothing to run inside it."""
+        import ast
+        from pathlib import Path
+
+        source = (REPO_ROOT / "Database" / "Spotify" / "smoketest.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+
+        collectable = [
+            node.name for node in ast.walk(tree)
+            if (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test"))
+            or (isinstance(node, ast.ClassDef) and node.name.startswith("Test"))
+        ]
+
+        self.assertEqual(collectable, [], "these would run against real Spotify under pytest")
 
 
 if __name__ == "__main__":
