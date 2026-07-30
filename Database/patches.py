@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
 import copy
+import datetime
 import logging
 import os
 import re
@@ -929,6 +930,102 @@ STATE_FAILURE_RECONNECT_THRESHOLD = 5
 
 UPDATE_LOOP_ERROR_SLEEP_SECONDS = 10  #< back off after an unexpected updateLoop error before reconnecting
 
+# --- Event-driven connect-state (eventDrivenConnectStatePlan.md Phase 2) -------
+#
+# Reading manager.state PUTs to connect-state every refreshInterval - ~10
+# requests a minute PER USER, and by far the largest source of Spotify traffic
+# this app generates. But connect_device() registers our Spotify-Connection-Id
+# with the dealer websocket, which is what makes Spotify PUSH state changes down
+# a socket that is already open. Phase 0 measured 10 hours of that channel: one
+# HTTP request in total, against the ~5,500 the poll would have made.
+#
+# Off by default. It replaces how plays are detected - the app's core job - and
+# Phase 0's sample was 9 minutes of listening, enough to clear every structural
+# unknown but not to call push reliable. Turn it on deliberately, watch it, and
+# the poll loop is still there underneath.
+
+# How often to re-PUT connect_device. Phase 0 saw the subscription survive
+# 9h46m untouched, so this is belt-and-braces rather than a requirement - but it
+# doubles as the "is the subscription still real?" probe, which silence alone
+# cannot answer. At 15 minutes it is 4 requests an hour against ~600.
+CONNECT_STATE_RESUBSCRIBE_SECONDS = 15 * 60
+
+# Fall back to polling after this long with NO frame of any kind.
+#
+# Deliberately keyed on any frame, not on state pushes: spotapi's keepalive
+# draws a pong every 60s, so the socket has a once-a-minute liveness beat, while
+# genuine state silence ran to 3.75 hours overnight. A watchdog on state pushes
+# would either false-positive constantly or be too slow to be worth having.
+PUSH_FRAME_SILENCE_FALLBACK_SECONDS = 5 * 60
+
+PUSH_RECV_TIMEOUT_SECONDS = 1.0     #< how long each read waits before the loop re-checks its stop flags
+PUSH_RESUBSCRIBE_MAX_FAILURES = 3   #< consecutive re-subscribe errors before handing back to polling
+
+# Frames arrive for things other than playback (keepalive pongs,
+# social-connect/v2/broadcast_status_update). A connect-state frame is
+# identified by carrying a cluster with a player_state, rather than by matching
+# the uri string, so a URI rename upstream degrades to "ignored" rather than to
+# a silently dead listener.
+_pushListenerEnabledHook = None
+
+
+def setPushListenerEnabledHook(hook) -> None:
+    """Install the callable that says whether push mode is on instance-wide.
+
+    A hook rather than a constructor argument because the decision is made three
+    layers above where it is needed (Database.startListener -> Listener ->
+    Spotify.startRecentlyPlayedListener -> LastPlayedManger.start, which starts
+    the thread itself), and the setting is instance-wide anyway - there is
+    nothing per-listener to thread through. app.py installs it at startup;
+    without it, push mode stays off."""
+    global _pushListenerEnabledHook
+    _pushListenerEnabledHook = hook
+
+
+def _pushListenerEnabled() -> bool:
+    """Never let a failing settings lookup decide to change how plays are
+    recorded - an unreadable toggle means keep polling."""
+    if _pushListenerEnabledHook is None:
+        return False
+    try:
+        return bool(_pushListenerEnabledHook())
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Could not read the push-listener setting, staying on polling: %s", e)
+        return False
+
+
+def _clusterFromPacket(packet) -> dict | None:
+    """The connect-state cluster carried by a dealer frame, or None if this
+    frame isn't one."""
+    if not isinstance(packet, dict):
+        return None
+    payloads = packet.get("payloads")
+    if not isinstance(payloads, list):
+        return None
+    for payload in payloads:
+        if not isinstance(payload, dict):
+            continue
+        cluster = payload.get("cluster")
+        if isinstance(cluster, dict) and isinstance(cluster.get("player_state"), dict):
+            return cluster
+    return None
+
+
+def _adoptCluster(manager, cluster: dict) -> bool:
+    """Write a pushed cluster into PlayerStatus's caches.
+
+    The push carries the same shape connect_device() replies with -
+    player_state / devices / active_device_id - so this is exactly what
+    player_status_renew_state does, minus the HTTP request. Keeping _device_dump
+    in step matters: device_ids/active_device_id read it."""
+    state = cluster.get("player_state")
+    if not isinstance(state, dict):
+        return False
+    manager._device_dump = cluster
+    manager._state = state
+    manager._devices = cluster.get("devices")
+    return True
+
 SESSION_CLOSED_ERROR_MARKER = "session is closed"  #< curl_cffi's "Session is closed, cannot send
                                                     #  request." - the HTTP session backing this manager
                                                     #  was closed (listener stop or GC) and can never
@@ -953,19 +1050,166 @@ def _isSessionClosedError(exc: BaseException | None) -> bool:
     return False
 
 
+def _applyStateToTracking(self, state, callback) -> None:
+    """Turn an observed player state into a recorded play, if the track changed.
+
+    Lifted verbatim out of the poll loop so BOTH modes run the same code:
+    whatever push does differently, it must not be this. The callback contract
+    (previous track's uri, its start time, its context, and the wall-clock ms
+    since it started) is what _addToRecentlyPlayed and every downstream play row
+    depend on.
+
+    `self` is a LastPlayedManger, taken explicitly rather than bound: these
+    helpers sit at module level so they can be tested directly instead of
+    through a closure."""
+    if (state is None
+            or getattr(state, "timestamp", None) is None
+            or getattr(state, "track", None) is None
+            or getattr(state.track, "uid", None) is None):
+        return
+
+    timestamp = int(state.timestamp) / 1000
+    if self.lastPLayed != state.track.uid:
+        if self.lastTrackUri is not None:
+            timePlayed = max(0, int((time.time() - self.lastPlayedAt.timestamp()) * 1000))
+            callback(self.lastTrackUri, self.lastPlayedAtText, self.lastContextUri, timePlayed)
+        self.lastTrackUri = state.track.uri
+        self.lastPlayedAt = datetime.datetime.fromtimestamp(timestamp, tz=datetime.timezone.utc)
+        self.lastPlayedAtText = self.lastPlayedAt.isoformat().replace("+00:00", "Z")
+        self.lastContextUri = state.context_uri
+        self.lastPLayed = state.track.uid
+
+
+def _applyPushedState(self, manager, callback) -> None:
+    """Build a PlayerState from the cached dict and run track detection.
+
+    Deep-copied for the same reason the state property is: spotapi's
+    Track.from_dict REPLACES data["metadata"] in place, so handing it the cached
+    _state would corrupt what getConnectPlayerState (Now Playing, the
+    missed-track cross-check) reads next."""
+    try:
+        state = spotapi.status.PlayerState.from_dict(copy.deepcopy(manager._state))
+    except Exception as e:  # noqa: BLE001 - a malformed push must not kill the loop
+        logger.warning("[SpotipyFree] Could not read a pushed player state: %s", e)
+        return
+    _applyStateToTracking(self, state, callback)
+
+
+def _subscribeConnectState(manager):
+    """Re-register with connect-state. True on success, False on a real failure,
+    None when the shared limiter refused a slot.
+
+    None is NOT a failure - nothing was sent, and the pause it reports is one we
+    are already applying. Counting it would let our own backoff window push this
+    listener off the push channel entirely: the same conflation that turned one
+    rate-limit event into one per listener (see SpotifyLocallyRateLimitedError)."""
+    if not SPOTIFY_LIMITER.acquire(timeout=SPOTIFY_ACQUIRE_TIMEOUT_SECONDS):
+        return None
+    try:
+        manager.connect_device()
+        return True
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[SpotipyFree] connect-state subscribe failed: %s", e)
+        return False
+
+
+def _runPushLoop(self, callback) -> str:
+    """Listen for pushed player states. Returns "stopped" when the loop is done,
+    or "fallback" when the caller should hand back to polling.
+
+    Falling back is always safe and never silent: polling is the known-good
+    path, so any doubt about the push channel resolves that way rather than into
+    missing plays."""
+    manager = self.manager
+
+    subscribed = None
+    while self.run and subscribed is None:
+        if getattr(manager, "_deliberate_close", False):
+            return "stopped"
+        subscribed = _subscribeConnectState(manager)   #< None = paused, keep waiting
+    if not self.run:
+        return "stopped"
+    if not subscribed:
+        logger.warning("[SpotipyFree] Could not subscribe to connect-state pushes; polling instead")
+        return "fallback"
+
+    # connect_device's reply IS the current state, so the channel starts seeded -
+    # no separate poll needed to know what is playing right now.
+    if isinstance(manager._device_dump, dict):
+        _adoptCluster(manager, manager._device_dump)
+        _applyPushedState(self, manager, callback)
+
+    logger.info("[SpotipyFree] Listening for connect-state pushes (polling disabled)")
+    lastFrameAt = time.monotonic()
+    lastSubscribeAt = lastFrameAt
+    resubscribeFailures = 0
+
+    while self.run:
+        if getattr(manager, "_deliberate_close", False):
+            logger.info("[SpotipyFree] Push loop exiting: websocket was closed deliberately")
+            self.run = False
+            return "stopped"
+
+        packet = manager.get_packet(timeout=PUSH_RECV_TIMEOUT_SECONDS)
+        now = time.monotonic()
+
+        if packet is not None:
+            # ANY frame proves the socket is alive - keepalive pongs included,
+            # which is what makes the watchdog below usable at all.
+            lastFrameAt = now
+            cluster = _clusterFromPacket(packet)
+            if cluster is not None and _adoptCluster(manager, cluster):
+                _applyPushedState(self, manager, callback)
+
+        if now - lastFrameAt >= PUSH_FRAME_SILENCE_FALLBACK_SECONDS:
+            logger.warning(
+                "[SpotipyFree] No websocket frame of any kind for %ds (not even a keepalive "
+                "pong) - the push channel looks dead, returning to polling",
+                PUSH_FRAME_SILENCE_FALLBACK_SECONDS)
+            return "fallback"
+
+        if now - lastSubscribeAt >= CONNECT_STATE_RESUBSCRIBE_SECONDS:
+            outcome = _subscribeConnectState(manager)
+            if outcome is None:
+                continue            #< paused, not failed; retry on a later pass
+            lastSubscribeAt = now
+            if outcome:
+                resubscribeFailures = 0
+            else:
+                resubscribeFailures += 1
+                if resubscribeFailures >= PUSH_RESUBSCRIBE_MAX_FAILURES:
+                    logger.warning(
+                        "[SpotipyFree] connect-state re-subscribe failed %d times; "
+                        "returning to polling", resubscribeFailures)
+                    return "fallback"
+
+    return "stopped"
+
+
 def patch_last_played() -> bool:
-    """Patch SpotipyFree.LastPlayed.LastPlayedManger.updateLoop to handle
-    situations where state or state.timestamp is None (e.g. inactive device)
-    without raising TypeError, spamming tracebacks, or forcing constant reconnects.
-    Transient "Could not get player state" failures are retried in place and only
-    escalate to a websocket reconnect after a persistent streak (see
-    STATE_FAILURE_RECONNECT_THRESHOLD above).
+    """Patch SpotipyFree.LastPlayed.LastPlayedManger.updateLoop.
+
+    Two modes behind one entry point. Polling (the default) handles a state or
+    state.timestamp of None without raising, and only escalates a persistent
+    "Could not get player state" streak to a websocket reconnect (see
+    STATE_FAILURE_RECONNECT_THRESHOLD). Push mode, when the admin toggle is on,
+    listens for the connect-state the dealer websocket already delivers, and
+    hands back to polling at the first sign of doubt.
     """
     try:
         from SpotipyFree.LastPlayed import LastPlayedManger
-        import datetime
 
         def patched_update_loop(self, callback, refreshInterval=3):
+            if _pushListenerEnabled():
+                if _runPushLoop(self, callback) == "stopped":
+                    return
+                # One-way: once the push channel has disappointed us this
+                # listener stays on polling until it is rebuilt. Flapping
+                # between the two would be harder to reason about than either.
+                logger.warning("[SpotipyFree] Falling back to connect-state polling")
+            _runPollLoop(self, callback, refreshInterval)
+
+        def _runPollLoop(self, callback, refreshInterval=3):
             consecutiveStateFailures = 0
             while self.run:
                 if getattr(self.manager, "_deliberate_close", False):
@@ -1033,25 +1277,10 @@ def patch_last_played() -> bool:
                         continue
 
                     consecutiveStateFailures = 0
-                    if (state is None or
-                        getattr(state, "timestamp", None) is None or
-                        getattr(state, "track", None) is None or
-                        getattr(state.track, "uid", None) is None):
-                        time.sleep(refreshInterval)
-                        continue
-
-                    timestamp = int(state.timestamp) / 1000
-                    if self.lastPLayed != state.track.uid:
-                        if self.lastTrackUri is not None:
-                            timePlayed = max(0, int((time.time() - self.lastPlayedAt.timestamp()) * 1000))
-                            callback(self.lastTrackUri, self.lastPlayedAtText, self.lastContextUri, timePlayed)
-                        self.lastTrackUri = state.track.uri
-                        self.lastPlayedAt = datetime.datetime.fromtimestamp(
-                            timestamp, tz=datetime.timezone.utc
-                        )
-                        self.lastPlayedAtText = self.lastPlayedAt.isoformat().replace("+00:00", "Z")
-                        self.lastContextUri = state.context_uri
-                        self.lastPLayed = state.track.uid
+                    # Shared with the push path - a state that can't be read
+                    # (inactive device, no track) is a no-op there too, so the
+                    # sleep below runs either way, exactly as it used to.
+                    _applyStateToTracking(self, state, callback)
                     time.sleep(refreshInterval)
                 except Exception as e:
                     logger.error("[SpotipyFree] Error in Recently Played: %s", e, exc_info=True)

@@ -1151,6 +1151,33 @@ class TestAdminSpotifySettings(AdminRouteTestBase):
         resp = self._post(dash, "/admin/spotify_settings", isAdmin=True, data={"spotify_backfill": "1"})
         self.assertTrue(dash.repo.isSpotifyApiBackfillEnabled())
 
+    def test_push_listener_is_off_until_an_admin_turns_it_on(self):
+        """The only feature key that defaults to DISABLED. It changes how plays
+        are DETECTED, and the measurement behind it covered 9 minutes of
+        listening - enough to clear the structural unknowns, not enough to be
+        the default (see eventDrivenConnectStatePlan.md)."""
+        dash = self._makeApp()
+        self.assertFalse(dash.repo.isPushListenerEnabled())
+
+        self._post(dash, "/admin/spotify_settings", isAdmin=True,
+                   data={"spotify_backfill": "1", "push_listener": "1"})
+        self.assertTrue(dash.repo.isPushListenerEnabled())
+
+        self._post(dash, "/admin/spotify_settings", isAdmin=True, data={"spotify_backfill": "1"})
+        self.assertFalse(dash.repo.isPushListenerEnabled())
+
+    def test_toggling_backfill_does_not_disturb_push_mode(self):
+        """Both live on one form, so a save that omits one must not silently
+        flip the other - the form posts both every time."""
+        dash = self._makeApp()
+        self._post(dash, "/admin/spotify_settings", isAdmin=True,
+                   data={"spotify_backfill": "1", "push_listener": "1"})
+
+        self._post(dash, "/admin/spotify_settings", isAdmin=True, data={"push_listener": "1"})
+
+        self.assertFalse(dash.repo.isSpotifyApiBackfillEnabled())
+        self.assertTrue(dash.repo.isPushListenerEnabled())
+
 
 class TestAdminManageAdmins(AdminRouteTestBase):
     """/admin/users/<username>/admin - promote/demote, driven against a real

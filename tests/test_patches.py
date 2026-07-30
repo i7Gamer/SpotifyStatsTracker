@@ -1745,6 +1745,317 @@ class TestPatchedGetPacket(unittest.TestCase):
         self.assertIsNone(event)   #< _listen's own guard covers this
 
 
+def pushedCluster(trackUri="spotify:track:aaa", uid="uid-1", timestampMs="1785367061986",
+                  contextUri="spotify:playlist:ctx", isPaused=False):
+    """A connect-state cluster in the exact shape the dealer pushes - verified
+    against the raw frames Phase 0 captured (payloads[].cluster.player_state,
+    same keys connect_device's reply carries)."""
+    return {
+        "timestamp": timestampMs,
+        "active_device_id": "device-1",
+        "devices": {"device-1": {"name": "laptop"}},
+        "player_state": {
+            "timestamp": timestampMs,
+            "context_uri": contextUri,
+            "is_playing": True,
+            "is_paused": isPaused,
+            "duration": "200000",
+            "position_as_of_timestamp": "1000",
+            "prev_tracks": [],
+            "next_tracks": [],
+            "track": {"uri": trackUri, "uid": uid, "metadata": {"title": "Song"}},
+        },
+    }
+
+
+def pushFrame(cluster, updateReason="DEVICE_STATE_CHANGED"):
+    return {"headers": {}, "type": "message", "uri": "hm://connect-state/v1/cluster",
+            "payloads": [{"update_reason": updateReason, "cluster": cluster}]}
+
+
+class _PushManager:
+    """Stands in for PlayerStatus during a push loop: hands out scripted frames
+    from get_packet and records connect_device calls."""
+
+    def __init__(self, frames, initialCluster=None):
+        self._frames = list(frames)
+        self._deliberate_close = False
+        self._device_dump = initialCluster
+        self._state = (initialCluster or {}).get("player_state")
+        self._devices = None
+        self.connectCalls = 0
+        self.connectError = None
+        self.onExhausted = None
+
+    def connect_device(self):
+        self.connectCalls += 1
+        if self.connectError is not None:
+            raise self.connectError
+        return self._device_dump
+
+    def get_packet(self, timeout=None):
+        if self._frames:
+            return self._frames.pop(0)
+        if self.onExhausted is not None:
+            self.onExhausted()
+        return None
+
+
+def _pushLastPlayed(manager):
+    from SpotipyFree.LastPlayed import LastPlayedManger
+    with patch("SpotipyFree.LastPlayed.PlayerStatus"):
+        lpm = LastPlayedManger(MagicMock())
+    lpm.manager = manager
+    lpm.run = True
+    return lpm
+
+
+class TestPushedClusterHandling(unittest.TestCase):
+    """A dealer frame carries more than playback - keepalive pongs and
+    social-connect broadcasts share the socket. Identifying a connect-state
+    frame by its CONTENT (a cluster with a player_state) rather than by its uri
+    string means an upstream rename degrades to 'ignored', not to a listener
+    that silently records nothing."""
+
+    def test_a_connect_state_frame_yields_its_cluster(self):
+        from Database.patches import _clusterFromPacket
+
+        cluster = pushedCluster()
+        self.assertIs(_clusterFromPacket(pushFrame(cluster)), cluster)
+
+    def test_a_keepalive_pong_is_not_a_cluster(self):
+        from Database.patches import _clusterFromPacket
+
+        self.assertIsNone(_clusterFromPacket({"type": "pong"}))
+
+    def test_a_social_connect_broadcast_is_not_a_cluster(self):
+        """Seen live in Phase 0: uri social-connect/v2/broadcast_status_update,
+        payloads present, no cluster."""
+        from Database.patches import _clusterFromPacket
+
+        frame = {"type": "message", "uri": "social-connect/v2/broadcast_status_update",
+                 "payloads": [{"deviceBroadcastStatus": {}}]}
+        self.assertIsNone(_clusterFromPacket(frame))
+
+    def test_a_cluster_without_a_player_state_is_ignored(self):
+        from Database.patches import _clusterFromPacket
+
+        frame = {"payloads": [{"cluster": {"devices": {}}}]}
+        self.assertIsNone(_clusterFromPacket(frame))
+
+    def test_adopting_a_cluster_fills_the_same_caches_renew_state_does(self):
+        """getConnectPlayerState (Now Playing, the missed-track cross-check)
+        reads _state, and device_ids reads _device_dump - a push has to leave
+        all of them exactly as a connect_device reply would."""
+        from Database.patches import _adoptCluster
+
+        manager = _PushManager([])
+        cluster = pushedCluster()
+
+        self.assertTrue(_adoptCluster(manager, cluster))
+        self.assertIs(manager._device_dump, cluster)
+        self.assertIs(manager._state, cluster["player_state"])
+        self.assertEqual(manager._devices, cluster["devices"])
+
+
+class TestPushLoop(unittest.TestCase):
+    """The push loop must record plays through exactly the same code the poll
+    loop uses (_applyStateToTracking), and must hand back to polling rather
+    than ever record nothing silently."""
+
+    def _run(self, manager, lpm=None):
+        from Database.patches import _runPushLoop
+
+        lpm = lpm or _pushLastPlayed(manager)
+        callback = MagicMock()
+        manager.onExhausted = lambda: setattr(lpm, "run", False)
+        return _runPushLoop(lpm, callback), callback, lpm
+
+    def test_a_pushed_track_change_records_the_previous_track_once(self):
+        first, second = pushedCluster(uid="uid-1"), pushedCluster(
+            trackUri="spotify:track:bbb", uid="uid-2")
+        manager = _PushManager([pushFrame(first), pushFrame(second)], initialCluster=first)
+
+        outcome, callback, _ = self._run(manager)
+
+        self.assertEqual(outcome, "stopped")
+        callback.assert_called_once()
+        self.assertEqual(callback.call_args[0][0], "spotify:track:aaa")   #< the PREVIOUS track
+
+    def test_a_repeated_push_for_the_same_track_records_nothing(self):
+        cluster = pushedCluster(uid="uid-1")
+        manager = _PushManager([pushFrame(cluster), pushFrame(cluster), pushFrame(cluster)],
+                               initialCluster=cluster)
+
+        _, callback, _ = self._run(manager)
+
+        callback.assert_not_called()
+
+    def test_a_pause_push_is_not_a_track_change(self):
+        playing = pushedCluster(uid="uid-1")
+        paused = pushedCluster(uid="uid-1", isPaused=True)
+        manager = _PushManager([pushFrame(playing), pushFrame(paused)], initialCluster=playing)
+
+        _, callback, _ = self._run(manager)
+
+        callback.assert_not_called()
+
+    def test_the_pushed_state_reaches_getConnectPlayerState(self):
+        """Now Playing and the missed-track cross-check read manager._state
+        directly - if push didn't keep it current they would freeze."""
+        first = pushedCluster(uid="uid-1")
+        second = pushedCluster(trackUri="spotify:track:bbb", uid="uid-2")
+        manager = _PushManager([pushFrame(second)], initialCluster=first)
+
+        self._run(manager)
+
+        self.assertEqual(manager._state["track"]["uri"], "spotify:track:bbb")
+
+    def test_a_deliberate_close_stops_without_falling_back(self):
+        manager = _PushManager([], initialCluster=pushedCluster())
+        lpm = _pushLastPlayed(manager)
+        manager._deliberate_close = True
+
+        outcome, callback, _ = self._run(manager, lpm=lpm)
+
+        self.assertEqual(outcome, "stopped")
+        callback.assert_not_called()
+
+    def test_total_frame_silence_falls_back_to_polling(self):
+        """Keyed on ANY frame, pongs included: genuine state silence ran to
+        3.75 h in Phase 0, so only a socket with no traffic at all is dead."""
+        from Database.patches import PUSH_FRAME_SILENCE_FALLBACK_SECONDS
+
+        manager = _PushManager([], initialCluster=pushedCluster())
+        manager.onExhausted = None   #< never stop; the watchdog must be what ends it
+        lpm = _pushLastPlayed(manager)
+        clock = [1000.0]
+
+        def advancingMonotonic():
+            clock[0] += PUSH_FRAME_SILENCE_FALLBACK_SECONDS / 2
+            return clock[0]
+
+        from Database.patches import _runPushLoop
+        with patch("Database.patches.time.monotonic", side_effect=advancingMonotonic):
+            with self.assertLogs("Database.patches", level="WARNING"):
+                outcome = _runPushLoop(lpm, MagicMock())
+
+        self.assertEqual(outcome, "fallback")
+
+    def test_a_keepalive_pong_keeps_the_channel_alive(self):
+        """A pong carries no state but proves the socket works, so it must
+        reset the watchdog - otherwise an idle account would flap back to
+        polling every few minutes."""
+        manager = _PushManager([{"type": "pong"}, {"type": "pong"}],
+                               initialCluster=pushedCluster())
+
+        outcome, callback, _ = self._run(manager)
+
+        self.assertEqual(outcome, "stopped")
+        callback.assert_not_called()
+
+    def test_the_initial_subscribe_takes_a_limiter_slot(self):
+        from Database.rate_limit import SPOTIFY_LIMITER
+
+        manager = _PushManager([], initialCluster=pushedCluster())
+        with patch.object(SPOTIFY_LIMITER, "acquire", return_value=True) as acquire:
+            self._run(manager)
+
+        acquire.assert_called()
+        self.assertEqual(manager.connectCalls, 1)
+
+    def test_a_failed_initial_subscribe_falls_back(self):
+        manager = _PushManager([], initialCluster=pushedCluster())
+        manager.connectError = RuntimeError("connect-state refused")
+
+        with self.assertLogs("Database.patches", level="WARNING"):
+            outcome, callback, _ = self._run(manager)
+
+        self.assertEqual(outcome, "fallback")
+
+    def test_a_locally_paused_slot_is_not_a_subscribe_failure(self):
+        """Same conflation that turned one rate-limit event into one per
+        listener: our own backoff window is not evidence about Spotify, and
+        must not push us off the push channel."""
+        from Database.rate_limit import SPOTIFY_LIMITER
+
+        manager = _PushManager([], initialCluster=pushedCluster())
+        lpm = _pushLastPlayed(manager)
+        with patch.object(SPOTIFY_LIMITER, "acquire", side_effect=[False, False, True]):
+            outcome, _, _ = self._run(manager, lpm=lpm)
+
+        self.assertEqual(outcome, "stopped")     #< kept waiting, never fell back
+        self.assertEqual(manager.connectCalls, 1)
+
+
+class TestUpdateLoopModeSelection(unittest.TestCase):
+    """The toggle is read once per loop entry, and anything unreadable keeps
+    polling - a settings lookup must never be what changes how plays are
+    recorded."""
+
+    def tearDown(self):
+        from Database.patches import setPushListenerEnabledHook
+        setPushListenerEnabledHook(None)
+
+    def test_no_hook_means_polling(self):
+        from Database.patches import _pushListenerEnabled, setPushListenerEnabledHook
+
+        setPushListenerEnabledHook(None)
+        self.assertFalse(_pushListenerEnabled())
+
+    def test_a_raising_hook_means_polling(self):
+        from Database.patches import _pushListenerEnabled, setPushListenerEnabledHook
+
+        setPushListenerEnabledHook(MagicMock(side_effect=RuntimeError("db down")))
+        with self.assertLogs("Database.patches", level="WARNING"):
+            self.assertFalse(_pushListenerEnabled())
+
+    def test_the_hook_enables_push(self):
+        from Database.patches import _pushListenerEnabled, setPushListenerEnabledHook
+
+        setPushListenerEnabledHook(lambda: True)
+        self.assertTrue(_pushListenerEnabled())
+
+    def test_with_push_off_the_loop_never_reads_the_socket(self):
+        from Database.patches import setPushListenerEnabledHook
+        from SpotipyFree.LastPlayed import LastPlayedManger
+
+        setPushListenerEnabledHook(lambda: False)
+        manager = _ScriptedStateManager([makeIdleState()])
+        manager.get_packet = MagicMock()
+        with patch("SpotipyFree.LastPlayed.PlayerStatus"):
+            lpm = LastPlayedManger(MagicMock())
+        lpm.manager = manager
+        lpm.run = True
+
+        with patch("time.sleep", side_effect=lambda _s: setattr(lpm, "run", False)):
+            lpm.updateLoop(MagicMock(), refreshInterval=1)
+
+        manager.get_packet.assert_not_called()
+
+    def test_a_push_fallback_hands_over_to_polling(self):
+        """The fallback has to actually reach the poll loop, or 'falls back
+        automatically' is just a log line."""
+        from Database.patches import setPushListenerEnabledHook
+        from SpotipyFree.LastPlayed import LastPlayedManger
+
+        setPushListenerEnabledHook(lambda: True)
+        manager = _ScriptedStateManager([makeIdleState()])
+        manager._deliberate_close = False
+        manager.get_packet = MagicMock(return_value=None)
+        manager.connect_device = MagicMock(side_effect=RuntimeError("no subscription"))
+        with patch("SpotipyFree.LastPlayed.PlayerStatus"):
+            lpm = LastPlayedManger(MagicMock())
+        lpm.manager = manager
+        lpm.run = True
+
+        with self.assertLogs("Database.patches", level="WARNING"):
+            with patch("time.sleep", side_effect=lambda _s: setattr(lpm, "run", False)):
+                lpm.updateLoop(MagicMock(), refreshInterval=1)
+
+        self.assertEqual(manager._results, [])   #< the poll loop consumed the scripted state
+
+
 class TestThrottleDetection(unittest.TestCase):
     """_looksThrottled decides whether a reply is Spotify pushing back. The
     hard case is the one that actually happens: HTTP 200 carrying an HTML

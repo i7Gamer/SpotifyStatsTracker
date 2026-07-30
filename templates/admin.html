@@ -392,6 +392,19 @@
               <input type="checkbox" name="spotify_backfill" value="1" {% if spotify_backfill_enabled %}checked{% endif %}>
               Spotify API backfill (missed-plays recovery and album/track metadata fetching)
             </label>
+            {# Off by default and experimental - it changes how plays are
+               detected, so the copy says what to watch rather than just what
+               it does. #}
+            <label class="admin-check-label" style="margin-bottom: 0.5rem;">
+              <input type="checkbox" name="push_listener" value="1" {% if push_listener_enabled %}checked{% endif %}>
+              Listen for pushed player state (experimental)
+            </label>
+            <p style="color: var(--muted); font-size: 0.8rem; margin-top: 0; margin-bottom: 1rem;">
+              Takes playback updates from Spotify's websocket instead of polling every few seconds
+              &mdash; roughly 5,500 fewer Spotify requests per user per day. Falls back to polling
+              automatically if the push channel goes quiet. Applies when each listener next restarts;
+              watch Total Plays above for a day after enabling.
+            </p>
             <button type="submit" class="primary-button admin-save-btn">Save</button>
           </form>
         </div>

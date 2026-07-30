@@ -34,6 +34,7 @@ from Database.db import SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON
 from Database.repository import Repository
 from Database.Migrators.migrate import migrateIfNeeded
 from Database.Listeners.spotifyListener import _suppress_signal_in_thread
+from Database.patches import setPushListenerEnabledHook as patch_push_listener_hook
 from Database.logging_config import configureLogging
 from Database.utils import msToString, convertToDatetime, formatDuration, dateToString, versionTuple, now, startOfDay, parseDateString
 # Genre-gate / coverage helpers live in services/genre_gate.py; re-exported here
@@ -932,6 +933,13 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
         if self._workersStarted:
             return
         self._workersStarted = True
+        # Tell the listener patches how to read the push-mode kill switch. It
+        # lives three layers below where the decision is made (Database ->
+        # Listener -> Spotify.startRecentlyPlayedListener -> LastPlayedManger,
+        # which starts its own thread), and the setting is instance-wide, so a
+        # hook beats threading a flag through all of them. Set before any
+        # listener starts; unset, the patches stay on polling.
+        patch_push_listener_hook(self.repo.isPushListenerEnabled)
         self.backupWorker.start()
         # Bind before start: the worker polls immediately, and an unbound one
         # opens a throwaway connection per job (see EmailWorker.process_one).

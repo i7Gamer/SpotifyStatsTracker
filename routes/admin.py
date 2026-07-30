@@ -335,6 +335,7 @@ def register(app, dashboard):
             users_list=users_list,
             admin_count=len(dashboard.repo.getAdminUsernames()),
             spotify_backfill_enabled=dashboard.repo.isSpotifyApiBackfillEnabled(),
+            push_listener_enabled=dashboard.repo.isPushListenerEnabled(),
             lastfm_backfill_enabled=dashboard.repo.isLastfmGenreBackfillEnabled(),
             sharing_enabled=dashboard.repo.isDataSharingEnabled(),
             inherited_genres_enabled=dashboard.repo.isInheritedGenresEnabled(),
@@ -548,7 +549,11 @@ def register(app, dashboard):
         if not dashboard.repo.isAdmin(username):
             abort(403)
         dashboard.repo.setSpotifyApiBackfillEnabled(request.form.get("spotify_backfill") == "1")
-        return redirect(url_for("adminPage", tab="workers", message="Spotify API backfill settings saved."))
+        # Read once per listener build, so this takes effect on the next
+        # rebuild rather than mid-stream - say so instead of implying it is live.
+        dashboard.repo.setPushListenerEnabled(request.form.get("push_listener") == "1")
+        return redirect(url_for("adminPage", tab="workers",
+                                message="Spotify settings saved. Push mode applies when each listener next restarts."))
     app.add_url_rule("/admin/spotify_settings", "adminSpotifySettings", adminSpotifySettings, methods=["POST"])
 
     def adminSkipSettings():
