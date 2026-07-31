@@ -38,6 +38,21 @@ def makeIdleState():
     return state
 
 
+def makePlayingState(uid="uid-1", uri="spotify:track:aaa"):
+    """A state _applyStateToTracking treats as an active track - two of these
+    with different uids make the poll loop fire the play callback."""
+    state = MagicMock()
+    state.timestamp = 1700000000000
+    state.track = MagicMock()
+    state.track.uid = uid
+    state.track.uri = uri
+    state.context_uri = "spotify:playlist:ctx"
+    state.position_as_of_timestamp = 1000
+    state.is_paused = False
+    state.duration = 200000
+    return state
+
+
 class TestPollLoop(unittest.TestCase):
     """The poll loop must tolerate degraded states, escalate a failure streak
     to exactly one reconnect, and reset the streak on success."""
@@ -142,6 +157,74 @@ class TestPollLoop(unittest.TestCase):
         self._runUpdateLoopIterations(manager, len(results))
 
         manager.reconnect.assert_not_called()
+
+    def test_a_raising_callback_does_not_reconnect(self):
+        """A play callback that raises (track()'s retry ladder re-raising, a
+        rate limit) is a metadata failure, not a transport failure - the state
+        was read fine. Escalating it to manager.reconnect() rebuilt the
+        websocket AND the session every poll tick for as long as the callback
+        kept failing (worst during a TOTP rotation, where the reconnect's own
+        get_session() also fails and bumps the auth-failure counter). Push got
+        this containment in _applyPushedState; this pins poll's equivalent."""
+        stateA = makePlayingState(uid="uid-1", uri="spotify:track:aaa")
+        stateB = makePlayingState(uid="uid-2", uri="spotify:track:bbb")
+        manager = _ScriptedStateManager([stateA, stateB])
+        callbackCalls = []
+
+        def failingCallback(*args):
+            callbackCalls.append(args)
+            raise RuntimeError("track lookup blew up")
+
+        from Database.Spotify.recentlyPlayed import RecentlyPlayedManager
+        with patch("spotapi.status.PlayerStatus"):
+            lpm = RecentlyPlayedManager(MagicMock())
+        lpm.manager = manager
+        lpm.run = True
+
+        sleepCount = [0]
+
+        def mockSleep(_secs):
+            sleepCount[0] += 1
+            if sleepCount[0] >= 2:
+                lpm.run = False
+
+        with self.assertLogs("Database.Spotify.recentlyPlayed", level="WARNING"), \
+                patch("time.sleep", side_effect=mockSleep):
+            lpm.updateLoop(failingCallback, refreshInterval=1)
+
+        manager.reconnect.assert_not_called()
+        self.assertEqual(len(callbackCalls), 1)
+        self.assertEqual(callbackCalls[0][0], "spotify:track:aaa")   #< the PREVIOUS track
+
+    def test_a_failed_play_is_retried_on_the_next_poll(self):
+        """Containment must not turn into dropping: lastPlayedUid only advances
+        after the callback returns, so the next poll of the same state retries
+        the same play - mirroring the push loop exactly."""
+        stateA = makePlayingState(uid="uid-1", uri="spotify:track:aaa")
+        stateB = makePlayingState(uid="uid-2", uri="spotify:track:bbb")
+        manager = _ScriptedStateManager([stateA, stateB, stateB])
+        callback = MagicMock(side_effect=RuntimeError("still failing"))
+
+        from Database.Spotify.recentlyPlayed import RecentlyPlayedManager
+        with patch("spotapi.status.PlayerStatus"):
+            lpm = RecentlyPlayedManager(MagicMock())
+        lpm.manager = manager
+        lpm.run = True
+
+        sleepCount = [0]
+
+        def mockSleep(_secs):
+            sleepCount[0] += 1
+            if sleepCount[0] >= 3:
+                lpm.run = False
+
+        with self.assertLogs("Database.Spotify.recentlyPlayed", level="WARNING"), \
+                patch("time.sleep", side_effect=mockSleep):
+            lpm.updateLoop(callback, refreshInterval=1)
+
+        manager.reconnect.assert_not_called()
+        self.assertEqual(callback.call_count, 2)
+        self.assertEqual(callback.call_args[0][0], "spotify:track:aaa")   #< same previous track, retried
 
 
 class TestSessionClosedDetection(unittest.TestCase):

@@ -276,8 +276,9 @@ def _applyPushedState(self, manager, callback) -> None:
     metadata, so it can raise (track()'s retry ladder re-raising, a rate
     limit), and the push loop has no other containment - an escape here killed
     the thread with `run` still True, freezing _state so the account read as
-    idle until the 6h stale hard-timeout rebuilt it. The poll loop's catch-all
-    contains the identical failure; this is push's equivalent. The failed play
+    idle until the 6h stale hard-timeout rebuilt it. The poll loop guards its
+    _applyStateToTracking call the same way (its catch-all would otherwise
+    escalate a callback failure into a full reconnect). The failed play
     is retried, not dropped: lastPlayedUid only advances after the callback
     returns (see _applyStateToTracking)."""
     try:
@@ -463,7 +464,21 @@ def _runPollLoop(self, callback, refreshInterval=3):
             # Shared with the push path - a state that can't be read
             # (inactive device, no track) is a no-op there too, so the
             # sleep below runs either way, exactly as it used to.
-            _applyStateToTracking(self, state, callback)
+            #
+            # Guarded separately from the catch-all below for the same reason
+            # _applyPushedState guards it: the callback resolves track metadata
+            # and can raise (track()'s retry ladder re-raising, a rate limit),
+            # and that is a metadata failure, not a transport failure - the
+            # state was just read fine. Letting it reach the catch-all rebuilt
+            # the websocket AND the session every poll tick for as long as the
+            # callback kept failing; during a TOTP rotation each of those
+            # reconnects failed its own get_session() and bumped the
+            # auth-failure counter. The failed play is retried, not dropped:
+            # lastPlayedUid only advances after the callback returns.
+            try:
+                _applyStateToTracking(self, state, callback)
+            except Exception as applyError:  # noqa: BLE001 - a failing play callback must not escalate to a reconnect
+                logger.warning("[Spotify] Could not record the observed play state: %s", applyError)
             time.sleep(refreshInterval)
         except Exception as e:
             logger.error("[Spotify] Error in Recently Played: %s", e, exc_info=True)
