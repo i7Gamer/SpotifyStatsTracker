@@ -196,9 +196,27 @@ function updateCompareIntervalFilter() {
 }
 
 function updateCompareDateFilter() {
-  const startDate = document.getElementById('startDate').value;
-  const endDate = document.getElementById('endDate').value;
+  const startDateElem = document.getElementById('startDate');
+  const endDateElem = document.getElementById('endDate');
+  const errorElem = document.getElementById('dateError');
+  const startDate = startDateElem.value;
+  const endDate = endDateElem.value;
+
+  errorElem.style.display = 'none';
+  startDateElem.style.borderColor = '';
+  endDateElem.style.borderColor = '';
+
   if (!startDate || !endDate) {
+    return;
+  }
+  // Same guard as the other filter pages (updateHistoryDateFilter et al.) -
+  // compare was the one page that fetched an inverted range and rendered an
+  // empty comparison with no explanation.
+  if (new Date(startDate) > new Date(endDate)) {
+    errorElem.textContent = 'Start date cannot be after end date.';
+    errorElem.style.display = 'block';
+    startDateElem.style.borderColor = 'var(--accent)';
+    endDateElem.style.borderColor = 'var(--accent)';
     return;
   }
 

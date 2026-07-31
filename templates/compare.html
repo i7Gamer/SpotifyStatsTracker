@@ -53,9 +53,10 @@
 
   <div class="filter-group custom-dates" id="compareCustomDates" {% if not (customStart and customEnd) %}style="display: none;"{% endif %}>
     <label for="startDate">From:</label>
-    <input type="date" id="startDate" value="{{ customStart }}" onchange="updateCompareDateFilter()">
+    <input type="date" id="startDate" value="{{ customStart }}" onchange="scheduleSearchFilter('startDate', updateCompareDateFilter)">
     <label for="endDate">To:</label>
-    <input type="date" id="endDate" value="{{ customEnd }}" onchange="updateCompareDateFilter()">
+    <input type="date" id="endDate" value="{{ customEnd }}" onchange="scheduleSearchFilter('endDate', updateCompareDateFilter)">
+    <span id="dateError" style="color: var(--accent); font-size: 0.85rem; display: none; margin-left: 10px;"></span>
   </div>
 
   <div class="filter-group">

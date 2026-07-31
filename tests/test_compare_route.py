@@ -413,6 +413,21 @@ class TestCompareRoute(AppTestCase):
 
         self.assertIn(b'id="compareCustomDates" style="display: none;"', resp.data)
 
+    def test_custom_date_inputs_carry_the_shared_validation_wiring(self):
+        """Compare was the one filter page without the start>end guard: no
+        #dateError span to write to and the inputs wired straight to
+        updateCompareDateFilter instead of through the shared debounce -
+        so an inverted range fired a fetch and rendered an empty comparison
+        with no explanation."""
+        self._accept("alice", "bob")
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare")
+
+        self.assertIn(b'id="dateError"', resp.data)
+        self.assertIn(b"scheduleSearchFilter('startDate', updateCompareDateFilter)", resp.data)
+        self.assertIn(b"scheduleSearchFilter('endDate', updateCompareDateFilter)", resp.data)
+
     def test_shared_artists_ranked_by_combined_plays_not_the_viewers_own_order(self):
         """Bug: 'Top Common Artists' used to be built by walking the VIEWER's
         own pool order and slicing to the first `limit` shared matches - so
