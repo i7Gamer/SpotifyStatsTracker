@@ -42,7 +42,10 @@
        pins that a layout hosting a loader also hosts this. #}
     <script src="{{ url_for('static', filename='js/ajax-status.js') }}"></script>
     <script src="{{ url_for('static', filename='js/artist-toggle.js') }}"></script>
-    <script src="{{ url_for('static', filename='js/layout-public-chrome.js') }}"></script>
+    {# The public page's whole chrome IS the shared piece (cover fade +
+       scroll-to-top ring) - layout-public-chrome.js was 85 lines of copies
+       of layout-chrome.js and nothing else, so it's gone. #}
+    <script src="{{ url_for('static', filename='js/chrome-common.js') }}"></script>
 
     <button id="scroll-to-top" class="scroll-to-top" aria-label="Scroll to top" style="display:none;">
       <svg class="progress-ring" width="40" height="40">

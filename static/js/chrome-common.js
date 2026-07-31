@@ -1,10 +1,16 @@
 // SPDX-FileCopyrightText: 2026 i7Gamer
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// The public (share-link) pages' chrome. Same story as layout-chrome.js:
-// extracted verbatim from layout_public.html so it can be linted; no Jinja,
-// same position, same execution order.
-// Smooth fade-in for track cover images - mirrors layout.html.
+// Chrome shared by BOTH layouts (layout.html and layout_public.html): the
+// track-cover fade-in and the scroll-to-top progress ring. These lived as
+// byte-identical copies in layout-chrome.js and layout-public-chrome.js
+// (78 of the public file's 85 lines) until the copies were folded here -
+// the public file was nothing else, so it's gone; the authenticated-only
+// pieces (version badge, listener pill, nav toggle, search helpers) stay
+// in layout-chrome.js.
+
+// Smooth fade-in for track cover images. The capture-phase listener catches
+// `load` on any img.track-cover including ones swapped in later by AJAX.
 (function() {
   document.addEventListener('load', (e) => {
     if (e.target.tagName === 'IMG' && e.target.classList.contains('track-cover')) {
@@ -12,6 +18,7 @@
     }
   }, true);
 
+  // Check already completed images (e.g. from cache) on DOMContentLoaded
   function markLoadedImages() {
     document.querySelectorAll('img.track-cover').forEach(img => {
       if (img.complete) {
@@ -27,9 +34,10 @@
   }
 })();
 
-// Scroll-to-top button with circular progress - mirrors layout.html.
-// Deferred to DOMContentLoaded because the button element lives near
-// </body>, after this parse-time script.
+// Scroll-to-top button with circular progress. Deferred to DOMContentLoaded:
+// this script runs during body parse, before the #scroll-to-top button
+// (near </body>) exists, so an immediate getElementById returned null and
+// the button never worked.
 (function() {
   function initScrollToTop() {
   const btn = document.getElementById('scroll-to-top');
@@ -56,6 +64,7 @@
       btn.style.display = 'flex';
     } else {
       btn.classList.remove('visible');
+      // Delay display none slightly for fade-out animation
       setTimeout(() => {
         if (!btn.classList.contains('visible')) {
           btn.style.display = 'none';
