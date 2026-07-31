@@ -25,13 +25,18 @@ class TestGetReadOnlyUserDb(ReadOnlyUserDbTestCase):
     def test_cold_user_gets_a_db_without_activation(self):
         app = self._makeApp()
 
-        with patch('dashboard.user_registry.Database', side_effect=lambda *a, **k: MagicMock()):
+        with patch('dashboard.user_registry.Database', side_effect=lambda *a, **k: MagicMock()) as mock_database:
             db = app._getReadOnlyUserDb("alice")
 
         self.assertIsNotNone(db)
         db.startAutoImporter.assert_not_called()
         db.resetProgress.assert_not_called()
         db.startListener.assert_not_called()
+        # Not just the listener/auto-importer: Database.__init__'s own five
+        # periodic workers must not spawn for an anonymous GET either - the
+        # metadata backfiller polls Spotify on the owner's stored credentials.
+        self.assertIs(mock_database.call_args.kwargs.get("startWorkers"), False)
+        db.startBackgroundWorkers.assert_not_called()
         self.assertIs(app.user_databases["alice"], db)
         self.assertNotIn("alice", app._activatedUsers)
 
@@ -69,6 +74,10 @@ class TestActivationGuardOnRealLogin(ReadOnlyUserDbTestCase):
 
         self.assertIs(activatedDb, readOnlyDb)   #< same object, not a fresh one
         mock_database.assert_called_once()   #< never reconstructed
+        #< the read-only construction skipped the five periodic workers, so
+        #  promotion must start them - this is what makes activating in place
+        #  equivalent to a fresh construction
+        activatedDb.startBackgroundWorkers.assert_called_once()
         activatedDb.startAutoImporter.assert_called_once()
         activatedDb.resetProgress.assert_called_once()
         activatedDb.startListener.assert_called_once_with(email="alice@example.com")
@@ -97,6 +106,9 @@ class TestActivationGuardOnRealLogin(ReadOnlyUserDbTestCase):
         self.assertIs(db1, db2)
         mock_database.assert_called_once()
         db1.startListener.assert_called_once()
+        #< a fresh construction starts its workers in __init__ (startWorkers
+        #  defaults to True); the promotion call is for read-only instances
+        self.assertNotIn("startWorkers", mock_database.call_args.kwargs)
 
 
 class TestActivationFailureHandling(ReadOnlyUserDbTestCase):

@@ -147,14 +147,22 @@ class UserRegistryMixin:
                 # Share the app-wide stop event so the listener reconnect
                 # paths can refuse to fire once shutdown has begun.
                 db = Database(user=username, email=email, shutdown_event=self._stop_event)
+            else:
+                # A cached-but-unactivated instance can only have come from
+                # _getReadOnlyUserDb, which constructs with startWorkers=False -
+                # promote it, or activation would silently hand back a Database
+                # whose periodic workers never run. No-op for workers already
+                # running, so a racing double-login can't stack threads.
+                db.startBackgroundWorkers()
 
             try:
                 db.startAutoImporter()
                 db.resetProgress()
                 db.startListener(email=email)
             except Exception:
-                # Database.__init__ already started this instance's background
-                # threads (wrapped worker, metadata backfiller); startAutoImporter
+                # This instance's background threads are running by here
+                # (Database.__init__ for a fresh construction, the promotion
+                # above for a read-only one); startAutoImporter
                 # added its watchdog. If a later step fails (startListener is a
                 # live Spotify call) the instance must not stay reachable
                 # half-activated, so it's stopped and both caches rolled back -
@@ -177,14 +185,17 @@ class UserRegistryMixin:
     def _getReadOnlyUserDb(self, username):
         """A Database for `username` suitable for a public, unauthenticated
         share-link view - never starts the listener/auto-importer (no live
-        Spotify session should ever be triggered by an anonymous GET). If
-        `username` already has an active Database (the common case: the
-        owner has logged in to this process before), that instance is
-        reused as-is. Otherwise a new instance is cached without activating
-        it; get_user_db() activates it in place on the owner's next real
-        login instead of skipping activation forever, since by then the
-        username is already in user_databases. Callers must already know
-        `username` exists (e.g. it came from a share_links row, which a
+        Spotify session should ever be triggered by an anonymous GET), and
+        never the five periodic workers either (startWorkers=False below):
+        the metadata backfiller polls Spotify on the owner's stored
+        credentials, which is the same live-session rule in different
+        clothes. If `username` already has an active Database (the common
+        case: the owner has logged in to this process before), that instance
+        is reused as-is. Otherwise a new instance is cached without
+        activating it; get_user_db() activates it in place on the owner's
+        next real login instead of skipping activation forever, since by
+        then the username is already in user_databases. Callers must already
+        know `username` exists (e.g. it came from a share_links row, which a
         foreign key guarantees points at a real user)."""
         with self._db_lock:
             db = self.user_databases.get(username)
@@ -200,7 +211,8 @@ class UserRegistryMixin:
                 if db is not None:
                     return db
             email = self.repo.getEmailForUsername(username)
-            db = Database(user=username, email=email, shutdown_event=self._stop_event)
+            db = Database(user=username, email=email, shutdown_event=self._stop_event,
+                          startWorkers=False)
             with self._db_lock:
                 self.user_databases[username] = db
             return db

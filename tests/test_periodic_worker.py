@@ -222,5 +222,36 @@ class TestWorkerStatus(PeriodicWorkerTestCase):
                          set(self.db._getWorkerTelemetry("wrapped")))
 
 
+class TestStartBackgroundWorkers(PeriodicWorkerTestCase):
+    """startBackgroundWorkers() is the promotion path for an instance built
+    with startWorkers=False: _getReadOnlyUserDb constructs one for a public
+    share-link view, and the owner's next real login must be able to activate
+    it in place with the same worker set a normal construction gets."""
+
+    WORKER_THREAD_ATTRS = ("backfiller_thread", "wrapped_thread", "lastfm_thread",
+                           "lastfm_biography_thread", "lastfm_album_biography_thread")
+
+    def test_starts_every_worker_construction_skipped(self):
+        #< the three Last.fm workers' precondition: keyless users get no thread
+        self.db.repo.updateUserLastfmApiKey(self.db.user, "key123")
+
+        self.db.startBackgroundWorkers()
+
+        for attr in self.WORKER_THREAD_ATTRS:
+            thread = getattr(self.db, attr)
+            self.assertIsNotNone(thread, f"{attr} was not started")
+            self.assertTrue(thread.is_alive(), f"{attr} is not running")
+
+    def test_a_second_call_leaves_running_workers_alone(self):
+        self.db.repo.updateUserLastfmApiKey(self.db.user, "key123")
+        self.db.startBackgroundWorkers()
+        running = {attr: getattr(self.db, attr) for attr in self.WORKER_THREAD_ATTRS}
+
+        self.db.startBackgroundWorkers()
+
+        for attr, thread in running.items():
+            self.assertIs(getattr(self.db, attr), thread, f"{attr} was replaced")
+
+
 if __name__ == "__main__":
     unittest.main()

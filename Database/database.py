@@ -311,7 +311,8 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         calculations, and the three Last.fm backfillers).
 
         Every attribute those workers use is still initialized, so the start*
-        methods work normally when a caller opts in later - this only skips the
+        methods work normally when a caller opts in later (startBackgroundWorkers()
+        is the bundled opt-in) - this only skips the
         automatic start. The test suite constructs ~117 Databases; each one
         spawned five threads that immediately parked on a randomized startup
         delay, then had to be signalled and joined at teardown, for work no
@@ -394,8 +395,6 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
 
         self.backfiller_thread = None
         self.backfiller_stop_event = threading.Event()
-        if startWorkers:
-            self.startMetadataBackfiller()
 
         self.wrapped_thread = None
         self.wrapped_stop_event = threading.Event()
@@ -404,25 +403,40 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         # never both run _calculateAndSaveWrapped for the same year at once.
         self._wrapped_recalc_locks_guard = threading.Lock()
         self._wrapped_recalc_locks: dict[int, threading.Lock] = {}
-        if startWorkers:
-            self.startWrappedCalculationsWorker()
 
         self.lastfm_thread = None
         self.lastfm_stop_event = threading.Event()
-        # No-op for users without a stored Last.fm key (no idle thread); the
-        # profile page's key save re-invokes it once a key lands.
-        if startWorkers:
-            self.startLastfmGenreBackfiller()
 
         self.lastfm_biography_thread = None
         self.lastfm_biography_stop_event = threading.Event()
-        if startWorkers:
-            self.startLastfmBiographyBackfiller()
 
         self.lastfm_album_biography_thread = None
         self.lastfm_album_biography_stop_event = threading.Event()
+
         if startWorkers:
-            self.startLastfmAlbumBiographyBackfiller()
+            self.startBackgroundWorkers()
+
+    def startBackgroundWorkers(self) -> None:
+        """The five always-on periodic workers a default construction spawns.
+
+        Split out of __init__ so an instance built with startWorkers=False can
+        be promoted to a fully active one later: _getReadOnlyUserDb constructs
+        read-only Databases for public share-link views (an anonymous GET must
+        not put the owner's stored credentials on a polling loop), and
+        get_user_db() activates that same cached instance in place on the
+        owner's next real login. One list here, so a future sixth worker can't
+        end up started on construction but skipped on promotion.
+
+        Safe to call on an already-active instance - each start no-ops when
+        its worker is running (and refuses outright once a stop has been
+        requested; see PeriodicWorkerMixin). The Last.fm three additionally
+        no-op without a stored API key; the profile page's key save re-invokes
+        them once a key lands."""
+        self.startMetadataBackfiller()
+        self.startWrappedCalculationsWorker()
+        self.startLastfmGenreBackfiller()
+        self.startLastfmBiographyBackfiller()
+        self.startLastfmAlbumBiographyBackfiller()
 
     def consumeMilestoneRecalcFlag(self) -> bool:
         """One-shot read of the "an import just changed play history" marker
