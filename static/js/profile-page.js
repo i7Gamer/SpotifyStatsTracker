@@ -23,45 +23,7 @@
   /* markup produced by _profile_base.html.                              */
   /* ------------------------------------------------------------------ */
   var SUBNAV_SEL      = '.profile-subnav';
-  var BODY_ID         = 'profile-tab-body';
   var LOADING_CLASS   = 'profile-tab-loading';
-
-  /* ------------------------------------------------------------------ */
-  /* DOM helpers                                                         */
-  /* ------------------------------------------------------------------ */
-
-  /** Return the element that holds the swappable tab content.
-   *  It is the sibling immediately after .profile-subnav. */
-  function _bodyRegion() {
-    var nav = document.querySelector(SUBNAV_SEL);
-    if (!nav) return null;
-    /* Walk forward siblings until we reach the logout row or run out. */
-    var node = nav.nextElementSibling;
-    while (node && node.classList.contains('profile-logout-row')) {
-      node = null;
-    }
-    return node ? node.parentElement || null : null;
-  }
-
-  /** Return the element that wraps tab-specific sections - the container
-   *  that sits between the subnav and the logout row inside .login-card. */
-  function _tabContainer(root) {
-    root = root || document;
-    var nav     = root.querySelector(SUBNAV_SEL);
-    var logout  = root.querySelector('.profile-logout-row');
-    if (!nav) return null;
-
-    /* Collect every sibling between nav and logout (exclusive). */
-    var container = document.createElement('div');
-    container.id = BODY_ID;
-
-    var cur = nav.nextElementSibling;
-    while (cur && cur !== logout) {
-      container.appendChild(cur.cloneNode(true));
-      cur = cur.nextElementSibling;
-    }
-    return container;
-  }
 
   /* ------------------------------------------------------------------ */
   /* Parsing helpers                                                     */

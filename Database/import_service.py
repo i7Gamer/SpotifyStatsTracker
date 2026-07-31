@@ -104,35 +104,34 @@ class ImportMixin:
         return was_inserted
 
     def importHistory(self, exportedHistory, progressPrefix: str = "", isFinalFile: bool = True, hasPriorError: bool = False, track_file_hash: bool = False,
-                      runState: _ImportRunState | None = None, deferCommit: bool = False):
+                      runState: _ImportRunState | None = None):
         """Import one export file. Serialized per user via _importLock (see
         its comment in __init__); the actual work is in _importHistoryLocked."""
         with self._importLock:
             return self._importHistoryLocked(exportedHistory, progressPrefix, isFinalFile, hasPriorError,
-                                             track_file_hash, runState, deferCommit)
+                                             track_file_hash, runState)
 
     def _importHistoryLocked(self, exportedHistory, progressPrefix: str = "", isFinalFile: bool = True, hasPriorError: bool = False, track_file_hash: bool = False,
-                             runState: _ImportRunState | None = None, deferCommit: bool = False):
+                             runState: _ImportRunState | None = None):
         """Import one export file: Phase 1 stages it (parse + Spotify metadata
         fetch) holding NO write transaction, then Phase 2 applies the staged
         rows. Splitting them keeps the network-bound fetch out of the write
         transaction - the atomic overwrite batch depends on this to avoid
-        holding SQLite's single write lock across Spotify lookups."""
+        holding SQLite's single write lock across Spotify lookups.
+
+        Always deferCommit=False on both phase calls: this path owns one
+        transaction per file, so writeProgress's self-commits are safe here.
+        The atomic overwrite batch never comes through this method - it
+        drives _stageImportData/_applyImportData directly with
+        deferCommit=True and its own no-op progress reporter, because a
+        self-commit would flush a prior file's staged writes mid-batch (see
+        _importHistoryBatchOverwriteLocked). A deferCommit parameter used to
+        exist here for that batch and was never called with it; had it been,
+        the staging-failure rollback below would have discarded a prior
+        file's staged writes in a transaction this method does not own."""
         importer = self._withCookiesFile(lambda cookiesFile: _dbmod.Importer(cookiesFile=cookiesFile, email=self.email))
         if runState is None:
             runState = _dbmod._ImportRunState()
-
-        # INVARIANT: repo methods that self-commit ("with conn:" - writeProgress,
-        # image-status writes, playlist upserts) run on this same thread-local
-        # connection, and "with conn:" commits WHATEVER is pending on it. In
-        # deferCommit mode (an atomic overwrite batch) a PRIOR file in the same
-        # batch may already have staged uncommitted writes, so every progress
-        # write is routed through reportProgress, which no-ops instead of
-        # self-committing, for the whole duration of deferCommit mode.
-        def reportProgress(status, current, totalSteps, message, error=False):
-            if deferCommit:
-                return
-            self.writeProgress(status, current, totalSteps, message, error=error)
 
         # Snapshot for the staging-failure path; the apply path restores the
         # same run-state fields itself (see _applyImportData's except).
@@ -140,7 +139,7 @@ class ImportMixin:
         insertedPlayKeysBefore = set(runState.insertedPlayKeys)
         try:
             staged = self._stageImportData(importer, exportedHistory, progressPrefix,
-                                           hasPriorError, reportProgress, runState, deferCommit)
+                                           hasPriorError, self.writeProgress, runState, deferCommit=False)
         except Exception as e:
             # Staging (parse / Spotify metadata fetch) failed before any DB
             # write. Report it and restore the batch-shared run state, matching
@@ -155,7 +154,7 @@ class ImportMixin:
         stagedTracks, stagedPlays, total, importStats = staged
         self._applyImportData(stagedTracks, stagedPlays, importStats, total, exportedHistory,
                               progressPrefix, isFinalFile, hasPriorError, track_file_hash,
-                              runState, deferCommit, reportProgress)
+                              runState, False, self.writeProgress)
 
     def _stageImportData(self, importer, exportedHistory, progressPrefix, hasPriorError,
                          reportProgress, runState, deferCommit, knownTracks=None):

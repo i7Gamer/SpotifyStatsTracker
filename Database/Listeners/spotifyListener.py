@@ -706,9 +706,6 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
                 return new[index:]
         return None
 
-    def track(self, trackId):
-        return self.sp.track(trackId)
-
     def playlistName(self, playlistId) -> str:
         return (self.sp.playlist(playlistId) or {}).get("name", "Unknown Playlist")
 

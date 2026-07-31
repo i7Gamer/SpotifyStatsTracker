@@ -866,17 +866,22 @@ class PlayQueries:
         rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
         trackIdsClause = ""
         trackIdsClause = self._idSetClause(params, "p.track_id", trackIds)
+        # The search is resolved to a track-id set on p.track_id
+        # (_searchNarrowClause), so this branch scans plays alone too - the
+        # tracks/albums joins were leftovers from when the match predicate ran
+        # inline here. tracks joins only for fullPlaysOnly's duration, exactly
+        # like the no-search branch above.
+        joinClause = ""
         fullPlaysClause = ""
         if fullPlaysOnly:
+            joinClause = self._tracksJoin()
             fullPlaysClause = self._fullPlaysClause(params)
         #< appended last, so it must also be the last clause in the SQL below
         searchClause = self._searchNarrowClause(params, searchQuery, "p.track_id")
         row = conn.execute(
             f"""
             SELECT COUNT(*) AS c FROM (
-                SELECT p.track_id FROM plays p
-                JOIN tracks t ON t.id = p.track_id
-                LEFT JOIN albums al ON al.id = t.album_id
+                SELECT p.track_id FROM plays p{joinClause}
                 WHERE p.username = ? AND p.is_skip=0{rangeClause}{trackIdsClause}{fullPlaysClause}{searchClause}
                 GROUP BY p.track_id
             )

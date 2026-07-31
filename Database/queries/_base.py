@@ -367,18 +367,6 @@ class SqlFragments:
                 )
     """
 
-    #< getSongsCount's copy: same three fields, but its subquery has track_artists
-    #  free to alias as ta (getSongsPage already uses that alias), hence ta3 there
-    #  and ta here.
-    _SONG_COUNT_MATCH_CONDITION = """
-                    t.name LIKE ? ESCAPE '\\'
-                    OR al.name LIKE ? ESCAPE '\\'
-                    OR EXISTS (
-                        SELECT 1 FROM track_artists ta JOIN artists ar ON ar.id = ta.artist_id
-                        WHERE ta.track_id = t.id AND ar.name LIKE ? ESCAPE '\\'
-                    )
-    """
-
     def _searchNarrowClause(self, params: list, searchQuery: str | None, column: str) -> str:
         """A song search, as a track-id set instead of an inline predicate.
 

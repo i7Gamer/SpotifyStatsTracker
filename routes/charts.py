@@ -428,7 +428,6 @@ def register(app, dashboard):
                 user_tags=userTags,
             )
 
-        page = dashboard._getPageParam()
         searchQuery = request.args.get("q", "")
 
         startDate, endDate = dashboard._getDateRange(interval, customStart, customEnd, default="all time", tz=db.tz)

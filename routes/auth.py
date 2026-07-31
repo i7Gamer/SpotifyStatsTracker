@@ -48,6 +48,7 @@ PROFILE_FLASH_PREFERENCES = "preferences"
 PROFILE_FLASH_SHARING = "data-sharing"
 PROFILE_FLASH_SPOTIFY = "spotify"
 PROFILE_FLASH_LASTFM = "lastfm"
+PROFILE_FLASH_NOTIFICATIONS = "notifications"
 
 HTTP_BAD_REQUEST = 400
 # Rate-limited actions render this status instead of redirecting - a 302 would
@@ -314,9 +315,6 @@ def register(app, dashboard):
     # cross-site GET must not be able to trigger it (the session cookie rides
     # top-level GET navigations even under SameSite=Lax).
     app.add_url_rule("/logout", "logout", logout, methods=["POST"])
-
-    PROFILE_FLASH_LASTFM = "lastfm"
-    PROFILE_FLASH_NOTIFICATIONS = "notifications"
 
     def _profileRedirect(endpoint, flashFor, success=None, error=None):
         """Back to a profile page with the message attached to `flashFor`'s
