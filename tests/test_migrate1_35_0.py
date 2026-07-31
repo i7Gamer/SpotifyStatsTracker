@@ -138,6 +138,35 @@ class TestMigrate1_35_0(unittest.TestCase):
 
         migrateModule.Migrator("1.35.0", "1.36.0").migrate()   #< must not raise
 
+    def test_legacy_users_shape_still_resolves_the_users_timezone(self):
+        """At 1.35.0 the users table has no hide_tags_panel/hide_now_playing
+        (added by the 1.38.0/1.39.0 migrators, which run AFTER this one in a
+        real upgrade). The timezone lookup used to go through getUserSettings,
+        whose SELECT names both - so on a genuine legacy database it raised
+        'no such column', resolveUserTimezone swallowed that at debug level,
+        and every user's milestone dates were silently recomputed on the
+        app-default day boundaries instead of their own."""
+        self._seedDatabaseAt("1.35.0")
+        repo = Repository(self.dbPath)
+        conn = repo._conn()
+        with conn:
+            conn.execute("UPDATE users SET timezone='Pacific/Kiritimati' WHERE username='someone'")
+            #< recreate the genuine 1.35.0 users shape
+            conn.execute("ALTER TABLE users DROP COLUMN hide_tags_panel")
+            conn.execute("ALTER TABLE users DROP COLUMN hide_now_playing")
+        repo.connectionManager.close()
+
+        capturedTzs = []
+
+        def capture(repo, username, tz):
+            capturedTzs.append(tz)
+            return 0
+
+        with patch.object(migrateModule, "recalculateMilestoneDates", side_effect=capture):
+            migrateModule.Migrator("1.35.0", "1.36.0").migrate()
+
+        self.assertEqual([str(tz) for tz in capturedTzs], ["Pacific/Kiritimati"])
+
         self.assertEqual(dbversion.readDbVersion(self.dbPath), "1.36.0")
 
 

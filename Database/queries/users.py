@@ -349,6 +349,20 @@ class UserQueries:
             conn.execute("UPDATE users SET is_admin=1 WHERE username=?", (row["username"],))
             return row["username"]
 
+    def getUserTimezone(self, username: str) -> str | None:
+        """users.timezone alone (a 1.11.0 column), NOT via getUserSettings:
+        resolveUserTimezone runs inside the 1.35.0 milestone-date migrator,
+        where the users table genuinely predates hide_tags_panel (1.38.0) and
+        hide_now_playing (1.39.0). getUserSettings' SELECT names both, so on
+        a real legacy database it raised 'no such column' - which the
+        helper's fallback swallowed at debug level, recomputing every user's
+        milestone dates on the app-default day boundaries. A helper a
+        migrator calls must only touch columns that exist at that
+        migrator's from-version."""
+        conn = self._conn()
+        row = conn.execute("SELECT timezone FROM users WHERE username=?", (username,)).fetchone()
+        return row["timezone"] if row else None
+
     def getUserSettings(self, username: str) -> dict:
         conn = self._conn()
         row = conn.execute(

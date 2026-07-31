@@ -139,9 +139,13 @@ def detectMilestones(db, repo, username, changeCache=None, markSeen=False) -> in
 def resolveUserTimezone(repo, username):
     """The tz `username`'s local day boundaries use - users.timezone when set
     and valid, else the app default - mirroring Database.refreshSettings so
-    recalculated streak dates agree with what the streak features show."""
+    recalculated streak dates agree with what the streak features show.
+
+    Reads through getUserTimezone, not getUserSettings: this also runs inside
+    the 1.35.0 migrator, against a users table that predates two of the
+    columns getUserSettings selects (see getUserTimezone's docstring)."""
     try:
-        tzName = repo.getUserSettings(username).get("timezone")
+        tzName = repo.getUserTimezone(username)
         if tzName:
             return ZoneInfo(tzName)
     except Exception as e:
