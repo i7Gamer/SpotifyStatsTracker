@@ -14,6 +14,7 @@ from conftest import DatabaseTestCase
 from Database.lastfm import (
     FetchOutcome, ArtistInfoOutcome, AlbumInfoOutcome,
     OUTCOME_OK, OUTCOME_NOT_FOUND, OUTCOME_TRANSIENT, OUTCOME_INVALID_KEY,
+    LASTFM_REFRESH_ACQUIRE_TIMEOUT_SECONDS,
 )
 
 OK_EMPTY = FetchOutcome(OUTCOME_OK, [])
@@ -100,7 +101,8 @@ class RefreshLastfmEntityTestCase(DatabaseTestCase):
         self.assertEqual(result, {"status": "ok", "name": "Artist X"})
         self.assertEqual(db.repo.getArtistGenres("aX"), ["rock", "indie rock"])
         self.assertEqual(db.getArtistBio("aX"), "A fresh bio.")
-        client.getArtistTopTags.assert_called_once_with("Artist X", stop_event=db.lastfm_stop_event)
+        client.getArtistTopTags.assert_called_once_with("Artist X", stop_event=db.lastfm_stop_event,
+                                                        timeout=LASTFM_REFRESH_ACQUIRE_TIMEOUT_SECONDS)
 
     @patch("Database.database.LastfmClient")
     def test_artist_refresh_clears_stale_genres_on_a_definitive_empty_result(self, mockClientClass):
@@ -168,8 +170,10 @@ class RefreshLastfmEntityTestCase(DatabaseTestCase):
         self.assertEqual([g["genre"] for g in db.repo.getAlbumGenres("alP")], ["rock", "indie rock"])
         self.assertFalse(any(g["inherited"] for g in db.repo.getAlbumGenres("alP")))
         self.assertEqual(db.getAlbumBio("alP"), "A fresh album bio.")
-        client.getAlbumTopTags.assert_any_call("Artist X", "Album P", stop_event=db.lastfm_stop_event)
-        client.getAlbumInfo.assert_called_once_with("Artist X", "Album P")
+        client.getAlbumTopTags.assert_any_call("Artist X", "Album P", stop_event=db.lastfm_stop_event,
+                                               timeout=LASTFM_REFRESH_ACQUIRE_TIMEOUT_SECONDS)
+        client.getAlbumInfo.assert_called_once_with("Artist X", "Album P",
+                                                    timeout=LASTFM_REFRESH_ACQUIRE_TIMEOUT_SECONDS)
 
     @patch("Database.database.LastfmClient")
     def test_album_refresh_bio_retries_with_cleaned_name_like_the_worker(self, mockClientClass):
@@ -183,7 +187,7 @@ class RefreshLastfmEntityTestCase(DatabaseTestCase):
         db = self._makeDb(tracks, entries, username="user1")
         db.repo.updateUserLastfmApiKey("user1", "key123")
 
-        def bioSideEffect(artist, album):
+        def bioSideEffect(artist, album, timeout=None):
             if album == "Album D":
                 return AlbumInfoOutcome(OUTCOME_OK, "The deluxe-stripped bio.")
             return AlbumInfoOutcome(OUTCOME_NOT_FOUND, None)
@@ -197,8 +201,10 @@ class RefreshLastfmEntityTestCase(DatabaseTestCase):
         self.assertEqual(result, {"status": "ok", "name": "Album D (Deluxe Edition)"})
         self.assertEqual(db.getAlbumBio("alD"), "The deluxe-stripped bio.")
         self.assertEqual(client.getAlbumInfo.call_count, 2)
-        client.getAlbumInfo.assert_any_call("Artist X", "Album D (Deluxe Edition)")
-        client.getAlbumInfo.assert_any_call("Artist X", "Album D")
+        client.getAlbumInfo.assert_any_call("Artist X", "Album D (Deluxe Edition)",
+                                            timeout=LASTFM_REFRESH_ACQUIRE_TIMEOUT_SECONDS)
+        client.getAlbumInfo.assert_any_call("Artist X", "Album D",
+                                            timeout=LASTFM_REFRESH_ACQUIRE_TIMEOUT_SECONDS)
 
     def test_album_with_no_resolvable_artist_is_reported(self):
         db = self._makeDbWithPlays()
@@ -233,7 +239,8 @@ class RefreshLastfmEntityTestCase(DatabaseTestCase):
         self.assertEqual(db.repo.getTrackGenres("tA"),
                          [{"genre": "rock", "inherited": False},
                           {"genre": "indie rock", "inherited": False}])
-        client.getTrackTopTags.assert_any_call("Artist X", "Song A", stop_event=db.lastfm_stop_event)
+        client.getTrackTopTags.assert_any_call("Artist X", "Song A", stop_event=db.lastfm_stop_event,
+                                               timeout=LASTFM_REFRESH_ACQUIRE_TIMEOUT_SECONDS)
 
     @patch("Database.database.LastfmClient")
     def test_tagless_track_refresh_falls_back_to_artist_inheritance(self, mockClientClass):
@@ -249,6 +256,34 @@ class RefreshLastfmEntityTestCase(DatabaseTestCase):
 
         self.assertEqual(result, {"status": "ok", "name": "Song A"})
         self.assertEqual(db.repo.getTrackGenres("tA"), [{"genre": "shoegaze", "inherited": True}])
+
+    # ---- request-thread bounding ------------------------------------------
+
+    LOOKUP_METHODS = ("getArtistTopTags", "getAlbumTopTags", "getTrackTopTags",
+                      "getArtistInfo", "getAlbumInfo")
+
+    @patch("Database.database.LastfmClient")
+    def test_every_refresh_lookup_is_bounded_by_the_request_timeout(self, mockClientClass):
+        """refreshLastfmEntity runs synchronously on an admin request thread.
+        An unbounded limiter acquire sat out whole backoff windows (60s on a
+        Last.fm 429), holding a Waitress thread - the rule validateApiKey
+        already follows (lastfm.py): share the limiter, never hang the HTTP
+        request. The track path is the deepest: its inheritance fallback does
+        an inline artist lookup, which must be bounded too."""
+        db = self._makeDbWithPlays()
+        db.repo.updateUserLastfmApiKey("user1", "key123")
+
+        client = self._clientReturning(getTrackTopTags=OK_EMPTY,   #< tag-less: forces the inline artist lookup
+                                       getArtistTopTags=ROCK_TAGS)
+        mockClientClass.return_value = client
+
+        db.refreshLastfmEntity("track", "tA")
+
+        boundedCalls = [c for c in client.mock_calls if str(c[0]) in self.LOOKUP_METHODS]
+        self.assertGreaterEqual(len(boundedCalls), 2)   #< the track lookup and the inline artist one
+        for name, args, kwargs in boundedCalls:
+            self.assertEqual(kwargs.get("timeout"), LASTFM_REFRESH_ACQUIRE_TIMEOUT_SECONDS,
+                             f"{name} ran unbounded on a request thread")
 
 
 if __name__ == "__main__":

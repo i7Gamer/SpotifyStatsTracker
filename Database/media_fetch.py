@@ -10,7 +10,7 @@ from __future__ import annotations
 # (stdlib, or Database/lastfm.py, which imports nothing of ours), so a real
 # import costs nothing and cannot cycle.
 from pathlib import Path
-from Database.lastfm import LastfmClient
+from Database.lastfm import LastfmClient, LASTFM_REFRESH_ACQUIRE_TIMEOUT_SECONDS
 
 import Database.database as _dbmod  # noqa: F401 - module-global names
 # (LastfmClient, requests, Importer, logger, time, Path, ...) are reached through
@@ -341,7 +341,13 @@ class MediaFetchMixin:
         if row is None:
             return {"status": "not_found"}
 
-        outcome = client.getArtistTopTags(row["name"], stop_event=self.lastfm_stop_event)
+        # timeout on every lookup here (and in the album/track twins below):
+        # this runs synchronously on an admin request thread, and an unbounded
+        # limiter acquire sat out whole backoff windows (60s on a Last.fm 429)
+        # holding a Waitress thread - the same rule validateApiKey follows.
+        # A timed-out lookup (None) already maps to "transient": try again.
+        outcome = client.getArtistTopTags(row["name"], stop_event=self.lastfm_stop_event,
+                                          timeout=LASTFM_REFRESH_ACQUIRE_TIMEOUT_SECONDS)
         if outcome is None:
             return {"status": "transient"}
         definitive, genres = self._lastfmOutcomeGenres(outcome)
@@ -350,7 +356,7 @@ class MediaFetchMixin:
         self.repo.replaceArtistGenres(artistId, genres)
         self.repo.markArtistsLastfmAttempted([artistId])
 
-        bioOutcome = client.getArtistInfo(row["name"])
+        bioOutcome = client.getArtistInfo(row["name"], timeout=LASTFM_REFRESH_ACQUIRE_TIMEOUT_SECONDS)
         if bioOutcome is not None and bioOutcome.status in (_dbmod.OUTCOME_OK, _dbmod.OUTCOME_NOT_FOUND):
             self.repo.setArtistBio(artistId, bioOutcome.bio if bioOutcome.status == _dbmod.OUTCOME_OK else None)
 
@@ -366,16 +372,19 @@ class MediaFetchMixin:
 
         definitive, genres, aborted = self._lastfmLookupOwnGenres(
             lambda name: client.getAlbumTopTags(primary["artist_name"], name,
-                                                stop_event=self.lastfm_stop_event),
+                                                stop_event=self.lastfm_stop_event,
+                                                timeout=LASTFM_REFRESH_ACQUIRE_TIMEOUT_SECONDS),
             row["name"])
         if aborted or not definitive:
             return {"status": "transient"}
         if not self._storeLastfmGenresWithInheritance(
-                client, "album", albumId, genres, primary["artist_id"], primary["artist_name"]):
+                client, "album", albumId, genres, primary["artist_id"], primary["artist_name"],
+                timeout=LASTFM_REFRESH_ACQUIRE_TIMEOUT_SECONDS):
             return {"status": "transient"}
 
         bioOutcome = self._lastfmLookupBioOutcome(
-            lambda name: client.getAlbumInfo(primary["artist_name"], name),
+            lambda name: client.getAlbumInfo(primary["artist_name"], name,
+                                             timeout=LASTFM_REFRESH_ACQUIRE_TIMEOUT_SECONDS),
             row["name"])
         if bioOutcome is not None and bioOutcome.status in (_dbmod.OUTCOME_OK, _dbmod.OUTCOME_NOT_FOUND):
             self.repo.setAlbumBio(albumId, bioOutcome.bio if bioOutcome.status == _dbmod.OUTCOME_OK else None)
@@ -389,13 +398,14 @@ class MediaFetchMixin:
 
         definitive, genres, aborted = self._lastfmLookupOwnGenres(
             lambda name: client.getTrackTopTags(row["artist_name"], name,
-                                                stop_event=self.lastfm_stop_event),
+                                                stop_event=self.lastfm_stop_event,
+                                                timeout=LASTFM_REFRESH_ACQUIRE_TIMEOUT_SECONDS),
             row["name"])
         if aborted or not definitive:
             return {"status": "transient"}
         if not self._storeLastfmGenresWithInheritance(
                 client, "track", trackId, genres, row["artist_id"], row["artist_name"],
-                albumId=row["album_id"]):
+                albumId=row["album_id"], timeout=LASTFM_REFRESH_ACQUIRE_TIMEOUT_SECONDS):
             return {"status": "transient"}
 
         return {"status": "ok", "name": row["name"]}

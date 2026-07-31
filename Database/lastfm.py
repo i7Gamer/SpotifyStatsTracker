@@ -157,6 +157,13 @@ _DECORATIVE_CODEPOINT_RANGES = (
 LASTFM_VALIDATION_ACQUIRE_TIMEOUT_SECONDS = 5
 LASTFM_VALIDATION_ARTIST = "Cher"   #< Last.fm's own docs example; any stable artist works
 
+# Same rule for the admin "Refresh Last.fm Data" button (refreshLastfmEntity):
+# synchronous on a request thread, so every one of its lookups gives up after
+# a short wait instead of sitting out a whole backoff window (60s on a
+# Last.fm 429) while holding a Waitress thread. A timed-out lookup surfaces
+# as the existing "transient" status - try again.
+LASTFM_REFRESH_ACQUIRE_TIMEOUT_SECONDS = 5
+
 OUTCOME_OK = "ok"
 OUTCOME_NOT_FOUND = "not_found"
 OUTCOME_TRANSIENT = "transient"
@@ -552,23 +559,29 @@ class LastfmClient:
         return fallback
 
     def getArtistTopTags(self, artistName: str,
-                         stop_event: threading.Event | None = None) -> FetchOutcome | None:
+                         stop_event: threading.Event | None = None,
+                         timeout: float | None = None) -> FetchOutcome | None:
+        #< timeout bounds each limiter acquire, for request-thread callers -
+        #  same contract getArtistInfo/getAlbumInfo already carry
         return self._lookupWithArtistNameFallback(
             artistName,
-            lambda name: self._fetchTopTags("artist.gettoptags", {"artist": name}, stop_event),
+            lambda name: self._fetchTopTags("artist.gettoptags", {"artist": name}, stop_event,
+                                            timeout=timeout),
             _hasUsableGenres,
             "artist tags")
 
     def getAlbumTopTags(self, artistName: str, albumName: str,
-                        stop_event: threading.Event | None = None) -> FetchOutcome | None:
+                        stop_event: threading.Event | None = None,
+                        timeout: float | None = None) -> FetchOutcome | None:
         return self._lookupWithArtistNameFallback(
             artistName,
-            lambda name: self._fetchAlbumTopTagsForArtist(name, albumName, stop_event),
+            lambda name: self._fetchAlbumTopTagsForArtist(name, albumName, stop_event, timeout),
             _hasUsableGenres,
             "album tags")
 
     def _fetchAlbumTopTagsForArtist(self, artistName: str, albumName: str,
-                                    stop_event: threading.Event | None) -> FetchOutcome | None:
+                                    stop_event: threading.Event | None,
+                                    timeout: float | None = None) -> FetchOutcome | None:
         """One album.gettoptags call for `artistName`/`albumName`, falling
         back to album.getinfo's embedded tags on a definitive-empty OR
         not-found result - album.gettoptags is confirmed unreliable for some
@@ -584,26 +597,30 @@ class LastfmClient:
         per-artist-name unit that getAlbumTopTags retries under alternate
         spellings via _lookupWithArtistNameFallback."""
         outcome = self._fetchTopTags("album.gettoptags",
-                                     {"artist": artistName, "album": albumName}, stop_event)
+                                     {"artist": artistName, "album": albumName}, stop_event,
+                                     timeout=timeout)
         if outcome is None or outcome.status not in (OUTCOME_OK, OUTCOME_NOT_FOUND) or outcome.tags:
             return outcome
         fallback = self._fetchTopTags("album.getinfo",
                                       {"artist": artistName, "album": albumName}, stop_event,
+                                      timeout=timeout,
                                       extractFn=_extractAlbumInfoTags)
         if fallback is not None and fallback.status == OUTCOME_OK and fallback.tags:
             _logGetInfoRecovery("album", fallback.tags, artistName, albumName)
         return fallback
 
     def getTrackTopTags(self, artistName: str, trackName: str,
-                        stop_event: threading.Event | None = None) -> FetchOutcome | None:
+                        stop_event: threading.Event | None = None,
+                        timeout: float | None = None) -> FetchOutcome | None:
         return self._lookupWithArtistNameFallback(
             artistName,
-            lambda name: self._fetchTrackTopTagsForArtist(name, trackName, stop_event),
+            lambda name: self._fetchTrackTopTagsForArtist(name, trackName, stop_event, timeout),
             _hasUsableGenres,
             "track tags")
 
     def _fetchTrackTopTagsForArtist(self, artistName: str, trackName: str,
-                                    stop_event: threading.Event | None) -> FetchOutcome | None:
+                                    stop_event: threading.Event | None,
+                                    timeout: float | None = None) -> FetchOutcome | None:
         """One track.gettoptags call for `artistName`/`trackName`, falling
         back to track.getinfo's embedded tags on a definitive-empty OR
         not-found result. Structurally mirrors _fetchAlbumTopTagsForArtist,
@@ -630,11 +647,13 @@ class LastfmClient:
         This is the per-artist-name unit that getTrackTopTags retries under
         alternate spellings via _lookupWithArtistNameFallback."""
         outcome = self._fetchTopTags("track.gettoptags",
-                                     {"artist": artistName, "track": trackName}, stop_event)
+                                     {"artist": artistName, "track": trackName}, stop_event,
+                                     timeout=timeout)
         if outcome is None or outcome.status not in (OUTCOME_OK, OUTCOME_NOT_FOUND) or outcome.tags:
             return outcome
         fallback = self._fetchTopTags("track.getinfo",
                                       {"artist": artistName, "track": trackName}, stop_event,
+                                      timeout=timeout,
                                       extractFn=_extractTrackInfoTags)
         if fallback is not None and fallback.status == OUTCOME_OK and fallback.tags:
             _logGetInfoRecovery("track", fallback.tags, artistName, trackName)

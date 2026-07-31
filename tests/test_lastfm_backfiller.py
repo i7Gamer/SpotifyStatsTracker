@@ -465,7 +465,8 @@ class WorkerBatchTestCase(LastfmWorkerBase):
 
         db._processLastfmAlbumBatch(client, "user1")
 
-        client.getArtistTopTags.assert_any_call("Artist M", stop_event=db.lastfm_stop_event)
+        client.getArtistTopTags.assert_any_call("Artist M", stop_event=db.lastfm_stop_event,
+                                                timeout=None)   #< workers stay unbounded; only request threads pass one
         self.assertEqual(db.repo.getArtistGenres("aM"), ["rock", "indie rock"])
         self.assertEqual([g["genre"] for g in db.repo.getAlbumGenres("alP")], ["rock", "indie rock"])
         self.assertTrue(all(g["inherited"] for g in db.repo.getAlbumGenres("alP")))

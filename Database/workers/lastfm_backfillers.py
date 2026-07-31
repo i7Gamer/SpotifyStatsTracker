@@ -614,7 +614,8 @@ class LastfmBackfillMixin:
                                           entityId: str, ownGenres: list[str],
                                           artistId: str, artistName: str,
                                           albumId: str | None = None,
-                                          stop_event: threading.Event | None = None) -> bool:
+                                          stop_event: threading.Event | None = None,
+                                          timeout: float | None = None) -> bool:
         """Store a definitive lookup result for a track/album. Own tags win;
         with none, a track first materializes its album's OWN genres as
         inherited rows (the closer granularity - the album batch runs earlier
@@ -651,7 +652,7 @@ class LastfmBackfillMixin:
             # Rarely duplicates another worker's in-flight artist fetch (the
             # claim set only guards batch rows) - harmless, the write is
             # idempotent.
-            outcome = client.getArtistTopTags(artistName, stop_event=stop_event)
+            outcome = client.getArtistTopTags(artistName, stop_event=stop_event, timeout=timeout)
             if outcome is None:
                 return False
             definitive, artistGenres = self._lastfmOutcomeGenres(outcome)
@@ -678,7 +679,7 @@ class LastfmBackfillMixin:
             secId, secName = sec["artist_id"], sec["artist_name"]
             secState = self.repo.getArtistLastfmState(secId)
             if secState["attempted_at"] is None and not secState["genres"]:
-                outcome = client.getArtistTopTags(secName, stop_event=stop_event)
+                outcome = client.getArtistTopTags(secName, stop_event=stop_event, timeout=timeout)
                 if outcome is None:
                     return False
                 def_sec, secGenres = self._lastfmOutcomeGenres(outcome)

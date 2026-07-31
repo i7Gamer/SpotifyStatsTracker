@@ -277,6 +277,24 @@ class ClientTestCase(unittest.TestCase):
         limiter.acquire.return_value = True
         return LastfmClient("test-key", rateLimiter=limiter), limiter
 
+    def test_top_tag_lookups_forward_the_timeout_to_the_limiter(self):
+        """getArtistInfo/getAlbumInfo have taken a timeout since the key-
+        validation work; the three TopTags getters could not - so a
+        request-thread caller (the admin Refresh Last.fm Data button) had no
+        way to bound the limiter wait and sat out whole backoff windows."""
+        lookups = (("getArtistTopTags", ("Artist",)),
+                   ("getAlbumTopTags", ("Artist", "Album")),
+                   ("getTrackTopTags", ("Artist", "Track")))
+        for lookup, args in lookups:
+            with self.subTest(lookup=lookup):
+                client, limiter = self._client()
+                limiter.acquire.return_value = False   #< no slot within the timeout
+
+                outcome = getattr(client, lookup)(*args, timeout=1.0)
+
+                self.assertIsNone(outcome)   #< gave up without a request
+                limiter.acquire.assert_called_once_with(stop_event=None, timeout=1.0)
+
     @patch("Database.lastfm.requests.get")
     def test_top_tags_request_carries_key_format_and_autocorrect(self, mockGet):
         client, _ = self._client()
