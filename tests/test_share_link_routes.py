@@ -119,6 +119,42 @@ class TestCreateShareLink(ShareLinkRoutesTestCase):
         self.assertEqual(resp.status_code, 302)
         self.assertIn("error=", resp.headers["Location"])
 
+    def test_a_year_without_listening_data_is_rejected(self):
+        """<int:year> bounds nothing and _buildWrappedContext does
+        nowLocal.replace(year=year + 1): a hand-crafted POST for year 9999
+        used to mint a link whose PUBLIC page 500'd on every visit (year
+        10000 is out of datetime's range). The route now accepts only years
+        the user has data for - the same set the share modal offers."""
+        client = self._loginAs("alice", "alice@example.com")   #< _makeDb: data in 2026 only
+
+        for badYear in (9999, 1, 1999):
+            resp = client.post(f"/wrapped/share-links/{badYear}", data={"expiry": "never"})
+            self.assertEqual(resp.status_code, 302)
+            self.assertIn("error=", resp.headers["Location"])
+
+        self.assertEqual(self.dash.repo.getShareLinksForUser("alice"), [])
+
+    def test_a_year_without_listening_data_is_rejected_over_ajax_too(self):
+        client = self._loginAs("alice", "alice@example.com")
+
+        resp = client.post("/wrapped/share-links/9999?ajax=true", data={"expiry": "never"})
+
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("error", resp.get_json())
+        self.assertEqual(self.dash.repo.getShareLinksForUser("alice"), [])
+
+    def test_an_all_years_link_needs_no_year_validation(self):
+        """The path year is ignored for allYears links (linkYear is None), so
+        the has-data check must not block them."""
+        client = self._loginAs("alice", "alice@example.com")
+
+        resp = client.post("/wrapped/share-links/9999", data={"expiry": "never", "allYears": "1"})
+
+        self.assertEqual(resp.status_code, 302)
+        links = self.dash.repo.getShareLinksForUser("alice")
+        self.assertEqual(len(links), 1)
+        self.assertIsNone(links[0]["year"])
+
     def test_missing_expiry_field_still_defaults_to_never(self):
         """The form always posts one of the choices; an absent field is the
         existing default and must keep working."""
@@ -169,8 +205,12 @@ class TestCreateShareLink(ShareLinkRoutesTestCase):
     def test_rate_limited_after_max_attempts(self):
         """Spread across distinct years so the per-bucket cap (5) never
         blocks a create before the rate limiter (per source IP, independent
-        of bucket) has a chance to trip at RATE_LIMIT_MAX_ATTEMPTS."""
-        client = self._loginAs("alice", "alice@example.com")
+        of bucket) has a chance to trip at RATE_LIMIT_MAX_ATTEMPTS. The db
+        declares data back to 2000 so every posted year passes the
+        has-data-for-that-year validation."""
+        db = self._makeDb()
+        db.getEntriesFromOld.return_value = [{"playedAt": _ts(2000)}]
+        client = self._loginAs("alice", "alice@example.com", db=db)
         for i in range(RATE_LIMIT_MAX_ATTEMPTS):
             client.post(f"/wrapped/share-links/{2000 + i}", data={"expiry": "never"})
 
@@ -621,6 +661,21 @@ class TestPublicSharedWrappedPage(PublicSharedWrappedTestCase):
         self.assertIn("Artists alice first listened to in 2026.", body)
         self.assertIn("Albums alice first listened to in 2026.", body)
         self.assertNotIn("you first listened to", body)
+
+    def test_a_history_of_only_future_plays_does_not_crash_a_multi_year_link(self):
+        """_computeAvailableYears' range is empty when the earliest play is
+        future-dated (imports can carry clock-skewed timestamps), and
+        sharedWrappedPage indexes availableYears[0] - which was an
+        IndexError -> 500 on a public URL. The helper now falls back to the
+        current year and renders an empty Wrapped instead."""
+        token = self._createLink(year=None)   #< multi-year: years come from the data
+        db = self._makeDb()
+        db.getEntriesFromOld.return_value = [{"playedAt": _ts(2027)}]   #< after the frozen 2026-07-11 'now'
+
+        resp = self._getShared(token, db=db)
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn(b"2026 Wrapped", resp.data)   #< the current-year fallback
 
     def test_track_card_you_played_line_uses_the_owners_username(self):
         token = self._createLink()

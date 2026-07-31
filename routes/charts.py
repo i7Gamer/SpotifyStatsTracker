@@ -393,8 +393,13 @@ def register(app, dashboard):
         customEnd = request.args.get("endDate", "")
 
         # History defaults to All Time (the full list); the Time Period filter
-        # then scopes it to any named interval or a custom range.
-        interval = request.args.get("interval") or "all time"
+        # then scopes it to any named interval or a custom range. Validated
+        # like dashboardIndex's (see the comment there): the DATA was safe
+        # either way (_getDateRange coerces junk to the default), but the raw
+        # value reached the template and _buildPaginationContext, leaving the
+        # select unselected and junk in every page link on a stale URL.
+        interval = dashboard._getValidInterval(request.args.get("interval") or "all time",
+                                               default="all time")
         if interval == "custom" and not (customStart and customEnd):
             interval = "all time"
 

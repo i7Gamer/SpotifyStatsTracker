@@ -234,6 +234,13 @@ def _render_event_template(
     relevant page; when blank, the copy falls back to telling the recipient
     where to go in words, since there's nothing reliable to link to."""
     link = _eventLink(event_type, base_url)
+    # Escaped for the HTML bodies only (the text bodies are text/plain).
+    # Usernames are sanitized to [A-Za-z0-9_-] at creation today, so no
+    # metacharacter can actually reach these f-strings - but the escaping
+    # decision was made nowhere (while _ctaButton right below escapes its
+    # link), and a future switch to display names, which allow spaces and
+    # more, would have turned the interpolation live silently.
+    htmlUsername = html.escape(username)
 
     if event_type == EVENT_INVALID_COOKIES:
         subject = "Spotify Stats Tracker — Action Required: Re-authenticate Session"
@@ -247,7 +254,7 @@ def _render_event_template(
         html_body = f"""
         <div style="font-family: Arial, sans-serif; padding: 20px; background-color: #121212; color: #ffffff;">
           <h2 style="color: #e05252;">Session Re-authentication Required</h2>
-          <p>Hello <strong>{username}</strong>,</p>
+          <p>Hello <strong>{htmlUsername}</strong>,</p>
           <p>Your Spotify session cookies have expired or become invalid. Listening tracking has been paused.</p>
           <p>{cta}</p>
         </div>
@@ -263,7 +270,7 @@ def _render_event_template(
         html_body = f"""
         <div style="font-family: Arial, sans-serif; padding: 20px; background-color: #121212; color: #ffffff;">
           <h2 style="color: #ff9800;">API Credentials Error</h2>
-          <p>Hello <strong>{username}</strong>,</p>
+          <p>Hello <strong>{htmlUsername}</strong>,</p>
           <p>Your API credentials (Spotify Developer API or Last.fm key) failed during recent backfill tasks.</p>
           <p>{cta}</p>
         </div>
@@ -280,15 +287,15 @@ def _render_event_template(
         html_body = f"""
         <div style="font-family: Arial, sans-serif; padding: 20px; background-color: #121212; color: #ffffff;">
           <h2 style="color: #1db954;">New Data Sharing Request</h2>
-          <p>Hello <strong>{username}</strong>,</p>
-          <p><strong>{requester}</strong> sent you a request to share listening statistics.</p>
+          <p>Hello <strong>{htmlUsername}</strong>,</p>
+          <p><strong>{html.escape(requester)}</strong> sent you a request to share listening statistics.</p>
           <p>{cta}</p>
         </div>
         """
     else:
         subject = f"Spotify Stats Tracker — Notification ({event_type})"
         text_body = f"Hello {username},\n\nYou have a new notification on Spotify Stats Tracker."
-        html_body = f"<p>Hello {username}, you have a new notification.</p>"
+        html_body = f"<p>Hello {htmlUsername}, you have a new notification.</p>"
 
     return subject, text_body, html_body
 

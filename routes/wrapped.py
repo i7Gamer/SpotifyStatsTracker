@@ -160,6 +160,17 @@ def register(app, dashboard):
             return redirect(url_for("wrappedPage", year=year, error=errorMessage, openShareModal=1))
         expiresInSeconds = SHARE_LINK_EXPIRY_CHOICES[expiryChoice]
         allYears = request.form.get("allYears") == "1"
+        # <int:year> bounds nothing, and _buildWrappedContext does
+        # nowLocal.replace(year=year + 1): a hand-crafted POST for year 9999
+        # minted a link whose PUBLIC page 500'd on every visit (year 10000 is
+        # out of datetime's range; year 0 dies on the first replace). Validate
+        # against the years the user has data for - the same set the share
+        # modal offers. allYears links carry no year, so they skip this.
+        if not allYears and year not in dashboard._computeAvailableYears(db):
+            errorMessage = "You can only share a year you have listening data for."
+            if isAjax:
+                return jsonify(error=errorMessage), 400
+            return redirect(url_for("wrappedPage", error=errorMessage, openShareModal=1))
         linkYear = None if allYears else year
 
         bucketCount = dashboard.repo.countActiveShareLinksForBucket(

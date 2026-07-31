@@ -214,6 +214,27 @@ class TestRenderEventTemplate:
         assert "alice" in html_body
         assert "some_future_event" in subject
 
+    def test_names_are_escaped_in_every_html_body(self):
+        """Usernames are sanitized to [A-Za-z0-9_-] at creation today, so no
+        metacharacter reaches these f-strings - but the escaping decision was
+        made nowhere (while _ctaButton right beside them escapes its link),
+        and a future switch to display names (which allow spaces and more)
+        would have turned the interpolation live. The text bodies are
+        text/plain and stay raw."""
+        hostile = "<img src=x onerror=alert(1)>"
+        for event, context in ((EVENT_INVALID_COOKIES, {}),
+                               (EVENT_API_KEY_FAILED, {}),
+                               (EVENT_SHARE_REQUEST, {}),
+                               ("some_future_event", {})):
+            _subject, _text, html_body = _render_event_template(event, hostile, context)
+            assert "<img" not in html_body, f"{event}: username reached the HTML unescaped"
+            assert "&lt;img" in html_body
+
+        _subject, _text, html_body = _render_event_template(
+            EVENT_SHARE_REQUEST, "alice", {"requester_username": hostile})
+        assert "<img" not in html_body, "requester reached the HTML unescaped"
+        assert "&lt;img" in html_body
+
     def test_invalid_cookies_links_to_login_when_base_url_configured(self):
         _subject, text_body, html_body = _render_event_template(
             EVENT_INVALID_COOKIES, "alice", {}, base_url="https://tracker.example.com")

@@ -298,6 +298,21 @@ class TestHistoryCustomRangeListScoping(_ListRouteTestBase):
         countKwargs = db.getEntriesCount.call_args.kwargs
         self.assertIsNotNone(countKwargs["startDate"])
 
+    def test_an_unrecognized_interval_renders_as_the_default_not_raw(self):
+        """historyPage was the one filter page reading ?interval= raw - the
+        data was safe (_getDateRange coerces junk to the default), but the raw
+        value reached the template and the pagination links, so a stale or
+        truncated URL left the Time Period select with no option selected and
+        propagated the junk into every page link."""
+        dash = self._makeApp()
+        db = self._makeDb(entryCount=0)
+
+        resp = self._getHistory(dash, db, query="?interval=bogus")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn(b"<option value=\"all time\" selected>", resp.data)
+        self.assertNotIn(b"bogus", resp.data)
+
     def test_default_visit_is_all_time_and_shows_full_history(self):
         """A plain visit (no query params) defaults to All Time, so the list is
         unscoped (startDate/endDate None) - the full history."""

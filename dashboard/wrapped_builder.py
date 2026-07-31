@@ -33,12 +33,17 @@ class WrappedBuilderMixin:
         """Every year `db`'s user has at least one play in, most recent
         first - shared by wrappedPage() (year badges) and a multi-year
         ("all years") share link on sharedWrappedPage(), which has no fixed
-        single year to fall back on the way a per-year link does."""
+        single year to fall back on the way a per-year link does.
+
+        Never empty: a history whose EARLIEST play is future-dated (a clock
+        skew artifact an import can carry) makes the range empty, and both
+        callers index [0] - so the current year stands in, rendering an
+        empty Wrapped rather than a 500."""
         nowLocal = now(tz=db.tz)
         currentYear = nowLocal.year
         oldestEntries = db.getEntriesFromOld(count=1, fullPagination=False)
         earliestYear = convertToDatetime(oldestEntries[0]["playedAt"], tz=db.tz).year if oldestEntries else currentYear
-        return list(range(currentYear, earliestYear - 1, -1))
+        return list(range(currentYear, earliestYear - 1, -1)) or [currentYear]
 
     def _parseWrappedFilterParams(self) -> tuple:
         """groupBy/limit/sortBy (validated, with the same defaults/fallbacks
