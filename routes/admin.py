@@ -13,6 +13,8 @@ import threading
 
 from flask import render_template, redirect, request, url_for, abort, jsonify
 
+from routes._auth import makeRequiresUser
+
 from config import (
     RECOMMENDATION_ARTIST_LIMIT, TRUTHY_ENV_VALUES,
     ALLOW_INSTANCE_RESTART_ENV_VAR, INSTANCE_RESTART_DELAY_SECONDS,
@@ -54,18 +56,22 @@ MANUAL_BACKUP_SYNC_WAIT_SECONDS = 20
 
 
 def register(app, dashboard):
-    def adminPage():
+    # The pre-bound admin flavour (see routes/_auth.py): logged-in + isAdmin,
+    # or 403; anonymous redirects to login with next=/admin. This replaced 13
+    # hand-rolled copies of the same four-line preamble - the exact
+    # forgettable-guard situation makeRequiresUser was written to close.
+    # adminRefreshLastfmEntity keeps its own guard: its login redirect targets
+    # the detail page the button lives on, not /admin.
+    requiresAdmin = makeRequiresUser(dashboard)(admin=True)
+
+    @requiresAdmin
+    def adminPage(username, db):
         """Every admin-only setting/view for the instance: the full
         users table (with per-account admin promote/demote), the 8
         feature/backfill toggles regrouped into 3 logical categories, and
         read-only instance-wide insights. Fully gated (unlike
         overviewPage, which stays visible to everyone) since there's
         nothing here for a non-admin to see."""
-        email, username, db = dashboard.get_current_user_or_redirect()
-        if not email:
-            return redirect(url_for("login", next=url_for("adminPage")))
-        if not dashboard.repo.isAdmin(username):
-            abort(403)
 
         users_list = []
         # One grouped scan for every user's play/skip counts instead of a
@@ -398,15 +404,11 @@ def register(app, dashboard):
         )
     app.add_url_rule("/admin", "adminPage", adminPage, methods=["GET"])
 
-    def adminEmailSettings():
+    @requiresAdmin
+    def adminEmailSettings(username, db):
         """Admin-only: update instance-wide SMTP configuration, the global
         email notifications toggle, and the public URL notification emails
         link back to."""
-        email, username, db = dashboard.get_current_user_or_redirect()
-        if not email:
-            return redirect(url_for("login", next=url_for("adminPage")))
-        if not dashboard.repo.isAdmin(username):
-            abort(403)
         enabled = request.form.get("email_notifications_enabled") == "1"
         host = request.form.get("smtp_host", "")
         try:
@@ -443,13 +445,12 @@ def register(app, dashboard):
         return redirect(url_for("adminPage", tab="settings", message="Email notification settings saved."))
     app.add_url_rule("/admin/email_settings", "adminEmailSettings", adminEmailSettings, methods=["POST"])
 
-    def adminTestEmail():
+    @requiresAdmin
+    def adminTestEmail(username, db):
         """Admin-only: send a test email to the current admin account."""
-        email, username, db = dashboard.get_current_user_or_redirect()
-        if not email:
-            return redirect(url_for("login", next=url_for("adminPage")))
-        if not dashboard.repo.isAdmin(username):
-            abort(403)
+        #< requiresAdmin deliberately doesn't pass the email through (it's
+        #  guard-only everywhere else); this one view actually sends to it
+        email = dashboard.repo.getEmailForUsername(username)
         success, err = send_test_email(dashboard.repo, email)
         if success:
             return redirect(url_for("adminPage", tab="settings", message=f"Test email successfully sent to {email}."))
@@ -457,17 +458,13 @@ def register(app, dashboard):
             return redirect(url_for("adminPage", tab="settings", error=f"Test email failed: {err}"))
     app.add_url_rule("/admin/test_email", "adminTestEmail", adminTestEmail, methods=["POST"])
 
-    def adminUserSettings():
+    @requiresAdmin
+    def adminUserSettings(username, db):
         """Admin-only: instance-wide toggles for data sharing (Compare +
         share requests), new user registration, public Wrapped share links,
         achievement milestones, automatic milestone-date recalculation, and
         the personal tagging system (tag panel, tag filters, Playlists page) -
         see Database/repository.py's app_settings."""
-        email, username, db = dashboard.get_current_user_or_redirect()
-        if not email:
-            return redirect(url_for("login", next=url_for("adminPage")))
-        if not dashboard.repo.isAdmin(username):
-            abort(403)
         # Unchecked checkboxes aren't submitted: absence means disable.
         dashboard.repo.setDataSharingEnabled(request.form.get("data_sharing") == "1")
         dashboard.repo.setRegistrationEnabled(request.form.get("registration") == "1")
@@ -480,16 +477,12 @@ def register(app, dashboard):
         return redirect(url_for("adminPage", tab="settings", message="User settings saved."))
     app.add_url_rule("/admin/user_settings", "adminUserSettings", adminUserSettings, methods=["POST"])
 
-    def adminLastfmSettings():
+    @requiresAdmin
+    def adminLastfmSettings(username, db):
         """Admin-only: Last.fm genre backfill, artist/album biography
         backfill, and whether inherited (artist-derived) genre rows count
         in genre stats and coverage - see Database/repository.py's
         app_settings."""
-        email, username, db = dashboard.get_current_user_or_redirect()
-        if not email:
-            return redirect(url_for("login", next=url_for("adminPage")))
-        if not dashboard.repo.isAdmin(username):
-            abort(403)
         dashboard.repo.setLastfmGenreBackfillEnabled(request.form.get("lastfm_backfill") == "1")
         dashboard.repo.setArtistBioEnabled(request.form.get("artist_bio") == "1")
         dashboard.repo.setAlbumBioEnabled(request.form.get("album_bio") == "1")
@@ -548,14 +541,10 @@ def register(app, dashboard):
         return redirect(url_for(detailRoute, **redirectArgs))
     app.add_url_rule("/admin/lastfm/refresh/<kind>/<entity_id>", "adminRefreshLastfmEntity", adminRefreshLastfmEntity, methods=["POST"])
 
-    def adminSpotifySettings():
+    @requiresAdmin
+    def adminSpotifySettings(username, db):
         """Admin-only: the Spotify Developer API backfill kill switch
         (missed-plays recovery and album/track metadata fetching)."""
-        email, username, db = dashboard.get_current_user_or_redirect()
-        if not email:
-            return redirect(url_for("login", next=url_for("adminPage")))
-        if not dashboard.repo.isAdmin(username):
-            abort(403)
         dashboard.repo.setSpotifyApiBackfillEnabled(request.form.get("spotify_backfill") == "1")
         # Read once per listener build, so this takes effect on the next
         # rebuild rather than mid-stream - say so instead of implying it is live.
@@ -564,16 +553,12 @@ def register(app, dashboard):
                                 message="Spotify settings saved. Push mode applies when each listener next restarts."))
     app.add_url_rule("/admin/spotify_settings", "adminSpotifySettings", adminSpotifySettings, methods=["POST"])
 
-    def adminSkipSettings():
+    @requiresAdmin
+    def adminSkipSettings(username, db):
         """Admin-only: the instance-wide skip threshold (a plain seconds value
         or a percent of each track's duration). Saving recomputes plays.is_skip
         across every user's history via recomputeSkipFlags(), so all skip vs
         real-play stats reflect the new boundary immediately."""
-        email, username, db = dashboard.get_current_user_or_redirect()
-        if not email:
-            return redirect(url_for("login", next=url_for("adminPage")))
-        if not dashboard.repo.isAdmin(username):
-            abort(403)
         mode = request.form.get("skip_mode", SKIP_MODE_SECONDS)
         if mode not in (SKIP_MODE_SECONDS, SKIP_MODE_PERCENT):
             mode = SKIP_MODE_SECONDS
@@ -600,15 +585,11 @@ def register(app, dashboard):
         return redirect(url_for("adminPage", tab="settings", message="Playback classification settings saved."))
     app.add_url_rule("/admin/skip_settings", "adminSkipSettings", adminSkipSettings, methods=["POST"])
 
-    def adminBackupSettings():
+    @requiresAdmin
+    def adminBackupSettings(username, db):
         """Admin-only: automatic-backup interval (hours) and retention (count),
         0 to disable either. Read when the BackupWorker is constructed, so a
         change applies after the app restarts."""
-        email, username, db = dashboard.get_current_user_or_redirect()
-        if not email:
-            return redirect(url_for("login", next=url_for("adminPage")))
-        if not dashboard.repo.isAdmin(username):
-            abort(403)
         for field, key, lo, hi in (
             ("backup_interval_hours", BACKUP_INTERVAL_HOURS_KEY, BACKUP_INTERVAL_HOURS_MIN, BACKUP_INTERVAL_HOURS_MAX),
             ("backup_retention_count", BACKUP_RETENTION_COUNT_KEY, BACKUP_RETENTION_COUNT_MIN, BACKUP_RETENTION_COUNT_MAX),
@@ -623,7 +604,8 @@ def register(app, dashboard):
         return redirect(url_for("adminPage", tab="settings", message="Backup settings saved."))
     app.add_url_rule("/admin/backup_settings", "adminBackupSettings", adminBackupSettings, methods=["POST"])
 
-    def adminCreateBackup():
+    @requiresAdmin
+    def adminCreateBackup(username, db):
         """Admin-only: trigger an immediate on-demand database backup. Runs
         unconditionally even if scheduled automatic backups are disabled.
 
@@ -633,11 +615,6 @@ def register(app, dashboard):
         the snapshot filename (or the failure) synchronously - and otherwise
         returns immediately, leaving the backup to finish in the background.
         Returns JSON when requested via AJAX, or redirects to /admin."""
-        email, username, db = dashboard.get_current_user_or_redirect()
-        if not email:
-            return redirect(url_for("login", next=url_for("adminPage")))
-        if not dashboard.repo.isAdmin(username):
-            abort(403)
 
         is_ajax = request.headers.get("X-Requested-With") == "XMLHttpRequest"
 
@@ -688,16 +665,12 @@ def register(app, dashboard):
         return respond("success", f"Database snapshot created: {filename}")
     app.add_url_rule("/admin/create_backup", "adminCreateBackup", adminCreateBackup, methods=["POST"])
 
-    def adminTuningSettings():
+    @requiresAdmin
+    def adminTuningSettings(username, db):
         """Admin-only: numeric tunables migrated out of code constants. The
         Discover artist count is read live per request; the worker pool sizes
         apply only after a restart (see Database.configureWorkerPools). Each
         value is clamped to its bounds; a blank/unparseable field is left as-is."""
-        email, username, db = dashboard.get_current_user_or_redirect()
-        if not email:
-            return redirect(url_for("login", next=url_for("adminPage")))
-        if not dashboard.repo.isAdmin(username):
-            abort(403)
 
         def _save(field, key, lo, hi):
             raw = request.form.get(field)
@@ -715,7 +688,8 @@ def register(app, dashboard):
         return redirect(url_for("adminPage", tab="workers", message="Advanced tuning settings saved."))
     app.add_url_rule("/admin/tuning_settings", "adminTuningSettings", adminTuningSettings, methods=["POST"])
 
-    def adminRestart():
+    @requiresAdmin
+    def adminRestart(username, db):
         """Admin-only: gracefully stop every worker and exit so a SUPERVISING
         launch script relaunches the process - the only way restart-only
         settings (worker pool sizes) take effect. Gated behind
@@ -724,11 +698,6 @@ def register(app, dashboard):
         INSTANCE_RESTART_DELAY_SECONDS so this response reaches the browser
         first; threading.Timer is the testable seam (no real os._exit under
         test, which patches it)."""
-        email, username, db = dashboard.get_current_user_or_redirect()
-        if not email:
-            return redirect(url_for("login", next=url_for("adminPage")))
-        if not dashboard.repo.isAdmin(username):
-            abort(403)
         if os.environ.get(ALLOW_INSTANCE_RESTART_ENV_VAR, "").lower() not in TRUTHY_ENV_VALUES:
             return redirect(url_for("adminPage", tab="settings",
                 error="Instance restart is disabled. Set ALLOW_INSTANCE_RESTART=1 in a supervised launch to enable it."))
@@ -745,18 +714,14 @@ def register(app, dashboard):
             message="Restarting now - the app will be back in a few seconds if the process is supervised."))
     app.add_url_rule("/admin/restart", "adminRestart", adminRestart, methods=["POST"])
 
-    def adminSetUserAdmin(username):
+    @requiresAdmin
+    def adminSetUserAdmin(actingUsername, db, username):
         """Admin-only: promote/demote a user's admin status. Demotion goes
         through Repository.demoteAdmin, which atomically refuses to remove the
         last remaining admin (setUserAdmin otherwise happily allows zero admins,
         stranding the instance with nobody able to reach any admin-gated
         surface). The block is raised only when the target actually IS that last
         admin - demoting a non-admin is a harmless no-op, not an error."""
-        email, actingUsername, db = dashboard.get_current_user_or_redirect()
-        if not email:
-            return redirect(url_for("login", next=url_for("adminPage")))
-        if not dashboard.repo.isAdmin(actingUsername):
-            abort(403)
         tab = request.args.get("tab") or request.form.get("tab") or "overview"
         makeAdmin = request.form.get("make_admin") == "1"
         if makeAdmin:

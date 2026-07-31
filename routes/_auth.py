@@ -20,7 +20,7 @@ each routes module builds its own decorator inside register().
 """
 import functools
 
-from flask import jsonify
+from flask import abort, jsonify, redirect, url_for
 
 
 def makeRequiresUser(dashboard):
@@ -31,7 +31,7 @@ def makeRequiresUser(dashboard):
     hands URL converters in as keyword arguments, which is why they ride
     through as **kwargs rather than positionally.
 
-    Two flavours, because the routes genuinely have two contracts:
+    Three flavours, because the routes genuinely have three contracts:
 
     `@requiresUser` is for a page. It delegates to
     dashboard.unauthenticatedResponse(), which redirects to the login screen -
@@ -41,8 +41,15 @@ def makeRequiresUser(dashboard):
 
     `@requiresUser(api=True)` is for an endpoint that only ever answers JSON
     and is fetched without an ?ajax= marker. Redirecting those would hand the
-    caller a login page to parse, so they always get the 401."""
-    def requiresUser(view=None, *, api=False):
+    caller a login page to parse, so they always get the 401.
+
+    `@requiresUser(admin=True)` additionally requires Repository.isAdmin, or
+    403. Its anonymous branch redirects with next=/admin - the admin
+    surface's own convention: whatever sub-endpoint was POSTed, land back on
+    the admin page after logging in. This flavour replaced 13 hand-rolled
+    copies of the same four lines in routes/admin.py, which was exactly the
+    forgettable-guard situation this file exists to close."""
+    def requiresUser(view=None, *, api=False, admin=False):
         def decorate(view):
             @functools.wraps(view)
             def wrapped(**urlParams):
@@ -50,9 +57,13 @@ def makeRequiresUser(dashboard):
                 if not email:
                     if api:
                         return jsonify({"error": "Not logged in"}), 401
+                    if admin:
+                        return redirect(url_for("login", next=url_for("adminPage")))
                     return dashboard.unauthenticatedResponse()
+                if admin and not dashboard.repo.isAdmin(username):
+                    abort(403)
                 return view(username, db, **urlParams)
             return wrapped
-        #< supports both bare @requiresUser and @requiresUser(api=True)
+        #< supports both bare @requiresUser and @requiresUser(api=True/admin=True)
         return decorate(view) if view is not None else decorate
     return requiresUser

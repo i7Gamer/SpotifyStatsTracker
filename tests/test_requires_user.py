@@ -108,6 +108,47 @@ class TestRequiresUser(AppTestCase):
         with self.dash.app.test_request_context("/api/thing"), self._loggedIn():
             self.assertEqual(view(), "alice")
 
+    def test_the_admin_flavour_passes_an_admin_through(self):
+        @self.requiresUser(admin=True)
+        def view(username, db):
+            return username
+
+        with self.dash.app.test_request_context("/admin"), self._loggedIn(), \
+                patch.object(self.dash.repo, "isAdmin", return_value=True):
+            self.assertEqual(view(), "alice")
+
+    def test_the_admin_flavour_403s_a_non_admin(self):
+        """The 13 hand-rolled copies of this guard in routes/admin.py are what
+        the flavour replaces - the invariant the file was written to enforce
+        (a view can't be registered without its guard) now covers admin too."""
+        from werkzeug.exceptions import Forbidden
+
+        ran = []
+
+        @self.requiresUser(admin=True)
+        def view(username, db):
+            ran.append(True)   # pragma: no cover - the guard must stop us
+
+        with self.dash.app.test_request_context("/admin"), self._loggedIn(), \
+                patch.object(self.dash.repo, "isAdmin", return_value=False):
+            with self.assertRaises(Forbidden):
+                view()
+        self.assertEqual(ran, [])
+
+    def test_the_admin_flavour_redirects_anonymous_to_the_admin_next(self):
+        """The admin surface's own convention: whatever sub-endpoint was hit,
+        land back on /admin after logging in."""
+        @self.requiresUser(admin=True)
+        def view(username, db):
+            return ""   # pragma: no cover
+
+        with self.dash.app.test_request_context("/admin/skip_settings"), self._loggedOut():
+            resp = view()
+
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn("/login", resp.headers["Location"])
+        self.assertIn("next=/admin", resp.headers["Location"])
+
     def test_the_wrapped_view_keeps_its_name(self):
         """Flask registers endpoints by function name in places, and a wrapper
         that renamed every view to `wrapped` would collide."""
