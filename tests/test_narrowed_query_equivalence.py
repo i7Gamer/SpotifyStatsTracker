@@ -303,6 +303,24 @@ class NarrowedQueryPlanTestCase(DatabaseTestCase):
 
         self.assertIn(self.SEEKABLE, sql)
 
+    def test_the_album_count_names_the_track_set_on_plays(self):
+        """getAlbumsCount was the one member of its family without the twin:
+        its filter is `t.album_id IN (...)` - on the JOINED table - so the
+        tag-filtered Top Albums pager's count read the user's entire play
+        history on every page load while getAlbumsPage beside it seeked."""
+        sql = self._sqlFor(lambda db: db.repo.getAlbumsCount(db.user, None, None,
+                                                             albumIds=[ALBUM_1]))
+
+        self.assertIn(self.SEEKABLE, sql)
+
+    def test_the_searched_album_count_names_the_track_set_on_plays(self):
+        """The search branch carries its own copy of the album-id filter."""
+        sql = self._sqlFor(lambda db: db.repo.getAlbumsCount(db.user, None, None,
+                                                             searchQuery="Album",
+                                                             albumIds=[ALBUM_1]))
+
+        self.assertIn(self.SEEKABLE, sql)
+
     def test_the_item_filter_clauses_stay_a_membership_test_on_plays(self):
         """_itemFilterClauses' artist/album branches were the EXISTS form that
         started all this; an EXISTS over track_artists leaves nothing seekable."""

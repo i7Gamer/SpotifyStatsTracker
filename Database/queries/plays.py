@@ -970,6 +970,11 @@ class PlayQueries:
             rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
             albumIdsClause = ""
             albumIdsClause = self._idSetClause(params, "t.album_id", albumIds)
+            # Redundant against t.album_id above and present only so the
+            # planner has a seekable track set - see getAlbumsPage's identical
+            # twin. This was the one member of the family without it, so the
+            # tag-filtered Top Albums pager's COUNT read all history.
+            albumIdsClause += self._trackSetClause(params, self.ALBUM_TRACKS_SUBQUERY, albumIds)
             fullPlaysClause = ""
             if fullPlaysOnly:
                 fullPlaysClause = self._fullPlaysClause(params)
@@ -990,6 +995,8 @@ class PlayQueries:
         rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
         albumIdsClause = ""
         albumIdsClause = self._idSetClause(params, "t.album_id", albumIds)
+        #< the same seekable twin as the no-search branch above
+        albumIdsClause += self._trackSetClause(params, self.ALBUM_TRACKS_SUBQUERY, albumIds)
         fullPlaysClause = ""
         if fullPlaysOnly:
             fullPlaysClause = self._fullPlaysClause(params)
