@@ -558,13 +558,15 @@ button {
   margin-bottom: 24px;
 }
 
+/* Sits directly under the import panel and shares its .import-card box, so it
+   keeps that panel's padding (inherited, not restated) and matches the import
+   form's 12px rhythm - a tighter box here read as one panel being squashed. */
 .export-card {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
-  padding: 14px 20px;
+  gap: 12px;
 }
 
 .export-card-text {
