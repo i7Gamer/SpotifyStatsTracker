@@ -59,12 +59,14 @@ if (allButton) {
 let activeWrappedLoad = null;
 
 function setWrappedFade(targets, add) {
+  //< the shared loading-fade class (style.css) - 'wrapped-loading-fade' was a
+  //  byte-identical re-declaration living in wrapped.html's inline styles
   targets.forEach(t => {
     if (!t) return;
     if (t instanceof NodeList) {
-      t.forEach(el => el.classList[add ? 'add' : 'remove']('wrapped-loading-fade'));
+      t.forEach(el => el.classList[add ? 'add' : 'remove']('loading-fade'));
     } else {
-      t.classList[add ? 'add' : 'remove']('wrapped-loading-fade');
+      t.classList[add ? 'add' : 'remove']('loading-fade');
     }
   });
 }
@@ -554,8 +556,19 @@ document.getElementById('shareLinkModal')?.addEventListener('submit', function(e
   url.searchParams.set('ajax', 'true');
 
   fetch(url, { method: 'POST', body: new FormData(form) })
-    .then(response => response.json())
+    .then(response => {
+      // A 4xx here still carries the JSON the handler below wants (the
+      // route's own error message - "reached the limit", "unknown expiry"),
+      // so only the 401 is peeled off for the shared login redirect; a
+      // .json() straight through couldn't tell "session expired" from
+      // "invalid form", and both showed the generic line.
+      if (window.AjaxStatus && window.AjaxStatus.redirectIfUnauthorized(response)) {
+        return null;
+      }
+      return response.json();
+    })
     .then(data => {
+      if (!data) return;   //< navigating to /login
       if (data.html !== undefined) {
         panelBody.innerHTML = data.html;
       } else {

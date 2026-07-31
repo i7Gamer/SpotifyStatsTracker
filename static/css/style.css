@@ -1460,6 +1460,77 @@ progress::-moz-progress-bar {
   filter: brightness(1.1);
 }
 
+/* The filter bars' inverted-date-range message (see the updateXDateFilter
+   handlers). One rule instead of six inline-style copies, which had already
+   drifted: one page omitted the font-size/margin, and top-list.js showed its
+   copy with display:inline where the others used block. The JS toggles
+   display none/block on top of this. */
+.date-error {
+  display: none;
+  color: var(--accent);
+  font-size: 0.85rem;
+  margin-left: 10px;
+}
+
+/* Wrapped page styles - moved out of wrapped.html's <style> block (the only
+   inline one in the project), which kept the share modal invisible to anyone
+   auditing this file and re-declared .loading-fade under a second name. */
+.track-summary-grid, .track-summary-grid-3, [data-category] {
+  transition: opacity 0.2s ease-in-out;
+}
+.track-summary-card {
+  transition: opacity 0.2s ease-in-out, transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+[data-category] {
+  margin-top: 36px;
+}
+[data-category] h2 {
+  margin: 0 0 18px;
+  font-size: 1.3rem;
+}
+.wrapped-stats-filters {
+  margin: 24px 0 12px !important;
+}
+.share-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+  padding: 1rem;
+}
+.share-modal-card {
+  position: relative;
+  width: 100%;
+  max-width: 480px;
+  max-height: 90vh;
+  overflow-y: auto;
+  padding: 1.5rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  backdrop-filter: blur(12px) saturate(180%);
+  -webkit-backdrop-filter: blur(12px) saturate(180%);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.45), 0 0 15px var(--accent-glow);
+}
+.share-modal-close {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.75rem;
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 1.5rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 4px;
+}
+.share-modal-close:hover {
+  color: var(--accent);
+}
+
 /* Profile's share tables ("Requests waiting on you" / "Requests you sent" /
    "Active shares"): row borders as a class (not inline styles) so the last
    row can drop its bottom border. */

@@ -702,6 +702,27 @@ class TestCompareRoute(AppTestCase):
         self.dbs["alice"].getPlayedArtistIds.assert_called_once_with([])
         self.dbs["alice"].getPlayedAlbumIds.assert_called_once_with([])
 
+    def test_versus_lines_use_display_names_like_the_rest_of_the_page(self):
+        """The compare page's headings, stats table and genre columns all
+        apply | displayName; the per-card versus block was the one place
+        still naming both users by raw username."""
+        self._accept("alice", "bob")
+        self.assertTrue(self.dash.repo.setDisplayName("alice", "Wonderland"))
+        self.assertTrue(self.dash.repo.setDisplayName("bob", "Builder"))
+        self.dbs["alice"].getTopArtists.return_value = [
+            _artist("sh1", "SharedArtist", plays=10, totalTimeListened=3_600_000, uniqueSongCount=4)]
+        self.dbs["bob"].getTopArtists.return_value = [
+            _artist("sh1", "SharedArtist", plays=5, totalTimeListened=1_800_000, uniqueSongCount=2)]
+        client = self._loginAs("alice")
+
+        _, data = self._ajax(client, "/compare")
+        html = self._ajaxHtml(data)
+
+        self.assertIn("Wonderland: #1 · 10 plays", html)
+        self.assertIn("Builder: #1 · 5 plays", html)
+        self.assertNotIn("alice: #1", html)
+        self.assertNotIn("bob: #1", html)
+
     def test_shared_artist_cards_show_both_users_stats(self):
         """Top Common cards lead with the COMBINED plays/time (the
         per-user numbers live in the versus block below), plus a split bar

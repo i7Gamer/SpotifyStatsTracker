@@ -8,67 +8,10 @@
    username). Kept separate from `username`, which stays the immutable key and
    doubles as the cover-image base for the card includes below. #}
 {% set ownerLabel = username | displayName %}
-  <style>
-    .wrapped-loading-fade {
-      opacity: 0.15 !important;
-      pointer-events: none;
-    }
-    .track-summary-grid, .track-summary-grid-3, .track-list, .chart-canvas-wrap, [data-category] {
-      transition: opacity 0.2s ease-in-out;
-    }
-    .track-summary-card {
-      transition: opacity 0.2s ease-in-out, transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-    }
-    [data-category] {
-      margin-top: 36px;
-    }
-    [data-category] h2 {
-      margin: 0 0 18px;
-      font-size: 1.3rem;
-    }
-    .wrapped-stats-filters {
-      margin: 24px 0 12px !important;
-    }
-    .share-modal-overlay {
-      position: fixed;
-      inset: 0;
-      background: rgba(0, 0, 0, 0.6);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      z-index: 200;
-      padding: 1rem;
-    }
-    .share-modal-card {
-      position: relative;
-      width: 100%;
-      max-width: 480px;
-      max-height: 90vh;
-      overflow-y: auto;
-      padding: 1.5rem;
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 20px;
-      backdrop-filter: blur(12px) saturate(180%);
-      -webkit-backdrop-filter: blur(12px) saturate(180%);
-      box-shadow: 0 12px 28px rgba(0, 0, 0, 0.45), 0 0 15px var(--accent-glow);
-    }
-    .share-modal-close {
-      position: absolute;
-      top: 0.5rem;
-      right: 0.75rem;
-      background: none;
-      border: none;
-      color: var(--muted);
-      font-size: 1.5rem;
-      line-height: 1;
-      cursor: pointer;
-      padding: 4px;
-    }
-    .share-modal-close:hover {
-      color: var(--accent);
-    }
-  </style>
+  {# Page styles live in style.css with everything else (the "Wrapped page
+     styles" section) - this used to carry the project's only inline <style>
+     block, which hid the share modal's styling from the shared stylesheet
+     and re-declared .loading-fade under a second name. #}
   <section class="hero">
     <div class="hero-content">
       {# ownerLabel, not the bare username: this page is public over a share

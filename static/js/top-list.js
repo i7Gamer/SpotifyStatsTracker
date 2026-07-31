@@ -169,7 +169,7 @@ if (typeof window !== 'undefined') (function () {
     startEl.style.borderColor = '';
     endEl.style.borderColor = '';
     if (startDate && endDate && new Date(startDate) > new Date(endDate)) {
-      if (errorEl) { errorEl.textContent = 'Start date cannot be after end date.'; errorEl.style.display = 'inline'; }
+      if (errorEl) { errorEl.textContent = 'Start date cannot be after end date.'; errorEl.style.display = 'block'; }   //< block, like the four sibling pages
       startEl.style.borderColor = 'var(--accent)';
       endEl.style.borderColor = 'var(--accent)';
       return;

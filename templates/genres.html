@@ -43,7 +43,7 @@
         <input type="date" id="startDate" name="startDate" value="{{ customStart }}" onchange="scheduleSearchFilter('startDate', updateGenresDateFilter)">
         <label for="endDate">To:</label>
         <input type="date" id="endDate" name="endDate" value="{{ customEnd }}" onchange="scheduleSearchFilter('endDate', updateGenresDateFilter)">
-        <span id="dateError" style="color: var(--accent); font-size: 0.85rem; display: none; margin-left: 10px;"></span>
+        <span id="dateError" class="date-error"></span>
       </div>
 
       {# Hidden on single-day views like charts.html: those bucket by hour,

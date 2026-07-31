@@ -175,8 +175,13 @@
            listening time. Colors mirror the trend chart's two series. #}
         {% if track.get('compareData') %}
           {% set cmp = track.get('compareData') %}
+          {#- | displayName like every other label on the compare page (its
+              headings, stats table and genre columns all apply it) - the
+              versus lines were the one place still naming both users raw -#}
+          {% set myLabel = username | displayName %}
+          {% set theirLabel = compareWith | displayName %}
           <div class="compare-versus">
-            {% set splitBarText = cmp.myTimePercent ~ '% of the combined listening time is ' ~ username ~ "'s, " ~ (100 - cmp.myTimePercent) ~ '% ' ~ compareWith ~ "'s" %}
+            {% set splitBarText = cmp.myTimePercent ~ '% of the combined listening time is ' ~ myLabel ~ "'s, " ~ (100 - cmp.myTimePercent) ~ '% ' ~ theirLabel ~ "'s" %}
             <div class="compare-split-bar" role="img" title="{{ splitBarText }}" aria-label="{{ splitBarText }}">
               <span class="mine" style="width: {{ cmp.myTimePercent }}%"></span><span class="theirs" style="width: {{ 100 - cmp.myTimePercent }}%"></span>
             </div>
@@ -185,8 +190,8 @@
             {# No combined "Together" line here - the card's top stat line
                already shows the combined plays/time. #}
             <div class="compare-versus-stats">
-              <span class="compare-versus-mine">{{ username }}: #{{ cmp.myRank }} · {{ cmp.myPlays }} plays · {{ cmp.myTimeText }}{% if 'myUniqueSongs' in cmp %} · {{ cmp.myUniqueSongs }} song{{ 's' if cmp.myUniqueSongs != 1 else '' }}{% endif %}</span>
-              <span class="compare-versus-theirs">{{ compareWith }}: #{{ cmp.theirRank }} · {{ cmp.theirPlays }} plays · {{ cmp.theirTimeText }}{% if 'theirUniqueSongs' in cmp %} · {{ cmp.theirUniqueSongs }} song{{ 's' if cmp.theirUniqueSongs != 1 else '' }}{% endif %}</span>
+              <span class="compare-versus-mine">{{ myLabel }}: #{{ cmp.myRank }} · {{ cmp.myPlays }} plays · {{ cmp.myTimeText }}{% if 'myUniqueSongs' in cmp %} · {{ cmp.myUniqueSongs }} song{{ 's' if cmp.myUniqueSongs != 1 else '' }}{% endif %}</span>
+              <span class="compare-versus-theirs">{{ theirLabel }}: #{{ cmp.theirRank }} · {{ cmp.theirPlays }} plays · {{ cmp.theirTimeText }}{% if 'theirUniqueSongs' in cmp %} · {{ cmp.theirUniqueSongs }} song{{ 's' if cmp.theirUniqueSongs != 1 else '' }}{% endif %}</span>
             </div>
           </div>
         {% endif %}

@@ -238,10 +238,18 @@
     fetch(window.location.pathname + '?' + params.toString(), {
       headers: { 'X-Requested-With': 'XMLHttpRequest' }
     })
-      .then(function (resp) { return resp.ok ? resp.json() : null; })
+      .then(function (resp) {
+        //< readJsonOrThrow, not `resp.ok ? resp.json() : null`: a non-2xx used
+        //  to fall through to the full-page fallback below, so a 500 on one
+        //  genre paid a whole reload to arrive at the same failure - and a 401
+        //  now takes the shared login redirect instead
+        return window.AjaxStatus.readJsonOrThrow(resp, 'genre detail');
+      })
       .then(function (data) {
         if (token !== loadToken) return;
         if (!data || !data.ok) {
+          //< the server answered but declined (e.g. the gate re-locked) - the
+          //  full page render is the one that can explain why
           window.location.href = detailFallbackUrl(genre);
           return;
         }
@@ -257,9 +265,15 @@
           replaceGenresUrl(function (p) { p.set('genre', data.genre); });
         }
       })
-      .catch(function () {
+      .catch(function (err) {
+        if (window.AjaxStatus && window.AjaxStatus.isUnauthorizedError(err)) return;   //< navigating to /login
         if (token !== loadToken) return;
-        window.location.href = detailFallbackUrl(genre);
+        //< a genuine failure gets the banner + Retry like every other loader,
+        //  instead of a reload that would fail the same way
+        if (detail) detail.classList.remove('is-loading');
+        if (window.AjaxStatus) {
+          window.AjaxStatus.showBanner(function () { loadGenreDetail(genre, push); });
+        }
       });
   }
 

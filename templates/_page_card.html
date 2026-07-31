@@ -9,7 +9,7 @@
 <section class="filter-section">
 <div class="filter-group filter-search">
     <label for="searchQuery">Search:</label>
-    <input type="search" id="searchQuery" class="auto-search-focus" name="q" value="{{ request.args.get('q', '') }}" placeholder="Search songs, artists, playlists" aria-label="Search the current page" onkeydown="handleSearchKeydown(event, updateSearchFilter)" onblur="handleSearchBlur(event, updateSearchFilter)">
+    <input type="search" id="searchQuery" name="q" value="{{ request.args.get('q', '') }}" placeholder="Search songs, artists, playlists" aria-label="Search the current page" onkeydown="handleSearchKeydown(event, updateSearchFilter)" onblur="handleSearchBlur(event, updateSearchFilter)">
 </div>
 
 <div class="filter-group">
@@ -31,7 +31,7 @@
     <input type="date" id="startDate" name="startDate" value="{{ customStart }}" onchange="scheduleSearchFilter('startDate', updateDateFilter)">
     <label for="endDate">To:</label>
     <input type="date" id="endDate" name="endDate" value="{{ customEnd }}" onchange="scheduleSearchFilter('endDate', updateDateFilter)">
-    <span id="dateError" class="date-error" style="display: none; color: var(--accent);"></span>
+    <span id="dateError" class="date-error"></span>
 </div>
 
 <div class="filter-group">

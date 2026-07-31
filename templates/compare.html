@@ -56,7 +56,7 @@
     <input type="date" id="startDate" value="{{ customStart }}" onchange="scheduleSearchFilter('startDate', updateCompareDateFilter)">
     <label for="endDate">To:</label>
     <input type="date" id="endDate" value="{{ customEnd }}" onchange="scheduleSearchFilter('endDate', updateCompareDateFilter)">
-    <span id="dateError" style="color: var(--accent); font-size: 0.85rem; display: none; margin-left: 10px;"></span>
+    <span id="dateError" class="date-error"></span>
   </div>
 
   <div class="filter-group">
