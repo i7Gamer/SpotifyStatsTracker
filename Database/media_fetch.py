@@ -129,13 +129,15 @@ class MediaFetchMixin:
                 _dbmod.logger.warning("Failed to refresh access token, falling back to the cookie client for artist image %s.", artistId)
 
         import Database.Spotify
-        cookiesFile = self._materializeCookiesFile()
-        try:
-            sp = Database.Spotify.Spotify(cookiesFile=str(cookiesFile))
-            images = (sp.artist(artistId) or {}).get("images") or []
-            return images[0]["url"] if images else None
-        finally:
-            cookiesFile.unlink(missing_ok=True)
+        # No cookiesFile on purpose: artist() is a public lookup through
+        # spotapi's pooled client and never touches the login. Constructing
+        # with cookies ran a full login() whose TLSClient atexit-pinned one
+        # live curl session PER ARTIST IMAGE for the life of the process -
+        # the same leak _pooledPublicClient was built to close - and paid a
+        # temp cookies-file write/delete for a session nothing used.
+        sp = Database.Spotify.Spotify()
+        images = (sp.artist(artistId) or {}).get("images") or []
+        return images[0]["url"] if images else None
 
     def _lazyFetchArtistImageTask(self, artistId: str, imagePath: Path) -> bool:
         try:

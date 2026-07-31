@@ -154,23 +154,25 @@ class MetadataBackfillMixin:
 
                     if use_fallback:
                         import Database.Spotify
-                        import time
-                        cookiesFile = self._materializeCookiesFile()
-                        try:
-                            sp = Database.Spotify.Spotify(cookiesFile=str(cookiesFile))
-                            for album_id in target_ids:
-                                if stop_event.is_set():
-                                    break
-                                try:
-                                    album_raw = sp.album(album_id)
-                                    if album_raw:
-                                        fetched_albums.append(album_raw)
-                                    attempted_ids.append(album_id)  #< a clean "no data" reply is definitive; exceptions stay unmarked for a next-cycle retry
-                                except Exception as fe:
-                                    _dbmod.logger.warning("[Backfiller-%s] Cookie client failed for album %s: %s", self.user, album_id, fe)
-                                stop_event.wait(1.0)
-                        finally:
-                            cookiesFile.unlink(missing_ok=True)
+                        # No cookiesFile on purpose: album() is a public lookup
+                        # through spotapi's pooled client and never touches the
+                        # login. Constructing with cookies ran a full login()
+                        # whose TLSClient atexit-pinned one live curl session
+                        # per backfill cycle (every 5 minutes, for every user
+                        # without Web-API credentials) - the same leak
+                        # _pooledPublicClient was built to close.
+                        sp = Database.Spotify.Spotify()
+                        for album_id in target_ids:
+                            if stop_event.is_set():
+                                break
+                            try:
+                                album_raw = sp.album(album_id)
+                                if album_raw:
+                                    fetched_albums.append(album_raw)
+                                attempted_ids.append(album_id)  #< a clean "no data" reply is definitive; exceptions stay unmarked for a next-cycle retry
+                            except Exception as fe:
+                                _dbmod.logger.warning("[Backfiller-%s] Cookie client failed for album %s: %s", self.user, album_id, fe)
+                            stop_event.wait(1.0)
 
                         if fetched_albums:
                             _dbmod.logger.info("[Backfiller-%s] Cookie client fetched %d album(s)", self.user, len(fetched_albums))

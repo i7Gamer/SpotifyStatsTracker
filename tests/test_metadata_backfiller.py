@@ -417,6 +417,10 @@ class TestMetadataBackfiller(DatabaseTestCase):
         self.assertEqual(row["total_tracks"], 8)
         self.assertIsNotNone(row["backfill_attempted_at"])
         mock_sp.album.assert_called_once_with("alb1")
+        # No cookiesFile: album() is a public lookup through spotapi's pooled
+        # client, and a login here would atexit-pin one live curl session per
+        # backfill cycle (the leak _pooledPublicClient documents).
+        mock_spotipy_class.assert_called_once_with()
 
     @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value="mock_token")
     @patch("Database.Spotify.Spotify")

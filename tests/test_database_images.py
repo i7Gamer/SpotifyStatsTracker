@@ -171,7 +171,7 @@ class TestLazyFetchArtistImage(unittest.TestCase):
             mock_sp.artist.return_value = {"images": [{"url": "https://i.scdn.co/image/xyz"}]}
             imageResponse = _imageResponse(_pngBytes())
 
-            with patch("Database.Spotify.Spotify", return_value=mock_sp), \
+            with patch("Database.Spotify.Spotify", return_value=mock_sp) as mock_sp_class, \
                  patch("Database.database.requests.get", return_value=imageResponse) as mock_get:
                 future = db.lazyFetchArtistImage("artist123", imagePath)
                 result = future.result(timeout=5)
@@ -180,6 +180,10 @@ class TestLazyFetchArtistImage(unittest.TestCase):
             self.assertTrue(imagePath.exists())
             mock_sp.artist.assert_called_once_with("artist123")
             mock_get.assert_called_once()   #< just the CDN image bytes; no api.spotify.com call was made
+            # No cookiesFile: artist() is a public lookup through spotapi's
+            # pooled client, and a login here would atexit-pin one live curl
+            # session per artist image (the leak _pooledPublicClient documents).
+            mock_sp_class.assert_called_once_with()
             self.assertEqual(db.repo.imageStatus("artist123", IMAGE_KIND_ARTIST), IMAGE_STATUS_OK)
 
     def test_falls_back_to_spotipy_free_when_web_api_request_fails(self):
