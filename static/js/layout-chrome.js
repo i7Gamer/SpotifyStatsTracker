@@ -96,11 +96,24 @@ window.handleJumpToPageKeydown = function(event, totalPages) {
 (function(){
   const statusPill = document.getElementById('listener-status-pill');
 
+  let pollTimer = null;
+
   function updateListenerStatus() {
     fetch('/api/listener-status')
       .then(r => {
         if (r.status === 401) {
+          // Session expired: stop polling, don't just hide the pill. The
+          // throw below lands in the catch, and with nothing clearing the
+          // interval this kept hitting the server every 10s for the life of
+          // the tab - the exact leak dashboard-page.js's now-playing poll
+          // already fixed. A background poll shouldn't yank the page away
+          // mid-read, so it stops rather than navigates - the next click on
+          // anything goes through the normal login redirect.
           if (statusPill) statusPill.style.display = 'none';
+          if (pollTimer !== null) {
+            clearInterval(pollTimer);
+            pollTimer = null;
+          }
           throw new Error('Not logged in');
         }
         return r.json();
@@ -117,7 +130,7 @@ window.handleJumpToPageKeydown = function(event, totalPages) {
   }
 
   updateListenerStatus();
-  setInterval(updateListenerStatus, 10 * 1000);
+  pollTimer = setInterval(updateListenerStatus, 10 * 1000);
 })();
 
 
