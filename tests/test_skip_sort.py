@@ -230,6 +230,75 @@ class TestASingleTrackLookupSkipsTheRanking(SkipSortTestCase):
         self.assertEqual(self.db.repo.getMostSkippedTracks(self.db.user, trackId="nope", limit=1), [])
 
 
+class TestASingleEntityLookupSkipsTheRanking(SkipSortTestCase):
+    """getArtist/getAlbum fall back to the skip-ranked queries the same way
+    getSong does (skip-only detail pages; the route's shell and deferred body
+    each run it once) - and the tracks query got the single-lookup shortcut
+    above while its two twins kept computing the whole-history prior to order
+    one row against nothing. An artistId/albumId filter makes the GROUP BY
+    produce at most one row, so the prior cannot change the answer."""
+
+    def _statementsFor(self, call):
+        conn = self.db.repo._conn()
+        captured = []
+        conn.set_trace_callback(captured.append)
+        try:
+            rows = call()
+        finally:
+            conn.set_trace_callback(None)
+        return rows, " ".join(captured)
+
+    def test_a_single_artist_lookup_does_not_read_the_whole_history(self):
+        self._seed("t1", plays=1, skips=3, artistId="aS")
+        self._seed("t2", plays=8, skips=1, artistId="aL")
+
+        _, sql = self._statementsFor(
+            lambda: self.db.repo.getMostSkippedArtists(self.db.user, artistId="aS", limit=1))
+
+        self.assertNotIn("lib AS", sql)
+        self.assertNotIn("SELECT rate FROM lib", sql)
+
+    def test_a_single_album_lookup_does_not_read_the_whole_history(self):
+        self._seed("t1", plays=1, skips=3, albumId="alS", albumName="Album S")
+        self._seed("t2", plays=8, skips=1, albumId="alL", albumName="Album L")
+
+        _, sql = self._statementsFor(
+            lambda: self.db.repo.getMostSkippedAlbums(self.db.user, albumId="alS", limit=1))
+
+        self.assertNotIn("lib AS", sql)
+        self.assertNotIn("SELECT rate FROM lib", sql)
+
+    def test_the_ranked_lists_still_use_the_library_prior(self):
+        """The narrowing must not leak into the path the prior exists for."""
+        self._seed("t1", plays=1, skips=3, albumName="Album One")
+
+        _, artistSql = self._statementsFor(
+            lambda: self.db.repo.getMostSkippedArtists(self.db.user, limit=10))
+        _, albumSql = self._statementsFor(
+            lambda: self.db.repo.getMostSkippedAlbums(self.db.user, limit=10))
+
+        self.assertIn("lib AS", artistSql)
+        self.assertIn("lib AS", albumSql)
+
+    def test_the_row_is_identical_either_way(self):
+        """Same equivalence contract the tracks shortcut pins: the ranked list
+        asked for the same entity must agree field for field."""
+        self._seed("t1", plays=1, skips=3, artistId="aS", artistName="Skipped",
+                   albumId="alS", albumName="Album S")
+        self._seed("t2", plays=8, skips=1, artistId="aL", artistName="Loved",
+                   albumId="alL", albumName="Album L")
+
+        narrowedArtist = self.db.repo.getMostSkippedArtists(self.db.user, artistId="aL", limit=1)
+        fromArtistList = [r for r in self.db.repo.getMostSkippedArtists(self.db.user, limit=50)
+                          if r["id"] == "aL"]
+        self.assertEqual(narrowedArtist, fromArtistList)
+
+        narrowedAlbum = self.db.repo.getMostSkippedAlbums(self.db.user, albumId="alL", limit=1)
+        fromAlbumList = [r for r in self.db.repo.getMostSkippedAlbums(self.db.user, limit=50)
+                         if r["id"] == "alL"]
+        self.assertEqual(narrowedAlbum, fromAlbumList)
+
+
 class TestArtistsAndAlbumsSortedBySkips(SkipSortTestCase):
     def test_artists_order_by_skip_rate(self):
         self._seed("t1", plays=1, skips=5, artistId="skipped", artistName="Skipped")

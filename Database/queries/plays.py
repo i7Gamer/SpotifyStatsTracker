@@ -1492,17 +1492,30 @@ class PlayQueries:
         here is a field that silently blanks out under one sort.
 
         The filter params mirror getArtistAggregates()' - see
-        _skippedArtistFilters."""
+        _skippedArtistFilters.
+
+        A single-artist lookup skips the ranking machinery entirely, exactly
+        like getMostSkippedTracks' trackId path (see its docstring for why the
+        prior is a full history read): `artistId` makes the GROUP BY produce
+        at most one row, so the shrunk rate can't change which row comes back.
+        getArtist falls back to this query for skip-only artist pages, on both
+        the detail shell and the deferred body."""
         params: list = []
-        libCte = self._libraryRateCte(username, params, startTs, endTs)
+        rankByLibraryRate = artistId is None
+        libCte = self._libraryRateCte(username, params, startTs, endTs) if rankByLibraryRate else ""
         params.append(username)
         rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
         joins, filterClause = self._skippedArtistFilters(
             params, artistId, searchQuery, artistIds, fullPlaysOnly)
-        params += [priorWeight, priorWeight, limit, offset]
+        if rankByLibraryRate:
+            params += [priorWeight, priorWeight]
+            orderBy = f"{self._shrunkSkipRateSql()} DESC, skips DESC, artist_id ASC"
+        else:
+            orderBy = "skips DESC, artist_id ASC"   #< the same tiebreakers, minus a prior for one row
+        params += [limit, offset]
         rows = self._conn().execute(
             f"""
-            WITH {libCte},
+            WITH {libCte + "," if libCte else ""}
             agg AS (
                 SELECT ar.id AS artist_id, ar.name AS name, ar.url AS url, ar.image_id AS image_id,
                        SUM(CASE WHEN p.is_skip = 1 THEN 1 ELSE 0 END) AS skips,
@@ -1519,7 +1532,7 @@ class PlayQueries:
                 HAVING skips > 0
             )
             SELECT * FROM agg
-            ORDER BY {self._shrunkSkipRateSql()} DESC, skips DESC, artist_id ASC
+            ORDER BY {orderBy}
             LIMIT ? OFFSET ?
             """,
             params,
@@ -1579,16 +1592,27 @@ class PlayQueries:
         Returns getAlbumsPage()' row shape plus skips/encounters - including
         the second artists lookup, which the shared card renders whatever the
         sort is. The filter params mirror getAlbumsPage()' - see
-        _skippedAlbumFilters."""
+        _skippedAlbumFilters.
+
+        A single-album lookup skips the ranking machinery entirely - same
+        shortcut and same reasoning as getMostSkippedTracks/Artists: one
+        grouped row can't be reordered, and the prior costs a full history
+        read. getAlbum falls back to this query for skip-only album pages."""
         params: list = []
-        libCte = self._libraryRateCte(username, params, startTs, endTs)
+        rankByLibraryRate = albumId is None
+        libCte = self._libraryRateCte(username, params, startTs, endTs) if rankByLibraryRate else ""
         params.append(username)
         rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
         filterClause = self._skippedAlbumFilters(params, albumId, searchQuery, albumIds, fullPlaysOnly)
-        params += [priorWeight, priorWeight, limit, offset]
+        if rankByLibraryRate:
+            params += [priorWeight, priorWeight]
+            orderBy = f"{self._shrunkSkipRateSql()} DESC, skips DESC, album_id ASC"
+        else:
+            orderBy = "skips DESC, album_id ASC"   #< the same tiebreakers, minus a prior for one row
+        params += [limit, offset]
         rows = self._conn().execute(
             f"""
-            WITH {libCte},
+            WITH {libCte + "," if libCte else ""}
             agg AS (
                 SELECT al.id AS album_id, al.name AS name, al.url AS url, al.image_id AS image_id,
                        al.image_url AS image_url, al.total_tracks AS total_tracks,
@@ -1607,7 +1631,7 @@ class PlayQueries:
                 HAVING skips > 0
             )
             SELECT * FROM agg
-            ORDER BY {self._shrunkSkipRateSql()} DESC, skips DESC, album_id ASC
+            ORDER BY {orderBy}
             LIMIT ? OFFSET ?
             """,
             params,
