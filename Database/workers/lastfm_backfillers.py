@@ -124,9 +124,9 @@ class LastfmBackfillMixin:
                         return
                     client = _dbmod.LastfmClient(apiKey)
 
-                    processedAny = self._runLastfmCycle(client, self.user)
+                    processedAny = self._runLastfmCycle(client, self.user, stop_event=stop_event)
                     if not processedAny and not stop_event.is_set():
-                        processedAny = self._runLastfmCycle(client, None)   #< global queue
+                        processedAny = self._runLastfmCycle(client, None, stop_event=stop_event)   #< global queue
                     if not processedAny:
                         if stop_event.wait(self.LASTFM_IDLE_WAIT_SECONDS):
                             break
@@ -146,20 +146,32 @@ class LastfmBackfillMixin:
         finally:
             _dbmod.logger.info("[LastfmWorker-%s] Exited gracefully", self.user)
 
-    def _runLastfmCycle(self, client: LastfmClient, scopeUsername: str | None) -> bool:
+    def _runLastfmCycle(self, client: LastfmClient, scopeUsername: str | None,
+                        stop_event: threading.Event | None = None) -> bool:
         """One batch each of artists -> albums -> tracks (that order is what
         makes same-cycle inheritance work: by the time a tag-less track is
         processed, its primary artist usually has a definitive result).
         Returns whether anything got a definitive result - False means the
         scope's queue is drained (or everything failed transiently) and the
-        caller should fall through to the global queue / idle."""
-        processedAny = self._processLastfmArtistBatch(client, scopeUsername)
-        if self.lastfm_stop_event.is_set():
+        caller should fall through to the global queue / idle.
+
+        `stop_event` is the calling RUN's private event, threaded down into
+        every batch. Reading self.lastfm_stop_event here instead broke the
+        fresh-event-per-run invariant (periodic.py): stop joins for only 3s,
+        then start assigns a fresh unset event - so a zombie batch from the
+        stopped run (the profile page's key save restarts this worker) never
+        broke early and ran a whole batch of HTTP lookups alongside the new
+        worker. The None fallback mirrors the loop entrypoints', for direct
+        single-run callers (tests)."""
+        if stop_event is None:
+            stop_event = self.lastfm_stop_event
+        processedAny = self._processLastfmArtistBatch(client, scopeUsername, stop_event=stop_event)
+        if stop_event.is_set():
             return processedAny
-        processedAny = self._processLastfmAlbumBatch(client, scopeUsername) or processedAny
-        if self.lastfm_stop_event.is_set():
+        processedAny = self._processLastfmAlbumBatch(client, scopeUsername, stop_event=stop_event) or processedAny
+        if stop_event.is_set():
             return processedAny
-        return self._processLastfmTrackBatch(client, scopeUsername) or processedAny
+        return self._processLastfmTrackBatch(client, scopeUsername, stop_event=stop_event) or processedAny
 
     def startLastfmBiographyBackfiller(self) -> None:
         """Start the background thread that backfills artist biographies from
@@ -223,9 +235,9 @@ class LastfmBackfillMixin:
                         return
                     client = _dbmod.LastfmClient(apiKey)
 
-                    processedAny = self._processLastfmBiographyBatch(client, self.user)
+                    processedAny = self._processLastfmBiographyBatch(client, self.user, stop_event=stop_event)
                     if not processedAny and not stop_event.is_set():
-                        processedAny = self._processLastfmBiographyBatch(client, None)   #< global queue
+                        processedAny = self._processLastfmBiographyBatch(client, None, stop_event=stop_event)   #< global queue
                     if not processedAny:
                         if stop_event.wait(self.LASTFM_BIOGRAPHY_IDLE_WAIT_SECONDS):
                             break
@@ -245,21 +257,25 @@ class LastfmBackfillMixin:
         finally:
             _dbmod.logger.info("[LastfmBioWorker-%s] Exited gracefully", self.user)
 
-    def _processLastfmBiographyBatch(self, client: LastfmClient, scopeUsername: str | None) -> bool:
+    def _processLastfmBiographyBatch(self, client: LastfmClient, scopeUsername: str | None,
+                                     stop_event: threading.Event | None = None) -> bool:
         """One batch of artist.getinfo lookups. Claims/releases under the
         same "bio" kind as lazyFetchArtistBio's on-demand fetch, so the two
         paths can never double-fetch the same artist concurrently. Returns
         whether anything got a definitive result - False means the scope's
         queue is drained (or everything failed transiently) and the caller
         should fall through to the global queue / idle."""
+        #< stop_event: the calling run's private event - see _runLastfmCycle
+        if stop_event is None:
+            stop_event = self.lastfm_biography_stop_event
         rows = self.repo.getArtistsMissingBiographies(self.LASTFM_BIOGRAPHY_QUEUE_BATCH_SIZE, scopeUsername)
         claimed = self._claimLastfmEntities("bio", rows)
         processedAny = False
         try:
             for row in claimed:
-                if self.lastfm_biography_stop_event.is_set():
+                if stop_event.is_set():
                     break
-                outcome = client.getArtistInfo(row["name"], stop_event=self.lastfm_biography_stop_event)
+                outcome = client.getArtistInfo(row["name"], stop_event=stop_event)
                 if outcome is None:   #< rate-limit slot aborted: we're stopping
                     break
                 if outcome.status == _dbmod.OUTCOME_INVALID_KEY:
@@ -329,9 +345,9 @@ class LastfmBackfillMixin:
                         return
                     client = _dbmod.LastfmClient(apiKey)
 
-                    processedAny = self._processLastfmAlbumBiographyBatch(client, self.user)
+                    processedAny = self._processLastfmAlbumBiographyBatch(client, self.user, stop_event=stop_event)
                     if not processedAny and not stop_event.is_set():
-                        processedAny = self._processLastfmAlbumBiographyBatch(client, None)   #< global queue
+                        processedAny = self._processLastfmAlbumBiographyBatch(client, None, stop_event=stop_event)   #< global queue
                     if not processedAny:
                         if stop_event.wait(self.LASTFM_ALBUM_BIOGRAPHY_IDLE_WAIT_SECONDS):
                             break
@@ -352,7 +368,8 @@ class LastfmBackfillMixin:
         finally:
             _dbmod.logger.info("[LastfmAlbumBioWorker-%s] Exited gracefully", self.user)
 
-    def _processLastfmAlbumBiographyBatch(self, client: LastfmClient, scopeUsername: str | None) -> bool:
+    def _processLastfmAlbumBiographyBatch(self, client: LastfmClient, scopeUsername: str | None,
+                                          stop_event: threading.Event | None = None) -> bool:
         """One batch of album.getinfo lookups. Claims/releases under the
         "album_bio" kind - distinct from "bio" (artist bios) and "album"
         (genre lookups), so none of the three ever collide over the same
@@ -362,13 +379,16 @@ class LastfmBackfillMixin:
         got a definitive result - False means the scope's queue is drained
         (or everything failed transiently) and the caller should fall
         through to the global queue / idle."""
+        #< stop_event: the calling run's private event - see _runLastfmCycle
+        if stop_event is None:
+            stop_event = self.lastfm_album_biography_stop_event
         rows = self.repo.getAlbumsMissingBiographies(self.LASTFM_ALBUM_BIOGRAPHY_QUEUE_BATCH_SIZE, scopeUsername)
         claimed = self._claimLastfmEntities("album_bio", rows)
         processedAny = False
         try:
             primaries = self.repo.getAlbumPrimaryArtists([row["id"] for row in claimed])
             for row in claimed:
-                if self.lastfm_album_biography_stop_event.is_set():
+                if stop_event.is_set():
                     break
                 primary = primaries.get(row["id"])
                 if primary is None:
@@ -377,8 +397,8 @@ class LastfmBackfillMixin:
                     continue
                 outcome = self._lastfmLookupBioOutcome(
                     lambda name: client.getAlbumInfo(primary["artist_name"], name,
-                                                     stop_event=self.lastfm_album_biography_stop_event),
-                    row["name"], stop_event=self.lastfm_album_biography_stop_event)
+                                                     stop_event=stop_event),
+                    row["name"], stop_event=stop_event)
                 if outcome is None:   #< rate-limit slot aborted: we're stopping
                     break
                 if outcome.status == _dbmod.OUTCOME_INVALID_KEY:
@@ -482,15 +502,19 @@ class LastfmBackfillMixin:
             return outcome
         return lookup(cleanedName)
 
-    def _processLastfmArtistBatch(self, client: LastfmClient, scopeUsername: str | None) -> bool:
+    def _processLastfmArtistBatch(self, client: LastfmClient, scopeUsername: str | None,
+                                  stop_event: threading.Event | None = None) -> bool:
+        #< stop_event: the calling run's private event - see _runLastfmCycle
+        if stop_event is None:
+            stop_event = self.lastfm_stop_event
         rows = self.repo.getArtistsMissingGenres(self.LASTFM_QUEUE_BATCH_SIZE, scopeUsername)
         claimed = self._claimLastfmEntities("artist", rows)
         processedAny = False
         try:
             for row in claimed:
-                if self.lastfm_stop_event.is_set():
+                if stop_event.is_set():
                     break
-                outcome = client.getArtistTopTags(row["name"], stop_event=self.lastfm_stop_event)
+                outcome = client.getArtistTopTags(row["name"], stop_event=stop_event)
                 if outcome is None:   #< rate-limit slot aborted: we're stopping
                     break
                 definitive, genres = self._lastfmOutcomeGenres(outcome)
@@ -504,14 +528,18 @@ class LastfmBackfillMixin:
             self._releaseLastfmEntities("artist", claimed)
         return processedAny
 
-    def _processLastfmAlbumBatch(self, client: LastfmClient, scopeUsername: str | None) -> bool:
+    def _processLastfmAlbumBatch(self, client: LastfmClient, scopeUsername: str | None,
+                                 stop_event: threading.Event | None = None) -> bool:
+        #< stop_event: the calling run's private event - see _runLastfmCycle
+        if stop_event is None:
+            stop_event = self.lastfm_stop_event
         rows = self.repo.getAlbumsMissingGenres(self.LASTFM_QUEUE_BATCH_SIZE, scopeUsername)
         claimed = self._claimLastfmEntities("album", rows)
         processedAny = False
         try:
             primaries = self.repo.getAlbumPrimaryArtists([row["id"] for row in claimed])
             for row in claimed:
-                if self.lastfm_stop_event.is_set():
+                if stop_event.is_set():
                     break
                 primary = primaries.get(row["id"])
                 if primary is None:
@@ -532,7 +560,7 @@ class LastfmBackfillMixin:
                 for cand in candidates:
                     definitive, genres, aborted = self._lastfmLookupOwnGenres(
                         lambda name, c_name=cand["artist_name"]: client.getAlbumTopTags(c_name, name,
-                                                                                        stop_event=self.lastfm_stop_event),
+                                                                                        stop_event=stop_event),
                         row["name"])
                     if aborted:
                         break
@@ -546,23 +574,28 @@ class LastfmBackfillMixin:
                     continue
                 if self._storeLastfmGenresWithInheritance(
                         client, "album", row["id"], genres,
-                        selected_primary["artist_id"], selected_primary["artist_name"]):
+                        selected_primary["artist_id"], selected_primary["artist_name"],
+                        stop_event=stop_event):
                     processedAny = True
         finally:
             self._releaseLastfmEntities("album", claimed)
         return processedAny
 
-    def _processLastfmTrackBatch(self, client: LastfmClient, scopeUsername: str | None) -> bool:
+    def _processLastfmTrackBatch(self, client: LastfmClient, scopeUsername: str | None,
+                                 stop_event: threading.Event | None = None) -> bool:
+        #< stop_event: the calling run's private event - see _runLastfmCycle
+        if stop_event is None:
+            stop_event = self.lastfm_stop_event
         rows = self.repo.getTracksMissingGenres(self.LASTFM_QUEUE_BATCH_SIZE, scopeUsername)
         claimed = self._claimLastfmEntities("track", rows)
         processedAny = False
         try:
             for row in claimed:
-                if self.lastfm_stop_event.is_set():
+                if stop_event.is_set():
                     break
                 definitive, genres, aborted = self._lastfmLookupOwnGenres(
                     lambda name: client.getTrackTopTags(row["artist_name"], name,
-                                                        stop_event=self.lastfm_stop_event),
+                                                        stop_event=stop_event),
                     row["name"])
                 if aborted:
                     break
@@ -570,7 +603,8 @@ class LastfmBackfillMixin:
                     continue
                 if self._storeLastfmGenresWithInheritance(
                         client, "track", row["id"], genres,
-                        row["artist_id"], row["artist_name"], albumId=row["album_id"]):
+                        row["artist_id"], row["artist_name"], albumId=row["album_id"],
+                        stop_event=stop_event):
                     processedAny = True
         finally:
             self._releaseLastfmEntities("track", claimed)
@@ -579,7 +613,8 @@ class LastfmBackfillMixin:
     def _storeLastfmGenresWithInheritance(self, client: LastfmClient, kind: str,
                                           entityId: str, ownGenres: list[str],
                                           artistId: str, artistName: str,
-                                          albumId: str | None = None) -> bool:
+                                          albumId: str | None = None,
+                                          stop_event: threading.Event | None = None) -> bool:
         """Store a definitive lookup result for a track/album. Own tags win;
         with none, a track first materializes its album's OWN genres as
         inherited rows (the closer granularity - the album batch runs earlier
@@ -590,6 +625,9 @@ class LastfmBackfillMixin:
         leaving the entity unmarked would re-fetch it every cycle forever.
         Returns False only when the artist lookup couldn't complete
         (stopping/transient) - the entity stays unmarked and retries."""
+        #< stop_event: the calling run's private event - see _runLastfmCycle
+        if stop_event is None:
+            stop_event = self.lastfm_stop_event
         replaceGenres = (self.repo.replaceTrackGenres if kind == "track"
                          else self.repo.replaceAlbumGenres)
         markAttempted = (self.repo.markTracksLastfmAttempted if kind == "track"
@@ -613,7 +651,7 @@ class LastfmBackfillMixin:
             # Rarely duplicates another worker's in-flight artist fetch (the
             # claim set only guards batch rows) - harmless, the write is
             # idempotent.
-            outcome = client.getArtistTopTags(artistName, stop_event=self.lastfm_stop_event)
+            outcome = client.getArtistTopTags(artistName, stop_event=stop_event)
             if outcome is None:
                 return False
             definitive, artistGenres = self._lastfmOutcomeGenres(outcome)
@@ -640,7 +678,7 @@ class LastfmBackfillMixin:
             secId, secName = sec["artist_id"], sec["artist_name"]
             secState = self.repo.getArtistLastfmState(secId)
             if secState["attempted_at"] is None and not secState["genres"]:
-                outcome = client.getArtistTopTags(secName, stop_event=self.lastfm_stop_event)
+                outcome = client.getArtistTopTags(secName, stop_event=stop_event)
                 if outcome is None:
                     return False
                 def_sec, secGenres = self._lastfmOutcomeGenres(outcome)

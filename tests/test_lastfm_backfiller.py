@@ -662,5 +662,64 @@ class AlbumFirstInheritanceTestCase(LastfmWorkerBase):
                          [{"genre": "dream pop", "inherited": True}])
 
 
+class RunEventThreadingTestCase(LastfmWorkerBase):
+    """The fresh-event-per-run invariant (Database/workers/periodic.py): stop
+    joins for only 3s, then start assigns a FRESH unset event - so a zombie
+    batch still running from the old thread must obey its own run's event.
+    The batch helpers used to read self.lastfm_stop_event instead, which
+    after a restart (the profile page's key save) is the new event: the
+    zombie never broke early and ran a whole batch of HTTP lookups alongside
+    the new worker."""
+
+    @patch("Database.database.LastfmClient")
+    def test_the_loop_hands_its_private_event_to_every_cycle(self, mockClientClass):
+        db = self._makeDbWithPlays()
+        db.repo.updateUserLastfmApiKey("user1", "key123")
+        mockClientClass.return_value = MagicMock()
+        captured = []
+
+        def capture(client, scope, stop_event=None):
+            captured.append(stop_event)
+            return False
+
+        privateEvent = _oneShotStopEvent()
+        with patch.object(db, "_runLastfmCycle", side_effect=capture):
+            db._lastfmGenreBackfillLoop(privateEvent)
+
+        self.assertEqual(len(captured), 2)   #< own queue, then the global fallback
+        self.assertTrue(all(ev is privateEvent for ev in captured))
+
+    def test_the_cycle_hands_the_event_to_every_batch(self):
+        db = self._makeDbWithPlays()
+        captured = []
+
+        def capture(client, scope, stop_event=None):
+            captured.append(stop_event)
+            return False
+
+        privateEvent = MagicMock()
+        privateEvent.is_set.return_value = False
+        with patch.object(db, "_processLastfmArtistBatch", side_effect=capture), \
+                patch.object(db, "_processLastfmAlbumBatch", side_effect=capture), \
+                patch.object(db, "_processLastfmTrackBatch", side_effect=capture):
+            db._runLastfmCycle(MagicMock(), "user1", stop_event=privateEvent)
+
+        self.assertEqual(len(captured), 3)
+        self.assertTrue(all(ev is privateEvent for ev in captured))
+
+    def test_a_set_run_event_stops_the_artist_batch_despite_a_fresh_attribute(self):
+        db = self._makeDbWithPlays()
+        self.assertTrue(db.repo.getArtistsMissingGenres(10, "user1"))   #< real rows to walk
+        oldEvent = threading.Event()
+        oldEvent.set()                              #< this run was stopped
+        db.lastfm_stop_event = threading.Event()    #< the restart's fresh, unset event
+        client = MagicMock()
+
+        processed = db._processLastfmArtistBatch(client, "user1", stop_event=oldEvent)
+
+        self.assertFalse(processed)
+        client.getArtistTopTags.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

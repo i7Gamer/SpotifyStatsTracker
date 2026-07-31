@@ -5,6 +5,7 @@ independently of the genre backfiller, on its own thread and stop event. The
 Last.fm client is always mocked (conftest blocks real sockets anyway)."""
 import sys
 import os
+import threading
 import unittest
 from unittest.mock import patch, MagicMock
 
@@ -302,6 +303,43 @@ class WorkerBatchTestCase(BiographyWorkerBase):
 
         self.assertIsNone(db.repo.getArtistBioState("aX")["bio"])   #< still claimed, skipped
         db._releaseLastfmEntities("bio", [{"id": "aX"}])
+
+
+class RunEventThreadingTestCase(BiographyWorkerBase):
+    """Same fresh-event-per-run invariant as the genre worker (see
+    tests/test_lastfm_backfiller.py RunEventThreadingTestCase): a zombie batch
+    from a stopped run must obey its own event, not the restart's fresh one."""
+
+    @patch("Database.database.LastfmClient")
+    def test_the_loop_hands_its_private_event_to_every_batch(self, mockClientClass):
+        db = self._makeDbWithPlays()
+        db.repo.updateUserLastfmApiKey("user1", "key123")
+        mockClientClass.return_value = MagicMock()
+        captured = []
+
+        def capture(client, scope, stop_event=None):
+            captured.append(stop_event)
+            return False
+
+        privateEvent = _oneShotStopEvent()
+        with patch.object(db, "_processLastfmBiographyBatch", side_effect=capture):
+            db._lastfmBiographyBackfillLoop(privateEvent)
+
+        self.assertEqual(len(captured), 2)   #< own queue, then the global fallback
+        self.assertTrue(all(ev is privateEvent for ev in captured))
+
+    def test_a_set_run_event_stops_the_batch_despite_a_fresh_attribute(self):
+        db = self._makeDbWithPlays()
+        self.assertTrue(db.repo.getArtistsMissingBiographies(10, "user1"))   #< real rows to walk
+        oldEvent = threading.Event()
+        oldEvent.set()                                        #< this run was stopped
+        db.lastfm_biography_stop_event = threading.Event()    #< the restart's fresh, unset event
+        client = MagicMock()
+
+        processed = db._processLastfmBiographyBatch(client, "user1", stop_event=oldEvent)
+
+        self.assertFalse(processed)
+        client.getArtistInfo.assert_not_called()
 
 
 if __name__ == "__main__":
