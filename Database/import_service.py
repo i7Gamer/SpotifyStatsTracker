@@ -666,10 +666,6 @@ class ImportMixin:
                                       runState, True, noProgress)
 
             self.repo.commit()
-            for year in sorted(coveredYears | runState.correctedYears):
-                self.repo.deleteUserWrapped(self.user, year)
-            for track in runState.pendingImageTracks.values():
-                self.saveImagesFromTrack(track)
         except Exception as e:
             # _applyImportData's except already rolled back the whole
             # transaction (the delete plus every prior file's staged writes)
@@ -682,6 +678,34 @@ class ImportMixin:
                                f"Overwrite import aborted: no changes were applied, original data is intact - {_dbmod.parseError(e)}",
                                error=True)
             return ["failed"] * total
+
+        # Post-commit cleanup, OUTSIDE the try above: the commit is the point
+        # of no return, and these are repairable side effects, not part of the
+        # atomic apply. When they shared the try, a failure here fell into the
+        # rollback handler - which told the user "no changes were applied,
+        # original data is intact" about an overwrite that had durably landed,
+        # and returned all-failed, so AutoImporter moved the successfully
+        # imported files to FAILED/ and importHistoryBatch never raised the
+        # milestone recalc flag. Each loop is guarded on its own so a Wrapped
+        # hiccup still lets the cover art queue.
+        for year in sorted(coveredYears | runState.correctedYears):
+            try:
+                self.repo.deleteUserWrapped(self.user, year)
+            except Exception as e:
+                #< stale-but-repairable: the wrapped worker's staleness check
+                #  compares the cached (max_played_at, play_count) snapshot to
+                #  the plays this batch just rewrote, so the year rebuilds on
+                #  its next cycle even with the stale row left behind
+                _dbmod.logger.warning("Overwrite import committed, but clearing the cached Wrapped "
+                                      "for %d failed (it may show stale data until recalculated): %s",
+                                      year, _dbmod.parseError(e))
+        for track in runState.pendingImageTracks.values():
+            try:
+                self.saveImagesFromTrack(track)
+            except Exception as e:
+                #< missing art self-heals too: the detail/list pages lazy-fetch
+                _dbmod.logger.warning("Overwrite import committed, but queueing cover art for track %s "
+                                      "failed: %s", track.get("id"), _dbmod.parseError(e))
 
         # Per-file progress is routed to noProgress in overwrite mode, so this
         # line is the only place a permanent drop can surface at all.

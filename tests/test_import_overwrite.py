@@ -248,6 +248,45 @@ class TestOverwriteGating(_OverwriteTestBase):
         self.assertIn(_ts(2019), playedAts)
         self.assertEqual(db.readProgress()["status"], "failed")
 
+    def test_a_wrapped_cleanup_failure_does_not_report_a_committed_import_as_failed(self):
+        """repo.commit() is the point of no return: dropping the stale Wrapped
+        caches and queueing cover art after it are repairable side effects, not
+        part of the atomic apply. A failure there used to fall into the
+        rollback handler, which told the user 'no changes were applied,
+        original data is intact' about an overwrite that had durably landed -
+        and returned all-failed, so AutoImporter moved the successfully
+        imported files to FAILED/ and the milestone recalc flag never rose."""
+        db = self._makeDb({}, [
+            {"id": "old19", "playedAt": _ts(2019), "timePlayed": 60000},
+        ])
+        fileSpecs = {
+            "file 2019": ((_ts(2019, 2), _ts(2019, 11), {2019}),
+                          lambda: iter([_meta("new19", _ts(2019, 3))])),
+        }
+        with patch.object(db.repo, "deleteUserWrapped", side_effect=RuntimeError("boom")):
+            outcomes = self._runBatch(db, fileSpecs)
+
+        self.assertEqual(outcomes, ["imported"])
+        playedAts = self._playedAts(db)
+        self.assertIn(_ts(2019, 3), playedAts)    #< the committed apply stands
+        self.assertNotIn(_ts(2019), playedAts)    #< and so does the delete
+        self.assertEqual(db.readProgress()["status"], "complete")
+
+    def test_an_image_queue_failure_does_not_report_a_committed_import_as_failed(self):
+        """Same point-of-no-return rule for the cover-art queueing (its
+        executor raises RuntimeError once shut down)."""
+        db = self._makeDb({}, [])
+        fileSpecs = {
+            "file 2019": ((_ts(2019, 2), _ts(2019, 11), {2019}),
+                          lambda: iter([_meta("new19", _ts(2019, 3))])),
+        }
+        with patch.object(db, "saveImagesFromTrack", side_effect=RuntimeError("shut down")):
+            outcomes = self._runBatch(db, fileSpecs)
+
+        self.assertEqual(outcomes, ["imported"])
+        self.assertIn(_ts(2019, 3), self._playedAts(db))
+        self.assertEqual(db.readProgress()["status"], "complete")
+
     def test_overwrite_clears_wrapped_for_covered_years_only(self):
         db = self._makeDb({}, [])
         conn = db.repo._conn()
