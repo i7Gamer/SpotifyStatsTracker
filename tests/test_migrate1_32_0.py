@@ -139,6 +139,58 @@ class TestMigrate1_32_0(unittest.TestCase):
 
         self.assertEqual((self.dataDir / "VERSION").read_text(encoding="utf-8").strip(), "1.33.0")
 
+    def test_a_mid_rebuild_failure_leaves_no_plays_new_and_the_retry_succeeds(self):
+        """DDL never triggers sqlite3's implicit BEGIN (only DML does), so
+        under a bare `with conn:` the CREATE TABLE plays_new autocommitted on
+        its own. A crash mid-copy then rolled back the copy but left
+        plays_new behind - and since plays still lacked is_skip, the retry
+        re-entered the rebuild and died on 'table plays_new already exists',
+        wedging the 1.32.0 upgrade permanently."""
+        import Database.db as dbModule
+
+        class _Unbindable:
+            pass
+
+        with patch.object(dbModule, "SKIP_THRESHOLD_MS", _Unbindable()):
+            with self.assertRaises(sqlite3.Error):   #< binding the CASE param fails mid-transaction
+                self._migrate()
+
+        conn = sqlite3.connect(self.dbPath)
+        try:
+            self.assertNotIn("plays_new", self._tables(conn))   #< the CREATE rolled back with the copy
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM plays").fetchone()[0], 3)
+        finally:
+            conn.close()
+
+        self._migrate()   #< the retry must go through
+
+        conn = sqlite3.connect(self.dbPath)
+        try:
+            self.assertIn("is_skip", self._columns(conn, "plays"))
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM plays").fetchone()[0], 5)
+        finally:
+            conn.close()
+
+    def test_a_database_wedged_by_the_old_rebuild_self_heals(self):
+        """Installs that crashed under the pre-fix code already carry a
+        leftover plays_new; the rebuild drops it rather than dying on it (the
+        name exists only for this procedure, so residue is always safe to
+        clear)."""
+        conn = sqlite3.connect(self.dbPath)
+        with conn:
+            conn.execute("CREATE TABLE plays_new (id INTEGER PRIMARY KEY)")   #< residue of a crashed rebuild
+        conn.close()
+
+        self._migrate()   #< must not raise 'table plays_new already exists'
+
+        conn = sqlite3.connect(self.dbPath)
+        try:
+            self.assertNotIn("plays_new", self._tables(conn))
+            self.assertIn("is_skip", self._columns(conn, "plays"))
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM plays").fetchone()[0], 5)
+        finally:
+            conn.close()
+
     def test_noop_when_no_play_skips_table(self):
         # An old DB that migrated through 1.22.0 after play_skips was retired has
         # no play_skips table - the merge must still add is_skip and relax the CHECK.

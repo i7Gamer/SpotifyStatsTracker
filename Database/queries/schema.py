@@ -206,6 +206,19 @@ class SchemaQueries:
         conn.execute("PRAGMA foreign_keys=OFF")
         try:
             with conn:
+                # DDL never triggers sqlite3's implicit BEGIN (only DML does),
+                # so under a bare `with conn:` the CREATE TABLE below ran in
+                # autocommit: a crash mid-copy rolled back the copy but left
+                # plays_new behind - and with plays still missing is_skip, the
+                # retry re-entered and died on 'table plays_new already
+                # exists', wedging the upgrade permanently. The explicit BEGIN
+                # puts the whole rebuild (SQLite's DDL is transactional) in
+                # the one transaction `with conn:` commits or rolls back -
+                # same fix as migrate1_23_0's share_links rebuild.
+                conn.execute("BEGIN IMMEDIATE")
+                #< self-heal installs the pre-fix code already wedged: the name
+                #  exists only for this procedure, so residue is safe to clear
+                conn.execute("DROP TABLE IF EXISTS plays_new")
                 conn.execute(self._PLAYS_NEW_TABLE_SQL)
                 # Existing plays keep played_from and get a computed is_skip.
                 conn.execute(
