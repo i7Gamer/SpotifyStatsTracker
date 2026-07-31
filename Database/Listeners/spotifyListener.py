@@ -352,28 +352,60 @@ def _get_current_user_from_web_api(access_token: str, logUser: str | None = None
     return None
 
 
+# The real signal.signal, pinned at import (imports run on the main thread,
+# before any suppression context can have patched it). Restoration below
+# always installs THIS - never a captured value that might itself be the
+# stub - so the stub can never outlive the last active context.
+_REAL_SIGNAL = signal.signal
+
+# Guards the depth counter and the install/restore of the process-global
+# patch. Never held across the yield, so overlapping Listener constructions
+# (a reconnect thread and a login thread) still run concurrently.
+_SUPPRESS_SIGNAL_LOCK = threading.Lock()
+_SUPPRESS_SIGNAL_DEPTH = 0
+
+
+def _suppressedSignal(signalnum, handler):
+    """Installed as signal.signal while any suppression context is active.
+    The patch is process-global but the reason for it ("this thread cannot
+    register handlers") is thread-local - so a genuine main-thread
+    registration arriving mid-suppression is delegated, not swallowed."""
+    if threading.current_thread() is threading.main_thread():
+        return _REAL_SIGNAL(signalnum, handler)
+    logger.debug("Suppressing signal registration for signal %s in context where signals are not allowed", signalnum)
+    return signal.getsignal(signalnum)
+
+
 @contextmanager
 def _suppress_signal_in_thread():
     """Temporarily patch signal.signal to skip SIGINT registration when called
     from a non-main thread (e.g. Flask worker threads). The spotapi library
     unconditionally registers a SIGINT handler in its __init__, which raises
-    ValueError on non-main threads."""
-    original = signal.signal
-    try:
-        original(signal.SIGINT, signal.getsignal(signal.SIGINT))
-        is_allowed = True
-    except ValueError:
-        is_allowed = False
+    ValueError on non-main threads.
 
-    if not is_allowed:
-        def _patched(signalnum, handler):
-            logger.debug("Suppressing signal registration for signal %s in context where signals are not allowed", signalnum)
-            return signal.getsignal(signalnum)
-        signal.signal = _patched
+    Depth-counted under a lock rather than capture-and-restore: two of these
+    contexts can overlap (Listener.__init__ runs on reconnect threads and on
+    Flask login threads), and the old swap let the second thread capture the
+    first's stub as "original" - its probe called the stub, didn't raise, so
+    it installed nothing - then re-install that stub after the first thread
+    had already restored the real function, leaving signal.signal a no-op for
+    the life of the process."""
+    global _SUPPRESS_SIGNAL_DEPTH
+    if threading.current_thread() is threading.main_thread():
+        #< signals register fine here; nothing to patch
+        yield
+        return
+    with _SUPPRESS_SIGNAL_LOCK:
+        _SUPPRESS_SIGNAL_DEPTH += 1
+        if _SUPPRESS_SIGNAL_DEPTH == 1:
+            signal.signal = _suppressedSignal
     try:
         yield
     finally:
-        signal.signal = original
+        with _SUPPRESS_SIGNAL_LOCK:
+            _SUPPRESS_SIGNAL_DEPTH -= 1
+            if _SUPPRESS_SIGNAL_DEPTH == 0:
+                signal.signal = _REAL_SIGNAL
 
 
 class Listener:  #< one user's live playback watcher: cookie session + Web API backfill
