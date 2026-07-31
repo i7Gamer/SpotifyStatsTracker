@@ -21,4 +21,8 @@
       <button type="submit" class="button button-small" style="padding: 4px 10px; font-size: 0.85rem;">+ Tag</button>
     </form>
   </div>
+  {#- Outside .tag-chips-container on purpose: renderTags() rebuilds that
+      container wholesale, and the error line must survive the re-render.
+      role="alert" so a failed add/remove is announced, not just painted. -#}
+  <p class="tag-error" role="alert" style="display: none; margin: 6px 0 0; font-size: 0.85rem; color: var(--accent);"></p>
 </div>
