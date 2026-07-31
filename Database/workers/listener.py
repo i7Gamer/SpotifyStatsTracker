@@ -8,6 +8,11 @@ import Database.database as _dbmod  # noqa: F401 - module-global names
 # the database module so the suite's patch("Database.database.X") targets keep
 # working after this relocation.
 
+#< the connect-state string-number coercion, shared with the poll/push
+#  tracking that reads the same payloads (was a byte-identical staticmethod
+#  copy here); recentlyPlayed imports nothing back from workers, so no cycle
+from Database.Spotify.recentlyPlayed import _connectStateInt
+
 
 class ListenerMixin:
     """Spotify listener lifecycle: connect/reconnect, live play ingestion, web-API reconcile, now-playing, and overall stop coordination."""
@@ -416,15 +421,6 @@ class ListenerMixin:
                 self.user, _dbmod.parseError(e),
             )
 
-    @staticmethod
-    def _connectStateInt(value) -> int:
-        """Connect-state numeric fields arrive as strings ("duration":
-        "215000"); 0 for anything missing or malformed."""
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return 0
-
     def getNowPlaying(self) -> dict | None:
         """What this user is playing right now, read from the listener's
         cached connect player_state (zero extra network calls - see
@@ -445,9 +441,9 @@ class ListenerMixin:
         trackId = trackUri.rsplit(":", 1)[-1]
         isPaused = bool(state.get("is_paused"))
 
-        timestampMs = self._connectStateInt(state.get("timestamp"))
-        positionMs = self._connectStateInt(state.get("position_as_of_timestamp"))
-        durationMs = self._connectStateInt(state.get("duration"))
+        timestampMs = _connectStateInt(state.get("timestamp"))
+        positionMs = _connectStateInt(state.get("position_as_of_timestamp"))
+        durationMs = _connectStateInt(state.get("duration"))
         # Standard connect-state position math: the state only updates on
         # play/pause/seek/track change, so the live position is the snapshot
         # position plus time elapsed since the snapshot (unless paused).

@@ -440,17 +440,23 @@ def _truncateBioToSentence(text: str, maxLength: int) -> str:
     return window[:cutoff] if cutoff > 0 else window
 
 
-def _extractArtistBio(payload) -> str | None:
-    """Cleaned, length-capped plain-text artist.getinfo biography, or None if
-    there's nothing usable (missing/empty, or Last.fm's own "incorrect tag"
-    merge-redirect boilerplate - see _INCORRECT_TAG_BIO_MARKER). Prefers the
-    full bio.content over the pre-truncated bio.summary (see BIO_MAX_LENGTH's
-    comment) and re-appends the Creative Commons attribution sentence after
-    truncation when the source carried one, so it's always complete."""
-    artist = payload.get("artist") if isinstance(payload, dict) else None
-    if not isinstance(artist, dict):
+def _extractBioText(payload, entityKey: str, bioKey: str) -> str | None:
+    """Cleaned, length-capped plain-text biography out of a *.getinfo payload,
+    or None if there's nothing usable (missing/empty, or Last.fm's own
+    "incorrect tag" merge-redirect boilerplate - see
+    _INCORRECT_TAG_BIO_MARKER). Prefers the full `content` over the
+    pre-truncated `summary` (see BIO_MAX_LENGTH's comment) and re-appends the
+    Creative Commons attribution sentence after truncation when the source
+    carried one, so it's always complete.
+
+    One pipeline for both callers - artist.getinfo's artist.bio and
+    album.getinfo's album.wiki carry the same shape and the same boilerplate
+    patterns; the two per-entity wrappers below were byte-identical after the
+    field lookup."""
+    entity = payload.get(entityKey) if isinstance(payload, dict) else None
+    if not isinstance(entity, dict):
         return None
-    bio = artist.get("bio")
+    bio = entity.get(bioKey)
     if not isinstance(bio, dict):
         return None
     text = bio.get("content")
@@ -475,40 +481,12 @@ def _extractArtistBio(payload) -> str | None:
     return text
 
 
+def _extractArtistBio(payload) -> str | None:
+    return _extractBioText(payload, "artist", "bio")
+
+
 def _extractAlbumBio(payload) -> str | None:
-    """Cleaned, length-capped plain-text album.getinfo biography, or None if
-    there's nothing usable. Same cleaning pipeline as _extractArtistBio
-    (HTML stripping, trailing boilerplate/attribution handling, sentence-
-    boundary truncation, the "incorrect tag" merge-redirect guard - album
-    wiki text carries the same Last.fm boilerplate patterns as artist bios),
-    just reading album.getinfo's `wiki` field instead of artist.getinfo's
-    `bio` field."""
-    album = payload.get("album") if isinstance(payload, dict) else None
-    if not isinstance(album, dict):
-        return None
-    wiki = album.get("wiki")
-    if not isinstance(wiki, dict):
-        return None
-    text = wiki.get("content")
-    if not isinstance(text, str) or not text.strip():
-        text = wiki.get("summary")
-    if not isinstance(text, str):
-        return None
-
-    text = html.unescape(_HTML_TAG_RE.sub("", text))
-    match = _BIO_TRAILING_BOILERPLATE_RE.search(text)
-    hasAttribution = False
-    if match is not None:
-        hasAttribution = match.group("cc") is not None
-        text = text[:match.start()]
-    text = " ".join(text.split())
-    if not text or _INCORRECT_TAG_BIO_MARKER in text:
-        return None
-
-    text = _truncateBioToSentence(text, BIO_MAX_LENGTH)
-    if hasAttribution:
-        text = f"{text} {_BIO_ATTRIBUTION_TEXT}"
-    return text
+    return _extractBioText(payload, "album", "wiki")
 
 
 class LastfmClient:

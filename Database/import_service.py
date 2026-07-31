@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:   # pragma: no cover
     from Database.database import _ImportRunState
 
+import hashlib
 import sqlite3
 
 import Database.database as _dbmod  # noqa: F401 - module-global names
@@ -28,6 +29,18 @@ import Database.database as _dbmod  # noqa: F401 - module-global names
 # carry no track name and can never resolve, so treating them as retryable
 # would make overwrite import impossible for most real exports.
 RETRYABLE_DROP_STAT_KEYS = ("droppedTransient", "droppedUnexpected")
+
+
+def _exportContentHash(content) -> str:
+    """The already-imported gate's identity for one export file's content -
+    what markFileImported stores and isFileImported checks. One
+    implementation on purpose: it used to be copy-pasted between the apply
+    path (writer) and the batch loop (reader), where a future change to the
+    hashing rule in one would silently desync the gate. Non-str content (a
+    mocked payload) hashes its str() form, as both inline copies always
+    did."""
+    contentBytes = content.encode("utf-8") if isinstance(content, str) else str(content).encode("utf-8")
+    return hashlib.sha256(contentBytes).hexdigest()
 
 # Entries that could not be READ (see StreamingHistoryImporter._parseHistory).
 # They abort an overwrite for the same reason as the keys above - the covered
@@ -436,10 +449,7 @@ class ImportMixin:
                 runState.insertedPlayKeys.add((track_id, played_at))
 
             if track_file_hash:
-                import hashlib
-                content_bytes = exportedHistory.encode("utf-8") if isinstance(exportedHistory, str) else str(exportedHistory).encode("utf-8")
-                file_hash = hashlib.sha256(content_bytes).hexdigest()
-                self.repo.markFileImported(self.user, file_hash)
+                self.repo.markFileImported(self.user, _exportContentHash(exportedHistory))
 
             if deferCommit:
                 # Atomic overwrite batch: the caller commits once for the
@@ -512,7 +522,6 @@ class ImportMixin:
         if not fileContents:
             return []
 
-        import hashlib
         total = len(fileContents)
         outcomes: list[str] = []
 
@@ -524,8 +533,7 @@ class ImportMixin:
             failedSoFar = outcomes.count("failed")
             try:
                 isFinalFile = (index == total)
-                content_bytes = content.encode("utf-8") if isinstance(content, str) else str(content).encode("utf-8")
-                file_hash = hashlib.sha256(content_bytes).hexdigest()
+                file_hash = _exportContentHash(content)
 
                 if self.repo.isFileImported(self.user, file_hash):
                     _dbmod.logger.info("File %s/%s already imported (hash: %s). Skipping.", index, total, file_hash)

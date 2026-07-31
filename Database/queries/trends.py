@@ -34,10 +34,12 @@ class TrendQueries:
 
         conn = self._conn()
 
-        # 1. Obsession
+        # 1. Obsession. One statement, run twice - the fallback differs only in
+        # how many recent plays it demands, same shape as forgottenWithAtLeast
+        # below (this pair was the verbatim copy that pattern was made to
+        # avoid).
         obsession_cutoff = now_ts - (TREND_OBSESSION_DAYS * SECONDS_PER_DAY)
-        obsession_row = conn.execute(
-            """
+        obsessionQuery = """
             SELECT track_id, COUNT(*) as recent_count, SUM(time_played) as recent_ms
             FROM plays
             WHERE username = ? AND is_skip = 0 AND played_at >= ?
@@ -45,24 +47,15 @@ class TrendQueries:
             HAVING recent_count >= ?
             ORDER BY recent_count DESC, recent_ms DESC
             LIMIT 1
-            """,
-            (username, obsession_cutoff, TREND_OBSESSION_MIN_PLAYS),
-        ).fetchone()
+            """
 
+        def obsessionWithAtLeast(minPlays: int):
+            return conn.execute(obsessionQuery, (username, obsession_cutoff, minPlays)).fetchone()
+
+        obsession_row = obsessionWithAtLeast(TREND_OBSESSION_MIN_PLAYS)
         # Fallback for obsession if user has < TREND_OBSESSION_MIN_PLAYS but plays exist
         if not obsession_row:
-            obsession_row = conn.execute(
-                """
-                SELECT track_id, COUNT(*) as recent_count, SUM(time_played) as recent_ms
-                FROM plays
-                WHERE username = ? AND is_skip = 0 AND played_at >= ?
-                GROUP BY track_id
-                HAVING recent_count >= ?
-                ORDER BY recent_count DESC, recent_ms DESC
-                LIMIT 1
-                """,
-                (username, obsession_cutoff, TREND_OBSESSION_FALLBACK_MIN_PLAYS),
-            ).fetchone()
+            obsession_row = obsessionWithAtLeast(TREND_OBSESSION_FALLBACK_MIN_PLAYS)
 
         # 2. Rediscovery
         rediscovery_recent_cutoff = now_ts - (TREND_REDISCOVERY_RECENT_DAYS * SECONDS_PER_DAY)

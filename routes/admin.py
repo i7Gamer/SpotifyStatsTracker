@@ -64,6 +64,23 @@ def register(app, dashboard):
     # the detail page the button lives on, not /admin.
     requiresAdmin = makeRequiresUser(dashboard)(admin=True)
 
+    def _saveClampedIntSetting(field, key, lo, hi):
+        """The admin forms' shared numeric-field rule - previously four
+        hand-rolled copies (Last.fm retry days, completion percent, backup
+        interval/retention, tuning): read the form field, store it clamped
+        into [lo, hi] via setIntSetting, and leave the stored value alone on
+        a blank or unparseable input. Note form values are STRINGS, so a
+        literal "0" is truthy and passes the `not raw` guard - the backup
+        form's 0-means-disable fields save fine (one copy spelled the guard
+        `raw is None or raw == ""` out of caution; same behavior)."""
+        raw = request.form.get(field)
+        if not raw:
+            return
+        try:
+            dashboard.repo.setIntSetting(key, int(raw), lo, hi)
+        except (TypeError, ValueError):
+            pass
+
     @requiresAdmin
     def adminPage(username, db):
         """Every admin-only setting/view for the instance: the full
@@ -490,12 +507,7 @@ def register(app, dashboard):
         # Backfill retry intervals (days) for the empty-result re-attempt gate.
         for field, key in (("genre_backfill_retry_days", GENRE_BACKFILL_RETRY_DAYS_KEY),
                            ("bio_backfill_retry_days", BIO_BACKFILL_RETRY_DAYS_KEY)):
-            raw = request.form.get(field)
-            if raw:
-                try:
-                    dashboard.repo.setIntSetting(key, int(raw), BACKFILL_RETRY_DAYS_MIN, BACKFILL_RETRY_DAYS_MAX)
-                except (TypeError, ValueError):
-                    pass
+            _saveClampedIntSetting(field, key, BACKFILL_RETRY_DAYS_MIN, BACKFILL_RETRY_DAYS_MAX)
         return redirect(url_for("adminPage", tab="workers", message="Last.fm settings saved."))
     app.add_url_rule("/admin/lastfm_settings", "adminLastfmSettings", adminLastfmSettings, methods=["POST"])
 
@@ -574,13 +586,8 @@ def register(app, dashboard):
         # that cap was added to remove - until someone saved this form twice.
         # Lenient on a blank/bad completion value, as before.
         dashboard.repo.setSkipThreshold(mode, value)   #< clamps to the mode's bounds
-        raw = request.form.get("completion_complete_percent")
-        if raw:
-            try:
-                dashboard.repo.setIntSetting(COMPLETION_COMPLETE_PERCENT_KEY, int(raw),
-                                             COMPLETION_COMPLETE_PERCENT_MIN, COMPLETION_COMPLETE_PERCENT_MAX)
-            except (TypeError, ValueError):
-                pass
+        _saveClampedIntSetting("completion_complete_percent", COMPLETION_COMPLETE_PERCENT_KEY,
+                               COMPLETION_COMPLETE_PERCENT_MIN, COMPLETION_COMPLETE_PERCENT_MAX)
         dashboard.repo.recomputeSkipFlags()             #< self-commits; reclassifies every play
         return redirect(url_for("adminPage", tab="settings", message="Playback classification settings saved."))
     app.add_url_rule("/admin/skip_settings", "adminSkipSettings", adminSkipSettings, methods=["POST"])
@@ -594,13 +601,8 @@ def register(app, dashboard):
             ("backup_interval_hours", BACKUP_INTERVAL_HOURS_KEY, BACKUP_INTERVAL_HOURS_MIN, BACKUP_INTERVAL_HOURS_MAX),
             ("backup_retention_count", BACKUP_RETENTION_COUNT_KEY, BACKUP_RETENTION_COUNT_MIN, BACKUP_RETENTION_COUNT_MAX),
         ):
-            raw = request.form.get(field)
-            if raw is None or raw == "":
-                continue   #< allow "0" (disable); only skip a truly empty field
-            try:
-                dashboard.repo.setIntSetting(key, int(raw), lo, hi)
-            except (TypeError, ValueError):
-                pass
+            #< "0" (disable) is a truthy string, so it saves - see the helper
+            _saveClampedIntSetting(field, key, lo, hi)
         return redirect(url_for("adminPage", tab="settings", message="Backup settings saved."))
     app.add_url_rule("/admin/backup_settings", "adminBackupSettings", adminBackupSettings, methods=["POST"])
 
@@ -672,19 +674,10 @@ def register(app, dashboard):
         apply only after a restart (see Database.configureWorkerPools). Each
         value is clamped to its bounds; a blank/unparseable field is left as-is."""
 
-        def _save(field, key, lo, hi):
-            raw = request.form.get(field)
-            if not raw:
-                return
-            try:
-                dashboard.repo.setIntSetting(key, int(raw), lo, hi)
-            except (TypeError, ValueError):
-                pass
-
-        _save("discover_artist_limit", DISCOVER_ARTIST_LIMIT_KEY, DISCOVER_ARTIST_LIMIT_MIN, DISCOVER_ARTIST_LIMIT_MAX)
-        _save("image_download_workers", IMAGE_DOWNLOAD_WORKERS_KEY, WORKER_COUNT_MIN, WORKER_COUNT_MAX)
-        _save("artist_bio_workers", ARTIST_BIO_FETCH_WORKERS_KEY, WORKER_COUNT_MIN, WORKER_COUNT_MAX)
-        _save("album_bio_workers", ALBUM_BIO_FETCH_WORKERS_KEY, WORKER_COUNT_MIN, WORKER_COUNT_MAX)
+        _saveClampedIntSetting("discover_artist_limit", DISCOVER_ARTIST_LIMIT_KEY, DISCOVER_ARTIST_LIMIT_MIN, DISCOVER_ARTIST_LIMIT_MAX)
+        _saveClampedIntSetting("image_download_workers", IMAGE_DOWNLOAD_WORKERS_KEY, WORKER_COUNT_MIN, WORKER_COUNT_MAX)
+        _saveClampedIntSetting("artist_bio_workers", ARTIST_BIO_FETCH_WORKERS_KEY, WORKER_COUNT_MIN, WORKER_COUNT_MAX)
+        _saveClampedIntSetting("album_bio_workers", ALBUM_BIO_FETCH_WORKERS_KEY, WORKER_COUNT_MIN, WORKER_COUNT_MAX)
         return redirect(url_for("adminPage", tab="workers", message="Advanced tuning settings saved."))
     app.add_url_rule("/admin/tuning_settings", "adminTuningSettings", adminTuningSettings, methods=["POST"])
 
