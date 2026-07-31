@@ -104,7 +104,10 @@
               {% endif %}
               {# the versus block below already shows both users' song counts #}
               {% if track.get('uniqueSongCount') and not track.get('compareData') %}
-                <div>{{ username if publicView else "You" }} played {{ track.get('uniqueSongCount') }} different songs by {{ cardTitle }}</div>
+                {#- (username | displayName), not the bare username: on the public
+                    share page `username` is the raw account key (the owner's email
+                    local-part) - it stays raw only as the /img/ path base above -#}
+                <div>{{ (username | displayName) if publicView else "You" }} played {{ track.get('uniqueSongCount') }} different songs by {{ cardTitle }}</div>
               {% endif %}
           </div>
           {% endif %}
@@ -119,7 +122,9 @@
               {% if track.get('uniqueSongCount') and not track.get('compareData') %}
               {#- cardTitle, not track.get('name', ''): get's default only covers a
                   MISSING key - a present-but-None name rendered the word "None" -#}
-              <div>{{ username if publicView else "You" }} played {{ track.get('uniqueSongCount') }} song{{ 's' if track.get('uniqueSongCount') != 1 else '' }} from {{ cardTitle }}</div>
+              {#- (username | displayName): same label-vs-image-path split as the
+                  artist branch above -#}
+              <div>{{ (username | displayName) if publicView else "You" }} played {{ track.get('uniqueSongCount') }} song{{ 's' if track.get('uniqueSongCount') != 1 else '' }} from {{ cardTitle }}</div>
               {% endif %}
           </div>
           {% endif %}

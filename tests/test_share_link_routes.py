@@ -635,6 +635,30 @@ class TestPublicSharedWrappedPage(PublicSharedWrappedTestCase):
         self.assertIn("alice played 3 different songs by TestArtist", body)
         self.assertNotIn("You played", body)
 
+    def test_track_card_played_lines_use_the_owners_display_name(self):
+        """The artist/album card lines were the one public-page string still
+        printing the raw username - which is the owner's email local-part
+        (get_or_create_user derives it from email.split('@')[0]) - on a
+        deliberately public URL, against sharedWrappedPage's 'No session, no
+        nav, no PII' contract. Only the label changes: the raw username stays
+        the /img/ cover path key (see wrapped.html's ownerLabel note)."""
+        token = self._createLink()   #< upserts alice first; the name needs the row
+        self.assertTrue(self.dash.repo.setDisplayName("alice", "Wonderland"))
+        db = self._makeDb()
+        db.getTopArtists.return_value = [
+            {"id": "a1", "name": "TestArtist", "plays": 5, "totalTimeListened": 5000, "uniqueSongCount": 3}
+        ]
+        db.getTopAlbums.return_value = [
+            {"id": "al1", "name": "TestAlbum", "plays": 4, "totalTimeListened": 4000, "uniqueSongCount": 2}
+        ]
+
+        resp = self._getShared(token, db=db)
+        body = resp.data.decode()
+
+        self.assertIn("Wonderland played 3 different songs by TestArtist", body)
+        self.assertIn("Wonderland played 2 songs from TestAlbum", body)
+        self.assertNotIn("alice played", body)
+
     def test_js_constants_reflect_public_view_and_owner(self):
         """The AJAX/year-switch JS branches on these to keep the hero text
         and fetch target correct after a client-side filter/year change."""
@@ -878,6 +902,23 @@ class TestSharedWrappedPageAjax(PublicSharedWrappedTestCase):
         html = resp.get_json()["topArtistsHtml"]
         self.assertIn("alice played 3 different songs by TestArtist", html)
         self.assertNotIn("You played", html)
+
+    def test_ajax_swapped_list_html_uses_the_owners_display_name(self):
+        """The AJAX partial renders the same _track_card.html lines, so a
+        year/filter swap must not regress the full render's display-name fix
+        back to the raw username."""
+        token = self._createLink(year=2026)   #< upserts alice first; the name needs the row
+        self.assertTrue(self.dash.repo.setDisplayName("alice", "Wonderland"))
+        db = self._makeDb()
+        db.getTopArtists.return_value = [
+            {"id": "a1", "name": "TestArtist", "plays": 5, "totalTimeListened": 5000, "uniqueSongCount": 3}
+        ]
+
+        resp = self._getSharedAjax(token, db=db)
+
+        html = resp.get_json()["topArtistsHtml"]
+        self.assertIn("Wonderland played 3 different songs by TestArtist", html)
+        self.assertNotIn("alice played", html)
 
     def test_ajax_year_switch_on_a_multi_year_link_stays_within_available_years(self):
         token = self._createLink(year=None)
