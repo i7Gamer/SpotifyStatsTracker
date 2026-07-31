@@ -976,175 +976,139 @@ def register(app, dashboard):
         )
     app.add_url_rule("/song/<track_id>", "songDetailPage", songDetailPage, methods=["GET"])
 
-    @requiresUser
-    def artistDetailPage(username, db, artist_id):
+    def _entityDetailPage(username, db, entityId, *, kind, getter, missingEndpoint,
+                          idKwarg, urlIdKwarg, shellTemplate, bodyTemplate,
+                          embedEntity, fetchBio):
+        """The artist/album detail route body - they were ~85-line twins whose
+        six inline comments all read "see songDetailPage's identical branch"
+        (the same reason the _topList* helpers above exist: a fix landing in
+        one twin and missing the other). songDetailPage stays its own function:
+        no songs list, a heatmap, the play-log template and a track duration.
 
-        artist = db.getArtist(artist_id)
-        if artist is None:
-            return _missingEntityResponse("topArtistsPage")
+        The shared skeleton, in order: bucket-only AJAX refetch (?ajax=true),
+        the deferred-body shell (no ajax), list-only refetch (?ajax=list), then
+        the full deferred body. `kind` is the tag/genre entity kind ("artist"/
+        "album") and also names the endpoint (f"{kind}DetailPage" - the route
+        registration convention below). `embedEntity`/`fetchBio` carry the two
+        genuinely different steps; fetchBio(entity) returns the bio to display
+        (or None), owning its own lazy-fetch + kill-switch wiring."""
+        entity = getter(entityId)
+        if entity is None:
+            return _missingEntityResponse(missingEndpoint)
 
+        spanKwargs = {idKwarg: entityId}
         groupByParam = request.args.get("groupBy", "")   #< raw: the select keeps showing Auto
         ajax = request.args.get("ajax", "")
-        # Bucket-only AJAX refetch - see songDetailPage's identical branch.
+        # The bucket select re-fetches just the play-history series (see
+        # static/js/detail-chart.js) - everything else is bucket-independent.
         if ajax == "true":
             groupBy = dashboard._resolveGroupBy(
-                groupByParam, *dashboard._playRangeSpanDates(username, db.tz, artistId=artist_id))
+                groupByParam, *dashboard._playRangeSpanDates(username, db.tz, **spanKwargs))
             timeSeries = dashboard._embedTimeSeriesTextElements(
-                db.getListeningTimeSeries(artistId=artist_id, groupBy=groupBy)
+                db.getListeningTimeSeries(groupBy=groupBy, **spanKwargs)
             )
             return jsonify(timeSeries=timeSeries, groupBy=groupBy)
 
-        # Deferred-body shell - see songDetailPage's identical branch. The
-        # artist page has the most to gain: the whole songs-by-this-artist
-        # aggregate and the Last.fm biography fetch below now happen after the
+        # Deferred-body shell, the same two-phase load songDetailPage documents.
+        # The artist page has the most to gain: the whole songs-by-this-artist
+        # aggregate and the Last.fm biography fetch below happen only after the
         # page is already on screen.
         if ajax not in ("list", DETAIL_BODY_AJAX):
             return render_template(
-                "artist_detail.html",
-                artist=artist,
+                shellTemplate,
                 username=username,
                 groupBy=groupByParam,
-                entity_tags=db.repo.getTagsForEntity(username, "artist", artist_id),
+                entity_tags=db.repo.getTagsForEntity(username, kind, entityId),
                 success=request.args.get("success"),
                 error=request.args.get("error"),
+                **{kind: entity},
             )
 
-        listCtx = _detailHistoryContext(db, "artistDetailPage", {"artist_id": artist_id, "view": "history"},
-                                        groupByParam=groupByParam, artistId=artist_id)
+        listCtx = _detailHistoryContext(db, f"{kind}DetailPage", {urlIdKwarg: entityId, "view": "history"},
+                                        groupByParam=groupByParam, **spanKwargs)
         listCtx["plays"] = dashboard._attachGenres(db, listCtx["plays"], "track")
-        # List-only AJAX refetch - see songDetailPage's identical branch.
+        # The sort toggle / pagination links re-fetch just the play log (see
+        # static/js/detail-history.js).
         if ajax == "list":
             return jsonify(resultsHtml=render_template(
                 "_detail_history_results.html", username=username,
-                itemName=artist.get("name", ""), **listCtx))
+                itemName=entity.get("name", ""), **listCtx))
 
         groupBy = dashboard._resolveGroupBy(
-            groupByParam, *dashboard._playRangeSpanDates(username, db.tz, artistId=artist_id))
+            groupByParam, *dashboard._playRangeSpanDates(username, db.tz, **spanKwargs))
         timeSeries = dashboard._embedTimeSeriesTextElements(
-            db.getListeningTimeSeries(artistId=artist_id, groupBy=groupBy)
+            db.getListeningTimeSeries(groupBy=groupBy, **spanKwargs)
         )
 
-        songs = db.getSongsStats(sortBy="plays", artistId=artist_id)
+        songs = db.getSongsStats(sortBy="plays", **spanKwargs)
         firstSong = min(songs, key=lambda s: s.get("firstListenedAt") or float("inf")) if songs else None
         firstSongName = firstSong.get("name") if firstSong else None
 
         songs = dashboard._embedSongsTextElements(songs)
         songs = dashboard._embedTopSongsTextElements(
-            songs, sortBy="plays", totalPlays=artist.get("plays", 0), totalMs=artist.get("totalTimeListened", 0)
+            songs, sortBy="plays", totalPlays=entity.get("plays", 0), totalMs=entity.get("totalTimeListened", 0)
         )
         songs = dashboard._attachGenres(db, songs, "track")
-        artist = dashboard._embedArtistTextElement(artist)
-        artist = dashboard._attachGenres(db, [artist], "artist")[0]
+        entity = embedEntity(entity)
+        entity = dashboard._attachGenres(db, [entity], kind)[0]
 
-        # lazyFetchArtistBio no-ops (and skips fetching) when the admin's
-        # instance-wide toggle is off, same contract as the Last.fm genre
-        # backfill kill switch - but the displayed bio is suppressed here
-        # too, so disabling the feature also hides an artist's
-        # already-fetched bio, not just new ones.
-        db.lazyFetchArtistBio(artist_id, artist.get("name", ""))
-        artist["bio"] = db.getArtistBio(artist_id) if dashboard.repo.isArtistBioEnabled() else None
+        entity["bio"] = fetchBio(entity)
 
-        skipStats = db.getSkipStats(artistId=artist_id)
+        skipStats = db.getSkipStats(**spanKwargs)
 
         return jsonify(
             bodyHtml=render_template(
-                "_artist_detail_body.html",
-                artist=artist,
+                bodyTemplate,
                 songs=songs,
                 firstSongName=firstSongName,
                 username=username,
                 skipStats=skipStats,
                 view=dashboard._getDetailViewParam(),
-                itemName=artist.get("name", ""),
+                itemName=entity.get("name", ""),
+                **{kind: entity},
                 **listCtx,
             ),
             timeSeries=timeSeries,
         )
+
+    @requiresUser
+    def artistDetailPage(username, db, artist_id):
+        def fetchBio(artist):
+            # lazyFetchArtistBio no-ops (and skips fetching) when the admin's
+            # instance-wide toggle is off, same contract as the Last.fm genre
+            # backfill kill switch - but the displayed bio is suppressed here
+            # too, so disabling the feature also hides an artist's
+            # already-fetched bio, not just new ones.
+            db.lazyFetchArtistBio(artist_id, artist.get("name", ""))
+            return db.getArtistBio(artist_id) if dashboard.repo.isArtistBioEnabled() else None
+
+        return _entityDetailPage(
+            username, db, artist_id,
+            kind="artist", getter=db.getArtist, missingEndpoint="topArtistsPage",
+            idKwarg="artistId", urlIdKwarg="artist_id",
+            shellTemplate="artist_detail.html", bodyTemplate="_artist_detail_body.html",
+            embedEntity=dashboard._embedArtistTextElement, fetchBio=fetchBio)
     app.add_url_rule("/artist/<artist_id>", "artistDetailPage", artistDetailPage, methods=["GET"])
 
     @requiresUser
     def albumDetailPage(username, db, album_id):
+        def fetchBio(album):
+            # Mirrors artistDetailPage's bio wiring: lazyFetchAlbumBio no-ops
+            # (and skips fetching) when the admin's instance-wide toggle is
+            # off, and the displayed bio is suppressed here too, so disabling
+            # the feature also hides an album's already-fetched bio. The
+            # primary artist (album.getinfo needs one) comes from the
+            # already-loaded artists list.
+            primaryArtists = album.get("artists") or []
+            primaryArtistName = primaryArtists[0].get("name", "") if primaryArtists else ""
+            if primaryArtistName:
+                db.lazyFetchAlbumBio(album_id, album.get("name", ""), primaryArtistName)
+            return db.getAlbumBio(album_id) if dashboard.repo.isAlbumBioEnabled() else None
 
-        album = db.getAlbum(album_id)
-        if album is None:
-            return _missingEntityResponse("topAlbumsPage")
-
-        groupByParam = request.args.get("groupBy", "")   #< raw: the select keeps showing Auto
-        ajax = request.args.get("ajax", "")
-        # Bucket-only AJAX refetch - see songDetailPage's identical branch.
-        if ajax == "true":
-            groupBy = dashboard._resolveGroupBy(
-                groupByParam, *dashboard._playRangeSpanDates(username, db.tz, albumId=album_id))
-            timeSeries = dashboard._embedTimeSeriesTextElements(
-                db.getListeningTimeSeries(albumId=album_id, groupBy=groupBy)
-            )
-            return jsonify(timeSeries=timeSeries, groupBy=groupBy)
-
-        # Deferred-body shell - see songDetailPage's identical branch.
-        if ajax not in ("list", DETAIL_BODY_AJAX):
-            return render_template(
-                "album_detail.html",
-                album=album,
-                username=username,
-                groupBy=groupByParam,
-                entity_tags=db.repo.getTagsForEntity(username, "album", album_id),
-                success=request.args.get("success"),
-                error=request.args.get("error"),
-            )
-
-        listCtx = _detailHistoryContext(db, "albumDetailPage", {"album_id": album_id, "view": "history"},
-                                        groupByParam=groupByParam, albumId=album_id)
-        listCtx["plays"] = dashboard._attachGenres(db, listCtx["plays"], "track")
-        # List-only AJAX refetch - see songDetailPage's identical branch.
-        if ajax == "list":
-            return jsonify(resultsHtml=render_template(
-                "_detail_history_results.html", username=username,
-                itemName=album.get("name", ""), **listCtx))
-
-        groupBy = dashboard._resolveGroupBy(
-            groupByParam, *dashboard._playRangeSpanDates(username, db.tz, albumId=album_id))
-        timeSeries = dashboard._embedTimeSeriesTextElements(
-            db.getListeningTimeSeries(albumId=album_id, groupBy=groupBy)
-        )
-
-        songs = db.getSongsStats(sortBy="plays", albumId=album_id)
-        firstSong = min(songs, key=lambda s: s.get("firstListenedAt") or float("inf")) if songs else None
-        firstSongName = firstSong.get("name") if firstSong else None
-
-        songs = dashboard._embedSongsTextElements(songs)
-        songs = dashboard._embedTopSongsTextElements(
-            songs, sortBy="plays", totalPlays=album.get("plays", 0), totalMs=album.get("totalTimeListened", 0)
-        )
-        songs = dashboard._attachGenres(db, songs, "track")
-        album = dashboard._embedAlbumTextElements(album)
-        album = dashboard._attachGenres(db, [album], "album")[0]
-
-        # Mirrors artistDetailPage's bio wiring: lazyFetchAlbumBio no-ops
-        # (and skips fetching) when the admin's instance-wide toggle is
-        # off, and the displayed bio is suppressed here too, so disabling
-        # the feature also hides an album's already-fetched bio. The
-        # primary artist (album.getinfo needs one) comes from the
-        # already-loaded artists list.
-        primaryArtists = album.get("artists") or []
-        primaryArtistName = primaryArtists[0].get("name", "") if primaryArtists else ""
-        if primaryArtistName:
-            db.lazyFetchAlbumBio(album_id, album.get("name", ""), primaryArtistName)
-        album["bio"] = db.getAlbumBio(album_id) if dashboard.repo.isAlbumBioEnabled() else None
-
-        skipStats = db.getSkipStats(albumId=album_id)
-
-        return jsonify(
-            bodyHtml=render_template(
-                "_album_detail_body.html",
-                album=album,
-                songs=songs,
-                firstSongName=firstSongName,
-                username=username,
-                skipStats=skipStats,
-                view=dashboard._getDetailViewParam(),
-                itemName=album.get("name", ""),
-                **listCtx,
-            ),
-            timeSeries=timeSeries,
-        )
+        return _entityDetailPage(
+            username, db, album_id,
+            kind="album", getter=db.getAlbum, missingEndpoint="topAlbumsPage",
+            idKwarg="albumId", urlIdKwarg="album_id",
+            shellTemplate="album_detail.html", bodyTemplate="_album_detail_body.html",
+            embedEntity=dashboard._embedAlbumTextElements, fetchBio=fetchBio)
     app.add_url_rule("/album/<album_id>", "albumDetailPage", albumDetailPage, methods=["GET"])
