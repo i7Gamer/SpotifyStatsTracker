@@ -111,7 +111,10 @@ class MediaFetchMixin:
         to a client-rendered SPA shell with no server-rendered metadata, for every
         artist, not just obscure ones."""
         creds = self.getUserSpotifyCredentials()
-        if creds and creds.get("client_id") and creds.get("refresh_token"):
+        #< all three, like the listener's own gate (spotifyListener.py): the
+        #  refresh call reads client_secret unconditionally, so a two-of-three
+        #  row raised KeyError here instead of falling back
+        if creds and creds.get("client_id") and creds.get("client_secret") and creds.get("refresh_token"):
             from Database.Listeners.spotifyListener import _refresh_spotify_access_token
             access_token = _refresh_spotify_access_token(
                 creds["client_id"], creds["client_secret"], creds["refresh_token"])

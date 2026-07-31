@@ -17,6 +17,11 @@ import Database.database as _dbmod  # noqa: F401 - module-global names
 # working after this relocation.
 
 
+# The Web API's GET /v1/albums hard cap on ids per request; also bounds the
+# cookie-client fallback's per-cycle batch so both paths pace identically.
+SPOTIFY_BULK_ALBUM_LIMIT = 20
+
+
 class MetadataBackfillMixin:
     """The Spotify Web-API metadata backfiller (missing album/track dates, artistless tracks)."""
 
@@ -106,7 +111,7 @@ class MetadataBackfillMixin:
                             if album_id not in _dbmod.Database._active_backfills:
                                 target_ids.append(album_id)
                                 _dbmod.Database._active_backfills.add(album_id)
-                                if len(target_ids) >= 20:  # Spotify bulk limit is 20
+                                if len(target_ids) >= SPOTIFY_BULK_ALBUM_LIMIT:
                                     break
 
                     # 5. If nothing eligible remains, wait and try next iteration
@@ -121,7 +126,9 @@ class MetadataBackfillMixin:
                     attempted_ids = []  #< albums that got a definitive response (incl. "gone") - rate-limits their next retry
                     use_fallback = True
 
-                    if creds and creds.get("client_id") and creds.get("refresh_token"):
+                    #< all three, like the listener's own gate - see the same
+                    #  comment on _fetchArtistImageUrl's copy in media_fetch.py
+                    if creds and creds.get("client_id") and creds.get("client_secret") and creds.get("refresh_token"):
                         from Database.Listeners.spotifyListener import _refresh_spotify_access_token
                         import requests
 

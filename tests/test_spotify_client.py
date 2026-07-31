@@ -308,6 +308,22 @@ class TestIncompleteTrackInfo(unittest.TestCase):
             getTrackInfoWithRetry("abc123")
 
     @patch("spotapi.Public")
+    def test_a_closed_session_raises_immediately_without_the_ladder(self, mock_public):
+        """curl_cffi's 'Session is closed, cannot send request.' contains
+        'session', so the substring classifier retried a permanently dead
+        transport through the whole 1+2+4s ladder before raising anyway -
+        while the reconnect paths (recentlyPlayed._isSessionClosedError)
+        already recognise that state as unrecoverable. Same helper, same
+        answer, on the first attempt."""
+        from Database.Spotify.client import getTrackInfoWithRetry
+
+        mock_public.song_info.side_effect = RuntimeError("Session is closed, cannot send request.")
+
+        with self.assertRaises(RuntimeError):
+            getTrackInfoWithRetry("abc123")
+        self.assertEqual(mock_public.song_info.call_count, 1)
+
+    @patch("spotapi.Public")
     def test_a_non_transport_spotapi_error_is_not_retried(self, mock_public):
         """The classification stays narrow - an unrecognised error is still a
         fact about the request, raised on the first attempt."""

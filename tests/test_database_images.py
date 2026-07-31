@@ -186,6 +186,31 @@ class TestLazyFetchArtistImage(unittest.TestCase):
             mock_sp_class.assert_called_once_with()
             self.assertEqual(db.repo.imageStatus("artist123", IMAGE_KIND_ARTIST), IMAGE_STATUS_OK)
 
+    def test_partial_credentials_fall_back_instead_of_raising(self):
+        """The gate used to check client_id + refresh_token but then read
+        creds["client_secret"] unconditionally - a row with only two of the
+        three stored (the listener's own gate at spotifyListener.py requires
+        all three) raised KeyError, which the lazy-fetch wrapper swallowed
+        into a plain False: no image, no fallback attempt, nothing logged
+        pointing at the real cause."""
+        db = _bareDatabase()
+        db.getUserSpotifyCredentials = MagicMock(return_value={
+            "client_id": "test_id", "refresh_token": "test_refresh"})   #< no client_secret
+        with tempfile.TemporaryDirectory() as tmpdir:
+            imagePath = Path(tmpdir) / "artist123.jpeg"
+
+            mock_sp = MagicMock()
+            mock_sp.artist.return_value = {"images": [{"url": "https://i.scdn.co/image/xyz"}]}
+            imageResponse = _imageResponse(_pngBytes())
+
+            with patch("Database.Spotify.Spotify", return_value=mock_sp), \
+                 patch("Database.database.requests.get", return_value=imageResponse):
+                future = db.lazyFetchArtistImage("artist123", imagePath)
+                result = future.result(timeout=5)
+
+            self.assertTrue(result)
+            mock_sp.artist.assert_called_once_with("artist123")   #< the cookie client covered it
+
     def test_falls_back_to_spotipy_free_when_web_api_request_fails(self):
         """Credentials configured but the official API call itself fails (expired
         grant, rate limit, ...) - must not give up, same fallback as no-credentials."""

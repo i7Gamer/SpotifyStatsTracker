@@ -40,7 +40,7 @@ from Database.Spotify.formatting import (
     formatTrackUnion, formatSearchTrackData, formatAlbumUnion, formatArtistUnion,
     formatPlaylistV2, formatProfile, formatContext, openSpotifyUrl,
 )
-from Database.Spotify.recentlyPlayed import RecentlyPlayedManager
+from Database.Spotify.recentlyPlayed import RecentlyPlayedManager, _isSessionClosedError
 
 try:
     from Database.db import RESTRICTED_FALLBACK_REASON, UNKNOWN_TRACK_NAME, UNKNOWN_ALBUM_NAME
@@ -202,7 +202,15 @@ def getTrackInfoWithRetry(trackId: str, max_retries: int = TRACK_FETCH_MAX_RETRI
             is_locally_paused = isinstance(e, SpotifyLocallyRateLimitedError)
             is_rate_limit = not is_locally_paused and (
                 "429" in error_str or ("rate" in error_str and "limit" in error_str))
-            is_session_error = "could not get session" in error_str or "session" in error_str
+            # A permanently dead transport is not transient: curl_cffi's
+            # "Session is closed, cannot send request." also says "session",
+            # so the broad match below bought that error three sleeps before
+            # raising anyway - while the reconnect paths (recentlyPlayed's
+            # _isSessionClosedError) already treat it as unrecoverable. Same
+            # helper, same answer, on the first attempt.
+            if _isSessionClosedError(e):
+                raise
+            is_session_error = "session" in error_str   #< subsumes the old "could not get session" first clause
             # spotapi raises SongError from exactly one place in
             # Song.get_track_info: `if resp.fail`, i.e. the HTTP request itself
             # failed. That is a transport blip - the class this ladder exists
