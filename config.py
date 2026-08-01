@@ -103,6 +103,12 @@ TRUTHY_ENV_VALUES = {"1", "true", "yes", "on"}
 # value, i.e. a trivial full-auth-bypass. _get_or_create_secret_key refuses to
 # start on this exact value (see app.py).
 PLACEHOLDER_FLASK_SECRET_KEY = "changeme-generate-your-own-random-value"
+# Where the Flask signing key is persisted when FLASK_SECRET_KEY is unset, so
+# sessions survive a restart. Same directory as the data encryption key
+# (Database/secret_store.py's DEFAULT_KEY_PATH) and written by the same helper,
+# so both get the same owner-only permissions and atomic write.
+SECRETS_DIR_NAME = "secrets"
+FLASK_SECRET_KEY_FILENAME = "flask_secret_key.txt"
 # Admin-triggered graceful restart (POST /admin/restart). The button gracefully
 # stops workers then exits so a *supervising* launch script relaunches the
 # process - it must NOT be relied on for a bare, unsupervised process (the app

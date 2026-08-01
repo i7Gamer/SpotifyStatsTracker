@@ -11,6 +11,7 @@
 """
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -19,7 +20,9 @@ from unittest.mock import patch, MagicMock
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import app as appModule
-from app import SpotifyDashboardApp, PLACEHOLDER_FLASK_SECRET_KEY
+from app import (SpotifyDashboardApp, PLACEHOLDER_FLASK_SECRET_KEY,
+                 SECRETS_DIR_NAME, FLASK_SECRET_KEY_FILENAME)
+from Database.secret_store import FLASK_SECRET_KEY_ENV_VAR, KEY_FILE_MODE
 from _app_factory import makeApp
 
 
@@ -166,6 +169,61 @@ class TestPlaceholderSecretKeyRefused(unittest.TestCase):
 
     def test_real_key_is_returned(self):
         self.assertEqual(self._call("a-real-random-value"), "a-real-random-value")
+
+
+class TestFlaskSecretKeyFile(unittest.TestCase):
+    """With no FLASK_SECRET_KEY set, the signing key is persisted under
+    secrets/ so sessions survive a restart. It is the recoverable twin of
+    secrets/data_encryption_key.txt - losing it logs everyone out, it does not
+    strand stored Spotify sessions - and goes through the same hardened
+    readOrCreateKeyFile, so both are written owner-only and atomically."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        self.baseDir = Path(self._tmpdir.name)
+        self.keyFile = self.baseDir / SECRETS_DIR_NAME / FLASK_SECRET_KEY_FILENAME
+        envPatcher = patch.dict(os.environ, {}, clear=False)
+        envPatcher.start()
+        self.addCleanup(envPatcher.stop)
+        os.environ.pop(FLASK_SECRET_KEY_ENV_VAR, None)
+
+    def _call(self):
+        return SpotifyDashboardApp._get_or_create_secret_key(SimpleNamespace(baseDir=self.baseDir))
+
+    def test_a_key_is_minted_and_persisted_on_first_start(self):
+        minted = self._call()
+
+        self.assertTrue(minted)
+        self.assertEqual(self.keyFile.read_text(encoding="utf-8").strip(), minted)
+
+    def test_the_persisted_key_is_reused_on_the_next_start(self):
+        """A key that changed every boot would log everyone out on every
+        restart - the whole reason it is written down."""
+        self.assertEqual(self._call(), self._call())
+
+    def test_an_empty_file_is_reminted_rather_than_fatal(self):
+        """Unlike the data encryption key, which refuses: a lost signing key
+        costs everyone a re-login, not their stored Spotify sessions."""
+        self.keyFile.parent.mkdir(parents=True)
+        self.keyFile.write_text("", encoding="utf-8")
+
+        minted = self._call()
+
+        self.assertTrue(minted)
+        self.assertEqual(self.keyFile.read_text(encoding="utf-8").strip(), minted)
+
+    def test_nothing_is_left_behind(self):
+        self._call()
+
+        leftovers = [p.name for p in self.keyFile.parent.iterdir() if p != self.keyFile]
+        self.assertEqual(leftovers, [], f"temporary artefacts left behind: {leftovers}")
+
+    @unittest.skipIf(os.name == "nt", "os.chmod on Windows never narrows the ACL")
+    def test_the_key_file_is_owner_only(self):
+        self._call()
+
+        self.assertEqual(self.keyFile.stat().st_mode & 0o777, KEY_FILE_MODE)
 
 
 if __name__ == "__main__":

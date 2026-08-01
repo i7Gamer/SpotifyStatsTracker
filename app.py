@@ -6,7 +6,6 @@ import math
 import os
 import json
 import random
-import secrets
 import tempfile
 import threading
 import requests
@@ -29,6 +28,7 @@ from services.email_worker import EMAIL_WORKER
 from Database.db import SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON
 from Database.repository import Repository
 from Database.Migrators.migrate import migrateIfNeeded
+from Database.secret_store import readOrCreateKeyFile, FLASK_SECRET_KEY_ENV_VAR
 from Database.Listeners.spotifyListener import _suppress_signal_in_thread
 from Database.Spotify.recentlyPlayed import setPushListenerEnabledHook as patch_push_listener_hook
 from Database.logging_config import configureLogging
@@ -263,7 +263,7 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
         """Resolve the Flask session-signing key. Prefers FLASK_SECRET_KEY, otherwise
         persists a random key under secrets/ so sessions can't be forged using the
         publicly-known default that used to ship in this repo."""
-        envKey = os.environ.get("FLASK_SECRET_KEY")
+        envKey = os.environ.get(FLASK_SECRET_KEY_ENV_VAR)
         if envKey:
             if envKey.strip() == PLACEHOLDER_FLASK_SECRET_KEY:
                 # Refuse to boot on the shipped placeholder: it is a public value,
@@ -277,16 +277,12 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
                 )
             return envKey
 
-        keyFile = self.baseDir / "secrets" / "flask_secret_key.txt"
-        if keyFile.exists():
-            existingKey = keyFile.read_text(encoding="utf-8").strip()
-            if existingKey:
-                return existingKey
-
-        newKey = secrets.token_hex(32)
-        keyFile.parent.mkdir(parents=True, exist_ok=True)
-        keyFile.write_text(newKey, encoding="utf-8")
-        return newKey
+        # No emptyFileError, unlike the data encryption key this shares the
+        # helper with: an empty or lost signing key only invalidates live
+        # sessions (everyone logs in again), while a lost data encryption key
+        # strands every stored Spotify session for good - so this one re-mints
+        # where that one has to refuse.
+        return readOrCreateKeyFile(self.baseDir / SECRETS_DIR_NAME / FLASK_SECRET_KEY_FILENAME)
 
     def _logIntegrityProbe(self):
         """Say plainly, once per start, whether the database is intact.

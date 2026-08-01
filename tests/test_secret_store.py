@@ -254,5 +254,162 @@ class TestKeyResolution(unittest.TestCase):
         self.assertEqual(decryptSecret(stored), "secret", "a later call must reuse the same key file")
 
 
+class _KeyFileTestCase(unittest.TestCase):
+    """A key path inside a not-yet-existing secrets/ directory, so the helper
+    has to create the directory as well as the file."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        self.keyPath = pathlib.Path(self._tmpdir.name) / "secrets" / "key.txt"
+
+    def _writeExisting(self, contents):
+        self.keyPath.parent.mkdir(parents=True, exist_ok=True)
+        self.keyPath.write_text(contents, encoding="utf-8")
+
+    def _mode(self, path):
+        return path.stat().st_mode & 0o777
+
+
+class TestReadOrCreateKeyFile(_KeyFileTestCase):
+    """The file mechanics shared by the data encryption key and app.py's Flask
+    session key. The two differ only in what an EMPTY file means, which is the
+    one parameter: losing the Flask key logs everyone out (recoverable, so
+    re-mint), losing the data encryption key strands every stored Spotify
+    session for good (so refuse and say to restore it)."""
+
+    def test_a_missing_file_is_minted_and_persisted(self):
+        minted = secretStore.readOrCreateKeyFile(self.keyPath)
+
+        self.assertTrue(minted)
+        self.assertEqual(self.keyPath.read_text(encoding="utf-8").strip(), minted)
+
+    def test_an_existing_key_is_returned_stripped(self):
+        self._writeExisting("  an-existing-key\n")
+
+        self.assertEqual(secretStore.readOrCreateKeyFile(self.keyPath), "an-existing-key")
+
+    def test_an_empty_file_is_reminted_when_no_error_is_supplied(self):
+        self._writeExisting("")
+
+        minted = secretStore.readOrCreateKeyFile(self.keyPath)
+
+        self.assertTrue(minted)
+        self.assertEqual(self.keyPath.read_text(encoding="utf-8").strip(), minted)
+
+    def test_a_whitespace_only_file_is_reminted_too(self):
+        self._writeExisting("   \n")
+
+        minted = secretStore.readOrCreateKeyFile(self.keyPath)
+
+        self.assertEqual(self.keyPath.read_text(encoding="utf-8").strip(), minted)
+
+    def test_an_empty_file_raises_the_supplied_error_and_is_left_alone(self):
+        self._writeExisting("")
+
+        with self.assertRaises(RuntimeError) as ctx:
+            secretStore.readOrCreateKeyFile(self.keyPath, emptyFileError="restore it from a backup")
+
+        self.assertIn("restore it from a backup", str(ctx.exception))
+        self.assertEqual(self.keyPath.read_text(encoding="utf-8"), "",
+                         "minting over it would make every encrypted value unreadable")
+
+    def test_a_stale_partial_from_a_crash_does_not_block_minting(self):
+        """os.open(O_EXCL) refuses an existing file, and a killed process can
+        leave the temp behind - so a crashed first boot must not wedge every
+        boot after it."""
+        self._writeExisting("")
+        self.keyPath.unlink()
+        stale = self.keyPath.with_name(self.keyPath.name + secretStore.PARTIAL_SUFFIX)
+        stale.write_text("half-written", encoding="utf-8")
+
+        minted = secretStore.readOrCreateKeyFile(self.keyPath)
+
+        self.assertEqual(self.keyPath.read_text(encoding="utf-8").strip(), minted)
+        self.assertFalse(stale.exists())
+
+    def test_nothing_is_left_behind(self):
+        secretStore.readOrCreateKeyFile(self.keyPath)
+
+        leftovers = [p.name for p in self.keyPath.parent.iterdir() if p != self.keyPath]
+        self.assertEqual(leftovers, [], f"temporary artefacts left behind: {leftovers}")
+
+
+@unittest.skipIf(os.name == "nt",
+                 "CPython's os.chmod on Windows only toggles the read-only attribute and never "
+                 "narrows the ACL, and st_mode is synthetic - there is no mode to assert on")
+class TestKeyFilePermissions(_KeyFileTestCase):
+    """A key file readable by every account on the host is one `cat` away from
+    forged sessions and decrypted Spotify credentials. Not a defence against
+    the host being compromised - the app reads the key unattended at boot, so
+    whatever it can read as its own user, an attacker running as that user can
+    too - but against other local accounts, an over-broad share ACL, and the
+    key riding along in an archive or `docker cp`."""
+
+    def test_a_minted_key_file_is_owner_only(self):
+        secretStore.readOrCreateKeyFile(self.keyPath)
+
+        self.assertEqual(self._mode(self.keyPath), secretStore.KEY_FILE_MODE)
+
+    def test_the_directory_it_creates_is_owner_only(self):
+        secretStore.readOrCreateKeyFile(self.keyPath)
+
+        self.assertEqual(self._mode(self.keyPath.parent), secretStore.SECRETS_DIR_MODE)
+
+    def test_the_key_is_never_world_readable_even_briefly(self):
+        """Creating with the default mode and chmod'ing after leaves a window
+        where the key is readable by anyone; the mode has to be set at
+        creation, on the temp file the rename preserves."""
+        observed = []
+        realReplace = os.replace
+
+        def captureThenReplace(src, dst):
+            if str(src).endswith(secretStore.PARTIAL_SUFFIX):
+                observed.append(os.stat(src).st_mode & 0o777)
+            return realReplace(src, dst)
+
+        with patch.object(os, "replace", side_effect=captureThenReplace):
+            secretStore.readOrCreateKeyFile(self.keyPath)
+
+        self.assertEqual(observed, [secretStore.KEY_FILE_MODE])
+
+    def test_an_existing_loose_key_file_is_tightened_on_read(self):
+        """Installs predating this wrote the file with the default mode and
+        never re-create it, so a fresh-install-only fix would never reach the
+        files that are actually exposed."""
+        self._writeExisting("an-existing-key")
+        os.chmod(self.keyPath, 0o644)
+
+        self.assertEqual(secretStore.readOrCreateKeyFile(self.keyPath), "an-existing-key")
+        self.assertEqual(self._mode(self.keyPath), secretStore.KEY_FILE_MODE)
+
+    def test_an_existing_loose_directory_is_tightened_on_read(self):
+        self._writeExisting("an-existing-key")
+        os.chmod(self.keyPath.parent, 0o755)
+
+        secretStore.readOrCreateKeyFile(self.keyPath)
+
+        self.assertEqual(self._mode(self.keyPath.parent), secretStore.SECRETS_DIR_MODE)
+
+    def test_an_already_narrower_file_is_left_alone(self):
+        """0o400 grants less than we ask for; resetting it to 0o600 would be a
+        downgrade of a deliberate choice."""
+        self._writeExisting("an-existing-key")
+        os.chmod(self.keyPath, 0o400)
+
+        secretStore.readOrCreateKeyFile(self.keyPath)
+
+        self.assertEqual(self._mode(self.keyPath), 0o400)
+
+    def test_a_failure_to_tighten_is_survivable(self):
+        """A key file owned by another account still has to be readable - the
+        app going down is worse than the permissions staying loose."""
+        self._writeExisting("an-existing-key")
+        os.chmod(self.keyPath, 0o644)
+
+        with patch.object(os, "chmod", side_effect=PermissionError("not the owner")):
+            self.assertEqual(secretStore.readOrCreateKeyFile(self.keyPath), "an-existing-key")
+
+
 if __name__ == "__main__":
     unittest.main()

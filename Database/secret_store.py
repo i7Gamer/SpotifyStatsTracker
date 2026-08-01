@@ -68,10 +68,113 @@ ENCRYPTED_PREFIX_V2 = "enc:v2:"
 KEY_FINGERPRINT_LENGTH = 8
 KEY_FILE_NUM_BYTES = 32        #< entropy of an auto-generated key file
 DEFAULT_KEY_PATH = Path(__file__).resolve().parent.parent / "secrets" / "data_encryption_key.txt"
+# A key file readable by every account on the host is one `cat` away from
+# forged sessions and decrypted Spotify credentials. This is NOT a defence
+# against the host being compromised - the app reads the key unattended at
+# boot, so whatever it can read as its own user, an attacker running as that
+# user can read too. It defends against the mundane cases: another local
+# account, an over-broad share ACL, and the key riding along in an archive or
+# a `docker cp` of the install directory.
+KEY_FILE_MODE = 0o600          #< owner read/write, nobody else
+SECRETS_DIR_MODE = 0o700       #< and nobody else may even list the directory
+PARTIAL_SUFFIX = ".partial"    #< the temp name a key file is written under before the rename
 
 # Serializes lazy creation of the key file - two threads encrypting for the
 # first time simultaneously must not each generate (and write) their own key.
 _keyFileLock = threading.Lock()
+
+# CPython's os.chmod on Windows only toggles FILE_ATTRIBUTE_READONLY; it never
+# touches the ACL, and st_mode comes back synthetic (0o666/0o444). Calling it
+# there would be a no-op dressed up as a fix, and the "is this looser than we
+# want" check below would try to repair every file on every boot. Restricting a
+# Windows install means an ACL (icacls / SetNamedSecurityInfo); that is
+# deliberately not attempted here rather than pretending a 0o600 did something.
+_CAN_SET_FILE_MODE = os.name != "nt"
+
+
+def _restrictPermissions(path: Path, mode: int) -> None:
+    """Narrow `path` to `mode` if it currently grants more than that.
+
+    Only ever narrows: a file someone deliberately set to 0o400 is left as it
+    is. Failure is logged and survived - a key file owned by another account
+    still has to be readable, and the app going down is worse than the
+    permissions staying loose."""
+    if not _CAN_SET_FILE_MODE:
+        return
+    try:
+        currentMode = path.stat().st_mode & 0o777
+    except OSError:
+        return
+    if not currentMode & ~mode:
+        return
+    try:
+        os.chmod(path, mode)
+    except OSError as e:
+        logger.warning("Could not restrict permissions on %s (%s) - it stays readable by other "
+                       "accounts on this host.", path, e)
+        return
+    logger.info("Tightened permissions on %s from %o to %o.", path, currentMode, mode)
+
+
+def _writeKeyFile(path: Path, contents: str) -> None:
+    """Persist a freshly-minted key, atomically and owner-only from the moment
+    it exists.
+
+    Atomic because a plain write truncates first, so a crash or a full disk
+    between the two leaves exactly the empty file readOrCreateKeyFile has to
+    refuse. Owner-only at creation rather than chmod'ed afterwards, because
+    chmod-after leaves a window in which the key is world-readable."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _restrictPermissions(path.parent, SECRETS_DIR_MODE)
+    tempPath = path.with_name(path.name + PARTIAL_SUFFIX)
+    # A .partial left behind by a killed process would make O_EXCL fail forever,
+    # and reusing it would keep its old (possibly loose) mode - os.open applies
+    # the mode only when it creates the file.
+    tempPath.unlink(missing_ok=True)
+    descriptor = os.open(tempPath, os.O_WRONLY | os.O_CREAT | os.O_EXCL, KEY_FILE_MODE)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(contents)
+        os.replace(tempPath, path)
+    except Exception:
+        tempPath.unlink(missing_ok=True)
+        raise
+
+
+def readOrCreateKeyFile(path: Path, *, emptyFileError: str | None = None,
+                        createdMessage: str | None = None) -> str:
+    """The key stored at `path`, minting and persisting a random one if it is
+    not there yet.
+
+    `emptyFileError` decides what an existing-but-EMPTY file means, which is
+    the only way the two callers differ. The data encryption key passes one:
+    minting over it would make every enc: value in the database undecryptable,
+    which decryptSecret reports as None, which every caller reads as "no
+    credentials stored" - so every user is silently bounced to re-login and
+    their Spotify refresh tokens are unrecoverable. Restoring the file from a
+    backup fixes that; minting cannot be undone, so it has to refuse. The Flask
+    session key passes None: losing it only invalidates live sessions, so an
+    empty file is just a failed write to redo."""
+    with _keyFileLock:
+        if path.exists():
+            existing = path.read_text(encoding="utf-8").strip()
+            if existing:
+                # Also on the read path, not just at creation: an install that
+                # predates this wrote the file with the default mode and will
+                # never re-create it, so a mint-only fix would never reach the
+                # files that are actually exposed.
+                _restrictPermissions(path, KEY_FILE_MODE)
+                _restrictPermissions(path.parent, SECRETS_DIR_MODE)
+                return existing
+            if emptyFileError:
+                raise RuntimeError(emptyFileError)
+            logger.warning("The key file at %s was empty - generating a new one.", path)
+        newKey = secrets.token_hex(KEY_FILE_NUM_BYTES)
+        _writeKeyFile(path, newKey)
+        if createdMessage:
+            logger.info(createdMessage)
+        return newKey
+
 
 # The SHA-256 derivations below are cached on the key MATERIAL, not on "the
 # current key": _keyMaterial is still consulted every time, so an env var or key
@@ -91,42 +194,22 @@ def _keyMaterial() -> str:
     if flaskKey:
         return flaskKey
 
-    with _keyFileLock:
-        if DEFAULT_KEY_PATH.exists():
-            existing = DEFAULT_KEY_PATH.read_text(encoding="utf-8").strip()
-            if existing:
-                return existing
-            # An existing-but-EMPTY key file is not "no key yet". Falling
-            # through here would mint a new one over the old path, and every
-            # enc:v1: value in the database would stop decrypting - which
-            # decryptSecret reports as None, which callers read as "no cookies
-            # stored", so every user is silently bounced to re-login and their
-            # Spotify refresh tokens are unrecoverable. Restoring this file from
-            # a backup fixes everything; minting cannot be undone, so refuse -
-            # the same call _get_or_create_secret_key makes for the placeholder
-            # FLASK_SECRET_KEY.
-            raise RuntimeError(
-                f"The data encryption key file at {DEFAULT_KEY_PATH} exists but is empty. "
-                "Restore it from a backup - without it, every stored Spotify session and API "
-                "credential is unreadable. If this really is a fresh install, delete the empty "
-                f"file and restart, or set {ENCRYPTION_KEY_ENV_VAR}."
-            )
-        newKey = secrets.token_hex(KEY_FILE_NUM_BYTES)
-        DEFAULT_KEY_PATH.parent.mkdir(parents=True, exist_ok=True)
-        # Written via a temp file in the same directory and renamed: a plain
-        # write_text truncates first, so a crash or a full disk between the two
-        # leaves exactly the empty file the branch above has to refuse.
-        tempPath = DEFAULT_KEY_PATH.with_name(DEFAULT_KEY_PATH.name + ".partial")
-        try:
-            tempPath.write_text(newKey, encoding="utf-8")
-            os.replace(tempPath, DEFAULT_KEY_PATH)
-        except Exception:
-            tempPath.unlink(missing_ok=True)
-            raise
-        logger.info("Generated a new data encryption key at %s - keep it with your backups: "
-                    "without it, stored Spotify sessions can't be read and every user must re-login.",
-                    DEFAULT_KEY_PATH)
-        return newKey
+    # An existing-but-EMPTY key file is not "no key yet" here - see
+    # readOrCreateKeyFile, which refuses rather than minting over it.
+    return readOrCreateKeyFile(
+        DEFAULT_KEY_PATH,
+        emptyFileError=(
+            f"The data encryption key file at {DEFAULT_KEY_PATH} exists but is empty. "
+            "Restore it from a backup - without it, every stored Spotify session and API "
+            "credential is unreadable. If this really is a fresh install, delete the empty "
+            f"file and restart, or set {ENCRYPTION_KEY_ENV_VAR}."
+        ),
+        createdMessage=(
+            f"Generated a new data encryption key at {DEFAULT_KEY_PATH} - keep it with your "
+            "backups: without it, stored Spotify sessions can't be read and every user must "
+            "re-login."
+        ),
+    )
 
 
 @functools.lru_cache(maxsize=_DERIVATION_CACHE_SIZE)
