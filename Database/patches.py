@@ -14,6 +14,7 @@ import websockets.exceptions
 import spotapi.exceptions
 import spotapi.status
 import spotapi.websocket
+from spotapi.types.alias import _Undefined
 
 from Database.rate_limit import (
     SPOTIFY_LIMITER, SPOTIFY_ACQUIRE_TIMEOUT_SECONDS,
@@ -102,7 +103,39 @@ if hasattr(spotapi.websocket, "connect"):
 # 2. Add a robust reconnect method to spotapi.status.PlayerStatus.
 # This prevents AttributeError: 'PlayerStatus' object has no attribute 'reconnect'
 # when the websocket drops and LastPlayedManger attempts to reconnect.
+
+# The dealer handshake authenticates ONLY through the access_token embedded in
+# its URI: none of the HTTP-side machinery applies (_auth_rule's per-request
+# refresh, _handle_auth_failure's retry-on-401), so an expired token is a
+# guaranteed 401 with no second chance. And spotapi's _get_auth_vars refuses
+# to fetch while ANY token is still set, however expired - which made the
+# renewal below a no-op for the one credential the handshake needs, and every
+# reconnect resent the token Spotify had just rejected (2026-08-01: 14 hours
+# of storming "server rejected WebSocket connection: HTTP 401"). A stale token
+# must therefore be cleared here, using the same expiry skew _auth_rule uses.
+WS_ACCESS_TOKEN_REFRESH_SKEW_MS = 30_000  #< mirrors BaseClient._REFRESH_SKEW_MS
+
+
+def _accessTokenNeedsRefresh(base) -> bool:
+    """Whether base.access_token cannot be trusted for a NEW dealer handshake."""
+    token = getattr(base, "access_token", None)
+    if token is None or token is _Undefined:
+        return True
+    expiresAtMs = getattr(base, "access_token_expires_at_ms", 0) or 0
+    if not expiresAtMs:
+        return True   #< unknown expiry: assume stale - a wrong guess costs one
+                      #  token fetch, guessing the other way costs a 401 loop
+    return time.time() * 1000 + WS_ACCESS_TOKEN_REFRESH_SKEW_MS >= expiresAtMs
+
+
 def player_status_reconnect(self):
+    if getattr(self, "_deliberate_close", False):
+        # stop() closed this socket on purpose. Resurrecting it would register
+        # a ghost device on a session that is being torn down - the callers'
+        # own flag checks end their loops right after this returns.
+        logger.info("Skipping PlayerStatus reconnect: the websocket was closed deliberately.")
+        return
+
     logger.info("Reconnecting PlayerStatus websocket...")
 
     # Close old connection if possible
@@ -112,13 +145,21 @@ def player_status_reconnect(self):
     except Exception:  # noqa: S110 - the old socket is being replaced; a failure to close
         pass           #  one that is already dead must not block the reconnect
 
-    # Renew session and client token
+    # Renew session and client token, clearing a stale access token first so
+    # _get_auth_vars actually fetches a replacement (see the block above).
+    if _accessTokenNeedsRefresh(self.base):
+        self.base.access_token = _Undefined
     try:
         self.base.get_session()
         self.base.get_client_token()
     except Exception as e:
+        if self.base.access_token is _Undefined:
+            # No usable token to fall back on: connecting anyway would send a
+            # literal "_Undefined" bearer token - a guaranteed 401 that the
+            # callers' bounded retry paths handle better as the real error.
+            raise
         logger.warning("Failed to renew session: %s", e)
-    
+
     # Establish new websocket connection using the patched connect function
     uri = f"wss://dealer.spotify.com/?access_token={self.base.access_token}"
     self.ws = websockets.sync.client.connect(
@@ -230,41 +271,85 @@ def patched_websocket_streamer_init(self, *args, **kwargs):
 spotapi.websocket.WebsocketStreamer.__init__ = patched_websocket_streamer_init
 
 
-# 4. Patch WebsocketStreamer.keep_alive to handle websockets.exceptions.ConnectionClosed.
-# The original keep_alive only catches ConnectionError and KeyboardInterrupt, so a
-# ConnectionClosed crashed the ping thread with a full traceback - after which pings
-# silently stopped and the feed stayed frozen until the listener's 30-minute stale-feed
-# detector rebuilt the session. Instead: a deliberate close (spotifyListener.stop() sets
-# _deliberate_close before closing the ws, and a clean close handshake raises
-# ConnectionClosedOK) ends the loop quietly, while an unexpected drop logs one concise
-# line (no traceback) and retries self.reconnect() (injected in patch 2 above) so the
-# feed recovers within a ping interval instead of half an hour.
+# 4. Replace WebsocketStreamer.keep_alive outright, and disable the fork's
+# _supervise thread.
+#
+# Both spotapi builds ship a keep_alive that mishandles a dead connection: the
+# PyPI build let ConnectionClosed crash the ping thread (pings silently
+# stopped until the 30-minute stale-feed detector rebuilt the session), and
+# the fork catches EVERYTHING internally and retries reconnect() forever -
+# which made the previous wrapper here (catch ConnectionClosed around the
+# original) dead code, because no exception ever escaped for it to see.
+# Neither build knows _deliberate_close, so a listener stop/session rebuild
+# left its daemon threads reconnecting the deliberately-closed socket for the
+# rest of the process's life - succeeding at first (ghost device
+# registrations), then 401ing forever once their token expired (the
+# 2026-08-01 storm, together with the token staleness fixed in patch 2).
+#
+# So keep_alive is now a full replacement rather than a wrapper: ping every
+# WS_KEEP_ALIVE_PING_INTERVAL_SECONDS, and treat ANY dead socket one way -
+# exit if the close was deliberate, otherwise reconnect with a bounded number
+# of attempts. A clean close (ConnectionClosedOK) that was NOT deliberate is
+# Spotify hanging up (observed about hourly on the dealer) and reconnects
+# too: updateLoop's push->poll fallback is one-way, so quietly stopping pings
+# would degrade the listener to polling until its next rebuild.
+WS_KEEP_ALIVE_PING_INTERVAL_SECONDS = 60   #< spotapi's own cadence, kept
+WS_KEEP_ALIVE_STOP_POLL_SECONDS = 1.0      #< how quickly a sleeping thread notices _deliberate_close
+WS_KEEP_ALIVE_PING_PAYLOAD = '{"type":"ping"}'
 WS_KEEP_ALIVE_MAX_RECONNECT_FAILURES = 3
 WS_KEEP_ALIVE_RECONNECT_BACKOFF_SECONDS = 10
 
-original_keep_alive = spotapi.websocket.WebsocketStreamer.keep_alive
+
+def _sleepInterruptibly(self, seconds) -> bool:
+    """Sleep up to `seconds` in WS_KEEP_ALIVE_STOP_POLL_SECONDS steps. False as
+    soon as _deliberate_close is set (the thread should exit), True once the
+    full wait elapsed."""
+    deadline = time.monotonic() + seconds
+    while True:
+        if getattr(self, "_deliberate_close", False):
+            return False
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return True
+        time.sleep(min(WS_KEEP_ALIVE_STOP_POLL_SECONDS, remaining))
+
 
 def patched_keep_alive(self):
     consecutiveFailures = 0
     while True:
-        try:
-            original_keep_alive(self)
-            return  #< original loop exited on its own (ConnectionError/KeyboardInterrupt)
-        except websockets.exceptions.ConnectionClosedOK:
-            logger.info("Websocket closed cleanly, stopping keep-alive pings.")
+        if not _sleepInterruptibly(self, WS_KEEP_ALIVE_PING_INTERVAL_SECONDS):
+            logger.info("Websocket closed on shutdown, stopping keep-alive pings.")
             return
-        except websockets.exceptions.ConnectionClosed as e:
+
+        pingError = None
+        with self.rlock:
+            ws = self.ws
+            if ws is not None:
+                try:
+                    ws.send(WS_KEEP_ALIVE_PING_PAYLOAD)
+                except Exception as e:  # noqa: BLE001 - any send failure means the socket is dead
+                    pingError = e
+        if ws is not None and pingError is None:
+            consecutiveFailures = 0
+            continue
+
+        # Dead socket: self.ws is gone, or the ping could not be sent on it.
+        while True:
             if getattr(self, "_deliberate_close", False):
                 logger.info("Websocket closed on shutdown, stopping keep-alive pings.")
                 return
             reconnect = getattr(self, "reconnect", None)
             if reconnect is None:
-                logger.warning("Websocket connection lost (%s) and no reconnect() available, stopping keep-alive pings.", e)
+                logger.warning(
+                    "Websocket connection lost (%s) and no reconnect() available, stopping keep-alive pings.",
+                    pingError)
                 return
-            logger.warning("Websocket connection lost (%s), attempting reconnect...", e)
+            logger.warning("Websocket connection lost (%s), attempting reconnect...",
+                           pingError if pingError is not None else "socket is gone")
             try:
                 reconnect()
                 consecutiveFailures = 0
+                break
             except Exception as reconnectError:
                 consecutiveFailures += 1
                 logger.warning(
@@ -277,9 +362,28 @@ def patched_keep_alive(self):
                         WS_KEEP_ALIVE_MAX_RECONNECT_FAILURES,
                     )
                     return
-                time.sleep(WS_KEEP_ALIVE_RECONNECT_BACKOFF_SECONDS)
+                if not _sleepInterruptibly(self, WS_KEEP_ALIVE_RECONNECT_BACKOFF_SECONDS):
+                    logger.info("Websocket closed on shutdown, stopping keep-alive pings.")
+                    return
 
 spotapi.websocket.WebsocketStreamer.keep_alive = patched_keep_alive
+
+
+def patched_supervise(self):
+    """No-op replacement for the fork's _supervise thread body.
+
+    The fork's supervisor reconnects whenever self.ws is None or closed -
+    which is exactly the state disconnect() leaves ON PURPOSE - with no
+    _deliberate_close check, no attempt ceiling, and print() diagnostics.
+    Every reconnect path this app wants already exists with bounds and stop
+    flags: keep_alive above, the push loop's _reconnectAfterDroppedPacket,
+    and the poll loop's failure-threshold escalation. A fourth, unbounded
+    one adds storms, not resilience."""
+    return
+
+
+if hasattr(spotapi.websocket.WebsocketStreamer, "_supervise"):
+    spotapi.websocket.WebsocketStreamer._supervise = patched_supervise
 
 
 # 5. Patch WebsocketStreamer.get_packet so a push channel can actually be read.
@@ -425,13 +529,15 @@ spotapi.websocket.WebsocketStreamer.get_packet = patched_get_packet
 # "got an unexpected keyword argument 'timeout'" and killed the listener
 # thread (2026-07-31) - and patched_keep_alive never ran at all. Deleting the
 # copies lets method lookup fall through the MRO to the patched versions.
-# Dunders (__init__, patch 3) never need this: @enforce skips them. The
-# state/saved_state properties don't either: @enforce skips properties.
-# The vars() guard covers names a given spotapi version never froze (the
-# PyPI/fork builds disagree on whether reconnect exists to begin with).
+# Dunders (__init__, patch 3) never need this: @enforce skips them - but ONLY
+# dunders, so single-underscore names like the fork's _supervise are frozen
+# like any other. The state/saved_state properties don't either: @enforce
+# skips properties. The vars() guard covers names a given spotapi version
+# never froze (the PyPI/fork builds disagree on whether reconnect or
+# _supervise exist to begin with).
 _ENFORCE_SHADOWED_METHODS = (
-    (spotapi.status.PlayerStatus, ("keep_alive", "get_packet")),
-    (spotapi.status.EventManager, ("keep_alive", "get_packet", "reconnect", "renew_state")),
+    (spotapi.status.PlayerStatus, ("keep_alive", "get_packet", "_supervise")),
+    (spotapi.status.EventManager, ("keep_alive", "get_packet", "reconnect", "renew_state", "_supervise")),
 )
 for _shadowedClass, _methodNames in _ENFORCE_SHADOWED_METHODS:
     for _methodName in _methodNames:

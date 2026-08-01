@@ -73,43 +73,51 @@ class TestPatches(unittest.TestCase):
         """reconnect() must call close on old socket, renew sessions, connect, get init packet, and register."""
         # Create a mock PlayerStatus instance
         self.assertTrue(hasattr(spotapi.status.PlayerStatus, "reconnect"))
-        
+
         # We will mock the required methods/attributes on PlayerStatus
         mock_ws = MagicMock()
         mock_ws_connect.return_value = mock_ws
-        
+
         instance = MagicMock(spec=spotapi.status.PlayerStatus)
         instance.ws = mock_ws
         instance.base = MagicMock()
-        
+        # Concrete token state (a bare MagicMock can't be compared against the
+        # expiry clock): unknown expiry means the token is refreshed, and
+        # get_session is what produces the new one.
+        instance.base.access_token = "expired-token"
+        instance.base.access_token_expires_at_ms = 0
+        def renewToken():
+            instance.base.access_token = "fresh-token"
+        instance.base.get_session.side_effect = renewToken
+
         # When get_init_packet is called, it returns a new connection ID
         instance.get_init_packet.return_value = "new-conn-id"
-        
+
         # Thread status mock
         mock_thread = MagicMock(spec=threading.Thread)
         mock_thread.is_alive.return_value = False
         instance.keep_alive_thread = mock_thread
-        
+
         # Call the reconnect function bound to the instance
         spotapi.status.PlayerStatus.reconnect(instance)
-        
+
         # Verify old websocket is closed
         mock_ws.close.assert_called_once()
-        
+
         # Verify sessions and tokens are renewed
         instance.base.get_session.assert_called_once()
         instance.base.get_client_token.assert_called_once()
-        
+
         # Verify we connect to the new websocket URI
         mock_ws_connect.assert_called_once()
-        
+
         # Verify connection_id was updated
         self.assertEqual(instance.connection_id, "new-conn-id")
-        
+
         # Verify device registration and connection
         instance.register_device.assert_called_once()
         instance.connect_device.assert_called_once()
-        
+
         # Verify keep alive thread was restarted
         mock_thread.is_alive.assert_called_once()
 
@@ -206,94 +214,6 @@ class TestPatches(unittest.TestCase):
             self.assertIn("non-Mapping response", log_capture.output[0])
             self.assertIn("Invalid JSON", str(err_ctx.exception))
 
-    def test_patched_keep_alive_exits_quietly_on_clean_close(self):
-        """A clean close handshake (ConnectionClosedOK) must end the ping loop
-        without any reconnect attempt."""
-        from Database.patches import patched_keep_alive
-        import websockets.exceptions
-
-        exc = websockets.exceptions.ConnectionClosedOK(rcvd=None, sent=None)
-        mock_original = MagicMock(side_effect=exc)
-
-        with patch("Database.patches.original_keep_alive", mock_original):
-            instance = MagicMock()
-            patched_keep_alive(instance)
-
-        mock_original.assert_called_once_with(instance)
-        instance.reconnect.assert_not_called()
-
-    def test_patched_keep_alive_exits_on_deliberate_close_flag(self):
-        """spotifyListener.stop() sets _deliberate_close before closing the ws -
-        keep_alive must exit instead of reconnecting, even if the close handshake
-        was abnormal (ConnectionClosedError)."""
-        from Database.patches import patched_keep_alive
-        import websockets.exceptions
-
-        exc = websockets.exceptions.ConnectionClosedError(rcvd=None, sent=None)
-        mock_original = MagicMock(side_effect=exc)
-
-        with patch("Database.patches.original_keep_alive", mock_original):
-            instance = MagicMock()
-            instance._deliberate_close = True
-            patched_keep_alive(instance)
-
-        mock_original.assert_called_once_with(instance)
-        instance.reconnect.assert_not_called()
-
-    def test_patched_keep_alive_reconnects_on_unexpected_drop(self):
-        """An unexpected drop (ConnectionClosedError) must trigger self.reconnect()
-        and resume the ping loop on the new connection."""
-        from Database.patches import patched_keep_alive
-        import websockets.exceptions
-
-        exc = websockets.exceptions.ConnectionClosedError(rcvd=None, sent=None)
-        # First run drops the connection, second run (after reconnect) exits normally
-        mock_original = MagicMock(side_effect=[exc, None])
-
-        with patch("Database.patches.original_keep_alive", mock_original):
-            instance = MagicMock()
-            instance._deliberate_close = False
-            patched_keep_alive(instance)
-
-        self.assertEqual(mock_original.call_count, 2)
-        instance.reconnect.assert_called_once_with()
-
-    def test_patched_keep_alive_gives_up_after_max_reconnect_failures(self):
-        """If reconnect() keeps failing, the loop must stop after
-        WS_KEEP_ALIVE_MAX_RECONNECT_FAILURES attempts instead of spinning forever."""
-        from Database.patches import patched_keep_alive, WS_KEEP_ALIVE_MAX_RECONNECT_FAILURES
-        import websockets.exceptions
-
-        exc = websockets.exceptions.ConnectionClosedError(rcvd=None, sent=None)
-        mock_original = MagicMock(side_effect=exc)
-
-        with patch("Database.patches.original_keep_alive", mock_original), \
-                patch("Database.patches.time") as mock_time:
-            instance = MagicMock()
-            instance._deliberate_close = False
-            instance.reconnect.side_effect = Exception("Spotify unreachable")
-            patched_keep_alive(instance)
-
-        self.assertEqual(instance.reconnect.call_count, WS_KEEP_ALIVE_MAX_RECONNECT_FAILURES)
-        # Backoff sleeps between attempts, but not after the final give-up
-        self.assertEqual(mock_time.sleep.call_count, WS_KEEP_ALIVE_MAX_RECONNECT_FAILURES - 1)
-
-    def test_patched_keep_alive_without_reconnect_method_exits(self):
-        """A plain WebsocketStreamer (no injected reconnect) must exit gracefully
-        instead of raising AttributeError."""
-        from Database.patches import patched_keep_alive
-        import types
-        import websockets.exceptions
-
-        exc = websockets.exceptions.ConnectionClosedError(rcvd=None, sent=None)
-        mock_original = MagicMock(side_effect=exc)
-
-        with patch("Database.patches.original_keep_alive", mock_original):
-            instance = types.SimpleNamespace()  #< no reconnect attribute
-            patched_keep_alive(instance)
-
-        mock_original.assert_called_once_with(instance)
-
     def test_player_status_renew_state_logs_error_detail_attribute(self):
         """spotapi's ParentException keeps the HTTP detail in .error, not in
         str(e) - the renew_state warning must surface it."""
@@ -369,6 +289,371 @@ class TestPatches(unittest.TestCase):
             f"{type(stored_meta).__name__}, expected dict")
         self.assertEqual(stored_meta.get("title"), "Test")
         self.assertEqual(stored_meta.get("artist_name"), "Artist")
+
+
+ONE_HOUR_MS = 60 * 60 * 1000
+
+
+class _FakeReconnectBase:
+    """Stands in for spotapi's BaseClient, reproducing the one behavior under
+    test: _get_auth_vars only fetches a token when none is set (spotapi's real
+    guard), so a reconnect that doesn't clear a stale token gets the stale
+    token straight back."""
+
+    def __init__(self, token="stale-token", expiresInMs=None):
+        import time
+        self.access_token = token
+        self.access_token_expires_at_ms = (
+            0 if expiresInMs is None else time.time() * 1000 + expiresInMs)
+        self.tokenWhenSessionRenewed = "get_session-never-called"
+        self.renewalError = None
+
+    def get_session(self):
+        from spotapi.types.alias import _Undefined
+        self.tokenWhenSessionRenewed = self.access_token
+        if self.renewalError is not None:
+            raise self.renewalError
+        if self.access_token is _Undefined:
+            self.access_token = "fresh-token"
+
+    def get_client_token(self):
+        pass
+
+
+def _reconnectableInstance(base):
+    """A stand-in PlayerStatus carrying only what player_status_reconnect touches."""
+    import types
+    instance = types.SimpleNamespace()
+    instance.ws = MagicMock()
+    instance.base = base
+    instance.get_init_packet = MagicMock(return_value="conn-id")
+    instance.register_device = MagicMock()
+    instance.connect_device = MagicMock()
+    aliveThread = MagicMock()
+    aliveThread.is_alive.return_value = True
+    instance.keep_alive_thread = aliveThread
+    return instance
+
+
+class TestReconnectRefreshesTheAccessToken(unittest.TestCase):
+    """The dealer handshake authenticates ONLY via the access_token in its URI -
+    no _auth_rule header injection, no 401-retry hook, no second chance.
+    spotapi's _get_auth_vars refuses to fetch while ANY token is still set,
+    however expired, so a reconnect that does not clear a stale token resends
+    the token Spotify just rejected - every attempt, forever. That is the
+    2026-08-01 storm: 14 hours of "server rejected WebSocket connection:
+    HTTP 401" at several attempts a minute."""
+
+    def _reconnect(self, base):
+        from Database.patches import player_status_reconnect
+        instance = _reconnectableInstance(base)
+        with patch("websockets.sync.client.connect") as wsConnect:
+            player_status_reconnect(instance)
+        wsConnect.assert_called_once()
+        return wsConnect.call_args.args[0]
+
+    def test_an_expired_token_is_replaced_before_connecting(self):
+        from spotapi.types.alias import _Undefined
+
+        base = _FakeReconnectBase(expiresInMs=-1000)
+        uri = self._reconnect(base)
+
+        #< cleared BEFORE the renewal ran, or _get_auth_vars would have no-opped
+        self.assertIs(base.tokenWhenSessionRenewed, _Undefined)
+        self.assertIn("access_token=fresh-token", uri)
+
+    def test_a_token_of_unknown_expiry_is_treated_as_stale(self):
+        """expires_at can be 0 when Spotify's token reply omitted the timestamp -
+        a wrong guess here costs one token fetch, guessing the other way costs
+        an unrecoverable 401 loop."""
+        base = _FakeReconnectBase(expiresInMs=None)
+
+        self.assertIn("access_token=fresh-token", self._reconnect(base))
+
+    def test_a_token_about_to_expire_is_refreshed(self):
+        """Same skew _auth_rule applies to HTTP requests: a token with seconds
+        left would pass the handshake and die on the first re-handshake."""
+        from Database.patches import WS_ACCESS_TOKEN_REFRESH_SKEW_MS
+
+        base = _FakeReconnectBase(expiresInMs=WS_ACCESS_TOKEN_REFRESH_SKEW_MS / 2)
+
+        self.assertIn("access_token=fresh-token", self._reconnect(base))
+
+    def test_a_still_valid_token_is_reused_not_refetched(self):
+        """No needless token traffic: a mid-hour network blip reconnects with
+        the token it already has."""
+        base = _FakeReconnectBase(expiresInMs=ONE_HOUR_MS)
+
+        uri = self._reconnect(base)
+
+        self.assertEqual(base.tokenWhenSessionRenewed, "stale-token")
+        self.assertIn("access_token=stale-token", uri)
+
+    def test_a_failed_renewal_with_no_token_raises_instead_of_connecting(self):
+        """With the stale token cleared and no replacement, connecting would
+        send a literal "_Undefined" bearer token - a guaranteed 401 that the
+        callers' bounded retry paths handle better as the real error."""
+        from Database.patches import player_status_reconnect
+
+        base = _FakeReconnectBase(expiresInMs=-1000)
+        base.renewalError = RuntimeError("open.spotify.com unreachable")
+        instance = _reconnectableInstance(base)
+
+        with patch("websockets.sync.client.connect") as wsConnect:
+            with self.assertRaises(RuntimeError):
+                player_status_reconnect(instance)
+
+        wsConnect.assert_not_called()
+
+    def test_a_failed_renewal_with_a_valid_token_still_connects(self):
+        """Pre-existing behavior, kept: a transient renewal failure while the
+        token is still good must not block a reconnect that can succeed."""
+        from Database.patches import player_status_reconnect
+
+        base = _FakeReconnectBase(expiresInMs=ONE_HOUR_MS)
+        base.renewalError = RuntimeError("blip")
+        instance = _reconnectableInstance(base)
+
+        with patch("websockets.sync.client.connect") as wsConnect:
+            with self.assertLogs("Database.patches", level="WARNING"):
+                player_status_reconnect(instance)
+
+        wsConnect.assert_called_once()
+        self.assertIn("access_token=stale-token", wsConnect.call_args.args[0])
+
+    def test_a_deliberately_closed_streamer_is_not_reconnected(self):
+        """stop() closed this socket on purpose; resurrecting it re-registers a
+        ghost device on a session that is being torn down."""
+        from Database.patches import player_status_reconnect
+
+        base = _FakeReconnectBase(expiresInMs=ONE_HOUR_MS)
+        instance = _reconnectableInstance(base)
+        instance._deliberate_close = True
+
+        with patch("websockets.sync.client.connect") as wsConnect:
+            player_status_reconnect(instance)
+
+        wsConnect.assert_not_called()
+        instance.ws.close.assert_not_called()
+        self.assertEqual(base.tokenWhenSessionRenewed, "get_session-never-called")
+
+
+def _keepAliveInstance(sendEffect=None, hasWs=True):
+    """A stand-in streamer carrying only what patched_keep_alive touches."""
+    import types
+    instance = types.SimpleNamespace()
+    instance.rlock = threading.Lock()
+    instance._deliberate_close = False
+    instance.reconnect = MagicMock()
+    if hasWs:
+        instance.ws = MagicMock()
+        if sendEffect is not None:
+            instance.ws.send.side_effect = sendEffect
+    else:
+        instance.ws = None
+    return instance
+
+
+class TestPatchedKeepAlive(unittest.TestCase):
+    """keep_alive is a full replacement, not a wrapper: the fork's original
+    catches EVERY exception internally and retries reconnect() forever, so a
+    wrapper around it never saw a single failure - and neither spotapi build
+    checks _deliberate_close, which left orphaned ping threads reconnecting
+    deliberately-closed sockets for the rest of the process's life."""
+
+    def setUp(self):
+        # Deterministic on purpose: every exit below is driven by scripted
+        # flags and side effects, never by the clock.
+        for constant in ("WS_KEEP_ALIVE_PING_INTERVAL_SECONDS",
+                         "WS_KEEP_ALIVE_RECONNECT_BACKOFF_SECONDS"):
+            patcher = patch(f"Database.patches.{constant}", 0)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def _run(self, instance):
+        from Database.patches import patched_keep_alive
+        patched_keep_alive(instance)
+
+    def test_exits_on_deliberate_close_without_touching_the_socket(self):
+        instance = _keepAliveInstance()
+        instance._deliberate_close = True
+
+        self._run(instance)
+
+        instance.ws.send.assert_not_called()
+        instance.reconnect.assert_not_called()
+
+    def test_a_dropped_socket_reconnects(self):
+        import websockets.exceptions
+
+        instance = _keepAliveInstance(
+            sendEffect=websockets.exceptions.ConnectionClosedError(None, None))
+        instance.reconnect.side_effect = (
+            lambda: setattr(instance, "_deliberate_close", True))
+
+        with self.assertLogs("Database.patches", level="WARNING"):
+            self._run(instance)
+
+        instance.reconnect.assert_called_once_with()
+
+    def test_a_clean_close_that_was_not_deliberate_reconnects_too(self):
+        """Spotify hangs up the dealer cleanly about once an hour. The push->
+        poll fallback is one-way per listener, so quietly stopping pings here
+        would degrade every listener to polling until its next rebuild."""
+        import websockets.exceptions
+
+        instance = _keepAliveInstance(
+            sendEffect=websockets.exceptions.ConnectionClosedOK(None, None))
+        instance.reconnect.side_effect = (
+            lambda: setattr(instance, "_deliberate_close", True))
+
+        with self.assertLogs("Database.patches", level="WARNING"):
+            self._run(instance)
+
+        instance.reconnect.assert_called_once_with()
+
+    def test_a_deliberate_close_discovered_at_the_failed_ping_stops_the_loop(self):
+        """stop() can flip the flag while this thread is mid-ping - the failed
+        send must lead to an exit, not a resurrection."""
+        import websockets.exceptions
+
+        instance = _keepAliveInstance()
+
+        def sendOnClosingSocket(payload):
+            instance._deliberate_close = True
+            raise websockets.exceptions.ConnectionClosedError(None, None)
+        instance.ws.send.side_effect = sendOnClosingSocket
+
+        self._run(instance)
+
+        instance.reconnect.assert_not_called()
+
+    def test_a_missing_socket_is_treated_as_a_drop(self):
+        instance = _keepAliveInstance(hasWs=False)
+        instance.reconnect.side_effect = (
+            lambda: setattr(instance, "_deliberate_close", True))
+
+        with self.assertLogs("Database.patches", level="WARNING"):
+            self._run(instance)
+
+        instance.reconnect.assert_called_once_with()
+
+    def test_reconnect_failures_are_bounded(self):
+        import websockets.exceptions
+        from Database.patches import WS_KEEP_ALIVE_MAX_RECONNECT_FAILURES
+
+        instance = _keepAliveInstance(
+            sendEffect=websockets.exceptions.ConnectionClosedError(None, None))
+        instance.reconnect.side_effect = RuntimeError("Spotify unreachable")
+
+        with self.assertLogs("Database.patches", level="ERROR"):
+            self._run(instance)
+
+        self.assertEqual(instance.reconnect.call_count,
+                         WS_KEEP_ALIVE_MAX_RECONNECT_FAILURES)
+
+    def test_a_successful_reconnect_resets_the_failure_budget(self):
+        """Two separate outages, each one failure short of the ceiling, must
+        not add up to a give-up - only CONSECUTIVE failures count."""
+        import websockets.exceptions
+        from Database.patches import WS_KEEP_ALIVE_MAX_RECONNECT_FAILURES
+
+        dropped = websockets.exceptions.ConnectionClosedError(None, None)
+        almostMax = WS_KEEP_ALIVE_MAX_RECONNECT_FAILURES - 1
+
+        instance = _keepAliveInstance()
+        sends = iter([dropped, dropped, "stop"])
+
+        def scriptedSend(payload):
+            action = next(sends)
+            if action == "stop":
+                instance._deliberate_close = True
+                return
+            raise action
+        instance.ws.send.side_effect = scriptedSend
+
+        reconnects = iter(
+            [RuntimeError("outage 1")] * almostMax + [None]
+            + [RuntimeError("outage 2")] * almostMax + [None])
+
+        def scriptedReconnect():
+            error = next(reconnects)
+            if error is not None:
+                raise error
+        instance.reconnect.side_effect = scriptedReconnect
+
+        with self.assertLogs("Database.patches", level="WARNING"):
+            self._run(instance)
+
+        #< both outages recovered; without the reset the second would have
+        #  crossed the ceiling on its first failure and given up
+        self.assertEqual(instance.reconnect.call_count, 2 * (almostMax + 1))
+
+    def test_without_a_reconnect_method_the_loop_exits(self):
+        """A plain WebsocketStreamer (no injected reconnect) must exit
+        gracefully instead of raising AttributeError."""
+        import types
+
+        instance = types.SimpleNamespace()
+        instance.rlock = threading.Lock()
+        instance._deliberate_close = False
+        instance.ws = None
+
+        with self.assertLogs("Database.patches", level="WARNING"):
+            self._run(instance)   #< must return, not raise
+
+    def test_the_wait_notices_a_deliberate_close_without_sleeping(self):
+        import types
+        from Database.patches import _sleepInterruptibly
+
+        instance = types.SimpleNamespace(_deliberate_close=True)
+
+        with patch("Database.patches.time.sleep") as mockSleep:
+            self.assertFalse(_sleepInterruptibly(instance, 3600))
+
+        mockSleep.assert_not_called()
+
+    def test_an_elapsed_wait_reports_completion(self):
+        import types
+        from Database.patches import _sleepInterruptibly
+
+        instance = types.SimpleNamespace(_deliberate_close=False)
+
+        self.assertTrue(_sleepInterruptibly(instance, 0))
+
+
+class TestSupervisorDisabled(unittest.TestCase):
+    """The fork's _supervise thread reconnects whenever self.ws is None or
+    closed - exactly the state a deliberate disconnect() leaves behind - with
+    no stop flag, no attempt ceiling and print() diagnostics. Every reconnect
+    this app wants is already owned by a bounded, flag-aware loop (keep_alive,
+    the push loop's _reconnectAfterDroppedPacket, the poll loop's escalation),
+    so the supervisor thread must do nothing at all."""
+
+    def setUp(self):
+        if not hasattr(spotapi.websocket.WebsocketStreamer, "_supervise"):
+            self.skipTest("this spotapi build has no _supervise thread")
+
+    def test_the_streamer_supervisor_is_the_no_op(self):
+        from Database.patches import patched_supervise
+        self.assertIs(spotapi.websocket.WebsocketStreamer._supervise, patched_supervise)
+
+    def test_the_decorated_subclasses_resolve_to_the_no_op_too(self):
+        """@enforce froze a wrapped copy of the ORIGINAL _supervise onto each
+        decorated subclass at import - the shadow removal must cover it, or the
+        supervisor threads real instances start still run the unbounded
+        original underneath the patch."""
+        from Database.patches import patched_supervise
+        self.assertIs(spotapi.status.PlayerStatus._supervise, patched_supervise)
+        self.assertIs(spotapi.status.EventManager._supervise, patched_supervise)
+
+    def test_the_no_op_touches_nothing(self):
+        from Database.patches import patched_supervise
+
+        instance = MagicMock()
+
+        self.assertIsNone(patched_supervise(instance))
+        self.assertEqual(instance.mock_calls, [])
 
 
 class TestSafeResponseHeaders(unittest.TestCase):
