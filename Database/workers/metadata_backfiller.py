@@ -11,10 +11,12 @@ from __future__ import annotations
 # import costs nothing and cannot cycle.
 import threading
 
-import Database.database as _dbmod  # noqa: F401 - module-global names
-# (LastfmClient, requests, Importer, logger, time, Path, ...) are reached through
-# the database module so the suite's patch("Database.database.X") targets keep
-# working after this relocation.
+# Module-global names (LastfmClient, requests, Importer, logger, time, Path, ...)
+# are reached through the database module, so the suite's
+# patch("Database.database.X") targets keep working here. Late-bound rather than
+# imported: database.py imports this file's mixin, so importing it back by name
+# made the cycle break whichever module was imported first (see Database/dbmodule.py).
+from Database.dbmodule import dbmod as _dbmod
 
 
 # The Web API's GET /v1/albums hard cap on ids per request; also bounds the

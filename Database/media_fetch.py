@@ -12,10 +12,12 @@ from __future__ import annotations
 from pathlib import Path
 from Database.lastfm import LastfmClient, LASTFM_REFRESH_ACQUIRE_TIMEOUT_SECONDS
 
-import Database.database as _dbmod  # noqa: F401 - module-global names
-# (LastfmClient, requests, Importer, logger, time, Path, ...) are reached through
-# the database module so the suite's patch("Database.database.X") targets keep
-# working after this relocation.
+# Module-global names (LastfmClient, requests, Importer, logger, time, Path, ...)
+# are reached through the database module, so the suite's
+# patch("Database.database.X") targets keep working here. Late-bound rather than
+# imported: database.py imports this file's mixin, so importing it back by name
+# made the cycle break whichever module was imported first (see Database/dbmodule.py).
+from Database.dbmodule import dbmod as _dbmod
 
 
 # Cover art from Spotify's CDN is tens of KB; this is a wide ceiling that only
