@@ -43,8 +43,6 @@ pip install -r requirements.txt
 A ready-to-adapt compose file:
 
 ```docker
-version: '3.8'
-
 services:
   spotify-tracker:
     image: i7gamer/spotify-tracker
@@ -68,6 +66,7 @@ services:
       # - SKIP_EMAIL_VERIFICATION=1   #< Uncomment to disable the "do these cookies belong to this email" check at login (only do this if you trust everyone who can reach this instance - it's what stops one user from claiming another's account, AND what stops the /reset-password flow from letting anyone set a new password on any account)
       # - SPOTIFY_TOTP_SECRET=61:44,55,...  #< Emergency override for the pinned Spotify TOTP secret. Only needed if Spotify rotates it and logins start failing instance-wide before a fixed release is out - the log line at that point tells you so. Format is "<version>:<comma-separated bytes>"; a malformed value is ignored (with an error logged) rather than taking login offline.
     restart: always
+    stop_grace_period: 45s          #< shutdown stops each user's listener/watchdog/workers in turn; Docker's 10s default would SIGKILL it partway. Free when shutdown is quick - it's a ceiling, not a wait
 ```
 
 Then you can run `docker compose up -d` and the app should start on `http://127.0.0.1:5000` or `http://yourIp:5000`

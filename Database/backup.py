@@ -53,6 +53,10 @@ BACKUP_BUSY_TIMEOUT_MS = 5000
 # This worker's key in the shared cycle telemetry (see WorkerTelemetryMixin).
 # One per process, so unlike the per-user workers it needs no user in the name.
 BACKUP_TELEMETRY_NAME = "backup"
+# How long stop() waits for the loop thread - it can be inside a multi-GB
+# snapshot, which no shutdown should sit through. Part of the shutdown budget
+# the compose file's stop_grace_period has to cover (tests/test_compose_shutdown_budget.py).
+BACKUP_STOP_JOIN_TIMEOUT_SECONDS = 5
 
 # Serializes every snapshot in the PROCESS, not merely per BackupWorker. The
 # scheduled loop and the admin's Create Backup Now button share one instance, but
@@ -264,4 +268,4 @@ class BackupWorker(WorkerTelemetryMixin):
     def stop(self) -> None:
         self._stop_event.set()
         if self.thread is not None and self.thread.is_alive():
-            self.thread.join(timeout=5)
+            self.thread.join(timeout=BACKUP_STOP_JOIN_TIMEOUT_SECONDS)

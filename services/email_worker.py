@@ -17,6 +17,10 @@ from services.email_service import get_smtp_config, send_email_notification
 logger = logging.getLogger(__name__)
 
 EMAIL_WORKER_POLL_INTERVAL_SECONDS = 2.0
+# How long stop() waits for the worker thread, which can be inside an SMTP
+# send. Part of the shutdown budget the compose file's stop_grace_period has to
+# cover (tests/test_compose_shutdown_budget.py).
+EMAIL_WORKER_STOP_JOIN_TIMEOUT_SECONDS = 3.0
 
 
 class EmailWorker:
@@ -105,7 +109,7 @@ class EmailWorker:
         """Stop the background worker thread."""
         self._stop_event.set()
         if self._thread is not None and self._thread.is_alive():
-            self._thread.join(timeout=3.0)
+            self._thread.join(timeout=EMAIL_WORKER_STOP_JOIN_TIMEOUT_SECONDS)
 
 
 # Module-level singleton worker instance
