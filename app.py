@@ -965,11 +965,47 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
                 db.signalStop()
             except Exception as e:
                 logger.error("Error signaling stop for %s: %s", db.user, e)
+        self._stopDatabasesConcurrently(databases)
+
+    def _stopDatabaseQuietly(self, db) -> None:
+        """One user's phase-2 stop. Failures are logged, never raised: this
+        runs on its own thread, where an exception would be reported by the
+        excepthook and take that user's stop with it silently."""
+        try:
+            db.stop()
+        except Exception as e:
+            logger.error("Error stopping database for %s: %s", db.user, e)
+
+    def _stopDatabasesConcurrently(self, databases) -> None:
+        """Phase 2, all users at once.
+
+        Each user's stop() is a chain of bounded joins - two on the listener,
+        one on the auto-import watchdog, five on the periodic workers - which
+        adds up to roughly USER_STOP_JOIN_TIMEOUT_SECONDS in the worst case
+        where every thread is wedged. Run one user after another that was the
+        worst case TIMES the number of users, growing past any container's stop
+        grace period as an instance gained users (see the compose file's
+        stop_grace_period). Run together it stays one user's worth however many
+        there are, and the common case - every thread parked on its stop event -
+        is immediate either way.
+
+        Safe to overlap because phase 1 has already signaled everyone: no
+        user's stop can revive another's listener, which is the property the
+        two-phase split exists for."""
+        stoppers = []
         for db in databases:
-            try:
-                db.stop()
-            except Exception as e:
-                logger.error("Error stopping database for %s: %s", db.user, e)
+            thread = threading.Thread(target=self._stopDatabaseQuietly, args=(db,),
+                                      name=f"shutdown-{db.user}", daemon=True)
+            thread.start()
+            stoppers.append((db, thread))
+        for db, thread in stoppers:
+            # Bounded even though stop() is: a wedged user must not hold the
+            # process past the grace period it is racing, and the threads are
+            # daemons, so one that outlives this dies with the interpreter.
+            thread.join(timeout=USER_STOP_JOIN_TIMEOUT_SECONDS)
+            if thread.is_alive():
+                logger.warning("Database for %s did not stop within %ss - continuing shutdown",
+                               db.user, USER_STOP_JOIN_TIMEOUT_SECONDS)
 
     def run(self) -> None:
         try:

@@ -176,6 +176,16 @@ VERSION_CHECK_MAX_START_DELAY_SECONDS = 180
 LOGIN_CHECK_MIN_START_DELAY_SECONDS = 60
 LOGIN_CHECK_MAX_START_DELAY_SECONDS = 300
 
+# How long shutdown waits for ONE user's Database.stop() (see
+# _stopDatabasesConcurrently). Every join inside that call is itself bounded -
+# two on the listener, one on the auto-import watchdog, five on the periodic
+# workers - and this covers their sum with slack, so it only ever expires for a
+# user whose threads are genuinely wedged. Users are stopped concurrently, so
+# this is the whole of phase 2 however many there are, which is what keeps
+# shutdown inside the compose file's stop_grace_period
+# (tests/test_compose_shutdown_budget.py pins the two against each other).
+USER_STOP_JOIN_TIMEOUT_SECONDS = 30
+
 # Query parameter carrying a static asset's mtime, appended to every
 # url_for('static', ...) by registerRoutes' url_defaults hook in app.py so a
 # changed file is served under a URL the browser has never cached.

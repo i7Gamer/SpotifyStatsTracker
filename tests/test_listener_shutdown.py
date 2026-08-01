@@ -17,8 +17,13 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 if isinstance(sys.modules.get("Database.database"), MagicMock):
     del sys.modules["Database.database"]
 
+import app as appModule
 from Database.database import Database
 from Database.Listeners.spotifyListener import Listener, LISTENER_THREAD_NAME_PREFIX
+
+# Bound for waits that return immediately in a correct run - they turn a hang
+# into a failure rather than giving a slow machine "enough" time.
+SHUTDOWN_CONCURRENCY_TIMEOUT_SECONDS = 10
 
 
 def _bareListener():
@@ -368,21 +373,78 @@ class TestAppShutdownTwoPhase(unittest.TestCase):
         return dash
 
     def test_signals_all_users_before_joining_any(self):
+        """Every signal precedes every stop. The order WITHIN each phase is
+        deliberately not asserted - phase 2 runs the users concurrently."""
         dash = self._bareApp()
         order = []
+        orderLock = threading.Lock()
+
+        def record(kind, name):
+            with orderLock:
+                order.append((kind, name))
+
         for name in ("alice", "bob"):
             db = MagicMock()
             db.user = name
-            db.signalStop.side_effect = lambda n=name: order.append(("signal", n))
-            db.stop.side_effect = lambda n=name: order.append(("stop", n))
+            db.signalStop.side_effect = lambda n=name: record("signal", n)
+            db.stop.side_effect = lambda n=name: record("stop", n)
             dash.user_databases[name] = db
 
         dash.shutdown()
 
         self.assertTrue(dash._stop_event.is_set())
         dash.backupWorker.stop.assert_called_once()
-        self.assertEqual(order, [("signal", "alice"), ("signal", "bob"),
-                                 ("stop", "alice"), ("stop", "bob")])
+        self.assertEqual([kind for kind, _ in order], ["signal", "signal", "stop", "stop"])
+        self.assertEqual({name for kind, name in order if kind == "signal"}, {"alice", "bob"})
+        self.assertEqual({name for kind, name in order if kind == "stop"}, {"alice", "bob"})
+
+    def test_users_are_stopped_concurrently(self):
+        """Phase 2's joins are bounded but not short - two listener joins, the
+        watchdog and five workers, ~27s per user in the worst case. Run one
+        user after another that is 27s TIMES the user count, past any
+        container's stop grace period; run together it stays 27s however many
+        users there are. Deterministic: each stop blocks until every other has
+        started, so the test can only pass if they really do overlap."""
+        dash = self._bareApp()
+        userCount = 3
+        allStarted = threading.Barrier(userCount, timeout=SHUTDOWN_CONCURRENCY_TIMEOUT_SECONDS)
+
+        def blockUntilEveryoneStarted():
+            allStarted.wait()   #< raises BrokenBarrierError on timeout, failing the stop
+
+        for index in range(userCount):
+            db = MagicMock()
+            db.user = f"user{index}"
+            db.stop.side_effect = blockUntilEveryoneStarted
+            dash.user_databases[db.user] = db
+
+        dash.shutdown()   #< hangs here if the stops are sequential
+
+        for db in dash.user_databases.values():
+            db.stop.assert_called_once()
+        self.assertFalse(allStarted.broken, "the stops did not overlap")
+
+    def test_a_user_that_will_not_stop_does_not_hold_up_shutdown(self):
+        """A Database.stop() is internally bounded, but if one ever wedges
+        anyway, shutdown must still return - the process is on a clock (the
+        compose file's stop_grace_period) and the other users still need their
+        threads stopped."""
+        dash = self._bareApp()
+        release = threading.Event()
+        self.addCleanup(release.set)
+        wedged = MagicMock()
+        wedged.user = "wedged"
+        wedged.stop.side_effect = lambda: release.wait(timeout=SHUTDOWN_CONCURRENCY_TIMEOUT_SECONDS)
+        quick = MagicMock()
+        quick.user = "quick"
+        dash.user_databases = {"wedged": wedged, "quick": quick}
+
+        with patch.object(appModule, "USER_STOP_JOIN_TIMEOUT_SECONDS", 0.05), \
+             self.assertLogs("app", level="WARNING") as logs:
+            dash.shutdown()   #< must return without waiting out the wedged user
+
+        quick.stop.assert_called_once()
+        self.assertTrue(any("wedged" in line for line in logs.output))
 
     def test_one_failing_user_does_not_block_the_rest(self):
         dash = self._bareApp()
