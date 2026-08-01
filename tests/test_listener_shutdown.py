@@ -69,6 +69,27 @@ class TestListenerStop(unittest.TestCase):
 
         mockThread.join.assert_not_called()
 
+    def test_stop_closes_the_spotify_session(self):
+        """Every login builds a fresh TLSClient (the contamination fix in
+        Database/Spotify/client.py), so a listener retired without closing it
+        leaked one live curl session per rebuild, atexit-pinned until process
+        exit."""
+        listener = _bareListener()
+        listener.sp.lastPlayedManager = None
+
+        listener.stop()
+
+        listener.sp.close.assert_called_once_with()
+
+    def test_stop_survives_a_failing_session_close(self):
+        listener = _bareListener()
+        listener.sp.lastPlayedManager = None
+        listener.sp.close.side_effect = RuntimeError("already torn down")
+
+        listener.stop()  # must not raise
+
+        self.assertFalse(listener.run)
+
 
 class TestListenerSignalStop(unittest.TestCase):
     """signalStop() is the signal-only half of stop(): every stop flag flips,
@@ -93,6 +114,9 @@ class TestListenerSignalStop(unittest.TestCase):
         self.assertTrue(lastPlayedManager.manager._deliberate_close)
         mockThread.join.assert_not_called()
         lastPlayedManager.manager.ws.close.assert_not_called()
+        #< the TLS session close belongs to stop()'s teardown half, after the
+        #  joins - phase 1 must not yank connections from running loops
+        listener.sp.close.assert_not_called()
 
     def test_signal_stop_safe_without_last_played_manager(self):
         listener = _bareListener()

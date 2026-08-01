@@ -61,6 +61,31 @@ class TestImportHistoryCommit(DatabaseTestCase):
         self.assertIsNotNone(self.db.repo.getTrack("i2"))
         self.assertEqual(self.db.readProgress()["status"], "complete")
 
+    def test_import_closes_the_spotify_session(self):
+        """Each import builds its own Importer, whose Spotify login holds a
+        fresh TLS session (Database/Spotify/client.py) - retiring it without
+        closing leaked one live curl session per import."""
+        def gen():
+            yield _meta("i1", 200)
+
+        importer = self._mockImporter(gen)
+        with patch("Database.database.Importer", return_value=importer):
+            self.db.importHistory("raw export")
+
+        importer.sp.close.assert_called_once_with()
+
+    def test_a_failed_import_still_closes_the_spotify_session(self):
+        def gen():
+            raise RuntimeError("network died mid-import")
+            yield  #< unreachable on purpose: makes this a generator
+
+        importer = self._mockImporter(gen)
+        with patch("Database.database.Importer", return_value=importer):
+            with self.assertRaises(RuntimeError):
+                self.db.importHistory("raw export")
+
+        importer.sp.close.assert_called_once_with()
+
     def test_failed_import_leaves_database_untouched(self):
         def gen():
             yield _meta("i1", 200)

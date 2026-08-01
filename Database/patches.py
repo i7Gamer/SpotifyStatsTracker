@@ -128,6 +128,38 @@ def _accessTokenNeedsRefresh(base) -> bool:
     return time.time() * 1000 + WS_ACCESS_TOKEN_REFRESH_SKEW_MS >= expiresAtMs
 
 
+# How long the dealer may take to send its init packet (the frame carrying
+# Spotify-Connection-Id). It arrives immediately after the handshake in
+# practice; without a bound, a dealer that accepts the socket but never speaks
+# would park the reconnecting thread in recv() forever.
+WS_INIT_PACKET_TIMEOUT_SECONDS = 10
+
+# keep_alive and the push loop's receive path watch the same socket, so one
+# drop can send both into reconnect at once. The lock serializes them; the
+# generation counter lets the one that waited notice the winner already
+# reconnected and stand down instead of stacking a second dealer connection
+# (and a second keep-alive thread) on top of a healthy one.
+_reconnectLockGuard = threading.Lock()     #< guards lazy creation of per-streamer locks
+_reconnectFallbackLock = threading.Lock()  #< for __slots__-only instances that can't store one
+
+
+def _reconnectLockFor(self):
+    """The lock serializing reconnects of one streamer, created on first use."""
+    with _reconnectLockGuard:
+        lock = getattr(self, "_reconnectSerializeLock", None)
+        if lock is None:
+            lock = threading.Lock()
+            try:
+                self._reconnectSerializeLock = lock
+            except AttributeError:
+                # Same reasoning as _setRecvReconnectFailures: every object
+                # this app builds is a PlayerStatus with a __dict__; a bare
+                # slotted instance gets one process-wide lock - coarser, but
+                # still serialized.
+                return _reconnectFallbackLock
+        return lock
+
+
 def player_status_reconnect(self):
     if getattr(self, "_deliberate_close", False):
         # stop() closed this socket on purpose. Resurrecting it would register
@@ -136,6 +168,25 @@ def player_status_reconnect(self):
         logger.info("Skipping PlayerStatus reconnect: the websocket was closed deliberately.")
         return
 
+    generationBefore = getattr(self, "_reconnectGeneration", 0)
+    with _reconnectLockFor(self):
+        if getattr(self, "_reconnectGeneration", 0) != generationBefore:
+            # Another thread reconnected while we waited for the lock; the
+            # drop this call was reacting to is already handled.
+            logger.info("Skipping PlayerStatus reconnect: another thread just reconnected this websocket.")
+            return
+        if getattr(self, "_deliberate_close", False):
+            logger.info("Skipping PlayerStatus reconnect: the websocket was closed deliberately.")
+            return
+        _reconnectPlayerStatusUnderLock(self)
+        try:
+            self._reconnectGeneration = generationBefore + 1
+        except AttributeError:  # noqa: S110 - slotted instance: the dedup above degrades
+            pass                #  to "always reconnect", which is the pre-lock behavior
+
+
+def _reconnectPlayerStatusUnderLock(self):
+    """The reconnect body. Callers hold this streamer's reconnect lock."""
     logger.info("Reconnecting PlayerStatus websocket...")
 
     # Close old connection if possible
@@ -160,21 +211,40 @@ def player_status_reconnect(self):
             raise
         logger.warning("Failed to renew session: %s", e)
 
-    # Establish new websocket connection using the patched connect function
+    # Establish the new websocket LOCALLY and read its init packet before
+    # publishing: self.ws is what the push loop's get_packet re-reads under
+    # rlock, so publishing first let that thread consume the init frame -
+    # leaving this one blocked forever in spotapi's untimed get_init_packet
+    # recv() (a hung keep-alive thread, a device never re-registered, and a
+    # listener silently degraded to polling).
     uri = f"wss://dealer.spotify.com/?access_token={self.base.access_token}"
-    self.ws = websockets.sync.client.connect(
+    newWs = websockets.sync.client.connect(
         uri,
         user_agent_header="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     )
-    
-    # Update connection ID
-    self.connection_id = self.get_init_packet()
-    
+    try:
+        initPacket = json.loads(newWs.recv(timeout=WS_INIT_PACKET_TIMEOUT_SECONDS))
+        headers = initPacket.get("headers") if isinstance(initPacket, dict) else None
+        connectionId = headers.get("Spotify-Connection-Id") if isinstance(headers, dict) else None
+        if connectionId is None:
+            raise ValueError("Invalid init packet")  #< same contract as spotapi's get_init_packet
+    except BaseException:
+        try:
+            newWs.close()
+        except Exception:  # noqa: S110 - already tearing down a failed handshake
+            pass
+        raise
+    self.ws_dump = initPacket
+    self.connection_id = connectionId
+    with self.rlock:
+        self.ws = newWs
+
     # Register and connect device
     self.register_device()
     self.connect_device()
-    
-    # Restart the keep_alive thread if it is dead
+
+    # Restart the keep_alive thread if it is dead (the reconnect lock keeps
+    # two watchers from both starting one)
     if hasattr(self, "keep_alive_thread") and not self.keep_alive_thread.is_alive():
         self.keep_alive_thread = threading.Thread(target=self.keep_alive, daemon=True)
         self.keep_alive_thread.start()
@@ -429,10 +499,14 @@ def patched_get_packet(self, timeout: float = WS_RECV_TIMEOUT_SECONDS):
             raw = ws.recv(timeout=timeout)
     except TimeoutError:
         return None             #< silence is the normal state of a push channel, not a fault
-    except websockets.exceptions.ConnectionClosedOK:
-        logger.info("Websocket closed cleanly; no more packets to read.")
-        return None
     except websockets.exceptions.ConnectionClosed as e:
+        # A clean close (ConnectionClosedOK) lands here too, on purpose:
+        # Spotify hangs up the dealer cleanly about once an hour, and until
+        # this reconnected, the push loop logged "closed cleanly" once per
+        # 1-second poll while waiting up to a minute for keep_alive's next
+        # ping to notice - lost push time, against a one-way push->poll
+        # fallback. A DELIBERATE close is told apart by the flag, which
+        # _reconnectAfterDroppedPacket checks first.
         _reconnectAfterDroppedPacket(self, e)
         return None
     except Exception as e:  # noqa: BLE001 - anything else is diagnosed, never silently retried

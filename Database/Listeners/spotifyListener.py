@@ -1329,3 +1329,17 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
         # invokes reconnection from within the listener thread).
         if hasattr(self, "thread") and self.thread.is_alive() and threading.current_thread() != self.thread:
             self.thread.join(timeout=LISTENER_STOP_JOIN_TIMEOUT_SECONDS)
+
+        # Release the spotapi TLS session - fresh per login (see
+        # Database/Spotify/client.py), so every rebuild retired one, and until
+        # this existed each stayed atexit-pinned with its curl session open
+        # until process exit. After the joins above on purpose: the loops get
+        # their chance to exit cleanly first, and a thread that outlived its
+        # join timeout now fails with "Session is closed", which the reconnect
+        # paths already treat as a terminal give-up.
+        closeSession = getattr(self.sp, "close", None)
+        if callable(closeSession):
+            try:
+                closeSession()
+            except Exception as e:
+                logger.warning("Failed to close the Spotify session on stop: %s", e)

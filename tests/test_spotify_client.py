@@ -602,5 +602,79 @@ class TestTrackFetchLimiting(unittest.TestCase):
 
 
 
+class TestSpotifyClose(unittest.TestCase):
+    """Every login builds a fresh TLSClient on purpose (the cookie-isolation
+    fix), and both TLSClient.__init__ and BaseClient.__init__ atexit.register
+    a close that nothing unregisters - so a session nobody closes stays
+    pinned, curl handles open, until process exit. close() is the missing
+    half of that design: the owner of a retiring session (Listener.stop(),
+    the import service) releases it."""
+
+    def _loggedInSpotify(self):
+        spotify = Spotify()
+        login = MagicMock()
+        spotify.user_auth = login
+        return spotify, login.client
+
+    def test_close_closes_the_login_client(self):
+        spotify, client = self._loggedInSpotify()
+
+        spotify.close()
+
+        client.close.assert_called_once_with()
+
+    def test_close_unregisters_the_atexit_hooks(self):
+        """TLSClient and every BaseClient over it registered the same bound
+        close - one unregister drops them all, unpinning the object graph."""
+        spotify, client = self._loggedInSpotify()
+
+        with patch("Database.Spotify.client.atexit") as mockAtexit:
+            spotify.close()
+
+        mockAtexit.unregister.assert_called_once_with(client.close)
+
+    def test_close_without_a_login_is_a_quiet_no_op(self):
+        spotify = Spotify()
+
+        spotify.close()  #< user_auth is False - nothing to close, must not raise
+
+    def test_close_twice_is_safe(self):
+        spotify, client = self._loggedInSpotify()
+
+        spotify.close()
+        spotify.close()
+
+        #< tolerating a double-close is the TLS client's job; ours is to never raise
+        self.assertEqual(client.close.call_count, 2)
+
+    def test_close_swallows_a_failing_client_close(self):
+        spotify, client = self._loggedInSpotify()
+        client.close.side_effect = RuntimeError("curl already gone")
+
+        spotify.close()  # must not raise
+
+    def test_a_failed_login_closes_the_client_it_built(self):
+        """Login.from_saver raising used to strand the just-built TLSClient:
+        atexit-pinned, session open, and user_auth still False so close()
+        would never find it."""
+        import json as jsonModule
+        import os
+        import tempfile
+
+        fakeClient = MagicMock()
+        with tempfile.TemporaryDirectory() as tmpDir:
+            cookiesFile = os.path.join(tmpDir, "sessions.json")
+            with open(cookiesFile, "w") as f:
+                jsonModule.dump([{"identifier": "user@example.com"}], f)
+
+            with patch.object(spotapi, "TLSClient", return_value=fakeClient), \
+                 patch.object(spotapi.Login, "from_saver", side_effect=RuntimeError("bad cookies")), \
+                 self.assertLogs("Database.Spotify.client", level="ERROR"):
+                spotify = Spotify()
+                self.assertFalse(spotify.login(cookiesFile))
+
+        fakeClient.close.assert_called_once_with()
+
+
 if __name__ == "__main__":
     unittest.main()

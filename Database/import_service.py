@@ -143,31 +143,37 @@ class ImportMixin:
         the staging-failure rollback below would have discarded a prior
         file's staged writes in a transaction this method does not own."""
         importer = self._withCookiesFile(lambda cookiesFile: _dbmod.Importer(cookiesFile=cookiesFile, email=self.email))
-        if runState is None:
-            runState = _dbmod._ImportRunState()
-
-        # Snapshot for the staging-failure path; the apply path restores the
-        # same run-state fields itself (see _applyImportData's except).
-        claimedRowIdsBefore = set(runState.claimedRowIds)
-        insertedPlayKeysBefore = set(runState.insertedPlayKeys)
         try:
-            staged = self._stageImportData(importer, exportedHistory, progressPrefix,
-                                           hasPriorError, self.writeProgress, runState, deferCommit=False)
-        except Exception as e:
-            # Staging (parse / Spotify metadata fetch) failed before any DB
-            # write. Report it and restore the batch-shared run state, matching
-            # the apply path's failure handling.
-            self.repo.rollback()
-            runState.claimedRowIds = claimedRowIdsBefore
-            runState.insertedPlayKeys = insertedPlayKeysBefore
-            self.writeProgress("failed", 0, 0, f"{progressPrefix}Import failed: {_dbmod.parseError(e)}", error=True)
-            raise
-        if staged is None:
-            return
-        stagedTracks, stagedPlays, total, importStats = staged
-        self._applyImportData(stagedTracks, stagedPlays, importStats, total, exportedHistory,
-                              progressPrefix, isFinalFile, hasPriorError, track_file_hash,
-                              runState, False, self.writeProgress)
+            if runState is None:
+                runState = _dbmod._ImportRunState()
+
+            # Snapshot for the staging-failure path; the apply path restores the
+            # same run-state fields itself (see _applyImportData's except).
+            claimedRowIdsBefore = set(runState.claimedRowIds)
+            insertedPlayKeysBefore = set(runState.insertedPlayKeys)
+            try:
+                staged = self._stageImportData(importer, exportedHistory, progressPrefix,
+                                               hasPriorError, self.writeProgress, runState, deferCommit=False)
+            except Exception as e:
+                # Staging (parse / Spotify metadata fetch) failed before any DB
+                # write. Report it and restore the batch-shared run state, matching
+                # the apply path's failure handling.
+                self.repo.rollback()
+                runState.claimedRowIds = claimedRowIdsBefore
+                runState.insertedPlayKeys = insertedPlayKeysBefore
+                self.writeProgress("failed", 0, 0, f"{progressPrefix}Import failed: {_dbmod.parseError(e)}", error=True)
+                raise
+            if staged is None:
+                return
+            stagedTracks, stagedPlays, total, importStats = staged
+            self._applyImportData(stagedTracks, stagedPlays, importStats, total, exportedHistory,
+                                  progressPrefix, isFinalFile, hasPriorError, track_file_hash,
+                                  runState, False, self.writeProgress)
+        finally:
+            # Each Importer logs in with its own fresh TLS session (see
+            # Database/Spotify/client.py) - release it or every import leaks
+            # one, atexit-pinned, until process exit.
+            importer.sp.close()
 
     def _stageImportData(self, importer, exportedHistory, progressPrefix, hasPriorError,
                          reportProgress, runState, deferCommit, knownTracks=None):
@@ -603,6 +609,7 @@ class ImportMixin:
         # can't block other writers. writeProgress here is safe: nothing is
         # staged on the connection during staging, only in-memory structures.
         runState = _dbmod._ImportRunState()
+        importer = None
         try:
             importer = self._withCookiesFile(lambda cookiesFile: _dbmod.Importer(cookiesFile=cookiesFile, email=self.email))
             knownTracks = self.repo.getAllTracks()   #< shared, grown per file below
@@ -623,6 +630,12 @@ class ImportMixin:
                                f"Overwrite import aborted: no changes were applied, original data is intact - {_dbmod.parseError(e)}",
                                error=True)
             return ["failed"] * total
+        finally:
+            # Staging is the importer's last use - the phases below only touch
+            # the staged rows. Release its TLS session (fresh per login, see
+            # Database/Spotify/client.py) here rather than at process exit.
+            if importer is not None:
+                importer.sp.close()
 
         # Phase 1b - the delete range covers every play the files PARSED, but
         # only the plays that survived staging get re-inserted. A play dropped
@@ -746,23 +759,28 @@ class ImportMixin:
         nothing (all valid-but-empty), or None when any file is unrecognized/
         corrupt - the caller must abort WITHOUT deleting."""
         importer = self._withCookiesFile(lambda cookiesFile: _dbmod.Importer(cookiesFile=cookiesFile, email=self.email))
+        try:
+            minStart = None
+            maxEnd = None
+            coveredYears: set[int] = set()
+            for content in fileContents:
+                parsedHistory, exportType = importer._convertToList(content)
+                if exportType == "None":
+                    return None
+                fileCoverage = importer.coverage(parsedHistory, exportType)
+                if fileCoverage is None:
+                    continue  #< a valid-but-empty export covers nothing
+                fileMin, fileMax, fileYears = fileCoverage
+                minStart = fileMin if minStart is None else min(minStart, fileMin)
+                maxEnd = fileMax if maxEnd is None else max(maxEnd, fileMax)
+                coveredYears |= fileYears
 
-        minStart = None
-        maxEnd = None
-        coveredYears: set[int] = set()
-        for content in fileContents:
-            parsedHistory, exportType = importer._convertToList(content)
-            if exportType == "None":
-                return None
-            fileCoverage = importer.coverage(parsedHistory, exportType)
-            if fileCoverage is None:
-                continue  #< a valid-but-empty export covers nothing
-            fileMin, fileMax, fileYears = fileCoverage
-            minStart = fileMin if minStart is None else min(minStart, fileMin)
-            maxEnd = fileMax if maxEnd is None else max(maxEnd, fileMax)
-            coveredYears |= fileYears
-
-        return minStart, maxEnd, coveredYears
+            return minStart, maxEnd, coveredYears
+        finally:
+            # Parsing never needed the importer's TLS login, but constructing
+            # the Importer opened one anyway - release it (fresh per login,
+            # see Database/Spotify/client.py).
+            importer.sp.close()
 
     def _deletePlaysInCoveredRange(self, minStart, maxEnd, coveredYears) -> tuple[int, int, list[int]]:
         """Delete this user's plays and skips in each covered year's segment of

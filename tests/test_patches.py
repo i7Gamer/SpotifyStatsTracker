@@ -90,8 +90,8 @@ class TestPatches(unittest.TestCase):
             instance.base.access_token = "fresh-token"
         instance.base.get_session.side_effect = renewToken
 
-        # When get_init_packet is called, it returns a new connection ID
-        instance.get_init_packet.return_value = "new-conn-id"
+        # The dealer's first frame carries the new connection ID
+        mock_ws.recv.return_value = '{"headers": {"Spotify-Connection-Id": "new-conn-id"}}'
 
         # Thread status mock
         mock_thread = MagicMock(spec=threading.Thread)
@@ -320,13 +320,17 @@ class _FakeReconnectBase:
         pass
 
 
+#< the dealer's first frame after a successful handshake
+_INIT_PACKET_JSON = '{"headers": {"Spotify-Connection-Id": "conn-id"}}'
+
+
 def _reconnectableInstance(base):
     """A stand-in PlayerStatus carrying only what player_status_reconnect touches."""
     import types
     instance = types.SimpleNamespace()
     instance.ws = MagicMock()
     instance.base = base
-    instance.get_init_packet = MagicMock(return_value="conn-id")
+    instance.rlock = threading.Lock()
     instance.register_device = MagicMock()
     instance.connect_device = MagicMock()
     aliveThread = MagicMock()
@@ -348,6 +352,7 @@ class TestReconnectRefreshesTheAccessToken(unittest.TestCase):
         from Database.patches import player_status_reconnect
         instance = _reconnectableInstance(base)
         with patch("websockets.sync.client.connect") as wsConnect:
+            wsConnect.return_value.recv.return_value = _INIT_PACKET_JSON
             player_status_reconnect(instance)
         wsConnect.assert_called_once()
         return wsConnect.call_args.args[0]
@@ -415,6 +420,7 @@ class TestReconnectRefreshesTheAccessToken(unittest.TestCase):
         instance = _reconnectableInstance(base)
 
         with patch("websockets.sync.client.connect") as wsConnect:
+            wsConnect.return_value.recv.return_value = _INIT_PACKET_JSON
             with self.assertLogs("Database.patches", level="WARNING"):
                 player_status_reconnect(instance)
 
@@ -436,6 +442,145 @@ class TestReconnectRefreshesTheAccessToken(unittest.TestCase):
         wsConnect.assert_not_called()
         instance.ws.close.assert_not_called()
         self.assertEqual(base.tokenWhenSessionRenewed, "get_session-never-called")
+
+
+class TestReconnectInitPacketHandling(unittest.TestCase):
+    """The init packet must be read from a socket the rest of the process
+    cannot see yet: self.ws is what get_packet re-reads under rlock, so
+    publishing before the read let the push loop consume the init frame -
+    leaving the reconnecting thread blocked forever in an untimed recv(),
+    the device never re-registered, and the listener silently degraded to
+    polling. The timeout also bounds a dealer that accepts the socket but
+    never speaks."""
+
+    def _instance(self):
+        return _reconnectableInstance(_FakeReconnectBase(expiresInMs=ONE_HOUR_MS))
+
+    def test_the_init_packet_read_is_bounded(self):
+        from Database.patches import player_status_reconnect, WS_INIT_PACKET_TIMEOUT_SECONDS
+
+        instance = self._instance()
+
+        with patch("websockets.sync.client.connect") as wsConnect:
+            wsConnect.return_value.recv.return_value = _INIT_PACKET_JSON
+            player_status_reconnect(instance)
+
+        wsConnect.return_value.recv.assert_called_once_with(
+            timeout=WS_INIT_PACKET_TIMEOUT_SECONDS)
+
+    def test_the_socket_is_published_only_after_the_init_packet_is_read(self):
+        from Database.patches import player_status_reconnect
+
+        instance = self._instance()
+        oldWs = instance.ws
+        publishedAtRecvTime = []
+
+        with patch("websockets.sync.client.connect") as wsConnect:
+            newWs = wsConnect.return_value
+
+            def recordingRecv(timeout=None):
+                publishedAtRecvTime.append(instance.ws)
+                return _INIT_PACKET_JSON
+            newWs.recv.side_effect = recordingRecv
+
+            player_status_reconnect(instance)
+
+        self.assertEqual(publishedAtRecvTime, [oldWs])  #< still the old socket at read time
+        self.assertIs(instance.ws, newWs)
+        self.assertEqual(instance.connection_id, "conn-id")
+
+    def test_a_bad_init_packet_closes_the_new_socket_and_raises(self):
+        from Database.patches import player_status_reconnect
+
+        instance = self._instance()
+        oldWs = instance.ws
+
+        with patch("websockets.sync.client.connect") as wsConnect:
+            newWs = wsConnect.return_value
+            newWs.recv.return_value = '{"no": "headers"}'
+            with self.assertRaises(ValueError):
+                player_status_reconnect(instance)
+
+        newWs.close.assert_called_once()
+        self.assertIs(instance.ws, oldWs)  #< the dead-but-known socket, never the broken one
+        instance.register_device.assert_not_called()
+
+
+class _LockStub:
+    """Stands in for the per-streamer reconnect lock: entering it runs a
+    scripted side effect - the deterministic version of "another thread held
+    the lock and changed the world while we waited"."""
+
+    def __init__(self, onEnter):
+        self.onEnter = onEnter
+
+    def __enter__(self):
+        self.onEnter()
+
+    def __exit__(self, *args):
+        return False
+
+
+class TestReconnectSerialization(unittest.TestCase):
+    """keep_alive and the push loop's receive path watch the same socket, so
+    one drop can send both into reconnect. The loser must notice the winner's
+    work and stand down instead of stacking a second dealer connection (and a
+    second keep-alive thread) on top of it."""
+
+    def test_a_reconnect_that_lost_the_race_is_skipped(self):
+        from Database.patches import player_status_reconnect
+
+        base = _FakeReconnectBase(expiresInMs=ONE_HOUR_MS)
+        instance = _reconnectableInstance(base)
+        instance._reconnectSerializeLock = _LockStub(
+            lambda: setattr(instance, "_reconnectGeneration",
+                            getattr(instance, "_reconnectGeneration", 0) + 1))
+
+        with patch("websockets.sync.client.connect") as wsConnect:
+            with self.assertLogs("Database.patches", level="INFO"):
+                player_status_reconnect(instance)
+
+        wsConnect.assert_not_called()
+        self.assertEqual(base.tokenWhenSessionRenewed, "get_session-never-called")
+
+    def test_a_stop_that_landed_while_waiting_for_the_lock_wins(self):
+        from Database.patches import player_status_reconnect
+
+        base = _FakeReconnectBase(expiresInMs=ONE_HOUR_MS)
+        instance = _reconnectableInstance(base)
+        instance._reconnectSerializeLock = _LockStub(
+            lambda: setattr(instance, "_deliberate_close", True))
+
+        with patch("websockets.sync.client.connect") as wsConnect:
+            player_status_reconnect(instance)
+
+        wsConnect.assert_not_called()
+
+    def test_a_successful_reconnect_bumps_the_generation(self):
+        from Database.patches import player_status_reconnect
+
+        instance = _reconnectableInstance(_FakeReconnectBase(expiresInMs=ONE_HOUR_MS))
+
+        with patch("websockets.sync.client.connect") as wsConnect:
+            wsConnect.return_value.recv.return_value = _INIT_PACKET_JSON
+            player_status_reconnect(instance)
+
+        self.assertEqual(instance._reconnectGeneration, 1)
+
+    def test_a_failed_reconnect_leaves_the_generation_for_the_next_try(self):
+        """Only a COMPLETED reconnect may make a waiting thread stand down -
+        after a failure the waiter must go ahead and try itself."""
+        from Database.patches import player_status_reconnect
+
+        base = _FakeReconnectBase(expiresInMs=-1000)
+        base.renewalError = RuntimeError("unreachable")
+        instance = _reconnectableInstance(base)
+
+        with patch("websockets.sync.client.connect"):
+            with self.assertRaises(RuntimeError):
+                player_status_reconnect(instance)
+
+        self.assertEqual(getattr(instance, "_reconnectGeneration", 0), 0)
 
 
 def _keepAliveInstance(sendEffect=None, hasWs=True):
@@ -1024,11 +1169,32 @@ class TestPatchedGetPacket(unittest.TestCase):
         self.assertIsNone(_getPacket(streamer))
         streamer.reconnect.assert_not_called()
 
-    def test_a_clean_close_does_not_reconnect(self):
+    def test_a_clean_close_that_was_not_deliberate_reconnects(self):
+        """Spotify hangs up the dealer cleanly about once an hour. Before this
+        reconnected, the push loop logged "closed cleanly" once per 1-second
+        poll until keep_alive's next ping noticed (up to a minute) - and lost
+        that much push time, against a one-way push->poll fallback."""
         import websockets.exceptions
 
         streamer = _fakeStreamer([
             websockets.exceptions.ConnectionClosedOK(None, None)])
+
+        with self.assertLogs("Database.patches", level="WARNING"):
+            self.assertIsNone(_getPacket(streamer))
+
+        streamer.reconnect.assert_called_once_with()
+
+    def test_a_clean_close_after_a_deliberate_stop_stays_quiet(self):
+        """stop() closes the socket mid-read: the resulting clean-close must
+        end quietly, not resurrect the connection being torn down."""
+        import websockets.exceptions
+
+        streamer = _fakeStreamer([])
+
+        def closingRecv(timeout=None, decode=None):
+            streamer._deliberate_close = True
+            raise websockets.exceptions.ConnectionClosedOK(None, None)
+        streamer.ws.recv = closingRecv
 
         self.assertIsNone(_getPacket(streamer))
         streamer.reconnect.assert_not_called()

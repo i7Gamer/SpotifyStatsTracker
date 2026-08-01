@@ -494,6 +494,26 @@ class TestOverwriteAbortsOnRetryableDrops(_OverwriteTestBase):
         self.assertEqual(self._playedAts(db), [_ts(2019, 3), _ts(2019)])   #< ordered by played_at
 
 
+class TestOverwriteClosesSessions(_OverwriteTestBase):
+    def test_the_batch_closes_every_importer_session_it_built(self):
+        """The overwrite batch builds one Importer for the coverage pre-pass
+        and one for staging; each holds a fresh TLS login that must be
+        released. The shared mock stands in for both constructions, so both
+        closes land on it."""
+        db = self._makeDb({}, [])
+
+        def gen():
+            yield _meta("i1", _ts(2020))
+
+        fileSpecs = {"file1": ((_ts(2020), _ts(2020), {2020}), gen)}
+        importer = self._mockImporter(fileSpecs)
+
+        with patch("Database.database.Importer", return_value=importer):
+            db.importHistoryBatch(list(fileSpecs.keys()), overwriteRange=True)
+
+        self.assertEqual(importer.sp.close.call_count, 2)
+
+
 if __name__ == "__main__":
     import unittest
     unittest.main()

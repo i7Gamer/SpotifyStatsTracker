@@ -22,6 +22,7 @@ expectations come from the CONSUMERS (Client.formatTrack, the importers, the
 listener) - see Database/Spotify/formatting.py for the mapping itself.
 """
 
+import atexit
 import json
 import logging
 import time
@@ -273,6 +274,26 @@ def _pooledPublicClient():
         client_pool.put(client)
 
 
+def _closeTlsClient(client) -> None:
+    """Close a TLSClient now and drop its atexit registrations. Never raises.
+
+    Both TLSClient.__init__ and every BaseClient.__init__ atexit.register a
+    close over the client that nothing unregisters, so an unclosed client
+    stays pinned - object graph AND live curl session - until process exit
+    (measured at 30 lookups -> 30 live sessions, see _pooledPublicClient).
+    The registrations are equal bound methods, so one unregister drops them
+    all; closing is idempotent, so an atexit sweep that still finds one is
+    harmless."""
+    try:
+        atexit.unregister(client.close)
+    except Exception:  # noqa: S110 - unregistering is an optimization; closing is the point
+        pass
+    try:
+        client.close()
+    except Exception as e:
+        logger.debug("Closing a Spotify TLS session failed: %s", e)
+
+
 def normalizeSpotifyId(value) -> str:
     """A bare entity id out of any form the app passes: spotify:<kind>:<id>
     URIs (the importer, straight from export files), open.spotify.com URLs, or
@@ -318,6 +339,7 @@ class Spotify:
         if cookiesFile is None:
             return False
         identifier = None
+        freshClient = None
         try:
             # spotapi.Config's `client` field defaults via `field(default=TLSClient(...))`
             # rather than `field(default_factory=...)` - dataclasses only reject known
@@ -330,9 +352,10 @@ class Spotify:
             # user's cookies happened to be in the jar at request time (the cross-user
             # contamination bug). A fresh TLSClient per login isolates each user's
             # cookies.
+            freshClient = spotapi.TLSClient(TLS_CLIENT_PROFILE, "", auto_retries=TLS_CLIENT_AUTO_RETRIES)
             cfg = spotapi.Config(
                 logger=spotapi.Logger(),
-                client=spotapi.TLSClient(TLS_CLIENT_PROFILE, "", auto_retries=TLS_CLIENT_AUTO_RETRIES),
+                client=freshClient,
             )
             saver = spotapi.saver.JSONSaver(cookiesFile)
             try:
@@ -348,13 +371,33 @@ class Spotify:
                     identifier = sessions[0]["identifier"]
             except Exception as e:
                 logger.error("Error loading cookies file: %s", e)
+                _closeTlsClient(freshClient)
                 return False
 
             self.user_auth = spotapi.Login.from_saver(saver, cfg, identifier)
         except Exception as e:
             logger.error("Failed to login user %s: %s", identifier or "unknown", e)
+            # A failed login strands the client just built above: user_auth is
+            # still False, so close() will never find it - release it here.
+            if freshClient is not None:
+                _closeTlsClient(freshClient)
             return False
         return True
+
+    def close(self) -> None:
+        """Release the login's TLS session. Idempotent, never raises.
+
+        Every login builds a fresh TLSClient (the contamination fix above), so
+        every retired session - a listener rebuild, a finished import - left
+        one behind, atexit-pinned with its curl session open until process
+        exit. Whoever retires the session (Listener.stop(), the import
+        service) calls this."""
+        login = self.user_auth
+        if isinstance(login, bool):
+            return
+        client = getattr(login, "client", None)
+        if client is not None:
+            _closeTlsClient(client)
 
     def isLoggedIn(self) -> bool:
         return not isinstance(self.user_auth, bool)
