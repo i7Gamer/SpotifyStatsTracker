@@ -149,7 +149,11 @@ class TestAdminWorkerHealthRoute(unittest.TestCase):
         mock_db.getWrappedWorkerStatus.return_value = {"configured": True, "running": False}
 
         mock_backup = MagicMock()
-        mock_backup.is_alive.return_value = True
+        #< the panel reads the worker's own summary now - see BackupWorker.getSummary
+        mock_backup.getSummary.return_value = {
+            "status": "RUNNING", "consecutive_failures": 0,
+            "failure_rate": 0.0, "last_error": None,
+        }
         dash.backupWorker = mock_backup
 
         # adminPage()'s per-user row reads dashboard.user_databases (an
@@ -252,7 +256,11 @@ class TestAdminWorkerHealthRoute(unittest.TestCase):
         }
 
         mock_backup = MagicMock()
-        mock_backup.is_alive.return_value = True
+        #< the panel reads the worker's own summary now - see BackupWorker.getSummary
+        mock_backup.getSummary.return_value = {
+            "status": "RUNNING", "consecutive_failures": 0,
+            "failure_rate": 0.0, "last_error": None,
+        }
         dash.backupWorker = mock_backup
         dash.user_databases = {"alice": mock_db}
 
@@ -454,6 +462,103 @@ class TestAdminWorkerHealthRoute(unittest.TestCase):
             self.assertIn("Un-inherited: 25.0%", body)
             self.assertIn("Un-inherited: 30.0%", body)
             self.assertNotIn("Un-inherited: 50.0%", body)
+
+
+class TestAdminBackupServicePanel(unittest.TestCase):
+    """The backup row used to report thread liveness and nothing else, so a
+    service that had failed every cycle for a month still read RUNNING. It now
+    carries the same FAILING badge as the per-user workers, at the same
+    threshold (Database.WORKER_HEALTH_FAILING_THRESHOLD)."""
+
+    @patch('app.SpotifyDashboardApp._get_or_create_secret_key', return_value='test-secret-key')
+    @patch('app.SpotifyDashboardApp.startVersionCheck_thread')
+    @patch('app.SpotifyDashboardApp.checkLogin_thread')
+    @patch('app.migrateIfNeeded')
+    @patch('app.Path.exists')
+    def _renderAdmin(self, mock_exists, mock_migrate, mock_check, mock_version, mock_secret,
+                     backupSummary=None):
+        mock_exists.return_value = False
+        dash = SpotifyDashboardApp()
+        dash.user_databases = {}
+        if backupSummary is None:
+            dash.backupWorker = None
+        else:
+            worker = MagicMock()
+            worker.getSummary.return_value = backupSummary
+            dash.backupWorker = worker
+
+        insights = {
+            "getCatalogGenreCoverage": {
+                "song": {"covered": 0, "total": 0, "percent": 0.0},
+                "album": {"covered": 0, "total": 0, "percent": 0.0},
+                "artist": {"covered": 0, "total": 0, "percent": 0.0},
+                "overall": {"percent": 0.0},
+            },
+            "getCatalogBiographyCoverage": {
+                "artist": {"covered": 0, "total": 0}, "album": {"covered": 0, "total": 0},
+            },
+            "getRecentRegistrationCounts": {"last_7_days": 0, "last_30_days": 0},
+            "getInstanceShareCounts": {"pending": 0, "accepted": 0},
+            "getActiveShareLinksCount": 0,
+        }
+        patches = [
+            patch.object(dash.repo, 'getGlobalDatabaseStats', return_value={}),
+            patch.object(dash.repo, 'getAllUsersDetails', return_value=[]),
+            patch.object(dash.repo, 'isAdmin', return_value=True),
+            patch.object(dash.repo, 'getAdminUsernames', return_value=['alice']),
+            patch.object(dash, 'is_user_logged_in', return_value=True),
+            patch.object(dash, 'get_username_for_email', return_value='alice'),
+            patch.object(dash, 'get_user_db', return_value=MagicMock()),
+        ]
+        for name, value in insights.items():
+            patches.append(patch.object(dash.repo, name, return_value=value))
+
+        with contextlib.ExitStack() as stack:
+            for p in patches:
+                stack.enter_context(p)
+            client = dash.app.test_client()
+            with client.session_transaction() as sess:
+                sess['email'] = 'alice@example.com'
+            resp = client.get("/admin")
+            self.assertEqual(resp.status_code, 200)
+            return resp.data.decode()
+
+    def _summary(self, **overrides):
+        summary = {"status": "RUNNING", "consecutive_failures": 0,
+                   "failure_rate": 0.0, "last_error": None}
+        summary.update(overrides)
+        return summary
+
+    def test_a_healthy_service_shows_running_and_no_failure_badge(self):
+        body = self._renderAdmin(backupSummary=self._summary())
+
+        self.assertIn("Database Backup Service", body)
+        self.assertNotIn("BACKUPS FAILING", body)
+
+    def test_a_repeatedly_failing_service_is_flagged_with_its_error(self):
+        body = self._renderAdmin(backupSummary=self._summary(
+            consecutive_failures=Database.WORKER_HEALTH_FAILING_THRESHOLD,
+            failure_rate=1.0, last_error="database is locked"))
+
+        self.assertIn("BACKUPS FAILING", body)
+        self.assertIn("database is locked", body)
+
+    def test_failures_below_the_threshold_are_shown_without_the_alarm(self):
+        """One failed cycle is a blip - a locked database during a checkpoint,
+        say - and the next 15-minute check usually clears it."""
+        body = self._renderAdmin(backupSummary=self._summary(
+            consecutive_failures=1, failure_rate=0.5, last_error="database is locked"))
+
+        self.assertNotIn("BACKUPS FAILING", body)
+        self.assertIn("1 FAILED CYCLE", body)
+
+    def test_an_absent_worker_still_renders(self):
+        """dash.backupWorker is None on a partially built app - the panel must
+        not 500 the whole admin page over it."""
+        body = self._renderAdmin()
+
+        self.assertIn("Database Backup Service", body)
+        self.assertIn("INACTIVE", body)
 
 
 class TestAdminSpotifyRateLimitPanel(unittest.TestCase):

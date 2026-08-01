@@ -300,15 +300,17 @@ def register(app, dashboard):
             if _isFailing(w):
                 wrapped_worker_summary["failing"] += 1
 
-        backup_worker_running = False
-        if hasattr(dashboard, "backupWorker") and dashboard.backupWorker is not None:
-            th = getattr(dashboard.backupWorker, "thread", None)
-            if th is not None:
-                backup_worker_running = th.is_alive()
-            elif hasattr(dashboard.backupWorker, "is_alive"):
-                backup_worker_running = dashboard.backupWorker.is_alive()
-
-        backup_worker_summary = {"status": "RUNNING" if backup_worker_running else "INACTIVE"}
+        # Thread liveness alone said nothing about whether backups were being
+        # TAKEN: a service failing every 15-minute cycle read RUNNING like any
+        # other. The worker now reports the same cycle telemetry as the
+        # per-user backfillers, judged here against the same threshold.
+        backupWorker = getattr(dashboard, "backupWorker", None)
+        backup_worker_summary = {"status": "INACTIVE", "consecutive_failures": 0,
+                                 "failure_rate": 0.0, "last_error": None}
+        if backupWorker is not None:
+            backup_worker_summary = backupWorker.getSummary()
+        backup_worker_summary["failing"] = (
+            backup_worker_summary["consecutive_failures"] >= Database.WORKER_HEALTH_FAILING_THRESHOLD)
 
         # Milestone detection has no thread of its own - it rides the periodic
         # login-check loop (see _detectMilestonesSafely), so its health IS that

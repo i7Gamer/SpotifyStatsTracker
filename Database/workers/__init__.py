@@ -12,7 +12,7 @@ from Database.workers.periodic import PeriodicWorkerMixin
 from Database.workers.wrapped_worker import WrappedWorkerMixin
 from Database.workers.metadata_backfiller import MetadataBackfillMixin
 from Database.workers.lastfm_backfillers import LastfmBackfillMixin
-from Database.workers.telemetry import WorkerTelemetryMixin
+from Database.telemetry import WorkerTelemetryMixin   #< a leaf module, see its docstring
 
 
 class WorkerLifecycleMixin(ListenerMixin, WrappedWorkerMixin,

@@ -9,9 +9,16 @@ import threading
 class WorkerTelemetryMixin:
     """Per-worker cycle success/failure counters shared by every periodic
     backfill loop in Database/workers/ (metadata backfiller, wrapped
-    calculator, Last.fm genre/artist-bio/album-bio backfillers). Feeds the
-    /admin Worker Health card's FAILING badges - see
-    Database.WORKER_HEALTH_FAILING_THRESHOLD."""
+    calculator, Last.fm genre/artist-bio/album-bio backfillers) and by the
+    process-wide BackupWorker. Feeds the /admin Worker Health card's FAILING
+    badges - see Database.WORKER_HEALTH_FAILING_THRESHOLD.
+
+    Deliberately a leaf module at Database/ root rather than inside
+    Database/workers/, where the rest of the worker code lives: importing
+    anything from that package runs its __init__, which pulls in the listener
+    and through it Database.database. Database/backup.py is imported on its own
+    (the migrators import it standalone, before any of that exists), and doing
+    so through the workers package raised a circular ImportError."""
 
     def _initWorkerTelemetry(self) -> None:
         self._worker_telemetry_lock = threading.Lock()

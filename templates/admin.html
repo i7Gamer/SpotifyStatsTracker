@@ -364,7 +364,20 @@
           {% else %}
             <span class="badge badge-secondary">INACTIVE</span>
           {% endif %}
+          {# Running and taking backups are different things - see BackupWorker.getSummary #}
+          {% if backup_worker_summary.failing %}
+            <span class="badge badge-danger">BACKUPS FAILING</span>
+          {% endif %}
+          {% if backup_worker_summary.consecutive_failures %}
+            {% set failedCycles = backup_worker_summary.consecutive_failures %}
+            <span class="badge badge-orange">{{ failedCycles }} FAILED CYCLE{{ 'S' if failedCycles != 1 else '' }} IN A ROW</span>
+          {% endif %}
         </div>
+        {% if backup_worker_summary.consecutive_failures and backup_worker_summary.last_error %}
+        <p class="admin-worker-note">
+          Last backup error: <code>{{ backup_worker_summary.last_error }}</code>
+        </p>
+        {% endif %}
 
         <p class="admin-worker-label">Mail Worker</p>
         <div id="emailWorkerStatus" class="admin-worker-row">

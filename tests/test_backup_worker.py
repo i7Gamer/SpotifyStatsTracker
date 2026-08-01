@@ -367,6 +367,129 @@ class TestConfiguration(BackupWorkerTestCase):
         self.assertEqual(worker.retentionCount, backupModule.DEFAULT_BACKUP_RETENTION_COUNT)
 
 
+class TestBackupTelemetry(BackupWorkerTestCase):
+    """A scheduled backup that fails is logged and retried on the next check -
+    which is correct, and was also the whole story: nothing counted the
+    failures, so /admin's Worker Health card reported the service as RUNNING
+    whether it had been succeeding or failing every 15 minutes for a month.
+    The per-user workers already record cycle outcomes (WorkerTelemetryMixin);
+    this one now does too, through the same mixin and the same FAILING
+    threshold."""
+
+    def _runCycles(self, worker, outcomes):
+        """Drive one loop pass per entry in `outcomes` - an Exception to raise,
+        anything else for a clean backup - then stop. No clock involved: the
+        check interval is patched to 0 and the loop exits on the pass after the
+        last outcome."""
+        stopEvent = threading.Event()
+        remaining = list(outcomes)
+
+        def fakeIsDue():
+            #< nothing due on the pass after the last outcome, so the wind-down
+            #  records no cycle of its own and can't reset what was counted
+            if not remaining:
+                stopEvent.set()
+                return False
+            return True
+
+        def fakeBackup():
+            outcome = remaining.pop(0)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return self.root / "backup.db"
+
+        with patch.object(worker, "isDue", side_effect=fakeIsDue), \
+             patch.object(worker, "runBackup", side_effect=fakeBackup), \
+             patch("Database.backup.random.randint", return_value=0), \
+             patch.object(backupModule, "BACKUP_CHECK_INTERVAL_SECONDS", 0):
+            worker._loop(stopEvent)
+
+    def test_a_failing_backup_is_counted_with_its_error(self):
+        worker = self._makeWorker()
+
+        self._runCycles(worker, [sqlite3.OperationalError("database is locked")])
+
+        summary = worker.getSummary()
+        self.assertEqual(summary["consecutive_failures"], 1)
+        self.assertEqual(summary["failure_rate"], 1.0)
+        self.assertIn("database is locked", summary["last_error"])
+
+    def test_consecutive_failures_accumulate(self):
+        worker = self._makeWorker()
+
+        self._runCycles(worker, [OSError("disk full")] * 3)
+
+        self.assertEqual(worker.getSummary()["consecutive_failures"], 3)
+
+    def test_a_success_clears_the_consecutive_count_but_not_the_rate(self):
+        """The rate is what still says "this has been unhealthy" after one
+        lucky cycle."""
+        worker = self._makeWorker()
+
+        self._runCycles(worker, [OSError("disk full"), None])
+
+        summary = worker.getSummary()
+        self.assertEqual(summary["consecutive_failures"], 0)
+        self.assertEqual(summary["failure_rate"], 0.5)
+
+    def test_a_cycle_with_nothing_due_records_nothing(self):
+        """The mixin counts cycles that actually ran - an idle worker between
+        daily backups must not dilute the failure rate towards zero."""
+        worker = self._makeWorker()
+        stopEvent = threading.Event()
+        checks = []
+
+        def notDue():
+            checks.append(1)
+            if len(checks) >= 3:
+                stopEvent.set()
+            return False
+
+        with patch.object(worker, "isDue", side_effect=notDue), \
+             patch("Database.backup.random.randint", return_value=0), \
+             patch.object(backupModule, "BACKUP_CHECK_INTERVAL_SECONDS", 0):
+            worker._loop(stopEvent)
+
+        summary = worker.getSummary()
+        self.assertEqual(summary["consecutive_failures"], 0)
+        self.assertEqual(summary["failure_rate"], 0.0)
+        self.assertIsNone(summary["last_error"])
+
+    def test_a_failing_due_check_counts_too(self):
+        """isDue() reads the backup directory - if that raises (an unreadable
+        or vanished mount), no backup can be taken either."""
+        worker = self._makeWorker()
+        stopEvent = threading.Event()
+        calls = []
+
+        def brokenIsDue():
+            calls.append(1)
+            if len(calls) >= 2:
+                stopEvent.set()
+            raise OSError("backup volume is gone")
+
+        with patch.object(worker, "isDue", side_effect=brokenIsDue), \
+             patch("Database.backup.random.randint", return_value=0), \
+             patch.object(backupModule, "BACKUP_CHECK_INTERVAL_SECONDS", 0):
+            worker._loop(stopEvent)
+
+        self.assertEqual(worker.getSummary()["consecutive_failures"], 2)
+
+    def test_a_worker_that_never_ran_reports_zeros(self):
+        summary = self._makeWorker().getSummary()
+
+        self.assertEqual(summary["status"], "INACTIVE")
+        self.assertEqual(summary["consecutive_failures"], 0)
+        self.assertIsNone(summary["last_error"])
+
+    def test_the_summary_reports_the_running_thread(self):
+        worker = self._makeWorker()
+        worker.start()
+        self.addCleanup(worker.stop)
+
+        self.assertEqual(worker.getSummary()["status"], "RUNNING")
+
+
 class TestWorkerThread(BackupWorkerTestCase):
     def test_start_and_stop_cleanly_without_backing_up_immediately(self):
         """The thread waits out a startup delay before its first due-check, so

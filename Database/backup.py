@@ -26,8 +26,12 @@ from pathlib import Path
 
 try:
     import Database.db as db
+    from Database.utils import parseError
+    from Database.telemetry import WorkerTelemetryMixin
 except ModuleNotFoundError:
     import db
+    from utils import parseError
+    from telemetry import WorkerTelemetryMixin
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +50,9 @@ BACKUP_TIMESTAMP_FORMAT = "%Y%m%d_%H%M%S"   #< lexicographic order == chronologi
 # this module is deliberately importable standalone (the migrators use it that
 # way, see Migrators/migrate.py's dual import).
 BACKUP_BUSY_TIMEOUT_MS = 5000
+# This worker's key in the shared cycle telemetry (see WorkerTelemetryMixin).
+# One per process, so unlike the per-user workers it needs no user in the name.
+BACKUP_TELEMETRY_NAME = "backup"
 
 # Serializes every snapshot in the PROCESS, not merely per BackupWorker. The
 # scheduled loop and the admin's Create Backup Now button share one instance, but
@@ -73,8 +80,14 @@ def _envInt(name: str, default: int) -> int:
         return default
 
 
-class BackupWorker:
-    """One per process (the database is shared across every user)."""
+class BackupWorker(WorkerTelemetryMixin):
+    """One per process (the database is shared across every user).
+
+    Cycle outcomes are recorded through the same telemetry mixin the per-user
+    backfillers use: a scheduled backup that fails is logged and retried on the
+    next check, which is right, but for a long time that was the whole story -
+    /admin reported the service by thread liveness alone, so one that had been
+    failing every 15 minutes for a month still read RUNNING. See getSummary."""
 
     def __init__(self, dbPath: Path | None = None, backupDir: Path | None = None,
                  intervalHours: int | None = None, retentionCount: int | None = None):
@@ -89,6 +102,20 @@ class BackupWorker:
             BACKUP_RETENTION_ENV_VAR, DEFAULT_BACKUP_RETENTION_COUNT)
         self.thread: threading.Thread | None = None
         self._stop_event = threading.Event()
+        self._initWorkerTelemetry()
+
+    def getSummary(self) -> dict:
+        """{status, consecutive_failures, failure_rate, last_error} for
+        /admin's Worker Health card - the same fields the per-user workers
+        report, judged against the same WORKER_HEALTH_FAILING_THRESHOLD.
+
+        `status` is still thread liveness; the telemetry is what distinguishes
+        a service that is running from one that is working."""
+        running = self.thread is not None and self.thread.is_alive()
+        return {
+            "status": "RUNNING" if running else "INACTIVE",
+            **self._getWorkerTelemetry(BACKUP_TELEMETRY_NAME),
+        }
 
     def isEnabled(self) -> bool:
         return self.intervalHours > 0 and self.retentionCount > 0
@@ -201,9 +228,17 @@ class BackupWorker:
             return
         while not stop_event.is_set():
             try:
+                # Recorded only when a backup was actually attempted: an idle
+                # check between two daily snapshots is not a cycle, and
+                # counting it would dilute the failure rate towards zero
+                # exactly when it should be alarming (see _recordWorkerCycle).
+                # A failing isDue() does count - it reads the backup directory,
+                # so no backup can be taken through it either.
                 if self.isDue():
                     self.runBackup()
+                    self._recordWorkerCycle(BACKUP_TELEMETRY_NAME, success=True)
             except Exception as e:
+                self._recordWorkerCycle(BACKUP_TELEMETRY_NAME, success=False, error=parseError(e))
                 logger.error("Scheduled backup failed: %s", e)
             if stop_event.wait(BACKUP_CHECK_INTERVAL_SECONDS):
                 return
