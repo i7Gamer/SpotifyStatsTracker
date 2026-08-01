@@ -25,13 +25,24 @@ from Database.utils import parseError, timeToInt
 # dump a raw traceback. Anything else (a real bug) still gets the default
 # handler so it stays loud and visible.
 import websockets.exceptions
-import sys
 
 logger = logging.getLogger(__name__)
 
+# Whatever hook was installed when this module loaded - threading's own default
+# unless the host (an embedding app, pytest's thread-exception plugin) put its
+# own there first. Everything this hook doesn't recognize goes back to it
+# untouched: installing ours process-wide must not cost an unrelated thread its
+# reporting. Forwarding to sys.__excepthook__ instead, as this did, dropped the
+# "Exception in thread <name>:" header that threading's handler writes - so a
+# crash in any worker read like a main-thread crash - and printed a traceback
+# for a thread's SystemExit, which threading deliberately ignores.
+_PREVIOUS_EXCEPTHOOK = threading.excepthook
+
+
 def _shutdown_exception_hook(args):
     """Log expected websocket-close exceptions from background threads instead of
-    letting them print a raw traceback; forward anything else to the default handler."""
+    letting them print a raw traceback; forward anything else to the hook this
+    one replaced."""
     exc = args.exc_value
 
     if isinstance(exc, (websockets.exceptions.ConnectionClosed, ConnectionAbortedError)):
@@ -45,8 +56,8 @@ def _shutdown_exception_hook(args):
         )
         return
 
-    # Otherwise, use the default exception handler
-    sys.__excepthook__(args.exc_type, args.exc_value, args.exc_traceback)
+    # Otherwise, hand it back whole - the thread it came from included
+    _PREVIOUS_EXCEPTHOOK(args)
 
 threading.excepthook = _shutdown_exception_hook
 

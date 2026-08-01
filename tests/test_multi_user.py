@@ -231,10 +231,13 @@ class TestSessionLockScope(unittest.TestCase):
         app = SpotifyDashboardApp.__new__(SpotifyDashboardApp)
         app.baseDir = Path(tempfile.mkdtemp())
         app.repo = Repository(app.baseDir / "test.db")
-        app.user_databases = {}
-        app._db_lock = threading.RLock()
-        app._session_lock = threading.RLock()
-        app._login_cache = {}
+        app._stop_event = threading.Event()
+        # The registry's real initializer, not a hand-picked subset of its
+        # attributes: this stub had drifted out of date (no
+        # _login_cache_generation), so is_user_logged_in below raised
+        # AttributeError on its thread - where the failure was invisible and
+        # the timing assertion passed without the slow call ever running.
+        app._initUserRegistry()
         return app
 
     def test_slow_listener_check_does_not_block_unrelated_session_lookups(self):
@@ -247,6 +250,7 @@ class TestSessionLockScope(unittest.TestCase):
         slowDb = MagicMock()
         slowDb.isListenerLoggedIn.side_effect = lambda: time.sleep(0.3) or True
         dash.user_databases["alice"] = slowDb
+        dash._activatedUsers.add("alice")   #< get_user_db hands it back instead of building a real one
 
         thread = threading.Thread(target=lambda: dash.is_user_logged_in("alice@example.com"))
         thread.start()
@@ -258,6 +262,9 @@ class TestSessionLockScope(unittest.TestCase):
 
         thread.join()
 
+        #< the assertion below means nothing if the slow call never ran, which is
+        #  exactly how this passed while the thread was dying on an AttributeError
+        slowDb.isListenerLoggedIn.assert_called_once()
         self.assertLess(
             elapsed, 0.2,
             "an unrelated session lookup blocked on another user's live listener check"
