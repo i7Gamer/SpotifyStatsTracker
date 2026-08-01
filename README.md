@@ -5,8 +5,7 @@
 
 ## Spotify Stats Tracker - [![Tests](https://github.com/i7Gamer/SpotifyStatsTracker/actions/workflows/tests.yml/badge.svg)](https://github.com/i7Gamer/SpotifyStatsTracker/actions/workflows/tests.yml) [![Lint](https://github.com/i7Gamer/SpotifyStatsTracker/actions/workflows/lint.yml/badge.svg)](https://github.com/i7Gamer/SpotifyStatsTracker/actions/workflows/lint.yml) [![CodeQL](https://github.com/i7Gamer/SpotifyStatsTracker/actions/workflows/github-code-scanning/codeql/badge.svg)](https://github.com/i7Gamer/SpotifyStatsTracker/security/code-scanning)
 
-### If you found [this repository](https://github.com/i7Gamer/SpotifyStatsTracker) useful, please give it a ⭐!
-A self-hosted web application for recording and exploring your Spotify listening history and statistics - **no Spotify Premium required**.
+A self-hosted web application for recording and exploring your Spotify listening history and statistics — **no Spotify Premium required**. If you find it useful, consider giving the [repo](https://github.com/i7Gamer/SpotifyStatsTracker) a ⭐.
 
 ## Features
 
