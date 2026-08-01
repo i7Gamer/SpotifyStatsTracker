@@ -229,6 +229,67 @@ class TrackQueries:
                 return []   #< every word must match, so an empty intersection is final
         return list(matched)
 
+    def getMatchingAlbumIds(self, searchQuery: str) -> list[str]:
+        """Album ids whose own name, or any artist credited on any of their
+        tracks, matches every word of `searchQuery` - the album twin of
+        getMatchingTrackIds, resolved against the CATALOG only.
+
+        It cannot reuse that one. An album's rows in a plays aggregate span
+        several DIFFERENT tracks, so its artist check has to consider every
+        track on the album rather than the current row's own, or the album's
+        totals would silently lose its non-matching tracks (see getAlbumsPage).
+        That is why the condition stayed inline as a correlated EXISTS long
+        after the song search stopped doing it, and it made the album search the
+        most expensive in the app - measured on the real 131k-play library, best
+        of 3, page and count together:
+            "love"          1526ms -> 182ms
+            "the"           2435ms -> 429ms
+            "radiohead"     1535ms ->  46ms   (0 results either way)
+            "xylophonezzz"  2962ms ->  84ms   (0 results either way)
+        against 317ms for the same page with no search at all: the old cost was
+        structural, not proportional to what was found.
+
+        Deliberately NOT paired with the seekable track-set companion that
+        _trackSetClause adds for a tag filter. Measured both ways: naming the
+        matched albums' tracks on plays as well helps a small set a lot ("love",
+        479 albums: 134ms -> 11ms) and hurts a large one badly ("e", 18,712
+        albums: 330ms -> 853ms, worse than the unnarrowed 905ms it replaced),
+        because a near-catalog-wide set turns one scan into tens of thousands of
+        seeks. Picking between them needs a size threshold, and a threshold is a
+        second path to keep tested; the id set alone is a large win at every size
+        measured.
+
+        Same shape as getMatchingTrackIds: one UNION per word, intersected here,
+        so every word must match somewhere but not all in the same field. The
+        artist branch joins albums back in so the set can only ever contain
+        albums that exist - tracks.album_id is not enforced against a missing
+        album row, and an id that matches nothing downstream would be a silent
+        extra."""
+        words = self.searchWords(searchQuery)
+        if not words:
+            return []
+        conn = self._conn()
+        matched: set | None = None
+        for word in words:
+            pattern = self._likePattern(word)
+            rows = conn.execute(
+                """
+                SELECT al.id AS id FROM albums al WHERE al.name LIKE ? ESCAPE '\\'
+                UNION
+                SELECT al2.id AS id FROM tracks t
+                 JOIN albums al2 ON al2.id = t.album_id
+                 JOIN track_artists ta ON ta.track_id = t.id
+                 JOIN artists ar ON ar.id = ta.artist_id
+                 WHERE ar.name LIKE ? ESCAPE '\\'
+                """,
+                (pattern, pattern),
+            ).fetchall()
+            found = {row["id"] for row in rows}
+            matched = found if matched is None else (matched & found)
+            if not matched:
+                return []   #< every word must match, so an empty intersection is final
+        return list(matched)
+
     def getMatchingPlayedFrom(self, searchQuery: str) -> list[str]:
         """The plays.played_from values whose playlist/album NAME matches every
         word - the other half of /history's search, which matches where a play came

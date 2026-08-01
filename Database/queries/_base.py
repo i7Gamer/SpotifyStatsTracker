@@ -344,28 +344,10 @@ class SqlFragments:
     #< Top Artists searches the name only - see getArtistAggregates. One pattern.
     _ARTIST_NAME_CONDITION = "ar.name LIKE ? ESCAPE '\\'"
 
-    #< Top Albums: the album's own name, or any artist credited on any of its
-    #  tracks. Two patterns.
-    _ALBUM_MATCH_CONDITION = """
-                al.name LIKE ? ESCAPE '\\'
-                OR EXISTS (
-                    SELECT 1 FROM tracks t2
-                    JOIN track_artists ta2 ON ta2.track_id = t2.id
-                    JOIN artists ar2 ON ar2.id = ta2.artist_id
-                    WHERE t2.album_id = al.id AND ar2.name LIKE ? ESCAPE '\\'
-                )
-    """
-
-    #< The skip scan's copy of the song condition: it groups PLAYS, so the artist
-    #  EXISTS correlates on p.track_id rather than t.id.
-    _SKIPPED_TRACK_MATCH_CONDITION = """
-                t.name LIKE ? ESCAPE '\\'
-                OR al.name LIKE ? ESCAPE '\\'
-                OR EXISTS (
-                    SELECT 1 FROM track_artists ta3 JOIN artists ar3 ON ar3.id = ta3.artist_id
-                    WHERE ta3.track_id = p.track_id AND ar3.name LIKE ? ESCAPE '\\'
-                )
-    """
+    # The album and skipped-track conditions that used to live here are gone:
+    # both correlated an artist EXISTS against the row being aggregated, so both
+    # ran once per play rather than once against the catalog. They are id sets
+    # now - see _albumSearchNarrowClause and _searchNarrowClause.
 
     def _searchNarrowClause(self, params: list, searchQuery: str | None, column: str) -> str:
         """A song search, as a track-id set instead of an inline predicate.
@@ -394,6 +376,19 @@ class SqlFragments:
         if not self.searchWords(searchQuery):
             return ""
         return self._jsonIdSetClause(params, column, self.getMatchingTrackIds(searchQuery))
+
+    def _albumSearchNarrowClause(self, params: list, searchQuery: str | None,
+                                  column: str = "al.id") -> str:
+        """_searchNarrowClause for an album search - the same two-phase move,
+        against the album resolver (see getMatchingAlbumIds for why the album
+        condition needs its own, and for the measurements).
+
+        Composes with an explicit album filter rather than replacing it: both
+        are clauses on the same column, so a tag-filtered page that is also
+        searched intersects the two sets."""
+        if not self.searchWords(searchQuery):
+            return ""
+        return self._jsonIdSetClause(params, column, self.getMatchingAlbumIds(searchQuery))
 
     def _playSearchNarrowClause(self, params: list, searchQuery: str | None) -> str:
         """/history's search, as two id sets instead of three joins and a predicate.

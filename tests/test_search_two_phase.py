@@ -188,6 +188,168 @@ class TestSearchCombinedWithOtherFilters(TwoPhaseSearchTestCase):
         self.assertEqual(sorted(s["id"] for s in songs), ["t1", "t3"])
 
 
+class TestTheAlbumResolverAgreesWithTheAggregate(TwoPhaseSearchTestCase):
+    """Top Albums' own version of the same two-phase move.
+
+    Its condition could not reuse the track resolver: an album's rows span
+    several DIFFERENT tracks, so the artist check has to look at every track on
+    the album (`t2.album_id = al.id`) rather than the current row's own - see
+    getAlbumsPage. That correlated EXISTS therefore stayed inside the per-play
+    aggregate long after the song search stopped doing it, and it was the most
+    expensive search in the app: measured on the real 131k-play library, the
+    page cost 1526ms for "love" and 2962ms for a term matching NOTHING (2435ms
+    for "the"), against 317ms unsearched."""
+
+    def _resolved(self, query):
+        return sorted(self.repo.getMatchingAlbumIds(query))
+
+    def test_it_finds_an_album_by_a_word_of_its_own_name(self):
+        self.assertEqual(self._resolved("Beta"), ["al_Beta Album"])
+
+    def test_it_finds_every_album_carrying_a_matching_artist(self):
+        """t1 and t3 share Alpha Artist but sit on different albums - the album
+        search has always matched both, which is why it needs its own resolver."""
+        self.assertEqual(self._resolved("Alpha Artist"), ["al_Alpha Album", "al_Gamma Album"])
+
+    def test_words_may_land_in_the_name_and_the_artist_of_the_same_album(self):
+        """"Gamma" from the album's name, "Alpha" from an artist on it."""
+        self.assertEqual(self._resolved("Gamma Alpha"), ["al_Gamma Album"])
+
+    def test_a_word_matching_nothing_drops_the_whole_query(self):
+        self.assertEqual(self._resolved("Alpha nomatch"), [])
+
+    def test_an_empty_query_resolves_to_nothing(self):
+        self.assertEqual(self.repo.getMatchingAlbumIds(""), [])
+        self.assertEqual(self.repo.getMatchingAlbumIds("   "), [])
+
+    def test_the_page_returns_exactly_what_the_resolver_selected(self):
+        for query in ("Alpha", "Album", "Alpha Artist", "Gamma Alpha", "nomatch"):
+            with self.subTest(query=query):
+                resolved = set(self.repo.getMatchingAlbumIds(query))
+                page = {a["id"] for a in self.db.getTopAlbums(searchQuery=query, limit=50)}
+
+                #< every resolved album HAS plays in this fixture, so it is equality
+                self.assertEqual(page, resolved)
+
+    def test_the_count_agrees_with_the_page(self):
+        for query in ("Alpha", "Album", "nomatch"):
+            with self.subTest(query=query):
+                page = self.db.getTopAlbums(searchQuery=query, limit=50)
+
+                self.assertEqual(self.db.getAlbumsCount(searchQuery=query), len(page))
+
+    def test_search_and_an_album_filter_intersect(self):
+        albums = self.db.getTopAlbums(searchQuery="Alpha Artist",
+                                      albumIds=["al_Alpha Album", "al_Beta Album"], limit=50)
+
+        #< "Alpha Artist" reaches Alpha+Gamma; the filter reaches Alpha+Beta
+        self.assertEqual([a["id"] for a in albums], ["al_Alpha Album"])
+
+
+class TestTheAlbumNarrowingIsActuallyApplied(TwoPhaseSearchTestCase):
+    """Shape assertions - see TestTheNarrowingIsActuallyApplied."""
+
+    def _sqlFor(self, call):
+        conn = self.repo._conn()
+        captured = []
+        conn.set_trace_callback(captured.append)
+        try:
+            call()
+        finally:
+            conn.set_trace_callback(None)
+        return " ".join(captured)
+
+    def test_the_page_narrows_by_a_json_id_set(self):
+        sql = self._sqlFor(lambda: self.db.getTopAlbums(searchQuery="Alpha", limit=50))
+
+        self.assertIn("json_each", sql)
+
+    def test_the_aggregate_no_longer_carries_the_per_album_artist_exists(self):
+        """The subquery that cost the time: correlated on al.id, so it ran once
+        per play row rather than once against the catalog."""
+        sql = self._sqlFor(lambda: self.db.getTopAlbums(searchQuery="Alpha", limit=50))
+        aggregate = sql[sql.index("FROM plays p"):] if "FROM plays p" in sql else sql
+
+        self.assertNotIn("ta2", aggregate)
+
+    def test_the_count_narrows_by_a_json_id_set(self):
+        sql = self._sqlFor(lambda: self.db.getAlbumsCount(searchQuery="Alpha"))
+
+        self.assertIn("json_each", sql)
+        self.assertNotIn("ta2", sql)
+
+    def test_an_unsearched_page_carries_no_narrowing(self):
+        sql = self._sqlFor(lambda: self.db.getTopAlbums(limit=50))
+
+        self.assertNotIn("json_each", sql)
+
+    def test_a_term_matching_nothing_short_circuits(self):
+        sql = self._sqlFor(lambda: self.db.getTopAlbums(searchQuery="nomatch", limit=50))
+
+        self.assertIn("AND 0", sql)
+        self.assertEqual(self.db.getTopAlbums(searchQuery="nomatch", limit=50), [])
+
+
+class TestTheSkipListSearches(TwoPhaseSearchTestCase):
+    """The skip-ranked lists carried the same two predicates: the per-track one
+    (correlated on p.track_id, since that scan groups PLAYS) and the album one.
+    Measured on the real library: most-skipped tracks 219ms unsearched -> 880ms
+    for a term matching nothing, most-skipped albums 734ms -> 3574ms."""
+
+    def setUp(self):
+        super().setUp()
+        for trackId, played in (("t1", 7000), ("t2", 7100), ("t3", 7200)):
+            self.repo.insertPlay(self.user, trackId, played, 1000, is_skip=1)
+        self.repo.commit()
+
+    def test_skipped_tracks_are_filtered_by_the_same_words_as_before(self):
+        for query in ("Alpha", "Song", "Alpha Artist", "Beta Album", "nomatch"):
+            with self.subTest(query=query):
+                resolved = set(self.repo.getMatchingTrackIds(query))
+                found = {row["track_id"]
+                         for row in self.repo.getMostSkippedTracks(self.user, searchQuery=query,
+                                                                    limit=50)}
+
+                self.assertEqual(found, resolved)
+
+    def test_the_skipped_tracks_count_agrees_with_its_list(self):
+        for query in ("Alpha", "nomatch"):
+            with self.subTest(query=query):
+                rows = self.repo.getMostSkippedTracks(self.user, searchQuery=query, limit=50)
+
+                self.assertEqual(self.repo.getSkippedTracksCount(self.user, searchQuery=query),
+                                 len(rows))
+
+    def test_skipped_albums_are_filtered_by_the_same_words_as_before(self):
+        for query in ("Alpha Artist", "Beta", "nomatch"):
+            with self.subTest(query=query):
+                resolved = set(self.repo.getMatchingAlbumIds(query))
+                found = {row["id"]
+                         for row in self.repo.getMostSkippedAlbums(self.user, searchQuery=query,
+                                                                    limit=50)}
+
+                self.assertEqual(found, resolved)
+
+    def test_the_skipped_track_scan_drops_the_joins_it_only_needed_for_the_predicate(self):
+        """Its SELECT reads p.* only, so tracks/albums were joined purely to
+        serve the search - the same joins getSongsPage shed."""
+        conn = self.repo._conn()
+        captured = []
+        conn.set_trace_callback(captured.append)
+        try:
+            self.repo.getMostSkippedTracks(self.user, searchQuery="Alpha", limit=50)
+        finally:
+            conn.set_trace_callback(None)
+        sql = " ".join(captured)
+        #< from the aggregate on, so the resolver's own catalog query - which
+        #  joins albums, and should - isn't what the assertions read
+        aggregate = sql[sql.index("FROM plays p"):]
+
+        self.assertIn("json_each", aggregate)
+        self.assertNotIn("JOIN albums al", aggregate)
+        self.assertNotIn("JOIN tracks t", aggregate)
+
+
 class TestTheHistorySearch(TwoPhaseSearchTestCase):
     """/history matches what was played AND where it was played FROM, so its
     narrowing needs two id sets. This is the half that lost three joins - including

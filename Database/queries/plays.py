@@ -903,13 +903,15 @@ class PlayQueries:
         explicit set of album ids (the tag-filtered Top Albums page) so the
         caller aggregates only those rows; an empty list matches nothing.
         `searchQuery` narrows to albums whose name or any artist on them
-        matches - the artist check deliberately looks up every track on the
-        album (`t2.album_id = al.id`) rather than just the current row's own
-        track: unlike getSongsPage() (grouped by t.id, so every row in a group
-        already shares one track), an album's rows span multiple different
-        tracks, so filtering by the current row's track alone would silently
-        drop that album's non-matching tracks from the aggregate instead of
-        keeping the album's true totals.
+        matches, resolved to an id set first (getMatchingAlbumIds). The artist
+        check deliberately spans every track on the album rather than just the
+        current row's own track: unlike getSongsPage() (grouped by t.id, so
+        every row in a group already shares one track), an album's rows span
+        multiple different tracks, so judging by the current row's track alone
+        would silently drop that album's non-matching tracks from the aggregate
+        instead of keeping the album's true totals. As an inline correlated
+        EXISTS that rule cost 1526ms here for "love" and 2962ms for a term
+        matching nothing - see getMatchingAlbumIds.
         """
         if sortBy not in ALBUM_SORT_COLUMNS:
             raise ValueError(f"Unknown sortBy: {sortBy!r}")
@@ -932,8 +934,7 @@ class PlayQueries:
         extraClauses += self._idSetClause(params, "al.id", albumIds)
         extraClauses += self._trackSetClause(params, self.ALBUM_TRACKS_SUBQUERY,
                                              [albumId] if albumId is not None else albumIds)
-        extraClauses += self._perWordAndClause(params, searchQuery,
-                                               self._ALBUM_MATCH_CONDITION, 2)
+        extraClauses += self._albumSearchNarrowClause(params, searchQuery)
         if fullPlaysOnly:
             extraClauses += self._fullPlaysClause(params)
         params += [limitValue, offset]
@@ -965,56 +966,33 @@ class PlayQueries:
         """Number of distinct albums played in range - the paging counterpart to
         getAlbumsPage(), used to compute total page count without fetching every
         album's metadata. `albumIds` mirrors the same param on getAlbumsPage().
-        `fullPlaysOnly` mirrors getAlbumsPage()'s param of the same name."""
-        conn = self._conn()
-        if not searchQuery:
-            # No name/artist lookup needed, so skip the joins entirely - stays
-            # exactly as cheap as before search support was added. tracks is
-            # already joined for album_id, so fullPlaysOnly costs nothing extra.
-            params = [username]
-            rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
-            albumIdsClause = ""
-            albumIdsClause = self._idSetClause(params, "t.album_id", albumIds)
-            # Redundant against t.album_id above and present only so the
-            # planner has a seekable track set - see getAlbumsPage's identical
-            # twin. This was the one member of the family without it, so the
-            # tag-filtered Top Albums pager's COUNT read all history.
-            albumIdsClause += self._trackSetClause(params, self.ALBUM_TRACKS_SUBQUERY, albumIds)
-            fullPlaysClause = ""
-            if fullPlaysOnly:
-                fullPlaysClause = self._fullPlaysClause(params)
-            row = conn.execute(
-                f"""
-                SELECT COUNT(*) AS c FROM (
-                    SELECT t.album_id FROM plays p
-                    JOIN tracks t ON t.id = p.track_id
-                    WHERE p.username = ? AND p.is_skip=0{rangeClause}{albumIdsClause}{fullPlaysClause}
-                    GROUP BY t.album_id
-                )
-                """,
-                params,
-            ).fetchone()
-            return row["c"]
+        `fullPlaysOnly` mirrors getAlbumsPage()'s param of the same name.
 
+        One query for both cases now: the search used to need its own branch,
+        because matching an album by name or by a credited artist meant joining
+        albums (and correlating an EXISTS over its tracks) inside this
+        aggregate. Resolved to an id set on t.album_id instead, a searched count
+        is the unsearched one plus one membership test - so the branch that
+        existed to keep the unsearched count cheap has nothing left to skip."""
+        conn = self._conn()
         params = [username]
         rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
-        albumIdsClause = ""
         albumIdsClause = self._idSetClause(params, "t.album_id", albumIds)
-        #< the same seekable twin as the no-search branch above
+        # Redundant against t.album_id above and present only so the planner has
+        # a seekable track set - see getAlbumsPage's identical twin. This was the
+        # one member of the family without it, so the tag-filtered Top Albums
+        # pager's COUNT read all history.
         albumIdsClause += self._trackSetClause(params, self.ALBUM_TRACKS_SUBQUERY, albumIds)
+        albumIdsClause += self._albumSearchNarrowClause(params, searchQuery, "t.album_id")
         fullPlaysClause = ""
         if fullPlaysOnly:
             fullPlaysClause = self._fullPlaysClause(params)
-        #< appended last, so it must also be the last clause in the SQL below
-        searchClause = self._perWordAndClause(params, searchQuery,
-                                              self._ALBUM_MATCH_CONDITION, 2)
         row = conn.execute(
             f"""
             SELECT COUNT(*) AS c FROM (
                 SELECT t.album_id FROM plays p
                 JOIN tracks t ON t.id = p.track_id
-                JOIN albums al ON al.id = t.album_id
-                WHERE p.username = ? AND p.is_skip=0{rangeClause}{albumIdsClause}{fullPlaysClause}{searchClause}
+                WHERE p.username = ? AND p.is_skip=0{rangeClause}{albumIdsClause}{fullPlaysClause}
                 GROUP BY t.album_id
             )
             """,
@@ -1317,18 +1295,19 @@ class PlayQueries:
         # _trackSetClause - this scan measured ~1.2s for a well-played artist.
         where += self._trackSetClause(params, self.ARTIST_TRACKS_SUBQUERY,
                                       [artistId] if artistId is not None else None)
-        if albumId is not None or searchQuery or fullPlaysOnly:
+        if albumId is not None or fullPlaysOnly:
             joins += " JOIN tracks t ON t.id = p.track_id"
         if albumId is not None:
             where += " AND t.album_id = ?"
             params.append(albumId)
         where += self._trackSetClause(params, self.ALBUM_TRACKS_SUBQUERY,
                                       [albumId] if albumId is not None else None)
-        if searchQuery:
-            joins += " LEFT JOIN albums al ON al.id = t.album_id"
-            #< ta3.track_id reads off p, not t, because this scan groups plays
-            where += self._perWordAndClause(params, searchQuery,
-                                            self._SKIPPED_TRACK_MATCH_CONDITION, 3)
+        # The search matched the track's name, its album's name, or a credited
+        # artist - all attributes of the track, none of the play - so it resolves
+        # to the same id set getSongsPage uses, and the tracks/albums joins it
+        # needed go with it. Inline it cost 219ms unsearched -> 880ms for a term
+        # matching nothing on the real library.
+        where += self._searchNarrowClause(params, searchQuery, "p.track_id")
         if fullPlaysOnly:
             where += self._fullPlayOrSkipClause(params)
         return joins, where
@@ -1370,11 +1349,10 @@ class PlayQueries:
         where += self._idSetClause(params, "al.id", albumIds)
         where += self._trackSetClause(params, self.ALBUM_TRACKS_SUBQUERY,
                                       [albumId] if albumId is not None else albumIds)
-        if searchQuery:
-            # The artist check spans every track on the album rather than the
-            # current row's own - see getAlbumsPage() on why.
-            where += self._perWordAndClause(params, searchQuery,
-                                            self._ALBUM_MATCH_CONDITION, 2)
+        # The artist check spans every track on the album rather than the
+        # current row's own - see getAlbumsPage() on why, and
+        # getMatchingAlbumIds on what that cost inline (734ms -> 3574ms here).
+        where += self._albumSearchNarrowClause(params, searchQuery)
         if fullPlaysOnly:
             where += self._fullPlayOrSkipClause(params)
         return where
