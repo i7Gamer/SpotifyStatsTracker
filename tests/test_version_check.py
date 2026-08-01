@@ -7,9 +7,13 @@ import sys
 import os
 from unittest.mock import MagicMock, patch
 
+import requests
+
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from _app_factory import AppTestCase
+
+HOURLY_WAIT_SECONDS = 60 * 60   #< the pass's closing wait - reaching it proves the pass completed
 
 
 def _runOnePass(dash):
@@ -79,6 +83,82 @@ class TestVersionCheckLoop(AppTestCase):
             _runOnePass(dash)
 
         self.assertIsNone(dash.latestVersion)
+
+
+class TestVersionCheckSurvivesFailures(AppTestCase):
+    """This loop runs for the life of the process against a third-party API it
+    does not control, so every failure mode has to satisfy two things at once:
+    the pass must complete (an escaping exception ends the thread, and nothing
+    restarts it - the instance would silently stop noticing releases until the
+    next reboot), and a previously-found update must survive untouched.
+
+    That second half is the subtle one. Only a 404 means "no release exists to
+    notify about"; a timeout, a 429 or a malformed body mean "we learned
+    nothing this hour". Clearing latestVersion on those would blink the update
+    badge off for an hour at a time, which reads to a user as the update having
+    been withdrawn.
+    """
+
+    def _dashWithAKnownUpdate(self):
+        """An instance that already found 1.31.0 on an earlier successful pass -
+        the state each failure below has to leave alone. Starting from None
+        would let a test pass while the code cleared the value."""
+        dash = self._makeApp()
+        dash.currentVersion = "1.30.0"
+        dash.latestVersion = "1.31.0"
+        return dash
+
+    def test_a_network_failure_leaves_the_loop_running_and_the_badge_intact(self):
+        dash = self._dashWithAKnownUpdate()
+
+        with patch("app.requests.get", side_effect=requests.exceptions.Timeout("timed out")):
+            _runOnePass(dash)
+
+        self.assertEqual(dash.latestVersion, "1.31.0")
+        dash._stop_event.wait.assert_any_call(HOURLY_WAIT_SECONDS)
+
+    def test_an_unhandled_status_does_not_clear_a_known_update(self):
+        """429 (GitHub's unauthenticated hourly cap, which this endpoint is well
+        within but shares with everything else on the egress IP) and 5xx are
+        neither a release nor evidence that none exists."""
+        for status in (429, 500, 503):
+            with self.subTest(status=status):
+                dash = self._dashWithAKnownUpdate()
+
+                with patch("app.requests.get", return_value=_response(status_code=status)):
+                    _runOnePass(dash)
+
+                self.assertEqual(dash.latestVersion, "1.31.0")
+                dash._stop_event.wait.assert_any_call(HOURLY_WAIT_SECONDS)
+
+    def test_a_malformed_response_body_is_swallowed(self):
+        """A 200 carrying HTML instead of JSON - a captive portal or a proxy
+        error page - raises inside .json(), not at the request."""
+        dash = self._dashWithAKnownUpdate()
+        resp = _response(status_code=200)
+        resp.json.side_effect = ValueError("Expecting value: line 1 column 1 (char 0)")
+
+        with patch("app.requests.get", return_value=resp):
+            _runOnePass(dash)
+
+        self.assertEqual(dash.latestVersion, "1.31.0")
+        dash._stop_event.wait.assert_any_call(HOURLY_WAIT_SECONDS)
+
+    def test_a_malformed_release_tag_is_logged_and_ignored(self):
+        """versionTuple int()s each dotted component, so a tag that isn't a
+        version ("nightly", "v2-beta") raises. This one is worth a WARNING
+        rather than the DEBUG the transport failures get: it means a release in
+        this repo was tagged in a shape the updater can't read, which is our
+        own mistake to fix and won't clear up on its own."""
+        dash = self._dashWithAKnownUpdate()
+
+        with patch("app.requests.get", return_value=_response(tag_name="nightly")), \
+             self.assertLogs("app", level="WARNING") as logs:
+            _runOnePass(dash)
+
+        self.assertEqual(dash.latestVersion, "1.31.0")
+        self.assertTrue(any("nightly" in line for line in logs.output),
+                        f"the offending tag must be named in the log: {logs.output}")
 
 
 if __name__ == "__main__":

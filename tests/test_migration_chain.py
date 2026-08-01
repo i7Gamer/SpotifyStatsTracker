@@ -27,7 +27,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -233,6 +233,86 @@ class TestVersionMarkerSurvivesACopy(MigrationChainTestCase):
         self._runChain()
 
         self.assertEqual(dbversion.readDbVersion(self.dbPath), APP_VERSION)
+
+
+class TestPreMigrationSnapshot(MigrationChainTestCase):
+    """Migrations run automatically at every boot, and the backup worker's own
+    scheduled snapshot deliberately waits out a startup delay so it doesn't race
+    them - which means that without this one-off snapshot, the newest recovery
+    point available to someone whose upgrade went wrong could be a full
+    BACKUP_INTERVAL_HOURS (24 by default) old.
+
+    It is the only thing standing between a buggy migrator and unrecoverable
+    data loss, and nothing exercised it. Worth being explicit about what it is
+    NOT: no integrity probe can detect a migrator that drops a table or deletes
+    rows - PRAGMA quick_check reports a perfectly healthy file afterwards,
+    because a smaller database is not a damaged one. Restoring the snapshot is
+    the whole recovery story, so the snapshot has to be there.
+    """
+
+    def _snapshotWith(self, backupWorker):
+        with patch("Database.backup.BackupWorker", backupWorker):
+            migrateModule._snapshotBeforeMigrating(self.runtimeDir)
+
+    def test_an_existing_database_is_snapshotted(self):
+        self._seedDatabase()
+        worker = MagicMock()
+
+        self._snapshotWith(worker)
+
+        worker.assert_called_once_with(dbPath=self.dbPath)
+        worker.return_value.runBackup.assert_called_once()
+
+    def test_a_fresh_install_with_no_database_is_a_silent_no_op(self):
+        """Nothing to protect yet (a fresh install, or the pre-1.7.0 JSON era).
+        Constructing a BackupWorker against a path with no file behind it would
+        create an empty Backups/ directory and log a failure on every first
+        boot, for a database that does not exist."""
+        worker = MagicMock()
+
+        self._snapshotWith(worker)   #< no _seedDatabase call
+
+        worker.assert_not_called()
+
+    def test_a_failed_snapshot_does_not_block_startup(self):
+        """Best-effort on purpose: migrating with no extra safety net still
+        beats an instance that refuses to boot because its disk is full. The
+        alternative is an upgrade that bricks the app rather than the data."""
+        self._seedDatabase()
+        worker = MagicMock()
+        worker.return_value.runBackup.side_effect = OSError("No space left on device")
+
+        self._snapshotWith(worker)   # must not raise
+
+        worker.return_value.runBackup.assert_called_once()
+
+    def test_the_snapshot_is_taken_before_the_first_migrator_runs(self):
+        """The ordering IS the feature - a snapshot taken after the chain has
+        started captures a half-migrated database, which is worse than useless
+        as a recovery point. Pinned by recording the version marker at the
+        moment the snapshot is asked for: it must still read the seeded
+        version, not anything the chain went on to write."""
+        self._seedDatabase()
+        versionAtSnapshotTime = []
+
+        def recordingSnapshot(runtimeDir):
+            versionAtSnapshotTime.append(dbversion.readDbVersion(self.dbPath))
+
+        with patch.object(migrateModule, "_snapshotBeforeMigrating", recordingSnapshot):
+            self._runChain()
+
+        self.assertEqual(versionAtSnapshotTime, [OLDEST_DB_ERA_VERSION])
+        self.assertEqual(dbversion.readDbVersion(self.dbPath), APP_VERSION)   #< the chain still ran
+
+    def test_no_snapshot_is_taken_when_there_is_nothing_to_migrate(self):
+        """An up-to-date database boots many times a day; a snapshot on every
+        one of them would rotate the genuinely useful ones out of retention."""
+        self._seedDatabase(version=APP_VERSION)
+
+        with patch.object(migrateModule, "_snapshotBeforeMigrating") as mockSnapshot:
+            self._runChain()
+
+        mockSnapshot.assert_not_called()
 
 
 class TestTheRealRuntimeDirectoryIsNeverTouched(MigrationChainTestCase):

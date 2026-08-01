@@ -192,6 +192,84 @@ class TestStartupReloginFromDatabaseCookies(AppTestCase):
         workerThreads = [t for t in threading.enumerate() if t.name == "wrapped-worker-retryuser"]
         self.assertEqual(len(workerThreads), 1)
 
+    def test_a_login_failed_listener_is_not_restarted_every_pass(self):
+        """Bad or mismatched cookies never recover by retrying, and this loop
+        runs every 5 minutes forever - so a restart here would re-attempt the
+        same failing Spotify login ~288 times a day per affected user, which is
+        how an instance argues itself into bot-detection. Only a fresh
+        re-login (_refresh_user_session, which rebuilds the listener) may retry.
+
+        Driven through a stand-in Database because the guard reads nothing but
+        the listener flags and the reported health."""
+        app = self._makeApp()
+        app.repo.upsertUser("expired", "expired@example.com")
+        app.repo.setUserCookies("expired", {"sp_dc": "stale"})
+        db = MagicMock()
+        db.listener.loginFailed = True
+        db.listener.contaminationDetected = False
+        db.getListenerHealth.return_value = {"status": "DEAD"}
+
+        with patch.object(app, "get_user_db", return_value=db):
+            app._ensureAllUsersLogin()
+
+        db.startListener.assert_not_called()
+
+    def test_a_contaminated_listener_is_not_restarted_either(self):
+        """The other half of the same guard: cookies that authenticate as a
+        different Spotify account are just as permanent as ones that don't
+        authenticate at all."""
+        app = self._makeApp()
+        app.repo.upsertUser("mixed", "mixed@example.com")
+        app.repo.setUserCookies("mixed", {"sp_dc": "someone-elses"})
+        db = MagicMock()
+        db.listener.loginFailed = False
+        db.listener.contaminationDetected = True
+        db.getListenerHealth.return_value = {"status": "DEAD"}
+
+        with patch.object(app, "get_user_db", return_value=db):
+            app._ensureAllUsersLogin()
+
+        db.startListener.assert_not_called()
+
+    def test_a_dead_listener_with_good_credentials_is_still_restarted(self):
+        """The guard has to be specifically about credentials. Without this,
+        widening it to "DEAD means leave it alone" would look correct against
+        the two tests above while silently ending recovery from the ordinary
+        crash-and-restart case the loop exists for."""
+        app = self._makeApp()
+        app.repo.upsertUser("crashed", "crashed@example.com")
+        app.repo.setUserCookies("crashed", {"sp_dc": "good"})
+        db = MagicMock()
+        db.listener.loginFailed = False
+        db.listener.contaminationDetected = False
+        db.getListenerHealth.return_value = {"status": "DEAD"}
+
+        with patch.object(app, "get_user_db", return_value=db):
+            app._ensureAllUsersLogin()
+
+        db.startListener.assert_called_once_with(email="crashed@example.com")
+
+    def test_milestone_detection_still_runs_for_a_login_failed_user(self):
+        """Milestones are derived entirely from stored play history - nothing in
+        detectMilestones touches Spotify. A user whose cookies expired still has
+        every play they ever recorded, and an import-only account never had
+        cookies to begin with, so folding detection under the credential guard
+        would strand exactly the users with the most history and no way to
+        notice. Detection sits deliberately outside that guard; this pins it."""
+        app = self._makeApp()
+        app.repo.upsertUser("expired", "expired@example.com")
+        app.repo.setUserCookies("expired", {"sp_dc": "stale"})
+        db = MagicMock()
+        db.listener.loginFailed = True
+        db.listener.contaminationDetected = False
+        db.getListenerHealth.return_value = {"status": "DEAD"}
+
+        with patch.object(app, "get_user_db", return_value=db), \
+             patch.object(app, "_detectMilestonesSafely") as mockDetect:
+            app._ensureAllUsersLogin()
+
+        mockDetect.assert_called_once_with(db, "expired")
+
     def test_second_call_does_not_recreate_already_running_databases(self):
         """_checkLoginLoop() re-runs this every 5 minutes - a user already
         holding a live Database/listener must not be reconstructed."""

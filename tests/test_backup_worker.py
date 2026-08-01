@@ -366,6 +366,23 @@ class TestConfiguration(BackupWorkerTestCase):
         self.assertEqual(worker.intervalHours, backupModule.DEFAULT_BACKUP_INTERVAL_HOURS)
         self.assertEqual(worker.retentionCount, backupModule.DEFAULT_BACKUP_RETENTION_COUNT)
 
+    def test_a_negative_env_value_disables_rather_than_reverting_to_the_default(self):
+        """Deliberately NOT the junk path above. A negative number is a parseable
+        intent to switch backups off, so clamping it to 0 (which isEnabled reads
+        as disabled) honours it, while falling back to the 24h default would
+        quietly keep writing snapshots for someone who asked for none.
+
+        Clamping is also what keeps a negative value from meaning "always due":
+        isDue compares against intervalHours * 3600, so a raw -1 would make
+        every check due and back the database up every 15 minutes forever."""
+        for raw in ("-1", "-24"):
+            with self.subTest(raw=raw):
+                with patch.dict(os.environ, {backupModule.BACKUP_INTERVAL_ENV_VAR: raw}):
+                    worker = self._makeWorker()
+
+                self.assertEqual(worker.intervalHours, 0)
+                self.assertFalse(worker.isEnabled())
+
 
 class TestBackupTelemetry(BackupWorkerTestCase):
     """A scheduled backup that fails is logged and retried on the next check -
