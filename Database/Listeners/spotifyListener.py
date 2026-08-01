@@ -52,6 +52,12 @@ threading.excepthook = _shutdown_exception_hook
 
 LISTENER_STOP_JOIN_TIMEOUT_SECONDS = 5  #< bound how long shutdown waits for spotapi's background LastPlayed thread to exit
 
+# Poll threads are named "<prefix><logUser>". An anonymous "Thread-17" in a
+# thread dump says nothing about whose listener is still running after a
+# shutdown that should have stopped it, and the test suite's leaked-thread
+# guard recognizes per-user threads by name.
+LISTENER_THREAD_NAME_PREFIX = "spotify-listener-"
+
 # current_user_recently_played() doesn't actually poll - it just returns spotapi's
 # websocket-fed local cache (see Database/Spotify/client.py's current_user_recently_played).
 # That websocket can silently die (its own reconnect() call targets a method that
@@ -1270,6 +1276,7 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
             target=self.startListener,
             args=(callback,),
             kwargs={"onStale": onStale, "onWebApiSnapshot": onWebApiSnapshot},
+            name=f"{LISTENER_THREAD_NAME_PREFIX}{self.logUser}",
             daemon=True,
         )
         self.thread.start()

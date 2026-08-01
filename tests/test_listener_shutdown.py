@@ -18,7 +18,7 @@ if isinstance(sys.modules.get("Database.database"), MagicMock):
     del sys.modules["Database.database"]
 
 from Database.database import Database
-from Database.Listeners.spotifyListener import Listener
+from Database.Listeners.spotifyListener import Listener, LISTENER_THREAD_NAME_PREFIX
 
 
 def _bareListener():
@@ -89,6 +89,37 @@ class TestListenerStop(unittest.TestCase):
         listener.stop()  # must not raise
 
         self.assertFalse(listener.run)
+
+
+class TestListenerThreadNaming(unittest.TestCase):
+    """The poll thread is the one a failed stop() leaves behind, and it used to
+    be an anonymous "Thread-17" - unattributable in a thread dump, and
+    invisible to the suite's leaked-thread guard (conftest._noLeakedUserThreads),
+    which recognizes per-user threads by name."""
+
+    def _namedThreadFor(self, **identity):
+        listener = _bareListener()
+        listener._stop_event = threading.Event()
+        for attr, value in identity.items():
+            setattr(listener, attr, value)
+        ran = threading.Event()
+
+        with patch.object(Listener, "startListener", lambda self, *a, **k: ran.set()):
+            listener.startListener_thread(MagicMock())
+            listener.thread.join(timeout=5)
+
+        self.assertTrue(ran.is_set(), "the poll thread never ran")
+        return listener.thread.name
+
+    def test_thread_is_named_after_the_internal_user_key(self):
+        self.assertEqual(self._namedThreadFor(user="alice", email="alice@example.com"),
+                         f"{LISTENER_THREAD_NAME_PREFIX}alice")
+
+    def test_thread_falls_back_to_the_email_like_every_other_log_line(self):
+        """logUser's rule (an unidentifiable line is worse than a private one)
+        - callers that pass no user key still get an attributable thread."""
+        self.assertEqual(self._namedThreadFor(user=None, email="alice@example.com"),
+                         f"{LISTENER_THREAD_NAME_PREFIX}alice@example.com")
 
 
 class TestListenerSignalStop(unittest.TestCase):

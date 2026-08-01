@@ -16,10 +16,12 @@ from unittest.mock import MagicMock
 import pytest
 
 # Every per-user background thread a live Database starts, by thread-name
-# prefix: the five periodic workers (Database/workers/) plus the auto-import
-# watchdog. All are named "<prefix><user>" - see _noLeakedUserThreads.
+# prefix: the five periodic workers (Database/workers/), the auto-import
+# watchdog, and the listener's poll thread. All are named "<prefix><user>" -
+# see _noLeakedUserThreads.
 USER_DATABASE_THREAD_NAME_PREFIXES = (
     "auto-import-watchdog-",
+    "spotify-listener-",
     "metadata-backfiller-",
     "wrapped-worker-",
     "lastfm-genres-",
@@ -108,7 +110,8 @@ def _noLeakedUserThreads():
 
     Activating a user (SpotifyDashboardApp.get_user_db) starts six real daemon
     threads for that user - the five periodic workers and the auto-import
-    watchdog - and nothing else ever stops them. Left running, they outlive the
+    watchdog, plus the listener's poll thread whenever a login actually
+    succeeds - and nothing else ever stops them. Left running, they outlive the
     test: each parks on a randomized startup delay (5-30s), then wakes up long
     after the test that spawned it finished, logs into a pytest capture stream
     that is already closed ("ValueError: I/O operation on closed file", which
