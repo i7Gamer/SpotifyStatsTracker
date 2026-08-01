@@ -573,6 +573,10 @@ button {
   flex: 1 1 300px;
 }
 
+/* The titles of the two Import & Export panels. One rule, so the import title
+   cannot drift from the export title it was added to match - the `.import-card`
+   prefix is what outranks the `.card h2` rule the import panel still carries. */
+.import-card .import-card-heading,
 .export-card-text h2 {
   margin: 0 0 4px;
 }

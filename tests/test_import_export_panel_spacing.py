@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Static guard: the Export panel is spaced like the Import panel above it.
 
-Both panels are `.card.import-card` sections stacked on the Import & Export
+Both panels are `.import-card` sections stacked on the Import & Export
 page, so any difference in their inner spacing reads as one panel being
 squashed relative to the other. `.export-card` used to carry a tighter
 `padding` and a wider `gap` of its own; these assertions compare the two rules
@@ -44,6 +44,18 @@ class TestImportExportPanelSpacing(unittest.TestCase):
             self._declaration(".export-card", "gap"),
             self._declaration("#import-form", "gap"),
         )
+
+    def test_the_two_panel_headings_share_one_rule(self):
+        # Both panels are headed now ("Import your history" / "Export your
+        # history"). One rule for both keeps the import title from drifting
+        # from the export title it was added to match - and it has to outrank
+        # the `.card h2` rule the import panel still carries.
+        for block in re.finditer(r"([^{}]+)\{([^}]*)\}", self.css):
+            selectors = block.group(1)
+            if ".export-card-text h2" in selectors:
+                self.assertIn(".import-card .import-card-heading", selectors)
+                return
+        self.fail("missing CSS rule for the export panel heading")
 
     def _ruleFor(self, selector):
         match = re.search(re.escape(selector) + r"\s*\{([^}]*)\}", self.css)

@@ -17,9 +17,12 @@
     {% endif %}
     <form id="import-form" action="{{ url_for('importHistory') }}" method="post" enctype="multipart/form-data">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
-      <label for="history_file">Spotify history JSON file(s)</label>
+      <h2 class="import-card-heading">Import your history</h2>
       <div class="import-input-wrapper">
-        <input id="history_file" name="history_file" type="file" accept=".json, .csv" multiple required />
+        {# The heading replaced the field's <label>, so the input carries the
+           name that label used to give it. #}
+        <input id="history_file" name="history_file" type="file" accept=".json, .csv" multiple required
+               aria-label="Spotify history JSON file(s)" />
         <p id="import-hint" class="import-hint">Drag and drop your files here or click to browse (max {{ maxUploadMb }} MB total)</p>
       </div>
       <p class="import-note">Upload both the <code>Streaming_History_Audio_*.json</code> and
@@ -54,7 +57,9 @@
 
   {# The same history, going the other way - and the JSON format is the one the
      form above accepts, so the round trip belongs on one page. #}
-  <section class="card import-card export-card">
+  {# No `.card` here: its 260px min-height and hover lift are for the dashboard
+     tiles, and `.import-card` already restates the rest of that box. #}
+  <section class="import-card export-card">
     <div class="export-card-text">
       <h2>Export your history</h2>
       <p class="import-note">

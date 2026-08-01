@@ -502,7 +502,36 @@ class TestExportLinksLiveOnTheImportPage(_AppTestBase):
 
         body = self._get(dash, self._makeDb(), "/import").data
 
-        self.assertIn(b'class="card import-card export-card"', body)
+        self.assertIn(b'class="import-card export-card"', body)
+
+    def test_export_panel_is_not_a_generic_card(self):
+        """`.card` adds a 260px min-height and a hover lift meant for the
+        dashboard tiles; on a two-line download panel that reads as padding."""
+        dash = self._makeApp()
+
+        body = self._get(dash, self._makeDb(), "/import").data
+
+        self.assertNotIn(b'class="card import-card export-card"', body)
+
+    def test_import_panel_is_headed_like_the_export_panel(self):
+        """The two panels are siblings, so the upload half gets a title in the
+        same shape as "Export your history" instead of a bare field label."""
+        dash = self._makeApp()
+
+        body = self._get(dash, self._makeDb(), "/import").data
+
+        self.assertIn(b'<h2 class="import-card-heading">Import your history</h2>', body)
+        self.assertIn(b"<h2>Export your history</h2>", body)
+        self.assertNotIn(b'<label for="history_file">', body)
+
+    def test_the_file_input_keeps_its_accessible_name(self):
+        """The visible <label> went away with the heading; the name it gave the
+        file input must not go with it."""
+        dash = self._makeApp()
+
+        body = self._get(dash, self._makeDb(), "/import").data
+
+        self.assertIn(b'aria-label="Spotify history JSON file(s)"', body)
 
 
 
