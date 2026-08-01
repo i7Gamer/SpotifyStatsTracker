@@ -85,6 +85,17 @@ LISTENER_STALE_TIMEOUT_SECONDS = 30 * 60
 # regardless of what the state claims.
 LISTENER_STALE_HARD_TIMEOUT_SECONDS = 6 * 60 * 60
 
+# How fresh RecentlyPlayedManager.pushChannelAliveAt has to be to still count as
+# "this listener is on a working push channel" (see _staleFeedIsBroken).
+#
+# The push loop stamps it on every websocket frame and gives up on itself after
+# 5 minutes with no frame of any kind, so a running loop can never be more than
+# that behind; double it so a loop mid-fallback is not misread as dead. Kept as
+# a local constant rather than imported from Database.Spotify.recentlyPlayed -
+# that module is reached through getattr chains on purpose, and this file has no
+# other reason to depend on it.
+LISTENER_PUSH_CHANNEL_ALIVE_SECONDS = 10 * 60
+
 AUTH_ERROR_TIMEOUT_SECONDS = 30  #< trigger reconnection immediately for auth errors, not 30 min
 
 RATE_LIMIT_ERROR_BACKOFF_SECONDS = 60  #< how long THIS listener's poll loop pauses after a rate limit.
@@ -698,6 +709,21 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
             self._lastPlayingChangeTime = time.monotonic()
         self._lastPlayingUri = uri
 
+    def _pushChannelIsAlive(self) -> bool:
+        """Whether a push loop is currently feeding this listener's connect
+        state, proven within LISTENER_PUSH_CHANNEL_ALIVE_SECONDS.
+
+        A stamp rather than a flag: a push thread that dies leaves its last
+        value behind, and only an ageing one stops vouching for it. Read
+        through the same getattr chain as getConnectPlayerState, and type-
+        checked for the same reason - whatever the other side left there is
+        not something to do arithmetic on unchecked."""
+        lastPlayedManager = getattr(self.sp, "lastPlayedManager", None)
+        aliveAt = getattr(lastPlayedManager, "pushChannelAliveAt", None)
+        if not isinstance(aliveAt, (int, float)):
+            return False
+        return (time.monotonic() - aliveAt) <= LISTENER_PUSH_CHANNEL_ALIVE_SECONDS
+
     def _staleFeedIsBroken(self) -> bool:
         """Whether a feed that hasn't changed in LISTENER_STALE_TIMEOUT_SECONDS
         is evidence of a dead session rather than of nobody listening.
@@ -708,9 +734,18 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
         count as evidence instead: no connect state at all (the websocket tick
         that produces it isn't running either), or a track change observed
         after the feed's last update, i.e. a play that finished and never
-        arrived."""
+        arrived.
+
+        The first of those holds for POLL mode only. Push mode has no tick:
+        _state is written when Spotify pushes a cluster and at no other time,
+        so an account nobody is listening to legitimately has none at all, and
+        reading that as death brought the 30-minute rebuild straight back (live
+        app.log 2026-08-01, one rebuild per LISTENER_STALE_TIMEOUT_SECONDS on
+        the dot). A live push channel is the evidence that the absence is
+        idleness. The hard ceiling still applies above this, so a channel
+        delivering pongs while its subscription is wedged is still recycled."""
         if not self.getConnectPlayerState():
-            return True
+            return not self._pushChannelIsAlive()
         return self._lastPlayingChangeTime > self._lastChangeTime
 
     def getNewItems(self, new: list) -> list | None:

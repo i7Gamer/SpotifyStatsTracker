@@ -821,6 +821,140 @@ class TestPushLoop(unittest.TestCase):
         self.assertEqual(manager.connectCalls, 1)
 
 
+class TestPushLoopWithoutAnyState(unittest.TestCase):
+    """connect_device() can reply with no player_state at all - an account with
+    no live Connect session - and _adoptCluster leaves the caches untouched when
+    it does. The seeding call guarded that; the periodic re-subscribe did not,
+    so PlayerState.from_dict(None) raised "argument of type 'NoneType' is not
+    iterable" once every CONNECT_STATE_RESUBSCRIBE_SECONDS, forever (live
+    app.log 2026-08-01 12:37-15:07, one warning per 901s)."""
+
+    def _stateless(self):
+        """A push loop whose subscribe reply carries no player_state, driven
+        past one re-subscribe boundary."""
+        from Database.Spotify.recentlyPlayed import CONNECT_STATE_RESUBSCRIBE_SECONDS
+
+        manager = _PushManager([{"type": "pong"}] * 10, initialCluster={"devices": {}})
+        lpm = _pushLastPlayed(manager)
+        manager.onExhausted = lambda: setattr(lpm, "run", False)
+
+        clock = [1000.0]
+
+        def steppingMonotonic():
+            clock[0] += CONNECT_STATE_RESUBSCRIBE_SECONDS / 2
+            return clock[0]
+
+        original = manager.connect_device
+
+        def stopAfterTheResubscribe():
+            result = original()
+            if manager.connectCalls >= 2:
+                lpm.run = False
+            return result
+        manager.connect_device = stopAfterTheResubscribe
+        return manager, lpm, steppingMonotonic
+
+    def test_a_resubscribe_without_any_adopted_state_is_silent(self):
+        from Database.Spotify.recentlyPlayed import _runPushLoop
+
+        manager, lpm, steppingMonotonic = self._stateless()
+        callback = MagicMock()
+
+        with patch("Database.Spotify.recentlyPlayed.time.monotonic", side_effect=steppingMonotonic):
+            with self.assertNoLogs("Database.Spotify.recentlyPlayed", level="WARNING"):
+                _runPushLoop(lpm, callback)
+
+        self.assertGreaterEqual(manager.connectCalls, 2)   #< it really re-subscribed
+        self.assertIsNone(manager._state)                  #< and still had nothing to apply
+        callback.assert_not_called()
+
+    def test_an_idle_account_still_reports_a_live_push_channel(self):
+        """The knock-on the warning was only the visible half of: with _state
+        never populated, getConnectPlayerState() returns None forever, which
+        _staleFeedIsBroken reads as a dead session - a full spotapi re-login
+        every LISTENER_STALE_TIMEOUT_SECONDS, the exact regression that check
+        was written to stop. A live channel has to be visible some other way."""
+        from Database.Spotify.recentlyPlayed import _runPushLoop
+
+        manager, lpm, steppingMonotonic = self._stateless()
+        seen = []
+        original = manager.get_packet
+
+        def recordAliveStamp(timeout=None):
+            seen.append(lpm.pushChannelAliveAt)
+            return original(timeout)
+        manager.get_packet = recordAliveStamp
+
+        with patch("Database.Spotify.recentlyPlayed.time.monotonic", side_effect=steppingMonotonic):
+            _runPushLoop(lpm, MagicMock())
+
+        self.assertTrue(all(isinstance(stamp, float) for stamp in seen), seen)
+
+
+class TestPushChannelLiveness(unittest.TestCase):
+    """pushChannelAliveAt is how the listener's stale check tells "idle account
+    on a working push channel" from "the tick that feeds _state is dead". It is
+    a monotonic stamp rather than a flag so a thread that died still reads as
+    not-alive once the stamp ages out."""
+
+    def test_a_frame_refreshes_the_stamp(self):
+        cluster = pushedCluster(uid="uid-1")
+        manager = _PushManager([pushFrame(cluster)], initialCluster=cluster)
+        lpm = _pushLastPlayed(manager)
+        seen = []
+        original = manager.get_packet
+        # The clock only moves between reads, so the stamps are exact rather
+        # than "whatever the host managed between two loop passes". A scripted
+        # side_effect list can't be used: patching this module's time.monotonic
+        # patches the time module itself, so every other module that reads the
+        # clock during the loop (the shared limiter) draws from it too.
+        clock = [10.0]
+
+        def recordAfterEachRead(timeout=None):
+            packet = original(timeout)
+            seen.append(lpm.pushChannelAliveAt)
+            clock[0] += 10.0
+            return packet
+        manager.get_packet = recordAfterEachRead
+        manager.onExhausted = lambda: setattr(lpm, "run", False)
+
+        from Database.Spotify.recentlyPlayed import _runPushLoop
+        with patch("Database.Spotify.recentlyPlayed.time.monotonic", side_effect=lambda: clock[0]):
+            _runPushLoop(lpm, MagicMock())
+
+        self.assertEqual(seen[0], 10.0)   #< seeded by the subscribe, before any frame
+        self.assertEqual(seen[1], 20.0)   #< the frame moved it on
+
+    def test_leaving_the_push_loop_clears_the_stamp(self):
+        """Poll mode's "no connect state means the tick is dead" reasoning is
+        true again the moment this loop is not the one feeding _state - so a
+        fallback must not leave a stamp behind that keeps the stale check
+        permanently reassured."""
+        manager = _PushManager([], initialCluster=pushedCluster())
+        lpm = _pushLastPlayed(manager)
+        manager.onExhausted = lambda: setattr(lpm, "run", False)
+
+        from Database.Spotify.recentlyPlayed import _runPushLoop
+        _runPushLoop(lpm, MagicMock())
+
+        self.assertIsNone(lpm.pushChannelAliveAt)
+
+    def test_a_raising_push_loop_still_clears_the_stamp(self):
+        manager = _PushManager([], initialCluster=pushedCluster())
+        lpm = _pushLastPlayed(manager)
+        manager.get_packet = MagicMock(side_effect=RuntimeError("socket exploded"))
+
+        from Database.Spotify.recentlyPlayed import _runPushLoop
+        with self.assertRaises(RuntimeError):
+            _runPushLoop(lpm, MagicMock())
+
+        self.assertIsNone(lpm.pushChannelAliveAt)
+
+    def test_a_fresh_manager_is_not_on_a_push_channel(self):
+        manager = _PushManager([])
+        self.assertIsNone(_pushLastPlayed(manager).pushChannelAliveAt)
+
+
 class TestUpdateLoopModeSelection(unittest.TestCase):
     """The toggle is read once per loop entry, and anything unreadable keeps
     polling - a settings lookup must never be what changes how plays are

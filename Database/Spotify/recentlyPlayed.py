@@ -280,9 +280,21 @@ def _applyPushedState(self, manager, callback) -> None:
     _applyStateToTracking call the same way (its catch-all would otherwise
     escalate a callback failure into a full reconnect). The failed play
     is retried, not dropped: lastPlayedUid only advances after the callback
-    returns (see _applyStateToTracking)."""
+    returns (see _applyStateToTracking).
+
+    Nothing adopted yet is a no-op, not a fault, and the guard lives HERE
+    rather than at the call sites: connect_device() can reply with no
+    player_state at all (an account with no live Connect session), _adoptCluster
+    leaves the caches untouched when it does, and spotapi's from_dict does
+    `key in data` - so a None _state raised "argument of type 'NoneType' is not
+    iterable". The seeding call guarded it and the periodic re-subscribe did
+    not, which is why it surfaced as one warning every
+    CONNECT_STATE_RESUBSCRIBE_SECONDS instead of at connect time."""
+    cached = manager._state
+    if not isinstance(cached, dict):
+        return
     try:
-        state = spotapi.status.PlayerState.from_dict(copy.deepcopy(manager._state))
+        state = spotapi.status.PlayerState.from_dict(copy.deepcopy(cached))
         _applyStateToTracking(self, state, callback)
     except Exception as e:  # noqa: BLE001 - a malformed push or failing callback must not kill the loop
         logger.warning("[Spotify] Could not apply a pushed player state: %s", e)
@@ -337,60 +349,71 @@ def _runPushLoop(self, callback) -> str:
         return "fallback"
 
     # _subscribeConnectState adopted the reply, so the channel starts seeded -
-    # no separate poll needed to know what is playing right now.
-    if isinstance(manager._state, dict):
-        _applyPushedState(self, manager, callback)
+    # no separate poll needed to know what is playing right now. A reply that
+    # carried no player_state leaves nothing to apply; _applyPushedState is the
+    # one place that decides so.
+    _applyPushedState(self, manager, callback)
 
     logger.info("[Spotify] Listening for connect-state pushes (polling disabled)")
     lastFrameAt = time.monotonic()
     lastSubscribeAt = lastFrameAt
     resubscribeFailures = 0
+    # From here the listener's stale check must read "idle account" rather than
+    # "dead session" out of an empty connect state - see pushChannelAliveAt.
+    self.pushChannelAliveAt = lastFrameAt
 
-    while self.run:
-        if getattr(manager, "_deliberate_close", False):
-            logger.info("[Spotify] Push loop exiting: websocket was closed deliberately")
-            self.run = False
-            return "stopped"
+    try:
+        while self.run:
+            if getattr(manager, "_deliberate_close", False):
+                logger.info("[Spotify] Push loop exiting: websocket was closed deliberately")
+                self.run = False
+                return "stopped"
 
-        packet = manager.get_packet(timeout=PUSH_RECV_TIMEOUT_SECONDS)
-        now = time.monotonic()
+            packet = manager.get_packet(timeout=PUSH_RECV_TIMEOUT_SECONDS)
+            now = time.monotonic()
 
-        if packet is not None:
-            # ANY frame proves the socket is alive - keepalive pongs included,
-            # which is what makes the watchdog below usable at all.
-            lastFrameAt = now
-            cluster = _clusterFromPacket(packet)
-            if cluster is not None and _adoptCluster(manager, cluster):
-                _applyPushedState(self, manager, callback)
+            if packet is not None:
+                # ANY frame proves the socket is alive - keepalive pongs included,
+                # which is what makes the watchdog below usable at all.
+                lastFrameAt = now
+                self.pushChannelAliveAt = now
+                cluster = _clusterFromPacket(packet)
+                if cluster is not None and _adoptCluster(manager, cluster):
+                    _applyPushedState(self, manager, callback)
 
-        if now - lastFrameAt >= PUSH_FRAME_SILENCE_FALLBACK_SECONDS:
-            logger.warning(
-                "[Spotify] No websocket frame of any kind for %ds (not even a keepalive "
-                "pong) - the push channel looks dead, returning to polling",
-                PUSH_FRAME_SILENCE_FALLBACK_SECONDS)
-            return "fallback"
+            if now - lastFrameAt >= PUSH_FRAME_SILENCE_FALLBACK_SECONDS:
+                logger.warning(
+                    "[Spotify] No websocket frame of any kind for %ds (not even a keepalive "
+                    "pong) - the push channel looks dead, returning to polling",
+                    PUSH_FRAME_SILENCE_FALLBACK_SECONDS)
+                return "fallback"
 
-        if now - lastSubscribeAt >= CONNECT_STATE_RESUBSCRIBE_SECONDS:
-            outcome = _subscribeConnectState(manager)
-            if outcome is None:
-                continue            #< paused, not failed; retry on a later pass
-            lastSubscribeAt = now
-            if outcome:
-                resubscribeFailures = 0
-                # The refreshed state runs through track detection too, so a
-                # change missed while pushes were silently dead is recovered
-                # here rather than lost. Idempotent: an unchanged track uid is
-                # a no-op, so this can never double-record.
-                _applyPushedState(self, manager, callback)
-            else:
-                resubscribeFailures += 1
-                if resubscribeFailures >= PUSH_RESUBSCRIBE_MAX_FAILURES:
-                    logger.warning(
-                        "[Spotify] connect-state re-subscribe failed %d times; "
-                        "returning to polling", resubscribeFailures)
-                    return "fallback"
+            if now - lastSubscribeAt >= CONNECT_STATE_RESUBSCRIBE_SECONDS:
+                outcome = _subscribeConnectState(manager)
+                if outcome is None:
+                    continue            #< paused, not failed; retry on a later pass
+                lastSubscribeAt = now
+                if outcome:
+                    resubscribeFailures = 0
+                    # The refreshed state runs through track detection too, so a
+                    # change missed while pushes were silently dead is recovered
+                    # here rather than lost. Idempotent: an unchanged track uid is
+                    # a no-op, so this can never double-record.
+                    _applyPushedState(self, manager, callback)
+                else:
+                    resubscribeFailures += 1
+                    if resubscribeFailures >= PUSH_RESUBSCRIBE_MAX_FAILURES:
+                        logger.warning(
+                            "[Spotify] connect-state re-subscribe failed %d times; "
+                            "returning to polling", resubscribeFailures)
+                        return "fallback"
 
-    return "stopped"
+        return "stopped"
+    finally:
+        # Every exit, including the fallback and an escaping exception: once
+        # this loop is not the one feeding _state, poll mode's "an empty
+        # connect state means the tick is dead" reasoning is true again.
+        self.pushChannelAliveAt = None
 
 
 def _runPollLoop(self, callback, refreshInterval=3):
@@ -500,16 +523,23 @@ class RecentlyPlayedManager:
     """Owns the PlayerStatus (websocket + connect-state caches) for one session
     and the background thread that watches it.
 
-    The attribute set (manager / run / thread) is a contract:
-    spotifyListener's shutdown path reaches in via getattr chains -
+    The attribute set (manager / run / thread / pushChannelAliveAt) is a
+    contract: spotifyListener's shutdown path reaches in via getattr chains -
     sp.lastPlayedManager.manager._deliberate_close, .run, .thread - to signal
-    and join without importing this module."""
+    and join without importing this module, and its stale check reads
+    pushChannelAliveAt the same way."""
 
     def __init__(self, login):
         self.login = login
         self.manager = spotapi.status.PlayerStatus(login)
         self.thread = None
         self.run = False
+        # time.monotonic() of the last proof the push channel was alive, or
+        # None whenever this listener is not on one (poll mode, or a push loop
+        # that has exited). Only _runPushLoop writes it; the listener's stale
+        # check reads it to tell an idle account apart from a dead session,
+        # which in push mode an empty connect state cannot answer on its own.
+        self.pushChannelAliveAt = None
         # Track-change detection state, read/written by _applyStateToTracking.
         self.lastPlayedUid = ""     #< uid of the currently-observed track ("" = none yet)
         self.lastTrackUri = None

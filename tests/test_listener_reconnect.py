@@ -25,6 +25,7 @@ from Database.Listeners.spotifyListener import (
     Listener,
     LISTENER_STALE_TIMEOUT_SECONDS,
     LISTENER_STALE_HARD_TIMEOUT_SECONDS,
+    LISTENER_PUSH_CHANNEL_ALIVE_SECONDS,
     RATE_LIMIT_ERROR_BACKOFF_SECONDS,
     RATE_LIMIT_REASON_LISTENER_POLL,
     LOCAL_PAUSE_RETRY_WAIT_SECONDS,
@@ -57,6 +58,11 @@ def _bareListener(recentlyPlayed=None):
     # or keeps erroring looks like) - the stale check reads this to tell a dead
     # session from an idle account, and "no evidence" means dead.
     listener.sp.lastPlayedManager.manager._state = None
+    # Poll mode: no push loop is feeding _state, which is what makes the
+    # absence above evidence of a dead tick. sp is a MagicMock, so this has to
+    # be set explicitly - an auto-created child attribute would read as a
+    # (truthy, non-numeric) liveness stamp.
+    listener.sp.lastPlayedManager.pushChannelAliveAt = None
     listener._lastPlayingUri = None      #< matches Listener.__init__
     listener._lastPlayingChangeTime = 0.0
     listener._lastChangeTime = 0.0
@@ -243,14 +249,68 @@ class TestStaleFeedIdleDetection(unittest.TestCase):
         onStale.assert_not_called()
 
     def test_missing_connect_state_still_rebuilds(self):
-        """No connect state at all means the websocket tick that feeds it isn't
-        running either - no evidence of life, so keep the old behaviour."""
+        """In POLL mode, no connect state at all means the websocket tick that
+        feeds it isn't running either - no evidence of life, so keep the old
+        behaviour. Push mode is the exception below."""
         listener, onStale = self._listener(), MagicMock()
 
         stillRunning = self._poll(listener, self._pastTimeout(), None, onStale)
 
         self.assertFalse(stillRunning)
         onStale.assert_called_once()
+
+    def test_missing_connect_state_on_a_live_push_channel_is_idle_not_stale(self):
+        """Push mode has no tick: _state is only written when Spotify pushes a
+        cluster, so an account nobody is listening to legitimately has none at
+        all. Reading that as a dead session rebuilt the whole spotapi session
+        every 30 minutes per user - the regression this class exists to prevent,
+        arriving through a door it didn't cover (live app.log 2026-08-01)."""
+        listener, onStale = self._listener(), MagicMock()
+        now = self._pastTimeout()
+        listener.sp.lastPlayedManager.pushChannelAliveAt = now - 60
+
+        stillRunning = self._poll(listener, now, None, onStale)
+
+        self.assertTrue(stillRunning)
+        onStale.assert_not_called()
+
+    def test_missing_connect_state_with_an_aged_push_stamp_still_rebuilds(self):
+        """A stamp is only evidence while it is fresh: a push thread that died
+        leaves its last one behind, and a flag would keep vouching for it."""
+        listener, onStale = self._listener(), MagicMock()
+        now = self._pastTimeout()
+        listener.sp.lastPlayedManager.pushChannelAliveAt = now - LISTENER_PUSH_CHANNEL_ALIVE_SECONDS - 1
+
+        stillRunning = self._poll(listener, now, None, onStale)
+
+        self.assertFalse(stillRunning)
+        onStale.assert_called_once()
+
+    def test_a_non_numeric_push_stamp_is_not_evidence_of_life(self):
+        """Read through a getattr chain across two modules, so the value is
+        whatever the other side left there - it must never be arithmetic on
+        trust (a MagicMock here used to be truthy, and subtracting it raises)."""
+        listener, onStale = self._listener(), MagicMock()
+        listener.sp.lastPlayedManager.pushChannelAliveAt = MagicMock()
+
+        stillRunning = self._poll(listener, self._pastTimeout(), None, onStale)
+
+        self.assertFalse(stillRunning)
+        onStale.assert_called_once()
+
+    def test_the_hard_ceiling_still_rebuilds_a_live_push_listener(self):
+        """The push exemption widens the idle window, it does not remove the
+        backstop: a channel delivering pongs while its subscription is wedged
+        is exactly what the hard ceiling is for."""
+        listener, onStale = self._listener(), MagicMock()
+        now = 100.0 + LISTENER_STALE_HARD_TIMEOUT_SECONDS + 1
+        listener.sp.lastPlayedManager.pushChannelAliveAt = now - 60
+
+        stillRunning = self._poll(listener, now, None, onStale)
+
+        self.assertFalse(stillRunning)
+        onStale.assert_called_once()
+        self.assertGreater(LISTENER_STALE_HARD_TIMEOUT_SECONDS, LISTENER_PUSH_CHANNEL_ALIVE_SECONDS)
 
     def test_hard_ceiling_rebuilds_even_when_idle(self):
         """The one failure the idle check cannot see is a connect state that
