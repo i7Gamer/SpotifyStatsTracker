@@ -6,7 +6,7 @@ tag-resolution SQL end to end (Database.getEntriesCount/getEntriesFromNew/
 searchEntries narrowed by getTaggedTrackIds), not just that the route calls
 the right method."""
 import unittest
-from tests._app_factory import AppTestCase, makeApp
+from tests._app_factory import AppTestCase
 
 
 def makeTrack(trackId, name, albumId, albumName, artistId, artistName):
@@ -36,7 +36,7 @@ def makeTrack(trackId, name, albumId, albumName, artistId, artistName):
 
 class TestHistoryTagFilter(AppTestCase):
     def setUp(self):
-        self.dash = makeApp()
+        self.dash = self._makeApp()   #< registers shutdown(): get_user_db below starts real threads
         self.client = self.dash.app.test_client()
         self.username = "testuser"
         self.email = "testuser@example.com"

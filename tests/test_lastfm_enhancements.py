@@ -70,7 +70,9 @@ class TestMultiArtistFallback(unittest.TestCase):
 
     def setUp(self):
         self.db_file = ":memory:"
-        self.db = Database("testuser", dbPath=self.db_file)
+        #< startWorkers=False: nothing here drives the periodic workers, and
+        #  they would outlive the test (see conftest._noLeakedUserThreads)
+        self.db = Database("testuser", dbPath=self.db_file, startWorkers=False)
         self.repo = self.db.repo
 
 

@@ -368,6 +368,24 @@ class TestAppShutdownTwoPhase(unittest.TestCase):
         good.signalStop.assert_called_once()
         good.stop.assert_called_once()
 
+    def test_a_failing_process_worker_does_not_skip_the_user_databases(self):
+        """The two process-wide workers are stopped before the per-user loop,
+        which is the part with the try/except. An exception up there (a stubbed
+        or missing backupWorker, an EmailWorker join blowing up) used to abort
+        shutdown before a single user's threads were signaled, let alone
+        joined - the exact "threads outlive shutdown" failure the whole
+        two-phase dance exists to prevent."""
+        dash = self._bareApp()
+        dash.backupWorker = None   #< as good as any failure: shutdown() called .stop() on it
+        db = MagicMock()
+        db.user = "alice"
+        dash.user_databases = {"alice": db}
+
+        dash.shutdown()   # must not raise
+
+        db.signalStop.assert_called_once()
+        db.stop.assert_called_once()
+
     def test_get_user_db_shares_shutdown_event_with_app(self):
         """Databases must observe the app-wide stop event, or the reconnect
         gates never fire."""

@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 import app as appModule
 from app import SpotifyDashboardApp
-from _app_factory import makeApp as _makeApp
+from _app_factory import AppTestCase
 
 _SECRET_KEY_PATCH = 'app.SpotifyDashboardApp._get_or_create_secret_key'
 
@@ -30,9 +30,13 @@ def _healthyListenerMock():
 
 
 
-class TestStartupReloginFromDatabaseCookies(unittest.TestCase):
+class TestStartupReloginFromDatabaseCookies(AppTestCase):
+    """AppTestCase, not a bare TestCase: _ensureAllUsersLogin() activates real
+    users, and every activation starts that user's periodic workers -
+    self._makeApp() is the one that shuts them down again at teardown."""
+
     def test_ensure_all_users_login_starts_listener_with_db_stored_cookies(self):
-        app = _makeApp()
+        app = self._makeApp()
         # Simulate a user who completed login before the "reboot" - their
         # username/email/cookies are already durably in the database, with no
         # web request involved this time around.
@@ -66,7 +70,7 @@ class TestStartupReloginFromDatabaseCookies(unittest.TestCase):
     def test_user_with_no_cookies_yet_is_not_logged_in_automatically(self):
         """A user row with no cookies (e.g. mid-migration, never actually
         logged in) must not get a listener started for it."""
-        app = _makeApp()
+        app = self._makeApp()
         app.repo.upsertUser("bob", "bob@example.com")  # no setUserCookies call
 
         with patch("Database.database.Listener") as mockListenerClass, \
@@ -78,7 +82,7 @@ class TestStartupReloginFromDatabaseCookies(unittest.TestCase):
         mockListenerClass.assert_not_called()
 
     def test_multiple_returning_users_each_get_their_own_cookies(self):
-        app = _makeApp()
+        app = self._makeApp()
         app.repo.upsertUser("alice", "alice@example.com")
         app.repo.setUserCookies("alice", {"sp_dc": "alice-cookie"})
         app.repo.upsertUser("bob", "bob@example.com")
@@ -105,7 +109,7 @@ class TestStartupReloginFromDatabaseCookies(unittest.TestCase):
         blob, a Listener construction error) must not stop every user after it
         in the list from getting their listener started - the whole loop used
         to be wrapped in one try/except that aborted on the first failure."""
-        app = _makeApp()
+        app = self._makeApp()
         app.repo.upsertUser("alice", "alice@example.com")
         app.repo.setUserCookies("alice", {"sp_dc": "broken"})
         app.repo.upsertUser("bob", "bob@example.com")
@@ -134,7 +138,7 @@ class TestStartupReloginFromDatabaseCookies(unittest.TestCase):
         request) leaked another full set, so one user ended up with 4 wrapped
         workers recalculating their stats every couple of minutes. The
         failure path must stop the orphan's workers before propagating."""
-        app = _makeApp()
+        app = self._makeApp()
         app.repo.upsertUser("leakuser", "leakuser@example.com")
         app.repo.setUserCookies("leakuser", {"sp_dc": "broken"})
 
@@ -165,7 +169,7 @@ class TestStartupReloginFromDatabaseCookies(unittest.TestCase):
         wrapped worker may be running for them - not the failed attempts'
         workers plus the live one, each recalculating on its own offset
         15-minute schedule."""
-        app = _makeApp()
+        app = self._makeApp()
         app.repo.upsertUser("retryuser", "retryuser@example.com")
         app.repo.setUserCookies("retryuser", {"sp_dc": "cookie"})
 
@@ -191,7 +195,7 @@ class TestStartupReloginFromDatabaseCookies(unittest.TestCase):
     def test_second_call_does_not_recreate_already_running_databases(self):
         """_checkLoginLoop() re-runs this every 5 minutes - a user already
         holding a live Database/listener must not be reconstructed."""
-        app = _makeApp()
+        app = self._makeApp()
         app.repo.upsertUser("alice", "alice@example.com")
         app.repo.setUserCookies("alice", {"sp_dc": "abc123"})
 

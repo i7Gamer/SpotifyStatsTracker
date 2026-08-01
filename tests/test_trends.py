@@ -33,7 +33,9 @@ def makeTrack(trackId="t1", name="Song One", albumId="alb1", artistId="art1"):
 class TestTrendQueries(unittest.TestCase):
     def setUp(self):
         self.db_path = Path(":memory:")
-        self.db = Database("alice", dbPath=self.db_path)
+        #< startWorkers=False: these are query tests, and the five periodic
+        #  workers would otherwise outlive them (see conftest._noLeakedUserThreads)
+        self.db = Database("alice", dbPath=self.db_path, startWorkers=False)
         self.repo = self.db.repo
         self.repo.upsertUser("alice", "alice@example.com")
         
@@ -206,7 +208,7 @@ class TestForgottenFavoriteFallback(unittest.TestCase):
 
         self.primaryMin = TREND_FORGOTTEN_MIN_HISTORICAL_PLAYS
         self.fallbackMin = TREND_FORGOTTEN_FALLBACK_MIN_PLAYS
-        self.db = Database("alice", dbPath=Path(":memory:"))
+        self.db = Database("alice", dbPath=Path(":memory:"), startWorkers=False)
         self.repo = self.db.repo
         self.repo.upsertUser("alice", "alice@example.com")
         self.now_ts = 1000000.0

@@ -5,7 +5,7 @@ MagicMock db, since the point of these tests is the actual tag-resolution SQL
 end to end, not just that the route calls the right method."""
 import unittest
 from unittest.mock import patch
-from tests._app_factory import AppTestCase, makeApp
+from tests._app_factory import AppTestCase
 
 
 def makeTrack(trackId, name, albumId, albumName, artistId, artistName):
@@ -35,7 +35,7 @@ def makeTrack(trackId, name, albumId, albumName, artistId, artistName):
 
 class TestTopListsTagFilter(AppTestCase):
     def setUp(self):
-        self.dash = makeApp()
+        self.dash = self._makeApp()   #< registers shutdown(): get_user_db below starts real threads
         self.client = self.dash.app.test_client()
         self.username = "testuser"
         self.email = "testuser@example.com"

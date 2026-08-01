@@ -18,6 +18,12 @@ AUTO_IMPORT_MAX_START_DELAY_SECONDS = 30
 
 WATCHDOG_STOP_JOIN_TIMEOUT_SECONDS = 2  #< bound how long stop() waits for the poll thread to exit
 
+# Poll threads are named "<prefix><watched folder's name>" (i.e. the username,
+# since each user watches autoImport/<user>/) - an anonymous "Thread-17" in a
+# thread dump says nothing about whose watcher is still running, and the test
+# suite's leaked-thread guard identifies these by name.
+WATCHDOG_THREAD_NAME_PREFIX = "auto-import-watchdog-"
+
 try:
     from Database.utils import parseError
 except ModuleNotFoundError:
@@ -133,6 +139,7 @@ class Watchdog:  #< polls a folder and hands over files once their size stops ch
             target=self.watchFolder_blocking,
             args=(pathToWatch, callback, checkInterval),
             kwargs={"startupDelaySeconds": startupDelaySeconds},
+            name=f"{WATCHDOG_THREAD_NAME_PREFIX}{os.path.basename(str(pathToWatch))}",
             daemon=True
         )
         self.thread.start()

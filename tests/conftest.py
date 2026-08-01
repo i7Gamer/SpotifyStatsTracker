@@ -8,11 +8,24 @@ are blocked for every test and raise instead.
 import datetime
 import socket
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+
+# Every per-user background thread a live Database starts, by thread-name
+# prefix: the five periodic workers (Database/workers/) plus the auto-import
+# watchdog. All are named "<prefix><user>" - see _noLeakedUserThreads.
+USER_DATABASE_THREAD_NAME_PREFIXES = (
+    "auto-import-watchdog-",
+    "metadata-backfiller-",
+    "wrapped-worker-",
+    "lastfm-genres-",
+    "lastfm-bios-",
+    "lastfm-album-bios-",
+)
 
 
 @pytest.fixture(autouse=True, scope="session")
@@ -87,6 +100,38 @@ def _blockNetwork(monkeypatch):
         )
 
     monkeypatch.setattr(socket.socket, "connect", guardedConnect)
+
+
+@pytest.fixture(autouse=True)
+def _noLeakedUserThreads():
+    """A test that starts a real per-user Database must stop it again.
+
+    Activating a user (SpotifyDashboardApp.get_user_db) starts six real daemon
+    threads for that user - the five periodic workers and the auto-import
+    watchdog - and nothing else ever stops them. Left running, they outlive the
+    test: each parks on a randomized startup delay (5-30s), then wakes up long
+    after the test that spawned it finished, logs into a pytest capture stream
+    that is already closed ("ValueError: I/O operation on closed file", which
+    can bury a real teardown failure), creates its user's autoImport/ folder in
+    the working tree, and keeps polling for the rest of the session while the
+    next tests stack more of the same.
+
+    Named threads, not every new entry in threading.enumerate(): the latter
+    would flag any unrelated short-lived helper thread that happens to still be
+    winding down, which is exactly the kind of timing-dependent flake this
+    suite avoids. Threads already running when the test STARTED are excluded so
+    one leaker doesn't fail every test that follows it in the same worker
+    process. `dash.shutdown()` (or db.stop()) at teardown is the fix."""
+    def userThreads():
+        return {t for t in threading.enumerate()
+                if t.name.startswith(USER_DATABASE_THREAD_NAME_PREFIXES)}
+
+    before = userThreads()
+    yield
+    leaked = sorted(t.name for t in userThreads() - before)
+    assert not leaked, (
+        f"test left per-user Database threads running: {leaked}. "
+        "Stop them at teardown (e.g. self.addCleanup(self.dash.shutdown)).")
 
 
 @pytest.fixture(autouse=True)

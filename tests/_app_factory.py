@@ -39,4 +39,17 @@ class AppTestCase(unittest.TestCase):
     """Base for tests that build a stubbed app via ``self._makeApp()``."""
 
     def _makeApp(self):
-        return makeApp()
+        """The app, with ``shutdown()`` registered as a cleanup.
+
+        Construction starts nothing, but activating a user does:
+        ``get_user_db()`` gives that user a live Database, i.e. the five
+        periodic workers plus the auto-import watchdog, on real daemon
+        threads. Unstopped they outlive the test - waking after their
+        randomized startup delay to log into a closed capture stream and poll
+        for the rest of the session (see conftest._noLeakedUserThreads).
+        Registered here rather than left to each test's tearDown because it is
+        needed by every test that activates a user, and harmless (a fast no-op)
+        for every test that doesn't."""
+        app = makeApp()
+        self.addCleanup(app.shutdown)
+        return app

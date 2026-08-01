@@ -943,8 +943,16 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
 
     def shutdown(self):
         self._stop_event.set()
-        self.backupWorker.stop()
-        EMAIL_WORKER.stop()
+        # Per worker, deliberately: these two run before the per-user loop
+        # below, which is the part that already tolerates a failing member. An
+        # exception up here aborted shutdown before a single user's threads
+        # were even signaled - leaving exactly the outliving-threads state the
+        # two-phase dance exists to prevent.
+        for worker in (self.backupWorker, EMAIL_WORKER):
+            try:
+                worker.stop()
+            except Exception as e:
+                logger.error("Error stopping %s: %s", type(worker).__name__, e)
         with self._db_lock:
             databases = list(self.user_databases.values())
         # Two-phase: SIGNAL every user's stop flags first (no joins), THEN

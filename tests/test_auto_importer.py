@@ -8,7 +8,7 @@ import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from conftest import DatabaseTestCase
-from Database.Importers.AutoImporter import AutoImporter, Watchdog
+from Database.Importers.AutoImporter import AutoImporter, Watchdog, WATCHDOG_THREAD_NAME_PREFIX
 
 
 def _fakeOpenByName(path, *args, **kwargs):
@@ -313,6 +313,23 @@ class TestAutoImporterWiring(DatabaseTestCase):
         auto-imported files too."""
         db = self._makeDb({}, [])
         self.assertEqual(db.autoImporter.importCallback.__func__, type(db).importHistoryBatch)
+
+
+class TestWatchdogThreadNaming(unittest.TestCase):
+    """The poll thread used to be anonymous ("Thread-17"), so a watcher that
+    outlived whoever started it was unattributable in a thread dump - and the
+    suite's leaked-thread guard (conftest._noLeakedUserThreads) can only
+    recognize one by name."""
+
+    def test_thread_is_named_after_the_watched_folder(self):
+        wd = Watchdog()
+        # A startup delay the thread parks on, so it never touches the disk:
+        # stop() sets the event and wait() returns at once, set before or after
+        # the thread reaches it.
+        wd.watchFolder(os.path.join("autoImport", "alice"), MagicMock(), startupDelaySeconds=30)
+        self.addCleanup(wd.stop)
+
+        self.assertEqual(wd.thread.name, f"{WATCHDOG_THREAD_NAME_PREFIX}alice")
 
 
 class TestWatchdogSignalStop(unittest.TestCase):

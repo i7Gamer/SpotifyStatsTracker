@@ -1,6 +1,6 @@
 import unittest
 from unittest.mock import patch
-from tests._app_factory import AppTestCase, makeApp
+from tests._app_factory import AppTestCase
 
 
 def makeTrack(trackId="t1", name="Song One", albumId="alb1", artistId="art1"):
@@ -30,7 +30,7 @@ def makeTrack(trackId="t1", name="Song One", albumId="alb1", artistId="art1"):
 
 class TestTagsRoutes(AppTestCase):
     def setUp(self):
-        self.dash = makeApp()
+        self.dash = self._makeApp()   #< registers shutdown(): get_user_db below starts real threads
         self.client = self.dash.app.test_client()
         self.username = "testuser"
         self.email = "testuser@example.com"
@@ -191,7 +191,7 @@ class TestTagsFeatureDisabled(AppTestCase):
     unaffected (see routes/tags.py's playlistExport year branch)."""
 
     def setUp(self):
-        self.dash = makeApp()
+        self.dash = self._makeApp()   #< registers shutdown(): get_user_db below starts real threads
         self.client = self.dash.app.test_client()
         self.username = "testuser"
         self.email = "testuser@example.com"
