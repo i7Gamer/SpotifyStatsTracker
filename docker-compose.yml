@@ -10,7 +10,7 @@ services:
       - FLASK_APP=wsgi.py
       - PYTHONUNBUFFERED=1
       - TZ=America/Los_Angeles        #< set YOUR IANA zone, or every play lands at the wrong local time
-      - FLASK_SECRET_KEY=changeme-generate-your-own-random-value  #< YOU MUST CHANGE THIS - the app refuses to start on this placeholder (it's public: forgeable sessions + readable stored Spotify sessions). Generate one with: python -c "import secrets; print(secrets.token_hex(32))". A fixed value keeps sessions alive across restarts; unset = a new one each restart, logging everyone out
+      - FLASK_SECRET_KEY=changeme-generate-your-own-random-value  #< YOU MUST CHANGE THIS, and DO NOT comment it out - the app refuses to start on this placeholder (it's public: forgeable sessions + readable stored Spotify sessions). Generate one with: python -c "import secrets; print(secrets.token_hex(32))". A fixed value keeps sessions alive across restarts. Leaving it unset does more than log everyone out: secrets/ is NOT mounted below, so the key the app falls back to is written inside the container and thrown away by the next `docker compose pull`, while the database it encrypted keeps living in the mounted volume - every stored Spotify session and API secret in it becomes permanently unreadable, not merely logged out
       # - SPOTIFY_CALLBACK_URL=http://localhost:5000/spotify-callback  #< Uncomment and set to your public callback URL to enable Spotify Web API backfilling
       # - IMPORT_KEYWORD=Weekly       #< Uncomment to auto-import only files whose name contains this keyword
       # - FLASK_DEBUG=1               #< Verbose Flask logging - enable when reporting an issue

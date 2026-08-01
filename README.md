@@ -55,7 +55,7 @@ services:
       - FLASK_APP=wsgi.py
       - PYTHONUNBUFFERED=1
       - TZ=America/Los_Angeles        #< set YOUR IANA zone, or every play lands at the wrong local time
-      - FLASK_SECRET_KEY=changeme-generate-your-own-random-value  #< YOU MUST CHANGE THIS - the app refuses to start on this exact placeholder (it's public, so it makes sessions forgeable). Generate one with `python -c "import secrets; print(secrets.token_hex(32))"`. A fixed value = sessions survive a restart; unset = a new one is generated each restart, logging everyone out. Also used to encrypt stored Spotify sessions unless DATA_ENCRYPTION_KEY is set - changing it means everyone must log in again.
+      - FLASK_SECRET_KEY=changeme-generate-your-own-random-value  #< YOU MUST CHANGE THIS, and DO NOT comment it out - the app refuses to start on this exact placeholder (it's public, so it makes sessions forgeable). Generate one with `python -c "import secrets; print(secrets.token_hex(32))"`. A fixed value = sessions survive a restart. Also used to encrypt stored Spotify sessions unless DATA_ENCRYPTION_KEY is set - changing it means everyone must log in again, and leaving it unset in Docker loses those sessions for good (see the warning below).
       # - DATA_ENCRYPTION_KEY=changeme-another-random-value  #< Optional dedicated key for encrypting stored Spotify sessions/API secrets at rest (falls back to FLASK_SECRET_KEY). Keep it safe alongside your backups: without the key that encrypted them, stored sessions can't be read and every user must re-login with fresh cookies.
       # - TRUST_PROXY_HEADERS=1       #< Set when running behind a reverse proxy (nginx/traefik/caddy) so rate limiting sees real client IPs instead of the proxy's; use the number of proxy hops (usually 1). Only set this if a proxy is actually in front - otherwise clients could forge their IP.
       # - ENABLE_HSTS=1               #< Send a Strict-Transport-Security header so browsers pin this origin to HTTPS. Only enable behind a TLS-terminating reverse proxy - on plain-HTTP access it will lock browsers out of the site.
@@ -69,6 +69,8 @@ services:
     stop_grace_period: 45s          #< shutdown stops each user's listener/watchdog/workers in turn; Docker's 10s default would SIGKILL it partway. Free when shutdown is quick - it's a ceiling, not a wait
 ```
 
+> **Set `FLASK_SECRET_KEY` (or `DATA_ENCRYPTION_KEY`) - don't leave both unset.** The compose file above mounts `Database/Data` and `autoImport`, but not `secrets/`. With neither variable set, the app generates `secrets/data_encryption_key.txt` *inside the container* and encrypts every stored Spotify session and API secret with it. The database survives in the mounted volume; that key does not survive `docker compose pull`, or any other recreate of the container. Listening history is unaffected, but every user has to log in with fresh cookies again and anyone using Web API backfilling has to re-enter their client secret - on every update, silently. The startup log names it when it happens ("stored secret(s) were encrypted with a DIFFERENT key"); pinning the variable is what prevents it.
+
 Then you can run `docker compose up -d` and the app should start on `http://127.0.0.1:5000` or `http://yourIp:5000`
 
 To update the container if an update is available, run `docker compose pull`
@@ -81,7 +83,8 @@ Listening history, tracks, images, and login sessions live in a single SQLite
 database under `Database/Data/`. If you were relying on `secrets/` being mounted (e.g. so
 `secrets/flask_secret_key.txt` persisted across restarts), set `FLASK_SECRET_KEY`
 as shown above instead; otherwise everyone's login session resets on each container
-restart.
+restart - and, because that variable is also the fallback encryption key, the stored
+Spotify sessions in the database stop being readable too (see the warning above).
 
 ### Local Development
 
@@ -149,6 +152,8 @@ docker compose exec spotify-tracker python -c "import sqlite3; sqlite3.connect('
 This writes `spotify_stats_backup.db` into the same `Database/Data/` folder on your host machine (via the volume mount). Copy that file somewhere else - a different disk, cloud storage, etc. - for it to actually protect you against data loss, and rename or timestamp it before backing up again if you want to keep more than one snapshot.
 
 Stored Spotify sessions and API secrets inside the database are encrypted with the key from `DATA_ENCRYPTION_KEY` (or `FLASK_SECRET_KEY` if that's not set - see the compose example above). Two practical consequences: keep that key somewhere safe alongside your backups, since a restored backup is unreadable without the key that encrypted it (listening history stays intact; everyone just has to log in with fresh cookies again) - and don't treat a backup as fully safe to hand around either, because anyone holding both the backup **and** the key can read every user's live Spotify session.
+
+Key files under `secrets/` are created (and, on an existing install, narrowed on the next start) to mode `0600`, inside a `0700` directory - owner only. That is not protection against the host itself being compromised, since the app reads them unattended at boot; it keeps them out of reach of other local accounts and out of an over-broad share. Windows hosts are the exception: Python's `chmod` there only sets the read-only attribute and never narrows the ACL, so restrict the folder yourself if the machine has other user accounts on it.
 
 ### Spotify Web API Backfilling (Optional)
 
