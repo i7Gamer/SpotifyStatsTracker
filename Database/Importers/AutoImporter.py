@@ -195,6 +195,26 @@ class AutoImporter:  #< drop-folder importer: Watchdog feeds _handleImport; file
                     continue
                 with open(path, encoding="utf-8") as f:
                     toImport.append((path, f.read()))
+            except UnicodeDecodeError as e:
+                # Undecodable content is permanent, so it is routed exactly like
+                # an import failure below: left in the watch folder it would be
+                # re-read and re-logged by every restart's initial scan (the
+                # watchdog only suppresses the retry within one process), and it
+                # would stay invisible to anyone not reading the log.
+                # Deliberately NOT folded into the except below: a file that is
+                # merely unreadable right now - held by an antivirus scanner or
+                # backup tool, or still being copied when the startup scan
+                # picked it up - raises OSError and reads fine on a later pass,
+                # so quarantining that one would lose a good import.
+                logger.error(f"Could not decode {os.path.basename(path)} as UTF-8 - moving to FAILED/. "
+                             f"Re-export it (or re-save it as UTF-8) and drop it back into the "
+                             f"watch folder: {e}")
+                try:
+                    shutil.move(path, self._destinationPath(path, subdirName="FAILED"))
+                except Exception as moveError:
+                    # The quarantine can hit the same lock that broke the read;
+                    # the file simply stays for the next pass.
+                    logger.error(f"Could not move {path} to FAILED/: {moveError}")
             except Exception as e:
                 logger.error(f"Error reading file {path}: {e}")
 

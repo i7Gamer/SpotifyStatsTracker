@@ -306,6 +306,101 @@ class TestAutoImporterOutcomeRouting(unittest.TestCase):
         self.assertIn("DONE", os.path.normpath(destination).split(os.sep))
 
 
+class TestAutoImporterUnreadableFileRouting(unittest.TestCase):
+    """A file whose CONTENT can't be decoded is as dead as one the importer
+    rejects, so it goes to FAILED/ for the same reason: left in the watch
+    folder it is re-read and re-logged on every restart (the watchdog adds a
+    name to knownFiles before the callback, so it isn't retried within a
+    process, but the startup scan hands it over again), and it stays invisible
+    to anyone not reading the log.
+
+    A file that is merely unreadable RIGHT NOW is the opposite case and must be
+    left alone: an antivirus scanner or backup tool holding the file, or a
+    still-being-copied file the startup scan picked up before the size-
+    stabilization gate could apply, both surface as OSError and both succeed on
+    a later pass (see Watchdog._fileSizeOrNone, which documents the same
+    transient states)."""
+
+    @patch("Database.Importers.AutoImporter.os.path.exists")
+    @patch("Database.Importers.AutoImporter.os.makedirs")
+    @patch("Database.Importers.AutoImporter.shutil.move")
+    def test_an_undecodable_file_moves_to_FAILED(self, mock_move, mock_makedirs, mock_exists):
+        mock_exists.return_value = False
+        import_callback = MagicMock(return_value=[])
+        importer = AutoImporter("/dummy/path", import_callback)
+        badBytes = UnicodeDecodeError("utf-8", b"\xff\xfe", 0, 1, "invalid start byte")
+
+        with patch("Database.Importers.AutoImporter.open", MagicMock(side_effect=badBytes)):
+            with self.assertLogs("Database.Importers.AutoImporter", level="ERROR") as log_capture:
+                importer._handleImport(["/dummy/path/mojibake.json"])
+
+        import_callback.assert_not_called()
+        destination = mock_move.call_args[0][1]
+        self.assertIn("FAILED", os.path.normpath(destination).split(os.sep))
+        self.assertTrue(any("mojibake.json" in record for record in log_capture.output))
+
+    @patch("Database.Importers.AutoImporter.os.path.exists")
+    @patch("Database.Importers.AutoImporter.os.makedirs")
+    @patch("Database.Importers.AutoImporter.shutil.move")
+    def test_a_transiently_locked_file_is_left_in_place(self, mock_move, mock_makedirs, mock_exists):
+        mock_exists.return_value = False
+        importer = AutoImporter("/dummy/path", MagicMock(return_value=[]))
+        locked = PermissionError("being used by another process")
+
+        with patch("Database.Importers.AutoImporter.open", MagicMock(side_effect=locked)):
+            with self.assertLogs("Database.Importers.AutoImporter", level="ERROR"):
+                importer._handleImport(["/dummy/path/still-copying.json"])
+
+        mock_move.assert_not_called()
+
+    @patch("Database.Importers.AutoImporter.os.path.exists")
+    @patch("Database.Importers.AutoImporter.os.makedirs")
+    @patch("Database.Importers.AutoImporter.shutil.move")
+    def test_one_undecodable_file_does_not_stop_the_rest_of_the_batch(self, mock_move, mock_makedirs, mock_exists):
+        mock_exists.return_value = False
+        import_callback = MagicMock(return_value=["imported"])
+        importer = AutoImporter("/dummy/path", import_callback)
+        badBytes = UnicodeDecodeError("utf-8", b"\xff\xfe", 0, 1, "invalid start byte")
+
+        def openOrFail(path, *args, **kwargs):
+            if "mojibake" in str(path):
+                raise badBytes
+            return _fakeOpenByName(path, *args, **kwargs)
+
+        with patch("Database.Importers.AutoImporter.open", MagicMock(side_effect=openOrFail)):
+            with self.assertLogs("Database.Importers.AutoImporter", level="ERROR"):
+                importer._handleImport(["/dummy/path/good.json", "/dummy/path/mojibake.json"])
+
+        self.assertEqual(import_callback.call_count, 1)   #< the readable file still imported
+        destinations = {os.path.basename(call[0][0]): os.path.normpath(call[0][1]).split(os.sep)
+                        for call in mock_move.call_args_list}
+        self.assertIn("DONE", destinations["good.json"])
+        self.assertIn("FAILED", destinations["mojibake.json"])
+
+    @patch("Database.Importers.AutoImporter.os.path.exists")
+    @patch("Database.Importers.AutoImporter.os.makedirs")
+    @patch("Database.Importers.AutoImporter.shutil.move")
+    def test_a_quarantine_move_that_itself_fails_does_not_kill_the_batch(self, mock_move, mock_makedirs, mock_exists):
+        """The quarantine move can hit the same lock that broke the read. It
+        must not take down the poll - the file just stays for the next pass."""
+        mock_exists.return_value = False
+        import_callback = MagicMock(return_value=["imported"])
+        importer = AutoImporter("/dummy/path", import_callback)
+        badBytes = UnicodeDecodeError("utf-8", b"\xff\xfe", 0, 1, "invalid start byte")
+        mock_move.side_effect = OSError("move denied")
+
+        def openOrFail(path, *args, **kwargs):
+            if "mojibake" in str(path):
+                raise badBytes
+            return _fakeOpenByName(path, *args, **kwargs)
+
+        with patch("Database.Importers.AutoImporter.open", MagicMock(side_effect=openOrFail)):
+            with self.assertLogs("Database.Importers.AutoImporter", level="ERROR"):
+                importer._handleImport(["/dummy/path/good.json", "/dummy/path/mojibake.json"])
+
+        self.assertEqual(import_callback.call_count, 1)
+
+
 class TestAutoImporterWiring(DatabaseTestCase):
     def test_database_wires_batch_import_callback(self):
         """Database must feed the AutoImporter through importHistoryBatch so
