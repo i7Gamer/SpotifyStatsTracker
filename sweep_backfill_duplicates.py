@@ -33,25 +33,47 @@ from Database.database import Database
 #  locked" aborts the sweep - the sweep's own work is milliseconds
 BUSY_TIMEOUT_MS = 5000
 
+#< how many ids one DELETE binds. Each is a bound parameter, and SQLite's
+#  SQLITE_MAX_VARIABLE_NUMBER (32766 here) is a COMPILE-TIME maximum that
+#  sqlite3_limit clamps to and cannot raise - so one statement over every
+#  duplicate raises "too many SQL variables" on a library with enough of them,
+#  after the report has already told the operator how many there are. Well
+#  under the ceiling; a one-off sweep gains nothing from being close to it.
+DELETE_CHUNK_SIZE = 500
+
 #< matches the reconciler's pairing rule exactly (see workers/listener.py
 #  _isSameListen): backfill played_at (Spotify's end-time reading) against the
 #  listener row's created_at (its observed end). The created_reason filters are
 #  what getPlaysWithSourceInRange's CASE and the mixed-sources rule enforce in
 #  the live path: only listener rows anchor, only backfill rows are deleted.
+#
+#  One row per duplicate via ROW_NUMBER rather than GROUP BY: the reported
+#  start and end are what the operator reads to decide whether --apply is safe,
+#  and two independent MIN() aggregates took each end of that pair from
+#  whichever listener row minimised it separately - so a copy pairing with
+#  several listener rows was described by a start and an end that never
+#  belonged to the same listen. The pick is the CLOSEST pairing (l.id breaks a
+#  tie, so the report is stable across runs). Only the reported columns change;
+#  WHERE decides which backfill rows are duplicates, and it is untouched.
 _FIND_SQL = """
-SELECT b.id AS play_id, b.username, b.track_id, b.played_at,
-       MIN(l.played_at) AS listener_played_at,
-       MIN(l.created_at) AS listener_created_at
-FROM plays b
-JOIN plays l
-  ON l.username = b.username AND l.track_id = b.track_id
-WHERE b.created_reason LIKE 'web_api_backfill_play%'
-  AND l.created_reason LIKE 'listener_play%'
-  AND b.is_skip = 0 AND l.is_skip = 0
-  AND l.created_at IS NOT NULL
-  AND ABS(b.played_at - l.created_at) <= ?
-GROUP BY b.id
-ORDER BY b.username, b.played_at
+SELECT play_id, username, track_id, played_at, listener_played_at, listener_created_at
+FROM (
+    SELECT b.id AS play_id, b.username, b.track_id, b.played_at,
+           l.played_at AS listener_played_at,
+           l.created_at AS listener_created_at,
+           ROW_NUMBER() OVER (PARTITION BY b.id
+                              ORDER BY ABS(b.played_at - l.created_at), l.id) AS pairRank
+    FROM plays b
+    JOIN plays l
+      ON l.username = b.username AND l.track_id = b.track_id
+    WHERE b.created_reason LIKE 'web_api_backfill_play%'
+      AND l.created_reason LIKE 'listener_play%'
+      AND b.is_skip = 0 AND l.is_skip = 0
+      AND l.created_at IS NOT NULL
+      AND ABS(b.played_at - l.created_at) <= ?
+)
+WHERE pairRank = 1
+ORDER BY username, played_at
 """
 
 
@@ -64,12 +86,16 @@ def findBackfillEndTimeDuplicates(conn: sqlite3.Connection, toleranceSeconds: fl
 
 def deleteBackfillDuplicates(conn: sqlite3.Connection, playIds: list[int]) -> int:
     """Delete the given plays rows by id; returns how many rows went. The
-    caller owns the transaction (commit/rollback)."""
-    if not playIds:
-        return 0
-    placeholders = ",".join("?" for _ in playIds)
-    cur = conn.execute(f"DELETE FROM plays WHERE id IN ({placeholders})", playIds)
-    return cur.rowcount
+    caller owns the transaction (commit/rollback), so a chunk that fails rolls
+    the whole sweep back with it - the batching below is about SQLite's
+    parameter ceiling (see DELETE_CHUNK_SIZE), not about partial progress."""
+    deleted = 0
+    for start in range(0, len(playIds), DELETE_CHUNK_SIZE):
+        chunk = playIds[start:start + DELETE_CHUNK_SIZE]
+        placeholders = ",".join("?" for _ in chunk)
+        deleted += conn.execute(
+            f"DELETE FROM plays WHERE id IN ({placeholders})", chunk).rowcount
+    return deleted
 
 
 def _iso(ts: float) -> str:

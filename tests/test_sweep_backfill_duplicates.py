@@ -174,6 +174,51 @@ class SweepTestCase(unittest.TestCase):
         self.assertEqual(exitCode, 0)
         self.assertEqual(self._playedAts(), [START, START])  #< listener row + genuine backfill
 
+    def test_the_reported_listener_times_come_from_one_row(self):
+        """The report prints a "listener start -> end" pair per duplicate. Two
+        independent MIN() aggregates took each end of that pair from whichever
+        row minimised it separately, so a backfill copy pairing with several
+        listener rows was described by a start and an end that never belonged
+        to the same listen - and the operator reads exactly this to decide
+        whether --apply is safe.
+
+        Here the EARLIER-starting row is not the one whose end pairs: MIN()
+        reports its start (START - 300) beside the other row's end."""
+        self._insertPlay("t1", START, createdAt=END, created_reason=LISTENER_REASON)
+        self._insertPlay("t1", START - 300, createdAt=END + 4, created_reason=LISTENER_REASON)
+        self._insertPlay("t1", END + 1, created_reason=BACKFILL_REASON)
+
+        found = self._find()
+
+        self.assertEqual(len(found), 1)
+        row = found[0]
+        pairs = {(START, END), (START - 300, END + 4)}
+        self.assertIn((row["listener_played_at"], row["listener_created_at"]), pairs,
+                      "the reported start and end must be one row's, not two rows' minima")
+        #< and specifically the closest pairing, which is the one being acted on
+        self.assertEqual(row["listener_created_at"], END)
+
+    def test_more_duplicates_than_sqlites_parameter_ceiling_are_deleted(self):
+        """deleteBackfillDuplicates binds one parameter per id. SQLite's
+        SQLITE_MAX_VARIABLE_NUMBER is a COMPILE-TIME maximum (32766 here) that
+        sqlite3_limit cannot raise, so a single statement over every duplicate
+        raises "too many SQL variables" on a library with enough of them -
+        after the report has already told the operator how many there are.
+
+        Exercised against a lowered chunk size rather than by writing 32k rows:
+        the batching is what is under test, not SQLite's constant."""
+        for index in range(7):
+            playedAt = START + index * 10_000
+            self._insertPlay("t1", playedAt, createdAt=playedAt + 100,
+                             created_reason=LISTENER_REASON)
+            self._insertPlay("t1", playedAt + 101, created_reason=BACKFILL_REASON)
+
+        with patch.object(sweep, "DELETE_CHUNK_SIZE", 2):
+            exitCode = sweep.main(["--db", str(self.dbPath), "--apply"])
+
+        self.assertEqual(exitCode, 0)
+        self.assertEqual(len(self._playedAts()), 7, "every backfill copy should be gone")
+
 
 if __name__ == "__main__":
     unittest.main()
