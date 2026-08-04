@@ -26,6 +26,12 @@ from Database.dbmodule import dbmod as _dbmod
 # balloon a worker thread's footprint.
 MAX_IMAGE_BYTES = 12 * 1024 * 1024
 
+# Bounds both outbound requests below - the CDN image download and the Web API
+# artist lookup. Each runs on a background image thread and has a fallback
+# behind it (the cookie client, or a later retry through the pending claim), so
+# a stalled endpoint should cost one slow attempt rather than a wedged worker.
+MEDIA_FETCH_HTTP_TIMEOUT_SECONDS = 10
+
 
 class MediaFetchMixin:
     """Album/artist image + Last.fm biography fetching and on-demand refresh, mixed into Database."""
@@ -59,7 +65,7 @@ class MediaFetchMixin:
             # never returns its connection to the pool - the next image download
             # then pays a fresh TCP+TLS handshake. Closed before the decode/save
             # work below, which no longer needs the socket.
-            with _dbmod.requests.get(url, timeout=10, stream=True) as response:
+            with _dbmod.requests.get(url, timeout=MEDIA_FETCH_HTTP_TIMEOUT_SECONDS, stream=True) as response:
                 response.raise_for_status()
                 content = self._readCappedBody(response)
             img = _dbmod.Image.open(_dbmod.BytesIO(content))
@@ -128,7 +134,8 @@ class MediaFetchMixin:
             if access_token:
                 try:
                     headers = {"Authorization": f"Bearer {access_token}"}
-                    resp = _dbmod.requests.get(f"https://api.spotify.com/v1/artists/{artistId}", headers=headers, timeout=10)
+                    resp = _dbmod.requests.get(f"https://api.spotify.com/v1/artists/{artistId}", headers=headers,
+                                               timeout=MEDIA_FETCH_HTTP_TIMEOUT_SECONDS)
                     if resp.status_code == 200:
                         images = resp.json().get("images") or []
                         return images[0]["url"] if images else None

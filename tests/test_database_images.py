@@ -601,6 +601,43 @@ class TestImageDownloadSizeCap(DatabaseTestCase):
         self.assertEqual(db.repo.imageStatus("track-ok", IMAGE_KIND_TRACK), IMAGE_STATUS_OK)
 
 
+class TestMediaFetchRequestTimeouts(DatabaseTestCase):
+    """Both outbound requests in this module run on a background image thread
+    with a fallback behind them (the cookie client for the artist lookup, a
+    retry via the pending claim for the download), so neither may hang that
+    thread on a stalled endpoint. One constant because they are the same knob:
+    how long background image work may block on the network."""
+
+    def test_the_cdn_download_uses_the_named_timeout(self):
+        from Database.media_fetch import MEDIA_FETCH_HTTP_TIMEOUT_SECONDS
+
+        db = self._makeDb({}, [])
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("Database.database.requests.get",
+                       return_value=_imageResponse(_pngBytes())) as mock_get:
+                db._downloadImageTask(Path(tmpdir), "https://img.example/ok", "track-t", IMAGE_KIND_TRACK)
+
+        self.assertEqual(mock_get.call_args.kwargs["timeout"], MEDIA_FETCH_HTTP_TIMEOUT_SECONDS)
+
+    def test_the_web_api_artist_lookup_uses_the_named_timeout(self):
+        from Database.media_fetch import MEDIA_FETCH_HTTP_TIMEOUT_SECONDS
+
+        db = self._makeDb({}, [])
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {"images": [{"url": "https://cdn.example/a.jpg"}]}
+        creds = {"client_id": "cid", "client_secret": "sec", "refresh_token": "rt"}
+
+        with patch.object(db, "getUserSpotifyCredentials", return_value=creds), \
+             patch("Database.Listeners.spotifyListener._refresh_spotify_access_token",
+                   return_value="access-token"), \
+             patch("Database.database.requests.get", return_value=response) as mock_get:
+            url = db._fetchArtistImageUrl("artist-1")
+
+        self.assertEqual(url, "https://cdn.example/a.jpg")   #< the Web API path really was taken
+        self.assertEqual(mock_get.call_args.kwargs["timeout"], MEDIA_FETCH_HTTP_TIMEOUT_SECONDS)
+
+
 class TestImageDownloadReleasesTheConnection(DatabaseTestCase):
     """The download is streamed, and _readCappedBody deliberately STOPS draining
     an oversized body - a response left undrained never returns its connection
