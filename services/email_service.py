@@ -35,6 +35,10 @@ SETTING_INSTANCE_PUBLIC_URL = "instance_public_url"
 DEFAULT_SMTP_PORT = 587
 DEFAULT_SMTP_ENCRYPTION = "tls"
 DEFAULT_SMTP_FROM_NAME = "Spotify Stats Tracker"
+# Bounds every SMTP connect/read. smtplib's own default is no timeout at all,
+# so without this a black-holed host holds whichever thread is sending - an
+# admin's /admin/test_email request thread, or the email worker - indefinitely.
+SMTP_TIMEOUT_SECONDS = 15
 
 # Where each event's email should send the recipient, relative to
 # get_instance_public_url() - lives once here instead of being threaded
@@ -157,12 +161,12 @@ def _send_smtp_message(config: dict[str, Any], msg: MIMEMultipart) -> tuple[bool
 
     try:
         if encryption == "ssl":
-            with smtplib.SMTP_SSL(host, port, timeout=15) as server:
+            with smtplib.SMTP_SSL(host, port, timeout=SMTP_TIMEOUT_SECONDS) as server:
                 if user and password:
                     server.login(user, password)
                 server.send_message(msg)
         else:
-            with smtplib.SMTP(host, port, timeout=15) as server:
+            with smtplib.SMTP(host, port, timeout=SMTP_TIMEOUT_SECONDS) as server:
                 if encryption == "tls":
                     server.starttls()
                 if user and password:

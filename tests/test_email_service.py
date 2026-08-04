@@ -265,3 +265,45 @@ class TestRenderEventTemplate:
         _subject, _text_body, html_body = _render_event_template(
             EVENT_INVALID_COOKIES, "alice", {}, base_url="https://tracker.example.com/")
         assert "//login" not in html_body
+
+
+class TestSmtpTimeout:
+    """A misconfigured or black-holed SMTP host must not pin the caller: an
+    admin's /admin/test_email holds a request thread, and the notification path
+    runs inside the email worker. smtplib's default is no timeout at all, so
+    the value is the only thing bounding either - named rather than repeated
+    inline across the SSL and STARTTLS branches."""
+
+    @patch("smtplib.SMTP")
+    def test_starttls_connection_passes_the_named_timeout(self, mock_smtp_class):
+        from services.email_service import SMTP_TIMEOUT_SECONDS
+
+        mock_smtp_class.return_value.__enter__.return_value = MagicMock()
+        repo = Repository()
+        save_smtp_config(
+            repo=repo, enabled=True, host="smtp.example.com", port=587, encryption="tls",
+            user="smtp_user", password="smtp_password",
+            from_email="noreply@example.com", from_name="Spotify Tracker",
+        )
+
+        result, err = send_test_email(repo, "admin@example.com")
+
+        assert (result, err) == (True, None)
+        assert mock_smtp_class.call_args.kwargs["timeout"] == SMTP_TIMEOUT_SECONDS
+
+    @patch("smtplib.SMTP_SSL")
+    def test_ssl_connection_passes_the_named_timeout(self, mock_ssl_class):
+        from services.email_service import SMTP_TIMEOUT_SECONDS
+
+        mock_ssl_class.return_value.__enter__.return_value = MagicMock()
+        repo = Repository()
+        save_smtp_config(
+            repo=repo, enabled=True, host="smtp.example.com", port=465, encryption="ssl",
+            user="smtp_user", password="smtp_password",
+            from_email="noreply@example.com", from_name="Spotify Tracker",
+        )
+
+        result, err = send_test_email(repo, "admin@example.com")
+
+        assert (result, err) == (True, None)
+        assert mock_ssl_class.call_args.kwargs["timeout"] == SMTP_TIMEOUT_SECONDS
