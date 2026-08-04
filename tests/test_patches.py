@@ -1,9 +1,12 @@
+import contextlib
+import io
 import unittest
 from unittest.mock import MagicMock, patch
 import json
 import signal
 import threading
 import websockets.sync.client
+import spotapi.exceptions
 import spotapi.status
 import spotapi.websocket
 
@@ -1356,6 +1359,93 @@ class TestEnforceShadowRemoval(unittest.TestCase):
         self.assertEqual(packet, {"type": "pong"})
         self.assertEqual(streamer.ws.recvTimeouts, [0.25])
 
+    def test_both_classes_see_the_patched_device_registration(self):
+        from Database.patches import patched_register_device, patched_connect_device
+        self.assertIs(spotapi.status.PlayerStatus.register_device, patched_register_device)
+        self.assertIs(spotapi.status.PlayerStatus.connect_device, patched_connect_device)
+        self.assertIs(spotapi.status.EventManager.register_device, patched_register_device)
+        self.assertIs(spotapi.status.EventManager.connect_device, patched_connect_device)
+
+
+def _fakeDeviceStreamer(resp):
+    """A stand-in carrying only what register_device/connect_device touch."""
+    import types
+    streamer = types.SimpleNamespace()
+    streamer.device_id = "device-1234"
+    streamer.connection_id = "conn-5678"
+    streamer.client = MagicMock()
+    streamer.client.post.return_value = resp
+    streamer.client.put.return_value = resp
+    return streamer
+
+
+def _deviceResponse(fail=False, response=None):
+    resp = MagicMock()
+    resp.fail = fail
+    resp.status_code = 400 if fail else 200
+    resp.response = response if response is not None else {}
+    resp.error.string = "denied" if fail else None
+    resp.raw.headers = {"Content-Type": "application/json"}
+    return resp
+
+
+class TestPatchedDeviceRegistration(unittest.TestCase):
+    """spotapi's register_device/connect_device print a five-line diagnostic
+    block to stdout on failure - invisible in app.log, where the callers' own
+    one-line warnings land. And connect_device sits on the hot paths (the
+    renew_state poll tick and the push loop's periodic resubscribe), so one
+    throttled spell printed a block every few seconds to a console nobody
+    reads during an incident. The replacements keep the exact request
+    contract and route the diagnostics through logging."""
+
+    def test_a_failed_registration_logs_and_raises_without_stdout(self):
+        streamer = _fakeDeviceStreamer(_deviceResponse(fail=True))
+        captured = io.StringIO()
+        with self.assertLogs("Database.patches", level="WARNING") as logs, \
+                contextlib.redirect_stdout(captured):
+            with self.assertRaises(spotapi.exceptions.WebSocketError):
+                spotapi.websocket.WebsocketStreamer.register_device(streamer)
+        message = " ".join(logs.output)
+        self.assertIn("device-1234", message)
+        self.assertIn("denied", message)
+        self.assertEqual(captured.getvalue(), "", "diagnostics must log, not print")
+
+    def test_a_successful_registration_posts_the_fork_payload(self):
+        streamer = _fakeDeviceStreamer(_deviceResponse())
+
+        spotapi.websocket.WebsocketStreamer.register_device(streamer)
+
+        args, kwargs = streamer.client.post.call_args
+        self.assertIn("track-playback/v1/devices", args[0])
+        self.assertTrue(kwargs["authenticate"])
+        payload = kwargs["json"]
+        self.assertEqual(payload["device"]["device_id"], "device-1234")
+        self.assertEqual(payload["connection_id"], "conn-5678")
+        self.assertEqual(payload["device"]["model"], "web_player")  #< fork payload, verbatim
+
+    def test_a_failed_connect_logs_and_raises_without_stdout(self):
+        streamer = _fakeDeviceStreamer(_deviceResponse(fail=True))
+        captured = io.StringIO()
+        with self.assertLogs("Database.patches", level="WARNING") as logs, \
+                contextlib.redirect_stdout(captured):
+            with self.assertRaises(spotapi.exceptions.WebSocketError):
+                spotapi.websocket.WebsocketStreamer.connect_device(streamer)
+        message = " ".join(logs.output)
+        self.assertIn("conn-5678", message)
+        self.assertEqual(captured.getvalue(), "", "diagnostics must log, not print")
+
+    def test_a_successful_connect_returns_the_cluster_and_names_the_connection(self):
+        cluster = {"player_state": {"timestamp": "1"}}
+        streamer = _fakeDeviceStreamer(_deviceResponse(response=cluster))
+
+        result = spotapi.websocket.WebsocketStreamer.connect_device(streamer)
+
+        self.assertEqual(result, cluster)
+        args, kwargs = streamer.client.put.call_args
+        self.assertIn("hobs_device-1234", args[0])
+        self.assertTrue(kwargs["authenticate"])
+        self.assertEqual(kwargs["headers"]["x-spotify-connection-id"], "conn-5678")
+
 
 class TestThrottleDetection(unittest.TestCase):
     """_looksThrottled decides whether a reply is Spotify pushing back. The
@@ -2075,21 +2165,30 @@ class TestStreamerAtexitUnregistration(unittest.TestCase):
         self.assertIsInstance(spotapi.websocket.atexit, _SpotapiAtexitRecorder)
         self.assertIs(spotapi.websocket.atexit.unregister, realAtexit.unregister)
 
-    def test_init_forwards_and_records_the_forks_atexit_registration(self):
+    def test_init_swaps_the_forks_atexit_hook_for_an_owned_one(self):
+        """The fork's print-based closure must be unregistered right after
+        capture and replaced with the logger-based cleanup - which is what the
+        instance records for the deliberate-close unregistration."""
         cleanup = lambda: None
         instance = self._newStreamer()
         with patch("Database.patches.atexit") as mockAtexit:
             self._initRegistering(instance, cleanup)
-        mockAtexit.register.assert_called_once_with(cleanup)
-        self.assertEqual(instance._atexitCleanups, [cleanup])
-
-    def test_a_deliberate_close_unregisters_the_recorded_cleanup(self):
-        cleanup = lambda: None
-        instance = self._newStreamer()
-        with patch("Database.patches.atexit") as mockAtexit:
-            self._initRegistering(instance, cleanup)
-            instance._deliberate_close = True
         mockAtexit.unregister.assert_called_once_with(cleanup)
+        self.assertEqual(len(instance._atexitCleanups), 1)
+        owned = instance._atexitCleanups[0]
+        self.assertIsNot(owned, cleanup)
+        registered = [call.args[0] for call in mockAtexit.register.call_args_list]
+        self.assertEqual(registered, [cleanup, owned])  #< the recorder forwards the fork's, then the swap
+
+    def test_a_deliberate_close_unregisters_the_owned_cleanup(self):
+        cleanup = lambda: None
+        instance = self._newStreamer()
+        with patch("Database.patches.atexit") as mockAtexit:
+            self._initRegistering(instance, cleanup)
+            owned = instance._atexitCleanups[0]
+            mockAtexit.unregister.reset_mock()  #< drop the init-time swap call
+            instance._deliberate_close = True
+        mockAtexit.unregister.assert_called_once_with(owned)
         self.assertEqual(instance._atexitCleanups, [])
         self.assertTrue(instance._deliberate_close)
 
@@ -2098,19 +2197,61 @@ class TestStreamerAtexitUnregistration(unittest.TestCase):
         instance = self._newStreamer()
         with patch("Database.patches.atexit") as mockAtexit:
             self._initRegistering(instance, cleanup)
+            mockAtexit.unregister.reset_mock()  #< drop the init-time swap call
             instance._deliberate_close = True
             instance._deliberate_close = True
-        mockAtexit.unregister.assert_called_once_with(cleanup)
+        self.assertEqual(mockAtexit.unregister.call_count, 1)
 
     def test_clearing_the_flag_leaves_the_hook_registered(self):
         cleanup = lambda: None
         instance = self._newStreamer()
         with patch("Database.patches.atexit") as mockAtexit:
             self._initRegistering(instance, cleanup)
+            owned = instance._atexitCleanups[0]
+            mockAtexit.unregister.reset_mock()  #< drop the init-time swap call
             instance._deliberate_close = False
         mockAtexit.unregister.assert_not_called()
         self.assertFalse(instance._deliberate_close)
-        self.assertEqual(instance._atexitCleanups, [cleanup])
+        self.assertEqual(instance._atexitCleanups, [owned])
+
+    def _ownedHook(self, instance):
+        """Construct with a registering fake init and return the owned hook."""
+        with patch("Database.patches.atexit"):
+            self._initRegistering(instance, lambda: None)
+        return instance._atexitCleanups[0]
+
+    def test_the_owned_hook_closes_a_leftover_socket_through_logging(self):
+        instance = self._newStreamer()
+        hook = self._ownedHook(instance)
+        ws = MagicMock()
+        instance.ws = ws
+        captured = io.StringIO()
+        with self.assertLogs("Database.patches", level="INFO"), \
+                contextlib.redirect_stdout(captured):
+            hook()
+        ws.close.assert_called_once()
+        self.assertIsNone(instance.ws)
+        self.assertEqual(captured.getvalue(), "", "exit cleanup must log, not print")
+
+    def test_the_owned_hook_is_silent_when_the_socket_is_already_gone(self):
+        """The overwhelmingly common exit case - every deliberately closed
+        session - must not add a line per dead streamer to the log."""
+        instance = self._newStreamer()
+        hook = self._ownedHook(instance)
+        instance.ws = None
+        with self.assertNoLogs("Database.patches"):
+            hook()
+
+    def test_the_owned_hook_logs_a_failed_close_instead_of_raising(self):
+        """An exception out of an atexit callback would land on stderr during
+        interpreter teardown - exactly the noise this exists to remove."""
+        instance = self._newStreamer()
+        hook = self._ownedHook(instance)
+        ws = MagicMock()
+        ws.close.side_effect = RuntimeError("transport already torn down")
+        instance.ws = ws
+        with self.assertLogs("Database.patches", level="WARNING"):
+            hook()
 
     def test_the_flag_defaults_to_false_on_a_fresh_streamer(self):
         """Every reader does getattr(self, "_deliberate_close", False); the
@@ -2138,6 +2279,7 @@ class TestStreamerAtexitUnregistration(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 self._initRegistering(instance, cleanup, failure=failure)
         mockAtexit.unregister.assert_called_once_with(cleanup)
+        mockAtexit.register.assert_called_once_with(cleanup)  #< no owned hook for a dead construction
 
     def test_a_registration_outside_a_streamer_init_still_reaches_atexit(self):
         """The recorder must stay invisible to atexit use it wasn't built for -
@@ -2147,10 +2289,10 @@ class TestStreamerAtexitUnregistration(unittest.TestCase):
             spotapi.websocket.atexit.register(cleanup)
         mockAtexit.register.assert_called_once_with(cleanup)
 
-    def test_an_instance_that_cannot_record_still_registers_the_hook(self):
-        """A slotted instance can't store _atexitCleanups; the hook then simply
-        stays registered for the process's life - the pre-patch behavior, not
-        an exception out of __init__."""
+    def test_an_instance_that_cannot_record_still_gets_the_owned_hook(self):
+        """A slotted instance can't store _atexitCleanups; the owned hook then
+        simply stays registered for the process's life - logging instead of
+        printing, but never an exception out of __init__."""
         class Slotted:
             __slots__ = ()
 
@@ -2158,7 +2300,8 @@ class TestStreamerAtexitUnregistration(unittest.TestCase):
         instance = Slotted()
         with patch("Database.patches.atexit") as mockAtexit:
             self._initRegistering(instance, cleanup)
-        mockAtexit.register.assert_called_once_with(cleanup)
+        mockAtexit.unregister.assert_called_once_with(cleanup)
+        self.assertEqual(mockAtexit.register.call_count, 2)  #< the fork's, then the owned swap
         self.assertFalse(hasattr(instance, "_atexitCleanups"))
 
 

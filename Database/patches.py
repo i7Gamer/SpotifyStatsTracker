@@ -340,10 +340,13 @@ spotapi.status.PlayerStatus.saved_state = property(_player_status_saved_state_pr
 # 6 hours, each pinning its dead session's object graph until process exit and
 # printing "Websockets closing due to program ending" there (34 lines at the
 # 2026-08-04 shutdown, all but 3 of them for sessions long since replaced).
-# The recorder below captures what __init__ registers; the _deliberate_close
-# property further down drops the hook the moment the app declares this
-# streamer's close deliberate. A streamer never deliberately closed keeps its
-# hook: at exit it is the only close that socket will get.
+# The recorder below captures what __init__ registers, and the captured hook
+# is immediately swapped for an owned, logger-based one - so even the exit
+# line a crash-path streamer produces lands in the log instead of stdout. The
+# _deliberate_close property further down drops the hook the moment the app
+# declares this streamer's close deliberate. A streamer never deliberately
+# closed keeps its (owned) hook: at exit it is the only close that socket
+# will get.
 original_websocket_streamer_init = spotapi.websocket.WebsocketStreamer.__init__
 
 _streamerAtexitCapture = threading.local()  #< .captured is a list only while a patched __init__ runs in this thread
@@ -371,6 +374,29 @@ class _SpotapiAtexitRecorder:
 spotapi.websocket.atexit = _SpotapiAtexitRecorder()
 
 
+def _makeStreamerExitCleanup(streamer):
+    """A logger-based replacement for the fork's print-based atexit closure.
+
+    Closes a websocket left open at process exit. Deliberately takes no lock:
+    this runs during interpreter shutdown, where a daemon thread frozen while
+    holding rlock would turn a best-effort close into a hung process - the
+    2026-07-17 class of failure. The worst a lockless close can do is make a
+    concurrent recv()/send() raise ConnectionClosed, which every caller
+    already handles."""
+    def closeStreamerAtExit():
+        ws = getattr(streamer, "ws", None)
+        if ws is None:
+            return  #< the normal case: every deliberately closed session; stay quiet
+        logger.info("Closing a %s websocket left open at process exit", type(streamer).__name__)
+        try:
+            streamer.ws = None
+            ws.close()
+        except Exception as e:  # noqa: BLE001 - an exit-time close is best-effort by definition,
+            logger.warning(     #  and an exception here would land on stderr mid-teardown
+                "Failed to close the leftover websocket: %s", e)
+    return closeStreamerAtExit
+
+
 def patched_websocket_streamer_init(self, *args, **kwargs):
     previousSigintHandler = signal.getsignal(signal.SIGINT)
     _streamerAtexitCapture.captured = []
@@ -391,10 +417,17 @@ def patched_websocket_streamer_init(self, *args, **kwargs):
             for cleanup in captured:
                 atexit.unregister(cleanup)
     if captured:
+        # Swap the fork's print-based closures for one owned cleanup: the exit
+        # line lands in the log with everything else, and a failed close at
+        # teardown becomes a warning instead of stdout/stderr noise.
+        for forkCleanup in captured:
+            atexit.unregister(forkCleanup)
+        ownedCleanup = _makeStreamerExitCleanup(self)
+        atexit.register(ownedCleanup)
         try:
-            self._atexitCleanups = captured
+            self._atexitCleanups = [ownedCleanup]
         except AttributeError:  # noqa: S110 - a slotted instance can't record its hook; it just
-            pass                #  stays registered for the process's life, the pre-patch behavior
+            pass                #  stays registered for the process's life (logging, not printing)
 
 spotapi.websocket.WebsocketStreamer.__init__ = patched_websocket_streamer_init
 
@@ -425,7 +458,7 @@ def _setDeliberateClose(self, value) -> None:
 # is the one place that learns "this close is deliberate" first - making it
 # the right moment to drop the atexit hook. That covers Listener.stop()'s
 # direct ws.close() path, which never calls disconnect(), as well as every
-# session rebuild. No @enforce frozen copy can shadow this (patch 6's
+# session rebuild. No @enforce frozen copy can shadow this (patch 7's
 # concern): the name did not exist when the subclasses were decorated, and
 # @enforce skips properties regardless.
 spotapi.websocket.WebsocketStreamer._deliberate_close = property(_getDeliberateClose, _setDeliberateClose)
@@ -681,7 +714,116 @@ def _setRecvReconnectFailures(self, count: int) -> None:
 spotapi.websocket.WebsocketStreamer.get_packet = patched_get_packet
 
 
-# 6. Remove @enforce's frozen copies of the methods patched above.
+# 6. Replace register_device/connect_device's stdout diagnostics with logging.
+#
+# On a failed response both print a five-line block ("REGISTER DEVICE FAILED",
+# device id, connection id, error, raw body) straight to stdout before
+# raising - invisible in app.log, where the callers' one-line warnings land.
+# And these are hot paths: connect_device carries renew_state (the poll tick)
+# and the push loop's periodic resubscribe, so one throttled spell printed a
+# block every few seconds to a console nobody reads while the incident was
+# being diagnosed from the log. Full replacements with byte-identical request
+# payloads and the same raise contract; the diagnostics go through the
+# module's safe formatters, which never raise and never log a Spotify HTML
+# fallback page or a credential-bearing header.
+WS_REGISTER_DEVICE_URL = "https://gue1-spclient.spotify.com/track-playback/v1/devices"
+WS_CONNECT_DEVICE_URL_TEMPLATE = "https://gue1-spclient.spotify.com/connect-state/v1/devices/hobs_{deviceId}"
+
+
+def _logDeviceCallFailure(self, operation: str, resp) -> None:
+    logger.warning(
+        "%s failed: device_id=%s, connection_id=%s, error=%s, response=%s, headers=%s",
+        operation,
+        getattr(self, "device_id", None),
+        getattr(self, "connection_id", None),
+        getattr(getattr(resp, "error", None), "string", None),
+        _describeResponseBody(getattr(resp, "response", None), RESPONSE_SNIPPET_MAX_LEN),
+        _safeResponseHeaders(getattr(getattr(resp, "raw", None), "headers", None)))
+
+
+def patched_register_device(self) -> None:
+    """spotapi's register_device with its stdout prints routed to logging.
+    The payload is the fork's, verbatim; the raise contract is unchanged."""
+    payload = {
+        "device": {
+            "brand": "spotify",
+            "capabilities": {
+                "change_volume": True,
+                "enable_play_token": True,
+                "supports_file_media_type": True,
+                "play_token_lost_behavior": "pause",
+                "disable_connect": False,
+                "audio_podcasts": True,
+                "video_playback": True,
+                "manifest_formats": [
+                    "file_ids_mp3",
+                    "file_urls_mp3",
+                    "manifest_urls_audio_ad",
+                    "manifest_ids_video",
+                    "file_urls_external",
+                    "file_ids_mp4",
+                    "file_ids_mp4_dual",
+                    "manifest_urls_audio_ad",
+                ],
+            },
+            "device_id": self.device_id,
+            "device_type": "computer",
+            "metadata": {},
+            "model": "web_player",
+            "name": "Web Player (Chrome)",
+            "platform_identifier": "web_player windows 10;chrome 120.0.0.0;desktop",
+            "is_group": False,
+        },
+        "outro_endcontent_snooping": False,
+        "connection_id": self.connection_id,
+        "client_version": "harmony:4.43.2-a61ecaf5",
+        "volume": 65535,
+    }
+
+    resp = self.client.post(WS_REGISTER_DEVICE_URL, json=payload, authenticate=True)
+
+    if resp.fail:
+        _logDeviceCallFailure(self, "Websocket device registration", resp)
+        raise spotapi.exceptions.WebSocketError(
+            "Could not register device", error=resp.error.string)
+
+
+def patched_connect_device(self):
+    """spotapi's connect_device with its stdout prints routed to logging.
+    The payload is the fork's, verbatim; returns the cluster reply unchanged."""
+    payload = {
+        "member_type": "CONNECT_STATE",
+        "device": {
+            "device_info": {
+                "capabilities": {
+                    "can_be_player": False,
+                    "hidden": True,
+                    "needs_full_player_state": True,
+                }
+            }
+        },
+    }
+    headers = {
+        "x-spotify-connection-id": self.connection_id,
+    }
+
+    resp = self.client.put(
+        WS_CONNECT_DEVICE_URL_TEMPLATE.format(deviceId=self.device_id),
+        json=payload, authenticate=True, headers=headers)
+
+    if resp.fail:
+        _logDeviceCallFailure(self, "Websocket device connect", resp)
+        raise spotapi.exceptions.WebSocketError(
+            "Could not connect device", error=resp.error.string)
+
+    return resp.response
+
+
+spotapi.websocket.WebsocketStreamer.register_device = patched_register_device
+spotapi.websocket.WebsocketStreamer.connect_device = patched_connect_device
+
+
+# 7. Remove @enforce's frozen copies of the methods patched above.
 #
 # spotapi's @enforce class decorator iterates dir(cls) - inherited methods
 # included - and setattr's a signature-checking wrapper of each onto the
@@ -700,8 +842,11 @@ spotapi.websocket.WebsocketStreamer.get_packet = patched_get_packet
 # never froze (the PyPI/fork builds disagree on whether reconnect or
 # _supervise exist to begin with).
 _ENFORCE_SHADOWED_METHODS = (
-    (spotapi.status.PlayerStatus, ("keep_alive", "get_packet", "_supervise")),
-    (spotapi.status.EventManager, ("keep_alive", "get_packet", "reconnect", "renew_state", "_supervise")),
+    (spotapi.status.PlayerStatus,
+     ("keep_alive", "get_packet", "_supervise", "register_device", "connect_device")),
+    (spotapi.status.EventManager,
+     ("keep_alive", "get_packet", "reconnect", "renew_state", "_supervise",
+      "register_device", "connect_device")),
 )
 for _shadowedClass, _methodNames in _ENFORCE_SHADOWED_METHODS:
     for _methodName in _methodNames:
