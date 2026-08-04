@@ -15,14 +15,19 @@ import collections
 import sys
 import os
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 if isinstance(sys.modules.get("Database.database"), MagicMock):
     del sys.modules["Database.database"]
 
-from Database.Listeners.spotifyListener import Listener, CONNECT_STATE_MISSED_TRACK_CACHE_SIZE
+from Database.Listeners.spotifyListener import (
+    Listener,
+    CONNECT_STATE_MISSED_TRACK_CACHE_SIZE,
+    CONNECT_STATE_MISSED_TRACK_GRACE_SECONDS,
+    _settledMissingUrisForUser,
+)
 
 
 def _bareListener(recentlyPlayed=None, get_recorded_track_ids=None):
@@ -31,8 +36,26 @@ def _bareListener(recentlyPlayed=None, get_recorded_track_ids=None):
     listener.sp = MagicMock()
     listener.recentlyPlayed_Z1 = recentlyPlayed if recentlyPlayed is not None else []
     listener._settledMissingTrackUris = collections.OrderedDict()
+    listener._pendingMissingTrackUris = {}
     listener.get_recorded_track_ids = get_recorded_track_ids
     return listener
+
+
+def _ripen(listener):
+    """Backdate every pending first-seen stamp past the grace window, so the
+    next check treats the candidates as ripe. Deterministic stand-in for
+    'CONNECT_STATE_MISSED_TRACK_GRACE_SECONDS elapsed' - time.monotonic() never
+    decreases, so age >= grace holds without any real waiting."""
+    for uri in listener._pendingMissingTrackUris:
+        listener._pendingMissingTrackUris[uri] -= CONNECT_STATE_MISSED_TRACK_GRACE_SECONDS
+
+
+def _checkUntilRipe(listener):
+    """First sighting (stamps the candidates as pending), then a ripe re-check -
+    the shortest path to a warning under the grace window."""
+    listener._checkConnectStateForMissedTracks()
+    _ripen(listener)
+    listener._checkConnectStateForMissedTracks()
 
 
 def _withConnectState(listener, prevTracks):
@@ -115,6 +138,8 @@ class TestCheckConnectStateForMissedTracks(unittest.TestCase):
         listener = _bareListener(recentlyPlayed=[self._recordedItem("aaa")])
         _withConnectState(listener, [{"uri": "spotify:track:aaa"}, {"uri": "spotify:track:bbb"}])
 
+        listener._checkConnectStateForMissedTracks()  #< first sighting - pending, not warned
+        _ripen(listener)
         with self.assertLogs("Database.Listeners.spotifyListener", level="WARNING") as cm:
             listener._checkConnectStateForMissedTracks()
 
@@ -143,21 +168,19 @@ class TestCheckConnectStateForMissedTracks(unittest.TestCase):
         listener = _bareListener(recentlyPlayed=[])
         _withConnectState(listener, [{"uri": "spotify:track:bbb"}])
 
+        listener._checkConnectStateForMissedTracks()  #< first sighting - pending, not warned
+        _ripen(listener)
         with self.assertLogs("Database.Listeners.spotifyListener", level="WARNING") as cm:
             listener._checkConnectStateForMissedTracks()
         firstCallWarnings = len(cm.output)
 
-        # Second call: same missing track, already warned about - must not log again.
-        # (assertLogs requires at least one log record, so trigger a second,
-        # unrelated warning to keep the context manager happy while asserting
-        # the dedup behavior via call count instead of via assertLogs itself.)
-        import logging
-        logger = logging.getLogger("Database.Listeners.spotifyListener")
-        with self.assertLogs("Database.Listeners.spotifyListener", level="WARNING") as cm2:
+        # Later calls: same missing track, already warned about - must not log
+        # again, even after another full grace window.
+        with self.assertNoLogs("Database.Listeners.spotifyListener", level="WARNING"):
             listener._checkConnectStateForMissedTracks()
-            logger.warning("sentinel")
+            _ripen(listener)
+            listener._checkConnectStateForMissedTracks()
 
-        self.assertEqual(len(cm2.output), 1)  # only the sentinel, not a repeat warning
         self.assertEqual(firstCallWarnings, 1)
 
     def test_non_track_uris_never_warn(self):
@@ -171,6 +194,8 @@ class TestCheckConnectStateForMissedTracks(unittest.TestCase):
             {"uri": "spotify:track:bbb"},
         ])
 
+        listener._checkConnectStateForMissedTracks()  #< first sighting - pending, not warned
+        _ripen(listener)
         with self.assertLogs("Database.Listeners.spotifyListener", level="WARNING") as cm:
             listener._checkConnectStateForMissedTracks()
 
@@ -216,7 +241,7 @@ class TestCheckConnectStateForMissedTracks(unittest.TestCase):
         )
         _withConnectState(listener, [{"uri": "spotify:track:new"}])
 
-        listener._checkConnectStateForMissedTracks()
+        _checkUntilRipe(listener)
 
         self.assertLessEqual(len(listener._settledMissingTrackUris), CONNECT_STATE_MISSED_TRACK_CACHE_SIZE)
 
@@ -225,11 +250,18 @@ class TestCheckConnectStateForMissedTracks(unittest.TestCase):
         track the DB vouches for is a permanent miss against the in-memory
         cache - so without recording the answer it would be re-queried ~1,800
         times per listener per idle cycle, per user. The database answer has to
-        settle the URI just as a warning does."""
+        settle the URI just as a warning does. The grace window shields the
+        database further: a candidate that is merely pending costs no query at
+        all - only a ripe one is looked up, exactly once."""
         recorded = MagicMock(return_value={"bbb"})
         listener = _bareListener(recentlyPlayed=[], get_recorded_track_ids=recorded)
         _withConnectState(listener, [{"uri": "spotify:track:bbb"}])
 
+        for _ in range(5):
+            listener._checkConnectStateForMissedTracks()
+        recorded.assert_not_called()  #< still inside the grace window
+
+        _ripen(listener)
         for _ in range(5):
             listener._checkConnectStateForMissedTracks()
 
@@ -244,7 +276,7 @@ class TestCheckConnectStateForMissedTracks(unittest.TestCase):
             {"uri": f"spotify:track:{i}"} for i in range(CONNECT_STATE_MISSED_TRACK_CACHE_SIZE + 10)
         ])
 
-        listener._checkConnectStateForMissedTracks()
+        _checkUntilRipe(listener)
 
         self.assertLessEqual(len(listener._settledMissingTrackUris),
                              CONNECT_STATE_MISSED_TRACK_CACHE_SIZE)
@@ -258,12 +290,12 @@ class TestCheckConnectStateForMissedTracks(unittest.TestCase):
         _withConnectState(listener, [{"uri": "spotify:track:bbb"}])
 
         with self.assertLogs("Database.Listeners.spotifyListener", level="WARNING"):
-            listener._checkConnectStateForMissedTracks()
+            _checkUntilRipe(listener)
         # the warning itself settles it, but the lookup must be retried for a
         # track that is still unaccounted for after the cache is cleared
         listener._settledMissingTrackUris.clear()
         with self.assertLogs("Database.Listeners.spotifyListener", level="WARNING"):
-            listener._checkConnectStateForMissedTracks()
+            _checkUntilRipe(listener)
 
         self.assertEqual(recorded.call_count, 2)
 
@@ -279,7 +311,7 @@ class TestCheckConnectStateForMissedTracks(unittest.TestCase):
         _withConnectState(listener, [{"uri": "spotify:track:bbb"}])
 
         with self.assertNoLogs("Database.Listeners.spotifyListener", level="WARNING"):
-            listener._checkConnectStateForMissedTracks()
+            _checkUntilRipe(listener)
 
         recorded.assert_called_once_with(["bbb"])
         #< settled, not forgotten - see test_db_is_asked_about_a_given_track_only_once
@@ -291,7 +323,7 @@ class TestCheckConnectStateForMissedTracks(unittest.TestCase):
         _withConnectState(listener, [{"uri": "spotify:track:bbb"}])
 
         with self.assertLogs("Database.Listeners.spotifyListener", level="WARNING") as cm:
-            listener._checkConnectStateForMissedTracks()
+            _checkUntilRipe(listener)
 
         self.assertTrue(any("bbb" in message for message in cm.output))
 
@@ -303,7 +335,7 @@ class TestCheckConnectStateForMissedTracks(unittest.TestCase):
                                  get_recorded_track_ids=recorded)
         _withConnectState(listener, [{"uri": "spotify:track:aaa"}, {"uri": "spotify:track:bbb"}])
 
-        listener._checkConnectStateForMissedTracks()
+        _checkUntilRipe(listener)
 
         recorded.assert_called_once_with(["bbb"])
 
@@ -313,7 +345,7 @@ class TestCheckConnectStateForMissedTracks(unittest.TestCase):
                                  get_recorded_track_ids=recorded)
         _withConnectState(listener, [{"uri": "spotify:track:aaa"}])
 
-        listener._checkConnectStateForMissedTracks()
+        _checkUntilRipe(listener)
 
         recorded.assert_not_called()
 
@@ -325,7 +357,7 @@ class TestCheckConnectStateForMissedTracks(unittest.TestCase):
         _withConnectState(listener, [{"uri": "spotify:track:bbb"}])
 
         with self.assertLogs("Database.Listeners.spotifyListener", level="WARNING") as cm:
-            listener._checkConnectStateForMissedTracks()
+            _checkUntilRipe(listener)
 
         self.assertTrue(any("bbb" in message for message in cm.output))
 
@@ -336,7 +368,7 @@ class TestCheckConnectStateForMissedTracks(unittest.TestCase):
         _withConnectState(listener, [{"uri": "spotify:track:bbb"}])
 
         with self.assertLogs("Database.Listeners.spotifyListener", level="WARNING") as cm:
-            listener._checkConnectStateForMissedTracks()
+            _checkUntilRipe(listener)
 
         self.assertTrue(any("bbb" in message for message in cm.output))
 
@@ -350,12 +382,156 @@ class TestCheckConnectStateForMissedTracks(unittest.TestCase):
         )
         _withConnectState(listener, [{"uri": "spotify:track:new"}])
 
-        listener._checkConnectStateForMissedTracks()
+        _checkUntilRipe(listener)
 
         self.assertNotIn("spotify:track:0", listener._settledMissingTrackUris)
         for i in range(1, CONNECT_STATE_MISSED_TRACK_CACHE_SIZE):
             self.assertIn(f"spotify:track:{i}", listener._settledMissingTrackUris)
         self.assertIn("spotify:track:new", listener._settledMissingTrackUris)
+
+
+class TestMissedTrackGraceWindow(unittest.TestCase):
+    """prev_tracks shows a track the moment playback moves on, while its
+    recording lands a recently-played/backfill poll later - every 'never
+    recorded' warning sampled in app.log 2026-08-04 was followed by its own
+    web_api_backfill recording 3-22 seconds later. A candidate must stay
+    unaccounted for a full grace window before it is worth a warning."""
+
+    def test_first_sighting_only_marks_pending_no_warning(self):
+        listener = _bareListener(recentlyPlayed=[])
+        _withConnectState(listener, [{"uri": "spotify:track:bbb"}])
+
+        with self.assertNoLogs("Database.Listeners.spotifyListener", level="WARNING"):
+            listener._checkConnectStateForMissedTracks()
+
+        self.assertIn("spotify:track:bbb", listener._pendingMissingTrackUris)
+        self.assertEqual(len(listener._settledMissingTrackUris), 0)
+
+    def test_repeat_checks_inside_the_grace_window_stay_quiet(self):
+        listener = _bareListener(recentlyPlayed=[])
+        _withConnectState(listener, [{"uri": "spotify:track:bbb"}])
+
+        with self.assertNoLogs("Database.Listeners.spotifyListener", level="WARNING"):
+            for _ in range(5):
+                listener._checkConnectStateForMissedTracks()
+
+        self.assertIn("spotify:track:bbb", listener._pendingMissingTrackUris)
+
+    def test_still_missing_after_the_grace_window_warns_once(self):
+        listener = _bareListener(recentlyPlayed=[])
+        _withConnectState(listener, [{"uri": "spotify:track:bbb"}])
+
+        listener._checkConnectStateForMissedTracks()
+        _ripen(listener)
+        with self.assertLogs("Database.Listeners.spotifyListener", level="WARNING") as cm:
+            listener._checkConnectStateForMissedTracks()
+
+        self.assertTrue(any("bbb" in message for message in cm.output))
+        #< answered - the warning must also clear the pending stamp
+        self.assertNotIn("spotify:track:bbb", listener._pendingMissingTrackUris)
+
+    def test_track_recorded_during_the_grace_window_never_warns(self):
+        """The exact live-log sequence: sighted in prev_tracks, recorded via
+        backfill seconds later - must resolve silently."""
+        listener = _bareListener(recentlyPlayed=[])
+        _withConnectState(listener, [{"uri": "spotify:track:bbb"}])
+
+        listener._checkConnectStateForMissedTracks()  #< sighted, pending
+        listener.recentlyPlayed_Z1 = [{"track": {"id": "bbb"}, "played_at": "t"}]  #< backfill landed
+
+        _ripen(listener)
+        with self.assertNoLogs("Database.Listeners.spotifyListener", level="WARNING"):
+            listener._checkConnectStateForMissedTracks()
+
+        self.assertNotIn("spotify:track:bbb", listener._pendingMissingTrackUris)
+        self.assertEqual(len(listener._settledMissingTrackUris), 0)
+
+    def test_track_recorded_in_database_during_the_grace_window_settles_silently(self):
+        recorded = MagicMock(return_value={"bbb"})
+        listener = _bareListener(recentlyPlayed=[], get_recorded_track_ids=recorded)
+        _withConnectState(listener, [{"uri": "spotify:track:bbb"}])
+
+        with self.assertNoLogs("Database.Listeners.spotifyListener", level="WARNING"):
+            _checkUntilRipe(listener)
+
+        self.assertIn("spotify:track:bbb", listener._settledMissingTrackUris)
+        self.assertNotIn("spotify:track:bbb", listener._pendingMissingTrackUris)
+
+    def test_track_that_rolls_out_of_queue_history_is_forgotten(self):
+        """Also what keeps the pending dict bounded: it can only ever hold
+        what prev_tracks currently holds."""
+        listener = _bareListener(recentlyPlayed=[])
+        _withConnectState(listener, [{"uri": "spotify:track:bbb"}])
+        listener._checkConnectStateForMissedTracks()
+
+        _withConnectState(listener, [{"uri": "spotify:track:ccc"}])
+        listener._checkConnectStateForMissedTracks()
+
+        self.assertNotIn("spotify:track:bbb", listener._pendingMissingTrackUris)
+        self.assertIn("spotify:track:ccc", listener._pendingMissingTrackUris)
+
+
+class TestSettledCachePersistsAcrossListenerGenerations(unittest.TestCase):
+    """A listener is rebuilt on every reconnect and every 6h hard-ceiling
+    recycle (LISTENER_STALE_HARD_TIMEOUT_SECONDS), and an idle account's
+    prev_tracks never changes - so a per-listener settled set re-warned the
+    same ~10 storm-era tracks every 6 hours for days (app.log 2026-08-01..04).
+    The settled store therefore lives per user for the lifetime of the
+    process, not per Listener object.
+
+    Every test uses its own unique user key: the registry is process-global
+    on purpose, so a shared key would couple tests run in the same worker."""
+
+    def test_same_user_key_returns_the_same_store(self):
+        self.assertIs(_settledMissingUrisForUser("crosscheck-gen-same"),
+                      _settledMissingUrisForUser("crosscheck-gen-same"))
+
+    def test_different_user_keys_get_separate_stores(self):
+        self.assertIsNot(_settledMissingUrisForUser("crosscheck-gen-left"),
+                         _settledMissingUrisForUser("crosscheck-gen-right"))
+
+    def test_rebuilt_listener_does_not_rewarn_a_settled_track(self):
+        userKey = "crosscheck-gen-rebuild"
+        first = _bareListener(recentlyPlayed=[])
+        first._settledMissingTrackUris = _settledMissingUrisForUser(userKey)
+        _withConnectState(first, [{"uri": "spotify:track:bbb"}])
+        with self.assertLogs("Database.Listeners.spotifyListener", level="WARNING"):
+            _checkUntilRipe(first)
+
+        rebuilt = _bareListener(recentlyPlayed=[])
+        rebuilt._settledMissingTrackUris = _settledMissingUrisForUser(userKey)
+        _withConnectState(rebuilt, [{"uri": "spotify:track:bbb"}])
+        with self.assertNoLogs("Database.Listeners.spotifyListener", level="WARNING"):
+            _checkUntilRipe(rebuilt)
+
+    def _constructListener(self, **kwargs):
+        with patch("Database.Listeners.spotifyListener.Spotify") as mock_spotify_cls:
+            mock_sp = MagicMock()
+            mock_sp.current_user_recently_played.return_value = []
+            mock_spotify_cls.return_value = mock_sp
+            return Listener("dummy_cookie", **kwargs)
+
+    def test_constructor_wires_the_shared_store_for_a_keyed_listener(self):
+        listener = self._constructListener(user="crosscheck-gen-wired",
+                                           email="crosscheck-gen-wired@example.com")
+
+        self.assertIs(listener._settledMissingTrackUris,
+                      _settledMissingUrisForUser("crosscheck-gen-wired"))
+
+    def test_constructor_falls_back_to_the_email_key(self):
+        listener = self._constructListener(email="crosscheck-gen-email-only@example.com")
+
+        self.assertIs(listener._settledMissingTrackUris,
+                      _settledMissingUrisForUser("crosscheck-gen-email-only@example.com"))
+
+    def test_anonymous_listeners_keep_private_stores(self):
+        """No user key and no email (only ever tests) - sharing one store
+        between unrelated anonymous listeners would couple them for no
+        benefit."""
+        listener = self._constructListener()
+        other = self._constructListener()
+
+        self.assertIsNot(listener._settledMissingTrackUris, other._settledMissingTrackUris)
 
 
 if __name__ == "__main__":

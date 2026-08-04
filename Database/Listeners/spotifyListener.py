@@ -122,6 +122,35 @@ CONNECT_STATE_MISSED_TRACK_CACHE_SIZE = 50
 # "already recorded" just because the same track was played yesterday.
 CONNECT_STATE_MISSED_TRACK_LOOKBACK_SECONDS = 6 * 60 * 60
 
+# How long a missed-track candidate must stay unaccounted for before it is
+# worth a warning. prev_tracks shows a track the moment playback moves on,
+# while its recording lands a recently-played/backfill poll later - every
+# "never recorded" warning sampled in app.log 2026-08-04 was followed by its
+# own web_api_backfill recording 3-22 seconds later. The check runs every poll
+# tick (~1s), so this is a deferral before judging, not a schedule.
+CONNECT_STATE_MISSED_TRACK_GRACE_SECONDS = 60
+
+# One settled-set per user for the lifetime of the PROCESS, not per Listener:
+# a listener is rebuilt on every reconnect and every 6h hard-ceiling recycle
+# (LISTENER_STALE_HARD_TIMEOUT_SECONDS), and an idle account's prev_tracks
+# never changes - so a per-listener set re-warned the same ~10 tracks every 6
+# hours for days (app.log 2026-08-01..04). Keyed by the listener's log key
+# (user key, else email - see Listener.logUser).
+_settledMissingUrisByUser: dict[str, collections.OrderedDict] = {}
+_settledMissingUrisByUserLock = threading.Lock()
+
+
+def _settledMissingUrisForUser(userKey: str) -> collections.OrderedDict:
+    """The shared settled-missing-URI store for `userKey`, created on first
+    use. Successive Listener generations for the same user mutate the same
+    OrderedDict, so a warning issued before a rebuild still suppresses after
+    it. Only the get-or-create is locked; the dict itself is only ever touched
+    from the (single) live listener thread of that user - a brief overlap
+    during a reconnect handoff can at worst nudge the FIFO bound by one entry,
+    which a diagnostic cache can afford."""
+    with _settledMissingUrisByUserLock:
+        return _settledMissingUrisByUser.setdefault(userKey, collections.OrderedDict())
+
 SPOTIFY_TRACK_URI_PREFIX = "spotify:track:"  #< connect-state prev_tracks mixes real tracks with queue
                                               #  markers (spotify:delimiter, spotify:meta:*) - only URIs
                                               #  with this prefix are playable tracks
@@ -545,9 +574,18 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
         self._lastChangeTime = time.monotonic()
         self._lastPlayingUri = None       #< last track the connect state reported playing, and when it
         self._lastPlayingChangeTime = 0.0  #  last changed - see _observePlaybackForStaleness
-        self._settledMissingTrackUris = collections.OrderedDict()  #< dedupes _checkConnectStateForMissedTracks
-                                                                   #  warnings; OrderedDict (not set) so
-                                                                   #  eviction can target the oldest entry
+        # Dedupes _checkConnectStateForMissedTracks warnings; OrderedDict (not
+        # set) so eviction can target the oldest entry. Shared across this
+        # user's successive Listener generations via _settledMissingUrisForUser
+        # so a rebuild doesn't re-warn what was already answered; anonymous
+        # listeners (no user key and no email - only ever tests) keep a
+        # private store rather than all sharing one.
+        userKey = self.logUser
+        self._settledMissingTrackUris = (
+            _settledMissingUrisForUser(userKey) if userKey else collections.OrderedDict()
+        )
+        self._pendingMissingTrackUris: dict[str, float] = {}  #< uri -> monotonic first-seen; see
+                                                              #  _checkConnectStateForMissedTracks
         self._last_user_validation_time = None  #< None means "never validated yet" - forces an immediate first check
         self._last_user_validation_result = True  #< cache validation result
         self._last_validation_error_time = None  #< when the profile endpoint last refused to answer;
@@ -861,6 +899,14 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
         queue's rolling history (no per-item timestamp), not an account-wide
         play log - so it can only flag a possible miss, not backfill one.
 
+        A candidate is only judged once it has stayed unaccounted for a full
+        CONNECT_STATE_MISSED_TRACK_GRACE_SECONDS: prev_tracks shows a track
+        the moment playback moves on, while its recording lands a
+        recently-played/backfill poll later, so judging on first sighting
+        warned about plays that were recorded seconds afterwards. The deferral
+        also keeps the database out of it until it matters - a pending
+        candidate costs no lookup at all.
+
         Must never raise: a bug here is not allowed to disrupt the primary
         polling loop."""
         try:
@@ -878,14 +924,36 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
                 if item.get("track")
             }
 
-            missingUris = []
+            candidates = []
             for uri in recentUris:
                 trackId = uri.removeprefix(SPOTIFY_TRACK_URI_PREFIX)
                 if trackId in recordedTrackIds or uri in self._settledMissingTrackUris:
                     continue
-                missingUris.append(uri)
+                candidates.append(uri)
 
-            missingUris = self._dropUrisAlreadyInDatabase(missingUris)
+            # A pending entry that stopped being a candidate resolved itself -
+            # recorded after all, or rolled out of prev_tracks - and is
+            # forgotten. This is also what bounds the pending dict: it can
+            # only ever hold what prev_tracks currently holds.
+            candidateSet = set(candidates)
+            for uri in [u for u in self._pendingMissingTrackUris if u not in candidateSet]:
+                del self._pendingMissingTrackUris[uri]
+
+            now = time.monotonic()
+            ripeUris = [
+                uri for uri in candidates
+                if now - self._pendingMissingTrackUris.setdefault(uri, now)
+                >= CONNECT_STATE_MISSED_TRACK_GRACE_SECONDS
+            ]
+            if not ripeUris:
+                return
+
+            missingUris = self._dropUrisAlreadyInDatabase(ripeUris)
+            for uri in ripeUris:
+                # Answered either way - warned below, or settled by the
+                # database lookup (a failed lookup warns too) - so nothing
+                # ripe stays pending.
+                self._pendingMissingTrackUris.pop(uri, None)
 
             if missingUris:
                 logger.warning(
