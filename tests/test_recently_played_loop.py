@@ -292,6 +292,81 @@ class TestUpdateLoopShutdown(unittest.TestCase):
         self.assertFalse(lpm.run)
         manager.reconnect.assert_not_called()
 
+    def test_no_single_sleep_outlasts_the_join_that_waits_for_this_loop(self):
+        """Listener.stop() sets `run = False` and then joins this thread with
+        LISTENER_STOP_JOIN_TIMEOUT_SECONDS. `run` is only re-read at the top of
+        the loop, so a sleep longer than that join means the join expires
+        rather than the thread exiting cleanly.
+
+        The normal inter-poll sleep is the problem, not an edge case: live it
+        is LISTENER_POLL_INTERVAL_SECONDS plus jitter (6-7s) against a 5s
+        join, and the sleep dominates the loop - so the join timed out on
+        essentially every shutdown of a poll-mode listener. The push loop
+        never had this: its recv timeout re-checks `run` every second.
+
+        Asserted on the durations requested, not on elapsed time."""
+        from Database.Spotify.recentlyPlayed import POLL_STOP_POLL_SECONDS
+        from Database.Listeners.spotifyListener import (
+            LISTENER_POLL_INTERVAL_SECONDS, LISTENER_STOP_JOIN_TIMEOUT_SECONDS)
+
+        self.assertLess(POLL_STOP_POLL_SECONDS, LISTENER_STOP_JOIN_TIMEOUT_SECONDS,
+                        "a sleeping loop must notice the stop flag inside the join window")
+
+        lpm = self._makeLpm(_ScriptedStateManager([makeIdleState()] * 10))
+        sleeps = []
+
+        def recordAndStop(seconds):
+            sleeps.append(seconds)
+            lpm.run = False   #< as Listener.stop() does, mid-sleep
+
+        with patch("time.sleep", side_effect=recordAndStop):
+            lpm.updateLoop(MagicMock(), refreshInterval=LISTENER_POLL_INTERVAL_SECONDS)
+
+        self.assertTrue(sleeps, "the loop should have slept at least once")
+        self.assertLessEqual(
+            max(sleeps), POLL_STOP_POLL_SECONDS,
+            f"a {max(sleeps)}s sleep cannot be interrupted by the "
+            f"{LISTENER_STOP_JOIN_TIMEOUT_SECONDS}s join waiting on this thread")
+
+    def test_the_error_backoff_sleep_is_interruptible_too(self):
+        """The catch-all's backoff is UPDATE_LOOP_ERROR_SLEEP_SECONDS - twice
+        the join - so a loop that errored on its way into shutdown was the
+        worst case of all."""
+        from Database.Spotify.recentlyPlayed import (
+            POLL_STOP_POLL_SECONDS, UPDATE_LOOP_ERROR_SLEEP_SECONDS)
+
+        manager = _ScriptedStateManager([RuntimeError("boom")] * 5)
+        lpm = self._makeLpm(manager)
+        sleeps = []
+
+        def recordAndStop(seconds):
+            sleeps.append(seconds)
+            lpm.run = False
+
+        with patch("time.sleep", side_effect=recordAndStop):
+            lpm.updateLoop(MagicMock(), refreshInterval=1)
+
+        self.assertTrue(sleeps)
+        self.assertLessEqual(max(sleeps), POLL_STOP_POLL_SECONDS,
+                             f"the {UPDATE_LOOP_ERROR_SLEEP_SECONDS}s error backoff must be "
+                             "interruptible")
+
+    def test_a_stop_during_the_error_backoff_skips_the_reconnect(self):
+        """Rebuilding the websocket on the way out is exactly what the
+        _deliberate_close guard exists to prevent (a leftover loop spamming
+        reconnect errors through the 2026-07-17 shutdown). Reaching the
+        backoff and being stopped inside it is the same situation."""
+        manager = _ScriptedStateManager([RuntimeError("boom")] * 5)
+        lpm = self._makeLpm(manager)
+
+        def stopMidSleep(_seconds):
+            lpm.run = False
+
+        with patch("time.sleep", side_effect=stopMidSleep):
+            lpm.updateLoop(MagicMock(), refreshInterval=1)
+
+        manager.reconnect.assert_not_called()
+
     def test_stops_when_reconnect_hits_closed_session(self):
         """Once the HTTP session is closed, reconnect can never succeed - the
         loop must stop itself instead of cycling warn/error forever."""

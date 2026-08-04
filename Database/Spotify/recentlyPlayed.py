@@ -75,6 +75,19 @@ STATE_FAILURE_RECONNECT_THRESHOLD = 5
 
 UPDATE_LOOP_ERROR_SLEEP_SECONDS = 10  #< back off after an unexpected updateLoop error before reconnecting
 
+# How long the poll loop may sleep before re-checking whether it should stop.
+#
+# Every wait below is spent in steps of this rather than in one time.sleep(),
+# because `run` is only re-read at the top of the loop: Listener.stop() sets it
+# and then joins this thread with LISTENER_STOP_JOIN_TIMEOUT_SECONDS (5s), and
+# both waits used to be LONGER than that join - the ordinary inter-poll sleep
+# is LISTENER_POLL_INTERVAL_SECONDS plus jitter (6-7s live) and the error
+# backoff is 10s. Since the sleep dominates the loop, the join expired on
+# essentially every shutdown of a poll-mode listener rather than the thread
+# exiting cleanly. Must stay well under that join; the push loop reaches the
+# same responsiveness through its PUSH_RECV_TIMEOUT_SECONDS recv timeout.
+POLL_STOP_POLL_SECONDS = 1.0
+
 # Frames arrive for things other than playback (keepalive pongs,
 # social-connect/v2/broadcast_status_update). A connect-state frame is
 # identified by carrying a cluster with a player_state, rather than by matching
@@ -420,6 +433,34 @@ def _runPushLoop(self, callback) -> str:
         self.subscriptionRenewedAt = None
 
 
+def _sleepUntilStopped(self, seconds) -> bool:
+    """Sleep up to `seconds` in POLL_STOP_POLL_SECONDS steps. False as soon as
+    this loop should stop - `run` cleared by Listener.stop(), or the websocket
+    deliberately closed - True once the full wait elapsed.
+
+    Same job as Database/patches.py's _sleepInterruptibly, which does this for
+    the keep-alive thread; `self` is a RecentlyPlayedManager, so the two stop
+    signals are read exactly where the loop head reads them.
+
+    Counts the steps down rather than measuring against a monotonic deadline,
+    so the number of time.sleep() calls is a function of the arguments alone.
+    A deadline re-read from the clock spins whenever sleep does not actually
+    advance it, which is exactly the condition every test here runs under
+    (time.sleep patched out) - the wait would then busy-loop for a real
+    `seconds` and the call count would be meaningless. PEP 475 makes
+    time.sleep sleep at least its argument, so the only thing given up is
+    precision this cadence does not need."""
+    remaining = seconds
+    while True:
+        if not self.run or getattr(self.manager, "_deliberate_close", False):
+            return False
+        if remaining <= 0:
+            return True
+        step = min(POLL_STOP_POLL_SECONDS, remaining)
+        time.sleep(step)
+        remaining -= step
+
+
 def _runPollLoop(self, callback, refreshInterval=3):
     consecutiveStateFailures = 0
     while self.run:
@@ -484,7 +525,7 @@ def _runPollLoop(self, callback, refreshInterval=3):
                             self.run = False
                             return
                         logger.error("[Spotify] Websocket reconnect failed; will keep retrying: %s", reconnect_err, exc_info=True)
-                time.sleep(refreshInterval)
+                _sleepUntilStopped(self, refreshInterval)
                 continue
 
             consecutiveStateFailures = 0
@@ -506,10 +547,15 @@ def _runPollLoop(self, callback, refreshInterval=3):
                 _applyStateToTracking(self, state, callback)
             except Exception as applyError:  # noqa: BLE001 - a failing play callback must not escalate to a reconnect
                 logger.warning("[Spotify] Could not record the observed play state: %s", applyError)
-            time.sleep(refreshInterval)
+            _sleepUntilStopped(self, refreshInterval)
         except Exception as e:
             logger.error("[Spotify] Error in Recently Played: %s", e, exc_info=True)
-            time.sleep(UPDATE_LOOP_ERROR_SLEEP_SECONDS)
+            if not _sleepUntilStopped(self, UPDATE_LOOP_ERROR_SLEEP_SECONDS):
+                # Stopped while backing off. Rebuilding the websocket now is
+                # what the _deliberate_close guard at the loop head exists to
+                # prevent - a leftover loop spamming reconnect errors through
+                # shutdown (2026-07-17). Let that head log and exit instead.
+                continue
             try:
                 self.manager.reconnect()
             except Exception as reconnect_err:
