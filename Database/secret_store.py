@@ -50,6 +50,20 @@ logger = logging.getLogger(__name__)
 
 ENCRYPTION_KEY_ENV_VAR = "DATA_ENCRYPTION_KEY"
 FLASK_SECRET_KEY_ENV_VAR = "FLASK_SECRET_KEY"
+# The value the README's compose example carries on its commented-out
+# DATA_ENCRYPTION_KEY line. Uncommenting that line without editing it encrypts
+# every stored session and API secret under a string published in this repo -
+# and since this encryption only ever protects a database file that has LEFT
+# the host, a publicly-known key means it protects nothing at all. _keyMaterial
+# refuses to start on this exact value, the same way app.py's
+# _get_or_create_secret_key refuses on PLACEHOLDER_FLASK_SECRET_KEY (config.py);
+# that guard existed from the start and this half was simply never written.
+#
+# Kept here rather than beside its twin in config.py because this module owns
+# every other key-resolution name (both env vars above, DEFAULT_KEY_PATH) and
+# is deliberately import-light - app.py already reads FLASK_SECRET_KEY_ENV_VAR
+# from here rather than the other way round.
+PLACEHOLDER_DATA_ENCRYPTION_KEY = "changeme-another-random-value"
 ENCRYPTED_PREFIX = "enc:v1:"   #< version-tagged so a future scheme change can coexist with old rows
 # v2 = v1 plus a short fingerprint of the key that wrote the value:
 #   enc:v2:<fingerprint>:<fernet token>
@@ -189,6 +203,15 @@ _DERIVATION_CACHE_SIZE = 4
 def _keyMaterial() -> str:
     envKey = os.environ.get(ENCRYPTION_KEY_ENV_VAR, "").strip()
     if envKey:
+        if envKey == PLACEHOLDER_DATA_ENCRYPTION_KEY:
+            raise RuntimeError(
+                f"{ENCRYPTION_KEY_ENV_VAR} is still set to the docker-compose placeholder "
+                "value. It is published in this repository, so every stored Spotify session "
+                "and API secret would be encrypted under a key anyone can read. Generate a "
+                "real random key - e.g. `python -c \"import secrets; print(secrets.token_hex(32))\"` "
+                f"- and set {ENCRYPTION_KEY_ENV_VAR} to it before starting, or comment the "
+                "variable out to fall back to " + FLASK_SECRET_KEY_ENV_VAR + "."
+            )
         return envKey
     flaskKey = os.environ.get(FLASK_SECRET_KEY_ENV_VAR, "").strip()
     if flaskKey:

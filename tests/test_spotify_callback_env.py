@@ -10,6 +10,7 @@ from urllib.parse import urlparse, parse_qs
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from app import SpotifyDashboardApp, SPOTIFY_OAUTH_STATE_SESSION_KEY
+from routes.auth import PROFILE_FLASH_SPOTIFY
 from _app_factory import makeApp
 
 
@@ -154,6 +155,27 @@ class TestSpotifyOAuthState(SpotifyEnvTestCase):
         mock_db.updateUserSpotifyCredentials.assert_not_called()
         self.assertEqual(resp.status_code, 302)
         self.assertIn("error=", resp.headers["Location"])
+
+    def test_a_rejected_state_lands_on_the_connections_tab(self):
+        """The state guard's redirect has to match every other failure branch
+        in this handler: /profile/connections, with the message flashed into
+        the Spotify section.
+
+        It predates the profile split and still targeted profilePage, so a
+        user whose authorization was rejected landed on the Account tab - away
+        from the "Authorize with Spotify" button the message tells them to use
+        - and passed `error` as a bare query param, which no profile template
+        renders without the flash_for the other branches send."""
+        dash, client = self._makeLoggedInClient()
+        with client.session_transaction() as sess:
+            sess[SPOTIFY_OAUTH_STATE_SESSION_KEY] = "expected-state"
+        with patch.object(dash, 'get_user_db') as mock_get_db, patch("requests.post"):
+            self._mockDb(mock_get_db)
+            resp = client.get("/spotify-callback?code=attacker-code&state=wrong-state")
+
+        location = resp.headers["Location"]
+        self.assertIn("/profile/connections", location)
+        self.assertIn(f"flash_for={PROFILE_FLASH_SPOTIFY}", location)
 
     def test_callback_accepts_the_matching_state_only_once(self):
         dash, client = self._makeLoggedInClient()

@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 import Database.secret_store as secretStore
 from Database.secret_store import encryptSecret, decryptSecret, isEncrypted, ENCRYPTED_PREFIX
+from config import PLACEHOLDER_FLASK_SECRET_KEY
 
 
 class TestRoundTrip(unittest.TestCase):
@@ -242,6 +243,53 @@ class TestKeyResolution(unittest.TestCase):
         with patch.dict(os.environ, {secretStore.FLASK_SECRET_KEY_ENV_VAR: "flask-key"}):
             stored = encryptSecret("secret")
             self.assertEqual(decryptSecret(stored), "secret")
+
+
+class TestPlaceholderKeyIsRefused(unittest.TestCase):
+    """The README's compose example carries a commented-out
+    DATA_ENCRYPTION_KEY=<placeholder> line. Uncommenting it without editing
+    the value encrypts every stored Spotify session and API secret under a
+    string published in this repo - which is the whole threat the encryption
+    exists for, since it only ever protects a database file that has left the
+    host. app.py already refuses to boot on FLASK_SECRET_KEY's placeholder for
+    the same reason; this is the other half of that guard."""
+
+    def test_the_shipped_placeholder_is_refused(self):
+        with patch.dict(os.environ, {
+                secretStore.ENCRYPTION_KEY_ENV_VAR: secretStore.PLACEHOLDER_DATA_ENCRYPTION_KEY}):
+            with self.assertRaises(RuntimeError) as caught:
+                secretStore._keyMaterial()
+        self.assertIn(secretStore.ENCRYPTION_KEY_ENV_VAR, str(caught.exception))
+
+    def test_surrounding_whitespace_does_not_smuggle_it_past(self):
+        with patch.dict(os.environ, {
+                secretStore.ENCRYPTION_KEY_ENV_VAR:
+                    f"  {secretStore.PLACEHOLDER_DATA_ENCRYPTION_KEY}  "}):
+            with self.assertRaises(RuntimeError):
+                secretStore._keyMaterial()
+
+    def test_a_real_key_is_unaffected(self):
+        with patch.dict(os.environ, {secretStore.ENCRYPTION_KEY_ENV_VAR: "a-real-random-key"}):
+            self.assertEqual(secretStore._keyMaterial(), "a-real-random-key")
+
+    def test_the_placeholder_is_only_checked_for_its_own_variable(self):
+        """FLASK_SECRET_KEY has its own placeholder and its own guard in
+        app.py; this one must not start rejecting values it does not own."""
+        with patch.dict(os.environ, {
+                secretStore.FLASK_SECRET_KEY_ENV_VAR: secretStore.PLACEHOLDER_DATA_ENCRYPTION_KEY}):
+            self.assertEqual(secretStore._keyMaterial(),
+                             secretStore.PLACEHOLDER_DATA_ENCRYPTION_KEY)
+
+    def test_both_guards_still_match_what_the_readme_ships(self):
+        """A placeholder guard matches ONE exact string, so it is only worth
+        anything while that string is the one a user can actually paste. Edit
+        the README's compose example without editing the constant and the
+        guard silently stops guarding - it would still pass every test above,
+        because those supply the constant to itself."""
+        readme = (pathlib.Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
+
+        self.assertIn(f"DATA_ENCRYPTION_KEY={secretStore.PLACEHOLDER_DATA_ENCRYPTION_KEY}", readme)
+        self.assertIn(f"FLASK_SECRET_KEY={PLACEHOLDER_FLASK_SECRET_KEY}", readme)
 
     def test_key_file_is_created_once_and_reused(self):
         self.assertFalse(secretStore.DEFAULT_KEY_PATH.exists())

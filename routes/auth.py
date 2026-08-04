@@ -747,10 +747,15 @@ def register(app, dashboard):
         # is rejected even after a successful exchange.
         expectedState = session.pop(SPOTIFY_OAUTH_STATE_SESSION_KEY, None)
         if not expectedState or request.args.get("state") != expectedState:
-            return redirect(url_for(
-                "profilePage",
+            # Through _profileRedirect like every other failure branch below:
+            # this one predates the profile split and still sent the user to
+            # the Account tab, away from the 'Authorize with Spotify' button
+            # its own message tells them to press, with a bare `error` param
+            # no profile template renders without a flash_for beside it.
+            return _profileRedirect(
+                "profileConnectionsPage", PROFILE_FLASH_SPOTIFY,
                 error="Spotify authorization failed: missing or mismatched state - "
-                      "please start over with 'Authorize with Spotify'."))
+                      "please start over with 'Authorize with Spotify'.")
 
         code = request.args.get("code")
         error = request.args.get("error")
