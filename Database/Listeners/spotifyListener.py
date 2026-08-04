@@ -1357,13 +1357,28 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
                 # moment, pauses included - so the end-time interpretation is
                 # matched against that stamp directly instead of deriving a
                 # start that assumes uninterrupted playback.
-                is_recorded = any(
+                recordedTimes = recorded_timestamps.get(track_id, ())
+                matched_by_played_at = any(
                     abs(timestamp - recorded_t) <= WEB_API_BACKFILL_DEDUP_TOLERANCE_SECONDS
                     or abs(timestamp - duration_s - recorded_t) <= WEB_API_BACKFILL_DEDUP_TOLERANCE_SECONDS
-                    or (recorded_end is not None
-                        and abs(timestamp - recorded_end) <= WEB_API_BACKFILL_END_TIME_DEDUP_TOLERANCE_SECONDS)
-                    for recorded_t, recorded_end in recorded_timestamps.get(track_id, ())
+                    for recorded_t, _recorded_end in recordedTimes
                 )
+                matched_by_end = not matched_by_played_at and any(
+                    recorded_end is not None
+                    and abs(timestamp - recorded_end) <= WEB_API_BACKFILL_END_TIME_DEDUP_TOLERANCE_SECONDS
+                    for _recorded_t, recorded_end in recordedTimes
+                )
+                if matched_by_end and _flaskDebugEnabled():
+                    # Live validation for the 2026-08-04 pause-duplicate fix:
+                    # only the cases the two played_at arms would have MISSED
+                    # are interesting - remove once a few days of logs confirm
+                    # the arm fires on real pauses and nothing else.
+                    logger.info(
+                        "Backfill item for track %s (played_at=%s) suppressed by the end-time arm alone "
+                        "(pause-stretched play already recorded) for user %s",
+                        track_id, played_at_str, self.logUser,
+                    )
+                is_recorded = matched_by_played_at or matched_by_end
                 if not is_recorded:
                     context = item.get("context") or {}
 

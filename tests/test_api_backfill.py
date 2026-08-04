@@ -879,6 +879,52 @@ class BackfillDatabaseDedupTestCase(unittest.TestCase):
 
         callback.assert_not_called()
 
+    def test_end_time_arm_suppression_is_logged_under_flask_debug(self):
+        """Live validation for the 2026-08-04 fix: when the end-time arm ALONE
+        suppresses an item, say so - the other two arms' suppressions are
+        routine and stay silent. Gated like the other backfill progress lines."""
+        pauseSeconds = 186
+        endTs = timeToInt(self.SECOND_PLAYED_AT)
+        startTs = endTs - self.DURATION_MS // 1000 - pauseSeconds
+        items = [{"track": {"id": "track1", "duration_ms": self.DURATION_MS},
+                  "played_at": self.SECOND_PLAYED_AT}]
+        recorded = [("track1", startTs, endTs + 1)]
+
+        with patch.dict(os.environ, {"FLASK_DEBUG": "1"}):
+            with self.assertLogs("Database.Listeners.spotifyListener", level="INFO") as cm:
+                self._runBackfill(MagicMock(return_value=recorded), items=items)
+
+        self.assertTrue(any("end-time arm" in m and "track1" in m for m in cm.output))
+
+    def test_end_time_arm_log_is_silent_when_a_start_time_arm_already_matched(self):
+        """An item the 2s arms recognise is old news - the line must only fire
+        when the end-time arm is what made the difference."""
+        items = [{"track": {"id": "track1", "duration_ms": self.DURATION_MS},
+                  "played_at": self.SECOND_PLAYED_AT}]
+        endTs = timeToInt(self.SECOND_PLAYED_AT)
+        #< matches arm 1 exactly AND carries a matching recorded end
+        recorded = [("track1", endTs, endTs + 1)]
+
+        with patch.dict(os.environ, {"FLASK_DEBUG": "1"}):
+            with self.assertLogs("Database.Listeners.spotifyListener", level="INFO") as cm:
+                callback = self._runBackfill(MagicMock(return_value=recorded), items=items)
+
+        callback.assert_not_called()
+        self.assertFalse(any("end-time arm" in m for m in cm.output))
+
+    def test_end_time_arm_log_is_silent_without_flask_debug(self):
+        pauseSeconds = 186
+        endTs = timeToInt(self.SECOND_PLAYED_AT)
+        startTs = endTs - self.DURATION_MS // 1000 - pauseSeconds
+        items = [{"track": {"id": "track1", "duration_ms": self.DURATION_MS},
+                  "played_at": self.SECOND_PLAYED_AT}]
+        recorded = [("track1", startTs, endTs + 1)]
+
+        envWithoutDebug = {k: v for k, v in os.environ.items() if k != "FLASK_DEBUG"}
+        with patch.dict(os.environ, envWithoutDebug, clear=True):
+            with self.assertNoLogs("Database.Listeners.spotifyListener", level="INFO"):
+                self._runBackfill(MagicMock(return_value=recorded), items=items)
+
     def test_a_recorded_end_outside_the_tolerance_does_not_suppress(self):
         """The end-time arm must stay a point match, not a window: a recorded
         end a minute away is evidence of a DIFFERENT listen, and suppressing on
