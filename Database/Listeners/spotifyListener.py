@@ -82,7 +82,11 @@ LISTENER_STALE_TIMEOUT_SECONDS = 30 * 60
 # simply idle" (see _staleFeedIsBroken). The idle check reads the connect
 # state, so the one failure it cannot see is a connect state that keeps
 # answering while its own tick is wedged; past this, a quiet feed is recycled
-# regardless of what the state claims.
+# regardless of what the state claims - UNLESS the push loop has re-proven
+# its subscription within LISTENER_PUSH_SUBSCRIPTION_FRESH_SECONDS, which is
+# direct evidence that exact failure is absent (see _checkOnce). Before the
+# deferral, every idle push-mode user cost a full re-login per 6 hours (live
+# app.log 2026-08-01 to 08-04, rebuilds on the :44 dot).
 LISTENER_STALE_HARD_TIMEOUT_SECONDS = 6 * 60 * 60
 
 # How fresh RecentlyPlayedManager.pushChannelAliveAt has to be to still count as
@@ -95,6 +99,18 @@ LISTENER_STALE_HARD_TIMEOUT_SECONDS = 6 * 60 * 60
 # that module is reached through getattr chains on purpose, and this file has no
 # other reason to depend on it.
 LISTENER_PUSH_CHANNEL_ALIVE_SECONDS = 10 * 60
+
+# How fresh RecentlyPlayedManager.subscriptionRenewedAt - the push loop's last
+# SUCCESSFUL connect-state re-subscribe - must be for the stale check's hard
+# ceiling to defer (see _checkOnce). A successful re-PUT re-registers the
+# subscription AND runs the returned cluster through track detection, so a
+# stamp this fresh rules out the silently-wedged subscription the ceiling
+# exists to bound. The loop re-proves itself every ~15 min (its resubscribe
+# cadence; a local constant here for the same import-avoidance reason as
+# LISTENER_PUSH_CHANNEL_ALIVE_SECONDS): two cadences plus slack, so one failed
+# attempt doesn't forfeit the deferral but two consecutive failures do -
+# by then the ceiling's distrust is warranted again.
+LISTENER_PUSH_SUBSCRIPTION_FRESH_SECONDS = 35 * 60
 
 # Why a rebuild was requested - short, stable strings passed to onStale and
 # carried through _makeOnStaleCallback into the listener-session ledger on
@@ -782,6 +798,17 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
             return False
         return (time.monotonic() - aliveAt) <= LISTENER_PUSH_CHANNEL_ALIVE_SECONDS
 
+    def _pushSubscriptionIsFresh(self) -> bool:
+        """Whether the push loop re-proved its connect-state subscription
+        within LISTENER_PUSH_SUBSCRIPTION_FRESH_SECONDS - the evidence that
+        lets the hard ceiling defer. Same stamp-not-flag, getattr-chain and
+        type-check reasoning as _pushChannelIsAlive."""
+        lastPlayedManager = getattr(self.sp, "lastPlayedManager", None)
+        renewedAt = getattr(lastPlayedManager, "subscriptionRenewedAt", None)
+        if not isinstance(renewedAt, (int, float)):
+            return False
+        return (time.monotonic() - renewedAt) <= LISTENER_PUSH_SUBSCRIPTION_FRESH_SECONDS
+
     def _staleFeedIsBroken(self) -> bool:
         """Whether a feed that hasn't changed in LISTENER_STALE_TIMEOUT_SECONDS
         is evidence of a dead session rather than of nobody listening.
@@ -800,8 +827,10 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
         reading that as death brought the 30-minute rebuild straight back (live
         app.log 2026-08-01, one rebuild per LISTENER_STALE_TIMEOUT_SECONDS on
         the dot). A live push channel is the evidence that the absence is
-        idleness. The hard ceiling still applies above this, so a channel
-        delivering pongs while its subscription is wedged is still recycled."""
+        idleness. The hard ceiling still applies above this - pongs alone
+        never defer it, because a channel can pong while its subscription is
+        wedged; only a recently RE-PROVEN subscription does (see
+        _pushSubscriptionIsFresh and the ceiling branch in _checkOnce)."""
         if not self.getConnectPlayerState():
             return not self._pushChannelIsAlive()
         return self._lastPlayingChangeTime > self._lastChangeTime
@@ -1038,11 +1067,16 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
             return True
 
         feedIsBroken = self._staleFeedIsBroken()
-        if elapsed < LISTENER_STALE_HARD_TIMEOUT_SECONDS and not feedIsBroken:
+        if not feedIsBroken and (elapsed < LISTENER_STALE_HARD_TIMEOUT_SECONDS
+                                 or self._pushSubscriptionIsFresh()):
             # Nobody is listening - the feed has nothing to report, which is
             # not a fault. This is what the 30-minute rebuild was really
             # detecting: 1,270 reconnects in 11 days, spread evenly across all
             # 24 hours while actual plays vary 100x between night and day.
+            # Past the hard ceiling the benefit of the doubt normally ends -
+            # unless the push loop re-proved its subscription just now, which
+            # rules out the wedged-subscription failure the ceiling bounds
+            # (see LISTENER_PUSH_SUBSCRIPTION_FRESH_SECONDS).
             logger.debug(
                 "Recently-played feed unchanged for over %ss, but the connect state shows no "
                 "unrecorded playback - treating the account as idle rather than the session as dead",

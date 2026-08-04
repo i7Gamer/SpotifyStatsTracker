@@ -821,6 +821,86 @@ class TestPushLoop(unittest.TestCase):
         self.assertEqual(manager.connectCalls, 1)
 
 
+class TestPushSubscriptionStamp(unittest.TestCase):
+    """subscriptionRenewedAt: monotonic stamp of the last SUCCESSFUL
+    connect-state subscribe. A successful re-PUT re-registers the subscription
+    and runs the returned cluster through track detection, so a fresh stamp
+    proves the subscription cannot be silently wedged - which is what lets the
+    listener's stale check defer its 6h hard ceiling instead of re-logging-in
+    every idle user four times a day (live app.log 2026-08-01 to 08-04, one
+    rebuild per user per 6h on the dot). Stamp-not-flag, same as
+    pushChannelAliveAt: a dead loop leaves its last value behind, and only a
+    fresh one vouches."""
+
+    def test_a_fresh_manager_has_no_subscription_stamp(self):
+        lpm = _pushLastPlayed(_PushManager([]))
+        self.assertIsNone(lpm.subscriptionRenewedAt)
+
+    def test_a_successful_subscribe_stamps_and_the_exit_clears(self):
+        from Database.Spotify.recentlyPlayed import _runPushLoop
+
+        manager = _PushManager([], initialCluster=pushedCluster())
+        lpm = _pushLastPlayed(manager)
+        seen = []
+        manager.onExhausted = lambda: (seen.append(lpm.subscriptionRenewedAt),
+                                       setattr(lpm, "run", False))
+
+        _runPushLoop(lpm, MagicMock())
+
+        self.assertIsInstance(seen[0], float)          #< stamped while the loop ran
+        self.assertIsNone(lpm.subscriptionRenewedAt)   #< and stopped vouching on exit
+
+    def test_a_periodic_resubscribe_advances_the_stamp(self):
+        from Database.Spotify.recentlyPlayed import CONNECT_STATE_RESUBSCRIBE_SECONDS, _runPushLoop
+
+        manager = _PushManager([{"type": "pong"}] * 10, initialCluster=pushedCluster())
+        lpm = _pushLastPlayed(manager)
+        manager.onExhausted = lambda: setattr(lpm, "run", False)
+
+        clock = [1000.0]
+
+        def steppingMonotonic():
+            clock[0] += CONNECT_STATE_RESUBSCRIBE_SECONDS / 2
+            return clock[0]
+
+        stamps = []
+        original = manager.connect_device
+
+        def recordingConnect():
+            result = original()
+            stamps.append(lpm.subscriptionRenewedAt)   #< value BEFORE this call's stamp lands
+            if manager.connectCalls >= 2:
+                lpm.run = False
+            return result
+        manager.connect_device = recordingConnect
+
+        with patch("Database.Spotify.recentlyPlayed.time.monotonic", side_effect=steppingMonotonic):
+            _runPushLoop(lpm, MagicMock())
+
+        self.assertGreaterEqual(manager.connectCalls, 2)
+        #< the re-subscribe saw the initial stamp already set, then advanced it
+        self.assertIsInstance(stamps[1], float)
+
+    def test_a_frame_silence_fallback_clears_the_stamp(self):
+        from Database.Spotify.recentlyPlayed import PUSH_FRAME_SILENCE_FALLBACK_SECONDS, _runPushLoop
+
+        manager = _PushManager([], initialCluster=pushedCluster())
+        manager.onExhausted = None   #< never stop; the watchdog must end it
+        lpm = _pushLastPlayed(manager)
+        clock = [1000.0]
+
+        def advancingMonotonic():
+            clock[0] += PUSH_FRAME_SILENCE_FALLBACK_SECONDS / 2
+            return clock[0]
+
+        with patch("Database.Spotify.recentlyPlayed.time.monotonic", side_effect=advancingMonotonic):
+            with self.assertLogs("Database.Spotify.recentlyPlayed", level="WARNING"):
+                outcome = _runPushLoop(lpm, MagicMock())
+
+        self.assertEqual(outcome, "fallback")
+        self.assertIsNone(lpm.subscriptionRenewedAt)
+
+
 class TestPushLoopWithoutAnyState(unittest.TestCase):
     """connect_device() can reply with no player_state at all - an account with
     no live Connect session - and _adoptCluster leaves the caches untouched when

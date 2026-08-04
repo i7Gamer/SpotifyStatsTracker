@@ -26,6 +26,7 @@ from Database.Listeners.spotifyListener import (
     Listener,
     LISTENER_STALE_TIMEOUT_SECONDS,
     LISTENER_STALE_HARD_TIMEOUT_SECONDS,
+    LISTENER_PUSH_SUBSCRIPTION_FRESH_SECONDS,
     STALE_REASON_VALIDATION_FAILED,
     STALE_REASON_UNRECORDED_PLAYBACK,
     STALE_REASON_HARD_CEILING,
@@ -64,10 +65,11 @@ def _bareListener(recentlyPlayed=None):
     # session from an idle account, and "no evidence" means dead.
     listener.sp.lastPlayedManager.manager._state = None
     # Poll mode: no push loop is feeding _state, which is what makes the
-    # absence above evidence of a dead tick. sp is a MagicMock, so this has to
+    # absence above evidence of a dead tick. sp is a MagicMock, so these have to
     # be set explicitly - an auto-created child attribute would read as a
     # (truthy, non-numeric) liveness stamp.
     listener.sp.lastPlayedManager.pushChannelAliveAt = None
+    listener.sp.lastPlayedManager.subscriptionRenewedAt = None
     listener._lastPlayingUri = None      #< matches Listener.__init__
     listener._lastPlayingChangeTime = 0.0
     listener._lastChangeTime = 0.0
@@ -210,6 +212,50 @@ class TestStaleReasonReporting(unittest.TestCase):
         listener._checkOnce(MagicMock(), onStale=onStale)
 
         onStale.assert_called_once_with(reason=STALE_REASON_VALIDATION_FAILED)
+
+    def test_a_fresh_push_subscription_defers_the_hard_ceiling(self):
+        """An idle push-mode listener whose subscription was re-proven within
+        LISTENER_PUSH_SUBSCRIPTION_FRESH_SECONDS is demonstrably healthy - a
+        successful re-PUT re-registers the subscription and runs the returned
+        cluster through track detection, so the wedged-subscription failure the
+        ceiling bounds cannot be hiding. Recycling it anyway was a pointless
+        full re-login per user per 6 hours (live app.log 2026-08-01 to 08-04)."""
+        listener, onStale = self._listener(), MagicMock()
+        pastHardCeiling = 100.0 + LISTENER_STALE_HARD_TIMEOUT_SECONDS + 1
+        listener.sp.lastPlayedManager.subscriptionRenewedAt = pastHardCeiling - 60
+
+        stillRunning = self._poll(listener, pastHardCeiling, {"is_playing": False}, onStale)
+
+        self.assertTrue(stillRunning)
+        onStale.assert_not_called()
+
+    def test_a_stale_subscription_stamp_lets_the_ceiling_fire(self):
+        """A stamp the push loop stopped renewing has stopped vouching - the
+        loop either died or its re-subscribes are failing, and past the ceiling
+        that quiet feed is recycled exactly as before."""
+        listener, onStale = self._listener(), MagicMock()
+        pastHardCeiling = 100.0 + LISTENER_STALE_HARD_TIMEOUT_SECONDS + 1
+        listener.sp.lastPlayedManager.subscriptionRenewedAt = (
+            pastHardCeiling - LISTENER_PUSH_SUBSCRIPTION_FRESH_SECONDS - 1)
+
+        stillRunning = self._poll(listener, pastHardCeiling, {"is_playing": False}, onStale)
+
+        self.assertFalse(stillRunning)
+        onStale.assert_called_once_with(reason=STALE_REASON_HARD_CEILING)
+
+    def test_broken_evidence_beats_a_fresh_subscription(self):
+        """A track change the feed never recorded is direct evidence of a
+        broken session - no liveness stamp may explain that away."""
+        listener, onStale = self._listener(), MagicMock()
+        pastHardCeiling = 100.0 + LISTENER_STALE_HARD_TIMEOUT_SECONDS + 1
+        listener.sp.lastPlayedManager.subscriptionRenewedAt = pastHardCeiling - 60
+
+        self._poll(listener, 200.0, _playingState(self.TRACK_A), onStale)
+        self._poll(listener, 300.0, _playingState(self.TRACK_B), onStale)
+        stillRunning = self._poll(listener, pastHardCeiling, _playingState(self.TRACK_B), onStale)
+
+        self.assertFalse(stillRunning)
+        onStale.assert_called_once_with(reason=STALE_REASON_UNRECORDED_PLAYBACK)
 
     def test_an_auth_error_names_its_reason(self):
         listener, onStale = self._listener(), MagicMock()

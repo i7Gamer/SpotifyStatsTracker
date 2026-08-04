@@ -361,6 +361,7 @@ def _runPushLoop(self, callback) -> str:
     # From here the listener's stale check must read "idle account" rather than
     # "dead session" out of an empty connect state - see pushChannelAliveAt.
     self.pushChannelAliveAt = lastFrameAt
+    self.subscriptionRenewedAt = lastFrameAt   #< the subscribe above just succeeded
 
     try:
         while self.run:
@@ -395,6 +396,7 @@ def _runPushLoop(self, callback) -> str:
                 lastSubscribeAt = now
                 if outcome:
                     resubscribeFailures = 0
+                    self.subscriptionRenewedAt = now
                     # The refreshed state runs through track detection too, so a
                     # change missed while pushes were silently dead is recovered
                     # here rather than lost. Idempotent: an unchanged track uid is
@@ -412,8 +414,10 @@ def _runPushLoop(self, callback) -> str:
     finally:
         # Every exit, including the fallback and an escaping exception: once
         # this loop is not the one feeding _state, poll mode's "an empty
-        # connect state means the tick is dead" reasoning is true again.
+        # connect state means the tick is dead" reasoning is true again, and
+        # a subscription nobody renews must stop vouching for anything.
         self.pushChannelAliveAt = None
+        self.subscriptionRenewedAt = None
 
 
 def _runPollLoop(self, callback, refreshInterval=3):
@@ -523,11 +527,11 @@ class RecentlyPlayedManager:
     """Owns the PlayerStatus (websocket + connect-state caches) for one session
     and the background thread that watches it.
 
-    The attribute set (manager / run / thread / pushChannelAliveAt) is a
-    contract: spotifyListener's shutdown path reaches in via getattr chains -
-    sp.lastPlayedManager.manager._deliberate_close, .run, .thread - to signal
-    and join without importing this module, and its stale check reads
-    pushChannelAliveAt the same way."""
+    The attribute set (manager / run / thread / pushChannelAliveAt /
+    subscriptionRenewedAt) is a contract: spotifyListener's shutdown path
+    reaches in via getattr chains - sp.lastPlayedManager.manager
+    ._deliberate_close, .run, .thread - to signal and join without importing
+    this module, and its stale check reads the two stamps the same way."""
 
     def __init__(self, login):
         self.login = login
@@ -540,6 +544,14 @@ class RecentlyPlayedManager:
         # check reads it to tell an idle account apart from a dead session,
         # which in push mode an empty connect state cannot answer on its own.
         self.pushChannelAliveAt = None
+        # time.monotonic() of the last SUCCESSFUL connect-state subscribe -
+        # a re-PUT that re-registered the subscription and ran the returned
+        # cluster through track detection, so a fresh value proves the
+        # subscription is not silently wedged. Same lifecycle as
+        # pushChannelAliveAt (only _runPushLoop writes it, cleared on every
+        # exit); the listener's stale check reads it to defer its 6h hard
+        # ceiling instead of re-logging-in a demonstrably healthy idle user.
+        self.subscriptionRenewedAt = None
         # Track-change detection state, read/written by _applyStateToTracking.
         self.lastPlayedUid = ""     #< uid of the currently-observed track ("" = none yet)
         self.lastTrackUri = None
