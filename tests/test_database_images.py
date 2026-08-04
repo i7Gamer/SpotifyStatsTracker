@@ -49,11 +49,17 @@ def _pngBytes():
 
 def _imageResponse(imageBytes):
     """A stand-in requests response for the streaming image download: the task
-    reads the body through iter_content (capped), not .content."""
+    reads the body through iter_content (capped), not .content.
+
+    __enter__ returns the response itself, exactly like requests.Response does -
+    a plain MagicMock would hand the `with` block a DIFFERENT auto-created mock
+    whose headers/iter_content are unconfigured (see
+    TestImageDownloadReleasesTheConnection)."""
     response = MagicMock()
     response.content = imageBytes
     response.headers = {"Content-Length": str(len(imageBytes))}
     response.iter_content = lambda chunk_size=None: iter([imageBytes])
+    response.__enter__.return_value = response
     return response
 
 class TestImageWritesAreAtomic(DatabaseTestCase):
@@ -75,6 +81,7 @@ class TestImageWritesAreAtomic(DatabaseTestCase):
         response = MagicMock()
         response.headers = {}
         response.iter_content.return_value = [buffer.getvalue()]
+        response.__enter__.return_value = response   #< see _imageResponse
         return response
 
     def test_a_save_that_dies_partway_leaves_no_file_behind(self):
@@ -558,6 +565,7 @@ class TestImageDownloadSizeCap(DatabaseTestCase):
         response = MagicMock()
         response.headers = {} if declaredLength is None else {"Content-Length": str(declaredLength)}
         response.iter_content = lambda chunk_size=None: (chunk for _ in range(chunkCount))
+        response.__enter__.return_value = response   #< see _imageResponse
         return response
 
     def test_an_oversized_body_is_refused_and_marked_failed(self):
@@ -591,6 +599,60 @@ class TestImageDownloadSizeCap(DatabaseTestCase):
 
             self.assertTrue((imgDir / "track-ok.jpeg").exists())
         self.assertEqual(db.repo.imageStatus("track-ok", IMAGE_KIND_TRACK), IMAGE_STATUS_OK)
+
+
+class TestImageDownloadReleasesTheConnection(DatabaseTestCase):
+    """The download is streamed, and _readCappedBody deliberately STOPS draining
+    an oversized body - a response left undrained never returns its connection
+    to urllib3's pool, so the next image download pays a fresh TCP+TLS
+    handshake. Holding it in a `with` releases it on every exit path, not only
+    the one where the body happened to be read to the end."""
+
+    def _refusedResponse(self):
+        """A response whose body blows the cap, so _readCappedBody raises
+        partway through iterating it."""
+        from Database.media_fetch import MAX_IMAGE_BYTES
+
+        chunk = b"x" * (1024 * 1024)
+        response = MagicMock()
+        response.headers = {}
+        response.iter_content = lambda chunk_size=None: (
+            chunk for _ in range((MAX_IMAGE_BYTES // len(chunk)) + 2))
+        response.__enter__.return_value = response
+        return response
+
+    def test_a_refused_oversized_body_still_releases_the_response(self):
+        db = self._makeDb({}, [])
+        response = self._refusedResponse()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("Database.database.requests.get", return_value=response), \
+                 self.assertLogs("Database.database", level="ERROR"):
+                db._downloadImageTask(Path(tmpdir), "https://img.example/big", "track-big3", IMAGE_KIND_TRACK)
+
+        self.assertTrue(response.__exit__.called,
+                        "the streamed response must be released even when its body is refused")
+
+    def test_undecodable_bytes_still_release_the_response(self):
+        """PIL rejecting what was read is the other early-exit path."""
+        db = self._makeDb({}, [])
+        response = _imageResponse(b"not an image")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("Database.database.requests.get", return_value=response), \
+                 self.assertLogs("Database.database", level="ERROR"):
+                db._downloadImageTask(Path(tmpdir), "https://img.example/junk", "track-junk", IMAGE_KIND_TRACK)
+
+        self.assertTrue(response.__exit__.called)
+        self.assertEqual(db.repo.imageStatus("track-junk", IMAGE_KIND_TRACK), IMAGE_STATUS_FAILED)
+
+    def test_a_successful_download_releases_the_response(self):
+        db = self._makeDb({}, [])
+        response = _imageResponse(_pngBytes())
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("Database.database.requests.get", return_value=response):
+                db._downloadImageTask(Path(tmpdir), "https://img.example/ok", "track-ok2", IMAGE_KIND_TRACK)
+
+        self.assertTrue(response.__exit__.called)
+        self.assertEqual(db.repo.imageStatus("track-ok2", IMAGE_KIND_TRACK), IMAGE_STATUS_OK)
 
 
 if __name__ == "__main__":

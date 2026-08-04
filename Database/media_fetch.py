@@ -54,9 +54,14 @@ class MediaFetchMixin:
 
     def _downloadImageTask(self, path: Path, url: str, imgId: str, kind: str):
         try:
-            response = _dbmod.requests.get(url, timeout=10, stream=True)
-            response.raise_for_status()
-            content = self._readCappedBody(response)
+            # Held in a `with`: the body is streamed and _readCappedBody stops
+            # draining it the moment it blows the cap, and an undrained response
+            # never returns its connection to the pool - the next image download
+            # then pays a fresh TCP+TLS handshake. Closed before the decode/save
+            # work below, which no longer needs the socket.
+            with _dbmod.requests.get(url, timeout=10, stream=True) as response:
+                response.raise_for_status()
+                content = self._readCappedBody(response)
             img = _dbmod.Image.open(_dbmod.BytesIO(content))
             # Always store as JPEG: the templates hardcode `<imgId>.jpeg`, so an
             # image saved under its source format (e.g. .png) would 404 forever.
