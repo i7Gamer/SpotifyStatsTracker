@@ -66,6 +66,77 @@ class TestLoginCheckLoopOffset(_AppTestBase):
         mock_ensure.assert_not_called()
 
 
+class _RecordedWaits:
+    """Stands in for the loop's stop event wait: records every timeout it is
+    asked for, then ends the loop after the first full pass so the periodic
+    wait is observable without the test sleeping through it."""
+
+    def __init__(self, stopEvent, passesBeforeStop=2):
+        self.timeouts = []
+        self._stopEvent = stopEvent
+        self._passesBeforeStop = passesBeforeStop
+
+    def __call__(self, timeout=None):
+        self.timeouts.append(timeout)
+        if len(self.timeouts) >= self._passesBeforeStop:
+            self._stopEvent.set()
+        return self._stopEvent.is_set()
+
+
+class TestPeriodicLoopIntervals(_AppTestBase):
+    """The startup offsets above are named constants; the intervals those loops
+    then repeat on were raw literals sitting two lines away. Pinned here so the
+    cadence a log line implies stays traceable to the constant that sets it."""
+
+    def test_version_check_repeats_on_the_named_interval(self):
+        dash = self._makeApp()
+        waits = _RecordedWaits(dash._stop_event)
+
+        with patch("app.random.randint", return_value=1), \
+             patch("app.requests.get") as mock_get, \
+             patch.object(dash._stop_event, "wait", side_effect=waits):
+            mock_get.return_value.status_code = 404   #< no release published; skips the parse
+            dash._versionCheckLoop()
+
+        self.assertEqual(waits.timeouts[-1], appModule.VERSION_CHECK_INTERVAL_SECONDS)
+
+    def test_version_check_request_uses_the_named_timeout(self):
+        dash = self._makeApp()
+        waits = _RecordedWaits(dash._stop_event)
+
+        with patch("app.random.randint", return_value=1), \
+             patch("app.requests.get") as mock_get, \
+             patch.object(dash._stop_event, "wait", side_effect=waits):
+            mock_get.return_value.status_code = 404
+            dash._versionCheckLoop()
+
+        self.assertEqual(mock_get.call_args.kwargs["timeout"],
+                         appModule.VERSION_CHECK_TIMEOUT_SECONDS)
+
+    def test_login_recheck_repeats_on_the_named_interval(self):
+        dash = self._makeApp()
+        waits = _RecordedWaits(dash._stop_event)
+
+        with patch("app.random.randint", return_value=1), \
+             patch.object(dash, "_ensureAllUsersLogin"), \
+             patch.object(dash._stop_event, "wait", side_effect=waits):
+            dash._checkLoginLoop()
+
+        self.assertEqual(waits.timeouts[-1], appModule.LOGIN_CHECK_INTERVAL_SECONDS)
+
+
+class TestServerPort(_AppTestBase):
+    def test_run_binds_the_named_default_port(self):
+        dash = self._makeApp()
+
+        with patch.object(dash, "startWorkers"), \
+             patch.object(dash, "shutdown"), \
+             patch.object(dash.app, "run") as mock_run:
+            dash.run()
+
+        self.assertEqual(mock_run.call_args.kwargs["port"], appModule.DEFAULT_PORT)
+
+
 class TestBackupWorkerOffset(unittest.TestCase):
     def setUp(self):
         self._tmpdir = tempfile.TemporaryDirectory()

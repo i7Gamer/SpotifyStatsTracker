@@ -83,6 +83,9 @@ WEEKDAY_NAMES = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturd
 MAX_INLINE_ARTISTS = 5   #< artist lists longer than this collapse behind a "+N more" toggle (_artist_links.html)...
 MIN_HIDDEN_ARTISTS = 2   #< ...but only when at least this many names would be hidden - "+1 more" saves no space
 MAX_UPLOAD_MB = 500              #< cap on a single import-history request's total upload size
+# The port app.run() binds. The container publishes it and the compose file
+# maps it, so changing this alone doesn't move a Docker deployment's port.
+DEFAULT_PORT = 5444
 DEFAULT_SORT_BY = "totalTimeListened"
 # The only sortBy values Repository.SONG_SORT_COLUMNS/ALBUM_SORT_COLUMNS/
 # ARTIST_SORT_COLUMNS know how to handle - an unrecognized ?sortBy= would
@@ -181,6 +184,16 @@ VERSION_CHECK_MIN_START_DELAY_SECONDS = 30
 VERSION_CHECK_MAX_START_DELAY_SECONDS = 180
 LOGIN_CHECK_MIN_START_DELAY_SECONDS = 60
 LOGIN_CHECK_MAX_START_DELAY_SECONDS = 300
+# ...and how long each sleeps BETWEEN passes - the delays above only stagger
+# the first one. The login re-check is the cadence a "session expired" gap in
+# the log is measured against, so it belongs next to the offsets rather than
+# inline in the loop.
+VERSION_CHECK_INTERVAL_SECONDS = 60 * 60
+LOGIN_CHECK_INTERVAL_SECONDS = 60 * 5
+# Short on purpose: an unreachable GitHub is the expected case for an offline
+# instance, and the result only drives an "update available" banner - waiting
+# out requests' default (no timeout at all) would pin the thread indefinitely.
+VERSION_CHECK_TIMEOUT_SECONDS = 6
 
 # How long shutdown waits for ONE user's Database.stop() (see
 # _stopDatabasesConcurrently). Every join inside that call is itself bounded -

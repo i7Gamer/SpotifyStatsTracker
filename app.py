@@ -572,7 +572,7 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
             return
         while not self._stop_event.is_set():
             self._ensureAllUsersLogin()
-            self._stop_event.wait(60 * 5)  # Check every 5 minutes
+            self._stop_event.wait(LOGIN_CHECK_INTERVAL_SECONDS)
 
     def startVersionCheck_thread(self) -> None:
         threading.Thread(target=self._versionCheckLoop, daemon=True).start()
@@ -589,7 +589,8 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
             return
         while not self._stop_event.is_set():
             try:
-                resp = requests.get(url, timeout=6, headers={"Accept": "application/vnd.github+json"})
+                resp = requests.get(url, timeout=VERSION_CHECK_TIMEOUT_SECONDS,
+                                    headers={"Accept": "application/vnd.github+json"})
                 if resp.status_code == 200:   #< a real published release to compare against
                     # Releases are tagged e.g. "1.31.0" (occasionally "v1.31.0").
                     remoteVersion = resp.json().get("tag_name", "").strip().lstrip("vV")
@@ -609,7 +610,7 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
                 # offline instance doesn't spam its log every hour.
                 logger.debug("Version check request failed: %s", e)
 
-            self._stop_event.wait(60 * 60)
+            self._stop_event.wait(VERSION_CHECK_INTERVAL_SECONDS)
 
     # Batched per-kind genre lookups for _attachGenres - one query per rendered
     # list, not per card (see resolveGenresForTracks' degrade-to-{} contract).
@@ -1007,7 +1008,7 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
         try:
             self.startWorkers()
             debug = os.environ.get("FLASK_DEBUG", "").lower() in TRUTHY_ENV_VALUES
-            self.app.run(host="0.0.0.0", debug=debug, port=5444, use_reloader=False)#, threaded=False)
+            self.app.run(host="0.0.0.0", debug=debug, port=DEFAULT_PORT, use_reloader=False)#, threaded=False)
         finally:
             self.shutdown()
 
