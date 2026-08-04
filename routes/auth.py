@@ -26,11 +26,8 @@ from config import (
 )
 from Database.Spotify.cookies import parseCookieString
 from Database.lastfm import LastfmClient
-from Database.utils import dateToString
 from services.email_worker import queue_email_notification
 from Database.queries.email_queries import (
-    EVENT_INVALID_COOKIES,
-    EVENT_API_KEY_FAILED,
     EVENT_SHARE_REQUEST,
     VALID_NOTIFICATION_EVENTS,
 )

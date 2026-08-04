@@ -7,7 +7,6 @@ import datetime
 import hashlib
 import logging
 import concurrent.futures
-import threading
 
 logger = logging.getLogger(__name__)
 

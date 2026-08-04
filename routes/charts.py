@@ -21,7 +21,7 @@ from config import (
 )
 from routes._auth import makeRequiresUser
 from Database.database import Database
-from Database.utils import convertToDatetime, dateToString, msToString
+from Database.utils import dateToString, msToString
 from services.genre_gate import (
     emptyGenreCoverage, resolveGenreCoverage, genreGatePasses, resolveGenreDistribution,
     emptyBiographyCoverage, resolveBiographyCoverage,
@@ -121,7 +121,6 @@ def register(app, dashboard):
             section=section, username=username, emptyMessage=emptyMessage, **pagination))
 
     def overviewPage():
-        from datetime import datetime
         # Intentionally unauthenticated: aggregate counts/DB size carry no
         # per-user listening data, so they're shown to any visitor as a
         # public "is this instance alive" summary - only the per-user

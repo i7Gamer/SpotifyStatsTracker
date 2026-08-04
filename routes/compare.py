@@ -11,7 +11,7 @@ instance.
 """
 from datetime import timedelta
 
-from flask import render_template, redirect, request, url_for, abort, jsonify
+from flask import render_template, request, abort, jsonify
 
 from config import (
     WRAPPED_LIMIT_OPTIONS, COMPARE_TOP_LIST_SIZE, COMPARE_SHARED_POOL_SIZE,

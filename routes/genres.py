@@ -25,7 +25,7 @@ closures, add_url_rule. app-level constants are aliased at register() time.
 """
 import logging
 
-from flask import render_template, redirect, request, url_for, jsonify
+from flask import render_template, request, jsonify
 
 from config import (
     GENRE_PAGE_LIST_LIMIT, GENRE_MIX_TREND_TOP_N, GENRE_PAGE_TOP_ARTISTS_LIMIT,
