@@ -68,7 +68,11 @@
         Spotify re-authorization needed
       </a>
       {% endif %}
-      <button id="nav-toggle" class="nav-toggle" aria-label="Toggle navigation menu">
+      {#- aria-expanded, like .artist-toggle and the play-embed button: the
+          class flip below is invisible to a screen reader, so without it the
+          menu opens and closes with nothing announced either way. #}
+      <button id="nav-toggle" class="nav-toggle" aria-label="Toggle navigation menu"
+              aria-expanded="false" aria-controls="nav-menu">
         <span></span>
         <span></span>
         <span></span>

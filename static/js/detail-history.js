@@ -110,6 +110,22 @@
       });
   }
 
+  // _pagination.html's "Go to page" input calls the shared
+  // handleJumpToPageKeydown (layout-chrome.js), which hands the page over to
+  // this hook when one is registered and otherwise navigates with a full
+  // reload. This module never registered one, so the jump box reloaded the
+  // whole detail page while the Prev/Next links printed beside it - by the
+  // same _pagination.html include - swapped in place through onContainerClick.
+  // history-page.js and top-list.js both register theirs.
+  function goToDetailHistoryPage(page) {
+    var params = new URLSearchParams(window.location.search);
+    params.set('page', page);
+    //< replaceState, not push - see the module comment: Back must leave the
+    //  page rather than step back through its page/sort/tab states
+    window.history.replaceState({}, '', window.location.pathname + '?' + params.toString());
+    loadDetailHistory();
+  }
+
   // Delegated click handler covering pagination links, sort toggle, skips
   // toggle and "Show more" - bound to the results container, which survives
   // every in-place swap of its own innerHTML.
@@ -207,6 +223,9 @@
     container = document.getElementById('detailHistoryResults');
     if (container) {
       container.addEventListener('click', onContainerClick);
+      //< here rather than at module load: until the deferred body arrives
+      //  there is no list to swap, and the full-reload fallback is right then
+      window.__paginationAjaxHandler = goToDetailHistoryPage;
     }
   }
 

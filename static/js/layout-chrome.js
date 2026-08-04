@@ -140,15 +140,25 @@ window.handleJumpToPageKeydown = function(event, totalPages) {
 
   if (!navToggle || !navMenu) return;
 
+  // Both class flips are purely visual, so the button has to say what it did
+  // (see the aria-expanded note in layout.html). Driven off navMenu's own
+  // class rather than a counter, so the link handler below - which closes the
+  // menu without going through here - can reuse it and never disagree.
+  function syncNavExpanded() {
+    navToggle.setAttribute('aria-expanded', String(navMenu.classList.contains('active')));
+  }
+
   navToggle.addEventListener('click', () => {
     navMenu.classList.toggle('active');
     navToggle.classList.toggle('active');
+    syncNavExpanded();
   });
 
   navMenu.querySelectorAll('a').forEach(link => {
     link.addEventListener('click', () => {
       navMenu.classList.remove('active');
       navToggle.classList.remove('active');
+      syncNavExpanded();
     });
   });
 })();

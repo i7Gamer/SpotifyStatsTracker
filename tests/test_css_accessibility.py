@@ -4,11 +4,22 @@ These assert against the stylesheet text directly - cheap regression guards that
 don't need a browser: the nav dropdowns must open on keyboard focus, not only on
 hover, and the logout control (now a POST form button) must be styled like its
 sibling links.
+
+Since extended to the markup/script pair behind the mobile nav toggle, which is
+the same kind of fix one level up from the stylesheet.
 """
 import os
 import unittest
 
-_CSS_PATH = os.path.join(os.path.dirname(__file__), "..", "static", "css", "style.css")
+_ROOT = os.path.join(os.path.dirname(__file__), "..")
+_CSS_PATH = os.path.join(_ROOT, "static", "css", "style.css")
+_LAYOUT_PATH = os.path.join(_ROOT, "templates", "layout.html")
+_LAYOUT_CHROME_PATH = os.path.join(_ROOT, "static", "js", "layout-chrome.js")
+
+
+def _readFile(path):
+    with open(path, encoding="utf-8") as fh:
+        return fh.read()
 
 
 class TestNavKeyboardCss(unittest.TestCase):
@@ -27,6 +38,34 @@ class TestNavKeyboardCss(unittest.TestCase):
         # Verify .setting-hint summary includes padding-right to shift the italic 'i' symbol left into optical center
         self.assertIn(".setting-hint summary", self.css)
         self.assertIn("padding-right: 1px;", self.css)
+
+
+class TestMobileNavToggleAnnouncesItsState(unittest.TestCase):
+    """Opening the mobile menu only flips CSS classes, which a screen reader
+    cannot see. `.artist-toggle` and the play-embed button both carry
+    aria-expanded already; this one was the remaining disclosure control that
+    did not, so the menu opened and closed with nothing announced."""
+
+    def test_the_button_starts_collapsed_and_names_what_it_controls(self):
+        layout = _readFile(_LAYOUT_PATH)
+        navToggle = layout[layout.index('id="nav-toggle"'):]
+        navToggle = navToggle[:navToggle.index(">")]
+
+        self.assertIn('aria-expanded="false"', navToggle,
+                      "the menu starts closed, so the initial state must say so")
+        self.assertIn('aria-controls="nav-menu"', navToggle)
+
+    def test_both_paths_that_change_the_menu_update_the_attribute(self):
+        """Two of them: the button itself, and a link click that closes the
+        menu without going through the button's handler. A fix landing in only
+        the first leaves the attribute stuck at "true" after navigating."""
+        chrome = _readFile(_LAYOUT_CHROME_PATH)
+        navBlock = chrome[chrome.index("const navToggle"):]
+
+        self.assertIn("aria-expanded", navBlock)
+        #< "syncNavExpanded();" is a CALL - the declaration ends in " {"
+        self.assertEqual(navBlock.count("syncNavExpanded();"), 2,
+                         "both the toggle click and the link click must re-sync it")
 
 class TestAdminUtilityClasses(unittest.TestCase):
     def setUp(self):

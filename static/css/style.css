@@ -1272,6 +1272,16 @@ progress::-moz-progress-bar {
   color: var(--text);
 }
 
+/* The tag widget's empty state. A class rather than the inline string it used
+   to be in _tag_widget.html AND tags.js: both copies ended `...; italic;`, a
+   value with no property name, which browsers discard - so the placeholder was
+   never italic in either the server-rendered or the re-rendered case. */
+.no-tags-text {
+  font-size: 0.85rem;
+  color: var(--text-muted, #888888);
+  font-style: italic;
+}
+
 .track-label {
   background: rgba(255, 255, 255, 0.05);
   padding: 6px 10px;

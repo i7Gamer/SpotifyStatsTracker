@@ -127,8 +127,7 @@ if (typeof window !== 'undefined') (function() {
         });
       } else {
         var empty = document.createElement('span');
-        empty.className = 'no-tags-text';
-        empty.style.cssText = 'font-size: 0.85rem; color: var(--text-muted, #888888); italic;';
+        empty.className = 'no-tags-text';   //< styled in style.css, like the template's copy
         empty.textContent = 'No tags added yet';
         chipsContainer.appendChild(empty);
       }
