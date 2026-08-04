@@ -37,6 +37,12 @@ import time
 # is a no-op until roughly 24 users, and the module's value until then is the
 # shared PENALTY window plus phase separation between users. Lower it if
 # Spotify's bot-check pages ever become sustained rather than sporadic.
+#
+# Reviewed 2026-08-04 (eventDrivenConnectStatePlan.md Phase 3) and deliberately
+# NOT tightened for push mode: the historical storms ran through paths that
+# never acquire this limiter (session renewals, the dealer handshake), while
+# the paths a lower cap WOULD bind are legitimate - the import metadata
+# pre-fetch and the all-users poll fallback during a dealer outage.
 SPOTIFY_REQUESTS_PER_SECOND = 4
 
 # Cool-down applied process-wide once Spotify answers anything with a
