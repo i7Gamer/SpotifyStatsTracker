@@ -19,6 +19,32 @@ logger = logging.getLogger(__name__)
 FILENAME_UNSAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
+def _requestFields(*names) -> list[str] | None:
+    """The named fields of a JSON or form body, stripped - or None when the
+    body is not a mapping at all.
+
+    The three write endpoints below each read `get_json(silent=True) or
+    request.form` and went straight to `.get(name, "").strip()`. Two shapes
+    reached that as an AttributeError, which Flask serves as a 500 with a
+    traceback in the log, for what is only a badly-shaped request:
+    a JSON body that is an array or a scalar (no `.get`), and a field whose
+    value is null or a number (no `.strip`). The second is the easier one to
+    send by accident - `{"tag": null}` is what a client sends for an
+    unfilled field.
+
+    A non-string field reads as absent rather than as its str(): the callers
+    all reject empty input already, so `{"tag": 5}` becomes "Missing ... tag"
+    instead of silently creating a tag named "5".
+
+    Duck-typed on `.get` rather than `isinstance(data, dict)`: request.form is
+    a Werkzeug MultiDict, and pinning this to that class's current base would
+    turn every form post into a 400 if it ever changes."""
+    data = request.get_json(silent=True) or request.form
+    if not hasattr(data, "get"):
+        return None
+    return [value.strip() if isinstance(value := data.get(name), str) else "" for name in names]
+
+
 def register(app, dashboard):
 
     def addTagApi():
@@ -28,10 +54,10 @@ def register(app, dashboard):
         if not dashboard.repo.isTagsEnabled():
             abort(404)
 
-        data = request.get_json(silent=True) or request.form
-        entity_type = data.get("entity_type", "").strip()
-        entity_id = data.get("entity_id", "").strip()
-        tag = data.get("tag", "").strip()
+        fields = _requestFields("entity_type", "entity_id", "tag")
+        if fields is None:
+            return jsonify({"error": "Invalid payload"}), 400
+        entity_type, entity_id, tag = fields
 
         if not entity_type or not entity_id or not tag:
             return jsonify({"error": "Missing entity_type, entity_id, or tag"}), 400
@@ -61,10 +87,10 @@ def register(app, dashboard):
         if not dashboard.repo.isTagsEnabled():
             abort(404)
 
-        data = request.get_json(silent=True) or request.form
-        entity_type = data.get("entity_type", "").strip()
-        entity_id = data.get("entity_id", "").strip()
-        tag = data.get("tag", "").strip()
+        fields = _requestFields("entity_type", "entity_id", "tag")
+        if fields is None:
+            return jsonify({"error": "Invalid payload"}), 400
+        entity_type, entity_id, tag = fields
 
         if not entity_type or not entity_id or not tag:
             return jsonify({"error": "Missing entity_type, entity_id, or tag"}), 400
@@ -99,9 +125,10 @@ def register(app, dashboard):
         if not dashboard.repo.isTagsEnabled():
             abort(404)
 
-        data = request.get_json(silent=True) or request.form
-        old_tag = data.get("old_tag", "").strip()
-        new_tag = data.get("new_tag", "").strip()
+        fields = _requestFields("old_tag", "new_tag")
+        if fields is None:
+            return jsonify({"error": "Invalid payload"}), 400
+        old_tag, new_tag = fields
 
         if not old_tag or not new_tag:
             return jsonify({"error": "Missing old_tag or new_tag"}), 400

@@ -91,6 +91,44 @@ class TestTagsRoutes(AppTestCase):
         data = resp.get_json()
         self.assertEqual(data["tags"], [])
 
+    def test_a_malformed_payload_is_a_400_not_a_500(self):
+        """These three endpoints read `request.get_json(silent=True) or
+        request.form` and went straight to .get(). A JSON body that is not an
+        object has no .get, and a field that is not a string has no .strip() -
+        both raised AttributeError inside the view, i.e. an unhandled 500 with
+        a traceback in the log for what is only a badly-shaped request.
+
+        All three sites at once: they are byte-identical, and a fix landing in
+        one of a set is this repo's most-repeated defect."""
+        self._login()
+        endpoints = (
+            (self.client.post, "/api/tags"),
+            (self.client.delete, "/api/tags"),
+            (self.client.post, "/api/tags/rename"),
+        )
+        payloads = (
+            ["entity_type", "entity_id", "tag"],   #< a JSON array: no .get
+            "just-a-string",                       #< a JSON scalar: no .get either
+            {"entity_type": None, "entity_id": "t1", "tag": "x"},      #< null: no .strip
+            {"entity_type": 7, "entity_id": "t1", "tag": "x"},         #< number: no .strip
+            {"old_tag": None, "new_tag": 12},                          #< the rename pair
+        )
+        for send, url in endpoints:
+            for payload in payloads:
+                with self.subTest(url=url, payload=payload):
+                    resp = send(url, json=payload)
+                    self.assertEqual(resp.status_code, 400)
+                    self.assertIn("error", resp.get_json())
+
+    def test_a_well_formed_form_post_still_works(self):
+        """The guard must not mistake request.form for a malformed payload -
+        it is a MultiDict, not a plain dict."""
+        self._login()
+        resp = self.client.post("/api/tags", data={
+            "entity_type": "track", "entity_id": "t1", "tag": "formtag"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_json()["tag"], "formtag")
+
     def test_playlist_preview_and_export_api(self):
         self._login()
         self.client.post("/api/tags", json={"entity_type": "track", "entity_id": "t1", "tag": "workout"})
