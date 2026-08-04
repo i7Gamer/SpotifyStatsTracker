@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 i7Gamer
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """One-off sweep for historical pause-stretched backfill duplicates.
 
 The live dedup layers (backfill announce, insert guard, reconciler) recognise a
