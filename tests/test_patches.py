@@ -79,6 +79,7 @@ class TestPatches(unittest.TestCase):
         mock_ws_connect.return_value = mock_ws
 
         instance = MagicMock(spec=spotapi.status.PlayerStatus)
+        instance._deliberate_close = False  #< a bare MagicMock's auto-attribute is truthy = deliberate close
         instance.ws = mock_ws
         instance.base = MagicMock()
         # Concrete token state (a bare MagicMock can't be compared against the
@@ -2036,6 +2037,129 @@ class TestAuthFailureHint(unittest.TestCase):
         self.assertEqual(instance.access_token, "tok")
         self.assertEqual(instance.client_id, "cid")
         self.assertEqual(instance.access_token_expires_at_ms, 1234.0)
+
+
+class TestStreamerAtexitUnregistration(unittest.TestCase):
+    """spotapi's WebsocketStreamer.__init__ registers an anonymous atexit
+    closure (a print plus disconnect()) whose only reference lives inside
+    atexit's registry, so nothing upstream can ever unregister it. One
+    accumulated per streamer constructed - one per user per 6-hourly session
+    recycle - each pinning its dead session's object graph until process exit
+    and printing "Websockets closing due to program ending" there (34 lines at
+    the 2026-08-04 shutdown, all but 3 for sessions long since replaced).
+
+    The patch records what __init__ registers and drops the hook the moment
+    _deliberate_close is set - the one signal (spotifyListener.signalStop)
+    that every stop, rebuild and shutdown path already raises."""
+
+    def _newStreamer(self):
+        # PlayerStatus, not WebsocketStreamer: the base class is slotted (no
+        # __dict__), and PlayerStatus is the only thing this app instantiates.
+        return spotapi.status.PlayerStatus.__new__(spotapi.status.PlayerStatus)
+
+    def _initRegistering(self, instance, cleanup, failure=None):
+        """Run the patched __init__ with a fake original that registers
+        `cleanup` the way spotapi's does, optionally raising `failure` after."""
+        def fakeOriginalInit(self, *args, **kwargs):
+            spotapi.websocket.atexit.register(cleanup)
+            if failure is not None:
+                raise failure
+        with patch("Database.patches.original_websocket_streamer_init", fakeOriginalInit):
+            spotapi.websocket.WebsocketStreamer.__init__(instance, MagicMock())
+
+    def test_spotapi_websocket_atexit_is_the_recording_shim(self):
+        """The fork's module-level `atexit` name must resolve to the recorder,
+        and unknown attributes must fall through to the real module."""
+        import atexit as realAtexit
+        from Database.patches import _SpotapiAtexitRecorder
+        self.assertIsInstance(spotapi.websocket.atexit, _SpotapiAtexitRecorder)
+        self.assertIs(spotapi.websocket.atexit.unregister, realAtexit.unregister)
+
+    def test_init_forwards_and_records_the_forks_atexit_registration(self):
+        cleanup = lambda: None
+        instance = self._newStreamer()
+        with patch("Database.patches.atexit") as mockAtexit:
+            self._initRegistering(instance, cleanup)
+        mockAtexit.register.assert_called_once_with(cleanup)
+        self.assertEqual(instance._atexitCleanups, [cleanup])
+
+    def test_a_deliberate_close_unregisters_the_recorded_cleanup(self):
+        cleanup = lambda: None
+        instance = self._newStreamer()
+        with patch("Database.patches.atexit") as mockAtexit:
+            self._initRegistering(instance, cleanup)
+            instance._deliberate_close = True
+        mockAtexit.unregister.assert_called_once_with(cleanup)
+        self.assertEqual(instance._atexitCleanups, [])
+        self.assertTrue(instance._deliberate_close)
+
+    def test_setting_the_flag_twice_unregisters_the_hook_once(self):
+        cleanup = lambda: None
+        instance = self._newStreamer()
+        with patch("Database.patches.atexit") as mockAtexit:
+            self._initRegistering(instance, cleanup)
+            instance._deliberate_close = True
+            instance._deliberate_close = True
+        mockAtexit.unregister.assert_called_once_with(cleanup)
+
+    def test_clearing_the_flag_leaves_the_hook_registered(self):
+        cleanup = lambda: None
+        instance = self._newStreamer()
+        with patch("Database.patches.atexit") as mockAtexit:
+            self._initRegistering(instance, cleanup)
+            instance._deliberate_close = False
+        mockAtexit.unregister.assert_not_called()
+        self.assertFalse(instance._deliberate_close)
+        self.assertEqual(instance._atexitCleanups, [cleanup])
+
+    def test_the_flag_defaults_to_false_on_a_fresh_streamer(self):
+        """Every reader does getattr(self, "_deliberate_close", False); the
+        property getter must preserve that default on an instance nobody has
+        flagged yet - a truthy default would make every close look deliberate
+        and disable reconnects entirely."""
+        self.assertFalse(self._newStreamer()._deliberate_close)
+
+    def test_a_bare_slotted_streamer_keeps_the_signalstop_contract(self):
+        """signalStop wraps `manager._deliberate_close = True` in
+        try/except AttributeError for __slots__-only instances; the property
+        setter must keep raising there, and the getter must still read False."""
+        bare = spotapi.websocket.WebsocketStreamer.__new__(spotapi.websocket.WebsocketStreamer)
+        with self.assertRaises(AttributeError):
+            bare._deliberate_close = True
+        self.assertFalse(bare._deliberate_close)
+
+    def test_a_failed_init_unregisters_what_it_captured(self):
+        """A streamer whose construction raises has no owner to ever set
+        _deliberate_close, so anything it registered would be pinned for good."""
+        cleanup = lambda: None
+        instance = self._newStreamer()
+        failure = RuntimeError("handshake failed")
+        with patch("Database.patches.atexit") as mockAtexit:
+            with self.assertRaises(RuntimeError):
+                self._initRegistering(instance, cleanup, failure=failure)
+        mockAtexit.unregister.assert_called_once_with(cleanup)
+
+    def test_a_registration_outside_a_streamer_init_still_reaches_atexit(self):
+        """The recorder must stay invisible to atexit use it wasn't built for -
+        no open capture means plain forwarding, not a crash."""
+        cleanup = lambda: None
+        with patch("Database.patches.atexit") as mockAtexit:
+            spotapi.websocket.atexit.register(cleanup)
+        mockAtexit.register.assert_called_once_with(cleanup)
+
+    def test_an_instance_that_cannot_record_still_registers_the_hook(self):
+        """A slotted instance can't store _atexitCleanups; the hook then simply
+        stays registered for the process's life - the pre-patch behavior, not
+        an exception out of __init__."""
+        class Slotted:
+            __slots__ = ()
+
+        cleanup = lambda: None
+        instance = Slotted()
+        with patch("Database.patches.atexit") as mockAtexit:
+            self._initRegistering(instance, cleanup)
+        mockAtexit.register.assert_called_once_with(cleanup)
+        self.assertFalse(hasattr(instance, "_atexitCleanups"))
 
 
 if __name__ == "__main__":

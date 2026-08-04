@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: 2026 i7Gamer
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
+import atexit
 import copy
 import json
 import logging
@@ -321,24 +322,113 @@ spotapi.status.PlayerStatus.state = property(_player_status_state_property)
 spotapi.status.PlayerStatus.saved_state = property(_player_status_saved_state_property)
 
 
-# 3. Prevent WebsocketStreamer.__init__ from hijacking the process's SIGINT handler.
-# It unconditionally does `signal.signal(signal.SIGINT, self.handle_interrupt)`, whose
-# handler just does `self.ws.close(); exit(0)`. That overwrites Flask/Werkzeug's normal
-# Ctrl+C handling, and since it can fire while a background listener thread (see
-# LastPlayed.py's updateLoop) is mid-request, it leads to noisy/broken shutdowns instead
-# of a clean KeyboardInterrupt. Restore whatever SIGINT handler was registered before
+# 3. Prevent WebsocketStreamer.__init__ from hijacking the process's SIGINT
+# handler, and make its atexit registration removable.
+#
+# SIGINT: __init__ unconditionally does `signal.signal(signal.SIGINT,
+# self.handle_interrupt)`, whose handler just does `self.ws.close(); exit(0)`.
+# That overwrites Flask/Werkzeug's normal Ctrl+C handling, and since it can
+# fire while a background listener thread (see LastPlayed.py's updateLoop) is
+# mid-request, it leads to noisy/broken shutdowns instead of a clean
+# KeyboardInterrupt. Restore whatever SIGINT handler was registered before
 # spotapi's own __init__ ran.
+#
+# atexit: __init__ also registers an anonymous cleanup closure (a print plus
+# disconnect()) whose only reference lives inside atexit's registry, so
+# nothing upstream can ever unregister it. One accumulates per streamer
+# constructed - with the 6-hourly session recycle that means one per user per
+# 6 hours, each pinning its dead session's object graph until process exit and
+# printing "Websockets closing due to program ending" there (34 lines at the
+# 2026-08-04 shutdown, all but 3 of them for sessions long since replaced).
+# The recorder below captures what __init__ registers; the _deliberate_close
+# property further down drops the hook the moment the app declares this
+# streamer's close deliberate. A streamer never deliberately closed keeps its
+# hook: at exit it is the only close that socket will get.
 original_websocket_streamer_init = spotapi.websocket.WebsocketStreamer.__init__
+
+_streamerAtexitCapture = threading.local()  #< .captured is a list only while a patched __init__ runs in this thread
+
+
+class _SpotapiAtexitRecorder:
+    """Stands in for the atexit module inside spotapi.websocket.
+
+    register() forwards to the real atexit and also records the callback in
+    the calling thread's open capture (set by patched_websocket_streamer_init);
+    every other attribute proxies through, so the swap stays invisible to any
+    other atexit use the fork might grow."""
+
+    def register(self, func, *args, **kwargs):
+        result = atexit.register(func, *args, **kwargs)
+        capture = getattr(_streamerAtexitCapture, "captured", None)
+        if capture is not None:
+            capture.append(func)
+        return result
+
+    def __getattr__(self, name):
+        return getattr(atexit, name)
+
+
+spotapi.websocket.atexit = _SpotapiAtexitRecorder()
+
 
 def patched_websocket_streamer_init(self, *args, **kwargs):
     previousSigintHandler = signal.getsignal(signal.SIGINT)
-    original_websocket_streamer_init(self, *args, **kwargs)
+    _streamerAtexitCapture.captured = []
+    initSucceeded = False
     try:
-        signal.signal(signal.SIGINT, previousSigintHandler)
-    except ValueError:
-        pass  # signal.signal only works in main thread; silently skip if in worker thread
+        original_websocket_streamer_init(self, *args, **kwargs)
+        initSucceeded = True
+    finally:
+        captured = _streamerAtexitCapture.captured
+        _streamerAtexitCapture.captured = None
+        try:
+            signal.signal(signal.SIGINT, previousSigintHandler)
+        except ValueError:
+            pass  # signal.signal only works in main thread; silently skip if in worker thread
+        if not initSucceeded:
+            # A failed construction has no owner to ever set _deliberate_close,
+            # so anything it managed to register would be pinned for good.
+            for cleanup in captured:
+                atexit.unregister(cleanup)
+    if captured:
+        try:
+            self._atexitCleanups = captured
+        except AttributeError:  # noqa: S110 - a slotted instance can't record its hook; it just
+            pass                #  stays registered for the process's life, the pre-patch behavior
 
 spotapi.websocket.WebsocketStreamer.__init__ = patched_websocket_streamer_init
+
+
+def _dropStreamerAtexitCleanups(self) -> None:
+    """Unregister every atexit hook recorded for this streamer, once."""
+    for cleanup in getattr(self, "_atexitCleanups", ()):
+        atexit.unregister(cleanup)
+    try:
+        self._atexitCleanups = []
+    except AttributeError:  # noqa: S110 - slotted instance: nothing was recorded to drop
+        pass
+
+
+def _getDeliberateClose(self):
+    return getattr(self, "_deliberateCloseValue", False)
+
+
+def _setDeliberateClose(self, value) -> None:
+    self._deliberateCloseValue = value  #< AttributeError on a slotted instance, which
+                                        #  signalStop's own try/except already expects
+    if value:
+        _dropStreamerAtexitCleanups(self)
+
+
+# Every reader already does getattr(self, "_deliberate_close", False), so a
+# property whose getter defaults to False changes nothing for them. The setter
+# is the one place that learns "this close is deliberate" first - making it
+# the right moment to drop the atexit hook. That covers Listener.stop()'s
+# direct ws.close() path, which never calls disconnect(), as well as every
+# session rebuild. No @enforce frozen copy can shadow this (patch 6's
+# concern): the name did not exist when the subclasses were decorated, and
+# @enforce skips properties regardless.
+spotapi.websocket.WebsocketStreamer._deliberate_close = property(_getDeliberateClose, _setDeliberateClose)
 
 
 # 4. Replace WebsocketStreamer.keep_alive outright, and disable the fork's
