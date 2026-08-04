@@ -232,6 +232,7 @@ class TestDatabaseStop(unittest.TestCase):
         db._addToDatabaseFromListener = MagicMock()
         db._makeOnStaleCallback = MagicMock()
         db._reconcileWithWebApiHistory = MagicMock()
+        db.listener_session_builds = 0  #< the session ledger __init__ normally seeds
 
         # Invoke startListener
         result = db.startListener()

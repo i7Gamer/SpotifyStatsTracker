@@ -126,8 +126,10 @@ class ListenerMixin:
     def _makeOnStaleCallback(self) -> callable:
         """Create an onStale callback that retries with exponential backoff.
         Called when the listener detects a stale feed or auth error and needs
-        to reconnect with fresh cookies/session."""
-        def onStaleWithBackoff():
+        to reconnect with fresh cookies/session. `reason` is the listener's
+        diagnosis (spotifyListener's STALE_REASON_*), passed through to the
+        session ledger startListener keeps for /admin."""
+        def onStaleWithBackoff(reason=None):
             with self._health_lock:
                 self.listener_health = "DEGRADED"
                 self.listener_error_count += 1
@@ -160,7 +162,7 @@ class ListenerMixin:
                     # stale check now needs evidence of unrecorded playback
                     # (see _staleFeedIsBroken), but the level still fits.
                     _dbmod.logger.debug("Attempting to reconnect (attempt %d/%d)", attempt + 1, self.RECONNECT_MAX_RETRIES)
-                    if self.startListener(email=self.email) is False:
+                    if self.startListener(email=self.email, rebuildReason=reason) is False:
                         _dbmod.logger.info("Reconnection abandoned for user %s: stop requested", self.user)
                         return
                     if attempt == 0:
@@ -185,12 +187,17 @@ class ListenerMixin:
 
         return onStaleWithBackoff
 
-    def startListener(self, cookiesFile=None, email=None) -> bool:
+    def startListener(self, cookiesFile=None, email=None, rebuildReason=None) -> bool:
         """(Re)build and start this user's listener. Returns False when the
         start was refused or abandoned because stop/shutdown was requested;
         True otherwise. The whole body holds _listener_lock: concurrent
         reconnects (health check vs onStale) are serialized, and stop() can
-        rely on the swap below never interleaving with its own teardown."""
+        rely on the swap below never interleaving with its own teardown.
+
+        `rebuildReason` is the listener's own diagnosis of why a REbuild was
+        needed (spotifyListener's STALE_REASON_*), recorded in the session
+        ledger below; callers without one (boot, a cookies update) leave it
+        None and the ledger shows the rebuild as unattributed."""
         if self._stopRequested():
             _dbmod.logger.info("Not starting listener for user %s: stop requested", self.user)
             return False
@@ -238,6 +245,13 @@ class ListenerMixin:
                     _dbmod.logger.error("Failed to stop just-built listener for user %s: %s", self.user, _dbmod.parseError(e))
                 return False
             self.listener = newListener
+            with self._health_lock:
+                # The session ledger: even a build that turns out contaminated
+                # or login-failed constructed a session, so it counts.
+                self.listener_session_builds += 1
+                if isReconnect:
+                    self.listener_last_rebuild_time = _dbmod.time.time()
+                    self.listener_last_rebuild_reason = rebuildReason
             if self.listener.contaminationDetected:
                 # The cookies authenticate as a different Spotify account (see
                 # Listener.__init__'s contamination check). The listener itself
@@ -575,6 +589,9 @@ class ListenerMixin:
                 "error_count": self.listener_error_count,
                 "last_error": self.listener_last_error,
                 "seconds_since_last_poll": seconds_since_last_poll,
+                "session_builds": self.listener_session_builds,
+                "last_rebuild_time": self.listener_last_rebuild_time,
+                "last_rebuild_reason": self.listener_last_rebuild_reason,
             }
 
     # Every per-user background worker's stop event, in one place: shutdown

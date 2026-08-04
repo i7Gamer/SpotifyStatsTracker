@@ -55,6 +55,28 @@ logger = logging.getLogger(__name__)
 MANUAL_BACKUP_SYNC_WAIT_SECONDS = 20
 
 
+def _listenerSessionLedger(health: dict, tz) -> dict | None:
+    """The Worker Health card's listener-session entry for one user: sessions
+    built since process start, plus a "when - why" line for the last rebuild
+    (shown as the badge's tooltip). None when the snapshot carries no ledger
+    (a Database predating it, or a test mock), so the template skips the badge
+    instead of rendering zeros."""
+    builds = health.get("session_builds")
+    if not builds:
+        return None
+    parts = []
+    rebuiltAt = health.get("last_rebuild_time")
+    if rebuiltAt:
+        try:
+            parts.append(convertToDatetime(rebuiltAt, tz=tz).strftime("%Y-%m-%d %H:%M:%S"))
+        except Exception:  # noqa: S110 - an unformattable timestamp costs the tooltip its
+            pass           #  date, not the page
+    reason = health.get("last_rebuild_reason")
+    if reason:
+        parts.append(reason)
+    return {"builds": builds, "last_rebuild": " - ".join(parts) or None}
+
+
 def register(app, dashboard):
     # The pre-bound admin flavour (see routes/_auth.py): logged-in + isAdmin,
     # or 403; anonymous redirects to login with next=/admin. This replaced 13
@@ -108,10 +130,12 @@ def register(app, dashboard):
             # rather than paying that cost to find out.
             u_db = dashboard.user_databases.get(u_username)
 
+            listener_sessions = None
             if u["cookies_json"]:
                 if u_db is not None:
                     health = u_db.getListenerHealth()
                     sync_status = health.get("status", "UNKNOWN")
+                    listener_sessions = _listenerSessionLedger(health, db.tz)
                 else:
                     sync_status = "Inactive"
             else:
@@ -210,6 +234,7 @@ def register(app, dashboard):
                 "email": u_email,
                 "is_admin": u["is_admin"],
                 "sync_status": sync_status,
+                "listener_sessions": listener_sessions,
                 "spotify_api_status": "Needs Re-Auth" if (has_api and needs_reauth) else ("Configured" if has_api else "Not Configured"),
                 #< .get(): raw row presence check only - the stored key
                 #  is encrypted and never needs decrypting here

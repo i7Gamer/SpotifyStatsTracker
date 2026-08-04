@@ -471,6 +471,43 @@ class TestAdminMilestoneWorkerHealth(AdminRouteTestBase):
         self.assertIn(b"AUTO-RECALC OFF", section)
 
 
+class TestAdminListenerSessionLedger(AdminRouteTestBase):
+    """The Worker Health card's Listener Sessions row: one badge per active
+    user with the sessions-built-since-start count, carrying the last
+    rebuild's time and reason in its tooltip. That is the at-a-glance answer
+    to "is this rebuild churn?" the 2026-08-04 websocket investigation had to
+    reconstruct from app.log by hand."""
+
+    def _dbWithLedger(self, builds=4, reason="quiet feed hard ceiling"):
+        userDb = self._makeDb()
+        userDb.getListenerHealth.return_value = {
+            "status": "HEALTHY", "error_count": 0, "last_error": None,
+            "seconds_since_last_poll": 5,
+            "session_builds": builds,
+            "last_rebuild_time": 1718000000.0,
+            "last_rebuild_reason": reason,
+        }
+        return userDb
+
+    def test_the_ledger_renders_per_user_with_the_rebuild_reason(self):
+        dash = self._makeApp()
+        userDb = self._dbWithLedger()
+        resp = self._getAdmin(dash, patches=self._patches(dash, True, userDb=userDb))
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn(b"Listener Sessions", resp.data)
+        self.assertIn(b"alice: 4", resp.data)
+        self.assertIn(b"quiet feed hard ceiling", resp.data)
+
+    def test_a_health_snapshot_without_the_ledger_still_renders(self):
+        """_makeDb's default getListenerHealth has no session fields - the
+        page must render regardless (an older Database, or a mocked one)."""
+        dash = self._makeApp()
+        resp = self._getAdmin(dash)
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn(b"Listener Sessions", resp.data)
+        self.assertNotIn(b"alice: 4", resp.data)
+
+
 class TestAdminSkipSettings(AdminRouteTestBase):
     def test_non_admin_post_is_forbidden(self):
         dash = self._makeApp()

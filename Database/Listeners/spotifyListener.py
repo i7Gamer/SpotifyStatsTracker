@@ -96,6 +96,16 @@ LISTENER_STALE_HARD_TIMEOUT_SECONDS = 6 * 60 * 60
 # other reason to depend on it.
 LISTENER_PUSH_CHANNEL_ALIVE_SECONDS = 10 * 60
 
+# Why a rebuild was requested - short, stable strings passed to onStale and
+# carried through _makeOnStaleCallback into the listener-session ledger on
+# /admin's Worker Health card, so an operator can tell scheduled recycling
+# (the hard ceiling) from a session actually decaying without correlating
+# app.log timestamps by hand.
+STALE_REASON_VALIDATION_FAILED = "session validation failed"
+STALE_REASON_UNRECORDED_PLAYBACK = "unrecorded playback on a quiet feed"
+STALE_REASON_HARD_CEILING = "quiet feed hard ceiling"
+STALE_REASON_AUTH_ERROR = "auth error"
+
 AUTH_ERROR_TIMEOUT_SECONDS = 30  #< trigger reconnection immediately for auth errors, not 30 min
 
 RATE_LIMIT_ERROR_BACKOFF_SECONDS = 60  #< how long THIS listener's poll loop pauses after a rate limit.
@@ -988,7 +998,7 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
             logger.error("Listener session validation failed - triggering reconnection")
             if onStale is not None:
                 try:
-                    onStale()
+                    onStale(reason=STALE_REASON_VALIDATION_FAILED)
                 except Exception as e:
                     logger.error("Reconnect attempt failed: %s", parseError(e))
             return False
@@ -1027,7 +1037,8 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
         if elapsed <= LISTENER_STALE_TIMEOUT_SECONDS:
             return True
 
-        if elapsed < LISTENER_STALE_HARD_TIMEOUT_SECONDS and not self._staleFeedIsBroken():
+        feedIsBroken = self._staleFeedIsBroken()
+        if elapsed < LISTENER_STALE_HARD_TIMEOUT_SECONDS and not feedIsBroken:
             # Nobody is listening - the feed has nothing to report, which is
             # not a fault. This is what the 30-minute rebuild was really
             # detecting: 1,270 reconnects in 11 days, spread evenly across all
@@ -1047,7 +1058,11 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
             LISTENER_STALE_TIMEOUT_SECONDS,
         )
         try:
-            onStale()
+            # Broken evidence is the stronger diagnosis: past the ceiling WITH
+            # unrecorded playback, "hard ceiling" would misread a genuinely
+            # broken session as routine recycling.
+            onStale(reason=STALE_REASON_UNRECORDED_PLAYBACK if feedIsBroken
+                    else STALE_REASON_HARD_CEILING)
         except Exception as e:
             logger.error("Reconnect attempt failed: %s", parseError(e))
         return False
@@ -1077,7 +1092,7 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
                     logger.warning("Auth error detected, triggering immediate reconnection: %s", parseError(e))
                     if onStale is not None:
                         try:
-                            onStale()
+                            onStale(reason=STALE_REASON_AUTH_ERROR)
                         except Exception as reconnect_err:
                             logger.error("Reconnect attempt failed: %s", parseError(reconnect_err))
                     self.run = False

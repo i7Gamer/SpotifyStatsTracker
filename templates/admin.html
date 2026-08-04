@@ -215,6 +215,15 @@
           {% endfor %}
         </div>
 
+        <p class="admin-worker-label">Listener Sessions (since start)</p>
+        <div class="admin-worker-row">
+          {% for u in users_list if u.listener_sessions %}
+            <span class="badge badge-secondary"{% if u.listener_sessions.last_rebuild %} title="last rebuild: {{ u.listener_sessions.last_rebuild }}"{% endif %}>{{ u.username }}: {{ u.listener_sessions.builds }}</span>
+          {% else %}
+            <span class="badge badge-secondary">NO ACTIVE SESSIONS</span>
+          {% endfor %}
+        </div>
+
         <p class="admin-worker-label">Spotify Rate Limiting</p>
         <div class="admin-worker-row">
           {% if spotify_rate_limit %}

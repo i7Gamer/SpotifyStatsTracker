@@ -355,6 +355,13 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         self.listener_last_poll_time = None  # timestamp of last successful poll
         self.listener_error_count = 0  # consecutive errors
         self.listener_last_error = None  # last error message
+        # The listener-session ledger for /admin's Worker Health card. One
+        # websocket streamer exists per build (see the atexit notes in
+        # Database/patches.py), so builds since process start is also the
+        # streamer count; a runaway value is the rebuild-churn signal.
+        self.listener_session_builds = 0
+        self.listener_last_rebuild_time = None    # epoch seconds; None until a REbuild happens
+        self.listener_last_rebuild_reason = None  # spotifyListener's STALE_REASON_*, or None
 
         # All Database instances (one per user) share the same underlying SQLite
         # file - catalog data (tracks/artists/albums/images) is global, so it's

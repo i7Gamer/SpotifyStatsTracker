@@ -12,6 +12,7 @@ rebuild the session instead of staying wedged forever.
 import logging
 import sys
 import os
+import threading
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -25,6 +26,10 @@ from Database.Listeners.spotifyListener import (
     Listener,
     LISTENER_STALE_TIMEOUT_SECONDS,
     LISTENER_STALE_HARD_TIMEOUT_SECONDS,
+    STALE_REASON_VALIDATION_FAILED,
+    STALE_REASON_UNRECORDED_PLAYBACK,
+    STALE_REASON_HARD_CEILING,
+    STALE_REASON_AUTH_ERROR,
     LISTENER_PUSH_CHANNEL_ALIVE_SECONDS,
     RATE_LIMIT_ERROR_BACKOFF_SECONDS,
     RATE_LIMIT_REASON_LISTENER_POLL,
@@ -141,6 +146,82 @@ class TestCheckOnceStaleness(unittest.TestCase):
 
         self.assertFalse(stillRunning)
         onStale.assert_called_once()
+
+
+class TestStaleReasonReporting(unittest.TestCase):
+    """Every onStale call names WHY the rebuild was requested. The reason rides
+    through _makeOnStaleCallback into the listener-session ledger on /admin's
+    Worker Health card, so an operator can tell scheduled recycling (the
+    quiet-feed hard ceiling) from a session actually decaying - without
+    grepping app.log and correlating timestamps by hand (how the 2026-08-04
+    websocket investigation had to do it)."""
+
+    TRACK_A = "spotify:track:aaaaaaaaaaaaaaaaaaaaaa"
+    TRACK_B = "spotify:track:bbbbbbbbbbbbbbbbbbbbbb"
+
+    def _poll(self, listener, now, state, onStale):
+        listener.sp.lastPlayedManager.manager._state = state
+        with patch("Database.Listeners.spotifyListener.time.monotonic", return_value=now):
+            return listener._checkOnce(MagicMock(), onStale=onStale)
+
+    def _listener(self):
+        listener = _bareListener(recentlyPlayed=[{"played_at": 1}])
+        listener._lastChangeTime = 100.0
+        return listener
+
+    def test_unrecorded_playback_names_its_reason(self):
+        """A track change the feed never recorded - the genuine failure."""
+        listener, onStale = self._listener(), MagicMock()
+
+        self._poll(listener, 200.0, _playingState(self.TRACK_A), onStale)
+        self._poll(listener, 300.0, _playingState(self.TRACK_B), onStale)
+        self._poll(listener, 100.0 + LISTENER_STALE_TIMEOUT_SECONDS + 1,
+                   _playingState(self.TRACK_B), onStale)
+
+        onStale.assert_called_once_with(reason=STALE_REASON_UNRECORDED_PLAYBACK)
+
+    def test_the_hard_ceiling_names_its_reason(self):
+        """An idle account recycled purely because the quiet feed aged past the
+        ceiling - scheduled maintenance, not decay, and the ledger must say so."""
+        listener, onStale = self._listener(), MagicMock()
+
+        self._poll(listener, 100.0 + LISTENER_STALE_HARD_TIMEOUT_SECONDS + 1,
+                   {"is_playing": False}, onStale)
+
+        onStale.assert_called_once_with(reason=STALE_REASON_HARD_CEILING)
+
+    def test_broken_evidence_beats_the_ceiling_label(self):
+        """Past the hard ceiling WITH evidence of unrecorded playback, the
+        evidence is the stronger diagnosis - "hard ceiling" would misread a
+        genuinely broken session as routine recycling."""
+        listener, onStale = self._listener(), MagicMock()
+
+        self._poll(listener, 200.0, _playingState(self.TRACK_A), onStale)
+        self._poll(listener, 300.0, _playingState(self.TRACK_B), onStale)
+        self._poll(listener, 100.0 + LISTENER_STALE_HARD_TIMEOUT_SECONDS + 1,
+                   _playingState(self.TRACK_B), onStale)
+
+        onStale.assert_called_once_with(reason=STALE_REASON_UNRECORDED_PLAYBACK)
+
+    def test_a_failed_session_validation_names_its_reason(self):
+        listener, onStale = self._listener(), MagicMock()
+        listener._validateCurrentUser = MagicMock(return_value=False)
+
+        listener._checkOnce(MagicMock(), onStale=onStale)
+
+        onStale.assert_called_once_with(reason=STALE_REASON_VALIDATION_FAILED)
+
+    def test_an_auth_error_names_its_reason(self):
+        listener, onStale = self._listener(), MagicMock()
+        listener._stop_event = threading.Event()
+        listener.contaminationDetected = False
+        listener._checkOnce = MagicMock(side_effect=RuntimeError("boom"))
+
+        with patch("Database.Listeners.spotifyListener._is_auth_error", return_value=True):
+            listener.startListener(MagicMock(), onStale=onStale)
+
+        onStale.assert_called_once_with(reason=STALE_REASON_AUTH_ERROR)
+        self.assertFalse(listener.run)
 
 
 def _playingState(trackUri, isPaused=False):
