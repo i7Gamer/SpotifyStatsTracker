@@ -986,20 +986,28 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
         there are, and the common case - every thread parked on its stop event -
         is immediate either way.
 
+        Starting them together is not enough on its own: join(timeout=) waits
+        out the WHOLE timeout on a thread that is still running, so joining N
+        wedged users at the full timeout each costs N times the budget however
+        much they overlapped. The deadline below is therefore shared - each
+        join gets what is left of it, and once it is spent the rest return
+        immediately.
+
         Safe to overlap because phase 1 has already signaled everyone: no
         user's stop can revive another's listener, which is the property the
         two-phase split exists for."""
         stoppers = []
         for db in databases:
             thread = threading.Thread(target=self._stopDatabaseQuietly, args=(db,),
-                                      name=f"shutdown-{db.user}", daemon=True)
+                                      name=f"{SHUTDOWN_THREAD_NAME_PREFIX}{db.user}", daemon=True)
             thread.start()
             stoppers.append((db, thread))
+        deadline = time.monotonic() + USER_STOP_JOIN_TIMEOUT_SECONDS
         for db, thread in stoppers:
             # Bounded even though stop() is: a wedged user must not hold the
             # process past the grace period it is racing, and the threads are
             # daemons, so one that outlives this dies with the interpreter.
-            thread.join(timeout=USER_STOP_JOIN_TIMEOUT_SECONDS)
+            thread.join(timeout=max(0, deadline - time.monotonic()))
             if thread.is_alive():
                 logger.warning("Database for %s did not stop within %ss - continuing shutdown",
                                db.user, USER_STOP_JOIN_TIMEOUT_SECONDS)

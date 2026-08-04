@@ -195,15 +195,24 @@ LOGIN_CHECK_INTERVAL_SECONDS = 60 * 5
 # out requests' default (no timeout at all) would pin the thread indefinitely.
 VERSION_CHECK_TIMEOUT_SECONDS = 6
 
-# How long shutdown waits for ONE user's Database.stop() (see
-# _stopDatabasesConcurrently). Every join inside that call is itself bounded -
+# How long the WHOLE of shutdown's phase 2 may spend joining stopper threads
+# (see _stopDatabasesConcurrently) - a deadline shared by every user, not a
+# per-user allowance. Every join inside one Database.stop() is itself bounded -
 # two on the listener, one on the auto-import watchdog, five on the periodic
 # workers - and this covers their sum with slack, so it only ever expires for a
-# user whose threads are genuinely wedged. Users are stopped concurrently, so
-# this is the whole of phase 2 however many there are, which is what keeps
-# shutdown inside the compose file's stop_grace_period
+# user whose threads are genuinely wedged. Users are stopped concurrently, and
+# the deadline is what makes that concurrency show up in the budget: joining
+# them one after another at this timeout EACH costs it times the user count,
+# because join(timeout=) waits out the whole timeout on a thread that is still
+# running. Shared, phase 2 stays one user's worth however many there are, which
+# is what keeps shutdown inside the compose file's stop_grace_period
 # (tests/test_compose_shutdown_budget.py pins the two against each other).
 USER_STOP_JOIN_TIMEOUT_SECONDS = 30
+
+# Stopper threads are named "<prefix><user>". Same reason the listener and
+# watchdog threads carry theirs: an anonymous "Thread-17" in a dump taken
+# during a slow shutdown says nothing about whose stop is still running.
+SHUTDOWN_THREAD_NAME_PREFIX = "shutdown-"
 
 # Query parameter carrying a static asset's mtime, appended to every
 # url_for('static', ...) by registerRoutes' url_defaults hook in app.py so a

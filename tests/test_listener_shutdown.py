@@ -20,6 +20,7 @@ if isinstance(sys.modules.get("Database.database"), MagicMock):
 import app as appModule
 from Database.database import Database
 from Database.Listeners.spotifyListener import Listener, LISTENER_THREAD_NAME_PREFIX
+from config import SHUTDOWN_THREAD_NAME_PREFIX
 
 # Bound for waits that return immediately in a correct run - they turn a hang
 # into a failure rather than giving a slow machine "enough" time.
@@ -446,6 +447,50 @@ class TestAppShutdownTwoPhase(unittest.TestCase):
 
         quick.stop.assert_called_once()
         self.assertTrue(any("wedged" in line for line in logs.output))
+
+    def test_the_phase_two_deadline_is_shared_across_users(self):
+        """USER_STOP_JOIN_TIMEOUT_SECONDS bounds the whole of phase 2, not each
+        user's share of it.
+
+        Joining wedged users one after another at the full timeout each costs
+        the budget TIMES the user count - the very growth stopping them
+        concurrently was meant to remove, and past what
+        tests/test_compose_shutdown_budget.py reserves of the compose file's
+        stop_grace_period, so the container is SIGKILLed partway through.
+        `join(timeout=)` returns after the whole timeout when the thread is
+        still running, so overlapping the stops does not by itself bound the
+        joins that follow them.
+
+        Asserted on the timeouts the joins actually receive rather than on
+        elapsed wall-clock, so it states the invariant instead of racing it."""
+        dash = self._bareApp()
+        release = threading.Event()
+        self.addCleanup(release.set)
+        for index in range(3):
+            db = MagicMock()
+            db.user = f"wedged{index}"
+            db.stop.side_effect = lambda: release.wait(timeout=SHUTDOWN_CONCURRENCY_TIMEOUT_SECONDS)
+            dash.user_databases[db.user] = db
+
+        joinTimeouts = []
+        realJoin = threading.Thread.join
+
+        def recordingJoin(thread, timeout=None):
+            if thread.name.startswith(SHUTDOWN_THREAD_NAME_PREFIX):
+                joinTimeouts.append(timeout)
+            return realJoin(thread, timeout)
+
+        budgetSeconds = 0.3
+        with patch.object(appModule, "USER_STOP_JOIN_TIMEOUT_SECONDS", budgetSeconds), \
+             patch.object(threading.Thread, "join", recordingJoin), \
+             self.assertLogs("app", level="WARNING"):
+            dash.shutdown()
+
+        self.assertEqual(len(joinTimeouts), len(dash.user_databases),
+                         "every user's stopper thread should be joined")
+        self.assertLessEqual(
+            sum(joinTimeouts), budgetSeconds,
+            "the joins may spend one budget between them, not one budget each")
 
     def test_one_failing_user_does_not_block_the_rest(self):
         dash = self._bareApp()
