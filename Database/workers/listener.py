@@ -292,6 +292,38 @@ class ListenerMixin:
         }
 
 
+    def _isSameListen(self, anchor: dict, other: dict) -> bool:
+        """Do these two same-track rows describe one physical listen?
+
+        Two ways to prove it:
+        - proximity: their played_at stamps sit within
+          DUPLICATE_RECORDING_TOLERANCE_SECONDS of each other, or
+        - end-time pairing: a backfill row's played_at (Spotify's end-time
+          reading of the play) sits within
+          BACKFILL_END_TIME_MATCH_TOLERANCE_SECONDS of a LISTENER row's
+          created_at - the observed end of that play, pauses included, since
+          the listener inserts its row at the track-change moment. This is
+          what recognises a pause-stretched copy: on 2026-08-04 a ~3min
+          mid-track pause put the backfill copy's played_at 474s after the
+          listener row's start (a 287s track), outside every duration-based
+          window. Only a listener row's created_at qualifies
+          (getPlaysWithSourceInRange returns None for other sources), and a
+          backfill row never anchors the pairing - two backfill rows prove
+          nothing about which is the copy."""
+        if abs(anchor["playedAt"] - other["playedAt"]) <= self.DUPLICATE_RECORDING_TOLERANCE_SECONDS:
+            return True
+
+        def isBackfill(play: dict) -> bool:
+            return (play.get("createdReason") or "").startswith(self.WEB_API_BACKFILL_SOURCE)
+
+        for backfill, primary in ((anchor, other), (other, anchor)):
+            if (isBackfill(backfill) and not isBackfill(primary)
+                    and primary.get("createdAt") is not None
+                    and abs(backfill["playedAt"] - primary["createdAt"])
+                        <= self.BACKFILL_END_TIME_MATCH_TOLERANCE_SECONDS):
+                return True
+        return False
+
     def _reconcileWithWebApiHistory(self, apiItems: list[dict]) -> None:
         """Remove PROVABLE duplicate local plays: Web API backfill copies of a
         play another source already recorded. Both the live listener and the
@@ -299,11 +331,15 @@ class ListenerMixin:
         (Spotify's played_at field is documented as inconsistent about whether
         it reports a track's start or end time, per spotify/web-api#1083 - see
         _checkWebApiBackfill for how that ambiguity is handled on the ingest
-        side), leaving two rows for the same track seconds apart.
+        side), leaving two rows for the same track seconds apart - or, when a
+        mid-track pause stretched the play, minutes apart.
 
         Deletion requires BOTH proofs:
-        - proximity: a same-track sibling row within
-          DUPLICATE_RECORDING_TOLERANCE_SECONDS, AND
+        - same listen: a same-track sibling row within
+          DUPLICATE_RECORDING_TOLERANCE_SECONDS, or a listener row whose
+          created_at (observed play end) sits within
+          BACKFILL_END_TIME_MATCH_TOLERANCE_SECONDS of the backfill row's
+          played_at (see _isSameListen), AND
         - mixed sources: the cluster holds a backfill row plus at least one
           row from another source (listener / import / legacy-NULL).
         Only the backfill copies are deleted - backfill is the only secondary
@@ -372,7 +408,7 @@ class ListenerMixin:
                 cluster = [anchor]
                 stillRemaining = []
                 for other in remaining:
-                    if abs(anchor["playedAt"] - other["playedAt"]) <= self.DUPLICATE_RECORDING_TOLERANCE_SECONDS:
+                    if self._isSameListen(anchor, other):
                         cluster.append(other)
                     else:
                         stillRemaining.append(other)

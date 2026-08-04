@@ -162,6 +162,16 @@ WEB_API_BACKFILL_DEDUP_TOLERANCE_SECONDS = 2  #< max gap between a Web API item'
                                                #  and an already-recorded play's timestamp for them to count as
                                                #  the same play rather than a genuinely missing one
 
+WEB_API_BACKFILL_END_TIME_DEDUP_TOLERANCE_SECONDS = 10  #< max gap between a Web API item's played_at and a
+                                                         #  recorded listener row's created_at (its observed play
+                                                         #  end - the listener inserts at the track-change moment)
+                                                         #  for them to count as the same play. Wider than the 2s
+                                                         #  tolerance above because insert lag sits between the
+                                                         #  two stamps (~1s live, a few seconds in poll mode), but
+                                                         #  deliberately still a point match - a recorded end
+                                                         #  minutes away is evidence of a DIFFERENT listen, and
+                                                         #  suppressing on it would lose that play for good
+
 # Sentinel returned by _fetch_recently_played_from_web_api to distinguish a
 # scope-related rejection (the stored refresh token was never granted
 # user-read-recently-played - re-authorization required) from a transient
@@ -1113,8 +1123,11 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
                     self._stop_event.wait(30)
 
     def _recordedPlayTimesFromDatabase(self, items: list) -> dict:
-        """{track_id: {played_at, ...}} for the window `items` spans - the half
-        of the backfill's dedup set that survives a listener rebuild.
+        """{track_id: {(played_at, listener_created_at), ...}} for the window
+        `items` spans - the half of the backfill's dedup set that survives a
+        listener rebuild. The second tuple element is the recorded row's
+        created_at when the row came from the live listener (its observed play
+        end - see the dedup comment in _checkWebApiBackfill), None otherwise.
 
         Keyed by track because this window is wide (the whole API page plus a
         track length: hours, typically hundreds of rows, and skip bursts sitting
@@ -1138,7 +1151,10 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
 
         # played_at may be the END of a play (see the dedup comment below), in
         # which case the recorded row sits up to one track-length earlier - so
-        # the window has to reach back that far to find it.
+        # the window has to reach back that far to find it. A PAUSED play's
+        # start sits even earlier (duration + pause), which no fixed reach-back
+        # can cover - the query closes that gap itself by also matching
+        # listener rows into the window by their created_at.
         longestTrackSeconds = max(
             ((item.get("track") or {}).get("duration_ms", 0) or 0) // 1000 for item in items
         )
@@ -1146,8 +1162,9 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
         endTs = max(timestamps) + WEB_API_BACKFILL_DEDUP_TOLERANCE_SECONDS
         try:
             recorded: dict = {}
-            for trackId, playedAt in self.get_recorded_play_times(startTs, endTs):
-                recorded.setdefault(trackId, set()).add(float(playedAt))
+            for trackId, playedAt, listenerCreatedAt in self.get_recorded_play_times(startTs, endTs):
+                recorded.setdefault(trackId, set()).add(
+                    (float(playedAt), float(listenerCreatedAt) if listenerCreatedAt is not None else None))
             return recorded
         except Exception as e:
             logger.debug("Backfill dedup database lookup failed, judging on the in-memory caches alone: %s",
@@ -1271,12 +1288,15 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
             # "was THIS play recorded". The two caches spell the id differently
             # (the live listener's fallback rows carry track.track_id, the Web
             # API's carry track.id), so _itemTrackId reads both.
+            # Each entry is a (played_at, listener_created_at) pair; the caches
+            # only know played_at, so their second element is always None (only
+            # the database can say when a listener row was inserted).
             recorded_timestamps: dict = {}
             for item in self.recentlyPlayed_Z1 + self.webApiRecentlyPlayed_Z1:
                 trackId = _itemTrackId(item)
                 if not item.get("played_at") or not trackId:
                     continue
-                recorded_timestamps.setdefault(trackId, set()).add(timeToInt(item.get("played_at")))
+                recorded_timestamps.setdefault(trackId, set()).add((timeToInt(item.get("played_at")), None))
             # Both caches above live and die with this listener object, and a
             # listener is rebuilt on every stale-feed reconnect (1,568 times in
             # 11 days for 3 users) - webApiRecentlyPlayed_Z1 starts empty, and
@@ -1327,10 +1347,22 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
                 # real gap always has beside it. The suppressed play was then
                 # lost for good, since the next poll's page collides identically
                 # and nothing else retries it.
+                #
+                # The third arm covers what the second cannot: a mid-track
+                # PAUSE stretches start-to-end beyond duration_s by an
+                # unbounded amount (2026-08-04: a ~3min pause put played_at
+                # 474s after a 287s track's recorded start, and the same
+                # listen was recorded twice). A listener row's created_at is
+                # its OBSERVED end - the row is inserted at the track-change
+                # moment, pauses included - so the end-time interpretation is
+                # matched against that stamp directly instead of deriving a
+                # start that assumes uninterrupted playback.
                 is_recorded = any(
                     abs(timestamp - recorded_t) <= WEB_API_BACKFILL_DEDUP_TOLERANCE_SECONDS
                     or abs(timestamp - duration_s - recorded_t) <= WEB_API_BACKFILL_DEDUP_TOLERANCE_SECONDS
-                    for recorded_t in recorded_timestamps.get(track_id, ())
+                    or (recorded_end is not None
+                        and abs(timestamp - recorded_end) <= WEB_API_BACKFILL_END_TIME_DEDUP_TOLERANCE_SECONDS)
+                    for recorded_t, recorded_end in recorded_timestamps.get(track_id, ())
                 )
                 if not is_recorded:
                     context = item.get("context") or {}

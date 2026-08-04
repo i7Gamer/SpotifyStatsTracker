@@ -106,19 +106,33 @@ class PlayQueries:
         )
         return cur.rowcount > 0
 
-    def hasPlayNearTime(self, username: str, trackId: str, playedAt: float, toleranceSeconds: float) -> bool:
+    def hasPlayNearTime(self, username: str, trackId: str, playedAt: float, toleranceSeconds: float,
+                        listenerEndToleranceSeconds: float | None = None) -> bool:
         """True if a play for this exact track already exists for this user
         within toleranceSeconds of playedAt (inclusive both directions).
         Reuses idx_plays_user_track. See Database.appendTrackData for why this
         is a wide, defense-in-depth guard applied only to Web API backfill
-        inserts, not the live listener's own insert path."""
+        inserts, not the live listener's own insert path.
+
+        listenerEndToleranceSeconds additionally matches a LISTENER row whose
+        created_at sits within that (much tighter) tolerance of playedAt: the
+        listener inserts at the track-change moment, so its created_at is the
+        observed end of the play, pauses included - which the duration-based
+        window above cannot cover, since a mid-track pause stretches
+        start-to-end by an unbounded amount. Listener rows only: any other
+        source's created_at is an import/poll moment, not a play end."""
         conn = self._conn()
+        timeMatch = "played_at BETWEEN ? AND ?"
+        params: list = [playedAt - toleranceSeconds, playedAt + toleranceSeconds]
+        if listenerEndToleranceSeconds is not None:
+            timeMatch += " OR (created_reason LIKE 'listener_play%' AND created_at BETWEEN ? AND ?)"
+            params += [playedAt - listenerEndToleranceSeconds, playedAt + listenerEndToleranceSeconds]
         # is_skip=0: near-time matching only ever considered real plays (skips
         # used to live in a separate table); a backfill row must never dedup
         # against, or claim/correct, a merged skip row.
         row = conn.execute(
-            "SELECT 1 FROM plays WHERE username=? AND track_id=? AND played_at BETWEEN ? AND ? AND is_skip=0 LIMIT 1",
-            (username, trackId, playedAt - toleranceSeconds, playedAt + toleranceSeconds),
+            f"SELECT 1 FROM plays WHERE username=? AND track_id=? AND ({timeMatch}) AND is_skip=0 LIMIT 1",
+            (username, trackId, *params),
         ).fetchone()
         return row is not None
 
@@ -144,9 +158,9 @@ class PlayQueries:
         return {row["track_id"] for row in rows}
 
     def getTrackPlayTimesInRange(self, username: str, startTs: float,
-                                 endTs: float) -> list[tuple[str, float]]:
-        """Every (track_id, played_at) this user has in the closed
-        [startTs, endTs] window.
+                                 endTs: float) -> list[tuple[str, float, float | None]]:
+        """Every (track_id, played_at, listener_created_at) this user has in
+        the closed [startTs, endTs] window.
 
         Backs the Web API backfill's duplicate check (see _checkWebApiBackfill):
         the listener's in-memory caches only cover the current listener object's
@@ -163,13 +177,27 @@ class PlayQueries:
         timestamps alone let any one of them answer for a different track's
         genuine gap - which under gapless playback is not a coincidence but the
         norm, since a missing track's derived start equals its predecessor's
-        recorded end."""
+        recorded end.
+
+        The third element is the row's created_at, passed through for LISTENER
+        rows only: the listener inserts a play at the track-change moment, so
+        its created_at IS the observed end of the play, pauses included - the
+        anchor the caller's end-time dedup arm compares against. Any other
+        source's created_at is an import/poll moment, meaningless as a play
+        end, and comes through as None. Listener rows are also matched INTO
+        the window by that created_at, not just by played_at: a paused play
+        can start more than one track-length before its end, which is exactly
+        when the played_at-only window would miss the row the end-time arm
+        needs."""
         conn = self._conn()
         rows = conn.execute(
-            "SELECT track_id, played_at FROM plays WHERE username=? AND played_at BETWEEN ? AND ?",
-            (username, startTs, endTs),
+            "SELECT track_id, played_at, "
+            "CASE WHEN created_reason LIKE 'listener_play%' THEN created_at ELSE NULL END AS listener_created_at "
+            "FROM plays WHERE username=? AND (played_at BETWEEN ? AND ? "
+            "OR (created_reason LIKE 'listener_play%' AND created_at BETWEEN ? AND ?))",
+            (username, startTs, endTs, startTs, endTs),
         ).fetchall()
-        return [(row["track_id"], row["played_at"]) for row in rows]
+        return [(row["track_id"], row["played_at"], row["listener_created_at"]) for row in rows]
 
     def getPlaysNearTime(self, username: str, trackId: str, playedAt: float, toleranceSeconds: float) -> list[dict]:
         """Return all plays for this exact track already existing for this user
@@ -374,12 +402,23 @@ class PlayQueries:
         guarantee it only deletes provable double-recordings (a backfill row
         next to a row from another source) - proximity alone is not proof,
         since real exports contain genuine same-track plays seconds apart
-        (skip, then restart)."""
+        (skip, then restart).
+
+        createdAt carries the row's created_at for LISTENER rows only - their
+        insert happens at the track-change moment, so it is the observed end
+        of the play, pauses included; the reconciler's end-time pairing needs
+        it to recognise a pause-stretched backfill copy. Other sources'
+        created_at (an import/poll moment) comes through as None. Listener
+        rows are also matched into the window by that created_at: a paused
+        play can start before the window the API items span while still
+        ending inside it."""
         conn = self._conn()
         rows = conn.execute(
-            "SELECT track_id, played_at, time_played, created_reason FROM plays "
-            "WHERE username=? AND played_at BETWEEN ? AND ? AND is_skip=0",
-            (username, startTs, endTs),
+            "SELECT track_id, played_at, time_played, created_reason, "
+            "CASE WHEN created_reason LIKE 'listener_play%' THEN created_at ELSE NULL END AS listener_created_at "
+            "FROM plays WHERE username=? AND is_skip=0 AND (played_at BETWEEN ? AND ? "
+            "OR (created_reason LIKE 'listener_play%' AND created_at BETWEEN ? AND ?))",
+            (username, startTs, endTs, startTs, endTs),
         ).fetchall()
         return [
             {
@@ -387,6 +426,7 @@ class PlayQueries:
                 "playedAt": r["played_at"],
                 "timePlayed": r["time_played"],
                 "createdReason": r["created_reason"],
+                "createdAt": r["listener_created_at"],
             }
             for r in rows
         ]

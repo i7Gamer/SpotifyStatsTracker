@@ -215,6 +215,17 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
                                                 #  alone is NOT proof - real exports contain skip-then-restart pairs
                                                 #  seconds apart - so reconciliation additionally requires the
                                                 #  cluster to span different sources (see _reconcileWithWebApiHistory)
+    BACKFILL_END_TIME_MATCH_TOLERANCE_SECONDS = 10  #< max gap between a backfill row's played_at (Spotify's
+                                                     #  end-time reading) and a same-track listener row's
+                                                     #  created_at for the two to count as the same listen. A
+                                                     #  listener row is inserted at the track-change moment, so
+                                                     #  its created_at IS the observed end, pauses included -
+                                                     #  duration-based windows can't be, since a mid-track pause
+                                                     #  stretches start-to-end by an unbounded amount (the
+                                                     #  2026-08-04 double-recording: a ~3min pause put the copy
+                                                     #  474s after a 287s track's start). Kept a tight point
+                                                     #  match: live insert lag is ~1s, poll-mode detection a few
+                                                     #  seconds - anything minutes away is a different listen.
     WEB_API_BACKFILL_SOURCE = "web_api_backfill"  #< play source recorded by the Web API backfill; its
                                                    #  created_reason is "<source>_play (user: ...)" (appendTrackData)
 
@@ -1886,15 +1897,16 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         return self.repo.getRecentlyRecordedTrackIds(
             self.user, trackIds, CONNECT_STATE_MISSED_TRACK_LOOKBACK_SECONDS)
 
-    def getRecordedPlayTimes(self, startTs: float, endTs: float) -> list[tuple[str, float]]:
-        """The (track_id, played_at) pairs this user already has in a time
-        window. Bound to this user and handed to the Listener as a callback (like
-        getRecentlyRecordedTrackIds above), so the Web API backfill can tell a
-        genuine gap from an empty in-memory cache without the listener knowing
-        anything about the database.
+    def getRecordedPlayTimes(self, startTs: float, endTs: float) -> list[tuple[str, float, float | None]]:
+        """The (track_id, played_at, listener_created_at) triples this user
+        already has in a time window. Bound to this user and handed to the
+        Listener as a callback (like getRecentlyRecordedTrackIds above), so the
+        Web API backfill can tell a genuine gap from an empty in-memory cache
+        without the listener knowing anything about the database.
 
-        Pairs, not bare times - see getTrackPlayTimesInRange for why the dedup
-        cannot be sound without the track id."""
+        Triples, not bare times - see getTrackPlayTimesInRange for why the
+        dedup cannot be sound without the track id, and for what the third
+        element (a listener row's observed play end) is for."""
         return self.repo.getTrackPlayTimesInRange(self.user, startTs, endTs)
 
     def getUserLastfmApiKey(self) -> str | None:

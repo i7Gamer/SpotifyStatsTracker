@@ -98,9 +98,17 @@ class ImportMixin:
             # regardless of whether Spotify reported this entry's played_at as a
             # start or end time (see _checkWebApiBackfill for why that can't be
             # assumed one way or the other).
+            #
+            # The listener-end tolerance covers the case the duration window
+            # cannot: a mid-track pause stretches start-to-end by an unbounded
+            # amount, but a listener row's created_at is its observed end (the
+            # listener inserts at the track-change moment), so an entry whose
+            # played_at sits at that stamp is the same listen however long the
+            # pause was (see BACKFILL_END_TIME_MATCH_TOLERANCE_SECONDS).
             durationSeconds = (track.get("duration_ms", 0) or 0) // 1000
             tolerance = durationSeconds + self.BACKFILL_INSERT_GUARD_EXTRA_SECONDS
-            if self.repo.hasPlayNearTime(self.user, track_id, formatted_track["playedAt"], tolerance):
+            if self.repo.hasPlayNearTime(self.user, track_id, formatted_track["playedAt"], tolerance,
+                                         listenerEndToleranceSeconds=self.BACKFILL_END_TIME_MATCH_TOLERANCE_SECONDS):
                 if _dbmod.os.environ.get("FLASK_DEBUG", "").lower() in _dbmod.TRUTHY_DEBUG_VALUES:
                     _dbmod.logger.info(
                         "Skipping backfilled play for track %s (%s): an existing play already exists "

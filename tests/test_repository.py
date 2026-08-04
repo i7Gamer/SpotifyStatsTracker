@@ -3,6 +3,7 @@ import sys
 import os
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -591,6 +592,38 @@ class TestPlaysHistory(RepositoryTestCase):
         self.assertIsNone(byTime[1500.0]["createdReason"])
         self.assertEqual(byTime[1500.0]["timePlayed"], 5000)
 
+    def test_get_plays_with_source_carries_created_at_for_listener_rows_only(self):
+        """A listener row's created_at is the observed end of the play (the
+        listener inserts at the track-change moment) - the anchor the
+        reconciler's end-time pairing needs. Any other source's created_at is
+        an import/poll moment and must come through as None."""
+        with patch("Database.queries.plays.time") as mockTime:
+            mockTime.time.return_value = 1400.0
+            self.repo.insertPlay("alice", "t1", 1000.0, 5000, created_reason="listener_play (user: alice)")
+            self.repo.insertPlay("alice", "t1", 1100.0, 5000, created_reason="web_api_backfill_play (user: alice)")
+        self.repo.commit()
+
+        byTime = {p["playedAt"]: p for p in self.repo.getPlaysWithSourceInRange("alice", 900.0, 2000.0)}
+
+        self.assertEqual(byTime[1000.0]["createdAt"], 1400.0)
+        self.assertIsNone(byTime[1100.0]["createdAt"])
+
+    def test_get_plays_with_source_finds_a_listener_row_by_its_end_time(self):
+        """A paused play's start can sit more than one track-length before the
+        window the API items span - the row must still be found via its
+        created_at so the end-time pairing can see it."""
+        with patch("Database.queries.plays.time") as mockTime:
+            mockTime.time.return_value = 1000.0
+            self.repo.insertPlay("alice", "t1", 400.0, 5000, created_reason="listener_play (user: alice)")
+            self.repo.insertPlay("alice", "t2", 400.0, 5000, created_reason="history_import (user: alice)")
+        self.repo.commit()
+
+        plays = self.repo.getPlaysWithSourceInRange("alice", 900.0, 2000.0)
+
+        #< only the listener row is reachable via created_at; the import row's
+        #  created_at means nothing about when its play ended
+        self.assertEqual([(p["id"], p["playedAt"]) for p in plays], [("t1", 400.0)])
+
     def test_delete_zero_duration_plays_removes_only_zero_and_negative(self):
         conn = self.repo._conn()
         with conn:
@@ -1099,6 +1132,41 @@ class TestHasPlayNearTime(RepositoryTestCase):
     def test_false_for_different_user(self):
         self.repo.upsertUser("bob", "bob@example.com")
         self.assertFalse(self.repo.hasPlayNearTime("bob", "t1", 1050.0, 100))
+
+    def _insertPlayCreatedAt(self, trackId, playedAt, createdAt, created_reason):
+        """created_at is stamped with time.time() inside insertPlay - pin the
+        clock so the test controls the row's insert-time stamp."""
+        with patch("Database.queries.plays.time") as mockTime:
+            mockTime.time.return_value = createdAt
+            self.repo.insertPlay("alice", trackId, playedAt, 5000, created_reason=created_reason)
+        self.repo.commit()
+
+    def test_listener_end_tolerance_matches_a_row_by_its_created_at(self):
+        """A listener row's created_at is the observed end of the play (the
+        listener inserts at the track-change moment), so a backfill candidate
+        whose played_at sits at that end is the same listen - even when a
+        mid-track pause pushed it outside the duration-based window."""
+        self._insertPlayCreatedAt("t2", 2000.0, 5000.0, "listener_play (user: alice)")
+
+        self.assertFalse(self.repo.hasPlayNearTime("alice", "t2", 5000.0, 100))
+        self.assertTrue(self.repo.hasPlayNearTime("alice", "t2", 5000.0, 100,
+                                                  listenerEndToleranceSeconds=10))
+
+    def test_listener_end_tolerance_ignores_non_listener_rows(self):
+        """An import or backfill row's created_at is the import/poll moment,
+        not a play end - matching on it would suppress genuine plays."""
+        self._insertPlayCreatedAt("t2", 2000.0, 5000.0, "history_import (user: alice)")
+
+        self.assertFalse(self.repo.hasPlayNearTime("alice", "t2", 5000.0, 100,
+                                                   listenerEndToleranceSeconds=10))
+
+    def test_listener_end_tolerance_is_a_point_match(self):
+        self._insertPlayCreatedAt("t2", 2000.0, 5000.0, "listener_play (user: alice)")
+
+        self.assertFalse(self.repo.hasPlayNearTime("alice", "t2", 5011.0, 100,
+                                                   listenerEndToleranceSeconds=10))
+        self.assertTrue(self.repo.hasPlayNearTime("alice", "t2", 5010.0, 100,
+                                                  listenerEndToleranceSeconds=10))
 
 
 def makeSearchableTrack(trackId, name, artistName, albumName):

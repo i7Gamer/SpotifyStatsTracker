@@ -832,8 +832,8 @@ class BackfillDatabaseDedupTestCase(unittest.TestCase):
         return [item["track"]["id"] for item in callback.call_args[0][0]]
 
     def test_plays_already_in_the_database_are_not_backfilled(self):
-        recorded = [("track2", timeToInt(self.FIRST_PLAYED_AT)),
-                    ("track1", timeToInt(self.SECOND_PLAYED_AT))]
+        recorded = [("track2", timeToInt(self.FIRST_PLAYED_AT), None),
+                    ("track1", timeToInt(self.SECOND_PLAYED_AT), None)]
 
         callback = self._runBackfill(MagicMock(return_value=recorded))
 
@@ -842,7 +842,7 @@ class BackfillDatabaseDedupTestCase(unittest.TestCase):
     def test_only_the_genuinely_missing_play_is_backfilled(self):
         """The case the feature exists for: one of the two plays was never
         recorded, and it must still come through."""
-        callback = self._runBackfill(MagicMock(return_value=[("track2", timeToInt(self.FIRST_PLAYED_AT))]))
+        callback = self._runBackfill(MagicMock(return_value=[("track2", timeToInt(self.FIRST_PLAYED_AT), None)]))
 
         self.assertEqual(self._backfilledTrackIds(callback), ["track1"])
 
@@ -851,13 +851,61 @@ class BackfillDatabaseDedupTestCase(unittest.TestCase):
         stored row sits one track-length earlier - the same both-interpretations
         test the in-memory dedup already applies."""
         recorded = [
-            ("track2", timeToInt(self.FIRST_PLAYED_AT) - self.DURATION_MS // 1000),
-            ("track1", timeToInt(self.SECOND_PLAYED_AT) - self.DURATION_MS // 1000),
+            ("track2", timeToInt(self.FIRST_PLAYED_AT) - self.DURATION_MS // 1000, None),
+            ("track1", timeToInt(self.SECOND_PLAYED_AT) - self.DURATION_MS // 1000, None),
         ]
 
         callback = self._runBackfill(MagicMock(return_value=recorded))
 
         callback.assert_not_called()
+
+    def test_a_paused_plays_backfill_copy_is_recognised_by_the_recorded_end_time(self):
+        """The 2026-08-04 incident: a play paused for ~3 minutes mid-track. The
+        listener row holds the START time, and Spotify's played_at reported the
+        END - which sits duration PLUS pause after the start, so both existing
+        interpretations (start matches start, start = end - duration) miss and
+        the same listen was recorded twice. The listener inserts its row at the
+        track-change moment, so the row's created_at IS the observed end,
+        pauses included - that is the anchor that recognises the copy."""
+        pauseSeconds = 186
+        insertLagSeconds = 1  #< callback-to-insert latency observed live
+        endTs = timeToInt(self.SECOND_PLAYED_AT)
+        startTs = endTs - self.DURATION_MS // 1000 - pauseSeconds
+        items = [{"track": {"id": "track1", "duration_ms": self.DURATION_MS},
+                  "played_at": self.SECOND_PLAYED_AT}]
+        recorded = [("track1", startTs, endTs + insertLagSeconds)]
+
+        callback = self._runBackfill(MagicMock(return_value=recorded), items=items)
+
+        callback.assert_not_called()
+
+    def test_a_recorded_end_outside_the_tolerance_does_not_suppress(self):
+        """The end-time arm must stay a point match, not a window: a recorded
+        end a minute away is evidence of a DIFFERENT listen, and suppressing on
+        it would lose a genuine play for good (nothing retries a suppressed
+        item)."""
+        farSeconds = 60
+        endTs = timeToInt(self.SECOND_PLAYED_AT)
+        startTs = endTs - self.DURATION_MS // 1000 - 186
+        items = [{"track": {"id": "track1", "duration_ms": self.DURATION_MS},
+                  "played_at": self.SECOND_PLAYED_AT}]
+        recorded = [("track1", startTs, endTs - farSeconds)]
+
+        callback = self._runBackfill(MagicMock(return_value=recorded), items=items)
+
+        self.assertEqual(self._backfilledTrackIds(callback), ["track1"])
+
+    def test_another_tracks_recorded_end_does_not_suppress_a_missing_one(self):
+        """The end-time arm is per track like the other two: another track's
+        recorded end at the same instant proves nothing about this one."""
+        endTs = timeToInt(self.SECOND_PLAYED_AT)
+        items = [{"track": {"id": "track1", "duration_ms": self.DURATION_MS},
+                  "played_at": self.SECOND_PLAYED_AT}]
+        recorded = [("unrelated", endTs - 400, endTs)]
+
+        callback = self._runBackfill(MagicMock(return_value=recorded), items=items)
+
+        self.assertEqual(self._backfilledTrackIds(callback), ["track1"])
 
     def test_another_tracks_recorded_play_does_not_suppress_a_missing_one(self):
         """The dedup compares per track. A bare set of timestamps let ANY
@@ -865,8 +913,8 @@ class BackfillDatabaseDedupTestCase(unittest.TestCase):
         database half of that set spans the whole page's window (hours, hundreds
         of rows, skip bursts seconds apart), so an unrelated row silently
         consumed a genuine gap."""
-        recorded = [("unrelated", timeToInt(self.FIRST_PLAYED_AT)),
-                    ("unrelated", timeToInt(self.SECOND_PLAYED_AT))]
+        recorded = [("unrelated", timeToInt(self.FIRST_PLAYED_AT), None),
+                    ("unrelated", timeToInt(self.SECOND_PLAYED_AT), None)]
 
         callback = self._runBackfill(MagicMock(return_value=recorded))
 
@@ -887,7 +935,7 @@ class BackfillDatabaseDedupTestCase(unittest.TestCase):
              "played_at": self.FIRST_PLAYED_AT},
         ]
 
-        callback = self._runBackfill(MagicMock(return_value=[("track2", firstEnd)]), items=items)
+        callback = self._runBackfill(MagicMock(return_value=[("track2", firstEnd, None)]), items=items)
 
         self.assertEqual(self._backfilledTrackIds(callback), ["track1"])
 

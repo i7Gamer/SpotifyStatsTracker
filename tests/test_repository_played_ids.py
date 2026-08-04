@@ -11,6 +11,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -211,17 +212,55 @@ class TestGetPlayTimesInRange(unittest.TestCase):
         self.repo.commit()
 
     def _lookup(self, startTs, endTs):
-        return sorted(playedAt for _trackId, playedAt in self._lookupPairs(startTs, endTs))
+        return sorted(playedAt for _trackId, playedAt, _createdAt in self._lookupPairs(startTs, endTs))
 
     def _lookupPairs(self, startTs, endTs):
         return self.repo.getTrackPlayTimesInRange("alice", startTs, endTs)
+
+    def _insertPlayCreatedAt(self, trackId, playedAt, createdAt, created_reason):
+        """A play whose insert-time stamp is controlled: created_at is stamped
+        with time.time() inside insertPlay, so pin the clock for the call."""
+        with patch("Database.queries.plays.time") as mockTime:
+            mockTime.time.return_value = createdAt
+            self.repo.insertPlay("alice", trackId, playedAt, 60000, created_reason=created_reason)
+        self.repo.commit()
 
     def test_each_time_carries_the_track_it_belongs_to(self):
         """The backfill's dedup compares per track: a timestamp on its own let a
         recorded play of one track suppress a genuinely missing play of another
         (their played_at values sit seconds apart under gapless playback)."""
         self.assertEqual(sorted(self._lookupPairs(self.base - 10, self.base + 1200)),
-                         [("t1", self.base), ("t2", self.base + 600)])
+                         [("t1", self.base, None), ("t2", self.base + 600, None)])
+
+    def test_listener_rows_carry_their_created_at_as_the_observed_end(self):
+        """The listener inserts a play at the track-change moment, so a listener
+        row's created_at IS the observed end of the play, pauses included - the
+        anchor the backfill's end-time dedup arm compares against."""
+        self._insertPlayCreatedAt("t4", self.base + 300, self.base + 700,
+                                  "listener_play (user: alice)")
+
+        self.assertIn(("t4", self.base + 300, self.base + 700),
+                      self._lookupPairs(self.base - 10, self.base + 1200))
+
+    def test_non_listener_rows_never_carry_a_created_at(self):
+        """An import row's created_at is the moment the import ran - unrelated
+        to when the play ended - and a backfill row's is the poll moment. Only
+        a listener row's insert time means "this play just finished"."""
+        self._insertPlayCreatedAt("t4", self.base + 300, self.base + 700,
+                                  "history_import (user: alice)")
+
+        self.assertIn(("t4", self.base + 300, None),
+                      self._lookupPairs(self.base - 10, self.base + 1200))
+
+    def test_a_listener_row_starting_before_the_window_is_found_via_its_end(self):
+        """A paused play's start can sit MORE than one track-length before its
+        end - the exact case the end-time arm exists for - so the row must be
+        findable by when it ended, not only by when it started."""
+        self._insertPlayCreatedAt("t4", self.base - 5000, self.base + 100,
+                                  "listener_play (user: alice)")
+
+        self.assertIn(("t4", self.base - 5000, self.base + 100),
+                      self._lookupPairs(self.base - 10, self.base + 1200))
 
     def test_returns_played_at_values_inside_the_window(self):
         self.assertEqual(self._lookup(self.base - 10, self.base + 1200), [self.base, self.base + 600])

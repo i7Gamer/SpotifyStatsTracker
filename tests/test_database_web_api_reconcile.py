@@ -50,15 +50,19 @@ API_PLAYED_AT = "2026-07-13T10:00:00Z"
 API_TS = timeToInt(API_PLAYED_AT)
 
 TOLERANCE = Database.DUPLICATE_RECORDING_TOLERANCE_SECONDS
+END_TOLERANCE = Database.BACKFILL_END_TIME_MATCH_TOLERANCE_SECONDS
 
 
 def _backfillRow(trackId, playedAt):
-    return {"id": trackId, "playedAt": playedAt,
+    return {"id": trackId, "playedAt": playedAt, "createdAt": None,
             "createdReason": "web_api_backfill_play (user: alice)"}
 
 
-def _listenerRow(trackId, playedAt):
-    return {"id": trackId, "playedAt": playedAt,
+def _listenerRow(trackId, playedAt, createdAt=None):
+    #< createdAt: the row's insert-time stamp - for listener rows this is the
+    #  observed END of the play (the listener inserts at the track-change
+    #  moment). getPlaysWithSourceInRange returns it for listener rows only.
+    return {"id": trackId, "playedAt": playedAt, "createdAt": createdAt,
             "createdReason": "listener_play (user: alice)"}
 
 
@@ -316,6 +320,66 @@ class TestReconcileWithWebApiHistory(unittest.TestCase):
         db.repo.getPlaysWithSourceInRange.return_value = [
             _listenerRow("t1", API_TS),
             _backfillRow("t2", API_TS + 1),
+        ]
+
+        db._reconcileWithWebApiHistory([{"track": {"id": "t1"}, "played_at": API_PLAYED_AT}])
+
+        db.repo.deletePlay.assert_not_called()
+
+    def test_pause_stretched_backfill_copy_is_deleted_via_the_recorded_end(self):
+        """The 2026-08-04 incident: a ~3-minute mid-track pause put the
+        backfill copy's played_at (Spotify's end-time reading) 474s after the
+        listener row's start - far outside the proximity tolerance. The
+        listener row's created_at IS the observed end (it was inserted at the
+        track-change moment), so pairing the backfill's played_at against it
+        recognises the double-recording regardless of how long the pause was."""
+        db = _bareDatabase()
+        pausedElapsed = 474
+        db.repo.getPlaysWithSourceInRange.return_value = [
+            _listenerRow("t1", API_TS - pausedElapsed, createdAt=API_TS + 1),
+            _backfillRow("t1", API_TS),
+        ]
+
+        db._reconcileWithWebApiHistory([{"track": {"id": "t1"}, "played_at": API_PLAYED_AT}])
+
+        db.repo.deletePlay.assert_called_once_with("alice", "t1", API_TS)
+
+    def test_end_pairing_outside_the_tolerance_deletes_nothing(self):
+        """A recorded end well away from the backfill row's played_at is
+        evidence of a different listen, not a copy."""
+        db = _bareDatabase()
+        db.repo.getPlaysWithSourceInRange.return_value = [
+            _listenerRow("t1", API_TS - 474, createdAt=API_TS - END_TOLERANCE - 1),
+            _backfillRow("t1", API_TS),
+        ]
+
+        db._reconcileWithWebApiHistory([{"track": {"id": "t1"}, "played_at": API_PLAYED_AT}])
+
+        db.repo.deletePlay.assert_not_called()
+
+    def test_end_pairing_requires_a_listener_created_at(self):
+        """Legacy listener rows (created_at NULL) offer no observed end to pair
+        against - far-apart rows then stay two separate plays, exactly as
+        before the end-time pairing existed."""
+        db = _bareDatabase()
+        db.repo.getPlaysWithSourceInRange.return_value = [
+            _listenerRow("t1", API_TS - 474),
+            _backfillRow("t1", API_TS),
+        ]
+
+        db._reconcileWithWebApiHistory([{"track": {"id": "t1"}, "played_at": API_PLAYED_AT}])
+
+        db.repo.deletePlay.assert_not_called()
+
+    def test_end_pairing_never_pairs_two_backfill_rows(self):
+        """Even if a backfill row somehow carried a created_at, an all-backfill
+        pair has no primary-source row proving which is the copy."""
+        db = _bareDatabase()
+        rowWithCreatedAt = _backfillRow("t1", API_TS - 474)
+        rowWithCreatedAt["createdAt"] = API_TS + 1
+        db.repo.getPlaysWithSourceInRange.return_value = [
+            rowWithCreatedAt,
+            _backfillRow("t1", API_TS),
         ]
 
         db._reconcileWithWebApiHistory([{"track": {"id": "t1"}, "played_at": API_PLAYED_AT}])
