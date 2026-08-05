@@ -114,8 +114,14 @@ def fetchWebPlayerSecrets(timeout: float = REQUEST_TIMEOUT_SECONDS) -> list:
     URL) and the pack itself. Returns [] on any failure - a caller in this
     situation is already degraded, and an exception here would replace a
     diagnosable auth error with an unrelated network one."""
+    # Closed in the finally below rather than left to the garbage collector.
+    # Constructed outside the try on purpose: it opens no socket and cannot
+    # realistically raise, and doing it here means `session` is always bound for
+    # that finally. Same leak shape as _verifyCookiesMatchEmail's (fixed in
+    # 95d89b6) - a pooled TLS connection per call, kept alive by the Session
+    # object, on a path that runs whenever Spotify rotates its TOTP secret.
+    session = requests.Session()
     try:
-        session = requests.Session()
         session.headers["User-Agent"] = _BROWSER_USER_AGENT
 
         home = session.get(WEB_PLAYER_HOME, timeout=timeout)
@@ -142,6 +148,10 @@ def fetchWebPlayerSecrets(timeout: float = REQUEST_TIMEOUT_SECONDS) -> list:
     except Exception as e:  # noqa: BLE001 - recovery must never raise into the auth path
         logger.warning("Could not read the TOTP secret from Spotify's web player: %s", e)
         return []
+    finally:
+        #< also drops the streamed pack response's connection back to the pool,
+        #  which _readCapped may have stopped reading early on an over-cap body
+        session.close()
 
 
 def _findMainPackUrl(homeHtml: str):

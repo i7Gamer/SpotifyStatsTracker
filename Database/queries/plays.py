@@ -890,7 +890,6 @@ class PlayQueries:
             # unless fullPlaysOnly needs tracks.duration_ms.
             params = [username]
             rangeClause = self._dateRangeClause(params, startTs, endTs)
-            trackIdsClause = ""
             trackIdsClause = self._idSetClause(params, "track_id", trackIds)
             joinClause = ""
             fullPlaysClause = ""
@@ -910,7 +909,6 @@ class PlayQueries:
 
         params = [username]
         rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
-        trackIdsClause = ""
         trackIdsClause = self._idSetClause(params, "p.track_id", trackIds)
         # The search is resolved to a track-id set on p.track_id
         # (_searchNarrowClause), so this branch scans plays alone too - the
