@@ -46,10 +46,27 @@ function clearHtmxHistoryCache(storage) {
   }
 }
 
-if (typeof window !== 'undefined' && window.sessionStorage) {
-  clearHtmxHistoryCache(window.sessionStorage);
+// The store, or null when there isn't one to be had.
+//
+// Inside the try, not merely used inside one: reading the PROPERTY is what
+// throws when site data is blocked, so `window.sessionStorage` written at the
+// call site put the one access that can fail outside the only guard - on the
+// page someone is trying to log in on, which is the whole reason the comment
+// above exists. Matches static/js/back-button.js, which wraps the access itself.
+function sessionStorageOrNull() {
+  try {
+    if (typeof window === 'undefined') return null;
+    return window.sessionStorage || null;
+  } catch (err) {
+    return null;
+  }
+}
+
+var storage = sessionStorageOrNull();
+if (storage) {
+  clearHtmxHistoryCache(storage);
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { clearHtmxHistoryCache, HTMX_HISTORY_CACHE_KEY };
+  module.exports = { clearHtmxHistoryCache, sessionStorageOrNull, HTMX_HISTORY_CACHE_KEY };
 }
