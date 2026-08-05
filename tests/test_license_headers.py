@@ -21,7 +21,6 @@ because it would re-create the MIT notice-retention obligation the retirement
 relied on being gone. The check needs the full history in the checkout - see
 SHALLOW_CHECKOUT_HINT.
 """
-import functools
 import subprocess
 import sys
 import os
@@ -88,14 +87,9 @@ def _git(*args):
     return result.stdout
 
 
-@functools.lru_cache(maxsize=1)
-def inScopeFiles():
-    """Tracked source files the built artifact conveys AND this project wrote.
-
-    Cached: nine of these across the module is nine `git ls-files` spawns for
-    an answer that cannot change mid-run."""
+def _computeInScopeFiles():
     tracked = _git("ls-files", *SOURCE_GLOBS).split()
-    #< a tuple, not a list: callers share one cached object now
+    #< a tuple, not a list: every caller shares this one object
     return tuple(sorted(
         f for f in tracked
         if not f.startswith(EXCLUDED_PREFIXES + VENDORED_PREFIXES)
@@ -103,15 +97,37 @@ def inScopeFiles():
     ))
 
 
-@functools.lru_cache(maxsize=1)
+# Resolved once, at import - nine of these across the module would otherwise be
+# nine `git ls-files` spawns for an answer that cannot change mid-run.
+#
+# At import rather than memoized on first call, because _git is the seam
+# TestShallowCheckoutGuard patches. A memoized inScopeFiles() called while that
+# patch was live would store the double's answer for the rest of the process,
+# and since every assertion here reads "no in-scope file does X", they would all
+# then pass over one nonexistent file and report a clean sweep of nothing.
+# Import happens before any test can patch anything, so there is no window.
+IN_SCOPE_FILES = _computeInScopeFiles()
+
+
+def inScopeFiles():
+    """Tracked source files the built artifact conveys AND this project wrote."""
+    return IN_SCOPE_FILES
+
+
+#< resolved at import for the same reason as IN_SCOPE_FILES: _git is mocked
+#  elsewhere in this module, and a memoized answer taken under that mock would
+#  stick for the whole process
+VENDORED_FILES = tuple(sorted(
+    f for f in _git("ls-files", *VENDORED_PREFIXES).split()
+))
+
+
 def vendoredFiles():
     """Every tracked file under a vendored prefix, whatever its extension.
 
     Deliberately NOT filtered by SOURCE_GLOBS: the license text that has to
     accompany a vendored build is exactly the file those globs would miss."""
-    return tuple(sorted(
-        f for f in _git("ls-files", *VENDORED_PREFIXES).split()
-    ))
+    return VENDORED_FILES
 
 
 def repoIsShallow():
@@ -231,6 +247,32 @@ class TestShallowCheckoutGuard(unittest.TestCase):
         """The only way to reach the true branch without cloning at depth 1."""
         with mock.patch.object(sys.modules[__name__], "_git", return_value="true\n"):
             self.assertTrue(repoIsShallow())
+
+    def test_the_in_scope_file_list_cannot_be_poisoned_by_the_git_double(self):
+        """The trap the test above sets for the rest of this module.
+
+        inScopeFiles() was memoized, and _git is the seam patched here. An
+        inScopeFiles() call made while that patch is active would store the
+        fake answer - a one-element list, ["true"] - for the remainder of the
+        process. Every assertion in this file is of the form "no in-scope file
+        does X", so they would all then check one nonexistent file and PASS,
+        reporting a clean licence sweep over nothing at all.
+
+        Nothing does that today: this test's own patch wraps repoIsShallow()
+        only. It is the next test written here that would, silently.
+
+        The cache is cleared first if one exists, so this fails against a
+        memoized implementation rather than being answered from a warm cache."""
+        getattr(inScopeFiles, "cache_clear", lambda: None)()
+        try:
+            with mock.patch.object(sys.modules[__name__], "_git", return_value="true\n"):
+                underTheDouble = inScopeFiles()
+        finally:
+            getattr(inScopeFiles, "cache_clear", lambda: None)()
+
+        self.assertGreater(len(underTheDouble), 100,
+                           "inScopeFiles() answered from a mocked _git")
+        self.assertNotIn("true", underTheDouble)
 
 
 class TestLicenseHeaders(unittest.TestCase):
