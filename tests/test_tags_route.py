@@ -1,3 +1,4 @@
+import sqlite3
 import unittest
 from unittest.mock import patch
 from tests._app_factory import AppTestCase
@@ -119,6 +120,31 @@ class TestTagsRoutes(AppTestCase):
                     resp = send(url, json=payload)
                     self.assertEqual(resp.status_code, 400)
                     self.assertIn("error", resp.get_json())
+
+    def test_a_repository_failure_answers_json_on_every_endpoint(self):
+        """All four endpoints of one API must fail the same shape. add/remove
+        wrap their repo calls and return a JSON 500; rename/delete did not, so
+        a transient sqlite error there reached the client as Flask's HTML error
+        page - and every caller does res.json() on it (static/js/playlists.js).
+        Same fix-landed-in-some-of-N shape as the payload guard above."""
+        self._login()
+        endpoints = (
+            (self.client.post, "/api/tags",
+             {"entity_type": "track", "entity_id": "t1", "tag": "x"}, "addTag"),
+            (self.client.delete, "/api/tags",
+             {"entity_type": "track", "entity_id": "t1", "tag": "x"}, "removeTag"),
+            (self.client.post, "/api/tags/rename",
+             {"old_tag": "workout", "new_tag": "gym"}, "renameTag"),
+            (self.client.delete, "/api/tags/workout", None, "deleteTag"),
+        )
+        for send, url, payload, repoMethod in endpoints:
+            with self.subTest(url=url):
+                with patch.object(type(self.dash.repo), repoMethod,
+                                  side_effect=sqlite3.OperationalError("database is locked")):
+                    resp = send(url, json=payload) if payload else send(url)
+
+                self.assertEqual(resp.status_code, 500)
+                self.assertIn("error", resp.get_json())
 
     def test_a_well_formed_form_post_still_works(self):
         """The guard must not mistake request.form for a malformed payload -

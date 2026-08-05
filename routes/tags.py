@@ -133,9 +133,13 @@ def register(app, dashboard):
         if not old_tag or not new_tag:
             return jsonify({"error": "Missing old_tag or new_tag"}), 400
 
-        cnt = db.repo.renameTag(username, old_tag, new_tag)
-        db.repo.commit()
-        return jsonify({"success": True, "count": cnt})
+        try:
+            cnt = db.repo.renameTag(username, old_tag, new_tag)
+            db.repo.commit()
+            return jsonify({"success": True, "count": cnt})
+        except Exception as e:
+            logger.error("Error renaming tag: %s", e)
+            return jsonify({"error": "Failed to rename tag"}), 500
 
     app.add_url_rule("/api/tags/rename", "renameTagApi", renameTagApi, methods=["POST"])
 
@@ -146,9 +150,13 @@ def register(app, dashboard):
         if not dashboard.repo.isTagsEnabled():
             abort(404)
 
-        cnt = db.repo.deleteTag(username, tag)
-        db.repo.commit()
-        return jsonify({"success": True, "count": cnt})
+        try:
+            cnt = db.repo.deleteTag(username, tag)
+            db.repo.commit()
+            return jsonify({"success": True, "count": cnt})
+        except Exception as e:
+            logger.error("Error deleting tag: %s", e)
+            return jsonify({"error": "Failed to delete tag"}), 500
 
     # <path:tag> rather than the default string converter, which rejects
     # slashes: normalizeTag allows them, so a tag like "rock/metal" could be
