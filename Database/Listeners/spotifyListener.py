@@ -16,6 +16,10 @@ from Database.rate_limit import (
     SPOTIFY_LIMITER, SPOTIFY_RATE_LIMIT_BACKOFF_SECONDS, SpotifyLocallyRateLimitedError,
 )
 from Database.utils import parseError, timeToInt, flaskDebugEnabled
+#< the connect-state string-number coercion, shared with the poll/push tracking
+#  and Database.getNowPlaying rather than copied a third time; recentlyPlayed
+#  imports nothing back from here, so no cycle (same reasoning as workers/listener.py)
+from Database.Spotify.recentlyPlayed import _connectStateInt
 
 # A background thread's websocket ping (e.g. spotapi's keep_alive) can raise
 # websockets.exceptions.ConnectionClosed/ConnectionAbortedError for many reasons -
@@ -318,6 +322,30 @@ LISTENER_POLL_INTERVAL_SECONDS = 6
 # one thread until the other's slot passed; spreading them out here means it
 # rarely has to.
 LISTENER_POLL_INTERVAL_JITTER_SECONDS = 1.0
+
+# A "playing" track whose duration has fully elapsed since the connect state
+# was last updated is a frozen feed, not real playback. Same rule and same
+# grace as Database.getNowPlaying's NOW_PLAYING_STALE_GRACE_MS, which already
+# refuses to report these - spelled here in seconds because this file works in
+# them, and kept as its own constant so the two can be read side by side.
+CONNECT_STATE_FROZEN_GRACE_MS = 60_000
+
+
+def _connectStateIsFrozen(state: dict) -> bool:
+    """Whether `state` claims playback that the clock says finished long ago.
+
+    The connect state only updates on play/pause/seek/track change, so the live
+    position is the snapshot position plus the time since the snapshot. Past the
+    track's own duration (plus a grace), nothing is really playing - the state
+    is simply one nobody has touched."""
+    durationMs = _connectStateInt(state.get("duration"))
+    timestampMs = _connectStateInt(state.get("timestamp"))
+    if not durationMs or not timestampMs:
+        return False   #< nothing to judge against; treat it as live, as before
+    positionMs = _connectStateInt(state.get("position_as_of_timestamp"))
+    elapsedMs = max(0, int(time.time() * 1000) - timestampMs)
+    return positionMs + elapsedMs > durationMs + CONNECT_STATE_FROZEN_GRACE_MS
+
 
 def _itemTrackId(item: dict) -> str | None:
     """The track id of a recently-played entry from EITHER cache.
@@ -832,6 +860,15 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
         track's play was the feed's to record back when it ended."""
         state = self.getConnectPlayerState()
         if not state or not state.get("is_playing") or state.get("is_paused"):
+            return
+        if _connectStateIsFrozen(state):
+            # Not a sighting at all. A frozen state keeps saying is_playing on
+            # every ~1s tick, so counting it refreshed _lastPlayingSeenAt
+            # forever - and the continuity bound below measures the gap between
+            # SIGHTINGS, so hours of idleness became invisible and the eventual
+            # resume onto another track read as a witnessed transition. That is
+            # a full re-login at the moment someone starts listening, which is
+            # the exact failure the continuity bound was added to prevent.
             return
         uri = (state.get("track") or {}).get("uri") or ""
         if not uri.startswith(SPOTIFY_TRACK_URI_PREFIX):

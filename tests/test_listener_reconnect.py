@@ -214,6 +214,48 @@ class TestStaleReasonReporting(unittest.TestCase):
 
         onStale.assert_called_once_with(reason=STALE_REASON_UNRECORDED_PLAYBACK)
 
+    def test_a_frozen_connect_state_is_not_a_playback_sighting(self):
+        """The continuity bound is what makes a resume-after-idle a fresh
+        baseline rather than a witnessed change - but it measures the gap
+        between SIGHTINGS, and a frozen state is re-sighted on every ~1s tick.
+        So _lastPlayingSeenAt never aged, the hours of idleness were invisible,
+        and the eventual resume onto a different track read as a transition the
+        feed had failed to record: a full re-login at the exact moment someone
+        started listening, which is the bug the continuity bound was added for.
+
+        getNowPlaying already refuses this same state as not-real-playback; the
+        staleness observer did not."""
+        listener, onStale = self._listener(), MagicMock()
+
+        #< two ticks of a frozen state, close enough together that the second
+        #  would refresh the first's sighting
+        self._poll(listener, 200.0, _frozenState(self.TRACK_A), onStale)
+        self._poll(listener, 220.0, _frozenState(self.TRACK_A), onStale)
+        #< the resume, within the continuity window of that last frozen tick
+        self._poll(listener, 240.0, _playingState(self.TRACK_B), onStale)
+        self._poll(listener,
+                   100.0 + LISTENER_STALE_TIMEOUT_SECONDS
+                   + LISTENER_UNRECORDED_CHANGE_GRACE_SECONDS + 1,
+                   _playingState(self.TRACK_B), onStale)
+
+        for call in onStale.call_args_list:
+            self.assertNotEqual(STALE_REASON_UNRECORDED_PLAYBACK, call.kwargs.get("reason"),
+                                "a frozen connect state was counted as a witnessed track change")
+
+    def test_a_real_playback_sighting_still_counts(self):
+        """Guards the test above: the frozen filter must not swallow the
+        genuine evidence this whole check exists to gather."""
+        listener, onStale = self._listener(), MagicMock()
+
+        self._poll(listener, 200.0, _playingState(self.TRACK_A), onStale)
+        self._poll(listener, 210.0, _playingState(self.TRACK_B), onStale)
+        self._poll(listener,
+                   100.0 + LISTENER_STALE_TIMEOUT_SECONDS
+                   + LISTENER_UNRECORDED_CHANGE_GRACE_SECONDS + 1,
+                   _playingState(self.TRACK_B), onStale)
+
+        onStale.assert_called_once_with(reason=STALE_REASON_UNRECORDED_PLAYBACK)
+
     def test_the_catch_up_grace_defers_the_hard_ceiling_too(self):
         """The grace exists because a finished play is normally still resolving
         its metadata when the track change is first seen, and rebuilding inside
@@ -329,6 +371,28 @@ class TestStaleReasonReporting(unittest.TestCase):
 
 def _playingState(trackUri, isPaused=False):
     return {"is_playing": True, "is_paused": isPaused, "track": {"uri": trackUri}}
+
+
+_FROZEN_TRACK_DURATION_MS = 180_000
+
+
+def _frozenState(trackUri):
+    """A connect state stuck at is_playing:true - the track's whole duration
+    (and then some) has elapsed since anything last updated it.
+
+    The same shape getNowPlaying already refuses via NOW_PLAYING_STALE_GRACE_MS:
+    "a 'playing' track whose duration has fully elapsed since the last
+    connect-state update is a frozen/stale feed, not a real playback"."""
+    import time as _realTime
+    longAgoMs = int(_realTime.time() * 1000) - (_FROZEN_TRACK_DURATION_MS * 20)
+    return {
+        "is_playing": True,
+        "is_paused": False,
+        "track": {"uri": trackUri},
+        "duration": _FROZEN_TRACK_DURATION_MS,
+        "position_as_of_timestamp": 0,
+        "timestamp": longAgoMs,
+    }
 
 
 class TestStaleFeedIdleDetection(unittest.TestCase):
