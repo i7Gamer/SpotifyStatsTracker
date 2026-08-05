@@ -16,6 +16,7 @@ const {
   isNativeModifierClick,
   hidesTrendBuckets,
   failureUi,
+  onSwapFailure,
   RANGE_OK,
   RANGE_INCOMPLETE,
   RANGE_INVERTED,
@@ -200,6 +201,90 @@ run('an element with no dataset is not assumed to be inline', () => {
   // document/window can reach a listener as a target; reading .dataset off them
   // would throw inside an error handler, which is the worst place to throw.
   assert.strictEqual(failureUi({}), 'banner');
+});
+
+// --- onSwapFailure -----------------------------------------------------------
+// htmx events bubble to the document, so a handler registered here sees EVERY
+// failed swap on the page, not only the one its page cares about. Each
+// hand-rolled equivalent scopes on that (dashboard-page.js and detail-page.js
+// compare evt.detail.target; detail-history.js asks whether the target is inside
+// its list); the shared helper did not, so a second htmx region on any of its
+// three pages would have blanked the main list and offered a Retry for a request
+// that never failed.
+
+// The stub is the one the sibling tests use (see tests/test_ajax_status.js):
+// plain objects on `global`, no jsdom. htmx-filters.js reads `document` and
+// `window` when the handler RUNS, not when the module loads, so installing them
+// after the require at the top of this file is enough.
+function installFailureDom() {
+  const calls = { banner: 0, inline: [] };
+  const handlers = {};
+  global.document = { addEventListener(type, fn) { handlers[type] = fn; } };
+  global.window = {
+    AjaxStatus: {
+      showBanner() { calls.banner += 1; },
+      renderInto(target) { calls.inline.push(target); },
+    },
+  };
+  return { calls, fire: (target) => handlers['htmx:responseError']({ detail: { target } }) };
+}
+
+//< an element carries a dataset; that is what failureUi reads to tell an element
+//  from a document or a window
+const region = (id) => ({ id, dataset: {} });
+
+run('a failure in another region on the page is left to that region', () => {
+  // The regression this exists for. /charts, /history and the Top lists each
+  // have exactly one htmx region today, so the missing check cost nothing - but
+  // the dashboard already shows what a second one looks like (two deferred
+  // cards that fail independently of the summary), and the first of those added
+  // to one of these pages would have hit this.
+  const { calls, fire } = installFailureDom();
+  onSwapFailure('historyResults', () => {});
+  fire(region('discoverCard'));
+  assert.strictEqual(calls.inline.length, 0);
+  assert.strictEqual(calls.banner, 0);
+});
+
+run('a failure in this page\'s own region is reported inline', () => {
+  const { calls, fire } = installFailureDom();
+  onSwapFailure('historyResults', () => {});
+  const own = region('historyResults');
+  fire(own);
+  assert.deepStrictEqual(calls.inline, [own]);
+  assert.strictEqual(calls.banner, 0);
+});
+
+run('an unattributable failure still gets the banner', () => {
+  // No target means htmx could not resolve one, so there is no region to blame
+  // and no placeholder to write into. Staying silent is the failure mode this
+  // whole area exists to prevent, so it is reported rather than scoped away.
+  const { calls, fire } = installFailureDom();
+  onSwapFailure('historyResults', () => {});
+  fire(null);
+  assert.strictEqual(calls.banner, 1);
+  assert.strictEqual(calls.inline.length, 0);
+});
+
+run('the retry handed to the reporter is the page\'s own', () => {
+  const { fire } = installFailureDom();
+  let retried = 0;
+  onSwapFailure('historyResults', () => { retried += 1; });
+  const own = region('historyResults');
+  global.window.AjaxStatus.renderInto = (_target, retry) => retry();
+  fire(own);
+  assert.strictEqual(retried, 1);
+});
+
+run('both htmx failure events are covered, not just the response one', () => {
+  // A network error fires htmx:sendError and never reaches responseError -
+  // registering only the latter leaves an offline page on a stuck placeholder.
+  const handlers = {};
+  global.document = { addEventListener(type, fn) { handlers[type] = fn; } };
+  global.window = { AjaxStatus: { showBanner() {}, renderInto() {} } };
+  onSwapFailure('historyResults', () => {});
+  assert.deepStrictEqual(Object.keys(handlers).sort(),
+                         ['htmx:responseError', 'htmx:sendError']);
 });
 
 console.log('All htmx filter tests passed.');

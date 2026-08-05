@@ -29,6 +29,8 @@
 
 //< the form htmx watches; also the element the sort toggle re-triggers
 var HISTORY_FORM_ID = 'historyFilters';
+//< the swap target it fills, in history.html
+var HISTORY_RESULTS_ID = 'historyResults';
 
 // The date-range check, its error display, the custom-range show/hide and the
 // empty-param pruning all live in static/js/htmx-filters.js, shared with the
@@ -77,7 +79,7 @@ if (typeof document !== 'undefined') {
     params.set('page', page);
     var url = window.location.pathname + '?' + params.toString();
     window.history.replaceState({}, '', url);
-    htmx.ajax('GET', url, { target: '#historyResults', swap: 'innerHTML' });
+    htmx.ajax('GET', url, { target: '#' + HISTORY_RESULTS_ID, swap: 'innerHTML' });
   };
   window.__paginationAjaxHandler = goToHistoryPage;
 
@@ -104,9 +106,9 @@ if (typeof document !== 'undefined') {
   // "Loading…" or a silently stale list. An expired session no longer arrives
   // here at all: the server answers an htmx request with HX-Redirect, so the
   // browser navigates to /login instead of this reporting a load failure.
-  HtmxFilters.onSwapFailure(function () {
+  HtmxFilters.onSwapFailure(HISTORY_RESULTS_ID, function () {
     htmx.ajax('GET', window.location.pathname + window.location.search,
-              { target: '#historyResults', swap: 'innerHTML' });
+              { target: '#' + HISTORY_RESULTS_ID, swap: 'innerHTML' });
   });
 }
 //< no module.exports: everything pure moved to static/js/htmx-filters.js, which

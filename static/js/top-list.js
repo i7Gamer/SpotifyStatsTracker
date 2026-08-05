@@ -21,6 +21,8 @@
 
 //< the form htmx watches, in _page_card.html
 var TOP_LIST_FORM_ID = 'topListFilters';
+//< the swap target it fills, in _top_list_container.html
+var TOP_LIST_RESULTS_ID = 'topListResults';
 
 if (typeof document !== 'undefined') {
   var byId = function (id) { return document.getElementById(id); };
@@ -58,7 +60,7 @@ if (typeof document !== 'undefined') {
     params.set('page', page);
     var url = window.location.pathname + '?' + params.toString();
     window.history.replaceState({}, '', url);
-    htmx.ajax('GET', url, { target: '#topListResults', swap: 'innerHTML' });
+    htmx.ajax('GET', url, { target: '#' + TOP_LIST_RESULTS_ID, swap: 'innerHTML' });
   };
   window.__paginationAjaxHandler = goToTopListPage;
 
@@ -85,9 +87,9 @@ if (typeof document !== 'undefined') {
   // "Loading…" or a silently stale list. An expired session no longer arrives
   // here at all: the server answers an htmx request with HX-Redirect, so the
   // browser navigates to /login instead of this reporting a load failure.
-  HtmxFilters.onSwapFailure(function () {
+  HtmxFilters.onSwapFailure(TOP_LIST_RESULTS_ID, function () {
     htmx.ajax('GET', window.location.pathname + window.location.search,
-              { target: '#topListResults', swap: 'innerHTML' });
+              { target: '#' + TOP_LIST_RESULTS_ID, swap: 'innerHTML' });
   });
 }
 //< no module.exports: everything pure moved to static/js/htmx-filters.js, which

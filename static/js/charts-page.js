@@ -97,7 +97,7 @@ if (typeof document !== 'undefined') {
   // expired session no longer arrives here at all: the server answers an htmx
   // request with HX-Redirect, so the browser navigates to /login instead of
   // this reporting a load failure.
-  HtmxFilters.onSwapFailure(function () {
+  HtmxFilters.onSwapFailure(CHARTS_TARGET_ID, function () {
     htmx.ajax('GET', window.location.pathname + window.location.search,
               { target: '#' + CHARTS_TARGET_ID, swap: 'innerHTML' });
   });

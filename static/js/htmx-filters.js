@@ -155,20 +155,33 @@ function failureUi(target) {
   return 'inline';
 }
 
-// Register a page's swap-failure reporting. `retry` is the page's own - it is
-// deliberately NOT derived from the event here: the request to re-issue differs
-// per page (which target, which swap, whether the form has to be re-serialized),
-// and getting it subtly wrong would break recovery silently, in code no
-// behavioural test covers.
-function onSwapFailure(retry) {
+// Register a page's swap-failure reporting for the region with id `targetId`.
+// `retry` is the page's own - it is deliberately NOT derived from the event
+// here: the request to re-issue differs per page (which target, which swap,
+// whether the form has to be re-serialized), and getting it subtly wrong would
+// break recovery silently, in code no behavioural test covers.
+//
+// `targetId` is what makes that safe. htmx events bubble to the document, so
+// this handler sees EVERY failed swap on the page - and `retry` re-issues one
+// fixed request, so reporting another region's failure would blank this one and
+// offer a Retry for something that never failed. Every hand-rolled equivalent
+// already scopes this way (dashboard-page.js and detail-page.js compare
+// evt.detail.target, detail-history.js asks whether the target is inside its
+// list); this one did not, and only got away with it because its three callers
+// each have exactly one htmx region.
+function onSwapFailure(targetId, retry) {
   var handler = function (evt) {
     if (!window.AjaxStatus) return;
     var target = evt.detail && evt.detail.target;
+    //< nothing to attribute it to and nowhere to write it: report it rather
+    //  than scope it away, since silence is the failure this area exists for
     if (failureUi(target) === 'banner') {
       window.AjaxStatus.showBanner(retry);
-    } else {
-      window.AjaxStatus.renderInto(target, retry);
+      return;
     }
+    //< an element, so it names a region - and only ours is ours to report
+    if (target.id !== targetId) return;
+    window.AjaxStatus.renderInto(target, retry);
   };
   //< on `document`: htmx events bubble, and this must not depend on where the
   //  calling script sits relative to <body>
