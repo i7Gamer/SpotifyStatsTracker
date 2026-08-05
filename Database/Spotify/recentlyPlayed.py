@@ -474,6 +474,26 @@ def _sleepUntilStopped(self, seconds) -> bool:
 
 
 def _runPollLoop(self, callback, refreshInterval=3):
+    try:
+        _pollLoopBody(self, callback, refreshInterval)
+    finally:
+        # Every exit, including an escaping exception - the same rule
+        # _runPushLoop's finally applies to its own two stamps. stateRenewalSucceededAt
+        # is what tells the listener's stale check that a MISSING player_state is a
+        # real idle account rather than a dead tick, and only this loop stamps it.
+        # Once the loop is gone the stamp is vouching for a tick that no longer
+        # exists: the closed-session branch below sets run=False and returns while
+        # startListener keeps looping, so without this the listener reads "idle"
+        # for a whole LISTENER_POLL_RENEWAL_FRESH_SECONDS after the thread died.
+        manager = getattr(self, "manager", None)
+        if manager is not None:
+            try:
+                manager.stateRenewalSucceededAt = None
+            except Exception:  # noqa: BLE001 - teardown bookkeeping must not raise over a stop
+                logger.debug("[Spotify] Could not clear the poll renewal stamp", exc_info=True)
+
+
+def _pollLoopBody(self, callback, refreshInterval=3):
     consecutiveStateFailures = 0
     while self.run:
         if getattr(self.manager, "_deliberate_close", False):

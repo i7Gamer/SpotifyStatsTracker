@@ -74,6 +74,32 @@ class TestPollLoop(unittest.TestCase):
     """The poll loop must tolerate degraded states, escalate a failure streak
     to exactly one reconnect, and reset the streak on success."""
 
+    def test_a_poll_loop_that_exits_stops_vouching_for_its_last_renewal(self):
+        """stateRenewalSucceededAt is what tells the stale check that an absent
+        player_state is a real idle account rather than a dead tick. It is
+        stamped by the tick, so once the tick is gone it must stop answering -
+        exactly the rule _runPushLoop's finally already applies to
+        pushChannelAliveAt and subscriptionRenewedAt.
+
+        Without it: the poll thread dies (a closed-session error sets run=False
+        and returns) while startListener keeps looping, and for the next
+        LISTENER_POLL_RENEWAL_FRESH_SECONDS the listener reads 'idle' from a
+        stamp left by a thread that no longer exists."""
+        from Database.Spotify.recentlyPlayed import RecentlyPlayedManager
+
+        manager = MagicMock()
+        manager._deliberate_close = True   #< the simplest of the loop's exits
+        manager.stateRenewalSucceededAt = 1234.5
+
+        with patch("spotapi.status.PlayerStatus"):
+            lpm = RecentlyPlayedManager(MagicMock())
+        lpm.manager = manager
+        lpm.run = True
+
+        lpm.updateLoop(MagicMock(), refreshInterval=1)
+
+        self.assertIsNone(manager.stateRenewalSucceededAt)
+
     def test_patched_update_loop_handles_none_timestamp_gracefully(self):
         """updateLoop should sleep and continue without raising or calling reconnect when state or timestamp is None."""
         from Database.Spotify.recentlyPlayed import RecentlyPlayedManager
