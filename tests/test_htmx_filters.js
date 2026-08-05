@@ -14,6 +14,7 @@ const {
   rangeProblem,
   pruneEmptyParams,
   isNativeModifierClick,
+  failureUi,
   RANGE_OK,
   RANGE_INCOMPLETE,
   RANGE_INVERTED,
@@ -152,6 +153,34 @@ run('ctrl and meta are not claimed here - htmx already passes those through', ()
 run('a missing event is not a modifier click', () => {
   assert.strictEqual(isNativeModifierClick(null), false);
   assert.strictEqual(isNativeModifierClick(undefined), false);
+});
+
+// --- failureUi ---------------------------------------------------------------
+// Until the eight per-page copies of the failure block were merged here, this
+// choice lived inside a page IIFE and could not be tested at all - which is why
+// tests/test_ajax_loader_error_handling.py pins those loaders by source shape.
+
+run('a swap target hosts the inline error by default', () => {
+  assert.strictEqual(failureUi({ dataset: {} }), 'inline');
+});
+
+run('a target that says so gets the page-level banner', () => {
+  // For regions that cannot host a message: a canvas, or a refresh made only of
+  // scattered out-of-band swaps with no primary target.
+  assert.strictEqual(failureUi({ dataset: { htmxFailure: 'banner' } }), 'banner');
+});
+
+run('no target at all falls back to the banner', () => {
+  // There is nowhere to put an inline message, and saying nothing is the
+  // failure mode this whole area exists to prevent.
+  assert.strictEqual(failureUi(null), 'banner');
+  assert.strictEqual(failureUi(undefined), 'banner');
+});
+
+run('an element with no dataset is not assumed to be inline', () => {
+  // document/window can reach a listener as a target; reading .dataset off them
+  // would throw inside an error handler, which is the worst place to throw.
+  assert.strictEqual(failureUi({}), 'banner');
 });
 
 console.log('All htmx filter tests passed.');

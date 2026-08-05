@@ -71,10 +71,56 @@ function isNativeModifierClick(evt) {
   return !!evt && (!!evt.shiftKey || !!evt.altKey);
 }
 
+// Which failure UI a swap target wants, and where it goes.
+//
+// Every migrated page ended up with the same eight-line block: two listeners,
+// a null-guard, and a choice between the inline "couldn't load / Retry" and the
+// page-level banner. The CHOICE is not arbitrary - a target whose content is a
+// list can host an inline message, one that is a canvas or a set of scattered
+// out-of-band regions cannot - so it stays declarative, in the markup, as
+// data-htmx-failure="banner" on the target.
+//
+// Split out as a pure function because it is the half worth testing, and until
+// the copies were merged there was nowhere to test it from: each lived inside a
+// page IIFE, which is why tests/test_ajax_loader_error_handling.py pins these
+// loaders by source shape and says so.
+//
+// No target at all (a request htmx could not even resolve one for) means there
+// is nowhere to put an inline message, so the banner is the only honest answer.
+function failureUi(target) {
+  if (!target || !target.dataset || target.dataset.htmxFailure === 'banner') {
+    return 'banner';
+  }
+  return 'inline';
+}
+
+// Register a page's swap-failure reporting. `retry` is the page's own - it is
+// deliberately NOT derived from the event here: the request to re-issue differs
+// per page (which target, which swap, whether the form has to be re-serialized),
+// and getting it subtly wrong would break recovery silently, in code no
+// behavioural test covers.
+function onSwapFailure(retry) {
+  var handler = function (evt) {
+    if (!window.AjaxStatus) return;
+    var target = evt.detail && evt.detail.target;
+    if (failureUi(target) === 'banner') {
+      window.AjaxStatus.showBanner(retry);
+    } else {
+      window.AjaxStatus.renderInto(target, retry);
+    }
+  };
+  //< on `document`: htmx events bubble, and this must not depend on where the
+  //  calling script sits relative to <body>
+  document.addEventListener('htmx:responseError', handler);
+  document.addEventListener('htmx:sendError', handler);
+}
+
 var HtmxFilters = {
   rangeProblem: rangeProblem,
   pruneEmptyParams: pruneEmptyParams,
   isNativeModifierClick: isNativeModifierClick,
+  failureUi: failureUi,
+  onSwapFailure: onSwapFailure,
   RANGE_OK: RANGE_OK,
   RANGE_INCOMPLETE: RANGE_INCOMPLETE,
   RANGE_INVERTED: RANGE_INVERTED,

@@ -112,16 +112,10 @@ if (typeof document !== 'undefined') {
   // expired session no longer arrives here at all: the server answers an htmx
   // request with HX-Redirect, so the browser navigates to /login instead of
   // this reporting a load failure.
-  var reportChartsFailure = function () {
-    var target = byId(CHARTS_TARGET_ID);
-    if (!target || !window.AjaxStatus) return;
-    window.AjaxStatus.renderInto(target, function () {
-      htmx.ajax('GET', window.location.pathname + window.location.search,
-                { target: '#' + CHARTS_TARGET_ID, swap: 'innerHTML' });
-    });
-  };
-  document.body.addEventListener('htmx:responseError', reportChartsFailure);
-  document.body.addEventListener('htmx:sendError', reportChartsFailure);
+  HtmxFilters.onSwapFailure(function () {
+    htmx.ajax('GET', window.location.pathname + window.location.search,
+              { target: '#' + CHARTS_TARGET_ID, swap: 'innerHTML' });
+  });
 }
 //< no module.exports: everything pure lives in static/js/htmx-filters.js, which
 //  is where the plain-node unit test points (tests/test_htmx_filters.js)

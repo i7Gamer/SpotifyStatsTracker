@@ -106,16 +106,10 @@ if (typeof document !== 'undefined') {
   // "Loading…" or a silently stale list. An expired session no longer arrives
   // here at all: the server answers an htmx request with HX-Redirect, so the
   // browser navigates to /login instead of this reporting a load failure.
-  var reportTopListFailure = function () {
-    var target = byId('topListResults');
-    if (!target || !window.AjaxStatus) return;
-    window.AjaxStatus.renderInto(target, function () {
-      htmx.ajax('GET', window.location.pathname + window.location.search,
-                { target: '#topListResults', swap: 'innerHTML' });
-    });
-  };
-  document.body.addEventListener('htmx:responseError', reportTopListFailure);
-  document.body.addEventListener('htmx:sendError', reportTopListFailure);
+  HtmxFilters.onSwapFailure(function () {
+    htmx.ajax('GET', window.location.pathname + window.location.search,
+              { target: '#topListResults', swap: 'innerHTML' });
+  });
 }
 //< no module.exports: everything pure moved to static/js/htmx-filters.js, which
 //  is where the plain-node unit test now points (tests/test_htmx_filters.js)
