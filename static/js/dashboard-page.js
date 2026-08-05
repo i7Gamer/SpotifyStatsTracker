@@ -48,19 +48,6 @@ var DASHBOARD_SUMMARY_ID = 'dashboardSummary';
 
 var byId = function (id) { return document.getElementById(id); };
 
-var currentDashboardRangeProblem = function () {
-  return HtmxFilters.rangeProblem(byId('interval').value, byId('startDate').value, byId('endDate').value);
-};
-
-var showDashboardRangeError = function (problem) {
-  var invalid = problem === HtmxFilters.RANGE_INVERTED;
-  var errorElem = byId('dateError');
-  errorElem.textContent = invalid ? HtmxFilters.RANGE_INVERTED_MESSAGE : '';
-  errorElem.style.display = invalid ? 'block' : 'none';
-  byId('startDate').style.borderColor = invalid ? 'var(--accent)' : '';
-  byId('endDate').style.borderColor = invalid ? 'var(--accent)' : '';
-};
-
 // Called from the Time Period select's onchange. Runs before htmx's listener
 // (an inline on*= handler fires at the target; htmx's is on the form and fires
 // as the event bubbles), so the disabled flags are already right by the time
@@ -69,24 +56,19 @@ var showDashboardRangeError = function (problem) {
 // `disabled`, not merely hidden: a disabled control is not serialized, which is
 // what keeps a stale custom range out of the request - and so out of the URL -
 // after switching back to a named interval.
-function updateDashboardInterval() {
-  var custom = byId('interval').value === 'custom';
-  byId('dashboardCustomDates').style.display = custom ? 'flex' : 'none';
-  byId('startDate').disabled = !custom;
-  byId('endDate').disabled = !custom;
-  showDashboardRangeError(currentDashboardRangeProblem());
-}
-window.updateDashboardInterval = updateDashboardInterval;
+window.updateDashboardInterval = function () { HtmxFilters.syncCustomRange('dashboardCustomDates'); };
 
 // The one place a request gets vetoed, and what stops "custom" firing one the
 // moment it is selected: a range with no dates yet is RANGE_INCOMPLETE, which
-// is exactly what the old handler's early return covered. Shared with
-// /history, /charts and the Top lists, whose filter card is the same control
-// set (static/js/htmx-filters.js).
+// is exactly what the old handler's early return covered. Shared with every
+// other filter page - /history, /charts, /genres, /compare and the Top lists
+// render the same control set, so the logic lives once in
+// static/js/htmx-filters.js and tests/test_custom_date_controls.py keeps it
+// that way.
 document.body.addEventListener('htmx:configRequest', function (evt) {
   if (!evt.detail.elt || evt.detail.elt.id !== DASHBOARD_FORM_ID) return;
-  var problem = currentDashboardRangeProblem();
-  showDashboardRangeError(problem);
+  var problem = HtmxFilters.rangeProblemFromDom();
+  HtmxFilters.showRangeError(problem);
   if (problem !== HtmxFilters.RANGE_OK) {
     evt.preventDefault();
     return;
