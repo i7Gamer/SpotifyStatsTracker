@@ -929,6 +929,19 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
             return STALE_REASON_UNRECORDED_PLAYBACK
         return None
 
+    def _unrecordedChangeGraceIsRunning(self) -> bool:
+        """Whether a witnessed track change is still inside its catch-up window.
+
+        Both this and _staleFeedBrokenReason answer None/False right now, but
+        for opposite reasons: "no unrecorded playback" versus "a play the feed
+        still owes us, too recently to judge". Only the second is a reason to
+        hold the hard ceiling off - see the ceiling branch in _checkOnce, which
+        would otherwise recycle the session mid-grace and throw away the very
+        play the grace exists to protect."""
+        return (self._lastPlayingChangeTime > self._lastChangeTime
+                and time.monotonic() - self._firstUnarrivedChangeTime
+                <= LISTENER_UNRECORDED_CHANGE_GRACE_SECONDS)
+
     def getNewItems(self, new: list) -> list | None:
         """The suffix of `new` that starts at the first item the previous
         snapshot (Z1) hasn't seen, or None when nothing is new. Items are
@@ -1162,7 +1175,8 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
 
         brokenReason = self._staleFeedBrokenReason()
         if not brokenReason and (elapsed < LISTENER_STALE_HARD_TIMEOUT_SECONDS
-                                 or self._pushSubscriptionIsFresh()):
+                                 or self._pushSubscriptionIsFresh()
+                                 or self._unrecordedChangeGraceIsRunning()):
             # Nobody is listening - the feed has nothing to report, which is
             # not a fault. This is what the 30-minute rebuild was really
             # detecting: 1,270 reconnects in 11 days, spread evenly across all

@@ -214,6 +214,54 @@ class TestStaleReasonReporting(unittest.TestCase):
 
         onStale.assert_called_once_with(reason=STALE_REASON_UNRECORDED_PLAYBACK)
 
+    def test_the_catch_up_grace_defers_the_hard_ceiling_too(self):
+        """The grace exists because a finished play is normally still resolving
+        its metadata when the track change is first seen, and rebuilding inside
+        that window throws the play away. It deferred the 30-minute verdict but
+        not the 6-hour ceiling, so a change witnessed seconds before the ceiling
+        fell through to STALE_REASON_HARD_CEILING and rebuilt anyway -
+        Listener.stop() joins for 5s and then closes sp, killing the in-flight
+        track() lookup with "Session is closed".
+
+        The exact loss the grace was added to prevent, reached by the one path
+        it did not cover. Bounded: the deferral can only last as long as the
+        grace itself."""
+        listener, onStale = self._listener(), MagicMock()
+        pastHardCeiling = 100.0 + LISTENER_STALE_HARD_TIMEOUT_SECONDS + 1
+
+        #< the change is witnessed just before the ceiling is crossed, so its
+        #  grace is still running when the ceiling check runs
+        self._poll(listener, pastHardCeiling - 10, _playingState(self.TRACK_A), onStale)
+        self._poll(listener, pastHardCeiling - 5, _playingState(self.TRACK_B), onStale)
+        stillRunning = self._poll(listener, pastHardCeiling,
+                                  _playingState(self.TRACK_B), onStale)
+
+        self.assertTrue(stillRunning)
+        onStale.assert_not_called()
+
+    def test_the_ceiling_still_fires_once_the_grace_has_run_out(self):
+        """The deferral is bounded by the grace, not open-ended - a feed that
+        really is wedged must still be recycled."""
+        listener, onStale = self._listener(), MagicMock()
+        pastHardCeiling = 100.0 + LISTENER_STALE_HARD_TIMEOUT_SECONDS + 1
+
+        self._poll(listener, pastHardCeiling - 10, _playingState(self.TRACK_A), onStale)
+        self._poll(listener, pastHardCeiling - 5, _playingState(self.TRACK_B), onStale)
+        self._poll(listener, pastHardCeiling + LISTENER_UNRECORDED_CHANGE_GRACE_SECONDS + 1,
+                   _playingState(self.TRACK_B), onStale)
+
+        #< the evidence outlived its grace, so it is the diagnosis - not the ceiling
+        onStale.assert_called_once_with(reason=STALE_REASON_UNRECORDED_PLAYBACK)
+
+    def test_an_idle_account_past_the_ceiling_is_still_recycled(self):
+        """No witnessed change means no grace to run, so nothing defers."""
+        listener, onStale = self._listener(), MagicMock()
+
+        self._poll(listener, 100.0 + LISTENER_STALE_HARD_TIMEOUT_SECONDS + 1,
+                   {"is_playing": False}, onStale)
+
+        onStale.assert_called_once_with(reason=STALE_REASON_HARD_CEILING)
+
     def test_a_failed_session_validation_names_its_reason(self):
         listener, onStale = self._listener(), MagicMock()
         listener._validateCurrentUser = MagicMock(return_value=False)
