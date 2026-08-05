@@ -11,15 +11,24 @@ from zoneinfo import ZoneInfo   #< IANA zones, selected via the TZ env var below
 
 DATE_FORMATS = ("%Y-%m-%d", "%Y-%m", "%Y")   #< bare-date forms parseDateString accepts, most specific first
 
-# The env-var values this project reads as "on". "0" and "false" are
-# deliberately NOT in here: someone who sets a flag to 0 means off, and a bare
-# truthiness test on the string reads that as on.
+# The env-var values this project reads as "on", re-exported from config so the
+# Database package and the web layer cannot disagree about what "on" means.
 #
-# Named for what it is rather than TRUTHY_DEBUG_VALUES, which is what the three
-# copies of it were called - Database/patches.py used that set for
-# TOTP_AUTO_RECOVER, which has nothing to do with debugging, so the name was
-# already wrong at one of its two call sites.
-TRUTHY_ENV_VALUES = {"1", "true"}
+# This module briefly carried its OWN {"1", "true"} under that same name while
+# config.py carried {"1", "true", "yes", "on"} - two different answers to one
+# question, both live and both imported by name, so ENABLE_HSTS=yes was on while
+# TOTP_AUTO_RECOVER=yes was off. The name had been chosen to "say what it is",
+# which is exactly what made the split invisible.
+#
+# config is the right home rather than the reverse import: it imports NOTHING,
+# so it cannot take part in the cycle Database/dbmodule.py exists to break, and
+# it is already where the web layer's flags read theirs. Importing this module
+# from config would instead drag in Database/__init__.py, which imports
+# Database.patches for its spotapi side effects.
+#
+# ("0" and "false" are deliberately absent: someone who sets a flag to 0 means
+# off, and a bare truthiness test on the string reads that as on.)
+from config import TRUTHY_ENV_VALUES  # noqa: E402 - a constant re-export, not a dependency on app state
 
 
 def flaskDebugEnabled() -> bool:
