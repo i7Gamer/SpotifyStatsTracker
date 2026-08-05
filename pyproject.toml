@@ -51,3 +51,12 @@ select = [
 # the -n below an unrecognized argument and pytest refuses to start.
 addopts = "-n auto"
 testpaths = ["tests"]
+
+# Put the repo root on sys.path for every test run, so importing the app's
+# own packages (app, config, Database, routes, ...) doesn't depend on the
+# importing module having arranged it first. Every test file currently opens
+# with its own `sys.path.insert(0, ...)` for exactly this; those lines are
+# left alone for now (199 of them, and a mechanical sweep is a diff nobody
+# can review), but a NEW test file no longer needs one - and a file whose
+# insert is removed keeps working.
+pythonpath = ["."]
