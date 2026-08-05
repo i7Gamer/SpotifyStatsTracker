@@ -187,6 +187,10 @@ def _bareDatabase():
     db.autoImporter = MagicMock()
     db.listener = None
     db._stopping = False
+    #< the waitable twin of _stopping, set by signalStop() alongside it so a
+    #  sleeping reconnect backoff wakes on this instance's own stop rather than
+    #  only on the app-wide shutdown_event below
+    db._stopEvent = threading.Event()
     db.shutdown_event = threading.Event()
     db._listener_lock = threading.Lock()
     return db

@@ -355,6 +355,14 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         # interleaved stop/swap used to orphan a running listener.
         self.shutdown_event = shutdown_event if shutdown_event is not None else threading.Event()
         self._stopping = False
+        # The waitable form of _stopping, set by signalStop() alongside it.
+        # _stopping alone can only be POLLED, so anything sleeping had to wait on
+        # shutdown_event and could therefore only be interrupted by a whole-app
+        # exit - a per-instance stop (a logout, a listener rebuild, a direct
+        # stop()) left the reconnect backoff asleep for up to
+        # RECONNECT_MAX_DELAY. App shutdown signals both: it sets shutdown_event
+        # and then calls signalStop() on every user (see app.py's shutdown).
+        self._stopEvent = threading.Event()
         self._listener_lock = threading.Lock()
 
         # Health monitoring: track listener state for graceful degradation

@@ -7,6 +7,7 @@ that backoff behavior and proper error logging.
 import sys
 import os
 import unittest
+import threading
 import time
 from unittest.mock import MagicMock, patch, call
 
@@ -28,6 +29,72 @@ class TestReconnectBackoff(unittest.TestCase):
             db = Database(user="TestUser", email="test@example.com")
         self.addCleanup(db.stop)
         return db
+
+    def test_an_instance_stop_interrupts_the_backoff(self):
+        """Stopping ONE user's Database must abort its reconnect wait, not leave
+        the thread asleep until the backoff expires.
+
+        The wait used to be on `shutdown_event`, which is the APP-WIDE exit
+        signal shared by every user. An app shutdown sets it, so that case
+        aborted promptly - but a per-instance stop (a logout, a listener
+        rebuild, db.stop()) only sets `_stopping`, which was checked AFTER the
+        wait returned. With RECONNECT_MAX_DELAY at 300s that is a five-minute
+        zombie thread holding a session for a user who is already gone, and it
+        reconnects once more on the way out.
+
+        Deterministic rather than timed: the backoff is pushed far beyond any
+        plausible test runtime, so a thread that is still alive after the stop
+        can only be one that waited on the wrong event."""
+        db = self._makeTestDb()
+        attempted = threading.Event()
+
+        def failOnce(*args, **kwargs):
+            attempted.set()
+            raise RuntimeError("reconnect failed, forcing a backoff")
+
+        with patch.object(type(db), "RECONNECT_INITIAL_DELAY", 3600), \
+             patch.object(type(db), "RECONNECT_MAX_DELAY", 3600), \
+             patch.object(db, "startListener", side_effect=failOnce):
+            callback = db._makeOnStaleCallback()
+            worker = threading.Thread(target=callback, daemon=True)
+            worker.start()
+
+            #< attempt 0 runs with no backoff; the wait we care about is the one
+            #  before attempt 1
+            self.assertTrue(attempted.wait(timeout=5), "the first reconnect never ran")
+
+            db.signalStop()
+            worker.join(timeout=5)
+
+            self.assertFalse(worker.is_alive(),
+                             "the reconnect backoff ignored this instance's stop - it is waiting on "
+                             "the app-wide shutdown_event, so only a whole-app exit can interrupt it")
+
+    def test_a_signalled_instance_does_not_start_an_auto_importer(self):
+        """The same rule startListener follows: a signalled instance never
+        starts a thread again.
+
+        A watchdog begun after shutdown() took its snapshot of who to join is a
+        thread nothing will stop - it outlives the phase meant to end it, and
+        the process then waits out its grace period on a worker that started
+        after the exit began."""
+        db = self._makeTestDb()
+        db.autoImporter = MagicMock()
+
+        db.signalStop()
+        db.startAutoImporter()
+
+        db.autoImporter.start.assert_not_called()
+
+    def test_the_auto_importer_starts_normally_when_nothing_is_stopping(self):
+        """The negative control: without it the guard above passes even if
+        startAutoImporter became an unconditional no-op."""
+        db = self._makeTestDb()
+        db.autoImporter = MagicMock()
+
+        db.startAutoImporter()
+
+        db.autoImporter.start.assert_called_once()
 
     def test_exponential_backoff_calculation(self):
         """Verify exponential backoff delay calculation is correct."""
@@ -114,23 +181,37 @@ class TestReconnectShutdownGate(unittest.TestCase):
 
         mockStart.assert_called_once()
 
-    def test_onstale_backoff_waits_on_shutdown_event(self):
-        """The between-attempt backoff must wait on shutdown_event
-        (interruptible) and abandon reconnection when it fires - not sleep out
-        up to RECONNECT_MAX_DELAY and reconnect anyway."""
+    def test_onstale_backoff_waits_on_an_interruptible_event(self):
+        """The between-attempt backoff must wait on an EVENT (interruptible) and
+        abandon reconnection when it fires - not sleep out up to
+        RECONNECT_MAX_DELAY and reconnect anyway.
+
+        The event is _stopEvent, not shutdown_event, and that distinction is the
+        point: shutdown_event is shared app-wide, so waiting on it meant only a
+        whole-app exit could interrupt the backoff and a single user's stop was
+        ignored for up to five minutes. signalStop() sets _stopEvent, and app
+        shutdown calls signalStop() on every user, so both paths still abort
+        promptly - see test_an_instance_stop_interrupts_the_backoff."""
         db = self._makeTestDb()
         db.shutdown_event = MagicMock()
         db.shutdown_event.is_set.return_value = False
-        db.shutdown_event.wait.return_value = True  #< "shutdown arrived mid-wait"
+        db._stopEvent = MagicMock()
+
+        #< the stop has to land DURING the wait, not before it: _waitForStop
+        #  checks the flags up front too, and a stop already in place would
+        #  abort at the top of the attempt without ever reaching the backoff
+        def stopArrivesMidWait(timeout=None):
+            db._stopping = True
+        db._stopEvent.wait.side_effect = stopArrivesMidWait
 
         with patch.object(db, "startListener",
                           side_effect=RuntimeError("still down")) as mockStart, \
              patch("Database.database.time.sleep") as mockSleep:
             db._makeOnStaleCallback()()
 
-        mockStart.assert_called_once()               # attempt 1 failed...
-        db.shutdown_event.wait.assert_called_once()  # ...the backoff waited on the event...
-        mockSleep.assert_not_called()                # ...never via a blind sleep
+        mockStart.assert_called_once()          # attempt 1 failed...
+        db._stopEvent.wait.assert_called_once()  # ...the backoff waited on the event...
+        mockSleep.assert_not_called()            # ...never via a blind sleep
 
 
 class TestReconnectLogVolume(unittest.TestCase):
@@ -166,7 +247,9 @@ class TestReconnectLogVolume(unittest.TestCase):
         db = self._makeTestDb()
         db.shutdown_event = MagicMock()
         db.shutdown_event.is_set.return_value = False
-        db.shutdown_event.wait.return_value = False  #< backoff elapses normally
+        #< the backoff waits on _stopEvent (see _waitForStop); mocked so the
+        #  between-attempt delay elapses instantly instead of really sleeping
+        db._stopEvent = MagicMock()  #< backoff elapses normally
 
         attempts = [RuntimeError("still down"), True]
 
@@ -186,7 +269,9 @@ class TestReconnectLogVolume(unittest.TestCase):
         db = self._makeTestDb()
         db.shutdown_event = MagicMock()
         db.shutdown_event.is_set.return_value = False
-        db.shutdown_event.wait.return_value = False
+        #< the backoff waits on _stopEvent (see _waitForStop); mocked so the
+        #  between-attempt delay elapses instantly instead of really sleeping
+        db._stopEvent = MagicMock()
 
         with patch.object(db, "startListener", side_effect=RuntimeError("down")):
             with self.assertLogs("Database.database", level="ERROR") as cm:

@@ -123,6 +123,31 @@ class ListenerMixin:
         shutting down - reconnect/start paths must refuse from then on."""
         return self._stopping or self.shutdown_event.is_set()
 
+    def _waitForStop(self, timeout: float) -> bool:
+        """Sleep up to `timeout` seconds, returning True as soon as this
+        instance should stop.
+
+        Waits on _stopEvent rather than shutdown_event, which is the app-wide
+        exit signal SHARED by every user: an app shutdown sets that AND calls
+        signalStop() on each user (app.py), so both paths still interrupt
+        promptly - but a per-instance stop only ever touches this one, and
+        waiting on the shared event meant it could not interrupt anything.
+
+        The check BEFORE the wait is load-bearing, not a shortcut: waiting on
+        _stopEvent alone would sleep out the full timeout when shutdown_event is
+        already set and signalStop() has not reached this instance - which the
+        old `shutdown_event.wait(...)` returned from instantly. Dropping it
+        turns a prompt abort into a five-minute one.
+
+        The re-check afterwards covers shutdown_event arriving DURING the wait
+        without a signalStop() alongside it. In practice app shutdown always
+        sends both (app.py sets the event, then signals every user), so
+        _stopEvent ends the wait there too."""
+        if self._stopRequested():
+            return True
+        self._stopEvent.wait(timeout)
+        return self._stopRequested()
+
     def _makeOnStaleCallback(self) -> callable:
         """Create an onStale callback that retries with exponential backoff.
         Called when the listener detects a stale feed or auth error and needs
@@ -144,11 +169,13 @@ class ListenerMixin:
                         "Reconnection attempt %d/%d, waiting %ds before retry",
                         attempt, self.RECONNECT_MAX_RETRIES, backoff_delay
                     )
-                    # Interruptible: shutdown arriving mid-backoff aborts the
-                    # wait instead of sleeping out up to RECONNECT_MAX_DELAY
-                    # and reconnecting into a shutting-down process.
-                    if self.shutdown_event.wait(backoff_delay):
-                        _dbmod.logger.info("Reconnection abandoned for user %s: shutting down", self.user)
+                    # Interruptible by EITHER stop: an app shutdown or this one
+                    # user's own, instead of sleeping out up to
+                    # RECONNECT_MAX_DELAY and reconnecting into a process - or a
+                    # session - that is already going away. See _waitForStop for
+                    # why it is not shutdown_event.
+                    if self._waitForStop(backoff_delay):
+                        _dbmod.logger.info("Reconnection abandoned for user %s: stopping", self.user)
                         return
 
                 if self._stopRequested():
@@ -571,6 +598,15 @@ class ListenerMixin:
         }
 
     def startAutoImporter(self):
+        # Gated like every other start path here (startListener,
+        # _ensureAllUsersLogin): a signalled instance never starts a thread
+        # again. Without it, an auto-import watchdog begun after the shutdown
+        # snapshot was taken is a thread nothing will join - it outlives the
+        # phase that was supposed to stop it, and the process waits out its
+        # grace period for a worker that started after the exit began.
+        if self._stopRequested():
+            _dbmod.logger.info("Auto-importer not started for user %s: stop requested", self.user)
+            return
         self.autoImporter.start()
 
     def isListenerLoggedIn(self):
@@ -614,6 +650,9 @@ class ListenerMixin:
         another user's threads are being joined (the 2026-07-17 hang).
         Permanent: a signaled instance never starts a listener again."""
         self._stopping = True
+        #< the waitable twin of the flag above: anything sleeping (the reconnect
+        #  backoff) wakes on this rather than polling _stopping after its wait
+        self._stopEvent.set()
         listener = self.listener
         if listener is not None:
             try:
