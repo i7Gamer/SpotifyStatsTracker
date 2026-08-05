@@ -89,6 +89,31 @@ LISTENER_STALE_TIMEOUT_SECONDS = 30 * 60
 # app.log 2026-08-01 to 08-04, rebuilds on the :44 dot).
 LISTENER_STALE_HARD_TIMEOUT_SECONDS = 6 * 60 * 60
 
+# A track change only counts as a WITNESSED transition when the previous
+# sighting is at most this old. Sightings happen every quiet tick (~1s, on a
+# state the poll tick refreshes every ~3s), so a wider gap means playback
+# stopped or the state vanished in between - the next sighting is then a fresh
+# baseline, not a change. Without this bound, _lastPlayingUri survived idle
+# gaps: pressing play on a DIFFERENT track after a 30-minute break read as "a
+# play that never arrived" and rebuilt the session at the exact moment
+# listening resumed (one spurious full re-login per resume; the pre-gap
+# track's play, if one ended there, was the feed's to record back then).
+LISTENER_PLAYBACK_CONTINUITY_SECONDS = 30
+
+# A witnessed change waits this long for the feed to catch up before it counts
+# as broken evidence. The feed entry for a finished track only lands after the
+# play callback resolves its metadata, which under the shared limiter can
+# legitimately take ~3 acquire windows (TRACK_FETCH_MAX_RETRIES x
+# SPOTIFY_TRACK_ACQUIRE_TIMEOUT_SECONDS = 105s; local constant for the same
+# import-avoidance reason as LISTENER_PUSH_CHANNEL_ALIVE_SECONDS below).
+# Without the grace, the first change after a 30-minute-quiet feed - any track
+# longer than the stale timeout - was judged unrecorded while its play was
+# still in flight, and the rebuild threw that play away. Anchored on the FIRST
+# change since the feed last moved (_firstUnarrivedChangeTime), so constant
+# churn on a genuinely dead feed cannot keep re-arming it; a real failure is
+# detected this much later, against a 30-minute staleness gate.
+LISTENER_UNRECORDED_CHANGE_GRACE_SECONDS = 120
+
 # How fresh RecentlyPlayedManager.pushChannelAliveAt has to be to still count as
 # "this listener is on a working push channel" (see _staleFeedIsBroken).
 #
@@ -610,6 +635,8 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
         self._lastChangeTime = time.monotonic()
         self._lastPlayingUri = None       #< last track the connect state reported playing, and when it
         self._lastPlayingChangeTime = 0.0  #  last changed - see _observePlaybackForStaleness
+        self._lastPlayingSeenAt = 0.0     #< when that track was last sighted at all - the continuity bound
+        self._firstUnarrivedChangeTime = 0.0  #< first change since the feed last moved - the grace anchor
         # Dedupes _checkConnectStateForMissedTracks warnings; OrderedDict (not
         # set) so eviction can target the oldest entry. Shared across this
         # user's successive Listener generations via _settledMissingUrisForUser
@@ -772,16 +799,28 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
         real tracks is recorded - the first sighting isn't one (a listener
         rebuilt mid-track would otherwise immediately justify the next rebuild),
         and ads/episodes never reach the recently-played feed at all, so moving
-        between them proves nothing about the feed's health."""
+        between them proves nothing about the feed's health.
+
+        "Between" is bounded by LISTENER_PLAYBACK_CONTINUITY_SECONDS: a
+        different track sighted across a wider gap is a fresh baseline, not a
+        witnessed transition - the resume-after-idle case, where the pre-gap
+        track's play was the feed's to record back when it ended."""
         state = self.getConnectPlayerState()
         if not state or not state.get("is_playing") or state.get("is_paused"):
             return
         uri = (state.get("track") or {}).get("uri") or ""
         if not uri.startswith(SPOTIFY_TRACK_URI_PREFIX):
             return
-        if self._lastPlayingUri is not None and uri != self._lastPlayingUri:
-            self._lastPlayingChangeTime = time.monotonic()
+        now = time.monotonic()
+        if (self._lastPlayingUri is not None and uri != self._lastPlayingUri
+                and now - self._lastPlayingSeenAt <= LISTENER_PLAYBACK_CONTINUITY_SECONDS):
+            if self._lastPlayingChangeTime <= self._lastChangeTime:
+                # First change since the feed last moved: the catch-up grace in
+                # _staleFeedIsBroken runs from here, not from later churn.
+                self._firstUnarrivedChangeTime = now
+            self._lastPlayingChangeTime = now
         self._lastPlayingUri = uri
+        self._lastPlayingSeenAt = now
 
     def _pushChannelIsAlive(self) -> bool:
         """Whether a push loop is currently feeding this listener's connect
@@ -830,10 +869,17 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
         idleness. The hard ceiling still applies above this - pongs alone
         never defer it, because a channel can pong while its subscription is
         wedged; only a recently RE-PROVEN subscription does (see
-        _pushSubscriptionIsFresh and the ceiling branch in _checkOnce)."""
+        _pushSubscriptionIsFresh and the ceiling branch in _checkOnce).
+
+        A witnessed change is only evidence once the feed has had
+        LISTENER_UNRECORDED_CHANGE_GRACE_SECONDS to catch up - the finished
+        play is normally still resolving its metadata when the change is first
+        observed, and rebuilding inside that window threw the play away."""
         if not self.getConnectPlayerState():
             return not self._pushChannelIsAlive()
-        return self._lastPlayingChangeTime > self._lastChangeTime
+        return (self._lastPlayingChangeTime > self._lastChangeTime
+                and time.monotonic() - self._firstUnarrivedChangeTime
+                > LISTENER_UNRECORDED_CHANGE_GRACE_SECONDS)
 
     def getNewItems(self, new: list) -> list | None:
         """The suffix of `new` that starts at the first item the previous

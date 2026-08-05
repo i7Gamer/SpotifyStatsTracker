@@ -40,6 +40,8 @@ from Database.Listeners.spotifyListener import (
     WEB_API_POLL_INTERVAL_SECONDS,
     LISTENER_POLL_INTERVAL_SECONDS,
     LISTENER_POLL_INTERVAL_JITTER_SECONDS,
+    LISTENER_PLAYBACK_CONTINUITY_SECONDS,
+    LISTENER_UNRECORDED_CHANGE_GRACE_SECONDS,
     _pollIntervalWithJitter,
     _is_auth_error,
     _is_rate_limit_error,
@@ -72,6 +74,8 @@ def _bareListener(recentlyPlayed=None):
     listener.sp.lastPlayedManager.subscriptionRenewedAt = None
     listener._lastPlayingUri = None      #< matches Listener.__init__
     listener._lastPlayingChangeTime = 0.0
+    listener._lastPlayingSeenAt = 0.0
+    listener._firstUnarrivedChangeTime = 0.0
     listener._lastChangeTime = 0.0
     listener._authenticated_user_id = None
     listener.email = None
@@ -176,7 +180,7 @@ class TestStaleReasonReporting(unittest.TestCase):
         listener, onStale = self._listener(), MagicMock()
 
         self._poll(listener, 200.0, _playingState(self.TRACK_A), onStale)
-        self._poll(listener, 300.0, _playingState(self.TRACK_B), onStale)
+        self._poll(listener, 210.0, _playingState(self.TRACK_B), onStale)  #< within the continuity window
         self._poll(listener, 100.0 + LISTENER_STALE_TIMEOUT_SECONDS + 1,
                    _playingState(self.TRACK_B), onStale)
 
@@ -199,7 +203,7 @@ class TestStaleReasonReporting(unittest.TestCase):
         listener, onStale = self._listener(), MagicMock()
 
         self._poll(listener, 200.0, _playingState(self.TRACK_A), onStale)
-        self._poll(listener, 300.0, _playingState(self.TRACK_B), onStale)
+        self._poll(listener, 210.0, _playingState(self.TRACK_B), onStale)  #< within the continuity window
         self._poll(listener, 100.0 + LISTENER_STALE_HARD_TIMEOUT_SECONDS + 1,
                    _playingState(self.TRACK_B), onStale)
 
@@ -251,7 +255,7 @@ class TestStaleReasonReporting(unittest.TestCase):
         listener.sp.lastPlayedManager.subscriptionRenewedAt = pastHardCeiling - 60
 
         self._poll(listener, 200.0, _playingState(self.TRACK_A), onStale)
-        self._poll(listener, 300.0, _playingState(self.TRACK_B), onStale)
+        self._poll(listener, 210.0, _playingState(self.TRACK_B), onStale)  #< within the continuity window
         stillRunning = self._poll(listener, pastHardCeiling, _playingState(self.TRACK_B), onStale)
 
         self.assertFalse(stillRunning)
@@ -334,7 +338,7 @@ class TestStaleFeedIdleDetection(unittest.TestCase):
         listener, onStale = self._listener(), MagicMock()
 
         self._poll(listener, 200.0, _playingState(self.TRACK_A), onStale)
-        self._poll(listener, 300.0, _playingState(self.TRACK_B), onStale)
+        self._poll(listener, 210.0, _playingState(self.TRACK_B), onStale)  #< within the continuity window
         stillRunning = self._poll(listener, self._pastTimeout(), _playingState(self.TRACK_B), onStale)
 
         self.assertFalse(stillRunning)
@@ -362,6 +366,87 @@ class TestStaleFeedIdleDetection(unittest.TestCase):
 
         self.assertTrue(stillRunning)
         onStale.assert_not_called()
+
+    def test_resuming_after_an_idle_gap_with_a_new_track_is_not_a_change(self):
+        """The deterministic misfire this guards against: the last-playing track
+        survives an idle gap, so pressing play on a DIFFERENT track after a
+        30-minute break read as "a play that never arrived" and rebuilt the
+        session at the exact moment listening resumed. A sighting across a gap
+        wider than LISTENER_PLAYBACK_CONTINUITY_SECONDS is a fresh baseline -
+        whatever ended before the gap was the feed's to record back then."""
+        listener, onStale = self._listener(), MagicMock()
+
+        self._poll(listener, 200.0, _playingState(self.TRACK_A), onStale)
+        stillRunning = self._poll(listener, self._pastTimeout(), _playingState(self.TRACK_B), onStale)
+
+        self.assertTrue(stillRunning)
+        onStale.assert_not_called()
+
+    def test_a_change_just_witnessed_gets_the_feed_a_grace_window(self):
+        """A 40-minute mix ends and the next track starts: the mix's play is
+        still in the callback's metadata fetch when the tick lands, so the feed
+        legitimately lags the observed change by seconds (worst case ~105s
+        under the shared limiter). Declaring the session broken in that window
+        rebuilt it mid-recording and could lose the play for good."""
+        listener, onStale = self._listener(), MagicMock()
+        mixEndsAt = self._pastTimeout()
+
+        self._poll(listener, mixEndsAt - 2.0, _playingState(self.TRACK_A), onStale)
+        stillRunning = self._poll(listener, mixEndsAt, _playingState(self.TRACK_B), onStale)
+
+        self.assertTrue(stillRunning)
+        onStale.assert_not_called()
+
+    def test_a_change_the_feed_never_caught_up_with_is_stale_after_the_grace(self):
+        """The grace defers the verdict; it must not disable it."""
+        listener, onStale = self._listener(), MagicMock()
+        changeAt = self._pastTimeout()
+
+        self._poll(listener, changeAt - 2.0, _playingState(self.TRACK_A), onStale)
+        self._poll(listener, changeAt, _playingState(self.TRACK_B), onStale)
+        stillRunning = self._poll(listener, changeAt + LISTENER_UNRECORDED_CHANGE_GRACE_SECONDS + 1,
+                                  _playingState(self.TRACK_B), onStale)
+
+        self.assertFalse(stillRunning)
+        onStale.assert_called_once()
+
+    def test_track_churn_does_not_keep_rearming_the_grace(self):
+        """A genuinely dead feed under constant listening keeps producing fresh
+        changes; the grace runs from the FIRST change the feed never recorded,
+        or the verdict would defer forever."""
+        listener, onStale = self._listener(), MagicMock()
+        firstChangeAt = self._pastTimeout()
+        churnStep = LISTENER_PLAYBACK_CONTINUITY_SECONDS - 5
+
+        self._poll(listener, firstChangeAt - 2.0, _playingState(self.TRACK_A), onStale)
+        self._poll(listener, firstChangeAt, _playingState(self.TRACK_B), onStale)
+        for step in (1, 2, 3, 4):  #< 4 x 25s of churn, all inside the 120s grace
+            track = self.TRACK_A if step % 2 else self.TRACK_B
+            self._poll(listener, firstChangeAt + step * churnStep, _playingState(track), onStale)
+        stillRunning = self._poll(listener,
+                                  firstChangeAt + LISTENER_UNRECORDED_CHANGE_GRACE_SECONDS + 1,
+                                  _playingState(self.TRACK_A), onStale)
+
+        self.assertFalse(stillRunning)
+        onStale.assert_called_once()
+
+    def test_a_change_after_a_feed_update_rearms_the_grace(self):
+        """Once the feed catches up, the next unrecorded change starts a fresh
+        grace window instead of inheriting a long-expired anchor."""
+        listener = self._listener()
+        listener._lastChangeTime = 1000.0           #< the feed moved after the old pending change...
+        listener._lastPlayingChangeTime = 900.0
+        listener._firstUnarrivedChangeTime = 500.0  #< ...whose grace anchor is long expired
+        listener._lastPlayingUri = self.TRACK_A
+        listener._lastPlayingSeenAt = 1000.0
+        listener.sp.lastPlayedManager.manager._state = _playingState(self.TRACK_B)
+
+        with patch("Database.Listeners.spotifyListener.time.monotonic", return_value=1010.0):
+            listener._observePlaybackForStaleness()
+        graceStillRunning = 1010.0 + LISTENER_UNRECORDED_CHANGE_GRACE_SECONDS - 1
+        with patch("Database.Listeners.spotifyListener.time.monotonic",
+                   return_value=graceStillRunning):
+            self.assertFalse(listener._staleFeedIsBroken())
 
     def test_track_change_already_reflected_in_the_feed_is_not_stale(self):
         """The change was observed BEFORE the feed's last update, i.e. the feed
