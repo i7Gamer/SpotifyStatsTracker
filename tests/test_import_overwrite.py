@@ -596,6 +596,77 @@ class TestOverwriteClosesSessions(_OverwriteTestBase):
         self.assertEqual(importer.sp.close.call_count, 2)
 
 
+class TestWrappedInvalidationUsesTheUsersOwnYears(_OverwriteTestBase):
+    """Two year notions meet at the Wrapped invalidation, counted in different
+    timezones on purpose.
+
+    coverage() and the delete segmentation bucket years in the INSTANCE zone, so
+    the segments line up with the uploaded files' own coverage. A Wrapped year is
+    defined in the USER's zone instead - _computeAvailableYears reads db.tz, which
+    refreshSettings fills from that user's `timezone` setting.
+
+    Those are the same value on an instance whose users all share its zone, which
+    is why this never showed up. For a user who does not, a play near a New Year
+    boundary can be covered-year N and Wrapped-year N+1, so handing covered years
+    straight to a user-keyed cache drops the wrong one and leaves the right one
+    stale until the wrapped worker's staleness check happens to rebuild it.
+
+    The span is therefore re-bucketed in the user's zone and UNIONED in, never
+    substituted: an extra year costs one recomputation of a cache that rebuilds on
+    demand, a missing year shows wrong numbers. Nothing here touches which plays
+    are deleted - that is decided and committed before this runs.
+    """
+
+    #< UTC+14, the furthest zone there is, so the boundary case is unambiguous
+    #  whatever zone the test host is in
+    FAR_ZONE = "Pacific/Kiritimati"
+
+    def _dbInFarZone(self):
+        from zoneinfo import ZoneInfo
+        db = self._makeDb({}, [])
+        db.tz = ZoneInfo(self.FAR_ZONE)
+        return db
+
+    def test_the_users_own_year_for_the_span_is_invalidated_too(self):
+        from Database.utils import convertToDatetime
+        db = self._dbInFarZone()
+        #< the last hours of the year in the instance zone, already next year in
+        #  the user's
+        edge = _ts(2019, 12, 31, 23)
+        usersYear = convertToDatetime(edge, tz=db.tz).year
+
+        years = db._wrappedYearsToInvalidate(edge, edge, {2019}, set())
+
+        self.assertIn(usersYear, years)
+
+    def test_the_covered_and_corrected_years_are_never_dropped(self):
+        """Widening only. Substituting the user-zone years would trade one stale
+        cache for another."""
+        db = self._dbInFarZone()
+
+        years = db._wrappedYearsToInvalidate(_ts(2019), _ts(2019), {2015}, {2021})
+
+        self.assertTrue({2015, 2021}.issubset(years))
+
+    def test_a_span_inside_one_year_adds_only_that_year(self):
+        """The union is the span's years, not every year between the extremes of
+        the two sets - a mid-year overwrite must not invalidate a decade."""
+        db = self._dbInFarZone()
+
+        years = db._wrappedYearsToInvalidate(_ts(2019, 6), _ts(2019, 7), set(), set())
+
+        self.assertEqual(years, {2019})
+
+    def test_an_empty_covered_range_keeps_the_sets_it_was_given(self):
+        """minStart is None when nothing was covered; there is no span to bucket
+        and the corrected years still have to be honoured."""
+        db = self._dbInFarZone()
+
+        years = db._wrappedYearsToInvalidate(None, None, {2019}, {2020})
+
+        self.assertEqual(years, {2019, 2020})
+
+
 if __name__ == "__main__":
     import unittest
     unittest.main()

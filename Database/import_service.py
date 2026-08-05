@@ -748,7 +748,8 @@ class ImportMixin:
         # imported files to FAILED/ and importHistoryBatch never raised the
         # milestone recalc flag. Each loop is guarded on its own so a Wrapped
         # hiccup still lets the cover art queue.
-        for year in sorted(coveredYears | runState.correctedYears):
+        for year in sorted(self._wrappedYearsToInvalidate(minStart, maxEnd, coveredYears,
+                                                          runState.correctedYears)):
             try:
                 self.repo.deleteUserWrapped(self.user, year)
             except Exception as e:
@@ -821,6 +822,38 @@ class ImportMixin:
             # the Importer opened one anyway - release it (fresh per login,
             # see Database/Spotify/client.py).
             importer.sp.close()
+
+    def _wrappedYearsToInvalidate(self, minStart, maxEnd, coveredYears, correctedYears) -> set:
+        """Which years' cached Wrapped this overwrite may have moved.
+
+        Three year notions meet here, and two of them are counted in different
+        timezones on purpose:
+
+        - `coveredYears` and the delete segments beside it are bucketed in the
+          INSTANCE zone, matching Importer.coverage - that is what makes the
+          segments line up with the files' own coverage.
+        - `correctedYears` is bucketed in the USER's zone, because that is the
+          zone a Wrapped year is defined in (see _computeAvailableYears, which
+          reads db.tz).
+
+        A user whose timezone differs from the instance's - `refreshSettings`
+        lets them - can therefore have a play that Importer.coverage calls year
+        N while their Wrapped calls it N+1, so passing covered years straight to
+        a user-keyed cache could drop the wrong year and leave the right one
+        stale.
+
+        So the span is re-bucketed in the user's zone and unioned in rather than
+        substituted. Widening is safe in a way that switching is not: an extra
+        year here costs one recomputation of a cache that is rebuilt on demand,
+        while a missed year shows stale numbers. Nothing about which PLAYS get
+        deleted is affected - that decision is made and committed above.
+        """
+        years = set(coveredYears) | set(correctedYears)
+        if minStart is None or maxEnd is None:
+            return years
+        firstYear = _dbmod.convertToDatetime(minStart, tz=self.tz).year
+        lastYear = _dbmod.convertToDatetime(maxEnd, tz=self.tz).year
+        return years | set(range(firstYear, lastYear + 1))
 
     def _deletePlaysInCoveredRange(self, minStart, maxEnd, coveredYears) -> tuple[int, int, list[int]]:
         """Delete this user's plays and skips in each covered year's segment of
