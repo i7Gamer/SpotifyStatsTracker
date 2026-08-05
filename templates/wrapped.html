@@ -67,6 +67,18 @@
         hx-sync="#wrappedResults:replace"
         hx-indicator="#wrappedResults"
         hx-replace-url="true"
+        {# Marks every request THIS FORM makes, and nothing else - the year
+           badges are boosted links outside it. The route reads that as "the
+           year cannot have changed", which is true because the only year input
+           in here is the hidden field above, rewritten out of band. It uses it
+           to skip the genre card's two year-scoped aggregations, which no
+           filter in this form can move (see routes/wrapped.py and
+           tests/test_wrapped_htmx.py's TestGenreCardIsNotRecomputedPerFilterChange).
+
+           A static JSON string, NOT hx-headers="js:...": the js: form compiles
+           an expression with the Function constructor, which the CSP here
+           forbids (see the header comment above). #}
+        hx-headers='{"X-Wrapped-Filter-Change": "1"}'
         style="display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; justify-content: space-between;">
     {% include '_wrapped_year_field.html' %}
     <div style="display: flex; gap: 1rem; flex-wrap: wrap; align-items: center;">

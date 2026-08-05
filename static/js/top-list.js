@@ -98,18 +98,9 @@ if (typeof document !== 'undefined') {
     HtmxFilters.pruneEmptyParams(evt.detail.parameters);
   });
 
-  // Smooth cover-art fade-ins for freshly swapped cards. The images are new
-  // elements on every swap, so this cannot be a one-time delegated listener.
-  document.body.addEventListener('htmx:afterSwap', function (evt) {
-    if (evt.target.id !== 'topListResults') return;
-    evt.target.querySelectorAll('img.track-cover').forEach(function (img) {
-      if (img.complete) {
-        img.classList.add('loaded');
-      } else {
-        img.addEventListener('load', function () { img.classList.add('loaded'); });
-      }
-    });
-  });
+  //< cover-art fade-ins are handled once for the whole app in
+  //  static/js/chrome-common.js, which already owned this behaviour and now
+  //  re-runs its sweep on htmx:afterSwap
 
   // A genuine failure gets the shared inline error + Retry rather than a stuck
   // "Loading…" or a silently stale list. An expired session no longer arrives

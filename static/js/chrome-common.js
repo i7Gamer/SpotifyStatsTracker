@@ -18,9 +18,10 @@
     }
   }, true);
 
-  // Check already completed images (e.g. from cache) on DOMContentLoaded
-  function markLoadedImages() {
-    document.querySelectorAll('img.track-cover').forEach(img => {
+  // Check already completed images (e.g. from cache): those never fire `load`,
+  // so the capture listener above never sees them.
+  function markLoadedImages(root) {
+    (root || document).querySelectorAll('img.track-cover').forEach(img => {
       if (img.complete) {
         img.classList.add('loaded');
       }
@@ -32,6 +33,18 @@
   } else {
     markLoadedImages();
   }
+
+  // The same sweep after every htmx swap, for the same reason: covers arriving
+  // in swapped-in markup are frequently cache hits, already `complete` before
+  // any listener could attach.
+  //
+  // This lives here rather than per page, and that is the point. The sweep was
+  // already this file's job - it just only ran once, at DOMContentLoaded - so
+  // five migrated pages had each grown their own copy inside their own
+  // htmx:afterSwap handler, re-solving a solved problem because nothing
+  // re-invoked the solution. On `document`, not document.body, so it does not
+  // depend on where in the page this script is loaded.
+  document.addEventListener('htmx:afterSwap', evt => markLoadedImages(evt.target));
 })();
 
 // Scroll-to-top button with circular progress. Deferred to DOMContentLoaded:

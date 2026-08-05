@@ -94,8 +94,19 @@
   </div>
 </section>
 
-<section class="card chart-card" id="wrappedGenresCard">
-  {% include "_wrapped_genres.html" %}
+{# The genre card is the one region here whose data depends on the YEAR alone -
+   it costs two year-scoped aggregations (coverage + distribution) that no
+   trend-bucket / items-per-category / sort change can move.
+
+   So a filter change sends this stub instead. htmx's hx-preserve keeps the
+   element ALREADY on the page and discards the incoming one (it moves the live
+   node aside and puts it back after the swap), which is what makes skipping the
+   queries safe: an innerHTML swap would otherwise delete the card rather than
+   leave it alone. The route decides - see _genreCardIsAlreadyCorrect in
+   routes/wrapped.py - and it is only ever true for a swap, so a full render
+   always carries real content and never a hollow card. #}
+<section class="card chart-card" id="wrappedGenresCard"{% if genresPreserved %} hx-preserve="true"{% endif %}>
+  {% if not genresPreserved %}{% include "_wrapped_genres.html" %}{% endif %}
 </section>
 
 {# Which of these is `active` is client state, not server state: the swapped-in

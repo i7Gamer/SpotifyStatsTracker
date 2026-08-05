@@ -51,16 +51,6 @@ if (typeof window !== 'undefined') (function () {
   var DETAIL_BODY_ID = 'detailBody';
   var CHART_DATA_ID = 'detailChartData';
 
-  // Cached covers can finish loading before layout.html's delegated handler
-  // ever sees them, so mark those explicitly (same as top-list.js does after
-  // its own swaps) or they stay at opacity 0.
-  function fadeInCovers(el) {
-    el.querySelectorAll('img.track-cover').forEach(function (img) {
-      if (img.complete) img.classList.add('loaded');
-      else img.addEventListener('load', function () { img.classList.add('loaded'); });
-    });
-  }
-
   // The canvases only exist once the body is on the page, so charts.js was told
   // to skip its initial render (window.__deferInitialChartRender in the shell)
   // and is driven from here instead.
@@ -73,7 +63,10 @@ if (typeof window !== 'undefined') (function () {
     //< both bind to elements that arrived with the body above
     if (window.initDetailHistory) window.initDetailHistory();
     if (window.initPlayEmbed) window.initPlayEmbed();
-    fadeInCovers(el);
+    //< cover-art fade-ins are handled once for the whole app in
+    //  static/js/chrome-common.js. This file used to re-mark them because that
+    //  sweep only ran at DOMContentLoaded - it now re-runs on htmx:afterSwap,
+    //  which is what the workaround was standing in for.
     //< disabled in the shell so a bucket change can't be issued against a chart
     //  that isn't on the page yet - and can't then be overwritten by the body
     //  swap already in flight

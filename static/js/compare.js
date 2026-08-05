@@ -36,8 +36,6 @@ var COMPARE_FORM_ID = 'compareFilters';
 //< the JSON island the trend chart is repainted from. Only the full refresh
 //  carries one - a sort change renders an identical chart, so it does not
 var COMPARE_TREND_DATA_ID = 'compareTrendData';
-//< marks the regions a refresh replaces; also what hx-indicator dims
-var COMPARE_FADE_TARGET_CLASS = 'htmx-fade-target';
 
 // The params whose blank value means "unset" HERE. This page cannot use
 // HtmxFilters.pruneEmptyParams as-is, and the exception is the point: Time
@@ -122,21 +120,9 @@ if (typeof document !== 'undefined') {
     pruneCompareAutoParams(evt.detail.parameters);
   });
 
-  // Smooth cover-art fade-ins for freshly swapped cards. The images are new
-  // elements on every swap, so this cannot be a one-time delegated listener.
-  // Filtered to the swap CONTAINERS: htmx fires afterSwap on every inserted
-  // node as well, and re-binding a load listener per card would stack
-  // duplicates on the same image.
-  document.body.addEventListener('htmx:afterSwap', function (evt) {
-    if (!evt.target.classList || !evt.target.classList.contains(COMPARE_FADE_TARGET_CLASS)) return;
-    evt.target.querySelectorAll('img.track-cover').forEach(function (img) {
-      if (img.complete) {
-        img.classList.add('loaded');
-      } else {
-        img.addEventListener('load', function () { img.classList.add('loaded'); });
-      }
-    });
-  });
+  //< cover-art fade-ins are handled once for the whole app in
+  //  static/js/chrome-common.js, which already owned this behaviour and now
+  //  re-runs its sweep on htmx:afterSwap
 
   // The trend chart. htmx swaps the data island in; painting a <canvas> from it
   // is the one thing no attribute can express.

@@ -304,6 +304,96 @@ class TestOutOfBandRegions(WrappedHtmxTestCase):
         self.assertNotIn('id="shareLinkPanelBody"', body)
 
 
+class TestGenreCardIsNotRecomputedPerFilterChange(WrappedHtmxTestCase):
+    """The genre card's data depends on the YEAR and nothing else, so a trend-
+    bucket / items-per-category / sort change must not pay for it.
+
+    Collapsing the old `?ajax=true&type=chart|lists` partial modes into one
+    fragment made every filter change run getGenreCoverage + getGenreDistribution
+    again - two year-scoped aggregations for a card whose content could not have
+    moved. The fix is not a cache: the filter form cannot change the year (its
+    year input is hidden and rewritten out of band, and the year badges are
+    links outside the form), so a request the FORM makes is exactly the case
+    where the card is already correct. It marks itself, and the response sends
+    an hx-preserve stub, which makes htmx keep the card already on the page.
+
+    Deliberately NOT solved by caching coverage per (user, year): the numbers
+    grow while the Last.fm backfill runs and the admin's inherited-genres toggle
+    moves them retroactively, which is why _buildWrappedContext computes them
+    live and never from the user_wrapped cache. This keeps them live and just
+    stops asking when the answer cannot have changed."""
+
+    #< what the form sends, and only the form: see wrapped.html's hx-headers
+    FILTER_CHANGE = dict(HX_HEADERS, **{"X-Wrapped-Filter-Change": "1"})
+
+    def test_a_filter_change_runs_no_genre_queries(self):
+        self.db.getGenreCoverage.reset_mock()
+        self.db.getGenreDistribution.reset_mock()
+
+        self.client.get("/wrapped?groupBy=week&sortBy=name", headers=self.FILTER_CHANGE)
+
+        self.db.getGenreCoverage.assert_not_called()
+        self.db.getGenreDistribution.assert_not_called()
+
+    def test_a_filter_change_preserves_the_card_already_on_the_page(self):
+        """An innerHTML swap would otherwise delete it - skipping the queries
+        without this would blank the card instead of leaving it alone."""
+        body = self._fragmentFilterChange("?groupBy=week")
+
+        self.assertIn('id="wrappedGenresCard"', body)
+        self.assertIn("hx-preserve", body)
+
+    def test_a_year_change_does_run_them_and_sends_real_content(self):
+        """The one thing that CAN move the card. A year badge is a boosted link
+        outside the form, so it carries no filter-change marker."""
+        self.db.getGenreCoverage.reset_mock()
+
+        body = self._fragment("?year=2024")
+
+        self.db.getGenreCoverage.assert_called()
+        self.assertIn('id="wrappedGenresCard"', body)
+        self.assertNotIn("hx-preserve", body)
+
+    def test_a_full_page_render_always_computes_them(self):
+        """No card is on the page yet, so there is nothing to preserve - and a
+        stub here would render the recap with a permanently empty genre card."""
+        self.db.getGenreCoverage.reset_mock()
+
+        body = self._page()
+
+        self.db.getGenreCoverage.assert_called()
+        self.assertNotIn("hx-preserve", body)
+
+    def test_the_marker_alone_does_not_strip_the_card_from_a_full_render(self):
+        """The header is only meaningful for a swap. A plain GET carrying it
+        (a crafted request, a proxy replaying headers) must still render a whole
+        usable page rather than one with a hollow card."""
+        body = self.client.get("/wrapped", headers={"X-Wrapped-Filter-Change": "1"}).get_data(as_text=True)
+
+        self.assertNotIn("hx-preserve", body)
+        self.db.getGenreCoverage.assert_called()
+
+    def test_the_form_still_cannot_change_the_year(self):
+        """The whole inference rests on this. The form carries the year only as
+        the hidden field that gets rewritten out of band; if a visible year
+        control is ever added to it, a filter change COULD move the year and
+        preserving the card would show the wrong year's genres."""
+        page = self._page()
+        #< from the filter form's own id, not from the first </form> on the page
+        #  - layout.html's logout form closes long before this one opens
+        start = page.index('id="wrappedFilters"')
+        form = page[start:page.index("</form>", start)]
+
+        self.assertIn('type="hidden" name="year"', form)
+        #< the only year input in the form is that hidden one
+        self.assertEqual(form.count('name="year"'), 1)
+        self.assertNotIn("<select id=\"year\"", form)
+
+    def _fragmentFilterChange(self, query=""):
+        return self.client.get("/wrapped" + query,
+                               headers=self.FILTER_CHANGE).get_data(as_text=True)
+
+
 class TestUnauthenticatedSwap(WrappedHtmxTestCase):
     """An expired session mid-swap. htmx follows a 302 as transparently as
     fetch() did, so without HX-Redirect the login page would be swapped into

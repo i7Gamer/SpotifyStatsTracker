@@ -27,6 +27,33 @@ from Database.utils import msToString, now
 
 def register(app, dashboard):
 
+    #< the marker templates/wrapped.html's filter form puts on its own requests
+    #  (hx-headers), and nothing else on the page does
+    FILTER_CHANGE_HEADER = "X-Wrapped-Filter-Change"
+
+    def _genreCardIsAlreadyCorrect():
+        """True when this request cannot have moved the genre card, so its two
+        year-scoped aggregations are skipped and the card on the page is left
+        alone (see _wrapped_results.html's hx-preserve stub).
+
+        The card's data depends on the YEAR and nothing else. The filter form
+        cannot change the year: its only year input is the hidden field that is
+        rewritten out of band after a badge click, and the year badges are
+        boosted links OUTSIDE the form. So "the filter form made this request"
+        is exactly "the year is the one already on screen".
+
+        Both conditions are required. Without HX-Request there is no swap and
+        therefore no card to preserve - a full render carrying a stray marker
+        would otherwise produce a page whose genre card is a permanent hole.
+
+        Deliberately not a cache keyed on (user, year): coverage grows while the
+        Last.fm backfill runs and the admin's inherited-genres toggle moves it
+        retroactively, which is why _buildWrappedContext computes it live and
+        never from the user_wrapped cache. This keeps it live and only stops
+        asking when the answer cannot have changed."""
+        return bool(request.headers.get("HX-Request")
+                    and request.headers.get(FILTER_CHANGE_HEADER))
+
     def _renderWrapped(pageArgs):
         """One render, two shapes. A plain GET is the whole recap; an htmx
         request - every year badge and filter change - gets just
@@ -65,7 +92,9 @@ def register(app, dashboard):
         year = dashboard._getWrappedYearParam(availableYears, currentYear)
         groupBy, limit, sortBy = dashboard._parseWrappedFilterParams()
 
-        ctx = dashboard._buildWrappedContext(db, year, groupBy, limit, sortBy)
+        preserveGenres = _genreCardIsAlreadyCorrect()
+        ctx = dashboard._buildWrappedContext(db, year, groupBy, limit, sortBy,
+                                             includeGenres=not preserveGenres)
 
         creds = db.getUserSpotifyCredentials() or {}
         has_api = bool(creds.get("client_id") and creds.get("client_secret"))
@@ -107,6 +136,7 @@ def register(app, dashboard):
             topGenres=ctx["topGenres"],
             genreCoverage=ctx["genreCoverage"],
             genreUnlocked=ctx["genreUnlocked"],
+            genresPreserved=preserveGenres,
             lastfmEnabled=ctx["lastfmEnabled"],
             has_api=has_api,
             is_authenticated=is_authenticated,
@@ -242,7 +272,12 @@ def register(app, dashboard):
         year = dashboard._getWrappedYearParam(availableYears, availableYears[0])
         groupBy, limit, sortBy = dashboard._parseWrappedFilterParams()
 
-        ctx = dashboard._buildWrappedContext(db, year, groupBy, limit, sortBy)
+        #< the public twin renders the same template and the same filter form,
+        #  so it gets the same saving - a visitor changing Trend buckets on a
+        #  shared recap pays for the genre card exactly as often as the owner
+        preserveGenres = _genreCardIsAlreadyCorrect()
+        ctx = dashboard._buildWrappedContext(db, year, groupBy, limit, sortBy,
+                                             includeGenres=not preserveGenres)
 
         # This route is NOT behind @requiresUser: the two ways it fails are a
         # dead token (404, above) and the miss rate limit (429), neither of
@@ -281,6 +316,7 @@ def register(app, dashboard):
             topGenres=ctx["topGenres"],
             genreCoverage=ctx["genreCoverage"],
             genreUnlocked=ctx["genreUnlocked"],
+            genresPreserved=preserveGenres,
             lastfmEnabled=ctx["lastfmEnabled"],
             has_api=False,
             is_authenticated=False,
