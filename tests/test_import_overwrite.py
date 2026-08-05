@@ -314,6 +314,88 @@ class TestOverwriteGating(_OverwriteTestBase):
         self.assertEqual(years, {2022})
 
 
+class TestOverwriteAbortsOnAmbiguousMatches(_OverwriteTestBase):
+    """The apply-time twin of the staging guards below: an entry whose
+    near-time lookup finds SEVERAL candidate rows is skipped rather than
+    guessing which to correct. Outside an overwrite that is safe - the entry
+    is already recorded, nothing was deleted. Inside one it is not: the
+    entry's own rows are gone with the covered range, the survivors are rows
+    just outside the span, and the skip drops a play permanently under a
+    'complete' banner. The batch must abort instead, exactly as it does for a
+    play that never made it through staging."""
+
+    def _dbWithTwoSurvivorsPastTheSpan(self):
+        """Two same-track plays sitting just AFTER the file's span end, so the
+        covered-range delete leaves them (it is bounded by the span, not the
+        year) while the staged entry's own row inside the span is removed."""
+        spanEnd = _ts(2019, 12, 20)
+        db = self._makeDb({}, [
+            {"id": "tX", "playedAt": _ts(2019, 3), "timePlayed": 60000},      #< inside the span: deleted
+            {"id": "tX", "playedAt": spanEnd + 5, "timePlayed": 60000},       #< survivors, both within
+            {"id": "tX", "playedAt": spanEnd + 12, "timePlayed": 60000},      #  IMPORT_MATCH_START_WINDOW_SECONDS
+        ])
+        return db, spanEnd
+
+    def _fileSpecsLandingOnTheSurvivors(self, spanEnd):
+        return {"file 2019": ((_ts(2019, 1, 5), spanEnd, {2019}),
+                              lambda: iter([_meta("tX", spanEnd + 8)]))}
+
+    def test_an_ambiguous_match_aborts_the_overwrite(self):
+        db, spanEnd = self._dbWithTwoSurvivorsPastTheSpan()
+
+        outcomes = self._runBatch(db, self._fileSpecsLandingOnTheSurvivors(spanEnd))
+
+        self.assertEqual(outcomes, ["failed"])
+        self.assertEqual(db.readProgress()["status"], "failed")
+
+    def test_the_original_data_survives_the_abort(self):
+        """The delete shares the batch's transaction, so the rollback has to
+        put the whole covered range back - including the row the entry that
+        could not be applied was meant to replace."""
+        db, spanEnd = self._dbWithTwoSurvivorsPastTheSpan()
+
+        self._runBatch(db, self._fileSpecsLandingOnTheSurvivors(spanEnd))
+
+        self.assertEqual(self._playedAts(db), [_ts(2019, 3), spanEnd + 5, spanEnd + 12])
+
+    def test_the_abort_message_carries_no_user_data(self):
+        """Import error text is matched by substring to classify failures, so
+        a track id or title interpolated into it would be classified on."""
+        db, spanEnd = self._dbWithTwoSurvivorsPastTheSpan()
+
+        self._runBatch(db, self._fileSpecsLandingOnTheSurvivors(spanEnd))
+
+        message = db.readProgress()["message"]
+        self.assertNotIn("tX", message)
+        self.assertIn("original data is intact", message)
+
+    def test_a_single_match_still_corrects_in_place(self):
+        """The guard fires on ambiguity only - one candidate is still claimed
+        and corrected, which is the normal overwrite path."""
+        spanEnd = _ts(2019, 12, 20)
+        db = self._makeDb({}, [{"id": "tX", "playedAt": spanEnd + 5, "timePlayed": 60000}])
+
+        outcomes = self._runBatch(db, self._fileSpecsLandingOnTheSurvivors(spanEnd))
+
+        self.assertEqual(outcomes, ["imported"])
+        self.assertEqual(self._playedAts(db), [spanEnd + 8])
+
+    def test_a_normal_import_still_skips_without_aborting(self):
+        """Nothing was deleted there, so the presumption 'already recorded'
+        holds and an ambiguous entry stays a skip, not a failure."""
+        spanEnd = _ts(2019, 12, 20)
+        db = self._makeDb({}, [
+            {"id": "tX", "playedAt": spanEnd + 5, "timePlayed": 60000},
+            {"id": "tX", "playedAt": spanEnd + 12, "timePlayed": 60000},
+        ])
+
+        outcomes = self._runBatch(db, self._fileSpecsLandingOnTheSurvivors(spanEnd),
+                                  overwriteRange=False)
+
+        self.assertEqual(outcomes, ["imported"])
+        self.assertEqual(self._playedAts(db), [spanEnd + 5, spanEnd + 12])
+
+
 class TestOverwriteStagesBeforeDeleting(_OverwriteTestBase):
     """Item 1 (2026-07-24 review): the network-bound metadata staging must run
     BEFORE the covered-range delete opens the write transaction, so SQLite's

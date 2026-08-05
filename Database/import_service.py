@@ -54,6 +54,15 @@ def _exportContentHash(content) -> str:
 # have always been importable.
 UNREADABLE_DROP_STAT_KEYS = ("droppedMalformed",)
 
+# Raised when an overwrite batch reaches an entry whose near-time lookup finds
+# several candidate rows (see _applyImportData). Static text on purpose: import
+# failures are classified by substring, and this message reaches the user's
+# progress line, so an interpolated track id or title would both leak into the
+# UI and change how the failure classifies.
+AMBIGUOUS_MATCH_ABORT_MESSAGE = (
+    "an uploaded entry matches several existing plays of the same track, so there is no single "
+    "row it can safely correct and the play it describes cannot be restored")
+
 # How far apart two skip rows for the same track may be and still be treated as
 # one physical event. Sized for the recording sources disagreeing about what
 # played_at means (start vs end of a sub-5s play) plus clock drift - NOT for the
@@ -448,6 +457,24 @@ class ImportMixin:
                             continue
                     else:
                         # Multiple matches - ambiguous, skip to avoid wrong update
+                        if deferCommit:
+                            # ...except in an overwrite batch, where skipping is
+                            # not the safe option it is above. This entry's own
+                            # row was already deleted with the covered range, so
+                            # the rows still visible are survivors from OUTSIDE
+                            # the span (just past its edges, or across an
+                            # uncovered-year boundary) - "already recorded" is
+                            # exactly what they are not. Skipping would drop the
+                            # play for good under a "complete" message. Abort
+                            # instead: the delete shares this transaction, so the
+                            # rollback restores the whole range. Same invariant as
+                            # the staging drop guards, one phase later.
+                            _dbmod.logger.error(
+                                "Overwrite import for user %s: %d plays found within tolerance of an "
+                                "entry for track %s - aborting rather than dropping it",
+                                self.user, len(matches), track_id,
+                            )
+                            raise ValueError(AMBIGUOUS_MATCH_ABORT_MESSAGE)
                         if _dbmod.os.environ.get("FLASK_DEBUG", "").lower() in _dbmod.TRUTHY_DEBUG_VALUES:
                             _dbmod.logger.info(
                                 "Skipping import play for track %s: %d plays found within tolerance - ambiguous, "
