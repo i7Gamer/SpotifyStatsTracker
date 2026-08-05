@@ -21,6 +21,7 @@ import os
 import re
 import sys
 import unittest
+import unittest.mock
 from pathlib import Path
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -92,3 +93,39 @@ class TestOneTruthyEnvValueSet(unittest.TestCase):
             definers, ["config.py"],
             "TRUTHY_ENV_VALUES must be defined once, in config.py (the module that "
             f"imports nothing); found {len(definers)} definitions: {definers}")
+
+
+class TestFlaskDebugHasOneReader(unittest.TestCase):
+    """FLASK_DEBUG is asked about through flaskDebugEnabled(), nowhere else.
+
+    The helper was introduced to collapse six spellings into one, and the site
+    it missed - Database/workers/listener.py's `if os.environ.get("FLASK_DEBUG")`
+    - was the one that mattered most: a bare truthiness test on the raw string,
+    on the hottest path in the app. "0" is a non-empty string, so an operator
+    setting FLASK_DEBUG=0 to silence diagnostics turned that one ON, logging per
+    ingest batch, per user, per cycle.
+
+    Structural because the bug only shows under an env var no test sets, and
+    because the next site to be written is the one this catches.
+    """
+
+    def test_only_the_owner_reads_it_from_the_environment(self):
+        readers = sorted(
+            str(path) for path, text in _productionSources()
+            if _FLASK_DEBUG_READ.search(_stripProse(text))
+        )
+
+        self.assertEqual(
+            readers, [str(FLASK_DEBUG_OWNER)],
+            "FLASK_DEBUG must be read only by Database/utils.py's flaskDebugEnabled(); "
+            f"these modules spell it themselves: {readers}")
+
+    def test_the_helper_is_what_the_owner_exposes(self):
+        """Guards the gate above: if the helper were renamed away, the scan
+        would pass by finding nothing anywhere, which reads like success."""
+        self.assertTrue(callable(databaseUtils.flaskDebugEnabled))
+
+    def test_zero_is_off(self):
+        """The bug the missed call site had, stated as behaviour."""
+        with unittest.mock.patch.dict(os.environ, {"FLASK_DEBUG": "0"}):
+            self.assertFalse(databaseUtils.flaskDebugEnabled())

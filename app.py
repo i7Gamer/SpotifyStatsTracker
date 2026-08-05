@@ -33,7 +33,7 @@ from Database.secret_store import readOrCreateKeyFile, FLASK_SECRET_KEY_ENV_VAR
 from Database.Listeners.spotifyListener import _suppress_signal_in_thread
 from Database.Spotify.recentlyPlayed import setPushListenerEnabledHook as patch_push_listener_hook
 from Database.logging_config import configureLogging
-from Database.utils import msToString, convertToDatetime, formatDuration, dateToString, versionTuple, now, startOfDay, parseDateString
+from Database.utils import msToString, convertToDatetime, formatDuration, dateToString, versionTuple, now, startOfDay, parseDateString, flaskDebugEnabled
 # Genre-gate / coverage helpers live in services/genre_gate.py; re-exported here
 # so route code (and the test suite, which imports several by name) still reach
 # them through `app`.
@@ -1052,7 +1052,9 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
     def run(self) -> None:
         try:
             self.startWorkers()
-            debug = os.environ.get("FLASK_DEBUG", "").lower() in TRUTHY_ENV_VALUES
+            #< the same helper every diagnostic gate reads, so Flask's debug mode
+            #  and the app's verbose logging can never disagree about one value
+            debug = flaskDebugEnabled()
             self.app.run(host="0.0.0.0", debug=debug, port=DEFAULT_PORT, use_reloader=False)#, threaded=False)
         finally:
             self.shutdown()

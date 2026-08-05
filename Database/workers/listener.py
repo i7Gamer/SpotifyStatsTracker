@@ -14,6 +14,9 @@ from Database.dbmodule import dbmod as _dbmod
 #  tracking that reads the same payloads (was a byte-identical staticmethod
 #  copy here); recentlyPlayed imports nothing back from workers, so no cycle
 from Database.Spotify.recentlyPlayed import _connectStateInt
+#< a direct import, unlike _dbmod above: Database.utils takes part in no cycle
+#  (see the note on its TRUTHY_ENV_VALUES re-export)
+from Database.utils import flaskDebugEnabled
 
 
 class ListenerMixin:
@@ -25,7 +28,10 @@ class ListenerMixin:
         recorded under another user's account)."""
         if not data:
             return
-        if _dbmod.os.environ.get("FLASK_DEBUG"):
+        #< flaskDebugEnabled(), not a bare os.environ.get: this site tested the
+        #  STRING for truthiness, so FLASK_DEBUG=0 - which silences every other
+        #  diagnostic - switched this one on, per ingest batch, per user, per cycle
+        if flaskDebugEnabled():
             source = data[0].get("_source", "unknown") if data else "unknown"
             _dbmod.logger.debug("_addToDatabaseFromListener called for user=%s with %d items, source=%s",
                         self.user, len(data), source)
