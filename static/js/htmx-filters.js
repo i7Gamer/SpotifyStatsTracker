@@ -98,13 +98,17 @@ function rangeProblemFromDom() {
                       document.getElementById('endDate').value);
 }
 
+// All four ids are addressed unguarded, because they are ONE control set: a
+// template rendering any of them renders all of them, which
+// tests/test_custom_date_controls.py asserts. #dateError used to be the one
+// null-guarded element here, which read as "the error span is optional" - it is
+// not, and the guard only meant a page that had lost it would silently stop
+// reporting inverted ranges instead of failing where someone would notice.
 function showRangeError(problem) {
   var invalid = problem === RANGE_INVERTED;
   var errorEl = document.getElementById('dateError');
-  if (errorEl) {
-    errorEl.textContent = invalid ? RANGE_INVERTED_MESSAGE : '';
-    errorEl.style.display = invalid ? 'block' : 'none';   //< block, like every sibling page
-  }
+  errorEl.textContent = invalid ? RANGE_INVERTED_MESSAGE : '';
+  errorEl.style.display = invalid ? 'block' : 'none';   //< block, like every sibling page
   document.getElementById('startDate').style.borderColor = invalid ? 'var(--accent)' : '';
   document.getElementById('endDate').style.borderColor = invalid ? 'var(--accent)' : '';
 }

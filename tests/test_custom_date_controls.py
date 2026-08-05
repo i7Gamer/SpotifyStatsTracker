@@ -32,6 +32,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 STATIC_JS_DIR = REPO_ROOT / "static" / "js"
+TEMPLATES_DIR = REPO_ROOT / "templates"
 
 #< the one module allowed to implement the control set
 SHARED_MODULE = "htmx-filters.js"
@@ -72,6 +73,60 @@ def pageModules():
         p for p in STATIC_JS_DIR.rglob("*.js")
         if p.name != SHARED_MODULE and VENDOR_DIR not in p.parts
     )
+
+
+# The four ids the shared functions reach for by name. They are one control set:
+# rangeProblemFromDom reads the first three, showRangeError paints the last three,
+# syncCustomRange enables/disables two of them. None of the three is meaningful
+# without all four present.
+CONTROL_SET_IDS = ('id="interval"', 'id="startDate"', 'id="endDate"', 'id="dateError"')
+
+
+def _templatesRenderingAnyControl():
+    """{template: ids present} for every template that renders part of the set."""
+    rendering = {}
+    for path in sorted(TEMPLATES_DIR.rglob("*.html")):
+        markup = path.read_text(encoding="utf-8")
+        present = tuple(i for i in CONTROL_SET_IDS if i in markup)
+        if present:
+            rendering[path.name] = present
+    return rendering
+
+
+class TestTheControlSetIsRenderedWhole(unittest.TestCase):
+    """What licenses the shared functions to reach for these by name without
+    null-guarding each one.
+
+    showRangeError used to guard #dateError and not #startDate/#endDate beside
+    it, which reads as "the error span is optional" - it is not, and the guard
+    only ever hid the fact that a page rendering three of the four would fail
+    silently instead of loudly. The invariant belongs here, where a template
+    breaking it is caught, rather than as a runtime branch that turns a broken
+    page into a quietly inert one.
+    """
+
+    def test_a_template_rendering_any_of_the_set_renders_all_of_it(self):
+        partial = {name: sorted(set(CONTROL_SET_IDS) - set(present))
+                   for name, present in _templatesRenderingAnyControl().items()
+                   if len(present) != len(CONTROL_SET_IDS)}
+        self.assertEqual(
+            partial, {},
+            "These templates render part of the custom-date control set. The shared "
+            "helpers in static/js/htmx-filters.js address all four by id and assume "
+            "they arrive together.\n  " + "\n  ".join(f"{k} missing {v}" for k, v in partial.items()))
+
+    def test_the_scan_sees_the_pages_that_carry_the_set(self):
+        """Guards the gate: an id renamed in every template at once would empty
+        the map, and an empty map satisfies the assertion above."""
+        rendering = _templatesRenderingAnyControl()
+        for template in ("history.html", "charts.html", "genres.html",
+                         "compare.html", "tracks.html", "_page_card.html"):
+            with self.subTest(template=template):
+                self.assertIn(template, rendering)
+
+    def test_a_partial_control_set_would_be_reported(self):
+        present = tuple(i for i in CONTROL_SET_IDS if i != 'id="dateError"')
+        self.assertNotEqual(len(present), len(CONTROL_SET_IDS))
 
 
 class TestCustomDateControlsHaveOneImplementation(unittest.TestCase):
