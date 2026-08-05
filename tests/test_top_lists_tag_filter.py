@@ -2,10 +2,19 @@
 topSongsPage/topArtistsPage/topAlbumsPage and templates/_page_card.html).
 Uses a real, seeded repository (like test_tags_route.py) rather than a
 MagicMock db, since the point of these tests is the actual tag-resolution SQL
-end to end, not just that the route calls the right method."""
+end to end, not just that the route calls the right method.
+
+The list itself arrives in a second request, which these pages now make with
+htmx rather than their own fetch() code: the marker is the HX-Request header
+instead of ?ajax=true, and the response is the HTML fragment instead of a JSON
+envelope around it. tests/test_top_lists_htmx.py covers that transport; these
+tests just have to speak it."""
 import unittest
 from unittest.mock import patch
 from tests._app_factory import AppTestCase
+
+#< what htmx puts on every request it makes; asking for the list, not the shell
+HX_HEADERS = {"HX-Request": "true"}
 
 
 def makeTrack(trackId, name, albumId, albumName, artistId, artistName):
@@ -95,7 +104,7 @@ class TestTopListsTagFilter(AppTestCase):
         self.dash.repo.commit()
         self.dash.repo.setTagsEnabled(False)
 
-        resp = self.client.get("/top-songs?tag=roadtrip&ajax=true")
+        resp = self.client.get("/top-songs?tag=roadtrip", headers=HX_HEADERS)
 
         body = resp.get_data(as_text=True)
         self.assertIn("Tagged Song", body)
@@ -116,7 +125,7 @@ class TestTopListsTagFilter(AppTestCase):
         self.dash.repo.addTag(self.username, "roadtrip", "track", "t1")
         self.dash.repo.commit()
 
-        resp = self.client.get("/top-songs?tag=roadtrip&ajax=true")
+        resp = self.client.get("/top-songs?tag=roadtrip", headers=HX_HEADERS)
 
         body = resp.get_data(as_text=True)
         self.assertIn("Tagged Song", body)
@@ -130,7 +139,7 @@ class TestTopListsTagFilter(AppTestCase):
         self.dash.repo.addTag(self.username, "favorites", "track", "t2")   # should not leak into artists
         self.dash.repo.commit()
 
-        resp = self.client.get("/top-artists?tag=favorites&ajax=true")
+        resp = self.client.get("/top-artists?tag=favorites", headers=HX_HEADERS)
 
         body = resp.get_data(as_text=True)
         self.assertIn("Tagged Artist", body)
@@ -142,7 +151,7 @@ class TestTopListsTagFilter(AppTestCase):
         self.dash.repo.addTag(self.username, "favorites", "track", "t2")   # should not leak into albums
         self.dash.repo.commit()
 
-        resp = self.client.get("/top-albums?tag=favorites&ajax=true")
+        resp = self.client.get("/top-albums?tag=favorites", headers=HX_HEADERS)
 
         body = resp.get_data(as_text=True)
         self.assertIn("Tagged Album", body)
@@ -153,16 +162,19 @@ class TestTopListsTagFilter(AppTestCase):
         self.dash.repo.addTag(self.username, "roadtrip", "track", "t1")
         self.dash.repo.commit()
 
-        resp = self.client.get("/top-songs?tag=nonexistent&ajax=true")
+        resp = self.client.get("/top-songs?tag=nonexistent", headers=HX_HEADERS)
 
         body = resp.get_data(as_text=True)
         self.assertNotIn("Tagged Song", body)
         self.assertNotIn("Other Song", body)
 
-    def _resultsHtml(self, path):
-        resp = self.client.get(path)
+    def _resultsHtml(self, path, headers=None):
+        """The swapped list fragment. These pages answer an HX-Request with the
+        HTML itself now, rather than a JSON envelope around it - see
+        tests/test_history_htmx.py for the transport."""
+        resp = self.client.get(path, headers=headers or HX_HEADERS)
         self.assertEqual(resp.status_code, 200)
-        return resp.get_json()["resultsHtml"]
+        return resp.get_data(as_text=True)
 
     def test_top_songs_stat_cards_respect_the_tag_filter(self):
         """The header cards (Total Plays / Time / Unique Songs) used to be
@@ -174,7 +186,7 @@ class TestTopListsTagFilter(AppTestCase):
         self.dash.repo.addTag(self.username, "roadtrip", "track", "t1")
         self.dash.repo.commit()
 
-        html = self._resultsHtml("/top-songs?tag=roadtrip&ajax=true")
+        html = self._resultsHtml("/top-songs?tag=roadtrip", headers=HX_HEADERS)
 
         self.assertIn('<p class="summary-value">1</p>', html)
         self.assertNotIn('<p class="summary-value">2</p>', html)
@@ -186,7 +198,7 @@ class TestTopListsTagFilter(AppTestCase):
         self.dash.repo.addTag(self.username, "favorites", "artist", "art1")
         self.dash.repo.commit()
 
-        html = self._resultsHtml("/top-artists?tag=favorites&ajax=true")
+        html = self._resultsHtml("/top-artists?tag=favorites", headers=HX_HEADERS)
 
         #< Total Plays (top list) / Unique Songs (top list) / Unique Artists,
         #  all 1 for the tagged slice - the whole library would read 2/2/2
@@ -198,7 +210,7 @@ class TestTopListsTagFilter(AppTestCase):
         self.dash.repo.addTag(self.username, "favorites", "album", "alb1")
         self.dash.repo.commit()
 
-        html = self._resultsHtml("/top-albums?tag=favorites&ajax=true")
+        html = self._resultsHtml("/top-albums?tag=favorites", headers=HX_HEADERS)
 
         self.assertIn('<p class="summary-value">1</p>', html)
         self.assertNotIn('<p class="summary-value">2</p>', html)
@@ -210,7 +222,7 @@ class TestTopListsTagFilter(AppTestCase):
         self.dash.repo.addTag(self.username, "roadtrip", "track", "t1")
         self.dash.repo.commit()
 
-        html = self._resultsHtml("/top-songs?tag=nonexistent&ajax=true")
+        html = self._resultsHtml("/top-songs?tag=nonexistent", headers=HX_HEADERS)
 
         #< an unknown tag matches nothing - the cards must agree with the
         #  empty list, not fall back to whole-library numbers
@@ -240,7 +252,7 @@ class TestTopListsTagFilter(AppTestCase):
         self.dash.repo.addTag(self.username, "roadtrip", "track", "t1")
         self.dash.repo.commit()
 
-        ajaxBody = self.client.get("/top-songs?tag=roadtrip&sortBy=name&ajax=true").get_data(as_text=True)
+        ajaxBody = self.client.get("/top-songs?tag=roadtrip&sortBy=name", headers=HX_HEADERS).get_data(as_text=True)
         self.assertIn("Tagged Song", ajaxBody)
         self.assertNotIn("Other Song", ajaxBody)
 

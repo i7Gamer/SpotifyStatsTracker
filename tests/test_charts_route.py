@@ -10,13 +10,16 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 # later test files.
 from app import SpotifyDashboardApp
 from _app_factory import AppTestCase
+from _charts_client import HX_HEADERS, chartData
 
 
 class TestChartsRoute(AppTestCase):
     """The /charts page loads in two phases: the GET returns a lightweight shell
-    (filter controls + empty canvases) and static/js/charts-page.js fetches the
-    data via ?ajax=true after first paint. Shell assertions check the filter/
-    canvas markup; every chart dataset now lives in the ajax JSON payload."""
+    (the filter card + an empty placeholder) and htmx fetches the chart card
+    after first paint. Shell assertions check the filter markup; the canvases
+    and every chart dataset live in the fragment - the datasets inside its JSON
+    data island, which `chartData` parses the way the page does. The transport
+    itself is pinned in tests/test_charts_htmx.py."""
 
     def _makeDb(self):
         db = MagicMock()
@@ -46,15 +49,14 @@ class TestChartsRoute(AppTestCase):
             return client.get(f"/charts{query}")
 
     def _getData(self, dash, db, query=""):
-        """The ajax JSON data payload."""
+        """The chart card, as htmx asks for it."""
         client = dash.app.test_client()
-        sep = "&" if query else "?"
         with patch.object(dash, 'is_user_logged_in', return_value=True), \
              patch.object(dash, 'get_username_for_email', return_value='alice'), \
              patch.object(dash, 'get_user_db', return_value=db):
             with client.session_transaction() as sess:
                 sess['email'] = 'alice@example.com'
-            return client.get(f"/charts{query}{sep}ajax=true")
+            return client.get(f"/charts{query}", headers=HX_HEADERS)
 
     def test_redirects_unauthenticated_users_to_login(self):
         dash = self._makeApp()
@@ -64,9 +66,10 @@ class TestChartsRoute(AppTestCase):
         self.assertEqual(resp.status_code, 302)
         self.assertIn('/login', resp.headers['Location'])
 
-    def test_shell_renders_canvases_without_running_data_queries(self):
-        """The GET is a shell: it must render the chart scaffold but defer every
-        heavy per-range query to the ajax payload."""
+    def test_shell_renders_the_filter_card_without_running_data_queries(self):
+        """The GET is a shell: it must render the filter controls but defer
+        every heavy per-range query - and the canvases they fill - to the
+        fragment."""
         dash = self._makeApp()
         db = self._makeDb()
 
@@ -74,28 +77,30 @@ class TestChartsRoute(AppTestCase):
 
         self.assertEqual(resp.status_code, 200)
         self.assertIn(b"Charts", resp.data)
-        self.assertIn(b"timeSeriesChart", resp.data)
-        self.assertIn(b"heatmapChart", resp.data)
-        self.assertIn(b"artistTrendChart", resp.data)
+        self.assertIn(b'id="chartsCard"', resp.data)
+        self.assertNotIn(b"timeSeriesChart", resp.data)
         db.getListeningTimeSeries.assert_not_called()
         db.getArtistTrend.assert_not_called()
         db.getHourOfDayHeatmap.assert_not_called()
 
-    def test_ajax_payload_is_json_and_runs_the_data_queries(self):
+    def test_the_fragment_runs_the_data_queries_and_carries_every_series(self):
         dash = self._makeApp()
         db = self._makeDb()
 
         resp = self._getData(dash, db)
 
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.mimetype, "application/json")
+        self.assertEqual(resp.mimetype, "text/html")
         db.getListeningTimeSeries.assert_called_once()
         db.getHourOfDayHeatmap.assert_called_once()
         db.getArtistTrend.assert_called_once()
-        payload = resp.get_json()
+        payload = chartData(resp)
         for key in ("timeSeries", "heatmap", "artistTrend", "explicitRatio",
-                    "decadeDistribution", "completionStats", "intervalLabel"):
+                    "decadeDistribution", "completionStats"):
             self.assertIn(key, payload)
+        #< the interval label is markup now, not a payload key for the client
+        #  to write into a <span>
+        self.assertIn(b"Listening Time", resp.data)
 
     def test_default_time_window_setting_is_used_when_no_interval_given(self):
         """Charts must honor the user's saved default_dashboard_window
@@ -130,7 +135,7 @@ class TestChartsRoute(AppTestCase):
         resp = self._getData(dash, db)
 
         self.assertEqual(resp.status_code, 200)
-        payload = resp.get_json()
+        payload = chartData(resp)
         self.assertEqual([pair[0] for pair in payload["decadeDistribution"]],
                          ["1990s", "2000s", "2010s"])
         _, kwargs = db.getListeningTimeSeries.call_args
@@ -156,7 +161,7 @@ class TestChartsRoute(AppTestCase):
         self.assertEqual(kwargs["groupBy"], "month")
         _, trendKwargs = db.getArtistTrend.call_args
         self.assertEqual(trendKwargs["groupBy"], "month")
-        self.assertEqual(data.get_json()["groupBy"], "month")
+        self.assertEqual(chartData(data)["groupBy"], "month")
 
         shell = self._get(dash, db, query="?groupBy=month")
         self.assertIn(b'<option value="month" selected>Month</option>', shell.data)
@@ -167,7 +172,7 @@ class TestChartsRoute(AppTestCase):
 
         resp = self._getData(dash, db)
 
-        first = resp.get_json()["timeSeries"][0]
+        first = chartData(resp)["timeSeries"][0]
         self.assertEqual(first["rangeStart"], "2026-07-01")
         self.assertEqual(first["rangeEnd"], "2026-07-01")
 
@@ -184,10 +189,11 @@ class TestChartsRoute(AppTestCase):
 
         resp = self._getData(dash, db, query="?interval=day")
 
-        payload = resp.get_json()
+        payload = chartData(resp)
         self.assertNotIn("rangeStart", payload["timeSeries"][0])
         self.assertIsNone(payload["artistTrend"])
-        self.assertIsNotNone(payload["lastDayDate"])
+        #< the date the heading names, rendered rather than shipped as a key
+        self.assertIn(b"Listening Time", resp.data)
 
     def test_artist_trend_series_id_is_embedded_for_click_through(self):
         dash = self._makeApp()
@@ -199,7 +205,7 @@ class TestChartsRoute(AppTestCase):
 
         resp = self._getData(dash, db)
 
-        self.assertEqual(resp.get_json()["artistTrend"]["series"][0]["id"], "artist-123")
+        self.assertEqual(chartData(resp)["artistTrend"]["series"][0]["id"], "artist-123")
 
     def test_invalid_groupby_falls_back_to_day(self):
         dash = self._makeApp()
@@ -230,7 +236,7 @@ class TestChartsRoute(AppTestCase):
         _, kwargs = db.getListeningTimeSeries.call_args
         self.assertIsNotNone(kwargs["startDate"])
 
-    def test_time_series_data_is_embedded_in_ajax_payload(self):
+    def test_time_series_data_is_embedded_in_the_fragment(self):
         dash = self._makeApp()
         db = self._makeDb()
 

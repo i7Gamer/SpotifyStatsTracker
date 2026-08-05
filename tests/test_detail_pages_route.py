@@ -10,8 +10,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 # it only exercises the routes with a per-test mock db (via get_user_db).
 from app import SpotifyDashboardApp
 from _app_factory import AppTestCase
-from _detail_client import DetailPageClientMixin
-from routes.charts import DETAIL_BODY_AJAX
+from _detail_client import (DetailPageClientMixin, HX_BODY_HEADERS, HX_LIST_HEADERS,
+                            HX_MORE_HEADERS)
 import routes.charts as chartsRoutes
 import app as appmod
 
@@ -38,10 +38,10 @@ def _heroCard(body):
 
 
 class _DetailRouteTestBase(DetailPageClientMixin, AppTestCase):
-    """`self._getPath(...)` is the shell GET plus its deferred ?ajax=page body,
-    which is what a browser ends up showing - see _detail_client.py. Tests
-    about the split itself live in TestDetailPageDeferredBody below and drive
-    the two requests through `_getRaw` instead."""
+    """`self._getPath(...)` is the shell GET plus the deferred body htmx swaps
+    into it, which is what a browser ends up showing - see _detail_client.py.
+    Tests about the split itself live in TestDetailPageDeferredBody below and
+    drive the two requests through `_getRaw` instead."""
 
     def _assertNoNavItemActive(self, body):
         """Detail subpages aren't the Top Songs/Artists/Albums list pages
@@ -671,9 +671,9 @@ class TestSongDetailRoute(_DetailRouteTestBase):
         self.assertIn("Date ↓".encode(), resp.data)
         self.assertIn(b"sort=oldest", resp.data)   #< the toggle links to the flipped order
 
-    def test_ajax_list_returns_results_html_and_skips_chart_work(self):
-        """The sort toggle / pagination links re-fetch just the play log via
-        ?ajax=list (static/js/detail-history.js) - chart and heatmap work
+    def test_the_play_log_swap_returns_the_fragment_and_skips_chart_work(self):
+        """The sort toggle / pagination links re-swap just the play log (an
+        HX-Request targeting #detailHistoryResults) - chart and heatmap work
         must be skipped."""
         dash = self._makeApp()
         db = MagicMock()
@@ -682,12 +682,11 @@ class TestSongDetailRoute(_DetailRouteTestBase):
         db.getEntriesFromNew.return_value = [self._playEntry()]
 
         with patch.object(dash, "_embedSongsTextElements", side_effect=lambda songs: songs):
-            resp = self._getPath(dash, db, "/song/t1?ajax=list")
+            resp = self._getRaw(dash, db, "/song/t1", headers=HX_LIST_HEADERS)
 
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.mimetype, "application/json")
-        resultsHtml = resp.get_json().get("resultsHtml", "")
-        self.assertIn("20 Jul 2026", resultsHtml)
+        self.assertEqual(resp.mimetype, "text/html")
+        self.assertIn("20 Jul 2026", resp.get_data(as_text=True))
         db.getHourOfDayHeatmap.assert_not_called()
 
     def test_song_detail_skips_toggle_passed_to_db(self):
@@ -704,7 +703,11 @@ class TestSongDetailRoute(_DetailRouteTestBase):
 
         self.assertEqual(db.getEntriesFromNew.call_args.kwargs.get("includeSkips"), False)
 
-    def test_song_detail_ajax_list_has_more_and_next_offset(self):
+    def test_song_detail_play_log_offers_the_next_batch(self):
+        """hasMore/nextOffset/nextBatchSize used to travel beside resultsHtml in
+        the JSON envelope for the client to act on. They are now spent in the
+        template: the "Show more" control's own URL carries the next offset, and
+        its label carries the batch size."""
         dash = self._makeApp()
         db = MagicMock()
         db.getSong.return_value = self._song()
@@ -712,13 +715,13 @@ class TestSongDetailRoute(_DetailRouteTestBase):
         db.getEntriesFromNew.return_value = [self._playEntry() for _ in range(50)]
 
         with patch.object(dash, "_embedSongsTextElements", side_effect=lambda songs: songs):
-            resp = self._getPath(dash, db, "/song/t1?ajax=list&offset=0")
+            body = self._getRaw(dash, db, "/song/t1?offset=0",
+                                headers=HX_LIST_HEADERS).get_data(as_text=True)
 
-        payload = resp.get_json()
-        self.assertTrue(payload.get("hasMore"))
-        self.assertEqual(payload.get("nextOffset"), 50)
-        self.assertEqual(payload.get("nextBatchSize"), 50)
-        self.assertIn("20 Jul 2026", payload.get("resultsHtml", ""))
+        self.assertIn('id="timelineActions"', body)
+        self.assertIn("offset=50", body)
+        self.assertIn("Show More Plays (50)", body)
+        self.assertIn("20 Jul 2026", body)
         db.getListeningTimeSeries.assert_not_called()
         db.getHourOfDayHeatmap.assert_not_called()
 
@@ -735,7 +738,7 @@ class TestSongDetailRoute(_DetailRouteTestBase):
         db.getEntriesFromNew.return_value = []
 
         with patch.object(dash, "_embedSongsTextElements", side_effect=lambda songs: songs):
-            self._getPath(dash, db, "/song/t1?ajax=list&limit=500000")
+            self._getRaw(dash, db, "/song/t1?limit=500000", headers=HX_LIST_HEADERS)
 
         requestedLimit = db.getEntriesFromNew.call_args.kwargs["count"]
         self.assertEqual(requestedLimit, appmod.PAGE_SIZE * chartsRoutes.MAX_DETAIL_HISTORY_PAGES)
@@ -751,7 +754,7 @@ class TestSongDetailRoute(_DetailRouteTestBase):
         allowed = appmod.PAGE_SIZE * 2
 
         with patch.object(dash, "_embedSongsTextElements", side_effect=lambda songs: songs):
-            self._getPath(dash, db, f"/song/t1?ajax=list&limit={allowed}")
+            self._getRaw(dash, db, f"/song/t1?limit={allowed}", headers=HX_LIST_HEADERS)
 
         self.assertEqual(db.getEntriesFromNew.call_args.kwargs["count"], allowed)
 
@@ -763,14 +766,28 @@ class TestSongDetailRoute(_DetailRouteTestBase):
         db.getEntriesFromNew.return_value = [self._playEntry() for _ in range(50)]
 
         with patch.object(dash, "_embedSongsTextElements", side_effect=lambda songs: songs):
-            resp = self._getPath(dash, db, "/song/t1?ajax=list&offset=0")
+            body = self._getRaw(dash, db, "/song/t1?offset=0",
+                                headers=HX_LIST_HEADERS).get_data(as_text=True)
 
-        payload = resp.get_json()
-        self.assertTrue(payload.get("hasMore"))
-        self.assertEqual(payload.get("nextOffset"), 50)
-        self.assertEqual(payload.get("nextBatchSize"), 12)
-        self.assertEqual(payload.get("remainingCount"), 12)
-        self.assertIn("Show More Plays (12)", payload.get("resultsHtml", ""))
+        self.assertIn("offset=50", body)
+        self.assertIn("Show More Plays (12)", body)
+
+    def test_a_show_more_batch_is_rows_and_the_next_control_only(self):
+        """It replaces the control at the end of the timeline, so the rows land
+        where the append used to put them and the log's header stays put."""
+        dash = self._makeApp()
+        db = MagicMock()
+        db.getSong.return_value = self._song()
+        db.getEntriesCount.return_value = 120
+        db.getEntriesFromNew.return_value = [self._playEntry() for _ in range(50)]
+
+        with patch.object(dash, "_embedSongsTextElements", side_effect=lambda songs: songs):
+            body = self._getRaw(dash, db, "/song/t1?offset=50",
+                                headers=HX_MORE_HEADERS).get_data(as_text=True)
+
+        self.assertIn("20 Jul 2026", body)
+        self.assertIn("offset=100", body)     #< the batch after this one
+        self.assertNotIn("Play Timeline", body)
 
 
 
@@ -1081,7 +1098,7 @@ class TestArtistDetailRoute(_DetailRouteTestBase):
         db.getEntriesFromNew.assert_not_called()
         self.assertIn("Date ↑".encode(), resp.data)
 
-    def test_ajax_list_skips_heavy_work(self):
+    def test_the_play_log_swap_skips_heavy_work(self):
         dash = self._makeApp()
         db = self._makeHistoryDb()
         db.getEntriesCount.return_value = 1
@@ -1090,11 +1107,11 @@ class TestArtistDetailRoute(_DetailRouteTestBase):
 
         with patch.object(dash, "_embedSongsTextElements", side_effect=lambda songs: songs), \
              patch.object(dash, "_attachGenres", side_effect=lambda db_, tracks, kind: tracks):
-            resp = self._getPath(dash, db, "/artist/a1?ajax=list")
+            resp = self._getRaw(dash, db, "/artist/a1", headers=HX_LIST_HEADERS)
 
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.mimetype, "application/json")
-        resultsHtml = resp.get_json().get("resultsHtml", "")
+        self.assertEqual(resp.mimetype, "text/html")
+        resultsHtml = resp.get_data(as_text=True)
         self.assertIn("History with Artist A", resultsHtml)
         self.assertIn("History Song", resultsHtml)
         self.assertIn("Played at 20 Jul 2026, 15:30", resultsHtml)
@@ -1374,7 +1391,7 @@ class TestAlbumDetailRoute(_DetailRouteTestBase):
         db.getEntriesFromNew.assert_not_called()
         self.assertIn("Date ↑".encode(), resp.data)
 
-    def test_ajax_list_skips_heavy_work(self):
+    def test_the_play_log_swap_skips_heavy_work(self):
         dash = self._makeApp()
         db = self._makeHistoryDb()
         db.getEntriesCount.return_value = 1
@@ -1383,11 +1400,11 @@ class TestAlbumDetailRoute(_DetailRouteTestBase):
 
         with patch.object(dash, "_embedSongsTextElements", side_effect=lambda songs: songs), \
              patch.object(dash, "_attachGenres", side_effect=lambda db_, tracks, kind: tracks):
-            resp = self._getPath(dash, db, "/album/alb1?ajax=list")
+            resp = self._getRaw(dash, db, "/album/alb1", headers=HX_LIST_HEADERS)
 
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.mimetype, "application/json")
-        resultsHtml = resp.get_json().get("resultsHtml", "")
+        self.assertEqual(resp.mimetype, "text/html")
+        resultsHtml = resp.get_data(as_text=True)
         self.assertIn("History with Album One", resultsHtml)
         self.assertIn("History Song", resultsHtml)
         db.getSongsStats.assert_not_called()
@@ -1397,10 +1414,13 @@ class TestAlbumDetailRoute(_DetailRouteTestBase):
 
 class TestDetailPageDeferredBody(_DetailRouteTestBase):
     """The two-phase split itself: the plain GET is a shell and everything
-    below the toolbar comes from ?ajax=page (see DETAIL_BODY_AJAX in
-    routes/charts.py and static/js/detail-page.js). These drive the two
-    requests through _getRaw rather than the composing _getPath the markup
-    tests use."""
+    below the toolbar arrives in a second request htmx makes on first paint
+    (see DETAIL_BODY_TARGET in routes/charts.py and static/js/detail-page.js).
+    These drive the two requests through _getRaw rather than the composing
+    _getPath the markup tests use.
+
+    The transport is pinned in tests/test_detail_htmx.py; what is asserted here
+    is which QUERIES land on which side of the split."""
 
     #< every query the split moved off the first paint, per page
     DEFERRED_LOOKUPS = {
@@ -1466,19 +1486,20 @@ class TestDetailPageDeferredBody(_DetailRouteTestBase):
                     getattr(db, name).assert_not_called()
 
     def test_the_body_opens_with_the_hero_as_detailBodys_own_child(self):
-        """The hero .track-list is the payload's first element, so once
-        detail-page.js swaps the body in it is a DIRECT child of #detailBody -
-        which is what the spacing rule keyed on in TestDetailHeroSpacingCss
-        below matches. Nesting it any deeper drops the gap between the hero
-        card and whatever follows it."""
+        """The hero .track-list is the fragment's first element, so once htmx
+        swaps the body in it is a DIRECT child of #detailBody - which is what
+        the spacing rule keyed on in TestDetailHeroSpacingCss below matches.
+        Nesting it any deeper drops the gap between the hero card and whatever
+        follows it."""
         for path in self.DEFERRED_LOOKUPS:
             with self.subTest(path=path):
                 dash = self._makeApp()
 
-                payload = self._getRaw(dash, self._db(), f"{path}?ajax={DETAIL_BODY_AJAX}").get_json()
+                body = self._getRaw(dash, self._db(), path,
+                                    headers=HX_BODY_HEADERS).get_data(as_text=True)
 
-                self.assertTrue(payload["bodyHtml"].strip().startswith(
-                    '<section id="track-list" class="track-list">'), payload["bodyHtml"][:120])
+                self.assertTrue(body.strip().startswith(
+                    '<section id="track-list" class="track-list">'), body[:120])
 
     def test_the_shell_disables_the_bucket_select_until_the_body_lands(self):
         """Its ?ajax=true refetch targets a chart that isn't on the page yet,
@@ -1490,29 +1511,31 @@ class TestDetailPageDeferredBody(_DetailRouteTestBase):
         selectTag = body[body.index('<select id="groupBy"'):]
         self.assertIn("disabled", selectTag[:selectTag.index(">")])
 
-    def test_the_deferred_payload_carries_the_body_and_the_chart_data(self):
+    def test_the_deferred_body_carries_the_markup_and_the_chart_data(self):
         for path, key in (("/song/t1", "Song One"), ("/artist/a1", "Songs by Artist A"),
                           ("/album/alb1", "Top Songs on Album One")):
             with self.subTest(path=path):
                 dash = self._makeApp()
 
-                resp = self._getRaw(dash, self._db(), f"{path}?ajax=page")
+                resp = self._getRaw(dash, self._db(), path, headers=HX_BODY_HEADERS)
 
-                self.assertEqual(resp.mimetype, "application/json")
-                payload = resp.get_json()
-                self.assertIn("track-card", payload["bodyHtml"])
-                self.assertIn(key, payload["bodyHtml"])
-                self.assertIn("timeSeries", payload)
+                self.assertEqual(resp.mimetype, "text/html")
+                body = resp.get_data(as_text=True)
+                self.assertIn("track-card", body)
+                self.assertIn(key, body)
+                self.assertIn("timeSeries", body)   #< the data island, see _detail_chart_data.html
 
-    def test_only_the_song_payload_carries_a_heatmap(self):
+    def test_only_the_song_body_carries_a_heatmap(self):
         """Its "When You Listen" canvas is the only one on the three pages."""
         dash = self._makeApp()
 
-        songPayload = self._getRaw(dash, self._db(), "/song/t1?ajax=page").get_json()
-        artistPayload = self._getRaw(dash, self._db(), "/artist/a1?ajax=page").get_json()
+        songBody = self._getRaw(dash, self._db(), "/song/t1",
+                                headers=HX_BODY_HEADERS).get_data(as_text=True)
+        artistBody = self._getRaw(dash, self._db(), "/artist/a1",
+                                  headers=HX_BODY_HEADERS).get_data(as_text=True)
 
-        self.assertIn("heatmap", songPayload)
-        self.assertNotIn("heatmap", artistPayload)
+        self.assertIn("heatmap", songBody)
+        self.assertNotIn("heatmap", artistBody)
 
     def test_the_deferred_body_brings_the_play_log_with_it(self):
         dash = self._makeApp()
@@ -1523,29 +1546,32 @@ class TestDetailPageDeferredBody(_DetailRouteTestBase):
              "timePlayedText": "3m 20s", "contextName": None, "artists": []}]
 
         with patch.object(dash, "_embedSongsTextElements", side_effect=lambda songs: songs):
-            payload = self._getRaw(dash, db, "/song/t1?ajax=page").get_json()
+            body = self._getRaw(dash, db, "/song/t1",
+                                headers=HX_BODY_HEADERS).get_data(as_text=True)
 
-        self.assertIn("Play Timeline", payload["bodyHtml"])
-        self.assertIn("20 Jul 2026, 15:30", payload["bodyHtml"])
+        self.assertIn("Play Timeline", body)
+        self.assertIn("20 Jul 2026, 15:30", body)
 
     def test_the_narrower_modes_keep_their_own_branches(self):
-        """?ajax=true and ?ajax=list are partial refetches OF the body this
-        adds, so both must still answer with their own payload rather than
+        """The bucket series and the play log are partial refetches OF the body
+        this adds, so both must still answer with their own response rather than
         falling through to the shell or to the whole body."""
         for path in ("/song/t1", "/artist/a1", "/album/alb1"):
             with self.subTest(path=path):
                 dash = self._makeApp()
 
                 seriesPayload = self._getRaw(dash, self._db(), f"{path}?ajax=true").get_json()
-                listPayload = self._getRaw(dash, self._db(), f"{path}?ajax=list").get_json()
+                log = self._getRaw(dash, self._db(), path,
+                                   headers=HX_LIST_HEADERS).get_data(as_text=True)
 
                 self.assertEqual(sorted(seriesPayload.keys()), ["groupBy", "timeSeries"])
-                self.assertIn("resultsHtml", listPayload)
-                self.assertNotIn("bodyHtml", listPayload)
+                self.assertIn("sort-toggle", log)
+                self.assertNotIn("detailChartData", log)   #< the whole body's island
 
     def test_an_unrecognised_ajax_value_falls_back_to_the_shell(self):
-        """Only the three known markers branch; anything else is a page load,
-        so a stale or hand-edited value can't serve a JSON fragment as a page."""
+        """?ajax= now marks exactly one mode, the JSON chart series. Anything
+        else is a page load, so a stale or hand-edited value can't serve a
+        fragment as a page."""
         dash = self._makeApp()
         db = self._db()
 
@@ -1577,8 +1603,8 @@ class TestDetailPageDeferredBody(_DetailRouteTestBase):
                 self.assertEqual(resp.status_code, 302)
                 self.assertIn(endpoint, resp.headers["Location"])
 
-    def test_an_unknown_entity_tells_an_ajax_caller_where_to_go(self):
-        """An AJAX request must NOT get the 302: fetch follows it transparently
+    def test_an_unknown_entity_tells_the_fetch_based_mode_where_to_go(self):
+        """A second request must NOT get the 302: fetch follows it transparently
         to the top-list page's 200 HTML, which passes resp.ok and then throws in
         resp.json() - so the visitor saw "couldn't load" and a Retry that behaved
         identically, rather than arriving at the list.
@@ -1586,17 +1612,17 @@ class TestDetailPageDeferredBody(_DetailRouteTestBase):
         Reachable from a shared or bookmarked URL for an entity an overwrite
         import removed between the shell request and the body request. Shaped
         like unauthenticatedResponse's loginUrl, so the client has one convention
-        for "go here instead"."""
+        for "go here instead". The htmx modes get HX-Redirect instead - see
+        tests/test_detail_htmx.py's TestMissingEntitySwap."""
         for path, endpoint in self.MISSING_PATHS:
-            for suffix in ("?ajax=page", "?ajax=true", "?ajax=list"):
-                with self.subTest(path=path, suffix=suffix):
-                    dash, db = self._missingEntityApp()
+            with self.subTest(path=path):
+                dash, db = self._missingEntityApp()
 
-                    resp = self._getRaw(dash, db, path + suffix)
+                resp = self._getRaw(dash, db, path + "?ajax=true")
 
-                    self.assertEqual(resp.status_code, 404)
-                    self.assertEqual(resp.mimetype, "application/json")
-                    self.assertIn(endpoint, resp.get_json()["redirectUrl"])
+                self.assertEqual(resp.status_code, 404)
+                self.assertEqual(resp.mimetype, "application/json")
+                self.assertIn(endpoint, resp.get_json()["redirectUrl"])
 
 
 class TestDetailHeroSpacingCss(unittest.TestCase):
@@ -1713,9 +1739,14 @@ class TestPlayHistoryChartLegend(_DetailRouteTestBase):
     def test_the_aggregate_pages_have_no_legend_slot(self):
         """/charts and /wrapped leave the skips series off, so their chart is
         one series against one axis - a key there would be noise. charts.js
-        no-ops without the element, which is what keeps them unchanged."""
+        no-ops without the element, which is what keeps them unchanged.
+
+        Named by the partial rather than the page: both moved their chart into
+        the fragment htmx swaps, so the page template no longer holds a canvas
+        at all - and asserting on a file that cannot contain the canvas would
+        pass for the wrong reason forever."""
         import os
-        for name in ("charts.html", "wrapped.html"):
+        for name in ("_charts_results.html", "_wrapped_results.html"):
             path = os.path.join(os.path.dirname(__file__), "..", "templates", name)
             with open(path, encoding="utf-8") as handle:
                 markup = handle.read()

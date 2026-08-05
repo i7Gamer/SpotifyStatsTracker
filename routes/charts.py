@@ -11,7 +11,7 @@ helper is reached through the dashboard instance.
 """
 import logging
 
-from flask import render_template, redirect, request, url_for, session, jsonify
+from flask import render_template, redirect, request, url_for, session, jsonify, Response
 
 from config import (
     PAGE_SIZE, CHART_ARTIST_TREND_TOP_N, CHART_TOP_GENRES_LIMIT,
@@ -30,11 +30,21 @@ from services.milestones import buildNextMilestones, formatMilestone, MS_PER_HOU
 
 logger = logging.getLogger(__name__)
 
-#< The detail pages' third AJAX mode. ?ajax=true (re-fetch the time series for
-#  a new Trend bucket) and ?ajax=list (re-fetch the play log) are partial
-#  refetches OF the body this one delivers, so the routes test them first and
-#  this value is deliberately neither of theirs. See static/js/detail-page.js.
-DETAIL_BODY_AJAX = "page"
+# The detail pages' htmx swap targets: the id of the element the second (third,
+# fourth) request is filling, which is what htmx puts in its HX-Target header.
+#
+# These routes are the only ones in the app with MORE THAN ONE htmx mode, so the
+# HX-Request header alone cannot say which fragment is wanted. HX-Target can, and
+# it costs nothing extra: htmx already sends it, and unlike the ?ajax= marker it
+# replaces, it never becomes part of the URL. That matters here because the play
+# log's swaps carry hx-replace-url, which writes the requested URL back to the
+# address bar - a marker in the query string would end up in every link a visitor
+# copies. The one mode that is NOT htmx keeps ?ajax=true: it answers the
+# Trend-buckets select with chart DATA for a canvas (see detail-chart.js), and
+# htmx swaps markup, not data.
+DETAIL_BODY_TARGET = "detailBody"            #< the whole deferred body
+DETAIL_HISTORY_TARGET = "detailHistoryResults"   #< the play log, re-sorted/paged
+DETAIL_MORE_TARGET = "timelineActions"       #< "Show more": one appended batch
 
 #< How many pages' worth of rows one ?limit= may ask for. The detail history's
 #  "Show more" grows its batch, so limit legitimately exceeds PAGE_SIZE - but it
@@ -42,6 +52,19 @@ DETAIL_BODY_AJAX = "page"
 #  ?limit=500000 fetched and rendered half a million rows. Own data only, so this
 #  is a footgun rather than a hole, and every other pager is already clamped.
 MAX_DETAIL_HISTORY_PAGES = 10
+
+
+def _detailSwapTarget():
+    """Which region of a detail page an htmx request is asking to fill, or ""
+    for a plain page load.
+
+    Falls back to the whole body when htmx sends no HX-Target (it only omits the
+    header for a target with no id, which none of ours is): answering an
+    HX-Request with the SHELL would swap a whole document into a region, which
+    is the one outcome worth ruling out by construction."""
+    if not request.headers.get("HX-Request"):
+        return ""
+    return request.headers.get("HX-Target") or DETAIL_BODY_TARGET
 
 
 def _positivePageArg():
@@ -86,7 +109,14 @@ def register(app, dashboard):
         return {
             "searchQuery": request.args.get("q", ""),
             "sortBy": dashboard._getSortByParam(allowed=TOP_LIST_SORT_BY),
-            "interval": request.args.get("interval", ""),
+            # Validated, like sortBy beside it. The DATA was always safe
+            # (_getDateRange coerces junk to the default), but the raw value
+            # reached _buildPaginationContext, so a stale or truncated URL put
+            # ?interval=bogus into every page link - and now also into the URL
+            # the shell loads its list from. "" is itself a valid interval here
+            # (All Time), which is why it is both the input default and the
+            # fallback. Same fix historyPage already carries.
+            "interval": dashboard._getValidInterval(request.args.get("interval", ""), default=""),
             "customStart": request.args.get("startDate", ""),
             "customEnd": request.args.get("endDate", ""),
             "tag": request.args.get("tag", "") if tagsOn else "",
@@ -97,17 +127,45 @@ def register(app, dashboard):
             "userTags": db.repo.getUserTags(username) if tagsOn else [],
         }
 
-    def _topListShell(section, template, username, filters):
+    def _topListShell(section, template, endpoint, username, filters):
         """The plain GET half of the two-phase load: the filter card plus an
-        empty #topListResults placeholder. top-list.js then fetches the stat
-        header + list + pagination via ?ajax=true on first paint and on every
-        filter/sort/tag/page change."""
+        empty #topListResults placeholder. htmx then fetches the stat header +
+        list + pagination on first paint and on every filter/sort/tag/page
+        change - see templates/_page_card.html."""
+        # The URL the placeholder loads from, built from the VALIDATED filter
+        # values rather than echoed from request.full_path - same rule the
+        # pagination links below follow, and the same one historyPage carries.
+        # Reflecting the raw query string would assert a junk ?interval= in the
+        # one place a reader would trust and disagree with every link beside it.
+        #
+        # fullOnly rides along unconditionally because it is a real tri-state to
+        # the route ("1" default / "0" opt-out) that the filter card always
+        # submits, so leaving it out here would make the first load and every
+        # subsequent one disagree about a filter the user can see is on.
+        # startDate/endDate ride along whenever they are set, rather than only
+        # for interval == "custom" - deliberately matching what
+        # _buildPaginationContext already puts in every page link, so the first
+        # load and the links below it agree. (These pages treat "both dates
+        # present" as the custom range being active; see _page_card.html's
+        # option, which has always selected Custom on that condition rather
+        # than on the interval value.)
+        listArgs = {
+            "q": filters["searchQuery"],
+            "sortBy": filters["sortBy"],
+            "interval": filters["interval"],
+            "startDate": filters["customStart"],
+            "endDate": filters["customEnd"],
+            "tag": filters["tag"],
+            "fullOnly": filters["fullOnly"],
+            "page": _positivePageArg(),
+        }
         return render_template(
             template, section=section, username=username,
             sortBy=filters["sortBy"], interval=filters["interval"],
             customStart=filters["customStart"], customEnd=filters["customEnd"],
             tag=filters["tag"], user_tags=filters["userTags"],
-            fullPlaysOnly=filters["fullPlaysOnly"])
+            fullPlaysOnly=filters["fullPlaysOnly"],
+            listUrl=url_for(endpoint, **{k: v for k, v in listArgs.items() if v}))
 
     def _topListTotal(filters, countFn, uniqueCount, **idKwarg):
         """How many rows the pager is sizing itself for.
@@ -128,9 +186,12 @@ def register(app, dashboard):
             q=filters["searchQuery"], tag=filters["tag"], sortBy=filters["sortBy"],
             interval=filters["interval"], startDate=filters["customStart"],
             endDate=filters["customEnd"], fullOnly=filters["fullOnly"])
-        return jsonify(resultsHtml=render_template(
+        # The fragment itself, not a JSON envelope around it: htmx swaps the
+        # response body straight into #topListResults, so a {"resultsHtml": ...}
+        # wrapper would land in the page as literal JSON text.
+        return render_template(
             "_top_list_results.html", tracks=items, statCards=statCards, startIndex=startIndex,
-            section=section, username=username, emptyMessage=emptyMessage, **pagination))
+            section=section, username=username, emptyMessage=emptyMessage, **pagination)
 
     def overviewPage():
         # Intentionally unauthenticated: aggregate counts/DB size carry no
@@ -315,11 +376,22 @@ def register(app, dashboard):
 
         # The Time Period filter only rescopes these four cards - the live
         # cards below (streak, on this day, discover, calendar) and next-
-        # milestones are unfiltered, so a filter change's ajax fetch re-renders
-        # just this one partial and skips every query below entirely (same
-        # fade-and-swap pattern as compare.html/genres.html).
-        if request.args.get("ajax") == "true":
-            return jsonify({"summaryHtml": render_template("_dashboard_summary.html", **summaryArgs)})
+        # milestones are unfiltered, so a filter change re-renders just this one
+        # partial and skips every query below entirely.
+        #
+        # htmx drives that swap, so the marker is its HX-Request header rather
+        # than the ?ajax=true this page used to send - which also keeps the
+        # marker out of the URL bar, since hx-replace-url writes the requested
+        # URL back to the address bar. The fragment itself, not a JSON envelope
+        # around it: htmx swaps the response body straight into
+        # #dashboardSummary, so a {"summaryHtml": ...} wrapper would land in the
+        # page as literal JSON text. See tests/test_dashboard_htmx.py.
+        #
+        # Unlike /history and the Top pages this is NOT a two-phase shell - the
+        # same partial is rendered inline below, so there is no first load to
+        # defer and no placeholder to trigger one from.
+        if request.headers.get("HX-Request"):
+            return render_template("_dashboard_summary.html", **summaryArgs)
 
         # Unfiltered dashboard cards (independent of the interval/date-range
         # filter above): live streak and "on this day" resurfacing are cheap
@@ -385,9 +457,9 @@ def register(app, dashboard):
             interval=interval,
             customStart=customStart,
             customEnd=customEnd,
-            #< the popstate fallback when a Back navigation lands on a bare
-            #  URL with no explicit ?interval= (see loadDashboardSummary)
-            defaultWindow=default_window,
+            #< no defaultWindow: it existed only as the popstate handler's
+            #  fallback for a Back navigation onto a bare URL, and nothing here
+            #  pushes a history entry any more - every URL update replaces
             **summaryArgs,
         )
     app.add_url_rule("/", "dashboard", dashboardIndex, methods=["GET"])
@@ -543,13 +615,23 @@ def register(app, dashboard):
 
     @requiresUser(api=True)
     def dashboardDiscover(username, db):
-        """JSON for the dashboard's Discover card, fetched by tracks.html's own
-        JS after first paint (see dashboardIndex) rather than computed inline -
-        the genre-coverage gate check and recommendation query are full-history
-        scans that noticeably slowed the dashboard once added."""
+        """The dashboard's Discover card, loaded by htmx after first paint (see
+        tracks.html) rather than computed inline - the genre-coverage gate check
+        and recommendation query are full-history scans that noticeably slowed
+        the dashboard once added.
+
+        Markup, not JSON: `unlocked` was a flag the client turned into one of
+        three pre-rendered-and-hidden paragraphs, and the recommendations were
+        rows it built element by element. Both are Jinja's job.
+
+        Still api=True, so an expired session gets a plain 401 rather than
+        unauthenticatedResponse's HX-Redirect: htmx reports the error and swaps
+        nothing, which leaves this ONE card showing its placeholder. The
+        alternative navigates the whole dashboard away because a background card
+        load failed."""
 
         if not dashboard.repo.isLastfmGenreBackfillEnabled():
-            return jsonify({"unlocked": False, "recommendations": []})
+            return render_template("_dashboard_discover.html", unlocked=False, recommendations=[])
 
         unlocked = genreGatePasses(resolveGenreCoverage(db, None, None))
         recommendations = []
@@ -560,23 +642,29 @@ def register(app, dashboard):
                 genrePool=RECOMMENDATION_GENRE_POOL,
                 excludeTopN=RECOMMENDATION_EXCLUDE_TOP_N,
             )
-        return jsonify({"unlocked": unlocked, "recommendations": recommendations})
+        return render_template("_dashboard_discover.html", username=username,
+                               unlocked=unlocked, recommendations=recommendations)
     app.add_url_rule("/api/dashboard-discover", "dashboardDiscover", dashboardDiscover, methods=["GET"])
 
     @requiresUser(api=True)
     def dashboardTrends(username, db):
-        """JSON/HTML for the dashboard's Obsession, Rediscovery, and Forgotten Favorite trend cards."""
+        """The dashboard's Obsession, Rediscovery, and Forgotten Favorite trend
+        cards, loaded by htmx after first paint.
 
-        trends = db.getDashboardTrends()
-        html = render_template("_dashboard_trends.html", username=username, trends=trends)
-        return jsonify({"trendsHtml": html, "trends": trends})
+        The partial was always the whole answer; it just used to travel as a
+        string inside {"trendsHtml": ..., "trends": ...}, of which the client
+        read one key and ignored the other. See dashboardDiscover for why this
+        stays api=True."""
+
+        return render_template("_dashboard_trends.html", username=username,
+                               trends=db.getDashboardTrends())
     app.add_url_rule("/api/dashboard-trends", "dashboardTrends", dashboardTrends, methods=["GET"])
 
     @requiresUser
     def topSongsPage(username, db):
         filters = _topListFilters(db, username)
-        if request.args.get("ajax") != "true":
-            return _topListShell("top_songs", "top_songs.html", username, filters)
+        if not request.headers.get("HX-Request"):
+            return _topListShell("top_songs", "top_songs.html", "topSongsPage", username, filters)
 
         tag = filters["tag"]
         trackIds = db.repo.getTaggedTrackIds(username, [tag]) if tag else None
@@ -624,8 +712,8 @@ def register(app, dashboard):
     @requiresUser
     def topAlbumsPage(username, db):
         filters = _topListFilters(db, username)
-        if request.args.get("ajax") != "true":
-            return _topListShell("top_albums", "top_albums.html", username, filters)
+        if not request.headers.get("HX-Request"):
+            return _topListShell("top_albums", "top_albums.html", "topAlbumsPage", username, filters)
 
         tag = filters["tag"]
         albumIds = db.repo.getTaggedAlbumIds(username, [tag]) if tag else None
@@ -665,8 +753,8 @@ def register(app, dashboard):
     @requiresUser
     def topArtistsPage(username, db):
         filters = _topListFilters(db, username)
-        if request.args.get("ajax") != "true":
-            return _topListShell("top_artists", "top_artists.html", username, filters)
+        if not request.headers.get("HX-Request"):
+            return _topListShell("top_artists", "top_artists.html", "topArtistsPage", username, filters)
 
         tag = filters["tag"]
         artistIds = db.repo.getTaggedArtistIds(username, [tag]) if tag else None
@@ -742,11 +830,26 @@ def register(app, dashboard):
         # both the shell and the ajax payload.
         lastfmEnabled = dashboard.repo.isLastfmGenreBackfillEnabled()
 
-        # Lightweight shell: the page's structure (filter, headings, empty
-        # canvases) renders immediately; static/js/charts-page.js then fetches
-        # the ajax payload below after first paint (and on every filter change),
-        # so none of the heavy per-range chart queries block the initial load.
-        if request.args.get("ajax") != "true":
+        # Lightweight shell: the filter card renders immediately and htmx
+        # fetches the chart card below after first paint (and on every filter
+        # change), so none of the heavy per-range queries block the initial
+        # load. Same two-phase shape /history and the Top pages use, and the
+        # same marker: htmx's own HX-Request header rather than ?ajax=true,
+        # which kept the marker out of the URL bar (hx-replace-url writes the
+        # requested URL back to the address bar). See tests/test_charts_htmx.py.
+        if not request.headers.get("HX-Request"):
+            # Built from the VALIDATED filter values rather than echoed from
+            # request.full_path - the rule every migrated shell follows: junk is
+            # coerced for the query itself, so reflecting it into the markup
+            # would assert it again in the one place a reader would trust. The
+            # custom dates ride along only when the range is actually in effect,
+            # matching the disabled date inputs in the shell.
+            resultsArgs = {
+                "interval": interval,
+                "groupBy": dashboard._getValidGroupBy(groupByParam, default=""),
+                "startDate": customStart if interval == "custom" else "",
+                "endDate": customEnd if interval == "custom" else "",
+            }
             return render_template(
                 "charts.html",
                 username=username,
@@ -755,11 +858,10 @@ def register(app, dashboard):
                 customStart=customStart,
                 customEnd=customEnd,
                 groupBy=groupByParam,
-                intervalLabel=intervalLabel,
-                lastDayDate=lastDayDate,
                 isSingleDayView=isSingleDayView,
-                defaultWindow=defaultWindow,
                 lastfmEnabled=lastfmEnabled,
+                resultsUrl=url_for("chartsPage",
+                                   **{k: v for k, v in resultsArgs.items() if v}),
             )
 
         timeSeriesGroupBy = "hour" if isSingleDayView else groupBy
@@ -808,30 +910,38 @@ def register(app, dashboard):
                 # a chart that climbs toward it.
                 genreDistribution = list(distribution.items())
 
-        # The Top Genres section's locked/unlocked structure is range-scoped
-        # (coverage over the selected window), so it's shipped as pre-rendered
-        # HTML the client swaps in - not just data - and the whole section
-        # stays hidden when the admin killed the feature.
-        genreSectionHtml = render_template(
-            "_charts_genre_section.html", genreUnlocked=genreUnlocked, genreCoverage=genreCoverage,
-        ) if lastfmEnabled else ""
-
-        return jsonify(
-            interval=interval,
-            groupBy=groupBy,
+        # The chart card as markup, with every series riding inside it as one
+        # JSON data island (see _charts_results.html). What used to be fifteen
+        # JSON keys is now three kinds of thing, each handled where it belongs:
+        # the two headings' text and the Top Genres section's range-scoped
+        # locked/unlocked body are rendered here rather than assembled by the
+        # client; whether the artist-trend section exists at all is a {% if %}
+        # rather than a style.display the client sets afterwards; and the nine
+        # datasets - which htmx cannot swap, because they are drawn onto
+        # canvases - stay data.
+        return render_template(
+            "_charts_results.html",
             intervalLabel=intervalLabel,
             lastDayDate=lastDayDate,
-            timeSeries=timeSeries,
-            heatmap=heatmap,
             artistTrend=artistTrend,
-            explicitRatio=explicitRatio,
-            decadeDistribution=decadeDistribution,
-            completionStats=completionStats,
-            mostSkippedSongs=mostSkippedSongs,
-            mostSkippedArtists=mostSkippedArtists,
-            genreDistribution=genreDistribution,
+            lastfmEnabled=lastfmEnabled,
             genreUnlocked=genreUnlocked,
-            genreSectionHtml=genreSectionHtml,
+            genreCoverage=genreCoverage,
+            #< exactly the window.__chartData charts.js reads - the client used
+            #  to rebuild this object key by key from the envelope
+            chartData={
+                "interval": interval,
+                "groupBy": groupBy,
+                "timeSeries": timeSeries,
+                "heatmap": heatmap,
+                "artistTrend": artistTrend,
+                "explicitRatio": explicitRatio,
+                "decadeDistribution": decadeDistribution,
+                "completionStats": completionStats,
+                "mostSkippedSongs": mostSkippedSongs,
+                "mostSkippedArtists": mostSkippedArtists,
+                "genreDistribution": genreDistribution,
+            },
         )
     app.add_url_rule("/charts", "chartsPage", chartsPage, methods=["GET"])
 
@@ -886,6 +996,13 @@ def register(app, dashboard):
                               skips="false" if not showSkips else None)
             sortToggleArgs = dict(sharedArgs, sort=None if oldestFirst else "oldest", offset=0)
             skipsToggleArgs = dict(sharedArgs, skips="false" if showSkips else "true", offset=0)
+            # "Show more" asks for the batch AFTER the rows already on screen and
+            # appends it, so the URL carries an offset rather than a larger limit
+            # - a grown limit would hit the MAX_DETAIL_HISTORY_PAGES ceiling above
+            # and silently stop advancing. The batch it fetches renders this same
+            # context, so the control it brings back builds its own next URL the
+            # same way; there is no client-side offset bookkeeping left.
+            showMoreArgs = dict(sharedArgs, offset=nextOffset)
 
             return {
                 "plays": plays,
@@ -900,6 +1017,7 @@ def register(app, dashboard):
                 "isSongDetail": True,
                 "sortToggleUrl": dashboard._buildPageUrl(endpoint, 1, **sortToggleArgs),
                 "skipsToggleUrl": dashboard._buildPageUrl(endpoint, 1, **skipsToggleArgs),
+                "showMoreUrl": dashboard._buildPageUrl(endpoint, 1, **showMoreArgs),
             }
 
         totalCount = db.getEntriesCount(trackId=trackId, artistId=artistId, albumId=albumId)
@@ -921,18 +1039,58 @@ def register(app, dashboard):
     def _missingEntityResponse(endpoint):
         """The answer for a detail URL whose entity no longer resolves.
 
-        A plain GET redirects, as it always has. An AJAX request must NOT: the
-        deferred-body fetch follows a 302 transparently, lands on the top-list
-        page's 200 HTML, passes resp.ok and then throws in resp.json() - so the
-        visitor got "couldn't load" plus a Retry that behaves identically, rather
-        than being taken to the list. Reachable via a shared or bookmarked URL
-        for an entity an overwrite import removed between the two requests.
+        A plain GET redirects, as it always has. A second request must NOT, and
+        for the same reason in both flavours: the client follows a 302
+        transparently, lands on the top-list page's 200 HTML, and inlines it -
+        htmx would swap a whole page into #detailBody, and the old fetch() passed
+        resp.ok and then threw in resp.json(), so the visitor got "couldn't load"
+        plus a Retry that behaved identically instead of being taken to the list.
+        Reachable via a shared or bookmarked URL for an entity an overwrite
+        import removed between the shell request and the body request.
 
-        Shaped like unauthenticatedResponse's loginUrl so the client has one
-        convention for "go here instead"."""
+        Each client gets the escape it understands natively: HX-Redirect + 204
+        for htmx (204 rather than 404 because htmx swaps the body of any 2xx and
+        reports a 4xx as an error - No Content leaves it nothing to inject and
+        nothing to complain about), and the 404 + redirectUrl body for the one
+        mode still on fetch(). Both shaped like unauthenticatedResponse's, so
+        there is one convention for "go here instead"."""
+        target = url_for(endpoint)
+        if request.headers.get("HX-Request"):
+            return Response(status=204, headers={"HX-Redirect": target})
         if request.args.get("ajax"):
-            return jsonify(redirectUrl=url_for(endpoint)), 404
-        return redirect(url_for(endpoint))
+            return jsonify(redirectUrl=target), 404
+        return redirect(target)
+
+    def _detailBodyUrl(endpoint, urlArgs, groupByParam, songDetail):
+        """The URL the shell's placeholder loads the deferred body from.
+
+        Built from the VALIDATED page state rather than echoed back from
+        request.full_path - the same rule the pagination links follow, and the
+        one historyPage and _topListShell already carry: junk is coerced for the
+        query itself, so reflecting it into the markup would assert it again in
+        the one place a reader would trust. ?groupBy=bogus is the visible case,
+        because the Trend-buckets select printed beside this already renders as
+        Auto for it.
+
+        Only state that survives a reload rides along. offset/limit are "Show
+        more" bookkeeping the address bar has never carried, so a reload has
+        always started from the first batch and still does."""
+        args = dict(urlArgs,
+                    groupBy=dashboard._getValidGroupBy(groupByParam, default=""),
+                    #< a junk or out-of-range page is clamped on the body request
+                    #  (_calculatePagination) / turned into an offset for the song
+                    #  page; this only keeps a shared ?page=3 working
+                    page=_positivePageArg())
+        sortOrder = dashboard._getHistorySortParam()
+        if sortOrder == "oldest":
+            args["sort"] = sortOrder
+        if songDetail:
+            #< the only opt-out worth carrying: the play log shows skips by default
+            if request.args.get("skips", "").lower() == "false":
+                args["skips"] = "false"
+        elif dashboard._getDetailViewParam() == "history":
+            args["view"] = "history"
+        return url_for(endpoint, **{k: v for k, v in args.items() if v})
 
     @requiresUser
     def songDetailPage(username, db, track_id):
@@ -942,15 +1100,15 @@ def register(app, dashboard):
             return _missingEntityResponse("topSongsPage")
 
         groupByParam = request.args.get("groupBy", "")   #< raw: the select keeps showing Auto
-        # Three AJAX modes share this route. They're tested most-specific first
-        # so the precedence can't drift: the two partial refetches claim their
-        # own value, the deferred whole-body load claims DETAIL_BODY_AJAX, and
-        # anything else (no ?ajax at all) is the shell.
-        ajax = request.args.get("ajax", "")
+        # Four modes share this route, and the marker differs by kind. The one
+        # that answers with DATA rather than markup keeps its query parameter;
+        # the three htmx ones are told apart by which region they are filling
+        # (see _detailSwapTarget and the DETAIL_*_TARGET constants).
+        #
         # The bucket select re-fetches just the play-history series (see
         # static/js/detail-chart.js) - everything else on the page is
         # bucket-independent, so the full render below is skipped.
-        if ajax == "true":
+        if request.args.get("ajax") == "true":
             groupBy = dashboard._resolveGroupBy(
                 groupByParam, *dashboard._playRangeSpanDates(username, db.tz, trackId=track_id))
             timeSeries = dashboard._embedTimeSeriesTextElements(
@@ -960,12 +1118,12 @@ def register(app, dashboard):
 
         # Lightweight shell, the same two-phase load /charts, /genres, /history
         # and the three Top pages use: this GET renders the hero, the toolbar
-        # and the tag panel - all off the one getSong above - and
-        # static/js/detail-page.js fetches everything below them right after
-        # first paint. Every query past this point (the play log, the bucketed
-        # chart aggregates, the skip summary) is work the first paint no longer
-        # waits on.
-        if ajax not in ("list", DETAIL_BODY_AJAX):
+        # and the tag panel - all off the one getSong above - and htmx fetches
+        # everything below them right after first paint. Every query past this
+        # point (the play log, the bucketed chart aggregates, the skip summary)
+        # is work the first paint no longer waits on.
+        swapTarget = _detailSwapTarget()
+        if not swapTarget:
             return render_template(
                 "song_detail.html",
                 song=song,
@@ -974,21 +1132,23 @@ def register(app, dashboard):
                 entity_tags=db.repo.getTagsForEntity(username, "track", track_id),
                 success=request.args.get("success"),
                 error=request.args.get("error"),
+                bodyUrl=_detailBodyUrl("songDetailPage", {"track_id": track_id},
+                                       groupByParam, songDetail=True),
             )
 
         listCtx = _detailHistoryContext(db, "songDetailPage", {"track_id": track_id},
                                         groupByParam=groupByParam, trackId=track_id,
                                         trackDurationMs=song.get("duration"))
-        # The sort toggle / pagination links re-fetch just the play log (see
-        # static/js/detail-history.js) - chart/heatmap work is skipped.
-        if ajax == "list":
-            return jsonify(
-                resultsHtml=render_template("_play_log.html", username=username, **listCtx),
-                hasMore=listCtx.get("hasMore", False),
-                nextOffset=listCtx.get("nextOffset", 0),
-                nextBatchSize=listCtx.get("nextBatchSize", 0),
-                remainingCount=listCtx.get("remainingCount", 0),
-            )
+        # Both play-log swaps skip the chart/heatmap work above: "Show more"
+        # replaces only the control at the end of the timeline (with the next
+        # batch of rows plus the next control - see _play_log_batch.html), and
+        # the sort/skips toggles and pagination links re-render the whole log.
+        # Fragments, not a JSON envelope: htmx swaps the response body straight
+        # in, so a {"resultsHtml": ...} wrapper would land as literal JSON text.
+        if swapTarget == DETAIL_MORE_TARGET:
+            return render_template("_play_log_batch.html", username=username, **listCtx)
+        if swapTarget == DETAIL_HISTORY_TARGET:
+            return render_template("_play_log.html", username=username, **listCtx)
 
         groupBy = dashboard._resolveGroupBy(
             groupByParam, *dashboard._playRangeSpanDates(username, db.tz, trackId=track_id))
@@ -1007,16 +1167,17 @@ def register(app, dashboard):
 
         skipStats = db.getSkipStats(trackId=track_id)
 
-        return jsonify(
-            bodyHtml=render_template(
-                "_song_detail_body.html",
-                song=song,
-                username=username,
-                skipStats=skipStats,
-                **listCtx,
-            ),
-            timeSeries=timeSeries,
-            heatmap=heatmap,
+        # The body as markup, with the two chart series riding inside it as a
+        # JSON data island (see _detail_chart_data.html). They used to travel
+        # beside the HTML in one JSON envelope; htmx swaps a response body, so
+        # the HTML has to BE the response and the data has to come with it.
+        return render_template(
+            "_song_detail_body.html",
+            song=song,
+            username=username,
+            skipStats=skipStats,
+            chartData={"timeSeries": timeSeries, "heatmap": heatmap},
+            **listCtx,
         )
     app.add_url_rule("/song/<track_id>", "songDetailPage", songDetailPage, methods=["GET"])
 
@@ -1029,9 +1190,9 @@ def register(app, dashboard):
         one twin and missing the other). songDetailPage stays its own function:
         no songs list, a heatmap, the play-log template and a track duration.
 
-        The shared skeleton, in order: bucket-only AJAX refetch (?ajax=true),
-        the deferred-body shell (no ajax), list-only refetch (?ajax=list), then
-        the full deferred body. `kind` is the tag/genre entity kind ("artist"/
+        The shared skeleton, in order: bucket-only chart refetch (?ajax=true),
+        the deferred-body shell (a plain GET), the play-log-only swap, then the
+        full deferred body. `kind` is the tag/genre entity kind ("artist"/
         "album") and also names the endpoint (f"{kind}DetailPage" - the route
         registration convention below). `embedEntity`/`fetchBio` carry the two
         genuinely different steps; fetchBio(entity) returns the bio to display
@@ -1042,10 +1203,10 @@ def register(app, dashboard):
 
         spanKwargs = {idKwarg: entityId}
         groupByParam = request.args.get("groupBy", "")   #< raw: the select keeps showing Auto
-        ajax = request.args.get("ajax", "")
         # The bucket select re-fetches just the play-history series (see
         # static/js/detail-chart.js) - everything else is bucket-independent.
-        if ajax == "true":
+        # The one mode that stays JSON: it answers with chart data, not markup.
+        if request.args.get("ajax") == "true":
             groupBy = dashboard._resolveGroupBy(
                 groupByParam, *dashboard._playRangeSpanDates(username, db.tz, **spanKwargs))
             timeSeries = dashboard._embedTimeSeriesTextElements(
@@ -1057,7 +1218,8 @@ def register(app, dashboard):
         # The artist page has the most to gain: the whole songs-by-this-artist
         # aggregate and the Last.fm biography fetch below happen only after the
         # page is already on screen.
-        if ajax not in ("list", DETAIL_BODY_AJAX):
+        swapTarget = _detailSwapTarget()
+        if not swapTarget:
             return render_template(
                 shellTemplate,
                 username=username,
@@ -1065,18 +1227,21 @@ def register(app, dashboard):
                 entity_tags=db.repo.getTagsForEntity(username, kind, entityId),
                 success=request.args.get("success"),
                 error=request.args.get("error"),
+                bodyUrl=_detailBodyUrl(f"{kind}DetailPage", {urlIdKwarg: entityId},
+                                       groupByParam, songDetail=False),
                 **{kind: entity},
             )
 
         listCtx = _detailHistoryContext(db, f"{kind}DetailPage", {urlIdKwarg: entityId, "view": "history"},
                                         groupByParam=groupByParam, **spanKwargs)
         listCtx["plays"] = dashboard._attachGenres(db, listCtx["plays"], "track")
-        # The sort toggle / pagination links re-fetch just the play log (see
-        # static/js/detail-history.js).
-        if ajax == "list":
-            return jsonify(resultsHtml=render_template(
+        # The sort toggle / pagination links re-swap just the play log. These
+        # pages page their history rather than growing it, so there is no
+        # DETAIL_MORE_TARGET branch here - only songDetailPage has a "Show more".
+        if swapTarget == DETAIL_HISTORY_TARGET:
+            return render_template(
                 "_detail_history_results.html", username=username,
-                itemName=entity.get("name", ""), **listCtx))
+                itemName=entity.get("name", ""), **listCtx)
 
         groupBy = dashboard._resolveGroupBy(
             groupByParam, *dashboard._playRangeSpanDates(username, db.tz, **spanKwargs))
@@ -1100,19 +1265,20 @@ def register(app, dashboard):
 
         skipStats = db.getSkipStats(**spanKwargs)
 
-        return jsonify(
-            bodyHtml=render_template(
-                bodyTemplate,
-                songs=songs,
-                firstSongName=firstSongName,
-                username=username,
-                skipStats=skipStats,
-                view=dashboard._getDetailViewParam(),
-                itemName=entity.get("name", ""),
-                **{kind: entity},
-                **listCtx,
-            ),
-            timeSeries=timeSeries,
+        #< no heatmap key: these pages have no "When You Listen" canvas, and
+        #  renderAllCharts skips a canvas that isn't there - see
+        #  _detail_chart_data.html
+        return render_template(
+            bodyTemplate,
+            songs=songs,
+            firstSongName=firstSongName,
+            username=username,
+            skipStats=skipStats,
+            view=dashboard._getDetailViewParam(),
+            itemName=entity.get("name", ""),
+            chartData={"timeSeries": timeSeries},
+            **{kind: entity},
+            **listCtx,
         )
 
     @requiresUser

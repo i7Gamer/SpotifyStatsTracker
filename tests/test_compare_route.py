@@ -3,12 +3,18 @@ least one accepted mutual share - see routes/compare.py's comparePage().
 
 The route is a two-phase load like /charts and /genres: a plain GET renders
 a lightweight shell (filter controls + empty placeholders, no data queries),
-and every actual data query only runs on the ?ajax=true payload that
-static/js/compare.js fetches right after first paint (and again on every
-filter change). Tests that only care about the shell's own markup (404s,
-redirects, dropdown state, DOM section ordering, nav links) hit the plain
-GET; everything that asserts on computed data goes through the ajax
-helpers below.
+and every actual data query only runs on the second request htmx makes right
+after first paint (and again on every filter change). Tests that only care
+about the shell's own markup (404s, redirects, dropdown state, DOM section
+ordering, nav links) hit the plain GET; everything that asserts on computed
+data goes through the _ajax helpers below.
+
+That second request is marked by the HX-Request header and answered with one
+HTML fragment whose elements each name the region they replace, where it used
+to be ?ajax=true answered with a dict of named chunks. _compare_fragment slices
+it back apart under the same keys, so what every test below asserts about is
+still one region of the page. The transport itself is pinned by
+tests/test_compare_htmx.py.
 """
 import unittest
 from unittest.mock import patch, MagicMock
@@ -20,6 +26,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 import app as appModule
 from app import SpotifyDashboardApp
 from _app_factory import AppTestCase
+from _compare_fragment import HX_HEADERS, fetchComparison
 
 _SECRET_KEY_PATCH = 'app.SpotifyDashboardApp._get_or_create_secret_key'
 
@@ -43,10 +50,10 @@ def _zeroHeatmapGrid():
 
 
 class TestCompareRoute(AppTestCase):
-    # Every ajax-rendered HTML fragment the full (non-sortable-scope) payload
-    # carries - concatenated, this is what compare.js swaps into the shell's
-    # placeholder divs on load. Used by tests that only care whether/how-often
-    # something appears anywhere on the page, not which specific chunk.
+    # Every HTML region the full (non-sortable-scope) refresh carries -
+    # concatenated, this is what htmx swaps into the shell's placeholders. Used
+    # by tests that only care whether/how-often something appears anywhere on
+    # the page, not which specific region.
     _AJAX_HTML_FIELDS = (
         "statsTableHtml", "similaritiesHtml", "genresHtml",
         "sharedArtistsHtml", "sharedSongsHtml", "sharedAlbumsHtml",
@@ -99,19 +106,17 @@ class TestCompareRoute(AppTestCase):
         self.dash.repo.respondToShareRequest(shareId, recipient, accept=True)
 
     def _ajax(self, client, url):
-        """Fetch the real data payload (the same fetch compare.js's initial
-        load and every filter change trigger) and return (resp, json dict)."""
-        sep = '&' if '?' in url else '?'
-        resp = client.get(f"{url}{sep}ajax=true")
-        return resp, resp.get_json()
+        """Fetch the real comparison (the same request the shell's first load
+        and every filter change make) and return (resp, regions-by-key)."""
+        return fetchComparison(client, url)
 
     def _ajaxHtml(self, data):
         return "".join(data.get(k) or "" for k in self._AJAX_HTML_FIELDS)
 
     def _fullPage(self, client, url):
-        """Shell text + every ajax fragment concatenated, for tests spanning
+        """Shell text + every refreshed region concatenated, for tests spanning
         both (e.g. counting a CSS class that appears in both the shell's
-        static column headings and the ajax-rendered stats table)."""
+        static column headings and the swapped-in stats table)."""
         shellResp = client.get(url)
         _, data = self._ajax(client, url)
         return shellResp.data.decode("utf-8") + self._ajaxHtml(data)
@@ -415,18 +420,21 @@ class TestCompareRoute(AppTestCase):
 
     def test_custom_date_inputs_carry_the_shared_validation_wiring(self):
         """Compare was the one filter page without the start>end guard: no
-        #dateError span to write to and the inputs wired straight to
-        updateCompareDateFilter instead of through the shared debounce -
-        so an inverted range fired a fetch and rendered an empty comparison
-        with no explanation."""
+        #dateError span to write to and no debounce - so an inverted range
+        fired a request and rendered an empty comparison with no explanation.
+        The guard now lives in compare.js's htmx:configRequest listener, which
+        needs the span to write into and named inputs to read; the debounce is
+        the delay: modifier on the form's trigger."""
         self._accept("alice", "bob")
         client = self._loginAs("alice")
 
         resp = client.get("/compare")
 
         self.assertIn(b'id="dateError"', resp.data)
-        self.assertIn(b"scheduleSearchFilter('startDate', updateCompareDateFilter)", resp.data)
-        self.assertIn(b"scheduleSearchFilter('endDate', updateCompareDateFilter)", resp.data)
+        self.assertIn(b'id="startDate" name="startDate"', resp.data)
+        self.assertIn(b'id="endDate" name="endDate"', resp.data)
+        self.assertIn(b"change delay:500ms from:#startDate", resp.data)
+        self.assertIn(b"change delay:500ms from:#endDate", resp.data)
 
     def test_shared_artists_ranked_by_combined_plays_not_the_viewers_own_order(self):
         """Bug: 'Top Common Artists' used to be built by walking the VIEWER's
@@ -840,25 +848,24 @@ class TestCompareRoute(AppTestCase):
         self._accept("alice", "bob")
         client = self._loginAs("alice")
 
-        resp = client.get("/compare?ajax=true")
+        _, data = self._ajax(client, "/compare")
 
-        data = resp.get_json()
-        self.assertIn("sharedSongsHtml", data)
-        self.assertIn("sharedAlbumsHtml", data)
+        self.assertIsNotNone(data["sharedSongsHtml"])
+        self.assertIsNotNone(data["sharedAlbumsHtml"])
 
     def test_ajax_sortable_scope_returns_only_the_six_lists_and_skips_the_rest(self):
-        """A sortBy change swaps only the six individual lists (see
-        compare.html's SORT_BY_LIST_SWAPS), so its fetch sends
-        scope=sortable and the server answers with exactly those six
-        chunks, skipping the shared lists, similarities, genres, taste
-        match and trend it won't render - observable via the trend series
-        queries never running."""
+        """A sortBy change moves only the six individual lists (see
+        _compare_sortable_lists.html), so the Sort by control asks for
+        scope=sortable and the server answers with exactly those six regions,
+        skipping the shared lists, similarities, genres, taste match and trend
+        it won't render - observable via the trend series queries never
+        running."""
         self._accept("alice", "bob")
         client = self._loginAs("alice")
 
-        resp = client.get("/compare?ajax=true&scope=sortable")
+        _, data = self._ajax(client, "/compare?scope=sortable")
 
-        self.assertEqual(set(resp.get_json().keys()), {
+        self.assertEqual({key for key, value in data.items() if value is not None}, {
             "myTopSongsHtml", "theirTopSongsHtml",
             "myTopArtistsHtml", "theirTopArtistsHtml",
             "myTopAlbumsHtml", "theirTopAlbumsHtml",
@@ -867,16 +874,15 @@ class TestCompareRoute(AppTestCase):
         self.dbs["bob"].getListeningTimeSeries.assert_not_called()
 
     def test_ajax_unknown_scope_returns_the_full_payload(self):
-        """An unrecognized scope must degrade to the full payload, not a
+        """An unrecognized scope must degrade to the full refresh, not a
         partial one - only the exact scope the frontend sends narrows it."""
         self._accept("alice", "bob")
         client = self._loginAs("alice")
 
-        resp = client.get("/compare?ajax=true&scope=bogus")
+        _, data = self._ajax(client, "/compare?scope=bogus")
 
-        data = resp.get_json()
-        self.assertIn("sharedArtistsHtml", data)
-        self.assertIn("comparisonTrend", data)
+        self.assertIsNotNone(data["sharedArtistsHtml"])
+        self.assertIsNotNone(data["comparisonTrend"])
 
     def test_similarities_sit_above_the_chart_and_shared_lists_join_categories(self):
         """Common Top Artist/Song/Album cards come directly above the trend
@@ -1538,50 +1544,51 @@ class TestCompareRoute(AppTestCase):
         self._accept("alice", "bob")
         client = self._loginAs("alice")
 
-        resp = client.get("/compare?ajax=true")
+        _, data = self._ajax(client, "/compare")
 
-        data = resp.get_json()
-        self.assertIn("tasteMatch", data)
         self.assertIsNone(data["tasteMatch"])   #< empty stub pools -> hidden, not 0%
 
     def test_ajax_returns_partial_chunks_not_a_full_page(self):
-        """The filter controls swap regions in place via ?ajax=true, mirroring
-        the Wrapped page's fade-and-swap pattern."""
+        """The filter controls refresh regions in place, so the response is a
+        fragment of them - never the whole page around them."""
         self._accept("alice", "bob")
         self.dbs["alice"].getTopSongs.return_value = [_song("s1", "MyAjaxSong")]
         client = self._loginAs("alice")
 
-        resp = client.get("/compare?ajax=true")
+        resp, data = self._ajax(client, "/compare")
 
-        data = resp.get_json()
         for key in ("withUsername", "statsTableHtml", "similaritiesHtml", "sharedArtistsHtml",
                     "myTopSongsHtml", "theirTopSongsHtml", "myTopArtistsHtml",
                     "theirTopArtistsHtml", "myTopAlbumsHtml", "theirTopAlbumsHtml",
                     "comparisonTrend"):
-            self.assertIn(key, data)
+            self.assertIsNotNone(data[key], key)
         self.assertEqual(data["withUsername"], "bob")
         self.assertIn("MyAjaxSong", data["myTopSongsHtml"])
         self.assertIn("compare-table", data["statsTableHtml"])
-        self.assertNotIn("<html", data["statsTableHtml"].lower())   #< chunks, not a page
+        #< regions, not a page: nothing here nests a second document
+        self.assertNotIn("<html", resp.get_data(as_text=True).lower())
 
     def test_ajax_counterpart_lists_stay_unlinked_from_detail_pages(self):
         self._accept("alice", "bob")
         self.dbs["bob"].getTopSongs.return_value = [_song("their-song-1", "TheirSong")]
         client = self._loginAs("alice")
 
-        resp = client.get("/compare?ajax=true")
+        _, data = self._ajax(client, "/compare")
 
-        data = resp.get_json()
         self.assertIn("TheirSong", data["theirTopSongsHtml"])
         self.assertNotIn("/song/their-song-1", data["theirTopSongsHtml"])
 
     def test_ajax_requires_an_accepted_share_like_the_full_page(self):
+        """The share can vanish under a live page. A refresh must not answer
+        with a comparison - and it can't answer with the empty-state PAGE
+        either, since the swap would drop it silently, so it sends the browser
+        there instead (see tests/test_compare_htmx.py)."""
         client = self._loginAs("alice")   #< no accepted shares
 
-        resp = client.get("/compare?ajax=true")
+        resp = client.get("/compare", headers=HX_HEADERS)
 
-        self.assertEqual(resp.status_code, 200)
-        self.assertIn(b"haven't connected with anyone yet", resp.data)
+        self.assertEqual(resp.status_code, 204)
+        self.assertIn("/compare", resp.headers["HX-Redirect"])
 
     def test_leader_cells_carry_a_non_color_marker(self):
         """The accent color alone can't mark the leading side for color-blind

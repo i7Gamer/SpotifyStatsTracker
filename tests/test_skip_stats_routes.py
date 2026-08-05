@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from _app_factory import AppTestCase
+from _charts_client import HX_HEADERS as CHARTS_HX_HEADERS, chartData
 from _detail_client import DetailPageClientMixin
 
 
@@ -22,9 +23,10 @@ def _skipStats(plays=10, skips=2, percent=16.7):
 
 
 class SkipStatsRouteTestCase(DetailPageClientMixin, AppTestCase):
-    """`_getRaw` is one request (what the /charts payload tests want);
-    `_getPath` is the detail pages' shell plus its deferred body, which is
-    where the per-entity summary lives now - see _detail_client.py."""
+    """`_getRaw` is one request (what the /charts fragment tests want, with
+    htmx's headers); `_getPath` is the detail pages' shell plus its deferred
+    body, which is where the per-entity summary lives now - see
+    _detail_client.py."""
 
     def _makeDb(self):
         db = MagicMock()
@@ -44,7 +46,7 @@ class SkipStatsRouteTestCase(DetailPageClientMixin, AppTestCase):
 
 
 class TestChartsPayload(SkipStatsRouteTestCase):
-    def test_the_ajax_payload_carries_both_lists(self):
+    def test_the_fragment_carries_both_lists(self):
         dash = self._makeApp()
         db = self._makeDb()
         db.getMostSkippedSongs.return_value = [
@@ -54,7 +56,7 @@ class TestChartsPayload(SkipStatsRouteTestCase):
             {"id": "a1", "name": "Skipped Artist", "skips": 9, "plays": 1,
              "encounters": 10, "skipPercent": 90.0}]
 
-        payload = self._getRaw(dash, db, "/charts?ajax=true").get_json()
+        payload = chartData(self._getRaw(dash, db, "/charts", headers=CHARTS_HX_HEADERS))
 
         self.assertEqual(payload["mostSkippedSongs"][0]["name"], "Skipped Song")
         self.assertEqual(payload["mostSkippedSongs"][0]["skipPercent"], 80.0)
@@ -65,7 +67,7 @@ class TestChartsPayload(SkipStatsRouteTestCase):
         the previous range's bars on screen."""
         dash = self._makeApp()
 
-        payload = self._getRaw(dash, self._makeDb(), "/charts?ajax=true").get_json()
+        payload = chartData(self._getRaw(dash, self._makeDb(), "/charts", headers=CHARTS_HX_HEADERS))
 
         self.assertEqual(payload["mostSkippedSongs"], [])
         self.assertEqual(payload["mostSkippedArtists"], [])
@@ -74,7 +76,7 @@ class TestChartsPayload(SkipStatsRouteTestCase):
         dash = self._makeApp()
         db = self._makeDb()
 
-        self._getRaw(dash, db, "/charts?ajax=true&interval=week")
+        self._getRaw(dash, db, "/charts?interval=week", headers=CHARTS_HX_HEADERS)
 
         kwargs = db.getMostSkippedSongs.call_args.kwargs
         self.assertIsNotNone(kwargs["startDate"])
@@ -86,15 +88,15 @@ class TestChartsPayload(SkipStatsRouteTestCase):
         dash = self._makeApp()
         db = self._makeDb()
 
-        self._getRaw(dash, db, "/charts?ajax=true")
+        self._getRaw(dash, db, "/charts", headers=CHARTS_HX_HEADERS)
 
         for call in (db.getMostSkippedSongs.call_args, db.getMostSkippedArtists.call_args):
             self.assertEqual(call.kwargs["limit"], CHART_MOST_SKIPPED_LIMIT)
 
-    def test_the_shell_renders_the_section_canvases(self):
+    def test_the_fragment_renders_the_section_canvases(self):
         dash = self._makeApp()
 
-        body = self._getRaw(dash, self._makeDb(), "/charts").data.decode()
+        body = self._getRaw(dash, self._makeDb(), "/charts", headers=CHARTS_HX_HEADERS).data.decode()
 
         self.assertIn('id="mostSkippedGrid"', body)
         self.assertIn('id="mostSkippedSongsChart"', body)
@@ -105,7 +107,7 @@ class TestChartsPayload(SkipStatsRouteTestCase):
         thought only in that order."""
         dash = self._makeApp()
 
-        body = self._getRaw(dash, self._makeDb(), "/charts").data.decode()
+        body = self._getRaw(dash, self._makeDb(), "/charts", headers=CHARTS_HX_HEADERS).data.decode()
 
         self.assertLess(body.index('id="completionChart"'), body.index('id="mostSkippedGrid"'))
 

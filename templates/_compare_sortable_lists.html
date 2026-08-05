@@ -1,0 +1,35 @@
+{#- SPDX-FileCopyrightText: 2026 i7Gamer
+    SPDX-License-Identifier: AGPL-3.0-or-later -#}
+
+{# The six individual my/their Top lists - the ONLY regions whose content reads
+   ?sortBy=. The stats table, chart, taste match, similarities and Top Common
+   lists render byte-identical under any sortBy (see routes/compare.py), so the
+   Sort by control asks for THIS fragment alone (?scope=sortable) and leaves the
+   rest of the page - the expensive half on long ranges - untouched. The full
+   refresh includes it too, which is what stops the two ever disagreeing about
+   what one of these lists looks like.
+
+   One loop drives all six, replacing the SORT_BY_LIST_SWAPS map compare.js used
+   to keep in step with the route by hand.
+
+   hx-swap-oob is how one response reaches a dozen regions: htmx matches each
+   element here to the shell element with the same id and replaces its contents.
+   They are all TOP-LEVEL elements of the fragment on purpose - htmx will look
+   inside nested elements too, but only while htmx.config.allowNestedOobSwaps is
+   on, and this page's correctness should not be a config setting.
+
+   Expects: my/their (from _gatherCompareStats), username, compareWith,
+   emptyMessage - see _wrapped_list.html and _track_card.html for the rest. #}
+{% for listId, listItems, listSection in [
+     ('myTopSongsList', my.topSongs, 'top_songs'),
+     ('theirTopSongsList', their.topSongs, 'top_songs'),
+     ('myTopArtistsList', my.topArtists, 'top_artists'),
+     ('theirTopArtistsList', their.topArtists, 'top_artists'),
+     ('myTopAlbumsList', my.topAlbums, 'top_albums'),
+     ('theirTopAlbumsList', their.topAlbums, 'top_albums')] %}
+{#- each counterpart item's own linkExternally decides internal vs. Spotify
+    (see _markLinkExternally) - nothing here has to know whose list it is #}
+<div id="{{ listId }}" hx-swap-oob="innerHTML">
+  {% with items = listItems, section = listSection %}{% include '_wrapped_list.html' %}{% endwith %}
+</div>
+{% endfor %}

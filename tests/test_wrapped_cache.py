@@ -487,9 +487,12 @@ class TestWrappedRouteAjax(AppTestCase):
         self.nowPatcher.start()
         self.addCleanup(self.nowPatcher.stop)
 
-    def test_ajax_returns_json_fragments(self):
+    def test_the_htmx_swap_renders_the_cached_numbers(self):
+        """Was test_ajax_returns_json_fragments: the swap answers with the
+        rendered recap instead of {"totalPlays": ..., "topSongsHtml": ...},
+        so the cached values are asserted where they land - in the markup."""
         dash = self._makeApp()
-        
+
         # Setup mock db
         db = MagicMock()
         db.tz = datetime.timezone.utc
@@ -526,20 +529,17 @@ class TestWrappedRouteAjax(AppTestCase):
             with client.session_transaction() as sess:
                 sess['email'] = 'alice@example.com'
             
-            resp = client.get("/wrapped?year=2026&ajax=true")
+            resp = client.get("/wrapped?year=2026", headers={"HX-Request": "true"})
             self.assertEqual(resp.status_code, 200)
-            data = json.loads(resp.data.decode())
-            
-            self.assertEqual(data["totalPlays"], 12)
-            self.assertEqual(data["longestStreak"], 3)
-            self.assertEqual(data["peakDay"], "2026-03-04")
-            self.assertIn("topSongsHtml", data)
-            self.assertIn("topArtistsHtml", data)
-            # discoveredAlbumsCount has no consumer - the front-end reads
-            # discoveredSongsCount/discoveredArtistsCount but never this key
-            # (see templates/wrapped.html's AJAX handler) - it must not be
-            # computed and shipped for nothing.
-            self.assertNotIn("discoveredAlbumsCount", data)
+            body = resp.get_data(as_text=True)
+
+            self.assertIn('data-stat="plays"', body)
+            self.assertIn('<p class="summary-value">12</p>', body)
+            self.assertIn('<p class="summary-value">3 days</p>', body)
+            self.assertIn("2026-03-04", body)
+            #< the swap replaces the whole recap, so the lists come with it
+            self.assertIn('data-category="top-songs"', body)
+            self.assertIn('data-category="top-artists"', body)
 
     def test_sort_by_resorts_the_cached_top_songs_pool(self):
         """The cache stores top_songs pre-ranked by plays (up to 100 items) -

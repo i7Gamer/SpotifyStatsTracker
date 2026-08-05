@@ -65,15 +65,18 @@
       </div>
 
       {% if lastfmGenreEnabled %}
-      <div class="summary-card discover-card" id="discoverCard">
+      {# Loaded after first paint - the coverage-gate check and recommendation
+         query are full-history scans too slow to block the dashboard's initial
+         render on. hx-trigger="load" with no hx-target is htmx's lazy-load
+         idiom: it defaults to this element and to innerHTML, so the card
+         replaces its own contents (heading included) once and is not
+         re-processed afterwards. The three states it used to render hidden and
+         reveal from JS now come rendered - see _dashboard_discover.html. #}
+      <div class="summary-card discover-card" id="discoverCard"
+           hx-get="{{ url_for('dashboardDiscover') }}"
+           hx-trigger="load">
         <h2>Discover</h2>
-        {# Populated by JS after first paint (see script block below) - the
-           coverage-gate check and recommendation query are full-history scans
-           too slow to block the dashboard's initial render on. #}
         <p class="dashboard-card-empty" id="discoverLoading">Loading picks…</p>
-        <div class="discover-list" id="discoverList" style="display: none;"></div>
-        <p class="dashboard-card-empty" id="discoverEmpty" style="display: none;">No fresh picks right now &mdash; keep listening!</p>
-        <p class="dashboard-card-empty" id="discoverLocked" style="display: none;">Unlock artist recommendations as your <a href="{{ url_for('genresPage') }}">genre data</a> fills in.</p>
       </div>
       {% endif %}
       </div>{# .dashboard-summary-cards #}
@@ -96,8 +99,12 @@
       </div>
       {% endif %}
 
-      {# Listening trends row: Obsession, Rediscovery, Forgotten Favorite #}
-      <div class="dashboard-summary-cards" id="dashboardTrendsContainer">
+      {# Listening trends row: Obsession, Rediscovery, Forgotten Favorite.
+         Deferred the same way the Discover card above is - see its comment for
+         what hx-trigger="load" without an hx-target does. #}
+      <div class="dashboard-summary-cards" id="dashboardTrendsContainer"
+           hx-get="{{ url_for('dashboardTrends') }}"
+           hx-trigger="load">
         <div class="summary-card"><p class="dashboard-card-empty">Loading listening trends…</p></div>
         <div class="summary-card"><p class="dashboard-card-empty">Loading listening trends…</p></div>
         <div class="summary-card"><p class="dashboard-card-empty">Loading listening trends…</p></div>
@@ -194,7 +201,34 @@
 
   <section class="hero">
     <div class="hero-content">
-      <form class="filter-section dashboard-filter" method="get" action="/">
+      {# hx-get + hx-trigger replace updateDashboardFilters/updateDashboardDateFilter
+         and their URLSearchParams surgery: htmx serializes this form's own
+         inputs, so "which params does a filter change set vs delete" is now
+         just which inputs exist and which are disabled.
+
+         hx-replace-url is the load-bearing one: a filter change must REPLACE
+         the URL, never push, so Back leaves the page instead of walking back
+         through every range the user tried. hx-sync ...:replace is the
+         AbortController bookkeeping - a newer request aborts the one in flight,
+         so a slow early response can't land on top of a later one.
+
+         Only the four cards below are filtered; everything above this form is
+         unfiltered and stays untouched by a swap (see dashboardIndex).
+
+         One constraint worth knowing before extending this: config.py's
+         Content-Security-Policy grants 'unsafe-eval' to the detail pages ONLY,
+         and every htmx feature taking a JS expression (hx-trigger event filters
+         `[expr]`, hx-vals="js:...", hx-on:) compiles it with the Function
+         constructor. Plain attributes only. #}
+      <form class="filter-section dashboard-filter" id="dashboardFilters"
+            method="get" action="{{ url_for('dashboard') }}"
+            hx-get="{{ url_for('dashboard') }}"
+            hx-target="#dashboardSummary"
+            hx-swap="innerHTML"
+            hx-trigger="change"
+            hx-sync="#dashboardSummary:replace"
+            hx-indicator="#dashboardSummary"
+            hx-replace-url="true">
         <div class="filter-group">
           <label for="interval">Time Period:</label>
           <select name="interval" id="interval" onchange="updateDashboardInterval()">
@@ -209,31 +243,53 @@
           </select>
         </div>
 
+        {# `disabled`, not merely hidden: a disabled control is not serialized,
+           which is what keeps a stale custom range out of the request - and so
+           out of the URL, since hx-replace-url writes back what was requested.
+           updateDashboardInterval keeps the two in step.
+
+           No onchange here either: the form's `change` trigger catches these,
+           and the "is this range worth a request" check that used to live in
+           updateDashboardDateFilter is now the shared htmx:configRequest veto
+           (static/js/htmx-filters.js). #}
         <div class="filter-group custom-dates" id="dashboardCustomDates" {% if interval != 'custom' %}style="display: none;"{% endif %}>
           <label for="startDate">From:</label>
-          <input type="date" id="startDate" name="startDate" value="{{ customStart }}" onchange="scheduleSearchFilter('startDate', updateDashboardDateFilter)">
+          <input type="date" id="startDate" name="startDate" value="{{ customStart }}"
+                 {% if interval != 'custom' %}disabled{% endif %}>
           <label for="endDate">To:</label>
-          <input type="date" id="endDate" name="endDate" value="{{ customEnd }}" onchange="scheduleSearchFilter('endDate', updateDashboardDateFilter)">
+          <input type="date" id="endDate" name="endDate" value="{{ customEnd }}"
+                 {% if interval != 'custom' %}disabled{% endif %}>
           <span id="dateError" class="date-error"></span>
         </div>
 
+        {# Unlike the shell pages, submitting this form genuinely works: the
+           dashboard renders its cards on the first GET, so a reload with the
+           same filters shows the same thing the swap would have. #}
         <noscript>
           <button class="primary-button" type="submit">Apply</button>
         </noscript>
       </form>
-      <div class="dashboard-summary" id="dashboardSummary">
+      {# The swap target. htmx-fade-target + the hx-indicator above dim it for
+         exactly the life of a request, which is what the loading-fade
+         add/remove bookkeeping (and its abort-path cleanup) did by hand. #}
+      <div class="dashboard-summary htmx-fade-target" id="dashboardSummary">
         {% include '_dashboard_summary.html' %}
       </div>
     </div>
   </section>
 
   <script>
-    //< data island: the only values the dashboard script needs from the
-    //  server. The logic lives in static/js/dashboard-page.js so the lint
-    //  gate covers it (see history.html for the same split).
-    var DASHBOARD_DEFAULT_WINDOW = {{ defaultWindow | tojson }};
+    //< data island: the only value the dashboard script still needs from the
+    //  server - the now-playing poll builds cover-image URLs from it. The logic
+    //  lives in static/js/dashboard-page.js so the lint gate covers it (see
+    //  history.html for the same split). DASHBOARD_DEFAULT_WINDOW went with the
+    //  popstate handler: nothing here pushes a history entry any more, so there
+    //  is no in-page state to reconcile a Back navigation against.
     var USERNAME = {{ username | tojson }};
   </script>
+  <script src="{{ url_for('static', filename='js/vendor/htmx.min.js') }}"></script>
+  {# htmx-filters.js first: dashboard-page.js reads HtmxFilters at load time #}
+  <script src="{{ url_for('static', filename='js/htmx-filters.js') }}"></script>
   <script src="{{ url_for('static', filename='js/dashboard-page.js') }}"></script>
   {% if milestones_enabled %}
   <script src="{{ url_for('static', filename='js/milestone-more.js') }}"></script>

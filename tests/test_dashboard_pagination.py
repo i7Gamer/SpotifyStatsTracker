@@ -64,14 +64,13 @@ class _ListRouteTestBase(AppTestCase):
         return resp, resp.get_data(as_text=True)
 
     def _getTopSongs(self, dash, db, query=""):
-        # Top lists are a two-phase load now (shell + ?ajax=true JSON results),
-        # so the list/pagination/totals only exist behind ajax=true.
-        sep = '&' if query else '?'
-        return self._getPath(dash, db, f"/top-songs{query}{sep}ajax=true")
+        # The Top lists are a two-phase load like /history, and migrated with
+        # it: the list/pagination/totals only come back for an HX-Request, and
+        # the response is the fragment rather than a JSON envelope.
+        return self._getPath(dash, db, f"/top-songs{query}", headers={"HX-Request": "true"})
 
     def _getTopArtists(self, dash, db, query=""):
-        sep = '&' if query else '?'
-        return self._getPath(dash, db, f"/top-artists{query}{sep}ajax=true")
+        return self._getPath(dash, db, f"/top-artists{query}", headers={"HX-Request": "true"})
 
 
 class TestHistoryPagination(_ListRouteTestBase):
@@ -430,7 +429,7 @@ class TestTopSongsPagination(_ListRouteTestBase):
 
         self.assertEqual(resp.status_code, 200)
         db.getPlayTotals.assert_called_once()
-        self.assertIn('<p class="summary-value">42</p>', resp.get_json()["resultsHtml"])
+        self.assertIn('<p class="summary-value">42</p>', resp.get_data(as_text=True))
 
     def test_totals_are_fetched_in_search_branch_too(self):
         dash = self._makeApp()
@@ -441,7 +440,7 @@ class TestTopSongsPagination(_ListRouteTestBase):
 
         self.assertEqual(resp.status_code, 200)
         db.getPlayTotals.assert_called_once()
-        self.assertIn('<p class="summary-value">7</p>', resp.get_json()["resultsHtml"])
+        self.assertIn('<p class="summary-value">7</p>', resp.get_data(as_text=True))
 
     def test_unknown_sortby_falls_back_to_default_instead_of_500(self):
         """Repository.getSongsPage raises ValueError for a sortBy outside
@@ -524,7 +523,7 @@ class TestSkipSortKeepsTheOtherFilters(_ListRouteTestBase):
         db.getTopAlbums.return_value = []
 
         self._getTopArtists(dash, db, query="?sortBy=skips&q=foo")
-        self._getPath(dash, db, "/top-albums?sortBy=skips&q=foo&ajax=true")
+        self._getPath(dash, db, "/top-albums?sortBy=skips&q=foo", headers={"HX-Request": "true"})
 
         self.assertEqual(db.getArtistsCount.call_args.kwargs["searchQuery"], "foo")
         self.assertEqual(db.getAlbumsCount.call_args.kwargs["searchQuery"], "foo")
@@ -536,7 +535,7 @@ class TestSkipSortKeepsTheOtherFilters(_ListRouteTestBase):
         db.getTopAlbums.return_value = []
 
         self._getTopArtists(dash, db, query="?sortBy=skips")
-        self._getPath(dash, db, "/top-albums?sortBy=skips&ajax=true")
+        self._getPath(dash, db, "/top-albums?sortBy=skips", headers={"HX-Request": "true"})
 
         for mock in (db.getArtistsCount, db.getAlbumsCount):
             calls = [c.kwargs for c in mock.call_args_list]
@@ -612,7 +611,7 @@ class TestTopArtistsSortAndPageClamp(_ListRouteTestBase):
         self.assertEqual(resp.status_code, 200)
         kwargs = db.getTopArtists.call_args.kwargs
         self.assertEqual(kwargs["offset"], 2 * appModule.PAGE_SIZE)   #< last page (3) of 120/50
-        self.assertIn("Page 3 of 3", resp.get_json()["resultsHtml"])
+        self.assertIn("Page 3 of 3", resp.get_data(as_text=True))
 
     def test_search_query_is_passed_through_to_sql(self):
         dash = self._makeApp()

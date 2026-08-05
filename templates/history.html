@@ -136,6 +136,7 @@
      _pagination.html - shared with the Top lists and the detail pages - having
      to know this page uses htmx. #}
   <div id="historyResults"
+       class="htmx-fade-target"
        hx-target="#historyResults"
        hx-swap="innerHTML"
        hx-sync="#historyResults:replace"
@@ -160,5 +161,7 @@
   </div>
 
   <script src="{{ url_for('static', filename='js/vendor/htmx.min.js') }}"></script>
+  {# htmx-filters.js first: history-page.js reads HtmxFilters at load time #}
+  <script src="{{ url_for('static', filename='js/htmx-filters.js') }}"></script>
   <script src="{{ url_for('static', filename='js/history-page.js') }}"></script>
 {% endblock %}

@@ -7,8 +7,8 @@ import json
 import math
 import time
 
-from flask import render_template, request
-from Database.utils import convertToDatetime, msToString, now
+from flask import request
+from Database.utils import convertToDatetime, now
 from services.genre_gate import emptyGenreCoverage, genreGatePasses, resolveGenreCoverage, resolveGenreDistribution
 from config import (
     SHARE_LINK_EXPIRY_CHOICES, SHARE_LINK_MAX_PER_BUCKET,
@@ -17,7 +17,7 @@ from config import (
 
 
 class WrappedBuilderMixin:
-    """Wrapped page context + AJAX response builders, year/filter parsing, share-link resolution, and re-sort/discovery helpers."""
+    """Wrapped page context builder, year/filter parsing, share-link panel args, and re-sort/discovery helpers."""
 
     def _getWrappedYearParam(self, availableYears: list, defaultYear: int) -> int:
         """The current request's ?year=... if it's one of the years the user
@@ -47,20 +47,15 @@ class WrappedBuilderMixin:
 
     def _parseWrappedFilterParams(self) -> tuple:
         """groupBy/limit/sortBy (validated, with the same defaults/fallbacks
-        wrappedPage() has always used) plus ajax-request detection - shared
-        by wrappedPage() and sharedWrappedPage() so the two routes can't
-        silently drift apart on validation or defaults. Returns (groupBy,
-        limit, sortBy, isAjaxRequest, ajaxUpdateType, includeGenres).
+        wrappedPage() has always used) - shared by wrappedPage() and
+        sharedWrappedPage() so the two routes can't silently drift apart on
+        validation or defaults. Returns (groupBy, limit, sortBy).
 
-        Genre data is deliberately computed live - never from the
-        user_wrapped cache: coverage keeps growing while the Last.fm
-        backfill runs, and the admin's inherited-genres toggle changes the
-        numbers retroactively. Only computed for responses that actually
-        render the card (the full page and ajax type=all - chart/lists
-        partial updates would compute and discard it). See chartsPage's
-        identical kill-switch comment; _wrapped_genres.html hides its whole
-        section (chart AND locked-progress fallback) when lastfmEnabled is
-        False."""
+        It used to also answer "is this the ajax request, and which slice of
+        the page does it want" (?ajax=true&type=all|chart|lists). Both went
+        with the htmx migration: the request is marked by the HX-Request
+        header now, and one fragment re-renders the whole recap, so there is
+        no narrow update to describe. See routes/wrapped.py."""
         # Raw param: "" is the Auto option, resolved per-year inside
         # _buildWrappedContext (the year span is known there) - the template's
         # select must keep showing Auto rather than pinning the derived value.
@@ -73,11 +68,7 @@ class WrappedBuilderMixin:
         # changes unless they touch the control.
         sortBy = self._getSortByParam(default="plays")
 
-        isAjaxRequest = request.args.get("ajax") == "true"
-        ajaxUpdateType = request.args.get("type", "all")
-        includeGenres = not isAjaxRequest or ajaxUpdateType == "all"
-
-        return groupBy, limit, sortBy, isAjaxRequest, ajaxUpdateType, includeGenres
+        return groupBy, limit, sortBy
 
     @staticmethod
     def _shareLinkExpiryLabel(expiresAt: float | None, nowTs: float) -> str:
@@ -380,78 +371,3 @@ class WrappedBuilderMixin:
             "genreUnlocked": genreUnlocked,
             "lastfmEnabled": lastfmEnabled,
         }
-
-    def _buildWrappedAjaxResponse(self, ctx: dict, username: str, year: int, updateType: str, publicView: bool,
-                                   imageBase: str | None = None) -> dict:
-        """The JSON-able payload for a Wrapped ?ajax=true request - shared by
-        the authenticated /wrapped route and the public /shared/<token>
-        route so the two can't drift on what an ajax response contains.
-        publicView is threaded into the _wrapped_list.html/
-        _wrapped_genres.html renders so their "You"/{{ username }} text (see
-        _track_card.html) stays correct after a partial swap on the shared
-        page too - and, with it, the same card options the shared page's full
-        render uses: `imageBase` (the caller's token-keyed image route, since
-        an anonymous viewer can't authorize against /img/<username>/...) and
-        suppressDetailLinks (login-gated detail pages are dead ends for them).
-        Returns a plain dict (not a Response) so wrappedPage() can
-        layer its own owner-only sharePanelHtml key on top before
-        jsonify-ing - sharedWrappedPage() never does, since a public visitor
-        must never receive share-panel data."""
-        topSongs, topArtists, topAlbums = ctx["topSongs"], ctx["topArtists"], ctx["topAlbums"]
-        discoveredSongs, discoveredArtists, discoveredAlbums = (
-            ctx["discoveredSongs"], ctx["discoveredArtists"], ctx["discoveredAlbums"])
-
-        res = {}
-
-        # imageBase is only set when the caller has one (the public share
-        # route); _track_card.html's own `is defined` fallback builds the
-        # authenticated /img/<username>/ prefix otherwise.
-        cardOptions = {"username": username, "year": year, "publicView": publicView,
-                       "suppressDetailLinks": publicView}
-        if imageBase:
-            cardOptions["imageBase"] = imageBase
-
-        if updateType in ("all", "chart"):
-            res["timeSeries"] = ctx["timeSeries"]
-
-        if updateType in ("all", "lists"):
-            res["topSongsHtml"] = render_template(
-                "_wrapped_list.html", items=topSongs, section="top_songs", **cardOptions)
-            res["topArtistsHtml"] = render_template(
-                "_wrapped_list.html", items=topArtists, section="top_artists", **cardOptions)
-            res["topAlbumsHtml"] = render_template(
-                "_wrapped_list.html", items=topAlbums, section="top_albums", **cardOptions)
-            res["discoveredSongsHtml"] = render_template(
-                "_wrapped_list.html", items=discoveredSongs, section="top_songs", **cardOptions)
-            res["discoveredArtistsHtml"] = render_template(
-                "_wrapped_list.html", items=discoveredArtists, section="top_artists", **cardOptions)
-            res["discoveredAlbumsHtml"] = render_template(
-                "_wrapped_list.html", items=discoveredAlbums, section="top_albums", **cardOptions)
-
-        if updateType == "all":
-            res["topGenresHtml"] = render_template(
-                "_wrapped_genres.html", topGenres=ctx["topGenres"],
-                genreCoverage=ctx["genreCoverage"], genreUnlocked=ctx["genreUnlocked"], year=year,
-                lastfmEnabled=ctx["lastfmEnabled"], username=username, publicView=publicView)
-            topSongText = (
-                f"{topSongs[0]['name']} - {topSongs[0]['artists'][0]['name']}"
-                if topSongs and topSongs[0].get('artists')
-                else (topSongs[0]['name'] if topSongs else "N/A")
-            )
-            topArtistText = topArtists[0]['name'] if topArtists else "N/A"
-            topAlbumText = topAlbums[0]['name'] if topAlbums else "N/A"
-            res.update({
-                "totalPlays": ctx["totalPlays"],
-                "totalTime": msToString(ctx["totalMs"]),
-                "longestStreak": ctx["longestStreak"],
-                "peakDay": ctx["peakListeningTime"][0] if ctx["peakListeningTime"] else "N/A",
-                "peakPlays": ctx["peakListeningTime"][1] if ctx["peakListeningTime"] else 0,
-                "uniqueSongsCount": ctx["uniqueSongsCount"],
-                "uniqueArtistsCount": ctx["uniqueArtistsCount"],
-                "discoveredSongsCount": ctx["discoveredSongsCount"],
-                "discoveredArtistsCount": ctx["discoveredArtistsCount"],
-                "topSongText": topSongText,
-                "topArtistText": topArtistText,
-                "topAlbumText": topAlbumText,
-            })
-        return res

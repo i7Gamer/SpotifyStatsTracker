@@ -9,28 +9,47 @@ trend charts follow the shared Trend-buckets control (Auto default, resolved
 server-side like every other page - see _resolveGroupBy).
 
 The page loads in two phases, like Charts: the initial GET renders a lightweight
-shell (filter controls + empty chart canvases), and static/js/genres.js then
-fetches the data via AJAX after first paint. A time-period filter (defaulting to
-the user's profile default window) scopes every displayed chart/stat; the unlock
-GATE, however, stays all-time (unlock is a library-wide achievement, like the
-Overview coverage card), so a narrow window never hides the whole page.
+shell (filter controls + an empty placeholder), and the data arrives in a second
+request right after first paint, and again on every filter/genre change. A
+time-period filter (defaulting to the user's profile default window) scopes
+every displayed chart/stat; the unlock GATE, however, stays all-time (unlock is
+a library-wide achievement, like the Overview coverage card), so a narrow window
+never hides the whole page.
 
-Two AJAX shapes, both ?ajax=true: the default (scope=all) returns the full data
-payload (overview datasets + chip row + the selected genre's detail); scope=detail
-returns just the re-rendered detail partial + its two chart datasets, for the
-chip-click drill-down swap. Neither reloads the whole page.
+That second request is driven by htmx rather than the page's own fetch() code,
+so it is marked by htmx's HX-Request header rather than the ?ajax=true
+convention the remaining shell pages use, and answered with an HTML FRAGMENT
+rather than a JSON envelope - htmx swaps response bodies, so {"detailHtml": ...}
+would land in the page verbatim. Keying on a header rather than a query param is
+also what keeps the marker out of the address bar: hx-replace-url writes back
+the URL that was requested.
+
+Two fragment shapes, told apart by HX-Target - htmx names the region it is
+replacing, so "which region" IS "which fragment", and nothing about the request
+shape leaks into the shareable URL:
+
+  #genresResults (default) - the whole data zone: overview datasets + chip row
+      + the selected genre's detail. A filter change, and the first load.
+  #genreExplore            - the chip row + detail only, for the chip-click
+      drill-down swap. The overview is unchanged by a genre switch, so its
+      three queries are skipped entirely.
+
+Chart datasets are not markup, so each fragment carries its own inside a
+<script type="application/json"> island that static/js/genres.js reads back out
+in htmx:afterSwap. See tests/test_genres_htmx.py.
 
 Follows the project's route convention: register(app, dashboard), handler
 closures, add_url_rule. app-level constants are aliased at register() time.
 """
 import logging
 
-from flask import render_template, request, jsonify
+from flask import Response, render_template, request, url_for
 
 from config import (
     GENRE_PAGE_LIST_LIMIT, GENRE_MIX_TREND_TOP_N, GENRE_PAGE_TOP_ARTISTS_LIMIT,
     GENRE_PAGE_TOP_TRACKS_LIMIT, LISTEN_TIME_HIDE_SECONDS_ABOVE_HOURS,
 )
+from dashboard.date_ranges import GROUP_BY_APPROX_BUCKET_DAYS
 from Database.utils import msToString, convertToDatetime
 from services.genre_gate import (
     emptyGenreCoverage, resolveGenreCoverage, genreGatePasses, resolveGenreDistribution,
@@ -40,6 +59,21 @@ from services.genre_gate import (
 
 logger = logging.getLogger(__name__)
 
+# The two htmx swap targets, by element id. htmx sends the target's id in the
+# HX-Target header, and that is what picks the fragment below - so these have to
+# agree with templates/genres.html and templates/_genres_results.html, which
+# tests/test_genres_htmx.py asserts. A renamed id would silently send the full
+# payload (and re-run the three overview queries) on every chip click.
+GENRES_RESULTS_ID = "genresResults"
+GENRE_EXPLORE_ID = "genreExplore"
+
+def emptyTrend():
+    """The trend dataset for a range with no genres at all, so the fragment
+    still carries a well-formed island for genres.js to read. A function, not a
+    module constant, for the same reason emptyHeatmapGrid() is one: a shared
+    mutable default is one careless caller away from leaking between requests."""
+    return {"buckets": [], "series": []}
+
 
 def register(app, dashboard):
 
@@ -48,7 +82,7 @@ def register(app, dashboard):
         two chart datasets (bucketed trend line, listening-clock heatmap), all
         scoped to the selected date range. `trendGroupBy` is the resolved
         Trend-buckets size (hour on single-day views - see genresPage).
-        Shared by the full payload and the chip-click detail swap so they
+        Shared by the full fragment and the chip-click detail swap so they
         can't drift."""
         selectedTrend = resolveGenreTrends(db, [selectedGenre], startDate, endDate, groupBy=trendGroupBy)
         clock = dashboard._embedHeatmapTextElements(resolveGenreHeatmap(db, selectedGenre, startDate, endDate))
@@ -64,8 +98,8 @@ def register(app, dashboard):
             "firstPlayedText": convertToDatetime(firstTs, tz=db.tz).strftime("%b %Y") if firstTs else "—",
         }
         return {
-            # username is supplied by the caller (the AJAX branch re-adds it) so
-            # it never collides with genres.html's own. intervalLabel lets the
+            # username is supplied by the caller (the fragment branch re-adds it)
+            # so it never collides with genres.html's own. intervalLabel lets the
             # detail partial's "Plays · <label>" heading match the filter.
             "context": {
                 "selectedGenre": selectedGenre,
@@ -108,6 +142,39 @@ def register(app, dashboard):
         # template hides the Trend-buckets control there too).
         trendGroupBy = "hour" if interval in ("day", "today") else groupBy
 
+        # The filter state as MARKUP is allowed to see it: validated, so the
+        # shell's first-load URL, the chip hrefs and the queries can never
+        # disagree about what is on screen. Echoing request.args instead would
+        # put a junk ?interval=bogus back into the one place a reader trusts,
+        # after the query had already coerced it away - the same rule
+        # historyPage's listUrl follows.
+        #
+        # A custom range's dates ride along only while that range is in effect,
+        # matching the shell's disabled date inputs; an unrecognised bucket size
+        # is dropped, because _resolveGroupBy has already replaced it with a
+        # span-derived one and the template's select shows Auto for it.
+        filterArgs = {
+            "interval": interval,
+            "startDate": customStart if interval == "custom" else "",
+            "endDate": customEnd if interval == "custom" else "",
+            "groupBy": groupByParam if groupByParam in GROUP_BY_APPROX_BUCKET_DAYS else "",
+        }
+        #< url_for renders an empty value as a bare `?startDate=`, so drop them
+        chipArgs = {key: value for key, value in filterArgs.items() if value}
+
+        # The genre is the one filter this phase cannot validate: deciding
+        # whether it exists needs the distribution query the shell deliberately
+        # defers. Passing it through is safe - the data request resolves it, and
+        # falls back to the range's top genre when it no longer has plays.
+        requestedGenre = request.args.get("genre", "")
+
+        def viewUrl(genre=""):
+            """The canonical full-page URL for the current filter state. Used
+            for the shell's first-load request, and as the recovery navigation
+            when a drill-down swap is declined."""
+            args = dict(chipArgs, genre=genre) if genre else dict(chipArgs)
+            return url_for("genresPage", **args)
+
         # Same instance-wide kill switch as the Charts genre section. The unlock
         # GATE is intentionally all-time (unlock is a library-wide achievement,
         # like the Overview coverage card): the selected window below only scopes
@@ -122,9 +189,14 @@ def register(app, dashboard):
 
         # Lightweight shell: the disabled/locked/unlocked structure is decided
         # here (all-time gate, one cheap coverage query), but every per-range
-        # data query is deferred to the ajax payload below, fetched by
-        # static/js/genres.js after first paint and on each filter change.
-        if request.args.get("ajax") != "true":
+        # data query is deferred to the fragment below, which htmx requests
+        # after first paint and on each filter/genre change. A locked or
+        # disabled shell carries no htmx wiring at all, so it never asks.
+        #
+        # intervalLabel and defaultWindow no longer ride along: the mix chart's
+        # heading moved into the fragment, and defaultWindow only ever fed the
+        # popstate handler, which every-update-is-a-replace made unnecessary.
+        if not request.headers.get("HX-Request"):
             return render_template(
                 "genres.html",
                 username=username,
@@ -136,36 +208,66 @@ def register(app, dashboard):
                 customStart=customStart,
                 customEnd=customEnd,
                 groupBy=groupByParam,
-                intervalLabel=intervalLabel,
-                defaultWindow=defaultWindow,
+                #< the raw genre, for the form's hidden field: genres.js replaces
+                #  it with the resolved one as soon as the first fragment lands
+                selectedGenre=requestedGenre,
+                dataUrl=viewUrl(genre=requestedGenre),
             )
 
-        # ---- AJAX data payload (scoped to the selected window) ----
+        # ---- htmx fragment (scoped to the selected window) ----
+        #< which region htmx is replacing, and so which fragment answers it
+        detailOnly = request.headers.get("HX-Target") == GENRE_EXPLORE_ID
+
         if not genreUnlocked:
-            return jsonify({"ok": False})
+            # The gate is all-time and stable, so a live page whose shell
+            # rendered unlocked should never land here. The two shapes recover
+            # differently, exactly as the old ok:false branches did:
+            #  - a drill-down swap navigates to the full page render, which is
+            #    the one that can explain why (the old detailFallbackUrl);
+            #  - a full swap does nothing at all. 204 is htmx's "no swap", so
+            #    the placeholder stays rather than being replaced by something
+            #    that could ask again and loop.
+            if detailOnly:
+                return Response(status=204, headers={"HX-Redirect": viewUrl(genre=requestedGenre)})
+            return Response(status=204)
 
         distribution = resolveGenreDistribution(db, startDate, endDate, GENRE_PAGE_LIST_LIMIT)
         genreNames = list(distribution.keys())
-        requested = request.args.get("genre")
-        selectedGenre = requested if requested in distribution else (genreNames[0] if genreNames else None)
+        selectedGenre = requestedGenre if requestedGenre in distribution else (genreNames[0] if genreNames else None)
 
-        # Chip-click drill-down: just the re-rendered detail partial + its two
-        # chart datasets (the overview charts and chips are unchanged by a
-        # genre switch, so they're never re-sent).
-        if request.args.get("scope") == "detail":
-            detail = _buildGenreDetail(db, username, selectedGenre, startDate, endDate, intervalLabel, trendGroupBy) if selectedGenre else None
-            if detail is None:
-                return jsonify({"ok": False})
-            return jsonify({
-                "ok": True,
-                "genre": selectedGenre,
-                "detailHtml": render_template("_genre_detail.html", username=username, **detail["context"]),
-                "selectedTrend": detail["selectedTrend"],
-                "clock": detail["clock"],
-            })
+        def exploreContext(detail):
+            """Everything the chip row + drill-down need. Built once and used by
+            both fragments (the chip-click one renders it alone, the full one
+            includes it), so a genre switch and a filter change can never render
+            the pair differently."""
+            context = {
+                "username": username,
+                "genreNames": genreNames,
+                "chipArgs": chipArgs,
+                "selectedTrend": detail["selectedTrend"] if detail else emptyTrend(),
+                "clock": detail["clock"] if detail else emptyHeatmapGrid(),
+            }
+            #< no detail at all means the range has no genres; the partial's own
+            #  `if selectedGenre` guard renders nothing, and the chip row is empty
+            context.update(detail["context"] if detail else
+                           {"selectedGenre": None, "intervalLabel": intervalLabel})
+            return context
 
-        # Full payload: overview datasets + chip row + the selected detail. The
-        # chip row is re-sent because a range change changes which genres have
+        def buildDetail():
+            return (_buildGenreDetail(db, username, selectedGenre, startDate, endDate,
+                                      intervalLabel, trendGroupBy)
+                    if selectedGenre else None)
+
+        # Chip-click drill-down: the chips (so the selected one moves) and the
+        # re-rendered detail. The distribution above is needed either way - to
+        # resolve the genre and label the chips - but the mix trend and the
+        # breadth counts are not, and skipping them is the whole point of having
+        # two shapes.
+        if detailOnly:
+            return render_template("_genre_explore.html", **exploreContext(buildDetail()))
+
+        # Full fragment: overview datasets + chip row + the selected detail. The
+        # chip row rides along because a range change changes which genres have
         # plays (and thus appear). The mix-over-time trend is computed before the
         # per-genre detail so its top-N query runs first.
         mixTrend = resolveGenreTrends(db, genreNames[:GENRE_MIX_TREND_TOP_N], startDate, endDate, groupBy=trendGroupBy)
@@ -175,18 +277,11 @@ def register(app, dashboard):
         breadth = resolveGenreArtistCounts(db, genreNames)
         breadthPairs = sorted(breadth.items(), key=lambda kv: (-kv[1], kv[0]))
 
-        detail = _buildGenreDetail(db, username, selectedGenre, startDate, endDate, intervalLabel, trendGroupBy) if selectedGenre else None
-        detailHtml = render_template("_genre_detail.html", username=username, **detail["context"]) if detail else ""
-        return jsonify({
-            "ok": True,
-            "genre": selectedGenre,
-            "intervalLabel": intervalLabel,
-            "distributionPairs": list(distribution.items()),
-            "breadthPairs": breadthPairs,
-            "mixTrend": mixTrend,
-            "chipsHtml": render_template("_genre_chips.html", genreNames=genreNames, selectedGenre=selectedGenre),
-            "detailHtml": detailHtml,
-            "selectedTrend": detail["selectedTrend"] if detail else {"buckets": [], "series": []},
-            "clock": detail["clock"] if detail else emptyHeatmapGrid(),
-        })
+        return render_template(
+            "_genres_results.html",
+            distributionPairs=list(distribution.items()),
+            breadthPairs=breadthPairs,
+            mixTrend=mixTrend,
+            **exploreContext(buildDetail()),
+        )
     app.add_url_rule("/genres", "genresPage", genresPage, methods=["GET"])

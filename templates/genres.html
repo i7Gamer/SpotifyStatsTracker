@@ -4,6 +4,25 @@
 {% extends "layout.html" %}
 {% block title %}Genres - {{ super() }}{% endblock %}
 {% block content %}
+  {# Two-phase load like /history, /charts and /compare: this GET is just the
+     filter form + an empty placeholder, and every chart, chip and stat arrives
+     in a second request right after first paint - and again on each filter or
+     genre change.
+
+     That second request is driven by the hx-* attributes below rather than by
+     hand-written fetch() code, and static/js/genres.js is down to what htmx has
+     no opinion about. What each attribute replaces is noted at its use site.
+
+     Two constraints worth knowing before extending this:
+
+     - config.py's Content-Security-Policy grants 'unsafe-eval' to the detail
+       pages ONLY (see DETAIL_PAGE_CSP), and every htmx feature that takes a JS
+       expression - hx-trigger event filters `[expr]`, `hx-vals="js:..."`,
+       `hx-on:` handlers - compiles it with the Function constructor. Those all
+       fail at runtime here, not at render time. Plain attributes only.
+     - the charts stay hand-drawn. htmx swaps HTML; a <canvas> arrives blank and
+       its data is not markup, so each fragment carries its datasets in a JSON
+       island and genres.js repaints in htmx:afterSwap. #}
   <section class="hero">
     <div class="hero-content">
       <h1>Genres</h1>
@@ -21,9 +40,30 @@
       {% with coverage = genreCoverage %}{% include "_genre_progress.html" %}{% endwith %}
     </section>
   {% else %}
-    {# method/action kept for the <noscript> fallback; with JS the controls fire
-       the AJAX filter handlers in genres.js and never submit this form. #}
-    <form class="filter-section" method="get" action="{{ url_for('genresPage') }}">
+    {# hx-get + hx-trigger="change" replace updateGenresIntervalFilter's and
+       updateGenresGroupByFilter's URL surgery: htmx serializes this form's own
+       inputs, so "which params does a filter change set vs delete" is now just
+       which inputs exist and which are disabled.
+
+       hx-replace-url is the load-bearing one - see replaceGenresUrl's note in
+       git history: a filter change must REPLACE the URL, never push, so Back
+       leaves the page instead of walking back through every filter the user
+       tried. tests/test_genres_htmx.py pins that it stays replace.
+
+       hx-sync ...:replace is the loadToken bookkeeping, and it is shared with
+       the chip clicks (see _genres_results.html) so that a slow filter load
+       cannot land on top of a newer drill-down.
+
+       method/action are kept for the <noscript> case below. #}
+    <form class="filter-section" method="get" action="{{ url_for('genresPage') }}"
+          id="genresFilters"
+          hx-get="{{ url_for('genresPage') }}"
+          hx-target="#genresResults"
+          hx-swap="innerHTML"
+          hx-trigger="change"
+          hx-sync="#genresResults:replace"
+          hx-indicator="#genresResults"
+          hx-replace-url="true">
       <div class="filter-group">
         <label for="interval">Time Period:</label>
         <select id="interval" name="interval" onchange="updateGenresIntervalFilter()">
@@ -38,11 +78,20 @@
         </select>
       </div>
 
+      {# `disabled` rather than only hidden: a disabled control is not
+         serialized, which is what keeps a stale startDate/endDate out of the
+         request - and therefore out of the URL, since hx-replace-url writes
+         back what was requested. updateGenresIntervalFilter keeps the two in
+         step. No onchange debounce helper either: the form's `change` trigger
+         covers these, and the half-entered range that used to need one is
+         vetoed in genres.js's htmx:configRequest instead. #}
       <div class="filter-group custom-dates" id="genresCustomDates" {% if interval != 'custom' %}style="display: none;"{% endif %}>
         <label for="startDate">From:</label>
-        <input type="date" id="startDate" name="startDate" value="{{ customStart }}" onchange="scheduleSearchFilter('startDate', updateGenresDateFilter)">
+        <input type="date" id="startDate" name="startDate" value="{{ customStart }}"
+               {% if interval != 'custom' %}disabled{% endif %}>
         <label for="endDate">To:</label>
-        <input type="date" id="endDate" name="endDate" value="{{ customEnd }}" onchange="scheduleSearchFilter('endDate', updateGenresDateFilter)">
+        <input type="date" id="endDate" name="endDate" value="{{ customEnd }}"
+               {% if interval != 'custom' %}disabled{% endif %}>
         <span id="dateError" class="date-error"></span>
       </div>
 
@@ -50,7 +99,7 @@
          so the control would be a no-op there. #}
       <div class="filter-group" id="groupByContainer" {% if interval in ['today', 'day'] %}style="display: none;"{% endif %}>
         <label for="groupBy">Trend buckets:</label>
-        <select id="groupBy" name="groupBy" onchange="updateGenresGroupByFilter()">
+        <select id="groupBy" name="groupBy">
           <option value="" {% if not groupBy %}selected{% endif %}>Auto</option>
           <option value="day" {% if groupBy == 'day' %}selected{% endif %}>Day</option>
           <option value="week" {% if groupBy == 'week' %}selected{% endif %}>Week</option>
@@ -58,8 +107,14 @@
         </select>
       </div>
 
-      {# This page renders a SHELL on a plain GET and fetches its body via
-         ?ajax=true, so submitting this form reloaded to a permanent
+      {# The drill-down selection has no visible control in this form, and a
+         filter change serializes the form - so without this field, changing the
+         time period would silently reset the page to the new range's top genre.
+         genres.js writes the RESOLVED genre back into it after every swap. #}
+      <input type="hidden" name="genre" id="genresSelectedGenre" value="{{ selectedGenre }}">
+
+      {# This page renders a SHELL on a plain GET and fetches its body in a
+         second request, so submitting this form reloaded to a permanent
          "Loading..." - the Apply button that used to sit here could not work
          by construction. Say what is actually wrong instead. #}
       <noscript>
@@ -68,57 +123,41 @@
       </noscript>
     </form>
 
-    {# ---- Overview zone (canvases filled by the /genres?ajax=true payload) -- #}
-    <section class="card chart-card" id="genresOverview">
-      <div class="chart-section">
-        <h2>Genre Distribution</h2>
-        <div class="chart-canvas-wrap">
-          <canvas id="genreDistChart" role="img" aria-label="Genre distribution"></canvas>
-        </div>
-      </div>
+    {# The swap target. The hx-* here are inherited by everything swapped into
+       it, which is how the chip row gets its behaviour - and how a chip click
+       ends up on the same hx-sync queue as a filter change. #}
+    <div id="genresResults"
+         class="htmx-fade-target"
+         hx-target="#genresResults"
+         hx-swap="innerHTML"
+         hx-sync="#genresResults:replace"
+         hx-indicator="#genresResults"
+         hx-replace-url="true">
+      {# The first load. Living on the placeholder rather than on the container
+         means it fires once and is then swapped away, so there is no separate
+         "have we loaded yet" state to keep.
 
-      <div class="chart-section-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 2rem; margin-top: 2rem;">
-        <div class="chart-section">
-          <h2>Genre Share</h2>
-          <div class="chart-canvas-wrap" style="height: 300px;">
-            <canvas id="genreShareChart" role="img" aria-label="Genre share of total plays"></canvas>
-          </div>
-          <div id="genreShareLegend" class="chart-legend"></div>
-        </div>
-        <div class="chart-section">
-          <h2>Artists per Genre</h2>
-          <p class="chart-subtitle">How many different artists you play in each genre (breadth).</p>
-          <div class="chart-canvas-wrap">
-            <canvas id="genreBreadthChart" role="img" aria-label="Genre breadth"></canvas>
-          </div>
-        </div>
-      </div>
-
-      {# Mix over time needs the full page width to be legible - its own row. #}
-      <div class="chart-section" style="margin-top: 2rem;">
-        <h2>Genre Mix &middot; <span id="genreMixLabel">{{ intervalLabel }}</span></h2>
-        <div class="chart-canvas-wrap">
-          <canvas id="genreMixChart" role="img" aria-label="Genre mix over time"></canvas>
-        </div>
-        <div id="genreMixLegend" class="chart-legend"></div>
-      </div>
-    </section>
-
-    {# ---- Per-genre drill-down zone (chips + detail filled via AJAX) -------- #}
-    <section class="card">
-      <h2>Explore a Genre</h2>
-      <div class="genre-chip-row" id="genreChipRow"></div>
-      <div id="genreDetail"><p class="loading">Loading…</p></div>
-    </section>
+         dataUrl is built by the route from the VALIDATED filter values, not
+         from request.full_path - reflecting the raw query string here would put
+         a junk ?interval=bogus back into the markup and disagree with the chip
+         hrefs built beside it. hx-replace-url is off for this one request only:
+         it asks for the canonical form of the URL the browser is already
+         showing, and rewriting the address bar on first paint would be a silent
+         redirect. #}
+      <section class="card"
+               hx-get="{{ dataUrl }}"
+               hx-trigger="load"
+               hx-replace-url="false">
+        <p class="loading">Loading…</p>
+      </section>
+    </div>
 
     {% import "_genre_macros.html" as genreMacros %}
     {{ genreMacros.lastfmAttribution(marginTop='1rem') }}
 
-    {# Initial filter state for genres.js. defaultWindow is the profile default
-       window - the popstate fallback interval for a bare URL (no ?interval). #}
-    <script type="application/json" id="genres-bootstrap">
-{{ { "interval": interval, "customStart": customStart, "customEnd": customEnd, "defaultWindow": defaultWindow } | tojson }}
-    </script>
+    <script src="{{ url_for('static', filename='js/vendor/htmx.min.js') }}"></script>
+    {# htmx-filters.js first: genres.js reads HtmxFilters at load time #}
+    <script src="{{ url_for('static', filename='js/htmx-filters.js') }}"></script>
     <script src="{{ url_for('static', filename='js/chart-utils.js') }}"></script>
     <script src="{{ url_for('static', filename='js/genres.js') }}"></script>
   {% endif %}

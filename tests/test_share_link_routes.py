@@ -15,7 +15,10 @@ from app import SpotifyDashboardApp, RATE_LIMIT_MAX_ATTEMPTS, RATE_LIMIT_ERROR_M
 from _app_factory import AppTestCase
 import Database.utils as utilsModule
 from test_charts_genres import coverageDict
-from test_wrapped_route import _wrappedBootstrap
+
+#< what htmx puts on every request it makes; the /wrapped and /shared/<token>
+#  filter swaps are marked by it rather than by the old ?ajax=true
+HX_HEADERS = {"HX-Request": "true"}
 
 _SECRET_KEY_PATCH = 'app.SpotifyDashboardApp._get_or_create_secret_key'
 
@@ -508,16 +511,17 @@ class TestOtherYearLinksInThePanel(ShareLinkRoutesTestCase):
         self.assertRegex(group, rf'data-url="https?://[^"]*/shared/{tokenA}"')
         self.assertRegex(group, rf'data-url="https?://[^"]*/shared/{tokenB}"')
 
-    def test_group_survives_an_ajax_year_switch(self):
-        """The panel is re-rendered server-side on an ajax year change, so the
-        group has to come through that path too - not just the full render."""
+    def test_group_survives_an_htmx_year_switch(self):
+        """The panel is re-rendered server-side on a year change (as an
+        out-of-band swap keyed on #shareLinkPanelBody), so the group has to
+        come through that path too - not just the full render."""
         self.dash.repo.upsertUser("alice", "alice@example.com")
         self.dash.repo.createShareLink("alice", self.dash.repo.SHARE_LINK_KIND_WRAPPED, 2024, None)
         client = self._loginAs("alice", "alice@example.com")
 
-        resp = client.get("/wrapped?year=2026&ajax=true&update=all")
+        body = client.get("/wrapped?year=2026", headers=HX_HEADERS).get_data(as_text=True)
 
-        self.assertIn("data-other-year-links", resp.get_json()["sharePanelHtml"])
+        self.assertIn("data-other-year-links", body)
 
 
 class TestProfileNoLongerListsShareLinks(ShareLinkRoutesTestCase):
@@ -714,17 +718,19 @@ class TestPublicSharedWrappedPage(PublicSharedWrappedTestCase):
         self.assertIn("Wonderland played 2 songs from TestAlbum", body)
         self.assertNotIn("alice played", body)
 
-    def test_js_constants_reflect_public_view_and_owner(self):
-        """The AJAX/year-switch JS branches on these to keep the hero text
-        and fetch target correct after a client-side filter/year change."""
+    def test_the_filter_form_swaps_against_this_share_url(self):
+        """The JS used to branch on isPublicView/shareOwnerName/fetchUrl from
+        the data island to keep the hero text and the fetch target correct
+        after a filter or year change. htmx takes the target from the form,
+        and the hero comes back server-rendered - so what has to be pinned is
+        that the form asks THIS token's page, not /wrapped (which an anonymous
+        visitor cannot reach)."""
         token = self._createLink()
 
-        resp = self._getShared(token)
-        bootstrap = _wrappedBootstrap(resp.data.decode())
+        body = self._getShared(token).data.decode()
 
-        self.assertTrue(bootstrap["isPublicView"])
-        self.assertEqual(bootstrap["shareOwnerName"], "alice")
-        self.assertEqual(bootstrap["fetchUrl"], f"/shared/{token}")
+        self.assertIn(f'hx-get="/shared/{token}"', body)
+        self.assertIn("alice&#39;s 2026 Wrapped", body)
 
     def test_genre_locked_progress_uses_the_owners_username(self):
         token = self._createLink()
@@ -922,44 +928,49 @@ class TestPublicSharedWrappedPageMultiYear(PublicSharedWrappedTestCase):
         self.assertNotIn('class="wrapped-year-badges"', body)
 
 
-class TestSharedWrappedPageAjax(PublicSharedWrappedTestCase):
-    def _getSharedAjax(self, token, query="", db=None):
+class TestSharedWrappedPageSwap(PublicSharedWrappedTestCase):
+    """The public page's filter/year swap. It used to be ?ajax=true answering
+    with {"topSongsHtml": ...}; it is now the HX-Request fragment
+    (_wrapped_results.html). The transport itself is pinned by
+    tests/test_wrapped_htmx.py - what stays here is that the swapped CARDS
+    still speak to an anonymous viewer the way the full render does."""
+
+    def _getSharedSwap(self, token, query="", db=None):
         client = self.dash.app.test_client()
         with patch.object(self.dash, '_getReadOnlyUserDb', return_value=db or self._makeDb()):
-            return client.get(f"/shared/{token}?ajax=true&type=all{query}")
+            return client.get(f"/shared/{token}{query}", headers=HX_HEADERS)
 
-    def test_ajax_lists_request_returns_json(self):
+    def test_a_swap_returns_the_recap_fragment(self):
         token = self._createLink(year=2026)
 
-        resp = self._getSharedAjax(token, query="&groupBy=month&limit=25&sortBy=name")
+        resp = self._getSharedSwap(token, query="?groupBy=month&limit=25&sortBy=name")
 
         self.assertEqual(resp.status_code, 200)
-        data = resp.get_json()
-        self.assertIn("topSongsHtml", data)
-        self.assertIn("timeSeries", data)
+        body = resp.get_data(as_text=True)
+        self.assertIn('data-category="top-songs"', body)
+        self.assertIn('id="timeSeriesChart"', body)
 
     def test_invalid_groupby_limit_sortby_fall_back_same_as_wrappedpage(self):
         token = self._createLink(year=2026)
 
-        resp = self._getSharedAjax(token, query="&groupBy=bogus&limit=999999&sortBy=bogus")
+        resp = self._getSharedSwap(token, query="?groupBy=bogus&limit=999999&sortBy=bogus")
 
         self.assertEqual(resp.status_code, 200)   #< falls back to defaults rather than erroring
 
-    def test_ajax_response_username_replaces_you_in_swapped_list_html(self):
+    def test_swapped_cards_name_the_owner_instead_of_saying_you(self):
         token = self._createLink(year=2026)
         db = self._makeDb()
         db.getTopArtists.return_value = [
             {"id": "a1", "name": "TestArtist", "plays": 5, "totalTimeListened": 5000, "uniqueSongCount": 3}
         ]
 
-        resp = self._getSharedAjax(token, db=db)
+        body = self._getSharedSwap(token, db=db).get_data(as_text=True)
 
-        html = resp.get_json()["topArtistsHtml"]
-        self.assertIn("alice played 3 different songs by TestArtist", html)
-        self.assertNotIn("You played", html)
+        self.assertIn("alice played 3 different songs by TestArtist", body)
+        self.assertNotIn("You played", body)
 
-    def test_ajax_swapped_list_html_uses_the_owners_display_name(self):
-        """The AJAX partial renders the same _track_card.html lines, so a
+    def test_swapped_cards_use_the_owners_display_name(self):
+        """The fragment renders the same _track_card.html lines, so a
         year/filter swap must not regress the full render's display-name fix
         back to the raw username."""
         token = self._createLink(year=2026)   #< upserts alice first; the name needs the row
@@ -969,37 +980,35 @@ class TestSharedWrappedPageAjax(PublicSharedWrappedTestCase):
             {"id": "a1", "name": "TestArtist", "plays": 5, "totalTimeListened": 5000, "uniqueSongCount": 3}
         ]
 
-        resp = self._getSharedAjax(token, db=db)
+        body = self._getSharedSwap(token, db=db).get_data(as_text=True)
 
-        html = resp.get_json()["topArtistsHtml"]
-        self.assertIn("Wonderland played 3 different songs by TestArtist", html)
-        self.assertNotIn("alice played", html)
+        self.assertIn("Wonderland played 3 different songs by TestArtist", body)
+        self.assertNotIn("alice played", body)
 
-    def test_ajax_year_switch_on_a_multi_year_link_stays_within_available_years(self):
+    def test_year_switch_on_a_multi_year_link_stays_within_available_years(self):
         token = self._createLink(year=None)
         db = self._makeDb()
         db.getEntriesFromOld.return_value = [{"playedAt": _ts(2023)}]
 
-        resp = self._getSharedAjax(token, query="&year=2024", db=db)
+        resp = self._getSharedSwap(token, query="?year=2024", db=db)
 
         self.assertEqual(resp.status_code, 200)
 
-    def test_ajax_year_tampering_is_ignored_for_a_single_year_link(self):
+    def test_year_tampering_is_ignored_for_a_single_year_link(self):
         token = self._createLink(year=2025)
         db = self._makeDb()
         db.getTopSongs.return_value = [
             {"id": "s1", "name": "OnlyIn2025", "plays": 1, "duration": 0, "artists": []}
         ]
 
-        resp = self._getSharedAjax(token, query="&year=2026", db=db)
+        body = self._getSharedSwap(token, query="?year=2026", db=db).get_data(as_text=True)
 
-        html = resp.get_json()["topSongsHtml"]
-        self.assertIn("OnlyIn2025", html)
+        self.assertIn("OnlyIn2025", body)
 
-    def test_ajax_list_html_uses_the_token_keyed_image_route(self):
-        """The full render passes imageBase=/shared/<token>/img; the ajax list
-        swap has to pass it too, or every cover in a re-sorted/resized list
-        falls back to /img/<owner>/... , which 404s without a session."""
+    def test_swapped_cards_use_the_token_keyed_image_route(self):
+        """The full render passes imageBase=/shared/<token>/img; the fragment
+        has to pass it too, or every cover in a re-sorted/resized list falls
+        back to /img/<owner>/... , which 404s without a session."""
         token = self._createLink(year=2026)
         db = self._makeDb()
         db.getTopSongs.return_value = [{
@@ -1010,13 +1019,12 @@ class TestSharedWrappedPageAjax(PublicSharedWrappedTestCase):
             "artists": [], "plays": 5, "totalTimeListened": 5000, "firstListenedAt": 0,
         }]
 
-        resp = self._getSharedAjax(token, db=db)
+        body = self._getSharedSwap(token, db=db).get_data(as_text=True)
 
-        html = resp.get_json()["topSongsHtml"]
-        self.assertIn(f'src="/shared/{token}/img/tracks/img1.jpeg"', html)
-        self.assertNotIn('src="/img/alice/', html)
+        self.assertIn(f'src="/shared/{token}/img/tracks/img1.jpeg"', body)
+        self.assertNotIn('src="/img/alice/', body)
 
-    def test_ajax_list_html_links_to_spotify_not_authenticated_detail_pages(self):
+    def test_swapped_cards_link_to_spotify_not_authenticated_detail_pages(self):
         token = self._createLink(year=2026)
         db = self._makeDb()
         db.getTopArtists.return_value = [{
@@ -1025,22 +1033,22 @@ class TestSharedWrappedPageAjax(PublicSharedWrappedTestCase):
             "uniqueSongCount": 3, "firstListenedAt": 0,
         }]
 
-        resp = self._getSharedAjax(token, db=db)
+        body = self._getSharedSwap(token, db=db).get_data(as_text=True)
 
-        html = resp.get_json()["topArtistsHtml"]
-        self.assertNotIn('href="/artist/a1"', html)
-        self.assertIn('href="https://open.spotify.com/artist/a1"', html)
+        self.assertNotIn('href="/artist/a1"', body)
+        self.assertIn('href="https://open.spotify.com/artist/a1"', body)
 
-    def test_ajax_response_never_includes_a_share_panel(self):
+    def test_a_swap_never_includes_a_share_panel(self):
         """Safety regression: an anonymous visitor must never receive
         share-panel data (create-link forms, existing tokens) for the
-        owner's account, even on the same type=all ajax path that the
-        authenticated page uses to refresh its own panel on year switch."""
+        owner's account, even though the authenticated page's swap refreshes
+        exactly that region out of band."""
         token = self._createLink(year=2026)
 
-        resp = self._getSharedAjax(token)
+        body = self._getSharedSwap(token).get_data(as_text=True)
 
-        self.assertNotIn("sharePanelHtml", resp.get_json())
+        self.assertNotIn("shareLinkPanelBody", body)
+        self.assertNotIn("Share this Wrapped", body)
 
 
 class TestShareLinkPanelOnWrappedPage(ShareLinkRoutesTestCase):
@@ -1151,57 +1159,50 @@ class TestShareLinkPanelOnWrappedPage(ShareLinkRoutesTestCase):
 
         self.assertIn('id="shareLinkModal" class="share-modal-overlay" style="display: flex;"', body)
 
-    def test_ajax_year_switch_refreshes_the_share_panel_for_the_new_year(self):
+    def test_a_year_switch_refreshes_the_share_panel_for_the_new_year(self):
         """Regression: the share modal's panel used to stay keyed to
         whichever year the page last fully rendered with, since the
         AJAX year-switch never touched #shareLinkPanelBody - reported after
         switching years and finding the modal still offered/showed the
-        previous year's link state."""
+        previous year's link state. It now rides the swap out of band."""
         self.dash.repo.upsertUser("alice", "alice@example.com")
         token = self.dash.repo.createShareLink("alice", self.dash.repo.SHARE_LINK_KIND_WRAPPED, 2025, None)
         db = self._makeDb()
         db.getEntriesFromOld.return_value = [{"playedAt": 0, "timePlayed": 1}]   #< makes 2025 a valid available year
         client = self._loginAs("alice", "alice@example.com", db=db)
 
-        resp = client.get("/wrapped?year=2025&ajax=true&type=all")
+        resp = client.get("/wrapped?year=2025", headers=HX_HEADERS)
 
         self.assertEqual(resp.status_code, 200)
-        panelHtml = resp.get_json()["sharePanelHtml"]
+        body = resp.get_data(as_text=True)
+        panelHtml = body[body.index('id="shareLinkPanelBody"'):]
         self.assertIn(f"/shared/{token}", panelHtml)
         self.assertIn("Revoke", panelHtml)
 
-    def test_ajax_share_panel_reflects_a_year_with_no_link_yet(self):
+    def test_the_swapped_share_panel_reflects_a_year_with_no_link_yet(self):
         self.dash.repo.upsertUser("alice", "alice@example.com")
         self.dash.repo.createShareLink("alice", self.dash.repo.SHARE_LINK_KIND_WRAPPED, 2025, None)
         client = self._loginAs("alice", "alice@example.com")
 
-        resp = client.get("/wrapped?year=2026&ajax=true&type=all")
+        body = client.get("/wrapped?year=2026", headers=HX_HEADERS).get_data(as_text=True)
 
-        panelHtml = resp.get_json()["sharePanelHtml"]
+        panelHtml = body[body.index('id="shareLinkPanelBody"'):]
         self.assertIn("Create Share Link", panelHtml)
         #< the 2025 link is still listed, but in the other-years group - what
         #  must not appear is a revoke for the year on screen
         currentSection = panelHtml[panelHtml.index("</details>"):]
         self.assertNotIn("Revoke", currentSection)
 
-    def test_ajax_chart_only_update_does_not_touch_the_share_panel(self):
-        """type=chart/lists narrow updates only ever fire when the year
-        hasn't changed (see updateWrappedFilters()'s updateType logic) - the
-        share panel doesn't need refreshing, and skipping it avoids an
-        unnecessary query/render on every groupBy-only tweak."""
-        client = self._loginAs("alice", "alice@example.com")
-
-        resp = client.get("/wrapped?year=2026&ajax=true&type=chart")
-
-        self.assertNotIn("sharePanelHtml", resp.get_json())
-
-    def test_ajax_share_panel_absent_when_feature_disabled(self):
+    def test_the_swapped_share_panel_is_absent_when_the_feature_is_disabled(self):
+        """With share links off there is no #shareLinkPanelBody on the page,
+        and an out-of-band swap for an element that isn't there is an
+        htmx:oobErrorNoTarget rather than a no-op."""
         self.dash.repo.setShareLinksEnabled(False)
         client = self._loginAs("alice", "alice@example.com")
 
-        resp = client.get("/wrapped?year=2026&ajax=true&type=all")
+        body = client.get("/wrapped?year=2026", headers=HX_HEADERS).get_data(as_text=True)
 
-        self.assertNotIn("sharePanelHtml", resp.get_json())
+        self.assertNotIn("shareLinkPanelBody", body)
 
     def test_panel_lists_multiple_links_for_the_same_year(self):
         self.dash.repo.upsertUser("alice", "alice@example.com")

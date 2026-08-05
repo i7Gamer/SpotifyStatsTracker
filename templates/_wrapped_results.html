@@ -1,0 +1,228 @@
+{#- SPDX-FileCopyrightText: 2026 i7Gamer
+    SPDX-License-Identifier: AGPL-3.0-or-later -#}
+
+{# Everything on the Wrapped page that a year / trend-bucket / items-per-category
+   / sort change re-renders, swapped as one unit into #wrappedResults - on the
+   first paint (included by wrapped.html) and again on every filter change (see
+   the HX-Request branch in routes/wrapped.py). Both renders get the same
+   context, which is the point of the split: the two used to be a full render and
+   a hand-assembled JSON envelope of six HTML chunks plus a dozen scalars, and
+   they drifted.
+
+   oobSwap is set only by the fragment render. /wrapped is NOT a two-phase shell
+   like /history - the first GET is the whole recap - so the regions a filter
+   change touches are not all inside one container: the hero and the year badges
+   sit above the filter form, the export button inside it, and the share panel
+   inside the modal beside it. Those four ride along as out-of-band swaps, which
+   is how ONE response still updates all of them. They must be at the TOP LEVEL
+   of the fragment for htmx to find them, which is why they lead this file. #}
+{% set ownerLabel = username | displayName %}
+{% if oobSwap %}
+  {% include '_wrapped_hero.html' %}
+  {% include '_wrapped_year_badges.html' %}
+  {% include '_wrapped_year_field.html' %}
+  {% if not publicView %}
+    {% include '_wrapped_export_button.html' %}
+    {#- Gated exactly like the modal in wrapped.html: with share links off there
+        is no #shareLinkPanelBody on the page, and an out-of-band swap for an
+        element that isn't there is an htmx:oobErrorNoTarget rather than a
+        no-op. A public visitor never gets share-panel data at all. -#}
+    {% if share_links_enabled %}
+      <div id="shareLinkPanelBody" hx-swap-oob="true">
+        {% include '_share_link_panel.html' %}
+      </div>
+    {% endif %}
+  {% endif %}
+{% endif %}
+
+{# data-stat lets a reader (and the export button's data-*) find each tile by
+   name instead of by :nth-child position, so reordering a card can't move a
+   value into the wrong tile. #}
+<section class="track-summary-grid">
+  <article class="track-summary-card" data-stat="plays">
+    <h3>Total Plays</h3>
+    <p class="summary-value">{{ totalPlays }}</p>
+  </article>
+  <article class="track-summary-card" data-stat="time">
+    <h3>Total Time</h3>
+    <p class="summary-value">{{ totalTime }}</p>
+  </article>
+</section>
+
+<section class="track-summary-grid-3">
+  <article class="track-summary-card" data-stat="streak">
+    <h3>Longest Streak</h3>
+    <p class="summary-value">{{ longestStreak }} days</p>
+  </article>
+  <article class="track-summary-card" data-stat="peak">
+    <h3>Peak Day</h3>
+    <div class="peak-day-container">
+      <span class="summary-value">{{ peakListeningTime[0] if peakListeningTime else 'N/A' }}</span>
+      <span class="summary-subtitle">{{ peakListeningTime[1] if peakListeningTime else '' }} plays</span>
+    </div>
+  </article>
+  <article class="track-summary-card" data-stat="uniqueSongs">
+    <h3>Unique Songs</h3>
+    <p class="summary-value">{{ uniqueSongsCount }}</p>
+  </article>
+</section>
+
+<section class="track-summary-grid-3">
+  <article class="track-summary-card" data-stat="uniqueArtists">
+    <h3>Unique Artists</h3>
+    <p class="summary-value">{{ uniqueArtistsCount }}</p>
+  </article>
+  <article class="track-summary-card" data-stat="discoveredSongs">
+    <h3>Songs Discovered</h3>
+    <p class="summary-value">{{ discoveredSongsCount }}</p>
+  </article>
+  <article class="track-summary-card" data-stat="discoveredArtists">
+    <h3>Artists Discovered</h3>
+    <p class="summary-value">{{ discoveredArtistsCount }}</p>
+  </article>
+</section>
+
+{# The canvas is a NEW element after every swap, so the redraw cannot be
+   anything htmx owns - it is an htmx:afterSwap listener in
+   static/js/wrapped.js, reading the data island at the bottom of this file. #}
+<section class="card chart-card">
+  <div class="chart-section">
+    <h2>Listening Over {{ year }}</h2>
+    <div class="chart-canvas-wrap">
+      <canvas id="timeSeriesChart" role="img" aria-label="Listening across the year"></canvas>
+    </div>
+  </div>
+</section>
+
+<section class="card chart-card" id="wrappedGenresCard">
+  {% include "_wrapped_genres.html" %}
+</section>
+
+{# Which of these is `active` is client state, not server state: the swapped-in
+   nav always leads with All Stats, and wrapped.js re-applies whatever the user
+   had chosen (see applyStatsFilter). #}
+<nav class="wrapped-stats-filters" aria-label="Filter statistics by category">
+  <button class="stats-filter-button active" data-filter="all">All Stats</button>
+  <button class="stats-filter-button" data-filter="top-songs">Top Songs</button>
+  <button class="stats-filter-button" data-filter="top-artists">Top Artists</button>
+  <button class="stats-filter-button" data-filter="top-albums">Top Albums</button>
+  <button class="stats-filter-button" data-filter="discoveries-songs" {% if not discoveredSongs %}style="display: none;"{% endif %}>Discovered Songs</button>
+  <button class="stats-filter-button" data-filter="discoveries-artists" {% if not discoveredArtists %}style="display: none;"{% endif %}>Discovered Artists</button>
+  <button class="stats-filter-button" data-filter="discoveries-albums" {% if not discoveredAlbums %}style="display: none;"{% endif %}>Discovered Albums</button>
+</nav>
+
+<div data-category="top-songs">
+  <div class="play-log-header">
+    <h2>Top Songs</h2>
+    {% if not publicView and topSongs %}
+    <div class="play-log-controls">
+      <div class="filter-group">
+        <label for="wrappedPlaylistFormat">Format:</label>
+        <select id="wrappedPlaylistFormat">
+          <option value="csv">CSV</option>
+          <option value="m3u">M3U</option>
+          <option value="xspf">XSPF</option>
+        </select>
+      </div>
+      <button type="button" id="downloadWrappedPlaylistBtn" class="button" data-year="{{ year }}">
+        Download Top 100
+      </button>
+    </div>
+    {% endif %}
+  </div>
+  <section class="track-list">
+    {% if topSongs %}
+      {% for track in topSongs %}
+        {% set item_number = loop.index %}
+        {% set section = 'top_songs' %}
+        {% include '_track_card.html' %}
+      {% endfor %}
+    {% else %}
+      <p class="loading">No songs played in {{ year }}.</p>
+    {% endif %}
+  </section>
+</div>
+
+<div data-category="top-artists">
+  <h2>Top Artists</h2>
+  <section class="track-list">
+    {% if topArtists %}
+      {% for track in topArtists %}
+        {% set item_number = loop.index %}
+        {% set section = 'top_artists' %}
+        {% include '_track_card.html' %}
+      {% endfor %}
+    {% else %}
+      <p class="loading">No artists played in {{ year }}.</p>
+    {% endif %}
+  </section>
+</div>
+
+<div data-category="top-albums">
+  <h2>Top Albums</h2>
+  <section class="track-list">
+    {% if topAlbums %}
+      {% for track in topAlbums %}
+        {% set item_number = loop.index %}
+        {% set section = 'top_albums' %}
+        {% include '_track_card.html' %}
+      {% endfor %}
+    {% else %}
+      <p class="loading">No albums played in {{ year }}.</p>
+    {% endif %}
+  </section>
+</div>
+
+{# The three discovery sections hide themselves when empty, exactly as the old
+   loader did by setting div.style.display - server-side now, so the markup and
+   the nav button above it can never disagree about whether there is anything
+   to show. #}
+<div data-category="discoveries-songs" {% if not discoveredSongs %}style="display: none;"{% endif %}>
+  <h2>Discovered Songs</h2>
+  <p class="chart-subtitle">Songs {{ ownerLabel if publicView else "you" }} first listened to in {{ year }}.</p>
+  <section class="track-list">
+    {% if discoveredSongs %}
+      {% for track in discoveredSongs %}
+        {% set item_number = loop.index %}
+        {% set section = 'top_songs' %}
+        {% include '_track_card.html' %}
+      {% endfor %}
+    {% endif %}
+  </section>
+</div>
+
+<div data-category="discoveries-artists" {% if not discoveredArtists %}style="display: none;"{% endif %}>
+  <h2>Discovered Artists</h2>
+  <p class="chart-subtitle">Artists {{ ownerLabel if publicView else "you" }} first listened to in {{ year }}.</p>
+  <section class="track-list">
+    {% if discoveredArtists %}
+      {% for track in discoveredArtists %}
+        {% set item_number = loop.index %}
+        {% set section = 'top_artists' %}
+        {% include '_track_card.html' %}
+      {% endfor %}
+    {% endif %}
+  </section>
+</div>
+
+<div data-category="discoveries-albums" {% if not discoveredAlbums %}style="display: none;"{% endif %}>
+  <h2>Discovered Albums</h2>
+  <p class="chart-subtitle">Albums {{ ownerLabel if publicView else "you" }} first listened to in {{ year }}.</p>
+  <section class="track-list">
+    {% if discoveredAlbums %}
+      {% for track in discoveredAlbums %}
+        {% set item_number = loop.index %}
+        {% set section = 'top_albums' %}
+        {% include '_track_card.html' %}
+      {% endfor %}
+    {% endif %}
+  </section>
+</div>
+
+<!-- The chart's data, server-rendered into a JSON data island (not executable
+     script - htmx inserts a type="application/json" tag without evaluating it).
+     Read once at load by static/js/wrapped.js and re-read by its htmx:afterSwap
+     listener, which is why it lives INSIDE the swap container. -->
+<script type="application/json" id="wrapped-bootstrap">
+{{ {"timeSeries": timeSeries} | tojson }}
+</script>

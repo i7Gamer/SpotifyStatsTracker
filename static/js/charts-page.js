@@ -1,230 +1,127 @@
 // SPDX-FileCopyrightText: 2026 i7Gamer
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-/* Drives the /charts page: fetches the chart-data payload after first paint
- * (and on every filter change) so the page shell renders immediately, then
- * hands the actual drawing to charts.js (window.renderAllCharts). Mirrors the
- * AJAX filter pattern of compare.js. The inline onchange="updateCharts*()"
- * handlers in charts.html depend on the globals defined here. */
-(function () {
-  var CHARTS_FADE_MS = 200;
+/* What is left of the /charts page's browser logic once htmx owns the
+ * request/swap layer (see templates/charts.html for the attributes).
+ *
+ * This file used to be 230 lines. Most of it went the same way /history's did,
+ * and the mapping is worth keeping written down:
+ *
+ *   loadChartsData + AbortController -> hx-get + hx-sync="#chartsCard:replace"
+ *   replaceChartsUrl                 -> hx-replace-url="true"
+ *   updateChartsFilters' set/delete  -> the form's own inputs, serialized by
+ *     surgery on the query string       htmx, plus `disabled` on the custom
+ *                                       dates when the range is not custom
+ *   updateChartsDateFilter's range   -> HtmxFilters.rangeProblem, vetoing the
+ *     check + error styling              request in htmx:configRequest
+ *   fadeTargets + loading-fade       -> .htmx-fade-target + hx-indicator
+ *   the 401 -> /login branch         -> HX-Redirect, sent by the server
+ *   the popstate handler             -> nothing, and deliberately: every URL
+ *     update here REPLACES, so this page never puts an entry on the history
+ *     stack for itself. It only ever ran on a cross-document Back, which
+ *     reloads the page server-side anyway. window.__chartsDefaultInterval, the
+ *     fallback it needed to re-select the right option, went with it.
+ *   applyChartsData's label writes,  -> rendered by the server, which is what
+ *     section hiding, and the           decided all three in the first place
+ *     genreSectionHtml injection
+ *
+ * What could not move is below. The charts themselves are the reason this file
+ * still exists at all: they are drawn onto <canvas>, which htmx has no way to
+ * swap, so the data comes with the markup as a JSON island and the redraw is a
+ * htmx:afterSwap listener. */
 
-  // Only the canvas wraps + the genre section dim during a filter fetch (they
-  // carry the opacity transition in style.css); the headings stay put.
-  function fadeTargets() {
-    var nodes = Array.prototype.slice.call(
-      document.querySelectorAll('#chartsCard .chart-canvas-wrap'));
-    var genreSection = document.getElementById('chartsGenreSection');
-    if (genreSection) {
-      nodes.push(genreSection);
-    }
-    return nodes;
-  }
+//< the swap target, and the data island that arrives inside it
+var CHARTS_TARGET_ID = 'chartsCard';
+var CHARTS_DATA_ID = 'chartsData';
 
-  //< the in-flight fetch ({controller, targets}) - a newer filter change aborts
-  //  it so a slow older response can't land after (and clobber) the newer one
-  var activeLoad = null;
+//< the form htmx watches, in charts.html
+var CHARTS_FORM_ID = 'chartsFilters';
 
-  function loadChartsData(opts) {
-    opts = opts || {};
-    var initial = !!opts.initial;
+//< the two ranges the route buckets by hour, where the Trend-buckets choice
+//  does not apply (see chartsPage's isSingleDayView)
+var SINGLE_DAY_INTERVALS = ['today', 'day'];
 
-    if (activeLoad) {
-      activeLoad.controller.abort();
-      activeLoad.targets.forEach(function (t) { t.classList.remove('loading-fade'); });
-    }
-    var controller = new AbortController();
-    //< no fade on the very first load: the canvases start empty, so there's
-    //  nothing to dim - just fill them in once the payload lands
-    var targets = initial ? [] : fadeTargets();
-    activeLoad = { controller: controller, targets: targets };
-    targets.forEach(function (t) { t.classList.add('loading-fade'); });
+if (typeof document !== 'undefined') {
+  var byId = function (id) { return document.getElementById(id); };
 
-    var params = new URLSearchParams(window.location.search);
-    params.set('ajax', 'true');
-    var delay = new Promise(function (resolve) { setTimeout(resolve, initial ? 0 : CHARTS_FADE_MS); });
-    var fetched = fetch(window.location.pathname + '?' + params.toString(), {
-      headers: { 'X-Requested-With': 'XMLHttpRequest' },
-      signal: controller.signal
-    }).then(function (resp) {
-      return window.AjaxStatus.readJsonOrThrow(resp, 'charts data');
-    });
+  var currentRangeProblem = function () {
+    return HtmxFilters.rangeProblem(byId('interval').value, byId('startDate').value, byId('endDate').value);
+  };
 
-    Promise.all([fetched, delay])
-      .then(function (results) {
-        //< a response that settled before its abort can still reach here; never
-        //  swap stale data in over a newer load's
-        if (!activeLoad || activeLoad.controller !== controller) {
-          return;
-        }
-        applyChartsData(results[0]);
-        if (window.AjaxStatus) window.AjaxStatus.clearBanner();
-      })
-      .catch(function (err) {
-        //< navigating to /login - not a load failure to report
-        if (window.AjaxStatus && window.AjaxStatus.isUnauthorizedError(err)) return;
-        if (err.name !== 'AbortError') {
-          console.error(err);
-          //< genuine failure (not superseded): the canvases can't hold a message,
-          //  so surface a page-level banner with Retry
-          if ((!activeLoad || activeLoad.controller === controller) && window.AjaxStatus) {
-            window.AjaxStatus.showBanner(function () { loadChartsData(); });
-          }
-        }
-      })
-      .finally(function () {
-        if (activeLoad && activeLoad.controller === controller) {
-          activeLoad = null;
-          targets.forEach(function (t) { t.classList.remove('loading-fade'); });
-        }
-      });
-  }
+  var showRangeError = function (problem) {
+    var invalid = problem === HtmxFilters.RANGE_INVERTED;
+    var errorEl = byId('dateError');
+    errorEl.textContent = invalid ? HtmxFilters.RANGE_INVERTED_MESSAGE : '';
+    errorEl.style.display = invalid ? 'block' : 'none';
+    byId('startDate').style.borderColor = invalid ? 'var(--accent)' : '';
+    byId('endDate').style.borderColor = invalid ? 'var(--accent)' : '';
+  };
 
-  function applyChartsData(data) {
-    window.__chartData = {
-      timeSeries: data.timeSeries,
-      heatmap: data.heatmap,
-      artistTrend: data.artistTrend,
-      explicitRatio: data.explicitRatio,
-      decadeDistribution: data.decadeDistribution,
-      completionStats: data.completionStats,
-      mostSkippedSongs: data.mostSkippedSongs,
-      mostSkippedArtists: data.mostSkippedArtists,
-      genreDistribution: data.genreDistribution,
-      groupBy: data.groupBy,
-      interval: data.interval
-    };
-
-    var timeLabel = document.getElementById('chartsTimeSeriesLabel');
-    if (timeLabel) {
-      timeLabel.textContent = data.intervalLabel + (data.lastDayDate ? ' (' + data.lastDayDate + ')' : '');
-    }
-    var trendLabel = document.getElementById('chartsArtistTrendLabel');
-    if (trendLabel) {
-      trendLabel.textContent = data.intervalLabel;
-    }
-
-    // Single-day ranges carry no artist trend (server sends null) - hide the
-    // whole section rather than drawing an empty-state chart.
-    var trendSection = document.getElementById('chartsArtistTrendSection');
-    if (trendSection) {
-      trendSection.style.display = (data.artistTrend === null) ? 'none' : '';
-    }
-
-    // The Top Genres body (locked progress vs. unlocked chart) is range-scoped,
-    // so it arrives as pre-rendered HTML - inject it before rendering so the
-    // #genreChart canvas exists when renderAllCharts draws into it.
-    var genreSection = document.getElementById('chartsGenreSection');
-    if (genreSection && typeof data.genreSectionHtml === 'string') {
-      genreSection.innerHTML = data.genreSectionHtml;
-    }
-
-    if (window.renderAllCharts) {
-      window.renderAllCharts();
-    }
-  }
-
-  // ---- URL + filter handlers (globals for the inline onchange handlers) ----
-
-  // Update the URL in place (replaceState, not push) so a filter change stays
-  // shareable/refreshable without stacking a history entry - Back then returns
-  // to the page the user came from instead of stepping back through past filters.
-  function replaceChartsUrl(mutate) {
-    var params = new URLSearchParams(window.location.search);
-    mutate(params);
-    params.delete('ajax');
-    var query = params.toString();
-    window.history.replaceState({}, '', window.location.pathname + (query ? '?' + query : ''));
-  }
-
+  // Called from the Time Period select's onchange. Runs before htmx's listener
+  // (an inline on*= handler fires at the target; htmx's is on the form and
+  // fires as the event bubbles), so the disabled flags are already right by the
+  // time the request is serialized.
+  //
+  // `disabled`, not merely hidden: a disabled control is not serialized, which
+  // is what keeps a stale custom range out of the request - and so out of the
+  // URL - after switching back to a named interval. The bucket select is only
+  // HIDDEN for a single-day range, because its value has to survive switching
+  // back to a multi-day one.
   window.updateChartsIntervalFilter = function () {
-    var interval = document.getElementById('interval').value;
-    var customDates = document.getElementById('chartsCustomDates');
-    var groupByContainer = document.getElementById('groupByContainer');
-
-    groupByContainer.style.display = (interval === 'today' || interval === 'day') ? 'none' : 'flex';
-
-    if (interval === 'custom') {
-      customDates.style.display = 'flex';
-      return;   //< wait for both custom dates before fetching
-    }
-    customDates.style.display = 'none';
-    window.updateChartsFilters();
+    var interval = byId('interval').value;
+    var custom = interval === 'custom';
+    byId('chartsCustomDates').style.display = custom ? 'flex' : 'none';
+    byId('startDate').disabled = !custom;
+    byId('endDate').disabled = !custom;
+    byId('groupByContainer').style.display =
+      SINGLE_DAY_INTERVALS.indexOf(interval) === -1 ? 'flex' : 'none';
+    showRangeError(currentRangeProblem());
   };
 
-  window.updateChartsDateFilter = function () {
-    var startEl = document.getElementById('startDate');
-    var endEl = document.getElementById('endDate');
-    var errorEl = document.getElementById('dateError');
-    var startDate = startEl.value, endDate = endEl.value;
-
-    errorEl.style.display = 'none';
-    startEl.style.borderColor = '';
-    endEl.style.borderColor = '';
-
-    if (startDate && endDate) {
-      if (new Date(startDate) > new Date(endDate)) {
-        errorEl.textContent = 'Start date cannot be after end date.';
-        errorEl.style.display = 'block';
-        startEl.style.borderColor = 'var(--accent)';
-        endEl.style.borderColor = 'var(--accent)';
-        return;
-      }
-      window.updateChartsFilters(true);
+  // The one place a request gets vetoed, and what stops "custom" firing a
+  // request the moment it is selected: a range with no dates yet is
+  // RANGE_INCOMPLETE, which is exactly what the old handler's early return
+  // covered. Shared with /history and the Top lists, whose filter card is the
+  // same control set (static/js/htmx-filters.js).
+  document.body.addEventListener('htmx:configRequest', function (evt) {
+    if (!evt.detail.elt || evt.detail.elt.id !== CHARTS_FORM_ID) return;
+    var problem = currentRangeProblem();
+    showRangeError(problem);
+    if (problem !== HtmxFilters.RANGE_OK) {
+      evt.preventDefault();
+      return;
     }
-  };
-
-  window.updateChartsFilters = function (forceCustom) {
-    var interval = document.getElementById('interval').value;
-    var groupBy = document.getElementById('groupBy').value;
-
-    //< Auto ("") drops the param so the server derives the bucket from the
-    //  range span - pinning the derived value would freeze auto mode
-    function setGroupBy(params) {
-      if (groupBy) {
-        params.set('groupBy', groupBy);
-      } else {
-        params.delete('groupBy');
-      }
-    }
-
-    if (interval === 'custom' || forceCustom) {
-      var startDate = document.getElementById('startDate').value;
-      var endDate = document.getElementById('endDate').value;
-      if (!startDate || !endDate) {
-        return;
-      }
-      replaceChartsUrl(function (params) {
-        setGroupBy(params);
-        params.set('interval', 'custom');
-        params.set('startDate', startDate);
-        params.set('endDate', endDate);
-      });
-    } else {
-      replaceChartsUrl(function (params) {
-        setGroupBy(params);
-        params.set('interval', interval);
-        params.delete('startDate');
-        params.delete('endDate');
-      });
-    }
-    loadChartsData();
-  };
-
-  window.addEventListener('popstate', function () {
-    var params = new URLSearchParams(window.location.search);
-    var hasCustom = params.get('startDate') && params.get('endDate');
-    //< a bare URL (no ?interval) means the server default window, not 'day'
-    var interval = hasCustom ? 'custom' : (params.get('interval') || window.__chartsDefaultInterval || 'day');
-    document.getElementById('interval').value = interval;
-    document.getElementById('startDate').value = params.get('startDate') || '';
-    document.getElementById('endDate').value = params.get('endDate') || '';
-    document.getElementById('chartsCustomDates').style.display = (interval === 'custom') ? 'flex' : 'none';
-    document.getElementById('groupBy').value = params.get('groupBy') || '';   //< bare URL = Auto
-    document.getElementById('groupByContainer').style.display =
-      (interval === 'today' || interval === 'day') ? 'none' : 'flex';
-    loadChartsData();
+    //< Auto ("") must not reach the URL, or the derived bucket would be pinned
+    //  and auto mode frozen - the same thing params.delete('groupBy') did
+    HtmxFilters.pruneEmptyParams(evt.detail.parameters);
   });
 
-  loadChartsData({ initial: true });
-})();
+  // The charts. htmx swaps the card's markup; a <canvas> is not markup, so the
+  // series travel with it as a JSON island (see _charts_results.html) and the
+  // redraw happens here. This IS window.__chartData - charts.js reads it
+  // directly, so there is no reshaping left to get wrong.
+  document.body.addEventListener('htmx:afterSwap', function (evt) {
+    if (evt.target.id !== CHARTS_TARGET_ID) return;
+    var island = evt.target.querySelector('#' + CHARTS_DATA_ID);
+    if (island) window.__chartData = JSON.parse(island.textContent);
+    if (window.renderAllCharts) window.renderAllCharts();
+  });
+
+  // A genuine failure gets the shared inline error + Retry rather than a stuck
+  // "Loading…" or a card of stale charts under a URL that says otherwise. An
+  // expired session no longer arrives here at all: the server answers an htmx
+  // request with HX-Redirect, so the browser navigates to /login instead of
+  // this reporting a load failure.
+  var reportChartsFailure = function () {
+    var target = byId(CHARTS_TARGET_ID);
+    if (!target || !window.AjaxStatus) return;
+    window.AjaxStatus.renderInto(target, function () {
+      htmx.ajax('GET', window.location.pathname + window.location.search,
+                { target: '#' + CHARTS_TARGET_ID, swap: 'innerHTML' });
+    });
+  };
+  document.body.addEventListener('htmx:responseError', reportChartsFailure);
+  document.body.addEventListener('htmx:sendError', reportChartsFailure);
+}
+//< no module.exports: everything pure lives in static/js/htmx-filters.js, which
+//  is where the plain-node unit test points (tests/test_htmx_filters.js)

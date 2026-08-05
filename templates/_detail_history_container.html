@@ -1,0 +1,29 @@
+{#- SPDX-FileCopyrightText: 2026 i7Gamer
+    SPDX-License-Identifier: AGPL-3.0-or-later -#}
+
+{# The play log's swap target, shared by all three detail bodies. The partial it
+   wraps differs (the song page's compact timeline vs the artist/album pages'
+   full history cards), so the caller sets `historyPartial` before including
+   this; everything around it has to stay identical, which is why it lives here
+   rather than being repeated three times.
+
+   These attributes are inherited by whatever is swapped in, which is how the
+   sort toggle and the pagination strip get their behaviour without
+   _pagination.html - shared with pages that are not on htmx - needing to know
+   anything about it. They also OVERRIDE the ones on #detailBody above (htmx
+   resolves an attribute to the nearest ancestor that carries it), which is what
+   keeps a sort change swapping the log rather than the whole body.
+
+   hx-replace-url is the load-bearing one: a sort/skips/page change must REPLACE
+   the URL, never push, so Back leaves the detail page instead of walking back
+   through every list state the visitor tried. That is the same rule the
+   replaceState calls this replaced followed. #}
+<div id="detailHistoryResults"
+     class="htmx-fade-target"
+     hx-target="#detailHistoryResults"
+     hx-swap="innerHTML"
+     hx-sync="#detailHistoryResults:replace"
+     hx-indicator="#detailHistoryResults"
+     hx-replace-url="true">
+  {% include historyPartial %}
+</div>

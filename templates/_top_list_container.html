@@ -1,0 +1,40 @@
+{#- SPDX-FileCopyrightText: 2026 i7Gamer
+    SPDX-License-Identifier: AGPL-3.0-or-later -#}
+
+{# The swap target for all three Top pages, plus the scripts that drive it.
+   Factored out when the wiring grew past the three-line placeholder the three
+   templates used to repeat: this is the half of the two-phase load that has to
+   stay identical across them, and _page_card.html above it is the other half.
+
+   The hx-* here are inherited by everything swapped in, which is how the
+   pagination strip gets its behaviour without _pagination.html - shared with
+   /history and the detail pages - having to know anything about it. #}
+<div id="topListResults"
+     class="htmx-fade-target"
+     hx-target="#topListResults"
+     hx-swap="innerHTML"
+     hx-sync="#topListResults:replace"
+     hx-indicator="#topListResults"
+     hx-replace-url="true">
+  {# The first load. Living on the placeholder rather than on the container
+     means it fires once and is then swapped away, so there is no separate
+     "have we loaded yet" state to keep.
+
+     listUrl is built by the route from the VALIDATED filter values, not echoed
+     from request.full_path - reflecting the raw query string would put a junk
+     ?interval=bogus back into the markup and disagree with the pagination links
+     built beside it. hx-replace-url is off for this one request only: it asks
+     for the canonical form of the URL the browser is already showing, and
+     rewriting the address bar on first paint would be a silent redirect. #}
+  <section class="track-list"
+           hx-get="{{ listUrl }}"
+           hx-trigger="load"
+           hx-replace-url="false">
+    <p class="loading">Loading…</p>
+  </section>
+</div>
+
+<script src="{{ url_for('static', filename='js/vendor/htmx.min.js') }}"></script>
+{# htmx-filters.js first: top-list.js reads HtmxFilters at load time #}
+<script src="{{ url_for('static', filename='js/htmx-filters.js') }}"></script>
+<script src="{{ url_for('static', filename='js/top-list.js') }}"></script>

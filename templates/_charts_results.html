@@ -1,0 +1,118 @@
+{#- SPDX-FileCopyrightText: 2026 i7Gamer
+    SPDX-License-Identifier: AGPL-3.0-or-later -#}
+
+{# The /charts card: every chart section, swapped as one unit into #chartsCard
+   on first paint and on every filter change (see chartsPage's HX-Request
+   branch). The shell (charts.html) renders only the filter card and an empty
+   placeholder.
+
+   The canvases are re-created by each swap, which is safe here and would not be
+   with a charting library: static/js/chart-utils.js is hand-rolled 2d drawing
+   with no per-<canvas> instance registry, so each render sets its canvas up
+   from scratch and the replaced ones are simply garbage.
+
+   Anything a range CHANGES belongs here rather than in the client: the two
+   headings' text, whether the artist-trend section exists, and the Top Genres
+   section's locked/unlocked body. Only the datasets stay data - see the island
+   at the bottom. #}
+<div class="chart-section">
+  <h2>Listening Time &middot; {{ intervalLabel }}{% if lastDayDate %} ({{ lastDayDate }}){% endif %}</h2>
+  <div class="chart-canvas-wrap">
+    <canvas id="timeSeriesChart" role="img" aria-label="Listening time over the selected period"></canvas>
+  </div>
+</div>
+
+<div class="chart-section">
+  <h2>When You Listen</h2>
+  <p class="chart-subtitle">Total listening time by day of week and hour of day.</p>
+  <div class="chart-canvas-wrap heatmap-wrap">
+    <canvas id="heatmapChart" role="img" aria-label="When you listen, by day of week and hour of day"></canvas>
+  </div>
+</div>
+
+{# A single-day range carries no artist trend (the route sends None), so the
+   section is not rendered at all - it used to be printed and then hidden by the
+   client once the payload confirmed it. An empty frame under this heading reads
+   as "you listened to nobody". #}
+{% if artistTrend is not none %}
+<div class="chart-section" id="chartsArtistTrendSection">
+  <h2>Top Artists &middot; {{ intervalLabel }}</h2>
+  <div class="chart-canvas-wrap">
+    <canvas id="artistTrendChart" role="img" aria-label="Top artists' plays over time"></canvas>
+  </div>
+  <div id="artistTrendLegend" class="chart-legend"></div>
+</div>
+{% endif %}
+
+<div class="chart-section-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 2rem; margin-top: 2rem;">
+  <div class="chart-section">
+    <h2>Explicit vs Clean Content</h2>
+    <div class="chart-canvas-wrap" style="height: 250px;">
+      <canvas id="explicitChart" role="img" aria-label="Explicit versus clean plays"></canvas>
+    </div>
+  </div>
+
+  <div class="chart-section">
+    <h2>Completion vs Skips</h2>
+    <div class="chart-canvas-wrap" style="height: 250px;">
+      <canvas id="completionChart" role="img" aria-label="Completed, partial, and skipped plays"></canvas>
+    </div>
+  </div>
+</div>
+
+{# "Completion vs Skips" above answers how OFTEN you skip; these answer WHAT you
+   skip. Which entries make the cut is decided by skip rate shrunk toward this
+   listener's own average, so a track skipped once and never played can't take a
+   slot from one with real volume behind it (see
+   Repository.getMostSkippedTracks); the entries that do make it are then ordered
+   by the true percentage their bars show. Both lists are hidden when nothing was
+   skipped at all, the normal state for a new library - by charts.js, which is
+   the only thing that knows whether either list came back empty. #}
+<div class="chart-section-grid" id="mostSkippedGrid"
+     style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 2rem; margin-top: 2rem;">
+  <div class="chart-section">
+    <h2>Most Skipped Songs</h2>
+    <div class="chart-canvas-wrap">
+      <canvas id="mostSkippedSongsChart" role="img" aria-label="Songs you skip most often, by share of encounters"></canvas>
+    </div>
+  </div>
+
+  <div class="chart-section">
+    <h2>Most Skipped Artists</h2>
+    <div class="chart-canvas-wrap">
+      <canvas id="mostSkippedArtistsChart" role="img" aria-label="Artists you skip most often, by share of encounters"></canvas>
+    </div>
+  </div>
+</div>
+
+<div class="chart-section" style="margin-top: 2rem;">
+  <h2>Release Era Distribution</h2>
+  <div class="chart-canvas-wrap" style="height: 300px;">
+    <canvas id="decadeChart" role="img" aria-label="Plays by release decade"></canvas>
+  </div>
+</div>
+
+{% if lastfmEnabled %}
+<div class="chart-section" style="margin-top: 2rem;">
+  <h2>Top Genres</h2>
+  {# Range-scoped (coverage over the selected window), so it is re-rendered by
+     every filter change rather than being part of the shell. It used to be
+     rendered to a string and handed over as a JSON key for the client to
+     inject; travelling with the rest of the card is the same thing without the
+     round trip through JavaScript. The whole section stays out when the admin
+     killed the feature. #}
+  <div id="chartsGenreSection">{% include '_charts_genre_section.html' %}</div>
+</div>
+{% endif %}
+
+{# The nine datasets, as one value the swap deposits in the DOM. They are drawn
+   onto canvases, which htmx has no way to swap, so charts-page.js parses this
+   into window.__chartData and redraws in htmx:afterSwap - the one thing on this
+   page htmx cannot own.
+
+   type="application/json" is what makes it a value rather than code: htmx only
+   re-executes swapped-in <script> tags it recognises as JavaScript, so this is
+   left alone as a plain node - and the inline-logic gate
+   (tests/test_inline_script_extraction.py) is satisfied because it computes
+   nothing. #}
+<script type="application/json" id="chartsData">{{ chartData | tojson }}</script>

@@ -1,15 +1,17 @@
 {#- SPDX-FileCopyrightText: 2026 i7Gamer
     SPDX-License-Identifier: AGPL-3.0-or-later -#}
 
-{# The song detail page's deferred body: everything below the toolbar, served
-   by songDetailPage's ?ajax=page branch and swapped into #detailBody by
-   static/js/detail-page.js. Split out of song_detail.html so the shell can
-   render off the single getSong the route already had to do, and every heavy
-   query (play log, bucketed chart aggregates, skip summary) lands after the
-   first paint instead of blocking it.
+{# The song detail page's deferred body: everything below the toolbar, swapped
+   into #detailBody by htmx on first paint (songDetailPage answers an
+   HX-Request targeting that id with this). Split out of song_detail.html so
+   the shell can render off the single getSong the route already had to do, and
+   every heavy query (play log, bucketed chart aggregates, skip summary) lands
+   after the first paint instead of blocking it.
 
    Rendered standalone, so it extends nothing - the surrounding page is the
-   shell that fetched it. #}
+   shell that asked for it. The hero .track-list has to stay the FIRST element
+   here: once swapped in it is a direct child of #detailBody, which is what the
+   stylesheet's gap-under-the-hero rule keys on. #}
 <section id="track-list" class="track-list">
   {% set track = song %}
   {% set section = 'top_songs' %}
@@ -67,6 +69,7 @@
   </div>
 </section>
 
-<div id="detailHistoryResults">
-  {% include '_play_log.html' %}
-</div>
+{% set historyPartial = '_play_log.html' %}
+{% include '_detail_history_container.html' %}
+
+{% include '_detail_chart_data.html' %}

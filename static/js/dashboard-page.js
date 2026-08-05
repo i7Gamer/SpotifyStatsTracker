@@ -1,157 +1,113 @@
 // SPDX-FileCopyrightText: 2026 i7Gamer
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// The dashboard: the Time Period filter's AJAX card refresh, the now-playing
-// poll (which also carries the friends-listening strip), the Discover card's
-// deferred load, the listening-calendar tooltip, and the trends fetch.
+// The dashboard: what is left of its browser logic once htmx owns the
+// request/swap layer (see templates/tracks.html for the attributes), plus the
+// two things htmx could not take - the now-playing poll and the
+// listening-calendar tooltip.
 //
 // Extracted from tracks.html so it can be linted - it was the single largest
-// unlinted file in the project. The three server values it needs stay behind
-// as a data island declared before this loads; USERNAME was declared twice,
-// once inside each of two IIFEs, and is now declared once at the top with the
-// same value, which those IIFEs read identically.
-// Dashboard filter only drives the stats cards' Time Period now - search
-// and the paginated list moved to /history, so no q/page handling here.
-// A change fetches just the four cards via ?ajax=true and fades them in
-// in place (same pattern as compare.html/genres.html) instead of a full
-// page reload - the live cards above (streak, on this day, discover,
-// calendar) and next-milestones are unfiltered and stay untouched.
-var DASHBOARD_FADE_MS = 200;
-var activeDashboardLoad = null;
+// unlinted file in the project. USERNAME stays behind as a data island because
+// the poll builds cover-image URLs from it.
+//
+// Three of this file's four fetches went to htmx, and the mapping is worth
+// keeping written down:
+//
+//   loadDashboardSummary + AbortController -> hx-get + hx-sync="...:replace"
+//   replaceDashboardUrl                    -> hx-replace-url="true"
+//   updateDashboardFilters' set/delete     -> the form's own inputs, serialized
+//     surgery on the query string             by htmx, plus `disabled` on the
+//                                             custom dates when not custom
+//   updateDashboardDateFilter's range      -> HtmxFilters.rangeProblem, vetoing
+//     check + error styling                   the request in htmx:configRequest
+//   the loading-fade bookkeeping           -> .htmx-fade-target + hx-indicator
+//   the 401 -> /login branch               -> HX-Redirect, sent by the server
+//   the popstate handler                   -> nothing, and deliberately: every
+//     URL update here REPLACES, so this page never puts an entry on the history
+//     stack for itself. It only ever ran on a cross-document Back, which
+//     reloads the page server-side anyway - and DASHBOARD_DEFAULT_WINDOW, the
+//     fallback it needed to re-select the right option, went with it.
+//   the Discover + trends card fetches     -> hx-trigger="load" on each card,
+//     and the DOM they built by hand          answering with markup
+//
+// The FOURTH fetch, the now-playing poll below, deliberately stayed. htmx can
+// issue a request every 15s, but not do either of the things this poll exists
+// for: it renders DATA into a dozen elements with per-link logic (an internal
+// /song/<id> link only when the track has actually been played before, a
+// Spotify link otherwise, plain text with no id at all), and it must STOP on a
+// 401 rather than navigate - a background poll yanking the page to /login
+// mid-read is the exact bug its 401 branch was added to fix, while every htmx
+// request in the app is answered with HX-Redirect, which navigates. Stopping a
+// poll client-side needs hx-on::, and that compiles a JS expression with the
+// Function constructor, which this page's CSP denies.
 
-function loadDashboardSummary() {
-  var target = document.getElementById('dashboardSummary');
-  if (activeDashboardLoad) {
-    activeDashboardLoad.controller.abort();
-    target.classList.remove('loading-fade');
-  }
-  var controller = new AbortController();
-  activeDashboardLoad = { controller: controller };
-  target.classList.add('loading-fade');
+//< the form htmx watches, in tracks.html
+var DASHBOARD_FORM_ID = 'dashboardFilters';
+//< the swap target
+var DASHBOARD_SUMMARY_ID = 'dashboardSummary';
 
-  var params = new URLSearchParams(window.location.search);
-  params.set('ajax', 'true');
-  var delay = new Promise(function (resolve) { setTimeout(resolve, DASHBOARD_FADE_MS); });
-  var fetched = fetch(window.location.pathname + '?' + params.toString(), { signal: controller.signal })
-    .then(function (response) {
-      return window.AjaxStatus.readJsonOrThrow(response, 'dashboard summary');
-    });
+var byId = function (id) { return document.getElementById(id); };
 
-  Promise.all([fetched, delay])
-    .then(function (results) {
-      var data = results[0];
-      //< a response that resolved before its abort can still reach here -
-      //  never swap stale data in over a newer load's
-      if (!activeDashboardLoad || activeDashboardLoad.controller !== controller) {
-        return;
-      }
-      target.innerHTML = data.summaryHtml;
-    })
-    .catch(function (err) {
-      //< navigating to /login - not a load failure to report
-      if (window.AjaxStatus && window.AjaxStatus.isUnauthorizedError(err)) return;
-      if (err.name !== 'AbortError') {
-        console.error(err);
-        //< genuine failure (not superseded): replace the stuck/stale cards
-        //  with an inline error + Retry so the numbers aren't silently stale
-        if ((!activeDashboardLoad || activeDashboardLoad.controller === controller) && window.AjaxStatus) {
-          window.AjaxStatus.renderInto(target, function () { loadDashboardSummary(); });
-        }
-      }
-    })
-    .finally(function () {
-      if (activeDashboardLoad && activeDashboardLoad.controller === controller) {
-        activeDashboardLoad = null;
-        target.classList.remove('loading-fade');
-      }
-    });
-}
+var currentDashboardRangeProblem = function () {
+  return HtmxFilters.rangeProblem(byId('interval').value, byId('startDate').value, byId('endDate').value);
+};
 
-// Update the URL in place (replaceState, not push) so a filter change stays
-// shareable/refreshable without stacking a history entry - Back then returns
-// to the previous page instead of stepping back through past filters.
-function replaceDashboardUrl(mutate) {
-  var params = new URLSearchParams(window.location.search);
-  mutate(params);
-  params.delete('ajax');
-  var query = params.toString();
-  window.history.replaceState({}, '', window.location.pathname + (query ? '?' + query : ''));
-}
+var showDashboardRangeError = function (problem) {
+  var invalid = problem === HtmxFilters.RANGE_INVERTED;
+  var errorElem = byId('dateError');
+  errorElem.textContent = invalid ? HtmxFilters.RANGE_INVERTED_MESSAGE : '';
+  errorElem.style.display = invalid ? 'block' : 'none';
+  byId('startDate').style.borderColor = invalid ? 'var(--accent)' : '';
+  byId('endDate').style.borderColor = invalid ? 'var(--accent)' : '';
+};
 
+// Called from the Time Period select's onchange. Runs before htmx's listener
+// (an inline on*= handler fires at the target; htmx's is on the form and fires
+// as the event bubbles), so the disabled flags are already right by the time
+// the request is serialized.
+//
+// `disabled`, not merely hidden: a disabled control is not serialized, which is
+// what keeps a stale custom range out of the request - and so out of the URL -
+// after switching back to a named interval.
 function updateDashboardInterval() {
-  const interval = document.getElementById('interval').value;
-  const customDates = document.getElementById('dashboardCustomDates');
+  var custom = byId('interval').value === 'custom';
+  byId('dashboardCustomDates').style.display = custom ? 'flex' : 'none';
+  byId('startDate').disabled = !custom;
+  byId('endDate').disabled = !custom;
+  showDashboardRangeError(currentDashboardRangeProblem());
+}
+window.updateDashboardInterval = updateDashboardInterval;
 
-  if (interval === 'custom') {
-    customDates.style.display = 'flex';
+// The one place a request gets vetoed, and what stops "custom" firing one the
+// moment it is selected: a range with no dates yet is RANGE_INCOMPLETE, which
+// is exactly what the old handler's early return covered. Shared with
+// /history, /charts and the Top lists, whose filter card is the same control
+// set (static/js/htmx-filters.js).
+document.body.addEventListener('htmx:configRequest', function (evt) {
+  if (!evt.detail.elt || evt.detail.elt.id !== DASHBOARD_FORM_ID) return;
+  var problem = currentDashboardRangeProblem();
+  showDashboardRangeError(problem);
+  if (problem !== HtmxFilters.RANGE_OK) {
+    evt.preventDefault();
     return;
   }
-
-  customDates.style.display = 'none';
-  updateDashboardFilters();
-}
-
-function updateDashboardDateFilter() {
-  const startDateElem = document.getElementById('startDate');
-  const endDateElem = document.getElementById('endDate');
-  const errorElem = document.getElementById('dateError');
-  const startDate = startDateElem.value;
-  const endDate = endDateElem.value;
-
-  errorElem.style.display = 'none';
-  startDateElem.style.borderColor = '';
-  endDateElem.style.borderColor = '';
-
-  if (startDate && endDate) {
-    if (new Date(startDate) > new Date(endDate)) {
-      errorElem.textContent = 'Start date cannot be after end date.';
-      errorElem.style.display = 'block';
-      startDateElem.style.borderColor = 'var(--accent)';
-      endDateElem.style.borderColor = 'var(--accent)';
-      return;
-    }
-    updateDashboardFilters(true);
-  }
-}
-
-function updateDashboardFilters(forceCustom = false) {
-  const interval = document.getElementById('interval').value;
-
-  if (interval === 'custom' || forceCustom) {
-    const startDate = document.getElementById('startDate').value;
-    const endDate = document.getElementById('endDate').value;
-
-    if (!startDate || !endDate) {
-      return;
-    }
-
-    replaceDashboardUrl(function (params) {
-      params.set('interval', 'custom');
-      params.set('startDate', startDate);
-      params.set('endDate', endDate);
-    });
-  } else {
-    replaceDashboardUrl(function (params) {
-      params.set('interval', interval);
-      params.delete('startDate');
-      params.delete('endDate');
-    });
-  }
-
-  loadDashboardSummary();
-}
-
-// Back/forward: reconcile the filter controls with the URL, then re-fetch.
-window.addEventListener('popstate', function () {
-  const params = new URLSearchParams(window.location.search);
-  const hasCustom = params.get('startDate') && params.get('endDate');
-  const interval = hasCustom ? 'custom' : (params.get('interval') || DASHBOARD_DEFAULT_WINDOW);
-  document.getElementById('interval').value = interval;
-  document.getElementById('startDate').value = params.get('startDate') || '';
-  document.getElementById('endDate').value = params.get('endDate') || '';
-  document.getElementById('dashboardCustomDates').style.display = hasCustom ? 'flex' : 'none';
-  loadDashboardSummary();
+  HtmxFilters.pruneEmptyParams(evt.detail.parameters);
 });
+
+// A genuine failure replaces the stuck/stale cards with an inline error +
+// Retry, so the numbers are never silently stale under a URL that says
+// otherwise. Scoped to the summary swap: the two deferred cards below fail
+// independently and keep their own placeholders rather than blanking this.
+var reportDashboardFailure = function (evt) {
+  var target = byId(DASHBOARD_SUMMARY_ID);
+  if (!target || !window.AjaxStatus || !evt.detail || evt.detail.target !== target) return;
+  window.AjaxStatus.renderInto(target, function () {
+    htmx.ajax('GET', window.location.pathname + window.location.search,
+              { target: '#' + DASHBOARD_SUMMARY_ID, swap: 'innerHTML' });
+  });
+};
+document.body.addEventListener('htmx:responseError', reportDashboardFailure);
+document.body.addEventListener('htmx:sendError', reportDashboardFailure);
 
 // Now Playing: poll the listener's cached connect state (no Spotify
 // calls server-side) and show the now-playing sub-panel only while
@@ -337,73 +293,32 @@ window.addEventListener('popstate', function () {
   pollTimer = setInterval(poll, NOW_PLAYING_POLL_MS);
 })();
 
-// Discover: fetched once after first paint instead of computed inline -
-// see routes/charts.py's dashboardDiscover for why (full-history queries
-// that were blocking the dashboard's initial render).
-(function () {
-  var loadingEl = document.getElementById('discoverLoading');
-  if (!loadingEl) return;
-  var listEl = document.getElementById('discoverList');
-  var emptyEl = document.getElementById('discoverEmpty');
-  var lockedEl = document.getElementById('discoverLocked');
-
-  function artistRow(artist) {
-    var row = document.createElement('a');
-    row.className = 'discover-row';
-    row.href = '/artist/' + encodeURIComponent(artist.id);
-
-    var img = document.createElement('img');
-    img.className = 'discover-cover';
-    img.loading = 'lazy';
-    img.alt = '';
-    img.src = '/img/' + encodeURIComponent(USERNAME) + '/artists/' + encodeURIComponent(artist.imageId) + '.jpeg';
-    img.onerror = function () { img.onerror = null; img.src = window.PLACEHOLDER_IMG; };
-    row.appendChild(img);
-
-    var meta = document.createElement('span');
-    meta.className = 'discover-meta';
-    var name = document.createElement('span');
-    name.className = 'discover-name';
-    name.textContent = artist.name;
-    meta.appendChild(name);
-    if (artist.matchedGenres && artist.matchedGenres.length) {
-      var genre = document.createElement('span');
-      genre.className = 'discover-genre';
-      genre.textContent = artist.matchedGenres[0];
-      meta.appendChild(genre);
-    }
-    row.appendChild(meta);
-    return row;
+// The two deferred cards fail independently of the summary and of each other,
+// and htmx swaps nothing on a non-2xx - so without these both would sit on a
+// placeholder claiming work is still in progress. They fail DIFFERENTLY, which
+// is why this is two handlers and not one:
+//
+//   Discover goes blank. Its three states are locked / empty / a list, and the
+//     first two are statements about the user's own library that a server error
+//     is no evidence for - the old fetch()'s catch made the same call.
+//   Trends gets the shared inline error + Retry, which is what its own catch
+//     did: three "Loading listening trends…" placeholders say nothing useful on
+//     their own and would otherwise stay up forever.
+document.body.addEventListener('htmx:responseError', function (evt) {
+  if (!evt.detail) return;
+  var card = document.getElementById('discoverCard');
+  if (card && evt.detail.target === card) {
+    card.replaceChildren();
+    return;
   }
-
-  fetch('/api/dashboard-discover')
-    .then(function (resp) {
-      //< a non-2xx used to resolve to null, which "!data" below then reported as
-      //  "not unlocked yet" - a statement about the user's own library that a
-      //  server error is no evidence for. Throw into the catch, which
-      //  deliberately leaves the card blank instead.
-      if (!resp.ok) throw new Error('discover fetch failed: ' + resp.status);
-      return resp.json();
-    })
-    .then(function (data) {
-      loadingEl.style.display = 'none';
-      if (!data || !data.unlocked) {
-        lockedEl.style.display = '';
-        return;
-      }
-      if (!data.recommendations || !data.recommendations.length) {
-        emptyEl.style.display = '';
-        return;
-      }
-      data.recommendations.forEach(function (artist) { listEl.appendChild(artistRow(artist)); });
-      listEl.style.display = '';
-    })
-    .catch(function () {
-      // Transient network error - leave the card blank rather than show
-      // a locked/empty message that isn't actually true.
-      loadingEl.style.display = 'none';
+  var trends = document.getElementById('dashboardTrendsContainer');
+  if (trends && evt.detail.target === trends && window.AjaxStatus) {
+    window.AjaxStatus.renderInto(trends, function () {
+      htmx.ajax('GET', '/api/dashboard-trends',
+                { target: '#dashboardTrendsContainer', swap: 'innerHTML' });
     });
-})();
+  }
+});
 
 // Listening calendar: a cursor-following overlay on hover (like the charts
 // page tooltips), replacing the native `title` hint so the day's play count
@@ -439,6 +354,7 @@ window.addEventListener('popstate', function () {
       { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
   }
 
+  //< bound once at load: the calendar is unfiltered, so it is never swapped
   grid.addEventListener('mousemove', function (evt) {
     // Future cells carry no data-date, so they (and the gaps) get no tooltip.
     var cell = evt.target.closest('.streak-calendar-day[data-date]');
@@ -458,26 +374,3 @@ window.addEventListener('popstate', function () {
   });
   grid.addEventListener('mouseleave', hideTooltip);
 })();
-
-document.addEventListener('DOMContentLoaded', function() {
-  function loadDashboardTrends() {
-    var container = document.getElementById('dashboardTrendsContainer');
-    if (!container) return;
-    fetch('/api/dashboard-trends')
-      .then(function(res) {
-        return window.AjaxStatus.readJsonOrThrow(res, 'dashboard trends');
-      })
-      .then(function(data) {
-        container.innerHTML = data.trendsHtml;
-      })
-      .catch(function(err) {
-        //< navigating to /login - not a load failure to report
-        if (window.AjaxStatus && window.AjaxStatus.isUnauthorizedError(err)) return;
-        console.error('Error fetching dashboard trends:', err);
-        //< the placeholders can't say anything useful on their own, so replace
-        //  them with an error + Retry rather than leave them loading forever
-        if (window.AjaxStatus) window.AjaxStatus.renderInto(container, loadDashboardTrends);
-      });
-  }
-  loadDashboardTrends();
-});

@@ -1,0 +1,36 @@
+{#- SPDX-FileCopyrightText: 2026 i7Gamer
+    SPDX-License-Identifier: AGPL-3.0-or-later -#}
+
+{# The genre chip row plus the selected genre's drill-down, swapped as one unit
+   into #genreExplore on a chip click - and included by _genres_results.html so
+   a filter change renders the identical pair.
+   Expects: genreNames, selectedGenre, chipArgs, selectedTrend, clock, plus
+   everything _genre_detail.html needs (genreStats, topArtists, topTracks,
+   username, intervalLabel).
+
+   The chips ship WITH the detail rather than having their selected class
+   toggled client-side (the old setSelectedChip): one render means the
+   highlighted chip and the drill-down under it cannot disagree, which they
+   could whenever a swap and a class toggle went different ways. #}
+{# hx-boost turns each chip into an in-place swap of this region, which is what
+   the delegated click listener in genres.js used to do by hand. Scoped to the
+   chip row rather than set on #genreExplore: boosting the whole region would
+   also capture every artist and track link in the Top lists below and swap a
+   detail PAGE into the drill-down instead of navigating to it. Boost also
+   leaves ctrl/cmd-click alone, so a chip still opens in a new tab. #}
+<div class="genre-chip-row" id="genreChipRow" hx-boost="true">
+  {% include "_genre_chips.html" %}
+</div>
+<div id="genreDetail">
+  {% include "_genre_detail.html" %}
+</div>
+
+{# The drill-down canvases' data, separate from the overview island because a
+   chip click re-sends only these two - the overview datasets are unchanged by a
+   genre switch and are not in that response at all. `genre` is the RESOLVED
+   selection, which genres.js writes back into the filter form's hidden field so
+   the next time-period change keeps this genre instead of resetting to the new
+   range's top one. #}
+<script type="application/json" id="genres-detail-data">
+{{ {"genre": selectedGenre, "selectedTrend": selectedTrend, "clock": clock} | tojson }}
+</script>

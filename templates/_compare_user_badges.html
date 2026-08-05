@@ -1,0 +1,32 @@
+{#- SPDX-FileCopyrightText: 2026 i7Gamer
+    SPDX-License-Identifier: AGPL-3.0-or-later -#}
+
+{# The counterpart picker. Links rather than a form control, so a comparison
+   stays shareable; hx-boost turns the click into the same in-place refresh
+   every other control on this page does, which is what the delegated click
+   listener in compare.js used to do by hand.
+
+   The href is now the WHOLE next request - the old listener read only ?with=
+   off it and rebuilt the rest from window.location - so it carries the current
+   filters, and the fragment re-renders this nav on every refresh to keep them
+   fresh. A stale href would silently reset the other filters.
+
+   The per-badge id is what lets htmx put keyboard focus back where it was after
+   replacing the nav: it matches the focused element up again by id.
+
+   Expects: userBadges (from routes/compare.py), withUsername; `oob` only when
+   included from _compare_results.html. #}
+<nav class="wrapped-year-badges" id="compareUserBadges" aria-label="Select user to compare with"
+     hx-boost="true"
+     hx-swap="none"
+     hx-sync="#compareFilters:replace"
+     hx-indicator=".htmx-fade-target"
+     hx-replace-url="true"{% if oob is defined and oob %} hx-swap-oob="outerHTML"{% endif %}>
+  {% for badge in userBadges %}
+    {# the badge SHOWS the display name but still selects by the real username:
+       ?with= is matched against the accepted-share list server-side. #}
+    <a class="wrapped-year-badge{{ ' active' if badge.username == withUsername else '' }}"
+       id="compareUserBadge{{ loop.index }}"
+       href="{{ badge.url }}">{{ badge.username | displayName }}</a>
+  {% endfor %}
+</nav>

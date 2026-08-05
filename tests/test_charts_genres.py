@@ -14,6 +14,7 @@ from app import (
     resolveGenresForTracks, resolveGenresForAlbums, resolveGenresForArtists,
 )
 from _app_factory import AppTestCase
+from _charts_client import HX_HEADERS, chartData
 
 
 def coverageDict(song, album, artist, total=1000):
@@ -189,16 +190,16 @@ class ChartsGenresTestCase(AppTestCase):
             return client.get(f"/charts{query}")
 
     def _getData(self, dash, db, query=""):
-        """The ajax JSON payload - the Top Genres section is range-scoped and
-        ships as pre-rendered genreSectionHtml here (plus genreDistribution)."""
+        """The chart card, as htmx asks for it. The Top Genres section is
+        range-scoped, so it is rendered into this fragment (and the distribution
+        it draws rides in the fragment's JSON data island)."""
         client = dash.app.test_client()
-        sep = "&" if query else "?"
         with patch.object(dash, 'is_user_logged_in', return_value=True), \
              patch.object(dash, 'get_username_for_email', return_value='alice'), \
              patch.object(dash, 'get_user_db', return_value=db):
             with client.session_transaction() as sess:
                 sess['email'] = 'alice@example.com'
-            return client.get(f"/charts{query}{sep}ajax=true")
+            return client.get(f"/charts{query}", headers=HX_HEADERS)
 
     def test_unstubbed_magicmock_db_still_renders_the_locked_state(self):
         """Regression guard for every pre-genre charts test: a db whose genre
@@ -209,30 +210,29 @@ class ChartsGenresTestCase(AppTestCase):
         resp = self._getData(dash, db)
 
         self.assertEqual(resp.status_code, 200)
-        payload = resp.get_json()
-        self.assertFalse(payload["genreUnlocked"])
-        self.assertIn("Genre insights unlock", payload["genreSectionHtml"])
-        self.assertNotIn('id="genreChart"', payload["genreSectionHtml"])
+        body = resp.get_data(as_text=True)
+        self.assertIn("Genre insights unlock", body)
+        self.assertNotIn('id="genreChart"', body)
         db.getGenreDistribution.assert_not_called()
 
     def test_locked_when_overall_is_exactly_at_the_threshold(self):
         dash = self._makeApp()
         db = self._makeDb(coverage=coverageDict(50, 50, 50))
         resp = self._getData(dash, db)
-        self.assertIn("Genre insights unlock", resp.get_json()["genreSectionHtml"])
+        self.assertIn("Genre insights unlock", resp.get_data(as_text=True))
         db.getGenreDistribution.assert_not_called()
 
     def test_locked_when_one_category_is_below_its_minimum(self):
         dash = self._makeApp()
         db = self._makeDb(coverage=coverageDict(29, 90, 90))   #< overall ~69.7 passes, songs don't
         resp = self._getData(dash, db)
-        self.assertIn("Genre insights unlock", resp.get_json()["genreSectionHtml"])
+        self.assertIn("Genre insights unlock", resp.get_data(as_text=True))
         db.getGenreDistribution.assert_not_called()
 
     def test_locked_state_shows_the_per_category_progress(self):
         dash = self._makeApp()
         db = self._makeDb(coverage=coverageDict(29, 90, 45))
-        html = self._getData(dash, db).get_json()["genreSectionHtml"]
+        html = self._getData(dash, db).get_data(as_text=True)
         self.assertIn("29", html)
         self.assertIn("90", html)
         self.assertIn("45", html)
@@ -245,11 +245,10 @@ class ChartsGenresTestCase(AppTestCase):
         resp = self._getData(dash, db)
 
         self.assertEqual(resp.status_code, 200)
-        payload = resp.get_json()
-        self.assertTrue(payload["genreUnlocked"])
-        self.assertIn('id="genreChart"', payload["genreSectionHtml"])
-        self.assertNotIn("Genre insights unlock", payload["genreSectionHtml"])
-        self.assertIn("indie rock", [pair[0] for pair in payload["genreDistribution"]])
+        body = resp.get_data(as_text=True)
+        self.assertIn('id="genreChart"', body)
+        self.assertNotIn("Genre insights unlock", body)
+        self.assertIn("indie rock", [pair[0] for pair in chartData(resp)["genreDistribution"]])
 
         _, coverageKwargs = db.getGenreCoverage.call_args
         self.assertIn("startDate", coverageKwargs)
@@ -261,14 +260,15 @@ class ChartsGenresTestCase(AppTestCase):
 
     def test_shell_defers_all_genre_queries(self):
         """The shell must not run any genre query - coverage/distribution are
-        resolved only in the ajax payload."""
+        resolved only in the fragment, which is also where the whole section
+        now lives (it is range-scoped, so it changes with every filter)."""
         dash = self._makeApp()
         db = self._makeDb(coverage=coverageDict(80, 60, 90), distribution={"rock": 1})
 
         resp = self._get(dash, db)
 
         self.assertEqual(resp.status_code, 200)
-        self.assertIn(b"Top Genres", resp.data)   #< the section shell is present
+        self.assertNotIn(b"Top Genres", resp.data)
         db.getGenreCoverage.assert_not_called()
         db.getGenreDistribution.assert_not_called()
 
@@ -276,7 +276,7 @@ class ChartsGenresTestCase(AppTestCase):
         dash = self._makeApp()
         db = self._makeDb(coverage=coverageDict(80, 60, 90), distribution={"rock": 1})
         resp = self._getData(dash, db)
-        self.assertIn("Last.fm", resp.get_json()["genreSectionHtml"])
+        self.assertIn("Last.fm", resp.get_data(as_text=True))
 
     def test_unlocked_chart_leads_with_the_top_genre(self):
         """The chart is called Top Genres, so the top one is the first thing
@@ -290,7 +290,7 @@ class ChartsGenresTestCase(AppTestCase):
         resp = self._getData(dash, db)
 
         self.assertEqual(resp.status_code, 200)
-        labels = [pair[0] for pair in resp.get_json()["genreDistribution"]]
+        labels = [pair[0] for pair in chartData(resp)["genreDistribution"]]
         self.assertEqual(labels, ["rock", "indie rock", "jazz"])
 
     #< the markup of one progress bar's track; counting it counts the bars
@@ -303,7 +303,7 @@ class ChartsGenresTestCase(AppTestCase):
         coverage = coverageDict(29, 90, 45)
         coverage["song"]["ownPercent"] = 12.0
         coverage["album"]["ownPercent"] = 34.0
-        html = self._getData(dash, self._makeDb(coverage=coverage)).get_json()["genreSectionHtml"]
+        html = self._getData(dash, self._makeDb(coverage=coverage)).get_data(as_text=True)
 
         self.assertEqual(html.count(self._PROGRESS_BAR_TRACK), 3)
         self.assertIn("Overall: <strong>{}%</strong>".format(coverage["overall"]["percent"]), html)
@@ -316,7 +316,7 @@ class ChartsGenresTestCase(AppTestCase):
         the overall percentage must not vanish with it."""
         dash = self._makeApp()
         coverage = coverageDict(29, 90, 45)   #< no ownPercent anywhere
-        html = self._getData(dash, self._makeDb(coverage=coverage)).get_json()["genreSectionHtml"]
+        html = self._getData(dash, self._makeDb(coverage=coverage)).get_data(as_text=True)
 
         self.assertNotIn("Counting only own", html)
         self.assertIn("Overall: <strong>{}%</strong>".format(coverage["overall"]["percent"]), html)
@@ -327,15 +327,15 @@ class ChartsGenresTestCase(AppTestCase):
         db.getGenreCoverage.side_effect = RuntimeError("db exploded")
         resp = self._getData(dash, db)
         self.assertEqual(resp.status_code, 200)
-        self.assertIn("Genre insights unlock", resp.get_json()["genreSectionHtml"])
+        self.assertIn("Genre insights unlock", resp.get_data(as_text=True))
 
     def test_disabled_hides_the_whole_section_without_querying_coverage(self):
         """The admin's instance-wide kill switch hides the Top Genres section
         entirely - neither the chart nor the locked-progress fallback, which
         would otherwise misleadingly invite adding a Last.fm key for a
-        feature the admin turned off. Checked on both phases: the shell omits
-        the section, and the ajax payload ships an empty genreSectionHtml
-        without touching any genre query."""
+        feature the admin turned off. Checked on both phases, since the section
+        could reappear from either: the shell has never carried it, and the
+        fragment omits it without touching any genre query."""
         dash = self._makeApp()
         dash.repo.setLastfmGenreBackfillEnabled(False)
         db = self._makeDb(coverage=coverageDict(80, 60, 90), distribution={"rock": 1})
@@ -346,9 +346,9 @@ class ChartsGenresTestCase(AppTestCase):
         self.assertNotIn(b'id="chartsGenreSection"', shell.data)
 
         data = self._getData(dash, db)
-        payload = data.get_json()
-        self.assertEqual(payload["genreSectionHtml"], "")
-        self.assertIsNone(payload["genreDistribution"])
+        self.assertNotIn(b"Top Genres", data.data)
+        self.assertNotIn(b'id="chartsGenreSection"', data.data)
+        self.assertIsNone(chartData(data)["genreDistribution"])
         db.getGenreCoverage.assert_not_called()
         db.getGenreDistribution.assert_not_called()
 

@@ -1,18 +1,18 @@
 {#- SPDX-FileCopyrightText: 2026 i7Gamer
     SPDX-License-Identifier: AGPL-3.0-or-later -#}
 
-{# The selectable genre chip row for the /genres drill-down. Rendered into the
-   shell's #genreChipRow placeholder by the /genres?ajax=true full payload, and
-   re-sent whenever the time filter changes (a range change changes which
-   genres have plays, and thus which chips appear).
-   Expects: genreNames, selectedGenre. #}
-{# The fallback href (no-JS / ctrl- or middle-click) carries the current time
-   filter so it opens the genre scoped the same way the JS click path does
-   (genres.js detailFallbackUrl); url_for drops the None-valued params. #}
+{# The selectable genre chip row for the /genres drill-down, rendered inside
+   _genre_explore.html - on first paint, on every time-filter change (a range
+   change changes which genres have plays, and thus which chips appear) and on
+   each chip click.
+   Expects: genreNames, selectedGenre, chipArgs. #}
+{# The href is load-bearing three times over: hx-boost issues it as the request,
+   hx-replace-url writes it back to the address bar afterwards, and it is still
+   the plain navigation for a no-JS or ctrl-clicked chip. So it carries the whole
+   validated filter state (chipArgs - interval, custom range, trend buckets), not
+   just some of it: a filter missing here would silently reset itself on the next
+   chip click. #}
 {% for name in genreNames %}
   <a class="genre-chip {{ 'selected' if name == selectedGenre }}"
-     href="{{ url_for('genresPage', genre=name,
-                      interval=request.args.get('interval'),
-                      startDate=request.args.get('startDate'),
-                      endDate=request.args.get('endDate')) }}" data-genre="{{ name }}">{{ name }}</a>
+     href="{{ url_for('genresPage', genre=name, **chipArgs) }}" data-genre="{{ name }}">{{ name }}</a>
 {% endfor %}

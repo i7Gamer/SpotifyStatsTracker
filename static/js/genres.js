@@ -1,26 +1,58 @@
 // SPDX-FileCopyrightText: 2026 i7Gamer
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-/* Genres page: fetches its data after first paint (the initial GET is just a
- * shell), draws with the shared window.ChartUtils primitives (chart-utils.js,
- * loaded first), and refreshes on filter/genre changes without a full reload.
+/* What is left of the /genres page's browser logic once htmx owns the
+ * request/swap layer (see templates/genres.html for the attributes).
  *
- * Two AJAX shapes, both against /genres:
- *   - full (?ajax=true): overview datasets + chip row + the selected genre's
- *     detail - fetched on load and on every time-period filter change.
- *   - detail (?ajax=true&scope=detail): just the drill-down partial + its two
- *     chart datasets - fetched on a chip click.
- * All data is scoped to the selected time window; the URL carries interval/
- * date/genre so Back/Forward and refresh reproduce the view. Self-contained. */
+ * This file was 400 lines, two fetch loaders and a hand-rolled history layer.
+ * The mapping is the same one /history and the Top lists wrote down, plus three
+ * entries this page contributes:
+ *
+ *   loadGenresData/loadGenreDetail + loadToken -> hx-get + hx-sync="...:replace"
+ *   replaceGenresUrl                           -> hx-replace-url="true"
+ *   the delegated chip click listener          -> hx-boost on the chip row
+ *   setSelectedChip                            -> the server re-renders the row
+ *   detailFallbackUrl                          -> HX-Redirect, sent by the route
+ *                                                 when it declines a chip swap
+ *   the 401 -> /login branch                   -> HX-Redirect, sent by the
+ *                                                 server (app.py's
+ *                                                 unauthenticatedResponse)
+ *   the popstate handler                       -> nothing, and deliberately:
+ *     every URL update here REPLACES, so this page never puts an entry on the
+ *     history stack for itself and there is no in-page state to pop back to.
+ *     The handler only ever ran on a cross-document Back, which reloads the
+ *     page server-side anyway.
+ *
+ * What htmx genuinely could not absorb is the CHARTS. htmx swaps HTML: a
+ * <canvas> arrives blank and has to be painted, and its data is not markup. So
+ * each fragment carries its datasets in a <script type="application/json">
+ * island, and the htmx:afterSwap listener at the bottom reads them back out and
+ * redraws. That listener is hand-written on purpose; there is no htmx feature
+ * that owns chart rendering.
+ *
+ * Note there is no `hx-on:` or event-filter shortcut available as a shortcut
+ * here - the CSP withholds 'unsafe-eval' from this page (see the header comment
+ * in templates/genres.html). */
 (function () {
   var CU = window.ChartUtils;
   if (!CU) return;
 
-  var bootstrapEl = document.getElementById('genres-bootstrap');
-  var bootstrap = bootstrapEl ? JSON.parse(bootstrapEl.textContent) : {};
+  //< the form htmx watches, and the two regions it and the chips swap into
+  var GENRES_FORM_ID = 'genresFilters';
+  var GENRES_RESULTS_ID = 'genresResults';
+  var GENRE_EXPLORE_ID = 'genreExplore';
+  //< the JSON islands each fragment carries its canvas data in (see
+  //  templates/_genres_results.html and templates/_genre_explore.html)
+  var OVERVIEW_DATA_ID = 'genres-overview-data';
+  var DETAIL_DATA_ID = 'genres-detail-data';
+
+  var GENRE_BREADTH_LIMIT = 8;      //< keep the horizontal breadth chart to a readable height
+  var RESIZE_REDRAW_MS = 150;       //< coalesce a drag-resize into one repaint
+  var THEME_REDRAW_MS = 50;         //< let the new theme's CSS variables land first
+
   window.__genreData = window.__genreData || {};
 
-  var GENRE_BREADTH_LIMIT = 8;   //< keep the horizontal breadth chart to a readable height
+  var byId = function (id) { return document.getElementById(id); };
 
   // ---- Overview charts (redrawn on each time-period change) -----------------
 
@@ -29,14 +61,14 @@
     // Horizontal bars, like Artists per Genre below - long genre names never
     // truncate into an ambiguous collision, like "alternative rock"/
     // "alternative metal" both cutting down to "alternative…" used to.
-    CU.renderHorizontalBars(document.getElementById('genreDistChart'), pairs, {
+    CU.renderHorizontalBars(byId('genreDistChart'), pairs, {
       emptyMessage: 'No genre data yet.',
       valueSuffix: ' plays'
     });
   }
 
   function renderShare() {
-    var canvas = document.getElementById('genreShareChart');
+    var canvas = byId('genreShareChart');
     if (!canvas) return;
     var pairs = (window.__genreData && window.__genreData.distributionPairs) || [];
     var grandTotal = pairs.reduce(function (sum, p) { return sum + p[1]; }, 0);
@@ -55,7 +87,7 @@
 
     // The donut has many slices, so the legend lives in HTML below it. It shows
     // just the genre name; the play count + % stay in the hover tooltip only.
-    var legend = document.getElementById('genreShareLegend');
+    var legend = byId('genreShareLegend');
     if (legend) {
       legend.innerHTML = grandTotal ? slices.map(function (s) {
         return '<span class="chart-legend-item"><span class="chart-legend-swatch" style="background:' + s.color + '"></span>' +
@@ -66,7 +98,7 @@
 
   function renderBreadth() {
     var pairs = ((window.__genreData && window.__genreData.breadthPairs) || []).slice(0, GENRE_BREADTH_LIMIT);
-    CU.renderHorizontalBars(document.getElementById('genreBreadthChart'), pairs, {
+    CU.renderHorizontalBars(byId('genreBreadthChart'), pairs, {
       emptyMessage: 'No genre data yet.',
       valueSuffix: ' artists'
     });
@@ -74,8 +106,8 @@
 
   function renderMix() {
     CU.renderMultiLineChart(
-      document.getElementById('genreMixChart'),
-      document.getElementById('genreMixLegend'),
+      byId('genreMixChart'),
+      byId('genreMixLegend'),
       (window.__genreData && window.__genreData.mixTrend) || { buckets: [], series: [] },
       {
         emptyMessage: 'Not enough data yet to show a genre trend.',
@@ -95,7 +127,7 @@
 
   function renderSelectedTrend() {
     CU.renderMultiLineChart(
-      document.getElementById('genreTrendChart'),
+      byId('genreTrendChart'),
       null,
       (window.__genreData && window.__genreData.selectedTrend) || { buckets: [], series: [] },
       {
@@ -107,7 +139,7 @@
 
   function renderClock() {
     CU.renderHeatmap(
-      document.getElementById('genreClockChart'),
+      byId('genreClockChart'),
       (window.__genreData && window.__genreData.clock) || [],
       { emptyMessage: 'No listening data for this genre yet.' }
     );
@@ -118,283 +150,178 @@
     renderClock();
   }
 
+  // Everything, from whatever is currently in window.__genreData. Used by the
+  // resize and theme handlers, which change how the canvases look without
+  // changing what is on them.
   function renderAll() {
     CU.refreshPalette();
     renderOverview();
     renderDetailCharts();
   }
 
-  // ---- URL helpers ---------------------------------------------------------
+  // ---- Reading the datasets back out of the swapped fragment ----------------
 
-  // Update the URL in place (replaceState, not push) so a filter/genre change
-  // stays shareable/refreshable without stacking a history entry - Back then
-  // returns to the page the user came from instead of stepping back through it.
-  function replaceGenresUrl(mutate) {
-    var params = new URLSearchParams(window.location.search);
-    mutate(params);
-    params.delete('ajax');
-    params.delete('scope');
-    var query = params.toString();
-    window.history.replaceState({}, '', window.location.pathname + (query ? '?' + query : ''));
+  function readIsland(id) {
+    var el = byId(id);
+    if (!el) return null;
+    try {
+      return JSON.parse(el.textContent);
+    } catch (err) {
+      //< a truncated or half-swapped fragment; the charts keep their last data
+      //  rather than being cleared to an empty state that looks like real zero
+      return null;
+    }
   }
 
-  function setSelectedChip(genre) {
-    document.querySelectorAll('.genre-chip').forEach(function (chip) {
-      chip.classList.toggle('selected', chip.getAttribute('data-genre') === genre);
-    });
+  function absorbOverviewData() {
+    var data = readIsland(OVERVIEW_DATA_ID);
+    if (!data) return;
+    window.__genreData.distributionPairs = data.distributionPairs;
+    window.__genreData.breadthPairs = data.breadthPairs;
+    window.__genreData.mixTrend = data.mixTrend;
   }
 
-  //< a newer load supersedes an older one - a stale response then no-ops
-  var loadToken = 0;
-
-  // ---- Full data load (initial paint + time-period changes) ----------------
-
-  function overviewFadeTargets() {
-    return Array.prototype.slice.call(
-      document.querySelectorAll('#genresOverview .chart-canvas-wrap'));
+  function absorbDetailData() {
+    var data = readIsland(DETAIL_DATA_ID);
+    if (!data) return;
+    window.__genreData.selectedTrend = data.selectedTrend;
+    window.__genreData.clock = data.clock;
+    // The filter form serializes itself on a time-period change, and the
+    // drill-down selection has no visible control in it - so the RESOLVED genre
+    // is carried back into the form's hidden field. Without this, picking a new
+    // time period would silently reset the page to that range's top genre.
+    var field = byId('genresSelectedGenre');
+    if (field) field.value = data.genre || '';
   }
 
-  function loadGenresData(opts) {
-    opts = opts || {};
-    var initial = !!opts.initial;
-    var token = ++loadToken;
+  // ---- Filter controls htmx cannot express ---------------------------------
 
-    var overviewTargets = initial ? [] : overviewFadeTargets();
-    var detail = document.getElementById('genreDetail');
-    overviewTargets.forEach(function (t) { t.classList.add('loading-fade'); });
-    if (!initial && detail) detail.classList.add('is-loading');
+  var currentRangeProblem = function () {
+    return HtmxFilters.rangeProblem(byId('interval').value, byId('startDate').value, byId('endDate').value);
+  };
 
-    var params = new URLSearchParams(window.location.search);
-    params.set('ajax', 'true');
-    params.delete('scope');
-    fetch(window.location.pathname + '?' + params.toString(), {
-      headers: { 'X-Requested-With': 'XMLHttpRequest' }
-    })
-      .then(function (resp) {
-        return window.AjaxStatus.readJsonOrThrow(resp, 'genres data');
-      })
-      .then(function (data) {
-        if (token !== loadToken) return;   //< superseded by a newer load
-        //< ok:false should not happen once the shell rendered unlocked (the
-        //  gate is all-time and stable) - leave the placeholders rather than
-        //  risk a reload loop
-        if (!data || !data.ok) return;
+  var showRangeError = function (problem) {
+    var invalid = problem === HtmxFilters.RANGE_INVERTED;
+    var errorEl = byId('dateError');
+    if (errorEl) {
+      errorEl.textContent = invalid ? HtmxFilters.RANGE_INVERTED_MESSAGE : '';
+      errorEl.style.display = invalid ? 'block' : 'none';
+    }
+    byId('startDate').style.borderColor = invalid ? 'var(--accent)' : '';
+    byId('endDate').style.borderColor = invalid ? 'var(--accent)' : '';
+  };
 
-        window.__genreData.distributionPairs = data.distributionPairs;
-        window.__genreData.breadthPairs = data.breadthPairs;
-        window.__genreData.mixTrend = data.mixTrend;
-        window.__genreData.selectedTrend = data.selectedTrend;
-        window.__genreData.clock = data.clock;
-
-        var chipRow = document.getElementById('genreChipRow');
-        if (chipRow) chipRow.innerHTML = data.chipsHtml;
-        if (detail) detail.innerHTML = data.detailHtml;
-        var mixLabel = document.getElementById('genreMixLabel');
-        if (mixLabel && data.intervalLabel) mixLabel.textContent = data.intervalLabel;
-
-        renderAll();
-        if (window.AjaxStatus) window.AjaxStatus.clearBanner();
-      })
-      .catch(function (err) {
-        //< navigating to /login - not a load failure to report
-        if (window.AjaxStatus && window.AjaxStatus.isUnauthorizedError(err)) return;
-        //< genuine failure of the current load: surface a banner + Retry (a
-        //  superseded load's failure is ignored by the token guard)
-        if (token === loadToken && window.AjaxStatus) {
-          window.AjaxStatus.showBanner(function () { loadGenresData(); });
-        }
-      })
-      .finally(function () {
-        // Un-fade unconditionally: only THIS load faded these elements, so
-        // being superseded is not a reason to leave them faded. A chip click
-        // during an in-flight filter load takes the next token, and this
-        // block used to bail before clearing - .loading-fade is opacity 0.15
-        // + pointer-events:none, so all four overview charts stayed near-
-        // invisible and unclickable until the next filter change.
-        overviewTargets.forEach(function (t) { t.classList.remove('loading-fade'); });
-        if (token !== loadToken) return;
-        if (detail) detail.classList.remove('is-loading');
-      });
-  }
-
-  // ---- Chip-click drill-down swap (detail only) ----------------------------
-
-  function detailFallbackUrl(genre) {
-    var params = new URLSearchParams(window.location.search);
-    params.set('genre', genre);
-    params.delete('ajax');
-    params.delete('scope');
-    return window.location.pathname + '?' + params.toString();
-  }
-
-  function loadGenreDetail(genre, push) {
-    var token = ++loadToken;
-    var detail = document.getElementById('genreDetail');
-    if (detail) detail.classList.add('is-loading');
-    var params = new URLSearchParams(window.location.search);
-    params.set('genre', genre);
-    params.set('ajax', 'true');
-    params.set('scope', 'detail');
-    fetch(window.location.pathname + '?' + params.toString(), {
-      headers: { 'X-Requested-With': 'XMLHttpRequest' }
-    })
-      .then(function (resp) {
-        //< readJsonOrThrow, not `resp.ok ? resp.json() : null`: a non-2xx used
-        //  to fall through to the full-page fallback below, so a 500 on one
-        //  genre paid a whole reload to arrive at the same failure - and a 401
-        //  now takes the shared login redirect instead
-        return window.AjaxStatus.readJsonOrThrow(resp, 'genre detail');
-      })
-      .then(function (data) {
-        if (token !== loadToken) return;
-        if (!data || !data.ok) {
-          //< the server answered but declined (e.g. the gate re-locked) - the
-          //  full page render is the one that can explain why
-          window.location.href = detailFallbackUrl(genre);
-          return;
-        }
-        window.__genreData.selectedTrend = data.selectedTrend;
-        window.__genreData.clock = data.clock;
-        if (detail) {
-          detail.innerHTML = data.detailHtml;
-          detail.classList.remove('is-loading');
-        }
-        setSelectedChip(data.genre);
-        renderDetailCharts();
-        if (push) {
-          replaceGenresUrl(function (p) { p.set('genre', data.genre); });
-        }
-      })
-      .catch(function (err) {
-        if (window.AjaxStatus && window.AjaxStatus.isUnauthorizedError(err)) return;   //< navigating to /login
-        if (token !== loadToken) return;
-        //< a genuine failure gets the banner + Retry like every other loader,
-        //  instead of a reload that would fail the same way
-        if (detail) detail.classList.remove('is-loading');
-        if (window.AjaxStatus) {
-          window.AjaxStatus.showBanner(function () { loadGenreDetail(genre, push); });
-        }
-      });
-  }
-
-  function onChipClick(evt) {
-    var chip = evt.target.closest('.genre-chip');
-    if (!chip) return;
-    // Let modified clicks (new tab, etc.) behave normally.
-    if (evt.metaKey || evt.ctrlKey || evt.shiftKey || evt.altKey) return;
-    var genre = chip.getAttribute('data-genre');
-    if (!genre) return;
-    evt.preventDefault();
-    if (chip.classList.contains('selected')) return;   //< already showing this genre
-    loadGenreDetail(genre, true);
-  }
-
-  // The chip row element persists across full loads (only its innerHTML is
-  // swapped), so this delegated listener survives every refresh.
-  var chipRow = document.getElementById('genreChipRow');
-  if (chipRow) chipRow.addEventListener('click', onChipClick);
-
-  // ---- Time-period filter handlers (globals for the inline onchange) -------
-
-  function setGroupByVisibility(interval) {
+  // Called from the Time Period select's onchange. Runs before htmx's own
+  // listener does (an inline on*= handler fires at the target, htmx's is on the
+  // form and fires as the event bubbles), so the disabled flags below are
+  // already correct by the time the request is serialized.
+  //
+  // `disabled`, not merely hidden: a disabled control is not serialized, which
+  // is what keeps a stale custom range out of the request - and therefore out
+  // of the URL - after switching back to a named interval.
+  window.updateGenresIntervalFilter = function () {
+    var interval = byId('interval').value;
+    var custom = interval === 'custom';
+    byId('genresCustomDates').style.display = custom ? 'flex' : 'none';
+    byId('startDate').disabled = !custom;
+    byId('endDate').disabled = !custom;
     // Single-day views bucket by hour server-side - the control is a no-op
     // there, so it hides (mirrors charts-page.js).
-    var container = document.getElementById('groupByContainer');
-    if (container) {
-      container.style.display = (interval === 'today' || interval === 'day') ? 'none' : 'flex';
+    var groupByContainer = byId('groupByContainer');
+    if (groupByContainer) {
+      groupByContainer.style.display = (interval === 'today' || interval === 'day') ? 'none' : 'flex';
     }
-  }
-
-  window.updateGenresIntervalFilter = function () {
-    var interval = document.getElementById('interval').value;
-    var customDates = document.getElementById('genresCustomDates');
-    setGroupByVisibility(interval);
-    if (interval === 'custom') {
-      customDates.style.display = 'flex';
-      return;   //< wait for both custom dates before fetching
-    }
-    customDates.style.display = 'none';
-    // The selected genre is kept in the URL: the server keeps it when it still
-    // has plays in the new range, else falls back to that range's top genre.
-    replaceGenresUrl(function (params) {
-      params.set('interval', interval);
-      params.delete('startDate');
-      params.delete('endDate');
-    });
-    loadGenresData();
+    showRangeError(currentRangeProblem());
   };
 
-  window.updateGenresGroupByFilter = function () {
-    var groupBy = document.getElementById('groupBy').value;
-    replaceGenresUrl(function (params) {
-      if (groupBy) {
-        params.set('groupBy', groupBy);
-      } else {
-        params.delete('groupBy');   //< Auto: let the server derive from the range span
-      }
-    });
-    loadGenresData();
-  };
+  // The one place a request gets vetoed.
+  document.body.addEventListener('htmx:configRequest', function (evt) {
+    var elt = evt.detail.elt;
+    if (!elt) return;
 
-  window.updateGenresDateFilter = function () {
-    var startEl = document.getElementById('startDate');
-    var endEl = document.getElementById('endDate');
-    var errorEl = document.getElementById('dateError');
-    var startDate = startEl.value, endDate = endEl.value;
-
-    errorEl.style.display = 'none';
-    startEl.style.borderColor = '';
-    endEl.style.borderColor = '';
-
-    if (startDate && endDate) {
-      if (new Date(startDate) > new Date(endDate)) {
-        errorEl.textContent = 'Start date cannot be after end date.';
-        errorEl.style.display = 'block';
-        startEl.style.borderColor = 'var(--accent)';
-        endEl.style.borderColor = 'var(--accent)';
-        return;
-      }
-      replaceGenresUrl(function (params) {
-        params.set('interval', 'custom');
-        params.set('startDate', startDate);
-        params.set('endDate', endDate);
-      });
-      loadGenresData();
+    // A chip that is already showing its genre. The old delegated listener
+    // returned early rather than re-fetching an identical drill-down, and
+    // hx-boost has no attribute that says "not this one", so the check lives
+    // here instead.
+    if (elt.classList && elt.classList.contains('genre-chip')) {
+      if (elt.classList.contains('selected')) evt.preventDefault();
+      return;
     }
-  };
 
-  // Back/forward: reconcile the filter controls with the URL, then reload the
-  // full payload (which resolves the genre from the URL too).
-  window.addEventListener('popstate', function () {
-    var params = new URLSearchParams(window.location.search);
-    var hasCustom = params.get('startDate') && params.get('endDate');
-    var interval = hasCustom ? 'custom' : (params.get('interval') || bootstrap.defaultWindow || 'day');
-    var intervalEl = document.getElementById('interval');
-    if (intervalEl) intervalEl.value = interval;
-    var startEl = document.getElementById('startDate');
-    var endEl = document.getElementById('endDate');
-    if (startEl) startEl.value = params.get('startDate') || '';
-    if (endEl) endEl.value = params.get('endDate') || '';
-    var customDates = document.getElementById('genresCustomDates');
-    if (customDates) customDates.style.display = (interval === 'custom') ? 'flex' : 'none';
-    var groupBySelect = document.getElementById('groupBy');
-    if (groupBySelect) groupBySelect.value = params.get('groupBy') || '';   //< bare URL = Auto
-    setGroupByVisibility(interval);
-    loadGenresData();
+    // Everything below is about the FILTER form only: a boosted chip carries
+    // its whole query in its href and must keep working even while the Time
+    // Period select sits on a half-entered custom range, which is exactly the
+    // state that blocks a form request.
+    if (elt.id !== GENRES_FORM_ID) return;
+    var problem = currentRangeProblem();
+    showRangeError(problem);
+    if (problem !== HtmxFilters.RANGE_OK) {
+      evt.preventDefault();
+      return;
+    }
+    HtmxFilters.pruneEmptyParams(evt.detail.parameters);
   });
 
-  loadGenresData({ initial: true });
+  // ---- The part htmx cannot own: painting the canvases it just swapped in ---
+  //
+  // Scoped to the two swap targets by id. htmx fires afterSwap on the target
+  // AND on each top-level element it inserted, so an unguarded listener would
+  // redraw several times per swap.
+  document.body.addEventListener('htmx:afterSwap', function (evt) {
+    var swapped = evt.target.id;
+    if (swapped !== GENRES_RESULTS_ID && swapped !== GENRE_EXPLORE_ID) return;
+    CU.refreshPalette();
+    //< a chip swap does not carry the overview island at all - its datasets are
+    //  unchanged by a genre switch, and its canvases were not replaced either
+    if (swapped === GENRES_RESULTS_ID) {
+      absorbOverviewData();
+      renderOverview();
+    }
+    absorbDetailData();
+    renderDetailCharts();
+    //< a swap landed, so whatever failed before has been recovered from
+    if (window.AjaxStatus) window.AjaxStatus.clearBanner();
+  });
+
+  // A genuine failure gets the shared error + Retry rather than a stuck
+  // "Loading…" or silently stale charts. This page uses the page-level banner
+  // rather than renderInto: its swap targets are mostly canvases, and replacing
+  // their markup with an error block would leave nothing left to draw on.
+  //
+  // An expired session no longer arrives here at all: the server answers an
+  // htmx request with HX-Redirect, so the browser navigates to /login instead
+  // of this reporting a load failure.
+  var reportGenresFailure = function (evt) {
+    if (!window.AjaxStatus) return;
+    var detail = evt.detail || {};
+    //< retry the request that actually failed - which of the two shapes it was
+    //  is already encoded in its target and its URL
+    var target = detail.target || byId(GENRES_RESULTS_ID);
+    var pathInfo = detail.pathInfo || {};
+    var path = pathInfo.finalRequestPath || pathInfo.requestPath ||
+      (window.location.pathname + window.location.search);
+    if (!target) return;
+    window.AjaxStatus.showBanner(function () {
+      htmx.ajax('GET', path, { target: target, swap: 'innerHTML' });
+    });
+  };
+  document.body.addEventListener('htmx:responseError', reportGenresFailure);
+  document.body.addEventListener('htmx:sendError', reportGenresFailure);
+
+  // ---- Repaints that are not swaps -----------------------------------------
 
   var resizeTimer;
   window.addEventListener('resize', function () {
     clearTimeout(resizeTimer);
-    resizeTimer = setTimeout(renderAll, 150);
+    resizeTimer = setTimeout(renderAll, RESIZE_REDRAW_MS);
   });
 
-  var themeSelector = document.getElementById('theme-selector');
+  var themeSelector = byId('theme-selector');
   if (themeSelector) {
     themeSelector.addEventListener('change', function () {
-      setTimeout(renderAll, 50);
+      setTimeout(renderAll, THEME_REDRAW_MS);
     });
   }
 })();
+//< no module.exports: the pure filter helpers moved to static/js/htmx-filters.js,
+//  which is where the plain-node unit test points (tests/test_htmx_filters.js)

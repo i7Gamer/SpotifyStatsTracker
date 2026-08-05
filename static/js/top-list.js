@@ -1,231 +1,130 @@
 // SPDX-FileCopyrightText: 2026 i7Gamer
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-/* Two-phase AJAX loader + filter handlers for the Top Songs/Artists/Albums
- * pages (templates/top_*.html + _page_card.html). The shell renders the filter
- * controls and an empty #topListResults placeholder; this fetches the stat
- * header + list + pagination via ?ajax=true on first paint and on every
- * filter/sort/tag/page change, swapping it in place instead of a full reload
- * (the same pattern history.html / charts-page.js use). The filter functions
- * were inline in _page_card.html and did window.location full navigations. */
+/* What is left of the Top Songs/Artists/Albums pages' browser logic once htmx
+ * owns the request/swap layer (see templates/_page_card.html for the wiring,
+ * shared by all three pages).
+ *
+ * This file was 208 lines of the same loader /history had: an AbortController
+ * to stop a superseded response landing, replaceState bookkeeping, a delegated
+ * pagination click listener, and four filter handlers that each hand-edited the
+ * query string. htmx does all of that declaratively, and the pure "which params
+ * does this filter set vs delete" helpers went with it - the filter card now IS
+ * the parameter list, serialized by htmx.
+ *
+ * What could not move is below, and it is the same short list as /history plus
+ * one: two controls need a hidden field kept in step with them, because neither
+ * a checkbox nor a shown/hidden date pair serializes the way the route reads it.
+ *
+ * Note there is no `hx-on:` or event-filter shortcut available here: the CSP
+ * withholds 'unsafe-eval' from these pages (see templates/_page_card.html). */
 
-// --- pure helpers -----------------------------------------------------------
-// Kept at module scope, DOM-free and exported, so the branchy parts (which
-// query params a filter change sets vs deletes, and whether a settled response
-// still belongs to the newest load) are unit-testable in plain node like the
-// sibling modules' logic is. The DOM wiring below reads the controls and hands
-// their values here.
+//< the form htmx watches, in _page_card.html
+var TOP_LIST_FORM_ID = 'topListFilters';
 
-// True when a response that just settled still belongs to the newest load. A
-// fetch aborted mid-flight can still resolve, so without this a superseded
-// response could swap stale rows in over fresher ones.
-function isCurrentTopListLoad(activeLoad, controller) {
-  return !!activeLoad && activeLoad.controller === controller;
-}
+if (typeof document !== 'undefined') {
+  var byId = function (id) { return document.getElementById(id); };
 
-// `state`: {interval, sortBy, searchQuery, startDate, endDate, forceCustom}
-function applyTopListFilterParams(params, state) {
-  var useCustom = state.interval === 'custom' || state.forceCustom;
-  if (state.searchQuery && state.searchQuery.trim()) {
-    params.set('q', state.searchQuery);
-  } else {
-    params.delete('q');
-  }
-  params.set('sortBy', state.sortBy);
-  if (useCustom) {
-    params.set('interval', 'custom');
-    params.set('startDate', state.startDate);
-    params.set('endDate', state.endDate);
-  } else if (state.interval) {
-    params.set('interval', state.interval);
-    params.delete('startDate');
-    params.delete('endDate');
-  } else {
-    params.delete('interval');   //< empty value = All Time
-    params.delete('startDate');
-    params.delete('endDate');
-  }
-  params.delete('page');         //< any filter change returns to page 1
-  return params;
-}
+  var currentRangeProblem = function () {
+    return HtmxFilters.rangeProblem(byId('interval').value, byId('startDate').value, byId('endDate').value);
+  };
 
-function applyTopListTagParam(params, tag) {
-  if (tag) { params.set('tag', tag); } else { params.delete('tag'); }
-  params.delete('page');
-  return params;
-}
-
-function applyTopListFullPlaysParam(params, fullPlaysOnly) {
-  params.set('fullOnly', fullPlaysOnly ? '1' : '0');
-  params.delete('page');
-  return params;
-}
-
-if (typeof window !== 'undefined') (function () {
-  var FADE_MS = 200;
-  var activeLoad = null;
-
-  function target() { return document.getElementById('topListResults'); }
-
-  function loadTopList(opts) {
-    opts = opts || {};
-    var initial = !!opts.initial;
-    var el = target();
-    if (!el) return;
-    if (activeLoad) {
-      activeLoad.controller.abort();
-      el.classList.remove('loading-fade');
+  var showRangeError = function (problem) {
+    var invalid = problem === HtmxFilters.RANGE_INVERTED;
+    var errorEl = byId('dateError');
+    if (errorEl) {
+      errorEl.textContent = invalid ? HtmxFilters.RANGE_INVERTED_MESSAGE : '';
+      errorEl.style.display = invalid ? 'block' : 'none';   //< block, like the sibling pages
     }
-    var controller = new AbortController();
-    activeLoad = { controller: controller };
-    if (!initial) el.classList.add('loading-fade');
+    byId('startDate').style.borderColor = invalid ? 'var(--accent)' : '';
+    byId('endDate').style.borderColor = invalid ? 'var(--accent)' : '';
+  };
 
-    var params = new URLSearchParams(window.location.search);
-    params.set('ajax', 'true');
-    var delay = new Promise(function (resolve) { setTimeout(resolve, initial ? 0 : FADE_MS); });
-    var fetched = fetch(window.location.pathname + '?' + params.toString(), { signal: controller.signal })
-      .then(function (resp) {
-        return window.AjaxStatus.readJsonOrThrow(resp, 'top list');
-      });
-
-    Promise.all([fetched, delay]).then(function (results) {
-      var data = results[0];
-      //< a response that resolved before its abort can still land here - never
-      //  swap stale data in over a newer load
-      if (!isCurrentTopListLoad(activeLoad, controller)) return;
-      el.innerHTML = data.resultsHtml;
-      el.querySelectorAll('img.track-cover').forEach(function (img) {
-        if (img.complete) img.classList.add('loaded');
-        else img.addEventListener('load', function () { img.classList.add('loaded'); });
-      });
-    }).catch(function (err) {
-      //< navigating to /login - not a load failure to report
-      if (window.AjaxStatus && window.AjaxStatus.isUnauthorizedError(err)) return;
-      if (err.name !== 'AbortError') {
-        console.error(err);
-        if ((!activeLoad || activeLoad.controller === controller) && window.AjaxStatus) {
-          window.AjaxStatus.renderInto(el, function () { loadTopList(); });
-        }
-      }
-    }).finally(function () {
-      if (activeLoad && activeLoad.controller === controller) {
-        activeLoad = null;
-        el.classList.remove('loading-fade');
-      }
-    });
-  }
-  window.loadTopList = loadTopList;
-
-  // Update the URL in place (replaceState, not push) so a filter/page change
-  // stays shareable/refreshable without stacking history entries - Back then
-  // leaves the page instead of stepping through each filter change.
-  function replaceTopListUrl(mutate) {
-    var params = new URLSearchParams(window.location.search);
-    mutate(params);
-    params.delete('ajax');
-    var query = params.toString();
-    window.history.replaceState({}, '', window.location.pathname + (query ? '?' + query : ''));
-  }
-
-  function currentSearch() {
-    var el = document.getElementById('searchQuery');
-    return el ? el.value : '';
-  }
-
-  function applyFilters(forceCustom) {
-    var interval = document.getElementById('interval').value;
-    var sortBy = document.getElementById('sortBy').value;
-    var searchQuery = currentSearch();
-    var startDate, endDate;
-    if (interval === 'custom' || forceCustom) {
-      startDate = document.getElementById('startDate').value;
-      endDate = document.getElementById('endDate').value;
-      if (!startDate || !endDate) return;
-    }
-    replaceTopListUrl(function (params) {
-      applyTopListFilterParams(params, {
-        interval: interval, sortBy: sortBy, searchQuery: searchQuery,
-        startDate: startDate, endDate: endDate, forceCustom: !!forceCustom,
-      });
-    });
-    loadTopList();
-  }
-
-  // --- handlers referenced by _page_card.html's controls ---
+  // Called from the Time Period select's onchange. Runs before htmx's listener
+  // (an inline on*= handler fires at the target; htmx's is on the form and fires
+  // as the event bubbles), so the disabled flags are already right by the time
+  // the request is serialized.
+  //
+  // `disabled`, not merely hidden: a disabled control is not serialized, which
+  // is what keeps a stale custom range out of the request - and so out of the
+  // URL - after switching back to a named interval.
   window.updateIntervalFilter = function () {
-    var interval = document.getElementById('interval').value;
-    var customDates = document.getElementById('customDates');
-    if (interval === 'custom') { customDates.style.display = 'flex'; return; }
-    customDates.style.display = 'none';
-    applyFilters();
+    var custom = byId('interval').value === 'custom';
+    byId('customDates').style.display = custom ? 'flex' : 'none';
+    byId('startDate').disabled = !custom;
+    byId('endDate').disabled = !custom;
+    showRangeError(currentRangeProblem());
   };
 
-  window.updateDateFilter = function () {
-    var startEl = document.getElementById('startDate');
-    var endEl = document.getElementById('endDate');
-    var errorEl = document.getElementById('dateError');
-    var startDate = startEl.value, endDate = endEl.value;
-    if (errorEl) errorEl.style.display = 'none';
-    startEl.style.borderColor = '';
-    endEl.style.borderColor = '';
-    if (startDate && endDate && new Date(startDate) > new Date(endDate)) {
-      if (errorEl) { errorEl.textContent = 'Start date cannot be after end date.'; errorEl.style.display = 'block'; }   //< block, like the four sibling pages
-      startEl.style.borderColor = 'var(--accent)';
-      endEl.style.borderColor = 'var(--accent)';
-      return;
-    }
-    if (startDate && endDate) applyFilters(true);
-  };
-
-  window.updateSearchFilter = function () { applyFilters(); };
-  window.updateFilters = function () { applyFilters(); };
-
-  window.updateTagFilter = function () {
-    var tagFilter = document.getElementById('tagFilter');
-    replaceTopListUrl(function (params) { applyTopListTagParam(params, tagFilter.value); });
-    loadTopList();
-  };
-
+  // "Full plays only" cannot be a plain form field. An unchecked checkbox is not
+  // serialized at all, and to this route an ABSENT fullOnly means the default,
+  // which is ON (see _topListFilters) - so unchecking it would have read as
+  // checking it. The checkbox therefore drives a hidden field carrying the
+  // explicit "1"/"0" the route expects, and htmx submits that.
   window.updateFullPlaysFilter = function () {
-    var cb = document.getElementById('fullPlaysOnly');
-    replaceTopListUrl(function (params) { applyTopListFullPlaysParam(params, cb.checked); });
-    loadTopList();
+    byId('fullOnlyValue').value = byId('fullPlaysOnly').checked ? '1' : '0';
   };
 
-  // --- pagination (the results container persists across swaps, so this
-  //     delegated listener survives every refresh) ---
-  function goToTopListPage(page) {
-    replaceTopListUrl(function (params) { params.set('page', page); });
-    loadTopList();
-  }
+  // _pagination.html's jump-to-page input calls the shared
+  // handleJumpToPageKeydown (static/js/layout-chrome.js), which defers to this
+  // hook when present. It is an <input>, not a link, so hx-boost does not cover
+  // it the way it covers Prev/Next.
+  //
+  // replaceState, never push - the same rule the hx-replace-url attributes
+  // encode, and tests/test_pagination_ajax_handler.py asserts for this file.
+  // htmx.ajax has no replace-url option, so the URL is updated here and the swap
+  // requested separately.
+  var goToTopListPage = function (page) {
+    var params = new URLSearchParams(window.location.search);
+    params.set('page', page);
+    var url = window.location.pathname + '?' + params.toString();
+    window.history.replaceState({}, '', url);
+    htmx.ajax('GET', url, { target: '#topListResults', swap: 'innerHTML' });
+  };
   window.__paginationAjaxHandler = goToTopListPage;
 
-  function init() {
-    var el = target();
-    if (!el) return;
-    el.addEventListener('click', function (evt) {
-      var link = evt.target.closest('.pagination-controls a');
-      if (!link) return;
-      if (evt.metaKey || evt.ctrlKey || evt.shiftKey || evt.altKey) return;   //< let new-tab clicks pass
+  // The one place a request gets vetoed. Scoped to requests the FORM makes: a
+  // boosted pagination link carries its whole query in its href and must keep
+  // working even while the Time Period select sits on a half-entered custom
+  // range, which is exactly the state that blocks a form request.
+  document.body.addEventListener('htmx:configRequest', function (evt) {
+    if (!evt.detail.elt || evt.detail.elt.id !== TOP_LIST_FORM_ID) return;
+    var problem = currentRangeProblem();
+    showRangeError(problem);
+    if (problem !== HtmxFilters.RANGE_OK) {
       evt.preventDefault();
-      var page = new URL(link.href).searchParams.get('page') || '1';
-      goToTopListPage(page);
+      return;
+    }
+    HtmxFilters.pruneEmptyParams(evt.detail.parameters);
+  });
+
+  // Smooth cover-art fade-ins for freshly swapped cards. The images are new
+  // elements on every swap, so this cannot be a one-time delegated listener.
+  document.body.addEventListener('htmx:afterSwap', function (evt) {
+    if (evt.target.id !== 'topListResults') return;
+    evt.target.querySelectorAll('img.track-cover').forEach(function (img) {
+      if (img.complete) {
+        img.classList.add('loaded');
+      } else {
+        img.addEventListener('load', function () { img.classList.add('loaded'); });
+      }
     });
-    loadTopList({ initial: true });
-  }
+  });
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', init);
-  } else {
-    init();
-  }
-})();
-
-if (typeof module !== 'undefined' && module.exports) {
-  module.exports = {
-    isCurrentTopListLoad,
-    applyTopListFilterParams,
-    applyTopListTagParam,
-    applyTopListFullPlaysParam,
+  // A genuine failure gets the shared inline error + Retry rather than a stuck
+  // "Loading…" or a silently stale list. An expired session no longer arrives
+  // here at all: the server answers an htmx request with HX-Redirect, so the
+  // browser navigates to /login instead of this reporting a load failure.
+  var reportTopListFailure = function () {
+    var target = byId('topListResults');
+    if (!target || !window.AjaxStatus) return;
+    window.AjaxStatus.renderInto(target, function () {
+      htmx.ajax('GET', window.location.pathname + window.location.search,
+                { target: '#topListResults', swap: 'innerHTML' });
+    });
   };
+  document.body.addEventListener('htmx:responseError', reportTopListFailure);
+  document.body.addEventListener('htmx:sendError', reportTopListFailure);
 }
+//< no module.exports: everything pure moved to static/js/htmx-filters.js, which
+//  is where the plain-node unit test now points (tests/test_htmx_filters.js)

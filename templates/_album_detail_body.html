@@ -79,7 +79,8 @@
 </div>
 
 <div data-category="history" class="{{ 'visible' if view == 'history' else '' }}">
-  <div id="detailHistoryResults">
-    {% include '_detail_history_results.html' %}
-  </div>
+  {% set historyPartial = '_detail_history_results.html' %}
+  {% include '_detail_history_container.html' %}
 </div>
+
+{% include '_detail_chart_data.html' %}

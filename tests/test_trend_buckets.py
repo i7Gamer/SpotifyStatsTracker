@@ -21,6 +21,7 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from _app_factory import AppTestCase
+from _charts_client import HX_HEADERS as CHARTS_HX_HEADERS, chartData
 from _detail_client import DetailPageClientMixin
 from dashboard.date_ranges import DateRangeMixin
 from config import COMPARE_TREND_WEEK_SPAN_DAYS, COMPARE_TREND_MONTH_SPAN_DAYS
@@ -282,31 +283,35 @@ class TestChartsAutoBuckets(AppTestCase):
         db.repo.getUserSettings.return_value = {"default_dashboard_window": "month", "timezone": None}
         return db
 
-    def _get(self, dash, db, query=""):
+    def _get(self, dash, db, query="", headers=None):
         client = dash.app.test_client()
         with patch.object(dash, 'is_user_logged_in', return_value=True), \
              patch.object(dash, 'get_username_for_email', return_value='alice'), \
              patch.object(dash, 'get_user_db', return_value=db):
             with client.session_transaction() as sess:
                 sess['email'] = 'alice@example.com'
-            return client.get(f"/charts{query}")
+            #< with CHARTS_HX_HEADERS this is the chart-card swap, where the
+            #  resolved bucket rides in the fragment's JSON data island; without
+            #  them it is the plain shell GET
+            return client.get(f"/charts{query}", headers=headers)
 
     def test_all_time_auto_buckets_from_the_play_range(self):
         dash = self._makeApp()
         db = self._makeDb()
         with patch.object(dash.repo, "getPlayTimeRange", return_value=(0.0, LONG_SPAN_SECONDS)):
-            resp = self._get(dash, db, "?interval=all+time&ajax=true")
+            resp = self._get(dash, db, "?interval=all+time", headers=CHARTS_HX_HEADERS)
 
-        self.assertEqual(resp.get_json()["groupBy"], "month")
+        self.assertEqual(chartData(resp)["groupBy"], "month")
         self.assertEqual(db.getListeningTimeSeries.call_args.kwargs.get("groupBy"), "month")
 
     def test_all_time_auto_without_plays_falls_back_to_day(self):
         dash = self._makeApp()
         db = self._makeDb()
 
-        resp = self._get(dash, db, "?interval=all+time&ajax=true")   #< real (empty) repo: no play range
+        #< real (empty) repo: no play range
+        resp = self._get(dash, db, "?interval=all+time", headers=CHARTS_HX_HEADERS)
 
-        self.assertEqual(resp.get_json()["groupBy"], "day")
+        self.assertEqual(chartData(resp)["groupBy"], "day")
 
     def test_shell_defaults_to_auto_selected(self):
         dash = self._makeApp()

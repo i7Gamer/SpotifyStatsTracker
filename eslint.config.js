@@ -66,13 +66,16 @@ module.exports = [
         // are the one thing that genuinely has to come from the server (see
         // history.html). Listing them here is what lets the logic itself live
         // in a linted file instead of inside the template.
-        DASHBOARD_DEFAULT_WINDOW: "readonly",
         USERNAME: "readonly",
         // The vendored library in static/js/vendor (ignored above, so its own
-        // `var htmx = ...` is never seen by this config). history-page.js calls
-        // htmx.ajax for the two things attributes cannot express - the
+        // `var htmx = ...` is never seen by this config). The migrated pages
+        // call htmx.ajax for the two things attributes cannot express - the
         // jump-to-page input and the Retry button.
         htmx: "readonly",
+        // static/js/htmx-filters.js's window export, read by every page that
+        // htmx drives. Same shape as renderTimeSeriesChart above: a real
+        // runtime global, loaded by the template immediately before its reader.
+        HtmxFilters: "readonly",
         // Only `module`, not node's whole set. Several of these scripts end with
         // `if (typeof module !== 'undefined' && module.exports) { … }` so their
         // pure logic can be required by the node unit tests - a deliberate

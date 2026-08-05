@@ -30,54 +30,24 @@
 //< the form htmx watches; also the element the sort toggle re-triggers
 var HISTORY_FORM_ID = 'historyFilters';
 
-// The three states a Time Period selection can be in. Split out as a pure
-// function (unit-tested in tests/test_history_page.js) because two different
-// callers need the same answer: the error display, and the gate that decides
-// whether a request is worth sending at all.
-var RANGE_OK = null;
-var RANGE_INCOMPLETE = 'incomplete';
-var RANGE_INVERTED = 'inverted';
-var RANGE_INVERTED_MESSAGE = 'Start date cannot be after end date.';
+// The date-range check and the empty-param pruning live in
+// static/js/htmx-filters.js, shared with the Top lists - both pages have the
+// same filter card, and two copies of "is this range worth a request" would
+// eventually disagree. Loaded before this file (see templates/history.html).
+var RANGE_OK = HtmxFilters.RANGE_OK;
+var RANGE_INVERTED = HtmxFilters.RANGE_INVERTED;
 
-function historyRangeProblem(interval, startDate, endDate) {
-  //< only a custom range can be malformed; a named interval needs no dates
-  if (interval !== 'custom') return RANGE_OK;
-  //< half-entered, which is what every keystroke of typing a date looks like:
-  //  not an error to shout about, but not something to query on either
-  if (!startDate || !endDate) return RANGE_INCOMPLETE;
-  if (new Date(startDate) > new Date(endDate)) return RANGE_INVERTED;
-  return RANGE_OK;
-}
-
-// Drop the params the user has not set. htmx serializes every enabled control
-// in the form, so an untouched search box or tag dropdown would otherwise put
-// `q=&tag=` in the request - and hx-replace-url writes the requested URL back
-// to the address bar, so those empties become part of the link people copy.
-//
-// Takes the parameters object htmx hands to htmx:configRequest, which is a
-// Proxy over a FormData with deleteProperty and ownKeys traps - so ordinary
-// object operations work on it, and a plain object works in the unit test.
-function pruneEmptyParams(parameters) {
-  Object.keys(parameters).forEach(function (key) {
-    if (parameters[key] === '') delete parameters[key];
-  });
-  return parameters;
-}
-
-// Everything below only runs in a browser (guarded on `document`, like
-// static/js/top-list.js's init) so this module can still be `require()`d from
-// a plain-node unit test for its pure helpers above.
 if (typeof document !== 'undefined') {
   var byId = function (id) { return document.getElementById(id); };
 
   var currentRangeProblem = function () {
-    return historyRangeProblem(byId('interval').value, byId('startDate').value, byId('endDate').value);
+    return HtmxFilters.rangeProblem(byId('interval').value, byId('startDate').value, byId('endDate').value);
   };
 
   var showRangeError = function (problem) {
     var invalid = problem === RANGE_INVERTED;
     var errorElem = byId('dateError');
-    errorElem.textContent = invalid ? RANGE_INVERTED_MESSAGE : '';
+    errorElem.textContent = invalid ? HtmxFilters.RANGE_INVERTED_MESSAGE : '';
     errorElem.style.display = invalid ? 'block' : 'none';
     byId('startDate').style.borderColor = invalid ? 'var(--accent)' : '';
     byId('endDate').style.borderColor = invalid ? 'var(--accent)' : '';
@@ -142,7 +112,7 @@ if (typeof document !== 'undefined') {
       evt.preventDefault();
       return;
     }
-    pruneEmptyParams(evt.detail.parameters);
+    HtmxFilters.pruneEmptyParams(evt.detail.parameters);
   });
 
   // Smooth cover-art fade-ins for freshly swapped cards. The images are new
@@ -173,13 +143,5 @@ if (typeof document !== 'undefined') {
   document.body.addEventListener('htmx:responseError', reportHistoryFailure);
   document.body.addEventListener('htmx:sendError', reportHistoryFailure);
 }
-
-if (typeof module !== 'undefined' && module.exports) {
-  module.exports = {
-    historyRangeProblem,
-    pruneEmptyParams,
-    RANGE_OK,
-    RANGE_INCOMPLETE,
-    RANGE_INVERTED,
-  };
-}
+//< no module.exports: everything pure moved to static/js/htmx-filters.js, which
+//  is where the plain-node unit test now points (tests/test_htmx_filters.js)

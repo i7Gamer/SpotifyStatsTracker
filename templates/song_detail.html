@@ -5,12 +5,23 @@
 {% block title %}{{ song.get('name', '') }} - {{ super() }}{% endblock %}
 {% from '_artist_links.html' import artistLinks with context %}
 {% block content %}
-  {# Two-phase load like /charts, /genres, /history and the Top pages: this GET
-     renders the hero, the toolbar and the tag panel - all off the one getSong
-     the route already does - and static/js/detail-page.js fetches everything
-     below via ?ajax=page right after first paint (see _song_detail_body.html).
-     The Trend-buckets select and the play log then keep their own narrower
-     refetches, ?ajax=true and ?ajax=list. #}
+  {# Two-phase load like /history and the Top pages: this GET renders the hero,
+     the toolbar and the tag panel - all off the one getSong the route already
+     does - and htmx fetches everything below right after first paint (see
+     _song_detail_body.html).
+
+     These pages have THREE second requests, and only two of them are markup.
+     The whole body and the play log are swapped by htmx and are told apart by
+     the id of the region they fill (htmx's HX-Target header - see
+     _detailSwapTarget in routes/charts.py); the Trend-buckets select re-fetches
+     chart DATA for a canvas, which htmx cannot swap, so it keeps its own
+     fetch() and its ?ajax=true JSON (static/js/detail-chart.js).
+
+     Unlike the other htmx pages, config.py grants these three routes
+     'unsafe-eval' (DETAIL_PAGE_CSP, for Spotify's iFrame API bundle), so the
+     htmx features that compile a JS expression would actually work here. They
+     are still not used: the pages are read as one set, and a shortcut available
+     on three of them is a trap for whoever copies it onto a fourth. #}
   <section class="hero">
     <div class="hero-content">
       <h1>{{ song.get('name', '') }}</h1>
@@ -54,13 +65,39 @@
   {% include '_tag_widget.html' %}
   {% endif %}
 
-  <div id="detailBody">{% include '_detail_skeleton.html' %}</div>
+  {# The swap target. The first load lives on the placeholder INSIDE it rather
+     than on the container, so it fires once and is then swapped away - there is
+     no separate "have we loaded yet" state to keep.
 
+     bodyUrl is built by the route from the VALIDATED page state rather than
+     echoed from request.full_path: a stale ?groupBy=bogus would otherwise be
+     asserted back into the markup while the select beside it already renders as
+     Auto. No hx-replace-url on this one: the load asks for what the URL already
+     means, and rewriting the address bar on first paint would be a silent
+     redirect. No hx-indicator either - the skeleton IS the loading state, and
+     fading it to 0.15 would hide the thing that says "loading". #}
+  <div id="detailBody"
+       hx-target="#detailBody"
+       hx-swap="innerHTML"
+       hx-sync="#detailBody:replace">
+    <section hx-get="{{ bodyUrl }}" hx-trigger="load">
+      {% include '_detail_skeleton.html' %}
+    </section>
+  </div>
+
+  <script src="{{ url_for('static', filename='js/vendor/htmx.min.js') }}"></script>
+  {# Not optional here even though nothing on these pages calls HtmxFilters
+     directly: it installs the capture listener that hands shift-click and
+     alt-click on a boosted link back to the browser. htmx's own boost exemption
+     covers ctrl and meta ONLY, while the delegated pagination handler hx-boost
+     replaced exempted all four - so without this, opening a play-log page in a
+     new WINDOW silently swaps it into the list instead. #}
+  <script src="{{ url_for('static', filename='js/htmx-filters.js') }}"></script>
   <script src="{{ url_for('static', filename='js/back-button.js') }}"></script>
   <script>
-    // Filled by detail-page.js once the deferred payload lands; charts.js is
-    // told to skip its own initial render until then (same contract /charts
-    // uses).
+    // Filled by detail-page.js from the body's data island once the swap lands;
+    // charts.js is told to skip its own initial render until then (same
+    // contract /charts uses).
     window.__chartData = {};
     window.__deferInitialChartRender = true;
 

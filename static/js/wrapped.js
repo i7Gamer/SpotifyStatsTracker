@@ -1,579 +1,371 @@
 // SPDX-FileCopyrightText: 2026 i7Gamer
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// The Wrapped page's client logic, extracted from the inline <script> in
-// templates/wrapped.html so it is a static, cacheable asset instead of ~500
-// lines of template-embedded JS.
+// What is left of the Wrapped page's browser logic once htmx owns the
+// request/swap layer (see templates/wrapped.html for the attributes, and
+// templates/_wrapped_results.html for what comes back).
 //
-// Server-rendered config + the time-series data arrive via the JSON
-// <script type="application/json" id="wrapped-bootstrap"> data island in
-// wrapped.html; everything below is verbatim from the former inline script.
-// This file is loaded BEFORE charts.js, which reads window.__chartData set here.
+// This file used to be 579 lines. What went, and what took it over:
 //
-// Top-level names stay global on purpose: the inline
-// onchange="updateWrappedFilters()" handlers in wrapped.html depend on it.
-const wrappedBootstrap = JSON.parse(document.getElementById('wrapped-bootstrap').textContent);
-window.__chartData = { timeSeries: wrappedBootstrap.timeSeries };
-const WRAPPED_FETCH_URL = wrappedBootstrap.fetchUrl;
-const IS_PUBLIC_VIEW = wrappedBootstrap.isPublicView;
-const SHARE_OWNER_NAME = wrappedBootstrap.shareOwnerName;
-let currentYear = String(wrappedBootstrap.year);
-let currentGroupBy = String(wrappedBootstrap.groupBy);
-let currentLimit = String(wrappedBootstrap.limit);
-let currentSortBy = String(wrappedBootstrap.sortBy);
+//   loadWrappedData + AbortController      -> hx-get + hx-sync="...:replace"
+//   setWrappedFade's add/remove/cleanup    -> hx-indicator + .htmx-fade-target
+//   updateWrappedFilters + the 3 onchange= -> hx-trigger="change" on the form
+//   the delegated year-badge click handler -> hx-boost on the badge nav
+//   replaceState, written out three times  -> hx-replace-url="true"
+//   the popstate handler                   -> nothing, and deliberately: every
+//     URL update here REPLACES, so this page never puts an entry on the history
+//     stack for itself and there is no in-page state to pop back to. The
+//     handler only ever ran on a cross-document Back, which reloads the page
+//     server-side anyway.
+//   ~200 lines of DOM surgery (8 stat tiles, 6 track lists and their
+//     show/hide, the genre card, the share panel, 13 export-button data-*,
+//     the hero title, the chart heading)
+//                                          -> the server renders all of it;
+//     the four regions that sit OUTSIDE the swap container come back as
+//     out-of-band swaps (see _wrapped_results.html's header)
+//   the 401 -> /login branch               -> HX-Redirect, sent by the server
+//                                             (app.py unauthenticatedResponse)
+//
+// What genuinely could not move is below, and it is more than /history kept:
+//
+//   - the chart. htmx swaps the HTML; the <canvas> is a NEW element after every
+//     swap and has to be redrawn from the freshly-rendered data island. That is
+//     an htmx:afterSwap listener, and there is no version of it htmx owns.
+//   - the Export Summary Card PNG, which is ~100 lines of canvas drawing.
+//   - which stats-filter category is showing. That is client state the server
+//     has no idea about (it is not in the URL), so it is remembered here and
+//     re-applied after each swap.
+//   - the share modal: opening/closing it, and its create/revoke forms, which
+//     POST to an action endpoint and swap back a panel rather than the recap.
+//     Those keep their own fetch() (see routes/auth.py's profileShareLinkAction
+//     and routes/wrapped.py's createWrappedShareLink, both still ?ajax=true).
+//
+// Note there is no `hx-on:` or event-filter shortcut available for any of it -
+// the CSP withholds 'unsafe-eval' from this page (see wrapped.html's header).
 
-const filterButtons = document.querySelectorAll('.stats-filter-button');
-const categoryDivs = document.querySelectorAll('[data-category]');
+//< the form htmx watches, and the container it swaps into
+var WRAPPED_FORM_ID = 'wrappedFilters';
+var WRAPPED_RESULTS_ID = 'wrappedResults';
+//< the stats-filter category that shows every section; also the fallback when
+//  the chosen one has no items in the year just loaded
+var STATS_FILTER_ALL = 'all';
 
-filterButtons.forEach(button => {
-  button.addEventListener('click', () => {
-    const filter = button.dataset.filter;
+if (typeof document !== 'undefined') {
+  var byId = function (id) { return document.getElementById(id); };
 
-    filterButtons.forEach(btn => btn.classList.remove('active'));
-    button.classList.add('active');
+  // --- the chart -------------------------------------------------------------
 
-    categoryDivs.forEach(div => {
-      if (filter === 'all' || div.dataset.category === filter) {
-        div.classList.add('visible');
-      } else {
-        div.classList.remove('visible');
-      }
+  // The time series is server-rendered into a JSON data island inside the swap
+  // container, so a swap brings the new data with it. charts.js reads
+  // window.__chartData at draw time, which is why this only has to reassign it.
+  //
+  // Deliberately no `interval` key. charts.js reads that as "these buckets are
+  // hours" (interval === 'day' means Yesterday on /charts) and splits each label
+  // on a space to get "HH:00". Wrapped's day buckets are whole dates with no
+  // space in them, so the old loader's `__chartData.interval = groupBy` turned
+  // every x-axis label and tooltip into "undefined" the moment someone picked
+  // Trend buckets = Day. The full-page render never set it and was always
+  // right; now both paths agree.
+  var loadChartData = function () {
+    var island = byId('wrapped-bootstrap');
+    if (!island) return;
+    window.__chartData = { timeSeries: JSON.parse(island.textContent).timeSeries };
+  };
+  //< at parse time, before charts.js runs its initial render
+  loadChartData();
+
+  // --- the stats-filter category nav -----------------------------------------
+
+  // Remembered across swaps: the nav and the sections are re-rendered by the
+  // server on every filter change, and the server has no idea which category
+  // the user is looking at (it is not in the URL). Without this, changing the
+  // sort order would silently bounce them back to All Stats.
+  var activeStatsFilter = STATS_FILTER_ALL;
+
+  var applyStatsFilter = function (filter) {
+    var chosen = document.querySelector('.stats-filter-button[data-filter="' + filter + '"]');
+    // A category with nothing in it is hidden server-side, so the year just
+    // loaded can take the chosen category away underneath the user - show
+    // everything rather than an empty page.
+    if (!chosen || chosen.style.display === 'none') {
+      filter = STATS_FILTER_ALL;
+    }
+    activeStatsFilter = filter;
+    document.querySelectorAll('.stats-filter-button').forEach(function (button) {
+      button.classList.toggle('active', button.dataset.filter === filter);
     });
-  });
-});
-
-const allButton = document.querySelector('[data-filter="all"]');
-if (allButton) {
-  allButton.click();
-}
-
-// The Export Summary Card button and Share modal only exist in the DOM
-// when not publicView - their handlers below use ?. so registering them
-// here unconditionally is a safe no-op on the public page.
-
-
-// The in-flight filter fetch ({controller, targets}) - a newer filter
-// change aborts it so a slow older response can't land after (and
-// clobber) the newer one's swap. Same race, same fix as Compare's
-// loadCompareData (see templates/compare.html).
-let activeWrappedLoad = null;
-
-function setWrappedFade(targets, add) {
-  //< the shared loading-fade class (style.css) - 'wrapped-loading-fade' was a
-  //  byte-identical re-declaration living in wrapped.html's inline styles
-  targets.forEach(t => {
-    if (!t) return;
-    if (t instanceof NodeList) {
-      t.forEach(el => el.classList[add ? 'add' : 'remove']('loading-fade'));
-    } else {
-      t.classList[add ? 'add' : 'remove']('loading-fade');
-    }
-  });
-}
-
-function loadWrappedData(year, groupBy, limit, sortBy, updateType = 'all') {
-  const targets = [];
-  if (updateType === 'all') {
-    const summaryGrid = document.querySelector('.track-summary-grid');
-    if (summaryGrid) targets.push(summaryGrid);
-    document.querySelectorAll('.track-summary-grid-3').forEach(el => targets.push(el));
-    const chartWrap = document.querySelector('.chart-canvas-wrap');
-    if (chartWrap) targets.push(chartWrap);
-    document.querySelectorAll('[data-category]').forEach(el => targets.push(el));
-  } else if (updateType === 'chart') {
-    const chartWrap = document.querySelector('.chart-canvas-wrap');
-    if (chartWrap) targets.push(chartWrap);
-  } else if (updateType === 'lists') {
-    document.querySelectorAll('[data-category]').forEach(el => targets.push(el));
-  }
-
-  if (activeWrappedLoad) {
-    activeWrappedLoad.controller.abort();
-    //< the aborted load skips its own finally cleanup - un-fade its
-    //  targets here so a wider ('all') load superseded by a narrower
-    //  ('chart'/'lists') one doesn't leave the extra sections stuck
-    //  mid-fade forever
-    setWrappedFade(activeWrappedLoad.targets, false);
-  }
-  const controller = new AbortController();
-  activeWrappedLoad = { controller, targets };
-
-  setWrappedFade(targets, true);
-
-  const hiddenYear = document.querySelector('form.filter-section input[name="year"]');
-  if (hiddenYear) hiddenYear.value = year;
-
-  const delayPromise = new Promise(resolve => setTimeout(resolve, 200));
-  // Build with URLSearchParams so each value is encoded - a crafted value (e.g.
-  // a year of "2024&limit=999" from a hand-edited URL restored on Back) can't
-  // inject or desync other params.
-  const fetchParams = new URLSearchParams({
-    year: year, groupBy: groupBy, limit: limit, sortBy: sortBy,
-    ajax: 'true', type: updateType,
-  });
-  const fetchPromise = fetch(`${WRAPPED_FETCH_URL}?${fetchParams.toString()}`, { signal: controller.signal })
-    .then(response => {
-      return window.AjaxStatus.readJsonOrThrow(response, 'wrapped data');
+    document.querySelectorAll('[data-category]').forEach(function (div) {
+      div.classList.toggle('visible', filter === STATS_FILTER_ALL || div.dataset.category === filter);
     });
+  };
+  applyStatsFilter(STATS_FILTER_ALL);
 
-  Promise.all([fetchPromise, delayPromise])
-    .then(([data]) => {
-      //< a response that resolved before its abort can still reach here
-      //  (abort() can't recall a settled promise, and the fade delay
-      //  may be what it was waiting on) - never swap stale data in
-      //  over a newer load's
-      if (!activeWrappedLoad || activeWrappedLoad.controller !== controller) {
-        return;
-      }
-      if (window.AjaxStatus) window.AjaxStatus.clearBanner();
-      if (data.error) {
-        console.error(data.error);
-        //< a failed filter/year change used to leave the previous year's data
-        //  on screen under an already-updated URL, with nothing but a console
-        //  line - the page looked like it had simply ignored the click
-        if (window.AjaxStatus) {
-          window.AjaxStatus.showBanner(() => loadWrappedData(year, groupBy, limit, sortBy, updateType));
-        }
-        return;
-      }
+  // --- the Export Summary Card PNG -------------------------------------------
 
-      const heroTitle = document.querySelector('.hero h1');
-      if (heroTitle) heroTitle.textContent = IS_PUBLIC_VIEW ? `${SHARE_OWNER_NAME}'s ${year} Wrapped` : `Your ${year} Wrapped`;
-      const heroSubtitle = document.querySelector('.hero p');
-      if (heroSubtitle) heroSubtitle.textContent = `A look back at what ${IS_PUBLIC_VIEW ? SHARE_OWNER_NAME : 'you'} listened to in ${year}.`;
+  // Drawn entirely from the button's data-*, which the server refreshes out of
+  // band on every swap. Unchanged from the pre-htmx version except for taking
+  // the button as an argument: it is a new element after each swap, so its
+  // click handler has to be delegated (see the listener at the bottom).
+  var exportSummaryCard = function (btn) {
+    var canvas = document.createElement('canvas');
+    canvas.width = 600;
+    canvas.height = 900;
+    var ctx = canvas.getContext('2d');
 
-      // 1. Update general stats if returned. Target tiles by data-stat name
-      //    (set in wrapped.html) rather than :nth-child position, so a card
-      //    reorder can't silently write a value into the wrong tile.
-      if (data.totalPlays !== undefined) {
-        const setStat = (stat, value) => {
-          const el = document.querySelector('[data-stat="' + stat + '"] .summary-value');
-          if (el) el.textContent = value;
-        };
-        setStat('plays', data.totalPlays);
-        setStat('time', data.totalTime);
-        setStat('streak', data.longestStreak + ' days');
-        setStat('peak', data.peakDay);
-        const peakSub = document.querySelector('[data-stat="peak"] .summary-subtitle');
-        if (peakSub) peakSub.textContent = data.peakPlays + ' plays';
-        setStat('uniqueSongs', data.uniqueSongsCount);
-        setStat('uniqueArtists', data.uniqueArtistsCount);
-        setStat('discoveredSongs', data.discoveredSongsCount);
-        setStat('discoveredArtists', data.discoveredArtistsCount);
-      }
+    var theme = document.documentElement.className || 'theme-rose';
+    var gradStart = '#3c0b1f';
+    var gradEnd = '#121212';
+    var accentColor = '#FB717B';
 
-      // Swap the live-computed genre card (year-scoped, so a year change
-      // must replace it wholesale).
-      const genresCard = document.getElementById('wrappedGenresCard');
-      if (genresCard && data.topGenresHtml !== undefined) {
-        genresCard.innerHTML = data.topGenresHtml;
-      }
-
-      // The share modal's panel is year-scoped too (create-form action
-      // URL, revoke form's hidden year field, and which link - if any -
-      // counts as "current" all depend on it) - re-render it on every
-      // year switch, same reasoning as the genre card above.
-      const sharePanelBody = document.getElementById('shareLinkPanelBody');
-      if (sharePanelBody && data.sharePanelHtml !== undefined) {
-        sharePanelBody.innerHTML = data.sharePanelHtml;
-      }
-
-      // 2. Update export button datasets
-      const exportBtn = document.getElementById('exportWrappedBtn');
-      if (exportBtn) {
-        exportBtn.dataset.year = year;
-        if (data.totalPlays !== undefined) {
-          exportBtn.dataset.plays = data.totalPlays;
-          exportBtn.dataset.time = data.totalTime;
-          exportBtn.dataset.songs = data.uniqueSongsCount;
-          exportBtn.dataset.artists = data.uniqueArtistsCount;
-          exportBtn.dataset.streak = data.longestStreak;
-          exportBtn.dataset.peakday = data.peakDay;
-          exportBtn.dataset.peakplays = data.peakPlays;
-          exportBtn.dataset.discoveredsongs = data.discoveredSongsCount;
-          exportBtn.dataset.discoveredartists = data.discoveredArtistsCount;
-          exportBtn.dataset.topsong = data.topSongText || 'N/A';
-          exportBtn.dataset.topartist = data.topArtistText || 'N/A';
-          exportBtn.dataset.topalbum = data.topAlbumText || 'N/A';
-        }
-      }
-
-      // 3. Update lists if returned
-      if (data.topSongsHtml !== undefined) {
-        const topSongsList = document.querySelector('[data-category="top-songs"] .track-list');
-        if (topSongsList) topSongsList.innerHTML = data.topSongsHtml;
-        const topArtistsList = document.querySelector('[data-category="top-artists"] .track-list');
-        if (topArtistsList) topArtistsList.innerHTML = data.topArtistsHtml;
-        const topAlbumsList = document.querySelector('[data-category="top-albums"] .track-list');
-        if (topAlbumsList) topAlbumsList.innerHTML = data.topAlbumsHtml;
-
-        const discSongsDiv = document.querySelector('[data-category="discoveries-songs"]');
-        if (discSongsDiv) {
-          const list = discSongsDiv.querySelector('.track-list');
-          if (list) list.innerHTML = data.discoveredSongsHtml;
-          const hasItems = list && list.querySelector('.track-card') !== null;
-          discSongsDiv.style.display = hasItems ? '' : 'none';
-          const btn = document.querySelector('.stats-filter-button[data-filter="discoveries-songs"]');
-          if (btn) btn.style.display = hasItems ? '' : 'none';
-        }
-        const discArtistsDiv = document.querySelector('[data-category="discoveries-artists"]');
-        if (discArtistsDiv) {
-          const list = discArtistsDiv.querySelector('.track-list');
-          if (list) list.innerHTML = data.discoveredArtistsHtml;
-          const hasItems = list && list.querySelector('.track-card') !== null;
-          discArtistsDiv.style.display = hasItems ? '' : 'none';
-          const btn = document.querySelector('.stats-filter-button[data-filter="discoveries-artists"]');
-          if (btn) btn.style.display = hasItems ? '' : 'none';
-        }
-        const discAlbumsDiv = document.querySelector('[data-category="discoveries-albums"]');
-        if (discAlbumsDiv) {
-          const list = discAlbumsDiv.querySelector('.track-list');
-          if (list) list.innerHTML = data.discoveredAlbumsHtml;
-          const hasItems = list && list.querySelector('.track-card') !== null;
-          discAlbumsDiv.style.display = hasItems ? '' : 'none';
-          const btn = document.querySelector('.stats-filter-button[data-filter="discoveries-albums"]');
-          if (btn) btn.style.display = hasItems ? '' : 'none';
-        }
-
-        // Fallback focus: if the currently active filter button becomes hidden, select "All Stats"
-        const activeFilterBtn = document.querySelector('.stats-filter-button.active');
-        if (activeFilterBtn && activeFilterBtn.style.display === 'none') {
-          const allBtn = document.querySelector('.stats-filter-button[data-filter="all"]');
-          if (allBtn) allBtn.click();
-        }
-      }
-
-      // 4. Update chart if returned
-      if (data.timeSeries !== undefined) {
-        const chartTitle = document.querySelector('.chart-section h2');
-        if (chartTitle) chartTitle.textContent = `Listening Over ${year}`;
-
-        window.__chartData = window.__chartData || {};
-        window.__chartData.timeSeries = data.timeSeries;
-        window.__chartData.interval = groupBy;
-        renderTimeSeriesChart();
-      }
-
-      // Trigger smooth cover art fade-ins for newly injected track elements
-      document.querySelectorAll('img.track-cover').forEach(img => {
-        if (img.complete) {
-          img.classList.add('loaded');
-        } else {
-          img.addEventListener('load', function() {
-            img.classList.add('loaded');
-          });
-        }
-      });
-    })
-    .catch(err => {
-      //< navigating to /login - not a load failure to report
-      if (window.AjaxStatus && window.AjaxStatus.isUnauthorizedError(err)) return;
-      //< an abort is the expected fate of a superseded load, not an error
-      if (err.name !== 'AbortError') {
-        console.error(err);
-        if ((!activeWrappedLoad || activeWrappedLoad.controller === controller)
-            && window.AjaxStatus) {
-          window.AjaxStatus.showBanner(() => loadWrappedData(year, groupBy, limit, sortBy, updateType));
-        }
-      }
-    })
-    .finally(() => {
-      //< only the still-current load cleans up - a superseded one's
-      //  fades were already cleared by its successor when it aborted it
-      if (activeWrappedLoad && activeWrappedLoad.controller === controller) {
-        activeWrappedLoad = null;
-        setWrappedFade(targets, false);
-      }
-    });
-}
-
-function updateWrappedFilters() {
-  const yearBadge = document.querySelector('.wrapped-year-badge.active');
-  const year = yearBadge ? new URL(yearBadge.href).searchParams.get('year') : new URLSearchParams(window.location.search).get('year') || String(wrappedBootstrap.year);
-  const groupBy = document.getElementById('groupBy').value;
-  const limit = document.getElementById('limit').value;
-  const sortBy = document.getElementById('sortBy').value;
-
-  let updateType = 'all';
-  if (year === currentYear) {
-    if (groupBy !== currentGroupBy && limit === currentLimit && sortBy === currentSortBy) {
-      updateType = 'chart';
-    } else if ((limit !== currentLimit || sortBy !== currentSortBy) && groupBy === currentGroupBy) {
-      updateType = 'lists';
-    }
-  }
-
-  currentYear = year;
-  currentGroupBy = groupBy;
-  currentLimit = limit;
-  currentSortBy = sortBy;
-
-  const newParams = new URLSearchParams();
-  newParams.set('year', year);
-  if (groupBy) newParams.set('groupBy', groupBy);   //< Auto: server derives from the year span
-  newParams.set('limit', limit);
-  newParams.set('sortBy', sortBy);
-  // replaceState, not push: keep the URL shareable without stacking a history
-  // entry, so Back returns to the previous page rather than past filter states.
-  window.history.replaceState({}, '', window.location.pathname + '?' + newParams.toString());
-
-  loadWrappedData(year, groupBy, limit, sortBy, updateType);
-}
-
-document.querySelectorAll('.wrapped-year-badge').forEach(badge => {
-  badge.addEventListener('click', function(e) {
-    e.preventDefault();
-    const url = new URL(this.href);
-    const year = url.searchParams.get('year');
-    const groupBy = document.getElementById('groupBy').value;
-    const limit = document.getElementById('limit').value;
-    const sortBy = document.getElementById('sortBy').value;
-
-    let updateType = 'all';
-    if (year === currentYear) {
-      if (groupBy !== currentGroupBy && limit === currentLimit && sortBy === currentSortBy) {
-        updateType = 'chart';
-      } else if ((limit !== currentLimit || sortBy !== currentSortBy) && groupBy === currentGroupBy) {
-        updateType = 'lists';
-      }
+    if (theme === 'theme-green') {
+      gradStart = '#0b3c1d';
+      gradEnd = '#121212';
+      accentColor = '#1DB954';
+    } else if (theme === 'theme-purple') {
+      gradStart = '#2b1055';
+      gradEnd = '#121212';
+      accentColor = '#C77DFF';
+    } else if (theme === 'theme-red') {
+      gradStart = '#500505';
+      gradEnd = '#121212';
+      accentColor = '#FF4A4A';
     }
 
-    currentYear = year;
-    currentGroupBy = groupBy;
-    currentLimit = limit;
-    currentSortBy = sortBy;
+    var gradient = ctx.createLinearGradient(0, 0, 0, 900);
+    gradient.addColorStop(0, gradStart);
+    gradient.addColorStop(1, gradEnd);
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, 600, 900);
 
-    const newParams = new URLSearchParams();
-    newParams.set('year', year);
-    if (groupBy) newParams.set('groupBy', groupBy);   //< Auto: server derives from the year span
-    newParams.set('limit', limit);
-    newParams.set('sortBy', sortBy);
-    // replaceState, not push: keep the URL shareable without stacking a history
-    // entry, so Back returns to the previous page rather than past filter states.
-    window.history.replaceState({}, '', window.location.pathname + '?' + newParams.toString());
+    ctx.strokeStyle = accentColor + '44';
+    ctx.lineWidth = 15;
+    ctx.strokeRect(15, 15, 570, 870);
 
-    document.querySelectorAll('.wrapped-year-badge').forEach(b => b.classList.remove('active'));
-    this.classList.add('active');
-
-    loadWrappedData(year, groupBy, limit, sortBy, updateType);
-  });
-});
-
-window.addEventListener('popstate', function() {
-  const params = new URLSearchParams(window.location.search);
-  const year = params.get('year') || String(wrappedBootstrap.year);
-  const groupBy = params.get('groupBy') || '';   //< bare URL = Auto
-  //< a bare URL (no ?limit) means the server default, not a hardcoded 50 that
-  //  would desync the select from the data the server actually returns
-  const limit = params.get('limit') || String(wrappedBootstrap.limitDefault);
-  const sortBy = params.get('sortBy') || 'plays';
-
-  document.querySelectorAll('.wrapped-year-badge').forEach(badge => {
-    const badgeYear = new URL(badge.href).searchParams.get('year');
-    if (badgeYear === year) {
-      badge.classList.add('active');
-    } else {
-      badge.classList.remove('active');
-    }
-  });
-
-  document.getElementById('groupBy').value = groupBy;
-  document.getElementById('limit').value = limit;
-  document.getElementById('sortBy').value = sortBy;
-
-  let updateType = 'all';
-  if (year === currentYear) {
-    if (groupBy !== currentGroupBy && limit === currentLimit && sortBy === currentSortBy) {
-      updateType = 'chart';
-    } else if ((limit !== currentLimit || sortBy !== currentSortBy) && groupBy === currentGroupBy) {
-      updateType = 'lists';
-    }
-  }
-
-  currentYear = year;
-  currentGroupBy = groupBy;
-  currentLimit = limit;
-  currentSortBy = sortBy;
-
-  loadWrappedData(year, groupBy, limit, sortBy, updateType);
-});
-
-document.getElementById('exportWrappedBtn')?.addEventListener('click', function() {
-  const btn = this;
-  const canvas = document.createElement('canvas');
-  canvas.width = 600;
-  canvas.height = 900;
-  const ctx = canvas.getContext('2d');
-
-  const theme = document.documentElement.className || 'theme-rose';
-  let gradStart = '#3c0b1f';
-  let gradEnd = '#121212';
-  let accentColor = '#FB717B';
-
-  if (theme === 'theme-green') {
-    gradStart = '#0b3c1d';
-    gradEnd = '#121212';
-    accentColor = '#1DB954';
-  } else if (theme === 'theme-purple') {
-    gradStart = '#2b1055';
-    gradEnd = '#121212';
-    accentColor = '#C77DFF';
-  } else if (theme === 'theme-red') {
-    gradStart = '#500505';
-    gradEnd = '#121212';
-    accentColor = '#FF4A4A';
-  }
-
-  const gradient = ctx.createLinearGradient(0, 0, 0, 900);
-  gradient.addColorStop(0, gradStart);
-  gradient.addColorStop(1, gradEnd);
-  ctx.fillStyle = gradient;
-  ctx.fillRect(0, 0, 600, 900);
-
-  ctx.strokeStyle = accentColor + '44';
-  ctx.lineWidth = 15;
-  ctx.strokeRect(15, 15, 570, 870);
-
-  ctx.fillStyle = '#ffffff';
-  ctx.font = 'bold 36px sans-serif';
-  ctx.textAlign = 'center';
-  ctx.fillText('SPOTIFY TRACKER', 300, 80);
-
-  ctx.fillStyle = accentColor;
-  ctx.font = 'bold 24px sans-serif';
-  ctx.fillText(btn.dataset.year + ' WRAPPED', 300, 120);
-
-  ctx.fillStyle = '#888888';
-  ctx.font = '16px sans-serif';
-  ctx.fillText('Listening Summary for @' + btn.dataset.user, 300, 150);
-
-  const drawStat = (label, val, x, y) => {
     ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold 32px sans-serif';
+    ctx.font = 'bold 36px sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText(val, x, y);
-    ctx.fillStyle = '#aaaaaa';
-    ctx.font = '14px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText(label, x, y + 25);
-  };
+    ctx.fillText('SPOTIFY TRACKER', 300, 80);
 
-  drawStat('Total Plays', btn.dataset.plays, 180, 220);
-  drawStat('Total Time', btn.dataset.time, 420, 220);
-  drawStat('Unique Songs', btn.dataset.songs, 180, 310);
-  drawStat('Unique Artists', btn.dataset.artists, 420, 310);
-  drawStat('Longest Streak', btn.dataset.streak + ' days', 300, 400);
-
-  ctx.fillStyle = 'rgba(255,255,255,0.05)';
-  ctx.fillRect(40, 440, 520, 380);
-  ctx.strokeStyle = accentColor + '33';
-  ctx.lineWidth = 2;
-  ctx.strokeRect(40, 440, 520, 380);
-
-  ctx.fillStyle = accentColor;
-  ctx.font = 'bold 18px sans-serif';
-  ctx.textAlign = 'left';
-  ctx.fillText('TOP HIGHLIGHTS', 65, 475);
-
-  const truncate = (str, len) => str.length > len ? str.substring(0, len) + '..' : str;
-
-  const drawHighlight = (label, value, y) => {
-    ctx.font = 'bold 17px sans-serif';
-    ctx.textAlign = 'left';
     ctx.fillStyle = accentColor;
-    ctx.fillText(label + ':', 65, y);
+    ctx.font = 'bold 24px sans-serif';
+    ctx.fillText(btn.dataset.year + ' WRAPPED', 300, 120);
 
+    ctx.fillStyle = '#888888';
     ctx.font = '16px sans-serif';
-    ctx.fillStyle = '#e0e0e0';
-    ctx.fillText(truncate(value, 32), 65, y + 25);
+    ctx.fillText('Listening Summary for @' + btn.dataset.user, 300, 150);
+
+    var drawStat = function (label, val, x, y) {
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 32px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(val, x, y);
+      ctx.fillStyle = '#aaaaaa';
+      ctx.font = '14px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(label, x, y + 25);
+    };
+
+    drawStat('Total Plays', btn.dataset.plays, 180, 220);
+    drawStat('Total Time', btn.dataset.time, 420, 220);
+    drawStat('Unique Songs', btn.dataset.songs, 180, 310);
+    drawStat('Unique Artists', btn.dataset.artists, 420, 310);
+    drawStat('Longest Streak', btn.dataset.streak + ' days', 300, 400);
+
+    ctx.fillStyle = 'rgba(255,255,255,0.05)';
+    ctx.fillRect(40, 440, 520, 380);
+    ctx.strokeStyle = accentColor + '33';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(40, 440, 520, 380);
+
+    ctx.fillStyle = accentColor;
+    ctx.font = 'bold 18px sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText('TOP HIGHLIGHTS', 65, 475);
+
+    var truncate = function (str, len) { return str.length > len ? str.substring(0, len) + '..' : str; };
+
+    var drawHighlight = function (label, value, y) {
+      ctx.font = 'bold 17px sans-serif';
+      ctx.textAlign = 'left';
+      ctx.fillStyle = accentColor;
+      ctx.fillText(label + ':', 65, y);
+
+      ctx.font = '16px sans-serif';
+      ctx.fillStyle = '#e0e0e0';
+      ctx.fillText(truncate(value, 32), 65, y + 25);
+    };
+
+    drawHighlight('Top Song', btn.dataset.topsong, 505);
+    drawHighlight('Top Artist', btn.dataset.topartist, 560);
+    drawHighlight('Top Album', btn.dataset.topalbum, 615);
+    drawHighlight('Peak Day', btn.dataset.peakday + ' (' + btn.dataset.peakplays + ' plays)', 670);
+    drawHighlight('Discovered Songs', btn.dataset.discoveredsongs, 725);
+    drawHighlight('Discovered Artists', btn.dataset.discoveredartists, 780);
+
+    ctx.fillStyle = '#666666';
+    ctx.font = 'italic 12px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('Generated via Spotify Stats Tracker', 300, 860);
+
+    var link = document.createElement('a');
+    link.download = btn.dataset.user + '_' + btn.dataset.year + '_wrapped_summary.png';
+    link.href = canvas.toDataURL('image/png');
+    link.click();
   };
 
-  drawHighlight('Top Song', btn.dataset.topsong, 505);
-  drawHighlight('Top Artist', btn.dataset.topartist, 560);
-  drawHighlight('Top Album', btn.dataset.topalbum, 615);
-  drawHighlight('Peak Day', btn.dataset.peakday + ' (' + btn.dataset.peakplays + ' plays)', 670);
-  drawHighlight('Discovered Songs', btn.dataset.discoveredsongs, 725);
-  drawHighlight('Discovered Artists', btn.dataset.discoveredartists, 780);
+  // --- the share modal -------------------------------------------------------
+  // It lives outside the swap container, so these elements survive every swap
+  // and can be bound directly. Only present when not publicView and the admin
+  // has share links on, hence the ?. throughout.
 
-  ctx.fillStyle = '#666666';
-  ctx.font = 'italic 12px sans-serif';
-  ctx.textAlign = 'center';
-  ctx.fillText('Generated via Spotify Stats Tracker', 300, 860);
+  byId('shareWrappedBtn')?.addEventListener('click', function () {
+    var modal = byId('shareLinkModal');
+    if (modal) modal.style.display = 'flex';
+  });
 
-  const dataURL = canvas.toDataURL('image/png');
-  const link = document.createElement('a');
-  link.download = btn.dataset.user + '_' + btn.dataset.year + '_wrapped_summary.png';
-  link.href = dataURL;
-  link.click();
-});
+  byId('shareLinkModal')?.addEventListener('click', function (e) {
+    if (e.target === this) this.style.display = 'none';
+  });
 
-document.getElementById('shareWrappedBtn')?.addEventListener('click', function() {
-  const modal = document.getElementById('shareLinkModal');
-  if (modal) modal.style.display = 'flex';
-});
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') {
+      var modal = byId('shareLinkModal');
+      if (modal) modal.style.display = 'none';
+    }
+  });
 
-document.getElementById('downloadWrappedPlaylistBtn')?.addEventListener('click', function() {
-  const year = this.dataset.year;
-  const format = document.getElementById('wrappedPlaylistFormat').value;
-  window.location.href = '/playlist/export?year=' + encodeURIComponent(year) +
-                          '&format=' + encodeURIComponent(format);
-});
+  var showShareLinkError = function (message) {
+    var panelBody = byId('shareLinkPanelBody');
+    if (!panelBody) return;
+    var errorEl = panelBody.querySelector('.share-link-error');
+    if (!errorEl) {
+      errorEl = document.createElement('p');
+      errorEl.className = 'share-link-error';
+      errorEl.style.cssText = 'color: #ff4a4a; font-size: 0.9rem; margin: 0 0 0.75rem;';
+      panelBody.prepend(errorEl);
+    }
+    errorEl.textContent = message;
+  };
 
-document.getElementById('shareLinkModal')?.addEventListener('click', function(e) {
-  if (e.target === this) this.style.display = 'none';
-});
+  // Event-delegated: the create/revoke forms below are replaced wholesale after
+  // each round-trip (and the whole panel is replaced out of band on every year
+  // switch), so a directly bound listener would be lost on the very first
+  // submit.
+  //
+  // Deliberately still a fetch() rather than htmx: these POST to an ACTION
+  // endpoint that answers with the share panel, not with the recap - a
+  // different response for a different target, and one that has to be able to
+  // report "you've reached the limit" from a 4xx body. Migrating it would mean
+  // teaching those routes to return a fragment too; see the note in
+  // routes/wrapped.py's createWrappedShareLink.
+  byId('shareLinkModal')?.addEventListener('submit', function (e) {
+    var form = e.target;
+    if (!form.matches('.share-link-create-form, .share-link-revoke-form')) return;
+    e.preventDefault();
 
-document.addEventListener('keydown', function(e) {
-  if (e.key === 'Escape') {
-    const modal = document.getElementById('shareLinkModal');
-    if (modal) modal.style.display = 'none';
-  }
-});
+    var panelBody = byId('shareLinkPanelBody');
+    var url = new URL(form.action, window.location.href);
+    url.searchParams.set('ajax', 'true');
 
-function showShareLinkError(message) {
-  const panelBody = document.getElementById('shareLinkPanelBody');
-  if (!panelBody) return;
-  let errorEl = panelBody.querySelector('.share-link-error');
-  if (!errorEl) {
-    errorEl = document.createElement('p');
-    errorEl.className = 'share-link-error';
-    errorEl.style.cssText = 'color: #ff4a4a; font-size: 0.9rem; margin: 0 0 0.75rem;';
-    panelBody.prepend(errorEl);
-  }
-  errorEl.textContent = message;
-}
+    fetch(url, { method: 'POST', body: new FormData(form) })
+      .then(function (response) {
+        // A 4xx here still carries the JSON the handler below wants (the
+        // route's own error message - "reached the limit", "unknown expiry"),
+        // so only the 401 is peeled off for the shared login redirect; a
+        // .json() straight through couldn't tell "session expired" from
+        // "invalid form", and both showed the generic line.
+        if (window.AjaxStatus && window.AjaxStatus.redirectIfUnauthorized(response)) {
+          return null;
+        }
+        return response.json();
+      })
+      .then(function (data) {
+        if (!data) return;   //< navigating to /login
+        if (data.html !== undefined) {
+          panelBody.innerHTML = data.html;
+        } else {
+          showShareLinkError(data.error || 'Something went wrong. Please try again.');
+        }
+      })
+      .catch(function () { showShareLinkError('Something went wrong. Please try again.'); });
+  });
 
-// Event-delegated: the create/revoke forms below are replaced wholesale
-// (innerHTML) after each AJAX round-trip, so a directly bound listener
-// would be lost on the very first submit.
-document.getElementById('shareLinkModal')?.addEventListener('submit', function(e) {
-  const form = e.target;
-  if (!form.matches('.share-link-create-form, .share-link-revoke-form')) return;
-  e.preventDefault();
+  // --- htmx wiring -----------------------------------------------------------
 
-  const panelBody = document.getElementById('shareLinkPanelBody');
-  const url = new URL(form.action, window.location.href);
-  url.searchParams.set('ajax', 'true');
+  // Both of these buttons are inside content the server re-renders (the export
+  // button out of band, the playlist download inside the swap container), so
+  // neither can hold a listener of its own.
+  document.body.addEventListener('click', function (evt) {
+    if (!evt.target || !evt.target.closest) return;
 
-  fetch(url, { method: 'POST', body: new FormData(form) })
-    .then(response => {
-      // A 4xx here still carries the JSON the handler below wants (the
-      // route's own error message - "reached the limit", "unknown expiry"),
-      // so only the 401 is peeled off for the shared login redirect; a
-      // .json() straight through couldn't tell "session expired" from
-      // "invalid form", and both showed the generic line.
-      if (window.AjaxStatus && window.AjaxStatus.redirectIfUnauthorized(response)) {
-        return null;
-      }
-      return response.json();
-    })
-    .then(data => {
-      if (!data) return;   //< navigating to /login
-      if (data.html !== undefined) {
-        panelBody.innerHTML = data.html;
+    var statsFilterButton = evt.target.closest('.stats-filter-button');
+    if (statsFilterButton) {
+      applyStatsFilter(statsFilterButton.dataset.filter);
+      return;
+    }
+    var exportButton = evt.target.closest('#exportWrappedBtn');
+    if (exportButton) {
+      exportSummaryCard(exportButton);
+      return;
+    }
+    var playlistButton = evt.target.closest('#downloadWrappedPlaylistBtn');
+    if (playlistButton) {
+      var format = byId('wrappedPlaylistFormat').value;
+      window.location.href = '/playlist/export?year=' + encodeURIComponent(playlistButton.dataset.year) +
+                             '&format=' + encodeURIComponent(format);
+    }
+  });
+
+  // Drop the params the user has not set. htmx serializes every enabled control
+  // in the form, so Trend buckets on Auto (the empty option) would otherwise put
+  // `groupBy=` in the request - and hx-replace-url writes the requested URL back
+  // to the address bar, so it becomes part of the link people copy. The old
+  // hand-written builder skipped it with `if (groupBy)`. Shared with the other
+  // htmx pages (static/js/htmx-filters.js), loaded before this file.
+  document.body.addEventListener('htmx:configRequest', function (evt) {
+    if (!evt.detail.elt || evt.detail.elt.id !== WRAPPED_FORM_ID) return;
+    HtmxFilters.pruneEmptyParams(evt.detail.parameters);
+  });
+
+  // Everything that has to happen once new markup is in the page. Scoped to the
+  // main swap so the four out-of-band regions (which fire their own events)
+  // don't run it four more times.
+  document.body.addEventListener('htmx:afterSwap', function (evt) {
+    if (evt.target.id !== WRAPPED_RESULTS_ID) return;
+
+    loadChartData();
+    renderTimeSeriesChart();
+    applyStatsFilter(activeStatsFilter);
+
+    // Smooth cover-art fade-ins for freshly swapped cards. The images are new
+    // elements on every swap, so this cannot be a one-time delegated listener.
+    document.querySelectorAll('#' + WRAPPED_RESULTS_ID + ' img.track-cover').forEach(function (img) {
+      if (img.complete) {
+        img.classList.add('loaded');
       } else {
-        showShareLinkError(data.error || 'Something went wrong. Please try again.');
+        img.addEventListener('load', function () { img.classList.add('loaded'); });
       }
-    })
-    .catch(() => showShareLinkError('Something went wrong. Please try again.'));
-});
+    });
+  });
+
+  // A genuine failure gets the shared inline error + Retry rather than a page
+  // left dimmed under a URL that already says otherwise. Two things reach here
+  // and nothing else: a 5xx, and - on the PUBLIC /shared/<token> page - the 404
+  // or 429 a dead or hammered token earns. That route is not behind
+  // @requiresUser, so it has no session to redirect (see routes/wrapped.py).
+  // An expired session on the owner's own page never arrives here at all: the
+  // server answers an htmx request with HX-Redirect, and the browser navigates.
+  var reportWrappedFailure = function () {
+    var target = byId(WRAPPED_RESULTS_ID);
+    if (!target || !window.AjaxStatus) return;
+    window.AjaxStatus.renderInto(target, function () {
+      htmx.ajax('GET', window.location.pathname + window.location.search,
+                { target: '#' + WRAPPED_RESULTS_ID, swap: 'innerHTML' });
+    });
+  };
+  document.body.addEventListener('htmx:responseError', reportWrappedFailure);
+  document.body.addEventListener('htmx:sendError', reportWrappedFailure);
+}
+//< no module.exports: nothing here is pure enough to unit-test off the DOM. The
+//  shared filter helpers live in static/js/htmx-filters.js, which has its own
+//  plain-node test (tests/test_htmx_filters.js).

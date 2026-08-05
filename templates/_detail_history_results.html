@@ -3,11 +3,14 @@
 
 {# Artist/album detail pages' History tab: full play-history cards (unlike the
    song page's compact log, consecutive plays here ARE different songs) -
-   swapped into #detailHistoryResults by detail-history.js on sort/page
-   changes (the ?ajax=list branch of artistDetailPage/albumDetailPage).
+   swapped into #detailHistoryResults on sort/page changes (see
+   _detail_history_container.html for the wiring it inherits).
    Expects: plays, startIndex, itemName, sortOldest, sortToggleUrl, plus
    everything _pagination.html needs. #}
-<div class="play-log-header detail-tabs-heading">
+{# hx-boost on the header rather than on the container: it holds the sort
+   toggle, and boosting the container would also capture every track/artist/
+   album link in the list below and swap a detail PAGE into the log. #}
+<div class="play-log-header detail-tabs-heading" hx-boost="true">
   <h2>History with {{ itemName }}</h2>
   <a class="button sort-toggle" href="{{ sortToggleUrl }}"
      aria-label="Sorted {{ 'oldest' if sortOldest else 'newest' }} first - click to sort {{ 'newest' if sortOldest else 'oldest' }} first">Date {{ '↑' if sortOldest else '↓' }}</a>
@@ -24,4 +27,11 @@
   {% endif %}
 </section>
 
-{% include '_pagination.html' %}
+{# Same scoping rule as the header above: the Prev/Next and page-number links
+   become in-place swaps, and _pagination.html - shared with pages that are not
+   on htmx - needs no changes. The "Go to page" input in it is not a link and so
+   is not boosted; it keeps going through the shared handleJumpToPageKeydown
+   hook (see detail-history.js). #}
+<div hx-boost="true">
+  {% include '_pagination.html' %}
+</div>

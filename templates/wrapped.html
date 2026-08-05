@@ -4,25 +4,31 @@
 {% extends "layout_public.html" if publicView else "layout.html" %}
 {% block title %}{{ year }} Wrapped - {{ super() }}{% endblock %}
 {% block content %}
-{# The page owner as people know them (users.display_name, falling back to the
-   username). Kept separate from `username`, which stays the immutable key and
-   doubles as the cover-image base for the card includes below. #}
-{% set ownerLabel = username | displayName %}
-  {# Page styles live in style.css with everything else (the "Wrapped page
-     styles" section) - this used to carry the project's only inline <style>
-     block, which hid the share modal's styling from the shared stylesheet
-     and re-declared .loading-fade under a second name. #}
-  <section class="hero">
-    <div class="hero-content">
-      {# ownerLabel, not the bare username: this page is public over a share
-         link, so the owner is named by what they go by. The bare `username` in
-         this template's context is ALSO the cover-image base for the card
-         includes (_track_card.html falls back to '/img/' + username), which is
-         why it isn't simply reassigned here. #}
-      <h1>{{ (ownerLabel + "'s") if publicView else "Your" }} {{ year }} Wrapped</h1>
-      <p>A look back at what {{ ownerLabel if publicView else "you" }} listened to in {{ year }}.</p>
-    </div>
-  </section>
+{# The Wrapped recap - the owner's own /wrapped, and the public /shared/<token>
+   twin, which renders the same template through layout_public.html.
+
+   Unlike /history this is NOT a two-phase shell: the first GET is the whole
+   recap. What htmx drives here is the SECOND request - every year badge and
+   filter change - which comes back as templates/_wrapped_results.html and is
+   swapped into #wrappedResults below. Four regions that a filter change also
+   has to update sit outside that container (the hero, the year badges, this
+   form's hidden year field and its export button, and the share modal's panel),
+   so the fragment carries them as out-of-band swaps. What each attribute
+   replaces is noted at its use site; static/js/wrapped.js's header lists the
+   whole mapping.
+
+   Page styles live in style.css with everything else (the "Wrapped page styles"
+   section) - this used to carry the project's only inline <style> block, which
+   hid the share modal's styling from the shared stylesheet and re-declared
+   .loading-fade under a second name.
+
+   One constraint worth knowing before extending this: config.py's
+   Content-Security-Policy grants 'unsafe-eval' to the detail pages ONLY (see
+   DETAIL_PAGE_CSP), and every htmx feature that takes a JS expression -
+   hx-trigger event filters `[expr]`, `hx-vals="js:..."`, `hx-on:` handlers -
+   compiles it with the Function constructor. Those are all unavailable here and
+   fail at runtime, not at render time. Plain attributes only. #}
+  {% include '_wrapped_hero.html' %}
 
   {% if error %}
     <p class="error" style="color: #ff4a4a; margin-bottom: 1.5rem; text-align: center;">{{ error }}</p>
@@ -31,20 +37,42 @@
     <p class="success" style="color: #4aff4a; margin-bottom: 1.5rem; text-align: center;">{{ success }}</p>
   {% endif %}
 
-  {% if not publicView or isMultiYearShare %}
-  <nav class="wrapped-year-badges" aria-label="Select year">
-    {% for y in availableYears %}
-      <a class="wrapped-year-badge{{ ' active' if y == year else '' }}" href="{{ url_for('sharedWrappedPage', token=token, year=y, groupBy=groupBy, limit=limit, sortBy=sortBy) if publicView else url_for('wrappedPage', year=y, groupBy=groupBy, limit=limit, sortBy=sortBy) }}">{{ y }}</a>
-    {% endfor %}
-  </nav>
-  {% endif %}
+  {% include '_wrapped_year_badges.html' %}
 
-  <form class="filter-section" method="get" action="{{ url_for('sharedWrappedPage', token=token) if publicView else url_for('wrappedPage', year=year) }}" style="display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; justify-content: space-between;">
-    <input type="hidden" name="year" value="{{ year }}">
+  {# hx-get + hx-trigger="change" replace updateWrappedFilters() and the three
+     onchange="" hooks that called it: htmx serializes this form's own inputs, so
+     the query string is now just "which controls exist", rather than
+     hand-written URLSearchParams surgery that had to be kept in step with the
+     badge handler and the popstate handler saying the same thing twice more.
+
+     hx-replace-url is the load-bearing one: a filter change must REPLACE the
+     URL, never push, so Back leaves the page instead of walking back through
+     every year the user looked at. tests/test_wrapped_htmx.py pins that.
+
+     hx-sync ...:replace is the activeWrappedLoad/AbortController bookkeeping -
+     a newer request aborts the one in flight, so a slow year switch can't land
+     on top of a later one.
+
+     hx-get is the bare path, deliberately: `action` still carries ?year= for the
+     <noscript> submit below, and htmx appends the serialized params to whatever
+     hx-get names - so a year in both places would send year twice. #}
+  <form class="filter-section"
+        id="wrappedFilters"
+        method="get"
+        action="{{ url_for('sharedWrappedPage', token=token) if publicView else url_for('wrappedPage', year=year) }}"
+        hx-get="{{ url_for('sharedWrappedPage', token=token) if publicView else url_for('wrappedPage') }}"
+        hx-target="#wrappedResults"
+        hx-swap="innerHTML"
+        hx-trigger="change"
+        hx-sync="#wrappedResults:replace"
+        hx-indicator="#wrappedResults"
+        hx-replace-url="true"
+        style="display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; justify-content: space-between;">
+    {% include '_wrapped_year_field.html' %}
     <div style="display: flex; gap: 1rem; flex-wrap: wrap; align-items: center;">
       <div class="filter-group">
         <label for="groupBy">Trend buckets:</label>
-        <select id="groupBy" name="groupBy" onchange="updateWrappedFilters()">
+        <select id="groupBy" name="groupBy">
           <option value="" {% if not groupBy %}selected{% endif %}>Auto</option>
           <option value="day" {% if groupBy == 'day' %}selected{% endif %}>Day</option>
           <option value="week" {% if groupBy == 'week' %}selected{% endif %}>Week</option>
@@ -54,7 +82,7 @@
 
       <div class="filter-group">
         <label for="limit">Items per category:</label>
-        <select id="limit" name="limit" onchange="updateWrappedFilters()">
+        <select id="limit" name="limit">
           {% for option in limitOptions %}
             <option value="{{ option }}" {% if limit == option %}selected{% endif %}>{{ option }}</option>
           {% endfor %}
@@ -63,7 +91,7 @@
 
       <div class="filter-group">
         <label for="sortBy">Sort by:</label>
-        <select id="sortBy" name="sortBy" onchange="updateWrappedFilters()">
+        <select id="sortBy" name="sortBy">
           <option value="totalTimeListened" {% if sortBy == 'totalTimeListened' %}selected{% endif %}>Time Played</option>
           <option value="plays" {% if sortBy == 'plays' %}selected{% endif %}>Number of Plays</option>
           <option value="name" {% if sortBy == 'name' %}selected{% endif %}>Name (A-Z)</option>
@@ -73,29 +101,7 @@
 
     {% if not publicView %}
     <div style="flex-shrink: 0; display: flex; gap: 0.75rem; align-items: center;">
-      <button id="exportWrappedBtn" class="primary-button" style="background: var(--accent); color: #111; font-weight: bold; border: none; padding: 10px 20px; border-radius: 20px; cursor: pointer; display: inline-flex; align-items: center; gap: 8px;"
-              data-year="{{ year }}"
-              {# label, not a key: wrapped.js paints it on the exported PNG
-                 ("Listening Summary for @…") and uses it as the filename. #}
-              data-user="{{ ownerLabel }}"
-              data-plays="{{ totalPlays }}"
-              data-time="{{ totalTime }}"
-              data-songs="{{ uniqueSongsCount }}"
-              data-artists="{{ uniqueArtistsCount }}"
-              data-streak="{{ longestStreak }}"
-              data-peakday="{{ peakListeningTime[0] if peakListeningTime else 'N/A' }}"
-              data-peakplays="{{ peakListeningTime[1] if peakListeningTime else 'N/A' }}"
-              data-discoveredsongs="{{ discoveredSongsCount }}"
-              data-discoveredartists="{{ discoveredArtistsCount }}"
-              data-topsong="{% if topSongs %}{{ topSongs[0]['name'] }}{% if topSongs[0]['artists'] %} - {{ topSongs[0]['artists'][0]['name'] }}{% endif %}{% else %}N/A{% endif %}"
-              data-topartist="{% if topArtists %}{{ topArtists[0]['name'] }}{% else %}N/A{% endif %}"
-              data-topalbum="{% if topAlbums %}{{ topAlbums[0]['name'] }}{% else %}N/A{% endif %}">
-        <svg width="16" height="16" fill="currentColor" viewBox="0 0 16 16" style="display:inline-block;">
-          <path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z"/>
-          <path d="M7.646 11.854a.5.5 0 0 0 .708 0l3-3a.5.5 0 0 0-.708-.708L8.5 10.293V1.5a.5.5 0 0 0-1 0v8.793L5.354 8.146a.5.5 0 1 0-.708.708l3 3z"/>
-        </svg>
-        Export Summary Card
-      </button>
+      {% include '_wrapped_export_button.html' %}
       {% if share_links_enabled %}
       <button type="button" id="shareWrappedBtn" class="primary-button" style="background: var(--accent); color: #111; font-weight: bold; border: none; padding: 10px 20px; border-radius: 20px; cursor: pointer; display: inline-flex; align-items: center; gap: 8px;">
         <svg width="16" height="16" fill="currentColor" viewBox="0 0 16 16" style="display:inline-block;">
@@ -107,6 +113,9 @@
     </div>
     {% endif %}
 
+    {# Submitting this form without JS reloads the page with the same filters,
+       which is exactly what the htmx path does in place - so unlike /history's
+       shell, an Apply button here genuinely works. #}
     <noscript>
       <button class="primary-button" type="submit">Apply</button>
     </noscript>
@@ -116,6 +125,11 @@
   <div id="shareLinkModal" class="share-modal-overlay" style="display: {{ 'flex' if request.args.get('openShareModal') else 'none' }};">
     <div class="share-modal-card" role="dialog" aria-modal="true" aria-labelledby="shareLinkModalTitle">
       <button type="button" class="share-modal-close" aria-label="Close" onclick="document.getElementById('shareLinkModal').style.display = 'none';">&times;</button>
+      {# Year-scoped (create-form action URL, the revoke forms' hidden year, and
+         which link counts as "current"), so a year switch re-renders it - as an
+         out-of-band swap keyed on this id. The forms inside still post through
+         their own ?ajax=true fetch in wrapped.js: they are actions, not a page
+         load, and they answer with the panel rather than the recap. #}
       <div id="shareLinkPanelBody">
         {% include '_share_link_panel.html' %}
       </div>
@@ -123,196 +137,16 @@
   </div>
   {% endif %}
 
-  {# data-stat lets wrapped.js target each tile by name instead of by
-     :nth-child position, so reordering a card can't write a value into the
-     wrong tile. #}
-  <section class="track-summary-grid">
-    <article class="track-summary-card" data-stat="plays">
-      <h3>Total Plays</h3>
-      <p class="summary-value">{{ totalPlays }}</p>
-    </article>
-    <article class="track-summary-card" data-stat="time">
-      <h3>Total Time</h3>
-      <p class="summary-value">{{ totalTime }}</p>
-    </article>
-  </section>
-
-  <section class="track-summary-grid-3">
-    <article class="track-summary-card" data-stat="streak">
-      <h3>Longest Streak</h3>
-      <p class="summary-value">{{ longestStreak }} days</p>
-    </article>
-    <article class="track-summary-card" data-stat="peak">
-      <h3>Peak Day</h3>
-      <div class="peak-day-container">
-        <span class="summary-value">{{ peakListeningTime[0] if peakListeningTime else 'N/A' }}</span>
-        <span class="summary-subtitle">{{ peakListeningTime[1] if peakListeningTime else '' }} plays</span>
-      </div>
-    </article>
-    <article class="track-summary-card" data-stat="uniqueSongs">
-      <h3>Unique Songs</h3>
-      <p class="summary-value">{{ uniqueSongsCount }}</p>
-    </article>
-  </section>
-
-  <section class="track-summary-grid-3">
-    <article class="track-summary-card" data-stat="uniqueArtists">
-      <h3>Unique Artists</h3>
-      <p class="summary-value">{{ uniqueArtistsCount }}</p>
-    </article>
-    <article class="track-summary-card" data-stat="discoveredSongs">
-      <h3>Songs Discovered</h3>
-      <p class="summary-value">{{ discoveredSongsCount }}</p>
-    </article>
-    <article class="track-summary-card" data-stat="discoveredArtists">
-      <h3>Artists Discovered</h3>
-      <p class="summary-value">{{ discoveredArtistsCount }}</p>
-    </article>
-  </section>
-
-  <section class="card chart-card">
-    <div class="chart-section">
-      <h2>Listening Over {{ year }}</h2>
-      <div class="chart-canvas-wrap">
-        <canvas id="timeSeriesChart" role="img" aria-label="Listening across the year"></canvas>
-      </div>
-    </div>
-  </section>
-
-  <section class="card chart-card" id="wrappedGenresCard">
-    {% include "_wrapped_genres.html" %}
-  </section>
-
-  <nav class="wrapped-stats-filters" aria-label="Filter statistics by category">
-    <button class="stats-filter-button active" data-filter="all">All Stats</button>
-    <button class="stats-filter-button" data-filter="top-songs">Top Songs</button>
-    <button class="stats-filter-button" data-filter="top-artists">Top Artists</button>
-    <button class="stats-filter-button" data-filter="top-albums">Top Albums</button>
-    <button class="stats-filter-button" data-filter="discoveries-songs" {% if not discoveredSongs %}style="display: none;"{% endif %}>Discovered Songs</button>
-    <button class="stats-filter-button" data-filter="discoveries-artists" {% if not discoveredArtists %}style="display: none;"{% endif %}>Discovered Artists</button>
-    <button class="stats-filter-button" data-filter="discoveries-albums" {% if not discoveredAlbums %}style="display: none;"{% endif %}>Discovered Albums</button>
-  </nav>
-
-  <div data-category="top-songs">
-    <div class="play-log-header">
-      <h2>Top Songs</h2>
-      {% if not publicView and topSongs %}
-      <div class="play-log-controls">
-        <div class="filter-group">
-          <label for="wrappedPlaylistFormat">Format:</label>
-          <select id="wrappedPlaylistFormat">
-            <option value="csv">CSV</option>
-            <option value="m3u">M3U</option>
-            <option value="xspf">XSPF</option>
-          </select>
-        </div>
-        <button type="button" id="downloadWrappedPlaylistBtn" class="button" data-year="{{ year }}">
-          Download Top 100
-        </button>
-      </div>
-      {% endif %}
-    </div>
-    <section class="track-list">
-      {% if topSongs %}
-        {% for track in topSongs %}
-          {% set item_number = loop.index %}
-          {% set section = 'top_songs' %}
-          {% include '_track_card.html' %}
-        {% endfor %}
-      {% else %}
-        <p class="loading">No songs played in {{ year }}.</p>
-      {% endif %}
-    </section>
+  {# The swap target. htmx-fade-target + the hx-indicator above dim it for
+     exactly the life of a request, which is what setWrappedFade's add/remove
+     bookkeeping (and its abort-path cleanup) did by hand. #}
+  <div id="wrappedResults" class="htmx-fade-target">
+    {% include '_wrapped_results.html' %}
   </div>
 
-  <div data-category="top-artists">
-    <h2>Top Artists</h2>
-    <section class="track-list">
-      {% if topArtists %}
-        {% for track in topArtists %}
-          {% set item_number = loop.index %}
-          {% set section = 'top_artists' %}
-          {% include '_track_card.html' %}
-        {% endfor %}
-      {% else %}
-        <p class="loading">No artists played in {{ year }}.</p>
-      {% endif %}
-    </section>
-  </div>
-
-  <div data-category="top-albums">
-    <h2>Top Albums</h2>
-    <section class="track-list">
-      {% if topAlbums %}
-        {% for track in topAlbums %}
-          {% set item_number = loop.index %}
-          {% set section = 'top_albums' %}
-          {% include '_track_card.html' %}
-        {% endfor %}
-      {% else %}
-        <p class="loading">No albums played in {{ year }}.</p>
-      {% endif %}
-    </section>
-  </div>
-
-  <div data-category="discoveries-songs" {% if not discoveredSongs %}style="display: none;"{% endif %}>
-    <h2>Discovered Songs</h2>
-    <p class="chart-subtitle">Songs {{ ownerLabel if publicView else "you" }} first listened to in {{ year }}.</p>
-    <section class="track-list">
-      {% if discoveredSongs %}
-        {% for track in discoveredSongs %}
-          {% set item_number = loop.index %}
-          {% set section = 'top_songs' %}
-          {% include '_track_card.html' %}
-        {% endfor %}
-      {% endif %}
-    </section>
-  </div>
-
-  <div data-category="discoveries-artists" {% if not discoveredArtists %}style="display: none;"{% endif %}>
-    <h2>Discovered Artists</h2>
-    <p class="chart-subtitle">Artists {{ ownerLabel if publicView else "you" }} first listened to in {{ year }}.</p>
-    <section class="track-list">
-      {% if discoveredArtists %}
-        {% for track in discoveredArtists %}
-          {% set item_number = loop.index %}
-          {% set section = 'top_artists' %}
-          {% include '_track_card.html' %}
-        {% endfor %}
-      {% endif %}
-    </section>
-  </div>
-
-  <div data-category="discoveries-albums" {% if not discoveredAlbums %}style="display: none;"{% endif %}>
-    <h2>Discovered Albums</h2>
-    <p class="chart-subtitle">Albums {{ ownerLabel if publicView else "you" }} first listened to in {{ year }}.</p>
-    <section class="track-list">
-      {% if discoveredAlbums %}
-        {% for track in discoveredAlbums %}
-          {% set item_number = loop.index %}
-          {% set section = 'top_albums' %}
-          {% include '_track_card.html' %}
-        {% endfor %}
-      {% endif %}
-    </section>
-  </div>
-
-  <!-- Server-rendered config + time-series for the Wrapped client logic in
-       static/js/wrapped.js. A JSON data island (not executable script) parsed
-       via document.getElementById('wrapped-bootstrap').textContent. -->
-  <script type="application/json" id="wrapped-bootstrap">
-{{ {
-      "timeSeries": timeSeries,
-      "fetchUrl": (url_for('sharedWrappedPage', token=token) if publicView else url_for('wrappedPage')),
-      "isPublicView": publicView,
-      "shareOwnerName": ownerLabel,
-      "year": year,
-      "groupBy": groupBy,
-      "limit": limit,
-      "limitDefault": limitDefault,
-      "sortBy": sortBy
-    } | tojson }}
-  </script>
+  <script src="{{ url_for('static', filename='js/vendor/htmx.min.js') }}"></script>
+  {# htmx-filters.js first: wrapped.js reads HtmxFilters at load time #}
+  <script src="{{ url_for('static', filename='js/htmx-filters.js') }}"></script>
   <script src="{{ url_for('static', filename='js/chart-utils.js') }}"></script>
   <script src="{{ url_for('static', filename='js/wrapped.js') }}"></script>
   <script src="{{ url_for('static', filename='js/charts.js') }}"></script>

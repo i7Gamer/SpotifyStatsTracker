@@ -68,15 +68,19 @@ class TestTrendsRoute(AppTestCase):
         self.assertEqual(resp.status_code, 401)
 
     def test_dashboard_trends_authorized(self):
+        """The partial IS the response now - htmx swaps it straight into the
+        trends row, so the {"trendsHtml": ...} envelope it used to travel in
+        would land in the page as literal JSON text."""
         self._login()
         resp = self.client.get("/api/dashboard-trends")
         self.assertEqual(resp.status_code, 200)
-        data = resp.get_json()
-        self.assertIn("trendsHtml", data)
-        self.assertIn("Obsession Song", data["trendsHtml"])
+        self.assertEqual(resp.mimetype, "text/html")
+        html = resp.get_data(as_text=True)
+        self.assertNotIn("trendsHtml", html)
+        self.assertIn("Obsession Song", html)
 
     def test_trend_card_links_artist_to_artist_page(self):
         self._login()
-        html = self.client.get("/api/dashboard-trends").get_json()["trendsHtml"]
+        html = self.client.get("/api/dashboard-trends").get_data(as_text=True)
         self.assertIn('href="/artist/art1"', html)
         self.assertIn("summary-top-artist-link", html)

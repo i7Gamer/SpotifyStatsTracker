@@ -8,10 +8,14 @@ come from services/; the app-level display constants (COMPARE_*,
 WRAPPED_LIMIT_OPTIONS) are aliased from the app module at register() time so the
 handler body stays unchanged. Everything else is reached through the dashboard
 instance.
+
+The second phase of this page's two-phase load is driven by htmx, like /history
+and the Top lists - see tests/test_compare_htmx.py for the transport contract
+and templates/compare.html for the attribute wiring.
 """
 from datetime import timedelta
 
-from flask import render_template, request, abort, jsonify
+from flask import render_template, request, abort, url_for, Response
 
 from config import (
     WRAPPED_LIMIT_OPTIONS, COMPARE_TOP_LIST_SIZE, COMPARE_SHARED_POOL_SIZE,
@@ -22,6 +26,52 @@ from services.taste_match import _markLinkExternally, _tasteMatchPercent
 from services.genre_gate import (
     emptyGenreCoverage, resolveGenreCoverage, genreGatePasses, resolveGenreDistribution,
 )
+
+# The Time Period dropdown's own options (see compare.html). "" is All Time -
+# and unlike every other param it stays in a URL even when empty, because an
+# ABSENT interval falls back to the user's saved default_dashboard_window:
+# dropping it would silently move an All Time view to "Last Month".
+COMPARE_INTERVALS = ("", "today", "day", "week", "month", "year", "5years", "custom")
+# The Trend buckets dropdown's own options. Auto is expressed by leaving groupBy
+# out entirely, which is the same thing _resolveGroupBy does with an empty one.
+COMPARE_TREND_BUCKETS = ("day", "week", "month")
+# The ?scope= the Sort by control sends, narrowing the refresh to the six
+# individual my/their lists (the only regions whose content reads sortBy).
+COMPARE_SORTABLE_SCOPE = "sortable"
+# What the shell's trend data island holds until the first swap replaces it:
+# the shape charts.js expects, so a resize before the data lands draws the
+# chart's empty state rather than throwing on a missing key.
+EMPTY_COMPARISON_TREND = {"buckets": [], "series": []}
+
+
+def _compareFilterArgs(withUsername, interval, customStart, customEnd, limit, groupBy, sortBy):
+    """The canonical query args for a /compare URL, from VALIDATED values only.
+
+    Every /compare URL the server writes goes through here - the shell's
+    first-load hx-get, each counterpart badge's href, and the HX-Replace-Url the
+    narrow sort swap answers with - so they cannot disagree with each other or
+    echo back something the query itself already coerced. Reflecting a raw
+    ?interval=bogus would assert it again in the one place a reader would trust,
+    while every link built beside it says otherwise.
+
+    A custom range rides along only while it is actually in effect, which is
+    both what _getDateRange means by "in effect" (both dates present beats the
+    interval string) and what the shell's disabled date inputs serialize.
+    """
+    args = {
+        #< the identity, not the label: ?with= is matched against the
+        #  accepted-share list server-side, so it must survive every refresh
+        "with": withUsername,
+        "interval": interval if interval in COMPARE_INTERVALS else "",
+        "limit": limit,
+        "sortBy": sortBy,
+    }
+    if customStart and customEnd:
+        args["startDate"] = customStart
+        args["endDate"] = customEnd
+    if groupBy in COMPARE_TREND_BUCKETS:
+        args["groupBy"] = groupBy
+    return args
 
 
 def register(app, dashboard):
@@ -49,6 +99,14 @@ def register(app, dashboard):
             # both "never requested a share" and the cookie-less-counterpart
             # edge case above alike, since either way there's nothing to
             # compare against right now.
+            if request.headers.get("HX-Request"):
+                # Reached when the counterpart revokes the share while the page
+                # is open. A whole page is not a fragment: the swap asks for no
+                # primary target (hx-swap="none"), so this would vanish without
+                # a trace and leave the comparison of a share that no longer
+                # exists on screen. Send the browser to the page instead, the
+                # same escape unauthenticatedResponse uses for the same reason.
+                return Response(status=204, headers={"HX-Redirect": url_for("comparePage")})
             return render_template("compare_empty.html", username=username, section="compare")
 
         withUsername = request.args.get("with", acceptedUsernames[0])
@@ -87,19 +145,38 @@ def register(app, dashboard):
         # taste-match never read it (see _buildSharedItems).
         sortBy = dashboard._getSortByParam(default="plays")
 
-        # Lightweight shell, same two-phase load as /charts and /genres: the
-        # initial GET renders just the filter controls + empty placeholders,
-        # and static/js/compare.js fetches the real payload via ?ajax=true
-        # right after first paint (and again on every filter change) - see
-        # loadCompareData's `initial` option. Every query below this point
-        # only runs for an ajax request.
-        if request.args.get("ajax") != "true":
+        # Every URL this page hands out is built from the values validated
+        # above, never echoed from request.full_path - see _compareFilterArgs.
+        filterArgs = _compareFilterArgs(withUsername, interval, customStart, customEnd,
+                                        limit, groupByParam, sortBy)
+        #< the counterpart picker: each badge's href IS the whole next request
+        #  now that htmx boosts it, so it carries the current filters rather
+        #  than only ?with= (which is all the old click listener read off it)
+        userBadges = [
+            {"username": candidate, "url": url_for("comparePage", **{**filterArgs, "with": candidate})}
+            for candidate in acceptedUsernames
+        ]
+
+        # Lightweight shell, same two-phase load as /charts, /genres and
+        # /history: the initial GET renders just the filter controls + empty
+        # placeholders, and the real comparison arrives in a second request
+        # right after first paint, and again on every filter change. Every
+        # query below this point only runs for that second request.
+        #
+        # htmx drives it, so the marker is htmx's own HX-Request header instead
+        # of the ?ajax=true convention the remaining shell pages use. Keying on
+        # the header rather than a query param is also what keeps the marker out
+        # of the URL bar: hx-replace-url writes back the URL that was requested,
+        # so a marker living in the query string would become part of the page's
+        # shareable address. See tests/test_compare_htmx.py.
+        if not request.headers.get("HX-Request"):
             return render_template(
                 "compare.html",
                 section="compare",
                 username=username,
                 withUsername=withUsername,
                 acceptedUsernames=acceptedUsernames,
+                userBadges=userBadges,
                 interval=interval,
                 customStart=customStart,
                 customEnd=customEnd,
@@ -109,6 +186,10 @@ def register(app, dashboard):
                 #  the auto-derived value would freeze auto mode
                 groupBy=groupByParam,
                 sortBy=sortBy,
+                resultsUrl=url_for("comparePage", **filterArgs),
+                #< the shell knows neither yet; the first swap fills both in
+                tasteMatch=None,
+                comparisonTrend=EMPTY_COMPARISON_TREND,
             )
 
         my = dashboard._gatherCompareStats(db, startDate, endDate, limit=limit, sortBy=sortBy)
@@ -126,36 +207,28 @@ def register(app, dashboard):
         _markLinkExternally(their["topArtists"], db.getPlayedArtistIds([a["id"] for a in their["topArtists"]]))
         _markLinkExternally(their["topAlbums"], db.getPlayedAlbumIds([a["id"] for a in their["topAlbums"]]))
 
-        listArgs = dict(username=username, compareWith=withUsername,
+        # Shared by both branches below, so a full refresh and a sort change can
+        # never disagree about what one of the six lists looks like.
+        #< each item's own linkExternally decides internal vs. Spotify (see _markLinkExternally)
+        listArgs = dict(my=my, their=their, username=username, compareWith=withUsername,
                         emptyMessage="No plays in this period.")
 
-        def sortableListsJson():
-            """The six individual my/their list chunks - the only part of
-            the ajax payload a sortBy change swaps (see compare.html's
-            SORT_BY_LIST_SWAPS)."""
-            return {
-                "myTopSongsHtml": render_template(
-                    "_wrapped_list.html", items=my["topSongs"], section="top_songs", **listArgs),
-                #< each item's own linkExternally decides internal vs. Spotify (see _markLinkExternally)
-                "theirTopSongsHtml": render_template(
-                    "_wrapped_list.html", items=their["topSongs"], section="top_songs", **listArgs),
-                "myTopArtistsHtml": render_template(
-                    "_wrapped_list.html", items=my["topArtists"], section="top_artists", **listArgs),
-                "theirTopArtistsHtml": render_template(
-                    "_wrapped_list.html", items=their["topArtists"], section="top_artists", **listArgs),
-                "myTopAlbumsHtml": render_template(
-                    "_wrapped_list.html", items=my["topAlbums"], section="top_albums", **listArgs),
-                "theirTopAlbumsHtml": render_template(
-                    "_wrapped_list.html", items=their["topAlbums"], section="top_albums", **listArgs),
-            }
-
-        # A sortBy change swaps only those six lists, so its fetch
-        # (scope=sortable, see loadCompareData) stops here - the shared
-        # lists, similarities, genres, taste match and trend below are
-        # the expensive half on long ranges and would render identically
-        # anyway. Any other scope value degrades to the full payload.
-        if request.args.get("ajax") == "true" and request.args.get("scope") == "sortable":
-            return jsonify(sortableListsJson())
+        # A sortBy change swaps only those six lists, so its request
+        # (?scope=sortable, see the Sort by control in compare.html) stops here
+        # - the shared lists, similarities, genres, taste match and trend below
+        # are the expensive half on long ranges and would render identically
+        # anyway. Any other scope value degrades to the full refresh.
+        if request.args.get("scope") == COMPARE_SORTABLE_SCOPE:
+            # The scope marker is transport, not page state, and hx-replace-url
+            # writes back the URL that was REQUESTED - so without this the
+            # address bar (and every link copied from it) would carry
+            # ?scope=sortable. Answering with the canonical URL overrides that,
+            # and is the same validated-values rule _compareFilterArgs exists
+            # for. htmx honours this header over the attribute.
+            return Response(
+                render_template("_compare_sortable_lists.html", **listArgs),
+                headers={"HX-Replace-Url": url_for("comparePage", **filterArgs)},
+            )
 
         # Sliced like every other list on the page. No percent text here -
         # it would mix two different users' totals. Searches the deeper
@@ -279,41 +352,27 @@ def register(app, dashboard):
             ],
         }
 
-        # Reaching here means ajax=true (the shell branch above returns
-        # earlier otherwise) - same fade-and-swap partial updates as the
-        # Wrapped page: the filter controls (and the shell's own initial
-        # load) fetch these chunks and swap them in place.
-        return jsonify({
-            **sortableListsJson(),
-            #< withUsername stays the identity (?with=, authorization); the
-            #  heading swap in compare.js reads withDisplayName
-            "withUsername": withUsername,
-            "withDisplayName": withDisplayName,
-            "tasteMatch": tasteMatch,
-            "statsTableHtml": render_template(
-                "_compare_stats_table.html", my=my, their=their,
-                username=username, withUsername=withUsername),
-            "similaritiesHtml": render_template(
-                "_compare_similarities.html", similarities=similarities,
-                username=username),   #< the cover-image URLs' session-authorization segment
-            "genresHtml": render_template(
-                "_compare_genres.html", username=username, withUsername=withUsername,
-                myTopGenres=myTopGenres, theirTopGenres=theirTopGenres,
-                sharedGenres=sharedGenres, myGenreCoverage=myGenreCoverage,
-                theirGenreCoverage=theirGenreCoverage, genresUnlocked=genresUnlocked,
-                lastfmEnabled=lastfmEnabled),
-            "sharedArtistsHtml": render_template(
-                "_wrapped_list.html", items=sharedArtists, section="top_artists",
-                username=username, compareWith=withUsername,
-                emptyMessage="No shared top artists in this period yet."),
-            "sharedSongsHtml": render_template(
-                "_wrapped_list.html", items=sharedSongs, section="top_songs",
-                username=username, compareWith=withUsername,
-                emptyMessage="No shared top songs in this period yet."),
-            "sharedAlbumsHtml": render_template(
-                "_wrapped_list.html", items=sharedAlbums, section="top_albums",
-                username=username, compareWith=withUsername,
-                emptyMessage="No shared top albums in this period yet."),
-            "comparisonTrend": comparisonTrend,
-        })
+        # Reaching here means an htmx request for the full refresh (both the
+        # shell and the narrow sort branch return earlier). ONE fragment, whose
+        # every element names the region it replaces - see
+        # _compare_results.html; a JSON envelope around these would land in the
+        # page as literal text, since htmx swaps response bodies.
+        return render_template(
+            "_compare_results.html",
+            #< withUsername stays the identity (?with=, authorization) and the
+            #  session-authorization segment of the cover-image URLs; the name
+            #  labels are swapped from the | displayName of it
+            withUsername=withUsername,
+            acceptedUsernames=acceptedUsernames,
+            userBadges=userBadges,
+            tasteMatch=tasteMatch,
+            similarities=similarities,
+            myTopGenres=myTopGenres, theirTopGenres=theirTopGenres,
+            sharedGenres=sharedGenres, myGenreCoverage=myGenreCoverage,
+            theirGenreCoverage=theirGenreCoverage, genresUnlocked=genresUnlocked,
+            lastfmEnabled=lastfmEnabled,
+            sharedArtists=sharedArtists, sharedSongs=sharedSongs, sharedAlbums=sharedAlbums,
+            comparisonTrend=comparisonTrend,
+            **listArgs,
+        )
     app.add_url_rule("/compare", "comparePage", comparePage, methods=["GET"])

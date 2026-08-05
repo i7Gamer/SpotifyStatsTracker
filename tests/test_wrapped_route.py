@@ -87,22 +87,23 @@ class _WrappedRouteTestBase(AppTestCase):
         db.getListeningTimeSeries.return_value = []
         return db
 
-    def _getWrapped(self, dash, db, query=""):
+    def _getWrapped(self, dash, db, query="", headers=None):
         client = dash.app.test_client()
         with patch.object(dash, 'is_user_logged_in', return_value=True), \
              patch.object(dash, 'get_username_for_email', return_value='alice'), \
              patch.object(dash, 'get_user_db', return_value=db):
             with client.session_transaction() as sess:
                 sess['email'] = 'alice@example.com'
-            return client.get(f"/wrapped{query}")
+            return client.get(f"/wrapped{query}", headers=headers or {})
 
 
-class TestWrappedAjaxCardsStayAuthenticated(_WrappedRouteTestBase):
-    """Counterpart to the public share page's ajax cards: the owner's own ajax
-    swaps must keep the session-authorized image prefix and the internal detail
-    links, i.e. the public-view card options must not leak into this path."""
+class TestWrappedSwapCardsStayAuthenticated(_WrappedRouteTestBase):
+    """Counterpart to the public share page's swapped cards: the owner's own
+    htmx swaps must keep the session-authorized image prefix and the internal
+    detail links, i.e. the public-view card options must not leak into this
+    path."""
 
-    def test_ajax_list_html_keeps_the_username_image_route_and_detail_links(self):
+    def test_swapped_list_html_keeps_the_username_image_route_and_detail_links(self):
         dash = self._makeApp()
         db = self._makeDb(earliestPlayedAt=_ts(2023))
         db.getSongsStats.return_value = [_song("song1", "Song", plays=5, firstListenedAt=_ts(2026, 3))]
@@ -114,23 +115,26 @@ class TestWrappedAjaxCardsStayAuthenticated(_WrappedRouteTestBase):
         db.getDiscoveredSongsCount.return_value = 0
         db.getDiscoveredArtistsCount.return_value = 0
 
-        resp = self._getWrapped(dash, db, query="?ajax=true&type=lists")
+        body = self._getWrapped(dash, db, headers={"HX-Request": "true"}).get_data(as_text=True)
 
-        html = resp.get_json()["topSongsHtml"]
-        self.assertIn('src="/img/alice/tracks/i.jpeg"', html)
-        self.assertIn('href="/song/song1"', html)
+        self.assertIn('src="/img/alice/tracks/i.jpeg"', body)
+        self.assertIn('href="/song/song1"', body)
 
 
 class TestWrappedYearSelection(_WrappedRouteTestBase):
-    def test_js_constants_reflect_authenticated_view(self):
+    def test_the_data_island_carries_only_the_chart_series(self):
+        """It used to also carry fetchUrl/isPublicView/shareOwnerName/year/
+        groupBy/limit/sortBy, all of them for the hand-written fetch loader:
+        htmx builds the request from the form's own attributes now, and every
+        "who is this page about" string is server-rendered. What is left is
+        the one thing a <canvas> genuinely cannot get from the markup."""
         dash = self._makeApp()
         db = self._makeDb(earliestPlayedAt=_ts(2023))
 
         resp = self._getWrapped(dash, db)
         bootstrap = _wrappedBootstrap(resp.data.decode())
 
-        self.assertFalse(bootstrap["isPublicView"])
-        self.assertEqual(bootstrap["fetchUrl"], "/wrapped")
+        self.assertEqual(list(bootstrap), ["timeSeries"])
 
     def test_defaults_to_current_year(self):
         dash = self._makeApp()

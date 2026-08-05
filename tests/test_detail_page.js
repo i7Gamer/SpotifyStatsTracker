@@ -1,8 +1,13 @@
-// Plain-node unit test for the detail pages' deferred-body URL builder
+// Plain-node unit test for the detail pages' chart-data shaping
 // (static/js/detail-page.js). No test framework/dependency - run with:
 //   node tests/test_detail_page.js
+//
+// The URL builder this file used to test is gone: htmx asks for the deferred
+// body from the hx-get the route prints on the shell's placeholder, so there is
+// no client-side URL assembly left. What survives is the one thing the server
+// deliberately does NOT send - see below.
 const assert = require('assert');
-const { detailBodyUrl, detailChartData, DETAIL_BODY_AJAX } = require('../static/js/detail-page.js');
+const { detailChartData } = require('../static/js/detail-page.js');
 
 function run(name, fn) {
   try {
@@ -14,39 +19,15 @@ function run(name, fn) {
   }
 }
 
-run('the marker is the one the routes branch on', () => {
-  // routes/charts.py's DETAIL_BODY_AJAX. Deliberately neither of the two
-  // narrower refetches' values ('true' for the bucket series, 'list' for the
-  // play log), which the routes test first.
-  assert.strictEqual(DETAIL_BODY_AJAX, 'page');
-});
-
-run('detailBodyUrl marks a bare page URL', () => {
-  assert.strictEqual(detailBodyUrl('/song/t1', ''), '/song/t1?ajax=page');
-});
-
-run('detailBodyUrl keeps the params the visitor asked for', () => {
-  // A shared/bookmarked link carries its bucket, sort, page and tab, and the
-  // deferred body is what renders all four.
-  assert.strictEqual(
-    detailBodyUrl('/artist/a1', '?groupBy=month&view=history&sort=oldest&page=2'),
-    '/artist/a1?groupBy=month&view=history&sort=oldest&page=2&ajax=page',
-  );
-});
-
-run('detailBodyUrl overwrites a narrower mode rather than duplicating it', () => {
-  // Landing on a URL that still carries ?ajax=list must not ask for the play
-  // log when what is missing is the whole body.
-  assert.strictEqual(detailBodyUrl('/album/alb1', '?ajax=list'), '/album/alb1?ajax=page');
-  assert.strictEqual(detailBodyUrl('/album/alb1', '?ajax=true'), '/album/alb1?ajax=page');
-});
-
 run('the detail pages are the only ones that draw the skips series', () => {
   // The series belongs to one item's chart, where it answers "does this get
   // skipped" and keeps a skip-only track's page from rendering blank. The
   // aggregate pages never set the flag: there the skip bar sat on its own
   // unlabelled count scale next to a time axis, so a bucket with 26 skips
   // could out-tower one with 566 plays.
+  //
+  // It stays client-side rather than riding in the data island because it is
+  // about how charts.js DRAWS, not about what the server measured.
   assert.strictEqual(detailChartData({}).showSkips, true);
 });
 
@@ -56,7 +37,7 @@ run('detailChartData carries both chart series through', () => {
   assert.deepStrictEqual(data.heatmap, [[1]]);
 });
 
-run('an artist/album payload without a heatmap stays without one', () => {
+run('an artist/album island without a heatmap stays without one', () => {
   // renderAllCharts skips a canvas that isn't on the page - the key must not
   // arrive as anything but undefined.
   assert.strictEqual(detailChartData({ timeSeries: [] }).heatmap, undefined);

@@ -1,0 +1,11 @@
+{#- SPDX-FileCopyrightText: 2026 i7Gamer
+    SPDX-License-Identifier: AGPL-3.0-or-later -#}
+
+{# The year the filter form serializes. One line, but its own partial because it
+   has to be re-rendered out of band after a year badge is clicked: it lives
+   inside the form (which is deliberately OUTSIDE the swap container, so a
+   select keeps focus while its own change is loading), and a stale value here
+   would make the next "Items per category" change silently ask for the year the
+   user just left. That was the `hiddenYear.value = year` line in the old
+   fetch loader. #}
+<input type="hidden" name="year" id="wrappedYearField" value="{{ year }}"{% if oobSwap %} hx-swap-oob="true"{% endif %}>

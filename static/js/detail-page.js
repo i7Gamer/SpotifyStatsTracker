@@ -1,60 +1,55 @@
 // SPDX-FileCopyrightText: 2026 i7Gamer
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-/* Two-phase load for the song/artist/album detail pages. The initial GET is a
- * shell - hero, toolbar, tag panel - and everything below it (the entity card,
- * the charts, the songs list, the play log) is fetched here via ?ajax=page and
- * swapped into #detailBody, the same shape /charts, /genres, /history and the
- * Top pages already use. The pages had grown a play-log query, two bucketed
- * chart aggregates, a songs aggregate, a Last.fm biography fetch and a skip
- * summary, all in front of the first paint.
+/* What is left of the song/artist/album detail pages' deferred-body load once
+ * htmx owns the request/swap layer (see templates/song_detail.html for the
+ * attributes, shared in shape by all three shells).
  *
- * Three AJAX modes share these routes and this one owns only the whole body;
- * the Trend-buckets select (?ajax=true, detail-chart.js) and the play log's
- * sort/page controls (?ajax=list, detail-history.js) keep their own narrower
- * refetches OF that body. The select is disabled in the shell and enabled here
- * so a bucket change can't be issued against a chart that isn't on the page
- * yet - and can't then be overwritten by the body payload already in flight.
+ * This file used to be the loader: build the ?ajax=page URL, fetch it, branch
+ * on 401 and on 404, parse the JSON, write bodyHtml into #detailBody. htmx does
+ * the request and the swap declaratively, and the two error branches moved to
+ * the server, where they are now one response header each:
  *
- * The URL is never touched: this load is what the current URL already means.
- * Loaded last of the detail scripts, since it calls the init functions the
- * others define. */
+ *   detailBodyUrl + fetch + DOMContentLoaded -> hx-get + hx-trigger="load"
+ *   the 401 -> /login branch                 -> HX-Redirect (app.py's
+ *                                               unauthenticatedResponse)
+ *   the 404 -> redirectUrl branch            -> HX-Redirect (_missingEntityResponse)
+ *
+ * That second one is why this file also leaves EXPECTED_PAGE_LOADERS *and*
+ * HAND_ROLLED_EXCEPTIONS in tests/test_ajax_loader_error_handling.py: it was
+ * the documented exception there precisely because reading a 404's body meant
+ * it could not use the shared payload-reading helper. There is no body to read
+ * any more. (Named obliquely on purpose - that gate matches on source text, and
+ * a comment naming the helper would satisfy it without any code doing so.)
+ *
+ * What could not move is below, and it is all of one kind: the swap puts new
+ * elements on the page, and something has to point the non-htmx machinery at
+ * them. Charts are the main one - htmx swaps markup, and a <canvas> is not
+ * markup, so the render is a htmx:afterSwap listener we write. */
 
-// --- pure helpers -----------------------------------------------------------
-// DOM-free and exported so the URL contract is unit-testable in plain node,
-// like the sibling modules' logic (see tests/test_detail_page.js).
-
-//< must match routes/charts.py's DETAIL_BODY_AJAX
-var DETAIL_BODY_AJAX = 'page';
-
-// Thrown once a navigation is already under way, so the catch below knows this
-// is not a load failure to report - same convention as AjaxStatus's
-// UNAUTHORIZED_ERROR.
-var REDIRECTING_ERROR = 'detail-redirecting';
-
-// The deferred body's URL for the page currently on screen. Every other
-// parameter rides along untouched: ?page=, ?sort=, ?view= and ?groupBy= are
-// all part of what the visitor asked for, and a shared link carries them.
-function detailBodyUrl(pathname, search) {
-  var params = new URLSearchParams(search);
-  params.set('ajax', DETAIL_BODY_AJAX);
-  return pathname + '?' + params.toString();
-}
-
-// window.__chartData for one item's page. showSkips is what turns the play
-// history chart's second (skip-count) series on, and these pages are the only
-// ones that set it: a skip is a per-item behaviour signal here, and a track
-// whose plays are ALL skips has to render at all. The aggregate pages leave it
-// off - see renderTimeSeriesChart for why it does not survive contact with
-// buckets holding real listening volume. heatmap is absent on artist/album,
-// whose payload has no such chart; renderAllCharts skips a canvas that isn't
-// there, so it stays undefined rather than becoming an empty series.
+// The chart series for one item's page, as window.__chartData expects them.
+// DOM-free and exported so the contract is unit-testable in plain node (see
+// tests/test_detail_page.js).
+//
+// showSkips is what turns the play-history chart's second (skip-count) series
+// on, and these pages are the only ones that set it: a skip is a per-item
+// behaviour signal here, and a track whose plays are ALL skips has to render at
+// all. The aggregate pages leave it off - see renderTimeSeriesChart for why it
+// does not survive contact with buckets holding real listening volume. It stays
+// a client-side flag rather than riding in the island, because it is about how
+// charts.js draws rather than about what the server measured.
+//
+// heatmap is absent on artist/album, whose island has no such key;
+// renderAllCharts skips a canvas that isn't there, so it stays undefined rather
+// than becoming an empty series.
 function detailChartData(data) {
   return { timeSeries: data.timeSeries, heatmap: data.heatmap, showSkips: true };
 }
 
 if (typeof window !== 'undefined') (function () {
-  function target() { return document.getElementById('detailBody'); }
+  //< the swap target, and the data island that arrives inside it
+  var DETAIL_BODY_ID = 'detailBody';
+  var CHART_DATA_ID = 'detailChartData';
 
   // Cached covers can finish loading before layout.html's delegated handler
   // ever sees them, so mark those explicitly (same as top-list.js does after
@@ -66,75 +61,53 @@ if (typeof window !== 'undefined') (function () {
     });
   }
 
-  function applyDetailBody(el, data) {
-    el.innerHTML = data.bodyHtml;
-    // The canvases only exist now, so charts.js was told to skip its initial
-    // render (window.__deferInitialChartRender in the shell) and is driven
-    // from here instead.
-    window.__chartData = detailChartData(data);
-    if (window.renderAllCharts) window.renderAllCharts();
+  // The canvases only exist once the body is on the page, so charts.js was told
+  // to skip its initial render (window.__deferInitialChartRender in the shell)
+  // and is driven from here instead.
+  function applyDetailBody(el) {
+    var island = el.querySelector('#' + CHART_DATA_ID);
+    if (island) {
+      window.__chartData = detailChartData(JSON.parse(island.textContent));
+      if (window.renderAllCharts) window.renderAllCharts();
+    }
     //< both bind to elements that arrived with the body above
     if (window.initDetailHistory) window.initDetailHistory();
     if (window.initPlayEmbed) window.initPlayEmbed();
     fadeInCovers(el);
+    //< disabled in the shell so a bucket change can't be issued against a chart
+    //  that isn't on the page yet - and can't then be overwritten by the body
+    //  swap already in flight
     var select = document.getElementById('groupBy');
     if (select) select.disabled = false;
   }
 
-  function loadDetailBody() {
-    var el = target();
-    if (!el) return;
+  document.body.addEventListener('htmx:afterSwap', function (evt) {
+    if (evt.target.id !== DETAIL_BODY_ID) return;
+    applyDetailBody(evt.target);
+  });
 
-    fetch(detailBodyUrl(window.location.pathname, window.location.search), {
-      headers: { 'X-Requested-With': 'XMLHttpRequest' }
-    })
-      .then(function (resp) {
-        //< an expired session: go to the login page instead of parsing its
-        //  HTML as JSON and dead-ending on a Retry that can never succeed
-        if (window.AjaxStatus && window.AjaxStatus.redirectIfUnauthorized(resp)) {
-          throw new Error(window.AjaxStatus.UNAUTHORIZED_ERROR);
-        }
-        //< the entity no longer resolves (a shared or bookmarked URL for
-        //  something an overwrite import removed). The route answers a 404 with
-        //  where to go instead, rather than a 302 that fetch would follow into
-        //  the top-list page's HTML - which passed resp.ok and then threw in
-        //  resp.json(), so the visitor got "couldn't load" and a Retry that
-        //  behaved identically, instead of arriving at the list.
-        if (resp.status === 404) {
-          return resp.json().then(function (data) {
-            if (data && data.redirectUrl) {
-              window.location.replace(data.redirectUrl);
-              throw new Error(REDIRECTING_ERROR);
-            }
-            throw new Error('detail body fetch failed: ' + resp.status);
-          });
-        }
-        if (!resp.ok) throw new Error('detail body fetch failed: ' + resp.status);
-        return resp.json();
-      })
-      .then(function (data) {
-        applyDetailBody(el, data);
-      })
-      .catch(function (err) {
-        //< navigating to /login or to the top-list page - not a load failure
-        if (window.AjaxStatus && window.AjaxStatus.isUnauthorizedError(err)) return;
-        if (err && err.message === REDIRECTING_ERROR) return;
-        console.error(err);
-        //< the skeleton would otherwise pulse forever with no way out
-        if (window.AjaxStatus) window.AjaxStatus.renderInto(el, loadDetailBody);
-      });
-  }
-
-  // No abort/supersede bookkeeping here, unlike the filter loaders this
-  // mirrors: nothing on the shell re-fires this load, so there is only ever
-  // one in flight.
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', loadDetailBody);
-  } else {
-    loadDetailBody();
-  }
+  // A genuine failure gets the shared inline error + Retry rather than a
+  // skeleton that pulses forever with no way out. Neither an expired session
+  // nor a removed entity arrives here any more: the server answers both with
+  // HX-Redirect, so the browser navigates instead of this reporting a load
+  // failure for something that is not one.
+  var reportDetailBodyFailure = function (evt) {
+    var target = document.getElementById(DETAIL_BODY_ID);
+    if (!target || !window.AjaxStatus) return;
+    //< the swap target of the request that failed, not the element that fired
+    //  it. The play log swaps live INSIDE #detailBody and report themselves
+    //  (see detail-history.js), so an element-containment check would let a
+    //  failed sort change blank the whole body.
+    if (!evt.detail || evt.detail.target !== target) return;
+    window.AjaxStatus.renderInto(target, function () {
+      htmx.ajax('GET', window.location.pathname + window.location.search,
+                { target: '#' + DETAIL_BODY_ID, swap: 'innerHTML' });
+    });
+  };
+  document.body.addEventListener('htmx:responseError', reportDetailBodyFailure);
+  document.body.addEventListener('htmx:sendError', reportDetailBodyFailure);
 })();
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { detailBodyUrl, detailChartData, DETAIL_BODY_AJAX };
+  module.exports = { detailChartData };
 }

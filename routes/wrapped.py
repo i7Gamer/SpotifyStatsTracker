@@ -27,13 +27,35 @@ from Database.utils import msToString, now
 
 def register(app, dashboard):
 
+    def _renderWrapped(pageArgs):
+        """One render, two shapes. A plain GET is the whole recap; an htmx
+        request - every year badge and filter change - gets just
+        _wrapped_results.html, which htmx swaps into #wrappedResults (plus the
+        handful of out-of-band regions that partial leads with).
+
+        The marker is htmx's own HX-Request header rather than the ?ajax=true
+        convention the unmigrated shell pages still use. Keying on the header
+        is also what keeps the marker out of the URL bar: hx-replace-url writes
+        back the URL that was requested, so a marker living in the query string
+        would become part of the page's shareable address.
+
+        Both branches get the SAME context, which is the point of the split -
+        the second used to be a hand-assembled JSON envelope of six HTML chunks
+        plus a dozen scalars, updated by ~200 lines of DOM surgery in
+        static/js/wrapped.js, and the two drifted. See
+        tests/test_wrapped_htmx.py."""
+        if request.headers.get("HX-Request"):
+            return render_template("_wrapped_results.html", oobSwap=True, **pageArgs)
+        return render_template("wrapped.html", **pageArgs)
+
     def wrappedPage():
         email, username, db = dashboard.get_current_user_or_redirect()
         if not email:
-            #< an ajax filter change needs the 401, not a 302: fetch follows the
-            #  redirect transparently, so wrapped.js's redirectIfUnauthorized
-            #  (which only fires on 401) never saw it and the user got a banner
-            #  whose Retry could only ever earn another login page
+            #< an htmx filter change needs HX-Redirect, not a 302: htmx follows
+            #  a redirect as transparently as the old fetch() layer did, so the
+            #  login page's HTML would be swapped into the recap and the user
+            #  would never learn they were logged out. unauthenticatedResponse
+            #  answers both shapes (see app.py)
             return dashboard.unauthenticatedResponse()
 
         nowLocal = now(tz=db.tz)
@@ -41,48 +63,23 @@ def register(app, dashboard):
         availableYears = dashboard._computeAvailableYears(db)   #< most recent first, for the year badges
 
         year = dashboard._getWrappedYearParam(availableYears, currentYear)
-        groupBy, limit, sortBy, isAjaxRequest, ajaxUpdateType, includeGenres = dashboard._parseWrappedFilterParams()
+        groupBy, limit, sortBy = dashboard._parseWrappedFilterParams()
 
-        ctx = dashboard._buildWrappedContext(db, year, groupBy, limit, sortBy, includeGenres=includeGenres)
-
-        if isAjaxRequest:
-            res = dashboard._buildWrappedAjaxResponse(ctx, username, year, ajaxUpdateType, publicView=False)
-            # The share modal's panel is keyed to whatever year the page
-            # last fully rendered with - without this, switching years
-            # via the AJAX badges leaves it showing the previous year's
-            # create-link form/action-URL/existing-link state even
-            # though the rest of the page has moved on.
-            if ajaxUpdateType == "all" and dashboard.repo.isShareLinksEnabled():
-                res["sharePanelHtml"] = render_template(
-                    "_share_link_panel.html", **dashboard.shareLinkPanelArgs(username, year))
-            return jsonify(res)
-
-        totalPlays, totalMs = ctx["totalPlays"], ctx["totalMs"]
-        topSongs, topArtists, topAlbums = ctx["topSongs"], ctx["topArtists"], ctx["topAlbums"]
-        discoveredSongs, discoveredArtists, discoveredAlbums = (
-            ctx["discoveredSongs"], ctx["discoveredArtists"], ctx["discoveredAlbums"])
-        timeSeries = ctx["timeSeries"]
-        longestStreak, peakListeningTime = ctx["longestStreak"], ctx["peakListeningTime"]
-        uniqueSongsCount, uniqueArtistsCount = ctx["uniqueSongsCount"], ctx["uniqueArtistsCount"]
-        discoveredSongsCount, discoveredArtistsCount = ctx["discoveredSongsCount"], ctx["discoveredArtistsCount"]
-        topGenres, genreCoverage, genreUnlocked = ctx["topGenres"], ctx["genreCoverage"], ctx["genreUnlocked"]
-        lastfmEnabled = ctx["lastfmEnabled"]
+        ctx = dashboard._buildWrappedContext(db, year, groupBy, limit, sortBy)
 
         creds = db.getUserSpotifyCredentials() or {}
         has_api = bool(creds.get("client_id") and creds.get("client_secret"))
         is_authenticated = bool(creds.get("refresh_token"))
 
-        success = request.args.get("success")
-        error = request.args.get("error")
-
         shareLinksEnabled = dashboard.repo.isShareLinksEnabled()
-        #< the page includes the panel inline (see wrapped.html's modal), so its
-        #  kwargs ride along in this render's context
+        # The share modal's panel is year-scoped (create-form action URL, the
+        # revoke forms' hidden year, and which link counts as "current"), so it
+        # is rebuilt on every render - a year switch that left it alone showed
+        # the previous year's link state under the new year's heading.
         sharePanelArgs = (dashboard.shareLinkPanelArgs(username, year) if shareLinksEnabled
                           else {"yearLinks": [], "allYearsLinks": [], "otherYearLinks": []})
 
-        return render_template(
-            "wrapped.html",
+        return _renderWrapped(dict(
             username=username,
             section="wrapped",
             year=year,
@@ -92,29 +89,29 @@ def register(app, dashboard):
             limitOptions=WRAPPED_LIMIT_OPTIONS,
             limitDefault=WRAPPED_LIST_SIZE,
             sortBy=sortBy,
-            totalPlays=totalPlays,
-            totalTime=msToString(totalMs),
-            topSongs=topSongs,
-            topArtists=topArtists,
-            topAlbums=topAlbums,
-            discoveredSongs=discoveredSongs,
-            discoveredArtists=discoveredArtists,
-            discoveredAlbums=discoveredAlbums,
-            timeSeries=timeSeries,
-            longestStreak=longestStreak,
-            peakListeningTime=peakListeningTime,
-            uniqueSongsCount=uniqueSongsCount,
-            uniqueArtistsCount=uniqueArtistsCount,
-            discoveredSongsCount=discoveredSongsCount,
-            discoveredArtistsCount=discoveredArtistsCount,
-            topGenres=topGenres,
-            genreCoverage=genreCoverage,
-            genreUnlocked=genreUnlocked,
-            lastfmEnabled=lastfmEnabled,
+            totalPlays=ctx["totalPlays"],
+            totalTime=msToString(ctx["totalMs"]),
+            topSongs=ctx["topSongs"],
+            topArtists=ctx["topArtists"],
+            topAlbums=ctx["topAlbums"],
+            discoveredSongs=ctx["discoveredSongs"],
+            discoveredArtists=ctx["discoveredArtists"],
+            discoveredAlbums=ctx["discoveredAlbums"],
+            timeSeries=ctx["timeSeries"],
+            longestStreak=ctx["longestStreak"],
+            peakListeningTime=ctx["peakListeningTime"],
+            uniqueSongsCount=ctx["uniqueSongsCount"],
+            uniqueArtistsCount=ctx["uniqueArtistsCount"],
+            discoveredSongsCount=ctx["discoveredSongsCount"],
+            discoveredArtistsCount=ctx["discoveredArtistsCount"],
+            topGenres=ctx["topGenres"],
+            genreCoverage=ctx["genreCoverage"],
+            genreUnlocked=ctx["genreUnlocked"],
+            lastfmEnabled=ctx["lastfmEnabled"],
             has_api=has_api,
             is_authenticated=is_authenticated,
-            success=success,
-            error=error,
+            success=request.args.get("success"),
+            error=request.args.get("error"),
             publicView=False,
             shareLinksEnabled=shareLinksEnabled,
             shareLinkExpiryChoices=SHARE_LINK_EXPIRY_CHOICES,
@@ -125,16 +122,23 @@ def register(app, dashboard):
             yearLinks=sharePanelArgs["yearLinks"],
             allYearsLinks=sharePanelArgs["allYearsLinks"],
             otherYearLinks=sharePanelArgs["otherYearLinks"],
-        )
+        ))
     app.add_url_rule("/wrapped", "wrappedPage", wrappedPage, methods=["GET"])
 
     def createWrappedShareLink(year):
         """Creates a public, no-login share link for one year of the
         current user's own Wrapped - see sharedWrappedPage() below for
-        the route that serves it. ajax=true mirrors wrappedPage()'s own
-        AJAX convention: the modal on wrapped.html posts here in the
-        background and swaps in the returned panel HTML instead of
-        leaving the page."""
+        the route that serves it. The modal on wrapped.html posts here in the
+        background and swaps in the returned panel HTML instead of leaving the
+        page.
+
+        Deliberately still ?ajax=true + {"html": ...} while wrappedPage() has
+        moved to htmx. This is an ACTION, not a page load: it answers with the
+        share panel rather than the recap, and its 4xx bodies carry messages
+        the modal shows in place ("you've reached the limit", "unknown link
+        expiry"), which an htmx swap would need HX-Reswap/HX-Retarget gymnastics
+        to keep. Migrating it (and its sibling profileShareLinkAction in
+        routes/auth.py) is a separate, self-contained job."""
         isAjax = request.args.get("ajax") == "true"
         email, username, db = dashboard.get_current_user_or_redirect()
         if not email:
@@ -236,17 +240,18 @@ def register(app, dashboard):
         # showing a different year of the same user's data.
         availableYears = dashboard._computeAvailableYears(db) if isMultiYearShare else [link["year"]]
         year = dashboard._getWrappedYearParam(availableYears, availableYears[0])
-        groupBy, limit, sortBy, isAjaxRequest, ajaxUpdateType, includeGenres = dashboard._parseWrappedFilterParams()
+        groupBy, limit, sortBy = dashboard._parseWrappedFilterParams()
 
-        ctx = dashboard._buildWrappedContext(db, year, groupBy, limit, sortBy, includeGenres=includeGenres)
+        ctx = dashboard._buildWrappedContext(db, year, groupBy, limit, sortBy)
 
-        if isAjaxRequest:
-            return jsonify(dashboard._buildWrappedAjaxResponse(
-                ctx, link["username"], year, ajaxUpdateType, publicView=True,
-                imageBase=_sharedImageBase(token)))
-
-        resp = make_response(render_template(
-            "wrapped.html",
+        # This route is NOT behind @requiresUser: the two ways it fails are a
+        # dead token (404, above) and the miss rate limit (429), neither of
+        # which is a session problem. An htmx request therefore gets the SAME
+        # status it always did - no HX-Redirect to /login, which would send an
+        # anonymous visitor to a login screen for an account that isn't theirs.
+        # wrapped.js reports it as a load failure with a Retry. Pinned by
+        # tests/test_wrapped_htmx.py's TestSharedWrappedHtmx.
+        resp = make_response(_renderWrapped(dict(
             username=link["username"],
             section="wrapped",
             year=year,
@@ -294,7 +299,7 @@ def register(app, dashboard):
             otherYearLinks=[],
             shareLinkExpiryChoices=SHARE_LINK_EXPIRY_CHOICES,
             shareLinkMaxPerBucket=SHARE_LINK_MAX_PER_BUCKET,
-        ))
+        )))
         resp.headers["X-Robots-Tag"] = "noindex"
         return resp
     app.add_url_rule("/shared/<token>", "sharedWrappedPage", sharedWrappedPage, methods=["GET"])

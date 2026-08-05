@@ -39,47 +39,67 @@ STATIC_JS_DIR = REPO_ROOT / "static" / "js"
 # Those are the fetches whose response is a full page render behind @requiresUser,
 # so those are the ones a 401 can reach.
 PAGE_LOADER_FETCH = re.compile(
-    r"fetch\(\s*[`(]?\s*(?:window\.location\.pathname|detail\w*Url\(|\$\{WRAPPED_FETCH_URL\})")
+    r"fetch\(\s*[`(]?\s*(?:window\.location\.pathname|detail\w*Url\()")
 
 # The swallow: a non-2xx becomes null, and the caller's "did I get a payload"
 # test then reads exactly like "nothing to do".
 SWALLOWING_TERNARY = re.compile(r"resp(?:onse)?\.ok\s*\?\s*resp(?:onse)?\.json\(\)\s*:\s*null")
 
+# Comments, stripped before the scan below. Not a nicety: this gate spent its
+# life counting PROSE. genres.js carried the line "readJsonOrThrow, not
+# `resp.ok ? resp.json() : null`: ..." explaining why it did NOT swallow, and
+# that comment is what put it in DELIBERATE_SWALLOWS - the entry documented a
+# recovery path for a swallow that did not exist. ajax-status.js's own
+# docstring says the same words and would newly trip the widened scan below.
+#
+# Naive enough to also eat the "//" in a URL, which is harmless here: the only
+# thing searched for afterwards is the ternary above.
+_LINE_COMMENT = re.compile(r"//[^\n]*")
+_BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
+
+
+def _code(text):
+    """`text` with comments removed, so a rule about code is about code."""
+    return _LINE_COMMENT.sub("", _BLOCK_COMMENT.sub("", text))
+
+
 # Swallows that ARE correct, because a non-2xx has a real recovery path here:
 #   dashboard-page.js - the 15s now-playing poll deliberately keeps the last
 #     state on a transient error rather than yanking a background failure into
 #     the user's face (its 401 is handled separately, by stopping the timer).
-#   genres.js - the genre-detail load navigates to detailFallbackUrl() instead,
-#     so the failure ends in a full page load rather than in silence.
-# Counted per file so that a NEW swallow alongside one of these still fails.
-DELIBERATE_SWALLOWS = {"dashboard-page.js": 1, "genres.js": 1}
+# Counted per file so that a NEW swallow alongside this one still fails.
+DELIBERATE_SWALLOWS = {"dashboard-page.js": 1}
 
 # The files that must carry the guard, as of this test. Named rather than purely
 # discovered so that a loader DISAPPEARING from the discovery (an extraction that
 # accidentally drops the fetch, say) fails loudly instead of shrinking the set
 # this test protects.
 #
-# history-page.js is deliberately absent, and it is the one entry worth
-# explaining: /history moved to htmx, so it makes no fetch() call to guard. The
+# It is down to ONE, and that is the point rather than a shrinking guard: every
+# other page moved to htmx and stopped calling fetch() for its own body. The
 # invariant did not go away, it moved to the server - an htmx request from an
 # expired session is answered with HX-Redirect rather than a 302 the swap would
-# inline (see app.py's unauthenticatedResponse, pinned by
-# tests/test_history_htmx.py's TestUnauthenticatedSwap). A page migrated to htmx
-# leaves this set; a page still driving its own fetch() must not.
-EXPECTED_PAGE_LOADERS = {
-    "charts-page.js", "compare.js", "dashboard-page.js", "detail-chart.js",
-    "detail-history.js", "detail-page.js", "genres.js",
-    "top-list.js", "wrapped.js",
-}
+# inline (see app.py's unauthenticatedResponse, pinned by each page's
+# test_*_htmx.py TestUnauthenticatedSwap). A page migrated to htmx leaves this
+# set; a page still driving its own fetch() must not.
+#
+# detail-chart.js is the one that stays, and it stays for a reason worth keeping
+# written down: the Trend-buckets select re-fetches a time SERIES, which is
+# numbers rather than markup. htmx swaps response bodies, so there is nothing
+# for it to do here - see routes/charts.py's `?ajax=true` branch.
+EXPECTED_PAGE_LOADERS = {"detail-chart.js"}
 
-# JSON endpoints that render a dashboard card. Not page loaders (they have their
-# own routes), but they sit behind @requiresUser(api=True), so the same 401 body
-# reaches them - and a card that silently no-ops shows a permanent "Loading..."
-# or, worse, states something untrue about the user's library.
-CARD_ENDPOINT_FETCHES = (
-    ("dashboard-page.js", "/api/dashboard-trends"),
-    ("dashboard-page.js", "/api/dashboard-discover"),
-)
+# Deliberately empty. Both dashboard card endpoints (/api/dashboard-trends,
+# /api/dashboard-discover) return HTML fragments now and are swapped by htmx, so
+# there is no client-side payload read left to guard. The failure behaviour they
+# had is still deliberate and still differs per card - Discover blanks, because
+# its "locked"/"empty" messages are claims about the user's library that a 500 is
+# no evidence for; trends shows the shared inline error and a Retry - but that is
+# behaviour, pinned in tests/test_dashboard_htmx.py, not source shape.
+#
+# Kept as an empty tuple with this note rather than deleted, so that a future
+# card added as a JSON fetch has an obvious place to be registered.
+CARD_ENDPOINT_FETCHES = ()
 
 #< how much of the promise chain after `fetch(` counts as "this fetch's response
 #  handling" - generous enough to span a formatted .then(), tight enough not to
@@ -130,8 +150,15 @@ class AjaxLoaderErrorHandlingTestCase(unittest.TestCase):
     def test_the_shared_helper_is_the_normal_way_to_read_a_payload(self):
         """Pins the convention rather than just the outcome: a new loader that
         hand-rolls the pair is how one of them lost the 401 check in the first
-        place. Only the documented exception may opt out."""
-        HAND_ROLLED_EXCEPTIONS = {"detail-page.js"}   #< needs a 404's body, see above
+        place. Only a documented exception may opt out.
+
+        There is none left. detail-page.js was the entry, and it was there
+        because it had to read a 404's BODY to find where an unresolvable entity
+        should send the visitor - which no helper that throws on every non-2xx
+        can do. The detail pages moved to htmx and that answer became a header
+        (HX-Redirect, see _missingEntityResponse), so the branch, the fetch and
+        the exception all went at once."""
+        HAND_ROLLED_EXCEPTIONS = set()
 
         handRolled = sorted(name for name in EXPECTED_PAGE_LOADERS - HAND_ROLLED_EXCEPTIONS
                             if "readJsonOrThrow" not in self.files[name])
@@ -151,12 +178,20 @@ class AjaxLoaderErrorHandlingTestCase(unittest.TestCase):
                 self.assertIn("js/ajax-status.js",
                               (templatesDir / layout).read_text(encoding="utf-8"))
 
-    def test_no_page_loader_swallows_a_non_2xx_into_null(self):
-        """Counted, not merely absent, so the two deliberate swallows stay
-        exempt while a NEW one in the same file still fails."""
-        for name in sorted(EXPECTED_PAGE_LOADERS):
+    def test_no_script_swallows_a_non_2xx_into_null(self):
+        """Counted, not merely absent, so the deliberate swallow stays exempt
+        while a NEW one in the same file still fails.
+
+        Scans EVERY script, not just EXPECTED_PAGE_LOADERS, and that widening is
+        load-bearing: the one deliberate swallow lives in dashboard-page.js's
+        now-playing poll, and the dashboard left that set when it moved to htmx.
+        Scoped to the loaders, this rule would have quietly stopped covering the
+        only file it still had anything to say about - and the poll is exactly
+        the code most likely to grow a second, accidental swallow, since it is
+        the last background fetch in the app."""
+        for name in sorted(self.files):
             with self.subTest(js=name):
-                found = len(SWALLOWING_TERNARY.findall(self.files[name]))
+                found = len(SWALLOWING_TERNARY.findall(_code(self.files[name])))
 
                 self.assertEqual(found, DELIBERATE_SWALLOWS.get(name, 0),
                                  f"{name} turns a non-2xx into null, which its caller cannot tell "
@@ -188,6 +223,21 @@ class AjaxLoaderErrorHandlingTestCase(unittest.TestCase):
         self.assertRegex("return response.ok ? response.json() : null;", SWALLOWING_TERNARY)
         self.assertNotRegex("if (!resp.ok) throw new Error('x'); return resp.json();",
                             SWALLOWING_TERNARY)
+
+    def test_a_swallow_named_only_in_prose_is_not_counted(self):
+        """The bug this gate had for its whole life. genres.js explained in a
+        comment why it did NOT swallow - quoting the pattern to say "not this" -
+        and the scan counted the quote, which is how it earned a
+        DELIBERATE_SWALLOWS entry documenting a recovery path for code that was
+        never there. ajax-status.js's docstring says the same words today."""
+        prose = "// non-2xx handed to `resp.ok ? resp.json() : null` reads as nothing to do\n"
+        block = "/* readJsonOrThrow, not resp.ok ? resp.json() : null: it throws */\n"
+
+        self.assertEqual(SWALLOWING_TERNARY.findall(_code(prose)), [])
+        self.assertEqual(SWALLOWING_TERNARY.findall(_code(block)), [])
+        #< and the real thing still counts once the comments around it are gone
+        self.assertEqual(len(SWALLOWING_TERNARY.findall(
+            _code("// why:\nreturn resp.ok ? resp.json() : null;\n"))), 1)
 
 
 if __name__ == "__main__":

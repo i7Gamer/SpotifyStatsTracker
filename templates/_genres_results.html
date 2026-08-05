@@ -1,0 +1,71 @@
+{#- SPDX-FileCopyrightText: 2026 i7Gamer
+    SPDX-License-Identifier: AGPL-3.0-or-later -#}
+
+{# The whole /genres data zone - overview charts plus the genre drill-down -
+   swapped as one unit into #genresResults on first paint and again on every
+   time-filter change (see routes/genres.py's HX-Request branch).
+   Expects: distributionPairs, breadthPairs, mixTrend, intervalLabel, plus
+   everything _genre_explore.html needs.
+
+   The canvases arrive blank: their data is not markup, so it rides in the JSON
+   island at the bottom and static/js/genres.js paints them from it in an
+   htmx:afterSwap listener. That listener is the one part of this page htmx
+   cannot own - it swaps a <canvas>, and has no idea it has to be drawn on. #}
+<section class="card chart-card" id="genresOverview">
+  <div class="chart-section">
+    <h2>Genre Distribution</h2>
+    <div class="chart-canvas-wrap">
+      <canvas id="genreDistChart" role="img" aria-label="Genre distribution"></canvas>
+    </div>
+  </div>
+
+  <div class="chart-section-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 2rem; margin-top: 2rem;">
+    <div class="chart-section">
+      <h2>Genre Share</h2>
+      <div class="chart-canvas-wrap" style="height: 300px;">
+        <canvas id="genreShareChart" role="img" aria-label="Genre share of total plays"></canvas>
+      </div>
+      <div id="genreShareLegend" class="chart-legend"></div>
+    </div>
+    <div class="chart-section">
+      <h2>Artists per Genre</h2>
+      <p class="chart-subtitle">How many different artists you play in each genre (breadth).</p>
+      <div class="chart-canvas-wrap">
+        <canvas id="genreBreadthChart" role="img" aria-label="Genre breadth"></canvas>
+      </div>
+    </div>
+  </div>
+
+  {# Mix over time needs the full page width to be legible - its own row. #}
+  <div class="chart-section" style="margin-top: 2rem;">
+    <h2>Genre Mix &middot; <span id="genreMixLabel">{{ intervalLabel }}</span></h2>
+    <div class="chart-canvas-wrap">
+      <canvas id="genreMixChart" role="img" aria-label="Genre mix over time"></canvas>
+    </div>
+    <div id="genreMixLegend" class="chart-legend"></div>
+  </div>
+</section>
+
+<section class="card">
+  <h2>Explore a Genre</h2>
+  {# The chip-click swap target. hx-target and hx-indicator override the ones
+     inherited from #genresResults, so a chip click replaces (and dims) just
+     this card's body instead of the whole page's data zone.
+
+     hx-sync is deliberately NOT overridden: both shapes stay on
+     #genresResults' queue, so a chip click during an in-flight filter load
+     supersedes it rather than racing it - which is exactly what the single
+     loadToken shared by the two hand-written loaders used to do. #}
+  <div id="genreExplore"
+       class="htmx-fade-target"
+       hx-target="#genreExplore"
+       hx-indicator="#genreExplore">
+    {% include "_genre_explore.html" %}
+  </div>
+</section>
+
+{# The overview canvases' data. Flask's tojson escapes `<`, so nothing in a
+   genre name can close this tag early. #}
+<script type="application/json" id="genres-overview-data">
+{{ {"distributionPairs": distributionPairs, "breadthPairs": breadthPairs, "mixTrend": mixTrend} | tojson }}
+</script>

@@ -1,0 +1,36 @@
+{#- SPDX-FileCopyrightText: 2026 i7Gamer
+    SPDX-License-Identifier: AGPL-3.0-or-later -#}
+
+{# The dashboard's Discover card, swapped into #discoverCard by htmx right after
+   first paint (see routes/charts.py's dashboardDiscover for why it is deferred).
+   The whole card including its heading, because the placeholder it replaces is
+   the card's own innerHTML.
+
+   The three states used to be three paragraphs rendered hidden in tracks.html
+   plus an `unlocked` flag and a recommendations array, with the client deciding
+   which to reveal and building the rows element by element. One {% if %} says
+   the same thing where the data already is. #}
+<h2>Discover</h2>
+{% if not unlocked %}
+  <p class="dashboard-card-empty">Unlock artist recommendations as your <a href="{{ url_for('genresPage') }}">genre data</a> fills in.</p>
+{% elif not recommendations %}
+  <p class="dashboard-card-empty">No fresh picks right now &mdash; keep listening!</p>
+{% else %}
+  <div class="discover-list">
+    {% for artist in recommendations %}
+    <a class="discover-row" href="{{ url_for('artistDetailPage', artist_id=artist.id) }}">
+      {# alt="": the artist's name is right beside it, so a screen reader would
+         otherwise read it twice - same rule _track_card.html follows. #}
+      <img class="discover-cover" loading="lazy" alt=""
+           src="/img/{{ username }}/artists/{{ artist.imageId }}.jpeg"
+           onerror="this.onerror=null;this.src=window.PLACEHOLDER_IMG;" />
+      <span class="discover-meta">
+        <span class="discover-name">{{ artist.name }}</span>
+        {#- one genre, not the list: it is the reason this artist is here, and the
+            row has one line to say it in -#}
+        {% if artist.matchedGenres %}<span class="discover-genre">{{ artist.matchedGenres[0] }}</span>{% endif %}
+      </span>
+    </a>
+    {% endfor %}
+  </div>
+{% endif %}

@@ -26,18 +26,20 @@ class TestTopAlbumsRoute(AppTestCase):
         return db
 
     def _getTopAlbums(self, dash, db, query="", ajax=True):
-        # Two-phase load: the list/pagination/totals only exist behind
-        # ?ajax=true; the filter card (checkbox, nav) is in the shell (ajax=False).
+        # Two-phase load: the list/pagination/totals only come back for the
+        # second request; the filter card (checkbox, nav) is in the shell
+        # (ajax=False). That second request is made by htmx now, so it is marked
+        # with the HX-Request header rather than ?ajax=true, and answered with
+        # the HTML fragment rather than a JSON envelope around it. The parameter
+        # keeps its name - what it selects is still "list, not shell".
         path = f"/top-albums{query}"
-        if ajax:
-            path += ('&' if query else '?') + 'ajax=true'
         client = dash.app.test_client()
         with patch.object(dash, 'is_user_logged_in', return_value=True), \
              patch.object(dash, 'get_username_for_email', return_value='alice'), \
              patch.object(dash, 'get_user_db', return_value=db):
             with client.session_transaction() as sess:
                 sess['email'] = 'alice@example.com'
-            return client.get(path)
+            return client.get(path, headers={"HX-Request": "true"} if ajax else {})
 
     def test_without_search_fetches_only_one_page(self):
         dash = self._makeApp()
@@ -114,7 +116,7 @@ class TestTopAlbumsRoute(AppTestCase):
         resp = self._getTopAlbums(dash, db)
 
         self.assertIn('<span class="track-label genre-label">indie rock</span>',
-                      resp.get_json()["resultsHtml"])
+                      resp.get_data(as_text=True))
         # One batched lookup for the whole list, not one call per card.
         db.getGenresForAlbums.assert_called_once_with(["alb1"])
 
@@ -127,7 +129,7 @@ class TestTopAlbumsRoute(AppTestCase):
 
         self.assertEqual(resp.status_code, 200)
         db.getPlayTotals.assert_called_once()
-        self.assertIn('<p class="summary-value">42</p>', resp.get_json()["resultsHtml"])
+        self.assertIn('<p class="summary-value">42</p>', resp.get_data(as_text=True))
 
     def test_full_plays_only_defaults_on(self):
         """A favorite has to have actually been heard - the filter is on by

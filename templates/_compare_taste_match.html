@@ -1,0 +1,15 @@
+{#- SPDX-FileCopyrightText: 2026 i7Gamer
+    SPDX-License-Identifier: AGPL-3.0-or-later -#}
+
+{# The hero's taste-match badge. The shell renders it hidden (tasteMatch=None) -
+   the score isn't known until the comparison runs - and each refresh replaces
+   it WHOLE rather than filling in the number, because "no score at all" and
+   "0%" are different states and only the container's own display can say which
+   one this is.
+
+   `oob` is set by _compare_results.html and unset in the shell: the same markup
+   has to be a swap target once and a swap source thereafter. #}
+<div class="taste-match" id="tasteMatch"{% if oob is defined and oob %} hx-swap-oob="outerHTML"{% endif %}{% if tasteMatch is none %} style="display: none;"{% endif %}>
+  <span class="taste-match-value js-taste-match">{% if tasteMatch is not none %}{{ tasteMatch }}%{% endif %}</span>
+  <span class="taste-match-label">taste match</span>
+</div>

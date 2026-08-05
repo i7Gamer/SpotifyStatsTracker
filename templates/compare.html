@@ -4,28 +4,38 @@
 {% extends "layout.html" %}
 {% block title %}Compare - {{ super() }}{% endblock %}
 {% block content %}
+{# Two-phase load like /history, /charts, /genres: this GET renders the filter
+   controls and empty placeholders, and the comparison itself arrives in a
+   second request right after first paint, and again on every filter change.
+
+   htmx drives that second request; static/js/compare.js is down to what htmx
+   has no opinion about. What each attribute replaces is noted at its use site,
+   and templates/history.html carries the same wiring with fuller commentary.
+
+   This page differs from the other two in one way worth knowing before
+   extending it: one response refreshes a DOZEN regions, so there is no primary
+   swap at all. Every region below is a target named by hx-swap-oob in
+   _compare_results.html, and hx-swap="none" says so rather than picking an
+   arbitrary "main" one. Add a region here and you must add it there too - htmx
+   never complains about a target nobody swaps, it just leaves stale content up.
+
+   One constraint before extending this: config.py's Content-Security-Policy
+   grants 'unsafe-eval' to the detail pages ONLY (see DETAIL_PAGE_CSP), and
+   every htmx feature that takes a JS expression - hx-trigger event filters
+   `[expr]`, `hx-vals="js:..."`, `hx-on:` handlers - compiles it with the
+   Function constructor. Those are unavailable here and fail at runtime, not at
+   render time. Plain attributes only. #}
 
 <section class="hero">
   <div class="hero-content">
     <h1>Compare with <span class="compare-user-theirs js-with-username">{{ withUsername | displayName }}</span></h1>
     <p>See how your listening stats stack up against someone who shares their data with you.</p>
-    {# tasteMatch isn't known until the ajax payload lands - hidden until compare.js fills it in. #}
-    <div class="taste-match" id="tasteMatch" style="display: none;">
-      <span class="taste-match-value js-taste-match"></span>
-      <span class="taste-match-label">taste match</span>
-    </div>
+    {% include '_compare_taste_match.html' %}
   </div>
 </section>
 
 {% if acceptedUsernames|length > 1 %}
-<nav class="wrapped-year-badges" aria-label="Select user to compare with">
-  {% for candidate in acceptedUsernames %}
-    {# the badge SHOWS the display name but still selects by the real username:
-       ?with= is matched against the accepted-share list server-side. #}
-    <a class="wrapped-year-badge{{ ' active' if candidate == withUsername else '' }}"
-       href="{{ url_for('comparePage', with=candidate, interval=interval, startDate=customStart, endDate=customEnd, groupBy=groupBy, limit=limit, sortBy=sortBy) }}">{{ candidate | displayName }}</a>
-  {% endfor %}
-</nav>
+{% include '_compare_user_badges.html' %}
 {% endif %}
 
 {# Adding or dropping a counterpart is what you reach for while looking at this
@@ -36,7 +46,38 @@
   <a href="{{ url_for('profileSharingPage') }}">Manage shares</a>
 </p>
 
-<section class="filter-section" style="display: flex; flex-wrap: wrap; gap: 1rem; align-items: center;">
+{# The form's own inputs ARE the query string, serialized by htmx on every
+   change, so the four hand-written updateCompare*Filter handlers that each
+   edited window.location's params are gone.
+
+   hx-trigger names the controls one by one rather than listening for any
+   `change`: the Sort by control below fires its OWN, narrower request, and a
+   blanket `change` here would race it (both would fire, and hx-sync would let
+   the wider one win - turning every sort change back into a full refresh). The
+   event filter that could suppress it needs 'unsafe-eval', see above.
+
+   hx-replace-url is the load-bearing one: a filter change must REPLACE the URL,
+   never push, so Back leaves the page instead of walking back through every
+   filter the user tried. hx-sync ...:replace is the AbortController bookkeeping
+   loadCompareData did by hand, and one queue for ALL of this page's requests is
+   deliberate - a sort change used to abort a pending filter load too.
+
+   hx-indicator dims the swapped regions rather than the control that fired
+   (.htmx-fade-target, see static/css/style.css), which is what the
+   compareSwapTargets/.loading-fade bookkeeping used to arrange. #}
+<form class="filter-section" id="compareFilters" method="get" action="{{ url_for('comparePage') }}"
+      style="display: flex; flex-wrap: wrap; gap: 1rem; align-items: center;"
+      hx-get="{{ url_for('comparePage') }}"
+      hx-trigger="change from:#interval, change from:#limit, change from:#groupBy, change delay:500ms from:#startDate, change delay:500ms from:#endDate"
+      hx-swap="none"
+      hx-sync="#compareFilters:replace"
+      hx-indicator=".htmx-fade-target"
+      hx-replace-url="true">
+  {# Which counterpart is being compared with - a link's job to change (see the
+     badges above), a hidden field's job to carry into every OTHER request.
+     Without it a filter change would drop ?with= and snap back to the first
+     accepted share. _compare_results.html swaps it in step with the badges. #}
+  <input type="hidden" name="with" id="compareWithField" value="{{ withUsername }}">
   <div class="filter-group">
     <label for="interval">Time Period:</label>
     <select id="interval" name="interval" onchange="updateCompareIntervalFilter()">
@@ -51,17 +92,27 @@
     </select>
   </div>
 
+  {# `disabled`, not merely hidden: a disabled control is not serialized, which
+     is what keeps a stale custom range out of the request - and so out of the
+     URL, since hx-replace-url writes back what was requested.
+     updateCompareIntervalFilter keeps the two in step. The 500ms in the form's
+     hx-trigger above is the debounce scheduleSearchFilter used to supply: a
+     date input fires `change` as each segment is completed, so an unthrottled
+     one would query on a half-edited year. An inverted or half-entered range is
+     vetoed outright - see compare.js's htmx:configRequest listener. #}
   <div class="filter-group custom-dates" id="compareCustomDates" {% if not (customStart and customEnd) %}style="display: none;"{% endif %}>
     <label for="startDate">From:</label>
-    <input type="date" id="startDate" value="{{ customStart }}" onchange="scheduleSearchFilter('startDate', updateCompareDateFilter)">
+    <input type="date" id="startDate" name="startDate" value="{{ customStart }}"
+           {% if not (customStart and customEnd) %}disabled{% endif %}>
     <label for="endDate">To:</label>
-    <input type="date" id="endDate" value="{{ customEnd }}" onchange="scheduleSearchFilter('endDate', updateCompareDateFilter)">
+    <input type="date" id="endDate" name="endDate" value="{{ customEnd }}"
+           {% if not (customStart and customEnd) %}disabled{% endif %}>
     <span id="dateError" class="date-error"></span>
   </div>
 
   <div class="filter-group">
     <label for="limit">Items per category:</label>
-    <select id="limit" name="limit" onchange="updateCompareLimitFilter()">
+    <select id="limit" name="limit">
       {% for option in limitOptions %}
         <option value="{{ option }}" {% if limit == option %}selected{% endif %}>{{ option }}</option>
       {% endfor %}
@@ -70,7 +121,10 @@
 
   <div class="filter-group">
     <label for="groupBy">Trend buckets:</label>
-    <select id="groupBy" name="groupBy" onchange="updateCompareGroupByFilter()">
+    {# Auto is the empty value, and compare.js prunes it from the request so the
+       address bar says "Auto" by omission, the way the old handler's
+       params.delete('groupBy') did. #}
+    <select id="groupBy" name="groupBy">
       <option value="" {% if not groupBy %}selected{% endif %}>Auto</option>
       <option value="day" {% if groupBy == 'day' %}selected{% endif %}>Day</option>
       <option value="week" {% if groupBy == 'week' %}selected{% endif %}>Week</option>
@@ -84,41 +138,83 @@
      taste-match score are BOTH unaffected: Top Common ranks by a fixed
      shared-rank-weighted score (see _buildSharedItems/_sharedRankScore) and
      taste-match runs over a fixed plays-ranked pool - neither reads this
-     control (which is why updateCompareSortByFilter swaps only the six
-     individual lists). Same options as the standalone Top pages, but "Name
+     control (which is why this one asks for ?scope=sortable and moves only the
+     six individual lists). Same options as the standalone Top pages, but "Name
      (A-Z)" here shows the top-`limit`-by-plays alphabetized for scanning
      (see _gatherCompareStats' displayList), not the paginated alphabetical
      browse of the whole history. #}
   <div class="filter-group">
     <label for="sortBy">Sort by:</label>
-    <select id="sortBy" name="sortBy" onchange="updateCompareSortByFilter()">
+    {# The one control with its OWN request: ?scope=sortable narrows the
+       response to the six lists it can move (see _compare_sortable_lists.html),
+       so the shared lists, genres, taste match and trend are not recomputed to
+       render identically. hx-include is required, not decorative - htmx does
+       NOT serialize the enclosing form for a GET fired by a control inside it,
+       so without it this would ask for a sort of the DEFAULT view.
+       hx-swap/hx-sync/hx-replace-url are inherited from the form; the indicator
+       is not, on purpose - a sort change dims only the lists it replaces. The
+       route answers with an HX-Replace-Url so ?scope= never reaches the address
+       bar. #}
+    <select id="sortBy" name="sortBy"
+            hx-get="{{ url_for('comparePage') }}?scope=sortable"
+            hx-trigger="change"
+            hx-include="#compareFilters"
+            hx-indicator=".compare-sortable-list">
       <option value="totalTimeListened" {% if sortBy == 'totalTimeListened' %}selected{% endif %}>Time Played</option>
       <option value="plays" {% if sortBy == 'plays' %}selected{% endif %}>Number of Plays</option>
       <option value="name" {% if sortBy == 'name' %}selected{% endif %}>Name (A-Z)</option>
     </select>
   </div>
-</section>
 
-{# The sections below are filled in by compare.js's initial ajax load
-   (loadCompareData({ initial: true })) - same fetch the filter controls
-   already trigger on every change, just fired once more up front instead
-   of the server pre-rendering this first response. #}
+  {# This page renders a SHELL on a plain GET and fetches its comparison in a
+     second request, so submitting this form without JS reloads to a permanent
+     "Loading...". Say what is actually wrong instead. #}
+  <noscript>
+    <p class="dashboard-card-empty">This page needs JavaScript to load its data.
+    With it enabled the filters above apply as you change them.</p>
+  </noscript>
+</form>
+
+{# Every region from here down is a swap target: _compare_results.html names it
+   by id and htmx replaces its contents (see that file's header). The
+   htmx-fade-target class is what the form's hx-indicator dims while a refresh
+   is in flight - it replaces the .loading-fade bookkeeping compare.js did in a
+   .finally(). #}
 <section class="card" style="margin: 1.5rem 0; overflow-x: auto;">
-  {# Outside #compareStatsTable so the AJAX swap doesn't re-render it. #}
+  {# Outside #compareStatsTable so the swap doesn't re-render it. #}
   <h2 style="margin: 0 0 0.75rem 0; font-family: var(--font-headings);">Stats Comparison</h2>
-  <div id="compareStatsTable">
-    <p class="loading">Loading…</p>
+  <div id="compareStatsTable" class="htmx-fade-target">
+    {# The first load. Living on the placeholder rather than on a container
+       means it fires once and is then swapped away, so there is no separate
+       "have we loaded yet" state to keep - and nothing left behind that could
+       fire `load` a second time when the region is replaced.
+
+       resultsUrl is built by the route from the VALIDATED filter values, not
+       echoed from request.full_path: reflecting the raw query string here would
+       put a junk ?interval=bogus back into the markup and disagree with the
+       counterpart badges built beside it. hx-replace-url is off for this one
+       request only - it asks for the canonical form of the URL the browser is
+       already showing, and rewriting the address bar on first paint would be a
+       silent redirect. No hx-indicator either: these placeholders already say
+       "Loading…", so there is nothing to dim (matching loadCompareData's
+       `initial` option, which faded nothing). #}
+    <p class="loading"
+       hx-get="{{ resultsUrl }}"
+       hx-trigger="load"
+       hx-swap="none"
+       hx-sync="#compareFilters:replace"
+       hx-replace-url="false">Loading…</p>
   </div>
 </section>
 
-<section class="track-summary-grid-3 compare-similarities" id="compareSimilarities">
+<section class="track-summary-grid-3 compare-similarities htmx-fade-target" id="compareSimilarities">
   <p class="loading">Loading…</p>
 </section>
 
 <section class="card" style="margin: 1.5rem 0;">
-  {# Outside #compareGenres so the AJAX swap doesn't re-render it. #}
+  {# Outside #compareGenres so the swap doesn't re-render it. #}
   <h2 style="margin: 0 0 0.75rem 0; font-family: var(--font-headings);">Genres</h2>
-  <div id="compareGenres">
+  <div id="compareGenres" class="htmx-fade-target">
     <p class="loading">Loading…</p>
   </div>
 </section>
@@ -127,7 +223,9 @@
    (charts.html); here the filter badges below separate the sections. #}
 <section class="chart-section" style="margin-bottom: 2rem; border-bottom: none;">
   <h2>Listening Trend</h2>
-  <div class="chart-canvas-wrap">
+  {# Dimmed with the rest, but never swapped: the canvas stays, and only the
+     data island at the bottom of the page is replaced. #}
+  <div class="chart-canvas-wrap htmx-fade-target">
     <canvas id="comparisonTrendChart" role="img"
             aria-label="Mirrored listening trend chart: your listening time above the center baseline, the other user's below it."></canvas>
   </div>
@@ -147,7 +245,7 @@
 <div data-category="common-top-songs">
   <section style="margin-bottom: 2.5rem;">
     <h2>Top Common Songs</h2>
-    <div class="track-list" id="sharedSongsList">
+    <div class="track-list htmx-fade-target" id="sharedSongsList">
       <p class="loading">Loading…</p>
     </div>
   </section>
@@ -156,7 +254,7 @@
 <div data-category="common-top-artists">
   <section style="margin-bottom: 2.5rem;">
     <h2>Top Common Artists</h2>
-    <div class="track-list" id="sharedArtistsList">
+    <div class="track-list htmx-fade-target" id="sharedArtistsList">
       <p class="loading">Loading…</p>
     </div>
   </section>
@@ -165,23 +263,26 @@
 <div data-category="common-top-albums">
   <section style="margin-bottom: 2.5rem;">
     <h2>Top Common Albums</h2>
-    <div class="track-list" id="sharedAlbumsList">
+    <div class="track-list htmx-fade-target" id="sharedAlbumsList">
       <p class="loading">Loading…</p>
     </div>
   </section>
 </div>
 
+{# The six below are the only regions a Sort by change moves, which is what the
+   extra compare-sortable-list class marks: it is that control's hx-indicator,
+   so a sort dims these and leaves the rest of the page alone. #}
 <div data-category="top-songs">
   <section class="compare-columns">
     <div>
       <h2><span class="compare-user-mine compare-user-label js-my-username">{{ username | displayName }}</span>'s Top Songs</h2>
-      <div class="track-list" id="myTopSongsList">
+      <div class="track-list htmx-fade-target compare-sortable-list" id="myTopSongsList">
         <p class="loading">Loading…</p>
       </div>
     </div>
     <div>
       <h2><span class="compare-user-theirs compare-user-label js-with-username">{{ withUsername | displayName }}</span>'s Top Songs</h2>
-      <div class="track-list" id="theirTopSongsList">
+      <div class="track-list htmx-fade-target compare-sortable-list" id="theirTopSongsList">
         <p class="loading">Loading…</p>
       </div>
     </div>
@@ -192,13 +293,13 @@
   <section class="compare-columns">
     <div>
       <h2><span class="compare-user-mine compare-user-label js-my-username">{{ username | displayName }}</span>'s Top Artists</h2>
-      <div class="track-list" id="myTopArtistsList">
+      <div class="track-list htmx-fade-target compare-sortable-list" id="myTopArtistsList">
         <p class="loading">Loading…</p>
       </div>
     </div>
     <div>
       <h2><span class="compare-user-theirs compare-user-label js-with-username">{{ withUsername | displayName }}</span>'s Top Artists</h2>
-      <div class="track-list" id="theirTopArtistsList">
+      <div class="track-list htmx-fade-target compare-sortable-list" id="theirTopArtistsList">
         <p class="loading">Loading…</p>
       </div>
     </div>
@@ -209,29 +310,28 @@
   <section class="compare-columns">
     <div>
       <h2><span class="compare-user-mine compare-user-label js-my-username">{{ username | displayName }}</span>'s Top Albums</h2>
-      <div class="track-list" id="myTopAlbumsList">
+      <div class="track-list htmx-fade-target compare-sortable-list" id="myTopAlbumsList">
         <p class="loading">Loading…</p>
       </div>
     </div>
     <div>
       <h2><span class="compare-user-theirs compare-user-label js-with-username">{{ withUsername | displayName }}</span>'s Top Albums</h2>
-      <div class="track-list" id="theirTopAlbumsList">
+      <div class="track-list htmx-fade-target compare-sortable-list" id="theirTopAlbumsList">
         <p class="loading">Loading…</p>
       </div>
     </div>
   </section>
 </div>
 
-<!-- Server-rendered comparison trend + default limit for the Compare client
-     logic in static/js/compare.js. JSON data island (not executable script)
-     parsed via document.getElementById('compare-bootstrap').textContent.
-     No comparisonTrend here anymore - the shell renders before that query
-     runs; compare.js's initial ajax load fills it in (see loadCompareData). -->
-<script type="application/json" id="compare-bootstrap">
-{{ {
-  "limitDefault": limitOptions[0]
-} | tojson }}
-</script>
+<!-- The trend chart's data. A JSON data island (not executable script) rather
+     than markup, because htmx swaps HTML and this is numbers: the refresh
+     replaces this whole element out-of-band and compare.js repaints the canvas
+     from it. Empty until the first swap lands - the shell renders before the
+     trend query runs (see routes/compare.py). -->
+<script type="application/json" id="compareTrendData">{{ comparisonTrend | tojson }}</script>
+<script src="{{ url_for('static', filename='js/vendor/htmx.min.js') }}"></script>
+{# htmx-filters.js first: compare.js reads HtmxFilters at load time #}
+<script src="{{ url_for('static', filename='js/htmx-filters.js') }}"></script>
 <script src="{{ url_for('static', filename='js/compare.js') }}"></script>
 <script src="{{ url_for('static', filename='js/chart-utils.js') }}"></script>
 <script src="{{ url_for('static', filename='js/charts.js') }}"></script>

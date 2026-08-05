@@ -73,7 +73,9 @@ class TestAjaxRequestsGet401(UnauthenticatedAjaxTestCase):
         self.assertNotIn("next=%2F%3F&", resp.get_json()["loginUrl"] + "&")
 
     def test_a_non_true_ajax_value_still_counts_as_ajax(self):
-        """detail-history uses ?ajax=list, not ?ajax=true."""
+        """The marker is the presence of ?ajax=, not its value: the branch has
+        to keep answering a spelling no page uses today, because the page that
+        introduces one tomorrow would otherwise get the 302 silently."""
         resp = self.client.get("/song/t1?ajax=list")
 
         self.assertEqual(resp.status_code, 401)

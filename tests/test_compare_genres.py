@@ -1,6 +1,10 @@
 """The genre comparison block on /compare: per-side top genres + shared
-genres, rendered only when BOTH users pass the unlock gate."""
-import json
+genres, rendered only when BOTH users pass the unlock gate.
+
+Read through the same seam as tests/test_compare_route.py: the block arrives in
+the htmx refresh's one HTML fragment, and _compare_fragment slices #compareGenres
+back out of it under the key the old JSON payload used.
+"""
 import unittest
 from unittest.mock import patch, MagicMock
 
@@ -10,6 +14,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 from app import SpotifyDashboardApp, COMPARE_GENRE_POOL_SIZE
 from _app_factory import AppTestCase
+from _compare_fragment import fetchComparison
 from test_charts_genres import coverageDict
 
 _SECRET_KEY_PATCH = 'app.SpotifyDashboardApp._get_or_create_secret_key'
@@ -71,10 +76,9 @@ class CompareGenresTestCase(AppTestCase):
 
     def test_unstubbed_dbs_render_the_locked_block(self):
         client = self._loginAs("alice")
-        resp = client.get("/compare?ajax=true")
-        payload = json.loads(resp.data)
+        resp, data = fetchComparison(client, "/compare")
         self.assertEqual(resp.status_code, 200)
-        self.assertIn("Genre comparison unlocks", payload["genresHtml"])
+        self.assertIn("Genre comparison unlocks", data["genresHtml"])
         self.dbs["alice"].getGenreDistribution.assert_not_called()
         self.dbs["bob"].getGenreDistribution.assert_not_called()
 
@@ -83,19 +87,19 @@ class CompareGenresTestCase(AppTestCase):
                                              distribution={"rock": 1})
         client = self._loginAs("alice")
 
-        resp = client.get("/compare?ajax=true")
+        _, data = fetchComparison(client, "/compare")
 
-        self.assertIn("Genre comparison unlocks", json.loads(resp.data)["genresHtml"])
+        self.assertIn("Genre comparison unlocks", data["genresHtml"])
         self.dbs["alice"].getGenreDistribution.assert_not_called()   #< no point querying one side
 
     def test_unlocked_shows_both_sides_and_the_shared_intersection(self):
         self._unlockBoth()
         client = self._loginAs("alice")
 
-        resp = client.get("/compare?ajax=true")
+        resp, data = fetchComparison(client, "/compare")
 
         self.assertEqual(resp.status_code, 200)
-        body = json.loads(resp.data)["genresHtml"]
+        body = data["genresHtml"]
         self.assertNotIn("Genre comparison unlocks", body)
         for genre in ("rock", "shoegaze", "jazz", "techno"):
             self.assertIn(genre, body)
@@ -113,11 +117,10 @@ class CompareGenresTestCase(AppTestCase):
         self._unlockBoth()
         client = self._loginAs("alice")
 
-        resp = client.get("/compare?ajax=true")
+        _, data = fetchComparison(client, "/compare")
 
-        payload = json.loads(resp.data)
-        self.assertIn("genresHtml", payload)
-        self.assertIn("shoegaze", payload["genresHtml"])
+        self.assertIsNotNone(data["genresHtml"])
+        self.assertIn("shoegaze", data["genresHtml"])
 
     def test_taste_match_includes_genre_overlap_when_gate_passes_both_sides(self):
         """Genres fold into taste match like any other category (see
@@ -137,9 +140,9 @@ class CompareGenresTestCase(AppTestCase):
             distribution={"rock": 90, "jazz": 40, "blues": 5})
         client = self._loginAs("alice")
 
-        resp = client.get("/compare?ajax=true")
+        _, data = fetchComparison(client, "/compare")
 
-        self.assertEqual(json.loads(resp.data)["tasteMatch"], 85)
+        self.assertEqual(data["tasteMatch"], 85)
 
     def test_taste_match_excludes_genre_when_gate_fails_for_either_side(self):
         """Same genre pools as the unlocked test above, but alice's coverage
@@ -154,9 +157,9 @@ class CompareGenresTestCase(AppTestCase):
             distribution={"rock": 90, "jazz": 40, "blues": 5})
         client = self._loginAs("alice")
 
-        resp = client.get("/compare?ajax=true")
+        _, data = fetchComparison(client, "/compare")
 
-        self.assertIsNone(json.loads(resp.data)["tasteMatch"])
+        self.assertIsNone(data["tasteMatch"])
         self.dbs["alice"].getGenreDistribution.assert_not_called()
         self.dbs["bob"].getGenreDistribution.assert_not_called()
 
@@ -165,10 +168,10 @@ class CompareGenresTestCase(AppTestCase):
         self.dash.repo.setLastfmGenreBackfillEnabled(False)
         client = self._loginAs("alice")
 
-        resp = client.get("/compare?ajax=true")
+        resp, data = fetchComparison(client, "/compare")
 
         self.assertEqual(resp.status_code, 200)
-        body = json.loads(resp.data)["genresHtml"]
+        body = data["genresHtml"]
         self.assertNotIn("Genre comparison unlocks", body)
         self.assertNotIn("You both listen to", body)
         self.dbs["alice"].getGenreCoverage.assert_not_called()
@@ -179,11 +182,10 @@ class CompareGenresTestCase(AppTestCase):
         self.dash.repo.setLastfmGenreBackfillEnabled(False)
         client = self._loginAs("alice")
 
-        resp = client.get("/compare?ajax=true")
+        _, data = fetchComparison(client, "/compare")
 
-        payload = json.loads(resp.data)
-        self.assertNotIn("shoegaze", payload["genresHtml"])
-        self.assertNotIn("Genre comparison unlocks", payload["genresHtml"])
+        self.assertNotIn("shoegaze", data["genresHtml"])
+        self.assertNotIn("Genre comparison unlocks", data["genresHtml"])
 
 
 if __name__ == "__main__":

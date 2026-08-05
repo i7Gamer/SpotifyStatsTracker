@@ -1,13 +1,13 @@
 {#- SPDX-FileCopyrightText: 2026 i7Gamer
     SPDX-License-Identifier: AGPL-3.0-or-later -#}
 
-{# The AJAX-swapped results for the Top Songs/Artists/Albums pages: the
+{# The swapped results for the Top Songs/Artists/Albums pages: the
    filter-scoped stat header, the list itself, and the pagination strip. The
    shell (top_*.html) renders only the filter card + an empty #topListResults
-   placeholder; routes/charts.py returns this partial as JSON for ?ajax=true,
-   and static/js/top-list.js swaps it in on first paint and every filter/page
-   change. `statCards` is a list of {label, value}; `section` selects the card
-   type in _track_card.html. #}
+   placeholder; routes/charts.py returns this partial for an HX-Request, and
+   htmx swaps it in on first paint and every filter/page change. `statCards` is
+   a list of {label, value}; `section` selects the card type in
+   _track_card.html. #}
 <section class="track-summary-grid-3">
   {% for card in statCards %}
   <article class="track-summary-card">
@@ -28,4 +28,15 @@
   {% endif %}
 </section>
 
-{% include '_pagination.html' %}
+{# hx-boost turns the Prev/Next and page-number links below into in-place swaps,
+   replacing the delegated click listener top-list.js used to carry. Scoped to
+   this wrapper rather than set on #topListResults: boosting the whole container
+   would also capture every track/artist/album link in the list above and swap a
+   detail PAGE into the results area instead of navigating to it. Target, sync
+   and replace-url are inherited from #topListResults, so _pagination.html -
+   shared with pages that are not on htmx - needs no changes. The "Go to page"
+   input in it is not a link and so is not boosted; it keeps going through the
+   shared handleJumpToPageKeydown hook (see top-list.js). #}
+<div hx-boost="true">
+  {% include '_pagination.html' %}
+</div>

@@ -4,8 +4,9 @@
 {% extends "layout.html" %}
 {% block title %}{{ artist.get('name', '') }} - {{ super() }}{% endblock %}
 {% block content %}
-  {# Shell of a two-phase load - see song_detail.html's comment; the body is
-     _artist_detail_body.html, fetched via ?ajax=page. #}
+  {# Shell of a two-phase load - see song_detail.html's comment for the htmx
+     wiring and for why one of the three second requests is still a fetch(); the
+     body is _artist_detail_body.html. #}
   <section class="hero">
     <div class="hero-content">
       <h1>{{ artist.get('name', '') }}</h1>
@@ -47,8 +48,20 @@
   {% include '_tag_widget.html' %}
   {% endif %}
 
-  <div id="detailBody">{% include '_detail_skeleton.html' %}</div>
+  {# The swap target - see song_detail.html for what each attribute is doing. #}
+  <div id="detailBody"
+       hx-target="#detailBody"
+       hx-swap="innerHTML"
+       hx-sync="#detailBody:replace">
+    <section hx-get="{{ bodyUrl }}" hx-trigger="load">
+      {% include '_detail_skeleton.html' %}
+    </section>
+  </div>
 
+  <script src="{{ url_for('static', filename='js/vendor/htmx.min.js') }}"></script>
+  {# The boosted-link modifier fix - see song_detail.html for why it is not
+     optional on a page with an hx-boost. #}
+  <script src="{{ url_for('static', filename='js/htmx-filters.js') }}"></script>
   <script src="{{ url_for('static', filename='js/back-button.js') }}"></script>
   <script>
     window.__chartData = {};

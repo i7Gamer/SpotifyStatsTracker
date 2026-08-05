@@ -4,6 +4,23 @@
 {% extends "layout.html" %}
 {% block title %}Charts - {{ super() }}{% endblock %}
 {% block content %}
+  {# Two-phase load like /history and the Top pages: this GET is the filter card
+     plus an empty placeholder, and the whole chart card arrives in a second
+     request right after first paint, and again on every filter change.
+
+     htmx drives that second request, so the marker is its HX-Request header
+     rather than the ?ajax=true this page used to send - which also keeps the
+     marker out of the URL bar, since hx-replace-url writes the requested URL
+     back to the address bar. What each attribute replaces is noted at its use
+     site; see templates/history.html for the same wiring with fuller
+     commentary, and static/js/charts-page.js's header for the whole mapping.
+
+     One constraint worth knowing before extending this: config.py's
+     Content-Security-Policy grants 'unsafe-eval' to the detail pages ONLY (see
+     DETAIL_PAGE_CSP), and every htmx feature that takes a JS expression -
+     hx-trigger event filters `[expr]`, `hx-vals="js:..."`, `hx-on:` handlers -
+     compiles it with the Function constructor. Those are all unavailable here
+     and fail at runtime, not at render time. Plain attributes only. #}
   <section class="hero">
     <div class="hero-content">
       <h1>Charts</h1>
@@ -11,9 +28,26 @@
     </div>
   </section>
 
-  {# method/action kept for the <noscript> fallback; with JS the controls fire
-     the AJAX filter handlers in charts-page.js and never submit this form. #}
-  <form class="filter-section" method="get" action="{{ url_for('chartsPage') }}">
+  {# hx-get + hx-trigger replace updateChartsFilters/updateChartsDateFilter's
+     URLSearchParams surgery: htmx serializes this form's own inputs, so "which
+     params does a filter change set vs delete" is now just which inputs exist
+     and which are disabled.
+
+     hx-replace-url is the load-bearing one: a filter change must REPLACE the
+     URL, never push, so Back leaves the page instead of walking back through
+     every range the user tried. hx-sync ...:replace is the AbortController
+     bookkeeping - a newer request aborts the one in flight, so a slow early
+     response can't land on top of a later one.
+
+     method/action are kept for the <noscript> note below. #}
+  <form class="filter-section" id="chartsFilters" method="get" action="{{ url_for('chartsPage') }}"
+        hx-get="{{ url_for('chartsPage') }}"
+        hx-target="#chartsCard"
+        hx-swap="innerHTML"
+        hx-trigger="change"
+        hx-sync="#chartsCard:replace"
+        hx-indicator="#chartsCard"
+        hx-replace-url="true">
     <div class="filter-group">
       <label for="interval">Time Period:</label>
       <select id="interval" name="interval" onchange="updateChartsIntervalFilter()">
@@ -28,17 +62,32 @@
       </select>
     </div>
 
+    {# `disabled`, not merely hidden: a disabled control is not serialized, which
+       is what keeps a stale custom range out of the request - and so out of the
+       URL - after switching back to a named interval. That is what
+       updateChartsFilters' params.delete('startDate') used to do by hand;
+       updateChartsIntervalFilter keeps the flag in step.
+
+       No onchange here either: the form's `change` trigger catches these, and
+       the "is this range worth a request" check that used to live in
+       updateChartsDateFilter is now the shared htmx:configRequest veto. #}
     <div class="filter-group custom-dates" id="chartsCustomDates" {% if interval != 'custom' %}style="display: none;"{% endif %}>
       <label for="startDate">From:</label>
-      <input type="date" id="startDate" name="startDate" value="{{ customStart }}" onchange="scheduleSearchFilter('startDate', updateChartsDateFilter)">
+      <input type="date" id="startDate" name="startDate" value="{{ customStart }}"
+             {% if interval != 'custom' %}disabled{% endif %}>
       <label for="endDate">To:</label>
-      <input type="date" id="endDate" name="endDate" value="{{ customEnd }}" onchange="scheduleSearchFilter('endDate', updateChartsDateFilter)">
+      <input type="date" id="endDate" name="endDate" value="{{ customEnd }}"
+             {% if interval != 'custom' %}disabled{% endif %}>
       <span id="dateError" class="date-error"></span>
     </div>
 
+    {# Hidden rather than disabled for a single-day range: the bucket genuinely
+       does not apply there (the route forces hour buckets), but the value has
+       to survive switching back to a multi-day range, and a disabled control
+       would drop out of the URL and reset the choice to Auto. #}
     <div class="filter-group" id="groupByContainer" {% if interval in ['today', 'day'] %}style="display: none;"{% endif %}>
       <label for="groupBy">Trend buckets:</label>
-      <select id="groupBy" name="groupBy" onchange="updateChartsFilters()">
+      <select id="groupBy" name="groupBy">
         <option value="" {% if not groupBy %}selected{% endif %}>Auto</option>
         <option value="day" {% if groupBy == 'day' %}selected{% endif %}>Day</option>
         <option value="week" {% if groupBy == 'week' %}selected{% endif %}>Week</option>
@@ -46,108 +95,49 @@
       </select>
     </div>
 
-    {# This page renders a SHELL on a plain GET and fetches its body via
-       ?ajax=true, so submitting this form reloaded to a permanent
-       "Loading..." - the Apply button that used to sit here could not work
-       by construction. Say what is actually wrong instead. #}
+    {# This page renders a SHELL on a plain GET and fetches its card in a second
+       request, so submitting this form reloaded to a permanent "Loading..." -
+       the Apply button that used to sit here could not work by construction.
+       Say what is actually wrong instead. #}
     <noscript>
       <p class="dashboard-card-empty">This page needs JavaScript to load its data.
       With it enabled the filters above apply as you change them.</p>
     </noscript>
   </form>
 
-  <section class="card chart-card" id="chartsCard">
-    <div class="chart-section">
-      <h2>Listening Time &middot; <span id="chartsTimeSeriesLabel">{{ intervalLabel }}{% if lastDayDate %} ({{ lastDayDate }}){% endif %}</span></h2>
-      <div class="chart-canvas-wrap">
-        <canvas id="timeSeriesChart" role="img" aria-label="Listening time over the selected period"></canvas>
-      </div>
+  {# The swap target. htmx-fade-target + hx-indicator dim it for exactly the
+     life of a request, which is what fadeTargets()'s add/remove bookkeeping
+     (and its abort-path cleanup) did by hand - and it dims the whole card
+     rather than just the canvas wraps, because the headings now change with the
+     range too. #}
+  <section class="card chart-card htmx-fade-target" id="chartsCard">
+    {# The first load. Living on the placeholder rather than on the container
+       means it fires once and is then swapped away, so there is no separate
+       "have we loaded yet" state to keep.
+
+       resultsUrl is built by the route from the VALIDATED filter values, not
+       echoed from request.full_path - reflecting the raw query string would put
+       a junk ?interval=bogus back into the markup. hx-replace-url is off for
+       this one request only: it asks for the canonical form of the URL the
+       browser is already showing, and rewriting the address bar on first paint
+       would be a silent redirect. #}
+    <div class="chart-section"
+         hx-get="{{ resultsUrl }}"
+         hx-trigger="load"
+         hx-replace-url="false">
+      <p class="loading">Loading…</p>
     </div>
-
-    <div class="chart-section">
-      <h2>When You Listen</h2>
-      <p class="chart-subtitle">Total listening time by day of week and hour of day.</p>
-      <div class="chart-canvas-wrap heatmap-wrap">
-        <canvas id="heatmapChart" role="img" aria-label="When you listen, by day of week and hour of day"></canvas>
-      </div>
-    </div>
-
-    {# Hidden until the payload confirms a multi-bucket range: single-day views
-       carry no artist trend, so charts-page.js re-hides it then. #}
-    <div class="chart-section" id="chartsArtistTrendSection" {% if isSingleDayView %}style="display: none;"{% endif %}>
-      <h2>Top Artists &middot; <span id="chartsArtistTrendLabel">{{ intervalLabel }}</span></h2>
-      <div class="chart-canvas-wrap">
-        <canvas id="artistTrendChart" role="img" aria-label="Top artists' plays over time"></canvas>
-      </div>
-      <div id="artistTrendLegend" class="chart-legend"></div>
-    </div>
-
-    <div class="chart-section-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 2rem; margin-top: 2rem;">
-      <div class="chart-section">
-        <h2>Explicit vs Clean Content</h2>
-        <div class="chart-canvas-wrap" style="height: 250px;">
-          <canvas id="explicitChart" role="img" aria-label="Explicit versus clean plays"></canvas>
-        </div>
-      </div>
-
-      <div class="chart-section">
-        <h2>Completion vs Skips</h2>
-        <div class="chart-canvas-wrap" style="height: 250px;">
-          <canvas id="completionChart" role="img" aria-label="Completed, partial, and skipped plays"></canvas>
-        </div>
-      </div>
-    </div>
-
-    {# "Completion vs Skips" above answers how OFTEN you skip; these answer
-       WHAT you skip. Which entries make the cut is decided by skip rate shrunk
-       toward this listener's own average, so a track skipped once and never
-       played can't take a slot from one with real volume behind it (see
-       Repository.getMostSkippedTracks); the entries that do make it are then
-       ordered by the true percentage their bars show. Both lists are hidden
-       when nothing was skipped at all, the normal state for a new library. #}
-    <div class="chart-section-grid" id="mostSkippedGrid"
-         style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 2rem; margin-top: 2rem;">
-      <div class="chart-section">
-        <h2>Most Skipped Songs</h2>
-        <div class="chart-canvas-wrap">
-          <canvas id="mostSkippedSongsChart" role="img" aria-label="Songs you skip most often, by share of encounters"></canvas>
-        </div>
-      </div>
-
-      <div class="chart-section">
-        <h2>Most Skipped Artists</h2>
-        <div class="chart-canvas-wrap">
-          <canvas id="mostSkippedArtistsChart" role="img" aria-label="Artists you skip most often, by share of encounters"></canvas>
-        </div>
-      </div>
-    </div>
-
-    <div class="chart-section" style="margin-top: 2rem;">
-      <h2>Release Era Distribution</h2>
-      <div class="chart-canvas-wrap" style="height: 300px;">
-        <canvas id="decadeChart" role="img" aria-label="Plays by release decade"></canvas>
-      </div>
-    </div>
-
-    {% if lastfmEnabled %}
-    <div class="chart-section" style="margin-top: 2rem;">
-      <h2>Top Genres</h2>
-      {# Filled by the /charts?ajax=true payload (genreSectionHtml) - its
-         locked/unlocked structure is range-scoped, so it ships as HTML. #}
-      <div id="chartsGenreSection"><p class="loading">Loading…</p></div>
-    </div>
-    {% endif %}
   </section>
 
   {# charts.js is shared with /compare, where it renders inline at load. Here
-     the data is fetched after first paint instead, so tell charts.js to skip
-     its own initial render - charts-page.js drives it once the payload lands. #}
+     the data arrives with the card instead, so tell charts.js to skip its own
+     initial render - charts-page.js drives it after each swap. #}
   <script>
     window.__deferInitialChartRender = true;
-    // Profile default window - the popstate fallback interval for a bare URL
-    // (no ?interval), so Back to it re-selects what the server would resolve.
-    window.__chartsDefaultInterval = {{ defaultWindow | tojson }};
   </script>
+  <script src="{{ url_for('static', filename='js/vendor/htmx.min.js') }}"></script>
+  {# htmx-filters.js first: charts-page.js reads HtmxFilters at load time #}
+  <script src="{{ url_for('static', filename='js/htmx-filters.js') }}"></script>
   <script src="{{ url_for('static', filename='js/chart-utils.js') }}"></script>
   <script src="{{ url_for('static', filename='js/charts.js') }}"></script>
   <script src="{{ url_for('static', filename='js/charts-page.js') }}"></script>

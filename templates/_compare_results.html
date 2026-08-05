@@ -1,0 +1,62 @@
+{#- SPDX-FileCopyrightText: 2026 i7Gamer
+    SPDX-License-Identifier: AGPL-3.0-or-later -#}
+
+{# The full comparison, in one response, distributed over the shell's regions by
+   out-of-band swaps (see templates/compare.html for the request side).
+
+   Unlike /history or the Top lists there is no single swap target here: a
+   filter change moves the stats table, the similarity cards, the genre block,
+   three Top Common lists, six per-user lists, the taste match, the counterpart
+   name wherever it appears, and the trend chart's data. So the shell asks for
+   hx-swap="none" and every region below names itself instead - which is exactly
+   what the innerHTML assignments in compare.js's loadCompareData used to do,
+   minus the map that had to stay in step with the route by hand.
+
+   Worth knowing about hx-swap-oob before adding a region: htmx errors loudly on
+   an oob element whose target is missing, but says NOTHING about a target with
+   no oob element - it just keeps its stale content under a URL that already
+   changed to say otherwise. tests/test_compare_htmx.py pins the pairing.
+
+   Every element here is a TOP-LEVEL element of the fragment on purpose. htmx
+   does look inside nested ones, but only while htmx.config.allowNestedOobSwaps
+   is on, and this page's correctness should not be a config setting. #}
+{% include '_compare_sortable_lists.html' %}
+
+{# The name the counterpart goes by appears in the hero and above each of their
+   three columns. None of those is a swap target of its own, so one element
+   addresses the lot by class - the querySelectorAll('.js-with-username') loop
+   compare.js used to run. #}
+<span hx-swap-oob="innerHTML:.js-with-username">{{ withUsername | displayName }}</span>
+
+{# The identity behind that label, hidden in the filter form so a filter change
+   after switching counterpart keeps comparing with the same person instead of
+   snapping back to the first accepted share. #}
+<input type="hidden" name="with" id="compareWithField" value="{{ withUsername }}" hx-swap-oob="outerHTML">
+
+{% if acceptedUsernames | length > 1 %}
+  {% with oob = true %}{% include '_compare_user_badges.html' %}{% endwith %}
+{% endif %}
+
+{% with oob = true %}{% include '_compare_taste_match.html' %}{% endwith %}
+
+<div id="compareStatsTable" hx-swap-oob="innerHTML">{% include '_compare_stats_table.html' %}</div>
+<div id="compareSimilarities" hx-swap-oob="innerHTML">{% include '_compare_similarities.html' %}</div>
+<div id="compareGenres" hx-swap-oob="innerHTML">{% include '_compare_genres.html' %}</div>
+
+{# Top Common Songs/Artists/Albums. Ranked by _buildSharedItems' own
+   shared-rank-weighted score, so unlike the six lists above they never read
+   sortBy - which is why they are here and not in _compare_sortable_lists.html. #}
+{% for listId, sharedItems, listSection, listEmptyMessage in [
+     ('sharedSongsList', sharedSongs, 'top_songs', 'No shared top songs in this period yet.'),
+     ('sharedArtistsList', sharedArtists, 'top_artists', 'No shared top artists in this period yet.'),
+     ('sharedAlbumsList', sharedAlbums, 'top_albums', 'No shared top albums in this period yet.')] %}
+<div id="{{ listId }}" hx-swap-oob="innerHTML">
+  {% with items = sharedItems, section = listSection, emptyMessage = listEmptyMessage %}{% include '_wrapped_list.html' %}{% endwith %}
+</div>
+{% endfor %}
+
+{# The trend is DATA, and htmx swaps HTML - so it rides along as a JSON island
+   and compare.js repaints the canvas from it in an htmx:afterSwap listener.
+   That listener is the one thing htmx cannot own here: it has no idea a canvas
+   exists, let alone that it has to be drawn. #}
+<script type="application/json" id="compareTrendData" hx-swap-oob="outerHTML">{{ comparisonTrend | tojson }}</script>

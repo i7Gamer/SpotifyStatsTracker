@@ -1,8 +1,8 @@
 """The live-computed Top Genres card on /wrapped: gated by year-scoped
-coverage, present in the ajax payload, and never read from the user_wrapped
-cache (backfill progresses continuously and the admin toggle would stale it)."""
+coverage, present in the htmx swap fragment, and never read from the
+user_wrapped cache (backfill progresses continuously and the admin toggle would
+stale it)."""
 import datetime
-import json
 import unittest
 from unittest.mock import patch, MagicMock
 import sys
@@ -71,14 +71,18 @@ class WrappedGenresTestBase(AppTestCase):
             db.getGenreDistribution.return_value = distribution
         return db
 
-    def _getWrapped(self, dash, db, query=""):
+    def _getWrapped(self, dash, db, query="", headers=None):
         client = dash.app.test_client()
         with patch.object(dash, 'is_user_logged_in', return_value=True), \
              patch.object(dash, 'get_username_for_email', return_value='alice'), \
              patch.object(dash, 'get_user_db', return_value=db):
             with client.session_transaction() as sess:
                 sess['email'] = 'alice@example.com'
-            return client.get(f"/wrapped{query}")
+            return client.get(f"/wrapped{query}", headers=headers or {})
+
+    def _getWrappedFragment(self, dash, db, query=""):
+        """The htmx swap: an HTML fragment, not the old ?ajax=true JSON."""
+        return self._getWrapped(dash, db, query, headers={"HX-Request": "true"})
 
 
 class TestWrappedGenreCard(WrappedGenresTestBase):
@@ -123,36 +127,32 @@ class TestWrappedGenreCard(WrappedGenresTestBase):
         _, distKwargs = db.getGenreDistribution.call_args
         self.assertEqual(distKwargs["startDate"].year, 2025)
 
-    def test_ajax_all_payload_carries_the_genre_card_html(self):
+    def test_the_htmx_fragment_carries_the_genre_card(self):
         dash = self._makeApp()
         db = self._makeDb(coverage=coverageDict(80, 60, 90),
                           distribution={"dream pop": 42})
 
-        resp = self._getWrapped(dash, db, query="?ajax=true&type=all")
+        body = self._getWrappedFragment(dash, db).get_data(as_text=True)
 
-        payload = json.loads(resp.data)
-        self.assertIn("topGenresHtml", payload)
-        self.assertIn("dream pop", payload["topGenresHtml"])
+        self.assertIn('id="wrappedGenresCard"', body)
+        self.assertIn("dream pop", body)
 
-    def test_ajax_lists_payload_skips_the_genre_card(self):
-        dash = self._makeApp()
-        db = self._makeDb(coverage=coverageDict(80, 60, 90), distribution={"rock": 1})
-        resp = self._getWrapped(dash, db, query="?ajax=true&type=lists")
-        payload = json.loads(resp.data)
-        self.assertNotIn("topGenresHtml", payload)
-
-    def test_ajax_chart_and_lists_requests_never_run_the_genre_queries(self):
-        """type=chart/type=lists responses don't include the genre card, so
-        the (year-wide) coverage and distribution aggregations must not run
-        for them - they'd be computed and discarded on every filter click."""
+    def test_every_swap_recomputes_the_genre_card(self):
+        """The ?ajax=true layer had three update shapes (all/chart/lists) and
+        only the widest one computed genres, so a trend-bucket tweak skipped
+        the two year-wide aggregations. htmx swaps ONE fragment - the whole
+        recap - so they run on every filter change now. That is a deliberate
+        trade: one response shape instead of three, at the cost of a coverage
+        and a distribution query per click. If it ever shows up on a large
+        library, the lever is caching coverage per (user, year), not
+        reintroducing partial responses."""
         dash = self._makeApp()
         db = self._makeDb(coverage=coverageDict(80, 60, 90), distribution={"rock": 1})
 
-        self._getWrapped(dash, db, query="?ajax=true&type=chart")
-        self._getWrapped(dash, db, query="?ajax=true&type=lists")
+        self._getWrappedFragment(dash, db, query="?groupBy=month")
 
-        db.getGenreCoverage.assert_not_called()
-        db.getGenreDistribution.assert_not_called()
+        db.getGenreCoverage.assert_called_once()
+        db.getGenreDistribution.assert_called_once()
 
     def test_cached_wrapped_path_still_computes_genres_live(self):
         """The genre card must never come from the user_wrapped cache - even
@@ -181,15 +181,17 @@ class TestWrappedGenreCard(WrappedGenresTestBase):
         db.getGenreCoverage.assert_not_called()
         db.getGenreDistribution.assert_not_called()
 
-    def test_disabled_ajax_all_payload_has_no_genre_section(self):
+    def test_disabled_htmx_fragment_has_no_genre_section(self):
         dash = self._makeApp()
         dash.repo.setLastfmGenreBackfillEnabled(False)
         db = self._makeDb(coverage=coverageDict(80, 60, 90), distribution={"rock": 1})
 
-        resp = self._getWrapped(dash, db, query="?ajax=true&type=all")
+        body = self._getWrappedFragment(dash, db).get_data(as_text=True)
 
-        payload = json.loads(resp.data)
-        self.assertNotIn("Top Genres", payload["topGenresHtml"])
+        #< the card's container still swaps in (it is part of the recap), but
+        #  _wrapped_genres.html renders nothing into it
+        self.assertIn('id="wrappedGenresCard"', body)
+        self.assertNotIn("Top Genres", body)
 
 
 if __name__ == "__main__":

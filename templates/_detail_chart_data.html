@@ -1,0 +1,22 @@
+{#- SPDX-FileCopyrightText: 2026 i7Gamer
+    SPDX-License-Identifier: AGPL-3.0-or-later -#}
+
+{# The detail pages' chart series, travelling INSIDE the deferred body.
+
+   The body used to be delivered as {"bodyHtml": ..., "timeSeries": ...,
+   "heatmap": ...} - HTML and data in one envelope. htmx swaps a response BODY,
+   so the markup has to be the response, and the two series that feed the
+   canvases come along as a data island the swap deposits in the DOM.
+
+   type="application/json" is what makes this a value rather than code: htmx
+   re-executes swapped-in <script> tags, but only ones it recognises as
+   JavaScript, so this is left alone as a plain node for
+   static/js/detail-page.js's htmx:afterSwap handler to read. It is also what
+   keeps this out of the inline-logic gate (tests/test_inline_script_extraction.py):
+   the rule there is that a template <script> may compute nothing, and this
+   computes nothing.
+
+   `heatmap` is absent on artist/album, whose pages have no such canvas -
+   renderAllCharts skips a canvas that isn't there, so the key must stay missing
+   rather than arrive as an empty series. #}
+<script type="application/json" id="detailChartData">{{ chartData | tojson }}</script>

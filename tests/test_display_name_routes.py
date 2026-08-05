@@ -17,6 +17,7 @@ from unittest.mock import patch, MagicMock
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from _app_factory import AppTestCase
+from _compare_fragment import fetchComparison
 
 
 def _song(trackId, name, **extra):
@@ -323,7 +324,7 @@ class TestNamesAreShownNotAddressedBy(AppTestCase):
         return client
 
     def _payload(self, client):
-        data = client.get("/compare?with=bob&ajax=true").get_json()
+        _, data = fetchComparison(client, "/compare?with=bob")
         html = "".join(data.get(key) or "" for key in (
             "statsTableHtml", "genresHtml", "myTopSongsHtml", "theirTopSongsHtml"))
         return data, html

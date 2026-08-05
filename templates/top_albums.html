@@ -13,9 +13,6 @@
   </section>
   {% include '_page_card.html' %}
 
-  <div id="topListResults">
-    <section class="track-list"><p class="loading">Loading…</p></section>
-  </div>
+  {% include '_top_list_container.html' %}
 
-  <script src="{{ url_for('static', filename='js/top-list.js') }}"></script>
 {% endblock %}

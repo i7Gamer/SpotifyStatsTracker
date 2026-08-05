@@ -13,6 +13,11 @@ from app import SpotifyDashboardApp  # noqa: F401
 from _app_factory import AppTestCase
 from conftest import makeDashboardDbMock
 
+#< what htmx puts on every request it makes; the dashboard's filter swap is
+#  marked by this rather than by ?ajax=true, so the marker never lands in the
+#  URL bar (hx-replace-url writes the requested URL back to the address bar)
+HX_HEADERS = {"HX-Request": "true"}
+
 
 def coverageDict(song, album, artist, total=1000):
     def category(percent):
@@ -68,14 +73,14 @@ class _DashboardHelpers:
         }
         return db
 
-    def _get(self, dash, db, path="/"):
+    def _get(self, dash, db, path="/", headers=None):
         client = dash.app.test_client()
         with patch.object(dash, 'is_user_logged_in', return_value=True), \
              patch.object(dash, 'get_username_for_email', return_value='alice'), \
              patch.object(dash, 'get_user_db', return_value=db):
             with client.session_transaction() as sess:
                 sess['email'] = 'alice@example.com'
-            return client.get(path)
+            return client.get(path, headers=headers)
 
 
 class DashboardCardsTestCase(_DashboardHelpers, AppTestCase):
@@ -274,12 +279,13 @@ class DashboardCardsTestCase(_DashboardHelpers, AppTestCase):
         db.getGenreCoverage.assert_not_called()
 
     def test_discover_api_locked_when_coverage_low(self):
+        """The endpoint answers with the card's markup now, so the `unlocked`
+        flag the client used to branch on is the branch the server took."""
         dash = self._makeApp()
         db = self._makeDb(coverage=coverageDict(10, 10, 10))
-        resp = self._get(dash, db, path="/api/dashboard-discover")
-        data = resp.get_json()
-        self.assertFalse(data["unlocked"])
-        self.assertEqual(data["recommendations"], [])
+        body = self._get(dash, db, path="/api/dashboard-discover").get_data(as_text=True)
+        self.assertIn("Unlock artist recommendations", body)
+        self.assertNotIn("discover-row", body)
         db.getRecommendedArtists.assert_not_called()
 
     def test_discover_api_returns_recommendations_when_unlocked(self):
@@ -288,10 +294,10 @@ class DashboardCardsTestCase(_DashboardHelpers, AppTestCase):
                           recommendations=[{"id": "art1", "name": "Fresh Artist",
                                             "imageId": "img1", "playCount": 2,
                                             "sharedGenreCount": 2, "matchedGenres": ["rock", "indie"]}])
-        resp = self._get(dash, db, path="/api/dashboard-discover")
-        data = resp.get_json()
-        self.assertTrue(data["unlocked"])
-        self.assertEqual(data["recommendations"][0]["name"], "Fresh Artist")
+        body = self._get(dash, db, path="/api/dashboard-discover").get_data(as_text=True)
+        self.assertNotIn("Unlock artist recommendations", body)
+        self.assertIn("Fresh Artist", body)
+        self.assertIn('href="/artist/art1"', body)
         db.getRecommendedArtists.assert_called_once()
 
     def test_top_song_title_spans_full_width_above_detail_row(self):
@@ -341,9 +347,8 @@ class DashboardCardsTestCase(_DashboardHelpers, AppTestCase):
         dash = self._makeApp()
         dash.repo.setLastfmGenreBackfillEnabled(False)
         db = self._makeDb(coverage=coverageDict(80, 60, 90))
-        resp = self._get(dash, db, path="/api/dashboard-discover")
-        data = resp.get_json()
-        self.assertFalse(data["unlocked"])
+        body = self._get(dash, db, path="/api/dashboard-discover").get_data(as_text=True)
+        self.assertIn("Unlock artist recommendations", body)
         db.getGenreCoverage.assert_not_called()
 
 
@@ -390,13 +395,12 @@ class DashboardIntervalResolutionTestCase(_DashboardHelpers, AppTestCase):
 
 
 class DashboardAjaxFilterTestCase(_DashboardHelpers, AppTestCase):
-    """The Time Period filter (interval/date range) now updates via ?ajax=true
-    instead of a full page reload - static/js in tracks.html swaps the
-    rendered partial into #dashboardSummary, same fade-and-swap pattern as
-    compare.html/genres.html. Only the four Time-Period-scoped cards
-    (_dashboard_summary.html) are part of that payload - the live cards
+    """The Time Period filter (interval/date range) updates in place rather
+    than reloading the page: htmx swaps the rendered partial into
+    #dashboardSummary. Only the four Time-Period-scoped cards
+    (_dashboard_summary.html) are part of that response - the live cards
     (streak, on this day, discover, calendar) and next-milestones are
-    unfiltered and must not be recomputed on an ajax filter change."""
+    unfiltered and must not be recomputed on a filter change."""
 
     def test_wrapper_div_present_for_the_ajax_swap_target(self):
         dash = self._makeApp()
@@ -404,7 +408,7 @@ class DashboardAjaxFilterTestCase(_DashboardHelpers, AppTestCase):
 
         self.assertIn(b'id="dashboardSummary"', resp.data)
 
-    def test_ajax_returns_a_json_partial_not_a_full_page(self):
+    def test_the_swap_returns_the_partial_not_a_full_page(self):
         dash = self._makeApp()
         db = self._makeDb()
         db.getOverallStats.return_value = {
@@ -413,31 +417,30 @@ class DashboardAjaxFilterTestCase(_DashboardHelpers, AppTestCase):
             "previousSongsPlayed": 0, "previousDurationMs": 0,
         }
 
-        resp = self._get(dash, db, path="/?ajax=true")
+        resp = self._get(dash, db, path="/", headers=HX_HEADERS)
 
         self.assertEqual(resp.status_code, 200)
-        data = resp.get_json()
-        self.assertIn("summaryHtml", data)
-        self.assertIn('<p class="summary-value">42</p>', data["summaryHtml"])
-        self.assertNotIn("<html", data["summaryHtml"].lower())
-        self.assertNotIn("dashboard-live", data["summaryHtml"])   #< the unfiltered panel isn't part of this chunk
+        body = resp.get_data(as_text=True)
+        self.assertIn('<p class="summary-value">42</p>', body)
+        self.assertNotIn("<html", body.lower())
+        self.assertNotIn("dashboard-live", body)   #< the unfiltered panel isn't part of this chunk
 
-    def test_ajax_scopes_stats_by_the_requested_interval(self):
+    def test_the_swap_scopes_stats_by_the_requested_interval(self):
         dash = self._makeApp()
         db = self._makeDb()
 
-        self._get(dash, db, path="/?ajax=true&interval=week")
+        self._get(dash, db, path="/?interval=week", headers=HX_HEADERS)
 
         self.assertEqual(db.getOverallStats.call_count, 1)   #< scoped by the request's own date range
 
-    def test_ajax_skips_the_unfiltered_live_queries(self):
+    def test_the_swap_skips_the_unfiltered_live_queries(self):
         """The interval/date-range filter never affects streak, on-this-day,
-        the listening calendar, or lifetime totals - an ajax filter change
-        must not pay for any of that."""
+        the listening calendar, or lifetime totals - a filter change must not
+        pay for any of that."""
         dash = self._makeApp()
         db = self._makeDb()
 
-        self._get(dash, db, path="/?ajax=true")
+        self._get(dash, db, path="/", headers=HX_HEADERS)
 
         db.getCurrentStreak.assert_not_called()
         db.getOnThisDay.assert_not_called()
@@ -659,13 +662,13 @@ class DashboardMilestonesCardTestCase(_DashboardHelpers, AppTestCase):
 
         self.assertEqual(dash.repo.getMilestonesForUser("alice")[0]["seen"], 0)
 
-    def test_ajax_filter_change_does_not_rebuild_the_cards(self):
+    def test_a_filter_change_does_not_rebuild_the_cards(self):
         """The milestone cards are unfiltered, like the streak and calendar."""
         dash = self._makeApp()
         self._record(dash, seen=False)
         db = self._makeDb()
 
-        self._get(dash, db, path="/?ajax=true")
+        self._get(dash, db, headers=HX_HEADERS)
 
         self.assertEqual(dash.repo.getUnseenMilestoneCount("alice"), 1)
 

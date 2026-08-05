@@ -1,0 +1,43 @@
+{#- SPDX-FileCopyrightText: 2026 i7Gamer
+    SPDX-License-Identifier: AGPL-3.0-or-later -#}
+
+{# The year picker. Only rendered where a year can actually change: the owner's
+   own page, and an "all years" share link. A per-year link is pinned to its one
+   year (see sharedWrappedPage), and its absence here is load-bearing - the
+   fragment leaves the out-of-band copy out for the same reason, since an
+   out-of-band swap with nothing to swap into is an htmx:oobErrorNoTarget.
+
+   hx-boost turns the badges into in-place swaps, which is what the delegated
+   click listener in static/js/wrapped.js used to do by hand: preventDefault,
+   re-read the three selects, rebuild the query string, move the `active` class.
+   All of that is now in the href the server already knows how to build, plus
+   this nav coming back out of band with `active` already on the right badge.
+
+   hx-replace-url is the load-bearing attribute, not an ornament: a boosted link
+   PUSHES by default, and an in-page filter change must replace, so Back leaves
+   the page rather than stepping through every year that was looked at.
+   tests/test_wrapped_htmx.py pins that it stays replace.
+
+   Scoped to this nav rather than set on #wrappedResults: boosting the results
+   container would also capture every track/artist/album link in the lists and
+   swap a detail PAGE into the recap. #}
+{% if not publicView or isMultiYearShare %}
+<nav class="wrapped-year-badges"
+     id="wrappedYearBadges"
+     aria-label="Select year"
+     {% if oobSwap %}hx-swap-oob="true"
+     {% endif %}hx-boost="true"
+     hx-target="#wrappedResults"
+     hx-swap="innerHTML"
+     hx-sync="#wrappedResults:replace"
+     hx-indicator="#wrappedResults"
+     hx-replace-url="true">
+  {#- `groupBy or none` rather than groupBy: Auto is the empty value, and
+      url_for spells that `groupBy=`. The href IS the request now, and
+      hx-replace-url writes it to the address bar, so an empty param here ends
+      up in every link people copy - the hand-written builder dropped it. -#}
+  {% for y in availableYears %}
+    <a class="wrapped-year-badge{{ ' active' if y == year else '' }}" href="{{ url_for('sharedWrappedPage', token=token, year=y, groupBy=groupBy or none, limit=limit, sortBy=sortBy) if publicView else url_for('wrappedPage', year=y, groupBy=groupBy or none, limit=limit, sortBy=sortBy) }}">{{ y }}</a>
+  {% endfor %}
+</nav>
+{% endif %}

@@ -1,0 +1,108 @@
+// SPDX-FileCopyrightText: 2026 i7Gamer
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+// The two pieces of filter logic every htmx-driven list page needs and htmx has
+// no opinion about. Extracted when the Top lists became the second page to want
+// them (after /history) rather than copied - the filter cards on /history,
+// /top-songs, /top-artists and /top-albums are the same control set, and a
+// divergence between two copies of "is this date range worth a request" would
+// show up as one page querying on a half-typed date and another not.
+//
+// DOM-free and exported, so both are unit-tested in plain node
+// (tests/test_htmx_filters.js). The pages wire them to htmx events; nothing here
+// knows what an element is.
+
+// The three states a Time Period selection can be in.
+var RANGE_OK = null;
+var RANGE_INCOMPLETE = 'incomplete';
+var RANGE_INVERTED = 'inverted';
+var RANGE_INVERTED_MESSAGE = 'Start date cannot be after end date.';
+
+function rangeProblem(interval, startDate, endDate) {
+  //< only a custom range can be malformed; a named interval needs no dates
+  if (interval !== 'custom') return RANGE_OK;
+  //< half-entered, which is what every keystroke of typing a date looks like:
+  //  not an error to shout about, but not something to query on either
+  if (!startDate || !endDate) return RANGE_INCOMPLETE;
+  if (new Date(startDate) > new Date(endDate)) return RANGE_INVERTED;
+  return RANGE_OK;
+}
+
+// Drop the params the user has not set. htmx serializes every enabled control in
+// a form, so an untouched search box or tag dropdown would otherwise put
+// `q=&tag=` in the request - and hx-replace-url writes the requested URL back to
+// the address bar, so those empties become part of the link people copy.
+//
+// Takes the parameters object htmx hands to htmx:configRequest, which is a Proxy
+// over a FormData with deleteProperty and ownKeys traps - so ordinary object
+// operations work on it, and a plain object works in the unit test.
+//
+// "Unset" means blank after trimming, which is what BOTH pages' hand-written
+// param code did before htmx (`if (searchQuery.trim())`) - a search box holding
+// only spaces is an untouched search box, and letting it through would put
+// `?q=%20%20` in the address bar and run a LIKE '% %' over the whole history.
+// The value kept is the ORIGINAL, untrimmed one, also matching the old
+// behaviour: leading space inside a real query is the user's to keep.
+//
+// "0" survives, because it is falsy but is a real value - the Top lists'
+// fullOnly opt-out is exactly that, and dropping it would flip the filter back
+// on (an absent fullOnly means the default, which is ON).
+function pruneEmptyParams(parameters) {
+  Object.keys(parameters).forEach(function (key) {
+    var value = parameters[key];
+    if (typeof value === 'string' && value.trim() === '') delete parameters[key];
+  });
+  return parameters;
+}
+
+// A click the BROWSER should handle rather than htmx, because the modifier the
+// user held means "open this somewhere else".
+//
+// htmx's boost exempts ctrl and meta only - the check in the vendored build is
+// `boosted && anchor && click && (ctrlKey || metaKey)`. Every delegated
+// pagination handler hx-boost replaced exempted all FOUR modifiers ("let
+// new-tab clicks pass"), so adopting boost silently swallowed shift-click (new
+// window) and alt-click (download) on every migrated page. This is the missing
+// half, applied once below rather than per page.
+//
+// Only the two htmx misses are listed: ctrl/meta already reach the browser, and
+// naming them here would be dead weight that reads like it is doing something.
+function isNativeModifierClick(evt) {
+  return !!evt && (!!evt.shiftKey || !!evt.altKey);
+}
+
+var HtmxFilters = {
+  rangeProblem: rangeProblem,
+  pruneEmptyParams: pruneEmptyParams,
+  isNativeModifierClick: isNativeModifierClick,
+  RANGE_OK: RANGE_OK,
+  RANGE_INCOMPLETE: RANGE_INCOMPLETE,
+  RANGE_INVERTED: RANGE_INVERTED,
+  RANGE_INVERTED_MESSAGE: RANGE_INVERTED_MESSAGE,
+};
+
+if (typeof window !== 'undefined') {
+  window.HtmxFilters = HtmxFilters;
+}
+
+// Hand shift/alt-clicks on a boosted link back to the browser. Installed here,
+// on the document, in the CAPTURE phase: htmx binds its trigger listener to the
+// boosted anchor itself, so stopping propagation on the way down means that
+// listener never runs and the default navigation proceeds untouched. One
+// listener covers every hx-boost in the app - the pagination strips, the genre
+// chips, the compare badges, the wrapped year badges - so no page has to
+// remember to opt in, which is exactly how the affordance got lost.
+//
+// Deliberately NOT preventDefault/stopImmediatePropagation: the whole point is
+// to let the browser do what it was going to do.
+if (typeof document !== 'undefined') {
+  document.addEventListener('click', function (evt) {
+    if (!isNativeModifierClick(evt)) return;
+    var link = evt.target && evt.target.closest && evt.target.closest('a[href]');
+    if (!link || !link.closest('[hx-boost]')) return;
+    evt.stopPropagation();
+  }, true);
+}
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = HtmxFilters;
+}

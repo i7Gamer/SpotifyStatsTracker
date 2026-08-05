@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 from app import SpotifyDashboardApp, MAX_INLINE_ARTISTS, MIN_HIDDEN_ARTISTS
 from _app_factory import AppTestCase
+from _compare_fragment import fetchComparison
 from _detail_client import DetailPageClientMixin
 
 _SECRET_KEY_PATCH = 'app.SpotifyDashboardApp._get_or_create_secret_key'
@@ -35,7 +36,7 @@ def _artists(count):
 
 class _ArtistOverflowTestBase(DetailPageClientMixin, AppTestCase):
     """The hero renders one artist list and the deferred body another, so
-    `_getPath` (shell + ?ajax=page body - see _detail_client.py) is what puts
+    `_getPath` (shell + the deferred body htmx swaps in - see _detail_client.py) is what puts
     both in front of these assertions."""
 
 
@@ -202,11 +203,10 @@ class TestCompareArtistOverflow(AppTestCase):
     def test_all_three_render_contexts_collapse(self):
         client = self._loginAs("alice")
 
-        resp = client.get("/compare?ajax=true")
+        resp, payload = fetchComparison(client, "/compare")
 
         self.assertEqual(resp.status_code, 200)
-        payload = resp.get_json()
-        # Shared card + my column + their column - the three fragments that
+        # Shared card + my column + their column - the three regions that
         # each render the same track (see the class docstring).
         data = payload["sharedSongsHtml"] + payload["myTopSongsHtml"] + payload["theirTopSongsHtml"]
         self.assertEqual(data.count(TOGGLE_BUTTON), 3)
@@ -214,9 +214,8 @@ class TestCompareArtistOverflow(AppTestCase):
     def test_counterpart_overflow_links_to_spotify_not_detail_pages(self):
         client = self._loginAs("alice")
 
-        resp = client.get("/compare?ajax=true")
+        _, payload = fetchComparison(client, "/compare")
 
-        payload = resp.get_json()
         # Page order: shared Top Common card, then my column, then theirs.
         data = payload["sharedSongsHtml"] + payload["myTopSongsHtml"] + payload["theirTopSongsHtml"]
         overflows = OVERFLOW_SPAN_RE.findall(data)
@@ -228,15 +227,14 @@ class TestCompareArtistOverflow(AppTestCase):
         self.assertIn('target="_blank"', theirOverflow)
 
     def test_ajax_partials_carry_the_collapsed_markup(self):
-        # Compare's filter controls swap card lists via innerHTML with these
-        # server-rendered partials - they must collapse exactly like the
+        # Compare's filter controls refresh these card lists in place with the
+        # same server-rendered partials - they must collapse exactly like the
         # initial page render.
         client = self._loginAs("alice")
 
-        resp = client.get("/compare?ajax=true")
+        resp, payload = fetchComparison(client, "/compare")
 
         self.assertEqual(resp.status_code, 200)
-        payload = resp.get_json()
         self.assertIn(TOGGLE_BUTTON, payload["myTopSongsHtml"])
         self.assertIn(TOGGLE_BUTTON, payload["theirTopSongsHtml"])
         self.assertIn(TOGGLE_BUTTON, payload["sharedSongsHtml"])

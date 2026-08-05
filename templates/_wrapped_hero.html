@@ -1,0 +1,23 @@
+{#- SPDX-FileCopyrightText: 2026 i7Gamer
+    SPDX-License-Identifier: AGPL-3.0-or-later -#}
+
+{# The Wrapped page's title block. Its own partial because the year is in the
+   text, so every year switch has to re-render it - and it sits ABOVE the filter
+   form, i.e. outside #wrappedResults, so it travels back as an out-of-band swap
+   instead of being written by hand (`heroTitle.textContent = ...` in the old
+   static/js/wrapped.js).
+
+   oobSwap is set only by the fragment render (see routes/wrapped.py's
+   HX-Request branch); the full page renders the same markup without it. #}
+{% set ownerLabel = username | displayName %}
+<section class="hero" id="wrappedHero"{% if oobSwap %} hx-swap-oob="true"{% endif %}>
+  <div class="hero-content">
+    {# ownerLabel, not the bare username: this page is public over a share
+       link, so the owner is named by what they go by. The bare `username` in
+       this template's context is ALSO the cover-image base for the card
+       includes (_track_card.html falls back to '/img/' + username), which is
+       why it isn't simply reassigned. #}
+    <h1>{{ (ownerLabel + "'s") if publicView else "Your" }} {{ year }} Wrapped</h1>
+    <p>A look back at what {{ ownerLabel if publicView else "you" }} listened to in {{ year }}.</p>
+  </div>
+</section>

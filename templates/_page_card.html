@@ -1,15 +1,42 @@
 {#- SPDX-FileCopyrightText: 2026 i7Gamer
     SPDX-License-Identifier: AGPL-3.0-or-later -#}
 
-{# Filter controls for the Top Songs/Artists/Albums pages. The onchange
-   handlers (updateSearchFilter/updateIntervalFilter/updateDateFilter/
-   updateFilters/updateTagFilter/updateFullPlaysFilter) live in
-   static/js/top-list.js, which mutates the URL in place and re-fetches the
-   list via ?ajax=true instead of a full page reload. #}
-<section class="filter-section">
+{# Filter controls for the Top Songs/Artists/Albums pages, shared by all three.
+
+   htmx drives the list from here: this form's own inputs ARE the query string,
+   serialized on every change, so the hand-written "which param does this filter
+   set vs delete" code in top-list.js is gone. What each attribute replaces is
+   noted at its use site; see templates/history.html for the same wiring with
+   fuller commentary.
+
+   hx-replace-url is the load-bearing one: a filter change must REPLACE the URL,
+   never push, so Back leaves the page instead of walking back through every
+   filter the user tried.
+
+   Constraint worth knowing before extending this: config.py's
+   Content-Security-Policy grants 'unsafe-eval' to the detail pages ONLY, and
+   every htmx feature taking a JS expression (hx-trigger event filters `[expr]`,
+   hx-vals="js:...", hx-on:) compiles it with the Function constructor. Those
+   fail at runtime, not at render time. Plain attributes only.
+
+   request.path rather than url_for(...): one partial, three endpoints
+   (/top-songs, /top-artists, /top-albums), and the form always posts back to
+   the page it is on. #}
+{% set customActive = interval == 'custom' or (customStart and customEnd) %}
+<form class="filter-section" id="topListFilters" method="get" action="{{ request.path }}"
+      hx-get="{{ request.path }}"
+      hx-target="#topListResults"
+      hx-swap="innerHTML"
+      hx-trigger="change, input changed delay:400ms from:#searchQuery, search from:#searchQuery"
+      hx-sync="#topListResults:replace"
+      hx-indicator="#topListResults"
+      hx-replace-url="true">
 <div class="filter-group filter-search">
+    {# No onkeydown/onblur: `input changed delay:400ms` above is the debounce,
+       and `search` catches the native clear button, which fires no input event
+       in every browser. #}
     <label for="searchQuery">Search:</label>
-    <input type="search" id="searchQuery" name="q" value="{{ request.args.get('q', '') }}" placeholder="Search songs, artists, playlists" aria-label="Search the current page" onkeydown="handleSearchKeydown(event, updateSearchFilter)" onblur="handleSearchBlur(event, updateSearchFilter)">
+    <input type="search" id="searchQuery" name="q" value="{{ request.args.get('q', '') }}" placeholder="Search songs, artists, playlists" aria-label="Search the current page">
 </div>
 
 <div class="filter-group">
@@ -22,21 +49,25 @@
     <option value="month" {{ 'selected' if interval == 'month' }}>Last Month</option>
     <option value="year" {{ 'selected' if interval == 'year' }}>Last Year</option>
     <option value="5years" {{ 'selected' if interval == '5years' }}>Last 5 Years</option>
-    <option value="custom" {{ 'selected' if customStart and customEnd }}>Custom Date Range</option>
+    <option value="custom" {{ 'selected' if customActive }}>Custom Date Range</option>
     </select>
 </div>
 
-<div class="filter-group custom-dates" id="customDates" {% if not (customStart and customEnd) %}style="display: none;"{% endif %}>
+{# `disabled`, not merely hidden: a disabled control is not serialized, which is
+   what keeps a stale custom range out of the request - and so out of the URL,
+   since hx-replace-url writes back what was requested. updateIntervalFilter
+   keeps the two in step. #}
+<div class="filter-group custom-dates" id="customDates" {% if not customActive %}style="display: none;"{% endif %}>
     <label for="startDate">From:</label>
-    <input type="date" id="startDate" name="startDate" value="{{ customStart }}" onchange="scheduleSearchFilter('startDate', updateDateFilter)">
+    <input type="date" id="startDate" name="startDate" value="{{ customStart }}" {% if not customActive %}disabled{% endif %}>
     <label for="endDate">To:</label>
-    <input type="date" id="endDate" name="endDate" value="{{ customEnd }}" onchange="scheduleSearchFilter('endDate', updateDateFilter)">
+    <input type="date" id="endDate" name="endDate" value="{{ customEnd }}" {% if not customActive %}disabled{% endif %}>
     <span id="dateError" class="date-error"></span>
 </div>
 
 <div class="filter-group">
     <label for="sortBy">Sort by:</label>
-    <select name="sortBy" id="sortBy" onchange="updateFilters()">
+    <select name="sortBy" id="sortBy">
     <option value="totalTimeListened" {{ 'selected' if sortBy == 'totalTimeListened' }}>Time Played</option>
     <option value="plays" {{ 'selected' if sortBy == 'plays' }}>Number of Plays</option>
     <option value="name" {{ 'selected' if sortBy == 'name' }}>Name (A-Z)</option>
@@ -47,7 +78,7 @@
 {% if tags_enabled and user_tags %}
 <div class="filter-group">
     <label for="tagFilter">Tag:</label>
-    <select id="tagFilter" name="tag" onchange="updateTagFilter()">
+    <select id="tagFilter" name="tag">
     <option value="">All Tags</option>
     {% for t in user_tags %}
     <option value="{{ t.tag }}" {% if tag == t.tag %}selected{% endif %}>#{{ t.tag }} ({{ t.count }})</option>
@@ -57,11 +88,25 @@
 {% endif %}
 
 {% if fullPlaysOnly is defined %}
+{# The checkbox carries no name and is NOT serialized. An unchecked box is
+   omitted from a form submission entirely, and to this route an ABSENT fullOnly
+   means the DEFAULT, which is on (see _topListFilters) - so unchecking would
+   have read as checking. The hidden field below carries the explicit "1"/"0"
+   the route reads, and updateFullPlaysFilter keeps it in step. #}
 <div class="filter-group filter-checkbox">
+    <input type="hidden" name="fullOnly" id="fullOnlyValue" value="{{ '1' if fullPlaysOnly else '0' }}">
     <label for="fullPlaysOnly">
         <input type="checkbox" id="fullPlaysOnly" {% if fullPlaysOnly %}checked{% endif %} onchange="updateFullPlaysFilter()">
         Full plays only
     </label>
 </div>
 {% endif %}
-</section>
+
+{# These pages render a SHELL on a plain GET and fetch the list in a second
+   request, so submitting this form without JS reloads to a permanent
+   "Loading...". Say what is actually wrong instead. #}
+<noscript>
+  <p class="dashboard-card-empty">This page needs JavaScript to load its data.
+  With it enabled the filters above apply as you change them.</p>
+</noscript>
+</form>
