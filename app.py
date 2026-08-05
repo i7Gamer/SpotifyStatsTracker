@@ -380,6 +380,7 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
 
         tmpFd, tmpPath = tempfile.mkstemp(prefix="verify_cookies_", suffix=".json")
         os.close(tmpFd)
+        sp = None
         try:
             saveSession(cookies, email, tmpPath)
             with _suppress_signal_in_thread():
@@ -393,6 +394,11 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
             logger.warning("Cookie verification failed for %s: %s", email, e)
             return False
         finally:
+            if sp is not None:
+                # This login built its own TLS client, and every one of those
+                # is atexit-pinned until the process exits - so a session left
+                # open here accumulated one per login/register/reset attempt.
+                sp.close()
             try:
                 os.unlink(tmpPath)
             except OSError:

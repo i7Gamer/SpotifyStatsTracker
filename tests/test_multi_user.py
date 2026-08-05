@@ -376,6 +376,40 @@ class TestLoginCookieVerification(AppTestCase):
             self.assertFalse(dash._verifyCookiesMatchEmail({"sp_dc": "abc"}, ""))
             mock_sf.assert_not_called()
 
+    def test_verify_closes_the_session_it_built(self):
+        """The verification login builds a full TLS client, and every one of
+        those registers an atexit hook that pins its curl session for the life
+        of the process. Listener.stop() and the import service close theirs;
+        this site is on the login/register/reset path, so it ran per attempt."""
+        dash = self._makeApp()
+        spotify = MagicMock()
+        spotify.isLoggedIn.return_value = True
+        spotify.current_user.return_value = {"email": "alice@example.com"}
+        with patch('app.Spotify') as mock_sf, patch('app.saveSession'):
+            mock_sf.return_value = spotify
+            dash._verifyCookiesMatchEmail({"sp_dc": "abc"}, "alice@example.com")
+
+        spotify.close.assert_called_once_with()
+
+    def test_verify_closes_the_session_on_every_outcome(self):
+        """A mismatch and a mid-verification failure retire a session just as
+        a match does - and those are the paths an attacker can drive."""
+        for outcome in ("mismatch", "not-logged-in", "raises"):
+            with self.subTest(outcome=outcome):
+                dash = self._makeApp()
+                spotify = MagicMock()
+                spotify.isLoggedIn.return_value = outcome != "not-logged-in"
+                if outcome == "raises":
+                    spotify.current_user.side_effect = RuntimeError("boom")
+                else:
+                    spotify.current_user.return_value = {"email": "attacker@evil.com"}
+                with patch('app.Spotify') as mock_sf, patch('app.saveSession'):
+                    mock_sf.return_value = spotify
+                    result = dash._verifyCookiesMatchEmail({"sp_dc": "abc"}, "alice@example.com")
+
+                self.assertFalse(result)
+                spotify.close.assert_called_once_with()
+
     def test_verify_cleans_up_its_temp_cookies_file(self):
         dash = self._makeApp()
         spotify = MagicMock()
