@@ -6,7 +6,6 @@ from __future__ import annotations
 import logging
 import queue
 import threading
-import time
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -95,15 +94,27 @@ class EmailWorker:
         """Start the background worker thread."""
         if self._thread is not None and self._thread.is_alive():
             return
-        self._stop_event.clear()
-        self._thread = threading.Thread(target=self._run, daemon=True, name="EmailWorker")
+        # A fresh event per run, passed INTO the loop rather than read back off
+        # self - the invariant PeriodicWorkerMixin documents. stop() joins with
+        # a timeout, so a worker inside a slow SMTP send can outlive it;
+        # reusing and clearing one event would hand that thread a cleared flag
+        # and revive it. Today start()'s is_alive check happens to prevent
+        # that, which is a subtle thing to depend on.
+        stopEvent = threading.Event()
+        self._stop_event = stopEvent
+        self._thread = threading.Thread(target=self._run, args=(stopEvent,),
+                                        daemon=True, name="EmailWorker")
         self._thread.start()
 
-    def _run(self) -> None:
-        while not self._stop_event.is_set():
+    def _run(self, stopEvent: threading.Event) -> None:
+        while not stopEvent.is_set():
             processed = self.process_one()
             if not processed:
-                time.sleep(EMAIL_WORKER_POLL_INTERVAL_SECONDS)
+                # wait(), not sleep(): an idle worker has to notice the stop
+                # flag inside the join window, or stop() returns while the
+                # thread is still parked. Shutdown used to work only because
+                # the interval was shorter than the join timeout.
+                stopEvent.wait(EMAIL_WORKER_POLL_INTERVAL_SECONDS)
 
     def stop(self) -> None:
         """Stop the background worker thread."""

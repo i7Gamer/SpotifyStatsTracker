@@ -1,12 +1,56 @@
 # SPDX-FileCopyrightText: 2026 i7Gamer
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
+import threading
+
 import pytest
 from unittest.mock import patch
 
 from Database.repository import Repository
 from services.email_worker import EmailWorker, queue_email_notification
 from Database.queries.email_queries import EVENT_INVALID_COOKIES
+
+# A failure deadline for the cross-thread waits below, not a pace: each wait
+# returns as soon as the worker thread gets there.
+_DEADLINE_SECONDS = 5
+# Longer than any join in these tests, so a worker that sleeps through its stop
+# flag instead of waiting on it is still parked when the assertion runs.
+_LONG_IDLE_INTERVAL_SECONDS = 60
+
+
+def test_the_idle_loop_notices_the_stop_flag_instead_of_sleeping_through_it():
+    """An idle worker waits on its stop event, so stop() is immediate no
+    matter how long the poll interval is. With a plain sleep, shutdown worked
+    only because the interval happened to be shorter than the join timeout -
+    raise the interval past it and stop() would return with the thread still
+    running, which is the shape ceb4209 fixed in the listener's poll loop."""
+    worker = EmailWorker()
+    idling = threading.Event()
+    worker.process_one = lambda: (idling.set(), False)[1]   #< empty queue: straight to the idle wait
+
+    with patch("services.email_worker.EMAIL_WORKER_POLL_INTERVAL_SECONDS",
+               _LONG_IDLE_INTERVAL_SECONDS):
+        worker.start()
+        assert idling.wait(_DEADLINE_SECONDS), "the worker thread never polled"
+        worker.stop()
+
+    assert not worker._thread.is_alive()
+
+
+def test_each_run_gets_its_own_stop_event():
+    """The invariant PeriodicWorkerMixin documents: a thread that outlived
+    stop()'s join must keep watching a SET event, so it exits on its own
+    rather than being handed a cleared one by the next start()."""
+    worker = EmailWorker()
+    worker.start()
+    firstEvent = worker._stop_event
+    worker.stop()
+
+    worker.start()
+
+    assert worker._stop_event is not firstEvent
+    assert firstEvent.is_set(), "the previous run's event was reused, so its thread could be revived"
+    worker.stop()
 
 
 @patch("services.email_worker.send_email_notification")
