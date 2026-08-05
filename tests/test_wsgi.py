@@ -7,6 +7,7 @@ otherwise a SIGINT/SIGTERM to the process leaves them to be force-killed
 mid-request during interpreter shutdown (see Database/patches.py and
 Database/Listeners/spotifyListener.py for the underlying issue).
 """
+import signal
 import sys
 import os
 import unittest
@@ -28,6 +29,40 @@ def _importWsgiWithMocks():
          patch('app.Path.exists', return_value=False):
         import wsgi
     return wsgi
+
+
+class TestWsgiSigterm(unittest.TestCase):
+    """`docker stop` sends SIGTERM, and in the container this process is PID 1
+    (exec-form CMD), where the kernel discards default-action signals outright.
+    Python installs no SIGTERM handler of its own and neither does waitress, so
+    without wsgi's handler the SIGTERM does nothing: the container sits out the
+    whole stop_grace_period and gets SIGKILLed with shutdown() never run."""
+
+    def test_the_handler_raises_keyboard_interrupt(self):
+        """SIGTERM takes the exact path Ctrl+C takes: KeyboardInterrupt out of
+        serve(), through main()'s finally, into dashboardApp.shutdown()."""
+        wsgi = _importWsgiWithMocks()
+
+        with self.assertRaises(KeyboardInterrupt):
+            wsgi._sigtermHandler(signal.SIGTERM, None)
+
+    def test_main_installs_it_before_serving(self):
+        """The handler must be live before serve() blocks - a stop arriving
+        in between is the normal case, not a race. Asserted via mocks: the
+        real signal.signal is only legal on the main thread, which a parallel
+        test worker is not."""
+        wsgi = _importWsgiWithMocks()
+        calls = []
+
+        with patch("wsgi.signal.signal",
+                   side_effect=lambda *args: calls.append(("signal", args))), \
+             patch("waitress.serve",
+                   side_effect=lambda *args, **kwargs: calls.append(("serve",))), \
+             patch.object(wsgi.dashboardApp, "shutdown"):
+            wsgi.main()
+
+        self.assertEqual(("signal", (signal.SIGTERM, wsgi._sigtermHandler)), calls[0])
+        self.assertEqual(("serve",), calls[-1])
 
 
 class TestWsgiShutdown(unittest.TestCase):
