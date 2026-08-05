@@ -44,6 +44,18 @@ DETAIL_BODY_AJAX = "page"
 MAX_DETAIL_HISTORY_PAGES = 10
 
 
+def _positivePageArg():
+    """?page= as a string when it names a real page, "" otherwise.
+
+    Only /history's shell needs this, and only to decide whether to carry the
+    page into the URL its placeholder loads from. The list request clamps the
+    page properly (_calculatePagination), so this is not validation - it is
+    deciding what is worth reflecting back into the markup. Junk gets left out
+    rather than echoed, same reasoning as the validated interval beside it."""
+    raw = request.args.get("page", "")
+    return raw if raw.isdigit() and int(raw) > 0 else ""
+
+
 def register(app, dashboard):
     # Read off the class, not the per-request db instance. A route test's
     # MagicMock db answers `db.SKIP_SORT_BY` with a Mock, which equals no
@@ -415,10 +427,42 @@ def register(app, dashboard):
 
         # Lightweight shell, same two-phase load as /compare, /charts, /genres:
         # the initial GET renders just the filter controls + an empty results
-        # placeholder, and history.html's own JS fetches the real list (and
-        # pagination strip) via ?ajax=true right after first paint, and again
-        # on every search/filter/page change - see loadHistoryResults.
-        if request.args.get("ajax") != "true":
+        # placeholder, and the list (plus pagination strip) arrives in a second
+        # request right after first paint, and again on every search/filter/page
+        # change.
+        #
+        # This page drives that second request with htmx rather than its own
+        # fetch() code, so the marker is htmx's own HX-Request header instead of
+        # the ?ajax=true convention the other shell pages still use. Keying on
+        # the header rather than a query param is also what keeps ?ajax=true out
+        # of the URL bar: hx-replace-url writes back the URL that was requested,
+        # so a marker living in the query string would become part of the page's
+        # shareable address. See tests/test_history_htmx.py.
+        if not request.headers.get("HX-Request"):
+            # The URL the shell's placeholder fetches the list from. Built from
+            # the VALIDATED values rather than echoed back from
+            # request.full_path, which is the same rule the pagination links
+            # already follow (see _buildPaginationContext below): ?interval=bogus
+            # is coerced to the default for the query itself, so reflecting the
+            # raw value into the markup would assert it again in the one place a
+            # reader would trust, and disagree with every link built beside it.
+            # Pinned by test_an_unrecognized_interval_renders_as_the_default_not_raw.
+            #
+            # A custom range's dates ride along only when the range is actually
+            # in effect, matching the disabled date inputs in the shell - see
+            # the note on `disabled` in templates/history.html.
+            listArgs = {
+                "q": request.args.get("q", ""),
+                "interval": interval,
+                "startDate": customStart if interval == "custom" else "",
+                "endDate": customEnd if interval == "custom" else "",
+                "sort": sortOrder if sortOrder == "oldest" else "",
+                "tag": tag,
+                #< a junk or out-of-range page is clamped by _calculatePagination
+                #  on the list request; this only keeps a shared ?page=3 working,
+                #  so anything that isn't a page number is simply left out
+                "page": _positivePageArg(),
+            }
             return render_template(
                 "history.html",
                 username=username,
@@ -426,10 +470,10 @@ def register(app, dashboard):
                 interval=interval,
                 customStart=customStart,
                 customEnd=customEnd,
-                defaultWindow="all time",
                 sort=sortOrder,
                 tag=tag,
                 user_tags=userTags,
+                listUrl=url_for("history", **{k: v for k, v in listArgs.items() if v}),
             )
 
         searchQuery = request.args.get("q", "")
@@ -483,17 +527,18 @@ def register(app, dashboard):
         creds = db.getUserSpotifyCredentials() or {}
         is_authenticated = bool(creds.get("refresh_token"))
 
-        return jsonify({
-            "resultsHtml": render_template(
-                "_history_results.html",
-                tracks=tracks,
-                startIndex=startIndex,
-                interval=interval,
-                is_authenticated=is_authenticated,
-                username=username,
-                **pagination,
-            ),
-        })
+        # The fragment itself, not a JSON envelope around it: htmx swaps the
+        # response body straight into #historyResults, so a {"resultsHtml": ...}
+        # wrapper would land in the page as literal JSON text.
+        return render_template(
+            "_history_results.html",
+            tracks=tracks,
+            startIndex=startIndex,
+            interval=interval,
+            is_authenticated=is_authenticated,
+            username=username,
+            **pagination,
+        )
     app.add_url_rule("/history", "history", historyPage, methods=["GET"])
 
     @requiresUser(api=True)

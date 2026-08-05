@@ -52,11 +52,38 @@ changes.
 Third-party components
 -------------------------------------------------------------------------------
 
-The source tree in this repository references its dependencies rather than
-bundling them. Built artifacts - notably the Docker image produced by the
+The source tree in this repository references its Python dependencies rather
+than bundling them. Built artifacts - notably the Docker image produced by the
 Dockerfile - do bundle them, and conveying such an artifact conveys those
-components too. The components whose licenses carry source-availability
-obligations are listed here.
+components too. The one exception is static/js/vendor/, which is checked in:
+the Content-Security-Policy in config.py allows scripts from 'self' only, so a
+browser dependency has to be served from this origin rather than a CDN, and
+this project ships no JS build step that could fetch one at package time.
+
+The components whose licenses carry source-availability obligations are listed
+here, followed by the vendored browser components.
+
+htmx
+  License:  Zero-Clause BSD (see static/js/vendor/htmx.LICENSE)
+  Upstream: https://github.com/bigskysoftware/htmx
+  Version:  2.0.9
+  Asset:    https://github.com/bigskysoftware/htmx/releases/download/v2.0.9/htmx.min.js
+  sha256:   57d9191515339922bd1356d7b2d80b1ee3b29f1b3a2c65a078bb8b2e8fd9ae5f
+
+  Vendored at static/js/vendor/htmx.min.js, byte-for-byte as published - the
+  hash above is checkable against the release asset, and .gitattributes keeps
+  git from rewriting the bytes. Pinned to a stable 2.x release deliberately:
+  the repository's own "latest release" is a 4.0.0 beta, which is not what a
+  live instance should be served.
+
+  0BSD imposes no notice-retention or attribution requirement at all, so
+  nothing here is obligatory; it is recorded because a checked-in binary whose
+  provenance is undocumented is the thing worth avoiding, not a license risk.
+
+  Version bumps are deliberate, with any fallout fixed in the same commit -
+  same reasoning as the pinned spotapi commit above and the pinned ruff/eslint
+  versions in the lint workflow. Update the version, asset URL and hash here
+  when it moves.
 
 spotapi
   License:  GNU General Public License v3

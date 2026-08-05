@@ -25,6 +25,14 @@
 *.ttf binary
 *.db binary
 
+# Vendored third-party builds are stored byte-for-byte as published, so the
+# sha256 recorded in NOTICE stays checkable against the upstream release asset
+# by anyone who wants to verify what this tree ships. `text=auto` above would
+# not in fact touch the current file (htmx.min.js is one line with no newline
+# at all), but that is a property of this particular build, not a guarantee
+# about the next one - so the rule is stated rather than relied on.
+static/js/vendor/** -text
+
 # Shell scripts must keep LF whatever the checkout platform does. Dockerfile does
 # `COPY . .` from the build context, so a CRLF script authored on Windows reaches
 # a Linux image with \r in its shebang and fails with "no such file or directory"

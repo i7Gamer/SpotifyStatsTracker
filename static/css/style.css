@@ -1434,9 +1434,22 @@ progress::-moz-progress-bar {
   pointer-events: none;
 }
 
+/* The same treatment, driven by htmx instead of by hand. htmx puts
+   .htmx-request on its hx-indicator element for exactly the life of the
+   request, which is the bookkeeping loadHistoryResults() used to do in a
+   .finally(). Deliberately a separate rule rather than another selector on
+   .loading-fade: the two have different owners (the hand-written loaders vs
+   htmx), and the hand-written ones retire as pages move over - at which point
+   .loading-fade goes with them and this stays. */
+#historyResults.htmx-request {
+  opacity: 0.15;
+  pointer-events: none;
+}
+
 #compareStatsTable,
 .compare-similarities,
 .chart-canvas-wrap,
+#historyResults,
 .track-list {
   transition: opacity 0.2s ease-in-out;
 }

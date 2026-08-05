@@ -26,6 +26,14 @@ const globals = require("globals");
 
 module.exports = [
   {
+    // Vendored third-party builds. Linting a minified bundle produces nothing
+    // actionable - the rules above are here to catch OUR typos, and this tree
+    // is stored byte-for-byte as upstream published it (see .gitattributes and
+    // NOTICE) precisely so it can be re-verified against the release asset. A
+    // lint fix applied here would break that.
+    ignores: ["static/js/vendor/**"],
+  },
+  {
     // Browser scripts get BROWSER globals only. Spreading node's in here too
     // (they were in one block at first, for the test files below) quietly
     // excused `module`, `require`, `process` and `global` in static/js - real
@@ -58,9 +66,13 @@ module.exports = [
         // are the one thing that genuinely has to come from the server (see
         // history.html). Listing them here is what lets the logic itself live
         // in a linted file instead of inside the template.
-        HISTORY_DEFAULT_WINDOW: "readonly",
         DASHBOARD_DEFAULT_WINDOW: "readonly",
         USERNAME: "readonly",
+        // The vendored library in static/js/vendor (ignored above, so its own
+        // `var htmx = ...` is never seen by this config). history-page.js calls
+        // htmx.ajax for the two things attributes cannot express - the
+        // jump-to-page input and the Retry button.
+        htmx: "readonly",
         // Only `module`, not node's whole set. Several of these scripts end with
         // `if (typeof module !== 'undefined' && module.exports) { … }` so their
         // pure logic can be required by the node unit tests - a deliberate

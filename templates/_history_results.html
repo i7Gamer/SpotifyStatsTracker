@@ -2,12 +2,12 @@
     SPDX-License-Identifier: AGPL-3.0-or-later -#}
 
 {# The play-history list + pagination strip, swapped as one unit into
-   #historyResults by history.html's own JS - on first paint and again on
-   every search/filter/page change (see routes/charts.py's historyPage ajax
-   branch and loadHistoryResults). Expects: tracks, startIndex, interval,
-   is_authenticated, plus everything _pagination.html needs (page,
-   totalPages, prevUrl, nextUrl, pageLinks, showingStart, showingEnd,
-   totalCount) - see dashboard/pagination.py's _buildPaginationContext. #}
+   #historyResults - on first paint and again on every search/filter/page
+   change (see routes/charts.py's historyPage HX-Request branch). Expects:
+   tracks, startIndex, interval, is_authenticated, plus everything
+   _pagination.html needs (page, totalPages, prevUrl, nextUrl, pageLinks,
+   showingStart, showingEnd, totalCount) - see dashboard/pagination.py's
+   _buildPaginationContext. #}
 <section class="track-list">
   {% if tracks %}
     {% for track in tracks %}
@@ -22,4 +22,16 @@
   {% endif %}
 </section>
 
-{% include '_pagination.html' %}
+{# hx-boost turns the Prev/Next and page-number links below into in-place swaps,
+   which is what the delegated click listener in history-page.js used to do by
+   hand. Scoped to this wrapper rather than set on #historyResults: boosting the
+   whole container would also capture every track/artist/album link in the list
+   above and swap a detail PAGE into the results area instead of navigating to
+   it. The swap target, sync and replace-url are inherited from #historyResults,
+   so _pagination.html - shared with the Top lists and the detail pages, neither
+   of which uses htmx - needs no changes. The "Go to page" input in it is not a
+   link and so is not boosted; it keeps going through the shared
+   handleJumpToPageKeydown hook (see history-page.js). #}
+<div hx-boost="true">
+  {% include '_pagination.html' %}
+</div>

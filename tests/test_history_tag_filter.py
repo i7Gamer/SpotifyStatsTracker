@@ -4,9 +4,19 @@ tests/test_top_lists_tag_filter.py, which this mirrors). Uses a real, seeded
 repository rather than a MagicMock db, since the point is the actual
 tag-resolution SQL end to end (Database.getEntriesCount/getEntriesFromNew/
 searchEntries narrowed by getTaggedTrackIds), not just that the route calls
-the right method."""
+the right method.
+
+The list itself arrives in a second request, which /history now makes with htmx
+rather than its own fetch() code: the marker is the HX-Request header instead of
+?ajax=true, and the response is the HTML fragment instead of a JSON envelope
+around it. tests/test_history_htmx.py covers that transport; these tests just
+have to speak it. The Top-list mirrors of this file still use ?ajax=true, since
+those pages have not migrated."""
 import unittest
 from tests._app_factory import AppTestCase
+
+#< what htmx puts on every request it makes; asking for the list, not the shell
+HX_HEADERS = {"HX-Request": "true"}
 
 
 def makeTrack(trackId, name, albumId, albumName, artistId, artistName):
@@ -90,9 +100,9 @@ class TestHistoryTagFilter(AppTestCase):
         self.dash.repo.commit()
         self.dash.repo.setTagsEnabled(False)
 
-        resp = self.client.get("/history?tag=roadtrip&ajax=true")
+        resp = self.client.get("/history?tag=roadtrip", headers=HX_HEADERS)
 
-        body = resp.get_json()["resultsHtml"]
+        body = resp.get_data(as_text=True)
         self.assertIn("Tagged Song", body)
         self.assertIn("Other Song", body)   #< tag filter bypassed -> unfiltered
 
@@ -111,9 +121,9 @@ class TestHistoryTagFilter(AppTestCase):
         self.dash.repo.addTag(self.username, "roadtrip", "track", "t1")
         self.dash.repo.commit()
 
-        resp = self.client.get("/history?tag=roadtrip&ajax=true")
+        resp = self.client.get("/history?tag=roadtrip", headers=HX_HEADERS)
 
-        body = resp.get_json()["resultsHtml"]
+        body = resp.get_data(as_text=True)
         self.assertIn("Tagged Song", body)
         self.assertNotIn("Other Song", body)
 
@@ -125,9 +135,9 @@ class TestHistoryTagFilter(AppTestCase):
         self.dash.repo.addTag(self.username, "roadtrip", "album", "alb2")
         self.dash.repo.commit()
 
-        resp = self.client.get("/history?tag=roadtrip&ajax=true")
+        resp = self.client.get("/history?tag=roadtrip", headers=HX_HEADERS)
 
-        body = resp.get_json()["resultsHtml"]
+        body = resp.get_data(as_text=True)
         self.assertIn("Other Song", body)
         self.assertNotIn("Tagged Song", body)
 
@@ -136,9 +146,9 @@ class TestHistoryTagFilter(AppTestCase):
         self.dash.repo.addTag(self.username, "roadtrip", "track", "t1")
         self.dash.repo.commit()
 
-        resp = self.client.get("/history?tag=nonexistent&ajax=true")
+        resp = self.client.get("/history?tag=nonexistent", headers=HX_HEADERS)
 
-        body = resp.get_json()["resultsHtml"]
+        body = resp.get_data(as_text=True)
         self.assertNotIn("Tagged Song", body)
         self.assertNotIn("Other Song", body)
 
@@ -148,25 +158,26 @@ class TestHistoryTagFilter(AppTestCase):
         self.dash.repo.addTag(self.username, "roadtrip", "track", "t2")
         self.dash.repo.commit()
 
-        resp = self.client.get("/history?tag=roadtrip&q=Tagged&ajax=true")
+        resp = self.client.get("/history?tag=roadtrip&q=Tagged", headers=HX_HEADERS)
 
-        body = resp.get_json()["resultsHtml"]
+        body = resp.get_data(as_text=True)
         self.assertIn("Tagged Song", body)
         self.assertNotIn("Other Song", body)
 
     def test_tag_filter_persists_across_sort_change(self):
-        """The tag select must survive an unrelated filter change - see
-        static/js/history-page.js's updateHistoryTagFilter/replaceHistoryUrl
-        convention: every URL-mutating function starts from the current query
-        string, so an active tag= must remain selected rather than silently
-        reset."""
+        """The tag select must survive an unrelated filter change. htmx submits
+        the whole filter form on every change, so an active tag rides along in
+        the request instead of having to be re-derived from the current query
+        string - but the shell still has to render it selected, or the next
+        submission drops it."""
         self._login()
         self.dash.repo.addTag(self.username, "roadtrip", "track", "t1")
         self.dash.repo.commit()
 
-        ajaxBody = self.client.get("/history?tag=roadtrip&sort=oldest&ajax=true").get_data(as_text=True)
-        self.assertIn("Tagged Song", ajaxBody)
-        self.assertNotIn("Other Song", ajaxBody)
+        listBody = self.client.get("/history?tag=roadtrip&sort=oldest",
+                                   headers=HX_HEADERS).get_data(as_text=True)
+        self.assertIn("Tagged Song", listBody)
+        self.assertNotIn("Other Song", listBody)
 
         # The tag dropdown lives in the shell; it must keep the active tag selected.
         shellBody = self.client.get("/history?tag=roadtrip&sort=oldest").get_data(as_text=True)

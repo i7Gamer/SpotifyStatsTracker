@@ -58,9 +58,17 @@ DELIBERATE_SWALLOWS = {"dashboard-page.js": 1, "genres.js": 1}
 # discovered so that a loader DISAPPEARING from the discovery (an extraction that
 # accidentally drops the fetch, say) fails loudly instead of shrinking the set
 # this test protects.
+#
+# history-page.js is deliberately absent, and it is the one entry worth
+# explaining: /history moved to htmx, so it makes no fetch() call to guard. The
+# invariant did not go away, it moved to the server - an htmx request from an
+# expired session is answered with HX-Redirect rather than a 302 the swap would
+# inline (see app.py's unauthenticatedResponse, pinned by
+# tests/test_history_htmx.py's TestUnauthenticatedSwap). A page migrated to htmx
+# leaves this set; a page still driving its own fetch() must not.
 EXPECTED_PAGE_LOADERS = {
     "charts-page.js", "compare.js", "dashboard-page.js", "detail-chart.js",
-    "detail-history.js", "detail-page.js", "genres.js", "history-page.js",
+    "detail-history.js", "detail-page.js", "genres.js",
     "top-list.js", "wrapped.js",
 }
 

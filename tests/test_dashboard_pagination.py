@@ -37,25 +37,31 @@ class _ListRouteTestBase(AppTestCase):
         db.getArtistTotals.return_value = (0, 0, 0)
         return db
 
-    def _getPath(self, dash, db, path):
+    def _getPath(self, dash, db, path, headers=None):
         client = dash.app.test_client()
         with patch.object(dash, 'is_user_logged_in', return_value=True), \
              patch.object(dash, 'get_username_for_email', return_value='alice'), \
              patch.object(dash, 'get_user_db', return_value=db):
             with client.session_transaction() as sess:
                 sess['email'] = 'alice@example.com'
-            return client.get(path)
+            return client.get(path, headers=headers or {})
 
     def _getHistory(self, dash, db, query=""):
         return self._getPath(dash, db, f"/history{query}")
 
-    def _getHistoryAjax(self, dash, db, query=""):
+    def _getHistoryList(self, dash, db, query=""):
         """/history is a two-phase load (see routes/charts.py's historyPage) -
-        the list/pagination content only exists behind ?ajax=true. Returns
-        (resp, resultsHtml)."""
-        sep = '&' if query else '?'
-        resp = self._getHistory(dash, db, query=f"{query}{sep}ajax=true")
-        return resp, (resp.get_json() or {}).get("resultsHtml", "")
+        the list/pagination content only comes back for the second request.
+
+        That request is made by htmx on this page, so it is marked with the
+        HX-Request header rather than the ?ajax=true the other shell pages
+        still use, and the response is the HTML fragment itself rather than a
+        JSON envelope around it. The transport is pinned in
+        tests/test_history_htmx.py; here it is just how you reach the list.
+
+        Returns (resp, listHtml)."""
+        resp = self._getPath(dash, db, f"/history{query}", headers={"HX-Request": "true"})
+        return resp, resp.get_data(as_text=True)
 
     def _getTopSongs(self, dash, db, query=""):
         # Top lists are a two-phase load now (shell + ?ajax=true JSON results),
@@ -95,7 +101,7 @@ class TestHistoryPagination(_ListRouteTestBase):
 
         with patch.object(dash, "_embedSongsTextElements", side_effect=lambda songs: songs), \
              patch.object(dash, "_attachGenres", side_effect=lambda db, tracks, kind: tracks):
-            resp, resultsHtml = self._getHistoryAjax(dash, db)
+            resp, resultsHtml = self._getHistoryList(dash, db)
 
         self.assertEqual(resp.status_code, 200)
         self.assertIn("Test Song", resultsHtml)
@@ -105,7 +111,7 @@ class TestHistoryPagination(_ListRouteTestBase):
         dash = self._makeApp()
         db = self._makeDb(entryCount=120)
 
-        resp, resultsHtml = self._getHistoryAjax(dash, db)
+        resp, resultsHtml = self._getHistoryList(dash, db)
 
         self.assertEqual(resp.status_code, 200)
         db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=0, startDate=None, endDate=None, trackIds=None)
@@ -115,7 +121,7 @@ class TestHistoryPagination(_ListRouteTestBase):
         dash = self._makeApp()
         db = self._makeDb(entryCount=120)
 
-        resp, resultsHtml = self._getHistoryAjax(dash, db, query="?page=2")
+        resp, resultsHtml = self._getHistoryList(dash, db, query="?page=2")
 
         db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=appModule.PAGE_SIZE, startDate=None, endDate=None, trackIds=None)
         self.assertIn("Page 2 of 3", resultsHtml)
@@ -124,7 +130,7 @@ class TestHistoryPagination(_ListRouteTestBase):
         dash = self._makeApp()
         db = self._makeDb(entryCount=120)
 
-        resp, resultsHtml = self._getHistoryAjax(dash, db, query="?page=99")
+        resp, resultsHtml = self._getHistoryList(dash, db, query="?page=99")
 
         db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=2 * appModule.PAGE_SIZE, startDate=None, endDate=None, trackIds=None)
         self.assertIn("Page 3 of 3", resultsHtml)
@@ -133,7 +139,7 @@ class TestHistoryPagination(_ListRouteTestBase):
         dash = self._makeApp()
         db = self._makeDb(entryCount=0)
 
-        resp, resultsHtml = self._getHistoryAjax(dash, db)
+        resp, resultsHtml = self._getHistoryList(dash, db)
 
         self.assertEqual(resp.status_code, 200)
         db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=0, startDate=None, endDate=None, trackIds=None)
@@ -147,7 +153,7 @@ class TestHistoryPagination(_ListRouteTestBase):
         db = self._makeDb(entryCount=120)
         db.searchEntriesCount.return_value = 5
 
-        resp, _ = self._getHistoryAjax(dash, db, query="?q=foo")
+        resp, _ = self._getHistoryList(dash, db, query="?q=foo")
 
         self.assertEqual(resp.status_code, 200)
         db.searchEntriesCount.assert_called_once_with("foo", startDate=None, endDate=None, trackIds=None)
@@ -161,7 +167,7 @@ class TestHistoryPagination(_ListRouteTestBase):
         db = self._makeDb(entryCount=0)
         db.searchEntriesCount.return_value = 120
 
-        resp, resultsHtml = self._getHistoryAjax(dash, db, query="?q=foo&page=9999")
+        resp, resultsHtml = self._getHistoryList(dash, db, query="?q=foo&page=9999")
 
         self.assertEqual(resp.status_code, 200)
         db.searchEntries.assert_called_once_with("foo", count=appModule.PAGE_SIZE, startIndex=2 * appModule.PAGE_SIZE, startDate=None, endDate=None,
@@ -172,7 +178,7 @@ class TestHistoryPagination(_ListRouteTestBase):
         dash = self._makeApp()
         db = self._makeDb(entryCount=120)
 
-        resp, _ = self._getHistoryAjax(dash, db, query="?sort=oldest")
+        resp, _ = self._getHistoryList(dash, db, query="?sort=oldest")
 
         self.assertEqual(resp.status_code, 200)
         db.getEntriesFromOld.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=0, startDate=None, endDate=None, trackIds=None)
@@ -182,7 +188,7 @@ class TestHistoryPagination(_ListRouteTestBase):
         dash = self._makeApp()
         db = self._makeDb(entryCount=120)
 
-        resp, _ = self._getHistoryAjax(dash, db, query="?sort=bogus")
+        resp, _ = self._getHistoryList(dash, db, query="?sort=bogus")
 
         self.assertEqual(resp.status_code, 200)
         db.getEntriesFromNew.assert_called_once()
@@ -193,7 +199,7 @@ class TestHistoryPagination(_ListRouteTestBase):
         db = self._makeDb(entryCount=0)
         db.searchEntriesCount.return_value = 5
 
-        resp, _ = self._getHistoryAjax(dash, db, query="?q=foo&sort=oldest")
+        resp, _ = self._getHistoryList(dash, db, query="?q=foo&sort=oldest")
 
         self.assertEqual(resp.status_code, 200)
         self.assertTrue(db.searchEntries.call_args.kwargs.get("oldestFirst"))
@@ -202,7 +208,7 @@ class TestHistoryPagination(_ListRouteTestBase):
         dash = self._makeApp()
         db = self._makeDb(entryCount=120)
 
-        resp, resultsHtml = self._getHistoryAjax(dash, db, query="?sort=oldest")
+        resp, resultsHtml = self._getHistoryList(dash, db, query="?sort=oldest")
 
         self.assertIn("sort=oldest", resultsHtml)
 
@@ -220,9 +226,15 @@ class TestHistoryPagination(_ListRouteTestBase):
 
 class TestHistoryAjaxShell(_ListRouteTestBase):
     """/history is a two-phase load like /compare, /charts, /genres: the plain
-    GET is just the filter form + an empty #historyResults placeholder, and
-    history.html's own JS fetches the real list via ?ajax=true right after
-    first paint - see routes/charts.py's historyPage and loadHistoryResults."""
+    GET is just the filter form + an empty #historyResults placeholder, and the
+    real list arrives in a second request right after first paint - see
+    routes/charts.py's historyPage.
+
+    Unlike the others, this page makes that second request with htmx, so it is
+    marked with the HX-Request header and answered with the fragment itself.
+    What these two tests pin is the SPLIT - the shell must not query the list,
+    and the fragment must not be a whole page - which the change of transport
+    leaves untouched. The transport is pinned in tests/test_history_htmx.py."""
 
     def test_shell_renders_the_placeholder_without_querying_the_list(self):
         dash = self._makeApp()
@@ -238,16 +250,16 @@ class TestHistoryAjaxShell(_ListRouteTestBase):
         db.searchEntries.assert_not_called()
         db.searchEntriesCount.assert_not_called()
 
-    def test_ajax_returns_a_json_partial_not_a_full_page(self):
+    def test_the_second_request_returns_a_partial_not_a_full_page(self):
         dash = self._makeApp()
         db = self._makeDb(entryCount=0)
 
-        resp, resultsHtml = self._getHistoryAjax(dash, db)
+        resp, listHtml = self._getHistoryList(dash, db)
 
         self.assertEqual(resp.status_code, 200)
-        self.assertIn("track-list", resultsHtml)
-        self.assertNotIn("<html", resultsHtml.lower())
-        self.assertNotIn('id="historySearch"', resultsHtml)   #< the filter form isn't part of this chunk
+        self.assertIn("track-list", listHtml)
+        self.assertNotIn("<html", listHtml.lower())
+        self.assertNotIn('id="historySearch"', listHtml)   #< the filter form isn't part of this chunk
 
 
 class TestHistoryCustomRangeListScoping(_ListRouteTestBase):
@@ -261,7 +273,7 @@ class TestHistoryCustomRangeListScoping(_ListRouteTestBase):
         dash = self._makeApp()
         db = self._makeDb(entryCount=0)
 
-        resp, _ = self._getHistoryAjax(dash, db, query="?interval=custom&startDate=2026-07-01&endDate=2026-07-05")
+        resp, _ = self._getHistoryList(dash, db, query="?interval=custom&startDate=2026-07-01&endDate=2026-07-05")
 
         self.assertEqual(resp.status_code, 200)
         kwargs = db.getEntriesFromNew.call_args.kwargs
@@ -276,7 +288,7 @@ class TestHistoryCustomRangeListScoping(_ListRouteTestBase):
         dash = self._makeApp()
         db = self._makeDb(entryCount=0)
 
-        resp, _ = self._getHistoryAjax(
+        resp, _ = self._getHistoryList(
             dash, db, query="?q=foo&interval=custom&startDate=2026-07-01&endDate=2026-07-05")
 
         self.assertEqual(resp.status_code, 200)
@@ -288,7 +300,7 @@ class TestHistoryCustomRangeListScoping(_ListRouteTestBase):
         dash = self._makeApp()
         db = self._makeDb(entryCount=0)
 
-        resp, _ = self._getHistoryAjax(dash, db, query="?interval=week")
+        resp, _ = self._getHistoryList(dash, db, query="?interval=week")
 
         self.assertEqual(resp.status_code, 200)
         # A named interval (Last Week) now scopes the /history list to that range.
@@ -319,7 +331,7 @@ class TestHistoryCustomRangeListScoping(_ListRouteTestBase):
         dash = self._makeApp()
         db = self._makeDb(entryCount=0)
 
-        resp, _ = self._getHistoryAjax(dash, db)
+        resp, _ = self._getHistoryList(dash, db)
 
         self.assertEqual(resp.status_code, 200)
         db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=0, startDate=None, endDate=None, trackIds=None)
@@ -330,7 +342,7 @@ class TestHistoryCustomRangeListScoping(_ListRouteTestBase):
         dash = self._makeApp()
         db = self._makeDb(entryCount=0)
 
-        resp, _ = self._getHistoryAjax(dash, db, query="?interval=custom")
+        resp, _ = self._getHistoryList(dash, db, query="?interval=custom")
 
         self.assertEqual(resp.status_code, 200)
         db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=0, startDate=None, endDate=None, trackIds=None)
@@ -538,7 +550,7 @@ class TestPageParamParsing(_ListRouteTestBase):
         dash = self._makeApp()
         db = self._makeDb(entryCount=120)
 
-        resp, resultsHtml = self._getHistoryAjax(dash, db, query="?page=abc")
+        resp, resultsHtml = self._getHistoryList(dash, db, query="?page=abc")
 
         self.assertEqual(resp.status_code, 200)
         db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=0, startDate=None, endDate=None, trackIds=None)
@@ -548,7 +560,7 @@ class TestPageParamParsing(_ListRouteTestBase):
         dash = self._makeApp()
         db = self._makeDb(entryCount=120)
 
-        resp, _ = self._getHistoryAjax(dash, db, query="?page=-5")
+        resp, _ = self._getHistoryList(dash, db, query="?page=-5")
 
         self.assertEqual(resp.status_code, 200)
         db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=0, startDate=None, endDate=None, trackIds=None)
@@ -621,7 +633,7 @@ class TestPaginationExtras(_ListRouteTestBase):
         dash = self._makeApp()
         db = self._makeDb(entryCount=500)   #< 10 pages of PAGE_SIZE=50
 
-        _, body = self._getHistoryAjax(dash, db, query="?page=5")
+        _, body = self._getHistoryList(dash, db, query="?page=5")
 
         for page in (1, 3, 4, 5, 6, 7, 10):
             self.assertIn(f">{page}<", body)
@@ -633,7 +645,7 @@ class TestPaginationExtras(_ListRouteTestBase):
         dash = self._makeApp()
         db = self._makeDb(entryCount=500)
 
-        _, resultsHtml = self._getHistoryAjax(dash, db, query="?page=5")
+        _, resultsHtml = self._getHistoryList(dash, db, query="?page=5")
 
         self.assertIn('class="pagination-page active"', resultsHtml)
 
@@ -641,7 +653,7 @@ class TestPaginationExtras(_ListRouteTestBase):
         dash = self._makeApp()
         db = self._makeDb(entryCount=120)   #< 3 pages, well within the window
 
-        _, body = self._getHistoryAjax(dash, db, query="?page=2")
+        _, body = self._getHistoryList(dash, db, query="?page=2")
 
         self.assertNotIn("&hellip;", body)
         for page in (1, 2, 3):
@@ -651,7 +663,7 @@ class TestPaginationExtras(_ListRouteTestBase):
         dash = self._makeApp()
         db = self._makeDb(entryCount=120)
 
-        _, resultsHtml = self._getHistoryAjax(dash, db)
+        _, resultsHtml = self._getHistoryList(dash, db)
 
         self.assertIn("Showing 1-50 of 120", resultsHtml)
 
@@ -659,7 +671,7 @@ class TestPaginationExtras(_ListRouteTestBase):
         dash = self._makeApp()
         db = self._makeDb(entryCount=120)
 
-        _, resultsHtml = self._getHistoryAjax(dash, db, query="?page=3")
+        _, resultsHtml = self._getHistoryList(dash, db, query="?page=3")
 
         self.assertIn("Showing 101-120 of 120", resultsHtml)
 
@@ -667,7 +679,7 @@ class TestPaginationExtras(_ListRouteTestBase):
         dash = self._makeApp()
         db = self._makeDb(entryCount=0)
 
-        _, resultsHtml = self._getHistoryAjax(dash, db)
+        _, resultsHtml = self._getHistoryList(dash, db)
 
         self.assertIn("Showing 0-0 of 0", resultsHtml)
 
@@ -675,7 +687,7 @@ class TestPaginationExtras(_ListRouteTestBase):
         dash = self._makeApp()
         db = self._makeDb(entryCount=120)
 
-        _, resultsHtml = self._getHistoryAjax(dash, db)
+        _, resultsHtml = self._getHistoryList(dash, db)
 
         self.assertIn('max="3"', resultsHtml)
 
@@ -703,7 +715,7 @@ class TestHistoryConnectionEmptyState(_ListRouteTestBase):
         dash = self._makeApp()
         db = self._makeDb(entryCount=0)
 
-        _, resultsHtml = self._getHistoryAjax(dash, db)
+        _, resultsHtml = self._getHistoryList(dash, db)
 
         self.assertIn("haven't connected Spotify yet", resultsHtml)
         self.assertNotIn("No history tracks found", resultsHtml)
@@ -712,7 +724,7 @@ class TestHistoryConnectionEmptyState(_ListRouteTestBase):
         dash = self._makeApp()
         db = self._makeDb(entryCount=0, hasApi=True, isAuthenticated=True)
 
-        _, resultsHtml = self._getHistoryAjax(dash, db)
+        _, resultsHtml = self._getHistoryList(dash, db)
 
         self.assertIn("No history tracks found", resultsHtml)
         self.assertNotIn("haven't connected Spotify yet", resultsHtml)
@@ -724,7 +736,7 @@ class TestHistoryConnectionEmptyState(_ListRouteTestBase):
         db = self._makeDb(entryCount=0)
         db.getUserLastfmApiKey.return_value = "key"
 
-        _, resultsHtml = self._getHistoryAjax(dash, db)
+        _, resultsHtml = self._getHistoryList(dash, db)
 
         self.assertIn("haven't connected Spotify yet", resultsHtml)
         self.assertNotIn("No history tracks found", resultsHtml)
@@ -733,7 +745,7 @@ class TestHistoryConnectionEmptyState(_ListRouteTestBase):
         dash = self._makeApp()
         db = self._makeDb(entryCount=120)
 
-        _, resultsHtml = self._getHistoryAjax(dash, db)
+        _, resultsHtml = self._getHistoryList(dash, db)
 
         self.assertNotIn("haven't connected Spotify yet", resultsHtml)
 
@@ -745,7 +757,7 @@ class TestHistoryConnectionEmptyState(_ListRouteTestBase):
         db = self._makeDb(entryCount=0)
         db.searchEntriesCount.return_value = 0
 
-        _, resultsHtml = self._getHistoryAjax(dash, db, query="?q=nonexistent")
+        _, resultsHtml = self._getHistoryList(dash, db, query="?q=nonexistent")
 
         self.assertIn("No history tracks found", resultsHtml)
         self.assertNotIn("haven't connected Spotify yet", resultsHtml)
@@ -756,7 +768,7 @@ class TestHistoryConnectionEmptyState(_ListRouteTestBase):
         dash = self._makeApp()
         db = self._makeDb(entryCount=0)
 
-        _, resultsHtml = self._getHistoryAjax(
+        _, resultsHtml = self._getHistoryList(
             dash, db, query="?interval=custom&startDate=2020-01-01&endDate=2020-01-02")
 
         self.assertIn("No history tracks found", resultsHtml)

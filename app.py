@@ -410,16 +410,28 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
         and the page would then try to parse the login HTML as JSON and show a
         generic "couldn't load" with a Retry that fails identically forever.
         The client turns the 401 into a real navigation (see
-        AjaxStatus.redirectIfUnauthorized). Everything else keeps the redirect."""
+        AjaxStatus.redirectIfUnauthorized). Everything else keeps the redirect.
+
+        An htmx request needs the same escape for the same reason - htmx follows
+        a 302 as transparently as fetch() did, and would swap the login page's
+        HTML into whatever region was being refreshed. It gets the equivalent it
+        understands natively instead: HX-Redirect, which the client turns into a
+        real navigation. 204 rather than 401 because htmx swaps the body of any
+        2xx and treats 4xx as an error to report; a No Content response leaves
+        it nothing to inject and nothing to complain about, so the only thing
+        that happens is the redirect."""
         #< full_path, not path: the query string IS the page state here (interval,
         #  custom dates, sortBy, tag, page), so dropping it landed the user on an
         #  unfiltered first page after logging back in. rstrip("?") because
         #  full_path always appends one, even with no args. _safeNextUrl still
         #  vets it on the way back (see routes/auth.py).
         target = nextPath or request.full_path.rstrip("?")
+        loginUrl = url_for("login", next=target)
+        if request.headers.get("HX-Request"):
+            return Response(status=204, headers={"HX-Redirect": loginUrl})
         if request.args.get("ajax"):
-            return jsonify(error="Not logged in", loginUrl=url_for("login", next=target)), 401
-        return redirect(url_for("login", next=target))
+            return jsonify(error="Not logged in", loginUrl=loginUrl), 401
+        return redirect(loginUrl)
 
     def get_current_user_or_redirect(self):
         """The (email, username, db) triple for the authenticated session, or

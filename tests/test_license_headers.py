@@ -46,6 +46,19 @@ SOURCE_GLOBS = ("*.py", "*.js", "*.html", "*.css")
 EXCLUDED_PREFIXES = ("tests/",)
 EXCLUDED_FILES = ("dev.py",)
 
+# Third-party code, conveyed by the image but not ours to mark. This is a
+# DIFFERENT exclusion from the two above, which are about files the image never
+# sees: these ship, and are skipped because stamping our copyright line and our
+# license identifier onto a file someone else wrote and licensed differently
+# would be a false claim on both counts - precisely the misstatement the rest of
+# this module exists to prevent.
+#
+# The obligation doesn't disappear, it moves: TestVendoredTrees below requires
+# each vendored tree to carry its own license text, and NOTICE records the
+# upstream, version and hash. Nothing here is allowed to be the easy fix of
+# pasting an AGPL header on top.
+VENDORED_PREFIXES = ("static/js/vendor/",)
+
 #< a header buried under a hundred lines is not a notice anyone will see
 MAX_HEADER_LINES = 12
 
@@ -77,7 +90,7 @@ def _git(*args):
 
 @functools.lru_cache(maxsize=1)
 def inScopeFiles():
-    """Tracked source files the built artifact conveys.
+    """Tracked source files the built artifact conveys AND this project wrote.
 
     Cached: nine of these across the module is nine `git ls-files` spawns for
     an answer that cannot change mid-run."""
@@ -85,7 +98,19 @@ def inScopeFiles():
     #< a tuple, not a list: callers share one cached object now
     return tuple(sorted(
         f for f in tracked
-        if not f.startswith(EXCLUDED_PREFIXES) and f not in EXCLUDED_FILES
+        if not f.startswith(EXCLUDED_PREFIXES + VENDORED_PREFIXES)
+        and f not in EXCLUDED_FILES
+    ))
+
+
+@functools.lru_cache(maxsize=1)
+def vendoredFiles():
+    """Every tracked file under a vendored prefix, whatever its extension.
+
+    Deliberately NOT filtered by SOURCE_GLOBS: the license text that has to
+    accompany a vendored build is exactly the file those globs would miss."""
+    return tuple(sorted(
+        f for f in _git("ls-files", *VENDORED_PREFIXES).split()
     ))
 
 
@@ -141,6 +166,13 @@ class TestScopeItself(unittest.TestCase):
 
         self.assertNotIn("dev.py", files)
         self.assertFalse([f for f in files if f.startswith("tests/")])
+
+    def test_vendored_code_is_out_of_scope(self):
+        """Vendored builds ship, but carry their own license (TestVendoredTrees)
+        rather than ours."""
+        files = inScopeFiles()
+
+        self.assertFalse([f for f in files if f.startswith(VENDORED_PREFIXES)])
 
     def test_every_source_kind_is_represented(self):
         """Guards the globs: dropping '*.html' would silently stop checking 53
@@ -231,6 +263,50 @@ class TestLicenseHeaders(unittest.TestCase):
         wrong = [f for f in inScopeFiles() if "AND MIT" in _head(f)]
 
         self.assertEqual(wrong, [])
+
+
+class TestVendoredTrees(unittest.TestCase):
+    """What replaces the header check for third-party code.
+
+    An exclusion is only safe if something else holds the line, so these are
+    the something else: a vendored tree must carry its upstream license text,
+    must not be passed off as ours, and must be named in NOTICE where its
+    version and hash live. The failure mode being guarded is the tempting one -
+    a vendored file trips TestLicenseHeaders, and the quickest way to green is
+    to paste our AGPL header onto someone else's code."""
+
+    #< the vendor tree exists to hold a browser dependency; an empty one means
+    #  the prefix was renamed and every assertion below passes vacuously
+    def test_there_is_something_vendored(self):
+        self.assertTrue(vendoredFiles())
+
+    def test_each_vendored_tree_carries_its_own_license_text(self):
+        for prefix in VENDORED_PREFIXES:
+            withPrefix = [f for f in vendoredFiles() if f.startswith(prefix)]
+            licenses = [f for f in withPrefix if "LICENSE" in Path(f).name.upper()]
+
+            self.assertTrue(licenses, f"{prefix} vendors code but ships no license text")
+
+    def test_no_vendored_file_claims_our_license(self):
+        """The shortcut this exclusion must not become."""
+        claiming = [f for f in vendoredFiles() if LICENSE_TAG in _head(f)]
+
+        self.assertEqual(claiming, [],
+                         "a vendored file carries this project's AGPL identifier - it is "
+                         "third-party code and keeps its own license, see NOTICE")
+
+    def test_no_vendored_file_claims_our_copyright(self):
+        claiming = [f for f in vendoredFiles() if COPYRIGHT_TAG in _head(f)]
+
+        self.assertEqual(claiming, [])
+
+    def test_every_vendored_tree_is_recorded_in_the_notice(self):
+        """NOTICE is where a vendored build's upstream, version and hash live,
+        so a new vendor directory that nobody documented fails here."""
+        notice = (REPO_ROOT / "NOTICE").read_text(encoding="utf-8", errors="replace")
+
+        for prefix in VENDORED_PREFIXES:
+            self.assertIn(prefix, notice, f"{prefix} is not mentioned in NOTICE")
 
 
 class TestUpstreamAuthorshipRetired(unittest.TestCase):
