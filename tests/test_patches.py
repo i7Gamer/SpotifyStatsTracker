@@ -1400,6 +1400,38 @@ class TestEnforceShadowRemoval(unittest.TestCase):
         self.assertEqual(packet, {"type": "pong"})
         self.assertEqual(streamer.ws.recvTimeouts, [0.25])
 
+    def test_both_classes_see_the_patched_init_packet_read(self):
+        """Construction reads the init packet through _create_websocket, and
+        both instantiable classes froze their own copy of the unbounded
+        original at import."""
+        from Database.patches import patched_get_init_packet
+        self.assertIs(spotapi.status.PlayerStatus.get_init_packet, patched_get_init_packet)
+        self.assertIs(spotapi.status.EventManager.get_init_packet, patched_get_init_packet)
+
+    def test_the_init_packet_read_is_bounded_through_player_status(self):
+        """The read a real construction makes, resolved the way a real
+        instance resolves it. Unbounded, a dealer that accepts the socket and
+        then says nothing parked the constructing thread forever - and that
+        thread holds the per-user _listener_lock, so the next startListener
+        for that user blocked forever too, wedging _ensureAllUsersLogin's pass
+        and with it the login-check loop for EVERY user until restart."""
+        from Database.patches import WS_INIT_PACKET_TIMEOUT_SECONDS
+        streamer = _fakeStreamer(
+            ['{"headers": {"Spotify-Connection-Id": "conn-1"}}'])
+
+        connectionId = spotapi.status.PlayerStatus.get_init_packet(streamer)
+
+        self.assertEqual("conn-1", connectionId)
+        self.assertEqual([WS_INIT_PACKET_TIMEOUT_SECONDS], streamer.ws.recvTimeouts)
+
+    def test_an_invalid_init_packet_still_raises(self):
+        """Same contract as spotapi's own: a packet without a connection id is
+        a failed handshake, not a usable session."""
+        streamer = _fakeStreamer(['{"headers": {}}'])
+
+        with self.assertRaises(ValueError):
+            spotapi.status.PlayerStatus.get_init_packet(streamer)
+
     def test_both_classes_see_the_patched_device_registration(self):
         from Database.patches import patched_register_device, patched_connect_device
         self.assertIs(spotapi.status.PlayerStatus.register_device, patched_register_device)

@@ -723,6 +723,36 @@ def _setRecvReconnectFailures(self, count: int) -> None:
 spotapi.websocket.WebsocketStreamer.get_packet = patched_get_packet
 
 
+# 5b. Bound the init-packet read that CONSTRUCTION performs.
+#
+# spotapi reads the handshake's first frame with a bare self.ws.recv() and no
+# timeout, so a dealer that accepts the socket and then says nothing parks the
+# caller forever - the exact condition patched_reconnect above already bounds
+# on the reconnect path. Construction reaches the same read through
+# _create_websocket, and construction runs under the per-user _listener_lock
+# (Database/workers/listener.py's startListener, via RecentlyPlayedManager):
+# a thread parked there holds that lock forever, so the user's next
+# startListener blocks forever too - and since _ensureAllUsersLogin walks
+# users one at a time, the process-wide login-check loop wedges with it and
+# NO user gets login re-checks or milestone detection until a restart.
+# Timing out instead surfaces as a failed listener build, which the login
+# loop already contains per user and retries on its next pass.
+def patched_get_init_packet(self) -> str:
+    """spotapi's get_init_packet, with the read bounded and its contract kept
+    (same ws_dump assignment, same ValueError on a packet with no connection
+    id, same return value)."""
+    self.ws_dump = dict(json.loads(self.ws.recv(timeout=WS_INIT_PACKET_TIMEOUT_SECONDS)))
+
+    if (self.ws_dump.get("headers") is None
+            or dict(self.ws_dump["headers"]).get("Spotify-Connection-Id") is None):
+        raise ValueError("Invalid init packet")
+
+    return self.ws_dump["headers"]["Spotify-Connection-Id"]
+
+
+spotapi.websocket.WebsocketStreamer.get_init_packet = patched_get_init_packet
+
+
 # 6. Replace register_device/connect_device's stdout diagnostics with logging.
 #
 # On a failed response both print a five-line block ("REGISTER DEVICE FAILED",
@@ -852,10 +882,11 @@ spotapi.websocket.WebsocketStreamer.connect_device = patched_connect_device
 # _supervise exist to begin with).
 _ENFORCE_SHADOWED_METHODS = (
     (spotapi.status.PlayerStatus,
-     ("keep_alive", "get_packet", "_supervise", "register_device", "connect_device")),
-    (spotapi.status.EventManager,
-     ("keep_alive", "get_packet", "reconnect", "renew_state", "_supervise",
+     ("keep_alive", "get_packet", "get_init_packet", "_supervise",
       "register_device", "connect_device")),
+    (spotapi.status.EventManager,
+     ("keep_alive", "get_packet", "get_init_packet", "reconnect", "renew_state",
+      "_supervise", "register_device", "connect_device")),
 )
 for _shadowedClass, _methodNames in _ENFORCE_SHADOWED_METHODS:
     for _methodName in _methodNames:
