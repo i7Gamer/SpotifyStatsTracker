@@ -627,6 +627,14 @@ class TestWrappedInvalidationUsesTheUsersOwnYears(_OverwriteTestBase):
         db.tz = ZoneInfo(self.FAR_ZONE)
         return db
 
+    def _dbInInstanceZone(self):
+        """A user whose zone matches the instance's - the ordinary case, where
+        the two year notions coincide and nothing is widened."""
+        from Database.utils import getTimezone
+        db = self._makeDb({}, [])
+        db.tz = getTimezone()
+        return db
+
     def test_the_users_own_year_for_the_span_is_invalidated_too(self):
         from Database.utils import convertToDatetime
         db = self._dbInFarZone()
@@ -649,13 +657,59 @@ class TestWrappedInvalidationUsesTheUsersOwnYears(_OverwriteTestBase):
         self.assertTrue({2015, 2021}.issubset(years))
 
     def test_a_span_inside_one_year_adds_only_that_year(self):
-        """The union is the span's years, not every year between the extremes of
-        the two sets - a mid-year overwrite must not invalidate a decade."""
-        db = self._dbInFarZone()
+        """The union is the covered years' own segments, not every year between
+        the extremes of the two sets - a mid-year overwrite must not invalidate
+        a decade.
 
-        years = db._wrappedYearsToInvalidate(_ts(2019, 6), _ts(2019, 7), set(), set())
+        A span always arrives with the years it covers: _computeCoveredRange
+        returns (None, None, set()) when the files cover nothing, so a non-None
+        minStart and an empty coveredYears cannot both happen."""
+        db = self._dbInInstanceZone()
+
+        years = db._wrappedYearsToInvalidate(_ts(2019, 6), _ts(2019, 7), {2019}, set())
 
         self.assertEqual(years, {2019})
+
+    def test_a_year_the_files_do_not_cover_is_left_alone(self):
+        """The span's ENDS are covered, the middle is not - files for 2018 and
+        2021 with nothing in between.
+
+        _deletePlaysInCoveredRange deliberately protects those gap years: no
+        file covers them, so their plays are untouched and it returns them as
+        skippedYears. Invalidating their Wrapped anyway contradicts the delete
+        it is supposed to be following, and costs a full-year recomputation on
+        the request thread the next time someone opens that year (the cache
+        miss in wrapped_builder recalculates synchronously).
+
+        The same protected-gap case is already pinned for the delete side by
+        test_missing_years_inside_the_span_are_protected.
+
+        Deliberately NOT in the far zone: a user 14 hours ahead genuinely owns
+        part of the neighbouring year, so the last moments of covered 2018 are
+        their 2019 and pulling it in is correct. Matching zones isolates the gap
+        from the timezone widening, which the test below covers separately."""
+        db = self._dbInInstanceZone()
+
+        years = db._wrappedYearsToInvalidate(_ts(2018, 6), _ts(2021, 6), {2018, 2021}, set())
+
+        self.assertNotIn(2019, years)
+        self.assertNotIn(2020, years)
+        self.assertTrue({2018, 2021}.issubset(years))
+
+    def test_a_covered_year_still_contributes_the_users_year_for_its_own_edges(self):
+        """Narrowing to covered years must not lose the timezone widening this
+        function exists for: the covered year's segment is what gets re-bucketed
+        now, rather than the whole span."""
+        from Database.utils import convertToDatetime
+        db = self._dbInFarZone()
+        #< inside covered year 2019 but already 2020 in the user's zone
+        edge = _ts(2019, 12, 31, 23)
+        usersYear = convertToDatetime(edge, tz=db.tz).year
+
+        years = db._wrappedYearsToInvalidate(_ts(2019, 6), edge, {2019}, set())
+
+        self.assertIn(usersYear, years)
+        self.assertNotEqual(usersYear, 2019)  #< guards the test itself
 
     def test_an_empty_covered_range_keeps_the_sets_it_was_given(self):
         """minStart is None when nothing was covered; there is no span to bucket

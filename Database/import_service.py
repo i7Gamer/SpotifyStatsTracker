@@ -842,18 +842,46 @@ class ImportMixin:
         a user-keyed cache could drop the wrong year and leave the right one
         stale.
 
-        So the span is re-bucketed in the user's zone and unioned in rather than
-        substituted. Widening is safe in a way that switching is not: an extra
-        year here costs one recomputation of a cache that is rebuilt on demand,
-        while a missed year shows stale numbers. Nothing about which PLAYS get
-        deleted is affected - that decision is made and committed above.
+        So each covered year's SEGMENT is re-bucketed in the user's zone and
+        unioned in rather than substituted. Widening is safe in a way that
+        switching is not: an extra year here costs one recomputation of a cache
+        that is rebuilt on demand, while a missed year shows stale numbers.
+        Nothing about which PLAYS get deleted is affected - that decision is
+        made and committed above.
+
+        Per covered year rather than across the whole span, because a span can
+        contain years no file covers - upload 2018 and 2021 and the years
+        between are not touched at all. _deletePlaysInCoveredRange protects them
+        by design and reports them as skippedYears, so invalidating their cache
+        would contradict the delete this is following, and cost a full-year
+        recomputation on the next request thread to ask for one (the wrapped
+        cache miss recalculates synchronously).
+
+        Only each segment's two ENDS are converted: year() is monotonic in time,
+        so no play inside a segment can fall outside the years its endpoints
+        land in.
         """
         years = set(coveredYears) | set(correctedYears)
         if minStart is None or maxEnd is None:
             return years
-        firstYear = _dbmod.convertToDatetime(minStart, tz=self.tz).year
-        lastYear = _dbmod.convertToDatetime(maxEnd, tz=self.tz).year
-        return years | set(range(firstYear, lastYear + 1))
+
+        # The instance zone, matching the delete's segmentation exactly - the
+        # segments below have to be the same ones whose plays were removed.
+        instanceTz = _dbmod.getTimezone()
+
+        def yearStartTs(year: int) -> float:
+            return _dbmod.datetime.datetime(year, 1, 1, tzinfo=instanceTz).timestamp()
+
+        def usersYear(timestamp: float) -> int:
+            return _dbmod.convertToDatetime(timestamp, tz=self.tz).year
+
+        for year in sorted(coveredYears):
+            segmentStart = max(yearStartTs(year), minStart)
+            segmentEnd = min(yearStartTs(year + 1) - self.YEAR_SEGMENT_BOUNDARY_EPSILON_SECONDS, maxEnd)
+            if segmentStart > segmentEnd:
+                continue   #< a covered year the batch span does not actually reach
+            years.update(range(usersYear(segmentStart), usersYear(segmentEnd) + 1))
+        return years
 
     def _deletePlaysInCoveredRange(self, minStart, maxEnd, coveredYears) -> tuple[int, int, list[int]]:
         """Delete this user's plays and skips in each covered year's segment of
