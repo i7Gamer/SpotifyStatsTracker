@@ -3,7 +3,6 @@ block a Waitress worker thread for a full second on every submission.
 """
 import io
 import threading
-import time
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -16,12 +15,30 @@ from _app_factory import AppTestCase
 
 _SECRET_KEY_PATCH = 'app.SpotifyDashboardApp._get_or_create_secret_key'
 
+# A failure deadline, not a pace: _importStarted below returns the moment the
+# import thread makes its call, so a passing run never waits this long. Only a
+# thread that never runs at all spends it, and then the test should fail.
+_IMPORT_THREAD_DEADLINE_SECONDS = 5
+
 
 class TestImportHistoryRoute(AppTestCase):
     def _makeDb(self):
         db = MagicMock()
         db.readProgress.return_value = {"status": "idle", "current": 0, "total": 0, "percentage": 0, "message": "", "error": False}
         return db
+
+    def _importStarted(self, db):
+        """An Event the mocked importHistoryBatch sets when the daemon import
+        thread actually reaches it. Waiting on the call itself is what makes
+        these tests deterministic - a fixed sleep is both slower than needed
+        and, on a loaded runner, sometimes shorter than needed."""
+        started = threading.Event()
+        db.importHistoryBatch.side_effect = lambda *args, **kwargs: started.set()
+        return started
+
+    def _awaitImport(self, started):
+        self.assertTrue(started.wait(_IMPORT_THREAD_DEADLINE_SECONDS),
+                        "the background import thread never called importHistoryBatch")
 
     def _postImport(self, dash, db, files):
         with patch.object(dash, 'is_user_logged_in', return_value=True), \
@@ -48,6 +65,7 @@ class TestImportHistoryRoute(AppTestCase):
         """One bad file in a multi-file upload must not drop the good ones too."""
         dash = self._makeApp()
         db = self._makeDb()
+        started = self._importStarted(db)
         garbageBytes = b'\xff\xfe\x00\x01 not valid utf-8 \xfa\xfb'
 
         self._postImport(dash, db, {
@@ -57,7 +75,7 @@ class TestImportHistoryRoute(AppTestCase):
             ]
         })
 
-        time.sleep(0.05)   #< let the daemon import thread run
+        self._awaitImport(started)
         db.importHistoryBatch.assert_called_once()
         importedContents = db.importHistoryBatch.call_args.args[0]
         self.assertEqual(importedContents, ['{"msPlayed": 1}'])
@@ -75,23 +93,25 @@ class TestImportHistoryRoute(AppTestCase):
     def test_overwrite_checkbox_flag_is_passed_to_the_batch(self):
         dash = self._makeApp()
         db = self._makeDb()
+        started = self._importStarted(db)
 
         self._postImport(dash, db, {
             'history_file': (io.BytesIO(b'{"msPlayed": 1}'), 'history.json'),
             'overwrite_range': 'on',
         })
 
-        time.sleep(0.05)   #< let the daemon import thread run
+        self._awaitImport(started)
         db.importHistoryBatch.assert_called_once()
         self.assertTrue(db.importHistoryBatch.call_args.kwargs.get("overwriteRange"))
 
     def test_missing_overwrite_checkbox_defaults_to_false(self):
         dash = self._makeApp()
         db = self._makeDb()
+        started = self._importStarted(db)
 
         self._postImport(dash, db, {'history_file': (io.BytesIO(b'{"msPlayed": 1}'), 'history.json')})
 
-        time.sleep(0.05)
+        self._awaitImport(started)
         db.importHistoryBatch.assert_called_once()
         self.assertFalse(db.importHistoryBatch.call_args.kwargs.get("overwriteRange"))
 

@@ -22,6 +22,12 @@ from _app_factory import AppTestCase
 # otherwise force a rewrite, invalidating live sessions).
 _SECRET_KEY_PATCH = 'app.SpotifyDashboardApp._get_or_create_secret_key'
 
+# A failure deadline for the cross-thread waits below, not a pace: every wait
+# returns the instant the other thread gets there, so a passing run never
+# spends it. Only a genuine block does - and then the test should fail rather
+# than hang the suite.
+_THREAD_DEADLINE_SECONDS = 5
+
 class TestMultiUser(unittest.TestCase):
     @patch(_SECRET_KEY_PATCH, return_value='test-secret-key')
     @patch('app.SpotifyDashboardApp.startVersionCheck_thread')
@@ -241,32 +247,52 @@ class TestSessionLockScope(unittest.TestCase):
         return app
 
     def test_slow_listener_check_does_not_block_unrelated_session_lookups(self):
-        import time
-
+        """The unrelated lookup must finish WHILE the slow listener check is
+        still in flight. Stated as ordering rather than as elapsed time: the
+        slow call is held open by an event instead of a sleep, so the test
+        proves the lookup overtook it rather than measuring how long a loaded
+        runner happened to take (the old version paced with sleep(0.05) and
+        asserted elapsed < 0.2s, which is the same claim with a stopwatch)."""
         dash = self._makeApp()
         dash.repo.upsertUser("alice", "alice@example.com")
         dash.repo.setUserCookies("alice", {"sp_dc": "fake"})
 
+        slowCallStarted = threading.Event()
+        releaseSlowCall = threading.Event()
+
+        def slowListenerCheck():
+            slowCallStarted.set()
+            releaseSlowCall.wait(_THREAD_DEADLINE_SECONDS)
+            return True
+
         slowDb = MagicMock()
-        slowDb.isListenerLoggedIn.side_effect = lambda: time.sleep(0.3) or True
+        slowDb.isListenerLoggedIn.side_effect = slowListenerCheck
         dash.user_databases["alice"] = slowDb
         dash._activatedUsers.add("alice")   #< get_user_db hands it back instead of building a real one
 
-        thread = threading.Thread(target=lambda: dash.is_user_logged_in("alice@example.com"))
-        thread.start()
-        time.sleep(0.05)  # let the slow call start
+        slowThread = threading.Thread(target=lambda: dash.is_user_logged_in("alice@example.com"))
+        slowThread.start()
+        self.addCleanup(slowThread.join, _THREAD_DEADLINE_SECONDS)
+        self.addCleanup(releaseSlowCall.set)   #< never leave the worker parked, even on failure
+        self.assertTrue(slowCallStarted.wait(_THREAD_DEADLINE_SECONDS),
+                        "the slow listener check never ran, so this test would prove nothing "
+                        "(it once passed with the thread dying on an AttributeError)")
 
-        start = time.time()
-        dash.get_username_for_email("bob@example.com")  # unrelated user, no network involved
-        elapsed = time.time() - start
+        # On its own thread so a REGRESSION blocks that thread rather than
+        # hanging the suite: the lookup is only released below, after the wait.
+        lookupReturned = threading.Event()
+        lookupThread = threading.Thread(
+            target=lambda: (dash.get_username_for_email("bob@example.com"), lookupReturned.set()))
+        lookupThread.start()
+        self.addCleanup(lookupThread.join, _THREAD_DEADLINE_SECONDS)
 
-        thread.join()
+        overtookTheSlowCall = lookupReturned.wait(_THREAD_DEADLINE_SECONDS)
+        releaseSlowCall.set()
+        slowThread.join(_THREAD_DEADLINE_SECONDS)
 
-        #< the assertion below means nothing if the slow call never ran, which is
-        #  exactly how this passed while the thread was dying on an AttributeError
         slowDb.isListenerLoggedIn.assert_called_once()
-        self.assertLess(
-            elapsed, 0.2,
+        self.assertTrue(
+            overtookTheSlowCall,
             "an unrelated session lookup blocked on another user's live listener check"
         )
 
