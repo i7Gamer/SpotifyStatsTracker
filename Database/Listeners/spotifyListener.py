@@ -857,7 +857,19 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
         "Between" is bounded by LISTENER_PLAYBACK_CONTINUITY_SECONDS: a
         different track sighted across a wider gap is a fresh baseline, not a
         witnessed transition - the resume-after-idle case, where the pre-gap
-        track's play was the feed's to record back when it ended."""
+        track's play was the feed's to record back when it ended.
+
+        Note this runs AFTER _validateCurrentUser and the feed read, so an error
+        on either skips it and the loop backs off - 60s for a rate limit, 30s
+        otherwise, both longer than the continuity bound. Track changes during a
+        backoff therefore land outside the window and read as fresh baselines,
+        which under-detects a genuinely broken feed exactly when Spotify is
+        misbehaving. That is the deliberate side of the trade: we did not
+        observe the gap, so we cannot claim to have witnessed anything across
+        it, and widening the window to cover backoffs would re-admit the
+        spurious rebuild-on-resume this bound exists to stop. Under-detection
+        costs a later rebuild; over-detection costs a re-login at the moment
+        someone starts listening."""
         state = self.getConnectPlayerState()
         if not state or not state.get("is_playing") or state.get("is_paused"):
             return
