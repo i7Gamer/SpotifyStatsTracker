@@ -846,7 +846,15 @@ class TestPushLoop(unittest.TestCase):
             return clock[0]
 
         callback = MagicMock()
-        with patch("Database.Spotify.recentlyPlayed.time.monotonic", side_effect=steppingMonotonic):
+        #< the re-subscribe interval is held out of the way so this measures the
+        #  frame watchdog alone. It is 5 minutes now - the same value as
+        #  PUSH_FRAME_SILENCE_FALLBACK_SECONDS - so at this clock step it fires
+        #  inside the window, and its extra monotonic() reads advance the clock
+        #  enough to trip the very fallback the test says must not happen. The
+        #  two thresholds are independent and merely happen to be equal; nothing
+        #  in the loop links them.
+        with patch("Database.Spotify.recentlyPlayed.time.monotonic", side_effect=steppingMonotonic), \
+             patch("Database.Spotify.recentlyPlayed.CONNECT_STATE_RESUBSCRIBE_SECONDS", 24 * 3600):
             outcome = _runPushLoop(lpm, callback)
 
         self.assertEqual(outcome, "stopped")   #< never fell back despite the elapsed time
@@ -872,6 +880,30 @@ class TestPushLoop(unittest.TestCase):
         _, callback, _ = self._run(manager)
 
         callback.assert_not_called()
+
+    def test_push_failover_window_stays_within_a_quarter_hour(self):
+        """How long a user's plays can go unrecorded before push gives up.
+
+        lastSubscribeAt is stamped whatever the re-subscribe returned - on
+        purpose, so a failing endpoint is not retried once per loop pass - which
+        makes the re-subscribe interval the RETRY interval too. The window is
+        therefore the product of the two constants, and neither one says so on
+        its own: at the original 15-minute interval, three failures took 45
+        minutes to reach the poll loop that would have recorded those plays.
+
+        Asserted as a bound rather than an equality: raising either constant is
+        allowed, but not past the point where the fallback stops being a
+        fallback."""
+        from Database.Spotify.recentlyPlayed import (
+            CONNECT_STATE_RESUBSCRIBE_SECONDS, PUSH_RESUBSCRIBE_MAX_FAILURES,
+        )
+
+        window = CONNECT_STATE_RESUBSCRIBE_SECONDS * PUSH_RESUBSCRIBE_MAX_FAILURES
+
+        self.assertLessEqual(window, 15 * 60,
+                             "push now takes %d minutes to fall back to polling; every play in that "
+                             "window is lost for a user with no Web API credentials"
+                             % (window // 60))
 
     def test_a_periodic_resubscribe_refreshes_the_state(self):
         """The floor under push mode: if the subscription silently stops

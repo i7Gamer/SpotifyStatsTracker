@@ -55,8 +55,20 @@ ENDPOINT_CONNECT_STATE = "connect-state"  #< shared-limiter backoff reason label
 # How often to re-PUT connect_device. Phase 0 saw the subscription survive
 # 9h46m untouched, so this is belt-and-braces rather than a requirement - but it
 # doubles as the "is the subscription still real?" probe, which silence alone
-# cannot answer. At 15 minutes it is 4 requests an hour against ~600.
-CONNECT_STATE_RESUBSCRIBE_SECONDS = 15 * 60
+# cannot answer.
+#
+# It is also the RETRY interval, because lastSubscribeAt is stamped whatever the
+# outcome - deliberately, so a failing endpoint is not hammered once per loop
+# pass. That makes this constant, times PUSH_RESUBSCRIBE_MAX_FAILURES, the time
+# push takes to give up and hand back to polling. At the original 15 minutes
+# that was 45 minutes of a user's plays going unrecorded before the fallback
+# that would have recorded them; at 5 it is 15
+# (test_push_failover_window_stays_within_a_quarter_hour pins it).
+#
+# The cost is the healthy path, and it is small: 12 requests an hour against
+# ~600, where 15 minutes was 4. Still ~2% of the budget, and the poll loop this
+# replaces made ~5,500 over the same 10 hours Phase 0 measured.
+CONNECT_STATE_RESUBSCRIBE_SECONDS = 5 * 60
 
 # Fall back to polling after this long with NO frame of any kind.
 #
