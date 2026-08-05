@@ -363,6 +363,13 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         # RECONNECT_MAX_DELAY. App shutdown signals both: it sets shutdown_event
         # and then calls signalStop() on every user (see app.py's shutdown).
         self._stopEvent = threading.Event()
+        # Bumped every time a listener is actually installed (startListener's
+        # swap). A reconnect backoff captures it on entry and abandons when it
+        # no longer matches: a re-login with fresh cookies replaces the listener
+        # WITHOUT stopping the instance - it cannot use signalStop, which sets
+        # _stopping and is never cleared - so this is what tells a parked
+        # backoff that the session it was retrying toward already exists.
+        self._listenerGeneration = 0
         self._listener_lock = threading.Lock()
 
         # Health monitoring: track listener state for graceful degradation

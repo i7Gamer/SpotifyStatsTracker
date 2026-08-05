@@ -129,9 +129,26 @@ class ListenerMixin:
         shutting down - reconnect/start paths must refuse from then on."""
         return self._stopping or self.shutdown_event.is_set()
 
-    def _waitForStop(self, timeout: float) -> bool:
+    def noteListenerSuperseded(self) -> None:
+        """Record that a newer listener now exists, and wake anything waiting.
+
+        Called from startListener's swap. NOT a stop: signalStop sets _stopping,
+        which is never cleared, so a user re-logging in with fresh cookies
+        cannot use it - it would refuse them a listener for the rest of the
+        process's life. This says only "whatever you were reconnecting toward
+        has been built already"."""
+        self._listenerGeneration += 1
+        self._stopEvent.set()
+
+    def _reconnectSuperseded(self, generation) -> bool:
+        """Whether a listener has been installed since `generation` was taken.
+        None means the caller is not part of a reconnect run and does not care."""
+        return generation is not None and generation != self._listenerGeneration
+
+    def _waitForStop(self, timeout: float, generation=None) -> bool:
         """Sleep up to `timeout` seconds, returning True as soon as this
-        instance should stop.
+        instance should stop - or, with `generation`, as soon as the reconnect
+        it belongs to has been superseded by a listener someone else built.
 
         Waits on _stopEvent rather than shutdown_event, which is the app-wide
         exit signal SHARED by every user: an app shutdown sets that AND calls
@@ -149,10 +166,20 @@ class ListenerMixin:
         without a signalStop() alongside it. In practice app shutdown always
         sends both (app.py sets the event, then signals every user), so
         _stopEvent ends the wait there too."""
-        if self._stopRequested():
+        if self._stopRequested() or self._reconnectSuperseded(generation):
+            return True
+        # Cleared for THIS wait, then the conditions re-read. _stopEvent is only
+        # the nudge that ends a wait early - _stopping and the generation are the
+        # truth - so a set left behind by an earlier wait would otherwise make
+        # this one return instantly, turning the backoff into a spin that burns
+        # every retry against Spotify with no delay between them. Re-reading
+        # after the clear is what makes it safe: a signal that arrived before it
+        # is caught here rather than lost.
+        self._stopEvent.clear()
+        if self._stopRequested() or self._reconnectSuperseded(generation):
             return True
         self._stopEvent.wait(timeout)
-        return self._stopRequested()
+        return self._stopRequested() or self._reconnectSuperseded(generation)
 
     def _makeOnStaleCallback(self) -> callable:
         """Create an onStale callback that retries with exponential backoff.
@@ -161,6 +188,10 @@ class ListenerMixin:
         diagnosis (spotifyListener's STALE_REASON_*), passed through to the
         session ledger startListener keeps for /admin."""
         def onStaleWithBackoff(reason=None):
+            #< captured before the first attempt: if anyone else installs a
+            #  listener while this loop is parked, the session it is retrying
+            #  toward already exists and reconnecting again would replace it
+            generation = self._listenerGeneration
             with self._health_lock:
                 self.listener_health = "DEGRADED"
                 self.listener_error_count += 1
@@ -180,11 +211,14 @@ class ListenerMixin:
                     # RECONNECT_MAX_DELAY and reconnecting into a process - or a
                     # session - that is already going away. See _waitForStop for
                     # why it is not shutdown_event.
-                    if self._waitForStop(backoff_delay):
-                        _dbmod.logger.info("Reconnection abandoned for user %s: stopping", self.user)
+                    if self._waitForStop(backoff_delay, generation):
+                        _dbmod.logger.info(
+                            "Reconnection abandoned for user %s: %s", self.user,
+                            "superseded by a newer listener"
+                            if self._reconnectSuperseded(generation) else "stopping")
                         return
 
-                if self._stopRequested():
+                if self._stopRequested() or self._reconnectSuperseded(generation):
                     _dbmod.logger.info("Reconnection abandoned for user %s: stop requested", self.user)
                     return
 
@@ -278,6 +312,9 @@ class ListenerMixin:
                     _dbmod.logger.error("Failed to stop just-built listener for user %s: %s", self.user, _dbmod.parseError(e))
                 return False
             self.listener = newListener
+            #< a listener now exists: any reconnect backoff still parked from an
+            #  earlier failure is retrying toward a session that is already here
+            self.noteListenerSuperseded()
             with self._health_lock:
                 # The session ledger: even a build that turns out contaminated
                 # or login-failed constructed a session, so it counts.

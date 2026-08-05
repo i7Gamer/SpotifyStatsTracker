@@ -70,6 +70,78 @@ class TestReconnectBackoff(unittest.TestCase):
                              "the reconnect backoff ignored this instance's stop - it is waiting on "
                              "the app-wide shutdown_event, so only a whole-app exit can interrupt it")
 
+    def test_a_backoff_superseded_by_a_fresh_listener_gives_up(self):
+        """The re-login path that an instance stop does NOT cover.
+
+        _refresh_user_session (dashboard/user_registry.py) handles a user
+        re-logging in with fresh cookies: it stops the listener and starts a
+        new one. It deliberately does not mark the instance stopped - signalStop
+        sets _stopping, which is never cleared, so that would refuse this user a
+        listener for the rest of the process's life.
+
+        So a backoff parked in _waitForStop saw no stop requested, slept out its
+        full RECONNECT_MAX_DELAY, woke up, and rebuilt on top of the healthy
+        session the re-login had just built - a second spotapi login, a second
+        TLS client, and a listener_session_builds bump that the /admin ledger
+        then reports as unexplained churn.
+
+        A generation counter is what distinguishes the two: a stop is permanent,
+        being superseded is not.
+
+        Deterministic rather than timed - the backoff is pushed far beyond any
+        plausible test runtime, so a thread that ends can only have been woken."""
+        db = self._makeTestDb()
+        attempted = threading.Event()
+
+        def failOnce(*args, **kwargs):
+            attempted.set()
+            raise RuntimeError("reconnect failed, forcing a backoff")
+
+        with patch.object(type(db), "RECONNECT_INITIAL_DELAY", 3600), \
+             patch.object(type(db), "RECONNECT_MAX_DELAY", 3600), \
+             patch.object(db, "startListener", side_effect=failOnce) as mockStart:
+            callback = db._makeOnStaleCallback()
+            worker = threading.Thread(target=callback, daemon=True)
+            worker.start()
+
+            self.assertTrue(attempted.wait(timeout=5), "the first reconnect never ran")
+            attemptsBeforeRelogin = mockStart.call_count
+
+            #< exactly what a successful startListener does at its swap
+            db.noteListenerSuperseded()
+
+            worker.join(timeout=5)
+
+            self.assertFalse(worker.is_alive(),
+                             "a superseded reconnect backoff is still asleep - a re-login cannot "
+                             "signalStop (that is permanent), so nothing else will wake it")
+            self.assertEqual(attemptsBeforeRelogin, mockStart.call_count,
+                             "the superseded backoff rebuilt a listener on top of the fresh one")
+
+    def test_being_superseded_does_not_stop_the_instance(self):
+        """The whole point of not reusing signalStop: this user must still be
+        able to start listeners afterwards."""
+        db = self._makeTestDb()
+
+        db.noteListenerSuperseded()
+
+        self.assertFalse(db._stopRequested())
+
+    def test_a_later_backoff_still_waits_after_an_earlier_one_was_superseded(self):
+        """The wake is an event, and an event left set would make every
+        subsequent wait return instantly - turning the backoff into a spin that
+        burns RECONNECT_MAX_RETRIES against Spotify with no delay at all."""
+        db = self._makeTestDb()
+        db.noteListenerSuperseded()
+
+        #< a fresh reconnect run, captured after the supersede
+        generation = db._listenerGeneration
+        started = time.monotonic()
+        interrupted = db._waitForStop(0.25, generation)
+
+        self.assertFalse(interrupted)
+        self.assertGreaterEqual(time.monotonic() - started, 0.2)
+
     def test_a_signalled_instance_does_not_start_an_auto_importer(self):
         """The same rule startListener follows: a signalled instance never
         starts a thread again.
