@@ -252,28 +252,19 @@ class TestTheNowPlayingPollStaysHandWritten(DashboardHtmxTestCase):
         self.assertIn("clearInterval", source)
 
 
-class TestUnauthenticatedSwap(DashboardHtmxTestCase):
+class TestDeferredCardsAreNotRedirected(DashboardHtmxTestCase):
+    """The dashboard's own share of the unauthenticated contract. The page-level
+    part of it - HX-Redirect instead of a 302, an empty body, the filters
+    preserved - is app-wide and parametrized over every htmx page in
+    tests/test_ajax_unauthenticated.py; what is dashboard-specific is that the
+    two deferred CARD endpoints deliberately do NOT join in."""
+
     def setUp(self):
         self.dash = self._makeApp()
         self.client = self.dash.app.test_client()
         self.patcher = patch.object(self.dash, "is_user_logged_in", return_value=False)
         self.patcher.start()
         self.addCleanup(self.patcher.stop)
-
-    def test_an_hx_request_gets_hx_redirect_rather_than_a_302(self):
-        """htmx follows a 302 as transparently as fetch() did, so without this
-        the login page is swapped into the summary cards."""
-        resp = self.client.get("/", headers=HX_HEADERS)
-
-        self.assertNotIn(resp.status_code, (301, 302, 303, 307, 308))
-        self.assertIn("/login", resp.headers.get("HX-Redirect", ""))
-        self.assertEqual(resp.get_data(as_text=True), "")
-
-    def test_a_plain_get_still_redirects(self):
-        resp = self.client.get("/")
-
-        self.assertEqual(resp.status_code, 302)
-        self.assertIn("/login", resp.headers.get("Location", ""))
 
     def test_the_deferred_cards_keep_their_401(self):
         """@requiresUser(api=True), unchanged: htmx reports the error and swaps

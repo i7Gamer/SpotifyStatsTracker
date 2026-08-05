@@ -17,6 +17,13 @@ pin the seam the rest of the migration will copy:
 The list CONTENT (tag/search/sort/pagination correctness) is covered by
 tests/test_history_tag_filter.py against the same fragment branch; what is
 here is the transport.
+
+The logged-out contract for this page is NOT here. HX-Redirect instead of a
+302, an empty body, and the filters preserved through the login round-trip
+are one app-wide rule with one implementation (app.py's
+unauthenticatedResponse), so it is asserted once, parametrized over every
+htmx page, in tests/test_ajax_unauthenticated.py. Eight copies of it lived
+here and in the sibling files, and only half checked all three things.
 """
 import os
 import sys
@@ -233,47 +240,3 @@ class TestShell(HistoryHtmxTestCase):
         return self.client.get("/history").get_data(as_text=True)
 
 
-class TestUnauthenticatedSwap(HistoryHtmxTestCase):
-    """An expired session mid-swap. Before the fetch() layer got its 401 branch
-    this dead-ended the page: the 302 was followed transparently and the login
-    HTML was parsed as data. htmx follows redirects the same way, so the same
-    bug is reachable again through a different client."""
-
-    def setUp(self):
-        super().setUp()
-        self.logged_in_patcher.stop()
-        self.addCleanup(self.logged_in_patcher.start)
-
-    def test_an_hx_request_gets_hx_redirect_rather_than_a_302(self):
-        resp = self.client.get("/history", headers=HX_HEADERS)
-
-        self.assertNotIn(resp.status_code, (301, 302, 303, 307, 308))
-        self.assertIn("/login", resp.headers.get("HX-Redirect", ""))
-
-    def test_the_hx_redirect_body_is_empty(self):
-        """Whatever the status, htmx swaps the body on a 2xx - so anything here
-        would be injected into the list before the redirect happens."""
-        resp = self.client.get("/history", headers=HX_HEADERS)
-
-        self.assertEqual(resp.get_data(as_text=True), "")
-
-    def test_the_hx_redirect_preserves_the_filtered_url(self):
-        """The query string IS the page state; coming back to an unfiltered
-        first page after logging in loses what the user was looking at."""
-        resp = self.client.get("/history?interval=week&q=abc", headers=HX_HEADERS)
-
-        target = resp.headers.get("HX-Redirect", "")
-        self.assertIn("interval%3Dweek", target)
-        self.assertIn("q%3Dabc", target)
-
-    def test_a_plain_get_still_redirects(self):
-        """Only the htmx path changes - an ordinary navigation keeps the 302 to
-        the login screen."""
-        resp = self.client.get("/history")
-
-        self.assertEqual(resp.status_code, 302)
-        self.assertIn("/login", resp.headers.get("Location", ""))
-
-
-if __name__ == "__main__":
-    unittest.main()

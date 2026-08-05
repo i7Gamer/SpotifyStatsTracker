@@ -18,6 +18,13 @@ specific to these three pages:
 - the body payload used to be HTML *and* chart data in one JSON envelope. The
   HTML is now the response, and the chart data rides inside it as a
   <script type="application/json"> island the afterSwap handler reads.
+
+The logged-out contract for this page is NOT here. HX-Redirect instead of a
+302, an empty body, and the filters preserved through the login round-trip
+are one app-wide rule with one implementation (app.py's
+unauthenticatedResponse), so it is asserted once, parametrized over every
+htmx page, in tests/test_ajax_unauthenticated.py. Eight copies of it lived
+here and in the sibling files, and only half checked all three things.
 """
 import os
 import sys
@@ -360,34 +367,6 @@ class TestShell(DetailHtmxTestCase):
 
         selectTag = body[body.index('<select id="groupBy"'):]
         self.assertIn("disabled", selectTag[:selectTag.index(">")])
-
-
-class TestUnauthenticatedSwap(DetailHtmxTestCase):
-    def setUp(self):
-        self.dash = self._makeApp()
-        self.client = self.dash.app.test_client()
-        self.patcher = patch.object(self.dash, "is_user_logged_in", return_value=False)
-        self.patcher.start()
-        self.addCleanup(self.patcher.stop)
-
-    def test_an_hx_request_gets_hx_redirect_rather_than_a_302(self):
-        """htmx follows a 302 as transparently as fetch() did, so without this
-        the login page is swapped into the detail body."""
-        for path in DETAIL_PATHS:
-            with self.subTest(path=path):
-                resp = self.client.get(path, headers=HX_BODY_HEADERS)
-
-                self.assertNotIn(resp.status_code, (301, 302, 303, 307, 308))
-                self.assertIn("/login", resp.headers.get("HX-Redirect", ""))
-                self.assertEqual(resp.get_data(as_text=True), "")
-
-    def test_a_plain_get_still_redirects(self):
-        for path in DETAIL_PATHS:
-            with self.subTest(path=path):
-                resp = self.client.get(path)
-
-                self.assertEqual(resp.status_code, 302)
-                self.assertIn("/login", resp.headers.get("Location", ""))
 
 
 class TestMissingEntitySwap(DetailHtmxTestCase):

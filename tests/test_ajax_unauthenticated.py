@@ -18,11 +18,36 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from _app_factory import AppTestCase
 
 # The pages whose content is loaded/refreshed by a fetch in static/js.
+#
+# Only detail-chart.js still does that, but the ?ajax= branch stays covered for
+# every page: it is one branch in unauthenticatedResponse, and a page that grows
+# a fetch tomorrow inherits it silently.
 AJAX_PATHS = ("/", "/charts", "/genres", "/history", "/top-songs", "/top-artists", "/top-albums",
               #< wrapped.js has called redirectIfUnauthorized since the feature
               #  landed, but the route still answered a 302, which fetch follows
               #  transparently - so the check never saw a 401 to act on
               "/wrapped")
+
+# Every page htmx drives. The same failure this module exists for, reachable
+# again through a different client: htmx follows a 302 exactly as transparently
+# as fetch() did, so an expired session mid-swap would put the login page's HTML
+# inside whatever region was being refreshed.
+#
+# Parametrized here rather than repeated per page. Each test_*_htmx.py grew its
+# own TestUnauthenticatedSwap saying this - eight copies of one app-wide rule
+# that lives in ONE place (app.py's unauthenticatedResponse), and only half of
+# them checked the empty body and the preserved filters. Now every path gets
+# every assertion.
+#
+# /shared/<token> is deliberately absent: it is not behind @requiresUser, so its
+# failures are a dead token (404) and the miss limiter (429), neither of which is
+# a session problem. Sending an anonymous visitor to a login screen for an
+# account that isn't theirs would be wrong - see test_wrapped_htmx.py's
+# TestSharedWrappedHtmx.
+HTMX_PATHS = AJAX_PATHS + ("/compare", "/song/t1", "/artist/a1", "/album/alb1")
+
+#< what htmx puts on every request it makes
+HX_HEADERS = {"HX-Request": "true"}
 
 
 class UnauthenticatedAjaxTestCase(AppTestCase):
@@ -79,6 +104,48 @@ class TestAjaxRequestsGet401(UnauthenticatedAjaxTestCase):
         resp = self.client.get("/song/t1?ajax=list")
 
         self.assertEqual(resp.status_code, 401)
+
+
+class TestHtmxRequestsGetHxRedirect(UnauthenticatedAjaxTestCase):
+    """The htmx half of the same contract. htmx understands HX-Redirect as "go
+    here instead"; a 302 it would simply follow, and swap the result in."""
+
+    def test_no_htmx_page_answers_a_swap_with_a_redirect(self):
+        for path in HTMX_PATHS:
+            with self.subTest(path=path):
+                resp = self.client.get(path, headers=HX_HEADERS)
+
+                self.assertNotIn(resp.status_code, (301, 302, 303, 307, 308))
+                self.assertIn("/login", resp.headers.get("HX-Redirect", ""))
+
+    def test_the_body_is_empty_so_nothing_is_swapped_in(self):
+        """htmx swaps the body of any 2xx before the redirect happens, so
+        anything here would be injected into the page on the way out."""
+        for path in HTMX_PATHS:
+            with self.subTest(path=path):
+                resp = self.client.get(path, headers=HX_HEADERS)
+
+                self.assertEqual(resp.get_data(as_text=True), "")
+
+    def test_the_hx_redirect_keeps_the_pages_filters(self):
+        """Same reasoning as the 401's loginUrl above - the query string IS the
+        page state, and dropping it lands the user somewhere else after logging
+        back in."""
+        resp = self.client.get("/top-songs?interval=year&sortBy=skips&page=4", headers=HX_HEADERS)
+
+        target = resp.headers.get("HX-Redirect", "")
+        for expected in ("interval%3Dyear", "sortBy%3Dskips", "page%3D4"):
+            with self.subTest(param=expected):
+                self.assertIn(expected, target)
+
+    def test_an_htmx_request_wins_over_a_stray_ajax_marker(self):
+        """A crafted ?ajax= on an htmx request must not get the JSON 401 the
+        swap cannot act on - the header is the stronger signal, and the branch
+        order in unauthenticatedResponse is what makes that true."""
+        resp = self.client.get("/history?ajax=true", headers=HX_HEADERS)
+
+        self.assertIn("/login", resp.headers.get("HX-Redirect", ""))
+        self.assertNotEqual(resp.mimetype, "application/json")
 
 
 class TestNormalRequestsStillRedirect(UnauthenticatedAjaxTestCase):

@@ -29,6 +29,13 @@ what most of this file is about:
 The page CONTENT - taste-match scoring, shared-list ranking, the stats table,
 the authorization boundary on ?with= - is covered by tests/test_compare_route.py
 against this same fragment; what is here is the transport.
+
+The logged-out contract for this page is NOT here. HX-Redirect instead of a
+302, an empty body, and the filters preserved through the login round-trip
+are one app-wide rule with one implementation (app.py's
+unauthenticatedResponse), so it is asserted once, parametrized over every
+htmx page, in tests/test_ajax_unauthenticated.py. Eight copies of it lived
+here and in the sibling files, and only half checked all three things.
 """
 import json
 import os
@@ -432,41 +439,6 @@ class TestShell(CompareHtmxTestCase):
         customDates = shell[shell.index('id="compareCustomDates"'):]
         customDates = customDates[:customDates.index("</div>")]
         self.assertNotIn("disabled", customDates)
-
-
-class TestUnauthenticatedSwap(CompareHtmxTestCase):
-    """An expired session mid-swap. htmx follows a 302 as transparently as
-    fetch() did, so without the escape the login page's HTML would be
-    distributed over the comparison's regions."""
-
-    def _anonymousClient(self):
-        return self.dash.app.test_client()
-
-    def test_an_hx_request_gets_hx_redirect_rather_than_a_302(self):
-        resp = self._anonymousClient().get("/compare", headers=HX_HEADERS)
-
-        self.assertNotIn(resp.status_code, (301, 302, 303, 307, 308))
-        self.assertIn("/login", resp.headers.get("HX-Redirect", ""))
-
-    def test_the_hx_redirect_body_is_empty(self):
-        resp = self._anonymousClient().get("/compare", headers=HX_HEADERS)
-
-        self.assertEqual(resp.get_data(as_text=True), "")
-
-    def test_the_hx_redirect_preserves_the_filtered_url(self):
-        """The query string IS the page state; coming back to an unfiltered
-        default comparison after logging in loses what the user was looking at."""
-        resp = self._anonymousClient().get("/compare?with=bob&interval=week", headers=HX_HEADERS)
-
-        target = resp.headers.get("HX-Redirect", "")
-        self.assertIn("with%3Dbob", target)
-        self.assertIn("interval%3Dweek", target)
-
-    def test_a_plain_get_still_redirects(self):
-        resp = self._anonymousClient().get("/compare")
-
-        self.assertEqual(resp.status_code, 302)
-        self.assertIn("/login", resp.headers.get("Location", ""))
 
 
 class TestRevokedShareMidSession(CompareHtmxTestCase):

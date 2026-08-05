@@ -22,6 +22,13 @@ Two things are specific to this page and have no counterpart on /history:
   layout_public.html, which is not behind @requiresUser. An expired or revoked
   share token is a 404, not a session problem, and must NOT acquire an
   HX-Redirect to /login - see TestSharedWrappedHtmx.
+
+The logged-out contract for this page is NOT here. HX-Redirect instead of a
+302, an empty body, and the filters preserved through the login round-trip
+are one app-wide rule with one implementation (app.py's
+unauthenticatedResponse), so it is asserted once, parametrized over every
+htmx page, in tests/test_ajax_unauthenticated.py. Eight copies of it lived
+here and in the sibling files, and only half checked all three things.
 """
 import os
 import sys
@@ -392,45 +399,6 @@ class TestGenreCardIsNotRecomputedPerFilterChange(WrappedHtmxTestCase):
     def _fragmentFilterChange(self, query=""):
         return self.client.get("/wrapped" + query,
                                headers=self.FILTER_CHANGE).get_data(as_text=True)
-
-
-class TestUnauthenticatedSwap(WrappedHtmxTestCase):
-    """An expired session mid-swap. htmx follows a 302 as transparently as
-    fetch() did, so without HX-Redirect the login page would be swapped into
-    the recap - the same bug wrappedPage's ajax 401 branch was added for,
-    reachable again through a different client."""
-
-    def setUp(self):
-        super().setUp()
-        patcher = patch.object(self.dash, "is_user_logged_in", return_value=False)
-        patcher.start()
-        self.addCleanup(patcher.stop)
-
-    def test_an_hx_request_gets_hx_redirect_rather_than_a_302(self):
-        resp = self.client.get("/wrapped", headers=HX_HEADERS)
-
-        self.assertNotIn(resp.status_code, (301, 302, 303, 307, 308))
-        self.assertIn("/login", resp.headers.get("HX-Redirect", ""))
-
-    def test_the_hx_redirect_body_is_empty(self):
-        """htmx swaps the body of any 2xx, so anything here would be injected
-        into the page before the redirect happens."""
-        resp = self.client.get("/wrapped", headers=HX_HEADERS)
-
-        self.assertEqual(resp.get_data(as_text=True), "")
-
-    def test_the_hx_redirect_preserves_the_year_and_filters(self):
-        resp = self.client.get("/wrapped?year=2024&sortBy=name", headers=HX_HEADERS)
-
-        target = resp.headers.get("HX-Redirect", "")
-        self.assertIn("year%3D2024", target)
-        self.assertIn("sortBy%3Dname", target)
-
-    def test_a_plain_get_still_redirects(self):
-        resp = self.client.get("/wrapped")
-
-        self.assertEqual(resp.status_code, 302)
-        self.assertIn("/login", resp.headers.get("Location", ""))
 
 
 class TestSharedWrappedHtmx(PublicSharedWrappedTestCase):

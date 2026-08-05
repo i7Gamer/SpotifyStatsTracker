@@ -15,6 +15,13 @@ on why the transport looks like this. What is specific to this page:
   library holding instances per <canvas>, so replacing the canvases wholesale on
   every filter change leaks nothing - each render sets its canvas up from
   scratch.
+
+The logged-out contract for this page is NOT here. HX-Redirect instead of a
+302, an empty body, and the filters preserved through the login round-trip
+are one app-wide rule with one implementation (app.py's
+unauthenticatedResponse), so it is asserted once, parametrized over every
+htmx page, in tests/test_ajax_unauthenticated.py. Eight copies of it lived
+here and in the sibling files, and only half checked all three things.
 """
 import os
 import sys
@@ -208,29 +215,3 @@ class TestShell(ChartsHtmxTestCase):
         self.assertNotIn("disabled", dateInput[:dateInput.index(">")])
 
 
-class TestUnauthenticatedSwap(ChartsHtmxTestCase):
-    def setUp(self):
-        self.dash = self._makeApp()
-        self.client = self.dash.app.test_client()
-        self.patcher = patch.object(self.dash, "is_user_logged_in", return_value=False)
-        self.patcher.start()
-        self.addCleanup(self.patcher.stop)
-
-    def test_an_hx_request_gets_hx_redirect_rather_than_a_302(self):
-        """htmx follows a 302 as transparently as fetch() did, so without this
-        the login page is swapped into the chart card."""
-        resp = self.client.get("/charts", headers=HX_HEADERS)
-
-        self.assertNotIn(resp.status_code, (301, 302, 303, 307, 308))
-        self.assertIn("/login", resp.headers.get("HX-Redirect", ""))
-        self.assertEqual(resp.get_data(as_text=True), "")
-
-    def test_a_plain_get_still_redirects(self):
-        resp = self.client.get("/charts")
-
-        self.assertEqual(resp.status_code, 302)
-        self.assertIn("/login", resp.headers.get("Location", ""))
-
-
-if __name__ == "__main__":
-    unittest.main()
