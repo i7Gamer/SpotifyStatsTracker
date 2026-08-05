@@ -14,6 +14,7 @@ const {
   rangeProblem,
   pruneEmptyParams,
   isNativeModifierClick,
+  hidesTrendBuckets,
   failureUi,
   RANGE_OK,
   RANGE_INCOMPLETE,
@@ -153,6 +154,22 @@ run('ctrl and meta are not claimed here - htmx already passes those through', ()
 run('a missing event is not a modifier click', () => {
   assert.strictEqual(isNativeModifierClick(null), false);
   assert.strictEqual(isNativeModifierClick(undefined), false);
+});
+
+// --- hidesTrendBuckets -------------------------------------------------------
+// /charts and /genres each carried this rule in a different spelling, one with
+// a comment saying it mirrored the other. One spelling, one test.
+
+run('a single-day view hides the Trend buckets control', () => {
+  // Those views are bucketed by hour server-side, so the control is a no-op.
+  assert.strictEqual(hidesTrendBuckets('today'), true);
+  assert.strictEqual(hidesTrendBuckets('day'), true);
+});
+
+run('every multi-day interval keeps it', () => {
+  ['week', 'month', 'year', '5years', 'all time', 'custom', ''].forEach((interval) => {
+    assert.strictEqual(hidesTrendBuckets(interval), false, interval);
+  });
 });
 
 // --- failureUi ---------------------------------------------------------------

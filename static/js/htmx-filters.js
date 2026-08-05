@@ -71,6 +71,60 @@ function isNativeModifierClick(evt) {
   return !!evt && (!!evt.shiftKey || !!evt.altKey);
 }
 
+// Whether a Time Period choice makes the Trend-buckets control meaningless.
+//
+// A single-day view is bucketed by hour server-side, so the control is a no-op
+// and hides. /charts and /genres both had this rule and spelled it differently -
+// one as `SINGLE_DAY_INTERVALS.indexOf(interval) === -1`, the other as
+// `interval === 'today' || interval === 'day'` - with a comment on the second
+// saying it mirrored the first. Two spellings of one rule is how they stop
+// mirroring.
+var SINGLE_DAY_INTERVALS = ['today', 'day'];
+
+function hidesTrendBuckets(interval) {
+  return SINGLE_DAY_INTERVALS.indexOf(interval) !== -1;
+}
+
+// --- the shared custom-date-range controls -----------------------------------
+// Every filter page names these the same (#interval, #startDate, #endDate,
+// #dateError); only the container id differs, so it is the one argument. The
+// three functions below were copied into five page modules, identical but for
+// that id - and they carry the validation, which is where a divergence would
+// actually hurt.
+
+function rangeProblemFromDom() {
+  return rangeProblem(document.getElementById('interval').value,
+                      document.getElementById('startDate').value,
+                      document.getElementById('endDate').value);
+}
+
+function showRangeError(problem) {
+  var invalid = problem === RANGE_INVERTED;
+  var errorEl = document.getElementById('dateError');
+  if (errorEl) {
+    errorEl.textContent = invalid ? RANGE_INVERTED_MESSAGE : '';
+    errorEl.style.display = invalid ? 'block' : 'none';   //< block, like every sibling page
+  }
+  document.getElementById('startDate').style.borderColor = invalid ? 'var(--accent)' : '';
+  document.getElementById('endDate').style.borderColor = invalid ? 'var(--accent)' : '';
+}
+
+// Called from the Time Period select's onchange. Runs before htmx's own
+// listener (an inline on*= handler fires at the target; htmx's is on the form
+// and fires as the event bubbles), so the disabled flags are already right by
+// the time the request is serialized.
+//
+// `disabled`, not merely hidden: a disabled control is not serialized, which is
+// what keeps a stale custom range out of the request - and so out of the URL,
+// since hx-replace-url writes back what was requested.
+function syncCustomRange(containerId) {
+  var custom = document.getElementById('interval').value === 'custom';
+  document.getElementById(containerId).style.display = custom ? 'flex' : 'none';
+  document.getElementById('startDate').disabled = !custom;
+  document.getElementById('endDate').disabled = !custom;
+  showRangeError(rangeProblemFromDom());
+}
+
 // Which failure UI a swap target wants, and where it goes.
 //
 // Every migrated page ended up with the same eight-line block: two listeners,
@@ -119,6 +173,10 @@ var HtmxFilters = {
   rangeProblem: rangeProblem,
   pruneEmptyParams: pruneEmptyParams,
   isNativeModifierClick: isNativeModifierClick,
+  hidesTrendBuckets: hidesTrendBuckets,
+  rangeProblemFromDom: rangeProblemFromDom,
+  showRangeError: showRangeError,
+  syncCustomRange: syncCustomRange,
   failureUi: failureUi,
   onSwapFailure: onSwapFailure,
   RANGE_OK: RANGE_OK,

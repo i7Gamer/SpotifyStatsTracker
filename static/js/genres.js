@@ -194,23 +194,6 @@
     if (field) field.value = data.genre || '';
   }
 
-  // ---- Filter controls htmx cannot express ---------------------------------
-
-  var currentRangeProblem = function () {
-    return HtmxFilters.rangeProblem(byId('interval').value, byId('startDate').value, byId('endDate').value);
-  };
-
-  var showRangeError = function (problem) {
-    var invalid = problem === HtmxFilters.RANGE_INVERTED;
-    var errorEl = byId('dateError');
-    if (errorEl) {
-      errorEl.textContent = invalid ? HtmxFilters.RANGE_INVERTED_MESSAGE : '';
-      errorEl.style.display = invalid ? 'block' : 'none';
-    }
-    byId('startDate').style.borderColor = invalid ? 'var(--accent)' : '';
-    byId('endDate').style.borderColor = invalid ? 'var(--accent)' : '';
-  };
-
   // Called from the Time Period select's onchange. Runs before htmx's own
   // listener does (an inline on*= handler fires at the target, htmx's is on the
   // form and fires as the event bubbles), so the disabled flags below are
@@ -220,18 +203,14 @@
   // is what keeps a stale custom range out of the request - and therefore out
   // of the URL - after switching back to a named interval.
   window.updateGenresIntervalFilter = function () {
-    var interval = byId('interval').value;
-    var custom = interval === 'custom';
-    byId('genresCustomDates').style.display = custom ? 'flex' : 'none';
-    byId('startDate').disabled = !custom;
-    byId('endDate').disabled = !custom;
-    // Single-day views bucket by hour server-side - the control is a no-op
-    // there, so it hides (mirrors charts-page.js).
+    HtmxFilters.syncCustomRange('genresCustomDates');
+    //< the same rule /charts applies, now in one spelling rather than two that
+    //  only a comment kept in step (see HtmxFilters.hidesTrendBuckets)
     var groupByContainer = byId('groupByContainer');
     if (groupByContainer) {
-      groupByContainer.style.display = (interval === 'today' || interval === 'day') ? 'none' : 'flex';
+      groupByContainer.style.display =
+        HtmxFilters.hidesTrendBuckets(byId('interval').value) ? 'none' : 'flex';
     }
-    showRangeError(currentRangeProblem());
   };
 
   // The one place a request gets vetoed.
@@ -253,8 +232,8 @@
     // Period select sits on a half-entered custom range, which is exactly the
     // state that blocks a form request.
     if (elt.id !== GENRES_FORM_ID) return;
-    var problem = currentRangeProblem();
-    showRangeError(problem);
+    var problem = HtmxFilters.rangeProblemFromDom();
+    HtmxFilters.showRangeError(problem);
     if (problem !== HtmxFilters.RANGE_OK) {
       evt.preventDefault();
       return;

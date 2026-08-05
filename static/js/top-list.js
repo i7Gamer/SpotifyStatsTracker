@@ -25,21 +25,6 @@ var TOP_LIST_FORM_ID = 'topListFilters';
 if (typeof document !== 'undefined') {
   var byId = function (id) { return document.getElementById(id); };
 
-  var currentRangeProblem = function () {
-    return HtmxFilters.rangeProblem(byId('interval').value, byId('startDate').value, byId('endDate').value);
-  };
-
-  var showRangeError = function (problem) {
-    var invalid = problem === HtmxFilters.RANGE_INVERTED;
-    var errorEl = byId('dateError');
-    if (errorEl) {
-      errorEl.textContent = invalid ? HtmxFilters.RANGE_INVERTED_MESSAGE : '';
-      errorEl.style.display = invalid ? 'block' : 'none';   //< block, like the sibling pages
-    }
-    byId('startDate').style.borderColor = invalid ? 'var(--accent)' : '';
-    byId('endDate').style.borderColor = invalid ? 'var(--accent)' : '';
-  };
-
   // Called from the Time Period select's onchange. Runs before htmx's listener
   // (an inline on*= handler fires at the target; htmx's is on the form and fires
   // as the event bubbles), so the disabled flags are already right by the time
@@ -48,13 +33,7 @@ if (typeof document !== 'undefined') {
   // `disabled`, not merely hidden: a disabled control is not serialized, which
   // is what keeps a stale custom range out of the request - and so out of the
   // URL - after switching back to a named interval.
-  window.updateIntervalFilter = function () {
-    var custom = byId('interval').value === 'custom';
-    byId('customDates').style.display = custom ? 'flex' : 'none';
-    byId('startDate').disabled = !custom;
-    byId('endDate').disabled = !custom;
-    showRangeError(currentRangeProblem());
-  };
+  window.updateIntervalFilter = function () { HtmxFilters.syncCustomRange('customDates'); };
 
   // "Full plays only" cannot be a plain form field. An unchecked checkbox is not
   // serialized at all, and to this route an ABSENT fullOnly means the default,
@@ -89,8 +68,8 @@ if (typeof document !== 'undefined') {
   // range, which is exactly the state that blocks a form request.
   document.body.addEventListener('htmx:configRequest', function (evt) {
     if (!evt.detail.elt || evt.detail.elt.id !== TOP_LIST_FORM_ID) return;
-    var problem = currentRangeProblem();
-    showRangeError(problem);
+    var problem = HtmxFilters.rangeProblemFromDom();
+    HtmxFilters.showRangeError(problem);
     if (problem !== HtmxFilters.RANGE_OK) {
       evt.preventDefault();
       return;

@@ -37,25 +37,12 @@ var CHARTS_DATA_ID = 'chartsData';
 //< the form htmx watches, in charts.html
 var CHARTS_FORM_ID = 'chartsFilters';
 
-//< the two ranges the route buckets by hour, where the Trend-buckets choice
-//  does not apply (see chartsPage's isSingleDayView)
-var SINGLE_DAY_INTERVALS = ['today', 'day'];
+//< which ranges the route buckets by hour, and so where the Trend-buckets
+//  choice does not apply (see chartsPage's isSingleDayView), lives in
+//  HtmxFilters.hidesTrendBuckets - /genres applies the same rule
 
 if (typeof document !== 'undefined') {
   var byId = function (id) { return document.getElementById(id); };
-
-  var currentRangeProblem = function () {
-    return HtmxFilters.rangeProblem(byId('interval').value, byId('startDate').value, byId('endDate').value);
-  };
-
-  var showRangeError = function (problem) {
-    var invalid = problem === HtmxFilters.RANGE_INVERTED;
-    var errorEl = byId('dateError');
-    errorEl.textContent = invalid ? HtmxFilters.RANGE_INVERTED_MESSAGE : '';
-    errorEl.style.display = invalid ? 'block' : 'none';
-    byId('startDate').style.borderColor = invalid ? 'var(--accent)' : '';
-    byId('endDate').style.borderColor = invalid ? 'var(--accent)' : '';
-  };
 
   // Called from the Time Period select's onchange. Runs before htmx's listener
   // (an inline on*= handler fires at the target; htmx's is on the form and
@@ -68,14 +55,12 @@ if (typeof document !== 'undefined') {
   // HIDDEN for a single-day range, because its value has to survive switching
   // back to a multi-day one.
   window.updateChartsIntervalFilter = function () {
-    var interval = byId('interval').value;
-    var custom = interval === 'custom';
-    byId('chartsCustomDates').style.display = custom ? 'flex' : 'none';
-    byId('startDate').disabled = !custom;
-    byId('endDate').disabled = !custom;
+    HtmxFilters.syncCustomRange('chartsCustomDates');
+    //< a single-day view is bucketed by hour server-side, so the control is a
+    //  no-op there. The rule is shared with /genres, which used to spell it
+    //  differently (see HtmxFilters.hidesTrendBuckets).
     byId('groupByContainer').style.display =
-      SINGLE_DAY_INTERVALS.indexOf(interval) === -1 ? 'flex' : 'none';
-    showRangeError(currentRangeProblem());
+      HtmxFilters.hidesTrendBuckets(byId('interval').value) ? 'none' : 'flex';
   };
 
   // The one place a request gets vetoed, and what stops "custom" firing a
@@ -85,8 +70,8 @@ if (typeof document !== 'undefined') {
   // same control set (static/js/htmx-filters.js).
   document.body.addEventListener('htmx:configRequest', function (evt) {
     if (!evt.detail.elt || evt.detail.elt.id !== CHARTS_FORM_ID) return;
-    var problem = currentRangeProblem();
-    showRangeError(problem);
+    var problem = HtmxFilters.rangeProblemFromDom();
+    HtmxFilters.showRangeError(problem);
     if (problem !== HtmxFilters.RANGE_OK) {
       evt.preventDefault();
       return;

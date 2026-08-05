@@ -30,28 +30,15 @@
 //< the form htmx watches; also the element the sort toggle re-triggers
 var HISTORY_FORM_ID = 'historyFilters';
 
-// The date-range check and the empty-param pruning live in
-// static/js/htmx-filters.js, shared with the Top lists - both pages have the
-// same filter card, and two copies of "is this range worth a request" would
-// eventually disagree. Loaded before this file (see templates/history.html).
+// The date-range check, its error display, the custom-range show/hide and the
+// empty-param pruning all live in static/js/htmx-filters.js, shared with the
+// four other filter pages - they carry the same control set, and five copies of
+// "is this range worth a request" would eventually disagree. Loaded before this
+// file (see templates/history.html).
 var RANGE_OK = HtmxFilters.RANGE_OK;
-var RANGE_INVERTED = HtmxFilters.RANGE_INVERTED;
 
 if (typeof document !== 'undefined') {
   var byId = function (id) { return document.getElementById(id); };
-
-  var currentRangeProblem = function () {
-    return HtmxFilters.rangeProblem(byId('interval').value, byId('startDate').value, byId('endDate').value);
-  };
-
-  var showRangeError = function (problem) {
-    var invalid = problem === RANGE_INVERTED;
-    var errorElem = byId('dateError');
-    errorElem.textContent = invalid ? HtmxFilters.RANGE_INVERTED_MESSAGE : '';
-    errorElem.style.display = invalid ? 'block' : 'none';
-    byId('startDate').style.borderColor = invalid ? 'var(--accent)' : '';
-    byId('endDate').style.borderColor = invalid ? 'var(--accent)' : '';
-  };
 
   // Called from the Time Period select's onchange. Runs before htmx's own
   // listener does (an inline on*= handler fires at the target, htmx's is on the
@@ -61,13 +48,7 @@ if (typeof document !== 'undefined') {
   // `disabled`, not merely hidden: a disabled control is not serialized, which
   // is what keeps a stale custom range out of the request - and therefore out
   // of the URL - after switching back to a named interval.
-  window.updateHistoryInterval = function () {
-    var custom = byId('interval').value === 'custom';
-    byId('historyCustomDates').style.display = custom ? 'flex' : 'none';
-    byId('startDate').disabled = !custom;
-    byId('endDate').disabled = !custom;
-    showRangeError(currentRangeProblem());
-  };
+  window.updateHistoryInterval = function () { HtmxFilters.syncCustomRange('historyCustomDates'); };
 
   // The Date sort toggle: flips newest-first (default) <-> oldest-first. The
   // value lives in a hidden form field so htmx builds the query string from one
@@ -106,8 +87,8 @@ if (typeof document !== 'undefined') {
   // range, which is exactly the state that blocks a form request.
   document.body.addEventListener('htmx:configRequest', function (evt) {
     if (!evt.detail.elt || evt.detail.elt.id !== HISTORY_FORM_ID) return;
-    var problem = currentRangeProblem();
-    showRangeError(problem);
+    var problem = HtmxFilters.rangeProblemFromDom();
+    HtmxFilters.showRangeError(problem);
     if (problem !== RANGE_OK) {
       evt.preventDefault();
       return;

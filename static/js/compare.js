@@ -70,19 +70,6 @@ if (typeof window !== 'undefined') {
 if (typeof document !== 'undefined') {
   var byId = function (id) { return document.getElementById(id); };
 
-  var currentRangeProblem = function () {
-    return HtmxFilters.rangeProblem(byId('interval').value, byId('startDate').value, byId('endDate').value);
-  };
-
-  var showRangeError = function (problem) {
-    var invalid = problem === HtmxFilters.RANGE_INVERTED;
-    var errorElem = byId('dateError');
-    errorElem.textContent = invalid ? HtmxFilters.RANGE_INVERTED_MESSAGE : '';
-    errorElem.style.display = invalid ? 'block' : 'none';
-    byId('startDate').style.borderColor = invalid ? 'var(--accent)' : '';
-    byId('endDate').style.borderColor = invalid ? 'var(--accent)' : '';
-  };
-
   // Called from the Time Period select's onchange. Both this and htmx's own
   // listener sit on that select (the form's trigger names it with `from:`), and
   // listeners on one element fire in registration order - an inline on*=
@@ -93,13 +80,7 @@ if (typeof document !== 'undefined') {
   // `disabled`, not merely hidden: a disabled control is not serialized, which
   // is what keeps a stale custom range out of the request - and therefore out
   // of the URL, since hx-replace-url writes back what was requested.
-  window.updateCompareIntervalFilter = function () {
-    var custom = byId('interval').value === 'custom';
-    byId('compareCustomDates').style.display = custom ? 'flex' : 'none';
-    byId('startDate').disabled = !custom;
-    byId('endDate').disabled = !custom;
-    showRangeError(currentRangeProblem());
-  };
+  window.updateCompareIntervalFilter = function () { HtmxFilters.syncCustomRange('compareCustomDates'); };
 
   // The one place a request gets vetoed, and the guard Compare was the last
   // page to gain: it used to fetch an inverted range and render an empty
@@ -111,8 +92,8 @@ if (typeof document !== 'undefined') {
   // that blocks a form request.
   document.body.addEventListener('htmx:configRequest', function (evt) {
     if (!evt.detail.elt || evt.detail.elt.id !== COMPARE_FORM_ID) return;
-    var problem = currentRangeProblem();
-    showRangeError(problem);
+    var problem = HtmxFilters.rangeProblemFromDom();
+    HtmxFilters.showRangeError(problem);
     if (problem !== HtmxFilters.RANGE_OK) {
       evt.preventDefault();
       return;
