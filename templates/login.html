@@ -63,4 +63,11 @@
   </div>
 </div>
 
+{# Reaching this page ends a session, whether by logging out or by one
+   expiring. htmx's page-snapshot cache lives in sessionStorage and no
+   server-side logout can clear it, so without this a Back from here repaints
+   the previous account's pages straight from storage - see
+   static/js/session-reset.js. #}
+<script src="{{ url_for('static', filename='js/session-reset.js') }}"></script>
+
 {% endblock %}
