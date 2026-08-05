@@ -27,7 +27,7 @@ try:
         Repository, IMAGE_KIND_TRACK, IMAGE_KIND_ARTIST, IMAGE_STATUS_OK, IMAGE_STATUS_FAILED,
         SKIP_RATE_PRIOR_WEIGHT,
     )
-    from Database.db import BEHAVIORAL_COLUMNS, SKIP_THRESHOLD_MS
+    from Database.db import BEHAVIORAL_COLUMNS, SKIP_THRESHOLD_MS, WEB_API_BACKFILL_SOURCE
     from Database.utils import parseError, convertToDatetime, dateToString, startOfDay, startOfWeek, startOfMonth, timeToInt, getTimezone, listeningBuckets
     from Database.lastfm import LastfmClient, filterTagsToGenres, cleanLookupName, OUTCOME_OK, OUTCOME_NOT_FOUND, OUTCOME_TRANSIENT, OUTCOME_INVALID_KEY
 except ModuleNotFoundError:
@@ -41,7 +41,7 @@ except ModuleNotFoundError:
         Repository, IMAGE_KIND_TRACK, IMAGE_KIND_ARTIST, IMAGE_STATUS_OK, IMAGE_STATUS_FAILED,
         SKIP_RATE_PRIOR_WEIGHT,
     )
-    from db import BEHAVIORAL_COLUMNS, SKIP_THRESHOLD_MS
+    from db import BEHAVIORAL_COLUMNS, SKIP_THRESHOLD_MS, WEB_API_BACKFILL_SOURCE
     from utils import parseError, convertToDatetime, dateToString, startOfDay, startOfWeek, startOfMonth, timeToInt, getTimezone, listeningBuckets
     from lastfm import LastfmClient, filterTagsToGenres, cleanLookupName, OUTCOME_OK, OUTCOME_NOT_FOUND, OUTCOME_TRANSIENT, OUTCOME_INVALID_KEY
 
@@ -226,8 +226,12 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
                                                      #  474s after a 287s track's start). Kept a tight point
                                                      #  match: live insert lag is ~1s, poll-mode detection a few
                                                      #  seconds - anything minutes away is a different listen.
-    WEB_API_BACKFILL_SOURCE = "web_api_backfill"  #< play source recorded by the Web API backfill; its
-                                                   #  created_reason is "<source>_play (user: ...)" (appendTrackData)
+    #< the module-level import above, re-exposed on the class because the mixins
+    #  reach it as self.WEB_API_BACKFILL_SOURCE. It is DEFINED in Database/db.py,
+    #  the leaf module Listeners/spotifyListener.py can import too - which is the
+    #  whole point: the listener tags plays with it, and the insert guard and the
+    #  reconciler both match on it, so it has to be one string, not three.
+    WEB_API_BACKFILL_SOURCE = WEB_API_BACKFILL_SOURCE
 
     NOW_PLAYING_STALE_GRACE_MS = 60_000        #< a "playing" track whose duration (plus this) has fully elapsed
                                                 #  since the last connect-state update is a frozen/stale feed,

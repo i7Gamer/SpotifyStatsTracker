@@ -1080,3 +1080,34 @@ class ListenerLogIdentityTestCase(unittest.TestCase):
         self.assertEqual(mockRefresh.call_args.kwargs["logUser"], "alice")
         self.assertEqual(mockUser.call_args.kwargs["logUser"], "alice")
         self.assertEqual(mockFetch.call_args.kwargs["logUser"], "alice")
+
+
+class TestBackfillSourceTagIsOneConstant(unittest.TestCase):
+    """The listener tags backfilled plays with a source string, and three
+    unrelated places depend on that exact spelling: the insert guard compares
+    `source == WEB_API_BACKFILL_SOURCE`, and the reconciler plus
+    sweep_backfill_duplicates.py LIKE-match the `<source>_play%` created_reason
+    it turns into. They all agreed only by coincidence - a rename in the
+    listener alone would silently stop deduplicating and start double-recording
+    plays, with nothing raising."""
+
+    def test_the_listener_tags_plays_with_the_shared_constant(self):
+        from Database.database import Database
+        from Database.db import WEB_API_BACKFILL_SOURCE
+
+        self.assertEqual(WEB_API_BACKFILL_SOURCE, Database.WEB_API_BACKFILL_SOURCE)
+
+    def test_no_module_spells_the_source_out_by_hand(self):
+        """The constant is only worth having if nothing bypasses it."""
+        from pathlib import Path as _Path
+        root = _Path(__file__).resolve().parents[1]
+        offenders = []
+        for path in (root / "Database" / "Listeners" / "spotifyListener.py",
+                     root / "Database" / "import_service.py",
+                     root / "Database" / "workers" / "listener.py"):
+            for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                code = line.split("#")[0]
+                if '"web_api_backfill"' in code or "'web_api_backfill'" in code:
+                    offenders.append(f"{path.name}:{number}")
+
+        self.assertEqual(offenders, [], "spell it via Database.db.WEB_API_BACKFILL_SOURCE instead")

@@ -10,6 +10,7 @@ import signal
 import threading
 import time
 from contextlib import contextmanager
+from Database.db import WEB_API_BACKFILL_SOURCE
 from Database.Spotify import Spotify
 from Database.rate_limit import (
     SPOTIFY_LIMITER, SPOTIFY_RATE_LIMIT_BACKOFF_SECONDS, SpotifyLocallyRateLimitedError,
@@ -1531,7 +1532,7 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
                                 len(missed_items), self.logUser)
                 # Mark these as backfilled so the database can record the source
                 for missed_item in missed_items:
-                    missed_item["_source"] = "web_api_backfill"
+                    missed_item["_source"] = WEB_API_BACKFILL_SOURCE
                 # Pass them to callback (it expects a list, newest plays last)
                 # Web API returns newest plays first, so reverse to maintain cron order
                 missed_items.reverse()

@@ -39,6 +39,19 @@ UNKNOWN_TRACK_NAME = "Unknown Track"
 # and in every album link.
 UNKNOWN_ALBUM_NAME = "Unknown Album"
 
+# The source tag the listener puts on plays recovered from the Web API's
+# recently-played history, and the stem of the created_reason they are stored
+# under ("<source>_play (user: ...)", see appendTrackData).
+#
+# It lives here, in the leaf module both sides can import, because three
+# unrelated places have to agree on the exact spelling: the insert guard
+# compares `source == WEB_API_BACKFILL_SOURCE`, while the reconciler and
+# sweep_backfill_duplicates.py LIKE-match the created_reason prefix it becomes.
+# As a literal in the listener it agreed with them only by coincidence - a
+# rename there would have silently stopped the dedup and started
+# double-recording plays, with nothing raising.
+WEB_API_BACKFILL_SOURCE = "web_api_backfill"
+
 # A real Spotify track id is 22 base62 characters. When a track cannot be
 # resolved against Spotify at all, the importer stores a surrogate instead - a
 # bare 32-character md5 digest of "name::artist"
