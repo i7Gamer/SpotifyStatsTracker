@@ -177,14 +177,16 @@ run('every multi-day interval keeps it', () => {
 // choice lived inside a page IIFE and could not be tested at all - which is why
 // tests/test_ajax_loader_error_handling.py pins those loaders by source shape.
 
-run('a swap target hosts the inline error by default', () => {
+run('a swap target hosts the inline error', () => {
   assert.strictEqual(failureUi({ dataset: {} }), 'inline');
 });
 
-run('a target that says so gets the page-level banner', () => {
-  // For regions that cannot host a message: a canvas, or a refresh made only of
-  // scattered out-of-band swaps with no primary target.
-  assert.strictEqual(failureUi({ dataset: { htmxFailure: 'banner' } }), 'banner');
+run('the choice is not configurable per element', () => {
+  // It branched on data-htmx-failure="banner" once, and no template ever
+  // emitted it - so the branch could not be taken and the "declarative" choice
+  // had exactly one setting. An element that still carries the old attribute
+  // must read as inline like any other, not as a knob that quietly works again.
+  assert.strictEqual(failureUi({ dataset: { htmxFailure: 'banner' } }), 'inline');
 });
 
 run('no target at all falls back to the banner', () => {

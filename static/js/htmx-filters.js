@@ -129,22 +129,29 @@ function syncCustomRange(containerId) {
 //
 // Every migrated page ended up with the same eight-line block: two listeners,
 // a null-guard, and a choice between the inline "couldn't load / Retry" and the
-// page-level banner. The CHOICE is not arbitrary - a target whose content is a
-// list can host an inline message, one that is a canvas or a set of scattered
-// out-of-band regions cannot - so it stays declarative, in the markup, as
-// data-htmx-failure="banner" on the target.
+// page-level banner.
+//
+// The choice is NOT configurable, and that is the honest shape. This once
+// branched on a data-htmx-failure="banner" attribute, described as declarative
+// markup - but no template ever emitted it, and the two pages that genuinely
+// want a banner (/genres, /compare) could never have used it: they retry the
+// request that actually failed, off its own target and path, rather than a
+// fixed region, so they register their own handlers instead. A knob with no
+// possible user reads as a supported mechanism and silently has one setting
+// (tests/test_data_attribute_knobs.py now fails on the shape).
+//
+// What is left is the real rule: a target that can host a message gets the
+// inline "couldn't load / Retry"; anything else gets the banner. That covers no
+// target at all - a request htmx could not resolve one for - and a non-element
+// like document or window, which reach a listener as targets and have no
+// dataset. Both mean there is nowhere to put an inline message.
 //
 // Split out as a pure function because it is the half worth testing, and until
 // the copies were merged there was nowhere to test it from: each lived inside a
 // page IIFE, which is why tests/test_ajax_loader_error_handling.py pins these
 // loaders by source shape and says so.
-//
-// No target at all (a request htmx could not even resolve one for) means there
-// is nowhere to put an inline message, so the banner is the only honest answer.
 function failureUi(target) {
-  if (!target || !target.dataset || target.dataset.htmxFailure === 'banner') {
-    return 'banner';
-  }
+  if (!target || !target.dataset) return 'banner';
   return 'inline';
 }
 
