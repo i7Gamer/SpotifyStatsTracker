@@ -56,6 +56,44 @@ class TestSecurityHeaders(AppTestCase):
         self.assertEqual(resp.headers.get("X-Content-Type-Options"), "nosniff")
         self.assertIn("Content-Security-Policy", resp.headers)
 
+    def test_pages_are_not_stored_by_the_browser(self):
+        """Logging out has to actually take the pages away.
+
+        Clearing htmx's sessionStorage snapshot cache only covers the entries
+        htmx owns. The browser's own back/forward cache holds fully RENDERED
+        pages and replays them with no request at all - so on a shared browser,
+        A logs out and B presses Back onto A's dashboard, session check and all
+        skipped. no-store is what makes a history navigation re-fetch (and, in
+        Chrome, what disqualifies the page from the bfcache)."""
+        dash = self._makeApp()
+        client = dash.app.test_client()
+
+        resp = client.get("/login")
+
+        self.assertIn("no-store", resp.headers.get("Cache-Control", ""))
+
+    def test_fragments_and_api_replies_are_not_stored_either(self):
+        """The htmx migration made most user data arrive as fragments and JSON
+        rather than whole pages; they carry the same account's content."""
+        dash = self._makeApp()
+        client = dash.app.test_client()
+
+        resp = client.get("/history", headers={"HX-Request": "true"})
+
+        self.assertIn("no-store", resp.headers.get("Cache-Control", ""))
+
+    def test_static_assets_stay_cacheable(self):
+        """The scope limit. CSS/JS/images carry no account data, and making the
+        browser re-fetch them on every navigation would be a real regression -
+        this app ships htmx and a chart bundle."""
+        dash = self._makeApp()
+        client = dash.app.test_client()
+
+        resp = client.get("/static/js/session-reset.js")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotIn("no-store", resp.headers.get("Cache-Control", ""))
+
     def test_csp_allows_google_fonts_but_restricts_object_and_framing(self):
         dash = self._makeApp()
         client = dash.app.test_client()

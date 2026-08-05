@@ -257,6 +257,19 @@ SECURITY_HEADERS = {
     ),
 }
 
+# What the app's own responses say about caching. Every one of them renders one
+# account's data, so none may be STORED - a logout that ends the session but
+# leaves rendered pages in the browser's back/forward cache means the next
+# person to press Back gets the previous account's history, no request made.
+#
+# max-age=0 rides along for intermediaries that predate no-store.
+NO_STORE_CACHE_CONTROL = "no-store, max-age=0"
+
+# Flask's built-in endpoint for /static/<path>. The one exemption from the
+# above: assets carry no account data, and this app ships htmx and a chart
+# bundle that would otherwise be re-fetched on every navigation.
+STATIC_ENDPOINT = "static"
+
 # The detail pages (/song, /artist, /album) run Spotify's iFrame API bundle in
 # our page context; that bundle is a webpack build with the `eval` devtool, so
 # it needs 'unsafe-eval'. That directive can't be scoped to a host in CSP, so it

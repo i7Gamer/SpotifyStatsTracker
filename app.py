@@ -705,6 +705,19 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
                 response.headers["Content-Security-Policy"] = DETAIL_PAGE_CSP
             if _hstsEnabled():
                 response.headers.setdefault("Strict-Transport-Security", HSTS_HEADER_VALUE)
+            # Everything the app itself renders is one account's data, so none of
+            # it may be stored: without this a logout takes away the SESSION but
+            # not the pages, and Back replays a fully rendered dashboard out of
+            # the browser's back/forward cache with no request and no session
+            # check - which is a shared browser handing the next person the
+            # previous account's listening history. Clearing htmx's snapshot
+            # cache on the login page covers only the entries htmx owns.
+            #
+            # Static assets are exempt: they carry no account data, and this app
+            # ships htmx plus a chart bundle that would otherwise be re-fetched
+            # on every navigation.
+            if request.endpoint != STATIC_ENDPOINT:
+                response.headers.setdefault("Cache-Control", NO_STORE_CACHE_CONTROL)
             return response
 
         @self.app.template_filter("displayName")
