@@ -46,11 +46,79 @@ class TestWsgiSigterm(unittest.TestCase):
         with self.assertRaises(KeyboardInterrupt):
             wsgi._sigtermHandler(signal.SIGTERM, None)
 
-    def test_main_installs_it_before_serving(self):
-        """The handler must be live before serve() blocks - a stop arriving
-        in between is the normal case, not a race. Asserted via mocks: the
-        real signal.signal is only legal on the main thread, which a parallel
-        test worker is not."""
+    def test_it_is_armed_before_the_slow_part_of_startup(self):
+        """main() was too late. startWorkers() runs at MODULE scope, and
+        checkLogin_thread's first pass is synchronous: it opens every user's
+        database and performs a network-bound Spotify login per user, which is
+        seconds to minutes. Installing the handler in main() left that entire
+        window handled by nothing - so `docker compose up -d` followed by
+        `docker compose stop` discarded the SIGTERM exactly as before the fix,
+        sat out the full stop_grace_period and got SIGKILLed."""
+        calls = []
+        if "wsgi" in sys.modules:
+            del sys.modules["wsgi"]
+
+        with patch('app.SpotifyDashboardApp._get_or_create_secret_key', return_value='test-secret-key'), \
+             patch('app.SpotifyDashboardApp.startVersionCheck_thread'), \
+             patch('app.SpotifyDashboardApp.checkLogin_thread'), \
+             patch('app.migrateIfNeeded'), \
+             patch('app.Path.exists', return_value=False), \
+             patch('signal.signal', side_effect=lambda *a: calls.append(("signal", a[0]))), \
+             patch('app.SpotifyDashboardApp.startWorkers',
+                   side_effect=lambda: calls.append(("startWorkers",))):
+            import wsgi  # noqa: F401
+
+        self.assertIn(("signal", signal.SIGTERM), calls)
+        self.assertLess(calls.index(("signal", signal.SIGTERM)),
+                        calls.index(("startWorkers",)),
+                        "SIGTERM must be handled before the per-user login pass begins")
+
+    def test_a_stop_during_startup_still_shuts_the_workers_down(self):
+        """Arming it earlier moves the raise OUTSIDE main()'s try/finally, so
+        module scope has to own the same guarantee: whatever startWorkers got
+        as far as starting must still be stopped."""
+        if "wsgi" in sys.modules:
+            del sys.modules["wsgi"]
+
+        with patch('app.SpotifyDashboardApp._get_or_create_secret_key', return_value='test-secret-key'), \
+             patch('app.SpotifyDashboardApp.startVersionCheck_thread'), \
+             patch('app.SpotifyDashboardApp.checkLogin_thread'), \
+             patch('app.migrateIfNeeded'), \
+             patch('app.Path.exists', return_value=False), \
+             patch('app.SpotifyDashboardApp.startWorkers', side_effect=KeyboardInterrupt), \
+             patch('app.SpotifyDashboardApp.shutdown') as mockShutdown:
+            with self.assertRaises(KeyboardInterrupt):
+                import wsgi  # noqa: F401
+
+        mockShutdown.assert_called_once()
+
+    def test_the_handler_disarms_itself_before_raising(self):
+        """A second SIGTERM must not land inside the shutdown the first one
+        started. Left armed, a repeated `docker stop` raises KeyboardInterrupt
+        again inside _stopDatabasesConcurrently's thread.join(), so the
+        remaining users are never joined and the traceback escapes main().
+
+        Ignored rather than restored to SIG_DFL: this process is PID 1 in the
+        container, where the kernel discards default-action signals - SIG_DFL
+        would be a no-op wearing the clothes of an escape hatch. Docker's own
+        SIGKILL at the end of stop_grace_period is the real one."""
+        wsgi = _importWsgiWithMocks()
+
+        with patch("wsgi.signal.signal") as mockSignal:
+            with self.assertRaises(KeyboardInterrupt):
+                wsgi._sigtermHandler(signal.SIGTERM, None)
+
+        mockSignal.assert_called_once_with(signal.SIGTERM, signal.SIG_IGN)
+
+    def test_serving_is_covered_without_main_re_arming(self):
+        """The handler must be live before serve() blocks - a stop arriving in
+        between is the normal case, not a race.
+
+        It used to be main()'s job to install it, and this test asserted that.
+        Module-level arming subsumes it: by the time anything can call main()
+        the import has already happened, so serve() is covered and main() has
+        no signal work left to do. Re-arming here would also undo the
+        SIG_IGN a shutdown-in-progress installed."""
         wsgi = _importWsgiWithMocks()
         calls = []
 
@@ -61,8 +129,7 @@ class TestWsgiSigterm(unittest.TestCase):
              patch.object(wsgi.dashboardApp, "shutdown"):
             wsgi.main()
 
-        self.assertEqual(("signal", (signal.SIGTERM, wsgi._sigtermHandler)), calls[0])
-        self.assertEqual(("serve",), calls[-1])
+        self.assertEqual([("serve",)], calls)
 
 
 class TestWsgiShutdown(unittest.TestCase):
