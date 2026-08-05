@@ -209,6 +209,13 @@
       if (!nav || nav._profileAjaxWired) return;
       nav._profileAjaxWired = true;
 
+      /* The entry this page loaded into has state === null, so the popstate
+         handler below would decline to re-render it: Back after a tab switch
+         left the URL on /profile with the swapped tab still on screen. */
+      if (typeof history !== 'undefined' && history.replaceState && !history.state) {
+        history.replaceState({ profileTab: location.href }, '', location.href);
+      }
+
       nav.addEventListener('click', function (e) {
         var link = e.target.closest('a[href]');
         if (!link) return;
