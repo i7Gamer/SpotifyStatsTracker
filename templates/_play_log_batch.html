@@ -64,7 +64,13 @@
 
      hx-replace-url="false" overrides the container's: appending a batch is not
      a state a URL can describe (a link carrying ?offset=50 shows rows 50-100
-     ALONE, not 0-100), and the address bar never carried it before either. #}
+     ALONE, not 0-100), and the address bar never carried it before either.
+
+     The label is nextBatchSize alone. It used to carry an `or 50` fallback that
+     could not be reached - the route computes min(PAGE_SIZE, remainingCount),
+     and hasMore above is true exactly when remainingCount > 0, so it is always
+     at least 1 - and the 50 was config.PAGE_SIZE's value written out by hand in
+     a template with no other reason to know it. #}
   <div class="timeline-actions htmx-fade-target" id="timelineActions">
     <button type="button" class="button show-more-btn" id="showMorePlaysBtn"
             hx-get="{{ showMoreUrl }}"
@@ -73,7 +79,7 @@
             hx-indicator="#timelineActions"
             hx-disabled-elt="this"
             hx-replace-url="false">
-      Show More Plays ({{ nextBatchSize or 50 }})
+      Show More Plays ({{ nextBatchSize }})
     </button>
   </div>
 {% endif %}

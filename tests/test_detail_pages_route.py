@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import patch, MagicMock
 import sys
 import os
+from pathlib import Path
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -771,6 +772,61 @@ class TestSongDetailRoute(_DetailRouteTestBase):
 
         self.assertIn("offset=50", body)
         self.assertIn("Show More Plays (12)", body)
+
+    def test_the_show_more_label_never_falls_back_to_a_literal_page_size(self):
+        """The label was `{{ nextBatchSize or 50 }}`.
+
+        The fallback could not be reached: inside {% if hasMore %} the route has
+        already computed min(PAGE_SIZE, remainingCount), and hasMore is true
+        exactly when remainingCount > 0 - so the value is always at least 1 and
+        never falsy. What the 50 did do was spell config.PAGE_SIZE's value as a
+        literal, in a template that has no other reason to know it, so raising
+        the page size would have left a stale number in the one place a reader
+        would trust it. Dead and wrong at the same time.
+        """
+        source = (Path(__file__).resolve().parent.parent
+                  / "templates" / "_play_log_batch.html").read_text(encoding="utf-8")
+        self.assertNotRegex(
+            source, r"nextBatchSize\s+or\s+\d",
+            "The batch size comes from the route; a numeric fallback here is "
+            "unreachable and duplicates config.PAGE_SIZE.")
+
+    def test_the_offered_batch_is_always_a_real_count_while_the_control_shows(self):
+        """What makes the fallback above safe to delete, pinned at the boundary
+        it would matter at: one row left is the smallest count that still
+        renders the control, and it must read as 1 rather than as a page."""
+        for remaining in (1, 2, appmod.PAGE_SIZE, appmod.PAGE_SIZE + 1):
+            with self.subTest(remaining=remaining):
+                dash = self._makeApp()
+                db = MagicMock()
+                db.getSong.return_value = self._song()
+                db.getEntriesCount.return_value = appmod.PAGE_SIZE + remaining
+                db.getEntriesFromNew.return_value = [
+                    self._playEntry() for _ in range(appmod.PAGE_SIZE)]
+
+                with patch.object(dash, "_embedSongsTextElements", side_effect=lambda songs: songs):
+                    body = self._getRaw(dash, db, "/song/t1?offset=0",
+                                        headers=HX_LIST_HEADERS).get_data(as_text=True)
+
+                expected = min(appmod.PAGE_SIZE, remaining)
+                self.assertIn('id="timelineActions"', body)
+                self.assertIn(f"Show More Plays ({expected})", body)
+
+    def test_the_control_is_gone_rather_than_offering_an_empty_batch(self):
+        """The other half of the same invariant: nothing remaining means no
+        control at all, which is why a zero batch size never reaches the label."""
+        dash = self._makeApp()
+        db = MagicMock()
+        db.getSong.return_value = self._song()
+        db.getEntriesCount.return_value = appmod.PAGE_SIZE
+        db.getEntriesFromNew.return_value = [self._playEntry() for _ in range(appmod.PAGE_SIZE)]
+
+        with patch.object(dash, "_embedSongsTextElements", side_effect=lambda songs: songs):
+            body = self._getRaw(dash, db, "/song/t1?offset=0",
+                                headers=HX_LIST_HEADERS).get_data(as_text=True)
+
+        self.assertNotIn('id="timelineActions"', body)
+        self.assertNotIn("Show More Plays", body)
 
     def test_a_show_more_batch_is_rows_and_the_next_control_only(self):
         """It replaces the control at the end of the timeline, so the rows land
