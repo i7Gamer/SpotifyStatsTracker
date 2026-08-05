@@ -217,12 +217,13 @@ class TestGetPlayTimesInRange(unittest.TestCase):
     def _lookupPairs(self, startTs, endTs):
         return self.repo.getTrackPlayTimesInRange("alice", startTs, endTs)
 
-    def _insertPlayCreatedAt(self, trackId, playedAt, createdAt, created_reason):
+    def _insertPlayCreatedAt(self, trackId, playedAt, createdAt, created_reason, is_skip=0):
         """A play whose insert-time stamp is controlled: created_at is stamped
         with time.time() inside insertPlay, so pin the clock for the call."""
         with patch("Database.queries.plays.time") as mockTime:
             mockTime.time.return_value = createdAt
-            self.repo.insertPlay("alice", trackId, playedAt, 60000, created_reason=created_reason)
+            self.repo.insertPlay("alice", trackId, playedAt, 60000,
+                                 created_reason=created_reason, is_skip=is_skip)
         self.repo.commit()
 
     def test_each_time_carries_the_track_it_belongs_to(self):
@@ -261,6 +262,33 @@ class TestGetPlayTimesInRange(unittest.TestCase):
 
         self.assertIn(("t4", self.base - 5000, self.base + 100),
                       self._lookupPairs(self.base - 10, self.base + 1200))
+
+    def test_a_listener_skip_row_never_anchors_an_end(self):
+        """A skip's created_at is when the user skipped AWAY, not the end of a
+        play the feed still owes us. Letting it anchor the caller's +/-10s
+        end-time arm meant a skip could suppress the backfill of a real play -
+        the user skips a track, the listener then dies and misses the full
+        replay, and the Web API's start-reading of that replay lands within
+        10s of the skip's stamp. The item is dropped before it ever reaches
+        the insert guard, whose own is_skip=0 would have let it through, and
+        every later poll collides identically: the play is lost for good.
+        The three sibling implementations of this pairing rule all restrict
+        to is_skip=0 (hasPlayNearTime, getPlaysWithSourceInRange, the sweep)."""
+        self._insertPlayCreatedAt("t4", self.base + 300, self.base + 700,
+                                  "listener_play (user: alice)", is_skip=1)
+
+        self.assertIn(("t4", self.base + 300, None),
+                      self._lookupPairs(self.base - 10, self.base + 1200))
+
+    def test_a_skip_is_not_reached_into_the_window_by_its_created_at(self):
+        """The reach-back arm exists to find a play whose END landed in the
+        window; a skip row has no such end, so its stamp must not pull it in
+        either. Its own played_at still counts wherever that falls."""
+        self._insertPlayCreatedAt("t4", self.base - 5000, self.base + 100,
+                                  "listener_play (user: alice)", is_skip=1)
+
+        self.assertEqual([], [row for row in self._lookupPairs(self.base - 10, self.base + 1200)
+                              if row[0] == "t4"])
 
     def test_returns_played_at_values_inside_the_window(self):
         self.assertEqual(self._lookup(self.base - 10, self.base + 1200), [self.base, self.base + 600])

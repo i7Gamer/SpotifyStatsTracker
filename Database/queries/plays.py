@@ -179,22 +179,28 @@ class PlayQueries:
         norm, since a missing track's derived start equals its predecessor's
         recorded end.
 
-        The third element is the row's created_at, passed through for LISTENER
-        rows only: the listener inserts a play at the track-change moment, so
-        its created_at IS the observed end of the play, pauses included - the
-        anchor the caller's end-time dedup arm compares against. Any other
-        source's created_at is an import/poll moment, meaningless as a play
-        end, and comes through as None. Listener rows are also matched INTO
-        the window by that created_at, not just by played_at: a paused play
-        can start more than one track-length before its end, which is exactly
-        when the played_at-only window would miss the row the end-time arm
-        needs."""
+        The third element is the row's created_at, passed through for real
+        LISTENER plays only: the listener inserts a play at the track-change
+        moment, so its created_at IS the observed end of the play, pauses
+        included - the anchor the caller's end-time dedup arm compares
+        against. Any other source's created_at is an import/poll moment,
+        meaningless as a play end, and comes through as None. So is a SKIP's:
+        that stamp is when the user skipped away, not the end of a play the
+        feed still owes us, and letting it anchor the arm let a skip suppress
+        the backfill of a real play seconds later (is_skip=0, matching
+        hasPlayNearTime and getPlaysWithSourceInRange - a backfill row must
+        never dedup against a merged skip row). Real listener plays are also
+        matched INTO the window by that created_at, not just by played_at: a
+        paused play can start more than one track-length before its end, which
+        is exactly when the played_at-only window would miss the row the
+        end-time arm needs."""
         conn = self._conn()
         rows = conn.execute(
             "SELECT track_id, played_at, "
-            "CASE WHEN created_reason LIKE 'listener_play%' THEN created_at ELSE NULL END AS listener_created_at "
+            "CASE WHEN created_reason LIKE 'listener_play%' AND is_skip=0 THEN created_at "
+            "ELSE NULL END AS listener_created_at "
             "FROM plays WHERE username=? AND (played_at BETWEEN ? AND ? "
-            "OR (created_reason LIKE 'listener_play%' AND created_at BETWEEN ? AND ?))",
+            "OR (created_reason LIKE 'listener_play%' AND is_skip=0 AND created_at BETWEEN ? AND ?))",
             (username, startTs, endTs, startTs, endTs),
         ).fetchall()
         return [(row["track_id"], row["played_at"], row["listener_created_at"]) for row in rows]
