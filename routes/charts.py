@@ -19,6 +19,7 @@ from config import (
     LISTEN_TIME_HIDE_SECONDS_ABOVE_HOURS, RECOMMENDATION_ARTIST_LIMIT,
     RECOMMENDATION_GENRE_POOL, RECOMMENDATION_EXCLUDE_TOP_N,
 )
+from routes._htmx import isHtmxSwap
 from routes._auth import makeRequiresUser
 from Database.database import Database
 from Database.utils import dateToString, msToString
@@ -62,7 +63,7 @@ def _detailSwapTarget():
     header for a target with no id, which none of ours is): answering an
     HX-Request with the SHELL would swap a whole document into a region, which
     is the one outcome worth ruling out by construction."""
-    if not request.headers.get("HX-Request"):
+    if not isHtmxSwap():
         return ""
     return request.headers.get("HX-Target") or DETAIL_BODY_TARGET
 
@@ -390,7 +391,7 @@ def register(app, dashboard):
         # Unlike /history and the Top pages this is NOT a two-phase shell - the
         # same partial is rendered inline below, so there is no first load to
         # defer and no placeholder to trigger one from.
-        if request.headers.get("HX-Request"):
+        if isHtmxSwap():
             return render_template("_dashboard_summary.html", **summaryArgs)
 
         # Unfiltered dashboard cards (independent of the interval/date-range
@@ -510,7 +511,7 @@ def register(app, dashboard):
         # of the URL bar: hx-replace-url writes back the URL that was requested,
         # so a marker living in the query string would become part of the page's
         # shareable address. See tests/test_history_htmx.py.
-        if not request.headers.get("HX-Request"):
+        if not isHtmxSwap():
             # The URL the shell's placeholder fetches the list from. Built from
             # the VALIDATED values rather than echoed back from
             # request.full_path, which is the same rule the pagination links
@@ -663,7 +664,7 @@ def register(app, dashboard):
     @requiresUser
     def topSongsPage(username, db):
         filters = _topListFilters(db, username)
-        if not request.headers.get("HX-Request"):
+        if not isHtmxSwap():
             return _topListShell("top_songs", "top_songs.html", "topSongsPage", username, filters)
 
         tag = filters["tag"]
@@ -712,7 +713,7 @@ def register(app, dashboard):
     @requiresUser
     def topAlbumsPage(username, db):
         filters = _topListFilters(db, username)
-        if not request.headers.get("HX-Request"):
+        if not isHtmxSwap():
             return _topListShell("top_albums", "top_albums.html", "topAlbumsPage", username, filters)
 
         tag = filters["tag"]
@@ -753,7 +754,7 @@ def register(app, dashboard):
     @requiresUser
     def topArtistsPage(username, db):
         filters = _topListFilters(db, username)
-        if not request.headers.get("HX-Request"):
+        if not isHtmxSwap():
             return _topListShell("top_artists", "top_artists.html", "topArtistsPage", username, filters)
 
         tag = filters["tag"]
@@ -837,7 +838,7 @@ def register(app, dashboard):
         # same marker: htmx's own HX-Request header rather than ?ajax=true,
         # which kept the marker out of the URL bar (hx-replace-url writes the
         # requested URL back to the address bar). See tests/test_charts_htmx.py.
-        if not request.headers.get("HX-Request"):
+        if not isHtmxSwap():
             # Built from the VALIDATED filter values rather than echoed from
             # request.full_path - the rule every migrated shell follows: junk is
             # coerced for the query itself, so reflecting it into the markup
@@ -1055,7 +1056,7 @@ def register(app, dashboard):
         mode still on fetch(). Both shaped like unauthenticatedResponse's, so
         there is one convention for "go here instead"."""
         target = url_for(endpoint)
-        if request.headers.get("HX-Request"):
+        if isHtmxSwap():
             return Response(status=204, headers={"HX-Redirect": target})
         if request.args.get("ajax"):
             return jsonify(redirectUrl=target), 404

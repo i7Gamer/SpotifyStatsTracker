@@ -17,6 +17,8 @@ from datetime import timedelta
 
 from flask import render_template, request, abort, url_for, Response
 
+from routes._htmx import isHtmxSwap
+
 from config import (
     WRAPPED_LIMIT_OPTIONS, COMPARE_TOP_LIST_SIZE, COMPARE_SHARED_POOL_SIZE,
     COMPARE_GENRE_POOL_SIZE, COMPARE_TOP_GENRES_LIMIT,
@@ -99,7 +101,7 @@ def register(app, dashboard):
             # both "never requested a share" and the cookie-less-counterpart
             # edge case above alike, since either way there's nothing to
             # compare against right now.
-            if request.headers.get("HX-Request"):
+            if isHtmxSwap():
                 # Reached when the counterpart revokes the share while the page
                 # is open. A whole page is not a fragment: the swap asks for no
                 # primary target (hx-swap="none"), so this would vanish without
@@ -169,7 +171,7 @@ def register(app, dashboard):
         # of the URL bar: hx-replace-url writes back the URL that was requested,
         # so a marker living in the query string would become part of the page's
         # shareable address. See tests/test_compare_htmx.py.
-        if not request.headers.get("HX-Request"):
+        if not isHtmxSwap():
             return render_template(
                 "compare.html",
                 section="compare",

@@ -16,6 +16,8 @@ from flask import (
     abort, send_from_directory,
 )
 
+from routes._htmx import isHtmxSwap
+
 from config import (
     WRAPPED_LIMIT_OPTIONS, WRAPPED_LIST_SIZE, SHARE_LINK_EXPIRY_CHOICES,
     SHARE_LINK_MAX_PER_BUCKET, RATE_LIMIT_ERROR_MESSAGE,
@@ -51,7 +53,7 @@ def register(app, dashboard):
         retroactively, which is why _buildWrappedContext computes it live and
         never from the user_wrapped cache. This keeps it live and only stops
         asking when the answer cannot have changed."""
-        return bool(request.headers.get("HX-Request")
+        return bool(isHtmxSwap()
                     and request.headers.get(FILTER_CHANGE_HEADER))
 
     def _renderWrapped(pageArgs):
@@ -71,7 +73,7 @@ def register(app, dashboard):
         plus a dozen scalars, updated by ~200 lines of DOM surgery in
         static/js/wrapped.js, and the two drifted. See
         tests/test_wrapped_htmx.py."""
-        if request.headers.get("HX-Request"):
+        if isHtmxSwap():
             return render_template("_wrapped_results.html", oobSwap=True, **pageArgs)
         return render_template("wrapped.html", **pageArgs)
 

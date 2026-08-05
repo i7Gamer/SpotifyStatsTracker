@@ -45,6 +45,8 @@ import logging
 
 from flask import Response, render_template, request, url_for
 
+from routes._htmx import isHtmxSwap
+
 from config import (
     GENRE_PAGE_LIST_LIMIT, GENRE_MIX_TREND_TOP_N, GENRE_PAGE_TOP_ARTISTS_LIMIT,
     GENRE_PAGE_TOP_TRACKS_LIMIT, LISTEN_TIME_HIDE_SECONDS_ABOVE_HOURS,
@@ -196,7 +198,7 @@ def register(app, dashboard):
         # intervalLabel and defaultWindow no longer ride along: the mix chart's
         # heading moved into the fragment, and defaultWindow only ever fed the
         # popstate handler, which every-update-is-a-replace made unnecessary.
-        if not request.headers.get("HX-Request"):
+        if not isHtmxSwap():
             return render_template(
                 "genres.html",
                 username=username,

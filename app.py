@@ -24,6 +24,7 @@ from Database.backup import (
     BackupWorker, _envInt, BACKUP_INTERVAL_ENV_VAR, BACKUP_RETENTION_ENV_VAR,
     DEFAULT_BACKUP_INTERVAL_HOURS, DEFAULT_BACKUP_RETENTION_COUNT,
 )
+from routes._htmx import isHtmxSwap
 from services.email_worker import EMAIL_WORKER
 from Database.db import SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON
 from Database.repository import Repository
@@ -419,7 +420,14 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
         real navigation. 204 rather than 401 because htmx swaps the body of any
         2xx and treats 4xx as an error to report; a No Content response leaves
         it nothing to inject and nothing to complain about, so the only thing
-        that happens is the redirect."""
+        that happens is the redirect.
+
+        A history restore is NOT such a request, even though htmx marks it with
+        the same HX-Request header. Its response replaces document.body and its
+        XHR never looks at HX-Redirect, so the 204 would blank the page rather
+        than navigate. It takes the ordinary redirect below, which the XHR
+        follows transparently - putting the login page where the restored page
+        would have been. isHtmxSwap draws that line (see routes/_htmx.py)."""
         #< full_path, not path: the query string IS the page state here (interval,
         #  custom dates, sortBy, tag, page), so dropping it landed the user on an
         #  unfiltered first page after logging back in. rstrip("?") because
@@ -427,7 +435,7 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
         #  vets it on the way back (see routes/auth.py).
         target = nextPath or request.full_path.rstrip("?")
         loginUrl = url_for("login", next=target)
-        if request.headers.get("HX-Request"):
+        if isHtmxSwap():
             return Response(status=204, headers={"HX-Redirect": loginUrl})
         if request.args.get("ajax"):
             return jsonify(error="Not logged in", loginUrl=loginUrl), 401
