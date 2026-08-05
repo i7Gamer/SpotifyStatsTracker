@@ -25,6 +25,7 @@ from Database.rate_limit import (
 # The dead-transport detector moved to the owned client package with the loop
 # machinery (Phase 1.5); the websocket receive path here still needs it.
 from Database.Spotify.recentlyPlayed import _isSessionClosedError
+from Database.utils import TRUTHY_ENV_VALUES, flaskDebugEnabled
 # Rotation recovery reads the current secret from Spotify's own web player -
 # see the pinned-secret block below, and Database/Spotify/totpSecret.py.
 from Database.Spotify.totpSecret import fetchWebPlayerSecrets
@@ -904,14 +905,14 @@ RESPONSE_SUMMARY_MAX_LEN = 120
 HTML_SNIFF_LEN = 200      #< leading chars examined to decide "web page, not an API reply"
 HTML_TITLE_MAX_LEN = 60   #< the page's <title>, kept as its identity
 
-TRUTHY_DEBUG_VALUES = {"1", "true"}  #< FLASK_DEBUG values that enable verbose diagnostics (mirrors Database.database)
-
 HTML_BODY_MARKERS = ("<!doctype", "<html")
 _HTML_TITLE_PATTERN = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
 
-
-def _flaskDebugEnabled() -> bool:
-    return os.environ.get("FLASK_DEBUG", "").lower() in TRUTHY_DEBUG_VALUES
+#< aliased to the private name this module has always used, so the ~10 tests that
+#  patch "Database.patches._flaskDebugEnabled" keep working - the call sites
+#  resolve it from module globals, which is what patch replaces. Import it
+#  plainly and every one of them silently stops taking effect.
+_flaskDebugEnabled = flaskDebugEnabled
 
 
 def _looksLikeHtml(text: str) -> bool:
@@ -1187,7 +1188,7 @@ def _autoRecoverEnabled() -> bool:
     raw = os.environ.get(TOTP_AUTO_RECOVER_ENV_VAR)
     if raw is None:
         return True   #< default on
-    return raw.strip().lower() in TRUTHY_DEBUG_VALUES
+    return raw.strip().lower() in TRUTHY_ENV_VALUES
 
 
 def attemptTotpRecovery() -> bool:

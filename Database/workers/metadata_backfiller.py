@@ -17,6 +17,9 @@ import threading
 # imported: database.py imports this file's mixin, so importing it back by name
 # made the cycle break whichever module was imported first (see Database/dbmodule.py).
 from Database.dbmodule import dbmod as _dbmod
+#< a direct import, unlike _dbmod above: Database.utils imports nothing but the
+#  standard library, so it cannot take part in the cycle _dbmod exists to break
+from Database.utils import flaskDebugEnabled
 
 
 # The Web API's GET /v1/albums hard cap on ids per request; also bounds the
@@ -153,7 +156,7 @@ class MetadataBackfillMixin:
                                 attempted_ids = list(target_ids)
                                 use_fallback = False
                             else:
-                                if _dbmod.os.environ.get("FLASK_DEBUG", "").lower() in _dbmod.TRUTHY_DEBUG_VALUES:
+                                if flaskDebugEnabled():
                                     _dbmod.logger.warning(
                                         "[Backfiller-%s] Spotify Web API returned status %d. Falling back to the cookie client.",
                                         self.user, resp.status_code

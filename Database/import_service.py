@@ -23,6 +23,9 @@ import sqlite3
 # imported: database.py imports this file's mixin, so importing it back by name
 # made the cycle break whichever module was imported first (see Database/dbmodule.py).
 from Database.dbmodule import dbmod as _dbmod
+#< a direct import, unlike _dbmod above: Database.utils imports nothing but the
+#  standard library, so it cannot take part in the cycle _dbmod exists to break
+from Database.utils import flaskDebugEnabled
 
 # Drop counters (see StreamingHistoryImporter._processPlay) whose plays WOULD
 # import on a later attempt: the lookup failed, the data didn't. An overwrite
@@ -118,7 +121,7 @@ class ImportMixin:
             tolerance = durationSeconds + self.BACKFILL_INSERT_GUARD_EXTRA_SECONDS
             if self.repo.hasPlayNearTime(self.user, track_id, formatted_track["playedAt"], tolerance,
                                          listenerEndToleranceSeconds=self.BACKFILL_END_TIME_MATCH_TOLERANCE_SECONDS):
-                if _dbmod.os.environ.get("FLASK_DEBUG", "").lower() in _dbmod.TRUTHY_DEBUG_VALUES:
+                if flaskDebugEnabled():
                     _dbmod.logger.info(
                         "Skipping backfilled play for track %s (%s): an existing play already exists "
                         "within %ds (duration+60s) of played_at=%s",
@@ -449,7 +452,7 @@ class ImportMixin:
                             continue
                         else:
                             # Data matches - skip, no update needed
-                            if _dbmod.os.environ.get("FLASK_DEBUG", "").lower() in _dbmod.TRUTHY_DEBUG_VALUES:
+                            if flaskDebugEnabled():
                                 _dbmod.logger.info(
                                     "Skipping import play for track %s: duplicate found with identical data",
                                     track_id,
@@ -475,7 +478,7 @@ class ImportMixin:
                                 self.user, len(matches), track_id,
                             )
                             raise ValueError(AMBIGUOUS_MATCH_ABORT_MESSAGE)
-                        if _dbmod.os.environ.get("FLASK_DEBUG", "").lower() in _dbmod.TRUTHY_DEBUG_VALUES:
+                        if flaskDebugEnabled():
                             _dbmod.logger.info(
                                 "Skipping import play for track %s: %d plays found within tolerance - ambiguous, "
                                 "not updating to avoid wrong match",

@@ -28,7 +28,7 @@ try:
         SKIP_RATE_PRIOR_WEIGHT,
     )
     from Database.db import BEHAVIORAL_COLUMNS, SKIP_THRESHOLD_MS, WEB_API_BACKFILL_SOURCE
-    from Database.utils import parseError, convertToDatetime, dateToString, startOfDay, startOfWeek, startOfMonth, timeToInt, getTimezone, listeningBuckets
+    from Database.utils import flaskDebugEnabled, parseError, convertToDatetime, dateToString, startOfDay, startOfWeek, startOfMonth, timeToInt, getTimezone, listeningBuckets
     from Database.lastfm import LastfmClient, filterTagsToGenres, cleanLookupName, OUTCOME_OK, OUTCOME_NOT_FOUND, OUTCOME_TRANSIENT, OUTCOME_INVALID_KEY
 except ModuleNotFoundError:
     from Formatters.spotifyClient import Client
@@ -47,7 +47,11 @@ except ModuleNotFoundError:
 
 logger = logging.getLogger(__name__)
 
-TRUTHY_DEBUG_VALUES = {"1", "true"}
+#< TRUTHY_DEBUG_VALUES used to live here, and two other modules carried copies
+#  of it labelled "mirrors Database.database". It is Database.utils'
+#  TRUTHY_ENV_VALUES now, reached through flaskDebugEnabled() - which the
+#  importer and the metadata backfiller previously read off this module via
+#  _dbmod purely because they could not import it any other way.
 
 # The genre-coverage categories (also the SQL alias prefixes in
 # getGenreCoverage). The overall percentage is the mean across these, so the
@@ -511,7 +515,11 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         tmpPath = Path(tmpPath)
         payload = [{"identifier": email, "cookies": cookies}]
         tmpPath.write_text(json.dumps(payload), encoding="utf-8")
-        if os.environ.get("FLASK_DEBUG"):
+        #< flaskDebugEnabled(), not a bare os.environ.get: this was the one site
+        #  that tested the string for truthiness rather than for a truthy VALUE,
+        #  so FLASK_DEBUG=0 - which turns every other diagnostic off - switched
+        #  this one on
+        if flaskDebugEnabled():
             logger.debug(
                 "Materialized cookies file for user=%s: path=%s, identifier=%s, has_cookies=%s",
                 self.user, tmpPath, email, bool(cookies)

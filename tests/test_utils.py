@@ -1,10 +1,58 @@
 import sys
 import os
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from Database.utils import msToString
+from Database.utils import msToString, flaskDebugEnabled
+
+
+class TestFlaskDebugEnabled(unittest.TestCase):
+    """The verbose-diagnostics gate, shared by six modules.
+
+    It used to be six separate spellings - two identical private copies, four
+    inline `os.environ.get(...) in TRUTHY_DEBUG_VALUES` reads, and one bare
+    `if os.environ.get("FLASK_DEBUG")` in Database/database.py that tested the
+    STRING for truthiness rather than for a truthy value. That last one is what
+    these tests are really for: "0" is a non-empty string, so setting
+    FLASK_DEBUG=0 to turn diagnostics off switched that one log on.
+
+    Read per call, not cached at import - every caller's tests drive it with
+    patch.dict around the code under test."""
+
+    def _enabled(self, value):
+        with patch.dict(os.environ, {"FLASK_DEBUG": value}):
+            return flaskDebugEnabled()
+
+    def test_the_on_values(self):
+        self.assertTrue(self._enabled("1"))
+        self.assertTrue(self._enabled("true"))
+
+    def test_case_does_not_matter(self):
+        self.assertTrue(self._enabled("TRUE"))
+        self.assertTrue(self._enabled("True"))
+
+    def test_zero_is_off_even_though_it_is_a_non_empty_string(self):
+        """The bug the shared helper removes: a bare truthiness test on the
+        env var read "0" as on."""
+        self.assertFalse(self._enabled("0"))
+
+    def test_other_falsy_spellings_are_off(self):
+        for value in ("false", "no", "off", "", "  "):
+            with self.subTest(value=value):
+                self.assertFalse(self._enabled(value))
+
+    def test_unset_is_off(self):
+        env = {k: v for k, v in os.environ.items() if k != "FLASK_DEBUG"}
+        with patch.dict(os.environ, env, clear=True):
+            self.assertFalse(flaskDebugEnabled())
+
+    def test_it_is_read_per_call_rather_than_frozen_at_import(self):
+        """Caching it would silently ignore every caller's patch.dict."""
+        self.assertTrue(self._enabled("1"))
+        self.assertFalse(self._enabled("0"))
+        self.assertTrue(self._enabled("1"))
 
 
 class TestMsToString(unittest.TestCase):

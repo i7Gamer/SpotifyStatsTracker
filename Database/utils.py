@@ -11,6 +11,40 @@ from zoneinfo import ZoneInfo   #< IANA zones, selected via the TZ env var below
 
 DATE_FORMATS = ("%Y-%m-%d", "%Y-%m", "%Y")   #< bare-date forms parseDateString accepts, most specific first
 
+# The env-var values this project reads as "on". "0" and "false" are
+# deliberately NOT in here: someone who sets a flag to 0 means off, and a bare
+# truthiness test on the string reads that as on.
+#
+# Named for what it is rather than TRUTHY_DEBUG_VALUES, which is what the three
+# copies of it were called - Database/patches.py used that set for
+# TOTP_AUTO_RECOVER, which has nothing to do with debugging, so the name was
+# already wrong at one of its two call sites.
+TRUTHY_ENV_VALUES = {"1", "true"}
+
+
+def flaskDebugEnabled() -> bool:
+    """Whether the operator asked for verbose diagnostics.
+
+    Lives here because it had six spellings across six modules: two identical
+    private copies (Database/patches.py and Database/Listeners/spotifyListener.py,
+    each with their own TRUTHY_DEBUG_VALUES marked "mirrors Database.database"),
+    four inline `_dbmod.os.environ.get(...) in _dbmod.TRUTHY_DEBUG_VALUES` reads
+    in the importer and the metadata backfiller, and one bare
+    `if os.environ.get("FLASK_DEBUG")` that did not filter for a truthy value at
+    all - so FLASK_DEBUG=0 turned that one log ON while turning every other one
+    off.
+
+    The importer and backfiller reached the constant through `_dbmod`, the
+    late-bound module reference that exists to dodge the Database import cycle
+    (see Database/dbmodule.py). They never needed to: this module imports
+    nothing but the standard library, so it is safe to import directly from
+    anywhere in the package.
+
+    Read per call rather than cached at import: the tests drive this with
+    patch.dict(os.environ, ...) around the code under test, and a value frozen
+    at import would ignore them."""
+    return environ.get("FLASK_DEBUG", "").lower() in TRUTHY_ENV_VALUES
+
 
 class _SystemLocalTimezone(datetime.tzinfo):
     """The host's local zone, answered per instant instead of frozen.

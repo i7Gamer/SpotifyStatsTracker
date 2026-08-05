@@ -15,7 +15,7 @@ from Database.Spotify import Spotify
 from Database.rate_limit import (
     SPOTIFY_LIMITER, SPOTIFY_RATE_LIMIT_BACKOFF_SECONDS, SpotifyLocallyRateLimitedError,
 )
-from Database.utils import parseError, timeToInt
+from Database.utils import parseError, timeToInt, flaskDebugEnabled
 
 # A background thread's websocket ping (e.g. spotapi's keep_alive) can raise
 # websockets.exceptions.ConnectionClosed/ConnectionAbortedError for many reasons -
@@ -309,9 +309,6 @@ LISTENER_POLL_INTERVAL_SECONDS = 6
 # rarely has to.
 LISTENER_POLL_INTERVAL_JITTER_SECONDS = 1.0
 
-TRUTHY_DEBUG_VALUES = {"1", "true"}  #< FLASK_DEBUG values that enable verbose diagnostics (mirrors Database.database)
-
-
 def _itemTrackId(item: dict) -> str | None:
     """The track id of a recently-played entry from EITHER cache.
 
@@ -323,8 +320,11 @@ def _itemTrackId(item: dict) -> str | None:
     return track.get("id") or track.get("track_id")
 
 
-def _flaskDebugEnabled() -> bool:
-    return os.environ.get("FLASK_DEBUG", "").lower() in TRUTHY_DEBUG_VALUES
+#< aliased to the private name this module has always used, so the ~5 tests that
+#  patch "Database.Listeners.spotifyListener._flaskDebugEnabled" keep working -
+#  the call sites below resolve it from module globals, which is what patch
+#  replaces. Import it plainly and every one of them silently stops taking effect.
+_flaskDebugEnabled = flaskDebugEnabled
 
 
 def _pollIntervalWithJitter() -> float:
