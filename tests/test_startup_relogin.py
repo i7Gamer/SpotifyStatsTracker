@@ -289,5 +289,68 @@ class TestStartupReloginFromDatabaseCookies(AppTestCase):
         self.assertIs(firstDb, secondDb)
 
 
+class TestTheStartupPassStopsWhenShutdownBegins(AppTestCase):
+    """The per-user loop had no stop check of its own.
+
+    startAutoImporter grew one (`Database/workers/listener.py`, "a signalled
+    instance never starts a thread again") because a worker begun after the
+    shutdown snapshot was taken is a thread nothing will join. This loop is the
+    other half of that: it is what CALLS startListener, and on a pass already
+    running when shutdown begins it walked every remaining user first - each one
+    a get_user_db, possibly a fresh listener, and a milestone pass that runs
+    queries. With three users that is small; it is also unbounded in the only
+    direction that matters, since the shutdown budget is fixed and the user
+    count is not.
+
+    Restarting a listener DURING a shutdown is the specific waste: it is started
+    only to be torn down, and if it starts after the snapshot, not torn down at
+    all.
+    """
+
+    def _twoUsersWithCookies(self, app):
+        for name in ("alice", "bob"):
+            app.repo.upsertUser(name, f"{name}@example.com")
+            app.repo.setUserCookies(name, {"sp_dc": f"{name}-cookie"})
+
+    def test_a_stop_signalled_mid_pass_ends_the_pass(self):
+        app = self._makeApp()
+        self._twoUsersWithCookies(app)
+        seen = []
+
+        realGetUserDb = app.get_user_db
+
+        def stopAfterFirst(username, email, *args, **kwargs):
+            seen.append(username)
+            #< the shutdown lands while the first user is being processed
+            app._stop_event.set()
+            return realGetUserDb(username, email, *args, **kwargs)
+
+        with patch("Database.database.Listener", side_effect=lambda *a, **k: _healthyListenerMock()),              patch("Database.database.AutoImporter") as mockAutoImporterClass,              patch.object(app, "get_user_db", side_effect=stopAfterFirst):
+            mockAutoImporterClass.return_value = MagicMock()
+            app._ensureAllUsersLogin()
+
+        self.assertEqual(len(seen), 1,
+                         "the pass kept starting listeners after the stop was signalled")
+
+    def test_an_unsignalled_pass_still_visits_everyone(self):
+        """The guard must not become an early return on the normal path - this
+        loop is what brings every user's listener up at boot."""
+        app = self._makeApp()
+        self._twoUsersWithCookies(app)
+        seen = []
+
+        realGetUserDb = app.get_user_db
+
+        def record(username, email, *args, **kwargs):
+            seen.append(username)
+            return realGetUserDb(username, email, *args, **kwargs)
+
+        with patch("Database.database.Listener", side_effect=lambda *a, **k: _healthyListenerMock()),              patch("Database.database.AutoImporter") as mockAutoImporterClass,              patch.object(app, "get_user_db", side_effect=record):
+            mockAutoImporterClass.return_value = MagicMock()
+            app._ensureAllUsersLogin()
+
+        self.assertEqual(sorted(seen), ["alice", "bob"])
+
+
 if __name__ == "__main__":
     unittest.main()

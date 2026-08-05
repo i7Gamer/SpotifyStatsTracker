@@ -564,6 +564,17 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
             return
 
         for username, email in usersWithCookies:
+            # Shutdown can land mid-pass, and the rest of this loop is not free:
+            # each remaining user costs a get_user_db (which opens a database),
+            # a health check, and a milestone pass that runs queries. The
+            # per-user start paths already refuse to create threads once
+            # signalled (see Database/workers/listener.py), so what this
+            # prevents is the WORK, not a leak - but the shutdown budget is
+            # fixed while the user count is not, so the pass has to be able to
+            # stop rather than always run to the end of the list.
+            if self._stop_event.is_set():
+                logger.info("Stop requested - ending the user login pass early")
+                return
             try:
                 db = self.get_user_db(username, email)
                 # If listener has crashed, marked DEAD, or its thread has stopped, restart it -
