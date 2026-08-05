@@ -166,6 +166,50 @@ class TestFetchWebPlayerSecrets(unittest.TestCase):
         self.assertEqual(packCall.args[0], PACK_URL)
         self.assertTrue(packCall.kwargs.get("stream"))
 
+    def test_the_session_is_closed_on_every_path(self):
+        """Each login mints a TLS client whose atexit hook pins the curl session
+        until the process exits, so one left open here accumulates every time
+        Spotify rotates its TOTP secret - the same leak shape fixed for
+        _verifyCookiesMatchEmail, which shipped with a test where this did not.
+
+        Driven per exit path rather than once on the happy path: the failure
+        branches are the ones a caller in this state actually takes, and a
+        `close()` written before the returns instead of in a finally would pass
+        a happy-path-only assertion."""
+        paths = {
+            "happy path": [
+                _response(text=HOME_HTML),
+                _response(chunks=[LIVE_BUNDLE_FRAGMENT.encode("utf-8")]),
+            ],
+            "no pack url in the home page": [_response(text="<html>nothing</html>")],
+            "the home page errors": [_response(text=HOME_HTML, raises=RuntimeError("503"))],
+            "the pack download errors": [
+                _response(text=HOME_HTML),
+                _response(raises=RuntimeError("connection reset")),
+            ],
+        }
+        for name, responses in paths.items():
+            with self.subTest(path=name):
+                session = _session(responses)
+
+                self._fetch(session)
+
+                session.close.assert_called_once_with()
+
+    def test_an_abandoned_oversized_pack_still_closes_the_session(self):
+        """The path that matters most: _readCapped stops reading mid-stream, so
+        the connection is left partially consumed. Closing discards it instead
+        of returning it to the pool for the next caller to trip over."""
+        session = _session([
+            _response(text=HOME_HTML),
+            _response(chunks=[b"x" * 200]),
+        ])
+
+        with patch("Database.Spotify.totpSecret.MAX_BUNDLE_BYTES", 100):
+            self._fetch(session)
+
+        session.close.assert_called_once_with()
+
     def test_the_bundle_is_requested_as_a_browser(self):
         session = _session([
             _response(text=HOME_HTML),
