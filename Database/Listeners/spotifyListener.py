@@ -131,11 +131,21 @@ LISTENER_PUSH_CHANNEL_ALIVE_SECONDS = 10 * 60
 # ceiling to defer (see _checkOnce). A successful re-PUT re-registers the
 # subscription AND runs the returned cluster through track detection, so a
 # stamp this fresh rules out the silently-wedged subscription the ceiling
-# exists to bound. The loop re-proves itself every ~15 min (its resubscribe
-# cadence; a local constant here for the same import-avoidance reason as
-# LISTENER_PUSH_CHANNEL_ALIVE_SECONDS): two cadences plus slack, so one failed
-# attempt doesn't forfeit the deferral but two consecutive failures do -
-# by then the ceiling's distrust is warranted again.
+# exists to bound.
+#
+# What bounds it is the push loop giving up on itself, NOT this number: the loop
+# re-subscribes every 5 minutes and hands back to polling after 3 consecutive
+# failures, and its finally clears subscriptionRenewedAt when it does - so the
+# deferral is forfeited at ~15 minutes by the stamp going away, and this window
+# only has to outlast that. It does, with room.
+#
+# (It was originally derived as "two 15-minute cadences plus slack, so one
+# failed attempt doesn't forfeit but two consecutive ones do". That arithmetic
+# died when the cadence became 5 minutes and the give-up path started clearing
+# the stamp; the derivation is stated as a property in
+# tests/test_recently_played_loop.py now, where the two modules' constants can
+# be compared - here it is a local constant on purpose, for the same
+# import-avoidance reason as LISTENER_PUSH_CHANNEL_ALIVE_SECONDS.)
 LISTENER_PUSH_SUBSCRIPTION_FRESH_SECONDS = 35 * 60
 
 # How fresh the POLL tick's last successful connect-state renewal

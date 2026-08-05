@@ -1352,6 +1352,55 @@ class TestConnectStatePollLimiting(unittest.TestCase):
         self.assertEqual(SPOTIFY_LIMITER.snapshot()["backoffs"], 0)
 
 
+class TestPushTimingConstantsAgree(unittest.TestCase):
+    """The listener's two push-freshness windows are sized against timings that
+    live in recentlyPlayed, but are spelled as local constants there to avoid
+    the import - so nothing connected the two, and changing the cadence from 15
+    to 5 minutes silently invalidated the arithmetic one of them was derived
+    from ("two cadences plus slack"; 35 minutes is seven of them now).
+
+    Tests are under no import-avoidance constraint, so this is where the two
+    halves can be held together. Both assertions state the property the windows
+    exist to have, not the numbers they currently hold - a re-timing that keeps
+    the property is free, and one that breaks it fails here instead of in a
+    comment nobody re-reads.
+    """
+
+    def test_the_subscription_window_outlasts_the_push_loop_giving_up(self):
+        """subscriptionRenewedAt defers the stale check's 6h ceiling, and the
+        push loop clears that stamp in its finally when it hands back to
+        polling. So the window only has to survive until the loop gives up:
+        shorter, and the ceiling would stop deferring for a loop that is still
+        retrying and about to succeed."""
+        from Database.Listeners.spotifyListener import LISTENER_PUSH_SUBSCRIPTION_FRESH_SECONDS
+        from Database.Spotify.recentlyPlayed import (
+            CONNECT_STATE_RESUBSCRIBE_SECONDS, PUSH_RESUBSCRIBE_MAX_FAILURES,
+        )
+
+        givesUpAfter = PUSH_RESUBSCRIBE_MAX_FAILURES * CONNECT_STATE_RESUBSCRIBE_SECONDS
+
+        self.assertGreater(
+            LISTENER_PUSH_SUBSCRIPTION_FRESH_SECONDS, givesUpAfter,
+            "the freshness window must outlast the loop's own give-up point")
+
+    def test_one_missed_resubscribe_does_not_forfeit_the_deferral(self):
+        """The original intent, kept as a property: a single failed attempt is
+        not evidence of a wedged subscription."""
+        from Database.Listeners.spotifyListener import LISTENER_PUSH_SUBSCRIPTION_FRESH_SECONDS
+        from Database.Spotify.recentlyPlayed import CONNECT_STATE_RESUBSCRIBE_SECONDS
+
+        self.assertGreater(LISTENER_PUSH_SUBSCRIPTION_FRESH_SECONDS,
+                           2 * CONNECT_STATE_RESUBSCRIBE_SECONDS)
+
+    def test_the_channel_window_outlasts_the_frame_silence_fallback(self):
+        """pushChannelAliveAt's twin rule, and the one whose comment stayed
+        true: a loop mid-fallback must not read as a dead channel."""
+        from Database.Listeners.spotifyListener import LISTENER_PUSH_CHANNEL_ALIVE_SECONDS
+        from Database.Spotify.recentlyPlayed import PUSH_FRAME_SILENCE_FALLBACK_SECONDS
+
+        self.assertGreaterEqual(LISTENER_PUSH_CHANNEL_ALIVE_SECONDS,
+                                2 * PUSH_FRAME_SILENCE_FALLBACK_SECONDS)
+
 
 if __name__ == "__main__":
     unittest.main()
