@@ -12,9 +12,10 @@
 
     var selectedTags = new Set();
 
+    //< the hidden input Flask-WTF renders; see the note in tags.js - the
+    //  meta[name="csrf-token"] branch that used to lead this was dead in both
+    //  copies, because nothing emits that tag
     function getCsrfToken() {
-      var meta = document.querySelector('meta[name="csrf-token"]');
-      if (meta) return meta.getAttribute('content');
       var input = document.querySelector('input[name="csrf_token"]');
       return input ? input.value : '';
     }

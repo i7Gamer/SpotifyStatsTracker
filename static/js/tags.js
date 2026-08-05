@@ -38,9 +38,11 @@ if (typeof window !== 'undefined') (function() {
     var tagInput = widget.querySelector('.input-new-tag');
     var errorLine = widget.querySelector('.tag-error');
 
+    //< the hidden input Flask-WTF renders. There used to be a
+    //  meta[name="csrf-token"] branch ahead of this one, which no template has
+    //  ever emitted - so it was dead on every path, and read like a second
+    //  supported convention that a reader had to check for.
     function getCsrfToken() {
-      var meta = document.querySelector('meta[name="csrf-token"]');
-      if (meta) return meta.getAttribute('content');
       var input = document.querySelector('input[name="csrf_token"]');
       return input ? input.value : '';
     }
