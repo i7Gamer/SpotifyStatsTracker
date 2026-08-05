@@ -741,12 +741,28 @@ spotapi.websocket.WebsocketStreamer.get_packet = patched_get_packet
 def patched_get_init_packet(self) -> str:
     """spotapi's get_init_packet, with the read bounded and its contract kept
     (same ws_dump assignment, same ValueError on a packet with no connection
-    id, same return value)."""
-    self.ws_dump = dict(json.loads(self.ws.recv(timeout=WS_INIT_PACKET_TIMEOUT_SECONDS)))
+    id, same return value) - and the socket released when it fails.
 
-    if (self.ws_dump.get("headers") is None
-            or dict(self.ws_dump["headers"]).get("Spotify-Connection-Id") is None):
-        raise ValueError("Invalid init packet")
+    The close matters because `self.ws` is assigned by _create_websocket BEFORE
+    this is called, so raising past it strands an open ClientConnection and its
+    two daemon threads (recv_events, keepalive) on a half-built PlayerStatus
+    that nothing can reach: no Listener was assigned, so Listener.stop()'s
+    manager.ws.close() never runs, and spotapi registers its atexit hook only
+    after connect() returns. A dealer that answers pings but never sends the
+    init frame would leak one per retry - and retries are what the login loop
+    does. patched_reconnect closes the same way on the same failure."""
+    try:
+        self.ws_dump = dict(json.loads(self.ws.recv(timeout=WS_INIT_PACKET_TIMEOUT_SECONDS)))
+
+        if (self.ws_dump.get("headers") is None
+                or dict(self.ws_dump["headers"]).get("Spotify-Connection-Id") is None):
+            raise ValueError("Invalid init packet")
+    except BaseException:
+        try:
+            self.ws.close()
+        except Exception:  # noqa: S110 - already tearing down a failed handshake
+            pass
+        raise
 
     return self.ws_dump["headers"]["Spotify-Connection-Id"]
 

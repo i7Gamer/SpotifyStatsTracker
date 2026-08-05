@@ -1122,6 +1122,10 @@ class _FakeWebsocket:
     def __init__(self, results):
         self._results = list(results)
         self.recvTimeouts = []
+        #< a real ClientConnection owns a socket and two daemon threads
+        #  (recv_events, keepalive); `closed` is how the tests below see whether
+        #  a failed handshake let go of them
+        self.closed = False
 
     def recv(self, timeout=None, decode=None):
         self.recvTimeouts.append(timeout)
@@ -1131,6 +1135,9 @@ class _FakeWebsocket:
         if isinstance(result, Exception):
             raise result
         return result
+
+    def close(self):
+        self.closed = True
 
 
 def _fakeStreamer(results, deliberateClose=False):
@@ -1431,6 +1438,46 @@ class TestEnforceShadowRemoval(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             spotapi.status.PlayerStatus.get_init_packet(streamer)
+
+    def test_a_timed_out_init_packet_closes_the_socket(self):
+        """The deadline stops the thread parking, but the socket it was reading
+        is spotapi's `self.ws`, assigned by _create_websocket BEFORE this call.
+        Raising past it strands an open ClientConnection - plus its recv_events
+        and keepalive threads - on a half-built PlayerStatus nothing can reach:
+        no Listener was assigned, so Listener.stop()'s manager.ws.close() never
+        runs, and spotapi registers its atexit hook only after connect() returns.
+
+        The reconnect path written in the same commit already does this
+        (patched_reconnect's `except BaseException: newWs.close(); raise`); a
+        dealer that pongs but never sends the init frame leaks one per retry,
+        and retries are exactly what the login loop does."""
+        streamer = _fakeStreamer([TimeoutError("dealer never spoke")])
+
+        with self.assertRaises(TimeoutError):
+            spotapi.status.PlayerStatus.get_init_packet(streamer)
+
+        self.assertTrue(streamer.ws.closed,
+                        "a handshake that timed out must not leave its socket open")
+
+    def test_an_invalid_init_packet_closes_the_socket_too(self):
+        """Same reasoning as the timeout: the connection is unusable either way,
+        and this is the older of the two ways out of this function."""
+        streamer = _fakeStreamer(['{"headers": {}}'])
+
+        with self.assertRaises(ValueError):
+            spotapi.status.PlayerStatus.get_init_packet(streamer)
+
+        self.assertTrue(streamer.ws.closed)
+
+    def test_a_successful_handshake_leaves_the_socket_open(self):
+        """The other half of the contract - this is the socket the session is
+        about to be built on."""
+        streamer = _fakeStreamer(
+            ['{"headers": {"Spotify-Connection-Id": "conn-1"}}'])
+
+        spotapi.status.PlayerStatus.get_init_packet(streamer)
+
+        self.assertFalse(streamer.ws.closed)
 
     def test_both_classes_see_the_patched_device_registration(self):
         from Database.patches import patched_register_device, patched_connect_device
