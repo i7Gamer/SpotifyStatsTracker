@@ -22,6 +22,7 @@ import os
 import subprocess
 import sys
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -46,20 +47,36 @@ FIRST_IMPORTS = (
 
 IMPORT_TIMEOUT_SECONDS = 120   #< a cold import of this package tree, with slack
 
+# The interpreters below are independent, so they run concurrently rather than
+# one after another: serially this was the second-slowest test in the suite
+# (~17s of the ~41s total), and xdist cannot help because parallelism there is
+# ACROSS tests, not within one. Capped rather than unbounded - each child
+# imports the whole package tree, and the suite is usually already running
+# under `-n auto`, so this should not try to own the machine.
+IMPORT_WORKERS = min(8, len(FIRST_IMPORTS))
+
+
+def _importFirstInFreshInterpreter(moduleName):
+    """Import `moduleName` into a brand-new interpreter; returns its result
+    for the assertions to read, so failures are still reported per module."""
+    return moduleName, subprocess.run(
+        [sys.executable, "-c", f"import {moduleName}"],
+        cwd=REPO_ROOT, capture_output=True, text=True,
+        timeout=IMPORT_TIMEOUT_SECONDS,
+        #< the app warns about an unset TZ on import; keep the check
+        #  about importability, not about the environment
+        env={**os.environ, "TZ": "UTC"},
+    )
+
 
 class TestModulesImportInAnyOrder(unittest.TestCase):
     def test_each_module_imports_first_in_a_fresh_interpreter(self):
-        for moduleName in FIRST_IMPORTS:
-            with self.subTest(module=moduleName):
-                result = subprocess.run(
-                    [sys.executable, "-c", f"import {moduleName}"],
-                    cwd=REPO_ROOT, capture_output=True, text=True,
-                    timeout=IMPORT_TIMEOUT_SECONDS,
-                    #< the app warns about an unset TZ on import; keep the check
-                    #  about importability, not about the environment
-                    env={**os.environ, "TZ": "UTC"},
-                )
+        with ThreadPoolExecutor(max_workers=IMPORT_WORKERS) as pool:
+            #< map re-raises a child's TimeoutExpired here, as the serial loop did
+            results = list(pool.map(_importFirstInFreshInterpreter, FIRST_IMPORTS))
 
+        for moduleName, result in results:
+            with self.subTest(module=moduleName):
                 self.assertEqual(
                     result.returncode, 0,
                     f"importing {moduleName} first failed:\n{result.stderr}")

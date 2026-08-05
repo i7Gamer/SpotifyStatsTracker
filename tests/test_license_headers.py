@@ -21,10 +21,12 @@ because it would re-create the MIT notice-retention obligation the retirement
 relied on being gone. The check needs the full history in the checkout - see
 SHALLOW_CHECKOUT_HINT.
 """
+import functools
 import subprocess
 import sys
 import os
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest import mock
 
@@ -47,6 +49,13 @@ EXCLUDED_FILES = ("dev.py",)
 #< a header buried under a hundred lines is not a notice anyone will see
 MAX_HEADER_LINES = 12
 
+# Concurrency for the per-file `git blame` pass in TestUpstreamAuthorshipRetired.
+# Each call is a subprocess that spends most of its life waiting on git, so
+# threads work here despite the GIL. Capped rather than unbounded: the suite is
+# usually already running under `-n auto`, and ~200 concurrent git processes
+# would be worse than the serial version it replaces.
+BLAME_WORKERS = 8
+
 SHALLOW_CHECKOUT_HINT = (
     "this is a shallow checkout, so git blame cannot see past the graft commit "
     "and every upstream line count would come back 0 - check out with full "
@@ -66,13 +75,18 @@ def _git(*args):
     return result.stdout
 
 
+@functools.lru_cache(maxsize=1)
 def inScopeFiles():
-    """Tracked source files the built artifact conveys."""
+    """Tracked source files the built artifact conveys.
+
+    Cached: nine of these across the module is nine `git ls-files` spawns for
+    an answer that cannot change mid-run."""
     tracked = _git("ls-files", *SOURCE_GLOBS).split()
-    return sorted(
+    #< a tuple, not a list: callers share one cached object now
+    return tuple(sorted(
         f for f in tracked
         if not f.startswith(EXCLUDED_PREFIXES) and f not in EXCLUDED_FILES
-    )
+    ))
 
 
 def repoIsShallow():
@@ -232,8 +246,22 @@ class TestUpstreamAuthorshipRetired(unittest.TestCase):
         #< one loud failure beats every file below reading as mis-attributed
         if repoIsShallow():
             raise AssertionError(SHALLOW_CHECKOUT_HINT)
-        #< one blame pass for the whole suite; it is ~200 subprocess calls
-        cls.upstreamCounts = {f: _upstreamLineCount(f) for f in inScopeFiles()}
+        # One blame pass for the whole suite, run concurrently: it is ~200
+        # subprocess calls, and serially this setUp alone was the slowest thing
+        # in the suite (~21s of the ~41s total). xdist cannot split it, since
+        # its parallelism is across tests and this is one fixture.
+        # pool.map preserves input order and re-raises a worker's exception, so
+        # _git's loud RuntimeError still reaches the caller.
+        files = inScopeFiles()
+        with ThreadPoolExecutor(max_workers=BLAME_WORKERS) as pool:
+            cls.upstreamCounts = dict(zip(files, pool.map(_upstreamLineCount, files)))
+
+    def test_every_in_scope_file_was_actually_blamed(self):
+        """Guards the pass itself. Every real count is 0, so the assertions
+        below also pass on an EMPTY map - and zip() stops at the shorter side,
+        so a blame pass that returned fewer results than it was given would
+        quietly shrink the checked set instead of failing."""
+        self.assertEqual(set(self.upstreamCounts), set(inScopeFiles()))
 
     def test_no_upstream_lines_remain(self):
         withUpstream = sorted(f for f, n in self.upstreamCounts.items() if n)
