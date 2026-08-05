@@ -42,6 +42,8 @@ from Database.Listeners.spotifyListener import (
     LISTENER_POLL_INTERVAL_JITTER_SECONDS,
     LISTENER_PLAYBACK_CONTINUITY_SECONDS,
     LISTENER_UNRECORDED_CHANGE_GRACE_SECONDS,
+    LISTENER_POLL_RENEWAL_FRESH_SECONDS,
+    STALE_REASON_NO_CONNECT_STATE,
     _pollIntervalWithJitter,
     _is_auth_error,
     _is_rate_limit_error,
@@ -72,6 +74,9 @@ def _bareListener(recentlyPlayed=None):
     # (truthy, non-numeric) liveness stamp.
     listener.sp.lastPlayedManager.pushChannelAliveAt = None
     listener.sp.lastPlayedManager.subscriptionRenewedAt = None
+    # Same reason: the poll tick's own renewal stamp, which vouches for a
+    # connect state that is legitimately absent (nothing is being cast).
+    listener.sp.lastPlayedManager.manager.stateRenewalSucceededAt = None
     listener._lastPlayingUri = None      #< matches Listener.__init__
     listener._lastPlayingChangeTime = 0.0
     listener._lastPlayingSeenAt = 0.0
@@ -446,7 +451,7 @@ class TestStaleFeedIdleDetection(unittest.TestCase):
         graceStillRunning = 1010.0 + LISTENER_UNRECORDED_CHANGE_GRACE_SECONDS - 1
         with patch("Database.Listeners.spotifyListener.time.monotonic",
                    return_value=graceStillRunning):
-            self.assertFalse(listener._staleFeedIsBroken())
+            self.assertFalse(listener._staleFeedBrokenReason())
 
     def test_track_change_already_reflected_in_the_feed_is_not_stale(self):
         """The change was observed BEFORE the feed's last update, i.e. the feed
@@ -461,15 +466,65 @@ class TestStaleFeedIdleDetection(unittest.TestCase):
         onStale.assert_not_called()
 
     def test_missing_connect_state_still_rebuilds(self):
-        """In POLL mode, no connect state at all means the websocket tick that
-        feeds it isn't running either - no evidence of life, so keep the old
-        behaviour. Push mode is the exception below."""
+        """In POLL mode, no connect state AND no proof the tick still runs
+        means the websocket tick that feeds it isn't running either - no
+        evidence of life, so keep the old behaviour. The two stamps below are
+        the exceptions."""
         listener, onStale = self._listener(), MagicMock()
 
         stillRunning = self._poll(listener, self._pastTimeout(), None, onStale)
 
         self.assertFalse(stillRunning)
         onStale.assert_called_once()
+
+    def test_missing_connect_state_on_a_renewing_poll_tick_is_idle_not_stale(self):
+        """An account with no live Connect session answers a SUCCESSFUL PUT
+        with no player_state, so poll mode has no connect state either - and
+        reading that as death rebuilt the session every 30 minutes for a user
+        who simply wasn't casting anything. A renewal stamp this fresh is
+        positive proof the tick is alive, which absence never was."""
+        listener, onStale = self._listener(), MagicMock()
+        now = self._pastTimeout()
+        listener.sp.lastPlayedManager.manager.stateRenewalSucceededAt = now - 10
+
+        stillRunning = self._poll(listener, now, None, onStale)
+
+        self.assertTrue(stillRunning)
+        onStale.assert_not_called()
+
+    def test_missing_connect_state_with_an_aged_poll_renewal_still_rebuilds(self):
+        """Same stamp-not-flag rule as the push channel: a tick that stopped
+        renewing has stopped vouching."""
+        listener, onStale = self._listener(), MagicMock()
+        now = self._pastTimeout()
+        listener.sp.lastPlayedManager.manager.stateRenewalSucceededAt = (
+            now - LISTENER_POLL_RENEWAL_FRESH_SECONDS - 1)
+
+        stillRunning = self._poll(listener, now, None, onStale)
+
+        self.assertFalse(stillRunning)
+        onStale.assert_called_once()
+
+    def test_a_non_numeric_poll_renewal_stamp_is_not_evidence_of_life(self):
+        """Read through the same cross-module getattr chain as the push stamps,
+        so it gets the same type check rather than arithmetic on trust."""
+        listener, onStale = self._listener(), MagicMock()
+        listener.sp.lastPlayedManager.manager.stateRenewalSucceededAt = MagicMock()
+
+        stillRunning = self._poll(listener, self._pastTimeout(), None, onStale)
+
+        self.assertFalse(stillRunning)
+        onStale.assert_called_once()
+
+    def test_a_missing_connect_state_names_its_own_reason(self):
+        """"Unrecorded playback" misstates this evidence: nothing was observed
+        playing at all. The ledger on /admin is only worth reading if the
+        reasons are distinguishable."""
+        listener, onStale = self._listener(), MagicMock()
+
+        self._poll(listener, self._pastTimeout(), None, onStale)
+
+        onStale.assert_called_once_with(reason=STALE_REASON_NO_CONNECT_STATE)
 
     def test_missing_connect_state_on_a_live_push_channel_is_idle_not_stale(self):
         """Push mode has no tick: _state is only written when Spotify pushes a

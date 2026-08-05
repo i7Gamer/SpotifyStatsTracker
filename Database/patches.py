@@ -266,6 +266,15 @@ def player_status_renew_state(self):
         if isinstance(self._device_dump, dict):
             self._state = self._device_dump.get("player_state")
             self._devices = self._device_dump.get("devices")
+            # A cluster came back, so the PUT itself worked - stamped even when
+            # it carries no player_state, because that is an account with no
+            # live Connect session, not a failure. Both cases raise the same
+            # ValueError out of the state property below, and this stamp is the
+            # only thing that tells them apart: without it the poll loop read a
+            # user who wasn't casting anything as a throttling streak (30s of
+            # PROCESS-WIDE backoff plus a websocket reconnect, about once a
+            # minute) and the stale check read it as a dead session.
+            self.stateRenewalSucceededAt = time.monotonic()
         else:
             self._state = None
             self._devices = None

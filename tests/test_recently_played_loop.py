@@ -29,6 +29,23 @@ class _ScriptedStateManager:
         return result
 
 
+class _StatelessButHealthyManager:
+    """A manager whose connect-state PUT SUCCEEDS while the returned cluster
+    carries no player_state - an account with no live Connect session. The
+    patched renew_state stamps stateRenewalSucceededAt before the state
+    property raises spotapi's usual ValueError, which is the only thing that
+    distinguishes this from a genuinely failing PUT."""
+    def __init__(self, stamps):
+        self._stamps = list(stamps)
+        self.reconnect = MagicMock()
+        self.stateRenewalSucceededAt = None
+
+    @property
+    def state(self):
+        self.stateRenewalSucceededAt = self._stamps.pop(0)
+        raise ValueError("Could not get player state")
+
+
 def makeIdleState():
     """A state the update loop skips gracefully (no timestamp/track) - fetching
     it still counts as a successful poll."""
@@ -139,6 +156,42 @@ class TestPollLoop(unittest.TestCase):
         self._runUpdateLoopIterations(manager, STATE_FAILURE_RECONNECT_THRESHOLD)
 
         manager.reconnect.assert_called_once_with()
+
+    def test_a_stateless_account_is_not_a_failure_streak(self):
+        """An account with no live Connect session answers every poll with a
+        successful PUT and no player_state. Counting those as failures put the
+        PROCESS-WIDE limiter into a 30s backoff and reconnected the websocket
+        roughly every minute, for as long as the user simply wasn't casting
+        anything - the request storm the limiter exists to prevent, with every
+        other user's tracking paused in 30-second slices."""
+        from Database.Spotify.recentlyPlayed import STATE_FAILURE_RECONNECT_THRESHOLD
+
+        polls = STATE_FAILURE_RECONNECT_THRESHOLD + 2
+        manager = _StatelessButHealthyManager(range(1, polls + 1))
+
+        with patch("Database.Spotify.recentlyPlayed.SPOTIFY_LIMITER") as limiter:
+            callback = self._runUpdateLoopIterations(manager, polls)
+
+        manager.reconnect.assert_not_called()
+        limiter.applyBackoff.assert_not_called()
+        callback.assert_not_called()
+
+    def test_a_failing_put_still_escalates_when_the_stamp_stands_still(self):
+        """The distinction is the stamp MOVING: a PUT that failed leaves it
+        where it was, and that streak must still reach exactly one reconnect."""
+        from Database.Spotify.recentlyPlayed import STATE_FAILURE_RECONNECT_THRESHOLD
+
+        frozenStamp = [7.0] * STATE_FAILURE_RECONNECT_THRESHOLD
+        manager = _StatelessButHealthyManager(frozenStamp)
+        # renew_state only stamps on success, so a failing PUT leaves the
+        # previous success's value standing - which is what "stands still" is.
+        manager.stateRenewalSucceededAt = 7.0
+
+        with patch("Database.Spotify.recentlyPlayed.SPOTIFY_LIMITER") as limiter:
+            self._runUpdateLoopIterations(manager, STATE_FAILURE_RECONNECT_THRESHOLD)
+
+        manager.reconnect.assert_called_once_with()
+        limiter.applyBackoff.assert_called_once()
 
     def test_patched_update_loop_successful_poll_resets_failure_counter(self):
         """A successful state fetch between failure streaks must reset the
@@ -702,7 +755,7 @@ class TestPushLoop(unittest.TestCase):
         (log, sleep, reconnect); push had no guard, so the same failure - e.g.
         track() re-raising after its retry ladder - killed the thread with
         `run` still True and _state frozen. A frozen state reads as IDLE to
-        _staleFeedIsBroken, so nothing rebuilt for the 6h hard timeout and
+        _staleFeedBrokenReason, so nothing rebuilt for the 6h hard timeout and
         every play in the window was lost, silently."""
         first = pushedCluster(uid="uid-1")
         second = pushedCluster(trackUri="spotify:track:bbb", uid="uid-2")
@@ -1026,7 +1079,7 @@ class TestPushLoopWithoutAnyState(unittest.TestCase):
     def test_an_idle_account_still_reports_a_live_push_channel(self):
         """The knock-on the warning was only the visible half of: with _state
         never populated, getConnectPlayerState() returns None forever, which
-        _staleFeedIsBroken reads as a dead session - a full spotapi re-login
+        _staleFeedBrokenReason reads as a dead session - a full spotapi re-login
         every LISTENER_STALE_TIMEOUT_SECONDS, the exact regression that check
         was written to stop. A live channel has to be visible some other way."""
         from Database.Spotify.recentlyPlayed import _runPushLoop

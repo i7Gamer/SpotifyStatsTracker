@@ -160,7 +160,7 @@ class ListenerMixin:
                     # as intended, not a fault. It used to fire ~2 times an hour
                     # per user because an idle feed counted as a dead one; the
                     # stale check now needs evidence of unrecorded playback
-                    # (see _staleFeedIsBroken), but the level still fits.
+                    # (see _staleFeedBrokenReason), but the level still fits.
                     _dbmod.logger.debug("Attempting to reconnect (attempt %d/%d)", attempt + 1, self.RECONNECT_MAX_RETRIES)
                     if self.startListener(email=self.email, rebuildReason=reason) is False:
                         _dbmod.logger.info("Reconnection abandoned for user %s: stop requested", self.user)

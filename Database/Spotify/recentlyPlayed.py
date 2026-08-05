@@ -491,9 +491,25 @@ def _runPollLoop(self, callback, refreshInterval=3):
             # traffic, not less.
             continue
         try:
+            # Read through getattr: the stamp lives on the patched PlayerStatus
+            # (Database/patches.py), and only appears once a renewal has
+            # succeeded at least once.
+            renewalBefore = getattr(self.manager, "stateRenewalSucceededAt", None)
             try:
                 state = self.manager.state
             except ValueError as stateError:
+                renewalAfter = getattr(self.manager, "stateRenewalSucceededAt", None)
+                if renewalAfter is not None and renewalAfter != renewalBefore:
+                    # The PUT succeeded; the cluster simply carried no
+                    # player_state - an account with no live Connect session.
+                    # Nothing failed, so nothing is counted: treating this as
+                    # the throttling streak below put the whole process into a
+                    # 30s backoff and reconnected the websocket every ~63s for
+                    # as long as the user wasn't casting anything, pausing
+                    # every OTHER user's tracking in 30-second slices.
+                    consecutiveStateFailures = 0
+                    _sleepUntilStopped(self, refreshInterval)
+                    continue
                 consecutiveStateFailures += 1
                 if consecutiveStateFailures < STATE_FAILURE_RECONNECT_THRESHOLD:
                     logger.warning(

@@ -79,7 +79,7 @@ LISTENER_THREAD_NAME_PREFIX = "spotify-listener-"
 # staying wedged silently until the process is restarted.
 LISTENER_STALE_TIMEOUT_SECONDS = 30 * 60
 # Ceiling on how long a quiet feed may be explained away as "this account is
-# simply idle" (see _staleFeedIsBroken). The idle check reads the connect
+# simply idle" (see _staleFeedBrokenReason). The idle check reads the connect
 # state, so the one failure it cannot see is a connect state that keeps
 # answering while its own tick is wedged; past this, a quiet feed is recycled
 # regardless of what the state claims - UNLESS the push loop has re-proven
@@ -115,7 +115,7 @@ LISTENER_PLAYBACK_CONTINUITY_SECONDS = 30
 LISTENER_UNRECORDED_CHANGE_GRACE_SECONDS = 120
 
 # How fresh RecentlyPlayedManager.pushChannelAliveAt has to be to still count as
-# "this listener is on a working push channel" (see _staleFeedIsBroken).
+# "this listener is on a working push channel" (see _staleFeedBrokenReason).
 #
 # The push loop stamps it on every websocket frame and gives up on itself after
 # 5 minutes with no frame of any kind, so a running loop can never be more than
@@ -137,6 +137,19 @@ LISTENER_PUSH_CHANNEL_ALIVE_SECONDS = 10 * 60
 # by then the ceiling's distrust is warranted again.
 LISTENER_PUSH_SUBSCRIPTION_FRESH_SECONDS = 35 * 60
 
+# How fresh the POLL tick's last successful connect-state renewal
+# (PlayerStatus.stateRenewalSucceededAt, stamped in Database/patches.py) has to
+# be to vouch for a connect state that is legitimately absent.
+#
+# A successful PUT whose cluster carries no player_state is an account with no
+# live Connect session - poll mode's version of the idle case push mode already
+# handles, and reading it as death rebuilt the session every 30 minutes for a
+# user who simply wasn't casting anything. The tick renews every refreshInterval
+# (single-digit seconds), so this only ages out when the tick has genuinely
+# stopped; sized like LISTENER_PUSH_CHANNEL_ALIVE_SECONDS, with room for a
+# limiter backoff and a reconnect ladder in between.
+LISTENER_POLL_RENEWAL_FRESH_SECONDS = 10 * 60
+
 # Why a rebuild was requested - short, stable strings passed to onStale and
 # carried through _makeOnStaleCallback into the listener-session ledger on
 # /admin's Worker Health card, so an operator can tell scheduled recycling
@@ -144,6 +157,7 @@ LISTENER_PUSH_SUBSCRIPTION_FRESH_SECONDS = 35 * 60
 # app.log timestamps by hand.
 STALE_REASON_VALIDATION_FAILED = "session validation failed"
 STALE_REASON_UNRECORDED_PLAYBACK = "unrecorded playback on a quiet feed"
+STALE_REASON_NO_CONNECT_STATE = "no connect state"
 STALE_REASON_HARD_CEILING = "quiet feed hard ceiling"
 STALE_REASON_AUTH_ERROR = "auth error"
 
@@ -816,7 +830,7 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
                 and now - self._lastPlayingSeenAt <= LISTENER_PLAYBACK_CONTINUITY_SECONDS):
             if self._lastPlayingChangeTime <= self._lastChangeTime:
                 # First change since the feed last moved: the catch-up grace in
-                # _staleFeedIsBroken runs from here, not from later churn.
+                # _staleFeedBrokenReason runs from here, not from later churn.
                 self._firstUnarrivedChangeTime = now
             self._lastPlayingChangeTime = now
         self._lastPlayingUri = uri
@@ -848,9 +862,25 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
             return False
         return (time.monotonic() - renewedAt) <= LISTENER_PUSH_SUBSCRIPTION_FRESH_SECONDS
 
-    def _staleFeedIsBroken(self) -> bool:
-        """Whether a feed that hasn't changed in LISTENER_STALE_TIMEOUT_SECONDS
-        is evidence of a dead session rather than of nobody listening.
+    def _pollRenewalIsFresh(self) -> bool:
+        """Whether the poll tick renewed the connect state successfully within
+        LISTENER_POLL_RENEWAL_FRESH_SECONDS - the evidence that an ABSENT
+        connect state is an account with nothing cast rather than a dead tick.
+        Same stamp-not-flag, getattr-chain and type-check reasoning as
+        _pushChannelIsAlive; one level deeper, since the stamp lives on the
+        PlayerStatus the manager owns."""
+        lastPlayedManager = getattr(self.sp, "lastPlayedManager", None)
+        manager = getattr(lastPlayedManager, "manager", None)
+        renewedAt = getattr(manager, "stateRenewalSucceededAt", None)
+        if not isinstance(renewedAt, (int, float)):
+            return False
+        return (time.monotonic() - renewedAt) <= LISTENER_POLL_RENEWAL_FRESH_SECONDS
+
+    def _staleFeedBrokenReason(self) -> str | None:
+        """Why a feed that hasn't changed in LISTENER_STALE_TIMEOUT_SECONDS is
+        evidence of a dead session rather than of nobody listening - or None
+        when it isn't. The reason rides into the /admin session ledger, so the
+        two failures stay distinguishable there.
 
         The feed only gains an entry when a track FINISHES, so silence is the
         normal state of an idle account - and rebuilding on silence alone meant
@@ -860,26 +890,33 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
         after the feed's last update, i.e. a play that finished and never
         arrived.
 
-        The first of those holds for POLL mode only. Push mode has no tick:
-        _state is written when Spotify pushes a cluster and at no other time,
-        so an account nobody is listening to legitimately has none at all, and
-        reading that as death brought the 30-minute rebuild straight back (live
-        app.log 2026-08-01, one rebuild per LISTENER_STALE_TIMEOUT_SECONDS on
-        the dot). A live push channel is the evidence that the absence is
-        idleness. The hard ceiling still applies above this - pongs alone
-        never defer it, because a channel can pong while its subscription is
-        wedged; only a recently RE-PROVEN subscription does (see
-        _pushSubscriptionIsFresh and the ceiling branch in _checkOnce).
+        An absent connect state only counts when nothing vouches for the tick
+        that fills it. Push mode has no tick at all: _state is written when
+        Spotify pushes a cluster and at no other time, so an account nobody is
+        listening to legitimately has none, and reading that as death brought
+        the 30-minute rebuild straight back (live app.log 2026-08-01, one
+        rebuild per LISTENER_STALE_TIMEOUT_SECONDS on the dot). Poll mode has
+        a tick, but an account with no live Connect session answers its PUT
+        successfully with no player_state - equally absent, equally idle, and
+        the renewal stamp is what proves the tick still runs. The hard ceiling
+        still applies above this - pongs alone never defer it, because a
+        channel can pong while its subscription is wedged; only a recently
+        RE-PROVEN subscription does (see _pushSubscriptionIsFresh and the
+        ceiling branch in _checkOnce).
 
         A witnessed change is only evidence once the feed has had
         LISTENER_UNRECORDED_CHANGE_GRACE_SECONDS to catch up - the finished
         play is normally still resolving its metadata when the change is first
         observed, and rebuilding inside that window threw the play away."""
         if not self.getConnectPlayerState():
-            return not self._pushChannelIsAlive()
-        return (self._lastPlayingChangeTime > self._lastChangeTime
+            if self._pushChannelIsAlive() or self._pollRenewalIsFresh():
+                return None
+            return STALE_REASON_NO_CONNECT_STATE
+        if (self._lastPlayingChangeTime > self._lastChangeTime
                 and time.monotonic() - self._firstUnarrivedChangeTime
-                > LISTENER_UNRECORDED_CHANGE_GRACE_SECONDS)
+                > LISTENER_UNRECORDED_CHANGE_GRACE_SECONDS):
+            return STALE_REASON_UNRECORDED_PLAYBACK
+        return None
 
     def getNewItems(self, new: list) -> list | None:
         """The suffix of `new` that starts at the first item the previous
@@ -1112,8 +1149,8 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
         if elapsed <= LISTENER_STALE_TIMEOUT_SECONDS:
             return True
 
-        feedIsBroken = self._staleFeedIsBroken()
-        if not feedIsBroken and (elapsed < LISTENER_STALE_HARD_TIMEOUT_SECONDS
+        brokenReason = self._staleFeedBrokenReason()
+        if not brokenReason and (elapsed < LISTENER_STALE_HARD_TIMEOUT_SECONDS
                                  or self._pushSubscriptionIsFresh()):
             # Nobody is listening - the feed has nothing to report, which is
             # not a fault. This is what the 30-minute rebuild was really
@@ -1133,16 +1170,15 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
         # DEBUG, not WARNING: the reconnect it triggers reports its own
         # outcome, and only an unsuccessful one is worth the default level.
         logger.debug(
-            "Recently-played feed unchanged for over %ss with playback that never reached it - "
-            "assuming the underlying session/websocket died silently - reconnecting",
-            LISTENER_STALE_TIMEOUT_SECONDS,
+            "Recently-played feed unchanged for over %ss (%s) - assuming the underlying "
+            "session/websocket died silently - reconnecting",
+            LISTENER_STALE_TIMEOUT_SECONDS, brokenReason or STALE_REASON_HARD_CEILING,
         )
         try:
             # Broken evidence is the stronger diagnosis: past the ceiling WITH
-            # unrecorded playback, "hard ceiling" would misread a genuinely
-            # broken session as routine recycling.
-            onStale(reason=STALE_REASON_UNRECORDED_PLAYBACK if feedIsBroken
-                    else STALE_REASON_HARD_CEILING)
+            # evidence, "hard ceiling" would misread a genuinely broken session
+            # as routine recycling.
+            onStale(reason=brokenReason or STALE_REASON_HARD_CEILING)
         except Exception as e:
             logger.error("Reconnect attempt failed: %s", parseError(e))
         return False

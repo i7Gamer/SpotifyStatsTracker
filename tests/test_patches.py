@@ -257,6 +257,47 @@ class TestPatches(unittest.TestCase):
             lps.renew_state()
             self.assertIsNone(lps._state)
             self.assertIsNone(lps._devices)
+    def test_player_status_renew_state_stamps_success_even_without_player_state(self):
+        """A successful connect_device PUT whose cluster carries no
+        player_state is an account with no live Connect session, not a
+        failure - the stamp is how the poll loop and the stale check tell
+        those apart (both raise/read the same 'Could not get player state'
+        ValueError otherwise)."""
+        from spotapi.status import PlayerStatus
+
+        with patch("spotapi.websocket.WebsocketStreamer.__init__", return_value=None), \
+             patch("spotapi.status.PlayerStatus.register_device"), \
+             patch("spotapi.status.PlayerStatus.connect_device") as mock_connect:
+            mock_connect.return_value = {"devices": []}
+            lps = PlayerStatus(MagicMock())
+            self.assertIsNone(getattr(lps, "stateRenewalSucceededAt", None))
+            with patch("Database.patches.time.monotonic", return_value=1234.5):
+                lps.renew_state()
+
+        self.assertEqual(1234.5, lps.stateRenewalSucceededAt)
+        self.assertIsNone(lps._state)
+
+    def test_player_status_renew_state_does_not_stamp_failures(self):
+        """A renewal that raised, or answered with something other than a
+        cluster dict, proved nothing - an ageing stamp is exactly how a
+        genuinely failing tick becomes visible again."""
+        from spotapi.exceptions import WebSocketError
+        from spotapi.status import PlayerStatus
+
+        with patch("spotapi.websocket.WebsocketStreamer.__init__", return_value=None), \
+             patch("spotapi.status.PlayerStatus.register_device"), \
+             patch("spotapi.status.PlayerStatus.connect_device") as mock_connect:
+            lps = PlayerStatus(MagicMock())
+            mock_connect.side_effect = WebSocketError("boom")
+            with self.assertLogs("Database.patches", level="WARNING"):
+                lps.renew_state()
+            self.assertIsNone(getattr(lps, "stateRenewalSucceededAt", None))
+
+            mock_connect.side_effect = None
+            mock_connect.return_value = None  #< non-dict reply is not a success either
+            lps.renew_state()
+            self.assertIsNone(getattr(lps, "stateRenewalSucceededAt", None))
+
     def test_player_status_renew_state_deep_copies_player_state_to_prevent_mutation(self):
         """Regression: spotapi's Track.from_dict() mutates its input dict in-place,
         replacing metadata dict with a Metadata dataclass:
