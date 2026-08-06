@@ -9,17 +9,17 @@ A self-hosted web application for recording and exploring your Spotify listening
 
 ## Features
 
-- **Top Lists**: View your top songs, artists, and albums with detailed statistics, with tag and "full plays only" filters
-- **Listening History**: Browse your play history on a dedicated `/history` page with instant AJAX filtering, and track daily listening activity with a contribution-style streak calendar on the Dashboard
+- **Top Lists**: View your top songs, artists, and albums with detailed statistics, with tag and "full plays only" filters, and a rank-movement badge showing how far each entry has climbed or fallen since the equal-length period before the one you're looking at (loaded after the list, so it costs you no waiting)
+- **Listening History**: Browse your play history on a dedicated `/history` page with instant AJAX filtering, and track daily listening activity with a contribution-style streak calendar on the Dashboard - hover any day for its play count and how long you listened
 - **Trend Insights**: Dashboard cards surface your current Obsession (a track in heavy recent rotation), Rediscovery (an old favorite you've come back to), and Forgotten Favorite (a former favorite you haven't played in a while)
 - **Personal Tagging & Playlist Export**: Tag any song, artist, or album with your own free-text labels, then filter and download a tagged playlist (or a Wrapped year's Top 100) as CSV, M3U, or XSPF on the `/playlists` page - ready for Spotify or converters like Soundiiz and TuneMyMusic
 - **Achievement Milestones**: Automatically celebrate lifetime play-count and listening-time thresholds, listening streaks, and each new all-time #1 artist - surfaced as a topbar badge and a pair of dashboard cards: Milestones (what you've earned) beside Next Milestones (progress toward the next ones)
 - **Charts & Analytics**: Visualize your listening patterns and statistics with interactive charts, customizable trend bucket granularity (hour, day, week, month, year), and a Top Genres breakdown once enough genre data has been backfilled (see Genre Insights below)
 - **Yearly Wrapped & Share Links**: Get a personalized recap of your yearly listening with category filters (Top Songs, Artists, Albums, Discovered Songs, Artists, Albums) plus top genres, and generate shareable links with custom expiration
-- **Data Sharing & Comparison**: Request to share your listening stats with another user - once they accept, compare top songs/artists/albums, a taste-match score, and shared genres side by side on the Compare page
+- **Data Sharing & Comparison**: Request to share your listening stats with another user - once they accept, compare top songs/artists/albums, a taste-match score, and shared genres side by side on the Compare page. Your dashboard also shows what those people are playing right now, each chip linking straight to a comparison with them (instance-wide admin switch, plus a per-account opt-out under Profile > Account)
 - **Genre Insights & Biographies**: Add a free Last.fm API key under Profile > Connections to backfill genre tags and rich artist/album biographies in the background (see [Genre Data](#genre-data-optional) below)
 - **Detail Pages & Interactive Timeline**: Drill down into individual songs, artists, and albums with an interactive play history timeline (with date headers, time gaps, and skip filters), embedded Spotify player, detailed stats, and biographies, plus a "Refresh Last.fm Data" button
-- **Admin Console**: Instance admins can monitor real-time worker health (auto-importer, Last.fm backfiller, backup worker, metadata backfiller), manage user sync states, inspect catalog backfill coverage, and configure instance-wide settings at `/admin`
+- **Admin Console**: Instance admins can monitor real-time worker health (auto-importer, Last.fm backfiller, backup worker, metadata backfiller), manage user sync states, inspect catalog backfill coverage, and configure instance-wide settings at `/admin` - which also warns when the files on disk have changed since the running process started, i.e. a deploy that was copied but never restarted (see [Upgrading](#upgrading-from-an-older-version))
 - **Multi-File Import**: Import multiple Spotify data export files at once with progress tracking
 - **Overview Page**: See total database statistics, your listening breakdown, API backfill configuration, and genre-backfill progress
 - **Auto-Import**: Automatically import files from the 'auto-import' folder with optional keyword filtering
@@ -77,6 +77,15 @@ To update the container if an update is available, run `docker compose pull`
 > **Note on scaling:** the app runs as a single process (Waitress/Flask). In-memory state - the per-IP auth rate limiter, the login-status cache, and the background worker pools - lives in that one process and is not shared, so run one instance rather than scaling it horizontally behind a load balancer.
 
 ### Upgrading from an older version
+
+**Restart the app after updating the files.** Copying a new version over a
+running instance is not a deploy: `static/` is read from disk on every request,
+while the templates and the Python are held in memory from startup - so the
+browser gets the new scripts and the server keeps serving the old markup. The
+result is pages that half-work in ways that look like anything but an upgrade
+problem. `docker compose pull` followed by `up -d` handles this; a manual file
+copy does not. `/admin` shows a banner whenever the running process and the
+files on disk disagree.
 
 Listening history, tracks, images, and login sessions live in a single SQLite
 database under `Database/Data/`. If you were relying on `secrets/` being mounted (e.g. so
