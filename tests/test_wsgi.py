@@ -10,6 +10,7 @@ Database/Listeners/spotifyListener.py for the underlying issue).
 import signal
 import sys
 import os
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -23,12 +24,18 @@ def _importWsgiWithMocks():
 
     signal.signal among them, which is not cosmetic: a6e296b moved the arming
     to MODULE scope, so every import here installed wsgi's real handler in the
-    pytest worker itself. See ProcessSignalsRestored for what that costs."""
+    pytest worker itself. See ProcessSignalsRestored for what that costs.
+
+    startWorkers as a whole, rather than the four things it starts: patching
+    its members one at a time is what let backupWorker and EMAIL_WORKER slip
+    through for as long as they did, and its own docstring points a caller that
+    only wants the WSGI app here. No test that uses this helper needs a worker
+    running; the two that care about startWorkers do their own import and patch
+    it themselves."""
     if "wsgi" in sys.modules:
         del sys.modules["wsgi"]
     with patch('app.SpotifyDashboardApp._get_or_create_secret_key', return_value='test-secret-key'), \
-         patch('app.SpotifyDashboardApp.startVersionCheck_thread'), \
-         patch('app.SpotifyDashboardApp.checkLogin_thread'), \
+         patch('app.SpotifyDashboardApp.startWorkers'), \
          patch('app.migrateIfNeeded'), \
          patch('app.Path.exists', return_value=False), \
          patch('signal.signal'):
@@ -89,6 +96,32 @@ class TestWsgiSigterm(ProcessSignalsRestored):
                 wsgi._sigtermHandler(signal.SIGTERM, None)
 
         self.assertIs(signal.getsignal(signal.SIGTERM), before)
+
+    def test_importing_the_module_under_test_starts_no_background_workers(self):
+        """wsgi calls startWorkers() at MODULE scope, so importing it here runs
+        the real thing unless it is patched out.
+
+        Two of its four workers were never in the helper's patch list.
+        backupWorker is per app instance, so every import in this file left
+        another "backup-worker" thread running for the rest of the session.
+        EMAIL_WORKER is worse for being a module-level SINGLETON: startWorkers
+        does bind_repo(self.repo) before starting it, so the survivor polls
+        every 2s holding a torn-down test database - and it drains the same
+        process-global queue tests/test_email_worker.py asserts on.
+
+        The suite's own leaked-thread guard cannot see either: conftest watches
+        per-user "<prefix><user>" threads by name, deliberately, so
+        process-wide workers fall outside it.
+
+        startWorkers' docstring names this exact caller - "a caller that only
+        wants the WSGI app (a test, a CLI subcommand) would otherwise have to
+        patch each one out individually"."""
+        before = {id(thread) for thread in threading.enumerate()}
+
+        _importWsgiWithMocks()
+
+        leaked = sorted(t.name for t in threading.enumerate() if id(t) not in before)
+        self.assertEqual(leaked, [], f"importing wsgi left threads running: {leaked}")
 
     def test_importing_the_module_under_test_does_not_arm_this_process(self):
         """The helper's own contract. wsgi arms at module scope, and this
