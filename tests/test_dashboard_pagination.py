@@ -134,6 +134,27 @@ class TestHistoryPagination(_ListRouteTestBase):
         db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=2 * appModule.PAGE_SIZE, startDate=None, endDate=None, trackIds=None)
         self.assertIn("Page 3 of 3", resultsHtml)
 
+    def test_a_page_number_too_long_to_parse_is_junk_not_a_crash(self):
+        """?page= reaches _positivePageArg as text, and it answered by calling
+        int() on anything that isdigit(). CPython refuses to convert a string
+        of more than 4300 digits (its int/str conversion limit), so a long
+        enough page number was an unhandled ValueError - a 500 on the shell of
+        /history and of all three Top pages alike, from a URL anyone can type.
+
+        It is junk, and junk is already handled here: left out rather than
+        echoed."""
+        dash = self._makeApp()
+        db = self._makeDb(entryCount=120)
+        absurd = "?page=" + "9" * 5000
+
+        #< the SHELL, not the list: the list path reads ?page= through
+        #  _getPageParam, which has always caught the conversion
+        for path in ("/history", "/top-songs"):
+            with self.subTest(path=path):
+                resp = self._getPath(dash, db, f"{path}{absurd}")
+
+                self.assertEqual(resp.status_code, 200)
+
     def test_without_search_handles_empty_database(self):
         dash = self._makeApp()
         db = self._makeDb(entryCount=0)
