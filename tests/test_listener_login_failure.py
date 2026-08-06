@@ -85,8 +85,11 @@ class TestAFailedConstructionRetiresItsSession(unittest.TestCase):
 
     Note this does NOT cover the streamer's own dealer socket: Spotify.close()
     releases login.client, and lastPlayedManager is still None when the
-    PlayerStatus constructor raised. That half is
-    _closeSocketOfFailedConstruction's, in Database/patches.py."""
+    PlayerStatus constructor raised. That half belongs to Database/patches.py -
+    _closeSocketOfFailedConstruction, reached from both patched frames of the
+    construction (the WebsocketStreamer base __init__ and PlayerStatus's own,
+    whose second register_device() call runs after the base one has already
+    returned successfully)."""
 
     def _construct(self, sp):
         with patch("Database.Listeners.spotifyListener.Spotify", return_value=sp):
@@ -111,10 +114,25 @@ class TestAFailedConstructionRetiresItsSession(unittest.TestCase):
         sp.close.assert_called_once_with()
 
     def test_a_later_failure_in_the_same_constructor_closes_it_too(self):
-        """The sibling one screen further down: current_user_recently_played is
-        a second network call made after the session exists, and it strands
-        exactly the same session. Covering only the handshake would leave the
-        shape of the bug in place one call away."""
+        """The guard covers the constructor, not just the handshake.
+
+        CORRECTION to 3f44703's commit message and this test's first docstring,
+        both of which called current_user_recently_played "a second network
+        call". It is not: Database/Spotify/client.py's implementation is
+        `return list(self.recentlyPlayed)`, and its own docstring says "NOT a
+        Spotify call".
+
+        The window is still worth covering, for a better reason. That deque is
+        appended to by _addToRecentlyPlayed on the RecentlyPlayedManager's
+        thread - which startRecentlyPlayedListener started a few lines earlier -
+        so the copy runs concurrently with a producer, and `list()` over a deque
+        mutated mid-iteration raises RuntimeError. That is the one window where
+        a raise finds a LIVE manager, which is precisely where a stranded
+        session costs the most.
+
+        Driven through a MagicMock here, so what it pins is the contract - any
+        raise after the session exists retires it - rather than that one
+        call's behaviour."""
         sp = self._loggedInClient()
         sp.current_user_recently_played.side_effect = RuntimeError("Max retries exceeded")
 
