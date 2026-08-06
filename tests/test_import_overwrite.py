@@ -263,7 +263,10 @@ class TestOverwriteGating(_OverwriteTestBase):
             "file 2019": ((_ts(2019, 2), _ts(2019, 11), {2019}),
                           lambda: iter([_meta("new19", _ts(2019, 3))])),
         }
-        with patch.object(db.repo, "deleteUserWrapped", side_effect=RuntimeError("boom")):
+        #< deleteUserWrappedFromYear, not deleteUserWrapped: c165ac0 moved this
+        #  path onto the from-year delete, and patching the old name injected
+        #  no failure at all - the test kept passing while guarding nothing
+        with patch.object(db.repo, "deleteUserWrappedFromYear", side_effect=RuntimeError("boom")):
             outcomes = self._runBatch(db, fileSpecs)
 
         self.assertEqual(outcomes, ["imported"])

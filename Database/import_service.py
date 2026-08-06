@@ -526,10 +526,10 @@ class ImportMixin:
 
             if deferCommit:
                 # Atomic overwrite batch: the caller commits once for the
-                # whole batch. deleteUserWrapped self-commits (INVARIANT
-                # above), so invalidating now would flush this transaction's
-                # still-uncommitted writes early - the caller invalidates
-                # these years itself after its own commit succeeds.
+                # whole batch. deleteUserWrappedFromYear self-commits
+                # (INVARIANT above), so invalidating now would flush this
+                # transaction's still-uncommitted writes early - the caller
+                # invalidates these years itself after its own commit succeeds.
                 runState.correctedYears |= correctedYears
             else:
                 self.repo.commit()

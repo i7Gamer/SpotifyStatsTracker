@@ -473,6 +473,25 @@ class TestAPlainImportInvalidatesLaterWrappedYears(DatabaseTestCase):
 
         self.assertEqual(self._cachedYears(db), {2018})
 
+    def test_a_wrapped_cleanup_failure_does_not_fail_a_committed_import(self):
+        """The append path gained the overwrite path's post-commit guard.
+
+        Before c165ac0 this side had none: the invalidation ran unguarded
+        AFTER self.repo.commit() but INSIDE the try whose handler rolls back
+        and re-raises, so a failure clearing a cache row would have reported a
+        durably-committed import as failed. Same point-of-no-return rule as
+        test_a_wrapped_cleanup_failure_does_not_report_a_committed_import_as_failed
+        on the overwrite side - pinned here because nothing did."""
+        db = self._dbWithCachedWrappedYears(2018, 2022)
+
+        with patch.object(db.repo, "deleteUserWrappedFromYear", side_effect=RuntimeError("boom")):
+            self._importAt(db, self._tsIn(2018))
+
+        self.assertEqual(db.readProgress()["status"], "complete")
+        playedAts = [e["playedAt"] for e in db.getEntriesFromOld(fullPagination=False)]
+        self.assertIn(self._tsIn(2018), playedAts)   #< the commit stands
+        self.assertEqual(self._cachedYears(db), {2018, 2022})   #< and the stale rows stay, repairably
+
     def test_an_import_that_inserts_nothing_keeps_the_cache(self):
         """A re-uploaded file whose plays are all already recorded rewrites
         nothing, so it must not throw away work either."""
