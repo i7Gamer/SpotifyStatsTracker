@@ -9,7 +9,7 @@ A self-hosted web application for recording and exploring your Spotify listening
 
 ## Features
 
-- **Top Lists**: View your top songs, artists, and albums with detailed statistics, with tag and "full plays only" filters, and a rank-movement badge showing how far each entry has climbed or fallen since the equal-length period before the one you're looking at (loaded after the list, so it costs you no waiting)
+- **Top Lists**: View your top songs, artists, and albums with detailed statistics, with tag and "full plays only" filters, and a rank-movement badge showing how far each entry has climbed or fallen — or that it is new — since the equal-length period before the one you're looking at (loaded after the list, so it costs you no waiting)
 - **Listening History**: Browse your play history on a dedicated `/history` page with instant AJAX filtering, and track daily listening activity with a contribution-style streak calendar on the Dashboard - hover any day for its play count and how long you listened
 - **Trend Insights**: Dashboard cards surface your current Obsession (a track in heavy recent rotation), Rediscovery (an old favorite you've come back to), and Forgotten Favorite (a former favorite you haven't played in a while)
 - **Personal Tagging & Playlist Export**: Tag any song, artist, or album with your own free-text labels, then filter and download a tagged playlist (or a Wrapped year's Top 100) as CSV, M3U, or XSPF on the `/playlists` page - ready for Spotify or converters like Soundiiz and TuneMyMusic
