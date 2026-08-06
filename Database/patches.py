@@ -407,6 +407,39 @@ def _makeStreamerExitCleanup(streamer):
     return closeStreamerAtExit
 
 
+def _closeSocketOfFailedConstruction(streamer) -> None:
+    """Release the dealer socket a construction that raised left behind.
+
+    connect() runs _create_websocket() - which assigns self.ws and then reads
+    the init packet - and only afterwards register_device(). So every failure
+    from the init-packet read onwards strands an open ClientConnection, and its
+    recv_events thread, on a half-built streamer nothing can reach: no Listener
+    was assigned, so Listener.stop()'s manager.ws.close() never runs, and
+    spotapi registers its own atexit hook only after connect() RETURNS (which
+    is also why the unregistration beside this call has nothing to unregister
+    on this path). patched_connect forces ping_interval=None process-wide, so
+    there is no keepalive to time a silent peer out either - the socket lives
+    until the dealer hangs up, and retrying is exactly what _checkLoginLoop's
+    restart pass and onStaleWithBackoff do.
+
+    Here rather than inside register_device/connect_device on purpose:
+    player_status_reconnect publishes self.ws BEFORE calling them, and
+    connect_device is also renew_state's body on the poll tick, so both run
+    against a socket with a live owner. This is the one place that knows the
+    construction as a whole failed.
+
+    patched_get_init_packet closes its own read's socket at the point of
+    failure; this is the backstop that covers the rest of the construction."""
+    ws = getattr(streamer, "ws", None)
+    if ws is None:
+        return   #< failed before _create_websocket got that far
+    try:
+        ws.close()
+    except Exception:  # noqa: BLE001 - the construction's own exception is what the
+        logger.debug(  #  caller classifies on; a teardown error must not replace it
+            "Could not close the websocket of a failed streamer construction", exc_info=True)
+
+
 def patched_websocket_streamer_init(self, *args, **kwargs):
     previousSigintHandler = signal.getsignal(signal.SIGINT)
     _streamerAtexitCapture.captured = []
@@ -423,9 +456,12 @@ def patched_websocket_streamer_init(self, *args, **kwargs):
             pass  # signal.signal only works in main thread; silently skip if in worker thread
         if not initSucceeded:
             # A failed construction has no owner to ever set _deliberate_close,
-            # so anything it managed to register would be pinned for good.
+            # so anything it managed to register would be pinned for good - and
+            # the socket it opened would be pinned by its own recv_events
+            # thread, which is the more expensive half of the same leak.
             for cleanup in captured:
                 atexit.unregister(cleanup)
+            _closeSocketOfFailedConstruction(self)
     if captured:
         # Swap the fork's print-based closures for one owned cleanup: the exit
         # line lands in the log with everything else, and a failed close at

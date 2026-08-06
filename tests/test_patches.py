@@ -2401,6 +2401,18 @@ class TestStreamerAtexitUnregistration(unittest.TestCase):
         mockAtexit.unregister.assert_called_once_with(cleanup)
         mockAtexit.register.assert_called_once_with(cleanup)  #< no owned hook for a dead construction
 
+    def test_a_failed_init_closes_the_socket_it_opened(self):
+        """The atexit unregistration alone leaves the socket itself behind -
+        see TestFailedStreamerConstructionClosesItsSocket for why that matters.
+        Asserted here too because these are one `if not initSucceeded` branch:
+        a future edit that keeps one half must not silently drop the other."""
+        instance = self._newStreamer()
+        instance.ws = MagicMock()
+        with patch("Database.patches.atexit"):
+            with self.assertRaises(RuntimeError):
+                self._initRegistering(instance, lambda: None, failure=RuntimeError("handshake failed"))
+        instance.ws.close.assert_called_once_with()
+
     def test_a_registration_outside_a_streamer_init_still_reaches_atexit(self):
         """The recorder must stay invisible to atexit use it wasn't built for -
         no open capture means plain forwarding, not a crash."""
@@ -2423,6 +2435,89 @@ class TestStreamerAtexitUnregistration(unittest.TestCase):
         mockAtexit.unregister.assert_called_once_with(cleanup)
         self.assertEqual(mockAtexit.register.call_count, 2)  #< the fork's, then the owned swap
         self.assertFalse(hasattr(instance, "_atexitCleanups"))
+
+
+class TestFailedStreamerConstructionClosesItsSocket(unittest.TestCase):
+    """A construction that raises after the dealer socket was opened must let
+    go of it.
+
+    spotapi's connect() runs _create_websocket() - which assigns self.ws and
+    then reads the init packet - and only afterwards register_device(). So
+    every failure from the init-packet read onwards leaves an open
+    ClientConnection, plus its recv_events thread, on a half-built streamer
+    nothing can reach: no Listener was assigned, so Listener.stop()'s
+    manager.ws.close() never runs, and spotapi registers its own atexit hook
+    only after connect() RETURNS.
+
+    Nor does it heal on its own. patched_connect forces ping_interval=None
+    process-wide, so there is no keepalive to time a silent peer out; the
+    socket lives until the dealer hangs up, and the login loop's restart pass
+    and onStaleWithBackoff are precisely what retry.
+
+    Guarded here, at the one place that knows the construction failed, rather
+    than in register_device: player_status_reconnect publishes self.ws BEFORE
+    calling register_device/connect_device, and connect_device is also
+    renew_state's body on the poll tick - both run against a socket that has a
+    live owner, and closing it there would tear down a healthy session."""
+
+    def _newStreamer(self):
+        return spotapi.status.PlayerStatus.__new__(spotapi.status.PlayerStatus)
+
+    def _init(self, instance, failure=None, ws=None):
+        """Run the patched __init__ with a fake original that opens `ws` the
+        way _create_websocket does, then optionally fails the way
+        register_device does."""
+        def fakeOriginalInit(self, *args, **kwargs):
+            if ws is not None:
+                self.ws = ws
+            if failure is not None:
+                raise failure
+        with patch("Database.patches.original_websocket_streamer_init", fakeOriginalInit):
+            spotapi.websocket.WebsocketStreamer.__init__(instance, MagicMock())
+
+    def test_a_construction_that_raises_closes_the_socket_it_opened(self):
+        ws = MagicMock()
+        instance = self._newStreamer()
+
+        with patch("Database.patches.atexit"):
+            with self.assertRaises(spotapi.exceptions.WebSocketError):
+                self._init(instance, failure=spotapi.exceptions.WebSocketError("Could not register device"), ws=ws)
+
+        ws.close.assert_called_once_with()
+
+    def test_a_successful_construction_keeps_its_socket(self):
+        """The whole point of the session: closing here would end every
+        listener the moment it was built."""
+        ws = MagicMock()
+        instance = self._newStreamer()
+
+        with patch("Database.patches.atexit"):
+            self._init(instance, ws=ws)
+
+        ws.close.assert_not_called()
+
+    def test_a_failure_before_the_socket_exists_is_not_an_attribute_error(self):
+        """get_session/get_client_token run before _create_websocket, so `ws`
+        can be absent entirely - and __init__ must still raise what it raised."""
+        instance = self._newStreamer()
+
+        with patch("Database.patches.atexit"):
+            with self.assertRaises(RuntimeError):
+                self._init(instance, failure=RuntimeError("could not get a session"))
+
+    def test_a_close_that_fails_does_not_replace_the_real_failure(self):
+        """The caller classifies on the construction error (see
+        classifyListenerError); a teardown OSError in its place would be
+        diagnosed as something else entirely."""
+        ws = MagicMock()
+        ws.close.side_effect = OSError("socket already gone")
+        instance = self._newStreamer()
+
+        with patch("Database.patches.atexit"):
+            with self.assertRaises(spotapi.exceptions.WebSocketError):
+                self._init(instance, failure=spotapi.exceptions.WebSocketError("Could not register device"), ws=ws)
+
+        ws.close.assert_called_once_with()
 
 
 if __name__ == "__main__":
