@@ -19,19 +19,53 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 def _importWsgiWithMocks():
     """wsgi.py builds a real SpotifyDashboardApp at import time; patch out the
     parts that would touch disk/threads/network before importing (or
-    re-importing) it fresh."""
+    re-importing) it fresh.
+
+    signal.signal among them, which is not cosmetic: a6e296b moved the arming
+    to MODULE scope, so every import here installed wsgi's real handler in the
+    pytest worker itself. See ProcessSignalsRestored for what that costs."""
     if "wsgi" in sys.modules:
         del sys.modules["wsgi"]
     with patch('app.SpotifyDashboardApp._get_or_create_secret_key', return_value='test-secret-key'), \
          patch('app.SpotifyDashboardApp.startVersionCheck_thread'), \
          patch('app.SpotifyDashboardApp.checkLogin_thread'), \
          patch('app.migrateIfNeeded'), \
-         patch('app.Path.exists', return_value=False):
+         patch('app.Path.exists', return_value=False), \
+         patch('signal.signal'):
         import wsgi
     return wsgi
 
 
-class TestWsgiSigterm(unittest.TestCase):
+class ProcessSignalsRestored(unittest.TestCase):
+    """Backstop: no test in this module may outlive its own SIGTERM writes.
+
+    Two things here write to the pytest process's real disposition. Importing
+    wsgi arms _sigtermHandler (module scope, since a6e296b), and CALLING that
+    handler installs SIG_IGN as its first statement. Nothing put either back,
+    so once this module had run, the worker was left either ignoring SIGTERM or
+    raising KeyboardInterrupt into whatever unrelated test was running when one
+    arrived. Windows cannot deliver one so the dev suite never noticed; a
+    cancelled GitHub Actions job sends exactly that.
+
+    The individual tests patch signal.signal so they never write in the first
+    place - this is the guard that catches the next one that forgets."""
+
+    def setUp(self):
+        super().setUp()
+        previous = signal.getsignal(signal.SIGTERM)
+        self.addCleanup(self._restoreSigterm, previous)
+
+    @staticmethod
+    def _restoreSigterm(previous):
+        if previous is None:
+            return  #< installed from C; there is nothing Python can put back
+        try:
+            signal.signal(signal.SIGTERM, previous)
+        except ValueError:
+            pass  #< not the main thread, so nothing was installed here either
+
+
+class TestWsgiSigterm(ProcessSignalsRestored):
     """`docker stop` sends SIGTERM, and in the container this process is PID 1
     (exec-form CMD), where the kernel discards default-action signals outright.
     Python installs no SIGTERM handler of its own and neither does waitress, so
@@ -40,11 +74,32 @@ class TestWsgiSigterm(unittest.TestCase):
 
     def test_the_handler_raises_keyboard_interrupt(self):
         """SIGTERM takes the exact path Ctrl+C takes: KeyboardInterrupt out of
-        serve(), through main()'s finally, into dashboardApp.shutdown()."""
-        wsgi = _importWsgiWithMocks()
+        serve(), through main()'s finally, into dashboardApp.shutdown().
 
-        with self.assertRaises(KeyboardInterrupt):
-            wsgi._sigtermHandler(signal.SIGTERM, None)
+        Driven with signal.signal patched - the handler's first statement
+        installs SIG_IGN, and unpatched that lands on the pytest process, not
+        on wsgi's. The disarm itself is asserted by its own test below; what
+        the trailing assertion pins here is that exercising the handler leaves
+        this process's disposition exactly as it found it."""
+        wsgi = _importWsgiWithMocks()
+        before = signal.getsignal(signal.SIGTERM)
+
+        with patch("wsgi.signal.signal"):
+            with self.assertRaises(KeyboardInterrupt):
+                wsgi._sigtermHandler(signal.SIGTERM, None)
+
+        self.assertIs(signal.getsignal(signal.SIGTERM), before)
+
+    def test_importing_the_module_under_test_does_not_arm_this_process(self):
+        """The helper's own contract. wsgi arms at module scope, and this
+        module imports it fresh in nine places; if the helper stops patching
+        signal.signal, every one of them silently starts writing to the pytest
+        worker's disposition again."""
+        before = signal.getsignal(signal.SIGTERM)
+
+        _importWsgiWithMocks()
+
+        self.assertIs(signal.getsignal(signal.SIGTERM), before)
 
     def test_it_is_armed_before_the_slow_part_of_startup(self):
         """main() was too late. startWorkers() runs at MODULE scope, and
@@ -85,6 +140,7 @@ class TestWsgiSigterm(unittest.TestCase):
              patch('app.SpotifyDashboardApp.checkLogin_thread'), \
              patch('app.migrateIfNeeded'), \
              patch('app.Path.exists', return_value=False), \
+             patch('signal.signal'), \
              patch('app.SpotifyDashboardApp.startWorkers', side_effect=KeyboardInterrupt), \
              patch('app.SpotifyDashboardApp.shutdown') as mockShutdown:
             with self.assertRaises(KeyboardInterrupt):
@@ -132,7 +188,7 @@ class TestWsgiSigterm(unittest.TestCase):
         self.assertEqual([("serve",)], calls)
 
 
-class TestWsgiShutdown(unittest.TestCase):
+class TestWsgiShutdown(ProcessSignalsRestored):
     def test_main_stops_all_listeners_after_serve_returns(self):
         wsgi = _importWsgiWithMocks()
         with patch('waitress.serve') as mockServe, \
