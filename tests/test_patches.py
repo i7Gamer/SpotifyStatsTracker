@@ -2520,6 +2520,77 @@ class TestFailedStreamerConstructionClosesItsSocket(unittest.TestCase):
         ws.close.assert_called_once_with()
 
 
+class TestFailedPlayerStatusConstructionReleasesTheStreamer(unittest.TestCase):
+    """The construction does not end when the base __init__ returns.
+
+    spotapi's PlayerStatus.__init__ calls register_device() a SECOND time,
+    after super().__init__(login) has already run connect() ->
+    register_device(). By then patched_websocket_streamer_init has set
+    initSucceeded True and swapped in the owned atexit hook, so its
+    `if not initSucceeded` branch - the whole of the socket release - is
+    skipped, and a raise from that second call leaves behind the dealer
+    socket, its recv_events thread, the patched_keep_alive thread (whose
+    _deliberate_close nothing can ever set, because the raise unwinds before
+    any Listener is assigned) and the atexit closure pinning the object.
+
+    PlayerStatus(login) is the only streamer this app constructs, so this is
+    the frame that decides whether a construction leaked."""
+
+    def _construct(self, ws=None, registerFails=None):
+        """Drive a real PlayerStatus construction with the base __init__ faked
+        to a successful connect, and register_device wired to fail or not."""
+        captured = {}
+
+        def fakeBaseInit(self, *args, **kwargs):
+            if ws is not None:
+                self.ws = ws
+            captured["instance"] = self
+
+        registerDevice = MagicMock(side_effect=registerFails)
+        with patch("Database.patches.original_websocket_streamer_init", fakeBaseInit), \
+             patch("Database.patches.atexit"), \
+             patch.object(spotapi.status.PlayerStatus, "register_device", registerDevice):
+            spotapi.status.PlayerStatus(MagicMock())
+        return captured.get("instance")
+
+    def test_a_second_register_device_that_fails_closes_the_socket(self):
+        ws = MagicMock()
+
+        with self.assertRaises(spotapi.exceptions.WebSocketError):
+            self._construct(ws=ws, registerFails=spotapi.exceptions.WebSocketError("Could not register device"))
+
+        ws.close.assert_called_once_with()
+
+    def test_it_also_stops_the_keepalive_the_base_init_started(self):
+        """Closing the socket alone is not enough: patched_keep_alive polls
+        _deliberate_close, and on a half-built streamer nothing else can ever
+        set it. Its setter is also what drops the atexit hook."""
+        captured = {}
+
+        def fakeBaseInit(self, *args, **kwargs):
+            self.ws = MagicMock()
+            captured["instance"] = self
+
+        with patch("Database.patches.original_websocket_streamer_init", fakeBaseInit), \
+             patch("Database.patches.atexit"), \
+             patch.object(spotapi.status.PlayerStatus, "register_device",
+                          MagicMock(side_effect=spotapi.exceptions.WebSocketError("nope"))):
+            with self.assertRaises(spotapi.exceptions.WebSocketError):
+                spotapi.status.PlayerStatus(MagicMock())
+
+        self.assertTrue(captured["instance"]._deliberate_close)
+
+    def test_a_successful_construction_keeps_its_socket_and_stays_live(self):
+        """The guard must not fire on the ordinary path - this socket is the
+        listener."""
+        ws = MagicMock()
+
+        instance = self._construct(ws=ws)
+
+        ws.close.assert_not_called()
+        self.assertFalse(instance._deliberate_close)
+
+
 if __name__ == "__main__":
     unittest.main()
 

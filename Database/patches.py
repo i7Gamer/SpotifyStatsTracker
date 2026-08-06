@@ -510,6 +510,52 @@ def _setDeliberateClose(self, value) -> None:
 spotapi.websocket.WebsocketStreamer._deliberate_close = property(_getDeliberateClose, _setDeliberateClose)
 
 
+original_player_status_init = spotapi.status.PlayerStatus.__init__
+
+
+def patched_player_status_init(self, *args, **kwargs):
+    """PlayerStatus's construction, released as a whole when it fails.
+
+    The base guard above is not enough, because the construction does not end
+    when the base __init__ returns. PlayerStatus.__init__ calls
+    register_device() a SECOND time (spotapi/status.py, right after
+    super().__init__(login) has already run connect() -> register_device()).
+    By then patched_websocket_streamer_init has set initSucceeded True and
+    swapped in the owned atexit hook, so its `if not initSucceeded` branch is
+    skipped - and a raise from that second call left behind exactly what that
+    branch exists to release.
+
+    It is worth its own patch because PlayerStatus(login) is the ONLY streamer
+    this app ever constructs (Database/Spotify/recentlyPlayed.py), so this
+    frame, not the base one, is what "the construction failed" means here.
+    Nothing upstream can clean up after it either: the raise unwinds through
+    RecentlyPlayedManager.__init__ before Spotify.lastPlayedManager is
+    assigned, and through Listener.__init__ before workers/listener.py assigns
+    self.listener - so neither Listener.stop() nor signalStop() is ever
+    reachable for this object.
+
+    _deliberate_close first, then the socket. The flag is the signal
+    patched_keep_alive polls, so setting it is what stops the thread the base
+    __init__ started - it would otherwise ping a healthy socket forever, since
+    nothing else can ever set it - and its setter is also what unregisters the
+    atexit hook that would otherwise pin the whole object until process exit.
+
+    @enforce is not a concern here: it skips names starting with "__", so
+    PlayerStatus.__init__ was never frozen into a subclass copy."""
+    try:
+        original_player_status_init(self, *args, **kwargs)
+    except BaseException:
+        try:
+            self._deliberate_close = True
+        except AttributeError:  # noqa: S110 - slotted instance: the setter's own
+            pass                #  documented case; the close below still runs
+        _closeSocketOfFailedConstruction(self)
+        raise
+
+
+spotapi.status.PlayerStatus.__init__ = patched_player_status_init
+
+
 # 4. Replace WebsocketStreamer.keep_alive outright, and disable the fork's
 # _supervise thread.
 #
