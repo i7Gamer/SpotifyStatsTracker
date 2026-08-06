@@ -17,9 +17,15 @@ which is worse than no arrows at all.
 
 The cost of that choice is depth: we read the previous period's top
 PREVIOUS_WINDOW_SCAN_LIMIT rather than all of it, so an entry that sat below
-that line is unplaceable. It gets no badge, and only a previous list SHORTER
-than the limit - which is therefore the whole period - can prove that an entry
-is genuinely new."""
+that line cannot be placed and gets no badge.
+
+"New" is not left to that scan. Absence from a bounded list only ever meant
+"the scan ended first" - and a year of one person's listening runs thousands of
+entries deep, so on any range past a few months nothing could ever be called
+new. The caller passes the ids that were played at all in the previous period
+(Repository.getEntitiesPlayedInRange, an existence query cheap enough to ask
+about a page's worth of entries), and absence from BOTH is what makes an entry
+new."""
 
 import datetime
 
@@ -53,26 +59,31 @@ def previousWindow(startDate: datetime.datetime | None, endDate: datetime.dateti
 
 
 def rankMovements(currentIds: list[str], previousIds: list[str],
-                  startIndex: int = 0, previousIsComplete: bool = False) -> dict:
+                  startIndex: int = 0, playedPreviously: set | None = None) -> dict:
     """How far each of `currentIds` has moved, keyed by id::
 
         {"<id>": {"direction": "up"|"down"|"same"|"new", "amount": int}}
 
     `currentIds` is one page in rank order and `startIndex` is the rank above
     it, so page 3 compares real ranks rather than positions 1..20.
-    `previousIds` is the previous period in the same order, deepest first.
+    `previousIds` is the previous period in the same order, deepest first -
+    bounded by PREVIOUS_WINDOW_SCAN_LIMIT, so it places an entry or it does not.
+
+    `playedPreviously` is what separates the two reasons an entry can be missing
+    from that scan: the ids known to have been played in the previous period at
+    all (see Repository.getEntitiesPlayedInRange). Absent from the scan AND from
+    this set means genuinely new; absent from the scan but present here means it
+    played too far down to place, which is not something to put a badge on.
+    Passing None keeps every unplaceable entry silent, since without it "new"
+    cannot be told apart from "we did not look far enough".
 
     An id with nothing to say is ABSENT from the result rather than present and
     empty - the caller renders one badge per entry it hears about, so silence
-    is how "we cannot place this" stays distinguishable from "it did not move".
+    stays distinguishable from "it did not move".
 
-    Two of those silences are deliberate:
-
-      * A previous period with no plays at all yields nothing. Every entry
-        would otherwise be flagged new, which is 20 badges saying one thing
-        about the period rather than anything about the entries.
-      * An entry missing from a previous list that hit the scan limit is
-        unplaceable, not new (see PREVIOUS_WINDOW_SCAN_LIMIT)."""
+    A previous period with no plays at all yields nothing, whatever the rest
+    says: every entry would otherwise be flagged new, which is a page of badges
+    saying one thing about the period rather than anything about the entries."""
     if not previousIds:
         return {}
 
@@ -81,7 +92,7 @@ def rankMovements(currentIds: list[str], previousIds: list[str],
     for index, entityId in enumerate(currentIds):
         was = previousRank.get(entityId)
         if was is None:
-            if previousIsComplete:
+            if playedPreviously is not None and entityId not in playedPreviously:
                 movements[entityId] = {"direction": NEW, "amount": 0}
             continue
         rank = startIndex + index + 1

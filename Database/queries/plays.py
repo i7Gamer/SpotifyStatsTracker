@@ -596,6 +596,72 @@ class PlayQueries:
             params.append(endTs)
         return clause
 
+    # Driving table, the id it answers with, and how that row reaches a play,
+    # for getEntitiesPlayedInRange. Entity-first on purpose - see its docstring.
+    _PLAYED_IN_RANGE_KINDS = {
+        "track": ("tracks e", "e.id", "e.id"),
+        "artist": ("track_artists e", "e.artist_id", "e.track_id"),
+        "album": ("tracks e", "e.album_id", "e.id"),
+    }
+
+    def getEntitiesPlayedInRange(self, username: str, kind: str, ids: list[str],
+                                  startTs: float | None, endTs: float | None,
+                                  fullPlaysOnly: bool = False) -> list[str]:
+        """Which of `ids` this user played at all in [startTs, endTs) - existence
+        only, no counts and no ordering. `kind` is "track", "artist" or "album".
+
+        The Top lists' rank-movement badge asks this about the <=50 entries on
+        one page, to tell "not played in the previous period" (new) apart from
+        "played, but below the depth we ranked" (unplaceable). The ranking scan
+        cannot answer it: a year of one person's listening runs thousands of
+        entries deep, so absence from a bounded scan means only that the scan
+        ended first.
+
+        Deliberately not the ranking query with an id filter bolted on. That
+        filter lands on the JOINED table, which SQLite cannot push into the
+        plays index, so it degrades to a full window scan - measured at 12ms
+        (artists) and 90ms (albums) over five years of the reference library.
+        Driving from the entity side instead lets every kind seek
+        (username, track_id, played_at) directly: 3.4ms, 29ms and 3.7ms for the
+        same window, and well under 3ms for the ranges people actually pick.
+
+        `fullPlaysOnly` mirrors the pages' own filter, because it changes
+        whether a play was a LISTEN: a period whose plays were all partial did
+        not hear the track, and the badge has to agree with the list above it.
+        Search and tag filters are absent on purpose - they decide which
+        entities are listed, not whether one was played, and the caller's ids
+        have already been through them."""
+        if kind not in self._PLAYED_IN_RANGE_KINDS:
+            raise ValueError(f"Unknown kind: {kind!r}")
+        if not ids:
+            return []   #< an empty page asks nothing, rather than everything
+        driver, idColumn, trackColumn = self._PLAYED_IN_RANGE_KINDS[kind]
+
+        conn = self._conn()
+        params: list = []
+        idsClause = self._idSetClause(params, idColumn, ids)
+        params.append(username)
+        rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
+        fullJoin = ""
+        fullClause = ""
+        if fullPlaysOnly:
+            fullJoin = self._tracksJoin(trackAlias="ft")
+            fullClause = self._fullPlaysClause(params, trackAlias="ft")
+
+        rows = conn.execute(
+            f"""
+            SELECT DISTINCT {idColumn} AS id
+            FROM {driver}
+            WHERE 1{idsClause} AND EXISTS (
+                SELECT 1 FROM plays p{fullJoin}
+                WHERE p.username = ? AND p.track_id = {trackColumn}
+                      AND p.is_skip = 0{rangeClause}{fullClause}
+            )
+            """,
+            params,
+        ).fetchall()
+        return [row["id"] for row in rows]
+
     def getPlayAggregatesByTrack(self, username: str, startTs: float | None = None,
                                   endTs: float | None = None) -> list[dict]:
         conn = self._conn()

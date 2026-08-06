@@ -189,19 +189,28 @@ def register(app, dashboard):
     # it. Keyed by `section`, so the three pages and the endpoint share one
     # vocabulary rather than mapping one set of names onto another.
     _MOVEMENT_KINDS = {
-        "top_songs": {"getter": "getTopSongs", "tagIds": "getTaggedTrackIds", "idsKwarg": "trackIds"},
-        "top_artists": {"getter": "getTopArtists", "tagIds": "getTaggedArtistIds", "idsKwarg": "artistIds"},
-        "top_albums": {"getter": "getTopAlbums", "tagIds": "getTaggedAlbumIds", "idsKwarg": "albumIds"},
+        "top_songs": {"getter": "getTopSongs", "tagIds": "getTaggedTrackIds",
+                      "idsKwarg": "trackIds", "entity": "track"},
+        "top_artists": {"getter": "getTopArtists", "tagIds": "getTaggedArtistIds",
+                        "idsKwarg": "artistIds", "entity": "artist"},
+        "top_albums": {"getter": "getTopAlbums", "tagIds": "getTaggedAlbumIds",
+                       "idsKwarg": "albumIds", "entity": "album"},
     }
 
-    def _movementUrl(section, filters, page, dateRange):
+    def _movementUrl(section, filters, page, dateRange, items):
         """Where the results fragment asks for its rank arrows - or None when
         there is no question to ask, in which case it renders no trigger at all
         rather than paying for a request that can only answer empty.
 
-        Carries the page it actually rendered: the list clamps an out-of-range
-        page against the total count, and a movement request re-deriving that
-        for itself would need the count query too, only to agree."""
+        Carries the page it rendered AND the ids on it. The page, because the
+        list clamps an out-of-range one against its total count and re-deriving
+        that would mean running the count query again just to agree. The ids,
+        because they are the answer to a query the list has already run: without
+        them the endpoint has to repeat that ranking aggregate wholesale, purely
+        to learn what is on screen. It also closes a race - a play recorded
+        between the two requests could otherwise reorder the list and have the
+        answer arrive about an entry the page never rendered, which htmx reports
+        as an oob element with no target."""
         if filters["sortBy"] not in MOVEMENT_SORT_BY or previousWindow(*dateRange) is None:
             return None
         args = {
@@ -214,6 +223,9 @@ def register(app, dashboard):
             "tag": filters["tag"],
             "fullOnly": filters["fullOnly"],
             "page": page,
+            #< in rank order: position in this list IS the entry's rank, once
+            #  offset by the page. Ids here are alphanumerics and underscores.
+            "ids": ",".join(entry["id"] for entry in items if entry.get("id")),
         }
         return url_for("topListMovement", **{k: v for k, v in args.items() if v})
 
@@ -227,6 +239,11 @@ def register(app, dashboard):
         for - so this runs after those rows are on screen, and an empty answer
         (see the guards below) leaves them exactly as they are.
 
+        The page's own ids arrive in the request rather than being re-derived
+        (see _movementUrl), so what this costs is one ranking of the previous
+        period plus one existence check, not a second ranking of a period the
+        list has already ranked.
+
         api=True for the same reason the dashboard's deferred cards keep their
         plain 401: this is a background request, and answering it with
         HX-Redirect would navigate the whole page away from under someone who
@@ -234,6 +251,12 @@ def register(app, dashboard):
         spec = _MOVEMENT_KINDS.get(request.args.get("kind", ""))
         filters = _topListFilters(db, username)
         if spec is None or filters["sortBy"] not in MOVEMENT_SORT_BY:
+            return ""
+        #< capped at a page: the ids name what to badge, and a crafted request
+        #  must not turn that into an unbounded id set
+        currentIds = [entityId for entityId in request.args.get("ids", "").split(",")
+                      if entityId][:PAGE_SIZE]
+        if not currentIds:
             return ""
         startDate, endDate = dashboard._getDateRange(
             filters["interval"], filters["customStart"], filters["customEnd"],
@@ -259,19 +282,21 @@ def register(app, dashboard):
         # into a 500. Any page past the end answers empty either way.
         page = min(int(_positivePageArg() or 1), MOVEMENT_MAX_PAGE)
         startIndex = (page - 1) * PAGE_SIZE
-        current = fetch(startDate=startDate, endDate=endDate,
-                        limit=PAGE_SIZE, offset=startIndex, **common)
         previous = fetch(startDate=window[0], endDate=window[1],
                          limit=PREVIOUS_WINDOW_SCAN_LIMIT, offset=0, **common)
+        # What the bounded scan above cannot answer: whether an entry it did not
+        # reach was absent from the period or merely below its depth. Cheap
+        # enough to ask about a page's worth of entries because it drives from
+        # the entity side - see Repository.getEntitiesPlayedInRange.
+        playedPreviously = set(db.getEntitiesPlayedInRange(
+            spec["entity"], currentIds, window[0], window[1],
+            fullPlaysOnly=filters["fullPlaysOnly"]))
 
         return render_template(
             "_top_list_movement.html",
             movements=rankMovements(
-                [entry["id"] for entry in current], [entry["id"] for entry in previous],
-                startIndex=startIndex,
-                #< a list that did not fill the scan is the whole period, which
-                #  is the only thing that can prove an entry is genuinely new
-                previousIsComplete=len(previous) < PREVIOUS_WINDOW_SCAN_LIMIT))
+                currentIds, [entry["id"] for entry in previous],
+                startIndex=startIndex, playedPreviously=playedPreviously))
     app.add_url_rule("/api/top-list-movement", "topListMovement", topListMovement, methods=["GET"])
 
     def _topListResults(section, endpoint, username, filters, items, statCards,
@@ -288,7 +313,7 @@ def register(app, dashboard):
         return render_template(
             "_top_list_results.html", tracks=items, statCards=statCards, startIndex=startIndex,
             section=section, username=username, emptyMessage=emptyMessage,
-            movementUrl=_movementUrl(section, filters, page, dateRange), **pagination)
+            movementUrl=_movementUrl(section, filters, page, dateRange, items), **pagination)
 
     def overviewPage():
         # Intentionally unauthenticated: aggregate counts/DB size carry no

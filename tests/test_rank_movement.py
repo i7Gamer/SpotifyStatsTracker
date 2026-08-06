@@ -68,37 +68,47 @@ class TestRankMovements(unittest.TestCase):
     def test_ranks_are_absolute_so_page_two_compares_page_two(self):
         """startIndex is the rank above this page. Without it every page would
         compare against 1..20 and page 3 would read as a mass promotion."""
-        moves = rankMovements(["a"], ["x"] * 40 + ["a"], startIndex=40, previousIsComplete=True)
+        moves = rankMovements(["a"], ["x"] * 40 + ["a"], startIndex=40, playedPreviously=set())
 
         #< was #41, still #41
         self.assertEqual(moves["a"], {"direction": SAME, "amount": 0})
 
-    def test_an_entry_the_previous_period_never_saw_is_new(self):
-        moves = rankMovements(["a"], ["x", "y"], previousIsComplete=True)
+    def test_an_entry_the_previous_period_never_played_is_new(self):
+        """Missing from the ranked scan AND from the played set - the only
+        combination that means the period genuinely did not hear it."""
+        moves = rankMovements(["a"], ["x", "y"], playedPreviously={"x", "y"})
 
         self.assertEqual(moves["a"], {"direction": NEW, "amount": 0})
 
-    def test_new_is_only_claimed_when_the_previous_list_is_the_whole_period(self):
-        """A list that hit the scan limit was truncated, so "not in it" means
-        "we did not look far enough" - which is not something to tell a user."""
-        moves = rankMovements(["a"], ["x", "y"], previousIsComplete=False)
+    def test_an_entry_played_too_far_down_to_place_is_not_called_new(self):
+        """It played; it just sat below the depth the scan ranked. Claiming
+        "new" there would be the wrong answer rather than a missing one - and
+        past a few months' range that is most of the previous period."""
+        moves = rankMovements(["a"], ["x", "y"], playedPreviously={"a", "x", "y"})
+
+        self.assertNotIn("a", moves)
+
+    def test_without_a_played_set_nothing_is_called_new(self):
+        """The caller could not tell us, so neither can we: absence from a
+        bounded scan on its own only means the scan ended first."""
+        moves = rankMovements(["a"], ["x", "y"], playedPreviously=None)
 
         self.assertNotIn("a", moves)
 
     def test_a_previous_period_with_no_plays_reports_nothing_at_all(self):
-        """Twenty "new" badges say one thing about the period and nothing about
-        any entry on the page."""
-        self.assertEqual(rankMovements(["a", "b"], [], previousIsComplete=True), {})
+        """A page of "new" badges says one thing about the period and nothing
+        about any entry on it - even though every entry qualifies."""
+        self.assertEqual(rankMovements(["a", "b"], [], playedPreviously=set()), {})
 
     def test_entries_are_judged_independently(self):
-        moves = rankMovements(["a", "b", "c"], ["b", "a", "c"], previousIsComplete=True)
+        moves = rankMovements(["a", "b", "c"], ["b", "a", "c"], playedPreviously=set())
 
         self.assertEqual(moves["a"], {"direction": UP, "amount": 1})     #< #2 -> #1
         self.assertEqual(moves["b"], {"direction": DOWN, "amount": 1})   #< #1 -> #2
         self.assertEqual(moves["c"], {"direction": SAME, "amount": 0})   #< #3 -> #3
 
     def test_nothing_on_the_page_is_nothing_to_report(self):
-        self.assertEqual(rankMovements([], ["a"], previousIsComplete=True), {})
+        self.assertEqual(rankMovements([], ["a"], playedPreviously=set()), {})
 
     def test_the_scan_limit_is_deep_enough_to_be_worth_having(self):
         """It is the difference between "it wasn't there" and "we didn't look",

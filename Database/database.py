@@ -800,6 +800,20 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         endTs = endDate.timestamp() if endDate else None
         return startTs, endTs
 
+    def getEntitiesPlayedInRange(self, kind: str, ids: list[str],
+                                  startDate: datetime.datetime = None,
+                                  endDate: datetime.datetime = None,
+                                  fullPlaysOnly: bool = False) -> list[str]:
+        """Which of `ids` (tracks, artists or albums - see `kind`) this user
+        played at all in the range. Existence only; the Top lists' rank-movement
+        badge uses it to tell "not played in the previous period" apart from
+        "played below the depth we ranked". See
+        Repository.getEntitiesPlayedInRange for why it is not the ranking query
+        with an id filter."""
+        return self.repo.getEntitiesPlayedInRange(
+            self.user, kind, ids, *self._dateRangeToTimestamps(startDate, endDate),
+            fullPlaysOnly=fullPlaysOnly)
+
     def getExplicitRatio(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> dict:
         """{explicit, clean} play counts for the Charts explicit ratio."""
         return self.repo.getExplicitCounts(self.user, *self._dateRangeToTimestamps(startDate, endDate))

@@ -16,6 +16,7 @@ rather than more work inside the list:
     comparison against a differently-filtered period is a wrong answer rather
     than a missing one.
 """
+import html
 import os
 import re
 import sys
@@ -38,6 +39,8 @@ _FEBRUARY = 1770033600.0    #< 2026-02-02 12:00 UTC, inside the window before it
 _JANUARY = 1768478400.0     #< 2026-01-15 12:00 UTC, BEFORE it - see the anchoring test
 
 _MOVEMENT_PATH = "/api/top-list-movement"
+_PATH_FOR_KIND = {"top_songs": "/top-songs", "top_artists": "/top-artists",
+                  "top_albums": "/top-albums"}
 
 
 def _oobDepths(fragment):
@@ -106,11 +109,37 @@ class MovementTestCase(AppTestCase):
             sess["email"] = self.email
             sess["username"] = self.username
 
+    def _triggerUrl(self, query=_CURRENT, kind="top_songs"):
+        """The movement URL the page itself emits, or None when it asks for
+        nothing at all.
+
+        Every test drives this rather than a hand-built URL, because the ids
+        the endpoint answers about now come FROM the list - so a URL assembled
+        here could ask a question the page never asks, and would keep passing
+        after the two stopped agreeing."""
+        body = self._list(path=_PATH_FOR_KIND[kind], query=query)
+        match = re.search(r'hx-get="([^"]*top-list-movement[^"]*)"', body)
+        return html.unescape(match.group(1)) if match else None
+
     def _movement(self, query=_CURRENT, kind="top_songs"):
+        url = self._triggerUrl(query=query, kind=kind)
+        if url is None:
+            return ""   #< the page asked for nothing, which IS the answer
         self._login()
-        separator = "&" if query else "?"
-        return self.client.get(f"{_MOVEMENT_PATH}{query}{separator}kind={kind}",
-                               headers=HX_HEADERS).get_data(as_text=True)
+        return self.client.get(url, headers=HX_HEADERS).get_data(as_text=True)
+
+    def _rawMovement(self, **overrides):
+        """A hand-built request, for the shapes a page never emits."""
+        params = {"kind": "top_songs", "interval": "custom",
+                  "startDate": "2026-03-01", "endDate": "2026-03-31",
+                  "ids": ",".join(self._pageIds())}
+        params.update(overrides)
+        self._login()
+        query = "&".join(f"{key}={value}" for key, value in params.items() if value != "")
+        return self.client.get(f"{_MOVEMENT_PATH}?{query}", headers=HX_HEADERS)
+
+    def _pageIds(self, query=_CURRENT, path="/top-songs"):
+        return re.findall(r'id="rankMove-([^"]+)"', self._list(path=path, query=query))
 
     def _list(self, path="/top-songs", query=_CURRENT):
         self._login()
@@ -201,24 +230,23 @@ class TestWhenThereIsNothingToCompare(MovementTestCase):
         self.assertEqual(self._movement(query=late).strip(), "")    #< and unjudged
 
     def test_an_unknown_kind_reports_nothing(self):
-        self.assertEqual(self._movement(kind="top_playlists").strip(), "")
+        self.assertEqual(self._rawMovement(kind="top_playlists").get_data(as_text=True).strip(), "")
 
-    def test_an_absurd_page_answers_empty_instead_of_failing(self):
-        """The list route clamps ?page= against the row count; this one has no
-        count query to clamp against, and _positivePageArg only checks that the
-        digits are positive - so a 20-digit page reached SQLite as an OFFSET
-        too large for an int64 and raised, turning a cosmetic background
-        request into a 500 in the log."""
-        self._login()
-        resp = self.client.get(
-            f"{_MOVEMENT_PATH}{_CURRENT}&kind=top_songs&page=99999999999999999999",
-            headers=HX_HEADERS)
+    def test_a_request_naming_no_entries_reports_nothing(self):
+        """The ids ARE the question. Without them there is nothing to badge,
+        and re-deriving them would be the ranking query this endpoint exists
+        not to repeat."""
+        self.assertEqual(self._rawMovement(ids="").get_data(as_text=True).strip(), "")
+
+    def test_an_absurd_page_does_not_fail(self):
+        """?page= only sets the rank the page starts at now that the ids come
+        with the request, so it no longer reaches SQLite as an OFFSET - but a
+        20-digit one did exactly that before, overflowing int64 and turning a
+        cosmetic background request into a 500. It stays clamped, and the only
+        thing left to assert is that a crafted request cannot break it."""
+        resp = self._rawMovement(page="99999999999999999999")
 
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.get_data(as_text=True).strip(), "")
-
-    def test_a_page_past_the_end_answers_empty(self):
-        self.assertEqual(self._movement(query=_CURRENT + "&page=9000").strip(), "")
 
 
 class TestTheFiltersReachBothWindows(MovementTestCase):
@@ -261,21 +289,25 @@ class TestTheFiltersReachBothWindows(MovementTestCase):
         self.assertNotIn("rank-move-new",
                          self._spanFor(self._movement(query=_CURRENT + "&fullOnly=0"), "t3"))
 
-    def test_a_truncated_previous_period_cannot_call_anything_new(self):
-        """The guard that keeps a deep-scan limit from becoming a wrong answer.
-        Every fixture here has a previous period far smaller than the real
-        500-row scan, so the derivation itself was never exercised - replacing
-        it with a constant True left the whole suite green."""
+    def test_a_truncated_scan_still_tells_new_from_unplaceable(self):
+        """The whole point of asking the previous period who played at all.
+
+        With the scan cut to one row, February places only t2. t1 played then
+        and cannot be placed, so it gets no badge; t3 did not play then at all,
+        and IS new. Before the existence check, absence from a truncated scan
+        was indistinguishable and neither could be claimed - which on any range
+        past a few months is every entry, since a year of listening runs
+        thousands deep."""
         self.dash.repo.upsertTrack(makeTrack("t3", "Gamma Song"))
         self._plays("t3", _MARCH, 2)
         self.dash.repo.commit()
 
-        #< 1 < the two entries February has, so the scan comes back truncated
         with patch("routes.charts.PREVIOUS_WINDOW_SCAN_LIMIT", 1):
             body = self._movement()
 
-        self.assertIsNone(self._spanFor(body, "t3"),
-                          "an entry below the scan line was reported as new")
+        self.assertIn("rank-move-new", self._spanFor(body, "t3"))
+        self.assertIsNone(self._spanFor(body, "t1"),
+                          "an entry that played, below the scan line, was given a badge")
 
     def test_the_previous_window_reaches_back_exactly_one_span(self):
         """January is outside [Jan 30, Mar 1) and has to stay outside it. These
@@ -394,6 +426,23 @@ class TestEveryKindIsWiredEndToEnd(MovementTestCase):
         self.assertIn('title="Up 2 from the previous period"', self._spanFor(body, "xA"))
         self.assertIn('title="Down 2 from the previous period"', self._spanFor(body, "xB"))
 
+    def test_each_kind_asks_about_its_own_entities_when_deciding_new(self):
+        """The existence check takes an entity KIND, and getting it wrong fails
+        in the direction that produces a badge rather than none: artist ids
+        matched against track ids find nothing, and everything unplaceable
+        would read as new.
+
+        With the scan cut to one row, aA and xA played in February and cannot
+        be placed - so silence is the only correct answer for them."""
+        for kind in ("top_artists", "top_albums"):
+            with self.subTest(kind=kind), patch("routes.charts.PREVIOUS_WINDOW_SCAN_LIMIT", 1):
+                body = self._movement(kind=kind)
+
+                for entityId in ("aA", "aB") if kind == "top_artists" else ("xA", "xB"):
+                    span = self._spanFor(body, entityId)
+                    self.assertNotIn("rank-move-new", span or "",
+                                     f"{entityId} played in February but was called new")
+
     def test_each_kind_reports_into_its_own_pages_placeholders(self):
         for path, kind in (("/top-songs", "top_songs"), ("/top-artists", "top_artists"),
                            ("/top-albums", "top_albums")):
@@ -415,11 +464,28 @@ class TestPagingComparesTheRightRanks(MovementTestCase):
         # A full page of tracks played MORE than t1/t2 in both months, so t1
         # and t2 land on page 2 with the same relative order as before.
         for index in range(PAGE_SIZE):
-            trackId = f"filler{index:03d}"
+            #< 22 characters, the length of a real Spotify id, so the URL-length
+            #  assertion below measures what a real page would send
+            trackId = f"trk{index:019d}"
             self.dash.repo.upsertTrack(makeTrack(trackId, f"Filler {index:03d}"))
             self._plays(trackId, _MARCH + 100 + index, 10)
             self._plays(trackId, _FEBRUARY + 100 + index, 10)
         self.dash.repo.commit()
+
+    def test_a_full_pages_trigger_url_stays_within_a_safe_request_line(self):
+        """The page's ids ride in the URL so the endpoint does not have to
+        re-run the list's own ranking to learn them. That trade has a ceiling:
+        raise PAGE_SIZE far enough and the request line grows past what proxies
+        and servers accept, and the badges would vanish behind a 414 that
+        nothing on the page reports.
+
+        50 ids of 22 characters is about 1.2KB; 2000 is the conservative limit
+        every browser and proxy honours."""
+        url = self._triggerUrl()
+
+        self.assertIsNotNone(url)
+        self.assertEqual(url.count(","), PAGE_SIZE - 1, "not a full page of ids")
+        self.assertLess(len(url), 2000, f"the trigger URL is {len(url)} characters")
 
     def test_a_second_page_entry_is_ranked_against_its_absolute_position(self):
         span = self._spanFor(self._movement(query=_CURRENT + "&page=2"), "t1")
