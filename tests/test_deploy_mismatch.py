@@ -112,17 +112,44 @@ class TestNewestSourceMtime(unittest.TestCase):
 
         self.assertEqual(newestSourceMtime(self.root), 4000)
 
+    # Every file below deliberately carries a scanned SUFFIX. Writing a .db, a
+    # .pyc and a .js here instead - the obvious choice - made all three of
+    # these pass with the directory rules deleted outright, because the suffix
+    # filter alone rejected them. They were three tests of one thing.
+
     def test_a_users_own_data_never_counts_as_a_deploy(self):
-        """Database/Data holds the live databases, written constantly - walking
-        them in would make the banner permanent and therefore useless."""
+        """Database/Data holds the live databases, the media tree and the logs
+        - 20,919 files on the instance this was written against, written to
+        constantly. Descending into it costs 5x the walk (measured: 5.0ms ->
+        24.4ms per /admin load) and would eventually make the banner permanent,
+        which is the same as not having one."""
         self._write("templates/tracks.html", 1000)
-        self._write("Database/Data/alice.db", 9999)
+        self._write("Database/Data/leftover.py", 9999)
 
         self.assertEqual(newestSourceMtime(self.root), 1000)
 
+    def test_it_does_not_even_walk_into_the_data_directory(self):
+        """The cost is the point, and it is invisible to the assertion above:
+        the exclusion has to skip the directory, not just ignore its files."""
+        self._write("templates/tracks.html", 1000)
+        self._write("Database/Data/Media/cover.py", 9999)
+        visited = []
+        realWalk = os.walk
+
+        def spy(top, *args, **kwargs):
+            for entry in realWalk(top, *args, **kwargs):
+                visited.append(entry[0])
+                yield entry
+
+        with patch("services.deploy_state.os.walk", spy):
+            newestSourceMtime(self.root)
+
+        self.assertTrue(visited, "the walk never ran")
+        self.assertFalse([path for path in visited if "Data" in Path(path).parts])
+
     def test_stale_bytecode_does_not_count(self):
         self._write("routes/charts.py", 1000)
-        self._write("routes/__pycache__/charts.cpython-313.pyc", 9999)
+        self._write("routes/__pycache__/charts.py", 9999)
 
         self.assertEqual(newestSourceMtime(self.root), 1000)
 
@@ -131,7 +158,7 @@ class TestNewestSourceMtime(unittest.TestCase):
         stale-process symptom - it is the half that IS live, and the reason
         this whole failure mode is so confusing."""
         self._write("templates/tracks.html", 1000)
-        self._write("static/js/dashboard-page.js", 9999)
+        self._write("static/offline.html", 9999)
 
         self.assertEqual(newestSourceMtime(self.root), 1000)
 
