@@ -55,6 +55,12 @@ MUST_BE_EXCLUDED = (
     "Database/Spotify/session.json",
     "session.json",
     "sessions.json",
+    #< the smoketest itself: a manual tool that talks to the REAL Spotify on
+    #  live cookies, imported by nothing and runnable only as __main__. It is
+    #  not private data, but it is 283 lines of network-calling code in a
+    #  published image that can never execute there - the same reason dev.py,
+    #  tests/ and *.ps1 are already excluded.
+    "Database/Spotify/smoketest.py",
 )
 
 # The image genuinely needs these - a rule broad enough to catch the above must
@@ -74,8 +80,9 @@ MUST_BE_INCLUDED = (
     #< the license must travel with the work (AGPL-3.0 / GPL-3.0 section 4)
     "COPYING",
     "NOTICE",
-    #< placeholders only, and the reference the smoketest's usage text points at -
-    #  the negation that keeps it is also this suite's proof negation works at all
+    #< placeholders only. The smoketest that reads it is excluded above, so this
+    #  no longer travels for its sake - it stays because the negation keeping it
+    #  is this suite's proof that a `!` exception works against the real file.
     "Database/Spotify/session.example.json",
 )
 

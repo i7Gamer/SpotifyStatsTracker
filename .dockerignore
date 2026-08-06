@@ -67,6 +67,14 @@ tests/
 docker-compose.yml
 dev.py
 *.ps1
+# The Spotify smoketest: a MANUAL tool, imported by nothing and runnable only as
+# __main__, that talks to the real Spotify on live sp_dc/sp_key cookies. Its
+# session file was already excluded above; the tool that reads it belongs out
+# too, for the same reason dev.py and tests/ are - 283 lines of network-calling
+# code that can never execute in a published image. session.example.json stays
+# (see the negation above): it is placeholder shape documentation, and this
+# suite's proof that a `!` exception works at all.
+Database/Spotify/smoketest.py
 # Lint-only, dev-only: the image ships no JS bundle and needs no node runtime.
 node_modules/
 package.json

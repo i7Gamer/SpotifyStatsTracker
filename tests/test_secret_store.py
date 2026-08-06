@@ -383,6 +383,90 @@ class TestReadOrCreateKeyFile(_KeyFileTestCase):
         self.assertEqual(leftovers, [], f"temporary artefacts left behind: {leftovers}")
 
 
+class TestAMintThatFailsPartWay(_KeyFileTestCase):
+    """_writeKeyFile's except arm: the only path here with no coverage.
+
+    The write is deliberately atomic - temp file, then rename - because a plain
+    write truncates first, so a crash between the two leaves exactly the empty
+    file readOrCreateKeyFile has to refuse. That leaves one question this suite
+    never asked: what the FAILING half does.
+
+    A full disk is the realistic trigger, and os.replace is where it surfaces:
+    the temp file is written and the rename is what cannot complete. What must
+    then be true is that the error reaches the caller (a boot that could not
+    persist its key must not look like a boot that did) and that the temp file
+    goes, since it is not a key and nothing will ever read it.
+    """
+
+    def _failingReplace(self):
+        return patch.object(secretStore.os, "replace",
+                            side_effect=OSError("No space left on device"))
+
+    def _partialPath(self):
+        return self.keyPath.with_name(self.keyPath.name + secretStore.PARTIAL_SUFFIX)
+
+    def test_the_failure_reaches_the_caller(self):
+        with self._failingReplace(), self.assertRaises(OSError):
+            secretStore.readOrCreateKeyFile(self.keyPath)
+
+    def test_no_key_file_is_left_claiming_to_be_one(self):
+        with self._failingReplace(), self.assertRaises(OSError):
+            secretStore.readOrCreateKeyFile(self.keyPath)
+
+        self.assertFalse(self.keyPath.exists(),
+                         "a half-mint must not leave something the next boot reads as the key")
+
+    def test_the_half_written_temp_file_is_cleaned_up(self):
+        with self._failingReplace(), self.assertRaises(OSError):
+            secretStore.readOrCreateKeyFile(self.keyPath)
+
+        self.assertFalse(self._partialPath().exists())
+        leftovers = [p.name for p in self.keyPath.parent.iterdir()]
+        self.assertEqual(leftovers, [], f"left behind after a failed mint: {leftovers}")
+
+    def test_the_next_boot_can_still_mint(self):
+        """The behavioural payoff. os.open(O_EXCL) refuses an existing file, so
+        a temp left behind by the arm above would wedge every boot after it -
+        the same wedge test_a_stale_partial_from_a_crash_does_not_block_minting
+        covers for a KILLED process, now for one that survived its own error."""
+        with self._failingReplace(), self.assertRaises(OSError):
+            secretStore.readOrCreateKeyFile(self.keyPath)
+
+        minted = secretStore.readOrCreateKeyFile(self.keyPath)
+
+        self.assertTrue(minted)
+        self.assertEqual(self.keyPath.read_text(encoding="utf-8").strip(), minted)
+
+    def test_a_write_that_fails_before_the_rename_is_cleaned_up_too(self):
+        """The other half of the try block. Patching the write rather than the
+        rename also proves the descriptor is closed on the way out - Windows
+        refuses to unlink a file that is still open, so a leaked handle fails
+        this on that platform rather than passing everywhere."""
+        realFdopen = secretStore.os.fdopen
+
+        class FailingStream:
+            def __init__(self, stream):
+                self._stream = stream
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                self._stream.close()
+                return False
+
+            def write(self, _contents):
+                raise OSError("No space left on device")
+
+        with patch.object(secretStore.os, "fdopen",
+                          lambda *args, **kwargs: FailingStream(realFdopen(*args, **kwargs))), \
+                self.assertRaises(OSError):
+            secretStore.readOrCreateKeyFile(self.keyPath)
+
+        self.assertFalse(self._partialPath().exists())
+        self.assertFalse(self.keyPath.exists())
+
+
 @unittest.skipIf(os.name == "nt",
                  "CPython's os.chmod on Windows only toggles the read-only attribute and never "
                  "narrows the ACL, and st_mode is synthetic - there is no mode to assert on")
