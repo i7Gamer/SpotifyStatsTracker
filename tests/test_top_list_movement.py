@@ -127,7 +127,8 @@ class TestWhatTheComparisonReports(MovementTestCase):
 
         self.assertIsNotNone(span, "no movement reported for the climbing entry")
         self.assertIn("rank-move-up", span)
-        self.assertIn("1", span)
+        #< the distance, not just the direction: #2 -> #1
+        self.assertIn('title="Up 1 from the previous period"', span)
 
     def test_an_entry_that_fell_is_reported_as_down(self):
         span = self._spanFor(self._movement(), "t2")
@@ -281,9 +282,10 @@ class TestPagingComparesTheRightRanks(MovementTestCase):
         span = self._spanFor(self._movement(query=_CURRENT + "&page=2"), "t1")
 
         self.assertIsNotNone(span, "page 2 reported nothing")
-        #< t1 sits at #51 now and #52 before, exactly as on page 1 of a
-        #  filler-free library - the fillers move both windows equally
-        self.assertIn("rank-move-up", span)
+        # t1 sits at #51 now and sat at #52 before, so it moved one place - the
+        # DISTANCE is the assertion, because a startIndex of 0 would still call
+        # this "up", just up 51 from a rank it never held.
+        self.assertIn('title="Up 1 from the previous period"', span)
 
 
 if __name__ == "__main__":
