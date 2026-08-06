@@ -117,6 +117,17 @@ class TestBuildListeningCalendar(unittest.TestCase):
 
         self.assertEqual(cal["weeks"][-1][0]["timeText"], "42m")
 
+    def test_a_day_under_a_minute_still_says_how_long(self):
+        """Suppressing seconds at every scale also suppresses the ONLY
+        component a sub-minute total has, so a day with a 45-second play
+        rendered "1 play" and nothing else - indistinguishable from a day the
+        grid shades for no reason. Non-skip plays can be this short: the skip
+        boundary is admin-tunable."""
+        cal = buildListeningCalendar({"2026-07-20": 1}, _TODAY, weeks=1,
+                                     dayMillis={"2026-07-20": 45_000})
+
+        self.assertEqual(cal["weeks"][-1][0]["timeText"], "45s")
+
     def test_a_day_with_no_plays_has_no_time_text(self):
         """The tooltip appends this, so an empty string is what keeps a quiet
         day reading "0 plays" rather than "0 plays - 0s"."""

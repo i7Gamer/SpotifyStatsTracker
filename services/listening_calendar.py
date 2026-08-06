@@ -33,6 +33,20 @@ def _intensityLevel(count: int, maxCount: int) -> int:
     return max(1, min(CALENDAR_INTENSITY_LEVELS, level))
 
 
+def _dayTimeText(ms: int) -> str:
+    """A day's listening time for the tooltip, or "" when there was none.
+
+    Seconds are hidden at every scale (0 reads as "above 0 hours", so the
+    condition never holds) because a day is read at a glance and "42m 13s"
+    spends the tooltip's width on precision nobody asked for. Under a minute
+    that suppression removes the only component there is, leaving an empty
+    string - so those fall back to the precise form rather than reporting a
+    day of real listening as no listening at all."""
+    if not ms:
+        return ""   #< the tooltip appends this; "0 plays - 0s" says it twice
+    return msToString(ms, hideSecondsAboveHours=0) or msToString(ms)
+
+
 def buildListeningCalendar(dayCounts: dict, today: datetime.date,
                            weeks: int = CALENDAR_WEEKS,
                            dayMillis: dict | None = None) -> dict:
@@ -77,10 +91,7 @@ def buildListeningCalendar(dayCounts: dict, today: datetime.date,
             ms = 0 if future or not dayMillis else dayMillis.get(dateStr, 0)
             column.append({"date": dateStr, "count": count,
                            "level": 0, "today": cellDate == today, "future": future,
-                           #< empty rather than "0s" on a quiet day: the tooltip
-                           #  appends this to the play count. 0 hides seconds at
-                           #  every scale - a day is read at a glance.
-                           "timeText": msToString(ms, hideSecondsAboveHours=0) if ms else ""})
+                           "timeText": _dayTimeText(ms)})
             # One month label per column, at the column whose week contains that
             # month's 1st - the same placement GitHub uses along the top axis.
             if cellDate.day == 1 and (not monthLabels or monthLabels[-1]["weekIndex"] != col):
