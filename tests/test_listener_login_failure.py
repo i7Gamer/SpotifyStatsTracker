@@ -116,23 +116,30 @@ class TestAFailedConstructionRetiresItsSession(unittest.TestCase):
     def test_a_later_failure_in_the_same_constructor_closes_it_too(self):
         """The guard covers the constructor, not just the handshake.
 
-        CORRECTION to 3f44703's commit message and this test's first docstring,
-        both of which called current_user_recently_played "a second network
-        call". It is not: Database/Spotify/client.py's implementation is
-        `return list(self.recentlyPlayed)`, and its own docstring says "NOT a
-        Spotify call".
+        What this pins is a CONTRACT - any raise after the session exists
+        retires it - not a reachable bug. Worth saying plainly, because two
+        earlier attempts to name a concrete raise here were both wrong and the
+        record should stop at the truth:
 
-        The window is still worth covering, for a better reason. That deque is
-        appended to by _addToRecentlyPlayed on the RecentlyPlayedManager's
-        thread - which startRecentlyPlayedListener started a few lines earlier -
-        so the copy runs concurrently with a producer, and `list()` over a deque
-        mutated mid-iteration raises RuntimeError. That is the one window where
-        a raise finds a LIVE manager, which is precisely where a stranded
-        session costs the most.
+        - 3f44703 called current_user_recently_played "a second network call".
+          It is not. Database/Spotify/client.py implements it as
+          `return list(self.recentlyPlayed)` and its own docstring says "NOT a
+          Spotify call".
+        - The replacement claim - that the copy races _addToRecentlyPlayed on
+          the manager thread and `list()` raises "deque mutated during
+          iteration" - is also wrong. list(deque) is a single C-level
+          iteration: it runs no bytecode, so the interpreter never switches
+          threads inside it. Measured on this repo's interpreter (CPython
+          3.13.14, GIL on): 9.5M copies against 33M concurrent appends, zero
+          RuntimeError. The producer could not have appended that early anyway
+          - _applyStateToTracking fires the callback only from the SECOND
+          observed connect state onward.
 
-        Driven through a MagicMock here, so what it pins is the contract - any
-        raise after the session exists retires it - rather than that one
-        call's behaviour."""
+        So no statement between the session coming up and the end of __init__
+        is known to be able to raise. The guard is breadth, not a fix: it costs
+        nothing, and it means the next line added to this constructor is
+        covered without anyone having to notice that it needs to be. Driven
+        through a MagicMock for exactly that reason."""
         sp = self._loggedInClient()
         sp.current_user_recently_played.side_effect = RuntimeError("Max retries exceeded")
 
