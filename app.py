@@ -25,7 +25,7 @@ from Database.backup import (
     DEFAULT_BACKUP_INTERVAL_HOURS, DEFAULT_BACKUP_RETENTION_COUNT,
 )
 from routes._htmx import isHtmxSwap
-from services.deploy_state import deployMismatch, newestSourceMtime
+from services.deploy_state import deployMismatch, sourceFingerprint
 from services.email_worker import EMAIL_WORKER
 from Database.db import SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON
 from Database.repository import Repository
@@ -232,8 +232,10 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
             self.currentVersion = (self.baseDir / "Database" / "VERSION").read_text(encoding="utf-8").strip()
         # ...which is exactly why getDeployMismatch re-reads it: a file-copy
         # deploy without a restart updates the file and leaves this variable,
-        # the compiled templates and this module itself on the old build.
-        self.startedAt = time.time()
+        # the compiled templates and this module itself on the old build. The
+        # fingerprint is the same question asked of the source tree, and has to
+        # be taken HERE, while what is on disk is still what got loaded.
+        self._bootFingerprint = sourceFingerprint(self.baseDir)
         self.latestVersion = None   #< set by the version-check worker when a newer release exists
         self._version_lock = threading.Lock()
         self._stop_event = threading.Event()
@@ -693,8 +695,8 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
         diskVersion = None
         with suppress(Exception):
             diskVersion = (self.baseDir / "Database" / "VERSION").read_text(encoding="utf-8").strip()
-        return deployMismatch(self.currentVersion, diskVersion, self.startedAt,
-                              newestSourceMtime(self.baseDir))
+        return deployMismatch(self.currentVersion, diskVersion,
+                              self._bootFingerprint, sourceFingerprint(self.baseDir))
 
     def registerRoutes(self) -> None:
         @self.app.url_defaults

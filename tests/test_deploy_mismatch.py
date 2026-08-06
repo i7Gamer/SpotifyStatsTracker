@@ -12,12 +12,16 @@ and was telling the truth.
 
 Two signals, because either alone has a hole. The VERSION file is authoritative
 but only moves on a release bump - 25 commits once shipped between two bumps,
-the whole htmx migration among them. A source file newer than the process
-catches those, and cannot tell you what changed.
+the whole htmx migration among them. A source tree that no longer fingerprints
+the way it did at startup catches those, and cannot tell you what changed.
+
+That second signal used to ask "is any source file newer than this process",
+which is wrong for every deploy that preserves timestamps - robocopy's default
+on this platform - since those files are dated when the build was cut. See
+test_a_deploy_dated_BEFORE_this_process_is_still_a_mismatch.
 """
 import os
 import sys
-import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -27,21 +31,19 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from _app_factory import AppTestCase
 #< the admin page needs a dozen patches to render; its own fixture owns them
 from test_admin_route import AdminRouteTestBase
-from services.deploy_state import (
-    DEPLOY_MTIME_GRACE_SECONDS, deployMismatch, newestSourceMtime,
-)
+from services.deploy_state import deployMismatch, sourceFingerprint
 
-_STARTED_AT = 1_000_000.0
-_OLDER = _STARTED_AT - 60          #< copied before the process read it
-_NEWER = _STARTED_AT + DEPLOY_MTIME_GRACE_SECONDS + 1
+_BOOT = "fingerprint-taken-at-startup"
+_SAME = _BOOT
+_CHANGED = "fingerprint-after-a-deploy"
 
 
 class TestDeployMismatch(unittest.TestCase):
     def test_a_matching_build_reports_nothing(self):
-        self.assertIsNone(deployMismatch("1.46.4", "1.46.4", _STARTED_AT, _OLDER))
+        self.assertIsNone(deployMismatch("1.46.4", "1.46.4", _BOOT, _SAME))
 
     def test_a_newer_version_on_disk_is_a_mismatch(self):
-        mismatch = deployMismatch("1.46.2", "1.46.3", _STARTED_AT, _OLDER)
+        mismatch = deployMismatch("1.46.2", "1.46.3", _BOOT, _SAME)
 
         self.assertEqual(mismatch["runningVersion"], "1.46.2")
         self.assertEqual(mismatch["diskVersion"], "1.46.3")
@@ -49,39 +51,43 @@ class TestDeployMismatch(unittest.TestCase):
     def test_an_older_version_on_disk_counts_too(self):
         """A rollback that copied the files and left the process up is the same
         split build, and reads as the newer one still running."""
-        self.assertIsNotNone(deployMismatch("1.46.4", "1.46.2", _STARTED_AT, _OLDER))
+        self.assertIsNotNone(deployMismatch("1.46.4", "1.46.2", _BOOT, _SAME))
 
     def test_an_unreadable_version_file_is_not_a_mismatch(self):
         """The reading failed; the deploy did not. Crying wolf here would teach
         an admin to ignore the banner, which is the only thing it has."""
-        self.assertIsNone(deployMismatch("1.46.4", None, _STARTED_AT, _OLDER))
-        self.assertIsNone(deployMismatch("1.46.4", "", _STARTED_AT, _OLDER))
+        self.assertIsNone(deployMismatch("1.46.4", None, _BOOT, _SAME))
+        self.assertIsNone(deployMismatch("1.46.4", "", _BOOT, _SAME))
 
-    def test_source_newer_than_the_process_is_a_mismatch_on_its_own(self):
+    def test_source_that_changed_since_boot_is_a_mismatch_on_its_own(self):
         """The case the version check cannot see: files replaced between two
         releases, so both builds call themselves 1.46.4."""
-        mismatch = deployMismatch("1.46.4", "1.46.4", _STARTED_AT, _NEWER)
+        mismatch = deployMismatch("1.46.4", "1.46.4", _BOOT, _CHANGED)
 
         self.assertTrue(mismatch["filesChanged"])
         self.assertIsNone(mismatch["diskVersion"])   #< nothing to report there
 
-    def test_a_file_touched_during_startup_is_not_a_mismatch(self):
-        """Copy-then-start is the normal deploy, and a boot takes seconds - the
-        grace is what keeps that from being reported as a stale one."""
-        self.assertIsNone(deployMismatch("1.46.4", "1.46.4", _STARTED_AT,
-                                         _STARTED_AT + DEPLOY_MTIME_GRACE_SECONDS - 1))
+    def test_a_deploy_dated_BEFORE_this_process_is_still_a_mismatch(self):
+        """The reason this compares fingerprints and not the clock. A copy that
+        preserves timestamps - robocopy's default on this platform, and rsync
+        -a, cp -p and tar -x elsewhere - leaves the new files dated whenever the
+        build was cut, usually before the running process started. Asking "is
+        anything newer than me" answers no, and the banner silently degrades to
+        the version check alone: exactly the case the file signal exists for."""
+        self.assertIsNotNone(deployMismatch("1.46.4", "1.46.4", _BOOT, _CHANGED))
 
     def test_an_unscannable_tree_is_not_a_mismatch(self):
-        self.assertIsNone(deployMismatch("1.46.4", "1.46.4", _STARTED_AT, None))
+        self.assertIsNone(deployMismatch("1.46.4", "1.46.4", _BOOT, None))
+        self.assertIsNone(deployMismatch("1.46.4", "1.46.4", None, _CHANGED))
 
     def test_both_signals_are_reported_together(self):
-        mismatch = deployMismatch("1.46.2", "1.46.3", _STARTED_AT, _NEWER)
+        mismatch = deployMismatch("1.46.2", "1.46.3", _BOOT, _CHANGED)
 
         self.assertEqual(mismatch["diskVersion"], "1.46.3")
         self.assertTrue(mismatch["filesChanged"])
 
 
-class TestNewestSourceMtime(unittest.TestCase):
+class TestSourceFingerprint(unittest.TestCase):
     """What counts as source: the files this process loads ONCE. static/ is
     deliberately out - it is read from disk per request, so a change there is
     already live rather than stale."""
@@ -92,25 +98,88 @@ class TestNewestSourceMtime(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
 
-    def _write(self, relative, mtime):
+    def _write(self, relative, mtime, text="x"):
         path = self.root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("x", encoding="utf-8")
+        path.write_text(text, encoding="utf-8")
         os.utime(path, (mtime, mtime))
         return path
 
-    def test_it_finds_the_newest_template(self):
+    def test_the_same_tree_twice_fingerprints_the_same(self):
+        """Otherwise every /admin load would report a deploy. os.walk returns
+        the filesystem's order, which is why the entries are sorted first."""
         self._write("templates/tracks.html", 1000)
-        self._write("templates/admin.html", 5000)
+        self._write("routes/charts.py", 2000)
 
-        self.assertEqual(newestSourceMtime(self.root), 5000)
+        self.assertEqual(sourceFingerprint(self.root), sourceFingerprint(self.root))
+
+    def test_the_walk_order_does_not_change_the_fingerprint(self):
+        """os.walk hands back the filesystem's own order, and a file created
+        and deleted in a scanned directory can permanently reshuffle it. Left
+        unsorted, that reshuffle would read as a deploy - a permanent banner
+        nobody can clear, which is worse than no banner."""
+        self._write("templates/a.html", 1000)
+        self._write("templates/b.html", 1000)
+        before = sourceFingerprint(self.root)
+        realWalk = os.walk
+
+        def reversedWalk(top, *args, **kwargs):
+            for dirPath, dirNames, fileNames in realWalk(top, *args, **kwargs):
+                yield dirPath, dirNames, list(reversed(fileNames))
+
+        with patch("services.deploy_state.os.walk", reversedWalk):
+            self.assertEqual(sourceFingerprint(self.root), before)
+
+    def test_a_template_changing_changes_it(self):
+        self._write("templates/tracks.html", 1000)
+        before = sourceFingerprint(self.root)
+
+        self._write("templates/tracks.html", 5000)
+
+        self.assertNotEqual(sourceFingerprint(self.root), before)
+
+    def test_a_file_dated_BACKWARDS_changes_it_too(self):
+        """The whole reason this is a fingerprint and not "newest mtime". A
+        deploy that preserves timestamps hands over files dated when the build
+        was cut - often older than what they replace, and always older than a
+        process that has been up a while."""
+        self._write("templates/tracks.html", 5000)
+        before = sourceFingerprint(self.root)
+
+        self._write("templates/tracks.html", 1000)
+
+        self.assertNotEqual(sourceFingerprint(self.root), before)
+
+    def test_same_timestamp_different_size_changes_it(self):
+        """A build replaced within the same second still replaced the file."""
+        self._write("routes/charts.py", 1000, text="short")
+        before = sourceFingerprint(self.root)
+
+        self._write("routes/charts.py", 1000, text="a good deal longer")
+
+        self.assertNotEqual(sourceFingerprint(self.root), before)
+
+    def test_adding_or_removing_a_file_changes_it(self):
+        self._write("templates/tracks.html", 1000)
+        before = sourceFingerprint(self.root)
+
+        added = self._write("templates/admin.html", 1000)
+        self.assertNotEqual(sourceFingerprint(self.root), before)
+
+        added.unlink()
+        self.assertEqual(sourceFingerprint(self.root), before)
 
     def test_it_covers_the_python_packages_and_the_root_modules(self):
-        self._write("routes/charts.py", 2000)
-        self._write("Database/database.py", 3000)
-        self._write("app.py", 4000)
+        self._write("templates/tracks.html", 1000)
+        base = sourceFingerprint(self.root)
+        for relative in ("routes/charts.py", "services/deploy_state.py",
+                         "dashboard/pagination.py", "Database/database.py", "app.py"):
+            with self.subTest(relative=relative):
+                previous = sourceFingerprint(self.root)
+                self._write(relative, 2000)
 
-        self.assertEqual(newestSourceMtime(self.root), 4000)
+                self.assertNotEqual(sourceFingerprint(self.root), previous)
+        self.assertNotEqual(sourceFingerprint(self.root), base)
 
     # Every file below deliberately carries a scanned SUFFIX. Writing a .db, a
     # .pyc and a .js here instead - the obvious choice - made all three of
@@ -120,13 +189,15 @@ class TestNewestSourceMtime(unittest.TestCase):
     def test_a_users_own_data_never_counts_as_a_deploy(self):
         """Database/Data holds the live databases, the media tree and the logs
         - 20,919 files on the instance this was written against, written to
-        constantly. Descending into it costs 5x the walk (measured: 5.0ms ->
-        24.4ms per /admin load) and would eventually make the banner permanent,
-        which is the same as not having one."""
+        constantly. Descending into it costs 3.5x the reading (measured: 7.6ms
+        -> 26.6ms per /admin load) and would make the banner permanent, which
+        is the same as not having one."""
         self._write("templates/tracks.html", 1000)
+        before = sourceFingerprint(self.root)
+
         self._write("Database/Data/leftover.py", 9999)
 
-        self.assertEqual(newestSourceMtime(self.root), 1000)
+        self.assertEqual(sourceFingerprint(self.root), before)
 
     def test_it_does_not_even_walk_into_the_data_directory(self):
         """The cost is the point, and it is invisible to the assertion above:
@@ -142,28 +213,32 @@ class TestNewestSourceMtime(unittest.TestCase):
                 yield entry
 
         with patch("services.deploy_state.os.walk", spy):
-            newestSourceMtime(self.root)
+            sourceFingerprint(self.root)
 
         self.assertTrue(visited, "the walk never ran")
         self.assertFalse([path for path in visited if "Data" in Path(path).parts])
 
     def test_stale_bytecode_does_not_count(self):
         self._write("routes/charts.py", 1000)
+        before = sourceFingerprint(self.root)
+
         self._write("routes/__pycache__/charts.py", 9999)
 
-        self.assertEqual(newestSourceMtime(self.root), 1000)
+        self.assertEqual(sourceFingerprint(self.root), before)
 
     def test_static_assets_are_out_of_scope(self):
         """They are served from disk per request. A change there is not a
         stale-process symptom - it is the half that IS live, and the reason
         this whole failure mode is so confusing."""
         self._write("templates/tracks.html", 1000)
+        before = sourceFingerprint(self.root)
+
         self._write("static/offline.html", 9999)
 
-        self.assertEqual(newestSourceMtime(self.root), 1000)
+        self.assertEqual(sourceFingerprint(self.root), before)
 
     def test_a_tree_with_nothing_in_it_answers_none(self):
-        self.assertIsNone(newestSourceMtime(self.root / "nope"))
+        self.assertIsNone(sourceFingerprint(self.root / "nope"))
 
 
 class TestTheAppReportsItsOwnState(AppTestCase):
