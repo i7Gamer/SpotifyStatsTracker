@@ -287,31 +287,56 @@ class TestOverwriteGating(_OverwriteTestBase):
         self.assertIn(_ts(2019, 3), self._playedAts(db))
         self.assertEqual(db.readProgress()["status"], "complete")
 
-    def test_overwrite_clears_wrapped_for_covered_years_only(self):
+    _WRAPPED_INSERT = """
+        INSERT INTO user_wrapped (
+            username, year, calculated_at, max_played_at, total_plays, total_ms,
+            longest_streak, unique_songs, unique_artists, discovered_songs, discovered_artists,
+            time_series_day, time_series_week, time_series_month,
+            top_songs, top_artists, top_albums,
+            discovered_songs_list, discovered_artists_list, discovered_albums_list
+        ) VALUES (?, ?, 0, 0, 1, 1, 1, 1, 1, 0, 0,
+                  '[]', '[]', '[]', '[]', '[]', '[]', '[]', '[]', '[]')
+    """
+
+    def _dbWithCachedWrappedYears(self, *years):
         db = self._makeDb({}, [])
         conn = db.repo._conn()
-        wrappedInsert = """
-            INSERT INTO user_wrapped (
-                username, year, calculated_at, max_played_at, total_plays, total_ms,
-                longest_streak, unique_songs, unique_artists, discovered_songs, discovered_artists,
-                time_series_day, time_series_week, time_series_month,
-                top_songs, top_artists, top_albums,
-                discovered_songs_list, discovered_artists_list, discovered_albums_list
-            ) VALUES (?, ?, 0, 0, 1, 1, 1, 1, 1, 0, 0,
-                      '[]', '[]', '[]', '[]', '[]', '[]', '[]', '[]', '[]')
-        """
         with conn:
-            conn.execute(wrappedInsert, (db.user, 2019))
-            conn.execute(wrappedInsert, (db.user, 2022))
+            for year in years:
+                conn.execute(self._WRAPPED_INSERT, (db.user, year))
+        return db
 
-        fileSpecs = {
-            "file 2019": ((_ts(2019, 2), _ts(2019, 11), {2019}), lambda: iter([])),
-        }
-        self._runBatch(db, fileSpecs)
-
-        years = {r["year"] for r in db.repo._conn().execute(
+    def _cachedYears(self, db):
+        return {r["year"] for r in db.repo._conn().execute(
             "SELECT year FROM user_wrapped WHERE username=?", (db.user,)).fetchall()}
-        self.assertEqual(years, {2022})
+
+    def test_overwrite_clears_the_rewritten_year_and_every_later_one(self):
+        """2022's own plays are untouched by a 2019 overwrite, and its cached
+        play_count and max_played_at do not move - so _wrappedCacheNeedsRecalc
+        would never rebuild it. But its DISCOVERIES can change: they are
+        anchored on all-time first listens, so re-writing 2019 can move an
+        artist into or out of "discovered in 2022".
+
+        This is deliberately wider than _wrappedYearsToInvalidate, which still
+        answers the narrower question it is named for - which years' PLAYS the
+        delete rewrote."""
+        db = self._dbWithCachedWrappedYears(2019, 2022)
+
+        self._runBatch(db, {"file 2019": ((_ts(2019, 2), _ts(2019, 11), {2019}), lambda: iter([]))})
+
+        self.assertEqual(self._cachedYears(db), set())
+
+    def test_overwrite_keeps_the_years_before_the_one_it_rewrote(self):
+        """The bound on the above, and the reason this is not
+        deleteAllUserWrapped: a first listen can only move within or after the
+        year the changed play lands in, so 2015 cannot be affected by a 2019
+        overwrite - and dropping it would buy a full-year recomputation for
+        nothing."""
+        db = self._dbWithCachedWrappedYears(2015, 2019, 2022)
+
+        self._runBatch(db, {"file 2019": ((_ts(2019, 2), _ts(2019, 11), {2019}), lambda: iter([]))})
+
+        self.assertEqual(self._cachedYears(db), {2015})
 
 
 class TestOverwriteAbortsOnAmbiguousMatches(_OverwriteTestBase):

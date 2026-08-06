@@ -31,6 +31,33 @@ class WrappedQueries:
                 (username, year)
             )
 
+    def deleteUserWrappedFromYear(self, username: str, year: int) -> int:
+        """Drop every cached year at or after `year`. Returns how many went.
+
+        A Wrapped year is NOT a pure function of that year's own plays. The
+        discovery fields - discovered_songs, discovered_artists and the three
+        discovered_*_list columns - are anchored on each item's ALL-TIME first
+        listen (getDiscoveredSongsCount groups over unfiltered history and
+        keeps MIN(played_at) in range; wrapped_builder._discoveriesInYear
+        filters an unbounded stats call on firstListenedAt). So a play written
+        into an earlier year moves items into and out of LATER years'
+        discovery lists while leaving those years' own play_count and
+        max_played_at untouched - and those two are all
+        _wrappedCacheNeedsRecalc compares, so nothing would ever notice.
+
+        Only forwards: a first listen can move within or after the year the
+        new play lands in, never before it, so earlier years are safe and
+        dropping them would just buy a full-year recomputation each.
+
+        A no-op for years with no cached row, so the cost is bounded by what
+        was actually cached rather than by the length of the user's history."""
+        conn = self._conn()
+        with conn:
+            return conn.execute(
+                "DELETE FROM user_wrapped WHERE username = ? AND year >= ?",
+                (username, year)
+            ).rowcount
+
     def deleteAllUserWrapped(self, username: str) -> int:
         """Drop every cached year for one user, for a change that invalidates
         all of them at once rather than year by year - a timezone change, which

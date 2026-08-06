@@ -103,6 +103,73 @@ def _wrappedRow():
     }
 
 
+class TestDeletingFromAYearOnwards(DatabaseTestCase):
+    """A Wrapped year is not a pure function of that year's own plays.
+
+    The discovery fields - discovered_songs, discovered_artists and the three
+    discovered_*_list columns - are anchored on each item's ALL-TIME first
+    listen (getDiscoveredSongsCount groups over unfiltered history and keeps
+    MIN(played_at) in range; _discoveriesInYear filters an unbounded stats call
+    on firstListenedAt). So writing a play into an EARLIER year moves items
+    into and out of LATER years' discovery lists while leaving those years'
+    own play_count and max_played_at untouched - and those two are the only
+    things _wrappedCacheNeedsRecalc compares, so the periodic worker never
+    notices and the wrong lists survive indefinitely.
+
+    Hence a delete that takes a year and everything after it."""
+
+    USER = "testuser"
+
+    def _dbWithCachedWrapped(self, years):
+        db = self._makeDb({}, [])
+        for year in years:
+            db.repo.saveCachedWrapped(self.USER, year, _wrappedRow())
+        return db
+
+    def _cachedYears(self, db):
+        rows = db.repo._conn().execute(
+            "SELECT year FROM user_wrapped WHERE username=?", (self.USER,)).fetchall()
+        return {r["year"] for r in rows}
+
+    def test_the_named_year_and_every_later_one_go(self):
+        db = self._dbWithCachedWrapped((2018, 2019, 2020, 2021))
+
+        db.repo.deleteUserWrappedFromYear(self.USER, 2019)
+
+        self.assertEqual(self._cachedYears(db), {2018})
+
+    def test_earlier_years_are_kept(self):
+        """Guards the test above. Nothing before the changed year can have its
+        discoveries moved by it - a first listen only ever moves within or
+        after the year the new play lands in - so dropping those would be pure
+        cost: a full-year recomputation each."""
+        db = self._dbWithCachedWrapped((2015, 2016, 2024))
+
+        db.repo.deleteUserWrappedFromYear(self.USER, 2024)
+
+        self.assertEqual(self._cachedYears(db), {2015, 2016})
+
+    def test_uncached_years_cost_nothing_and_it_reports_what_went(self):
+        """The cost is bounded by what was actually cached, not by the length
+        of the user's history - a user who has never opened /wrapped has no
+        rows, and this is then a single no-op DELETE."""
+        db = self._dbWithCachedWrapped((2020,))
+
+        self.assertEqual(db.repo.deleteUserWrappedFromYear(self.USER, 2019), 1)
+        self.assertEqual(db.repo.deleteUserWrappedFromYear(self.USER, 2019), 0)
+
+    def test_another_users_cache_is_untouched(self):
+        db = self._dbWithCachedWrapped((2019, 2020))
+        db.repo.upsertUser("someone-else", "someone-else@example.com")
+        db.repo.saveCachedWrapped("someone-else", 2020, _wrappedRow())
+
+        db.repo.deleteUserWrappedFromYear(self.USER, 2019)
+
+        rows = db.repo._conn().execute(
+            "SELECT year FROM user_wrapped WHERE username=?", ("someone-else",)).fetchall()
+        self.assertEqual({r["year"] for r in rows}, {2020})
+
+
 class TestTimezoneChangeInvalidatesTheCache(DatabaseTestCase):
     """Everything cached in user_wrapped that is timezone-derived - the day/week
     /month series labels, peak_day (a weekday NAME), longest_streak, and the

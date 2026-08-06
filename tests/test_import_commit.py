@@ -407,6 +407,91 @@ class TestImportHistoryBatch(DatabaseTestCase):
             self.assertEqual(mock_import.call_count, 1)
 
 
+class TestAPlainImportInvalidatesLaterWrappedYears(DatabaseTestCase):
+    """The append path has the same cross-year problem as the overwrite one.
+
+    A Wrapped year's discovery fields are anchored on all-time first listens,
+    so inserting a play into 2018 can move an artist out of "discovered in
+    2022" - while 2022's own play_count and max_played_at, the only two things
+    _wrappedCacheNeedsRecalc compares, do not move at all. Nothing rebuilt it.
+
+    This path used to invalidate correctedYears alone and lean on the count
+    check for everything else, which covers the year the plays LAND in and no
+    other."""
+
+    USER = "testuser"
+
+    def _dbWithCachedWrappedYears(self, *years):
+        db = self._makeDb({}, [])
+        for year in years:
+            db.repo.saveCachedWrapped(self.USER, year, {
+                "calculated_at": 0, "max_played_at": 0, "total_plays": 1, "total_ms": 1,
+                "longest_streak": 1, "peak_day": "Monday", "peak_plays": 1,
+                "unique_songs": 1, "unique_artists": 1,
+                "discovered_songs": 1, "discovered_artists": 1,
+                "time_series_day": "[]", "time_series_week": "[]", "time_series_month": "[]",
+                "top_songs": "[]", "top_artists": "[]", "top_albums": "[]",
+                "discovered_songs_list": "[]", "discovered_artists_list": "[]",
+                "discovered_albums_list": "[]",
+            })
+        return db
+
+    def _cachedYears(self, db):
+        return {r["year"] for r in db.repo._conn().execute(
+            "SELECT year FROM user_wrapped WHERE username=?", (self.USER,)).fetchall()}
+
+    def _importAt(self, db, playedAt):
+        def gen():
+            yield _meta("newTrack", playedAt)
+
+        importer = MagicMock()
+        importer._convertToList.return_value = ([{}], "spotifyAcountExport")
+        importer.importHistory.return_value = gen()
+        with patch("Database.database.Importer", return_value=importer):
+            db.importHistory("raw export")
+
+    @staticmethod
+    def _tsIn(year):
+        import datetime
+        from Database.utils import getTimezone
+        return datetime.datetime(year, 6, 1, tzinfo=getTimezone()).timestamp()
+
+    def test_inserting_an_old_play_drops_the_later_cached_years(self):
+        db = self._dbWithCachedWrappedYears(2018, 2022)
+
+        self._importAt(db, self._tsIn(2018))
+
+        self.assertEqual(self._cachedYears(db), set())
+
+    def test_inserting_a_recent_play_keeps_the_earlier_cached_years(self):
+        """The bound. Guards against the fix degenerating into "drop
+        everything on every import", which would make each one cost a
+        full-year recomputation per cached year."""
+        db = self._dbWithCachedWrappedYears(2018, 2022)
+
+        self._importAt(db, self._tsIn(2022))
+
+        self.assertEqual(self._cachedYears(db), {2018})
+
+    def test_an_import_that_inserts_nothing_keeps_the_cache(self):
+        """A re-uploaded file whose plays are all already recorded rewrites
+        nothing, so it must not throw away work either."""
+        db = self._dbWithCachedWrappedYears(2018, 2022)
+        self._importAt(db, self._tsIn(2018))
+        db = self._dbWithCachedWrappedYears(2018, 2022)  #< re-prime after that first import
+
+        def gen():
+            return iter([])
+
+        importer = MagicMock()
+        importer._convertToList.return_value = ([], "spotifyAcountExport")
+        importer.importHistory.return_value = gen()
+        with patch("Database.database.Importer", return_value=importer):
+            db.importHistory("raw export")
+
+        self.assertEqual(self._cachedYears(db), {2018, 2022})
+
+
 if __name__ == "__main__":
     import unittest
     unittest.main()

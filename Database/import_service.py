@@ -47,6 +47,24 @@ def _exportContentHash(content) -> str:
     contentBytes = content.encode("utf-8") if isinstance(content, str) else str(content).encode("utf-8")
     return hashlib.sha256(contentBytes).hexdigest()
 
+
+def _minTimestamp(current, *candidates):
+    """The smallest of `current` and `candidates`, where `current` may be None
+    ("nothing seen yet") and the candidates come straight off import entries or
+    database rows, so they can be str or int as well as float.
+
+    Its own function because the apply loop runs once per play and a six-figure
+    export makes the alternative - bucketing each row's year as it goes - a
+    six-figure pile of timezone conversions for one number."""
+    smallest = current
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        value = float(candidate)
+        if smallest is None or value < smallest:
+            smallest = value
+    return smallest
+
 # Entries that could not be READ (see StreamingHistoryImporter._parseHistory).
 # They abort an overwrite for the same reason as the keys above - the covered
 # range is computed from the same parse, so the OTHER entries still mark the
@@ -298,6 +316,12 @@ class ImportMixin:
             enrichedCount = 0
             skipsSavedCount = 0
             correctedYears = set()
+            # The oldest play this batch WRITES, corrected or inserted. Kept as
+            # a timestamp and bucketed once at the end rather than per row:
+            # this loop runs per play, and a large export is six figures of
+            # them. It is what decides how far back the Wrapped invalidation
+            # has to reach - see _invalidateWrappedFromEarliestOf.
+            earliestTouchedTimestamp = None
             # Fetch both classifier settings once for the whole batch so each
             # row's is_skip is computed without a per-row settings read.
             skipThreshold = self.repo.getSkipThreshold()
@@ -443,6 +467,8 @@ class ImportMixin:
                             # Wrapped is dropped after commit (see below).
                             correctedYears.add(_dbmod.convertToDatetime(existing_play["played_at"], tz=self.tz).year)
                             correctedYears.add(_dbmod.convertToDatetime(played_at, tz=self.tz).year)
+                            earliestTouchedTimestamp = _minTimestamp(
+                                earliestTouchedTimestamp, existing_play["played_at"], played_at)
                             continue
                         elif extras_differ:
                             # Same play, but this import carries behavioral
@@ -492,6 +518,7 @@ class ImportMixin:
                                         created_reason=f"history_import (user: {self.user})",
                                         extras=entry.get("importExtras"), is_skip=isSkip):
                     insertedCount += 1
+                    earliestTouchedTimestamp = _minTimestamp(earliestTouchedTimestamp, played_at)
                 runState.insertedPlayKeys.add((track_id, played_at))
 
             if track_file_hash:
@@ -507,12 +534,20 @@ class ImportMixin:
             else:
                 self.repo.commit()
 
-                # INVARIANT-safe only here: deleteUserWrapped self-commits, so it
-                # must never run while import rows are staged. Corrections can be
-                # invisible to _wrappedCacheNeedsRecalc (play count and max
-                # played_at unchanged) - drop the touched years' cache explicitly.
-                for year in sorted(correctedYears):
-                    self.repo.deleteUserWrapped(self.user, year)
+                # INVARIANT-safe only here: the Wrapped deletes self-commit, so
+                # they must never run while import rows are staged.
+                #
+                # Two ways a cached year goes wrong, and _wrappedCacheNeedsRecalc
+                # sees neither. A CORRECTION can move a play without changing its
+                # year's play count or max timestamp. And an INSERT into any year
+                # can move a later year's discoveries, which are anchored on
+                # all-time first listens - so the years to drop start at the
+                # oldest play written, not at the years written to.
+                touchedYears = set(correctedYears)
+                if earliestTouchedTimestamp is not None:
+                    touchedYears.add(
+                        _dbmod.convertToDatetime(earliestTouchedTimestamp, tz=self.tz).year)
+                self._invalidateWrappedFromEarliestOf(touchedYears, "Import")
 
             droppedNoTrack = importStats.get("droppedNoTrack", 0)
             summary = (f"{insertedCount} new, {updatedCount} corrected, {enrichedCount} enriched, "
@@ -748,18 +783,9 @@ class ImportMixin:
         # imported files to FAILED/ and importHistoryBatch never raised the
         # milestone recalc flag. Each loop is guarded on its own so a Wrapped
         # hiccup still lets the cover art queue.
-        for year in sorted(self._wrappedYearsToInvalidate(minStart, maxEnd, coveredYears,
-                                                          runState.correctedYears)):
-            try:
-                self.repo.deleteUserWrapped(self.user, year)
-            except Exception as e:
-                #< stale-but-repairable: the wrapped worker's staleness check
-                #  compares the cached (max_played_at, play_count) snapshot to
-                #  the plays this batch just rewrote, so the year rebuilds on
-                #  its next cycle even with the stale row left behind
-                _dbmod.logger.warning("Overwrite import committed, but clearing the cached Wrapped "
-                                      "for %d failed (it may show stale data until recalculated): %s",
-                                      year, _dbmod.parseError(e))
+        rewrittenYears = self._wrappedYearsToInvalidate(minStart, maxEnd, coveredYears,
+                                                        runState.correctedYears)
+        self._invalidateWrappedFromEarliestOf(rewrittenYears, "Overwrite import")
         for track in runState.pendingImageTracks.values():
             try:
                 self.saveImagesFromTrack(track)
@@ -822,6 +848,44 @@ class ImportMixin:
             # the Importer opened one anyway - release it (fresh per login,
             # see Database/Spotify/client.py).
             importer.sp.close()
+
+    def _invalidateWrappedFromEarliestOf(self, rewrittenYears, whatCommitted: str) -> None:
+        """Drop the cached Wrapped for the earliest year this import rewrote,
+        and for every year after it.
+
+        `rewrittenYears` says which years' PLAYS changed. That is not the same
+        question as which years' cached Wrapped is now wrong, and it is the
+        narrower one: the discovery fields (discovered_songs,
+        discovered_artists and the three discovered_*_list columns) are
+        anchored on each item's ALL-TIME first listen, so a play written into
+        an earlier year moves items into and out of LATER years' discovery
+        lists. Those years' own play_count and max_played_at do not move, and
+        they are all _wrappedCacheNeedsRecalc compares - so the periodic worker
+        never notices and the wrong lists survive until something else drops
+        the row.
+
+        This deliberately reaches past the gap years _wrappedYearsToInvalidate
+        protects. That narrowing is still right for what it answers - which
+        years the delete rewrote, and therefore which plays exist - but a gap
+        year's DISCOVERIES really can change when a year before it does.
+
+        Forwards only: a first listen can move within or after the year the new
+        play lands in, never before it.
+
+        Guarded like its neighbours in the post-commit block: the commit is the
+        point of no return, and a stale cache row is repairable - the deleted
+        rows recompute on demand or on the worker's next cycle, and a row left
+        behind by a failure here is exactly the state this fix describes, not a
+        new one."""
+        if not rewrittenYears:
+            return
+        earliestYear = min(rewrittenYears)
+        try:
+            self.repo.deleteUserWrappedFromYear(self.user, earliestYear)
+        except Exception as e:
+            _dbmod.logger.warning("%s committed, but clearing the cached Wrapped from %d onwards "
+                                  "failed (those years may show stale data until recalculated): %s",
+                                  whatCommitted, earliestYear, _dbmod.parseError(e))
 
     def _wrappedYearsToInvalidate(self, minStart, maxEnd, coveredYears, correctedYears) -> set:
         """Which years' cached Wrapped this overwrite may have moved.
