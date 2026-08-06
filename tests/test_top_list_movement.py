@@ -557,6 +557,23 @@ class TestPagingComparesTheRightRanks(MovementTestCase):
         self.assertEqual(url.count(","), PAGE_SIZE - 1, "not a full page of ids")
         self.assertLess(len(url), 2000, f"the trigger URL is {len(url)} characters")
 
+    def test_the_rank_the_page_shows_is_the_rank_the_badge_is_judged_at(self):
+        """The two halves of one number, computed in two places: the card
+        renders startIndex + loop.index, and the endpoint judges the entry at
+        startIndex + position. Nothing asserted the rendered half - so a
+        template that overrode it would put "#7, up 2" on an entry sitting at
+        #51, and every test would still pass.
+
+        _track_card.html had exactly such an override, reading an absoluteIndex
+        key that nothing has set since 2960f55 moved pagination into SQL. This
+        is what its removal leaves behind."""
+        body = self._list(query=_CURRENT + "&page=2")
+
+        shown = [int(number) for number in
+                 re.findall(r'<div class="track-number">(\d+)', body)]
+
+        self.assertEqual(shown, [PAGE_SIZE + 1, PAGE_SIZE + 2])
+
     def test_a_second_page_entry_is_ranked_against_its_absolute_position(self):
         span = self._spanFor(self._movement(query=_CURRENT + "&page=2"), "t1")
 

@@ -11,7 +11,7 @@
 <section class="track-list">
   {% if tracks %}
     {% for track in tracks %}
-      {% set item_number = track.get('absoluteIndex') if track.get('absoluteIndex') else (startIndex | default(0)) + loop.index %}
+      {% set item_number = (startIndex | default(0)) + loop.index %}
       {% set section = 'history' %}
       {% include '_track_card.html' %}
     {% endfor %}

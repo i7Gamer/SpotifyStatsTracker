@@ -20,7 +20,7 @@
 <section id="track-list" class="track-list">
   {% if tracks %}
     {% for track in tracks %}
-      {% set item_number = track.get('absoluteIndex') if track.get('absoluteIndex') else (startIndex | default(0)) + loop.index %}
+      {% set item_number = (startIndex | default(0)) + loop.index %}
       {# An empty placeholder per row, only when a movement request is actually
          going out - see the trigger below. #}
       {% set showRankMovement = movementUrl is defined and movementUrl %}
