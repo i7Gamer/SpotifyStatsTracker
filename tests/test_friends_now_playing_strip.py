@@ -153,6 +153,18 @@ class TestTheChipIsALink(unittest.TestCase):
     def test_the_href_comes_from_the_payload(self):
         self.assertIn("chip.href = friend.compareUrl;", self.script)
 
+    def test_an_unchanged_poll_leaves_the_chips_alone(self):
+        """The 15-second poll used to rebuild every chip unconditionally. That
+        was invisible while they were inert divs; as links it swallows a click
+        whose mousedown lands just before the rebuild, and drops keyboard focus
+        to <body> mid-read.
+
+        What the signature COVERS is asserted in plain node
+        (tests/test_dashboard_page.js); this is the half node cannot see - that
+        renderFriends actually returns early on it."""
+        self.assertIn("var signature = friendsStripSignature(friends, moreCount);", self.script)
+        self.assertIn("if (signature === renderedFriends) return;", self.script)
+
 
 class TestStripStyling(unittest.TestCase):
     """The one rule the layout depends on, asserted against the stylesheet: a

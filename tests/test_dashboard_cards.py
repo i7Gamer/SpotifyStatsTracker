@@ -234,17 +234,22 @@ class DashboardCardsTestCase(_DashboardHelpers, AppTestCase):
 
         self.assertNotIn(b'data-time=""', resp.data)
 
-    def test_the_tooltip_reads_the_time_off_the_cell(self):
-        """The other half of the same feature, and the only one that puts it on
-        screen - asserted against the source because the overlay is built in a
-        page IIFE (see tests/test_friends_now_playing_strip.py for the same
-        reasoning)."""
+    def test_the_tooltip_is_built_from_the_cells_count_and_time(self):
+        """What the label SAYS is asserted in plain node
+        (tests/test_dashboard_page.js::calendarTooltipLabel). This is the half
+        node cannot see: that the overlay reads both attributes off the cell
+        and hands them to that function.
+
+        It used to assert `getAttribute('data-time')` alone, which is not the
+        feature - deleting the time from the label while still reading the
+        attribute kept the test green and the tooltip silent."""
         import os
         scriptPath = os.path.join(os.path.dirname(__file__), "..", "static", "js", "dashboard-page.js")
         with open(scriptPath, encoding="utf-8") as handle:
             script = handle.read()
 
         self.assertIn("getAttribute('data-time')", script)
+        self.assertIn("calendarTooltipLabel(count, timeText)", script)
 
     def test_streak_calendar_absent_when_no_grid(self):
         # Empty weeks (the _makeDb default) => the card isn't rendered at all.

@@ -48,6 +48,35 @@ var DASHBOARD_SUMMARY_ID = 'dashboardSummary';
 
 var byId = function (id) { return document.getElementById(id); };
 
+// The streak calendar tooltip's second line. Pure and exported (see the bottom
+// of this file) because the DOM code that shows it cannot be tested from here,
+// and a source-shape assertion on it proved worthless: the check looked for the
+// data-time read, which survives reading the value and then dropping it.
+function calendarTooltipLabel(count, timeText) {
+  var plays = count + ' play' + (String(count) === '1' ? '' : 's');
+  //< a day with nothing played carries no data-time at all, so this is null
+  return timeText ? plays + ' · ' + timeText : plays;
+}
+
+// What the friends strip currently shows, as a comparable string, so a poll
+// that brings no news leaves the DOM alone.
+//
+// The chips are LINKS now, which turns a 15-second rebuild from invisible
+// churn into a defect: tearing down the element under a cursor swallows the
+// click (mousedown and mouseup on different elements dispatch no click), and
+// tearing it down under keyboard focus drops activeElement back to <body>, so
+// the user's next Tab restarts at the top of the page with nothing to explain
+// why. Neither could happen while the chips were inert divs.
+//
+// The separators are control characters rather than punctuation: a track named
+// "One Two" beside an empty artist must not serialize like "One" beside "Two".
+function friendsStripSignature(friends, moreCount) {
+  return (friends || []).map(function (friend) {
+    return [friend.username, friend.displayName, friend.name,
+            friend.artistsText, friend.imageId, friend.compareUrl].join('\u001f');
+  }).join('\u001e') + '\u001d' + moreCount;
+}
+
 // Called from the Time Period select's onchange. Runs before htmx's listener
 // (an inline on*= handler fires at the target; htmx's is on the form and fires
 // as the event bubbles), so the disabled flags are already right by the time
@@ -196,13 +225,21 @@ document.body.addEventListener('htmx:sendError', reportDashboardFailure);
     if (panel) panel.classList.add('has-now-playing');
   }
 
+  //< what the chips currently show, so an unchanged poll leaves them alone -
+  //  see friendsStripSignature for why rebuilding links every 15s is not free
+  var renderedFriends = null;
+
   function renderFriends(friends, moreCount) {
     if (!friendsRow) return;   //< admin switch off: the row isn't rendered
     friends = friends || [];
     if (!friends.length) {
       friendsRow.style.display = 'none';
+      renderedFriends = null;
       return;
     }
+    var signature = friendsStripSignature(friends, moreCount);
+    if (signature === renderedFriends) return;
+    renderedFriends = signature;
     friendsChips.textContent = '';
     friends.forEach(function (friend) {
       //< the whole chip is the link to comparing with that friend. The href is
@@ -359,12 +396,23 @@ document.body.addEventListener('htmx:responseError', function (evt) {
     // step that would turn a future non-numeric count into markup.
     var day = document.createElement('strong');
     day.textContent = formatDay(cell.getAttribute('data-date'));
-    var label = count + ' play' + (count === '1' ? '' : 's');
     tip.replaceChildren(day, document.createElement('br'),
-      document.createTextNode(timeText ? label + ' · ' + timeText : label));
+      document.createTextNode(calendarTooltipLabel(count, timeText)));
     tip.style.left = (evt.clientX + 14) + 'px';
     tip.style.top = (evt.clientY + 14) + 'px';
     tip.style.display = 'block';
   });
   grid.addEventListener('mouseleave', hideTooltip);
 })();
+
+// The two pure decisions at the top of this file, for tests/test_dashboard_page.js.
+// Same feature detection the other dual-use scripts here use - a browser has no
+// `module`, so this is a no-op there. Everything else in this file is DOM wiring
+// or a poll, which node cannot exercise; these two are the parts where being
+// wrong is invisible from the outside.
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = {
+    calendarTooltipLabel: calendarTooltipLabel,
+    friendsStripSignature: friendsStripSignature,
+  };
+}
