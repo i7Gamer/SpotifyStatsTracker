@@ -69,6 +69,53 @@ def _importFirstInFreshInterpreter(moduleName):
     )
 
 
+# Files inside the package that a developer is told, in the file itself, to run
+# DIRECTLY. Running a file puts its own directory on sys.path - not the repo
+# root - so a package module that reaches out to a top-level one breaks here
+# while every import and every test still passes: pyproject sets
+# `pythonpath = ["."]`, which puts the root on the path for the whole suite, so
+# nothing running under pytest can see the difference.
+#
+# Deliberately NOT every `if __name__ == "__main__"` block in the tree: the
+# migrators have one each and running those would migrate a real database.
+SCRIPT_ENTRY_POINTS = (
+    "Database/utils.py",   #< "`python Database/utils.py` drops into a REPL with the helpers loaded"
+)
+
+
+def _runAsScript(relativePath):
+    """Run the file the way its own comment says to, in a fresh interpreter."""
+    return relativePath, subprocess.run(
+        [sys.executable, str(REPO_ROOT / relativePath)],
+        cwd=REPO_ROOT, capture_output=True, text=True,
+        input="",   #< utils.py ends in code.interact; EOF on stdin exits it
+        timeout=IMPORT_TIMEOUT_SECONDS,
+        env={**os.environ, "TZ": "UTC"},
+    )
+
+
+class TestDocumentedScriptEntryPointsStillRun(unittest.TestCase):
+    """A module that says "run me like this" has to survive being run like that.
+
+    Database/utils.py re-exports config.TRUTHY_ENV_VALUES so the Database
+    package and the web layer cannot disagree about which env values mean "on".
+    config.py sits at the repo ROOT, so the re-export only resolves when the
+    root is on sys.path - which it is for every import of Database.utils, and
+    for the whole test suite, but not for `python Database/utils.py`, where
+    sys.path[0] is Database/ instead."""
+
+    def test_each_documented_entry_point_starts(self):
+        for relativePath in SCRIPT_ENTRY_POINTS:
+            with self.subTest(script=relativePath):
+                _, result = _runAsScript(relativePath)
+                self.assertNotIn(
+                    "ModuleNotFoundError", result.stderr,
+                    f"`python {relativePath}` cannot resolve one of its imports:\n{result.stderr}")
+                self.assertEqual(
+                    result.returncode, 0,
+                    f"`python {relativePath}` exited {result.returncode}:\n{result.stderr}")
+
+
 class TestModulesImportInAnyOrder(unittest.TestCase):
     def test_each_module_imports_first_in_a_fresh_interpreter(self):
         with ThreadPoolExecutor(max_workers=IMPORT_WORKERS) as pool:

@@ -28,7 +28,27 @@ DATE_FORMATS = ("%Y-%m-%d", "%Y-%m", "%Y")   #< bare-date forms parseDateString 
 #
 # ("0" and "false" are deliberately absent: someone who sets a flag to 0 means
 # off, and a bare truthiness test on the string reads that as on.)
-from config import TRUTHY_ENV_VALUES  # noqa: E402 - a constant re-export, not a dependency on app state
+try:
+    from config import TRUTHY_ENV_VALUES  # noqa: E402 - a constant re-export, not a dependency on app state
+except ModuleNotFoundError:               # noqa: E402
+    # `python Database/utils.py` - the REPL at the foot of this file - puts
+    # THIS directory on sys.path, not the repo root, so a top-level module is
+    # not importable from here. Every other way in already has the root
+    # (wsgi.py and dev.py live there, the Docker CMD runs from /app, and
+    # pyproject's `pythonpath = ["."]` covers the whole test suite), which is
+    # exactly why nothing caught this: no test can reach the failing case
+    # except by spawning an interpreter, which tests/test_import_cycles.py
+    # now does.
+    #
+    # Resolved from __file__ rather than the relative "../" its sibling shim in
+    # Database/Importers/AutoImporter.py uses: that one silently depends on the
+    # working directory being Database/.
+    import sys as _sys                    # noqa: E402
+    from pathlib import Path as _Path     # noqa: E402
+    _repoRoot = str(_Path(__file__).resolve().parent.parent)
+    if _repoRoot not in _sys.path:
+        _sys.path.insert(0, _repoRoot)
+    from config import TRUTHY_ENV_VALUES  # noqa: E402
 
 
 def flaskDebugEnabled() -> bool:
