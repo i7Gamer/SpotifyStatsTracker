@@ -1138,6 +1138,10 @@ progress::-moz-progress-bar {
 
 .track-number {
   display: flex;
+  /* Column so the Top lists' rank-movement badge can sit under the rank; with
+     one child (every other page) this centers exactly as it did. */
+  flex-direction: column;
+  gap: 5px;
   align-items: center;
   justify-content: center;
   font-size: 0.75rem;
@@ -1149,6 +1153,41 @@ progress::-moz-progress-bar {
   padding: 10px 8px;
   width: 56px;
   flex-shrink: 0;
+}
+
+/* How far a Top-list entry moved since the period before the one on screen.
+   Rendered empty by _track_card.html and filled by an out-of-band swap once
+   the list is already on screen (see templates/_top_list_movement.html), so
+   until then it must take up no room at all - hence :empty, since the flex
+   gap above would otherwise show for a badge that may never arrive. Direction
+   is carried by the glyph and by visually-hidden text, never by colour alone. */
+.rank-move {
+  font-size: 0.68rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.rank-move:empty {
+  display: none;
+}
+
+.rank-move-up {
+  color: var(--accent);
+}
+
+.rank-move-down {
+  color: var(--danger);
+}
+
+.rank-move-new {
+  color: var(--text);
+  font-size: 0.6rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.rank-move-same {
+  color: var(--muted);
 }
 
 /* Rank number + cover art column. Mobile keeps the original side-by-side

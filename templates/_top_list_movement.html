@@ -1,0 +1,29 @@
+{#- SPDX-FileCopyrightText: 2026 i7Gamer
+    SPDX-License-Identifier: AGPL-3.0-or-later -#}
+
+{# How far each entry on the page has moved since the period before it, as one
+   out-of-band swap per entry into the placeholder its row already carries (see
+   _track_card.html). The request that asks for this is the third phase of the
+   Top pages' load - the rows are already on screen by the time it goes out, so
+   nothing here is in anyone's way.
+
+   Every span is a TOP-LEVEL element of the fragment, like _compare_results.html
+   and for the same reason: htmx only looks inside nested elements while
+   htmx.config.allowNestedOobSwaps is on, and a page's correctness should not be
+   a config setting. It keeps its own id through the swap, or a later response
+   would have nothing to address.
+
+   Only entries with something to say are here. An entry the comparison cannot
+   place is absent rather than blank, which leaves its placeholder empty - see
+   services/rank_movement.py for which silences are deliberate. -#}
+{% for entityId, move in movements.items() -%}
+{% if move.direction == 'up' -%}
+<span id="rankMove-{{ entityId }}" class="rank-move rank-move-up" hx-swap-oob="outerHTML" title="Up {{ move.amount }} from the previous period"><span aria-hidden="true">&#9650;</span>{{ move.amount }}<span class="visually-hidden"> places up from the previous period</span></span>
+{% elif move.direction == 'down' -%}
+<span id="rankMove-{{ entityId }}" class="rank-move rank-move-down" hx-swap-oob="outerHTML" title="Down {{ move.amount }} from the previous period"><span aria-hidden="true">&#9660;</span>{{ move.amount }}<span class="visually-hidden"> places down from the previous period</span></span>
+{% elif move.direction == 'new' -%}
+<span id="rankMove-{{ entityId }}" class="rank-move rank-move-new" hx-swap-oob="outerHTML" title="Not played in the previous period">new</span>
+{% else -%}
+<span id="rankMove-{{ entityId }}" class="rank-move rank-move-same" hx-swap-oob="outerHTML" title="Unchanged from the previous period"><span aria-hidden="true">&ndash;</span><span class="visually-hidden">unchanged from the previous period</span></span>
+{% endif -%}
+{% endfor -%}

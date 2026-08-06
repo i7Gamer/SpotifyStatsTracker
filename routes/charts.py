@@ -15,7 +15,8 @@ from flask import render_template, redirect, request, url_for, session, jsonify,
 
 from config import (
     PAGE_SIZE, CHART_ARTIST_TREND_TOP_N, CHART_TOP_GENRES_LIMIT,
-    CHART_MOST_SKIPPED_LIMIT, TOP_LIST_SORT_BY, ON_THIS_DAY_YEARS_LIMIT,
+    CHART_MOST_SKIPPED_LIMIT, TOP_LIST_SORT_BY, MOVEMENT_SORT_BY,
+    ON_THIS_DAY_YEARS_LIMIT,
     LISTEN_TIME_HIDE_SECONDS_ABOVE_HOURS, RECOMMENDATION_ARTIST_LIMIT,
     RECOMMENDATION_GENRE_POOL, RECOMMENDATION_EXCLUDE_TOP_N,
 )
@@ -28,6 +29,9 @@ from services.genre_gate import (
     emptyBiographyCoverage, resolveBiographyCoverage,
 )
 from services.milestones import buildNextMilestones, formatMilestone, MS_PER_HOUR
+from services.rank_movement import (
+    PREVIOUS_WINDOW_SCAN_LIMIT, previousWindow, rankMovements,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -180,8 +184,93 @@ def register(app, dashboard):
                            sortBy=filters["sortBy"], **idKwarg)
         return uniqueCount
 
+    # What the movement endpoint needs to reproduce a page's ranking against
+    # the period before it: the same getter, and the same tag lookup narrowing
+    # it. Keyed by `section`, so the three pages and the endpoint share one
+    # vocabulary rather than mapping one set of names onto another.
+    _MOVEMENT_KINDS = {
+        "top_songs": {"getter": "getTopSongs", "tagIds": "getTaggedTrackIds", "idsKwarg": "trackIds"},
+        "top_artists": {"getter": "getTopArtists", "tagIds": "getTaggedArtistIds", "idsKwarg": "artistIds"},
+        "top_albums": {"getter": "getTopAlbums", "tagIds": "getTaggedAlbumIds", "idsKwarg": "albumIds"},
+    }
+
+    def _movementUrl(section, filters, page, dateRange):
+        """Where the results fragment asks for its rank arrows - or None when
+        there is no question to ask, in which case it renders no trigger at all
+        rather than paying for a request that can only answer empty.
+
+        Carries the page it actually rendered: the list clamps an out-of-range
+        page against the total count, and a movement request re-deriving that
+        for itself would need the count query too, only to agree."""
+        if filters["sortBy"] not in MOVEMENT_SORT_BY or previousWindow(*dateRange) is None:
+            return None
+        args = {
+            "kind": section,
+            "q": filters["searchQuery"],
+            "sortBy": filters["sortBy"],
+            "interval": filters["interval"],
+            "startDate": filters["customStart"],
+            "endDate": filters["customEnd"],
+            "tag": filters["tag"],
+            "fullOnly": filters["fullOnly"],
+            "page": page,
+        }
+        return url_for("topListMovement", **{k: v for k, v in args.items() if v})
+
+    @requiresUser(api=True)
+    def topListMovement(username, db):
+        """How far each entry on one Top-list page has moved since the period
+        before it, as out-of-band spans for the placeholders the rows carry.
+
+        A third phase on purpose. The previous period's ranking costs the same
+        as the list's own aggregate, and the list is what the user is waiting
+        for - so this runs after those rows are on screen, and an empty answer
+        (see the guards below) leaves them exactly as they are.
+
+        api=True for the same reason the dashboard's deferred cards keep their
+        plain 401: this is a background request, and answering it with
+        HX-Redirect would navigate the whole page away from under someone who
+        is reading it."""
+        spec = _MOVEMENT_KINDS.get(request.args.get("kind", ""))
+        filters = _topListFilters(db, username)
+        if spec is None or filters["sortBy"] not in MOVEMENT_SORT_BY:
+            return ""
+        startDate, endDate = dashboard._getDateRange(
+            filters["interval"], filters["customStart"], filters["customEnd"],
+            default="all time", tz=db.tz)
+        window = previousWindow(startDate, endDate)
+        if window is None:
+            return ""   #< All Time: there is no period before all of it
+
+        # Every filter the page applied, applied identically to both windows -
+        # a comparison against a differently-filtered period is a wrong answer
+        # rather than a missing one.
+        tag = filters["tag"]
+        narrowedIds = getattr(db.repo, spec["tagIds"])(username, [tag]) if tag else None
+        fetch = getattr(db, spec["getter"])
+        common = {"by": filters["sortBy"], "searchQuery": filters["searchQuery"],
+                  "fullPlaysOnly": filters["fullPlaysOnly"], spec["idsKwarg"]: narrowedIds}
+
+        page = int(_positivePageArg() or 1)
+        startIndex = (page - 1) * PAGE_SIZE
+        current = fetch(startDate=startDate, endDate=endDate,
+                        limit=PAGE_SIZE, offset=startIndex, **common)
+        previous = fetch(startDate=window[0], endDate=window[1],
+                         limit=PREVIOUS_WINDOW_SCAN_LIMIT, offset=0, **common)
+
+        return render_template(
+            "_top_list_movement.html",
+            movements=rankMovements(
+                [entry["id"] for entry in current], [entry["id"] for entry in previous],
+                startIndex=startIndex,
+                #< a list that did not fill the scan is the whole period, which
+                #  is the only thing that can prove an entry is genuinely new
+                previousIsComplete=len(previous) < PREVIOUS_WINDOW_SCAN_LIMIT))
+    app.add_url_rule("/api/top-list-movement", "topListMovement", topListMovement, methods=["GET"])
+
     def _topListResults(section, endpoint, username, filters, items, statCards,
-                         page, totalPages, totalCount, startIndex, emptyMessage):
+                         page, totalPages, totalCount, startIndex, emptyMessage,
+                         dateRange=(None, None)):
         pagination = dashboard._buildPaginationContext(
             endpoint, page, totalPages, totalCount,
             q=filters["searchQuery"], tag=filters["tag"], sortBy=filters["sortBy"],
@@ -192,7 +281,8 @@ def register(app, dashboard):
         # wrapper would land in the page as literal JSON text.
         return render_template(
             "_top_list_results.html", tracks=items, statCards=statCards, startIndex=startIndex,
-            section=section, username=username, emptyMessage=emptyMessage, **pagination)
+            section=section, username=username, emptyMessage=emptyMessage,
+            movementUrl=_movementUrl(section, filters, page, dateRange), **pagination)
 
     def overviewPage():
         # Intentionally unauthenticated: aggregate counts/DB size carry no
@@ -707,6 +797,7 @@ def register(app, dashboard):
                 {"label": "Unique Songs", "value": uniqueSongs},
             ],
             page=page, totalPages=totalPages, totalCount=totalCount, startIndex=startIndex,
+            dateRange=(startDate, endDate),
             emptyMessage="No top songs available. Import some listening history first.")
     app.add_url_rule("/top-songs", "topSongsPage", topSongsPage, methods=["GET"])
 
@@ -748,6 +839,7 @@ def register(app, dashboard):
                 {"label": "Unique Albums", "value": uniqueAlbums},
             ],
             page=page, totalPages=totalPages, totalCount=totalCount, startIndex=startIndex,
+            dateRange=(startDate, endDate),
             emptyMessage="No top albums available. Import some listening history first.")
     app.add_url_rule("/top-albums", "topAlbumsPage", topAlbumsPage, methods=["GET"])
 
@@ -794,6 +886,7 @@ def register(app, dashboard):
                 {"label": "Unique Artists", "value": uniqueArtists},
             ],
             page=page, totalPages=totalPages, totalCount=totalCount, startIndex=startIndex,
+            dateRange=(startDate, endDate),
             emptyMessage="No top artists available. Import some listening history first.")
     app.add_url_rule("/top-artists", "topArtistsPage", topArtistsPage, methods=["GET"])
 

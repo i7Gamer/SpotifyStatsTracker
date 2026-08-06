@@ -62,7 +62,17 @@
   {% endif %}
 
   <div class="track-media">
-  {% if item_number %}<div class="track-number">{{ item_number }}</div>{% endif %}
+  {# The rank pill also carries where this entry sat in the period before the
+     one on screen - filled in later by an out-of-band swap, so it renders
+     empty (see _top_list_movement.html). Inside the pill rather than beside
+     it: .track-media is an 18px-gap flex row, so a third child would hold that
+     gap open for an arrow that is often not coming.
+
+     Only where a caller asks for it. Every other page including this card -
+     the dashboard, Wrapped, Compare, the detail pages - has no ranked period
+     to compare against, and an id nothing ever fills is a swap target with no
+     owner. #}
+  {% if item_number %}<div class="track-number">{{ item_number }}{% if showRankMovement and track.get('id') %}<span class="rank-move" id="rankMove-{{ track.get('id') }}"></span>{% endif %}</div>{% endif %}
   {# The cover link goes exactly where the heading link below goes, so leaving
      both in the tab order costs two stops per card for one destination - 100
      on a 50-card Top page - and a screen reader announces the same target

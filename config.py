@@ -99,6 +99,14 @@ VALID_SORT_BY = {"totalTimeListened", "plays", "name"}
 # there would hand them differently-shaped rows (Compare) or an in-Python
 # re-sort on a key those rows don't carry (Wrapped).
 TOP_LIST_SORT_BY = VALID_SORT_BY | {"skips"}
+# The sorts a Top list will compare against the previous period (see
+# services/rank_movement.py). Deliberately a subset of the four it offers:
+#   "name"  - alphabetical position shifts by one whenever anything is inserted
+#             above it, so every row would carry an arrow about nothing.
+#   "skips" - skip rank runs through a Bayesian prior computed over the window,
+#             and the prior itself differs between the two windows, so an entry
+#             could "climb" without a single play of its own changing.
+MOVEMENT_SORT_BY = VALID_SORT_BY - {"name"}
 TRUTHY_ENV_VALUES = {"1", "true", "yes", "on"}
 # The literal FLASK_SECRET_KEY shipped as a placeholder in docker-compose.yml.
 # Booting with it signs session cookies - and, when DATA_ENCRYPTION_KEY is unset,

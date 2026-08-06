@@ -21,6 +21,9 @@
   {% if tracks %}
     {% for track in tracks %}
       {% set item_number = track.get('absoluteIndex') if track.get('absoluteIndex') else (startIndex | default(0)) + loop.index %}
+      {# An empty placeholder per row, only when a movement request is actually
+         going out - see the trigger below. #}
+      {% set showRankMovement = movementUrl is defined and movementUrl %}
       {% include '_track_card.html' %}
     {% endfor %}
   {% else %}
@@ -40,3 +43,29 @@
 <div hx-boost="true">
   {% include '_pagination.html' %}
 </div>
+
+{# The third phase: the rows are on screen, so now ask where each of them sat in
+   the period before this one. The answer arrives as out-of-band spans for the
+   placeholders above, which is why this asks for no swap of its own.
+
+   Every override here is undoing something #topListResults sets for its
+   descendants (see _top_list_container.html):
+     hx-swap="none"          - inherited innerHTML would replace the whole list
+                               with a pile of spans
+     hx-replace-url="false"  - inherited true would put this API URL in the
+                               address bar
+     hx-indicator="this"     - inherited would dim the list, which is finished
+   hx-sync is deliberately NOT overridden: inheriting #topListResults:replace is
+   what makes a filter change abort an in-flight movement request, so its answer
+   can never arrive against rows that have since been swapped away - the case
+   htmx reports as an oob element whose target is missing.
+
+   Absent entirely when there is nothing to ask (All Time, or a sort whose
+   movement would be noise) - see _movementUrl in routes/charts.py. #}
+{% if movementUrl %}
+<div hx-get="{{ movementUrl }}"
+     hx-trigger="load"
+     hx-swap="none"
+     hx-replace-url="false"
+     hx-indicator="this"></div>
+{% endif %}
