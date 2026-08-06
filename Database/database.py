@@ -1337,6 +1337,9 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
                                     tzinfo=self.tz).timestamp()
 
         dayCounts: dict = {}
+        #< the same rows carry the listened time, so the tooltip's per-day
+        #  minutes ride along on this scan rather than asking for a second one
+        dayMillis: dict = {}
         #< listeningBuckets, like every other consumer: getBucketedPlayTotals
         #  stopped filtering is_skip=0, so a skip-only bucket comes back with
         #  plays=0. buildListeningCalendar happens to test count > 0, so the
@@ -1347,7 +1350,8 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         for row in listeningBuckets(self.repo.getBucketedPlayTotals(self.user, startTs, None)):
             dateStr = convertToDatetime(row["bucketStartTs"], tz=self.tz).strftime("%Y-%m-%d")
             dayCounts[dateStr] = dayCounts.get(dateStr, 0) + row["plays"]
-        return buildListeningCalendar(dayCounts, today, weeks=weeks)
+            dayMillis[dateStr] = dayMillis.get(dateStr, 0) + row["totalTimeListened"]
+        return buildListeningCalendar(dayCounts, today, weeks=weeks, dayMillis=dayMillis)
 
     def _onThisDayWindows(self, today: datetime.date) -> list[tuple[float, float]]:
         """One [start, end) timestamp window per PRIOR year the user has plays

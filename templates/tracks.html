@@ -127,7 +127,8 @@
             {% for week in listeningCalendar.weeks %}{% for cell in week %}
             <span class="streak-calendar-day{% if cell.future %} is-future{% endif %}{% if cell.today %} is-today{% endif %}"
                   data-level="{{ cell.level }}"{% if not cell.future %}
-                  data-count="{{ cell.count }}" data-date="{{ cell.date }}"{% endif %}></span>
+                  data-count="{{ cell.count }}" data-date="{{ cell.date }}"{% endif %}{% if cell.timeText %}
+                  data-time="{{ cell.timeText }}"{% endif %}></span>
             {% endfor %}{% endfor %}
           </div>
         </div>

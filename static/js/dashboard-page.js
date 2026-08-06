@@ -349,14 +349,19 @@ document.body.addEventListener('htmx:responseError', function (evt) {
     var cell = evt.target.closest('.streak-calendar-day[data-date]');
     if (!cell) { hideTooltip(); return; }
     var count = cell.getAttribute('data-count');
+    //< absent on a day with nothing played, which is why the label below is
+    //  built rather than concatenated unconditionally: "0 plays - 0s" says
+    //  the same thing twice
+    var timeText = cell.getAttribute('data-time');
     var tip = ensureTooltip();
     // Built as nodes rather than an innerHTML concat: both values come off
     // data-* attributes, and reinterpreting DOM text as HTML is the one
     // step that would turn a future non-numeric count into markup.
     var day = document.createElement('strong');
     day.textContent = formatDay(cell.getAttribute('data-date'));
+    var label = count + ' play' + (count === '1' ? '' : 's');
     tip.replaceChildren(day, document.createElement('br'),
-      document.createTextNode(count + ' play' + (count === '1' ? '' : 's')));
+      document.createTextNode(timeText ? label + ' · ' + timeText : label));
     tip.style.left = (evt.clientX + 14) + 'px';
     tip.style.top = (evt.clientY + 14) + 'px';
     tip.style.display = 'block';

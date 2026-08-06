@@ -101,6 +101,43 @@ class TestBuildListeningCalendar(unittest.TestCase):
         self.assertEqual(cal["totalPlays"], 0)
         self.assertEqual(cal["maxCount"], 0)
 
+    def test_a_day_carries_its_listening_time_beside_the_count(self):
+        """Play count alone is what the grid is shaded by, but it is not how
+        people compare two days - forty 30-second skips are not an afternoon."""
+        cal = buildListeningCalendar({"2026-07-20": 10}, _TODAY, weeks=1,
+                                     dayMillis={"2026-07-20": 4_320_000})   #< 1h 12m
+
+        self.assertEqual(cal["weeks"][-1][0]["timeText"], "1h 12m")
+
+    def test_seconds_are_dropped_at_every_scale(self):
+        """A day is read at a glance; "42m 13s" spends a character budget on
+        precision nobody wanted."""
+        cal = buildListeningCalendar({"2026-07-20": 3}, _TODAY, weeks=1,
+                                     dayMillis={"2026-07-20": 2_533_000})   #< 42m 13s
+
+        self.assertEqual(cal["weeks"][-1][0]["timeText"], "42m")
+
+    def test_a_day_with_no_plays_has_no_time_text(self):
+        """The tooltip appends this, so an empty string is what keeps a quiet
+        day reading "0 plays" rather than "0 plays - 0s"."""
+        cal = buildListeningCalendar({}, _TODAY, weeks=1)
+
+        self.assertEqual(cal["weeks"][-1][0]["timeText"], "")
+
+    def test_a_caller_that_passes_no_times_still_builds_a_grid(self):
+        """dayMillis is optional: the shading and the streak card behind it
+        only ever needed counts."""
+        cal = buildListeningCalendar({"2026-07-20": 10}, _TODAY, weeks=1)
+
+        self.assertEqual(cal["weeks"][-1][0]["count"], 10)
+        self.assertEqual(cal["weeks"][-1][0]["timeText"], "")
+
+    def test_future_days_never_carry_a_time(self):
+        cal = buildListeningCalendar({}, _TODAY, weeks=1,
+                                     dayMillis={"2026-07-26": 9_000_000})   #< Sunday is future
+
+        self.assertEqual(cal["weeks"][-1][6]["timeText"], "")
+
     def test_month_labels_are_ordered_month_starts(self):
         cal = buildListeningCalendar({}, _TODAY, weeks=53)
         labels = cal["monthLabels"]

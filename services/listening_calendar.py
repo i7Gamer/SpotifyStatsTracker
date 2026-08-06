@@ -13,6 +13,11 @@ buildListeningCalendar; the dashboard renders the returned grid
 import datetime
 import math
 
+#< the app's duration formatter, so a day's total reads the way every other
+#  listening time in the UI does. Database/utils.py is a stdlib-only leaf, so
+#  importing it here costs this module none of its no-DB, no-Flask testability.
+from Database.utils import msToString
+
 CALENDAR_WEEKS = 53                 #< week columns shown (~1 year, GitHub-style)
 CALENDAR_INTENSITY_LEVELS = 4       #< non-zero heat buckets (1..4); 0 = no plays
 _DAYS_PER_WEEK = 7
@@ -29,17 +34,22 @@ def _intensityLevel(count: int, maxCount: int) -> int:
 
 
 def buildListeningCalendar(dayCounts: dict, today: datetime.date,
-                           weeks: int = CALENDAR_WEEKS) -> dict:
+                           weeks: int = CALENDAR_WEEKS,
+                           dayMillis: dict | None = None) -> dict:
     """Grid model for the streak calendar.
 
     `dayCounts` maps "%Y-%m-%d" -> play count (days outside the window or in the
-    future are ignored); `today` is the user's local date. Returns::
+    future are ignored); `today` is the user's local date. `dayMillis` is the
+    same map of listened milliseconds, optional because the shading and the
+    streak card behind it are counted in plays - it only fills each cell's
+    `timeText`, which the tooltip shows beside the count. Returns::
 
         {"weeks": [[cell, ...7], ... up to `weeks` columns],   # oldest col first
          "monthLabels": [{"label": "Jul", "weekIndex": 40}, ...],
          "maxCount": int, "activeDays": int, "totalPlays": int}
 
-    Each cell is {"date", "count", "level" (0..4), "today", "future"}. Columns
+    Each cell is {"date", "count", "level" (0..4), "today", "future",
+    "timeText"}. Columns
     are weeks and rows are Mon..Sun (matching the app's listening-clock heatmap);
     the last column is the current week, so days after `today` in it are marked
     future (rendered blank). Levels are assigned in a second pass once the
@@ -64,8 +74,13 @@ def buildListeningCalendar(dayCounts: dict, today: datetime.date,
                 activeDays += 1
                 totalPlays += count
                 maxCount = max(maxCount, count)
+            ms = 0 if future or not dayMillis else dayMillis.get(dateStr, 0)
             column.append({"date": dateStr, "count": count,
-                           "level": 0, "today": cellDate == today, "future": future})
+                           "level": 0, "today": cellDate == today, "future": future,
+                           #< empty rather than "0s" on a quiet day: the tooltip
+                           #  appends this to the play count. 0 hides seconds at
+                           #  every scale - a day is read at a glance.
+                           "timeText": msToString(ms, hideSecondsAboveHours=0) if ms else ""})
             # One month label per column, at the column whose week contains that
             # month's 1st - the same placement GitHub uses along the top axis.
             if cellDate.day == 1 and (not monthLabels or monthLabels[-1]["weekIndex"] != col):

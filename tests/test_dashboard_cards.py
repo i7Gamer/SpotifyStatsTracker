@@ -205,6 +205,47 @@ class DashboardCardsTestCase(_DashboardHelpers, AppTestCase):
         self.assertNotIn(b'title="7 plays on 2026-07-20"', resp.data)
         self.assertIn(b'data-level="4"', resp.data)   # busiest day is the top heat level
 
+    def test_streak_calendar_cells_carry_the_days_listening_time(self):
+        """What the tooltip shows beside the count. A day with plays but no
+        attribute would read as a bug in the tooltip rather than in here."""
+        import datetime
+        from services.listening_calendar import buildListeningCalendar
+        dash = self._makeApp()
+        db = self._makeDb()
+        db.getListeningCalendar.return_value = buildListeningCalendar(
+            {"2026-07-20": 7}, datetime.date(2026, 7, 23), weeks=6,
+            dayMillis={"2026-07-20": 4_320_000})   #< 1h 12m
+
+        resp = self._get(dash, db)
+
+        self.assertIn(b'data-time="1h 12m"', resp.data)
+
+    def test_a_quiet_day_carries_no_time_attribute_at_all(self):
+        """371 cells, most of them empty for most users - an empty attribute on
+        every one of them is page weight for nothing."""
+        import datetime
+        from services.listening_calendar import buildListeningCalendar
+        dash = self._makeApp()
+        db = self._makeDb()
+        db.getListeningCalendar.return_value = buildListeningCalendar(
+            {"2026-07-20": 7}, datetime.date(2026, 7, 23), weeks=6)
+
+        resp = self._get(dash, db)
+
+        self.assertNotIn(b'data-time=""', resp.data)
+
+    def test_the_tooltip_reads_the_time_off_the_cell(self):
+        """The other half of the same feature, and the only one that puts it on
+        screen - asserted against the source because the overlay is built in a
+        page IIFE (see tests/test_friends_now_playing_strip.py for the same
+        reasoning)."""
+        import os
+        scriptPath = os.path.join(os.path.dirname(__file__), "..", "static", "js", "dashboard-page.js")
+        with open(scriptPath, encoding="utf-8") as handle:
+            script = handle.read()
+
+        self.assertIn("getAttribute('data-time')", script)
+
     def test_streak_calendar_absent_when_no_grid(self):
         # Empty weeks (the _makeDb default) => the card isn't rendered at all.
         dash = self._makeApp()

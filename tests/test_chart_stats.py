@@ -704,6 +704,23 @@ class TestGetListeningCalendar(ChartStatsTestCase):
         self.assertEqual(cal["totalPlays"], 3)
         self.assertEqual(cal["maxCount"], 2)
 
+    def test_a_days_listening_time_is_summed_alongside_its_count(self):
+        """Same rows, second sum: getBucketedPlayTotals already returns the
+        listened time per bucket, so the tooltip's minutes cost no extra query
+        on a scan the dashboard is careful about."""
+        entries = [
+            {"id": "t1", "playedAt": _ts(2026, 7, 20, 9), "timePlayed": 3_000_000},    # Monday, 50m
+            {"id": "t1", "playedAt": _ts(2026, 7, 20, 20), "timePlayed": 1_320_000},   # Monday, +22m
+            {"id": "t1", "playedAt": _ts(2026, 7, 22, 9), "timePlayed": 600_000},      # Wednesday, 10m
+        ]
+        db = self._makeDb({}, entries)
+
+        col = db.getListeningCalendar(now=self._NOW, weeks=1)["weeks"][-1]
+
+        self.assertEqual(col[0]["timeText"], "1h 12m")   # Monday
+        self.assertEqual(col[2]["timeText"], "10m")      # Wednesday
+        self.assertEqual(col[1]["timeText"], "")         # Tuesday, nothing played
+
     def test_empty_database_is_a_full_grid_of_zero_cells(self):
         from services.listening_calendar import CALENDAR_WEEKS
         db = self._makeDb({}, [])
