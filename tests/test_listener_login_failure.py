@@ -68,6 +68,99 @@ class TestLoginFailureDetection(unittest.TestCase):
             self.fail(f"Listener construction raised on a failed login: {e!r}")
 
 
+class TestAFailedConstructionRetiresItsSession(unittest.TestCase):
+    """A Listener whose __init__ raises has to release the TLS session it built.
+
+    Every login mints a fresh spotapi TLSClient, and Spotify.close() is
+    reachable from exactly one place: Listener.stop(). An exception out of
+    __init__ means startListener never assigns `self.listener`, so stop() is
+    never reachable for that object and spotapi's atexit registration keeps the
+    curl session open until the process exits.
+
+    Failing construction used to be rare - the init-packet read simply parked
+    forever. c8b688b gave it a deadline and a899886 a socket close, which is
+    what turned a wedge into a raise, and retrying is what _checkLoginLoop's
+    restart pass and onStaleWithBackoff both do. So the leak is one session per
+    failed reconnect, for the life of the process.
+
+    Note this does NOT cover the streamer's own dealer socket: Spotify.close()
+    releases login.client, and lastPlayedManager is still None when the
+    PlayerStatus constructor raised. That half is
+    _closeSocketOfFailedConstruction's, in Database/patches.py."""
+
+    def _construct(self, sp):
+        with patch("Database.Listeners.spotifyListener.Spotify", return_value=sp):
+            return Listener(cookiesFile="unused.json", email="expected@example.com")
+
+    def _loggedInClient(self):
+        sp = MagicMock()
+        sp.isLoggedIn.return_value = True
+        sp.current_user.return_value = {"id": "spotify-user-1", "email": "expected@example.com"}
+        sp.current_user_recently_played.return_value = []
+        return sp
+
+    def test_a_handshake_that_raises_closes_the_session(self):
+        """The path c8b688b created: the init packet never arrives and the
+        bounded read raises out of the PlayerStatus constructor."""
+        sp = self._loggedInClient()
+        sp.startRecentlyPlayedListener.side_effect = TimeoutError("no init packet")
+
+        with self.assertRaises(TimeoutError):
+            self._construct(sp)
+
+        sp.close.assert_called_once_with()
+
+    def test_a_later_failure_in_the_same_constructor_closes_it_too(self):
+        """The sibling one screen further down: current_user_recently_played is
+        a second network call made after the session exists, and it strands
+        exactly the same session. Covering only the handshake would leave the
+        shape of the bug in place one call away."""
+        sp = self._loggedInClient()
+        sp.current_user_recently_played.side_effect = RuntimeError("Max retries exceeded")
+
+        with self.assertRaises(RuntimeError):
+            self._construct(sp)
+
+        sp.close.assert_called_once_with()
+
+    def test_a_construction_that_succeeds_keeps_its_session(self):
+        """The session IS the listener; closing it here would end every
+        listener at the moment it was built."""
+        sp = self._loggedInClient()
+
+        listener = self._construct(sp)
+
+        sp.close.assert_not_called()
+        self.assertIs(listener.sp, sp)
+
+    def test_a_login_failure_is_not_a_construction_failure(self):
+        """Invalid cookies return a real Listener (see above), so stop() still
+        owns its close - retiring it here would shut a session the caller
+        holds, and startListener reports DEAD from the flag, not from a raise."""
+        sp = MagicMock()
+        sp.isLoggedIn.return_value = False
+        sp.current_user.return_value = {"id": "spotify-user-1", "email": "expected@example.com"}
+        sp.current_user_recently_played.return_value = []
+
+        listener = self._construct(sp)
+
+        self.assertTrue(listener.loginFailed)
+        sp.close.assert_not_called()
+
+    def test_a_close_that_fails_does_not_replace_the_real_failure(self):
+        """classifyListenerError decides retry-vs-give-up from the construction
+        error; a teardown OSError in its place would be diagnosed as something
+        else. Listener.stop() guards its own close the same way."""
+        sp = self._loggedInClient()
+        sp.startRecentlyPlayedListener.side_effect = TimeoutError("no init packet")
+        sp.close.side_effect = OSError("session already gone")
+
+        with self.assertRaises(TimeoutError):
+            self._construct(sp)
+
+        sp.close.assert_called_once_with()
+
+
 class TestLoginFailedListenerHealth(DatabaseTestCase):
     def _startWithListener(self, listener):
         db = self._makeDb({}, [])

@@ -625,87 +625,135 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
         self._lastWebApiPollTime = None  #< None means "never polled yet" - forces an immediate first poll
         with _suppress_signal_in_thread():
             self.sp = Spotify(cookiesFile=cookiesFile, email=email)
-            if self.sp.isLoggedIn():
-                self.sp.startRecentlyPlayedListener(refreshInterval=self.refreshInterval)
-            else:
-                # self.sp.user_auth stays a plain bool (the client's
-                # not-logged-in sentinel) when the stored cookies fail to
-                # authenticate. startRecentlyPlayedListener() would refuse
-                # with a ValueError in that state; skip it and let
-                # startListener() (Database/workers/listener.py) report this
-                # the same way it already does for contaminationDetected
-                # below.
-                self.loginFailed = True
-                logger.warning("Spotify login failed for user %s - stored cookies may be invalid or expired", self.logUser)
 
-        # Validate that this Spotify client is properly authenticated for the expected user
+        # A TLS session exists from here on, and Listener.stop() is the only
+        # thing that ever closes one. An exception out of __init__ means
+        # startListener never assigns self.listener, so stop() is unreachable
+        # for this object for good, and spotapi's atexit registration holds its
+        # curl session open until the process exits.
+        #
+        # That used to be nearly unreachable - the init-packet read simply
+        # parked forever instead of raising. c8b688b gave it a deadline and
+        # a899886 a socket close, which turned the wedge into a raise; retrying
+        # is precisely what _checkLoginLoop's restart pass and
+        # onStaleWithBackoff do, so it would now be one session per attempt.
+        #
+        # A failed LOGIN is not a failed construction: it returns a real
+        # Listener (see the else branch below), which startListener assigns and
+        # whose stop() owns the close as usual.
+        #
+        # The suppression context is split rather than widened: it is
+        # depth-counted, and only the PlayerStatus construction below needs it.
+        constructionSucceeded = False
         try:
-            current_user = self.sp.current_user()
-            self._authenticated_user_id = current_user.get("id")
-            authenticated_email = current_user.get("email")
+            with _suppress_signal_in_thread():
+                if self.sp.isLoggedIn():
+                    self.sp.startRecentlyPlayedListener(refreshInterval=self.refreshInterval)
+                else:
+                    # self.sp.user_auth stays a plain bool (the client's
+                    # not-logged-in sentinel) when the stored cookies fail to
+                    # authenticate. startRecentlyPlayedListener() would refuse
+                    # with a ValueError in that state; skip it and let
+                    # startListener() (Database/workers/listener.py) report this
+                    # the same way it already does for contaminationDetected
+                    # below.
+                    self.loginFailed = True
+                    logger.warning("Spotify login failed for user %s - stored cookies may be invalid or expired", self.logUser)
 
-            # CRITICAL: Verify cookies actually belong to the expected user, not a
-            # different account. Detection alone isn't enough - the flag set here
-            # makes this listener refuse to record anything (see startListener/
-            # isLoggedIn): without it, plays from the wrong account kept being
-            # recorded under this user, and _validateCurrentUser was no help
-            # because it baselines on _authenticated_user_id, i.e. the WRONG
-            # account's own id, so the ongoing check always passed. Only a real,
-            # non-empty string email is proof of a mismatch - Spotify can return
-            # "email": null, which must not read as contamination.
-            if isinstance(authenticated_email, str) and authenticated_email and email:
-                if authenticated_email.lower() != email.lower():
-                    self.contaminationDetected = True
-                    logger.error(
-                        "CRITICAL: Cookie contamination detected! Cookies for %s are actually authenticated as %s. "
-                        "Recording is disabled for this listener so plays from %s are NOT recorded under %s's account. "
-                        "The stored cookies must be re-authorized.",
-                        email, authenticated_email, authenticated_email, email
-                    )
+            # Validate that this Spotify client is properly authenticated for the expected user
+            try:
+                current_user = self.sp.current_user()
+                self._authenticated_user_id = current_user.get("id")
+                authenticated_email = current_user.get("email")
 
-            # The Spotify id used to be logged alongside this - but for these
-            # accounts Spotify returns the email AS the id, so the line printed
-            # the address twice. It stays available on self._authenticated_user_id
-            # and is reported by the contamination/validation errors, which are
-            # the only places it actually distinguishes anything.
-            # DEBUG: a Listener is rebuilt on every stale-feed reconnect, so
-            # this fired 1,568 times in 11 days for 3 users. The worker's own
-            # start/stop lines cover the lifecycle events worth seeing.
-            logger.debug("Listener initialized for user %s", self.logUser)
-        except Exception as e:
-            logger.warning("Could not verify authenticated user during listener init: %s", parseError(e))
+                # CRITICAL: Verify cookies actually belong to the expected user, not a
+                # different account. Detection alone isn't enough - the flag set here
+                # makes this listener refuse to record anything (see startListener/
+                # isLoggedIn): without it, plays from the wrong account kept being
+                # recorded under this user, and _validateCurrentUser was no help
+                # because it baselines on _authenticated_user_id, i.e. the WRONG
+                # account's own id, so the ongoing check always passed. Only a real,
+                # non-empty string email is proof of a mismatch - Spotify can return
+                # "email": null, which must not read as contamination.
+                if isinstance(authenticated_email, str) and authenticated_email and email:
+                    if authenticated_email.lower() != email.lower():
+                        self.contaminationDetected = True
+                        logger.error(
+                            "CRITICAL: Cookie contamination detected! Cookies for %s are actually authenticated as %s. "
+                            "Recording is disabled for this listener so plays from %s are NOT recorded under %s's account. "
+                            "The stored cookies must be re-authorized.",
+                            email, authenticated_email, authenticated_email, email
+                        )
 
-        if (self.loginFailed or self.contaminationDetected) and self.user:
-            from services.email_worker import queue_email_notification
-            from Database.queries.email_queries import EVENT_INVALID_COOKIES
-            queue_email_notification(self.user, EVENT_INVALID_COOKIES)
+                # The Spotify id used to be logged alongside this - but for these
+                # accounts Spotify returns the email AS the id, so the line printed
+                # the address twice. It stays available on self._authenticated_user_id
+                # and is reported by the contamination/validation errors, which are
+                # the only places it actually distinguishes anything.
+                # DEBUG: a Listener is rebuilt on every stale-feed reconnect, so
+                # this fired 1,568 times in 11 days for 3 users. The worker's own
+                # start/stop lines cover the lifecycle events worth seeing.
+                logger.debug("Listener initialized for user %s", self.logUser)
+            except Exception as e:
+                logger.warning("Could not verify authenticated user during listener init: %s", parseError(e))
 
-        self.recentlyPlayed_Z1 = self.sp.current_user_recently_played()   #< Z1 = the previous poll's snapshot
-        self.webApiRecentlyPlayed_Z1 = []  #< _checkWebApiBackfill's own dedup bookkeeping, kept
-                                            #  separate from recentlyPlayed_Z1 (live-listener-owned,
-                                            #  different dict shape) so the two polling loops never
-                                            #  stomp on each other's cache
-        self._lastChangeTime = time.monotonic()
-        self._lastPlayingUri = None       #< last track the connect state reported playing, and when it
-        self._lastPlayingChangeTime = 0.0  #  last changed - see _observePlaybackForStaleness
-        self._lastPlayingSeenAt = 0.0     #< when that track was last sighted at all - the continuity bound
-        self._firstUnarrivedChangeTime = 0.0  #< first change since the feed last moved - the grace anchor
-        # Dedupes _checkConnectStateForMissedTracks warnings; OrderedDict (not
-        # set) so eviction can target the oldest entry. Shared across this
-        # user's successive Listener generations via _settledMissingUrisForUser
-        # so a rebuild doesn't re-warn what was already answered; anonymous
-        # listeners (no user key and no email - only ever tests) keep a
-        # private store rather than all sharing one.
-        userKey = self.logUser
-        self._settledMissingTrackUris = (
-            _settledMissingUrisForUser(userKey) if userKey else collections.OrderedDict()
-        )
-        self._pendingMissingTrackUris: dict[str, float] = {}  #< uri -> monotonic first-seen; see
-                                                              #  _checkConnectStateForMissedTracks
-        self._last_user_validation_time = None  #< None means "never validated yet" - forces an immediate first check
-        self._last_user_validation_result = True  #< cache validation result
-        self._last_validation_error_time = None  #< when the profile endpoint last refused to answer;
-                                                  #  see USER_VALIDATION_ERROR_COOLDOWN_SECONDS
+            if (self.loginFailed or self.contaminationDetected) and self.user:
+                from services.email_worker import queue_email_notification
+                from Database.queries.email_queries import EVENT_INVALID_COOKIES
+                queue_email_notification(self.user, EVENT_INVALID_COOKIES)
+
+            self.recentlyPlayed_Z1 = self.sp.current_user_recently_played()   #< Z1 = the previous poll's snapshot
+            self.webApiRecentlyPlayed_Z1 = []  #< _checkWebApiBackfill's own dedup bookkeeping, kept
+                                                #  separate from recentlyPlayed_Z1 (live-listener-owned,
+                                                #  different dict shape) so the two polling loops never
+                                                #  stomp on each other's cache
+            self._lastChangeTime = time.monotonic()
+            self._lastPlayingUri = None       #< last track the connect state reported playing, and when it
+            self._lastPlayingChangeTime = 0.0  #  last changed - see _observePlaybackForStaleness
+            self._lastPlayingSeenAt = 0.0     #< when that track was last sighted at all - the continuity bound
+            self._firstUnarrivedChangeTime = 0.0  #< first change since the feed last moved - the grace anchor
+            # Dedupes _checkConnectStateForMissedTracks warnings; OrderedDict (not
+            # set) so eviction can target the oldest entry. Shared across this
+            # user's successive Listener generations via _settledMissingUrisForUser
+            # so a rebuild doesn't re-warn what was already answered; anonymous
+            # listeners (no user key and no email - only ever tests) keep a
+            # private store rather than all sharing one.
+            userKey = self.logUser
+            self._settledMissingTrackUris = (
+                _settledMissingUrisForUser(userKey) if userKey else collections.OrderedDict()
+            )
+            self._pendingMissingTrackUris: dict[str, float] = {}  #< uri -> monotonic first-seen; see
+                                                                  #  _checkConnectStateForMissedTracks
+            self._last_user_validation_time = None  #< None means "never validated yet" - forces an immediate first check
+            self._last_user_validation_result = True  #< cache validation result
+            self._last_validation_error_time = None  #< when the profile endpoint last refused to answer;
+                                                      #  see USER_VALIDATION_ERROR_COOLDOWN_SECONDS
+            constructionSucceeded = True
+        finally:
+            if not constructionSucceeded:
+                self._retireSessionOfFailedConstruction()
+
+    def _retireSessionOfFailedConstruction(self) -> None:
+        """Close the TLS session of a Listener that never came into existence.
+
+        Spotify.close() is idempotent and documented never to raise, but
+        Listener.stop() guards its own call to it and so does this: the caller
+        classifies on the CONSTRUCTION error (classifyListenerError decides
+        retry-vs-give-up from it), and a teardown failure surfacing in its place
+        would be diagnosed as something else entirely.
+
+        This releases login.client only. The streamer's dealer socket is a
+        separate leak with a separate owner - lastPlayedManager is still None
+        when the PlayerStatus constructor is what raised - and is handled by
+        _closeSocketOfFailedConstruction in Database/patches.py."""
+        closeSession = getattr(self.sp, "close", None)
+        if not callable(closeSession):
+            return
+        try:
+            closeSession()
+        except Exception as e:  # noqa: BLE001 - see the docstring: the construction's
+            logger.warning(     #  own exception is the one worth propagating
+                "Failed to close the Spotify session of a listener that could not be built: %s", parseError(e))
 
     @property
     def logUser(self) -> str | None:
