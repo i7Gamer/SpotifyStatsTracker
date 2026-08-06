@@ -107,6 +107,12 @@ TOP_LIST_SORT_BY = VALID_SORT_BY | {"skips"}
 #             and the prior itself differs between the two windows, so an entry
 #             could "climb" without a single play of its own changing.
 MOVEMENT_SORT_BY = VALID_SORT_BY - {"name"}
+# The highest ?page= the movement endpoint will turn into a SQL offset. It has
+# no row count to clamp against (the list route does, via _calculatePagination),
+# and an unclamped page multiplies into an OFFSET that overflows SQLite's int64
+# and raises. Far past any real library - 50M entries at PAGE_SIZE - so every
+# page it rejects was already going to answer empty.
+MOVEMENT_MAX_PAGE = 1_000_000
 TRUTHY_ENV_VALUES = {"1", "true", "yes", "on"}
 # The literal FLASK_SECRET_KEY shipped as a placeholder in docker-compose.yml.
 # Booting with it signs session cookies - and, when DATA_ENCRYPTION_KEY is unset,

@@ -203,6 +203,23 @@ class TestWhenThereIsNothingToCompare(MovementTestCase):
     def test_an_unknown_kind_reports_nothing(self):
         self.assertEqual(self._movement(kind="top_playlists").strip(), "")
 
+    def test_an_absurd_page_answers_empty_instead_of_failing(self):
+        """The list route clamps ?page= against the row count; this one has no
+        count query to clamp against, and _positivePageArg only checks that the
+        digits are positive - so a 20-digit page reached SQLite as an OFFSET
+        too large for an int64 and raised, turning a cosmetic background
+        request into a 500 in the log."""
+        self._login()
+        resp = self.client.get(
+            f"{_MOVEMENT_PATH}{_CURRENT}&kind=top_songs&page=99999999999999999999",
+            headers=HX_HEADERS)
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_data(as_text=True).strip(), "")
+
+    def test_a_page_past_the_end_answers_empty(self):
+        self.assertEqual(self._movement(query=_CURRENT + "&page=9000").strip(), "")
+
 
 class TestTheFiltersReachBothWindows(MovementTestCase):
     def test_a_search_narrows_the_previous_period_too(self):
@@ -213,6 +230,52 @@ class TestTheFiltersReachBothWindows(MovementTestCase):
 
         self.assertIsNotNone(span)
         self.assertIn("rank-move-same", span)
+
+    def test_a_tag_narrows_the_previous_period_too(self):
+        """Same shape as the search test, on the other filter that changes WHICH
+        entries are ranked. Tagged alone, t1 leads both periods; unfiltered it
+        climbed past t2, so a delta here means the previous window was ranked
+        against a list this page is not showing."""
+        self.dash.repo.addTag(self.username, "chill", "track", "t1")
+        self.dash.repo.commit()
+
+        span = self._spanFor(self._movement(query=_CURRENT + "&tag=chill"), "t1")
+
+        self.assertIsNotNone(span, "the tagged page reported no movement at all")
+        self.assertIn("rank-move-same", span)
+
+    def test_full_plays_only_is_applied_to_the_previous_period_too(self):
+        """t3's February plays are 1s of a 200s track. With the page's default
+        "full plays only" they are not listens, so February never heard it and
+        March is new; opt out and February placed it, so it moved instead.
+
+        Both directions asserted, because a filter that reaches neither window
+        would also produce one of them."""
+        self.dash.repo.upsertTrack(makeTrack("t3", "Gamma Song"))
+        for offset in range(4):
+            self.dash.repo.insertPlay(self.username, "t3", _MARCH + 50 + offset * 600, 200_000)
+            self.dash.repo.insertPlay(self.username, "t3", _FEBRUARY + 50 + offset * 600, 1_000)
+        self.dash.repo.commit()
+
+        self.assertIn("rank-move-new", self._spanFor(self._movement(), "t3"))
+        self.assertNotIn("rank-move-new",
+                         self._spanFor(self._movement(query=_CURRENT + "&fullOnly=0"), "t3"))
+
+    def test_a_truncated_previous_period_cannot_call_anything_new(self):
+        """The guard that keeps a deep-scan limit from becoming a wrong answer.
+        Every fixture here has a previous period far smaller than the real
+        500-row scan, so the derivation itself was never exercised - replacing
+        it with a constant True left the whole suite green."""
+        self.dash.repo.upsertTrack(makeTrack("t3", "Gamma Song"))
+        self._plays("t3", _MARCH, 2)
+        self.dash.repo.commit()
+
+        #< 1 < the two entries February has, so the scan comes back truncated
+        with patch("routes.charts.PREVIOUS_WINDOW_SCAN_LIMIT", 1):
+            body = self._movement()
+
+        self.assertIsNone(self._spanFor(body, "t3"),
+                          "an entry below the scan line was reported as new")
 
     def test_the_previous_window_reaches_back_exactly_one_span(self):
         """January is outside [Jan 30, Mar 1) and has to stay outside it. These
@@ -250,6 +313,29 @@ class TestItStaysOffThePagesCriticalPath(MovementTestCase):
 
         self.assertIn('hx-swap="none"', trigger)
         self.assertIn('hx-replace-url="false"', trigger)
+
+    def test_the_trigger_owns_its_own_failures_instead_of_the_lists(self):
+        """The inherited hx-target is the dangerous one, because nothing about
+        it is visible in a successful run.
+
+        htmx resolves a request's target from hx-target even when the swap is
+        "none", and puts it on htmx:responseError / htmx:sendError. top-list.js
+        registers HtmxFilters.onSwapFailure('topListResults'), which blanks
+        whatever target matches that id - so a movement request that 502s mid
+        deploy, or dies on a wifi blip, would replace a perfectly good list of
+        50 rows with "couldn't load / Retry". onSwapFailure's own comment warns
+        about the day a page grows a second region; this is that day."""
+        body = self._list()
+        trigger = re.search(r"<div[^>]*%s[^>]*>" % re.escape(_MOVEMENT_PATH), body).group(0)
+
+        self.assertIn('hx-target="this"', trigger)
+
+    def test_a_page_with_no_rows_asks_for_nothing(self):
+        """Nothing to badge, so the previous-period scan would be a full-range
+        aggregate answering an empty page."""
+        empty = "?interval=custom&startDate=2026-03-20&endDate=2026-03-30"
+
+        self.assertNotIn(_MOVEMENT_PATH, self._list(query=empty))
 
     def test_no_trigger_when_there_is_nothing_to_ask_for(self):
         """An All Time list would otherwise pay for a request that can only

@@ -16,7 +16,7 @@ from flask import render_template, redirect, request, url_for, session, jsonify,
 from config import (
     PAGE_SIZE, CHART_ARTIST_TREND_TOP_N, CHART_TOP_GENRES_LIMIT,
     CHART_MOST_SKIPPED_LIMIT, TOP_LIST_SORT_BY, MOVEMENT_SORT_BY,
-    ON_THIS_DAY_YEARS_LIMIT,
+    MOVEMENT_MAX_PAGE, ON_THIS_DAY_YEARS_LIMIT,
     LISTEN_TIME_HIDE_SECONDS_ABOVE_HOURS, RECOMMENDATION_ARTIST_LIMIT,
     RECOMMENDATION_GENRE_POOL, RECOMMENDATION_EXCLUDE_TOP_N,
 )
@@ -251,7 +251,13 @@ def register(app, dashboard):
         common = {"by": filters["sortBy"], "searchQuery": filters["searchQuery"],
                   "fullPlaysOnly": filters["fullPlaysOnly"], spec["idsKwarg"]: narrowedIds}
 
-        page = int(_positivePageArg() or 1)
+        # Clamped, unlike the list route's page - which is clamped against the
+        # row count by _calculatePagination, a count query this endpoint has no
+        # reason to run. _positivePageArg only proves the digits are positive,
+        # so a hand-crafted 20-digit ?page= reached SQLite as an OFFSET too
+        # large for an int64 and raised, turning a cosmetic background request
+        # into a 500. Any page past the end answers empty either way.
+        page = min(int(_positivePageArg() or 1), MOVEMENT_MAX_PAGE)
         startIndex = (page - 1) * PAGE_SIZE
         current = fetch(startDate=startDate, endDate=endDate,
                         limit=PAGE_SIZE, offset=startIndex, **common)
