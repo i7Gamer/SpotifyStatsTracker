@@ -263,6 +263,63 @@ class TestItStaysOffThePagesCriticalPath(MovementTestCase):
                 self.assertIn(f"kind={kind}", self._list(path=path))
 
 
+def _trackBy(trackId, name, artistId, albumId):
+    """A track pinned to a specific artist and album, so the artist and album
+    lists have something of their own to rank."""
+    track = makeTrack(trackId, name)
+    track["artists"] = [{"id": artistId, "name": f"Artist {artistId}", "imageId": artistId,
+                         "url": f"http://example.com/artist/{artistId}", "imageUrl": ""}]
+    track["album"] = dict(track["album"], id=albumId, name=f"Album {albumId}",
+                          url=f"http://example.com/album/{albumId}", imageId=albumId)
+    return track
+
+
+class TestEveryKindIsWiredEndToEnd(MovementTestCase):
+    """_MOVEMENT_KINDS is three getters, three tag lookups and three id kwargs,
+    and each kind aggregates differently - songs group by track, albums through
+    tracks, artists through track_artists. "It works for songs" therefore says
+    nothing about the other two, which is exactly the sibling-call-site shape
+    this codebase keeps getting caught by.
+
+    aA/aB (and albums xA/xB) swap places between the two months:
+
+        February   B (7 plays), the base fixture's shared artist (6), A (1)
+        March      A (5 plays), the base fixture's shared artist (4), B (1)"""
+
+    def setUp(self):
+        super().setUp()
+        self.dash.repo.upsertTrack(_trackBy("t3", "Third Song", "aA", "xA"))
+        self.dash.repo.upsertTrack(_trackBy("t4", "Fourth Song", "aB", "xB"))
+        self._plays("t3", _MARCH, 5)
+        self._plays("t4", _MARCH, 1)
+        self._plays("t3", _FEBRUARY, 1)
+        self._plays("t4", _FEBRUARY, 7)
+        self.dash.repo.commit()
+
+    def test_the_artist_list_ranks_artists(self):
+        body = self._movement(kind="top_artists")
+
+        self.assertIn('title="Up 2 from the previous period"', self._spanFor(body, "aA"))
+        self.assertIn('title="Down 2 from the previous period"', self._spanFor(body, "aB"))
+
+    def test_the_album_list_ranks_albums(self):
+        body = self._movement(kind="top_albums")
+
+        self.assertIn('title="Up 2 from the previous period"', self._spanFor(body, "xA"))
+        self.assertIn('title="Down 2 from the previous period"', self._spanFor(body, "xB"))
+
+    def test_each_kind_reports_into_its_own_pages_placeholders(self):
+        for path, kind in (("/top-songs", "top_songs"), ("/top-artists", "top_artists"),
+                           ("/top-albums", "top_albums")):
+            with self.subTest(kind=kind):
+                placeholders = set(re.findall(r'id="rankMove-([^"]+)"', self._list(path=path)))
+                reported = set(re.findall(r'id="rankMove-([^"]+)"', self._movement(kind=kind)))
+
+                self.assertTrue(reported, f"{kind} reported nothing to swap in")
+                self.assertTrue(reported <= placeholders,
+                                f"{kind} would swap into nothing: {reported - placeholders}")
+
+
 class TestPagingComparesTheRightRanks(MovementTestCase):
     """startIndex is what makes page 2 compare #51..#100 rather than #1..#50.
     Without it every page but the first reads as a mass promotion."""
