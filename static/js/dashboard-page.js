@@ -205,8 +205,15 @@ document.body.addEventListener('htmx:sendError', reportDashboardFailure);
     }
     friendsChips.textContent = '';
     friends.forEach(function (friend) {
-      var chip = document.createElement('div');
+      //< the whole chip is the link to comparing with that friend. The href is
+      //  built server-side (routes/system.py) so it goes through url_for like
+      //  every other link in the app; without one this stays an inert <a>,
+      //  which is what an older cached copy of this file would produce.
+      var chip = document.createElement('a');
       chip.className = 'friends-listening-chip';
+      if (friend.compareUrl) {
+        chip.href = friend.compareUrl;
+      }
 
       var cover = document.createElement('img');
       cover.className = 'friends-listening-cover';

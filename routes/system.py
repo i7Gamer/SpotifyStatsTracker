@@ -210,7 +210,14 @@ def register(app, dashboard):
         friends = dashboard.getFriendsNowPlaying(username)
         return jsonify({
             "nowPlaying": db.getNowPlaying(),
-            "friends": friends["friends"],
+            #< the chip is a link to comparing with that friend, and the chips
+            #  are built client-side - so the URL rides in the payload rather
+            #  than being spelled out as a path in dashboard-page.js. `with` is
+            #  a Python keyword, hence the kwargs dict.
+            "friends": [
+                dict(friend, compareUrl=url_for("comparePage", **{"with": friend["username"]}))
+                for friend in friends["friends"]
+            ],
             "friendsMoreCount": friends["moreCount"],
         })
     app.add_url_rule("/api/now-playing", "nowPlayingStatus", nowPlayingStatus, methods=["GET"])

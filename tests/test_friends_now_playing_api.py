@@ -187,6 +187,42 @@ class TestWhatIsReported(FriendsNowPlayingTestCase):
         self.assertEqual(self._payload()["moreCount"], 0)
 
 
+class TestTheChipLinksToTheFriend(FriendsNowPlayingTestCase):
+    """A chip names someone you already share with, and /compare is the page
+    that puts the two of you side by side - so the chip is a link to it.
+
+    The URL is built in the route rather than spelled out in dashboard-page.js:
+    the chips are rendered client-side, so a hand-built path there would be
+    both unroutable by url_for and untestable from here."""
+
+    def _friendsFromTheEndpoint(self):
+        client = self.dash.app.test_client()
+        own = MagicMock()
+        own.getNowPlaying.return_value = None   #< the viewer's own half; a Mock is not serializable
+        with patch.object(self.dash, "is_user_logged_in", return_value=True), \
+             patch.object(self.dash, "get_username_for_email", return_value=self.VIEWER), \
+             patch.object(self.dash, "get_user_db", return_value=own):
+            with client.session_transaction() as sess:
+                sess["email"] = self.VIEWER_EMAIL
+            return client.get("/api/now-playing").get_json()["friends"]
+
+    def test_each_chip_carries_a_compare_link_for_that_friend(self):
+        self._addUser("bob", playing=_nowPlaying())
+        self._share("bob")
+
+        self.assertEqual(self._friendsFromTheEndpoint()[0]["compareUrl"], "/compare?with=bob")
+
+    def test_the_link_selects_by_username_even_behind_a_display_name(self):
+        """?with= picks an account, and comparePage silently falls back to
+        another share when it matches none - so a display name there would
+        compare the viewer with the wrong person rather than fail."""
+        self._addUser("bob", playing=_nowPlaying())
+        self._share("bob")
+        self.dash.repo.setDisplayName("bob", "Bob Builder")
+
+        self.assertEqual(self._friendsFromTheEndpoint()[0]["compareUrl"], "/compare?with=bob")
+
+
 class TestToggleGating(FriendsNowPlayingTestCase):
     def test_the_admin_switch_empties_the_strip(self):
         self._addUser("bob", playing=_nowPlaying())

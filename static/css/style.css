@@ -4102,6 +4102,14 @@ html.theme-red {
      and this only spends width where there is something to show. */
   max-width: 360px;
   min-width: 0;
+  /* The chip is an <a> to /compare?with=<friend>, styled like .onthisday-row:
+     the row reads as content, and the accent on hover is the affordance. */
+  text-decoration: none;
+  color: inherit;
+}
+
+.friends-listening-chip:hover .friends-listening-track {
+  color: var(--accent);
 }
 
 .friends-listening-cover {

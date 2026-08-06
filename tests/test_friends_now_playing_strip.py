@@ -136,6 +136,24 @@ class TestStripPollIsNotCoupledToNowPlaying(unittest.TestCase):
                       self.template)
 
 
+class TestTheChipIsALink(unittest.TestCase):
+    """The href itself is the route's, and tested there
+    (tests/test_friends_now_playing_api.py). What is asserted here is the half
+    that lives in the browser script: that the chip is an anchor at all, and
+    that it uses the URL the payload carries rather than a path of its own."""
+
+    def setUp(self):
+        scriptPath = os.path.join(os.path.dirname(__file__), "..", "static", "js", "dashboard-page.js")
+        with open(scriptPath, encoding="utf-8") as handle:
+            self.script = handle.read()
+
+    def test_the_chip_element_is_an_anchor(self):
+        self.assertIn("var chip = document.createElement('a');", self.script)
+
+    def test_the_href_comes_from_the_payload(self):
+        self.assertIn("chip.href = friend.compareUrl;", self.script)
+
+
 class TestStripStyling(unittest.TestCase):
     """The one rule the layout depends on, asserted against the stylesheet: a
     chip that can grow reintroduces exactly the stretched-slab problem."""
@@ -168,6 +186,13 @@ class TestStripStyling(unittest.TestCase):
         match = re.search(r"max-width:\s*(\d+)px", block)
         self.assertIsNotNone(match, "the chip cap is not a plain px value")
         self.assertGreaterEqual(int(match.group(1)), CHIP_TITLE_ROOM_FLOOR_PX)
+
+    def test_the_chip_link_does_not_read_as_a_bare_anchor(self):
+        """It became an <a> without becoming blue and underlined."""
+        block = self._block(".friends-listening-chip")
+
+        self.assertIn("text-decoration: none", block)
+        self.assertIn("color: inherit", block)
 
     def test_the_row_wraps_rather_than_scrolling(self):
         block = self._block(".friends-listening")
