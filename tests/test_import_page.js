@@ -15,6 +15,10 @@ const assert = require('assert');
 const path = require('path');
 
 const SCRIPT = path.join(__dirname, '..', 'static', 'js', 'import-page.js');
+// Captured before any test replaces global.console. The stub below swallows
+// console.error so a test can assert on it - and would otherwise swallow this
+// runner's own failure report too, turning a red test into a silent exit 1.
+const realConsole = console;
 
 function makeElement(extra) {
   return Object.assign({ value: null, textContent: '', checked: false, files: [] }, extra || {});
@@ -37,7 +41,7 @@ function loadImportPage(options) {
   global.document = { getElementById(id) { return elements[id] || null; } };
   global.setTimeout = function (fn, ms) { calls.timeouts.push({ fn, ms }); return calls.timeouts.length; };
   global.confirm = function (message) { calls.confirms.push(message); return !!options.confirmAnswer; };
-  global.console = { error(...args) { calls.errors.push(args); }, log: console.log };
+  global.console = { error(...args) { calls.errors.push(args); }, log: realConsole.log };
   global.fetch = function (url) {
     calls.fetched.push(url);
     const responder = options.respond;
@@ -196,12 +200,12 @@ run('a non-OK progress response is dropped rather than rendered as zero', async 
   for (const { name, fn } of results) {
     try {
       await fn();
-      console.log(`ok - ${name}`);
+      realConsole.log(`ok - ${name}`);
     } catch (err) {
-      console.error(`FAIL - ${name}`);
-      console.error(err);
+      realConsole.error(`FAIL - ${name}`);
+      realConsole.error(err);
       process.exit(1);
     }
   }
-  console.log(`all ${results.length} import-page tests passed`);
+  realConsole.log(`all ${results.length} import-page tests passed`);
 })();
