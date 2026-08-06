@@ -622,6 +622,22 @@ class TestSortParamValidation(unittest.TestCase):
         self.assertNotIn("skips", VALID_SORT_BY)
         self.assertTrue(VALID_SORT_BY < TOP_LIST_SORT_BY)   #< the Top pages only ADD to the shared set
 
+    def test_skips_never_reaches_the_rank_movement_comparison(self):
+        """A skip rank is not comparable across two periods: it runs through a
+        Bayesian prior computed over the window, so the prior itself differs
+        between them and an entry can "climb" without a single play of its own
+        changing. An arrow saying so is worse than no arrow.
+
+        Pinned as a literal rather than re-derived from the sets above, which
+        would only restate config.py's own expression. The value is what the
+        exclusion means, and it is what fails if "skips" is ever promoted into
+        VALID_SORT_BY and leaks through a derivation that never named it."""
+        from config import MOVEMENT_SORT_BY, TOP_LIST_SORT_BY
+
+        self.assertEqual(MOVEMENT_SORT_BY, {"totalTimeListened", "plays"})
+        #< a movement sort the pages don't offer is config nothing can reach
+        self.assertTrue(MOVEMENT_SORT_BY < TOP_LIST_SORT_BY)
+
     def test_the_ranking_weight_reaches_sql_as_a_bound_param(self):
         """The predecessor took an `orderBy` string that was interpolated into
         the ORDER BY and so had to be whitelisted. The ranking is now one fixed

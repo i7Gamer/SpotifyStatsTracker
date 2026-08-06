@@ -106,7 +106,12 @@ TOP_LIST_SORT_BY = VALID_SORT_BY | {"skips"}
 #   "skips" - skip rank runs through a Bayesian prior computed over the window,
 #             and the prior itself differs between the two windows, so an entry
 #             could "climb" without a single play of its own changing.
-MOVEMENT_SORT_BY = VALID_SORT_BY - {"name"}
+# Taken off what the pages OFFER, naming both exclusions, rather than off the
+# shared set - where "skips" happens not to be, so subtracting only "name"
+# reads as the same thing and is one edit away from not being: promote "skips"
+# into VALID_SORT_BY and this would silently start badging it, against the
+# reason written directly above. See test_skip_sort.py's guard on the value.
+MOVEMENT_SORT_BY = TOP_LIST_SORT_BY - {"name", "skips"}
 # The highest ?page= the movement endpoint will turn into a SQL offset. It has
 # no row count to clamp against (the list route does, via _calculatePagination),
 # and an unclamped page multiplies into an OFFSET that overflows SQLite's int64
