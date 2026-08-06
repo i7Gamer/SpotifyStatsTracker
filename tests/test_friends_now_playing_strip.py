@@ -17,6 +17,10 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from _app_factory import AppTestCase
 from conftest import makeDashboardDbMock
 
+#< the narrowest .friends-listening-chip cap that still leaves a usable track
+#  title beside the 30px cover (see TestStripStyling)
+CHIP_TITLE_ROOM_FLOOR_PX = 320
+
 
 class FriendsStripTestCase(AppTestCase):
     USERNAME = "alice"
@@ -151,6 +155,19 @@ class TestStripStyling(unittest.TestCase):
 
     def test_a_chip_is_width_capped(self):
         self.assertIn("max-width", self._block(".friends-listening-chip"))
+
+    def test_the_cap_still_leaves_room_for_the_track_title(self):
+        """The cap is a design choice; a cap that eats the title is not.
+
+        At 230px - minus the 30px cover and the 8px gap - one ~190px line had to
+        hold the friend's name, a separator AND the track name, so most titles
+        arrived as an ellipsis. Pinned as a floor rather than an exact value so
+        the number stays tunable, but not back down into that."""
+        block = self._block(".friends-listening-chip")
+
+        match = re.search(r"max-width:\s*(\d+)px", block)
+        self.assertIsNotNone(match, "the chip cap is not a plain px value")
+        self.assertGreaterEqual(int(match.group(1)), CHIP_TITLE_ROOM_FLOOR_PX)
 
     def test_the_row_wraps_rather_than_scrolling(self):
         block = self._block(".friends-listening")

@@ -4095,7 +4095,12 @@ html.theme-red {
   /* Never grow: a stretched chip is the failure mode this layout exists to
      avoid. Shrinking is fine - that's what the ellipsis below is for. */
   flex: 0 1 auto;
-  max-width: 230px;
+  /* The cap was 230px, which after the 30px cover and the gap left one ~190px
+     line to hold the friend's name, the separator AND the track title - so the
+     title, the part people actually read the strip for, was usually an
+     ellipsis. Chips still size to their content, so a short one is unchanged
+     and this only spends width where there is something to show. */
+  max-width: 360px;
   min-width: 0;
 }
 
