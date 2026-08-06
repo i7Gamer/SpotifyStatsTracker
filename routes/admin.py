@@ -388,6 +388,9 @@ def register(app, dashboard):
 
         return render_template(
             "admin.html",
+            #< a deploy that copied files over a running process, which nothing
+            #  else in the app can see (see services/deploy_state.py)
+            deploy_mismatch=dashboard.getDeployMismatch(),
             restart_enabled=restart_enabled,
             users_list=users_list,
             admin_count=len(dashboard.repo.getAdminUsernames()),

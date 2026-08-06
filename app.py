@@ -25,6 +25,7 @@ from Database.backup import (
     DEFAULT_BACKUP_INTERVAL_HOURS, DEFAULT_BACKUP_RETENTION_COUNT,
 )
 from routes._htmx import isHtmxSwap
+from services.deploy_state import deployMismatch, newestSourceMtime
 from services.email_worker import EMAIL_WORKER
 from Database.db import SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON
 from Database.repository import Repository
@@ -229,6 +230,10 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
         with suppress(Exception):
             #< read once - the app cannot update without a restart
             self.currentVersion = (self.baseDir / "Database" / "VERSION").read_text(encoding="utf-8").strip()
+        # ...which is exactly why getDeployMismatch re-reads it: a file-copy
+        # deploy without a restart updates the file and leaves this variable,
+        # the compiled templates and this module itself on the old build.
+        self.startedAt = time.time()
         self.latestVersion = None   #< set by the version-check worker when a newer release exists
         self._version_lock = threading.Lock()
         self._stop_event = threading.Event()
@@ -674,6 +679,22 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
             return str(int(os.stat(os.path.join(self.app.static_folder, filename)).st_mtime))
         except OSError:
             return None
+
+    def getDeployMismatch(self):
+        """Whether this process is still running the files on disk, for the
+        /admin banner - None when it is. See services/deploy_state.py for the
+        failure this exists to name; the short version is that the stamping
+        above is what makes it so confusing, since it cache-busts the new
+        scripts into a page rendered from the old templates.
+
+        Read live rather than at boot, and not memoized: the whole point is to
+        notice a change made after this process started, and /admin is not a
+        page anyone loads in a loop."""
+        diskVersion = None
+        with suppress(Exception):
+            diskVersion = (self.baseDir / "Database" / "VERSION").read_text(encoding="utf-8").strip()
+        return deployMismatch(self.currentVersion, diskVersion, self.startedAt,
+                              newestSourceMtime(self.baseDir))
 
     def registerRoutes(self) -> None:
         @self.app.url_defaults

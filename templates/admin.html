@@ -12,6 +12,26 @@
   </div>
 </section>
 
+{# The files on disk moved after this process loaded them, so the instance is
+   serving new static assets against templates and route code from boot. Above
+   the error/message banners on purpose: while this is up, anything else on the
+   page may be describing the other build. #}
+{% if deploy_mismatch %}
+<section class="card deploy-mismatch" style="margin-bottom: 1.5rem; border: 1px solid var(--danger, #e05252); padding: 1rem 1.5rem; min-height: auto;">
+  <h2 style="margin: 0 0 0.4rem; font-family: var(--font-headings); color: var(--danger, #e05252);">Restart needed &mdash; this instance is half-deployed</h2>
+  <p style="margin: 0; color: var(--muted);">
+    {% if deploy_mismatch.diskVersion %}
+      Running <strong>{{ deploy_mismatch.runningVersion }}</strong>, but the files on disk are <strong>{{ deploy_mismatch.diskVersion }}</strong>.
+    {% else %}
+      The application files have changed since this process started (still on <strong>{{ deploy_mismatch.runningVersion }}</strong>).
+    {% endif %}
+    Pages are being built from the templates and code loaded at startup, while every
+    <code>/static</code> asset is served fresh from disk &mdash; so the browser is running the new
+    scripts against the old markup. Restart the app to load what was deployed.
+  </p>
+</section>
+{% endif %}
+
 {% if error %}
 <section class="card" style="margin-bottom: 1.5rem; border: 1px solid var(--danger, #e05252); padding: 1rem 1.5rem; min-height: auto; width: fit-content; max-width: 100%;">
   <p style="margin: 0; color: var(--danger, #e05252);">{{ error }}</p>
