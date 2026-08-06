@@ -240,21 +240,44 @@ class TestWhenThereIsNothingToCompare(MovementTestCase):
 
         self.assertIn('title="Down 2 from the previous period"', self._spanFor(body, "t2"))
 
+    def test_more_ids_than_a_page_holds_are_not_all_asked_about(self):
+        """The cap is what keeps a crafted request from binding one SQL
+        parameter per id straight into SQLITE_MAX_VARIABLE_NUMBER, which would
+        turn a background badge request into a 500."""
+        padding = [f"pad{index:03d}" for index in range(PAGE_SIZE)]
+        body = self._rawMovement(ids=",".join(["t1"] + padding + ["t2"])).get_data(as_text=True)
+
+        self.assertIsNotNone(self._spanFor(body, "t1"), "the first id was dropped")
+        self.assertIsNone(self._spanFor(body, "t2"), "an id past the cap was answered about")
+
     def test_a_request_naming_no_entries_reports_nothing(self):
         """The ids ARE the question. Without them there is nothing to badge,
         and re-deriving them would be the ranking query this endpoint exists
         not to repeat."""
         self.assertEqual(self._rawMovement(ids="").get_data(as_text=True).strip(), "")
 
-    def test_an_absurd_page_does_not_fail(self):
-        """?page= only sets the rank the page starts at now that the ids come
-        with the request, so it no longer reaches SQLite as an OFFSET - but a
-        20-digit one did exactly that before, overflowing int64 and turning a
-        cosmetic background request into a 500. It stays clamped, and the only
-        thing left to assert is that a crafted request cannot break it."""
-        resp = self._rawMovement(page="99999999999999999999")
+    def test_a_page_number_nobody_can_be_on_is_refused(self):
+        """?page= is the rank this page starts at. Since the ids now come with
+        the request it is no longer a SQL offset - so instead of overflowing
+        int64 it would quietly render "Down 49,999,899" on an entry that never
+        moved. A page beyond any real library is not a page, it is a crafted
+        URL, and the answer to it is nothing.
 
-        self.assertEqual(resp.status_code, 200)
+        The digit count is checked before int(), which refuses a string of more
+        than 4300 digits outright - a 500 rather than a badge."""
+        self.assertEqual(self._rawMovement(page="99999999999999999999")
+                         .get_data(as_text=True).strip(), "")
+        self.assertEqual(self._rawMovement(page="9" * 5000)
+                         .get_data(as_text=True).strip(), "")
+        #< short enough to parse, still past any real library
+        self.assertEqual(self._rawMovement(page="9999999")
+                         .get_data(as_text=True).strip(), "")
+
+    def test_a_page_a_large_library_could_really_be_on_is_honoured(self):
+        """The refusal above must not swallow page 200 of someone's history."""
+        body = self._rawMovement(page="200").get_data(as_text=True)
+
+        self.assertIn("rank-move", body)
 
 
 class TestTheFiltersReachBothWindows(MovementTestCase):
@@ -376,6 +399,29 @@ class TestItStaysOffThePagesCriticalPath(MovementTestCase):
         empty = "?interval=custom&startDate=2026-03-20&endDate=2026-03-30"
 
         self.assertNotIn(_MOVEMENT_PATH, self._list(query=empty))
+
+    def test_an_id_containing_the_separator_forfeits_its_badge_not_the_page(self):
+        """The ids ride the URL comma-separated and positionally, so an id with
+        a comma in it would add a phantom slot: an oob span nothing can receive,
+        and every rank below it off by one.
+
+        Spotify's own ids are alphanumeric, but an IMPORTED one is whatever the
+        export file said - StreamingHistoryImporter takes it from
+        spotify_track_uri without validating it - so this is not an invariant
+        to rank by. The entry keeps its slot and loses only its own badge."""
+        commaId = "we,ird"
+        self.dash.repo.upsertTrack(makeTrack(commaId, "Comma Song"))
+        self._plays(commaId, _MARCH, 99)   #< tops the March list
+        self.dash.repo.commit()
+
+        url = self._triggerUrl()
+        body = self._movement()
+
+        self.assertIn("ids=,t1,t2", url.replace("%2C", ","))
+        self.assertIsNone(self._spanFor(body, "we"), "a phantom slot was emitted")
+        #< t1 is #2 now and was #2 in February: the rank below the blank slot
+        #  is still judged correctly
+        self.assertIn("rank-move-same", self._spanFor(body, "t1"))
 
     def test_an_entry_with_no_id_keeps_its_slot_in_the_url(self):
         """The other half of the positional contract, and the half no fixture

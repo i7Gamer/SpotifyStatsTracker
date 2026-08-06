@@ -72,6 +72,12 @@ def _detailSwapTarget():
     return request.headers.get("HX-Target") or DETAIL_BODY_TARGET
 
 
+# Past this, ?page= is not a page anyone can be on - it is a typo or a crafted
+# URL, and treating it as either costs nothing. Well under CPython's 4300-digit
+# int/str conversion limit, which is what makes the check worth having.
+_MAX_PAGE_DIGITS = 9
+
+
 def _positivePageArg():
     """?page= as a string when it names a real page, "" otherwise.
 
@@ -81,10 +87,17 @@ def _positivePageArg():
     validation, because the list request clamps the page against the row count
     (_calculatePagination).
 
-    topListMovement is the exception and clamps for itself - it runs no count
-    query, so nothing downstream would catch an absurd page for it."""
+    topListMovement is the exception and reads ?page= itself (see
+    _movementPage) - it runs no count query, so nothing downstream would catch
+    an absurd page for it.
+
+    The length check comes before int(): CPython refuses to convert a string of
+    more than 4300 digits, so `isdigit() and int(raw)` was an unhandled
+    ValueError - a 500 on four shells, from a URL anyone can type."""
     raw = request.args.get("page", "")
-    return raw if raw.isdigit() and int(raw) > 0 else ""
+    if not raw.isdigit() or len(raw) > _MAX_PAGE_DIGITS:
+        return ""
+    return raw if int(raw) > 0 else ""
 
 
 def register(app, dashboard):
@@ -200,6 +213,52 @@ def register(app, dashboard):
                        "idsKwarg": "albumIds", "entity": "album"},
     }
 
+    # The movement URL carries the page's ids positionally: position i is rank
+    # startIndex + i + 1, so a slot must never appear or disappear.
+    _MOVEMENT_ID_SEPARATOR = ","
+
+    def _movementIds(items):
+        """The page's ids for that URL, one slot per row, in rank order.
+
+        Two entries forfeit their own badge and keep their slot, because
+        dropping either would shift every rank below it - silently, since those
+        badges still land on real entries and merely report a distance nobody
+        held:
+
+          * an entry with no id. None can occur today, as all three ranking
+            queries inner-join their catalog table; this is what stops that
+            from being load-bearing three layers away.
+          * an id containing the separator. Spotify's own ids are
+            alphanumeric, but an IMPORTED id is whatever the export file said -
+            StreamingHistoryImporter reads it out of spotify_track_uri without
+            validating it, and derives album ids from it - so the character set
+            is not something to rank by.
+        """
+        slots = []
+        for entry in items:
+            entityId = entry.get("id") or ""
+            slots.append("" if _MOVEMENT_ID_SEPARATOR in entityId else entityId)
+        return _MOVEMENT_ID_SEPARATOR.join(slots)
+
+    def _movementPage():
+        """?page= as the rank this page starts at, or None when it names a page
+        nobody can be on.
+
+        Deliberately not _positivePageArg. That one answers "is this worth
+        echoing back into markup", and the shells that use it are clamped for
+        real afterwards, against a row count. Here the number IS the arithmetic
+        - it decides what rank each entry is judged at - and there is no count
+        to clamp against, so an impossible page is refused rather than guessed
+        at: honouring it would render "Down 49,999,899" on an entry that never
+        moved."""
+        raw = request.args.get("page", "")
+        if not raw:
+            return 1
+        if not raw.isdigit() or len(raw) > len(str(MOVEMENT_MAX_PAGE)):
+            return None   #< digits counted before int(), which refuses >4300 of them
+        page = int(raw)
+        return page if 0 < page <= MOVEMENT_MAX_PAGE else None
+
     def _movementUrl(section, filters, page, dateRange, items):
         """Where the results fragment asks for its rank arrows - or None when
         there is no question to ask, in which case it renders no trigger at all
@@ -226,15 +285,7 @@ def register(app, dashboard):
             "tag": filters["tag"],
             "fullOnly": filters["fullOnly"],
             "page": page,
-            # In rank order: position in this list IS the entry's rank, once
-            # offset by the page. An entry with no id keeps its SLOT rather
-            # than being dropped - dropping it would shift every rank below it
-            # by one, and silently, since the badges would still land on real
-            # entries. No entity can lack an id today (all three ranking
-            # queries inner-join their catalog table), and this is what keeps
-            # that from being load-bearing. Ids are alphanumerics and
-            # underscores, so the comma separator is unambiguous.
-            "ids": ",".join(entry.get("id") or "" for entry in items),
+            "ids": _movementIds(items),
         }
         return url_for("topListMovement", **{k: v for k, v in args.items() if v})
 
@@ -264,7 +315,7 @@ def register(app, dashboard):
         #< capped at a page: the ids name what to badge, and a crafted request
         #  must not turn that into an unbounded id set. Empty slots are KEPT -
         #  they hold the rank positions of entries that carry no id.
-        currentIds = request.args.get("ids", "").split(",")[:PAGE_SIZE]
+        currentIds = request.args.get("ids", "").split(_MOVEMENT_ID_SEPARATOR)[:PAGE_SIZE]
         if not any(currentIds):
             return ""
         startDate, endDate = dashboard._getDateRange(
@@ -283,13 +334,9 @@ def register(app, dashboard):
         common = {"by": filters["sortBy"], "searchQuery": filters["searchQuery"],
                   "fullPlaysOnly": filters["fullPlaysOnly"], spec["idsKwarg"]: narrowedIds}
 
-        # The rank this page starts at. Nothing else reads it - the ids say
-        # what to badge, so it never becomes a SQL offset (it did once, and a
-        # hand-crafted 20-digit ?page= overflowed int64 and turned a cosmetic
-        # background request into a 500). Clamped anyway: _positivePageArg only
-        # proves the digits are positive, and this is the one caller with no
-        # row count to clamp against.
-        page = min(int(_positivePageArg() or 1), MOVEMENT_MAX_PAGE)
+        page = _movementPage()
+        if page is None:
+            return ""   #< a page nobody can be on; see _movementPage
         startIndex = (page - 1) * PAGE_SIZE
         previous = fetch(startDate=window[0], endDate=window[1],
                          limit=PREVIOUS_WINDOW_SCAN_LIMIT, offset=0, **common)
