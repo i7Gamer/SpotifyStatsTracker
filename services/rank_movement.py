@@ -90,6 +90,11 @@ def rankMovements(currentIds: list[str], previousIds: list[str],
     previousRank = {entityId: index + 1 for index, entityId in enumerate(previousIds)}
     movements = {}
     for index, entityId in enumerate(currentIds):
+        #< an entry with no id still holds its rank position, so the entries
+        #  below it are judged against the right numbers - it just cannot be
+        #  badged, having nothing for the swap to address
+        if not entityId:
+            continue
         was = previousRank.get(entityId)
         if was is None:
             if playedPreviously is not None and entityId not in playedPreviously:

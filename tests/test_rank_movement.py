@@ -107,6 +107,16 @@ class TestRankMovements(unittest.TestCase):
         self.assertEqual(moves["b"], {"direction": DOWN, "amount": 1})   #< #1 -> #2
         self.assertEqual(moves["c"], {"direction": SAME, "amount": 0})   #< #3 -> #3
 
+    def test_an_entry_with_no_id_holds_its_rank_for_the_ones_below_it(self):
+        """The ids travel to the endpoint positionally, so an entry that cannot
+        be badged keeps its SLOT. Dropping it instead would shift every rank
+        below it by one - and silently, because those badges still land on real
+        entries and simply report the wrong distance."""
+        moves = rankMovements(["a", "", "c"], ["a", "x", "c"], playedPreviously=set())
+
+        self.assertEqual(moves["c"], {"direction": SAME, "amount": 0})   #< #3 both times
+        self.assertNotIn("", moves)
+
     def test_nothing_on_the_page_is_nothing_to_report(self):
         self.assertEqual(rankMovements([], ["a"], playedPreviously=set()), {})
 

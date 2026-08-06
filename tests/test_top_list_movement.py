@@ -232,6 +232,14 @@ class TestWhenThereIsNothingToCompare(MovementTestCase):
     def test_an_unknown_kind_reports_nothing(self):
         self.assertEqual(self._rawMovement(kind="top_playlists").get_data(as_text=True).strip(), "")
 
+    def test_an_empty_slot_in_the_ids_does_not_shift_the_ranks_below_it(self):
+        """The endpoint reads the ids positionally. "t1,,t2" says t2 is third,
+        and February had it first - so down 2. Collapsing the gap would make it
+        second, and report down 1 about a rank it never held."""
+        body = self._rawMovement(ids="t1,,t2").get_data(as_text=True)
+
+        self.assertIn('title="Down 2 from the previous period"', self._spanFor(body, "t2"))
+
     def test_a_request_naming_no_entries_reports_nothing(self):
         """The ids ARE the question. Without them there is nothing to badge,
         and re-deriving them would be the ranking query this endpoint exists
@@ -368,6 +376,22 @@ class TestItStaysOffThePagesCriticalPath(MovementTestCase):
         empty = "?interval=custom&startDate=2026-03-20&endDate=2026-03-30"
 
         self.assertNotIn(_MOVEMENT_PATH, self._list(query=empty))
+
+    def test_an_entry_with_no_id_keeps_its_slot_in_the_url(self):
+        """The other half of the positional contract, and the half no fixture
+        can reach on its own: every ranking query inner-joins its catalog
+        table, so an id-less entry cannot occur today. That is precisely why
+        the URL must not depend on it - a dropped slot shifts every rank below
+        it, and the badges still land on real entries while reporting the
+        wrong distance."""
+        idless = dict(makeTrack("t9", "Nameless"))
+        del idless["id"]
+        with patch.object(self.db, "getTopSongs",
+                          return_value=[idless, makeTrack("t1", "Alpha Song")]):
+            url = self._triggerUrl()
+
+        self.assertIsNotNone(url)
+        self.assertIn("ids=,t1", url.replace("%2C", ","))
 
     def test_no_trigger_when_there_is_nothing_to_ask_for(self):
         """An All Time list would otherwise pay for a request that can only

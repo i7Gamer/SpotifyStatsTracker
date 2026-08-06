@@ -75,11 +75,14 @@ def _detailSwapTarget():
 def _positivePageArg():
     """?page= as a string when it names a real page, "" otherwise.
 
-    Only /history's shell needs this, and only to decide whether to carry the
-    page into the URL its placeholder loads from. The list request clamps the
-    page properly (_calculatePagination), so this is not validation - it is
-    deciding what is worth reflecting back into the markup. Junk gets left out
-    rather than echoed, same reasoning as the validated interval beside it."""
+    The two-phase shells use it to decide whether to carry the page into the
+    URL their placeholder loads from: junk gets left out rather than echoed,
+    same reasoning as the validated interval beside them. For those it is not
+    validation, because the list request clamps the page against the row count
+    (_calculatePagination).
+
+    topListMovement is the exception and clamps for itself - it runs no count
+    query, so nothing downstream would catch an absurd page for it."""
     raw = request.args.get("page", "")
     return raw if raw.isdigit() and int(raw) > 0 else ""
 
@@ -223,9 +226,15 @@ def register(app, dashboard):
             "tag": filters["tag"],
             "fullOnly": filters["fullOnly"],
             "page": page,
-            #< in rank order: position in this list IS the entry's rank, once
-            #  offset by the page. Ids here are alphanumerics and underscores.
-            "ids": ",".join(entry["id"] for entry in items if entry.get("id")),
+            # In rank order: position in this list IS the entry's rank, once
+            # offset by the page. An entry with no id keeps its SLOT rather
+            # than being dropped - dropping it would shift every rank below it
+            # by one, and silently, since the badges would still land on real
+            # entries. No entity can lack an id today (all three ranking
+            # queries inner-join their catalog table), and this is what keeps
+            # that from being load-bearing. Ids are alphanumerics and
+            # underscores, so the comma separator is unambiguous.
+            "ids": ",".join(entry.get("id") or "" for entry in items),
         }
         return url_for("topListMovement", **{k: v for k, v in args.items() if v})
 
@@ -253,10 +262,10 @@ def register(app, dashboard):
         if spec is None or filters["sortBy"] not in MOVEMENT_SORT_BY:
             return ""
         #< capped at a page: the ids name what to badge, and a crafted request
-        #  must not turn that into an unbounded id set
-        currentIds = [entityId for entityId in request.args.get("ids", "").split(",")
-                      if entityId][:PAGE_SIZE]
-        if not currentIds:
+        #  must not turn that into an unbounded id set. Empty slots are KEPT -
+        #  they hold the rank positions of entries that carry no id.
+        currentIds = request.args.get("ids", "").split(",")[:PAGE_SIZE]
+        if not any(currentIds):
             return ""
         startDate, endDate = dashboard._getDateRange(
             filters["interval"], filters["customStart"], filters["customEnd"],
@@ -274,12 +283,12 @@ def register(app, dashboard):
         common = {"by": filters["sortBy"], "searchQuery": filters["searchQuery"],
                   "fullPlaysOnly": filters["fullPlaysOnly"], spec["idsKwarg"]: narrowedIds}
 
-        # Clamped, unlike the list route's page - which is clamped against the
-        # row count by _calculatePagination, a count query this endpoint has no
-        # reason to run. _positivePageArg only proves the digits are positive,
-        # so a hand-crafted 20-digit ?page= reached SQLite as an OFFSET too
-        # large for an int64 and raised, turning a cosmetic background request
-        # into a 500. Any page past the end answers empty either way.
+        # The rank this page starts at. Nothing else reads it - the ids say
+        # what to badge, so it never becomes a SQL offset (it did once, and a
+        # hand-crafted 20-digit ?page= overflowed int64 and turned a cosmetic
+        # background request into a 500). Clamped anyway: _positivePageArg only
+        # proves the digits are positive, and this is the one caller with no
+        # row count to clamp against.
         page = min(int(_positivePageArg() or 1), MOVEMENT_MAX_PAGE)
         startIndex = (page - 1) * PAGE_SIZE
         previous = fetch(startDate=window[0], endDate=window[1],
@@ -289,8 +298,8 @@ def register(app, dashboard):
         # enough to ask about a page's worth of entries because it drives from
         # the entity side - see Repository.getEntitiesPlayedInRange.
         playedPreviously = set(db.getEntitiesPlayedInRange(
-            spec["entity"], currentIds, window[0], window[1],
-            fullPlaysOnly=filters["fullPlaysOnly"]))
+            spec["entity"], [entityId for entityId in currentIds if entityId],
+            window[0], window[1], fullPlaysOnly=filters["fullPlaysOnly"]))
 
         return render_template(
             "_top_list_movement.html",
