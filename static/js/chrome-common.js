@@ -28,8 +28,12 @@
     });
   }
 
+  // Wrapped, not passed straight in: a listener is handed the Event, and this
+  // takes a root ELEMENT - so `markLoadedImages` as the handler swept
+  // `(Event || document)` and threw on every page load, taking the sweep with
+  // it. The sibling registration below reads the root off the event on purpose.
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', markLoadedImages);
+    document.addEventListener('DOMContentLoaded', () => markLoadedImages());
   } else {
     markLoadedImages();
   }
