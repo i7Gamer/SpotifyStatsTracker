@@ -39,6 +39,10 @@ pip install -r requirements.txt
 
 ### Using Docker
 
+The image is published for **linux/amd64 and linux/arm64**, so `docker pull`
+picks the right one on an x86 server, a Raspberry Pi or other ARM SBC, an ARM
+VPS, or an Apple Silicon Mac. No emulation, and no separate tag to remember.
+
 A ready-to-adapt compose file:
 
 ```docker

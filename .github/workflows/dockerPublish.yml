@@ -1,0 +1,228 @@
+name: Docker build and push
+
+# One implementation for the three publish workflows. dockerLatest and
+# dockerNightly were byte-identical apart from the tag they push, and
+# dockerReleaseTag a third near-copy - which was tolerable while each was a
+# single linear job, and is not now that each would be a build matrix plus a
+# manifest merge. Three copies of that is how they drift.
+#
+# WHY A MATRIX RATHER THAN ONE MULTI-PLATFORM BUILD. The obvious spelling,
+# `--platform linux/amd64,linux/arm64 --push`, cannot be smoke-tested: a
+# multi-architecture manifest is not something `docker run` can start, so the
+# health check that gates every push today would have quietly covered one
+# architecture, or vanished. Building each architecture on its OWN native
+# runner keeps that gate - and now applies it to both - and avoids QEMU, which
+# would make the arm64 build roughly an order of magnitude slower.
+#
+# Nothing in the image resists arm64: every dependency that ships compiled code
+# (cryptography, pillow, pymongo, websockets, and curl_cffi, which carries
+# spotapi's libcurl-impersonate) publishes a prebuilt manylinux aarch64 wheel
+# for CPython 3.13, so this compiles nothing that the amd64 build does not.
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: 'Docker Hub tag to publish (latest, nightly, v1.46.5, ...)'
+        required: true
+        type: string
+      ref:
+        description: 'Git ref to build. Empty means the caller''s own checkout.'
+        required: false
+        type: string
+        default: ''
+    secrets:
+      DOCKERHUB_USERNAME:
+        required: true
+      DOCKERHUB_TOKEN:
+        required: true
+
+# The image is pushed with Docker Hub credentials, so GITHUB_TOKEN only ever
+# needs to read the checkout - without this it inherits the repository default,
+# which can be write-all.
+permissions:
+  contents: read
+
+env:
+  IMAGE: i7gamer/spotify-tracker
+
+jobs:
+  build:
+    strategy:
+      # A failed architecture must stop the other from publishing. The merge
+      # below would otherwise write a single-platform manifest over a tag that
+      # was multi-platform yesterday, which is worse than not publishing.
+      fail-fast: true
+      matrix:
+        include:
+          - platform: linux/amd64
+            arch: amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            arch: arm64
+            # GitHub's hosted arm64 runner, free for public repositories. It is
+            # much newer than the amd64 label, so "no runner matching labels" is
+            # the first thing to check if this job ever fails to start.
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v7
+      with:
+        #< empty is checkout's own default: whatever ref triggered the caller
+        ref: ${{ inputs.ref }}
+
+    - name: Log in to Docker Hub
+      uses: docker/login-action@v4
+      with:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+    - name: Set up Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Build this architecture
+      uses: docker/build-push-action@v6
+      with:
+        context: .
+        platforms: ${{ matrix.platform }}
+        # Loaded into the local daemon instead of pushed: it has to pass the
+        # health check below before it goes anywhere. This is the step native
+        # runners buy - the image being tested is the image being published,
+        # running on its own architecture rather than under emulation.
+        load: true
+        tags: spotify-tracker:smoke
+        #< the reproducibility trade the Dockerfile documents: pinned packages,
+        #  but a fresh apt so the base image's security updates land
+        no-cache: true
+        # Attestations would add "unknown/unknown" entries to the manifest that
+        # Docker Hub renders as phantom platforms beside the two real ones.
+        provenance: false
+
+    - name: Test container startup and health
+      env:
+        ARCH: ${{ matrix.arch }}
+      run: |
+        echo "Starting container ($ARCH)..."
+        docker run -d --name test-tracker spotify-tracker:smoke
+
+        # An old tag can predate the Dockerfile's HEALTHCHECK, and this workflow
+        # is what rebuilds old tags - so the absence of one is a fallback, not a
+        # failure.
+        HAS_HEALTHCHECK=$(docker inspect -f '{{if .Config.Healthcheck}}yes{{else}}no{{end}}' test-tracker)
+
+        if [ "$HAS_HEALTHCHECK" == "yes" ]; then
+          echo "Healthcheck found. Waiting up to 60 seconds for healthy status..."
+          TIMEOUT=60
+          ELAPSED=0
+
+          while [ $ELAPSED -le $TIMEOUT ]; do
+            STATUS=$(docker inspect -f '{{.State.Health.Status}}' test-tracker)
+
+            if [ "$STATUS" == "healthy" ]; then
+              echo "Container is stable and healthy on $ARCH."
+              exit 0
+            elif [ "$STATUS" == "unhealthy" ]; then
+              echo "Container reported unhealthy status. Aborting push."
+              docker logs test-tracker
+              exit 1
+            fi
+
+            echo "Waiting for healthcheck (current status: $STATUS)..."
+            sleep 5
+            ELAPSED=$((ELAPSED + 5))
+          done
+
+          echo "Timeout reached waiting for container health."
+          docker logs test-tracker
+          exit 1
+        else
+          echo "No healthcheck in this image. Executing fallback runtime check..."
+          echo "Waiting 15 seconds to ensure the container does not crash on startup..."
+          sleep 15
+
+          STATUS=$(docker inspect -f '{{.State.Status}}' test-tracker)
+
+          if [ "$STATUS" == "running" ]; then
+            echo "Container is still running on $ARCH. Considering it stable."
+            exit 0
+          else
+            echo "Container exited unexpectedly (Status: $STATUS). Aborting push."
+            docker logs test-tracker
+            exit 1
+          fi
+        fi
+
+    - name: Push by digest
+      id: push
+      uses: docker/build-push-action@v6
+      with:
+        context: .
+        platforms: ${{ matrix.platform }}
+        # A cache hit on the build above - same builder, same context - so what
+        # reaches the registry is the image that was just tested. It arrives
+        # under NO tag: only the merge job names anything, so a run that dies
+        # here cannot leave half a manifest behind a tag people pull.
+        outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+        provenance: false
+
+    - name: Record the digest
+      env:
+        DIGEST: ${{ steps.push.outputs.digest }}
+      run: |
+        mkdir -p /tmp/digests
+        touch "/tmp/digests/${DIGEST#sha256:}"
+
+    - name: Hand the digest to the merge job
+      uses: actions/upload-artifact@v4
+      with:
+        name: digest-${{ matrix.arch }}
+        path: /tmp/digests/*
+        if-no-files-found: error
+        retention-days: 1
+
+  merge:
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      #< via env, never ${{ }} inside a run: script - see
+      #  tests/test_workflow_shell_injection.py for what that costs here
+      TAG: ${{ inputs.tag }}
+
+    steps:
+    - name: Collect the per-architecture digests
+      uses: actions/download-artifact@v4
+      with:
+        path: /tmp/digests
+        pattern: digest-*
+        merge-multiple: true
+
+    - name: Log in to Docker Hub
+      uses: docker/login-action@v4
+      with:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+    - name: Publish the multi-architecture tag
+      working-directory: /tmp/digests
+      run: |
+        DIGESTS=(*)
+        if [ ${#DIGESTS[@]} -eq 0 ]; then
+          echo "::error::no digests were handed over; nothing to publish"
+          exit 1
+        fi
+        echo "Merging ${#DIGESTS[@]} architectures into $IMAGE:$TAG"
+        docker buildx imagetools create -t "$IMAGE:$TAG" \
+          $(printf "$IMAGE@sha256:%s " "${DIGESTS[@]}")
+
+    - name: Fail unless the published tag really carries both architectures
+      run: |
+        docker buildx imagetools inspect --raw "$IMAGE:$TAG" > manifest.json
+        cat manifest.json
+        for arch in amd64 arm64; do
+          jq -e --arg arch "$arch" \
+            '.manifests | map(.platform.architecture) | index($arch)' manifest.json > /dev/null \
+            || { echo "::error::$arch is missing from the published $IMAGE:$TAG"; exit 1; }
+        done
+        echo "Published $IMAGE:$TAG for amd64 and arm64."
