@@ -395,6 +395,53 @@ def _frozenState(trackUri):
     }
 
 
+class TestTheFrozenGraceIsMillisecondsAndMatchesItsSibling(unittest.TestCase):
+    """CONNECT_STATE_FROZEN_GRACE_MS's unit and its cross-module twin.
+
+    Its own comment says "same rule and same grace as Database.getNowPlaying's
+    NOW_PLAYING_STALE_GRACE_MS" - two constants in two modules that have to
+    agree, with nothing asserting it. The comment that shipped beside it also
+    said the value was "spelled here in seconds because this file works in
+    them", which it is not: the name says MS, and _connectStateIsFrozen
+    compares it against time.time() * 1000. Acting on that comment - editing
+    60_000 to 60 - is the plausible mistake, and it would call a track frozen
+    one second after it ended.
+
+    So the guard is behavioural rather than a bare equality on the number: it
+    pins the unit through the comparison that actually uses it."""
+
+    def test_the_two_graces_are_one_value(self):
+        from Database.Listeners.spotifyListener import CONNECT_STATE_FROZEN_GRACE_MS
+        from Database.database import Database
+
+        self.assertEqual(CONNECT_STATE_FROZEN_GRACE_MS, Database.NOW_PLAYING_STALE_GRACE_MS,
+                         "the frozen-state grace and getNowPlaying's must stay the same rule")
+
+    def test_a_track_just_past_its_duration_is_not_frozen_yet(self):
+        """The unit, stated as behaviour. A grace of 60 rather than 60_000
+        would make this True - and with it most of the ordinary gap between one
+        track ending and the next one starting."""
+        from Database.Listeners.spotifyListener import _connectStateIsFrozen
+        import time as _realTime
+
+        oneSecondPast = {
+            "is_playing": True,
+            "is_paused": False,
+            "duration": _FROZEN_TRACK_DURATION_MS,
+            "position_as_of_timestamp": _FROZEN_TRACK_DURATION_MS,
+            "timestamp": int(_realTime.time() * 1000) - 1_000,
+        }
+
+        self.assertFalse(_connectStateIsFrozen(oneSecondPast))
+
+    def test_a_genuinely_frozen_state_still_reads_as_frozen(self):
+        """Guards the test above: a grace wide enough to pass it by never
+        firing would be no grace at all."""
+        from Database.Listeners.spotifyListener import _connectStateIsFrozen
+
+        self.assertTrue(_connectStateIsFrozen(_frozenState("spotify:track:t1")))
+
+
 class TestStaleFeedIdleDetection(unittest.TestCase):
     """A quiet recently-played feed used to mean "the session died", so a
     listener was rebuilt every 30 minutes whether or not anyone was listening -

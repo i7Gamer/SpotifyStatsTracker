@@ -326,8 +326,16 @@ LISTENER_POLL_INTERVAL_JITTER_SECONDS = 1.0
 # A "playing" track whose duration has fully elapsed since the connect state
 # was last updated is a frozen feed, not real playback. Same rule and same
 # grace as Database.getNowPlaying's NOW_PLAYING_STALE_GRACE_MS, which already
-# refuses to report these - spelled here in seconds because this file works in
-# them, and kept as its own constant so the two can be read side by side.
+# refuses to report these, and kept as its own constant so the two can be read
+# side by side.
+#
+# MILLISECONDS, unlike every other timing value in this file - the _MS suffix
+# is the whole reason it carries one. The connect state's `duration`,
+# `position_as_of_timestamp` and `timestamp` are all Spotify's own epoch
+# milliseconds, and _connectStateIsFrozen compares against time.time() * 1000,
+# so this has to be in their unit rather than the file's. The two constants are
+# pinned equal, and this unit pinned through that comparison, by
+# tests/test_listener_reconnect.py.
 CONNECT_STATE_FROZEN_GRACE_MS = 60_000
 
 
