@@ -132,6 +132,64 @@ class ViewModelMixin:
         cssClass = "change-positive" if change > 0 else "change-negative"
         return formatted, cssClass
 
+    @staticmethod
+    def _classifyPlay(play: dict, durationMs: int, completePercentThreshold: int) -> dict:
+        """Sets playType ("full"/"partial"/"skip"), playTypeLabel and
+        percentPlayed on one play, from how much of `durationMs` it reached.
+
+        Shared by the two surfaces that label individual plays - the song
+        detail timeline and the /history list - rather than spelled twice. The
+        boundary here is the admin's completion-complete percent, which the
+        "Full plays only" filter, getCompletionStats and the Forgotten
+        Favorite trend all read as well, so a second copy would start
+        disagreeing with the filter the moment that setting moved. A row the
+        filter keeps must not be labelled one the filter drops.
+
+        A duration of 0 means the track's metadata never arrived: the play
+        reads as full, not as a 0% partial, matching FULL_PLAY_PREDICATE's
+        `duration_ms <= 0` arm, which keeps those rows for the same reason.
+
+        A skip carries no percentage in its label. It is a skip whether it ran
+        one second or four, and a number there invites reading it as a partial
+        listen - percentPlayed is still set for callers that want the figure."""
+        timePlayed = play.get("timePlayed", 0)
+        if play.get("isSkip", False):
+            play["playType"] = "skip"
+            play["playTypeLabel"] = "Skipped"
+            play["percentPlayed"] = round((timePlayed / durationMs * 100), 1) if durationMs > 0 else 0
+        elif durationMs > 0:
+            pct = (timePlayed / durationMs) * 100
+            play["percentPlayed"] = round(pct, 1)
+            if pct >= completePercentThreshold:
+                play["playType"] = "full"
+                play["playTypeLabel"] = "Full Play"
+            else:
+                play["playType"] = "partial"
+                play["playTypeLabel"] = f"Partial • {round(pct)}%"
+        else:
+            play["playType"] = "full"
+            play["playTypeLabel"] = "Full Play"
+            play["percentPlayed"] = 100
+        return play
+
+    def _attachPlayTypes(self, plays: list[dict], completePercentThreshold: int | None = None) -> list[dict]:
+        """playType/playTypeLabel for a play-HISTORY list, where every row is a
+        different track and so carries its own duration - the song timeline is
+        one track's plays and gets told the duration once.
+
+        Feeds the Partial/Skipped chips on /history's cards
+        (templates/_track_card.html). They matter because unticking "Full plays
+        only" makes that list the raw log, and the card describes the TRACK: a
+        one-second skip and a real listen are otherwise the same row.
+
+        Reads the threshold once for the whole page rather than per row, the
+        same reason _attachGenres batches its lookup."""
+        if completePercentThreshold is None:
+            completePercentThreshold = self.repo.getCompletionCompletePercent()
+        for play in plays:
+            self._classifyPlay(play, play.get("duration") or 0, completePercentThreshold)
+        return plays
+
     def _enrichSongTimelineEntries(self, plays: list[dict], trackDurationMs: int | None = None,
                                     completePercentThreshold: int | None = None) -> list[dict]:
         """Enriches play entries for the song detail timeline with playType,
@@ -154,27 +212,8 @@ class ViewModelMixin:
         lastMonthYear = None
 
         for i, play in enumerate(plays):
-            is_skip = play.get("isSkip", False)
-            duration = play.get("duration") or trackDurationMs or 0
-            time_played = play.get("timePlayed", 0)
-
-            if is_skip:
-                play["playType"] = "skip"
-                play["playTypeLabel"] = "Skipped"
-                play["percentPlayed"] = round((time_played / duration * 100), 1) if duration > 0 else 0
-            elif duration > 0:
-                pct = (time_played / duration) * 100
-                play["percentPlayed"] = round(pct, 1)
-                if pct >= completePercentThreshold:
-                    play["playType"] = "full"
-                    play["playTypeLabel"] = "Full Play"
-                else:
-                    play["playType"] = "partial"
-                    play["playTypeLabel"] = f"Partial • {round(pct)}%"
-            else:
-                play["playType"] = "full"
-                play["playTypeLabel"] = "Full Play"
-                play["percentPlayed"] = 100
+            self._classifyPlay(play, play.get("duration") or trackDurationMs or 0,
+                               completePercentThreshold)
 
             played_at_dt = convertToDatetime(play.get("playedAt", 0), tz=tz)
             month_year_str = played_at_dt.strftime("%B %Y")

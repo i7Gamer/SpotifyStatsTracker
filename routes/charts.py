@@ -805,6 +805,10 @@ def register(app, dashboard):
                                   **listFilters)
         tracks = dashboard._embedSongsTextElements(tracks)
         tracks = dashboard._attachGenres(db, tracks, "track")
+        #< the Partial/Skipped chips. Only meaningful once the filter above is
+        #  off - with it on every row is a full play - but attached either way,
+        #  since the template decides what is worth a chip, not the route
+        tracks = dashboard._attachPlayTypes(tracks)
 
         pagination = dashboard._buildPaginationContext(
             "history",
@@ -1256,6 +1260,13 @@ def register(app, dashboard):
         plays = fetchEntries(count=PAGE_SIZE, startIndex=startIndex,
                              trackId=trackId, artistId=artistId, albumId=albumId)
         plays = dashboard._embedSongsTextElements(plays)
+        #< the artist/album History tab renders the same card /history does
+        #  (_detail_history_results.html -> _track_card.html, section='history'),
+        #  and shows partial plays for the same reason: this list is not filtered
+        #  by completion. Without this the two surfaces would label the same row
+        #  differently. The song page's log is the timeline instead, which labels
+        #  every play already - see _enrichSongTimelineEntries above.
+        plays = dashboard._attachPlayTypes(plays)
         sharedArgs = dict(linkArgs, groupBy=groupByParam, sort=sortOrder if oldestFirst else None)
         return {
             "plays": plays,

@@ -4089,6 +4089,30 @@ html.theme-red {
   border-color: var(--accent);
 }
 
+/* The play-history rows' Partial/Skipped chips (templates/_track_card.html),
+   which say what kind of play a row was once /history's "Full plays only"
+   filter is off and the list is the raw log.
+
+   Styled as .track-label pills, not as the .play-type-badge the song timeline
+   uses: that badge sits alone on a header line at 0.7rem, and these sit in
+   .track-attributes, a 0.92rem flex row of pills where it would read as a
+   different component. The COLOURS are the timeline's, so both surfaces still
+   agree on what partial and skipped look like. */
+.track-label.play-type-partial {
+  background: var(--accent-secondary-glow);
+  color: var(--accent-secondary);
+  border: 1px solid var(--accent-secondary-glow);
+}
+
+/* Deliberately quieter than its sibling: .track-label's own background already
+   matches the timeline's skip badge, so only the muted text and the border
+   are left to set. A skip is the least interesting thing in the list - the
+   chip is there to be read past, not to draw the eye. */
+.track-label.play-type-skip {
+  color: var(--muted);
+  border: 1px solid var(--border);
+}
+
 /* The detail hero card's skip summary (templates/_skip_stat.html). It sits
    inside .track-meta.small rather than in a block of its own below the card, so
    it inherits that line's size and colour - including for the skip count, which

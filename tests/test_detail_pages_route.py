@@ -1175,6 +1175,25 @@ class TestArtistDetailRoute(_DetailRouteTestBase):
         db.lazyFetchArtistBio.assert_not_called()
         db.getListeningTimeSeries.assert_not_called()
 
+    def test_a_partial_listen_in_the_history_tab_says_so(self):
+        """This tab renders the same card /history does (section='history') and
+        is not filtered by completion either, so the two have to label the same
+        row the same way - see _attachPlayTypes. The song page is exempt: its
+        log is the timeline, which already labels every play."""
+        dash = self._makeApp()
+        db = self._makeHistoryDb()
+        db.getEntriesCount.return_value = 1
+        db.getEntriesFromNew.return_value = [
+            {"id": "t1", "name": "History Song", "artists": [],
+             "duration": 200000, "timePlayed": 20000, "isSkip": False}]   #< 10%
+
+        with patch.object(dash, "_embedSongsTextElements", side_effect=lambda songs: songs), \
+             patch.object(dash, "_attachGenres", side_effect=lambda db_, tracks, kind: tracks):
+            body = self._getPath(dash, db, "/artist/a1?view=history").get_data(as_text=True)
+
+        self.assertIn('class="track-label play-type-partial"', body)
+        self.assertIn("Partial • 10%", body)
+
 
 class TestAlbumDetailRoute(_DetailRouteTestBase):
     def _album(self):

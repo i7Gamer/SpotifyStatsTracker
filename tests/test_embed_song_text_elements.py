@@ -198,6 +198,95 @@ class TestEnrichSongTimelineEntries(AppTestCase):
         self.assertIsNone(enriched[2].get("monthYearHeader"))
 
 
+class TestAttachPlayTypes(AppTestCase):
+    """_attachPlayTypes labels a play-HISTORY list (/history's rows), where
+    every entry is a different track and so carries its own duration - unlike
+    the song timeline, which is one track's plays and can be told the duration
+    once.
+
+    Both go through the same classifier, deliberately: the full-vs-partial
+    boundary is the admin's completion-complete percent, shared with the "Full
+    plays only" filter and getCompletionStats, and a second spelling of it
+    would disagree the moment that setting moved."""
+
+    def test_each_row_is_judged_against_its_own_track(self):
+        dash = self._makeApp()
+        plays = [
+            {"id": "t1", "duration": 200000, "timePlayed": 190000, "isSkip": False},   #< 95%
+            {"id": "t2", "duration": 200000, "timePlayed": 20000, "isSkip": False},    #< 10%
+            {"id": "t3", "duration": 10000, "timePlayed": 9500, "isSkip": False},      #< 95% of a SHORT track
+            {"id": "t4", "duration": 200000, "timePlayed": 1000, "isSkip": True},
+        ]
+
+        attached = dash._attachPlayTypes(plays)
+
+        self.assertEqual([p["playType"] for p in attached],
+                         ["full", "partial", "full", "skip"])
+
+    def test_the_partial_label_carries_the_percentage(self):
+        dash = self._makeApp()
+
+        attached = dash._attachPlayTypes(
+            [{"id": "t1", "duration": 200000, "timePlayed": 20000, "isSkip": False}])
+
+        self.assertEqual(attached[0]["playTypeLabel"], "Partial • 10%")
+
+    def test_a_skip_is_labelled_without_a_percentage(self):
+        """A skip is a skip whether it ran 1 second or 4 - the number would
+        invite reading it as a partial listen."""
+        dash = self._makeApp()
+
+        attached = dash._attachPlayTypes(
+            [{"id": "t1", "duration": 200000, "timePlayed": 1000, "isSkip": True}])
+
+        self.assertEqual(attached[0]["playTypeLabel"], "Skipped")
+
+    def test_an_unknown_duration_is_a_full_play_not_a_partial_one(self):
+        """duration_ms <= 0 means the metadata never arrived. The percentage
+        would be meaningless, and the "Full plays only" filter keeps these rows
+        for the same reason - so the label has to agree with the filter."""
+        dash = self._makeApp()
+
+        attached = dash._attachPlayTypes(
+            [{"id": "t1", "duration": 0, "timePlayed": 5000, "isSkip": False}])
+
+        self.assertEqual(attached[0]["playType"], "full")
+
+    def test_a_row_with_no_duration_key_at_all_does_not_raise(self):
+        """The MagicMock-backed route tests hand through rows with only the
+        keys they care about, and a stubbed history row is a real shape."""
+        dash = self._makeApp()
+
+        attached = dash._attachPlayTypes([{"id": "t1", "name": "Test Song"}])
+
+        self.assertEqual(attached[0]["playType"], "full")
+
+    def test_it_defaults_to_the_admin_completion_percent(self):
+        """Same default as the timeline's, read once for the whole page rather
+        than per row."""
+        dash = self._makeApp()
+        play = {"id": "t1", "duration": 200000, "timePlayed": 180000, "isSkip": False}   #< 90%
+
+        with patch.object(dash.repo, "getCompletionCompletePercent", return_value=95):
+            strict = dash._attachPlayTypes([dict(play)])
+        with patch.object(dash.repo, "getCompletionCompletePercent", return_value=80):
+            lenient = dash._attachPlayTypes([dict(play)])
+
+        self.assertEqual(strict[0]["playType"], "partial")
+        self.assertEqual(lenient[0]["playType"], "full")
+
+    def test_the_threshold_is_read_once_for_the_whole_list(self):
+        """One settings read per page, not per row - the same reason
+        _attachGenres batches its lookup."""
+        dash = self._makeApp()
+        plays = [{"id": f"t{i}", "duration": 200000, "timePlayed": 190000} for i in range(10)]
+
+        with patch.object(dash.repo, "getCompletionCompletePercent", return_value=80) as reader:
+            dash._attachPlayTypes(plays)
+
+        self.assertEqual(reader.call_count, 1)
+
+
 if __name__ == "__main__":
     unittest.main()
 

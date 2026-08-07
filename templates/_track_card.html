@@ -224,6 +224,24 @@
           <span class="track-label warning">{{ availabilityLabels.get(track.get('availability_reason'), 'May be unavailable') }}</span>
         {% endif %}
         {% if section in ('dashboard', 'history') %}
+          {# What KIND of play this row was, when it wasn't a whole one. The
+             card otherwise describes the track, so with /history's "Full plays
+             only" filter off a three-second skip and a real listen are the
+             same row - see _attachPlayTypes.
+
+             Only the exceptions get a chip. A "Full Play" label would appear
+             on every row in the DEFAULT view, where by definition they all
+             are, and say nothing. (The song detail timeline does label all
+             three, because there the list is one track's plays and "Full Play"
+             is the contrast - see _play_log_batch.html.)
+
+             A .track-label pill rather than that timeline's .play-type-badge:
+             this sits in a 0.92rem flex row of pills, where a 0.7rem square
+             badge reads as a different component. Same colours, so the two
+             surfaces still agree on what partial and skipped look like. #}
+          {% if track.get('playType') in ('partial', 'skip') %}
+            <span class="track-label play-type-{{ track.get('playType') }}">{{ track.get('playTypeLabel') }}</span>
+          {% endif %}
           {# play-history rows: duration, time played, track info, explicit, isrc, context #}
           {% if track.get('durationText') %}
             <span class="track-label">Duration: {{ track.get('durationText') }}</span>

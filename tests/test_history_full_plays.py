@@ -217,5 +217,69 @@ class TestTheFilterRidesAlong(HistoryFullPlaysTestCase):
         self.assertShows(self._list("?tag=roadtrip&fullOnly=0"), "Complete Song", "Partial Song")
 
 
+class TestThePlayTypeBadges(HistoryFullPlaysTestCase):
+    """Unticking the filter turns /history into the raw log, and a raw log is
+    only useful if a 1-second skip is distinguishable from a real listen - the
+    rows are otherwise identical, since the card shows the track, not the play.
+
+    Same vocabulary as the song detail timeline (playType/playTypeLabel, see
+    _enrichSongTimelineEntries), because they classify the same thing against
+    the same admin-tunable boundary."""
+
+    #< PARTIAL_MS of FULL_MS is 5%; the label rounds it. The separator is a
+    #  literal U+2022, not &bull; - Jinja escapes only &<>"', so it reaches the
+    #  page as itself
+    PARTIAL_BADGE = "Partial • 5%"
+    SKIP_BADGE = "Skipped"
+
+    def test_a_partial_listen_says_how_much_of_it_was_played(self):
+        body = self._list("?fullOnly=0")
+
+        self.assertIn(self.PARTIAL_BADGE, body)
+        self.assertIn('class="track-label play-type-partial"', body)
+
+    def test_a_skip_is_labelled_as_one(self):
+        body = self._list("?fullOnly=0")
+
+        self.assertIn(self.SKIP_BADGE, body)
+        self.assertIn('class="track-label play-type-skip"', body)
+
+    def test_a_play_that_finished_carries_no_badge(self):
+        """Only the exceptions are worth a chip. Badging every row would put a
+        label on all of them in the DEFAULT view, where by definition they are
+        all full plays - noise that says nothing."""
+        body = self._list("?fullOnly=0")
+
+        self.assertNotIn("play-type-full", body)
+        self.assertNotIn("Full Play", body)
+
+    def test_the_default_view_carries_no_badges_at_all(self):
+        """With the filter on, every row IS a full play."""
+        body = self._list()
+
+        self.assertNotIn("play-type-", body)
+        self.assertNotIn("Partial", body)
+        self.assertNotIn(self.SKIP_BADGE, body)
+
+    def test_a_track_whose_duration_is_unknown_is_not_called_partial(self):
+        """The percentage would be meaningless and the row is NOT a skip, so it
+        reads as a normal play - matching the filter, which keeps it for exactly
+        the same reason (it cannot judge what it cannot measure)."""
+        body = self._list("?fullOnly=0")
+        card = body[body.index("Unknown Length Song"):]
+        card = card[:card.find("</article>")]
+
+        self.assertNotIn("play-type-", card)
+
+    def test_the_badge_survives_a_search(self):
+        """The search branch hydrates its rows through the same path; it used
+        not to select is_skip at all, which would have made every skip in a
+        search result render as a partial listen."""
+        body = self._list("?q=Skipped&fullOnly=0")
+
+        self.assertIn("Skipped Song", body)
+        self.assertIn('class="track-label play-type-skip"', body)
+
+
 if __name__ == "__main__":
     unittest.main()
