@@ -4202,14 +4202,29 @@ html.theme-red {
      and this only spends width where there is something to show. */
   max-width: 360px;
   min-width: 0;
-  /* The chip is an <a> to /compare?with=<friend>, styled like .onthisday-row:
-     the row reads as content, and the accent on hover is the affordance. */
+}
+
+/* A chip is a container of three independent links - the friend's name to
+   /compare, the track to its page, each artist to theirs - so the affordance
+   is per-link. It used to be one <a> wrapping the whole chip, which lit the
+   entire row on hover and, worse, meant the track title was a link to a page
+   about the friend. Styled like .onthisday-row: the row reads as content, and
+   the accent is what says the word under the cursor is the target. */
+.friends-listening-link {
   text-decoration: none;
   color: inherit;
 }
 
-.friends-listening-chip:hover .friends-listening-track {
+.friends-listening-link:hover {
   color: var(--accent);
+  text-decoration: underline;
+}
+
+/* The friend is who the chip is ABOUT; the track title beside it is what they
+   happen to be playing. Without this they read as one run of text broken by a
+   middot. */
+.friends-listening-name {
+  font-weight: 600;
 }
 
 .friends-listening-cover {

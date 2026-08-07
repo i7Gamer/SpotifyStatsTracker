@@ -15,10 +15,12 @@ global.document = {
   addEventListener() {},
   getElementById() { return null; },     //< no now-playing card, no friends strip
   querySelector() { return null; },      //< no streak calendar
-  createElement() { return { classList: { add() {} }, appendChild() {} }; },
+  //< `tag` so the chip-link tests can tell an <a> from the <span> a link-less
+  //  field falls back to
+  createElement(tag) { return { tag, classList: { add() {} }, appendChild() {} }; },
 };
 
-const { calendarTooltipLabel, friendsStripSignature,
+const { calendarTooltipLabel, friendsStripSignature, friendsChipLink,
         progressPercent, pollIsStale } = require('../static/js/dashboard-page.js');
 
 function run(name, fn) {
@@ -47,7 +49,9 @@ run('a day with no time attribute reports only its plays', () => {
 // --- the friends strip's 15s poll --------------------------------------------
 
 const KEVIN = { username: 'kevin', displayName: 'Kevin', name: 'Nightcall',
-                artistsText: 'Kavinsky', imageId: 'img1', compareUrl: '/compare?with=kevin' };
+                artistsText: 'Kavinsky', imageId: 'img1', compareUrl: '/compare?with=kevin',
+                trackUrl: '/song/t1',
+                artists: [{ name: 'Kavinsky', url: '/artist/art1' }] };
 
 run('the same strip twice is the same signature', () => {
   assert.strictEqual(friendsStripSignature([KEVIN], 0), friendsStripSignature([KEVIN], 0));
@@ -59,11 +63,41 @@ run('a friend changing track changes it', () => {
 });
 
 run('every field the chip renders is part of it', () => {
-  for (const field of ['username', 'displayName', 'name', 'artistsText', 'imageId', 'compareUrl']) {
+  for (const field of ['username', 'displayName', 'name', 'artistsText', 'imageId',
+                       'compareUrl', 'trackUrl']) {
     const changed = Object.assign({}, KEVIN, { [field]: 'something else' });
     assert.notStrictEqual(friendsStripSignature([KEVIN], 0),
                           friendsStripSignature([changed], 0), `${field} is not in the signature`);
   }
+});
+
+run('an artist link that moves is part of it', () => {
+  // The same artist can go from Spotify to our own /artist page the moment the
+  // viewer's first play of them lands - same name, different href.
+  const played = Object.assign({}, KEVIN, {
+    artists: [{ name: 'Kavinsky', url: 'https://open.spotify.com/artist/art1' }],
+  });
+  assert.notStrictEqual(friendsStripSignature([KEVIN], 0), friendsStripSignature([played], 0));
+});
+
+run('a credited artist appearing or vanishing is part of it', () => {
+  const feat = Object.assign({}, KEVIN, {
+    artists: KEVIN.artists.concat([{ name: 'Lovefoxxx', url: '/artist/art2' }]),
+  });
+  assert.notStrictEqual(friendsStripSignature([KEVIN], 0), friendsStripSignature([feat], 0));
+});
+
+run('a chip with no artists does not serialize like one with them', () => {
+  // The artists are flattened into the same field list as everything else, so
+  // this is the collision that shape has to survive.
+  const bare = Object.assign({}, KEVIN, { artists: [] });
+  const named = Object.assign({}, KEVIN, { artists: [{ name: '', url: '' }] });
+  assert.notStrictEqual(friendsStripSignature([bare], 0), friendsStripSignature([named], 0));
+});
+
+run('a payload with no artists key at all is still stable', () => {
+  const legacy = Object.assign({}, KEVIN, { artists: undefined });
+  assert.strictEqual(friendsStripSignature([legacy], 0), friendsStripSignature([legacy], 0));
 });
 
 run('the overflow count is part of it', () => {
@@ -87,6 +121,44 @@ run('two friends cannot collide by concatenation', () => {
 
 run('nothing playing is a stable signature', () => {
   assert.strictEqual(friendsStripSignature([], 0), friendsStripSignature([], 0));
+});
+
+// --- a chip's three links -----------------------------------------------------
+// A chip names a person, a track and some artists, and each goes somewhere
+// different. Which of our own pages vs. Spotify is the server's call
+// (routes/system.py::_friendChip); what is decided HERE is only whether the
+// link leaves the app, which is read straight off the URL.
+
+run('an app-relative link stays in this tab', () => {
+  const el = friendsChipLink('Nightcall', '/song/t1', 'friends-listening-link');
+
+  assert.strictEqual(el.tag, 'a');
+  assert.strictEqual(el.href, '/song/t1');
+  assert.strictEqual(el.textContent, 'Nightcall');
+  assert.strictEqual(el.target, undefined);
+  assert.strictEqual(el.rel, undefined);
+});
+
+run('a Spotify link opens in a new tab, unable to reach back', () => {
+  const el = friendsChipLink('Nightcall', 'https://open.spotify.com/track/t1',
+                             'friends-listening-link');
+
+  assert.strictEqual(el.target, '_blank');
+  assert.strictEqual(el.rel, 'noreferrer noopener');
+});
+
+run('nothing to link to is text, not an empty anchor', () => {
+  // An <a href=""> is a link back to the current page, which is worse than no
+  // link: the strip would look clickable and reload the dashboard.
+  const el = friendsChipLink('Some Local File', '', 'friends-listening-link');
+
+  assert.strictEqual(el.tag, 'span');
+  assert.strictEqual(el.href, undefined);
+  assert.strictEqual(el.textContent, 'Some Local File');
+});
+
+run('a missing name renders empty rather than "undefined"', () => {
+  assert.strictEqual(friendsChipLink(undefined, '/song/t1', 'x').textContent, '');
 });
 
 // --- the progress bar between polls ------------------------------------------

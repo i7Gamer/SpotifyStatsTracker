@@ -16,10 +16,49 @@ from flask import (
 )
 
 from config import MAX_UPLOAD_MB, EXPORT_FORMATS
+from Database.Spotify.formatting import openSpotifyUrl
 from Database.utils import versionTuple, now
 from services.export import generateJsonExport, generateCsvExport
 
 logger = logging.getLogger(__name__)
+
+
+def _friendChip(friend):
+    """One friends-strip chip, with the three links it renders as.
+
+    The chip names three things and each one goes somewhere different: the
+    friend to /compare, the track to its page, every artist to theirs. The
+    track and the artists point at OUR detail pages only where the viewer has
+    their own plays (getFriendsNowPlaying._markViewerPlayed decides that) and
+    out to Spotify otherwise - /song/<id> for a track the viewer has never
+    played bounces off _missingEntityResponse.
+
+    Built here rather than in dashboard-page.js because the chips are rendered
+    client-side: a path spelled out there would be unroutable by url_for. The
+    per-friend `played` flags are consumed here and do not survive into the
+    JSON. `with` is a Python keyword, hence the kwargs dict."""
+    trackId = friend["trackId"]
+    return {
+        "username": friend["username"],
+        "displayName": friend["displayName"],
+        "name": friend["name"],
+        "artistsText": friend["artistsText"],
+        "imageId": friend["imageId"],
+        "compareUrl": url_for("comparePage", **{"with": friend["username"]}),
+        #< openSpotifyUrl answers "" for a missing id, which renders as plain
+        #  text - an empty href would be a link back to the current page
+        "trackUrl": (url_for("songDetailPage", track_id=trackId)
+                     if trackId and friend["trackPlayedByViewer"]
+                     else openSpotifyUrl("track", trackId)),
+        "artists": [
+            {"name": artist["name"],
+             "url": (url_for("artistDetailPage", artist_id=artist["id"])
+                     if artist["playedByViewer"]
+                     else openSpotifyUrl("artist", artist["id"]))}
+            for artist in friend["artists"]
+        ],
+    }
+
 
 # Progress statuses that mean "this import is over". Anything else - notably
 # the 'running' the route claims before starting the thread - means the slot is
@@ -210,14 +249,9 @@ def register(app, dashboard):
         friends = dashboard.getFriendsNowPlaying(username)
         return jsonify({
             "nowPlaying": db.getNowPlaying(),
-            #< the chip is a link to comparing with that friend, and the chips
-            #  are built client-side - so the URL rides in the payload rather
-            #  than being spelled out as a path in dashboard-page.js. `with` is
-            #  a Python keyword, hence the kwargs dict.
-            "friends": [
-                dict(friend, compareUrl=url_for("comparePage", **{"with": friend["username"]}))
-                for friend in friends["friends"]
-            ],
+            #< every URL a chip renders is built here, not in the browser
+            #  script - see _friendChip
+            "friends": [_friendChip(friend) for friend in friends["friends"]],
             "friendsMoreCount": friends["moreCount"],
         })
     app.add_url_rule("/api/now-playing", "nowPlayingStatus", nowPlayingStatus, methods=["GET"])

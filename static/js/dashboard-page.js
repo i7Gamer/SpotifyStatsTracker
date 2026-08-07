@@ -101,11 +101,46 @@ function calendarTooltipLabel(count, timeText) {
 //
 // The separators are control characters rather than punctuation: a track named
 // "One Two" beside an empty artist must not serialize like "One" beside "Two".
+//
+// The artists are flattened into the same field list rather than getting a
+// separator level of their own: they sit last, so a chip crediting one more of
+// them is simply a longer field list and cannot serialize like a shorter one.
 function friendsStripSignature(friends, moreCount) {
   return (friends || []).map(function (friend) {
-    return [friend.username, friend.displayName, friend.name,
-            friend.artistsText, friend.imageId, friend.compareUrl].join('\u001f');
+    var fields = [friend.username, friend.displayName, friend.name,
+                  friend.artistsText, friend.imageId, friend.compareUrl,
+                  friend.trackUrl];
+    (friend.artists || []).forEach(function (artist) {
+      fields.push(artist.name, artist.url);
+    });
+    return fields.join('\u001f');
   }).join('\u001e') + '\u001d' + moreCount;
+}
+
+// One of the three things a chip names, as a link - or as plain text where
+// there is nothing to link to (a track with no id, artists the connect-state
+// fallback knows only by name).
+//
+// Internal or external is read off the URL rather than carried as a payload
+// field of its own: every internal link is built with url_for and so arrives
+// as an app-relative path, and the only other thing the payload ever holds is
+// a Spotify URL. Only that one opens in a new tab - following a link that
+// stays inside the app should not spawn one.
+//
+// textContent, not innerHTML: every one of these strings is another user's
+// data, and two of them are names Spotify supplied.
+function friendsChipLink(text, url, className) {
+  var el = document.createElement(url ? 'a' : 'span');
+  el.className = className;
+  el.textContent = text || '';
+  if (url) {
+    el.href = url;
+    if (url.charAt(0) !== '/') {
+      el.target = '_blank';
+      el.rel = 'noreferrer noopener';
+    }
+  }
+  return el;
 }
 
 // Called from the Time Period select's onchange. Runs before htmx's listener
@@ -303,15 +338,14 @@ document.body.addEventListener('htmx:sendError', reportDashboardFailure);
     renderedFriends = signature;
     friendsChips.textContent = '';
     friends.forEach(function (friend) {
-      //< the whole chip is the link to comparing with that friend. The href is
-      //  built server-side (routes/system.py) so it goes through url_for like
-      //  every other link in the app; without one this stays an inert <a>,
-      //  which is what an older cached copy of this file would produce.
-      var chip = document.createElement('a');
+      // The chip is a container of three INDEPENDENT links, not one link
+      // wrapping everything: it names a person, a track and some artists, and
+      // those are three different places to go. (It used to be a single <a> to
+      // /compare, which made the track title a link to a page about the
+      // friend.) Every href is built server-side - see routes/system.py's
+      // _friendChip - so they all go through url_for like the rest of the app.
+      var chip = document.createElement('div');
       chip.className = 'friends-listening-chip';
-      if (friend.compareUrl) {
-        chip.href = friend.compareUrl;
-      }
 
       var cover = document.createElement('img');
       cover.className = 'friends-listening-cover';
@@ -326,13 +360,30 @@ document.body.addEventListener('htmx:sendError', reportDashboardFailure);
 
       var meta = document.createElement('div');
       meta.className = 'friends-listening-meta';
+
       var title = document.createElement('div');
       title.className = 'friends-listening-track';
-      //< textContent throughout: names are other users' data
-      title.textContent = (friend.displayName || friend.username) + ' · ' + (friend.name || '');
+      title.appendChild(friendsChipLink(friend.displayName || friend.username,
+                                        friend.compareUrl,
+                                        'friends-listening-link friends-listening-name'));
+      title.appendChild(document.createTextNode(' · '));
+      title.appendChild(friendsChipLink(friend.name, friend.trackUrl,
+                                        'friends-listening-link'));
+
       var artist = document.createElement('div');
       artist.className = 'friends-listening-artist';
-      artist.textContent = friend.artistsText || '';
+      if (friend.artists && friend.artists.length) {
+        friend.artists.forEach(function (each, index) {
+          if (index) artist.appendChild(document.createTextNode(', '));
+          artist.appendChild(friendsChipLink(each.name, each.url,
+                                             'friends-listening-link'));
+        });
+      } else {
+        //< a first listen isn't in the catalog yet, so the payload has the
+        //  artist names but no ids to link them by (see getFriendsNowPlaying)
+        artist.textContent = friend.artistsText || '';
+      }
+
       meta.appendChild(title);
       meta.appendChild(artist);
       chip.appendChild(meta);
@@ -504,6 +555,7 @@ if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     calendarTooltipLabel: calendarTooltipLabel,
     friendsStripSignature: friendsStripSignature,
+    friendsChipLink: friendsChipLink,
     progressPercent: progressPercent,
     pollIsStale: pollIsStale,
   };

@@ -160,22 +160,48 @@ class TestStripPollIsNotCoupledToNowPlaying(unittest.TestCase):
                       self.template)
 
 
-class TestTheChipIsALink(unittest.TestCase):
-    """The href itself is the route's, and tested there
+class TestTheChipIsThreeLinks(unittest.TestCase):
+    """Every href itself is the route's, and tested there
     (tests/test_friends_now_playing_api.py). What is asserted here is the half
-    that lives in the browser script: that the chip is an anchor at all, and
-    that it uses the URL the payload carries rather than a path of its own."""
+    that lives in the browser script: that the chip names three things and
+    links each one separately, and that every URL comes from the payload rather
+    than being a path this file builds.
+
+    The chip used to be ONE <a> to /compare wrapping everything, which made the
+    track title a link to a page about the friend. A nested <a> is also invalid
+    markup the parser would unnest, so this cannot be fixed by adding links
+    inside the old chip - the container has to stop being one."""
 
     def setUp(self):
         scriptPath = os.path.join(os.path.dirname(__file__), "..", "static", "js", "dashboard-page.js")
         with open(scriptPath, encoding="utf-8") as handle:
             self.script = handle.read()
 
-    def test_the_chip_element_is_an_anchor(self):
-        self.assertIn("var chip = document.createElement('a');", self.script)
+    def _renderFriends(self):
+        body = self.script[self.script.index("function renderFriends("):]
+        return body[:body.index("\n  var pollHandle")]
 
-    def test_the_href_comes_from_the_payload(self):
-        self.assertIn("chip.href = friend.compareUrl;", self.script)
+    def test_the_chip_container_is_not_itself_a_link(self):
+        self.assertIn("var chip = document.createElement('div');", self.script)
+        self.assertNotIn("chip.href", self.script)
+
+    def test_the_friend_s_name_links_to_comparing_with_them(self):
+        self.assertIn("friend.compareUrl", self._renderFriends())
+
+    def test_the_track_title_links_to_the_track(self):
+        self.assertIn("friendsChipLink(friend.name, friend.trackUrl", self._renderFriends())
+
+    def test_each_artist_links_to_that_artist(self):
+        self.assertIn("each.name, each.url", self._renderFriends())
+
+    def test_no_url_is_built_in_the_browser(self):
+        """Every internal path goes through url_for server-side; a literal
+        '/song/' here would be unroutable and silently wrong after a rename."""
+        rendered = self._renderFriends()
+
+        for path in ("'/song/", "'/artist/", "'/compare"):
+            with self.subTest(path=path):
+                self.assertNotIn(path, rendered)
 
     def test_an_unchanged_poll_leaves_the_chips_alone(self):
         """The 15-second poll used to rebuild every chip unconditionally. That
@@ -262,12 +288,17 @@ class TestStripStyling(unittest.TestCase):
         self.assertIsNotNone(match, "the chip cap is not a plain px value")
         self.assertGreaterEqual(int(match.group(1)), CHIP_TITLE_ROOM_FLOOR_PX)
 
-    def test_the_chip_link_does_not_read_as_a_bare_anchor(self):
-        """It became an <a> without becoming blue and underlined."""
-        block = self._block(".friends-listening-chip")
+    def test_the_chip_s_links_do_not_read_as_bare_anchors(self):
+        """Three links per chip without three blue underlined runs of text."""
+        block = self._block(".friends-listening-link")
 
         self.assertIn("text-decoration: none", block)
         self.assertIn("color: inherit", block)
+
+    def test_each_link_highlights_on_its_own_hover(self):
+        """The whole-chip rule this replaced lit the track title while the
+        cursor was over the friend's name - which goes somewhere else."""
+        self.assertIn("color: var(--accent)", self._block(".friends-listening-link:hover"))
 
     def test_the_chips_wrap_rather_than_scrolling(self):
         block = self._block(".friends-listening-chips")

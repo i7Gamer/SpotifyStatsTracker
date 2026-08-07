@@ -230,8 +230,9 @@ class UserRegistryMixin:
 
         The payload is deliberately narrower than the viewer's own now-playing:
         no position/duration (a progress bar is noise at chip size) and none of
-        the played/trackPlayed flags, which describe the friend's own history
-        and are nobody else's business."""
+        the friend's own played/trackPlayed flags, which describe their history
+        and are nobody else's business - the chip's links are decided by the
+        VIEWER's, see _markViewerPlayed."""
         if not (self.repo.isDataSharingEnabled() and self.repo.isFriendsNowPlayingEnabled()):
             return {"friends": [], "moreCount": 0}
 
@@ -273,12 +274,52 @@ class UserRegistryMixin:
                 "name": nowPlaying.get("name"),
                 "artistsText": nowPlaying.get("artistsText"),
                 "imageId": nowPlaying.get("imageId"),
+                # Ids and names only - artistsText already says the names out
+                # loud, and the ids are catalog facts. The friend's own
+                # `played` flag is dropped here rather than passed through.
+                # artistsText stays the fallback: a first listen isn't in the
+                # catalog yet, so getNowPlaying has no artist ids to give.
+                "artists": [{"id": artist.get("id"), "name": artist.get("name", "")}
+                            for artist in (nowPlaying.get("artists") or [])
+                            if artist.get("id")],
             })
 
+        #< the cap first, then the lookups: the overflow is never rendered, so
+        #  querying for it is work nobody sees
+        strip = playing[:FRIENDS_NOW_PLAYING_LIMIT]
+        self._markViewerPlayed(username, strip)
         return {
-            "friends": playing[:FRIENDS_NOW_PLAYING_LIMIT],
+            "friends": strip,
             "moreCount": max(0, len(playing) - FRIENDS_NOW_PLAYING_LIMIT),
         }
+
+    def _markViewerPlayed(self, viewer, friends):
+        """In place: whether the VIEWER has their own plays of each chip's
+        track and artists, which is what decides whether the chip links to our
+        detail pages or out to Spotify.
+
+        The viewer's history and not the friend's, for the same reason the
+        Compare page's counterpart lists use it (see
+        services/taste_match._markLinkExternally): /song/<id> and /artist/<id>
+        render the VIEWER's data, so for something they have never played the
+        detail page has nothing to show. The friend is playing it right now, so
+        their own flags would be near-always true - and reading them here would
+        put their listening history in a payload built for someone else.
+
+        Two queries for the whole strip rather than two per chip: this runs on
+        a 15-second poll."""
+        #< dict.fromkeys, not a set: two friends playing the same track is
+        #  exactly what a shared strip surfaces, and the order stays stable
+        trackIds = list(dict.fromkeys(
+            friend["trackId"] for friend in friends if friend["trackId"]))
+        artistIds = list(dict.fromkeys(
+            artist["id"] for friend in friends for artist in friend["artists"]))
+        playedTracks = self.repo.getPlayedTrackIds(viewer, trackIds)
+        playedArtists = self.repo.getPlayedArtistIds(viewer, artistIds)
+        for friend in friends:
+            friend["trackPlayedByViewer"] = friend["trackId"] in playedTracks
+            for artist in friend["artists"]:
+                artist["playedByViewer"] = artist["id"] in playedArtists
 
     # ---- login-status cache --------------------------------------------------
 
