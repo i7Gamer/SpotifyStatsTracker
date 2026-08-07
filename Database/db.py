@@ -267,6 +267,7 @@ CREATE TABLE IF NOT EXISTS users (
     spotify_refresh_token TEXT,
     lastfm_api_key        TEXT,
     default_dashboard_window TEXT DEFAULT 'day',
+    default_top_list_window TEXT DEFAULT 'all time',
     is_admin              INTEGER NOT NULL DEFAULT 0,
     timezone              TEXT,
     spotify_needs_reauth  INTEGER NOT NULL DEFAULT 0,

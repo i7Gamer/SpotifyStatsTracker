@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 
 from Database.queries._base import *  # noqa: F401,F403 - shared constants/db helpers
+from config import TOP_LIST_DEFAULT_WINDOW
 
 logger = logging.getLogger(__name__)
 
@@ -366,28 +367,44 @@ class UserQueries:
     def getUserSettings(self, username: str) -> dict:
         conn = self._conn()
         row = conn.execute(
-            "SELECT default_dashboard_window, timezone, hide_tags_panel, hide_now_playing FROM users WHERE username=?",
+            "SELECT default_dashboard_window, default_top_list_window, timezone, hide_tags_panel, "
+            "hide_now_playing FROM users WHERE username=?",
             (username,),
         ).fetchone()
         if row:
             return {
                 "default_dashboard_window": row["default_dashboard_window"] or "day",
+                #< `or` the default, not just the column DEFAULT: a row written
+                #  before the column existed reads NULL, and All Time is what
+                #  those accounts were already getting (see migrate1_46_0)
+                "default_top_list_window": row["default_top_list_window"] or TOP_LIST_DEFAULT_WINDOW,
                 "timezone": row["timezone"],
                 "hide_tags_panel": bool(row["hide_tags_panel"]),
                 "hide_now_playing": bool(row["hide_now_playing"]),
             }
-        return {"default_dashboard_window": "day", "timezone": None,
+        return {"default_dashboard_window": "day",
+                "default_top_list_window": TOP_LIST_DEFAULT_WINDOW, "timezone": None,
                 "hide_tags_panel": False, "hide_now_playing": False}
 
     def updateUserSettings(self, username: str, default_dashboard_window: str, timezone: str | None,
-                           hide_tags_panel: bool = False, hide_now_playing: bool = False) -> None:
+                           hide_tags_panel: bool = False, hide_now_playing: bool = False,
+                           default_top_list_window: str | None = None) -> None:
         conn = self._conn()
-        previousTimezone = self.getUserSettings(username)["timezone"]
+        previous = self.getUserSettings(username)
+        previousTimezone = previous["timezone"]
+        # None means "not submitted", NOT "reset to the default". This parameter
+        # arrived long after the signature did, and giving it a plain default
+        # would have silently put every existing caller's Top pages back on All
+        # Time on the next save. Same hazard the hide_* checkboxes solve with
+        # their _present markers - see routes/auth.py's save_preferences.
+        if default_top_list_window is None:
+            default_top_list_window = previous["default_top_list_window"]
         with conn:
             conn.execute(
-                "UPDATE users SET default_dashboard_window=?, timezone=?, hide_tags_panel=?, "
-                "hide_now_playing=? WHERE username=?",
-                (default_dashboard_window, timezone, int(hide_tags_panel), int(hide_now_playing), username),
+                "UPDATE users SET default_dashboard_window=?, default_top_list_window=?, timezone=?, "
+                "hide_tags_panel=?, hide_now_playing=? WHERE username=?",
+                (default_dashboard_window, default_top_list_window, timezone,
+                 int(hide_tags_panel), int(hide_now_playing), username),
             )
         # A timezone change moves every bucket boundary, weekday name and streak
         # day - so everything timezone-derived in a cached Wrapped year (the

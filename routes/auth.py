@@ -22,7 +22,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from config import (
     PASSWORD_MIN_LENGTH, RATE_LIMIT_ERROR_MESSAGE, SPOTIFY_OAUTH_STATE_NUM_BYTES,
     SPOTIFY_OAUTH_STATE_SESSION_KEY, DISPLAY_NAME_MIN_LENGTH,
-    DISPLAY_NAME_MAX_LENGTH, DISPLAY_NAME_ALLOWED_PATTERN,
+    DISPLAY_NAME_MAX_LENGTH, DISPLAY_NAME_ALLOWED_PATTERN, TOP_LIST_DEFAULT_WINDOW,
 )
 from Database.Spotify.cookies import parseCookieString
 from Database.lastfm import LastfmClient
@@ -367,6 +367,10 @@ def register(app, dashboard):
             if action == "save_preferences":
                 flashFor = PROFILE_FLASH_PREFERENCES
                 default_window = request.form.get("default_dashboard_window")
+                #< None (never submitted) means "leave it alone" to
+                #  updateUserSettings, which is what any future form that omits
+                #  this select should get - see its comment
+                default_top_list_window = request.form.get("default_top_list_window")
                 timezone = request.form.get("timezone")
                 if timezone == "":
                     timezone = None
@@ -395,7 +399,8 @@ def register(app, dashboard):
                 hide_now_playing = _checkboxValue("hide_now_playing")
                 try:
                     db.repo.updateUserSettings(username, default_window, timezone, hide_tags_panel,
-                                               hide_now_playing)
+                                               hide_now_playing,
+                                               default_top_list_window=default_top_list_window)
                     db.refreshSettings()
                     success = "Preferences saved successfully!"
                 except Exception as e:
@@ -441,6 +446,7 @@ def register(app, dashboard):
             displayNameMinLength=DISPLAY_NAME_MIN_LENGTH,
             displayNameMaxLength=DISPLAY_NAME_MAX_LENGTH,
             default_window=settings.get("default_dashboard_window", "day"),
+            default_top_list_window=settings.get("default_top_list_window", TOP_LIST_DEFAULT_WINDOW),
             user_timezone=settings.get("timezone") or "",
             hide_now_playing=settings.get("hide_now_playing", False),
             friends_now_playing_enabled=dashboard.repo.isFriendsNowPlayingEnabled(),

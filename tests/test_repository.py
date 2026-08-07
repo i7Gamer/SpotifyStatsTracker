@@ -12,6 +12,7 @@ from Database.repository import (
     SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON,
     COMPLETION_COMPLETE_PERCENT_KEY, COMPLETION_COMPLETE_PERCENT_MIN, COMPLETION_COMPLETE_PERCENT_MAX,
 )
+from config import TOP_LIST_DEFAULT_WINDOW
 
 
 def makeTrack(trackId="t1", name="Song One", albumId="alb1", artistId="art1"):
@@ -2697,6 +2698,38 @@ class TestUserSettings(RepositoryTestCase):
 
     def test_get_hide_tags_panel_unknown_user_returns_false(self):
         self.assertFalse(self.repo.getHideTagsPanel("nobody"))
+
+    def test_top_list_window_defaults_to_all_time(self):
+        """The Top pages ranked all-time before this setting existed, so its
+        default is what keeps every existing account seeing what it saw."""
+        self.assertEqual(self.repo.getUserSettings("alice")["default_top_list_window"],
+                         TOP_LIST_DEFAULT_WINDOW)
+
+    def test_unknown_user_gets_the_top_list_window_default_too(self):
+        self.assertEqual(self.repo.getUserSettings("nobody")["default_top_list_window"],
+                         TOP_LIST_DEFAULT_WINDOW)
+
+    def test_update_and_get_top_list_window(self):
+        self.repo.updateUserSettings("alice", "month", None, default_top_list_window="year")
+        self.assertEqual(self.repo.getUserSettings("alice")["default_top_list_window"], "year")
+
+    def test_omitting_the_top_list_window_leaves_it_alone(self):
+        """None means "not submitted", not "reset to the default". Several
+        callers predate this parameter, and a plain default would have silently
+        put every one of them back on All Time."""
+        self.repo.updateUserSettings("alice", "month", None, default_top_list_window="week")
+        self.repo.updateUserSettings("alice", "day", "Europe/London")
+
+        settings = self.repo.getUserSettings("alice")
+        self.assertEqual(settings["default_top_list_window"], "week")
+        self.assertEqual(settings["default_dashboard_window"], "day")   #< the rest still saved
+
+    def test_top_list_window_scoped_per_user(self):
+        self.repo.upsertUser("bob", "bob@example.com")
+        self.repo.updateUserSettings("alice", "day", None, default_top_list_window="week")
+
+        self.assertEqual(self.repo.getUserSettings("bob")["default_top_list_window"],
+                         TOP_LIST_DEFAULT_WINDOW)
 
 
 class TestImportProgressClaim(RepositoryTestCase):

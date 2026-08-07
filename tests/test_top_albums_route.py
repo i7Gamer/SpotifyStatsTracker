@@ -23,6 +23,10 @@ class TestTopAlbumsRoute(AppTestCase):
         db.getAlbumsCount.return_value = albumCount
         db.getPlayTotals.return_value = (0, 0)
         db.repo.getUserTags.return_value = []
+        #< a real dict, not the auto-Mock: _topListFilters reads the page's
+        #  default time window out of it, and a Mock .get() hands back a Mock
+        #  that renders into every URL the shell builds
+        db.repo.getUserSettings.return_value = {}
         return db
 
     def _getTopAlbums(self, dash, db, query="", ajax=True):

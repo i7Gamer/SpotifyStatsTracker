@@ -120,6 +120,12 @@ MOVEMENT_SORT_BY = TOP_LIST_SORT_BY - {"name", "skips"}
 # and raises. Far past any real library - 50M entries at PAGE_SIZE - so every
 # page it rejects was already going to answer empty.
 MOVEMENT_MAX_PAGE = 1_000_000
+# What users.default_top_list_window falls back to, and the column's own DEFAULT.
+# The Top pages were hardcoded to all-time before that setting existed, so this
+# value is what keeps an upgraded account seeing exactly what it saw. Deliberately
+# the "all time" spelling rather than "" - see _topListFilters for why All Time
+# must be expressible in a query string now that the default is per-user.
+TOP_LIST_DEFAULT_WINDOW = "all time"
 TRUTHY_ENV_VALUES = {"1", "true", "yes", "on"}
 # The literal FLASK_SECRET_KEY shipped as a placeholder in docker-compose.yml.
 # Booting with it signs session cookies - and, when DATA_ENCRYPTION_KEY is unset,

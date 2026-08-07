@@ -39,9 +39,11 @@ run('a named interval never needs dates', () => {
   assert.strictEqual(rangeProblem('all time', '', ''), RANGE_OK);
 });
 
-run('the Top lists\' empty-string All Time is a named interval too', () => {
-  // /history spells All Time "all time"; the Top pages spell it "". Both must
-  // reach the same answer, or one of the two pages blocks every request.
+run('an empty-string All Time is a named interval too', () => {
+  // Every page now spells All Time "all time" (the Top pages moved off "" when
+  // their default window became per-user - see charts.py's _topListFilters), but
+  // "" still arrives from links made before that and still means All Time. It
+  // must reach the same answer, or those URLs block every request.
   assert.strictEqual(rangeProblem('', '', ''), RANGE_OK);
 });
 

@@ -1,5 +1,5 @@
-"""The Preferences section on /profile: default time window, timezone, and
-the per-user "hide the tag panel" checkbox (independent of the admin's
+"""The Preferences section on /profile: the two default time windows, timezone,
+and the per-user "hide the tag panel" checkbox (independent of the admin's
 instance-wide tags kill switch - see Database/queries/settings.py's
 isTagsEnabled and Database/queries/users.py's hide_tags_panel column)."""
 import sys
@@ -9,6 +9,7 @@ from unittest.mock import patch, MagicMock
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from _app_factory import AppTestCase
+from config import TOP_LIST_DEFAULT_WINDOW
 
 
 class ProfilePreferencesTestCase(AppTestCase):
@@ -33,6 +34,70 @@ class ProfilePreferencesTestCase(AppTestCase):
             sess['email'] = email
             sess['username'] = username
         return client
+
+
+class TestDefaultTimeWindows(ProfilePreferencesTestCase):
+    """Two separate windows, because the pages they drive disagree about what a
+    useful default is: the Dashboard/Insights/Compare views answer "what have I
+    been listening to lately", while the Top pages are a career ranking and have
+    always opened on All Time."""
+
+    def test_each_select_names_the_pages_it_drives(self):
+        client = self._loginAs("alice", "alice@example.com")
+
+        body = client.get("/profile").get_data(as_text=True)
+
+        self.assertIn("Default Time Window (Dashboard, Insights, Compare)", body)
+        self.assertIn("Default Time Window (Top Lists)", body)
+
+    def test_top_list_window_defaults_to_all_time(self):
+        client = self._loginAs("alice", "alice@example.com")
+
+        body = client.get("/profile").get_data(as_text=True)
+
+        self.assertIn(f'<option value="{TOP_LIST_DEFAULT_WINDOW}" selected>All Time</option>', body)
+
+    def test_save_preferences_persists_the_top_list_window(self):
+        client = self._loginAs("alice", "alice@example.com")
+
+        resp = client.post("/profile", data={
+            "action": "save_preferences",
+            "default_dashboard_window": "week",
+            "default_top_list_window": "year",
+            "timezone": "",
+        }, follow_redirects=True)   #< the action redirects; see test_profile_prg.py
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(self.dash.repo.getUserSettings("alice")["default_top_list_window"], "year")
+
+    def test_saved_top_list_window_renders_selected(self):
+        client = self._loginAs("alice", "alice@example.com")
+        client.post("/profile", data={
+            "action": "save_preferences",
+            "default_dashboard_window": "week",
+            "default_top_list_window": "month",
+            "timezone": "",
+        })
+
+        body = client.get("/profile").get_data(as_text=True)
+
+        self.assertIn('<option value="month" selected>Last Month</option>', body)
+
+    def test_the_two_windows_are_stored_independently(self):
+        """One control must not write the other's column - they are separate
+        settings sharing a vocabulary, not two views of one value."""
+        client = self._loginAs("alice", "alice@example.com")
+
+        client.post("/profile", data={
+            "action": "save_preferences",
+            "default_dashboard_window": "week",
+            "default_top_list_window": "5years",
+            "timezone": "",
+        })
+
+        settings = self.dash.repo.getUserSettings("alice")
+        self.assertEqual(settings["default_dashboard_window"], "week")
+        self.assertEqual(settings["default_top_list_window"], "5years")
 
 
 class TestHideTagsPanelCheckbox(ProfilePreferencesTestCase):

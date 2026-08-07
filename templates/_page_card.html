@@ -42,7 +42,12 @@
 <div class="filter-group">
     <label for="interval">Time Period:</label>
     <select name="interval" id="interval" onchange="updateIntervalFilter()">
-    <option value="">All Time</option>{# the unfiltered default #}
+    {# "all time", not "": every URL these pages build drops empty values (see
+       PaginationMixin._buildPageUrl and charts.py's _topListShell), so an
+       explicitly chosen All Time used to vanish from the link and page 2
+       re-resolved the default. Harmless while that default was hardcoded to
+       All Time; wrong now that it is the per-user default_top_list_window. #}
+    <option value="all time" {{ 'selected' if interval in ('', 'all time') }}>All Time</option>
     <option value="today" {% if interval == 'today' %}selected{% endif %}>Today</option>
     <option value="day" {% if interval == 'day' %}selected{% endif %}>Yesterday</option>
     <option value="week" {{ 'selected' if interval == 'week' }}>Last Week</option>

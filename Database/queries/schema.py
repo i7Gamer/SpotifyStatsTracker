@@ -397,6 +397,22 @@ class SchemaQueries:
             with conn:
                 conn.execute("ALTER TABLE users ADD COLUMN hide_now_playing INTEGER NOT NULL DEFAULT 0")
 
+    def addTopListWindowColumnIfMissing(self) -> None:
+        """Add users.default_top_list_window (migrate1_46_0) if missing - the
+        Top Songs/Artists/Albums pages' own default time window, split off from
+        default_dashboard_window.
+
+        The column DEFAULT carries the whole migration: those pages were
+        hardcoded to all-time before this, so every existing row wants exactly
+        the value the ALTER already gives it, and there is nothing to backfill.
+        Guarded so re-running the migration doesn't fail."""
+        conn = self._conn()
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
+        if "default_top_list_window" not in columns:
+            with conn:
+                conn.execute("ALTER TABLE users ADD COLUMN default_top_list_window "
+                             "TEXT DEFAULT 'all time'")
+
     def addDisplayNameColumnIfMissing(self) -> None:
         """Add users.display_name (migrate1_45_0) if missing - the editable
         label that stands in for the immutable username key wherever a person

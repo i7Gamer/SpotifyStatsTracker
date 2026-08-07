@@ -19,6 +19,7 @@ from config import (
     MOVEMENT_MAX_PAGE, ON_THIS_DAY_YEARS_LIMIT,
     LISTEN_TIME_HIDE_SECONDS_ABOVE_HOURS, RECOMMENDATION_ARTIST_LIMIT,
     RECOMMENDATION_GENRE_POOL, RECOMMENDATION_EXCLUDE_TOP_N,
+    TOP_LIST_DEFAULT_WINDOW,
 )
 from routes._htmx import isHtmxSwap
 from routes._auth import makeRequiresUser
@@ -127,6 +128,13 @@ def register(app, dashboard):
         # out. Both spellings are kept: the raw one rebuilds pagination links,
         # the bool goes to the queries.
         fullOnly = request.args.get("fullOnly", "1")
+        # These pages have their own default window, separate from the one the
+        # Dashboard/Charts/Genres/Compare share: a career ranking and a "what
+        # have I played lately" view want different answers, and this one
+        # defaults to All Time, which is what the pages were hardcoded to
+        # before the setting existed. See /profile's Preferences section.
+        defaultWindow = db.repo.getUserSettings(username).get(
+            "default_top_list_window", TOP_LIST_DEFAULT_WINDOW)
         return {
             "searchQuery": request.args.get("q", ""),
             "sortBy": dashboard._getSortByParam(allowed=TOP_LIST_SORT_BY),
@@ -134,10 +142,17 @@ def register(app, dashboard):
             # (_getDateRange coerces junk to the default), but the raw value
             # reached _buildPaginationContext, so a stale or truncated URL put
             # ?interval=bogus into every page link - and now also into the URL
-            # the shell loads its list from. "" is itself a valid interval here
-            # (All Time), which is why it is both the input default and the
-            # fallback. Same fix historyPage already carries.
-            "interval": dashboard._getValidInterval(request.args.get("interval", ""), default=""),
+            # the shell loads its list from. Same fix historyPage already carries.
+            #
+            # "" stays a VALID value rather than being coerced: it is what every
+            # link these pages handed out before the setting existed, and it has
+            # always meant All Time (_getDateRange resolves it against the
+            # default="all time" the callers pass). What changed is that it is no
+            # longer what the pages PRODUCE - see _page_card.html's All Time
+            # option, which now carries "all time" so the choice survives
+            # _buildPageUrl, which drops empty values from every link it builds.
+            "interval": dashboard._getValidInterval(request.args.get("interval", defaultWindow),
+                                                    default=defaultWindow),
             "customStart": request.args.get("startDate", ""),
             "customEnd": request.args.get("endDate", ""),
             "tag": request.args.get("tag", "") if tagsOn else "",
