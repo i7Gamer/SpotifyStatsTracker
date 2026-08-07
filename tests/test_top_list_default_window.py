@@ -18,6 +18,7 @@ to survive into the pagination links and the first-load URL, or page 2 silently
 snaps back to the stored window.
 """
 import os
+import re
 import sys
 import time
 import unittest
@@ -202,6 +203,38 @@ class TestLegacyUrls(TopListWindowTestCase):
         self._setWindow("year")
 
         self.assertIn(ANCIENT, self._list("/top-songs", "?interval="))
+
+    def test_an_empty_interval_is_normalised_before_it_reaches_a_url(self):
+        """The case above is only half of it. `` is valid to _getValidInterval,
+        so it used to reach the shell as-is: the card selected All Time (its
+        option matches both spellings), while listUrl - which drops empty values
+        - carried no interval at all, so the list request that followed
+        re-resolved the stored window. The card said All Time over a
+        year-scoped list.
+
+        Normalising `` to the All Time spelling at the point it is read fixes
+        both halves at once, which is why this asserts on the URL rather than on
+        the selected option."""
+        self._setWindow("year")
+
+        for path in TOP_LIST_PATHS:
+            with self.subTest(path=path):
+                self.assertIn("interval=all+time", self._shell(path, "?interval="))
+
+    def test_the_list_the_shell_asks_for_is_the_one_the_card_describes(self):
+        """End to end, because the two halves disagreeing is the actual defect:
+        follow the URL the placeholder loads and check the rows against the
+        option the card marked selected."""
+        self._setWindow("year")
+
+        shell = self._shell("/top-songs", "?interval=")
+        self.assertIn('<option value="all time" selected>All Time</option>', shell)
+
+        #< the placeholder's, not the filter form's - that one is a bare
+        #  request.path and carries no filters at all (see _page_card.html)
+        listUrl = re.search(r'class="track-list"\s+hx-get="([^"]*)"',
+                            shell).group(1).replace("&amp;", "&")
+        self.assertIn(ANCIENT, self.client.get(listUrl, headers=HX_HEADERS).get_data(as_text=True))
 
 
 if __name__ == "__main__":

@@ -135,6 +135,17 @@ def register(app, dashboard):
         # before the setting existed. See /profile's Preferences section.
         defaultWindow = db.repo.getUserSettings(username).get(
             "default_top_list_window", TOP_LIST_DEFAULT_WINDOW)
+        # `or`, not a .get() default: ?interval= is PRESENT and empty, so a
+        # default only covers the absent case. Empty has always meant All Time -
+        # it is what every link these pages built before the setting existed, and
+        # what the old <option value=""> submitted - so it is normalised to the
+        # spelling that survives a URL rather than left to mean it implicitly.
+        # Left as "" it passed _getValidInterval intact (it is a valid interval),
+        # selected All Time in the card, and was then dropped from listUrl and
+        # from every page link, so the request that followed re-resolved
+        # defaultWindow: the card said All Time over a list scoped to something
+        # else. Harmless while the default was hardcoded to All Time.
+        rawInterval = request.args.get("interval", defaultWindow) or TOP_LIST_DEFAULT_WINDOW
         return {
             "searchQuery": request.args.get("q", ""),
             "sortBy": dashboard._getSortByParam(allowed=TOP_LIST_SORT_BY),
@@ -144,15 +155,12 @@ def register(app, dashboard):
             # ?interval=bogus into every page link - and now also into the URL
             # the shell loads its list from. Same fix historyPage already carries.
             #
-            # "" stays a VALID value rather than being coerced: it is what every
-            # link these pages handed out before the setting existed, and it has
-            # always meant All Time (_getDateRange resolves it against the
-            # default="all time" the callers pass). What changed is that it is no
-            # longer what the pages PRODUCE - see _page_card.html's All Time
-            # option, which now carries "all time" so the choice survives
-            # _buildPageUrl, which drops empty values from every link it builds.
-            "interval": dashboard._getValidInterval(request.args.get("interval", defaultWindow),
-                                                    default=defaultWindow),
+            # Never "" out of here - see rawInterval above. That spelling still
+            # means All Time on the way IN; what it must not do is come back out,
+            # since _buildPageUrl and _topListShell's listArgs drop empty values
+            # from every link they build. _page_card.html's All Time option
+            # carries "all time" for the same reason.
+            "interval": dashboard._getValidInterval(rawInterval, default=defaultWindow),
             "customStart": request.args.get("startDate", ""),
             "customEnd": request.args.get("endDate", ""),
             "tag": request.args.get("tag", "") if tagsOn else "",
