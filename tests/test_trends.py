@@ -83,6 +83,10 @@ class TestTrendQueries(unittest.TestCase):
 
         self.assertIsNotNone(raw["rediscovery"])
         self.assertEqual(raw["rediscovery"]["track_id"], "rediscovery_track")
+        # Fresh Find only fills the slot a rediscovery left empty. obsession_track
+        # is new enough to qualify on its own (its first play is inside the
+        # window), so this also pins that the rediscovery short-circuits it.
+        self.assertIsNone(raw["freshFind"])
 
         self.assertIsNotNone(raw["forgotten"])
         self.assertEqual(raw["forgotten"]["track_id"], "forgotten_track")
@@ -193,6 +197,216 @@ class TestTrendQueries(unittest.TestCase):
         self.assertIsNotNone(trends["forgotten"])
         self.assertEqual(trends["forgotten"]["id"], "forgotten_track")
         self.assertIn("plays all-time", trends["forgotten"]["trend_subtitle"])
+
+        self.assertIsNone(trends["freshFind"])
+
+
+class TestRediscoveryGapLadder(unittest.TestCase):
+    """Rediscovery used to be all-or-nothing on the 180-day gap - the only one
+    of the three cards with no fallback at all. It now walks the shorter gaps in
+    TREND_REDISCOVERY_FALLBACK_GAP_DAYS when nothing clears that bar."""
+
+    def setUp(self):
+        from Database.queries.trends import (
+            TREND_REDISCOVERY_GAP_DAYS, TREND_REDISCOVERY_FALLBACK_GAP_DAYS,
+            TREND_REDISCOVERY_MIN_HISTORICAL_PLAYS,
+        )
+
+        self.primaryGap = TREND_REDISCOVERY_GAP_DAYS
+        self.tiers = TREND_REDISCOVERY_FALLBACK_GAP_DAYS
+        self.minHistorical = TREND_REDISCOVERY_MIN_HISTORICAL_PLAYS
+        self.db = Database("alice", dbPath=Path(":memory:"), startWorkers=False)
+        self.repo = self.db.repo
+        self.repo.upsertUser("alice", "alice@example.com")
+        self.now_ts = 1000000.0
+        self.day = 86400
+
+    def tearDown(self):
+        self.repo.connectionManager.close()
+
+    def _seedComeback(self, trackId, gapDays, recentPlays=1):
+        """A track last heard `gapDays` ago, played again in the past few hours."""
+        self.repo.upsertTrack(makeTrack(trackId=trackId, name=f"Song {trackId}"))
+        for i in range(self.minHistorical):
+            self.repo.insertPlay("alice", trackId,
+                                 self.now_ts - (gapDays * self.day) - (i * 100), 200000)
+        for i in range(recentPlays):
+            self.repo.insertPlay("alice", trackId, self.now_ts - 500 - (i * 100), 200000)
+        self.repo.commit()
+
+    def test_a_gap_too_short_for_the_primary_is_caught_by_the_first_tier(self):
+        gap = (self.primaryGap + self.tiers[0]) // 2   #< under 180, over 60
+        self._seedComeback("mid_gap", gap)
+
+        raw = self.repo.getDashboardTrendsRaw("alice", now_ts=self.now_ts)
+
+        self.assertIsNotNone(raw["rediscovery"])
+        self.assertEqual(raw["rediscovery"]["track_id"], "mid_gap")
+
+    def test_the_shortest_tier_catches_what_the_first_one_misses(self):
+        gap = (self.tiers[0] + self.tiers[1]) // 2   #< under 60, over 30
+        self._seedComeback("short_gap", gap)
+
+        raw = self.repo.getDashboardTrendsRaw("alice", now_ts=self.now_ts)
+
+        self.assertEqual(raw["rediscovery"]["track_id"], "short_gap")
+
+    def test_a_gap_under_every_tier_is_not_a_rediscovery(self):
+        """The ladder stops at 30 days deliberately: coming back to a track you
+        heard three weeks ago is just listening, not a rediscovery."""
+        self._seedComeback("barely_gone", self.tiers[-1] - 10)
+
+        raw = self.repo.getDashboardTrendsRaw("alice", now_ts=self.now_ts)
+
+        self.assertIsNone(raw["rediscovery"])
+
+    def test_the_longest_matching_gap_wins_over_a_busier_short_one(self):
+        """Tiers run longest-first for this reason. Within one tier the ordering
+        is by recent play count, so a flat query would hand the card to the
+        30-day comeback purely for having been played more this week."""
+        self._seedComeback("true_comeback", self.primaryGap + 20, recentPlays=1)
+        self._seedComeback("busy_short_gap", self.tiers[-1] + 5, recentPlays=5)
+
+        raw = self.repo.getDashboardTrendsRaw("alice", now_ts=self.now_ts)
+
+        self.assertEqual(raw["rediscovery"]["track_id"], "true_comeback")
+
+    def test_a_comeback_found_by_a_fallback_tier_suppresses_the_fresh_find(self):
+        self._seedComeback("mid_gap", (self.tiers[0] + self.tiers[1]) // 2)
+        self.repo.upsertTrack(makeTrack(trackId="new_track", name="New"))
+        for i in range(3):
+            self.repo.insertPlay("alice", "new_track", self.now_ts - (5 * self.day) + (i * 3600), 200000)
+        self.repo.commit()
+
+        raw = self.repo.getDashboardTrendsRaw("alice", now_ts=self.now_ts)
+
+        self.assertEqual(raw["rediscovery"]["track_id"], "mid_gap")
+        self.assertIsNone(raw["freshFind"])
+
+
+class TestFreshFindFallback(unittest.TestCase):
+    """What the Rediscovery slot shows when not even the shortest gap matches:
+    the newest arrival worth mentioning."""
+
+    def setUp(self):
+        from Database.queries.trends import TREND_FRESH_FIND_DAYS, TREND_FRESH_FIND_MIN_PLAYS
+
+        self.windowDays = TREND_FRESH_FIND_DAYS
+        self.minPlays = TREND_FRESH_FIND_MIN_PLAYS
+        self.db = Database("alice", dbPath=Path(":memory:"), startWorkers=False)
+        self.repo = self.db.repo
+        self.repo.upsertUser("alice", "alice@example.com")
+        self.now_ts = 1000000.0
+        self.day = 86400
+
+    def tearDown(self):
+        self.repo.connectionManager.close()
+
+    def _seedObsession(self):
+        """A track that owns the Obsession card, so the Fresh Find assertions
+        below are never really testing the obsession exclusion by accident.
+
+        Its single old play is deliberate: three would make it a rediscovery
+        under the 30-day tier, which would suppress the Fresh Find entirely."""
+        self.repo.upsertTrack(makeTrack(trackId="obsession_track", name="Obsession Song"))
+        self.repo.insertPlay("alice", "obsession_track", self.now_ts - (60 * self.day), 200000)
+        for i in range(6):
+            self.repo.insertPlay("alice", "obsession_track", self.now_ts - (i * 3600), 200000)
+        self.repo.commit()
+
+    def _seedNewTrack(self, trackId, firstPlayedDaysAgo, plays, is_skip=0):
+        self.repo.upsertTrack(makeTrack(trackId=trackId, name=f"Song {trackId}"))
+        firstAt = self.now_ts - (firstPlayedDaysAgo * self.day)
+        for i in range(plays):
+            self.repo.insertPlay("alice", trackId, firstAt + (i * 3600),
+                                 3000 if is_skip else 200000, is_skip=is_skip)
+        self.repo.commit()
+
+    def test_a_new_track_fills_the_slot_when_no_gap_tier_matches(self):
+        self._seedObsession()
+        self._seedNewTrack("new_track", firstPlayedDaysAgo=5, plays=self.minPlays + 1)
+
+        raw = self.repo.getDashboardTrendsRaw("alice", now_ts=self.now_ts)
+
+        self.assertIsNone(raw["rediscovery"])
+        self.assertIsNotNone(raw["freshFind"])
+        self.assertEqual(raw["freshFind"]["track_id"], "new_track")
+        self.assertEqual(raw["freshFind"]["play_count"], self.minPlays + 1)
+
+    def test_the_most_played_new_track_wins(self):
+        self._seedObsession()
+        self._seedNewTrack("quiet_new", firstPlayedDaysAgo=6, plays=self.minPlays)
+        self._seedNewTrack("loud_new", firstPlayedDaysAgo=4, plays=self.minPlays + 2)
+
+        raw = self.repo.getDashboardTrendsRaw("alice", now_ts=self.now_ts)
+
+        self.assertEqual(raw["freshFind"]["track_id"], "loud_new")
+
+    def test_the_obsession_track_is_never_also_the_fresh_find(self):
+        """A brand-new track played hard all week is both by construction, and
+        the same song in two adjacent cards reads as a bug."""
+        self._seedNewTrack("only_track", firstPlayedDaysAgo=3, plays=6)
+
+        raw = self.repo.getDashboardTrendsRaw("alice", now_ts=self.now_ts)
+
+        self.assertEqual(raw["obsession"]["track_id"], "only_track")
+        self.assertIsNone(raw["freshFind"])
+
+    def test_one_play_is_not_a_find(self):
+        self._seedObsession()
+        self._seedNewTrack("passed_by", firstPlayedDaysAgo=5, plays=self.minPlays - 1)
+
+        raw = self.repo.getDashboardTrendsRaw("alice", now_ts=self.now_ts)
+
+        self.assertIsNone(raw["freshFind"])
+
+    def test_a_track_first_heard_before_the_window_is_not_fresh(self):
+        """Played plenty this week, but it is not new - the window is measured
+        from the all-time first listen, not from the recent ones."""
+        self._seedObsession()
+        self.repo.upsertTrack(makeTrack(trackId="old_friend", name="Old Friend"))
+        self.repo.insertPlay("alice", "old_friend", self.now_ts - ((self.windowDays + 10) * self.day), 200000)
+        for i in range(3):
+            self.repo.insertPlay("alice", "old_friend", self.now_ts - (i * 3600) - 60, 200000)
+        self.repo.commit()
+
+        raw = self.repo.getDashboardTrendsRaw("alice", now_ts=self.now_ts)
+
+        self.assertIsNone(raw["freshFind"])
+
+    def test_a_track_only_ever_skipped_is_not_a_find(self):
+        self._seedObsession()
+        self._seedNewTrack("skipped_new", firstPlayedDaysAgo=5, plays=4, is_skip=1)
+
+        raw = self.repo.getDashboardTrendsRaw("alice", now_ts=self.now_ts)
+
+        self.assertIsNone(raw["freshFind"])
+
+    def test_freshness_is_measured_from_the_first_real_listen(self):
+        """Skipping past a track months ago is not having heard it - same
+        definition of "discovered" getDiscoveredSongsCount uses."""
+        self._seedObsession()
+        self.repo.upsertTrack(makeTrack(trackId="late_bloomer", name="Late Bloomer"))
+        for i in range(3):
+            self.repo.insertPlay("alice", "late_bloomer",
+                                 self.now_ts - (100 * self.day) - (i * 100), 3000, is_skip=1)
+        for i in range(self.minPlays):
+            self.repo.insertPlay("alice", "late_bloomer", self.now_ts - (5 * self.day) + (i * 3600), 200000)
+        self.repo.commit()
+
+        raw = self.repo.getDashboardTrendsRaw("alice", now_ts=self.now_ts)
+
+        self.assertEqual(raw["freshFind"]["track_id"], "late_bloomer")
+
+    def test_the_hydrated_fresh_find_says_how_new_it_is(self):
+        self._seedObsession()
+        self._seedNewTrack("new_track", firstPlayedDaysAgo=5, plays=self.minPlays + 1)
+
+        trends = self.db.getDashboardTrends(now_ts=self.now_ts)
+
+        self.assertEqual(trends["freshFind"]["id"], "new_track")
+        self.assertIn("first heard 5 days ago", trends["freshFind"]["trend_subtitle"])
+        self.assertIn(f"{self.minPlays + 1} plays", trends["freshFind"]["trend_subtitle"])
 
 
 class TestForgottenFavoriteFallback(unittest.TestCase):

@@ -58,6 +58,8 @@ logger = logging.getLogger(__name__)
 # count must track this tuple - never a bare literal.
 GENRE_COVERAGE_CATEGORIES = ("song", "album", "artist")
 
+SECONDS_PER_DAY = 86400
+
 # How far back getCurrentStreak scans for the ongoing daily streak. A live
 # streak is always far shorter; this only bounds the bucket query so it never
 # walks the whole history to compute a number that can't exceed this anyway.
@@ -1437,17 +1439,21 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         return result
 
     def getDashboardTrends(self, now_ts: float | None = None) -> dict[str, dict | None]:
-        """Fetch dashboard trend insights (Obsession, Rediscovery, Forgotten Favorite) with song metadata."""
+        """Fetch dashboard trend insights (Obsession, Rediscovery or its Fresh
+        Find fallback, Forgotten Favorite) with song metadata."""
         raw = self.repo.getDashboardTrendsRaw(self.user, now_ts=now_ts)
         now_ts = now_ts or time.time()
 
-        result = {"obsession": None, "rediscovery": None, "forgotten": None}
+        result = {"obsession": None, "rediscovery": None, "freshFind": None, "forgotten": None}
         # getTrack is 3 queries; hydrating the three cards one at a time cost 9
         # on an endpoint that returns at most 3 tracks (often the same one
-        # twice). getTracksByIds answers the whole set in 3, deduped.
+        # twice). getTracksByIds answers the whole set in 3, deduped. Still at
+        # most 3 tracks with Fresh Find in the list - it is only ever set when
+        # rediscovery is not.
         songsById = self.repo.getTracksByIds([
             item["track_id"] for item in
-            (raw.get("obsession"), raw.get("rediscovery"), raw.get("forgotten")) if item
+            (raw.get("obsession"), raw.get("rediscovery"), raw.get("freshFind"),
+             raw.get("forgotten")) if item
         ])
 
         if raw.get("obsession"):
@@ -1464,9 +1470,20 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
             if song:
                 cnt = item["recent_count"]
                 max_old = item["max_old_played_at"]
-                days_ago = max(1, int((now_ts - max_old) // 86400)) if max_old else 0
+                days_ago = max(1, int((now_ts - max_old) // SECONDS_PER_DAY)) if max_old else 0
                 song["trend_subtitle"] = f"{cnt} play{'s' if cnt != 1 else ''} this week · unplayed for {days_ago} days"
                 result["rediscovery"] = song
+
+        if raw.get("freshFind"):
+            item = raw["freshFind"]
+            song = songsById.get(item["track_id"])
+            if song:
+                cnt = item["play_count"]
+                first_played = item["first_played_at"]
+                days_ago = max(1, int((now_ts - first_played) // SECONDS_PER_DAY)) if first_played else 0
+                song["trend_subtitle"] = (f"{cnt} play{'s' if cnt != 1 else ''} · "
+                                          f"first heard {days_ago} day{'s' if days_ago != 1 else ''} ago")
+                result["freshFind"] = song
 
         if raw.get("forgotten"):
             item = raw["forgotten"]
@@ -1474,7 +1491,7 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
             if song:
                 total = item["total_plays"]
                 last_played = item["last_played_at"]
-                days_ago = max(1, int((now_ts - last_played) // 86400)) if last_played else 0
+                days_ago = max(1, int((now_ts - last_played) // SECONDS_PER_DAY)) if last_played else 0
                 months_ago = max(1, days_ago // 30)
                 song["trend_subtitle"] = f"{total} full plays all-time · last played {months_ago} month{'s' if months_ago != 1 else ''} ago"
                 result["forgotten"] = song

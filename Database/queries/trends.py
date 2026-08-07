@@ -11,7 +11,10 @@ from config import (
     TREND_OBSESSION_FALLBACK_MIN_PLAYS,
     TREND_REDISCOVERY_RECENT_DAYS,
     TREND_REDISCOVERY_GAP_DAYS,
+    TREND_REDISCOVERY_FALLBACK_GAP_DAYS,
     TREND_REDISCOVERY_MIN_HISTORICAL_PLAYS,
+    TREND_FRESH_FIND_DAYS,
+    TREND_FRESH_FIND_MIN_PLAYS,
     TREND_FORGOTTEN_GAP_DAYS,
     TREND_FORGOTTEN_MIN_HISTORICAL_PLAYS,
     TREND_FORGOTTEN_FALLBACK_MIN_PLAYS,
@@ -21,12 +24,17 @@ SECONDS_PER_DAY = 86400
 
 
 class TrendQueries:
-    """TrendQueries: SQL queries for Dashboard Obsession, Rediscovery, and Forgotten Favorites.
+    """TrendQueries: SQL queries for Dashboard Obsession, Rediscovery, Fresh
+    Find, and Forgotten Favorites.
 
-    All three exclude skips (plays.is_skip=1): a track you keep skipping is not
-    an obsession, a rediscovery, or a forgotten favorite. Forgotten Favorite
-    additionally requires each counted play to be a full listen (completion
-    ratio) - see getDashboardTrendsRaw."""
+    All of them exclude skips (plays.is_skip=1): a track you keep skipping is
+    not an obsession, a rediscovery, a find, or a forgotten favorite. Forgotten
+    Favorite additionally requires each counted play to be a full listen
+    (completion ratio) - see getDashboardTrendsRaw.
+
+    Rediscovery and Fresh Find share one dashboard slot: the card shows a
+    rediscovery when there is one and the newest arrival otherwise, so a user
+    whose listening has no comebacks in it still gets an insight there."""
 
     def getDashboardTrendsRaw(self, username: str, now_ts: float | None = None) -> dict[str, dict | None]:
         if now_ts is None:
@@ -57,11 +65,12 @@ class TrendQueries:
         if not obsession_row:
             obsession_row = obsessionWithAtLeast(TREND_OBSESSION_FALLBACK_MIN_PLAYS)
 
-        # 2. Rediscovery
+        # 2. Rediscovery. One statement, run once per gap tier - same
+        # run-it-again shape as the two cards either side of it, except what
+        # relaxes here is the gap rather than a play floor (its play floor is
+        # already low).
         rediscovery_recent_cutoff = now_ts - (TREND_REDISCOVERY_RECENT_DAYS * SECONDS_PER_DAY)
-        rediscovery_gap_cutoff = now_ts - (TREND_REDISCOVERY_GAP_DAYS * SECONDS_PER_DAY)
-        rediscovery_row = conn.execute(
-            """
+        rediscoveryQuery = """
             SELECT track_id,
                    COUNT(CASE WHEN played_at >= ? THEN 1 END) as recent_count,
                    COUNT(CASE WHEN played_at < ? THEN 1 END) as old_count,
@@ -88,18 +97,76 @@ class TrendQueries:
                AND max_old_played_at <= ?
             ORDER BY recent_count DESC, old_count DESC
             LIMIT 1
-            """,
-            (
-                rediscovery_recent_cutoff,
-                rediscovery_recent_cutoff,
-                rediscovery_recent_cutoff,
-                username,
-                username,
-                rediscovery_recent_cutoff,
-                TREND_REDISCOVERY_MIN_HISTORICAL_PLAYS,
-                rediscovery_gap_cutoff,
-            ),
-        ).fetchone()
+            """
+
+        def rediscoveryWithGap(gapDays: int):
+            return conn.execute(
+                rediscoveryQuery,
+                (
+                    rediscovery_recent_cutoff,
+                    rediscovery_recent_cutoff,
+                    rediscovery_recent_cutoff,
+                    username,
+                    username,
+                    rediscovery_recent_cutoff,
+                    TREND_REDISCOVERY_MIN_HISTORICAL_PLAYS,
+                    now_ts - (gapDays * SECONDS_PER_DAY),
+                ),
+            ).fetchone()
+
+        rediscovery_row = None
+        # Longest gap first: a genuine 180-day comeback must not be displaced by
+        # a 30-day one that happens to have been played more this week (within a
+        # tier the ordering is by recent_count, so a single flat query would).
+        for gapDays in (TREND_REDISCOVERY_GAP_DAYS, *TREND_REDISCOVERY_FALLBACK_GAP_DAYS):
+            rediscovery_row = rediscoveryWithGap(gapDays)
+            if rediscovery_row:
+                break
+
+        # 2b. Fresh Find - the same card's fallback insight, so it is only asked
+        # for when no gap tier matched. The newest arrival: a track whose
+        # all-time first real listen is inside the window, ranked by how often it
+        # has been played since.
+        fresh_find_row = None
+        if not rediscovery_row:
+            fresh_find_row = conn.execute(
+                """
+                SELECT track_id,
+                       COUNT(*) as play_count,
+                       MIN(played_at) as first_played_at,
+                       SUM(time_played) as total_ms
+                FROM plays
+                WHERE username = ? AND is_skip = 0
+                  -- Same candidate narrowing as the rediscovery query above,
+                  -- lossless for the same kind of reason: a track whose
+                  -- all-time first real play is inside the window necessarily
+                  -- has a real play inside the window. Note the aggregate
+                  -- itself is deliberately NOT windowed - MIN(played_at) has to
+                  -- see the track's whole history, or every track played this
+                  -- week would look new.
+                  AND track_id IN (
+                      SELECT track_id FROM plays
+                      WHERE username = ? AND is_skip = 0 AND played_at >= ?
+                  )
+                  -- The obsession is usually a new track played hard, which
+                  -- would put the same song in two adjacent cards. `IS NOT` and
+                  -- not `!=` because the parameter is NULL when the user has no
+                  -- obsession, and `track_id != NULL` excludes everything.
+                  AND track_id IS NOT ?
+                GROUP BY track_id
+                HAVING first_played_at >= ? AND play_count >= ?
+                ORDER BY play_count DESC, total_ms DESC
+                LIMIT 1
+                """,
+                (
+                    username,
+                    username,
+                    now_ts - (TREND_FRESH_FIND_DAYS * SECONDS_PER_DAY),
+                    obsession_row["track_id"] if obsession_row else None,
+                    now_ts - (TREND_FRESH_FIND_DAYS * SECONDS_PER_DAY),
+                    TREND_FRESH_FIND_MIN_PLAYS,
+                ),
+            ).fetchone()
 
         # 3. Forgotten Favorite - only counts full listens (is_skip=0 and at/over
         # the admin's completion-complete percent, same boundary getCompletionStats
@@ -138,5 +205,6 @@ class TrendQueries:
         return {
             "obsession": dict(obsession_row) if obsession_row else None,
             "rediscovery": dict(rediscovery_row) if rediscovery_row else None,
+            "freshFind": dict(fresh_find_row) if fresh_find_row else None,
             "forgotten": dict(forgotten_row) if forgotten_row else None,
         }

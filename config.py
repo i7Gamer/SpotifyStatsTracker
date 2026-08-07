@@ -194,6 +194,23 @@ TREND_FORGOTTEN_MIN_HISTORICAL_PLAYS = 15
 # listeners rather than rendering empty.
 TREND_OBSESSION_FALLBACK_MIN_PLAYS = 2
 TREND_FORGOTTEN_FALLBACK_MIN_PLAYS = 2
+# Rediscovery degrades on the gap instead, since its play floor is already low:
+# shorter comebacks tried in order only when no track clears the gap above.
+# Longest-first, so the strongest gap that matches is the one shown - a genuine
+# 180-day comeback is never displaced by a busier 30-day one.
+TREND_REDISCOVERY_FALLBACK_GAP_DAYS = (60, 30)
+
+# Fresh Find - what the Rediscovery slot shows when not even the shortest gap
+# above matches: the track whose all-time first listen is the most recent
+# arrival worth mentioning, ranked by how often it has been played since.
+# The window is wider than TREND_OBSESSION_DAYS on purpose - a track first
+# heard two days ago has had no time to accumulate plays, so a 7-day window
+# would mostly find one-play tracks.
+TREND_FRESH_FIND_DAYS = 14
+# Two plays, not one: a single play is a track that went past, a repeat is a
+# find. Also what keeps the card off a brand-new listener's dashboard until
+# they have actually returned to something.
+TREND_FRESH_FIND_MIN_PLAYS = 2
 # Random startup-offset bounds for this module's periodic workers, so a
 # restart doesn't fire every worker at the same instant (the metadata
 # backfiller and wrapped worker in Database/database.py already stagger

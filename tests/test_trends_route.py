@@ -4,6 +4,9 @@ from unittest.mock import patch
 from tests._app_factory import AppTestCase
 
 
+SECONDS_PER_DAY = 86400
+
+
 def makeTrack(trackId="t1", name="Song One", albumId="alb1", artistId="art1"):
     return {
         "id": trackId,
@@ -84,3 +87,33 @@ class TestTrendsRoute(AppTestCase):
         html = self.client.get("/api/dashboard-trends").get_data(as_text=True)
         self.assertIn('href="/artist/art1"', html)
         self.assertIn("summary-top-artist-link", html)
+
+    def test_the_middle_card_becomes_a_fresh_find_when_there_is_no_rediscovery(self):
+        """The fixture user has no comeback at any gap tier, so the slot that
+        would say "Recent Rediscovery" carries the newest arrival instead."""
+        now_ts = time.time()
+        self.dash.repo.upsertTrack(makeTrack(trackId="t2", name="Fresh Song",
+                                             albumId="alb2", artistId="art2"))
+        for i in range(3):
+            self.dash.repo.insertPlay(self.username, "t2",
+                                      now_ts - (4 * SECONDS_PER_DAY) + (i * 3600), 200000)
+        self.dash.repo.commit()
+        self._login()
+
+        html = self.client.get("/api/dashboard-trends").get_data(as_text=True)
+
+        self.assertIn("Fresh Find", html)
+        self.assertIn("Fresh Song", html)
+        self.assertIn('href="/artist/art2"', html)
+        self.assertNotIn("Recent Rediscovery", html)
+
+    def test_the_middle_card_keeps_its_empty_state_when_there_is_neither(self):
+        """t1 is the obsession, and the obsession is never also the fresh find -
+        so this user has nothing for the slot at all."""
+        self._login()
+
+        html = self.client.get("/api/dashboard-trends").get_data(as_text=True)
+
+        self.assertIn("Recent Rediscovery", html)
+        self.assertIn("No rediscovery matches found", html)
+        self.assertNotIn("Fresh Find", html)
