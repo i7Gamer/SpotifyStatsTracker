@@ -112,6 +112,27 @@ class TestStaleDataIsMarked(unittest.TestCase):
         self.assertIsNotNone(rule, "nothing renders the stale mark")
         self.assertIn("opacity", rule.group(1))
 
+    def test_the_progress_tick_is_gated_on_the_same_mark(self):
+        """The bar runs on its own 1s timer, off the last payload's anchor, so
+        it is the one thing on the card that keeps LOOKING live after the poll
+        feeding it has stopped. The rule itself is tested in node
+        (progressShouldAdvance); this pins that the tick actually asks it."""
+        tick = self.script[self.script.index("function tickProgress()"):]
+        tick = tick[:tick.index("}")]
+
+        self.assertIn("progressShouldAdvance(", tick)
+
+    def test_an_expired_session_stops_the_tick_as_well_as_the_poll(self):
+        """Two handles, one dead session. The tick's was discarded, so a 401
+        left a 1s timer running for the life of the tab - the leak the whole
+        VisibilityPoll change exists to close, reintroduced by the timer added
+        beside it."""
+        session = self.script[self.script.index("resp.status === 401"):]
+        session = session[:session.index("return null;")]
+
+        self.assertIn("pollHandle.stop()", session)
+        self.assertIn("tickHandle.stop()", session)
+
 
 if __name__ == "__main__":
     unittest.main()

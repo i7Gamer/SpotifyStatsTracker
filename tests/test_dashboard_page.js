@@ -21,7 +21,8 @@ global.document = {
 };
 
 const { calendarTooltipLabel, friendsStripSignature, friendsChipAnchor,
-        friendsChipLink, progressPercent, pollIsStale } = require('../static/js/dashboard-page.js');
+        friendsChipLink, progressPercent, progressShouldAdvance,
+        pollIsStale } = require('../static/js/dashboard-page.js');
 
 function run(name, fn) {
   try { fn(); console.log(`ok - ${name}`); }
@@ -208,6 +209,33 @@ run('a clock that jumped backwards does not rewind the bar', () => {
   // Wall-clock time is not monotonic - an NTP correction or a laptop waking up
   // can hand back a negative elapsed.
   assert.strictEqual(progressPercent(120000, FOUR_MINUTES_MS, -5000, false), 50);
+});
+
+// Whether the bar is allowed to move at all. Separate from the arithmetic above
+// because the arithmetic is happy to keep answering forever off a stale anchor -
+// which is exactly what it did.
+
+const LIVE = { positionMs: 1000, durationMs: FOUR_MINUTES_MS, isPaused: false, atMs: 0 };
+
+run('a playing track advances', () => {
+  assert.strictEqual(progressShouldAdvance(LIVE, false), true);
+});
+
+run('nothing playing does not', () => {
+  assert.strictEqual(progressShouldAdvance(null, false), false);
+});
+
+run('a paused track does not', () => {
+  assert.strictEqual(progressShouldAdvance(Object.assign({}, LIVE, { isPaused: true }), false),
+                     false);
+});
+
+run('a stale panel does not advance, however live its last payload looked', () => {
+  // The anchor is the LAST payload that got through. Once the poll has stopped
+  // answering - three failures, or a 401 - a bar that keeps sliding is claiming
+  // progress for a track nothing has confirmed is still playing, underneath a
+  // card that has just dimmed and said Stale.
+  assert.strictEqual(progressShouldAdvance(LIVE, true), false);
 });
 
 // --- the poll's own health ---------------------------------------------------

@@ -79,6 +79,18 @@ function pollIsStale(consecutiveFailures) {
   return consecutiveFailures >= NOW_PLAYING_STALE_AFTER_FAILURES;
 }
 
+// Whether the bar may move on this tick, given the last payload and whether the
+// poll that delivered it is still getting through.
+//
+// Separate from progressPercent because that function is happy to keep answering
+// forever off a stale anchor - which is what it did. The bar runs on its own 1s
+// timer, so it is the one thing on this card that goes on LOOKING live after the
+// 15s poll behind it has stopped: a dimmed card captioned Stale, with a progress
+// bar still sliding toward the end of a track nothing has confirmed is playing.
+function progressShouldAdvance(playing, isStale) {
+  return !!playing && !playing.isPaused && !isStale;
+}
+
 // The streak calendar tooltip's second line. Pure and exported (see the bottom
 // of this file) because the DOM code that shows it cannot be tested from here,
 // and a source-shape assertion on it proved worthless: the check looked for the
@@ -304,6 +316,9 @@ document.body.addEventListener('htmx:sendError', reportDashboardFailure);
   //< the last payload's position + when it landed, or null while nothing is
   //  playing. Read by the tick below, which runs on its own (much faster) timer.
   var playing = null;
+  //< kept beside `playing` because the tick needs both: an anchor is only worth
+  //  advancing while the poll that set it is still getting through
+  var isStale = false;
 
   function drawProgress(elapsedMs) {
     var bar = document.getElementById('nowPlayingBar');
@@ -320,7 +335,7 @@ document.body.addEventListener('htmx:sendError', reportDashboardFailure);
   }
 
   function tickProgress() {
-    if (!playing || playing.isPaused) return;   //< a paused track sits still
+    if (!progressShouldAdvance(playing, isStale)) return;
     drawProgress(Date.now() - playing.atMs);
   }
 
@@ -418,13 +433,19 @@ document.body.addEventListener('htmx:sendError', reportDashboardFailure);
   }
 
   var pollHandle = null;
+  var tickHandle = null;
   var consecutiveFailures = 0;
 
   // Both blocks are fed by the one request, so when it stops answering both are
   // equally out of date - and neither said so: the card kept rendering a track
   // that may have ended twenty minutes ago exactly like one playing now. The
   // panel dims and the state pill says Stale until a poll gets through again.
+  //
+  // The progress bar is the third thing this governs, and the least obvious:
+  // it moves on its own timer, so nothing here would have stopped it (see
+  // progressShouldAdvance).
   function setStale(stale) {
+    isStale = stale;
     if (card) card.classList.toggle('is-stale', stale);
     if (friendsRow) friendsRow.classList.toggle('is-stale', stale);
     var stateEl = document.getElementById('nowPlayingState');
@@ -446,8 +467,12 @@ document.body.addEventListener('htmx:sendError', reportDashboardFailure);
         // rather than navigates - the next click on anything goes through the
         // normal login redirect. What is on screen is frozen from here on, so
         // it is marked as such rather than left looking live.
+        //
+        // Both timers, not just the fetching one: the bar's tick is the leak
+        // this whole change closed, reintroduced. stop() is permanent on both.
         if (resp.status === 401) {
           if (pollHandle) pollHandle.stop();
+          if (tickHandle) tickHandle.stop();
           setStale(true);
           return null;
         }
@@ -475,7 +500,7 @@ document.body.addEventListener('htmx:sendError', reportDashboardFailure);
   // tick has its own handle so the bar stops moving in a background tab too,
   // where its arithmetic would be answering a question nobody asked.
   pollHandle = window.VisibilityPoll.start(poll, NOW_PLAYING_POLL_MS);
-  window.VisibilityPoll.start(tickProgress, PROGRESS_TICK_MS);
+  tickHandle = window.VisibilityPoll.start(tickProgress, PROGRESS_TICK_MS);
 })();
 
 // The two deferred cards fail independently of the summary and of each other,
@@ -576,6 +601,7 @@ if (typeof module !== 'undefined' && module.exports) {
     friendsChipAnchor: friendsChipAnchor,
     friendsChipLink: friendsChipLink,
     progressPercent: progressPercent,
+    progressShouldAdvance: progressShouldAdvance,
     pollIsStale: pollIsStale,
   };
 }
